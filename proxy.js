@@ -42,6 +42,7 @@ function normalizeUsage(u) {
     outputTokens: 0,
     quotaFailures: 0,
     lastUsedAt: null,
+    lastError: null,
     ...(u && typeof u === 'object' ? u : {}),
   };
 }
@@ -355,6 +356,8 @@ function startOpenCodeProxy({ configPath, log = () => {} }) {
           scheduleSave();
         }
         recordUsage(idx, result.usage);
+        state.usage[idx].lastError = null;
+        scheduleSave();
         if (!result.streamed && !result.aborted) writeBufferedResponse(res, result);
         return;
       }
@@ -364,6 +367,7 @@ function startOpenCodeProxy({ configPath, log = () => {} }) {
         log(`key #${idx} (${maskKey(state.keys[idx])}) rejected (HTTP ${result.status}): ${text.slice(0, 200) || '(no body)'}`);
         state.usage[idx].quotaFailures += 1;
         state.usage[idx].lastUsedAt = Date.now();
+        state.usage[idx].lastError = { status: result.status, text: text.slice(0, 300), at: Date.now() };
         scheduleSave();
         lastFailure = result;
         continue;
