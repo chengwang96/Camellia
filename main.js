@@ -54,6 +54,8 @@ function defaultConfig() {
     port: DEFAULT_PORT,
     dshHome: DSH_HOME,      // pass through as DSH_HOME env to the backend
     firstRunComplete: false, // set true after onboarding
+    mode: 'dsh',            // 'dsh' | 'claude' — which agent UI the main window shows
+    claude: {},             // Claude Code GUI settings
   };
 }
 
@@ -274,6 +276,97 @@ function syncOllamaBaseUrl(active) {
   } catch (err) {
     log(`ollama-proxy: sync settings.yaml failed: ${err && err.message}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code GUI (headless CLI driver)
+// ---------------------------------------------------------------------------
+function detectClaudeExe() {
+  const candidates = [
+    path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'claude-code', 'claude.exe'),
+  ];
+  return firstExisting(candidates) || 'claude';
+}
+
+function claudeSettings() {
+  return loadConfig().claude || {};
+}
+
+function saveClaudeSettings(patch) {
+  const config = loadConfig();
+  const next = { ...config, claude: { ...(config.claude || {}), ...patch } };
+  saveConfig(next);
+  return next.claude;
+}
+
+let claudeRunSeq = 0;
+const claudeRuns = new Map(); // runId -> child process
+
+function spawnClaude(payload) {
+  const runId = ++claudeRunSeq;
+  const settings = payload.settings || {};
+  const args = ['-p', payload.prompt, '--output-format', 'stream-json', '--include-partial-messages', '--verbose'];
+  if (settings.permissionMode && settings.permissionMode !== 'default') args.push('--permission-mode', settings.permissionMode);
+  if (settings.model) args.push('--model', settings.model);
+  if (payload.resumeLast) args.push('-c');
+  else if (payload.sessionId) args.push('--resume', payload.sessionId);
+
+  const env = { ...process.env };
+  if (settings.baseUrl) env.ANTHROPIC_BASE_URL = settings.baseUrl;
+  if (settings.authToken) env.ANTHROPIC_AUTH_TOKEN = settings.authToken;
+  if (settings.apiKey) env.ANTHROPIC_API_KEY = settings.apiKey;
+
+  const exe = detectClaudeExe();
+  log(`claude: spawn ${exe} ${args.slice(0, 6).join(' ')}… (run ${runId})`);
+  const proc = spawn(exe, args, {
+    cwd: settings.cwd || undefined,
+    env,
+    windowsHide: true,
+    shell: exe === 'claude', // PATH fallback needs the shell to resolve claude.cmd
+  });
+  claudeRuns.set(runId, proc);
+
+  const send = (obj) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:claude-event', obj);
+  };
+
+  let buffer = '';
+  const emitLine = (line) => {
+    line = line.trim();
+    if (!line) return;
+    try {
+      send(JSON.parse(line));
+    } catch (_err) {
+      // 非 JSON 行（进度条等），忽略
+    }
+  };
+  proc.stdout.on('data', (chunk) => {
+    buffer += chunk.toString('utf8');
+    let idx;
+    while ((idx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      emitLine(line);
+    }
+  });
+  proc.stderr.on('data', (chunk) => {
+    const text = chunk.toString().trimEnd();
+    if (text) log(`[claude stderr] ${text}`);
+  });
+  proc.on('error', (err) => {
+    claudeRuns.delete(runId);
+    send({ type: 'result', is_error: true, subtype: 'spawn_error', result: String(err && err.message || err) });
+  });
+  proc.on('exit', (code) => {
+    claudeRuns.delete(runId);
+    if (buffer.trim()) emitLine(buffer);
+    if (code !== 0) {
+      send({ type: 'result', is_error: true, subtype: 'exit_' + code, result: `claude 退出码 ${code}` });
+    }
+  });
+
+  return runId;
 }
 
 // ---------------------------------------------------------------------------
@@ -1437,6 +1530,41 @@ if (!gotSingleInstanceLock) {
     }
   });
 
+  // ---- Claude Code GUI ---------------------------------------------------
+  ipcMain.handle('dsh:claude-send', (_event, payload) => {
+    try {
+      const runId = spawnClaude(payload || {});
+      return { ok: true, runId };
+    } catch (err) {
+      log(`claude-send failed: ${err && err.message}`);
+      return { ok: false, error: String(err && err.message || err) };
+    }
+  });
+
+  ipcMain.handle('dsh:claude-cancel', (_event, runId) => {
+    const proc = claudeRuns.get(runId);
+    if (proc) {
+      try { proc.kill(); } catch (_err) { /* ignore */ }
+      claudeRuns.delete(runId);
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle('dsh:claude-get-settings', () => claudeSettings());
+
+  ipcMain.handle('dsh:claude-save-settings', (_event, patch) => {
+    try {
+      return { ok: true, settings: saveClaudeSettings(patch || {}) };
+    } catch (err) {
+      return { ok: false, error: String(err && err.message || err) };
+    }
+  });
+
+  ipcMain.handle('dsh:switch-mode', (_event, mode) => {
+    switchMode(mode);
+    return { ok: true };
+  });
+
   function ipcMainOllamaState() {
     const cfg = readOllamaProxyConfig();
     return {
@@ -1533,9 +1661,12 @@ if (!gotSingleInstanceLock) {
     startProxy();
     startOllamaProxyHandle();
     const window = createMainWindow();
+    const config = loadConfig();
 
-    if (isFirstRun()) {
-      const config = loadConfig();
+    if (config.mode === 'claude') {
+      log('mode=claude: loading Claude Code GUI');
+      window.loadFile(path.join(__dirname, 'claude.html'));
+    } else if (isFirstRun()) {
       log('first run: showing onboarding');
       window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(welcomeHtml(config)));
     } else {
@@ -1580,6 +1711,19 @@ if (!gotSingleInstanceLock) {
     }
   }
 
+  function switchMode(mode) {
+    const next = mode === 'claude' ? 'claude' : 'dsh';
+    saveConfig({ mode: next });
+    log(`switch mode → ${next}`);
+    if (next === 'claude') {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.loadFile(path.join(__dirname, 'claude.html'));
+      }
+    } else {
+      void bootToGui().catch((err) => { log(`boot failed: ${err && err.stack || err}`); });
+    }
+  }
+
   function setMenu() {
     const template = [
       {
@@ -1593,6 +1737,13 @@ if (!gotSingleInstanceLock) {
           { label: '打开日志目录', click: () => shell.openPath(logDir()) },
           { type: 'separator' },
           { label: '退出', role: 'quit' },
+        ],
+      },
+      {
+        label: '模式',
+        submenu: [
+          { label: '切换到 DSH', click: () => switchMode('dsh') },
+          { label: '切换到 Claude Code', click: () => switchMode('claude') },
         ],
       },
       {

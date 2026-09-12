@@ -24,6 +24,15 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   ollamaProxyRotate: () => ipcRenderer.invoke('dsh:ollama-proxy-rotate'),
   // DeepSeek official balance
   deepseekBalance: () => ipcRenderer.invoke('dsh:deepseek-balance'),
+  // Claude Code GUI
+  claudeSend: (payload) => ipcRenderer.invoke('dsh:claude-send', payload),
+  claudeCancel: (runId) => ipcRenderer.invoke('dsh:claude-cancel', runId),
+  claudeGetSettings: () => ipcRenderer.invoke('dsh:claude-get-settings'),
+  claudeSaveSettings: (payload) => ipcRenderer.invoke('dsh:claude-save-settings', payload),
+  switchMode: (mode) => ipcRenderer.invoke('dsh:switch-mode', mode),
+  onClaudeEvent: (callback) => {
+    ipcRenderer.on('dsh:claude-event', (_event, data) => callback(data));
+  },
 });
 
 // Ctrl + mouse wheel zoom (zoom by font/page size from any page).
