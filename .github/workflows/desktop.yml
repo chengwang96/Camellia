@@ -1,0 +1,67 @@
+name: Desktop
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-latest
+            arch: x64
+            command: dist:win
+            bundle: dist/win-unpacked
+          - platform: macos
+            runner: macos-15
+            arch: arm64
+            command: dist:mac
+            bundle: dist/mac-arm64/Camellia.app
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            runtimes/*/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: Electron smoke test
+        run: node tests/electron-smoke.cjs
+      - name: Native DSH settings
+        run: node tests/native-settings-electron.cjs
+      - name: Kimi ACP smoke test
+        run: npm run test:kimi
+      - name: Build desktop artifacts
+        run: npm run ${{ matrix.command }} -- --publish never
+      - name: Verify bundled sources and native runtimes
+        run: node tests/verify-package.cjs "${{ matrix.bundle }}"
+      - name: Verify Windows portable extraction and startup
+        if: matrix.platform == 'windows'
+        run: node tests/portable-smoke.cjs
+      - name: Install official Claude with bundled Node and npm
+        run: node tests/runtime-install-smoke.cjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Camellia-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
