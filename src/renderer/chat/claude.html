@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code — Camellia</title>
+<link rel="stylesheet" href="../shared/ui-theme.css">
+<link rel="stylesheet" href="./claude.css">
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <div class="logo-icon">C</div>
+        <span class="logo-text" data-harness-name>Claude Code</span>
+        <span class="logo-badge">HARNESS</span>
+      </div>
+      <button class="btn-new-session" id="newSessionBtn" title="New standalone session without a workspace">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+        New session
+      </button>
+    </div>
+
+    <nav class="session-list" id="sessionList" aria-label="Workspaces and sessions"></nav>
+
+    <div class="sidebar-footer">
+      <button class="btn-footer" id="resumeLastBtn" title="Open the most recent session">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+        Resume last session
+      </button>
+      <button class="btn-footer" id="settingsBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </button>
+      <button class="btn-footer" id="backToHome" title="Home (Ctrl/Cmd+Shift+H)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg>
+        Home
+      </button>
+      <button class="btn-footer" id="backToDsh">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+        Switch to DSH
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    <div class="main-header">
+      <span class="header-title" id="headerTitle">New session</span>
+      <button class="workspace-picker" id="workspacePicker" title="Choose a workspace for this session" aria-haspopup="menu"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg><span id="workspaceLabel">No workspace</span><span>⌄</span></button>
+      <span class="header-pill">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+        <span data-harness-name>Claude Code</span>
+      </span>
+      <span style="flex:1"></span>
+      <span class="header-pill" id="goalPillBtn" style="cursor:pointer" title="Goal mode (Ctrl/Cmd+G)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
+        Goal mode
+      </span>
+    </div>
+
+<div class="chat-scroll" id="chatScroll">
+      <div class="column" id="chat">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-state-heading"><span class="empty-state-wordmark" data-harness-name>Claude Code</span><span class="empty-state-badge">HARNESS</span></div>
+          <div class="empty-state-desc">Start with an idea, or add files to the conversation.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-zone">
+      <div class="column">
+        <div class="goal-bar" id="goalBar">
+          <div class="goal-input-row" id="goalInputRow">
+            <input id="goalInput" type="text" placeholder="🎯 Set a long-term goal for Claude to work through automatically…">
+            <select id="goalRounds" title="Turn budget">
+              <option value="10">10 turns</option>
+              <option value="25" selected>25 turns</option>
+              <option value="50">50 turns</option>
+            </select>
+            <button class="goal-start-btn" id="goalStartBtn">Start goal</button>
+          </div>
+          <div class="goal-card" id="goalCard" style="display:none">
+            <div class="goal-card-top">
+              <span>🎯</span>
+              <span class="goal-objective" id="goalObjective"></span>
+              <span class="goal-phase" id="goalPhase"></span>
+            </div>
+            <div class="goal-meta" id="goalMeta"></div>
+            <div class="goal-reason" id="goalReason" style="display:none"></div>
+            <div class="goal-actions">
+              <button id="goalPauseBtn">Pause</button>
+              <button id="goalResumeBtn" style="display:none">Continue</button>
+              <button id="goalCompleteBtn">Mark complete</button>
+              <button id="goalClearBtn" class="danger">Clear</button>
+            </div>
+          </div>
+        </div>
+        <div class="suggestion" id="suggestion"></div>
+        <div class="input-card" id="inputCard">
+          <div class="attach-row" id="attachRow"></div>
+          <textarea id="input" placeholder="Message Claude Code" rows="2"></textarea>
+          <div class="input-row">
+            <button class="btn-attach" id="attachBtn" title="Add attachments, or drop images here">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+            <span class="pill-select" title="Permission mode">
+              <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              <select id="selPermission" aria-label="Permission mode">
+                <option value="acceptEdits">Accept edits</option>
+                <option value="plan">Plan only</option>
+                <option value="bypassPermissions">Allow all</option>
+                <option value="default">Default permissions</option>
+              </select>
+            </span>
+            <span class="input-spacer"></span>
+            <button class="model-pill" id="modelPill" title="Model and reasoning level">
+              <span class="model-name" id="modelPillName">Default model</span>
+              <span class="model-level" id="modelPillLevel"></span>
+              <svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></svg>
+            </button>
+            <button class="usage-dot" id="usageDot" title="Last turn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+            </button>
+            <button class="btn-send" id="send" disabled title="Send">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="status-line" id="statusLine">Ready</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Permission modal (P3): answers can_use_tool control requests -->
+<div class="perm-mask" id="permMask">
+  <div class="perm-dialog">
+    <div class="perm-title">Claude requests the following action</div>
+    <div class="perm-tool" id="permTool"></div>
+    <div class="perm-input" id="permInput"></div>
+    <div class="perm-options" id="permOptions"></div>
+    <div class="perm-actions" id="permDefaultActions">
+      <button class="perm-deny" id="permDeny">Deny</button>
+      <button class="perm-allow" id="permAllow">Allow</button>
+    </div>
+  </div>
+</div>
+
+<!-- Workspace create modal -->
+<div class="ws-mask" id="wsMask">
+  <form class="ws-dialog" id="wsForm" role="dialog" aria-modal="true" aria-labelledby="wsDialogTitle">
+    <div class="perm-title" id="wsDialogTitle">Add workspace</div>
+    <div class="ws-field">
+      <label for="wsName">Name</label>
+      <input id="wsName" type="text" placeholder="e.g. Research / Main experiment" required>
+    </div>
+    <div class="ws-field" id="wsPathField">
+      <label for="wsPath">Folder</label>
+      <div class="row-pick">
+        <input id="wsPath" type="text" placeholder="D:\Code\…" required>
+        <button type="button" class="perm-deny" id="wsBrowse" style="white-space:nowrap">Browse…</button>
+      </div>
+    </div>
+    <p class="ws-hint" id="wsHint">Sessions run in this folder. You can move them out to make them standalone.</p>
+    <div class="ws-error" id="wsError" role="alert"></div>
+    <div class="perm-actions">
+      <button type="button" class="perm-deny" id="wsCancel">Cancel</button>
+      <button type="submit" class="perm-allow" id="wsCreate">Add</button>
+    </div>
+  </form>
+</div>
+
+<script src="./chat-runtime.js"></script>
+<script src="./claude-sidebar.js"></script>
+<script src="./claude-goal-ui.js"></script>
+<script src="./claude.js"></script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+.nav-divider { border-top: 1px solid var(--dsw-alias-border-l2); margin: 12px; }
+.engine-tabs { display: flex; gap: 5px; padding: 4px; border-radius: 12px; background: var(--dsw-specific-sidebar-fill); margin-bottom: 20px; width: fit-content; }
+.engine-tabs button { border: 0; border-radius: 9px; padding: 8px 16px; }
+.engine-tabs [aria-selected=true] { background: var(--dsw-alias-bg-base); box-shadow: 0 1px 4px #0000000c; font-weight: 600; }
+.global-notice { padding: 15px 18px; border: 1px solid var(--dsw-alias-border-l2); border-left: 3px solid var(--dsw-static-deepseek-400); border-radius: 10px; margin-bottom: 22px; font-size: 12px; line-height: 1.7; }
+.global-notice strong { font-size: 13px; }
+.global-notice summary { cursor: pointer; color: var(--dsw-alias-label-secondary); }
+.global-notice code { word-break: break-all; }
+#enginePaths { padding-top: 8px; }
+#enginePaths p { word-break: break-all; }
+.engine-field { display: flex; align-items: center; justify-content: space-between; gap: 26px; padding: 16px 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.engine-field > label { margin: 0; flex: 1; }
+.engine-field input:not([type=checkbox]), .engine-field select { width: min(310px, 50%); }
+.engine-field input[type=number] { width: 125px; }
+.engine-common-title { margin: 26px 0 2px; font-size: 14px; }
+.native-documents { margin-top: 24px; }
+.document-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 12px 0; }
+#engineSource { min-height: 320px; font: 12px/1.8 Consolas, 'Cascadia Code', monospace; tab-size: 2; white-space: pre; }
+.engine-save { display: flex; gap: 10px; align-items: center; padding: 22px 0 4px; flex-wrap: wrap; }
+.engine-save .hint { margin-left: auto; }
+#dshSettingsSurface { display: block; width: 100%; height: 610px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-base); }
+.native-save-note { margin-bottom: 12px; }
+.runtime-intro { color: var(--dsw-alias-label-secondary); margin: 0 0 22px; line-height: 1.8; }
+.runtime-card { padding: 21px 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.runtime-card > div:first-child { display: flex; align-items: center; gap: 12px; }
+.runtime-card h2 { margin: 0; flex: 1; }
+.runtime-card p { margin: 10px 0 0; overflow-wrap: anywhere; }
+.runtime-card code { display: block; overflow-wrap: anywhere; margin-top: 8px; }
+.runtime-card details { margin-top: 12px; font-size: 12px; }
+@media(max-width:850px) { .engine-tabs button { padding: 8px 10px; }.engine-field { gap: 12px; } }

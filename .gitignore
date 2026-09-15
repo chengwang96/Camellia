@@ -11,3 +11,8 @@ build-*.txt
 Thumbs.db
 .idea/
 .vscode/
+
+build/runtime-assets/
+
+# Local reference screenshots
+/docs/images/local/

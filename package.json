@@ -1,16 +1,27 @@
 {
-  "name": "dsh-desktop",
+  "name": "camellia-desktop",
   "version": "0.1.0",
-  "description": "DeepSeek Harness desktop shell (Windows x64) — launches the local dsh web backend and loads its GUI",
-  "main": "main.js",
-  "author": "DSH Desktop",
+  "description": "Camellia: a shared workbench for DSH, Claude Code and Kimi Code",
+  "main": "src/main/main.js",
+  "author": "Camellia contributors",
   "license": "MIT",
   "private": true,
   "scripts": {
+    "setup:kimi": "npm --prefix runtimes/kimi ci --omit=optional --ignore-scripts --no-audit --no-fund",
+    "test:kimi": "node tests/kimi-cli-smoke.cjs",
+    "test": "node --test tests/*.test.js",
     "dev": "electron .",
     "start": "electron .",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder --win nsis portable"
+    "dist": "electron-builder",
+    "build:icons": "electron scripts/build-icons.cjs",
+    "setup:runtimes": "node scripts/prepare-runtimes.cjs",
+    "postinstall": "node scripts/prepare-runtimes.cjs",
+    "prestart": "node scripts/prepare-runtimes.cjs --check",
+    "predev": "node scripts/prepare-runtimes.cjs --check",
+    "dist:win": "electron-builder --win --x64",
+    "dist:mac": "electron-builder --mac --arm64",
+    "pack:mac": "electron-builder --mac --arm64 --dir"
   },
   "devDependencies": {
     "electron": "^39.2.7",
@@ -18,34 +29,118 @@
   },
   "build": {
     "appId": "com.dsh.desktop",
-    "productName": "DeepSeek Harness",
+    "productName": "Camellia",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "assets"
     },
     "files": [
-      "main.js",
-      "preload.js",
-      "claude.html",
-      "proxy.js",
-      "opencode-proxy-cli.js",
-      "ollama-proxy.js",
-      "ollama-proxy-cli.js",
-      "ollama-switch-account.ps1",
-      "welcome.html",
+      "src/**/*",
+      "assets/icon-256.png",
+      "scripts/ollama-proxy-cli.js",
+      "scripts/ollama-switch-account.ps1",
+      "integrations/dsh/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "runtimes/kimi",
+        "to": "runtimes/kimi",
+        "filter": [
+          "package.json",
+          "README.md",
+          "package-lock.json"
+        ]
+      },
+      {
+        "from": "runtimes/kimi/node_modules",
+        "to": "runtimes/kimi/node_modules",
+        "filter": [
+          "**/*",
+          "!@moonshot-ai/kimi-code/dist-web/**/*"
+        ]
+      },
+      {
+        "from": "runtimes/dsh",
+        "to": "runtimes/dsh",
+        "filter": [
+          "package.json",
+          "package-lock.json"
+        ]
+      },
+      {
+        "from": "runtimes/dsh/node_modules",
+        "to": "runtimes/dsh/node_modules",
+        "filter": [
+          "**/*",
+          "!**/*.map",
+          "!**/*.workbench-original"
+        ]
+      },
+      {
+        "from": "runtimes/claude",
+        "to": "runtimes/claude",
+        "filter": [
+          "package.json",
+          "package-lock.json"
+        ]
+      },
+      {
+        "from": "build/runtime-assets",
+        "to": "runtime",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "beforePack": "./scripts/prepare-package.cjs",
     "win": {
       "target": [
         "nsis",
-        "portable"
+        "zip"
       ],
-      "icon": "build/icon.ico"
+      "artifactName": "${productName}-${version}-win-${arch}-portable.${ext}",
+      "icon": "assets/icon.ico"
     },
     "nsis": {
+      "artifactName": "${productName}-Setup-${version}-win-${arch}.${ext}",
+      "useZip": true,
+      "differentialPackage": false,
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "icon": "assets/icon-1024.png",
+      "artifactName": "${productName}-${version}-macOS-${arch}.${ext}",
+      "extendInfo": {
+        "CFBundleDevelopmentRegion": "en"
+      }
     }
+  },
+  "dependencies": {
+    "smol-toml": "^1.8.0",
+    "yaml": "^2.9.1"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
   }
 }

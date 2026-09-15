@@ -1,0 +1,104 @@
+/* Shared desktop surfaces use the installed DSH theme's palette and metrics. */
+:root {
+  color-scheme: light dark;
+  --dsw-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --ds-font-family-code: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, "Liberation Mono", Menlo, monospace;
+  --ds-ease-in-out: cubic-bezier(.4, 0, .2, 1);
+  --dt-fast: .1s;
+  --dsw-static-deepseek-200: #d3e2ff;
+  --dsw-static-deepseek-400: #679efe;
+  --dsw-static-deepseek-500: #4176e6;
+  --dsw-static-red-400: #f25a5a;
+  --dsw-static-green-500: #22c55e;
+  --dsw-alias-bg-base: light-dark(#fff, #151517);
+  --dsw-alias-bg-layer-1: light-dark(#fff, #232324);
+  --dsw-alias-bg-layer-3: light-dark(#fff, #353638);
+  --dsw-alias-bg-module-platform: light-dark(#f5f6f7, #353638);
+  --dsw-alias-bg-soft: light-dark(#f9fafb, #1b1b1c);
+  --dsw-alias-bg-muted: light-dark(#ebeef2, #353638);
+  --dsw-alias-bg-mask-1: light-dark(#0000003d, #00000080);
+  --dsw-alias-border-l2: light-dark(#0000001a, #ffffff1f);
+  --dsw-alias-border-l3: light-dark(#0000001f, #ffffff29);
+  --dsw-alias-interactive-bg-hover: light-dark(#2631480f, #ffffff14);
+  --dsw-alias-label-primary: light-dark(#0f1115, #f9fafb);
+  --dsw-alias-label-secondary: light-dark(#61666b, #cfd3d6);
+  --dsw-alias-label-tertiary: light-dark(#81858c, #adb2b8);
+  --dsw-alias-label-caption: light-dark(#adb2b8, #81858c);
+  --dsw-alias-label-inverted: light-dark(#fff, #0f1115);
+  --dsw-alias-state-business-primary: light-dark(#4176e6, #679efe);
+  --dsw-alias-state-business-tertiary: light-dark(#edf3fe, #283142);
+  --dsw-alias-state-success-primary: light-dark(#15803d, #4ed17e);
+  --dsw-alias-state-success-tertiary: light-dark(#e6faed, #233c2c);
+  --dsw-alias-state-error-primary: light-dark(#ec1313, #f25a5a);
+  --dsw-alias-state-error-tertiary: light-dark(#fef2f2, #570c0c);
+  --dsw-specific-sidebar-fill: light-dark(#f9fafb, #1b1b1c);
+  --dsw-specific-sidebar-nav-item-hover: light-dark(#f1f3f5, #2c2c2e);
+  --dsw-specific-sidebar-nav-item-active: light-dark(#ebeef2, #43454a);
+  --dsw-specific-input-major: light-dark(#fff, #2c2c2e);
+  --dsw-alias-scrollbar-bg: light-dark(#e1e5ee, #43454a);
+  --dsw-shadow-lv2: 0 4px 12px 0 #00000005, 0 2px 8px 0 #0000000a;
+  --dsw-shadow-lv3: 0 0 1px 0 #0003, 0 0 4px 0 #00000005, 0 12px 32px 0 #00000014;
+  --f-xxxs-11: 11px/14px var(--dsw-font-family);
+  --f-xxs-12: 12px/18px var(--dsw-font-family);
+  --f-xxs-strong-12: 500 12px/18px var(--dsw-font-family);
+  --f-xs-13: 13px/20px var(--dsw-font-family);
+  --f-xs-strong-13: 500 13px/20px var(--dsw-font-family);
+  --f-s-14: 14px/22px var(--dsw-font-family);
+  --f-s-strong-14: 500 14px/22px var(--dsw-font-family);
+  --f-base-16: 16px/24px var(--dsw-font-family);
+  --f-m-18: 500 18px/28px var(--dsw-font-family);
+  --f-code: 13px/20px var(--ds-font-family-code);
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+button, input, select, textarea { font: inherit; }
+button { transition: background var(--dt-fast) var(--ds-ease-in-out); }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--dsw-static-deepseek-400);
+  outline-offset: 2px;
+}
+input::placeholder, textarea::placeholder { color: var(--dsw-alias-label-caption); }
+input[type="checkbox"] { accent-color: var(--dsw-static-deepseek-500); }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--dsw-alias-scrollbar-bg); border-radius: 4px; }
+
+/* Electron's customizable selects retain native form and keyboard behavior. */
+select, ::picker(select) { appearance: base-select; }
+select {
+  display: inline-flex; align-items: center; gap: 12px;
+  min-width: 0; min-height: 36px; max-width: 100%; padding: 6px 14px;
+  border: 0; border-radius: 18px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-primary); font: var(--f-s-14);
+  cursor: pointer; white-space: nowrap;
+}
+select:hover, select:open { background: var(--dsw-alias-interactive-bg-hover); }
+select:disabled { opacity: .45; cursor: default; }
+select::picker-icon {
+  content: ""; width: 7px; height: 7px; flex-shrink: 0; margin: 0 1px 3px auto;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  color: var(--dsw-alias-label-tertiary); transform: rotate(45deg);
+  transition: transform var(--dt-fast);
+}
+select:open::picker-icon { transform: translateY(3px) rotate(225deg); }
+::picker(select) {
+  min-width: 220px; max-width: calc(100vw - 24px);
+  max-height: min(420px, calc(100vh - 24px)); overflow-y: auto;
+  margin: 4px 0; padding: 6px;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-3); color: var(--dsw-alias-label-primary);
+  box-shadow: var(--dsw-shadow-lv3); font: var(--f-s-14);
+}
+option {
+  display: flex; align-items: center; gap: 12px; min-height: 40px;
+  padding: 9px 12px; border-radius: 8px; cursor: pointer;
+  white-space: normal; overflow-wrap: anywhere;
+}
+option:checked { background: var(--dsw-specific-sidebar-nav-item-hover); }
+option:hover, option:focus { background: var(--dsw-alias-interactive-bg-hover); outline: none; }
+option::checkmark { order: 1; margin-left: auto; content: "✓"; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

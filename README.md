@@ -1,65 +1,145 @@
-# DeepSeek Harness 桌面应用（Windows x64）
+<p align="center">
+  <img src="assets/icon-256.png" width="88" height="88" alt="Camellia cat logo">
+</p>
 
-把本机已安装的 DeepSeek Harness（`dsh web`）打包成双击即可启动的桌面应用。
+<h1 align="center">Camellia</h1>
 
-## 产物
+<p align="center">A desktop workbench for coding agents.</p>
 
-位于 `dist/`：
+<p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
 
-| 文件 | 说明 |
-|---|---|
-| `DeepSeek Harness 0.1.0.exe` | **便携版（推荐直接使用）**，免安装，双击即用 |
-| `DeepSeek Harness Setup 0.1.0.exe` | NSIS 安装器，可安装到指定目录并创建开始菜单/桌面快捷方式 |
-| `dist/win-unpacked/` | 免安装目录版（解压即用），运行其中的 `DeepSeek Harness.exe` |
+Camellia brings **DeepSeek Harness, Claude Code, and Kimi Code** into one desktop application. It centralizes provider credentials, model routing, usage tracking, and engine settings while preserving each engine's execution model and conversation history.
 
-## 工作原理
+![Camellia home screen with engine selection and shared settings](docs/images/home.png)
 
-- 主进程（`main.js`）启动后自动探测本机的 `node.exe` 和 `@deepseek-ai/dsh` 入口：
-  - `node.exe`：优先 `C:\Program Files\nodejs\node.exe`，其次 PATH；
-  - dsh 入口：优先全局 npm 安装，其次 `%LOCALAPPDATA%\npm-cache\_npx\*\node_modules\@deepseek-ai\dsh\lib\bin.js`（npx 缓存，按修改时间取最新）。
-- 探测到后 spawn `node dsh/lib/bin.js web --host 127.0.0.1 --port <port>`，后端默认从 `3000` 起，端口被占用时自动顺延（3001、3002…）。
-- 根路径 `/` 返回 200（含 `window.__DSH_BOOT__` 注入）视为就绪，随后加载该 URL。
-- 复用 `$DSH_HOME`（默认 `~/.dsh`），凭据和会话与命令行 `dsh` 完全共享。
+## Features
 
-## 首次启动 API Key 引导
+- **Multiple engines, one application.** Switch between DSH, Claude Code, and Kimi Code with shared navigation and settings.
+- **Workspace and standalone conversations.** Organize Claude and Kimi sessions by local folder, or start without a workspace. Pin, rename, fork, archive, and resume sessions.
+- **Centralized API management.** Configure providers, import and label keys, discover models, and validate connections in one place.
+- **Same-model failover.** Retry eligible failures through another key or provider serving the same configured model. Camellia never substitutes a different model automatically.
+- **Usage and account visibility.** Filter local requests and token statistics by provider, key, model, and date. View balances, subscription limits, and observed trends for supported account APIs.
+- **Managed runtimes.** Prepare pinned engine versions automatically, with installation status and retry controls in settings.
 
-应用首次启动（且 `~/.dsh/.credentials.yaml` 尚不存在）时，会弹出引导页让你选择 provider 并填写 API Key，写入：
+## Getting started
 
-- `~/.dsh/.credentials.yaml` —— 凭据（`KEY: value` 扁平映射）
-- `~/.dsh/settings.yaml` —— `agent-default-model` 与 `llm-pi-ai.providers.<id>.apiKeyEnv` 指向对应环境变量
+### Requirements
 
-之后即可在 GUI 的 Models 页进一步管理（dsh 自带热加载）。
+- Windows x64 or macOS on Apple Silicon (ARM64)
+- For source runs and builds: Node.js **22.19 or later in the 22.x series**, or **24 and later**. Desktop builds include Node.js.
+- Git; on Windows, install Git for Windows with Bash for engine shell tools
+- Network access for initial runtime installation, and credentials for a supported model provider
 
-> 也可以点「跳过」留空，之后随时在 harness 的 Models 页面配置。
+### Run from source
 
-## 设置页面
-
-点击菜单 **DeepSeek Harness → 设置…**（快捷键 `Ctrl+,`）打开独立设置窗口，可手动指定：
-
-| 字段 | 说明 |
-|---|---|
-| **dsh 入口（bin.js）** | `@deepseek-ai/dsh/lib/bin.js` 的完整路径；留空则自动探测（全局 npm → npx 缓存） |
-| **Node.js（node.exe）** | 运行 dsh 的 Node 可执行文件；留空则自动探测 |
-| **端口** | 后端监听端口（默认 3000，被占用自动顺延） |
-| **DSH_HOME** | dsh 家目录（凭据/会话/配置），默认 `~/.dsh` |
-
-每个路径字段旁有「浏览…」按钮（原生文件选择框），以及「测试连接」按钮（实际运行 `node bin.js --version` 验证）。点「保存并重启」后会自动停止旧后端、用新路径/端口重新拉起。
-
-> 当 dsh 入口来自 npx 缓存（哈希目录，可能被 npm 清理），或应用启动失败时，会显示报错页 —— 直接点报错页上的「打开设置」填入固定路径即可恢复。
-
-## 本地开发 / 重新打包
-
-```powershell
-cd C:\Users\45846\Documents\DSH-Desktop
-npm install                 # 首次
-npm run dev                 # 直接跑 electron（开发模式）
-npm run pack                # 只生成 win-unpacked 目录
-npm run dist                # 生成 nsis 安装器 + portable 便携版
+```sh
+git clone https://github.com/chengwang96/Camellia.git
+cd Camellia
+npm ci
+npm start
 ```
 
-## 已知限制
+Installation prepares the pinned DSH, Kimi, and official Claude runtimes under `runtimes/`. Separate global CLI installations are not required. If a download fails, retry from **Settings → Runtime** or run `npm run setup:runtimes`.
 
-1. **依赖本机已有 node + dsh**：方案按「调用本机已装的 dsh」实现，因此目标机器需有 Node.js 且能解析到 `@deepseek-ai/dsh`（全局安装或 npx 缓存）。若需完全离线/无依赖，需改用「捆绑完整 dsh 运行时」方案（打包 node_modules，体积约 +1GB）。→ 可通过**设置页面**手动指定固定路径规避 npx 缓存不稳定的问题。
-2. **未做代码签名**：本地打包无签名，Windows SmartScreen 可能提示「未知发布者」，点「仍要运行」即可。
-3. **仅 Windows x64**：native 依赖（koffi/sharp/node-pty 等）按平台预编译，跨平台需另行打包。
-4. **npx 缓存路径不稳定**：dsh 入口若来自 npx 缓存（哈希目录），可能被 npm 清理。→ 在「设置」里用 `dshBin` 指到固定路径即可彻底规避。
+The application defaults to English.
+
+### Configure your first session
+
+1. Open **Settings → Providers & Keys**.
+2. Add a provider, enter API keys, and select or enter its available models.
+3. Save the configuration and validate a key against the model you intend to use.
+4. Return home, select an engine and model, and start a session. Claude and Kimi support both workspace and standalone sessions.
+
+Connection validation sends a short model request and may incur a small charge. Reading a model catalog does not establish access to every listed model.
+
+Use `Ctrl+,` to open settings and `Ctrl+Shift+H` to return home. On macOS, use `Cmd` instead of `Ctrl`.
+
+## Engine integration
+
+| Engine | Integration | Runtime in desktop builds |
+| --- | --- | --- |
+| DeepSeek Harness | Embedded web interface, with maintained source patches for settings integration and frontend startup | Bundled |
+| Claude Code | Official CLI over stream-json, with a Camellia-managed desktop interface | Installed from the official npm package on first use |
+| Kimi Code | Open-source runtime over the Agent Client Protocol (ACP), using the shared conversation interface | Bundled |
+
+Source installation prepares all three runtimes. Desktop builds also include Node.js, npm, and pnpm. Shell tools use the native shell on macOS and require Git Bash on Windows.
+
+Engine histories remain separate. DSH retains its native project model. Claude sessions can move between workspaces; existing Kimi ACP sessions retain their execution directory, so changing that directory requires a new session.
+
+## Providers and routing
+
+Engine selection and model-provider selection are independent. The engine manages tools and task execution; the local API router selects a configured route to the requested model.
+
+```mermaid
+flowchart LR
+    UI[Camellia] --> DSH[DeepSeek Harness]
+    UI --> Claude[Claude Code]
+    UI --> Kimi[Kimi Code]
+    DSH --> Router[Local API router]
+    Claude --> Router
+    Kimi --> Router
+    Router --> A[Provider A / Key pool]
+    Router --> B[Provider B / Key pool]
+    Router --> Usage[Usage records]
+```
+
+Connection presets cover **Ollama Cloud, DeepSeek, Kimi / Moonshot, Kimi Code, Command Code GOAT, OpenCode Go, and OpenCode Zen**. Custom OpenAI Chat Completions and Anthropic Messages endpoints are supported, subject to protocol and model capabilities.
+
+A route group must represent the **same model and version**, even when providers use different upstream names. Quota exhaustion, rate limits, authentication failures, and eligible temporary errors can advance to another route in that group. If no route remains, the request fails. Responses that have begun producing content are not replayed automatically.
+
+Local usage records describe requests through Camellia. Account balances and subscription quotas come from provider APIs and may include other clients' activity. Some adapters use undocumented or client-derived endpoints. See the [configuration guide](docs/configuration.md#balances-and-subscription-quotas) for coverage and verification limits.
+
+## Configuration and data
+
+All engines share the application settings window, covering provider connections, usage, account balances, native engine options, runtime installation, and appearance.
+
+**Saving native engine settings updates the corresponding CLI's global configuration**, which can affect CLI sessions outside Camellia. Existing files receive a one-time `.workbench.bak` backup before their first managed overwrite. The interface shows the affected paths.
+
+Provider keys are stored in local configuration files. Engines use the local router URL and placeholder credentials; CLI sessions configured for that router require Camellia to remain running.
+
+Application data lives in `%APPDATA%/dsh-desktop` on Windows and `~/Library/Application Support/dsh-desktop` on macOS. The existing directory name is retained so settings and sessions remain available. See [configuration and data locations](docs/configuration.md) for engine-specific paths and environment overrides.
+
+<details>
+<summary>Usage and balance interface — demonstration data</summary>
+
+![Account balances and subscription quotas using demonstration data](docs/images/balances.png)
+
+</details>
+
+## Development
+
+```sh
+npm run dev    # Start the development application
+npm test       # Run unit and local integration tests
+npm run pack   # Build an unpacked application for the host platform
+npm run dist   # Build distributable artifacts for the host platform
+```
+
+Build on the target platform: `npm run dist:win` produces a Windows x64 NSIS installer and portable ZIP; `npm run dist:mac` produces macOS ARM64 DMG and ZIP files. macOS builds require an Apple Silicon Mac running ARM64 Node.js.
+
+Directory builds are at `dist/win-unpacked/Camellia.exe` or `dist/mac-arm64/Camellia.app`. Extract the Windows portable ZIP once and launch `Camellia.exe`. Keep the full extracted directory together, including `resources/`.
+
+```text
+assets/         Application icons
+src/
+  main/         Electron lifecycle, IPC, processes, and runtime management
+  api/          Routing, protocol conversion, provider adapters, and usage
+  engines/      Engine sessions, workspaces, and native settings
+  renderer/     Home, conversation, settings, and shared styles
+  shared/       Shared storage utilities
+integrations/   Maintained upstream source patches
+runtimes/       Per-engine package manifests and lockfiles
+scripts/        Runtime preparation, packaging, and standalone utilities
+tests/          Unit, integration, Electron, and browser checks
+docs/           Guides, technical notes, and historical records
+```
+
+Build instructions, runtime pins, regression commands, and contribution guidance are in the [development guide](docs/development.md). Generated files under `build/` and `dist/` are not committed.
+
+## Documentation and upstream projects
+
+- [Configuration guide](docs/configuration.md) — providers, failover, native settings, usage, and local data.
+- [Development guide](docs/development.md) — architecture, runtimes, testing, and packaging.
+- [Documentation index](docs/README.md) — implementation notes and archived design records.
+
+Camellia integrates [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), [Claude Code](https://github.com/anthropics/claude-code), and [Kimi Code](https://github.com/MoonshotAI/kimi-code). DSH and Kimi Code retain their MIT licenses. Claude Code is proprietary; Camellia integrates its official CLI without modifying or redistributing its core. Upstream components retain their respective licenses and terms.
