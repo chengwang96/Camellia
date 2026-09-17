@@ -1,7 +1,6 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const prepare = require('./prepare-runtimes.cjs');
 const { Arch } = require('builder-util');
 const { npmCandidates } = require('../src/main/runtime-paths');
 
@@ -15,19 +14,22 @@ exports.default = async context => {
   const platform = context.electronPlatformName;
   const arch = Arch[context.arch];
   assertBuildHost(platform, arch);
-  await prepare({ strict: true, engines: ['dsh', 'kimi'] });
   const target = path.join(context.packager.projectDir, 'build/runtime-assets');
   const npmCli = npmCandidates(process.execPath).find(file => fs.existsSync(file));
   if (!npmCli) throw new Error('Packaging requires a complete Node.js/npm installation');
   const npmRoot = path.resolve(path.dirname(fs.realpathSync(npmCli)), '..');
-  if (!fs.existsSync(path.join(npmRoot, 'bin/npm-cli.js'))) throw new Error("Packaging requires a complete Node.js/npm installation");
   fs.mkdirSync(target, { recursive: true });
   const nodeTarget = path.join(target, platform === 'win32' ? 'node.exe' : 'node');
   fs.copyFileSync(process.execPath, nodeTarget);
   if (platform !== 'win32') fs.chmodSync(nodeTarget, 0o755);
   fs.cpSync(npmRoot, path.join(target, 'npm'), { recursive: true });
-  const response = await fetch(`https://raw.githubusercontent.com/nodejs/node/${process.version}/LICENSE`);
-  if (!response.ok) throw new Error("Could not fetch the bundled Node.js license");
-  fs.writeFileSync(path.join(target, 'NODE-LICENSE'), await response.text());
-  fs.writeFileSync(path.join(target, 'version.json'), JSON.stringify({ node: process.version, platform, arch }));
+  const licenseFile = path.join(target, 'NODE-LICENSE'), versionFile = path.join(target, 'version.json');
+  const cachedLicense = fs.existsSync(licenseFile) && fs.existsSync(versionFile)
+    && JSON.parse(fs.readFileSync(versionFile, 'utf8')).node === process.version;
+  if (!cachedLicense) {
+    const response = await fetch(`https://raw.githubusercontent.com/nodejs/node/${process.version}/LICENSE`);
+    if (!response.ok) throw new Error("Could not fetch the bundled Node.js license");
+    fs.writeFileSync(licenseFile, await response.text());
+  }
+  fs.writeFileSync(versionFile, JSON.stringify({ node: process.version, platform, arch }));
 };

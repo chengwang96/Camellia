@@ -15,6 +15,8 @@ class ClaudeSession {
     this.closed = false;
     this.initialized = false;
     this.watchdog = null;
+    this.cancelTimer = null;
+    this.cancelled = false;
     this.stdoutBuf = '';
     this.stdoutDecoder = new StringDecoder('utf8');
     this.stderrDecoder = new StringDecoder('utf8');
@@ -24,8 +26,15 @@ class ClaudeSession {
 
   start() {
     const { exe, spec } = this;
-    this.log(`claude: persistent session gen=${this.gen} resume=${this.opts.sessionId || (this.opts.resumeLast ? 'last' : 'no')} ${spec.args.join(' ')}`);
-    const proc = this.spawn(exe, spec.args, { cwd: spec.cwd, env: spec.env, windowsHide: true, shell: exe === 'claude' });
+    // Print mode otherwise denies operations that need approval without ever
+    // sending can_use_tool to our existing permission handler.
+    const args = spec.args.includes('--permission-prompt-tool') ? [...spec.args] : [...spec.args, '--permission-prompt-tool', 'stdio'];
+    // In the app, Allow all is the user's chosen execution mode. EnterPlanMode
+    // silently replaces it with read-only planning inside a persistent CLI.
+    // Keep this UI choice stable; users can still select Plan only themselves.
+    if (this.opts.lockPermissionMode && this.settings.permissionMode === 'bypassPermissions') args.push('--disallowedTools', 'EnterPlanMode');
+    this.log(`claude: persistent session gen=${this.gen} resume=${this.opts.sessionId || 'no'} ${args.join(' ')}`);
+    const proc = this.spawn(exe, args, { cwd: spec.cwd, env: spec.env, windowsHide: true, shell: exe === 'claude' });
     this.proc = proc;
     proc.stdout.on('data', chunk => {
       if (this.closed) return;
@@ -59,7 +68,10 @@ class ClaudeSession {
     while (!this.closed && (index = this.stdoutBuf.indexOf('\n')) >= 0) {
       const line = this.stdoutBuf.slice(0, index);
       this.stdoutBuf = this.stdoutBuf.slice(index + 1);
-      this.emitLine(line);
+      // A throwing event handler must not wedge the parser loop; log it and
+      // continue with the next buffered line.
+      try { this.emitLine(line); }
+      catch (err) { this.log(`claude: event handling failed: ${err.message}`); }
     }
     if (final && this.stdoutBuf.trim()) this.emitLine(this.stdoutBuf);
     if (final) this.stdoutBuf = '';
@@ -80,9 +92,12 @@ class ClaudeSession {
     if (!this.running) return;
     this.running = false;
     this.clearWatchdog();
+    this.clearTimer(this.cancelTimer); this.cancelTimer = null;
     this.permissions.clear();
     this.rememberSession(obj.session_id);
-    const result = { ...obj, session_id: this.sessionId };
+    const errorText = Array.isArray(obj.errors) ? obj.errors.filter(e => typeof e === 'string').join('\n') : '';
+    const result = { ...obj, result: obj.result || (obj.is_error ? errorText : '') || '', session_id: this.sessionId,
+      ...(this.cancelled ? { subtype: 'stopped', is_error: false } : {}) };
     try { this.onResult?.(result); }
     catch (err) { this.log(`claude result hook failed: ${err.message}`); }
     this.sendChannel(result);
@@ -119,9 +134,17 @@ class ClaudeSession {
       this.clearWatchdog();
       this.answer(msg.request_id, {});
     } else if (req.subtype === 'can_use_tool') {
-      this.permissions.set(msg.request_id, req.input || {});
+      if (!this.running || this.cancelled) {
+        this.answer(msg.request_id, { behavior: 'deny', message: 'This response was stopped or is no longer active.' });
+        return;
+      }
+      const input = req.input || {};
+      const questions = req.tool_name === 'AskUserQuestion' && Array.isArray(input.questions)
+        ? input.questions.map((question, index) => ({ ...question, id: 'claude-question-' + index })) : undefined;
+      this.permissions.set(msg.request_id, { input, questions });
       this.sendChannel({ type: 'gui:permission', requestId: msg.request_id, toolName: req.tool_name || '',
-        input: req.input || {}, permissionSuggestions: req.permission_suggestions || null });
+        input, ...(questions?.length ? { questions } : {}), permissionSuggestions: req.permission_suggestions || null,
+        reason: req.decision_reason || req.blocked_path && ('Protected path: ' + req.blocked_path) || '', permissionMode: this.settings.permissionMode });
     } else {
       this.log(`claude: control_request subtype=${req.subtype} → auto-success`);
       this.answer(msg.request_id, {});
@@ -145,15 +168,28 @@ class ClaudeSession {
 
   answerPermission(requestId, allow, input, message) {
     if (!this.permissions.has(requestId)) return false;
-    const originalInput = this.permissions.get(requestId);
+    const { input: originalInput, questions } = this.permissions.get(requestId);
+    let updatedInput = input ?? originalInput;
+    if (allow && questions?.length) {
+      const answers = Object.fromEntries(questions.map(question => {
+        const answer = input?.[question.id];
+        const value = Array.isArray(answer) ? answer.filter(v => typeof v === 'string' && v.trim()).join(', ') : answer;
+        if (typeof value !== 'string' || !value.trim()) throw new Error('Answer each question before submitting');
+        return [question.question, value];
+      }));
+      // AskUserQuestion needs the original schema plus answers keyed by the
+      // question text. Treating this as a plain Allow loses the user's answer.
+      updatedInput = { ...originalInput, answers };
+    }
     this.permissions.delete(requestId);
     return this.answer(requestId, allow
-      ? { behavior: 'allow', updatedInput: input ?? originalInput }
+      ? { behavior: 'allow', updatedInput }
       : { behavior: 'deny', message: message || "The user denied this action in the desktop interface" });
   }
 
   sendUserMessage(text) {
     if (this.dead || this.running) return false;
+    this.cancelled = false;
     this.running = true;
     if (!this.initialized) {
       this.watchdog = this.setTimer(() => this.fail('session_timeout', "Claude did not initialize within 25 seconds (stream-json handshake failed)."), 25_000);
@@ -162,7 +198,24 @@ class ClaudeSession {
   }
 
   interrupt() {
-    return this.write({ type: 'control_request', request_id: `gui-interrupt-${++this.controlSeq}`, request: { subtype: 'interrupt' } });
+    if (!this.running || this.cancelled) return false;
+    this.cancelled = true;
+    for (const requestId of this.permissions.keys()) this.answerPermission(requestId, false, undefined, 'The user stopped this response.');
+    const sent = this.write({ type: 'control_request', request_id: `gui-interrupt-${++this.controlSeq}`, request: { subtype: 'interrupt' } });
+    if (this.running) this.cancelTimer = this.setTimer(() => {
+      if (!this.running) return;
+      this.log('claude: interrupt was not acknowledged within 8 seconds; stopping this session process');
+      const finish = () => { this.complete({ type: 'result', subtype: 'stopped', result: 'Stopped' }); this.kill(); };
+      if (process.platform === 'win32' && this.proc?.pid) {
+        try {
+          const taskkill = require('node:path').join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
+          const killer = this.spawn(taskkill, ['/PID', String(this.proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+          killer.once('error', finish); killer.once('close', finish);
+          this.cancelTimer = this.setTimer(finish, 3000);
+        } catch { finish(); }
+      } else finish();
+    }, 8000);
+    return sent;
   }
 
   clearWatchdog() { this.clearTimer(this.watchdog); this.watchdog = null; }
@@ -174,6 +227,7 @@ class ClaudeSession {
     this.permissions.clear();
     this.stdoutBuf = '';
     this.clearWatchdog();
+    this.clearTimer(this.cancelTimer); this.cancelTimer = null;
     try { this.proc?.kill(); } catch { /* already gone */ }
   }
 }

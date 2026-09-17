@@ -2,74 +2,137 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'">
-<title>Settings — Camellia</title>
+<title data-i18n>Settings — Camellia</title>
 <link rel="stylesheet" href="../shared/ui-theme.css"><link rel="stylesheet" href="./api-settings.css">
 <link rel="stylesheet" href="./engine-settings.css">
+<link rel="stylesheet" href="../shared/engine-brand.css">
 </head><body>
 <aside class="settings-nav">
-  <div class="settings-brand"><img src="../../../assets/icon-256.png" alt="Camellia cat" width="36" height="36"><span>Camellia<small>Settings</small></span></div>
-  <nav aria-label="Settings categories">
-    <button data-view="providers" class="active"><span aria-hidden="true">⌘</span>Providers &amp; Keys</button>
-    <button data-view="usage"><span aria-hidden="true">▥</span>Usage</button>
-    <button data-view="balances"><span aria-hidden="true">◴</span>Balances &amp; Quotas</button>
+  <div class="settings-brand"><img src="../../../assets/icon-256.png" alt="Camellia cat" width="36" height="36"><span>Camellia<small data-i18n>Settings</small></span></div>
+  <nav aria-label="Settings categories" data-i18n-attrs="aria-label">
+    <button data-view="providers" class="active" data-i18n><span aria-hidden="true">⌘</span>Providers &amp; Keys</button>
+    <button data-view="usage" data-i18n><span aria-hidden="true">▥</span>Usage</button>
+    <button data-view="balances" data-i18n><span aria-hidden="true">◴</span>Balances &amp; Quotas</button>
     <div class="nav-divider"></div>
-    <button data-view="engines"><span aria-hidden="true">◇</span>Engine Settings</button>
-    <button data-view="runtimes"><span aria-hidden="true">↓</span>Runtime</button>
-    <button data-view="general"><span aria-hidden="true">⚙</span>General</button>
+    <button data-view="engines" data-i18n><span aria-hidden="true">◇</span>Engine Settings</button>
+    <button data-view="runtimes" data-i18n><span aria-hidden="true">↓</span>Runtime</button>
+    <button data-view="general" data-i18n><span aria-hidden="true">⚙</span>General</button>
   </nav>
-  <div class="nav-foot"><span class="status-dot" id="routerDot"></span><span id="routerLabel">Connecting</span><small>Automatic failover within the same model</small></div>
+  <div class="nav-foot"><span class="status-dot" id="routerDot"></span><span id="routerLabel" data-i18n>Connecting</span><small data-i18n>Automatic failover within the same model</small></div>
 </aside>
 <div class="settings-main">
-  <header class="page-head"><div><h1 id="pageTitle">Providers &amp; Keys</h1><p id="pageSubtitle">Configure once. Use across all engines.</p></div><button id="refresh" aria-label="Refresh status">Refresh</button></header>
+  <header class="page-head"><div><h1 id="pageTitle" data-i18n>Providers &amp; Keys</h1><p id="pageSubtitle" data-i18n>Configure once. Use across all engines.</p></div><button id="refresh" aria-label="Refresh status" data-i18n data-i18n-attrs="aria-label">Refresh</button></header>
   <main class="scroll-content">
     <section id="providersPage" class="page">
-      <div class="toolbar"><p class="hint" id="providerSummary"></p><button id="addProvider" class="primary">+ Add provider</button></div>
+      <section class="account-connections" aria-labelledby="accountConnectionsTitle">
+        <div><h2 id="accountConnectionsTitle" data-i18n>Account sign-in</h2><p class="hint" data-i18n>Use account models and quota in the matching engine.</p></div>
+        <div class="account-shortcuts"><button data-account-engine="kimi" data-i18n>Kimi account</button><button data-account-engine="antigravity" data-i18n>Google account · Antigravity</button><button data-account-engine="codex" data-i18n>ChatGPT account</button></div>
+      </section>
+      <section id="subscriptionOverview" class="subscription-overview" hidden><h2 data-i18n>Subscription accounts</h2><div id="subscriptionCards" class="balance-grid"></div></section>
+      <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div>
       <div id="providers" class="provider-grid"></div>
       <div id="editor" hidden></div>
-      <details class="advanced router-options"><summary>Router options</summary><div class="row"><label><input id="enabled" type="checkbox">Enable shared router</label><label>Local port <input id="port" type="number" min="1024" max="65535"></label></div><div id="live" class="hint"></div></details>
+      <details class="advanced router-options"><summary data-i18n>Router options</summary><div class="row"><label data-i18n><input id="enabled" type="checkbox">Enable shared router</label><label data-i18n>Local port <input id="port" type="number" min="1024" max="65535"></label></div><div id="live" class="hint" data-i18n></div></details>
     </section>
     <section id="usagePage" class="page" hidden>
-      <div class="filter-row"><label>Date<select id="usageRange"><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="all">Total</option></select></label><label>Provider<select id="usageProvider"></select></label><label>Key<select id="usageKey"></select></label><label>Model<select id="usageModel"></select></label></div>
+      <section id="subscriptionUsage" class="subscription-overview" hidden><h2 data-i18n>Subscription usage</h2><p class="hint" data-i18n>Account-wide quota reported by your subscription. Select an account for limits, reset times, and trends.</p><div id="subscriptionUsageCards" class="balance-grid"></div></section>
+      <h2 class="usage-api-title" data-i18n>API request history</h2>
+      <div class="filter-row"><label data-i18n>Date<select id="usageRange"><option value="7" data-i18n>Last 7 days</option><option value="30" data-i18n>Last 30 days</option><option value="90" data-i18n>Last 90 days</option><option value="all" data-i18n>Total</option></select></label><label data-i18n>Provider<select id="usageProvider"></select></label><label data-i18n>Key<select id="usageKey"></select></label><label data-i18n>Model<select id="usageModel"></select></label></div>
       <div id="usageSummary" class="usage-summary"></div>
-      <div class="chart-panel"><div class="section-head"><h2>Request trends</h2><select id="usageMetric" aria-label="Trend metric"><option value="requests">Successful requests</option><option value="tokens">Token usage</option><option value="failures">Failed requests</option></select></div><div id="usageChart"></div></div>
-      <div class="section-head table-head"><h2>Model and key details</h2><button id="exportUsage">Export CSV</button></div>
-      <div class="table-scroll"><table class="usage-table"><thead><tr><th>Model / Provider</th><th>Key</th><th>Success</th><th>Input</th><th>Output</th><th>Cache read</th><th>Failed</th></tr></thead><tbody id="usageRows"></tbody></table></div>
-      <p class="hint footnote">Business requests through this router, excluding validation. Tokens come from provider responses. Model and date breakdowns accumulate from this version; legacy aggregates appear under Total. Cache reads are included in input tokens.</p>
+      <div class="chart-panel"><div class="section-head"><h2 data-i18n>Request trends</h2><select id="usageMetric" aria-label="Trend metric" data-i18n-attrs="aria-label"><option value="requests" data-i18n>Successful requests</option><option value="tokens" data-i18n>Token usage</option><option value="failures" data-i18n>Failed requests</option></select></div><div id="usageChart"></div></div>
+      <div class="section-head table-head"><h2 data-i18n>Model and key details</h2><button id="exportUsage" data-i18n>Export CSV</button></div>
+      <div class="table-scroll"><table class="usage-table"><thead><tr><th data-i18n>Model / Provider</th><th data-i18n>Key</th><th data-i18n>Success</th><th data-i18n>Input</th><th data-i18n>Output</th><th data-i18n>Cache read</th><th data-i18n>Failed</th></tr></thead><tbody id="usageRows"></tbody></table></div>
+      <p class="hint footnote" data-i18n>Business requests through this router, excluding validation. Tokens come from provider responses. Model and date breakdowns accumulate from this version; legacy aggregates appear under Total. Cache reads are included in input tokens.</p>
     </section>
     <section id="balancesPage" class="page" hidden>
-      <div class="toolbar"><p class="hint">Balances and subscription quotas as reported by each provider.</p><button id="refreshBalances" class="primary">Refresh all</button></div>
-      <div class="balance-filter"><select id="balanceProvider" aria-label="Balance provider"></select><input id="balanceSearch" aria-label="Filter accounts" placeholder="Filter by account label or masked key"></div>
+      <div class="toolbar"><p class="hint" data-i18n>Balances and subscription quotas as reported by each provider.</p><button id="refreshBalances" class="primary" data-i18n>Refresh all</button></div>
+      <div class="balance-filter"><select id="balanceProvider" aria-label="Balance provider" data-i18n-attrs="aria-label"></select><input id="balanceSearch" aria-label="Filter accounts" placeholder="Filter by account label or masked key" data-i18n-attrs="aria-label placeholder"></div>
       <div id="balanceCards" class="balance-grid"></div>
       <div id="balanceDetail"></div>
-      <p class="hint footnote">Keys may share an account balance, so card amounts are not added together. Charts show local observations, including top-ups and resets; earlier history is not reconstructed.</p>
+      <p class="hint footnote" data-i18n>Keys may share an account balance, so card amounts are not added together. Charts show local observations, including top-ups and resets; earlier history is not reconstructed.</p>
     </section>
     <section id="generalPage" class="page" hidden>
-      <div class="setting-row"><div><h2>Appearance</h2><p class="hint">Applies throughout Camellia.</p></div><select id="theme" aria-label="Appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
-      <div class="setting-row"><div><h2>Refresh balances automatically</h2><p class="hint">Query enabled keys every 15 minutes while the app is running.</p></div><input id="autoRefreshBalances" type="checkbox" aria-label="Refresh balances automatically"></div>
-      <div class="setting-row"><div><h2>Local data</h2><p class="hint" id="dataPath"></p></div><button id="openLogs">View logs</button></div>
-      <div class="setting-row"><div><h2>Camellia</h2><p class="hint">DeepSeek Harness · Claude Code · Kimi Code</p></div><span id="version" class="hint"></span></div>
-      <button id="saveGeneral" class="primary">Save preferences</button>
+      <div class="setting-row"><div><h2 data-i18n>Language</h2><p class="hint" data-i18n>Choose the display language for Camellia.</p></div><select id="language" aria-label="Language" data-i18n-attrs="aria-label"><option value="en" lang="en">English</option><option value="zh-CN" lang="zh-CN">简体中文</option></select></div>
+      <div class="setting-row"><div><h2 data-i18n>Appearance</h2><p class="hint" data-i18n>Applies throughout Camellia.</p></div><select id="theme" aria-label="Appearance" data-i18n-attrs="aria-label"><option value="system" data-i18n>System</option><option value="light" data-i18n>Light</option><option value="dark" data-i18n>Dark</option></select></div>
+      <div class="setting-row"><div><h2 data-i18n>Refresh balances automatically</h2><p class="hint" data-i18n>Refresh API balances and supported subscription quotas every 15 minutes while the app is running.</p></div><input id="autoRefreshBalances" type="checkbox" aria-label="Refresh balances automatically" data-i18n-attrs="aria-label"></div>
+      <div class="setting-row"><div><h2 data-i18n>Shared conversations</h2><p class="hint" data-i18n>Continue any conversation in Claude Code, Codex CLI, DSH, Kimi Code or Antigravity.</p></div><select id="conversationMode" aria-label="Default conversation handoff" data-i18n-attrs="aria-label"><option value="direct" data-i18n>Continue directly (default)</option><option value="markdown" data-i18n>Automatic Markdown handoff</option></select></div>
+      <p class="hint" data-i18n>Direct continuation sends missing history to the next engine. Markdown asks the previous engine to summarize into a .md file and automatically starts a new native session. Both keep your shared conversation. Switching may increase latency and token usage; caches and internal state cannot transfer, and a summary may lose details.</p>
+      <div class="setting-row"><div><h2 data-i18n>Remind me when switching engines</h2><p class="hint" data-i18n>Show the context and performance tradeoffs before continuing. Off by default.</p></div><input id="conversationWarn" type="checkbox" aria-label="Remind me when switching engines" data-i18n-attrs="aria-label"></div>
+      <div class="setting-row"><div><h2 data-i18n>Show conversation origins</h2><p class="hint" data-i18n>Mark which engine created a conversation and show Markdown handoff records. Off by default.</p></div><input id="conversationOriginSetting" type="checkbox" aria-label="Show conversation origins" data-i18n-attrs="aria-label"></div>
+      <div class="setting-row"><div><h2 data-i18n>Local data</h2><p class="hint" id="dataPath"></p></div><button id="openLogs" data-i18n>View logs</button></div>
+      <div class="setting-row"><div><h2>Camellia</h2><p class="hint">Claude Code · Codex CLI · DeepSeek Harness · Kimi Code · Antigravity</p></div><span id="version" class="hint"></span></div>
+      <button id="saveGeneral" class="primary" data-i18n>Save preferences</button>
     </section>
     <section id="enginesPage" class="page" hidden>
-      <div class="engine-tabs" role="tablist" aria-label="Engine"><button role="tab" data-engine="dsh">DeepSeek Harness</button><button role="tab" data-engine="claude">Claude Code</button><button role="tab" data-engine="kimi">Kimi Code</button></div>
-      <div class="global-notice"><strong>These settings also apply to the CLI</strong><p>Saving overwrites the CLI's global settings and affects other CLI sessions. Before the first overwrite, an original <code>.workbench.bak</code> backup is kept.</p><p class="hint">Camellia manages API routes centrally. CLI sessions using its router require the app to remain running. Project settings follow each engine's precedence rules.</p><details><summary>View affected files</summary><div id="enginePaths"></div></details></div>
-      <div id="engineLoading" class="hint" role="status">Loading settings…</div>
+      <div class="engine-tabs" role="tablist" aria-label="Engine" data-i18n-attrs="aria-label"><button role="tab" data-engine="claude">Claude Code</button><button role="tab" data-engine="codex">Codex CLI</button><button role="tab" data-engine="dsh">DeepSeek Harness</button><button role="tab" data-engine="kimi">Kimi Code</button><button role="tab" data-engine="antigravity">Antigravity</button></div>
+      <div class="global-notice"><strong id="engineScopeTitle" data-i18n>These settings also apply to the CLI</strong><p id="engineScopeDescription" data-i18n>Saving overwrites the CLI's global settings and affects other CLI sessions. Before the first overwrite, an original <code>.workbench.bak</code> backup is kept.</p><p class="hint" id="engineRouteHint" data-i18n>Camellia manages API routes centrally. CLI sessions using its router require the app to remain running. Project settings follow each engine's precedence rules.</p><details><summary data-i18n>View affected files</summary><div id="enginePaths"></div></details></div>
+      <div id="engineLoading" class="hint" role="status" data-i18n>Loading settings…</div>
       <div id="engineContent" hidden>
-        <div id="dshNative" hidden><p class="hint native-save-note">DSH's native settings panel saves immediately. Models and keys are managed in the shared pool.</p><div id="nativeLoading" class="hint" role="status"></div><div id="dshSettingsSurface" aria-label="DSH native settings"></div><button id="retryNative" hidden>Reload panel</button></div>
+        <div id="codexConnectionPanel" class="engine-connection" hidden>
+          <div class="engine-field"><label for="codexConnection" data-i18n>Connection for new Codex sessions</label><select id="codexConnection"><option value="api" data-i18n>API key / third-party API</option><option value="subscription" data-i18n>ChatGPT account</option></select></div>
+          <p class="hint" id="codexConnectionHint" data-i18n></p>
+          <p class="hint" data-i18n>Existing Codex sessions keep their original connection. API and account models are remembered separately.</p>
+          <div class="account-actions"><button id="codexSaveConnection" class="primary" hidden data-i18n>Save settings</button><button id="codexProviders" data-i18n>Configure API providers &amp; keys</button></div>
+          <div class="engine-field"><label for="codexProxyUrl" data-i18n>Codex connection proxy<small class="hint" data-i18n>Optional. Leave blank to inherit your environment proxy.</small></label><input id="codexProxyUrl" type="url" placeholder="http://proxy.example:8080" autocomplete="off" spellcheck="false"></div>
+          <div id="codexAccountPanel" hidden>
+            <div class="account-actions"><button id="codexSignIn" class="primary" data-i18n>Sign in with ChatGPT</button><button id="codexRefresh" data-i18n>Refresh account</button><button id="codexCancelLogin" hidden data-i18n>Cancel sign-in</button><button id="codexSignOut" hidden data-i18n>Sign out</button></div>
+            <p id="codexAccountStatus" class="hint" role="status" data-i18n></p>
+            <div id="codexQuotas" class="codex-quotas"></div>
+            <details id="codexModelDetails" hidden><summary data-i18n>Available account models</summary><ul id="codexModelList"></ul></details>
+            <p class="hint" data-i18n>Sign-in opens the official ChatGPT authorization page. Return here after completing it. Your personal Codex CLI settings and account remain separate.</p>
+          </div>
+        </div>
+        <div id="kimiConnectionPanel" class="engine-connection" hidden>
+          <div class="engine-field"><label for="kimiConnection" data-i18n>Connection for new Kimi sessions</label><select id="kimiConnection"><option value="api" data-i18n>Shared API routes</option><option value="subscription" data-i18n>Kimi subscription</option></select></div>
+          <p class="hint" id="kimiConnectionHint" data-i18n></p>
+          <p class="hint" data-i18n>Existing sessions keep their original connection. API and account models are remembered separately.</p>
+          <div class="account-actions"><button id="kimiSaveConnection" class="primary" hidden data-i18n>Save settings</button><button id="kimiProviders" data-i18n>Configure API providers &amp; keys</button></div>
+          <div id="kimiAccountPanel" hidden>
+            <div class="engine-field"><label for="kimiLoginRegion" data-i18n>Login region<small class="hint" data-i18n>Choose the site where you registered your Kimi account.</small></label><select id="kimiLoginRegion"><option value="mainland-cn" data-i18n>China · kimi.com</option><option value="global" data-i18n>Global · kimi.ai</option></select></div>
+            <div class="account-actions"><button id="kimiSignIn" class="primary" data-i18n>Sign in with Kimi</button><button id="kimiRefresh" data-i18n>Refresh account</button><button id="kimiCancelLogin" hidden data-i18n>Cancel sign-in</button><button id="kimiSignOut" hidden data-i18n>Sign out</button></div>
+            <p id="kimiAccountStatus" class="hint" role="status" data-i18n></p>
+            <button id="kimiUsage" hidden data-i18n>View usage and quotas</button>
+            <div id="kimiDeviceLogin" hidden><p data-i18n>Authorization code: <code id="kimiUserCode"></code></p><button id="kimiOpenLogin" data-i18n>Open sign-in page</button><p id="kimiLoginExpiry" class="hint" data-i18n></p></div>
+            <details id="kimiModelDetails" hidden><summary data-i18n>Available account models</summary><ul id="kimiModelList"></ul></details>
+            <p class="hint" data-i18n>Complete the official Kimi authorization in your browser. Camellia stores this login separately from your personal Kimi CLI. Subscription requests use your Kimi plan and do not fall back to API billing.</p>
+          </div>
+        </div>
+        <div id="antigravityConnectionPanel" class="engine-connection" hidden>
+          <div class="engine-field"><label for="antigravityConnection" data-i18n>Connection</label><select id="antigravityConnection"><option value="subscription" data-i18n>Google subscription</option><option value="api" data-i18n>Shared API routes</option></select></div>
+          <p class="hint" id="antigravityConnectionHint" data-i18n></p>
+          <div id="googleAccountPanel" hidden>
+            <div class="engine-field"><label for="googleProxyUrl" data-i18n>Google connection proxy<small class="hint" data-i18n>Optional. Leave blank to use the system proxy.</small></label><input id="googleProxyUrl" type="url" placeholder="http://proxy.example:8080" autocomplete="off" spellcheck="false"></div>
+            <div class="account-actions"><button id="googleSaveConnection" class="primary" hidden data-i18n>Save settings</button><button id="googleSignIn" class="primary" data-i18n>Sign in with Google</button><button id="googleRefresh" data-i18n>Refresh account</button></div>
+            <p id="googleAccountStatus" class="hint" role="status" data-i18n></p>
+            <details id="googleModelDetails" hidden><summary id="googleModelSummary" data-i18n></summary><ul id="googleModelList"></ul></details>
+            <p class="hint" data-i18n>Sign-in opens the official CLI in a terminal and your browser. After signing in, return here and refresh the account. To switch accounts, use <code>/logout</code> in that terminal.</p>
+          </div>
+        </div>
+        <div id="dshNative" hidden><p class="hint native-save-note" data-i18n>DSH's native settings panel saves immediately. Models and keys are managed in the shared pool.</p><div id="nativeLoading" class="hint" role="status" data-i18n></div><div id="dshSettingsSurface" aria-label="DSH native settings" data-i18n-attrs="aria-label"></div><button id="retryNative" hidden data-i18n>Reload panel</button></div>
         <div id="engineCommon"></div>
-        <details class="advanced native-documents" id="nativeDocuments"><summary>Advanced configuration · MCP · Global instructions</summary><p class="hint">Edit full native configuration, including tools, hooks, plugins, and permission rules. Camellia manages API connections. Common options above are applied when you save.</p><div class="document-toolbar"><select id="engineDocument" aria-label="Configuration file"></select><span id="documentFormat" class="badge"></span></div><textarea id="engineSource" aria-label="Native configuration" spellcheck="false"></textarea></details>
-        <div class="engine-save"><button id="reloadEngine">Reload</button><button id="saveEngine" class="primary" disabled>Save engine settings</button><span class="hint" id="engineSaveHint">Applies to the next message</span></div>
+        <details class="advanced native-documents" id="nativeDocuments"><summary data-i18n>Advanced configuration · MCP · Global instructions</summary><p class="hint" id="engineAdvancedHint" data-i18n>Edit full native configuration, including tools, hooks, plugins, and permission rules. Camellia manages API connections. Common options above are applied when you save.</p><div class="document-toolbar"><select id="engineDocument" aria-label="Configuration file" data-i18n-attrs="aria-label"></select><span id="documentFormat" class="badge"></span></div><textarea id="engineSource" aria-label="Native configuration" spellcheck="false" data-i18n-attrs="aria-label"></textarea></details>
+        <div class="engine-save"><button id="reloadEngine" data-i18n>Reload</button><button id="saveEngine" class="primary" disabled data-i18n>Save engine settings</button><span class="hint" id="engineSaveHint" data-i18n>Applies to the next message</span></div>
       </div>
     </section>
     <section id="runtimesPage" class="page" hidden>
-      <p class="runtime-intro">Camellia detects and prepares each engine. No separate CLI installation is required. Initial downloads need a network connection.</p>
+      <p class="runtime-intro" data-i18n>All five engines are optional downloads. Choose which ones to install here, or download an engine when you first open it. Camellia includes the tools needed to install them; no separate CLI installation is required.</p>
+      <form id="downloadPreferences" class="download-preferences">
+        <h2 data-i18n>Download connection</h2>
+        <p class="hint" data-i18n>Choose your preferred connection. Before each download, you can use the saved proxy or connect directly.</p>
+        <div class="engine-field"><label for="downloadMode" data-i18n>Preferred connection</label><select id="downloadMode"><option value="direct" data-i18n>Direct connection</option><option value="proxy" data-i18n>Use proxy</option></select></div>
+        <div class="engine-field"><label for="downloadProxyUrl" data-i18n>Proxy address<small class="hint" data-i18n>HTTP or HTTPS proxy, including mixed proxy ports.</small></label><input id="downloadProxyUrl" type="url" placeholder="http://proxy.example:8080" spellcheck="false" autocomplete="off"></div>
+        <div class="download-save"><p class="hint" data-i18n>Applies only to engine downloads. Saved on this device.</p><button id="saveDownload" type="submit" disabled data-i18n>Save connection</button></div>
+      </form>
       <div id="runtimeCards"></div>
-      <p class="hint footnote">DSH and Kimi use pinned open-source runtimes. Claude Code is installed from the official package when missing and remains subject to Anthropic's terms. Runtime installation does not change global CLI settings; saving engine settings does.</p>
+      <p class="hint footnote" data-i18n>DSH and Kimi use pinned open-source runtimes. Claude Code is installed from the official package and remains subject to Anthropic's terms. Antigravity downloads the official CLI for Google subscriptions, or the SDK and managed Python for API mode. Downloads do not change global CLI settings; saving native CLI settings does.</p>
     </section>
   </main>
-  <footer><span id="status" role="status" aria-live="polite"></span><button id="save" class="primary" disabled>Save changes</button></footer>
+  <footer><span id="status" role="status" aria-live="polite" data-i18n></span><button id="save" class="primary" disabled data-i18n>Save changes</button></footer>
 </div>
-<dialog id="addDialog"><form method="dialog" class="dialog-head"><h2>Add provider</h2><button aria-label="Close">×</button></form><p class="hint">Choose a service to fill in its API address.</p><label for="preset">Provider</label><select id="preset"></select><button id="confirmAdd" class="primary">Continue</button></dialog>
-<dialog id="modelDialog"><form method="dialog" class="dialog-head"><h2>Select model</h2><button aria-label="Close">×</button></form><input id="modelSearch" placeholder="Search models" aria-label="Search models"><div id="catalogList"></div><button id="applyModels" class="primary">Add selected models</button></dialog>
+<dialog id="addDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Add API provider</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p class="hint" data-i18n>Connect with an API key. Choose a service to fill in its API address.</p><label for="preset" data-i18n>Provider</label><select id="preset"></select><div id="presetAccount" class="preset-account" hidden><p id="presetAccountHint" class="hint"></p><button id="openPresetAccount"></button></div><button id="confirmAdd" class="primary" data-i18n>Add API provider</button></dialog>
+<dialog id="modelDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Select model</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><input id="modelSearch" placeholder="Search models" aria-label="Search models" data-i18n-attrs="aria-label placeholder"><div id="catalogList"></div><button id="applyModels" class="primary" data-i18n>Add selected models</button></dialog>
+<script src="../../shared/i18n-messages.js"></script>
+<script src="../../shared/i18n.js"></script>
+<script src="../shared/i18n.js"></script>
 <script src="./settings-charts.js"></script><script src="./engine-settings-ui.js"></script><script src="./api-settings.js"></script>
 </body></html>

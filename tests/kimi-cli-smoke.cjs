@@ -155,7 +155,7 @@ async function run() {
     const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
     assert.ok(!config.includes('local-working') && !config.includes('exhausted'));
     assert.match(config, /proxy-managed/);
-    console.log('PASS: real Kimi Code 0.43.0 ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, isolated history and config. Local endpoints only.');
+    console.log('PASS: real Kimi Code 0.43.1 ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, isolated history and config. Local endpoints only.');
   } finally {
     await session?.shutdown();
     await router.stop();

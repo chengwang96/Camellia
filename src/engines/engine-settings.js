@@ -9,6 +9,22 @@ const { writeText } = require('../shared/json-store');
 const ROUTE_ENV = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL'];
 const FIELDS = {
+  codex: [
+    { key: 'approval_policy', label: 'Command approvals', type: 'select', options: [['', 'Workbench default'], ['untrusted', 'Ask for untrusted commands'], ['on-request', 'Ask when needed'], ['never', 'Never ask']] },
+    { key: 'sandbox_mode', label: 'Sandbox', type: 'select', options: [['', 'Workspace write'], ['read-only', 'Read only'], ['workspace-write', 'Workspace write'], ['danger-full-access', 'Full access']] },
+    { key: 'model_reasoning_effort', label: 'Default reasoning level', type: 'select', options: [['', 'Model default'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high']] },
+    { key: 'web_search', label: 'Web search with ChatGPT', type: 'select', options: [['', 'Default'], ['disabled', 'Disabled'], ['cached', 'Cached'], ['live', 'Live']] },
+  ],
+  antigravitySubscription: [
+    { key: 'agentMode', label: 'Default execution mode', type: 'select', options: [['default', 'CLI defaults'], ['accept-edits', 'Accept edits'], ['plan', 'Planning']] },
+    { key: 'toolPermission', label: 'CLI tool policy', type: 'select', options: [['request-review', 'Request review'], ['strict', 'Strict'], ['proceed-in-sandbox', 'Proceed in sandbox'], ['always-proceed', 'Allow all']] },
+    { key: 'useG1Credits', label: 'Use AI credits after the plan quota is exhausted', type: 'checkbox' },
+    { key: 'enableTelemetry', label: 'Send anonymous CLI usage statistics', type: 'checkbox' },
+  ],
+  antigravity: [
+    { key: 'permissionMode', label: 'Default permissions', type: 'select', options: [['default', 'Default permissions'], ['acceptEdits', 'Accept edits'], ['plan', 'Plan only'], ['bypassPermissions', 'Allow all']] },
+    { key: 'instructions', label: 'Agent instructions', type: 'textarea', placeholder: 'Instructions used in Antigravity sessions' },
+  ],
   claude: [
     { key: 'language', label: "Response language", type: 'text', placeholder: "Follow the conversation language" },
     { key: 'permissions.defaultMode', label: "Default permissions", type: 'select', options: [['default', "Default permissions"], ['acceptEdits', "Accept edits"], ['plan', "Plan only"], ['bypassPermissions', "Allow all"]] },
@@ -48,9 +64,20 @@ function routeKimi(config, { route, model, contextWindow = 131072 }) {
     providers: { ...config.providers, workbench: { type: 'openai', base_url: route.baseUrl + '/v1', api_key: route.authToken } },
     models: { ...config.models, [model]: { provider: 'workbench', model, max_context_size: contextWindow } } };
 }
-function createEngineSettings({ home, claudeHome, dshHome, kimiHome, getDesktop, saveDesktop, getRoute }) {
+function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravityHome, codexHome, getDesktop, saveDesktop, getRoute }) {
   const claudeDir = claudeHome || path.join(home, '.claude');
+  const subscription = engine => engine === 'antigravity' && getDesktop(engine).connection === 'subscription';
+  const fields = engine => FIELDS[subscription(engine) ? 'antigravitySubscription' : engine] || [];
   function definitions(engine) {
+    if (engine === 'codex') return [
+      { id: 'settings', label: 'Configuration and MCP servers', format: 'toml', path: path.join(codexHome, 'config.toml') },
+      { id: 'instructions', label: 'Instructions', format: 'text', path: path.join(codexHome, 'AGENTS.md') },
+    ];
+    if (subscription(engine)) return [
+      { id: 'settings', label: 'CLI configuration', format: 'json', path: path.join(home, '.gemini/antigravity-cli/settings.json') },
+      ...['mcp_config', 'skills', 'plugins'].map((name, i) => ({ id: name, label: ['MCP servers', 'Skills', 'Plugins'][i], format: 'json', path: path.join(home, '.gemini/config', name + '.json') })),
+    ];
+    if (engine === 'antigravity') return [{ id: 'settings', label: 'Instructions, permissions, MCP and skills', format: 'json', path: path.join(antigravityHome, 'settings.json') }];
     if (engine === 'dsh') return [{ id: 'settings', label: "Full configuration", format: 'yaml', path: path.join(dshHome(), 'settings.yaml') }];
     if (engine === 'claude') return [
       { id: 'settings', label: "Full configuration", format: 'json', path: path.join(claudeDir, 'settings.json') },
@@ -65,7 +92,12 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, getDesktop,
     throw new Error("Unknown engine");
   }
   function editable(engine, doc, value) {
+    if (engine === 'codex' && doc.id === 'settings') {
+      value = { ...value };
+      for (const key of ['model', 'model_provider', 'model_providers', 'cli_auth_credentials_store', 'forced_login_method', 'forced_chatgpt_workspace_id', 'openai_base_url', 'chatgpt_base_url']) delete value[key];
+    }
     if (doc.key) return value[doc.key] || {};
+    if (subscription(engine) && doc.id === 'settings') { value = { ...value }; delete value.modelProvider; }
     if (engine === 'claude' && doc.id === 'settings') {
       value = structuredClone(value);
       for (const key of ROUTE_ENV) if (value.env) delete value.env[key];
@@ -83,11 +115,12 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, getDesktop,
       return { ...doc, revision: revision(text), text: doc.format === 'text' ? value : stringify(value, doc.format), backup: fs.existsSync(doc.path + '.workbench.bak') };
     });
     const native = parse(files[0].text, files[0].format);
-    return { engine, files, desktop: getDesktop(engine), fields: (FIELDS[engine] || []).map(field => ({ ...field, value: getAt(native, field.key) ?? (field.type === 'checkbox' ? false : '') })) };
+    return { engine, files, desktop: getDesktop(engine), scope: engine === 'codex' || engine === 'antigravity' && !subscription(engine) ? 'app' : 'cli',
+      fields: fields(engine).map(field => ({ ...field, value: getAt(native, field.key) ?? (field.type === 'checkbox' ? false : '') })) };
   }
   function save(engine, payload) {
     const definitionsById = new Map(definitions(engine).map(doc => [doc.id, doc]));
-    const route = getRoute();
+    const route = ['claude', 'kimi'].includes(engine) ? getRoute() : null;
     const writes = payload.files.map(input => {
       const doc = definitionsById.get(input.id);
       if (!doc) throw new Error("Unknown configuration file");
@@ -97,13 +130,15 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, getDesktop,
       const old = parse(original, doc.format);
       let value = parse(input.text, doc.format);
       if (doc.id === 'settings') for (const [key, next] of Object.entries(payload.common || {})) {
-        const field = (FIELDS[engine] || []).find(item => item.key === key);
+        const field = fields(engine).find(item => item.key === key);
         if (!field) throw new Error("Unknown setting");
         if (field.type === 'number' && next !== '' && (!Number.isInteger(next) || next < field.min || next > field.max)) throw new Error(`${field.label} must be an integer between ${field.min} and ${field.max}`);
         if (field.type === 'select' && next !== '' && !field.options.some(([id]) => id === next)) throw new Error(`Invalid ${field.label.toLowerCase()}`);
         setAt(value, key, next);
       }
       if (doc.key) value = { ...old, [doc.key]: value };
+      if (subscription(engine) && doc.id === 'settings') delete value.modelProvider;
+      if (engine === 'codex') value = editable(engine, doc, value);
       if (engine === 'claude' && doc.id === 'settings') {
         const oldRoute = Object.fromEntries(ROUTE_ENV.filter(key => old.env?.[key] !== undefined).map(key => [key, old.env[key]]));
         value.env = { ...value.env, ...oldRoute };
@@ -117,7 +152,8 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, getDesktop,
       }
       if (engine === 'kimi' && doc.id === 'settings') {
         value = routeKimi({ ...value, providers: old.providers, models: old.models, default_model: old.default_model }, {
-          route, model: getDesktop('kimi').model, contextWindow: payload.desktop?.contextWindow || getDesktop('kimi').contextWindow,
+          route, model: getDesktop('kimi').apiModel ?? (getDesktop('kimi').connection !== 'subscription' ? getDesktop('kimi').model : ''),
+          contextWindow: payload.desktop?.contextWindow || getDesktop('kimi').contextWindow,
         });
       }
       return { file: doc.path, text: stringify(value, doc.format) };
@@ -125,6 +161,12 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, getDesktop,
     // Validate every document before replacing any file, and back up the originals once.
     for (const item of writes) backup(item.file);
     const desktop = { ...payload.desktop };
+    if (engine === 'codex') {
+      const native = parse(writes.find(item => item.file === definitionsById.get('settings').path).text, 'toml');
+      // The composer's default uses the native approval and sandbox combination.
+      desktop.permissionMode = 'default';
+      desktop.thinkingBudget = native.model_reasoning_effort || '';
+    }
     if (engine === 'claude') {
       const native = parse(writes.find(item => item.file === definitionsById.get('settings').path).text, 'json');
       desktop.permissionMode = native.permissions?.defaultMode || 'default';
@@ -133,6 +175,12 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, getDesktop,
     if (engine === 'kimi') {
       const native = parse(writes.find(item => item.file === definitionsById.get('settings').path).text, 'toml');
       desktop.permissionMode = native.default_plan_mode ? 'plan' : native.default_permission_mode === 'manual' ? 'default' : native.default_permission_mode || 'default';
+    }
+    if (engine === 'antigravity') {
+      const native = parse(writes.find(item => item.file === definitionsById.get('settings').path).text, 'json');
+      desktop.permissionMode = subscription(engine)
+        ? native.toolPermission === 'always-proceed' ? 'bypassPermissions' : native.agentMode === 'accept-edits' ? 'acceptEdits' : native.agentMode === 'plan' ? 'plan' : 'default'
+        : native.permissionMode || 'default';
     }
     saveDesktop(engine, desktop);
     for (const item of writes) writeText(item.file, item.text);

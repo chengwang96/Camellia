@@ -21,7 +21,7 @@ bridge=r"""(() => {
     for(const e of r.events||[]){if(e.channel==='dsh:api-router-state')onRouter(e.data);if(e.channel==='dsh:claude-event')onEvent(e.data);if(e.channel==='dsh:claude-goal')onGoal(e.data);if(e.channel==='dsh:provider-insights')onInsights(e.data);}
     return r.result;
   };
-  window.dshDesktop=new Proxy({},{get:(_,m)=>['onEngineSettingsChanged','onRuntimeState','onSettingsNavigate','onNativeSettingsReady'].includes(m)?()=>()=>{}:m==='onApiRouterState'?f=>onRouter=f:m==='onClaudeEvent'?f=>onEvent=f:m==='onClaudeGoal'?f=>onGoal=f:m==='onProviderInsights'?f=>onInsights=f:p=>window.testCall(m,p)});
+  window.dshDesktop=new Proxy({},{get:(_,m)=>m.startsWith('on')&&!['onApiRouterState','onClaudeEvent','onClaudeGoal','onProviderInsights'].includes(m)?()=>()=>{}:m==='onApiRouterState'?f=>onRouter=f:m==='onClaudeEvent'?f=>onEvent=f:m==='onClaudeGoal'?f=>onGoal=f:m==='onProviderInsights'?f=>onInsights=f:p=>window.testCall(m,p)});
 })();"""
 try:
     port=rpc('freePort')['result']; upstream=rpc('startTestUpstream')['result']

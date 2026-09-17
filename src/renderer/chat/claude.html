@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Code — Camellia</title>
+<title data-i18n>Claude Code — Camellia</title>
 <link rel="stylesheet" href="../shared/ui-theme.css">
+<link rel="stylesheet" href="../shared/engine-brand.css">
 <link rel="stylesheet" href="./claude.css">
 </head>
 <body>
@@ -13,34 +14,26 @@
   <aside class="sidebar">
     <div class="sidebar-header">
       <div class="logo">
-        <div class="logo-icon">C</div>
+        <div class="logo-icon engine-mark" data-engine="claude" aria-hidden="true"><img src="../../../assets/brands/claude.svg" alt=""></div>
         <span class="logo-text" data-harness-name>Claude Code</span>
         <span class="logo-badge">HARNESS</span>
       </div>
-      <button class="btn-new-session" id="newSessionBtn" title="New standalone session without a workspace">
+      <button class="btn-new-session" id="newSessionBtn" title="New standalone session without a workspace" data-i18n data-i18n-attrs="title">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
         New session
       </button>
     </div>
 
-    <nav class="session-list" id="sessionList" aria-label="Workspaces and sessions"></nav>
+    <nav class="session-list" id="sessionList" aria-label="Workspaces and sessions" data-i18n-attrs="aria-label"></nav>
 
     <div class="sidebar-footer">
-      <button class="btn-footer" id="resumeLastBtn" title="Open the most recent session">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
-        Resume last session
-      </button>
-      <button class="btn-footer" id="settingsBtn">
+      <button class="btn-footer" id="settingsBtn" data-i18n>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Settings
       </button>
-      <button class="btn-footer" id="backToHome" title="Home (Ctrl/Cmd+Shift+H)">
+      <button class="btn-footer" id="backToHome" title="Home (Ctrl/Cmd+Shift+H)" data-i18n data-i18n-attrs="title">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg>
         Home
-      </button>
-      <button class="btn-footer" id="backToDsh">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
-        Switch to DSH
       </button>
     </div>
   </aside>
@@ -49,23 +42,23 @@
   <main class="main">
     <div class="main-header">
       <span class="header-title" id="headerTitle">New session</span>
-      <button class="workspace-picker" id="workspacePicker" title="Choose a workspace for this session" aria-haspopup="menu"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg><span id="workspaceLabel">No workspace</span><span>⌄</span></button>
-      <span class="header-pill">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-        <span data-harness-name>Claude Code</span>
-      </span>
+      <button class="header-pill workspace-picker" id="workspacePicker" title="Choose a workspace for this session" aria-haspopup="menu" data-i18n-attrs="title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg><span id="workspaceLabel">No workspace</span><span class="header-chevron" aria-hidden="true"></span></button>
+      <select class="header-pill" id="engineSwitch" aria-label="Conversation engine" data-i18n-attrs="aria-label title"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="dsh">DeepSeek Harness</option><option value="kimi">Kimi Code</option><option value="antigravity">Antigravity</option></select>
+      <button class="header-pill" id="handoffBtn" title="Choose how to continue in another engine" data-i18n data-i18n-attrs="title">Switch options</button>
+      <button class="header-pill" id="handoffStop" hidden data-i18n>Stop handoff</button>
       <span style="flex:1"></span>
-      <span class="header-pill" id="goalPillBtn" style="cursor:pointer" title="Goal mode (Ctrl/Cmd+G)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
+      <button class="header-pill" id="goalPillBtn" type="button" title="Goal mode (Ctrl/Cmd+G)" data-i18n data-i18n-attrs="title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
         Goal mode
-      </span>
+      </button>
     </div>
 
+<div id="conversationOrigin" class="conversation-origin" hidden data-i18n></div>
 <div class="chat-scroll" id="chatScroll">
       <div class="column" id="chat">
         <div class="empty-state" id="emptyState">
           <div class="empty-state-heading"><span class="empty-state-wordmark" data-harness-name>Claude Code</span><span class="empty-state-badge">HARNESS</span></div>
-          <div class="empty-state-desc">Start with an idea, or add files to the conversation.</div>
+          <div class="empty-state-desc" data-i18n>Start with an idea, or add files to the conversation.</div>
         </div>
       </div>
     </div>
@@ -73,63 +66,67 @@
     <div class="input-zone">
       <div class="column">
         <div class="goal-bar" id="goalBar">
-          <div class="goal-input-row" id="goalInputRow">
-            <input id="goalInput" type="text" placeholder="🎯 Set a long-term goal for Claude to work through automatically…">
-            <select id="goalRounds" title="Turn budget">
-              <option value="10">10 turns</option>
-              <option value="25" selected>25 turns</option>
-              <option value="50">50 turns</option>
-            </select>
-            <button class="goal-start-btn" id="goalStartBtn">Start goal</button>
+          <div id="goalEntry">
+            <div class="goal-input-row" id="goalInputRow">
+              <input id="goalInput" type="text" aria-label="Goal" aria-describedby="goalInputHint" placeholder="What would you like to complete?" data-i18n-attrs="aria-label placeholder">
+              <button class="goal-start-btn" id="goalStartBtn" data-i18n>Start goal</button>
+            </div>
+            <p class="goal-input-hint" id="goalInputHint" data-i18n>Keeps working until complete or blocked. You can pause at any time.</p>
           </div>
-          <div class="goal-card" id="goalCard" style="display:none">
+          <section class="goal-card" id="goalCard" aria-label="Current goal" hidden data-i18n-attrs="aria-label">
             <div class="goal-card-top">
-              <span>🎯</span>
+              <svg class="goal-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
+              <span class="goal-phase" id="goalPhase" role="status" data-i18n></span>
               <span class="goal-objective" id="goalObjective"></span>
-              <span class="goal-phase" id="goalPhase"></span>
+              <span class="goal-elapsed" id="goalElapsed" title="Active time" data-i18n data-i18n-attrs="title"></span>
+              <div class="goal-controls">
+                <button class="goal-icon-btn" id="goalClearBtn" aria-label="Remove goal" title="Remove goal and stop working" data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M5 6l1 14a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1l1-14M10 10v7M14 10v7"/></svg></button>
+                <button class="goal-icon-btn" id="goalPauseBtn" aria-label="Pause goal" title="Pause goal and stop the current response" data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M10 8v8M14 8v8"/></svg></button>
+                <button class="goal-icon-btn" id="goalResumeBtn" aria-label="Resume goal" title="Resume goal" hidden data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4z"/></svg></button>
+                <button class="goal-icon-btn" id="goalExpandBtn" aria-label="Show goal details" title="Show goal details" aria-expanded="false" aria-controls="goalDetails" data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"/></svg></button>
+              </div>
             </div>
-            <div class="goal-meta" id="goalMeta"></div>
-            <div class="goal-reason" id="goalReason" style="display:none"></div>
-            <div class="goal-actions">
-              <button id="goalPauseBtn">Pause</button>
-              <button id="goalResumeBtn" style="display:none">Continue</button>
-              <button id="goalCompleteBtn">Mark complete</button>
-              <button id="goalClearBtn" class="danger">Clear</button>
+            <div class="goal-details" id="goalDetails" hidden>
+              <p class="goal-full-objective" id="goalFullObjective"></p>
+              <p class="goal-meta" id="goalMeta" data-i18n></p>
+              <p class="goal-reason" id="goalReason" hidden></p>
+              <div class="goal-actions"><button id="goalCompleteBtn" data-i18n>Mark complete</button></div>
             </div>
-          </div>
+          </section>
         </div>
         <div class="suggestion" id="suggestion"></div>
         <div class="input-card" id="inputCard">
           <div class="attach-row" id="attachRow"></div>
-          <textarea id="input" placeholder="Message Claude Code" rows="2"></textarea>
+          <textarea id="input" placeholder="Message Claude Code" rows="2" data-i18n-attrs="placeholder"></textarea>
           <div class="input-row">
-            <button class="btn-attach" id="attachBtn" title="Add attachments, or drop images here">
+            <button class="btn-attach" id="attachBtn" title="Add attachments, or drop images here" data-i18n-attrs="title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             </button>
-            <span class="pill-select" title="Permission mode">
+            <span class="pill-select" title="Permission mode" data-i18n-attrs="title">
               <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-              <select id="selPermission" aria-label="Permission mode">
-                <option value="acceptEdits">Accept edits</option>
-                <option value="plan">Plan only</option>
-                <option value="bypassPermissions">Allow all</option>
-                <option value="default">Default permissions</option>
+              <select id="selPermission" aria-label="Permission mode" data-i18n-attrs="aria-label">
+                <option value="acceptEdits" data-i18n>Accept edits</option>
+                <option value="plan" data-i18n>Plan only</option>
+                <option value="bypassPermissions" data-i18n>Allow all</option>
+                <option value="default" data-i18n>Default permissions</option>
               </select>
             </span>
             <span class="input-spacer"></span>
-            <button class="model-pill" id="modelPill" title="Model and reasoning level">
+            <button class="model-pill" id="modelPill" title="Model and reasoning level" data-i18n-attrs="title">
               <span class="model-name" id="modelPillName">Default model</span>
-              <span class="model-level" id="modelPillLevel"></span>
+              <span class="model-level" id="modelPillLevel" data-i18n></span>
               <svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></svg>
             </button>
-            <button class="usage-dot" id="usageDot" title="Last turn">
+            <button class="usage-dot" id="usageDot" title="Last turn" data-i18n-attrs="title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
             </button>
-            <button class="btn-send" id="send" disabled title="Send">
+            <button class="btn-send" id="send" disabled title="Send" data-i18n-attrs="title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
             </button>
           </div>
         </div>
-        <div class="status-line" id="statusLine">Ready</div>
+        <button class="connection-note" id="connectionInfo" hidden data-i18n></button>
+        <div class="status-line" id="statusLine" data-i18n>Ready</div>
       </div>
     </div>
   </main>
@@ -138,41 +135,54 @@
 <!-- Permission modal (P3): answers can_use_tool control requests -->
 <div class="perm-mask" id="permMask">
   <div class="perm-dialog">
-    <div class="perm-title">Claude requests the following action</div>
-    <div class="perm-tool" id="permTool"></div>
+    <div class="perm-title" data-i18n>Claude requests the following action</div>
+    <div class="perm-tool" id="permTool" data-i18n></div>
+    <div class="perm-tool" id="permReason" hidden></div>
     <div class="perm-input" id="permInput"></div>
     <div class="perm-options" id="permOptions"></div>
     <div class="perm-actions" id="permDefaultActions">
-      <button class="perm-deny" id="permDeny">Deny</button>
-      <button class="perm-allow" id="permAllow">Allow</button>
+      <button class="perm-deny" id="permDeny" data-i18n>Deny</button>
+      <button class="perm-allow" id="permAllow" data-i18n>Allow</button>
     </div>
+    <button class="perm-deny" id="permLater" type="button" data-i18n>Later</button>
   </div>
 </div>
 
 <!-- Workspace create modal -->
 <div class="ws-mask" id="wsMask">
   <form class="ws-dialog" id="wsForm" role="dialog" aria-modal="true" aria-labelledby="wsDialogTitle">
-    <div class="perm-title" id="wsDialogTitle">Add workspace</div>
+    <div class="perm-title" id="wsDialogTitle" data-i18n>Add workspace</div>
     <div class="ws-field">
-      <label for="wsName">Name</label>
-      <input id="wsName" type="text" placeholder="e.g. Research / Main experiment" required>
+      <label for="wsName" data-i18n>Name</label>
+      <input id="wsName" type="text" placeholder="e.g. Research / Main experiment" required data-i18n-attrs="placeholder">
     </div>
     <div class="ws-field" id="wsPathField">
-      <label for="wsPath">Folder</label>
+      <label for="wsPath" data-i18n>Folder</label>
       <div class="row-pick">
         <input id="wsPath" type="text" placeholder="D:\Code\…" required>
-        <button type="button" class="perm-deny" id="wsBrowse" style="white-space:nowrap">Browse…</button>
+        <button type="button" class="perm-deny" id="wsBrowse" style="white-space:nowrap" data-i18n>Browse…</button>
       </div>
     </div>
-    <p class="ws-hint" id="wsHint">Sessions run in this folder. You can move them out to make them standalone.</p>
-    <div class="ws-error" id="wsError" role="alert"></div>
+    <p class="ws-hint" id="wsHint" data-i18n>Sessions run in this folder. You can move them out to make them standalone.</p>
+    <div class="ws-error" id="wsError" role="alert" data-i18n></div>
     <div class="perm-actions">
-      <button type="button" class="perm-deny" id="wsCancel">Cancel</button>
-      <button type="submit" class="perm-allow" id="wsCreate">Add</button>
+      <button type="button" class="perm-deny" id="wsCancel" data-i18n>Cancel</button>
+      <button type="submit" class="perm-allow" id="wsCreate" data-i18n>Add</button>
     </div>
   </form>
 </div>
 
+<dialog id="switchDialog" class="switch-dialog">
+  <h2 data-i18n>Continue with another engine</h2>
+  <p data-i18n>Switching can use extra tokens and take longer. Native caches, tool state and internal reasoning do not transfer. Markdown summaries may omit details.</p>
+  <label data-i18n>Engine <select id="switchTarget"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="dsh">DeepSeek Harness</option><option value="kimi">Kimi Code</option><option value="antigravity">Antigravity</option></select></label>
+  <label data-i18n>Continue using <select id="switchMethod"><option value="direct" data-i18n>Shared conversation history</option><option value="markdown" data-i18n>Markdown handoff · new native session</option></select></label>
+  <p class="switch-hint" data-i18n>Markdown asks the previous engine to summarize, saves a .md file, and opens a new session in the target engine automatically. The conversation stays in this shared list.</p>
+  <div class="perm-actions"><button id="switchCancel" class="btn-secondary" data-i18n>Cancel</button><button id="switchConfirm" class="btn-primary" data-i18n>Continue</button></div>
+</dialog>
+<script src="../../shared/i18n-messages.js"></script>
+<script src="../../shared/i18n.js"></script>
+<script src="../shared/i18n.js"></script>
 <script src="./chat-runtime.js"></script>
 <script src="./claude-sidebar.js"></script>
 <script src="./claude-goal-ui.js"></script>

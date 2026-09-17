@@ -3,12 +3,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const patchDsh = require('../../integrations/dsh/patch.cjs');
+const { locatePythonRuntime, installPythonRuntime } = require('./python-runtime');
+const { createDownloadConnection } = require('./download-network');
+const { locateAntigravityCli, installAntigravityCli } = require('./antigravity-cli-runtime');
 
 const ENGINES = {
-  dsh: { name: 'DeepSeek Harness', package: '@deepseek-ai/dsh', entry: 'lib/bin.js' },
   // The official wrapper installs the native binary at this path on every OS.
   claude: { name: 'Claude Code', package: '@anthropic-ai/claude-code', entry: 'bin/claude.exe' },
+  codex: { name: 'Codex CLI', package: '@openai/codex' },
+  dsh: { name: 'DeepSeek Harness', package: '@deepseek-ai/dsh', entry: 'lib/bin.js' },
   kimi: { name: 'Kimi Code', package: '@moonshot-ai/kimi-code', entry: 'dist/main.mjs' },
+  antigravity: { name: 'Antigravity', type: 'python' },
 };
 function run(exe, args, options = {}, onOutput = () => {}) {
   return new Promise((resolve, reject) => {
@@ -29,12 +34,23 @@ function run(exe, args, options = {}, onOutput = () => {}) {
     });
   });
 }
-function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {}, runCommand = run }) {
+function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {}, runCommand = run, downloadOptions = () => undefined, runtimeMode = () => 'api' }) {
   const pending = new Map(), progress = new Map();
-  const entry = (dir, engine) => path.join(dir, 'node_modules', ENGINES[engine].package, ENGINES[engine].entry);
-  function locate(engine) {
+  const entry = (dir, engine) => {
+    if (engine === 'codex') {
+      const target = process.platform === 'win32' ? 'x86_64-pc-windows-msvc' : 'aarch64-apple-darwin';
+      return path.join(dir, 'node_modules', '@openai', `codex-${process.platform}-${process.arch}`, 'vendor', target, 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex');
+    }
+    return path.join(dir, 'node_modules', ENGINES[engine].package, ENGINES[engine].entry);
+  };
+  function locate(engine, mode = runtimeMode(engine)) {
     if (!ENGINES[engine]) throw new Error("Unknown engine");
-    for (const [base, source] of [[root, "Bundled with application"], [installRoot, "Installed by Camellia"]]) {
+    for (const [base, source] of [[root, "Available locally"], [installRoot, "Installed by Camellia"]]) {
+      if (ENGINES[engine].type === 'python') {
+        const found = (mode === 'subscription' ? locateAntigravityCli : locatePythonRuntime)(path.join(base, 'runtimes', engine));
+        if (found) return { ...found, source };
+        continue;
+      }
       const dir = path.join(base, 'runtimes', engine), file = entry(dir, engine);
       if (fs.existsSync(file)) return { file, dir, source, version: JSON.parse(fs.readFileSync(path.join(dir, 'node_modules', ENGINES[engine].package, 'package.json'))).version };
     }
@@ -42,17 +58,25 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
   }
   function state() {
     return Object.entries(ENGINES).map(([id, engine]) => {
-      const found = locate(id);
-      return { id, name: engine.name, ...found, status: found ? 'ready' : 'missing', ...progress.get(id) };
+      const mode = runtimeMode(id), found = locate(id, mode);
+      return { id, name: engine.name, mode, ...found, status: found ? 'ready' : 'missing', ...progress.get(id + ':' + mode) };
     });
   }
-  function report(engine, value) { progress.set(engine, value); onChange(state()); }
-  async function install(engine) {
-    if (!ENGINES[engine]) throw new Error("Unknown engine");
+  function report(engine, mode, value) { progress.set(engine + ':' + mode, value); onChange(state()); }
+  async function install(engine, mode, options) {
+    const connection = createDownloadConnection(options);
     const source = path.join(root, 'runtimes', engine);
     const dir = path.join(installRoot, 'runtimes', engine);
-    report(engine, { status: 'installing', message: "Preparing runtime from the official npm package…" });
+    const update = value => report(engine, mode, value);
+    update({ status: 'installing', message: engine === 'antigravity' ? `Preparing the official Antigravity ${mode === 'subscription' ? 'CLI' : 'SDK'}…` : "Preparing runtime from the official npm package…" });
     try {
+      if (ENGINES[engine].type === 'python') {
+        const installer = mode === 'subscription' ? installAntigravityCli : installPythonRuntime;
+        const found = await installer({ source, dir, run: runCommand, connection,
+          report: message => update({ status: 'installing', message }) });
+        update({ status: 'ready', message: 'Ready' });
+        return found;
+      }
       if (!node || !npm) throw new Error("Node.js/npm not found. Install Node.js 22.19+ and retry.");
       fs.mkdirSync(dir, { recursive: true });
       for (const name of ['package.json', 'package-lock.json']) {
@@ -63,20 +87,28 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
       const installDir = fs.realpathSync.native(dir);
       const args = [npm, 'ci', '--prefix', installDir, '--no-audit', '--no-fund'];
       if (engine === 'kimi') args.push('--omit=optional', '--ignore-scripts');
-      await runCommand(node, args, { cwd: installDir, env: { ...process.env, PATH: path.dirname(node) + path.delimiter + process.env.PATH } });
+      await runCommand(node, args, { cwd: installDir, env: { ...connection.env, PATH: path.dirname(node) + path.delimiter + process.env.PATH } });
       if (engine === 'dsh') patchDsh(dir);
       const found = locate(engine);
       if (!found) throw new Error("Installation did not produce an executable. Please retry.");
-      report(engine, { status: 'ready', message: "Ready" });
+      update({ status: 'ready', message: "Ready" });
       return found;
-    } catch (e) { report(engine, { status: 'error', message: e.message }); throw e; }
+    } catch (e) { update({ status: 'error', message: e.message }); throw e; }
+    finally { await connection.close(); }
   }
-  function ensure(engine) {
-    if (pending.has(engine)) return pending.get(engine);
-    const found = locate(engine);
-    if (found) return Promise.resolve(found);
-    const task = install(engine).finally(() => pending.delete(engine));
-    pending.set(engine, task);
+  function ensure(engine, mode = runtimeMode(engine)) {
+    const key = engine + ':' + mode;
+    if (pending.has(key)) return pending.get(key);
+    const found = locate(engine, mode);
+    if (found) {
+      // Downloaded DSH survives application upgrades; refresh our integration
+      // when it is reused so it stays in step with the installed workbench.
+      if (engine === 'dsh') patchDsh(found.dir);
+      return Promise.resolve(found);
+    }
+    const task = Promise.resolve().then(() => downloadOptions(engine, mode)).then(options => install(engine, mode, options))
+      .finally(() => pending.delete(key));
+    pending.set(key, task);
     return task;
   }
   return { locate, ensure, state };

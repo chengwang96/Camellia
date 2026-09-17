@@ -1,0 +1,34 @@
+{
+  "sdk": "0.1.17",
+  "python": "3.13.14",
+  "uv": "0.12.15",
+  "cli": {
+    "version": "1.2.3",
+    "platforms": {
+      "win32-x64": {
+        "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.3-5101874907578368/windows-x64/cli_windows_x64.exe",
+        "sha512": "b1d25dd76540ca9759d167fbff27f02ebde920c4924670640d47b96ff3a2984196ca3d078ae6c668cad1ee7ba79f633cbeb3c616b8e3cf817dfa83a80d2dc240"
+      },
+      "darwin-arm64": {
+        "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.3-5101874907578368/darwin-arm/cli_mac_arm64.tar.gz",
+        "sha512": "9d0b6e891960ddff7c1a2d532a08eab25b5eebd1e4953423f1a564c26164ee22b4f4e27a141fe31f95827f5924e04a4aea10422305e1ddd9374f4bff5124d996"
+      }
+    }
+  },
+  "platforms": {
+    "win32-x64": {
+      "archive": "uv-runtime.whl",
+      "sha256": "39af7d437b6d1f962f11c0b77f891d302ea675a0ebbcfe9792f633d843740a25",
+      "uv": "uv-0.12.15.data/scripts/uv.exe",
+      "python": "cpython-3.13.14-windows-x86_64-none/python.exe",
+      "url": "https://files.pythonhosted.org/packages/ac/d8/0b4fdfb56c79a307237295f8a0f7c64a34d5d1e8c090fab0bc1201cab2a8/uv-0.12.15-py3-none-win_amd64.whl"
+    },
+    "darwin-arm64": {
+      "archive": "uv-runtime.whl",
+      "sha256": "03b2c763f8b3c5595fa103221bc667e3af0146f8cb327aa06630ebcf5cfe16e9",
+      "uv": "uv-0.12.15.data/scripts/uv",
+      "python": "cpython-3.13.14-macos-aarch64-none/bin/python3.13",
+      "url": "https://files.pythonhosted.org/packages/84/62/82e86e03e111463ab224c132c0f0e6b649d98d22710b177fbc000d379103/uv-0.12.15-py3-none-macosx_11_0_arm64.whl"
+    }
+  }
+}

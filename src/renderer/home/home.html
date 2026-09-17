@@ -6,42 +6,63 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'">
 <title>Camellia</title>
 <link rel="stylesheet" href="../shared/ui-theme.css">
+<link rel="stylesheet" href="../shared/engine-brand.css">
 <link rel="stylesheet" href="./home.css">
 </head>
 <body>
 <main class="home-panel">
   <header class="home-heading">
     <div class="home-brand"><img src="../../../assets/icon-256.png" alt="Camellia cat" width="38" height="38">Camellia</div>
-    <h1>Start working</h1>
-    <p>Choose an engine to continue your work.</p>
+    <h1 data-i18n>Start working</h1>
+  <p data-i18n>Choose an engine to continue your work. Download only the engines you need.</p>
   </header>
-  <nav class="home-entries" aria-label="Engines">
-    <button class="agent-entry" id="enterDsh" data-mode="dsh" aria-label="Open DSH">
-      <span class="agent-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg></span>
-      <span class="entry-title">DeepSeek Harness</span>
-      <span class="entry-description">Work on conversations, projects, and goals in your workspace.</span>
-      <span class="entry-action">Open DSH <span aria-hidden="true">↗</span></span>
-    </button>
-    <button class="agent-entry" id="enterClaude" data-mode="claude" aria-label="Open Claude">
-      <span class="agent-symbol claude-symbol" aria-hidden="true">C</span>
+  <nav class="home-entries" aria-label="Engines" data-i18n-attrs="aria-label">
+    <button class="agent-entry" id="enterClaude" data-mode="claude" aria-label="Open Claude" data-i18n-attrs="aria-label">
+      <span class="agent-symbol engine-mark" data-engine="claude" aria-hidden="true"><img src="../../../assets/brands/claude.svg" alt=""></span>
       <span class="entry-title">Claude Code</span>
-      <span class="entry-description">Continue in a workspace or start a standalone conversation.</span>
-      <span class="entry-action">Open Claude <span aria-hidden="true">↗</span></span>
+      <span class="entry-description" data-i18n>Continue in a workspace or start a standalone conversation.</span>
+      <span class="entry-action" data-i18n>Open Claude <span aria-hidden="true">↗</span></span>
     </button>
-    <button class="agent-entry" id="enterKimi" data-mode="kimi" aria-label="Open Kimi">
-      <span class="agent-symbol kimi-symbol" aria-hidden="true">K</span>
+    <button class="agent-entry" id="enterCodex" data-mode="codex" aria-label="Open Codex" data-i18n-attrs="aria-label">
+      <span class="agent-symbol engine-mark" data-engine="codex" aria-hidden="true"><img src="../../../assets/brands/codex.png" alt=""></span>
+      <span class="entry-title">Codex CLI</span>
+      <span class="entry-description" data-i18n>Work with Codex using your ChatGPT plan or shared API routes.</span>
+      <span class="entry-action" data-i18n>Open Codex <span aria-hidden="true">↗</span></span>
+    </button>
+    <button class="agent-entry" id="enterDsh" data-mode="dsh" aria-label="Open DSH" data-i18n-attrs="aria-label">
+      <span class="agent-symbol engine-mark" data-engine="dsh" aria-hidden="true"><img src="../../../assets/brands/deepseek.svg" alt=""></span>
+      <span class="entry-title">DeepSeek Harness</span>
+      <span class="entry-description" data-i18n>Work on conversations, projects, and goals in your workspace.</span>
+      <span class="entry-action" data-i18n>Open DSH <span aria-hidden="true">↗</span></span>
+    </button>
+    <button class="agent-entry" id="enterKimi" data-mode="kimi" aria-label="Open Kimi" data-i18n-attrs="aria-label">
+      <span class="agent-symbol engine-mark" data-engine="kimi" aria-hidden="true"><img src="../../../assets/brands/kimi.svg" alt=""></span>
       <span class="entry-title">Kimi Code</span>
-      <span class="entry-description">Use the open-source Kimi engine with Camellia's shared API routes.</span>
-      <span class="entry-action">Open Kimi <span aria-hidden="true">↗</span></span>
+      <span class="entry-description" data-i18n>Use the open-source Kimi engine with Camellia's shared API routes.</span>
+      <span class="entry-action" data-i18n>Open Kimi <span aria-hidden="true">↗</span></span>
     </button>
-    <button class="config-entry" id="openConfig" aria-label="Settings">
+    <button class="agent-entry" id="enterAntigravity" data-mode="antigravity" aria-label="Open Antigravity" data-i18n-attrs="aria-label">
+      <span class="agent-symbol engine-mark" data-engine="antigravity" aria-hidden="true"><img src="../../../assets/brands/antigravity.svg" alt=""></span>
+      <span class="entry-title">Antigravity</span>
+      <span class="entry-description" data-i18n>Use your Google subscription or shared API routes with Google's agent engine.</span>
+      <span class="entry-action" data-i18n>Open Antigravity <span aria-hidden="true">↗</span></span>
+    </button>
+    <button class="config-entry benchmark-entry" id="openBenchmark" aria-label="Benchmark" data-i18n-attrs="aria-label">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 20V10m5 10V4m6 16v-7m5 7V7"/></svg>
+      <span><span class="config-title" data-i18n>Benchmark</span><span class="entry-description" data-i18n>Compare one model across all five engines</span></span>
+      <span class="config-arrow" aria-hidden="true">→</span>
+    </button>
+    <button class="config-entry" id="openConfig" aria-label="Settings" data-i18n-attrs="aria-label">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 7h7m6 0h3M4 17h3m6 0h7"/><circle cx="14" cy="7" r="3"/><circle cx="10" cy="17" r="3"/></svg>
-      <span><span class="config-title">Settings</span><span class="entry-description">Providers, keys, usage, and balances</span></span>
+      <span><span class="config-title" data-i18n>Settings</span><span class="entry-description" data-i18n>Providers, keys, usage, and balances</span></span>
       <span class="config-arrow" aria-hidden="true">→</span>
     </button>
   </nav>
-  <p id="homeStatus" role="status" aria-live="polite"></p>
+  <p id="homeStatus" role="status" aria-live="polite" data-i18n></p>
 </main>
+<script src="../../shared/i18n-messages.js"></script>
+<script src="../../shared/i18n.js"></script>
+<script src="../shared/i18n.js"></script>
 <script src="./home.js"></script>
 </body>
 </html>

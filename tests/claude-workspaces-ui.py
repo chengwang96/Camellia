@@ -225,7 +225,8 @@ try:
         expect(section.locator('.ws-count')).to_have_text('75')
         page.reload()
         expect(section.locator('[data-history]')).to_have_count(0)
-        page.locator('#resumeLastBtn').click()
+        section.locator('.ws-row').click()
+        section.locator('[data-sid="paged-0"]').click()
         expect(page.locator('#workspaceLabel')).to_have_text('分页工作区')
         expect(page.locator('#chat')).to_contain_text('分页会话 0')
 

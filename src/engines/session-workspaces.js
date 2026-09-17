@@ -16,11 +16,9 @@ async function listSessions({ limits = {}, activeSessionId = null } = {}) {
   const counts = new Map();
   const seen = new Set();
   let active;
-  let latestSessionId = null;
   for (const entry of entries) {
     if (seen.has(entry.id) || meta.archived[entry.id]) continue;
     seen.add(entry.id);
-    latestSessionId ||= entry.id;
     const workspaceId = meta.sessionWorkspace[entry.id];
     const ws = workspaceById.get(workspaceId);
     if (ws) counts.set(ws.id, (counts.get(ws.id) || 0) + 1);
@@ -53,7 +51,7 @@ async function listSessions({ limits = {}, activeSessionId = null } = {}) {
     };
   }));
   return {
-    sessions, pagination, latestSessionId,
+    sessions, pagination,
     workspaces: meta.workspaces.map(w => ({ ...w, collapsed: Boolean(meta.collapsed[w.id]), sessionCount: counts.get(w.id) || 0 })),
   };
 }
@@ -147,7 +145,7 @@ function metaOp(payload) {
   if (op === 'assign-session' && payload.workspaceId && !meta.workspaces.some((w) => w.id === payload.workspaceId)) return { ok: false, error: "Workspace no longer exists" };
   const session = getSession();
   const busy = session && session.running;
-  if (fixedCwd && op === 'assign-session' && (meta.sessionWorkspace[payload.sessionId] || null) !== (payload.workspaceId || null)) return { ok: false, error: "Existing Kimi sessions cannot change directories. Start a new session in the target workspace." };
+  if (fixedCwd && op === 'assign-session' && (meta.sessionWorkspace[payload.sessionId] || null) !== (payload.workspaceId || null)) return { ok: false, error: "Existing sessions cannot change directories. Start a new session in the target workspace." };
   if (busy && ((op === 'assign-session' && payload.sessionId === session.sessionId)
       || (op === 'delete-workspace' && payload.id === session.opts.workspaceId))) return { ok: false, error: "Stop the current response before changing workspaces" };
   switch (op) {

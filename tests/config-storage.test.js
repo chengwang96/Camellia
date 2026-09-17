@@ -18,6 +18,23 @@ test('atomic configuration replacement leaves original data and no temporary fil
   assert.equal(fs.readdirSync(h.root).some(name => name.endsWith('.tmp')), false);
 });
 
+test('a transient rename lock is retried and the replacement still succeeds', t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  const file = path.join(h.root, 'config.json');
+  writeJson(file, { keep: 'original' });
+  const real = fs.renameSync;
+  let calls = 0;
+  const rename = t.mock.method(fs, 'renameSync', (...args) => {
+    if (++calls <= 2) throw Object.assign(new Error('locked by scanner'), { code: 'EPERM' });
+    return real(...args);
+  });
+  writeJson(file, { keep: 'replacement' });
+  rename.mock.restore();
+  assert.equal(calls, 3);
+  assert.deepEqual(readJson(file), { keep: 'replacement' });
+  assert.equal(fs.readdirSync(h.root).some(name => name.endsWith('.tmp')), false);
+});
+
 test('BOM is accepted and malformed configuration is never silently overwritten or exposed', t => {
   const h = createHarness(); t.after(() => h.cleanup());
   const dir = h.folder('app'), file = path.join(dir, 'desktop-config.json');

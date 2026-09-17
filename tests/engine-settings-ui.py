@@ -44,7 +44,7 @@ try:
         for scheme in ['light','dark']:
             page.emulate_media(color_scheme=scheme)
             page.screenshot(path=str(repo/f'dist/engine-settings-qa/kimi-{scheme}.png'),full_page=True)
-        page.locator('[data-view=runtimes]').click(); expect(page.locator('.runtime-card')).to_have_count(3)
+        page.locator('[data-view=runtimes]').click(); expect(page.locator('.runtime-card')).to_have_count(5)
         expect(page.locator('#runtimeCards')).to_contain_text('Ready')
         page.locator('[data-view=engines]').click()
         page.locator('[data-engine=dsh]').click()
@@ -54,10 +54,31 @@ try:
         native.on('pageerror',lambda error:errors.append(str(error)))
         native.goto(native_url); native.wait_for_load_state('domcontentloaded')  # DSH keeps its event connection open; wait for the panel below.
         expect(native.locator('.workbench-native-settings')).to_be_visible(timeout=60000)
+        assert native.locator('.workbench-native-settings').evaluate('el => el.parentElement === document.body')
+        native.set_viewport_size({'width':560,'height':480})
+        expect(native.locator('.workbench-native-nav')).to_be_visible()
+        # Native sidebar animations must not clip or hide the embedded surface.
+        native.locator('body').evaluate("el => {for (const child of el.children) if (!child.classList.contains('workbench-native-settings') && child.tagName !== 'STYLE') {child.style.opacity='0';child.style.overflow='hidden';child.style.transform='translateX(-100%)';}}")
+        expect(native.locator('.workbench-native-settings')).to_be_visible()
+        assert native.locator('.workbench-native-settings').evaluate('el => document.elementFromPoint(50,50)?.closest(".workbench-native-settings") === el')
         nav=native.locator('.workbench-native-nav')
         print('DSH native sections:',nav.inner_text())
         expect(nav).to_contain_text('Providers & Keys')
         native.screenshot(path=str(repo/'dist/engine-settings-qa/dsh-native.png'),full_page=True)
+        # The desktop composition uses Camellia's language without changing the
+        # standalone DSH preference or exposing a second language selector.
+        rpc('workbenchSaveSettings', {'language':'zh-CN','theme':'system','autoRefreshBalances':False})
+        native.expose_function('testPreferences', lambda: rpc('workbenchSettings'))
+        native.add_init_script("""window.nativeLanguageListeners=[];
+          window.dshDesktop={settingsEmbedded:true,nativeSettingsReady:()=>{},openSettingsWindow:()=>{},
+            workbenchSettings:()=>window.testPreferences(),
+            onLanguageChanged:fn=>{nativeLanguageListeners.push(fn);return()=>{};}};""")
+        native.reload(wait_until='domcontentloaded')
+        expect(native.locator('.workbench-native-nav')).to_contain_text('通用设置', timeout=60000)
+        expect(native.locator('.workbench-native-nav')).to_contain_text('供应商与 Key')
+        native.evaluate("nativeLanguageListeners.forEach(fn=>fn('en'))")
+        expect(native.locator('.workbench-native-nav')).to_contain_text('General')
+        expect(native.locator('.workbench-native-content').get_by_text('Language',exact=True)).to_have_count(0)
         native.close()
         assert errors==[],errors
         browser.close()

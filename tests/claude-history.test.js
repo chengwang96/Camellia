@@ -57,3 +57,21 @@ test('newest duplicate transcript wins and invalid IDs cannot escape the history
     assert.equal(h.call('claude-rename-session', { id, title: 'bad' }).ok, false);
   }
 });
+
+test('history ignores vanished files but surfaces filesystem errors', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  const file = h.seedSession('unreadable', h.folder('project'));
+  const error = Object.assign(new Error('Access denied to transcript'), { code: 'EACCES' });
+  const fileSystem = Object.create(fs);
+  fileSystem.statSync = () => { throw error; };
+  Object.defineProperty(fileSystem, 'promises', { value: {
+    ...fs.promises, stat: async () => { throw error; },
+  } });
+  const history = new ClaudeHistory(path.join(h.home, '.claude', 'projects'), fileSystem);
+  await assert.rejects(history.list(), { code: 'EACCES' });
+  assert.throws(() => history.find('unreadable'), { code: 'EACCES' });
+  error.code = 'ENOENT';
+  assert.deepEqual(await history.list(), []);
+  assert.equal(history.find('unreadable'), null);
+  assert.equal(fs.existsSync(file), true, 'The test only simulates a concurrent deletion');
+});

@@ -61,30 +61,152 @@ try:
         browser = p.chromium.launch(headless=True)
         errors = []
 
-        def new_page(width=1320, height=900, scheme='light'):
+        def new_page(width=1320, height=900, scheme='light', fresh=False):
             page = browser.new_page(viewport={'width': width, 'height': height}, color_scheme=scheme)
             page.on('pageerror', lambda e: errors.append(str(e)))
-            page.expose_function('testRpc', rpc)
+            def page_rpc(method, payload=None):
+                if fresh and method == 'runtimeState':
+                    return {'result': {'ok': True, 'engines': [
+                        {'id': engine, 'name': name, 'status': 'missing'} for engine, name in
+                        [('claude', 'Claude Code'), ('codex', 'Codex CLI'), ('dsh', 'DeepSeek Harness'), ('kimi', 'Kimi Code'), ('antigravity', 'Antigravity')]
+                    ]}}
+                return rpc(method, payload)
+            page.expose_function('testRpc', page_rpc)
             page.add_init_script(bridge)
             return page
 
         for scheme in ['light', 'dark']:
-            landing = new_page(scheme=scheme)
+            landing = new_page(scheme=scheme, fresh=True)
             landing.goto((repo / 'src/renderer/home/home.html').as_uri())
-            expect(landing.get_by_role('button', name='Open DSH', exact=True)).to_be_visible()
-            expect(landing.get_by_role('button', name='Open Claude', exact=True)).to_be_visible()
-            expect(landing.get_by_role('button', name='Open Kimi', exact=True)).to_be_visible()
+            expect(landing.get_by_role('button', name='Download & open DSH', exact=True)).to_be_visible()
+            expect(landing.get_by_role('button', name='Download & open Claude', exact=True)).to_be_visible()
+            expect(landing.get_by_role('button', name='Download & open Codex', exact=True)).to_be_visible()
+            expect(landing.get_by_role('button', name='Download & open Kimi', exact=True)).to_be_visible()
+            expect(landing.get_by_role('button', name='Download & open Antigravity', exact=True)).to_be_visible()
             expect(landing.get_by_role('button', name='Settings', exact=True)).to_be_visible()
             landing.screenshot(animations='disabled', path=str(screenshots / f'home-{scheme}.png'))
             landing.keyboard.press('Tab')
-            expect(landing.locator('#enterDsh')).to_be_focused()
-            landing.keyboard.press('Tab')
             expect(landing.locator('#enterClaude')).to_be_focused()
+            landing.keyboard.press('Tab')
+            expect(landing.locator('#enterCodex')).to_be_focused()
             landing.set_viewport_size({'width': 520, 'height': 820})
             no_overflow(landing)
             landing.close()
 
+            downloads = new_page(1040, scheme=scheme, fresh=True)
+            downloads.goto((repo / 'src/renderer/settings/api-settings.html').as_uri() + '?page=runtimes')
+            expect(downloads.locator('#runtimeCards [data-install]:not(:disabled)')).to_have_count(5)
+            expect(downloads.get_by_role('button', name='Download', exact=True)).to_have_count(5)
+            expect(downloads.locator('#downloadMode')).to_have_value('direct')
+            expect(downloads.locator('#downloadProxyUrl')).to_have_value('')
+            downloads.locator('#downloadMode').select_option('proxy')
+            downloads.locator('#downloadProxyUrl').fill('socks5://proxy.example:1080')
+            downloads.locator('#saveDownload').click()
+            expect(downloads.locator('#status')).to_contain_text('HTTP or HTTPS')
+            assert rpc('downloadSettings')['result']['url'] == ''
+            downloads.locator('#downloadProxyUrl').fill('http://proxy.example:8080')
+            downloads.locator('#saveDownload').click()
+            expect(downloads.locator('#status')).to_have_text('Download connection saved')
+            downloads.reload()
+            expect(downloads.locator('#downloadMode')).to_have_value('proxy')
+            expect(downloads.locator('#downloadProxyUrl')).to_have_value('http://proxy.example:8080/')
+            downloads.screenshot(animations='disabled', path=str(screenshots / f'optional-downloads-{scheme}.png'))
+            no_overflow(downloads)
+            downloads.set_viewport_size({'width': 760, 'height': 820})
+            no_overflow(downloads)
+            downloads.locator('#downloadMode').select_option('direct')
+            downloads.locator('#downloadProxyUrl').fill('')
+            downloads.locator('#saveDownload').click()
+            expect(downloads.locator('#status')).to_have_text('Download connection saved')
+            downloads.close()
+
         rpc('configureTestApi')
+        codex = new_page()
+        codex.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex')
+        codex.wait_for_load_state('networkidle')
+        expect(codex.locator('#input')).to_have_attribute('placeholder', 'Message Codex CLI')
+        expect(codex.locator('#connectionInfo')).to_contain_text('API key / third-party API')
+        expect(codex.locator('#workspaceLabel')).to_have_text('No workspace')
+        codex.screenshot(animations='disabled', path=str(screenshots / 'codex-chat.png'))
+        no_overflow(codex)
+        codex.close()
+        codex_settings = new_page(1040)
+        codex_settings.goto((repo / 'src/renderer/settings/api-settings.html').as_uri() + '?page=engines&engine=codex')
+        codex_settings.wait_for_load_state('networkidle')
+        expect(codex_settings.locator('#codexConnection')).to_have_value('api')
+        expect(codex_settings.locator('#engineScopeTitle')).to_have_text('Codex in Camellia')
+        codex_settings.locator('#codexConnection').select_option('subscription')
+        expect(codex_settings.locator('#codexSignIn')).to_be_disabled()
+        codex_settings.locator('#saveEngine').click()
+        expect(codex_settings.locator('#status')).to_contain_text('Codex settings saved')
+        expect(codex_settings.locator('#codexSignIn')).to_be_enabled()
+        codex_settings.locator('#codexConnection').select_option('api')
+        expect(codex_settings.locator('#saveEngine')).to_be_enabled()
+        codex_settings.locator('#saveEngine').click()
+        expect(codex_settings.locator('#status')).to_contain_text('Codex settings saved')
+        codex_settings.reload()
+        expect(codex_settings.locator('#codexConnection')).to_have_value('api')
+        codex_settings.screenshot(animations='disabled', path=str(screenshots / 'codex-settings.png'))
+        no_overflow(codex_settings)
+        codex_settings.close()
+        agy = new_page()
+        agy.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=antigravity')
+        expect(agy.locator('#input')).to_have_attribute('placeholder', 'Message Antigravity')
+        expect(agy.locator('#workspaceLabel')).to_have_text('No workspace')
+        permission = check_picker(agy, '#selPermission')
+        permission.get_by_role('option', name='Plan only', exact=True).click()
+        expect(agy.locator('#statusLine')).to_contain_text('Permission mode saved')
+        assert rpc('antigravityGetSettings')['result']['permissionMode'] == 'plan'
+        agy.locator('#attachBtn').click()
+        expect(agy.locator('#statusLine')).to_contain_text('Use Claude or Kimi for images')
+        expect(agy.locator('.attchip')).to_have_count(1)
+        expect(agy.locator('.attchip-name')).to_have_text('notes.txt')
+        agy.locator('.attchip-x').click()
+        for scheme in ['light', 'dark']:
+            agy.emulate_media(color_scheme=scheme)
+            agy.screenshot(animations='disabled', path=str(screenshots / f'antigravity-{scheme}.png'))
+            no_overflow(agy)
+        agy.close()
+        agy_settings = new_page(1160, 860)
+        agy_settings.goto((repo / 'src/renderer/settings/api-settings.html').as_uri() + '?page=engines&engine=antigravity')
+        expect(agy_settings.locator('[data-field=instructions]')).to_be_visible()
+        agy_settings.locator('[data-field=instructions]').fill('Use the project conventions.')
+        agy_settings.locator('#saveEngine').click()
+        expect(agy_settings.locator('#status')).to_contain_text('Antigravity settings saved')
+        agy_settings.screenshot(animations='disabled', path=str(screenshots / 'antigravity-settings.png'))
+        agy_settings.reload()
+        expect(agy_settings.locator('[data-field=instructions]')).to_have_value('Use the project conventions.')
+        agy_settings.locator('#antigravityConnection').select_option('subscription')
+        expect(agy_settings.locator('#googleAccountPanel')).to_be_visible()
+        expect(agy_settings.locator('#googleSignIn')).to_be_disabled()
+        agy_settings.locator('#googleProxyUrl').fill('http://proxy.example:8080')
+        agy_settings.locator('#saveEngine').click()
+        expect(agy_settings.locator('#googleSignIn')).to_be_enabled()
+        expect(agy_settings.locator('[data-field=agentMode]')).to_be_visible()
+        expect(agy_settings.locator('#engineScopeTitle')).to_contain_text('also apply to the CLI')
+        assert rpc('antigravityGetSettings')['result']['model'] == ''
+        assert rpc('antigravityGetSettings')['result']['proxyUrl'] == 'http://proxy.example:8080/'
+        rpc('seedGoogleAccount')
+        agy_settings.reload()
+        expect(agy_settings.locator('#googleAccountStatus')).to_contain_text('2 models available')
+        expect(agy_settings.locator('[data-field=useG1Credits]')).not_to_be_checked()
+        for scheme in ['light', 'dark']:
+            agy_settings.emulate_media(color_scheme=scheme)
+            agy_settings.locator('.scroll-content').evaluate('el => el.scrollTop = 0')
+            agy_settings.screenshot(animations='disabled', path=str(screenshots / f'antigravity-google-{scheme}.png'))
+            no_overflow(agy_settings)
+        google_chat = new_page()
+        google_chat.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=antigravity')
+        expect(google_chat.locator('#connectionInfo')).to_have_text('Google subscription · Manage account')
+        expect(google_chat.locator('#modelPillName')).to_have_text('Gemini Fixture (High)')
+        google_chat.locator('#modelPill').click()
+        google_chat.locator('.pop-row').filter(has_text='Model').first.click()
+        expect(google_chat.locator('.pop-opt').filter(has_text='Gemini Fixture (Low)')).to_have_count(1)
+        expect(google_chat.locator('.pop-opt').filter(has_text='test-model')).to_have_count(0)
+        google_chat.keyboard.press('Escape')
+        google_chat.close()
+        no_overflow(agy_settings)
+        agy_settings.close()
         page = new_page()
         page.goto((repo / 'src/renderer/chat/claude.html').as_uri())
         page.wait_for_load_state('networkidle')
@@ -106,6 +228,28 @@ try:
         page.locator('#selPermission').click()
         page.keyboard.press('Escape')
         expect(page.locator('#selPermission')).to_be_focused()
+
+        # A rejected disk write must not show a model, effort or permission
+        # selection as saved. Exercise the real IPC handler with an unreadable
+        # config in the driver's isolated profile, then restore that profile.
+        config_file = Path(rpc('fixtures')['result']['userData']) / 'desktop-config.json'
+        saved_config = config_file.read_bytes()
+        model_before = page.locator('#modelPillName').inner_text()
+        level_before = page.locator('#modelPillLevel').inner_text()
+        config_file.write_text('{invalid json', encoding='utf-8')
+        try:
+            page.locator('#selPermission').select_option('bypassPermissions')
+            expect(page.locator('#selPermission')).to_have_value('default')
+            expect(page.locator('#statusLine')).to_contain_text('Could not save settings:')
+            page.evaluate("persistModel('')")
+            expect(page.locator('#modelPillName')).to_have_text(model_before)
+            page.evaluate("persistLevel('high')")
+            expect(page.locator('#modelPillLevel')).to_have_text(level_before)
+            expect(page.locator('#statusLine')).to_contain_text('Invalid JSON')
+            assert config_file.read_text(encoding='utf-8') == '{invalid json'
+        finally:
+            config_file.write_bytes(saved_config)
+
         page.locator('#newSessionBtn').click()
         page.screenshot(animations='disabled', path=str(screenshots / 'claude-home.png'))
         page.locator('#modelPill').click()
@@ -118,12 +262,11 @@ try:
         page.screenshot(animations='disabled', path=str(screenshots / 'claude-usage-menu.png'))
         page.locator('#input').click()
         page.locator('#goalPillBtn').click()
-        rounds = check_picker(page, '#goalRounds')
-        rounds.get_by_role('option', name='50 turns', exact=True).click()
-        page.locator('#goalInput').fill('验证选择的目标轮数')
+        expect(page.locator('#goalRounds')).to_have_count(0)
+        page.locator('#goalInput').fill('持续完成目标并验证结果')
         page.locator('#goalStartBtn').click()
-        expect(page.locator('#goalMeta')).to_contain_text('50')
-        assert rpc('claudeGoalGet')['result']['goal']['maxRounds'] == 50
+        expect(page.locator('#goalPhase')).to_contain_text('Goal in progress')
+        assert 'maxRounds' not in rpc('claudeGoalGet')['result']['goal']
         page.locator('#goalPauseBtn').click()
         page.locator('#goalClearBtn').click()
 
@@ -183,6 +326,22 @@ try:
             api.keyboard.press('Escape')
             no_overflow(api)
             api.set_viewport_size({'width': 1040, 'height': 900})
+
+        api.evaluate("""const currentDay = localDay(new Date()); const before = new Date(); before.setDate(before.getDate()-1);
+          const previousDay = localDay(before), key = live.providers[0].keys[0].id;
+          const stats = {requests:769,inputTokens:20653512,outputTokens:848891,cacheReadTokens:16123942,failures:3};
+          live.usage[key] = {...stats,byModel:{'test-model':stats},daily:{[previousDay]:{'test-model':{requests:1,inputTokens:0}},[currentDay]:{'test-model':stats}}};""")
+        api.locator('[data-view=usage]').click()
+        api.locator('#usageMetric').select_option('tokens')
+        for width in [1040, 2160, 760]:
+            api.set_viewport_size({'width':width,'height':900})
+            expected_chart_width = api.locator('#usageChart').evaluate('el => el.clientWidth')
+            expect(api.locator('#usageChart svg')).to_have_attribute('width', str(expected_chart_width))
+            dimensions = api.locator('#usageChart svg').evaluate("el => ({height:el.getBoundingClientRect().height,labelSize:parseFloat(getComputedStyle(el.querySelector('text')).fontSize) * el.getScreenCTM().a})")
+            assert abs(dimensions['height'] - 248) < 1, dimensions
+            assert 12 <= dimensions['labelSize'] <= 14, dimensions
+            no_overflow(api)
+            api.screenshot(animations='disabled', path=str(screenshots / f'usage-type-scale-{width}.png'))
 
         # Render the same templates used by Electron's data URL windows.
         script = """
