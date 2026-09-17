@@ -95,6 +95,10 @@ test('Codex keeps configuration, auth storage and remembered connections inside 
   assert.equal(engine.settings('nativeThread').connection, 'subscription'); assert.equal(engine.settings('nativeThread').model, 'account-model');
   engine.saveSettings({ sessionId: 'nativeThread', model: 'another-account-model' });
   assert.equal(engine.settings().model, 'api-model'); assert.equal(engine.settings('nativeThread').model, 'another-account-model');
+  engine.saveSettings({ sessionId: 'nativeThread', connection: 'api', model: 'picked-api-model' });
+  assert.equal(engine.settings().connection, 'api'); assert.equal(engine.settings().apiModel, 'picked-api-model');
+  assert.equal(engine.settings().subscriptionModel, 'another-account-model');
+  assert.equal(engine.settings('nativeThread').connection, 'subscription');
   const settings = createEngineSettings({ home: root, codexHome: home, getDesktop: () => engine.settings(), saveDesktop: (_, value) => engine.saveSettings(value) });
   const state = settings.get('codex'); assert.equal(state.scope, 'app'); assert.ok(!state.files[0].text.includes('personal'));
   settings.save('codex', { files: state.files, common: { model_reasoning_effort: 'medium', approval_policy: 'never', sandbox_mode: 'workspace-write' }, desktop: {} });

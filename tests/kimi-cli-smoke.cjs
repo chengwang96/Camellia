@@ -17,6 +17,7 @@ const { frame } = require('../src/api/api-protocol');
 async function run() {
   const runtime = path.resolve(process.argv[2] || path.join(__dirname, '../runtimes/kimi/node_modules/@moonshot-ai/kimi-code/dist/main.mjs'));
   assert.ok(fs.existsSync(runtime), 'Run npm run setup:kimi first');
+  const runtimeVersion = JSON.parse(fs.readFileSync(path.join(path.dirname(runtime), '..', 'package.json'), 'utf8')).version;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-kimi-smoke-'));
   let inputRoot = root;
   if (process.platform === 'win32') {
@@ -155,7 +156,7 @@ async function run() {
     const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
     assert.ok(!config.includes('local-working') && !config.includes('exhausted'));
     assert.match(config, /proxy-managed/);
-    console.log('PASS: real Kimi Code 0.43.1 ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, isolated history and config. Local endpoints only.');
+    console.log(`PASS: real Kimi Code ${runtimeVersion} ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, isolated history and config. Local endpoints only.`);
   } finally {
     await session?.shutdown();
     await router.stop();

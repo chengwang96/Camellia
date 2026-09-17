@@ -13,7 +13,7 @@ jobs:
   build:
     name: ${{ matrix.platform }} / ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -40,7 +40,9 @@ jobs:
             runtimes/*/package-lock.json
       - run: npm ci
       - name: Prepare engines used by integration tests
-        run: npm run setup:runtimes -- claude codex dsh kimi
+        run: npm run setup:runtimes -- claude codex dsh kimi antigravity
+      - name: Prepare the Antigravity subscription CLI
+        run: npm run setup:antigravity:subscription
       - run: npm test
       - name: Electron smoke test
         run: node tests/electron-smoke.cjs
@@ -50,6 +52,26 @@ jobs:
         run: npm run test:kimi
       - name: Codex app-server smoke test
         run: npm run test:codex
+      - name: Antigravity SDK smoke test
+        run: npm run test:antigravity
+      - name: Antigravity subscription CLI smoke test
+        run: npm run test:antigravity:subscription
+      - name: Benchmark harnesses smoke test
+        run: npm run test:benchmark
+      - name: Benchmark DSH limits smoke test
+        run: node tests/benchmark-dsh-limits-smoke.cjs
+      - name: Native tools audit
+        run: npm run test:tools
+      - name: Kimi subscription protocol smoke test
+        run: node tests/kimi-subscription-smoke.cjs
+      - name: Shared conversations smoke test
+        run: node tests/shared-native-smoke.cjs
+      - name: Claude CLI resume smoke test
+        run: node tests/claude-cli-resume.cjs "${{ github.workspace }}/runtimes/claude/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+      - name: API router CLI smoke test
+        run: node tests/api-router-cli-smoke.cjs "${{ github.workspace }}/runtimes/claude/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+      - name: Kimi desktop UI smoke test
+        run: node tests/kimi-desktop-smoke.cjs
       - name: Build desktop artifacts
         run: npm run ${{ matrix.command }} -- --publish never
       - name: Verify lightweight package and download manifests

@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   engineSettingsSave: (payload) => ipcRenderer.invoke('dsh:engine-settings-save', payload),
   runtimeState: () => ipcRenderer.invoke('dsh:runtime-state'),
   runtimeEnsure: (payload) => ipcRenderer.invoke('dsh:runtime-ensure', payload),
+  runtimeCheckUpdates: () => ipcRenderer.invoke('dsh:runtime-check-updates'),
+  runtimeUpdate: (payload) => ipcRenderer.invoke('dsh:runtime-update', payload),
   downloadSettings: () => ipcRenderer.invoke('dsh:download-settings'),
   downloadSaveSettings: (payload) => ipcRenderer.invoke('dsh:download-save-settings', payload),
   onRuntimeState: (callback) => subscribe('dsh:runtime-state', callback),
@@ -59,6 +61,9 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   workbenchSettings: () => ipcRenderer.invoke('dsh:workbench-settings'),
   onLanguageChanged: (callback) => subscribe('dsh:language-changed', callback),
   workbenchSaveSettings: (payload) => ipcRenderer.invoke('dsh:workbench-save-settings', payload),
+  archivedSessionsList: () => ipcRenderer.invoke('dsh:archived-sessions-list'),
+  archivedSessionAction: (payload) => ipcRenderer.invoke('dsh:archived-session-action', payload),
+  onArchivedChanged: (callback) => subscribe('dsh:archived-changed', callback),
   // Claude Code GUI
   claudeSend: (payload) => ipcRenderer.invoke('dsh:claude-send', payload),
   claudeCancel: (runId) => ipcRenderer.invoke('dsh:claude-cancel', runId),

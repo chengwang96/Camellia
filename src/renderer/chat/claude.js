@@ -59,6 +59,7 @@ const context = { sessionId: null, workspaceId: null };
   const accountSubscription = () => ['codex', 'kimi', 'antigravity'].includes(harnessId) && currentConnection === 'subscription';
   const accountName = { codex: 'ChatGPT', kimi: 'Kimi', antigravity: 'Google' }[harnessId];
   let accountModels = [];
+  let routeModels = [];
   const googleSubscription = () => harnessId === 'antigravity' && currentConnection === 'subscription';
   let uiReady = false, sending = false, settingsLoadSeq = 0;
   const uiPrefix = 'camellia-chat-';
@@ -226,8 +227,16 @@ const context = { sessionId: null, workspaceId: null };
     }
   }
   function persistModel(model) {
-    return persistSettings({ model, ...(harnessId !== 'claude' ? { thinkingBudget: '' } : {}) },
-      "Model changed: " + modelLabel(model) + " (applies to the next message)");
+    // Picking across groups in a subscription composer selects the other
+    // connection for this conversation (or globally on a fresh start page).
+    let connection;
+    if (accountSubscription() && model && (sharedChat || !context.sessionId)) {
+      if (routeModels.includes(model)) connection = 'api';
+      else if (accountModels.some(m => m.id === model)) connection = 'subscription';
+    }
+    return persistSettings({ model, ...(connection ? { connection } : {}), ...(harnessId !== 'claude' ? { thinkingBudget: '' } : {}) },
+      "Model changed: " + modelLabel(model) + " (applies to the next message)")
+      .then(() => { if (connection) void loadSettings(); });
   }
   function persistLevel(level) {
     return persistSettings({ thinkingBudget: level }, "Reasoning level changed: " + levelLabel(level) + " (applies to the next message)");
@@ -240,7 +249,7 @@ const context = { sessionId: null, workspaceId: null };
     return '<svg class="pop-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
   }
 
-  function openSubMenu(rowEl, title, options, currentId, onPick) {
+  function openSubMenu(rowEl, sections, currentId, onPick) {
     // Remove existing sibling submenus first (keep the root menu).
     const root = openPops[0];
     for (const p of openPops.slice(1)) p.remove();
@@ -249,20 +258,22 @@ const context = { sessionId: null, workspaceId: null };
     const sub = document.createElement('div');
     sub.className = 'dsh-pop';
     sub.style.minWidth = '220px';
-    if (title) {
-      const g = document.createElement('div');
-      g.className = 'pop-group'; g.dataset.i18n = '';
-      g.textContent = title;
-      sub.appendChild(g);
-    }
-    for (const o of options) {
-      const el = document.createElement('div');
-      el.className = 'pop-opt' + (o.id === currentId ? ' current' : '');
-      el.innerHTML = '<span></span>' + checkMark();
-      el.querySelector('span').textContent = o.label;
-      if (options === LEVELS || !o.id) el.querySelector('span').dataset.i18n = '';
-      el.addEventListener('click', () => { void onPick(o.id); closePops(); });
-      sub.appendChild(el);
+    for (const section of sections) {
+      if (section.title) {
+        const g = document.createElement('div');
+        g.className = 'pop-group'; g.dataset.i18n = '';
+        g.textContent = section.title;
+        sub.appendChild(g);
+      }
+      for (const o of section.options) {
+        const el = document.createElement('div');
+        el.className = 'pop-opt' + (o.id === currentId ? ' current' : '');
+        el.innerHTML = '<span></span>' + checkMark();
+        el.querySelector('span').textContent = o.label;
+        if (section.options === LEVELS || !o.id) el.querySelector('span').dataset.i18n = '';
+        el.addEventListener('click', () => { void onPick(o.id); closePops(); });
+        sub.appendChild(el);
+      }
     }
     document.body.appendChild(sub);
     sub.style.visibility = 'hidden';
@@ -271,6 +282,16 @@ const context = { sessionId: null, workspaceId: null };
     clampPopPosition(sub, rowRect.top - 6, null);
     sub.style.visibility = '';
     openPops.push(sub);
+  }
+
+  function modelSections() {
+    // A signed-in account lists its models first; shared API routes stay
+    // selectable as a second group when switching applies cleanly (shared
+    // conversations or a fresh start page).
+    if (!accountSubscription()) return [{ title: 'Model · Same-model failover', options: MODELS }];
+    const sections = [{ title: 'Model · ' + accountName + ' account', options: MODELS }];
+    if (routeModels.length && (sharedChat || !context.sessionId)) sections.push({ title: 'Model · Shared API routes', options: routeModels.map(id => ({ id, label: id })) });
+    return sections;
   }
 
   function openModelMenu() {
@@ -283,7 +304,7 @@ const context = { sessionId: null, workspaceId: null };
       rowModel.innerHTML = "<span data-i18n>Model</span><span class=\"pop-row-value\"></span>" + chevRight();
       rowModel.querySelector('.pop-row-value').textContent = modelLabel(currentModel);
       rowModel.addEventListener('click', () => {
-        openSubMenu(rowModel, accountSubscription() ? 'Model · ' + accountName + ' account' : 'Model · Same-model failover', MODELS, currentModel, persistModel);
+        openSubMenu(rowModel, modelSections(), currentModel, persistModel);
       });
       const rowLevel = document.createElement('div');
       rowLevel.className = 'pop-row';
@@ -291,7 +312,7 @@ const context = { sessionId: null, workspaceId: null };
       rowLevel.querySelector('.pop-row-value').dataset.i18n = '';
       rowLevel.querySelector('.pop-row-value').textContent = levelLabel(currentLevel);
       rowLevel.addEventListener('click', () => {
-        openSubMenu(rowLevel, '', LEVELS, currentLevel, persistLevel);
+        openSubMenu(rowLevel, [{ title: '', options: LEVELS }], currentLevel, persistLevel);
       });
       pop.appendChild(rowModel);
       if (LEVELS.length > 1) pop.appendChild(rowLevel);
@@ -1143,6 +1164,7 @@ const context = { sessionId: null, workspaceId: null };
     attachments = [];
     renderAttachments();
     autoResize();
+    chat.querySelector('.switch-hint')?.remove();
     const userMessage = addUser(text || "[Attachments]", atts, { at: Date.now() });
     if (!context.sessionId && !$('headerTitle').dataset.titled && text) {
       $('headerTitle').textContent = text.length > 24 ? text.slice(0, 24) + '…' : text;
@@ -1175,6 +1197,7 @@ const context = { sessionId: null, workspaceId: null };
       chip.textContent = "Failed to start: " + res.error;
       chat.appendChild(chip);
       setStatus("Failed to start");
+      updateSwitchHint();
       setRunning(false);
       acceptSessionEvents = false;
       restoringRun = false; eventsDuringRestore.length = 0;
@@ -1225,7 +1248,9 @@ const context = { sessionId: null, workspaceId: null };
     context.sessionId = null;
     loadedEngine = harnessId;
     $('conversationOrigin').hidden = true;
+    updateSwitchHint();
     context.workspaceId = workspaceId;
+    writeUi('location', { sessionId: null, workspaceId });
     pendingForkId = null;
     turnEl = null;
     blocks = {};
@@ -1271,6 +1296,24 @@ const context = { sessionId: null, workspaceId: null };
     const state = pendingQuestion;
     for (const control of state.card.querySelectorAll('input, textarea, button')) control.disabled = true;
     state.status.textContent = text; state.status.classList.remove('error'); state.status.setAttribute('role', 'status');
+    // Collapse the answered form: a compact answer summary stays visible while
+    // the full option lists fold behind a toggle.
+    const answers = document.createElement('div'); answers.className = 'question-answers';
+    for (const { question: q, choices, custom } of state.fields) {
+      const picked = choices.filter(c => c.checked).map(c => c.value);
+      const value = custom.value ? q.isSecret ? '••••••' : custom.value : picked.join(' · ');
+      const line = document.createElement('div');
+      const name = document.createElement('strong'); name.textContent = q.question;
+      const answer = document.createElement('span'); answer.textContent = value || '—';
+      line.append(name, answer); answers.append(line);
+    }
+    const review = document.createElement('details'); review.className = 'question-review';
+    const toggle = document.createElement('summary'); toggle.dataset.i18n = ''; toggle.textContent = 'Review options';
+    review.append(toggle);
+    for (const field of state.card.querySelectorAll('fieldset')) review.append(field);
+    state.card.insertBefore(answers, state.status);
+    state.card.insertBefore(review, state.status);
+    state.card.classList.add('done');
     questionDrafts.delete(state.key); pendingQuestion = null;
   }
   function showQuestion(ev) {
@@ -1541,13 +1584,16 @@ const context = { sessionId: null, workspaceId: null };
         await goalUI.refresh();
       }
       return true;
-    } catch (err) { setStatus("Could not load: " + err.message); return false; }
+    } catch (err) { if (!/archived/i.test(err.message)) setStatus("Could not load: " + err.message); return false; }
     finally {
       if (seq === sessionOpenSeq) { loadingSession = false; input.disabled = false; restoringRun = false; updateSendEnabled(); updateConversationControls(); sidebar.updateLabel(); saveDraft(); }
     }
   }
 
   function renderHistoryMessages(messages) {
+      // Label every reply once a conversation's history spans harnesses.
+      const replyEngines = new Set(messages.filter(m => m.role === 'assistant' && m.engine).map(m => m.engine));
+      const mixed = replyEngines.size > 1 || (replyEngines.size === 1 && !replyEngines.has(harnessId));
       for (const m of messages) {
         if (m.role === 'notice') {
           if (!conversationPrefs.showOrigin) continue;
@@ -1559,11 +1605,25 @@ const context = { sessionId: null, workspaceId: null };
         else {
           const div = document.createElement('div');
           div.className = 'turn';
-          div.innerHTML = '<div class="turn-meta">' + chatAvatar + '<span>' + esc(conversationPrefs.showOrigin && m.engine ? m.engine : 'Assistant') + '</span></div><div class="turn-body"><div class="md"></div></div>';
+          const label = m.engine && (mixed || conversationPrefs.showOrigin) ? ENGINE_SHORT_NAMES[m.engine] || m.engine : 'Assistant';
+          div.innerHTML = '<div class="turn-meta">' + (m.engine && m.engine !== harnessId ? engineAvatar(m.engine) : chatAvatar) + '<span>' + esc(label) + '</span></div><div class="turn-body"><div class="md"></div></div>';
           div.querySelector('.md').innerHTML = mdRender(m.text);
           chat.appendChild(div);
         }
       }
+      updateSwitchHint();
+  }
+
+  function updateSwitchHint() {
+    chat.querySelector('.switch-hint')?.remove();
+    if (!sharedChat || !context.sessionId || !loadedEngine || loadedEngine === harnessId) return;
+    const hint = document.createElement('div');
+    hint.className = 'switch-hint';
+    const mode = conversationPrefs.mode === 'markdown' ? 'Automatic Markdown handoff' : 'Continue directly';
+    const t = window.CamelliaI18n.t;
+    hint.textContent = t('Last reply from {0} · Continuing with {1}: {2}').replace('{0}', ENGINE_SHORT_NAMES[loadedEngine] || loadedEngine)
+      .replace('{1}', chatProfile.name).replace('{2}', t(mode));
+    chat.appendChild(hint);
   }
 
   function applyLiveRun(live) {
@@ -1602,6 +1662,7 @@ const context = { sessionId: null, workspaceId: null };
   $('settingsBtn').addEventListener('click', () => { closePops(); void window.dshDesktop.openSettingsWindow({ page: 'engines', engine: harnessId }); });
   $('connectionInfo').onclick = () => void window.dshDesktop.openSettingsWindow({ page: 'engines', engine: harnessId });
   function applyRouterModels(state) {
+    if (Array.isArray(state?.models)) routeModels = state.enabled ? state.models : [];
     if (accountSubscription()) return;
     if (!Array.isArray(state?.models)) return;
     const models = state.enabled ? state.models : [];
@@ -1658,8 +1719,13 @@ const context = { sessionId: null, workspaceId: null };
       const selected = await chatApi.getSettings({ sessionId });
       if (selected.ok === false) throw new Error(selected.error);
       const subscription = ['codex', 'kimi', 'antigravity'].includes(harnessId) && selected.connection === 'subscription';
-      const state = subscription ? await window.dshDesktop[harnessId + 'AccountState']() : await window.dshDesktop.apiRouterGetState();
+      // Subscription composers also offer the shared API routes as a group.
+      const [state, routerState] = await Promise.all([
+        subscription ? window.dshDesktop[harnessId + 'AccountState']() : window.dshDesktop.apiRouterGetState(),
+        subscription ? window.dshDesktop.apiRouterGetState() : Promise.resolve(null),
+      ]);
       if (seq !== settingsLoadSeq || sessionId !== context.sessionId) return;
+      if (subscription) routeModels = routerState?.enabled && Array.isArray(routerState.models) ? routerState.models : [];
       applySessionSettings(selected);
       if (subscription) {
         const account = state;
@@ -1676,6 +1742,10 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   window.dshDesktop.onEngineSettingsChanged(({ engine }) => { if (engine === harnessId) void loadSettings(); });
+  window.dshDesktop.onArchivedChanged?.(({ id, action }) => {
+    if (action === 'delete' && context.sessionId === id) void newSession(null);
+    else void sidebar.load();
+  });
 
   sidebar.render();
   void goalUI.refresh();

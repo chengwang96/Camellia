@@ -166,6 +166,9 @@ dialog > .primary { margin-top: 20px; }
   .grid { grid-template-columns: 1fr; }
   .usage-summary { grid-template-columns: repeat(2, 1fr); }
 }
+.archived-row h2 { overflow-wrap: anywhere; }
+.setting-row > div.archived-actions { flex: 0 0 auto; display: flex; gap: 8px; }
+.archived-actions button { font-size: 12px; min-height: 30px; padding: 4px 12px; }
 @media (max-width: 700px) {
   .settings-nav { flex-basis: 62px; padding: 22px 6px; }
   .settings-brand { padding: 0 6px 20px; }

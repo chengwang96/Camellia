@@ -361,6 +361,45 @@ test('Kimi account selections stay in their conversation when the new-session de
   assert.equal(f.manager.settings('kimi', second.sessionId).model, 'api-model');
 });
 
+test('picking an API route model in a subscription conversation switches connection on a fresh native session', async t => {
+  const { kimiConnectionSettings, updateKimiConnectionSettings } = require('../src/engines/kimi-session');
+  const f = fixture(t), config = { kimi: { connection: 'subscription', subscriptionModel: 'kimi-code/first', apiModel: 'api-model' }, kimiSessionConnections: {} };
+  const ensure = f.drivers.kimi.ensure;
+  f.drivers.kimi.settings = id => kimiConnectionSettings(config, id);
+  f.drivers.kimi.saveSettings = patch => { config.kimi = updateKimiConnectionSettings(config, patch); return kimiConnectionSettings(config, patch.sessionId); };
+  f.drivers.kimi.ensure = opts => {
+    const session = ensure(opts); config.kimiSessionConnections[session.sessionId] = opts.settings.connection; return session;
+  };
+  const first = await f.manager.send('kimi', { prompt: 'Account turn' }); f.finish('kimi');
+  const nativeBefore = f.manager.get(first.sessionId).segments.kimi.nativeId;
+  f.manager.saveSettings('kimi', { sessionId: first.sessionId, connection: 'api', model: 'kimi-k2.5' });
+  assert.equal(f.manager.settings('kimi', first.sessionId).connection, 'api');
+  assert.equal(f.manager.settings('kimi', first.sessionId).model, 'kimi-k2.5');
+  await f.manager.send('kimi', { sessionId: first.sessionId, prompt: 'API turn' });
+  const segment = f.manager.get(first.sessionId).segments.kimi;
+  assert.notEqual(segment.nativeId, nativeBefore);
+  assert.equal(config.kimiSessionConnections[segment.nativeId], 'api');
+  assert.match(f.sent.at(-1).prompt, /Conversation context[\s\S]*Account turn/);
+  f.finish('kimi');
+  f.manager.saveSettings('kimi', { sessionId: first.sessionId, connection: 'subscription', model: 'kimi-code/first' });
+  await f.manager.send('kimi', { sessionId: first.sessionId, prompt: 'Back on account' });
+  const back = f.manager.get(first.sessionId).segments.kimi;
+  assert.notEqual(back.nativeId, segment.nativeId);
+  assert.equal(config.kimiSessionConnections[back.nativeId], 'subscription');
+  f.finish('kimi');
+});
+
+test('archived conversations cannot be loaded back into the chat surface', async t => {
+  const f = fixture(t);
+  const run = await f.manager.send('kimi', { prompt: 'One' }); f.finish('kimi');
+  assert.equal(f.manager.load('kimi', run.sessionId).ok, true);
+  await f.manager.command('kimi', 'archive-session', { id: run.sessionId, archived: true });
+  const res = f.manager.load('kimi', run.sessionId);
+  assert.equal(res.ok, false); assert.match(res.error, /archived/);
+  await f.manager.command('kimi', 'archive-session', { id: run.sessionId, archived: false });
+  assert.equal(f.manager.load('kimi', run.sessionId).ok, true);
+});
+
 test('permissions and live snapshots are addressed by conversation and run, including duplicate request IDs', async t => {
   const f = fixture(t);
   const a = await f.manager.send('kimi', { prompt: 'private A' }), sa = f.sent.at(-1).session;

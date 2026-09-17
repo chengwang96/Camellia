@@ -12,6 +12,7 @@ const titles = {
   usage: ["Usage", "Track requests by model and route."],
   balances: ["Balances & Quotas", "Account balances, subscription limits, and trends."],
   general: ["General", "Language, appearance, and local preferences."],
+  archived: ["Archived", "Restore or permanently delete archived conversations."],
   engines: ["Engine Settings", "Manage native settings in one place."],
   runtimes: ["Runtime", "Download only the engines you need."],
 };
@@ -34,6 +35,7 @@ function setView(next, engine, focus) {
   if (next === 'balances') renderBalances();
   if (next === 'engines') void (focus === 'account' ? engineUI.openAccount(engine) : engineUI.select(engine || engineUI.selected()));
   if (next === 'runtimes') void engineUI.runtimePage(focus);
+  if (next === 'archived') void renderArchived();
 }
 function navigateSettings(target = {}) {
   if (target.subscriptionId) balanceKey = target.subscriptionId;
@@ -234,10 +236,7 @@ function accountCard(account, selected = false) {
 function renderSubscriptions() {
   const accounts = accountsList().filter(a => a.subscriptionId);
   $('subscriptionOverview').hidden = !accounts.length;
-  $('subscriptionUsage').hidden = !accounts.length;
-  const cards = accounts.map(a => accountCard(a)).join('');
-  $('subscriptionCards').innerHTML = cards;
-  $('subscriptionUsageCards').innerHTML = cards;
+  $('subscriptionCards').innerHTML = accounts.map(a => accountCard(a)).join('');
 }
 function renderBalances() {
   const all = accountsList();
@@ -361,7 +360,7 @@ $('save').onclick = async () => {
 };
 for (const id of ['usageRange','usageProvider','usageKey','usageModel','usageMetric']) $(id).onchange = () => { fillUsageFilters(); renderUsage(); };
 $('balanceCards').onclick = e => { const button = e.target.closest('[data-balance]'); if (button) { balanceKey = button.dataset.balance; renderBalances(); } };
-for (const id of ['subscriptionCards', 'subscriptionUsageCards']) $(id).onclick = e => {
+for (const id of ['subscriptionCards']) $(id).onclick = e => {
   const button = e.target.closest('[data-balance]');
   if (button) { balanceKey = button.dataset.balance; $('balanceProvider').value = ''; $('balanceSearch').value = ''; setView('balances'); }
 };
@@ -397,7 +396,7 @@ async function refresh(initial = false) {
       renderPresetAccount();
       renderEditor();
     }
-    showLive(); renderSubscriptions(); if (view === 'usage') { fillUsageFilters(); renderUsage(); } if (view === 'balances') renderBalances();
+    showLive(); renderSubscriptions(); if (view === 'usage') { fillUsageFilters(); renderUsage(); } if (view === 'balances') renderBalances(); if (view === 'archived') void renderArchived();
     if (!dirty) status(details.ok ? '' : details.error, !details.ok);
     if (initial) {
       const preferences = await api.workbenchSettings();
@@ -411,6 +410,52 @@ async function refresh(initial = false) {
   } catch (e) { status(e.message, true); }
 }
 $('refresh').onclick = () => refresh();
+// ---------- Archived conversations ----------
+const engineNames = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity' };
+let archivedPendingDelete = null;
+async function renderArchived() {
+  try {
+    const result = await api.archivedSessionsList();
+    if (!result.ok) throw new Error(result.error);
+    const t = window.CamelliaI18n.t;
+    $('archivedList').innerHTML = result.sessions.map(s => `<div class="setting-row archived-row">
+      <div><h2>${esc(s.title)}</h2><p class="hint">${esc(engineNames[s.origin || s.source] || s.source)} · ${esc(t("Archived"))} ${when(s.archivedAt)}${s.missing ? ' · ' + esc(t("Files missing")) : ''}</p></div>
+      <div class="archived-actions"><button data-restore="${esc(s.source)}:${esc(s.id)}" data-i18n>Restore</button><button class="danger" data-delete="${esc(s.source)}:${esc(s.id)}" data-i18n>Delete</button></div>
+    </div>`).join('') || `<div class="empty"><h2 data-i18n>No archived conversations</h2><p class="hint" data-i18n>Archive a conversation from its ⋯ menu in the sidebar and it will appear here.</p></div>`;
+  } catch (e) { status(e.message, true); }
+}
+$('archivedList').onclick = async e => {
+  const button = e.target.closest('button'); if (!button) return;
+  const key = button.dataset.restore ?? button.dataset.delete;
+  if (key === undefined) return;
+  const sep = key.indexOf(':');
+  const target = { source: key.slice(0, sep), id: key.slice(sep + 1) };
+  if (button.dataset.delete !== undefined) {
+    archivedPendingDelete = target;
+    $('deleteArchivedTitle').textContent = button.closest('.archived-row').querySelector('h2').textContent;
+    $('deleteArchivedDialog').showModal();
+    return;
+  }
+  button.disabled = true;
+  try {
+    const result = await api.archivedSessionAction({ ...target, action: 'restore' });
+    if (!result.ok) throw new Error(result.error);
+    status("Conversation restored");
+  } catch (err) { status(err.message, true); }
+  await renderArchived();
+};
+$('confirmDeleteArchived').onclick = async () => {
+  const target = archivedPendingDelete;
+  archivedPendingDelete = null;
+  $('deleteArchivedDialog').close();
+  if (!target) return;
+  try {
+    const result = await api.archivedSessionAction({ ...target, action: 'delete' });
+    if (!result.ok) throw new Error(result.error);
+    status("Conversation deleted");
+  } catch (err) { status(err.message, true); }
+  await renderArchived();
+};
 api.onApiRouterState(state => {
   if (!live) return; live = { ...live, ...state }; showLive(); updateKeyStats();
   if (view === 'usage') { fillUsageFilters(); renderUsage(); }
@@ -436,5 +481,5 @@ new ResizeObserver(() => {
 void refresh(true).then(() => navigateSettings(Object.fromEntries(new URLSearchParams(location.search))));
 window.addEventListener('camellia:language', () => {
   if (!live) return;
-  renderSubscriptions(); if (view === 'balances') renderBalances();
+  renderSubscriptions(); if (view === 'balances') renderBalances(); if (view === 'archived') void renderArchived();
 });

@@ -63,6 +63,14 @@ class ClaudeHistory {
     return newest;
   }
 
+  remove(id) {
+    const file = this.find(id);
+    if (!file) return false;
+    this.fs.unlinkSync(file);
+    this.heads.delete(file);
+    return true;
+  }
+
   head(file, stat = this.fs.statSync(file)) {
     const key = `${stat.mtimeMs}/${stat.ctimeMs}/${stat.size}`;
     const cached = this.heads.get(file);

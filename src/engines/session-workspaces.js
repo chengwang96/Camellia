@@ -123,6 +123,40 @@ function renameSession(id, title) {
   return { ok: true };
 }
 
+// Archived sessions are hidden from listSessions; the settings window lists
+// them here so they can be restored or permanently deleted.
+async function listArchived() {
+  const entries = await history.list();
+  const byId = new Map(entries.map(entry => [entry.id, entry]));
+  const meta = sessionMeta();
+  const sessions = [];
+  for (const [id, archivedAt] of Object.entries(meta.archived)) {
+    const entry = byId.get(id);
+    let head = { summary: '', title: '' };
+    if (entry) {
+      try { head = await history.readHead(entry.file, entry); }
+      catch (err) { if (err.code !== 'ENOENT') throw err; }
+    }
+    const title = meta.titles[id] || head.summary || head.title || "(Empty session)";
+    sessions.push({ id, title: title.length > 60 ? title.slice(0, 60) + '…' : title,
+      archivedAt, mtimeMs: entry ? entry.mtimeMs : archivedAt, missing: !entry });
+  }
+  return sessions.sort((a, b) => b.archivedAt - a.archivedAt || a.id.localeCompare(b.id));
+}
+
+// Permanent delete: transcript file plus every display-metadata entry.
+async function removeSession(id) {
+  if (!validSessionId(id)) throw new Error("Invalid session");
+  const session = getSession();
+  const liveId = session && (session.sessionId || session.opts?.sessionId);
+  if (session && session.running && liveId === id) throw new Error("Wait for the response to finish or stop it before deleting this conversation");
+  const removed = history.remove ? await history.remove(id) : false;
+  saveSessionMeta((m) => {
+    for (const key of ['titles', 'archived', 'pinned', 'sessionWorkspace', 'sessionCwd']) delete m[key][id];
+  });
+  return { ok: true, removed: Boolean(removed) };
+}
+
 function archiveSession(id, archived) {
   if (!validSessionId(id)) throw new Error("Invalid session");
   saveSessionMeta((m) => {
@@ -216,12 +250,15 @@ function metaOp(payload) {
 }
 
 async function transcript(id) {
+  const meta = sessionMeta();
+  // Archived sessions stay out of the chat surface; restore them first.
+  if (meta.archived[id]) throw new Error('This conversation is archived. Restore it from Settings → Archived first.');
   const { messages, cwd, truncated } = await history.transcript(id);
-  return { messages, truncated, ...resolveContext(loadConfig()[settingsKey] || {}, { sessionId: id }, cwd) };
+  return { messages, truncated, ...resolveContext(loadConfig()[settingsKey] || {}, { sessionId: id }, cwd, meta) };
 }
 
 
-return { listSessions, sessionMeta, resolveContext, recordContext, renameSession, archiveSession, metaOp, transcript };
+return { listSessions, listArchived, removeSession, sessionMeta, resolveContext, recordContext, renameSession, archiveSession, metaOp, transcript };
 }
 
 module.exports = { createSessionWorkspaces };

@@ -10,6 +10,7 @@ const { createKimiAccount } = require('../src/engines/kimi-account');
 async function main() {
   const runtime = path.resolve(__dirname, '../runtimes/kimi/node_modules/@moonshot-ai/kimi-code/dist/main.mjs');
   assert.ok(fs.existsSync(runtime), 'Install the pinned Kimi runtime first');
+  const runtimeVersion = JSON.parse(fs.readFileSync(path.join(path.dirname(runtime), '..', 'package.json'), 'utf8')).version;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-subscription-smoke-'));
   const home = path.join(root, 'kimi'); fs.mkdirSync(home);
   const account = createKimiAccount({ home, runtime: () => ({ file: runtime }), ensureRuntime: async () => {}, node: () => process.execPath,
@@ -26,7 +27,7 @@ async function main() {
     assert.equal(logout.account, null); assert.equal(logout.error, null);
     const config = require('smol-toml').parse(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'));
     assert.equal(config.providers?.['managed:kimi-code'], undefined);
-    console.log('PASS pinned Kimi 0.43.1: ACP rejects an unsigned account and native logout removes its managed profile; no login or model calls');
+    console.log(`PASS pinned Kimi ${runtimeVersion}: ACP rejects an unsigned account and native logout removes its managed profile; no login or model calls`);
   } finally {
     await account.shutdown();
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));

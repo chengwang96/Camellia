@@ -36,10 +36,15 @@ async function main() {
     assert.match(navigation, /Providers & Keys/);
     const view = settings.contentView.children.find(view => view.webContents === native);
     assert.ok(view.getVisible()); assert.ok(view.getBounds().height > 150);
-    const shot = await settings.capturePage();
-    fs.mkdirSync(path.resolve(__dirname, '../dist/engine-settings-qa'), { recursive: true });
-    fs.writeFileSync(path.resolve(__dirname, '../dist/engine-settings-qa/native-electron.png'), shot.toPNG());
-    fs.writeFileSync(path.resolve(__dirname, '../dist/engine-settings-qa/native-view.png'), (await native.capturePage()).toPNG());
+    // Screenshots are QA artifacts; locked or remote displays cannot capture pages.
+    try {
+      const shot = await settings.capturePage();
+      fs.mkdirSync(path.resolve(__dirname, '../dist/engine-settings-qa'), { recursive: true });
+      fs.writeFileSync(path.resolve(__dirname, '../dist/engine-settings-qa/native-electron.png'), shot.toPNG());
+      fs.writeFileSync(path.resolve(__dirname, '../dist/engine-settings-qa/native-view.png'), (await native.capturePage()).toPNG());
+    } catch (error) {
+      console.log('Skipping QA screenshots: ' + (error.message || error));
+    }
     await native.executeJavaScript("Array.from(document.querySelectorAll('button')).find(button=>button.textContent.includes('Providers & Keys')).click()");
     await wait(() => settings.webContents.executeJavaScript("!document.querySelector('#providersPage').hidden"));
     await wait(() => !view.getVisible());

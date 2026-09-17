@@ -768,6 +768,7 @@
 .session-origin { display: block; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
 .handoff-notice { margin: 18px 0; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
 .handoff-notice button { border: 0; background: none; color: var(--dsw-static-deepseek-500); cursor: pointer; margin-left: 8px; }
+.switch-hint { margin: 18px 0 4px; padding: 8px 12px; border: 1px dashed var(--dsw-alias-border-l2); border-radius: 10px; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
 .switch-dialog { margin: auto; width: min(500px, calc(100vw - 32px)); border: 1px solid var(--dsw-alias-border-l2); border-radius: 16px; padding: 24px; color: inherit; background: var(--dsw-alias-bg-layer-1); }
 .switch-dialog::backdrop { background: var(--dsw-alias-bg-mask-1); }
 .switch-dialog h2 { font-size: 18px; margin-bottom: 14px; }
@@ -798,6 +799,14 @@
 .question-status { font: var(--f-xs-13); color: var(--dsw-alias-label-secondary); line-height: 1.5; }
 .question-status:empty { display: none; }
 .question-status.error { color: var(--dsw-alias-state-danger-primary, #cf3535); }
+.question-card.done .question-hint, .question-card.done .question-actions { display: none; }
+.question-answers { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 2px; font: var(--f-xs-13); }
+.question-answers > div { display: flex; gap: 8px; min-width: 0; line-height: 1.5; }
+.question-answers strong { flex: none; font-weight: 600; overflow-wrap: anywhere; }
+.question-answers span { min-width: 0; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.question-review { margin-top: 8px; }
+.question-review > summary { cursor: pointer; color: var(--dsw-alias-label-secondary); font: var(--f-xs-13); width: fit-content; }
+.question-review fieldset { margin: 12px 0 0; }
 
 /* Background work remains visible without competing with conversation titles. */
 .session-item[data-activity="running"] .session-item-time { color: var(--accent, #4275ed); }

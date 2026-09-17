@@ -31,8 +31,22 @@ test('keyboard and wheel persist one zoom level across pages, windows and contro
   reopened.emit('before-input-event', { preventDefault() {} }, { type: 'keyDown', meta: true, key: '0' });
   assert.equal(readJson(file).zoomLevel, 0);
 });
-test('legacy migration uses only the selected page and never rewrites Chromium preferences', t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-zoom-'));
+test('an attached surface can keep a fixed zoom offset across zoom changes and navigation', () => {
+  const zoom = createZoomController({ loadConfig: () => ({}), saveConfig: () => {} });
+  const host = content(), embedded = content();
+  zoom.attach(host); zoom.attach(embedded, -1);
+  assert.equal(embedded.getZoomLevel(), -1);
+  assert.equal(host.getZoomLevel(), 0);
+  zoom.set(1.5);
+  assert.equal(embedded.getZoomLevel(), 0.5);
+  embedded.setZoomLevel(3); embedded.emit('dom-ready');
+  assert.equal(embedded.getZoomLevel(), 0.5);
+  assert.equal(zoom.factorAt(-1), 1.2 ** 0.5);
+  zoom.set(-100);
+  assert.equal(embedded.getZoomLevel(), zoom.level, 'Offsets clamp at the minimum zoom level');
+});
+
+test('legacy migration uses only the selected page and never rewrites Chromium preferences', t => {  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-zoom-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'Preferences');
   writeJson(file, { partition: { per_host_zoom_levels: { partition: { 'file:///selected': 1.5, 'file:///other': 4, 'bad': '2' } } } });

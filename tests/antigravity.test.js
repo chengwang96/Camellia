@@ -84,3 +84,12 @@ test('Antigravity settings and standalone/workspace histories are isolated and e
   assert.equal((await h.call('kimi-list-sessions')).workspaces.length, 0);
   assert.equal((await h.call('antigravity-load-session', '../desktop-config')).ok, false);
 });
+
+test('Antigravity model selections land in the slot of the chosen connection', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  assert.equal((await h.call('antigravity-save-settings', { connection: 'subscription', model: 'account-model' })).ok, true);
+  assert.equal((await h.call('antigravity-save-settings', { connection: 'api', model: 'api-model' })).ok, true);
+  const settings = await h.call('antigravity-get-settings');
+  assert.equal(settings.connection, 'api'); assert.equal(settings.model, 'api-model');
+  assert.equal(settings.subscriptionModel, 'account-model'); assert.equal(settings.apiModel, 'api-model');
+});

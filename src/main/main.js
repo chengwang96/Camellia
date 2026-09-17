@@ -21,7 +21,8 @@ const { createKimiAccount } = require('../engines/kimi-account.js');
 const { createCodex } = require('../engines/codex');
 const { createAntigravity } = require('../engines/antigravity');
 const { createProviderInsights } = require('../api/provider-insights.js');
-const { createRuntimeManager, ENGINES } = require('./runtime-manager.js');
+const { createRuntimeManager, ENGINES, run: runtimeRun } = require('./runtime-manager.js');
+const { createRuntimeUpdates } = require('./runtime-updates.js');
 const { downloadSettings } = require('./download-network.js');
 const { createEngineSettings, backup } = require('../engines/engine-settings.js');
 const runtimePaths = require('./runtime-paths.js');
@@ -171,6 +172,30 @@ async function chooseDownloadConnection(engine) {
   if (response === buttons.length - 2) openSettingsWindow({ page: 'runtimes', focus: 'downloadProxyUrl' });
   if (response >= buttons.length - 2) throw Object.assign(new Error('Download cancelled'), { code: 'DOWNLOAD_CANCELLED' });
   return { ...saved, mode: hasProxy && response === 0 ? 'proxy' : 'direct' };
+}
+let runtimeUpdatesService;
+function runtimeUpdates() {
+  if (!runtimeUpdatesService) {
+    const root = app.isPackaged ? process.resourcesPath : APP_ROOT;
+    const node = detectNode();
+    const npm = firstExisting(runtimePaths.npmCandidates(node, { resourcesPath: app.isPackaged ? root : undefined, env: process.env }));
+    runtimeUpdatesService = createRuntimeUpdates({ manager: runtimes(), engines: ENGINES, node, npm, run: runtimeRun,
+      downloadSettings: () => loadConfig().downloadProxy,
+      promptRestart: promptRuntimeRestart,
+      log });
+  }
+  return runtimeUpdatesService;
+}
+async function promptRuntimeRestart(name, from, to) {
+  const { response } = await dialog.showMessageBox(BrowserWindow.getFocusedWindow() || mainWindow, {
+    type: 'info', title: uiText('Restart required'),
+    message: uiText(`${name} was updated to v${to}. Restart Camellia to use the new version.`),
+    buttons: [uiText('Later'), uiText('Restart now')], defaultId: 1, cancelId: 0, noLink: true,
+  });
+  if (response !== 1) return false;
+  app.relaunch();
+  app.exit(0);
+  return true;
 }
 function runtimeEnvironment(node, engine) {
   const root = app.isPackaged ? process.resourcesPath : APP_ROOT;
@@ -789,6 +814,26 @@ async function startBackend() {
 }
 
 // ---------------------------------------------------------------------------
+// Engine status for About dialog
+// ---------------------------------------------------------------------------
+// Chat runs on per-engine ACP/CLI sessions, not on the lazy `dsh web` backend
+// above, so the About dialog reports the live session state instead.
+function engineStatusText() {
+  const pools = [
+    ['claude', 'Claude Code', claudeSessions],
+    ['codex', 'Codex CLI', codex.sessions],
+    ['dsh', 'DSH', dshChat.sessions],
+    ['kimi', 'Kimi Code', kimiSessions],
+    ['antigravity', 'Antigravity', antigravity.sessions],
+  ];
+  const state = pool => (pool.running ? 'responding' : pool.active ? 'session idle' : 'not started');
+  const current = pools.find(([id]) => id === currentMode);
+  if (current) return `${current[1]}: ${state(current[2])}`;
+  const active = pools.filter(([, , pool]) => pool.active);
+  return active.length ? active.map(([, label, pool]) => `${label}: ${state(pool)}`).join(', ') : 'no engine running';
+}
+
+// ---------------------------------------------------------------------------
 // Window helpers / UI
 // ---------------------------------------------------------------------------
 let mainWindow = null;
@@ -932,9 +977,11 @@ if (!gotSingleInstanceLock) {
       if (!loadConfig().dshBin && !runtimes().locate('dsh')) return { ok: false, needsRuntime: true,
         error: 'Download DeepSeek Harness from Settings → Runtime to use its native panel.' };
       if (!nativeSettingsView) {
+        // The DSH settings UI is laid out for a full workbench window. Embed it one
+        // zoom step finer so its density matches the surrounding settings panel.
         nativeSettingsView = new WebContentsView({ webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true,
-          zoomFactor: desktopZoom().factor, nodeIntegration: false, additionalArguments: ['--workbench-settings'] } });
-        desktopZoom().attach(nativeSettingsView.webContents);
+          zoomFactor: desktopZoom().factorAt(-1), nodeIntegration: false, additionalArguments: ['--workbench-settings'] } });
+        desktopZoom().attach(nativeSettingsView.webContents, -1);
         settingsWindow.contentView.addChildView(nativeSettingsView);
         nativeSettingsView.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       }
@@ -954,6 +1001,11 @@ if (!gotSingleInstanceLock) {
     } catch (error) { return { ok: false, error: error.message }; }
   });
 
+  const engineBusy = engine => sharedConversations.isBusy(engine)
+    || (engine === 'codex' && (codex.session?.running || codex.goal.armed))
+    || (engine === 'claude' && (claudeSessions.legacy?.running || goalDriver.armed))
+    || (engine === 'kimi' && (kimiSessions.legacy?.running || kimiGoalDriver.armed))
+    || (engine === 'antigravity' && (antigravity.session?.running || antigravity.goal.armed));
   for (const [name, handler] of Object.entries({
     'benchmark-state': () => ({ ok: true, ...benchmarks().state() }),
     'benchmark-start': payload => ({ ok: true, ...benchmarks().start(payload) }),
@@ -980,7 +1032,7 @@ if (!gotSingleInstanceLock) {
     },
     'engine-settings-get': ({ engine }) => ({ ok: true, ...engineSettings().get(engine) }),
     'engine-settings-save': async ({ engine, ...payload }) => {
-      if (sharedConversations.isBusy(engine) || (engine === 'codex' && (codex.session?.running || codex.goal.armed)) || (engine === 'claude' && (claudeSessions.legacy?.running || goalDriver.armed)) || (engine === 'kimi' && (kimiSessions.legacy?.running || kimiGoalDriver.armed)) || (engine === 'antigravity' && (antigravity.session?.running || antigravity.goal.armed))) throw new Error("Stop the current response or goal before changing global settings");
+      if (engineBusy(engine)) throw new Error("Stop the current response or goal before changing global settings");
       const result = engineSettings().save(engine, payload);
       if (engine === 'claude') await claudeSessions.shutdown();
       if (engine === 'kimi') await kimiSessions.shutdown();
@@ -992,6 +1044,11 @@ if (!gotSingleInstanceLock) {
     },
     'runtime-state': () => ({ ok: true, engines: runtimes().state() }),
     'runtime-ensure': async ({ engine }) => ({ ok: true, runtime: await runtimes().ensure(engine) }),
+    'runtime-check-updates': async () => ({ ok: true, engines: await runtimeUpdates().check() }),
+    'runtime-update': async ({ engine }) => {
+      if (engineBusy(engine)) throw new Error('Stop conversations using this engine before updating it');
+      return runtimeUpdates().update(engine);
+    },
     'download-settings': () => ({ ok: true, ...downloadSettings(loadConfig().downloadProxy) }),
     'download-save-settings': payload => {
       const settings = downloadSettings(payload);
@@ -1229,6 +1286,49 @@ if (!gotSingleInstanceLock) {
     void shell.openPath(file); return { ok: true };
   });
 
+  // ---- Archived conversations (Settings → Archived) ------------------------
+  const archivedSources = () => ({
+    claude: claudeWorkspaces, kimi: kimiWorkspaces, codex: codex.workspaces,
+    antigravity: antigravity.workspaces, shared: sharedConversations.workspaces,
+  });
+  ipcMain.handle('dsh:archived-sessions-list', async () => {
+    try {
+      const sessions = [];
+      for (const [source, workspaces] of Object.entries(archivedSources())) {
+        for (const session of await workspaces.listArchived()) {
+          sessions.push({ ...session, source, origin: source === 'shared' ? sharedConversations.items.get(session.id)?.origin || null : null });
+        }
+      }
+      sessions.sort((a, b) => b.archivedAt - a.archivedAt || a.id.localeCompare(b.id));
+      return { ok: true, sessions };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('dsh:archived-session-action', async (_event, payload) => {
+    try {
+      const { source, id, action } = payload || {};
+      const workspaces = archivedSources()[source];
+      if (!workspaces) throw new Error('Unknown conversation source');
+      if (!['restore', 'delete'].includes(action)) throw new Error('Unknown action');
+      if (action === 'restore') workspaces.archiveSession(id, false);
+      else {
+        const goal = { claude: goalDriver, kimi: kimiGoalDriver, codex: codex.goal, antigravity: antigravity.goal }[source];
+        if (goal?.goal?.sessionId === id) {
+          if (goal.armed) throw new Error('Pause the goal before deleting its conversation');
+          goal.clear();
+        }
+        await workspaces.removeSession(id);
+        const connectionKey = { kimi: 'kimiSessionConnections', codex: 'codexSessionConnections' }[source];
+        if (connectionKey && loadConfig()[connectionKey]?.[id]) {
+          const connections = { ...loadConfig()[connectionKey] };
+          delete connections[id];
+          saveConfig({ [connectionKey]: connections });
+        }
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:archived-changed', { source, id, action });
+      return { ok: true };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+
   // Native file picker. `kind` filters the visible file extensions;
   // kind 'directory' switches to a folder picker (workspace paths).
   ipcMain.handle('dsh:pick-file', async (_event, payload) => {
@@ -1438,7 +1538,7 @@ if (!gotSingleInstanceLock) {
       {
         label: APP_NAME,
         submenu: [
-          { label: "About", click: () => dialog.showMessageBox({ type: 'info', title: `About ${APP_NAME}`, message: APP_NAME, detail: `Version ${app.getVersion()}\nBackend: ${backendUrl || "Not started"}` }) },
+          { label: "About", click: () => dialog.showMessageBox({ type: 'info', title: `About ${APP_NAME}`, message: APP_NAME, detail: `Version ${app.getVersion()}\nEngine: ${engineStatusText()}` }) },
           { type: 'separator' },
           { label: "Settings…", accelerator: 'CmdOrCtrl+,', click: () => openSettingsWindow() },
           { type: 'separator' },

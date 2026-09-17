@@ -37,7 +37,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     for (const key of ['cwd', 'permissionMode', 'thinkingBudget', 'proxyUrl']) if (patch[key] !== undefined) value[key] = String(patch[key]).trim();
     if (!PERMISSIONS[value.permissionMode]) throw new Error('Invalid Codex permission mode');
     if (value.proxyUrl) value.proxyUrl = downloadSettings({ mode: 'proxy', url: value.proxyUrl }).url;
-    if (patch.model !== undefined) value[(patch.sessionId ? connectionFor(patch.sessionId) : value.connection) + 'Model'] = String(patch.model).trim();
+    if (patch.model !== undefined) value[(patch.connection || (patch.sessionId ? connectionFor(patch.sessionId) : value.connection)) + 'Model'] = String(patch.model).trim();
     delete value.model;
     saveConfig({ codex: value }); return settings(patch.sessionId);
   }
@@ -169,7 +169,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     'goal-complete': () => goal.setPhase('complete'), 'goal-clear': () => goal.clear(),
   };
   return { get session() { return sessions.legacy; }, get active() { return Boolean(sessions.active || (accountClient && !accountClient.dead)); },
-    home, goal, settings, saveSettings, handlers, ensureSession, history, sessions,
+    home, goal, settings, saveSettings, handlers, ensureSession, history, sessions, workspaces,
     async shutdown() { await sessions.shutdown(); await accountClient?.shutdown(); accountClient = null; loginId = null; } };
 }
 module.exports = { createCodex };
