@@ -16,7 +16,8 @@ const PRESETS = [
     models: ['kimi-k3', 'kimi-k2.6', 'kimi-k2.5'].map(id => ({ id, upstream: 'moonshotai/' + id })) },
   { type: 'opencode-go', name: 'OpenCode Go', baseUrl: 'https://opencode.ai/zen/go/v1', protocol: 'dual', models: [] },
   { type: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', protocol: 'dual', models: [] },
-  { type: 'kimi-code', name: "Kimi Code subscription", baseUrl: 'https://api.kimi.com/coding/v1', protocol: 'dual', models: [] },
+  { type: 'kimi-code', name: 'Kimi Code (API key)', baseUrl: 'https://api.kimi.com/coding/v1', protocol: 'dual', models: [] },
+  { type: 'gemini', name: 'Google Gemini API', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', protocol: 'openai', models: [] },
   { type: 'custom', name: "Custom provider", baseUrl: '', protocol: 'openai', models: [] },
 ];
 

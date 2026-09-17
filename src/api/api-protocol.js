@@ -129,9 +129,8 @@ function convertResponse(body, from, to, model) {
     : body?.role !== 'assistant' || !Array.isArray(body.content)) throw new Error("The provider returned an invalid model response");
   if (from === to) return { ...body, model };
   if (to === 'anthropic') {
-    const choice = body.choices?.[0];
-    if (!choice) throw new Error("The provider returned an invalid Chat Completions response");
-    const m = choice.message || {};
+    const choice = body.choices[0];
+    const m = choice.message;
     const content = [];
     if (m.reasoning_content) content.push({ type: 'thinking', thinking: m.reasoning_content, signature: '' });
     if (m.content) content.push(...toAnthropicContent(m.content));

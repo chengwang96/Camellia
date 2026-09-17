@@ -13,6 +13,16 @@ Thumbs.db
 .vscode/
 
 build/runtime-assets/
+build/benchmark-research/
+build/benchmark-validation/
+
+# App-owned Python and Antigravity SDK installation
+runtimes/antigravity/python/
+runtimes/antigravity/packages/
+runtimes/antigravity/installer/
+runtimes/antigravity/cli/
+runtimes/antigravity/installed.json
+__pycache__/
 
 # Local reference screenshots
 /docs/images/local/

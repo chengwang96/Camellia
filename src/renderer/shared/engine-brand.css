@@ -1,0 +1,10 @@
+.engine-mark { display: grid; place-items: center; flex-shrink: 0; line-height: 0; }
+.engine-mark img { display: block; width: 70%; height: 70%; object-fit: contain; }
+.engine-mark[data-engine="dsh"] { background: light-dark(#edf3fe, #283142); }
+.engine-mark[data-engine="dsh"] img { width: 80%; height: 80%; }
+.engine-mark[data-engine="claude"] { background: light-dark(#faf0e9, #382b25); }
+.engine-mark[data-engine="kimi"] { background: #4176e6; }
+.engine-mark[data-engine="antigravity"] { background: light-dark(#f0f3fa, #2b3040); }
+
+.engine-mark[data-engine="codex"] { background: light-dark(#f1f0fe, #302e47); }
+.engine-mark[data-engine="codex"] img { width: 88%; height: 88%; }

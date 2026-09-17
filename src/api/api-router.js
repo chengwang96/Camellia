@@ -5,7 +5,11 @@ const https = require('node:https');
 const fs = require('node:fs');
 const { modelId, normalizeConfig, loadConfig, writeConfig, publicState, DEFAULT_PORT, PRESETS } = require('./api-router-config');
 const { convertRequest, convertResponse, SSEParser, StreamConverter, frame } = require('./api-protocol');
+const { BufferedToolStream } = require('./buffered-tool-stream');
 const { recordUsage } = require('./api-usage');
+const { GeminiToolState } = require('./gemini-tool-state');
+const { RequestScopes } = require('./request-scopes');
+const { responsesToChat, ResponsesStream, chatToResponse } = require('./responses-protocol');
 
 function retryDelay(headers = {}, now = Date.now()) {
   const value = headers['retry-after'];
@@ -48,9 +52,11 @@ function apiError(res, status, message, protocol, code = 'api_router_error', hea
 
 function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeoutMs = 120000 } = {}) {
   let cfg = loadConfig(configPath);
+  const geminiTools = new GeminiToolState(configPath + '.gemini-tools.jsonl');
   let running = false, error = null, stopped = false, saveTimer = null, lastRoute = null;
   let diskMtime = fs.existsSync(configPath) ? fs.statSync(configPath).mtimeMs : 0;
   const sockets = new Set(), upstreams = new Set();
+  const scopes = new RequestScopes();
   const getState = () => ({ ...publicState(cfg), running, error, activeRequests: upstreams.size, url: `http://127.0.0.1:${cfg.port}`, lastRoute: lastRoute ? { ...lastRoute } : null });
   const notify = () => { try { onState(getState()); } catch { /* observers must not interrupt a request */ } };
   function refreshDisk() {
@@ -88,7 +94,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
       if (!p.enabled) continue;
       const m = p.models.find(m => m.id === model);
       if (!m) continue;
-      const wire = m.protocol && m.protocol !== 'auto' ? m.protocol : p.protocol === 'dual' ? protocol : p.protocol;
+      const wire = m.protocol && m.protocol !== 'auto' ? m.protocol : p.protocol === 'dual' ? protocol === 'responses' ? 'openai' : protocol : p.protocol;
       for (const k of p.keys) if (k.enabled) all.push({ provider: p, key: k, model: m, protocol: wire });
     }
     const start = all.findIndex(r => r.key.id === cfg.active[model]);
@@ -123,10 +129,18 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
     changed();
   }
 
-  function forward(route, clientProtocol, body, pathname, downstream, clientHeaders) {
+  function forward(route, clientProtocol, body, pathname, downstream, clientHeaders, bufferTools = false) {
     const source = route.protocol;
-    let payload;
-    try { payload = convertRequest(body, clientProtocol, source); }
+    let payload, responseTools;
+    const isGemini = source === 'openai' && (route.provider.type === 'gemini' || new URL(route.provider.baseUrl).hostname === 'generativelanguage.googleapis.com');
+    const rememberTools = isGemini ? geminiTools.response(body.model) : () => {};
+    try {
+      if (clientProtocol === 'responses') {
+        const converted = responsesToChat(body); responseTools = converted.tools;
+        payload = convertRequest(converted.body, 'openai', source);
+      } else payload = convertRequest(body, clientProtocol, source);
+      if (isGemini) geminiTools.restore(payload, body.model);
+    }
     catch (e) { return Promise.resolve({ status: 400, kind: 'protocol', detail: e.message }); }
     payload.model = route.model.upstream;
     const count = pathname.endsWith('/count_tokens');
@@ -141,8 +155,10 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
       if (clientHeaders['anthropic-beta']) headers['anthropic-beta'] = clientHeaders['anthropic-beta'];
     }
     const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reported: false };
-    let anthropicTotals = {};
+    let anthropicTotals = {}, finishReason = null;
     const countUsage = obj => {
+      const reason = obj.choices?.[0]?.finish_reason || obj.delta?.stop_reason || obj.stop_reason;
+      if (typeof reason === 'string') finishReason = reason;
       const usage = obj.message?.usage || obj.usage || obj.choices?.[0]?.usage;
       if (!usage || !['prompt_tokens', 'completion_tokens', 'input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].some(key => typeof usage[key] === 'number')) return;
       tokens.reported = true;
@@ -159,13 +175,17 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
       }
     };
     return new Promise(resolve => {
-      let settled = false, upstream, committed = false;
+      let settled = false, upstream, converter, committed = false;
+      const endStreamError = message => {
+        if (clientProtocol === 'responses') { converter.fail(message); downstream.end(); }
+        else downstream.end(frame(clientProtocol === 'anthropic' ? { type: 'error', error: { type: 'api_error', message } } : { error: { type: 'api_error', message } }, clientProtocol === 'anthropic' ? 'error' : ''));
+      };
       const finish = result => {
         if (settled) return;
         settled = true;
         downstream.off('close', cancel);
         upstreams.delete(upstream);
-        resolve({ ...result, committed, tokens });
+        resolve({ ...result, committed, tokens, finishReason, maxOutputTokens: payload.max_tokens ?? payload.max_completion_tokens ?? null, hasTools: Boolean(body.tools?.length) });
       };
       const cancel = () => { if (!downstream.writableEnded) { upstream?.destroy(); finish({ cancelled: true }); } };
       downstream.on('close', cancel);
@@ -187,9 +207,10 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
             if (obj.error) return finish({ status: 502, kind: failureKind(Number(obj.error.status) || 429, JSON.stringify(obj.error)) || 'upstream' });
             try {
               countUsage(obj);
+              rememberTools(obj);
               if (body.stream && !count) return finish({ status: 502, kind: 'upstream', detail: "The provider did not return the requested stream" });
               if (count && (!Number.isFinite(obj.input_tokens) || obj.input_tokens < 0)) return finish({ status: 502, kind: 'upstream' });
-              const result = count ? obj : convertResponse(obj, source, clientProtocol, body.model);
+              const result = count ? obj : clientProtocol === 'responses' ? chatToResponse(obj, source, body.model, responseTools) : convertResponse(obj, source, clientProtocol, body.model);
               json(downstream, status, result);
               committed = true;
               finish({ ok: true });
@@ -198,7 +219,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
           return;
         }
         let terminal = false, messageStarted = false, waitingForDrain = false;
-        const converter = new StreamConverter(source, clientProtocol, body.model, data => {
+        const writeStream = data => {
           if (settled || downstream.destroyed) return;
           if (!committed) {
             committed = true;
@@ -209,12 +230,16 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
             response.pause();
             downstream.once('drain', () => { waitingForDrain = false; if (!settled) response.resume(); });
           }
-        });
+        };
+        const bufferedTools = bufferTools ? new BufferedToolStream(writeStream) : null;
+        const writeConverted = bufferedTools ? data => bufferedTools.feed(data) : writeStream;
+        converter = clientProtocol === 'responses' ? new ResponsesStream(source, body.model, responseTools, writeConverted)
+          : new StreamConverter(source, clientProtocol, body.model, writeConverted);
         function streamError(kind, detail = '') {
           if (settled) return;
           if (committed && !downstream.destroyed) {
             const message = "The upstream stream was interrupted. Retry the request; started responses are not replayed automatically.";
-            downstream.end(frame(clientProtocol === 'anthropic' ? { type: 'error', error: { type: 'api_error', message } } : { error: { type: 'api_error', message } }, clientProtocol === 'anthropic' ? 'error' : ''));
+            endStreamError(message);
           }
           finish({ status: 502, kind, detail });
           response.destroy();
@@ -234,7 +259,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
             if (!messageStarted) throw new Error("The upstream stream contained no valid message");
             terminal = true;
           }
-          if (obj !== '[DONE]') countUsage(obj);
+          if (obj !== '[DONE]') { countUsage(obj); rememberTools(obj); }
           // Preserve native SSE event names, including tool and thinking deltas.
           converter.push(obj, event || (typeof obj === 'object' ? obj.type || '' : ''));
         });
@@ -257,7 +282,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
       upstream.on('error', () => {
         if (committed && !settled && !downstream.destroyed) {
           const message = "The upstream connection closed before the response completed. Please retry.";
-          downstream.end(frame(clientProtocol === 'anthropic' ? { type: 'error', error: { type: 'api_error', message } } : { error: { type: 'api_error', message } }, clientProtocol === 'anthropic' ? 'error' : ''));
+          endStreamError(message);
         }
         finish({ status: 502, kind: 'network' });
       });
@@ -268,12 +293,23 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
   async function handle(req, res) {
     const host = req.headers.host || '';
     if (req.headers.origin || !/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(host)) return apiError(res, 403, "Only local API clients are allowed", 'openai');
-    const pathname = new URL(req.url, 'http://localhost').pathname.replace(/^\/v1(?=\/)/, '');
+    const scoped = scopes.resolve(new URL(req.url, 'http://localhost').pathname);
+    const scope = scoped.scope;
+    const bufferTools = scoped.pathname.startsWith('/compat/antigravity/');
+    const pathname = (bufferTools ? scoped.pathname.slice('/compat/antigravity'.length) : scoped.pathname).replace(/^\/v1(?=\/)/, '');
+    if (bufferTools && pathname !== '/chat/completions') return apiError(res, 404, 'Unsupported Antigravity API path', 'openai');
+    if (scoped.scoped && (!scope || scope.closed)) return apiError(res, 410, 'This benchmark trial has ended', pathname.startsWith('/messages') ? 'anthropic' : 'openai');
     refreshDisk();
+    if (scope) {
+      scope.responses.add(res);
+      res.once('close', () => scope.responses.delete(res));
+      if (req.method === 'GET' && pathname === '/models') return json(res, 200, { object: 'list', data: [{ id: scope.model, object: 'model' }] });
+      if (pathname.startsWith('/__')) return apiError(res, 404, 'Unsupported benchmark API path', 'openai');
+    }
     if (req.method === 'GET' && ['/__router/state', '/__ollama/state'].includes(pathname)) return json(res, 200, getState());
     if (req.method === 'GET' && pathname === '/models') return json(res, 200, { object: 'list', data: publicState(cfg).models.map(id => ({ id, object: 'model', owned_by: 'api-pool' })) });
-    const protocol = pathname.startsWith('/messages') ? 'anthropic' : 'openai';
-    if (req.method !== 'POST' || !['/chat/completions', '/messages', '/messages/count_tokens'].includes(pathname)) return apiError(res, 404, "Unsupported API path", protocol);
+    const protocol = pathname.startsWith('/messages') ? 'anthropic' : pathname === '/responses' ? 'responses' : 'openai';
+    if (req.method !== 'POST' || !['/chat/completions', '/responses', '/messages', '/messages/count_tokens'].includes(pathname)) return apiError(res, 404, "Unsupported API path", protocol);
     if (!cfg.enabled) return apiError(res, 503, "The API route pool is disabled", protocol);
     if (!/application\/json/i.test(req.headers['content-type'] || '')) return apiError(res, 415, "Requests must use application/json", protocol);
     const chunks = []; let size = 0;
@@ -281,9 +317,11 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
     let body, model;
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); model = modelId(body.model); }
     catch { return apiError(res, 400, "Requests require valid JSON and an explicit model ID", protocol); }
-    const routes = candidates(model, protocol);
+    if (scope && model !== scope.model) return apiError(res, 400, 'Benchmark requests must use the selected model', protocol, 'benchmark_model_mismatch');
+    const routes = candidates(model, protocol).filter(route => !scope || (route.provider.id === scope.providerId && route.model.upstream === scope.upstream && routeFingerprint(route) === scope.routeFingerprint));
     if (!routes.length) return apiError(res, 404, `Model "${model}" has no configured routes. Add a route for this model; no other model will be used.`, protocol, 'model_not_found');
     const secrets = cfg.providers.flatMap(p => p.keys.map(k => k.key));
+    if (!pathname.endsWith('/count_tokens')) scope?.observeTools(body, protocol);
     const attempts = [];
     for (const route of routes) {
       if (res.destroyed || stopped) return;
@@ -292,7 +330,20 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
           || current.protocol !== route.protocol || current.provider.baseUrl !== route.provider.baseUrl
           || current.provider.anthropicBaseUrl !== route.provider.anthropicBaseUrl) continue;
       if (!available(route, model)) continue;
-      const result = await forward(route, protocol, body, pathname, res, req.headers);
+      if (scope && !pathname.endsWith('/count_tokens')) {
+        const reason = scope.begin({ hasTools: Boolean(body.tools?.length) });
+        if (reason) return apiError(res, 429, reason, protocol, 'benchmark_limit');
+      }
+      const requestStarted = Date.now(), requestSequence = scope?.requests;
+      const pending = forward(route, protocol, body, pathname, res, req.headers, bufferTools);
+      scope?.pending.add(pending);
+      const result = await pending;
+      if (scope && !pathname.endsWith('/count_tokens')) scope.record({ model, upstreamModel: route.model.upstream,
+        sequence: requestSequence, durationMs: Date.now() - requestStarted,
+        providerId: route.provider.id, tokens: result.tokens, outcome: result.cancelled ? 'cancelled' : result.ok ? 'success' : 'error',
+        finishReason: result.finishReason, maxOutputTokens: result.maxOutputTokens, hasTools: result.hasTools, failureKind: result.kind || null,
+        error: result.ok || result.cancelled ? null : safeDetail(result.detail || reasonText[result.kind] || 'Provider request failed', secrets) });
+      scope?.pending.delete(pending);
       if (result.cancelled || stopped) {
         const usage = usageFor(route);
         if (usage && !pathname.endsWith('/count_tokens')) { recordUsage(usage, model, result.tokens, 'cancelled'); changed(); }
@@ -351,12 +402,29 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
   }
   async function stop() {
     stopped = true; running = false;
+    scopes.closeAll();
     try { flush(); } catch (e) { log(`Could not save router state: ${e.message}`); }
     for (const upstream of upstreams) upstream.destroy();
     for (const socket of sockets) socket.destroy();
     await new Promise(resolve => server.close(resolve));
   }
-  return { ready, getState, updateConfig, reset, rotate, reload: () => { refreshDisk(); notify(); return getState(); }, stop, url: `http://127.0.0.1:${cfg.port}` };
+  function createScope(options) {
+    refreshDisk();
+    if (!running || stopped || !cfg.enabled) throw new Error('Enable the API route pool before running a benchmark');
+    const model = modelId(options.model);
+    const route = candidates(model, 'openai').find(r => r.provider.id === options.providerId && available(r, model));
+    if (!route) throw new Error('This model has no available key on the selected provider');
+    const fingerprint = routeFingerprint(route);
+    if (options.routeFingerprint && options.routeFingerprint !== fingerprint) throw new Error('The provider route changed; start a new benchmark');
+    const result = scopes.create({ ...options, model, upstream: route.model.upstream, routeFingerprint: fingerprint });
+    return { ...result, baseUrl: `http://127.0.0.1:${cfg.port}${result.path}`, authToken: 'proxy-managed' };
+  }
+  return { ready, getState, updateConfig, reset, rotate, createScope, reload: () => { refreshDisk(); notify(); return getState(); }, stop, url: `http://127.0.0.1:${cfg.port}` };
+}
+
+function routeFingerprint(route) {
+  return require('node:crypto').createHash('sha256').update(JSON.stringify([route.provider.baseUrl, route.provider.anthropicBaseUrl,
+    route.provider.protocol, route.model.protocol, route.model.upstream])).digest('hex');
 }
 
 module.exports = { startApiRouter, startOllamaProxy: startApiRouter, DEFAULT_PORT, PRESETS, retryDelay, failureKind };

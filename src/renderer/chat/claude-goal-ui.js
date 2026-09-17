@@ -1,9 +1,28 @@
 'use strict';
 
 function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, acceptEvents, setStatus, onChange }) {
-  // ---------- P2: goal bar ----------
-  let goalState = null;
+  let goalState = null, expanded = false, pending = false, ticker = null;
+  const active = () => Boolean(goalState?.phase === 'active' && goalState.armed);
+  const controls = ['goalStartBtn', 'goalPauseBtn', 'goalResumeBtn', 'goalCompleteBtn', 'goalClearBtn'];
+
+  function renderElapsed() {
+    if (!goalState) return;
+    const ms = (goalState.elapsedMs || 0) + (active() && Number.isFinite(goalState.activeSince) ? Math.max(0, Date.now() - goalState.activeSince) : 0);
+    const seconds = Math.floor(ms / 1000), minutes = Math.floor(seconds / 60), hours = Math.floor(minutes / 60);
+    $('goalElapsed').textContent = [hours ? hours + 'h' : '', minutes || hours ? minutes % 60 + 'm' : '', seconds % 60 + 's'].filter(Boolean).join(' ');
+  }
+
+  function renderDetails() {
+    $('goalDetails').hidden = !expanded;
+    $('goalExpandBtn').setAttribute('aria-expanded', String(expanded));
+    const label = expanded ? 'Hide goal details' : 'Show goal details';
+    $('goalExpandBtn').setAttribute('aria-label', label);
+    $('goalExpandBtn').title = label;
+  }
+
   function renderGoalBar() {
+    clearInterval(ticker);
+    ticker = null;
     onChange();
     const bar = $('goalBar');
     if (!goalState) {
@@ -11,91 +30,114 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
       return;
     }
     bar.classList.add('visible');
-    $('goalInputRow').style.display = 'none';
-    const card = $('goalCard');
-    card.style.display = 'block';
+    $('goalEntry').hidden = true;
+    $('goalCard').hidden = false;
     $('goalObjective').textContent = goalState.objective;
     $('goalObjective').title = goalState.objective;
-    const phaseMap = { active: "In progress", paused: "Paused", blocked: "Blocked", complete: "Completed" };
-    const ph = $('goalPhase');
-    ph.textContent = phaseMap[goalState.phase] || goalState.phase;
-    ph.className = 'goal-phase ' + goalState.phase;
-    $('goalMeta').textContent =
-      "Round " + goalState.roundsStarted + ' / ' + goalState.maxRounds + " " +
-      (goalState.phase === 'active' ? (goalState.armed ? " · Continuing automatically" : " · Waiting to continue") : '');
-    const reason = $('goalReason');
-    if (goalState.phase === 'blocked' && goalState.blockedReason) {
-      reason.style.display = 'block';
-      reason.textContent = "Blocked: " + (goalState.blockedReason.message || goalState.blockedReason.code);
-    } else {
-      reason.style.display = 'none';
-    }
-    $('goalPauseBtn').style.display = goalState.phase === 'active' && goalState.armed ? '' : 'none';
-    $('goalResumeBtn').style.display = (goalState.phase === 'paused' || goalState.phase === 'blocked' || (goalState.phase === 'active' && !goalState.armed)) ? '' : 'none';
+    $('goalFullObjective').textContent = goalState.objective;
+    const phase = goalState.phase === 'active' && !goalState.armed ? 'paused' : goalState.phase;
+    const phaseMap = { active: 'Goal in progress', paused: 'Goal paused', blocked: 'Goal blocked', complete: 'Goal completed' };
+    $('goalPhase').textContent = phaseMap[phase] || phase;
+    $('goalPhase').className = 'goal-phase ' + phase;
+    const hints = {
+      active: goalState.errorStreak ? 'Retrying after an execution error…' : goalState.blockerStreak ? 'Checking whether the blocker can be resolved…' : 'Continues automatically until the goal is complete or blocked.',
+      paused: 'Paused. Resume when you are ready to continue.',
+      blocked: 'Resolve the issue below, then resume the goal.',
+      complete: 'The goal has been marked complete. Automatic continuation has stopped.',
+    };
+    $('goalMeta').textContent = hints[phase] || '';
+    $('goalReason').hidden = phase !== 'blocked' || !goalState.blockedReason;
+    $('goalReason').textContent = goalState.blockedReason?.message || goalState.blockedReason?.code || '';
+    $('goalPauseBtn').hidden = !active();
+    $('goalResumeBtn').hidden = !['paused', 'blocked'].includes(phase);
+    $('goalCompleteBtn').hidden = phase === 'complete';
+    renderDetails();
+    renderElapsed();
+    if (active()) ticker = setInterval(renderElapsed, 1000);
   }
-  function showGoalInput() {
-    $('goalBar').classList.add('visible');
-    $('goalInputRow').style.display = 'flex';
-    $('goalCard').style.display = 'none';
-    $('goalInput').focus();
-  }
-  async function refreshGoal() {
-    const res = await chatApi.goalGet();
-    goalState = res && res.ok ? res.goal : null;
+
+  function receiveGoal(goal) {
+    if (goal?.id !== goalState?.id) expanded = false;
+    if (goal?.phase === 'blocked' && goalState?.phase !== 'blocked') expanded = true;
+    goalState = goal;
     renderGoalBar();
   }
+
+  function showGoalInput() {
+    $('goalBar').classList.add('visible');
+    $('goalEntry').hidden = false;
+    $('goalCard').hidden = true;
+    $('goalInput').focus();
+  }
+
+  async function refreshGoal() {
+    const sessionId = context.sessionId;
+    try {
+      const res = await chatApi.goalGet(sharedChat ? { sessionId } : undefined);
+      if (sessionId !== context.sessionId) return;
+      if (res?.ok) receiveGoal(res.goal);
+      else setStatus(res?.error || 'Could not load the goal');
+    } catch (error) { setStatus('Could not load the goal: ' + error.message); }
+  }
+
+  async function updateGoal(action, message) {
+    if (pending) return false;
+    pending = true;
+    const sessionId = context.sessionId;
+    for (const id of controls) $(id).disabled = true;
+    try {
+      const res = await action();
+      if (!res?.ok) throw new Error(res?.error || 'Could not update the goal');
+      if (sessionId !== context.sessionId) return false;
+      if (sharedChat && res.sessionId) context.sessionId = res.sessionId;
+      receiveGoal(res.goal);
+      if (message) setStatus(message);
+      return true;
+    } catch (error) { setStatus(error.message); return false; }
+    finally {
+      pending = false;
+      for (const id of controls) $(id).disabled = false;
+    }
+  }
+
   $('goalStartBtn').addEventListener('click', async () => {
     const objective = $('goalInput').value.trim();
-    if (!objective) return;
-    if (!canChangeContext()) return;
+    if (!objective || !canChangeContext()) return;
     acceptEvents();
-    const res = await chatApi.goalStart({ objective, maxRounds: Number($('goalRounds').value) || 10, sessionId: context.sessionId, workspaceId: context.workspaceId });
-    if (res && res.ok) {
-      goalState = res.goal;
-      $('goalInput').value = '';
-      renderGoalBar();
-      setStatus("Goal started. Continuing automatically…");
-    } else {
-      setStatus("Failed to start: " + ((res && res.error) || "Unknown error"));
-    }
+    if (await updateGoal(() => chatApi.goalStart({ objective, sessionId: context.sessionId, workspaceId: context.workspaceId }), 'Goal started. Working until complete or blocked…')) $('goalInput').value = '';
   });
-  $('goalInput').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); $('goalStartBtn').click(); }
+  $('goalInput').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); $('goalStartBtn').click(); }
+    if (event.key === 'Escape' && !goalState) { $('goalBar').classList.remove('visible'); $('goalPillBtn').focus(); }
   });
-  $('goalPauseBtn').addEventListener('click', async () => { goalState = (await chatApi.goalPause()).goal; renderGoalBar(); });
+  $('goalPauseBtn').addEventListener('click', () => updateGoal(() => chatApi.goalPause(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal paused. Stopping the current response…'));
   $('goalResumeBtn').addEventListener('click', async () => {
-    if (!canChangeContext()) return;
+    if (pending || !goalState || !canChangeContext()) return;
     if (goalState.sessionId && !await openHistorySession(goalState.sessionId)) return;
     if (!goalState.sessionId) context.workspaceId = goalState.workspaceId || null;
     acceptEvents();
-    const res = await chatApi.goalResume();
-    if (res && res.ok) { goalState = res.goal; renderGoalBar(); }
-    else setStatus((res && res.error) || "Could not resume the goal");
+    await updateGoal(() => chatApi.goalResume(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal resumed. Continuing automatically…');
   });
-  $('goalCompleteBtn').addEventListener('click', async () => { goalState = (await chatApi.goalComplete()).goal; renderGoalBar(); });
+  $('goalCompleteBtn').addEventListener('click', () => updateGoal(() => chatApi.goalComplete(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal marked complete.'));
   $('goalClearBtn').addEventListener('click', async () => {
-    await chatApi.goalClear();
-    goalState = null;
-    showGoalInput();
+    if (await updateGoal(() => chatApi.goalClear(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal removed. Automatic work has stopped.')) $('goalPillBtn').focus();
   });
-  chatApi.onGoal((g) => { goalState = g; renderGoalBar(); });
-
-  // Goal entry: header pill toggles the goal bar (Ctrl+G also works).
-  $('goalPillBtn').addEventListener('click', () => {
-    if ($('goalBar').classList.contains('visible') && !goalState) {
-      $('goalBar').classList.remove('visible');
-    } else if (goalState) {
-      renderGoalBar();
-    } else {
-      showGoalInput();
-    }
-  });
-  document.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'g' || e.key === 'G')) {
-      e.preventDefault();
-      if (!goalState) showGoalInput(); else renderGoalBar();
-    }
+  $('goalExpandBtn').addEventListener('click', () => { expanded = !expanded; renderDetails(); });
+  chatApi.onGoal(event => {
+    if (!sharedChat) return receiveGoal(event);
+    if (event?.sessionId !== context.sessionId) return;
+    receiveGoal(Object.prototype.hasOwnProperty.call(event, 'goal') ? event.goal : event);
   });
 
-  return { refresh: refreshGoal, isActive: () => Boolean(goalState?.phase === 'active' && goalState.armed) };
+  function toggleGoal() {
+    if (goalState) { expanded = !expanded; renderGoalBar(); }
+    else if ($('goalBar').classList.contains('visible')) $('goalBar').classList.remove('visible');
+    else showGoalInput();
+  }
+  $('goalPillBtn').addEventListener('click', toggleGoal);
+  document.addEventListener('keydown', (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'g') { event.preventDefault(); toggleGoal(); }
+  });
+  window.addEventListener('beforeunload', () => clearInterval(ticker));
+  return { refresh: refreshGoal, isActive: active };
 }

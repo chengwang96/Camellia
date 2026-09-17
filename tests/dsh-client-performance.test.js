@@ -19,7 +19,7 @@ function sameArtifact(actual, expected) {
   assert.equal(JSON.stringify(actual), JSON.stringify(expected));
 }
 
-test('client startup patch preserves bundle bytes, revisions, maps and HMR updates', { skip: !fs.existsSync(file) && 'Run npm run setup:runtimes first' }, () => {
+test('client startup patch preserves bundle bytes, revisions, maps and HMR updates', { skip: !fs.existsSync(file) && 'Run npm run setup:dsh first' }, () => {
   const original = fs.readFileSync(fs.existsSync(file + '.workbench-original') ? file + '.workbench-original' : file, 'utf8');
   const before = functions(original), after = functions(patch(original));
   for (const source of ['', 'a', '\n', '猫🐈\r\nsecond\n', 'line\n'.repeat(10000)]) {

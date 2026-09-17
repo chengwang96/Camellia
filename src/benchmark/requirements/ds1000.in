@@ -1,0 +1,19 @@
+# Execution dependencies from the pinned upstream environment.yml.
+numpy==1.26.4
+pandas==1.5.3
+scipy==1.12.0
+matplotlib==3.8.4
+scikit-learn==1.4.0
+gensim==4.3.2
+seaborn==0.13.2
+statsmodels==0.14.1
+xgboost==2.0.3
+PyYAML==6.0.2
+torch==2.2.0
+tensorflow-cpu==2.16.1 ; sys_platform == 'win32'
+tensorflow-intel==2.16.1 ; sys_platform == 'win32'
+tensorflow==2.16.1 ; sys_platform == 'darwin'
+# Newer filesystem wheels dropped Windows; 0.31 still satisfies TF 2.16.1.
+tensorflow-io-gcs-filesystem==0.31.0 ; sys_platform == 'win32'
+tensorflow-io-gcs-filesystem==0.37.1 ; sys_platform == 'darwin'
+keras==3.3.3

@@ -8,7 +8,7 @@
 |---|---|---|
 | DeepSeek 官方 | 可用余额、充值与赠送部分，按返回币种展示 | 正式公开接口 [`GET /user/balance`](https://api-docs.deepseek.com/api/get-user-balance/) |
 | Kimi / Moonshot 开放平台 | 可用余额、现金、代金券 | 正式公开接口 [`GET /v1/users/me/balance`](https://platform.kimi.com/docs/api/balance)；中国站 CNY，国际站 [USD](https://platform.kimi.ai/docs/api/balance)，两个平台的 Key 独立 |
-| Kimi Code 订阅 | 周额度及接口返回的其他时间窗口、重置时间 | 官方 [Kimi Code 源码](https://github.com/MoonshotAI/kimi-code)及随应用附带的 `@moonshot-ai/kimi-code@0.43.0`，`GET /coding/v1/usages`；与 Moonshot 充值余额分开 |
+| Kimi Code 订阅 | 周额度及接口返回的其他时间窗口、重置时间 | 官方 [Kimi Code 源码](https://github.com/MoonshotAI/kimi-code)及随应用附带的 `@moonshot-ai/kimi-code@0.43.1`，`GET /coding/v1/usages`；与 Moonshot 充值余额分开 |
 | OpenCode Go | 5 小时、每周、每月使用比例及重置时间 | 官方服务[源代码](https://github.com/anomalyco/opencode/blob/dev/packages/console/app/src/routes/zen/go/v1/usage.ts)的 `GET /zen/go/v1/usage`；Key 必须开通相应订阅 |
 | OpenCode Zen 按量付费 | 暂不提供账户余额查询 | 本次在[公开文档](https://opencode.ai/docs/zen/)与当前开源服务路由中未找到可用 API Key 查询现金余额的接口；仍支持本机调用统计 |
 | Command Code / GOAT | 剩余 Credits、订阅时间窗口及返回的模型/组织限额 | 官方 `command-code@1.54.0` CLI 的 `/usage` 实现：`GET /alpha/whoami?limits=1` → `GET /alpha/billing/credits?orgId=…`；相关[额度说明](https://commandcode.ai/docs/resources/usage-limits)和 [Provider Key 文档](https://commandcode.ai/docs/provider)。Credits 不当作现金美元 |

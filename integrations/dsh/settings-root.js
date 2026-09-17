@@ -4,6 +4,7 @@
  */
 'use strict';
 const React = require('react');
+const { createPortal } = require('react-dom');
 const h = React.createElement;
 const embedded = window.dshDesktop?.settingsEmbedded === true || window.name === 'workbench-settings' || new URLSearchParams(location.search).has('workbench-settings');
 function openWorkbench(page = 'engines') {
@@ -14,12 +15,19 @@ function openWorkbench(page = 'engines') {
 function EmbeddedSettings({ useSections, renderSlot }) {
   const rows = useSections(s => s).filter(row => row.id !== 'models');
   const [selected, select] = React.useState('general');
+  const [language, setLanguage] = React.useState('en');
   const active = rows.find(row => row.id === selected)?.id || rows[0]?.id;
   React.useEffect(() => {
     if (window.dshDesktop) window.dshDesktop.nativeSettingsReady();
     else parent.postMessage({ type: 'workbench:settings-ready' }, '*');
+    if (window.dshDesktop) {
+      window.dshDesktop.workbenchSettings().then(settings => { if (settings.ok) setLanguage(settings.language); });
+      return window.dshDesktop.onLanguageChanged(setLanguage);
+    }
   }, []);
-  return h('section', { className: 'workbench-native-settings', 'aria-label': "DSH settings" },
+  // The settings slot lives inside DSH's collapsible sidebar. Mount the embedded
+  // surface at the document root so sidebar clipping/transforms cannot hide it.
+  return createPortal(h('section', { className: 'workbench-native-settings', 'aria-label': "DSH settings" },
     h('style', null, `
       .workbench-native-settings {position:fixed;inset:0;z-index:9999;display:flex;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#191b1f);font:14px/1.6 system-ui,sans-serif}
       .workbench-native-nav {flex:0 0 158px;padding:16px 12px;border-right:1px solid var(--dsw-alias-border-weak,#eceef1);overflow:auto}
@@ -31,8 +39,8 @@ function EmbeddedSettings({ useSections, renderSlot }) {
     `),
     h('nav', { className: 'workbench-native-nav', 'aria-label': "DSH settings categories" },
       ...rows.map(row => h('button', { key: row.id, 'aria-current': row.id === active ? 'true' : 'false', onClick: () => select(row.id) }, row.label)),
-      h('button', { onClick: () => openWorkbench('providers') }, "Providers & Keys ↗")),
-    h('div', { className: 'workbench-native-content' }, active && renderSlot('settings.section', { close: () => {} }, { only: active })));
+      h('button', { onClick: () => openWorkbench('providers') }, language === 'zh-CN' ? '供应商与 Key ↗' : 'Providers & Keys ↗')),
+    h('div', { className: 'workbench-native-content' }, active && renderSlot('settings.section', { close: () => {} }, { only: active }))), document.body);
 }
 module.exports = function WorkbenchSettingsRoot(props) {
   if (embedded) return h(EmbeddedSettings, props);

@@ -1,6 +1,8 @@
 # Camellia 的多 Harness 接入方案
 
-当前实现（2026-09-15）见 [统一设置与自动运行时](./unified-settings.md)：DSH 设置外壳已源码接入，DSH/Kimi 随包提供，Claude CLI 自动安装，三个引擎的设置统一管理。以下保留早期接入分析；其中“未替换运行时”“未同步全局设置”等描述已由当前实现更新。
+当前实现（2026-09-16）见 [统一设置与按需运行时](./unified-settings.md)：DSH 设置外壳已源码接入，Claude、Codex、DSH、Kimi 和 Antigravity 均按需下载，五个引擎的设置统一管理。Codex 已通过官方 app-server 接入 ChatGPT 订阅和共享 API 线路，配置与登录数据完全放在工作台目录；下文 Codex 暂缓描述也仅代表早期决策。以下保留早期接入分析；其中“未替换运行时”“未同步全局设置”等描述已由当前实现更新。
+
+跨引擎会话共享的最新评估见 [会话共享与切换](./shared-conversations.md)：建议使用共享记录和各引擎原生会话映射，目前仍未实现跨引擎续聊。
 
 早期核实日期：2026-09-14。接入排序依据官方源码、接口文档和当前应用结构；尚未对新 Harness 做真实模型调用评测。
 
@@ -40,7 +42,7 @@ pnpm dsh web
 
 优先考虑新的 [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code)。旧 Python 项目的 [官方 README](https://github.com/MoonshotAI/kimi-cli)已经说明迁移方向；新版使用 TypeScript、MIT 许可并支持 Windows。[新版说明](https://github.com/MoonshotAI/kimi-code/blob/main/README.md)
 
-现已固定并内置 `@moonshot-ai/kimi-code@0.43.0`，通过 `kimi acp` 子进程，以 stdin/stdout JSON-RPC 接入公共聊天界面。入口、主题、工作区列表、模型菜单、消息和工具卡片与 Claude 共用，实现位于 `src/renderer/chat/chat-runtime.js`、`src/engines/kimi-session.js` 和 `src/engines/session-workspaces.js`。[ACP 文档](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/kimi-acp.md)
+现已固定并内置 `@moonshot-ai/kimi-code@0.43.1`，通过 `kimi acp` 子进程，以 stdin/stdout JSON-RPC 接入公共聊天界面。入口、主题、工作区列表、模型菜单、消息和工具卡片与 Claude 共用，实现位于 `src/renderer/chat/chat-runtime.js`、`src/engines/kimi-session.js` 和 `src/engines/session-workspaces.js`。[ACP 文档](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/kimi-acp.md)
 
 使用工作台专属 `KIMI_CODE_HOME` 隔离配置和数据，在其中的 `config.toml` 注入统一路由地址和占位凭据，真实 Key 继续由工作台持有。新版的目录和参数不同于旧 Python CLI。[配置目录](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/configuration/config-files.md)、[提供商](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/configuration/providers.md)
 

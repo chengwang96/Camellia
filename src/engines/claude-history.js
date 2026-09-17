@@ -42,7 +42,7 @@ class ClaudeHistory {
           if (!stat.isFile()) return;
           entries.push({ id: name.slice(0, -6), file, mtimeMs: stat.mtimeMs, size: stat.size, ctimeMs: stat.ctimeMs });
           present.add(file);
-        } catch { /* the CLI can move files during a scan */ }
+        } catch (err) { if (err.code !== 'ENOENT') throw err; }
       }));
     }
     for (const file of this.heads.keys()) if (!present.has(file)) this.heads.delete(file);
@@ -58,7 +58,7 @@ class ClaudeHistory {
       try {
         const stat = this.fs.statSync(file);
         if (stat.isFile() && stat.mtimeMs > mtime) { newest = file; mtime = stat.mtimeMs; }
-      } catch { /* not a transcript */ }
+      } catch (err) { if (err.code !== 'ENOENT') throw err; }
     }
     return newest;
   }
@@ -111,7 +111,8 @@ class ClaudeHistory {
     if (!file) throw new Error("Transcript not found. Refresh the session list.");
     const input = this.fs.createReadStream(file, { encoding: 'utf8' });
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
-    const messages = new Array(limit);
+    const full = limit === Infinity;
+    const messages = full ? [] : new Array(limit);
     let total = 0;
     let cwd = '';
     try {
@@ -125,12 +126,14 @@ class ClaudeHistory {
         if (role === 'user' && row.message.role !== 'user') continue;
         const text = messageText(row.message.content).trim();
         if (!text || (role === 'user' && /^\s*<system-reminder>/.test(text))) continue;
-        messages[total++ % limit] = { role, text: text.slice(0, role === 'user' ? 8000 : 20000) };
+        if (full) { messages.push({ role, text }); total++; }
+        else messages[total++ % limit] = { role, text: text.slice(0, role === 'user' ? 8000 : 20000) };
       }
     } finally {
       lines.close();
       input.destroy();
     }
+    if (full) return { messages, cwd, truncated: false };
     const count = Math.min(total, limit);
     const start = total > limit ? total % limit : 0;
     return { messages: Array.from({ length: count }, (_, i) => messages[(start + i) % limit]), cwd, truncated: total > limit };

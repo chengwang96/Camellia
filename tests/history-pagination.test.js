@@ -33,7 +33,6 @@ test('1,350 conversations are paged by group, collapsed workspaces read no heads
   assert.equal(first.pagination[ws.id].loaded, 0);
   assert.equal(first.pagination.recent.total, 80);
   assert.equal(first.pagination.pinned.total, 70);
-  assert.equal(first.latestSessionId, 'history-0');
 
   meta.collapsed[ws.id] = false; save();
   const opened = await h.call('claude-list-sessions');
@@ -54,7 +53,7 @@ test('1,350 conversations are paged by group, collapsed workspaces read no heads
   assert.equal(end.pagination[ws.id].hasMore, false);
   assert.equal(end.workspaces[0].sessionCount, 1199);
   assert.ok(end.sessions.some(s => s.id === 'history-1199'));
-  assert.equal(end.latestSessionId, 'history-1');
+  assert.equal(end.sessions[0].id, 'history-1');
 });
 
 test('overlapping history scans share a promise; later scans see newly written transcripts', async t => {

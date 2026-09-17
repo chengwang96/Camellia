@@ -1,11 +1,10 @@
 'use strict';
 
-function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus, newSession, openHistorySession, forkSession, openActionMenu, closePops }) {
+function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus, newSession, openHistorySession, forkSession, canFork = () => true, openActionMenu, closePops }) {
   const input = $('input');
   let sessionHistory = [], workspaces = [];
   let historyLoadSeq = 0;
   let pagination = {}, limits = {};
-  let latestSessionId = null;
   // ---------- Workspaces and session history ----------
   const SIDEBAR_ICONS = {
     chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
@@ -26,22 +25,20 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   }
   function updateWorkspaceLabel() {
     const ws = workspaces.find((w) => w.id === context.workspaceId);
-    $('workspaceLabel').textContent = ws ? ws.name : "No workspace";
+    $('workspaceLabel').textContent = ws ? ws.name : window.CamelliaI18n.t("No workspace");
     $('workspacePicker').title = ws ? ws.path : "Standalone session without a workspace";
     $('workspacePicker').disabled = contextBusy();
     $('newSessionBtn').disabled = contextBusy();
-    $('resumeLastBtn').disabled = contextBusy();
   }
   async function loadSessionHistory() {
     const seq = ++historyLoadSeq;
     try {
       const res = await chatApi.listSessions({ limits, activeSessionId: context.sessionId });
       if (seq !== historyLoadSeq) return false;
-      if (!res || !res.ok) throw new Error((res && res.error) || "Cannot load sessions");
-      sessionHistory = res.sessions || [];
-      workspaces = res.workspaces || [];
+      if (!res.ok) throw new Error(res.error);
+      sessionHistory = res.sessions;
+      workspaces = res.workspaces;
       pagination = res.pagination;
-      latestSessionId = res.latestSessionId;
       const active = sessionHistory.find((s) => s.id === context.sessionId);
       if (active) context.workspaceId = active.workspaceId || null;
       if (context.workspaceId && !workspaces.some((w) => w.id === context.workspaceId)) context.workspaceId = null;
@@ -56,7 +53,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'session-more';
-    button.title = label;
+    button.dataset.i18nAttrs = 'title aria-label'; button.title = label;
     button.setAttribute('aria-label', label);
     button.innerHTML = sidebarIcon(icon);
     button.addEventListener('click', (e) => { e.stopPropagation(); onClick(button); });
@@ -65,7 +62,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   function appendGroup(list, label, button) {
     const group = document.createElement('div');
     group.className = 'sb-group sb-flex';
-    group.textContent = label;
+    group.dataset.i18n = ''; group.textContent = label;
     if (button) group.appendChild(button);
     list.appendChild(group);
   }
@@ -127,7 +124,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
         appendMore(children, ws.id);
         if (!children.childElementCount) {
           const empty = document.createElement('div');
-          empty.className = 'ws-empty';
+          empty.dataset.i18n = ''; empty.className = 'ws-empty';
           empty.textContent = workspaceSessions.length ? "Session appears in Pinned" : "No sessions. Click + to start.";
           children.appendChild(empty);
         }
@@ -138,7 +135,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     if (!workspaces.length) {
       const empty = document.createElement('button');
       empty.type = 'button';
-      empty.className = 'ws-create-link';
+      empty.dataset.i18n = ''; empty.className = 'ws-create-link';
       empty.textContent = "Add a folder as a workspace";
       empty.addEventListener('click', () => openWorkspaceDialog());
       list.appendChild(empty);
@@ -151,7 +148,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     appendMore(independent, 'recent');
     if (!independent.childElementCount) {
       const empty = document.createElement('div');
-      empty.className = 'ws-empty';
+      empty.dataset.i18n = ''; empty.className = 'ws-empty';
       empty.textContent = "Choose New session to start a standalone conversation";
       independent.appendChild(empty);
     }
@@ -164,7 +161,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     if (!page?.hasMore) return;
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'history-more';
+    button.className = 'history-more'; button.dataset.i18n = '';
     button.dataset.group = group;
     button.textContent = `Load more (${page.loaded} / ${page.total})`;
     button.addEventListener('click', async () => {
@@ -185,10 +182,17 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     else item.id = 'sessionCurrent';
     const title = s ? s.title : $('headerTitle').textContent;
     item.title = title + (s && s.cwd ? '\n' + s.cwd : '');
-    item.innerHTML = sidebarIcon('chat') + '<span class="session-item-text"><span></span></span><span class="session-item-time"></span>';
+    item.innerHTML = sidebarIcon('chat') + '<span class="session-item-text"><span></span></span><span class="session-item-time" data-i18n></span>';
     item.querySelector('.session-item-text > span').textContent = title || "(Empty session)";
-    item.querySelector('.session-item-time').textContent = s ? relTime(s.mtimeMs) : "Now";
-    const open = () => { if (s && s.id !== context.sessionId) void openHistorySession(s.id); else input.focus(); };
+    if (s?.showOrigin && s.origin) {
+      const badge = document.createElement('span'); badge.className = 'session-origin'; badge.dataset.i18n = '';
+      badge.textContent = s.origin === harnessId ? 'Created here' : 'Created in ' + s.origin;
+      item.querySelector('.session-item-text').appendChild(badge);
+    }
+    const activity = s?.activity;
+    item.dataset.activity = activity || '';
+    item.querySelector('.session-item-time').textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : s ? relTime(s.mtimeMs) : 'Now';
+    const open = () => { if (s && (s.id !== context.sessionId || ['permission', 'question'].includes(s.activity))) void openHistorySession(s.id); else input.focus(); };
     item.addEventListener('click', open);
     item.addEventListener('keydown', (e) => {
       if (e.target !== item) return;
@@ -203,7 +207,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   async function runMetaOp(payload) {
     try {
       const res = await chatApi.metaOp(payload);
-      if (!res || !res.ok) throw new Error((res && res.error) || "Action failed");
+      if (!res.ok) throw new Error(res.error);
       return res;
     } catch (err) { setStatus(err.message); return null; }
   }
@@ -229,7 +233,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       } },
       ...(!chatProfile.fixedCwd ? [{ label: "Move to workspace…", disabled: contextBusy(), run: () => openWorkspacePicker(anchor, s) }] : []),
       ...(s.workspaceId && !chatProfile.fixedCwd ? [{ label: "Move out of workspace", disabled: contextBusy(), run: () => void assignWorkspace(s, null) }] : []),
-      { label: "Fork session", disabled: contextBusy(), run: () => void forkSession(s) },
+      ...(canFork(s) ? [{ label: "Fork session", disabled: contextBusy(), run: () => void forkSession(s) }] : []),
       { label: "Archive session", disabled: contextBusy(), run: () => void archiveSession(s) },
     ]);
   }
@@ -245,7 +249,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     const selected = s ? s.workspaceId : context.workspaceId;
     openActionMenu(anchor, [
       { label: "No workspace · Standalone session", current: !selected, disabled: contextBusy(), run: () => void assignWorkspace(s, null) },
-      ...workspaces.map((ws) => ({ label: ws.name, title: ws.path, current: selected === ws.id, disabled: contextBusy(), run: () => void assignWorkspace(s, ws.id) })),
+      ...workspaces.map((ws) => ({ label: ws.name, title: ws.path, localize: false, current: selected === ws.id, disabled: contextBusy(), run: () => void assignWorkspace(s, ws.id) })),
       { label: "Add workspace…", run: () => openWorkspaceDialog() },
     ]);
   }
@@ -304,7 +308,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   $('wsBrowse').addEventListener('click', async () => {
     try {
       const res = await window.dshDesktop.pickFile({ kind: 'directory', title: "Choose workspace folder" });
-      if (!res || res.canceled) return;
+      if (res.canceled) return;
       $('wsPath').value = res.path;
       defaultWorkspaceName();
     } catch (err) { $('wsError').textContent = err.message; }
@@ -319,7 +323,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
         ? { op: 'rename-workspace', id: editingWorkspace.id, name: $('wsName').value.trim() }
         : { op: 'create-workspace', name: $('wsName').value.trim(), path: $('wsPath').value.trim() };
       const res = await chatApi.metaOp(payload);
-      if (!res || !res.ok) throw new Error((res && res.error) || "Could not save");
+      if (!res.ok) throw new Error(res.error);
       if (!editingWorkspace && !context.sessionId && !contextBusy()) context.workspaceId = res.workspace.id;
       $('wsCreate').disabled = false;
       closeWorkspaceDialog();
@@ -343,7 +347,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       if (save) {
         try {
           const res = await chatApi.renameSession({ id: s.id, title: inputEl.value.trim() });
-          if (!res || !res.ok) throw new Error((res && res.error) || "Could not rename");
+          if (!res.ok) throw new Error(res.error);
           if (context.sessionId === s.id && inputEl.value.trim()) $('headerTitle').textContent = inputEl.value.trim();
           setStatus("Session renamed");
         } catch (err) { setStatus(err.message); }
@@ -362,16 +366,16 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     if (!canChangeContext()) return;
     try {
       const res = await chatApi.archiveSession({ id: s.id, archived: true });
-      if (!res || !res.ok) throw new Error((res && res.error) || "Could not archive");
+      if (!res.ok) throw new Error(res.error);
       if (context.sessionId === s.id) await newSession(null);
       await loadSessionHistory();
       setStatus("Session archived");
     } catch (err) { setStatus(err.message); }
   }
 
+  window.addEventListener('camellia:language', updateWorkspaceLabel);
   return {
     load: loadSessionHistory, render: renderSessionSidebar, updateLabel: updateWorkspaceLabel, metaOp: runMetaOp,
     get sessions() { return sessionHistory; }, get workspaces() { return workspaces; },
-    get latestSessionId() { return latestSessionId; },
   };
 }

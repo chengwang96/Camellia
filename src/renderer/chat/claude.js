@@ -12,11 +12,14 @@ const context = { sessionId: null, workspaceId: null };
 
 
   let running = false;
+  let conversationActivity = null;
   let currentRunId = null;
   let acceptSessionEvents = false;
-  let restoringRun = harnessId === 'kimi';
+  let restoringRun = sharedChat || harnessId !== 'claude';
+  let switchingEngine = false;
+  let conversationPrefs = { mode: 'direct', warnOnSwitch: false, showOrigin: false };
+  let loadedEngine = harnessId;
   const eventsDuringRestore = [];
-  let resumeNext = false;
   let turnEl = null;          // current assistant turn container
   let blocks = {};            // stream block index -> { type, raw, el, ... }
   let pendingTools = {};      // tool_use_id -> card handle
@@ -32,8 +35,11 @@ const context = { sessionId: null, workspaceId: null };
 
   let sessionOpenSeq = 0;
   let loadingSession = false;
+  let editingMessage = null;
   let permRequestId = null;   // pending can_use_tool control request id
   const permissionQueue = [];
+  let pendingQuestion = null, permissionSubmission = null;
+  const questionDrafts = new Map();
 
   // Offline defaults; a configured pool supplies its explicit model groups.
   const MODELS = [{ id: '', label: "Select model" }];
@@ -45,9 +51,45 @@ const context = { sessionId: null, workspaceId: null };
     { id: 'high', label: 'High' },
     { id: 'max', label: 'Max' },
   ];
-  if (harnessId === 'kimi') LEVELS.splice(1);
+  if (harnessId !== 'claude') LEVELS.splice(1);
   let currentModel = '';
   let currentLevel = '';
+  let currentPermission = chatProfile.permission;
+  let currentConnection = 'api';
+  const accountSubscription = () => ['codex', 'kimi', 'antigravity'].includes(harnessId) && currentConnection === 'subscription';
+  const accountName = { codex: 'ChatGPT', kimi: 'Kimi', antigravity: 'Google' }[harnessId];
+  let accountModels = [];
+  const googleSubscription = () => harnessId === 'antigravity' && currentConnection === 'subscription';
+  let uiReady = false, sending = false, settingsLoadSeq = 0;
+  const uiPrefix = 'camellia-chat-';
+  const draftKey = (id = context.sessionId, workspace = context.workspaceId) => id || 'new:' + (workspace || 'standalone');
+  function readUi(key) {
+    try { return JSON.parse(localStorage.getItem(uiPrefix + key)); } catch { return null; }
+  }
+  function writeUi(key, value) {
+    try { localStorage.setItem(uiPrefix + key, JSON.stringify(value)); }
+    catch { setStatus('Could not save the draft on this computer. Keep this page open until you copy or send it.'); }
+  }
+  function saveDraft() {
+    if (!sharedChat || !uiReady || loadingSession || sending) return;
+    writeUi('draft:' + draftKey(), { text: input.value, attachments, pendingForkId,
+      scrollTop: chatScroll.scrollTop, bottom: nearBottom() });
+    writeUi('location', { sessionId: context.sessionId, workspaceId: context.workspaceId });
+  }
+  function restoreDraft() {
+    if (!sharedChat) return;
+    const saved = readUi('draft:' + draftKey());
+    input.value = typeof saved?.text === 'string' ? saved.text : '';
+    attachments = Array.isArray(saved?.attachments) ? saved.attachments : [];
+    pendingForkId = saved?.pendingForkId || null;
+    renderAttachments(); autoResize(); updateSendEnabled();
+    chatScroll.scrollTop = saved && !saved.bottom ? Number(saved.scrollTop) || 0 : chatScroll.scrollHeight;
+  }
+  window.addEventListener('beforeunload', saveDraft);
+  let scrollSaveTimer;
+  chatScroll.addEventListener('scroll', () => {
+    clearTimeout(scrollSaveTimer); scrollSaveTimer = setTimeout(saveDraft, 120);
+  });
 
   const SENT = '\x01'; // escaped SOH sentinel — never appears in prose
 
@@ -152,29 +194,43 @@ const context = { sessionId: null, workspaceId: null };
 
   function modelLabel(id) {
     const m = MODELS.find((x) => x.id === id);
-    return m ? m.label : id || "Default model";
+    return id ? (m ? m.label : id) : window.CamelliaI18n.t(m?.label || "Default model");
   }
   function levelLabel(id) {
     const l = LEVELS.find((x) => x.id === id);
     return l ? l.label : 'Default';
   }
+  window.addEventListener('camellia:language', () => {
+    renderModelPill();
+    if (!context.sessionId) $('headerTitle').textContent = window.CamelliaI18n.t('New session');
+  });
   function renderModelPill() {
     $('modelPillName').textContent = modelLabel(currentModel);
     $('modelPillLevel').textContent = currentLevel ? levelLabel(currentLevel) : '';
   }
 
-  async function persistModel(model) {
-    currentModel = model;
-    if (harnessId === 'kimi') { currentLevel = ''; LEVELS.splice(1); }
-    renderModelPill();
-    await chatApi.saveSettings({ model, ...(harnessId === 'kimi' ? { thinkingBudget: '' } : {}) });
-    setStatus("Model changed: " + modelLabel(model) + " (applies to the next message)");
+  async function persistSettings(patch, message) {
+    if (sharedChat && conversationBusy()) return;
+    const sessionId = context.sessionId;
+    try {
+      const result = await chatApi.saveSettings({ ...patch, ...(sharedChat || ['codex', 'antigravity'].includes(harnessId) ? { sessionId: context.sessionId } : {}) });
+      if (!result.ok) throw new Error(result.error);
+      if (sessionId !== context.sessionId) return;
+      if (harnessId !== 'claude' && patch.model !== undefined) LEVELS.splice(1);
+      applySessionSettings(result.settings);
+      if (harnessId === 'codex') applyCodexLevels();
+      setStatus(message);
+    } catch (error) {
+      $('selPermission').value = currentPermission;
+      setStatus("Could not save settings: " + error.message);
+    }
   }
-  async function persistLevel(level) {
-    currentLevel = level;
-    renderModelPill();
-    await chatApi.saveSettings({ thinkingBudget: level });
-    setStatus("Reasoning level changed: " + levelLabel(level) + " (applies to the next message)");
+  function persistModel(model) {
+    return persistSettings({ model, ...(harnessId !== 'claude' ? { thinkingBudget: '' } : {}) },
+      "Model changed: " + modelLabel(model) + " (applies to the next message)");
+  }
+  function persistLevel(level) {
+    return persistSettings({ thinkingBudget: level }, "Reasoning level changed: " + levelLabel(level) + " (applies to the next message)");
   }
 
   function chevRight() {
@@ -195,7 +251,7 @@ const context = { sessionId: null, workspaceId: null };
     sub.style.minWidth = '220px';
     if (title) {
       const g = document.createElement('div');
-      g.className = 'pop-group';
+      g.className = 'pop-group'; g.dataset.i18n = '';
       g.textContent = title;
       sub.appendChild(g);
     }
@@ -204,6 +260,7 @@ const context = { sessionId: null, workspaceId: null };
       el.className = 'pop-opt' + (o.id === currentId ? ' current' : '');
       el.innerHTML = '<span></span>' + checkMark();
       el.querySelector('span').textContent = o.label;
+      if (options === LEVELS || !o.id) el.querySelector('span').dataset.i18n = '';
       el.addEventListener('click', () => { void onPick(o.id); closePops(); });
       sub.appendChild(el);
     }
@@ -223,14 +280,15 @@ const context = { sessionId: null, workspaceId: null };
     showPop(rect, (pop) => {
       const rowModel = document.createElement('div');
       rowModel.className = 'pop-row';
-      rowModel.innerHTML = "<span>Model</span><span class=\"pop-row-value\"></span>" + chevRight();
+      rowModel.innerHTML = "<span data-i18n>Model</span><span class=\"pop-row-value\"></span>" + chevRight();
       rowModel.querySelector('.pop-row-value').textContent = modelLabel(currentModel);
       rowModel.addEventListener('click', () => {
-        openSubMenu(rowModel, "Model · Same-model failover", MODELS, currentModel, persistModel);
+        openSubMenu(rowModel, accountSubscription() ? 'Model · ' + accountName + ' account' : 'Model · Same-model failover', MODELS, currentModel, persistModel);
       });
       const rowLevel = document.createElement('div');
       rowLevel.className = 'pop-row';
-      rowLevel.innerHTML = "<span>Reasoning level</span><span class=\"pop-row-value\"></span>" + chevRight();
+      rowLevel.innerHTML = "<span data-i18n>Reasoning level</span><span class=\"pop-row-value\"></span>" + chevRight();
+      rowLevel.querySelector('.pop-row-value').dataset.i18n = '';
       rowLevel.querySelector('.pop-row-value').textContent = levelLabel(currentLevel);
       rowLevel.addEventListener('click', () => {
         openSubMenu(rowLevel, '', LEVELS, currentLevel, persistLevel);
@@ -246,7 +304,7 @@ const context = { sessionId: null, workspaceId: null };
     showPop(rect, (pop) => {
       if (!lastUsage) {
         const d = document.createElement('div');
-        d.className = 'pop-group';
+        d.className = 'pop-group'; d.dataset.i18n = '';
         d.textContent = "Usage appears here after a completed turn";
         pop.appendChild(d);
         return;
@@ -258,14 +316,14 @@ const context = { sessionId: null, workspaceId: null };
         ["Output tokens", fmtTokens(lastUsage.output_tokens)],
       ];
       const g = document.createElement('div');
-      g.className = 'pop-group';
+      g.className = 'pop-group'; g.dataset.i18n = '';
       g.textContent = "Last turn";
       pop.appendChild(g);
       for (const [k, v] of rows) {
         const el = document.createElement('div');
         el.className = 'pop-row';
         el.innerHTML = '<span></span><span class="pop-row-value"></span>';
-        el.querySelector('span').textContent = k;
+        el.querySelector('span').dataset.i18n = ''; el.querySelector('span').textContent = k;
         el.querySelector('.pop-row-value').textContent = '~' + v;
         pop.appendChild(el);
       }
@@ -284,12 +342,15 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function addAttachments(paths) {
+    let unsupportedImage = false;
     for (const p of paths || []) {
       if (!p) continue;
+      if (chatProfile.supportsImages === false && isImagePath(p)) { unsupportedImage = true; continue; }
       if (attachments.some((a) => a.path === p)) continue;
       attachments.push({ path: p, name: String(p).split(/[\\/]/).pop(), isImage: isImagePath(p) });
     }
     renderAttachments();
+    if (unsupportedImage) setStatus('Antigravity currently supports text and code attachments. Use Claude or Kimi for images.');
   }
 
   function renderAttachments() {
@@ -311,11 +372,12 @@ const context = { sessionId: null, workspaceId: null };
       });
       row.appendChild(chip);
     });
+    saveDraft();
   }
 
   $('attachBtn').addEventListener('click', async () => {
     const res = await window.dshDesktop.pickAttachments();
-    if (res && !res.canceled && res.paths && res.paths.length) addAttachments(res.paths);
+    if (!res.canceled) addAttachments(res.paths);
   });
 
   // Drag & drop onto the input card
@@ -354,11 +416,12 @@ const context = { sessionId: null, workspaceId: null };
   });
 
   // ---------- messages ----------
-  function addUser(text, atts) {
+  function addUser(text, atts, meta = {}) {
     const was = nearBottom();
     clearEmpty();
     const div = document.createElement('div');
     div.className = 'msg-user';
+    div.messageData = { text, attachments: atts || [], seq: meta.seq, at: meta.at };
     const b = document.createElement('div');
     b.className = 'bubble';
     b.textContent = text;
@@ -374,8 +437,117 @@ const context = { sessionId: null, workspaceId: null };
       }
       div.appendChild(chips);
     }
+    const actions = document.createElement('div');
+    actions.className = 'message-actions';
+    const time = document.createElement('time');
+    if (meta.at) { time.dateTime = new Date(meta.at).toISOString(); time.textContent = new Date(meta.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+    actions.appendChild(time);
+    const copy = document.createElement('button');
+    copy.type = 'button'; copy.className = 'message-copy'; copy.title = 'Copy message'; copy.setAttribute('aria-label', 'Copy message');
+    copy.dataset.i18nAttrs = 'title aria-label';
+    copy.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="12" height="12" rx="3"/><path d="M15 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></svg>';
+    copy.onclick = async () => { try { await navigator.clipboard.writeText(div.messageData.text); setStatus('Message copied'); } catch { setStatus('Could not copy the message'); } };
+    actions.appendChild(copy);
+    if (sharedChat) {
+      const edit = document.createElement('button');
+      edit.type = 'button'; edit.className = 'message-edit'; edit.title = 'Edit message'; edit.setAttribute('aria-label', 'Edit message'); edit.hidden = true;
+      edit.dataset.i18nAttrs = 'title aria-label';
+      edit.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m14 5 5 5M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15z"/></svg>';
+      edit.onclick = () => beginMessageEdit(div);
+      actions.appendChild(edit);
+    }
+    div.appendChild(actions);
     chat.appendChild(div);
+    updateMessageActions();
     maybeScroll(was);
+    return div;
+  }
+
+  function updateMessageActions() {
+    const users = [...chat.querySelectorAll('.msg-user')];
+    const editable = sharedChat && context.sessionId && !conversationBusy() && !loadingSession && !sending && !switchingEngine;
+    for (const div of users) {
+      const button = div.querySelector('.message-edit');
+      if (button) button.hidden = !editable || div !== users.at(-1) || !div.messageData.seq || Boolean(editingMessage);
+    }
+  }
+
+  function cancelMessageEdit() {
+    const state = editingMessage;
+    if (!state) return;
+    editingMessage = null;
+    state.div.classList.remove('editing'); state.form.remove();
+    updateConversationControls();
+    state.div.querySelector('.message-edit')?.focus();
+  }
+
+  function beginMessageEdit(div) {
+    if (!sharedChat || conversationBusy() || contextBusy() || !div.messageData.seq || div !== [...chat.querySelectorAll('.msg-user')].at(-1)) return;
+    cancelMessageEdit();
+    const form = document.createElement('form'); form.className = 'message-editor';
+    const textarea = document.createElement('textarea'); textarea.setAttribute('aria-label', 'Edit message'); textarea.value = div.messageData.text;
+    const hint = document.createElement('div'); hint.className = 'message-edit-hint'; hint.textContent = 'The previous reply and tool history are cleared. File changes are kept.';
+    hint.dataset.i18n = ''; textarea.dataset.i18nAttrs = 'aria-label';
+    const controls = document.createElement('div'); controls.className = 'message-edit-buttons';
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel'; cancel.onclick = cancelMessageEdit;
+    const submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'primary'; submit.textContent = 'Send';
+    cancel.dataset.i18n = ''; submit.dataset.i18n = '';
+    const status = document.createElement('div'); status.className = 'message-edit-status'; status.dataset.i18n = ''; status.hidden = true; status.setAttribute('role', 'status');
+    controls.append(cancel, submit); form.append(textarea, hint, status, controls); div.appendChild(form); div.classList.add('editing');
+    const state = { div, form, textarea, submit, cancel, status, sessionId: context.sessionId }; editingMessage = state;
+    const resize = () => { textarea.style.height = 'auto'; textarea.style.height = Math.min(320, Math.max(100, textarea.scrollHeight)) + 'px'; submit.disabled = !textarea.value.trim() && !div.messageData.attachments.length; };
+    textarea.oninput = resize;
+    textarea.onkeydown = event => {
+      if (event.key === 'Escape') { event.preventDefault(); cancelMessageEdit(); }
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void resendEditedMessage(state); }
+    };
+    form.onsubmit = event => { event.preventDefault(); void resendEditedMessage(state); };
+    updateConversationControls(); resize(); textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }
+
+  function showMessageEditStatus(state, text, error = false) {
+    state.status.textContent = text; state.status.hidden = false;
+    state.status.classList.toggle('error', error); state.status.setAttribute('role', error ? 'alert' : 'status');
+    state.status.scrollIntoView({ block: 'nearest' });
+  }
+
+  async function resendEditedMessage(state) {
+    if (editingMessage !== state || state.sessionId !== context.sessionId) return;
+    if (sending) return;
+    if (conversationBusy() || contextBusy()) { showMessageEditStatus(state, 'Wait for this conversation to finish or stop it first.', true); return; }
+    const text = state.textarea.value.trim(), atts = state.div.messageData.attachments;
+    if (!text && !atts.length) { showMessageEditStatus(state, 'Message cannot be empty', true); return; }
+    sending = true; restoringRun = true; state.submit.disabled = true; state.cancel.disabled = true; state.textarea.disabled = true;
+    state.submit.textContent = 'Sending…'; state.form.setAttribute('aria-busy', 'true');
+    // Clear the old reply immediately. Keep its nodes until the backend accepts
+    // the revision so a rejected request can restore the unchanged transcript.
+    const previousReply = [];
+    while (state.div.nextSibling) { previousReply.push(state.div.nextSibling); state.div.nextSibling.remove(); }
+    showMessageEditStatus(state, 'Restarting this turn…');
+    updateConversationControls();
+    let res;
+    try {
+      res = await chatApi.send({ sessionId: state.sessionId, workspaceId: context.workspaceId, editSeq: state.div.messageData.seq,
+        prompt: buildPrompt(text, atts), displayText: text, attachments: atts });
+    } catch (error) { res = { ok: false, error: error.message }; }
+    sending = false;
+    if (!res?.ok) {
+      state.div.after(...previousReply);
+      restoringRun = false;
+      for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
+      state.submit.disabled = false; state.cancel.disabled = false; state.textarea.disabled = false;
+      state.submit.textContent = 'Send'; state.form.removeAttribute('aria-busy');
+      const error = 'Could not resend: ' + (res?.error || 'No response from the app');
+      showMessageEditStatus(state, error, true); setStatus(error); updateConversationControls(); state.textarea.focus({ preventScroll: true }); return;
+    }
+    editingMessage = null;
+    while (state.div.nextSibling) state.div.nextSibling.remove();
+    state.div.remove(); turnEl = null; blocks = {}; pendingTools = {}; todoItems = null; todoPanelEl = null;
+    addUser(text, atts, { seq: res.userSeq, at: Date.now() });
+    currentRunId = res.runId; acceptSessionEvents = true; loadedEngine = harnessId;
+    setRunning(true); restoringRun = false;
+    for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
+    updateConversationControls(); void sidebar.load();
   }
 
   function ensureTurn() {
@@ -384,7 +556,7 @@ const context = { sessionId: null, workspaceId: null };
     const div = document.createElement('div');
     div.className = 'turn';
     div.innerHTML =
-      '<div class="turn-meta"><div class="turn-avatar">' + chatProfile.initial + '</div><span>' + chatProfile.shortName + '</span></div>' +
+      '<div class="turn-meta">' + chatAvatar + '<span>' + chatProfile.shortName + '</span></div>' +
       '<div class="turn-body"></div>';
     chat.appendChild(div);
     turnEl = div;
@@ -400,7 +572,7 @@ const context = { sessionId: null, workspaceId: null };
       el = document.createElement('div');
       el.className = 'run-status';
       el.setAttribute('role', 'status');
-      el.innerHTML = '<span class="pulse"></span><span class="run-text"></span><span class="run-clock"></span>';
+      el.innerHTML = '<span class="pulse"></span><span class="run-text" data-i18n></span><span class="run-clock"></span>';
       t.insertBefore(el, t.querySelector('.turn-body'));
     }
     return el;
@@ -438,8 +610,7 @@ const context = { sessionId: null, workspaceId: null };
     const parts = [];
     if (c.in_progress) parts.push(c.in_progress + " In progress");
     if (c.pending) parts.push(c.pending + " Pending");
-    if (!parts.length && c.completed) parts.push(c.completed + " Completed");
-    else if (c.completed) parts.push(c.completed + " Completed");
+    if (c.completed) parts.push(c.completed + " Completed");
     return parts.join(' · ');
   }
   function todoIconSvg(status) {
@@ -459,7 +630,7 @@ const context = { sessionId: null, workspaceId: null };
     el.innerHTML =
       '<div class="todo-head">' +
       '  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>' +
-      "  <span>Task</span><span class=\"todo-counts\"></span>" +
+      "  <span data-i18n>Task</span><span class=\"todo-counts\"></span>" +
       '  <span class="chev"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></span>' +
       '</div>' +
       '<div class="todo-list"></div>';
@@ -540,7 +711,7 @@ const context = { sessionId: null, workspaceId: null };
     const el = document.createElement('div');
     el.className = 'think open live';
     el.innerHTML =
-      "<div class=\"think-head\"><span class=\"arrow\">▶</span><span>💭 Reasoning</span><span class=\"think-status\">In progress…</span></div>" +
+      "<div class=\"think-head\"><span class=\"arrow\">▶</span><span>💭 Reasoning</span><span class=\"think-status\" data-i18n>In progress…</span></div>" +
       '<div class="think-body"></div>';
     el.querySelector('.think-head').addEventListener('click', () => el.classList.toggle('open'));
     turnBody().appendChild(el);
@@ -578,10 +749,10 @@ const context = { sessionId: null, workspaceId: null };
       '  <span class="tool-state"></span>' +
       '</div>' +
       '<div class="tool-body">' +
-      "  <div class=\"tool-section-label\">Input</div>" +
+      "  <div class=\"tool-section-label\" data-i18n>Input</div>" +
       '  <div class="tool-code tool-input"></div>' +
-      "  <div class=\"tool-section-label\">Output</div>" +
-      "  <div class=\"tool-output\">Waiting for result…</div>" +
+      "  <div class=\"tool-section-label\" data-i18n>Output</div>" +
+      "  <div class=\"tool-output\" data-i18n>Waiting for result…</div>" +
       '</div>';
     el.querySelector('.tool-name').textContent = name || 'tool';
     el.querySelector('.tool-head').addEventListener('click', () => el.classList.toggle('open'));
@@ -606,6 +777,7 @@ const context = { sessionId: null, workspaceId: null };
         }
       },
       setOutput(text, isErr) {
+        this.finished = true;
         this.outputEl.textContent = text || "(No output)";
         this.outputEl.classList.toggle('err', !!isErr);
         this.stateEl.className = 'tool-state ' + (isErr ? 'err' : 'done');
@@ -626,8 +798,7 @@ const context = { sessionId: null, workspaceId: null };
         if (st) st.textContent = "Completed";
         if (!b.userToggled) b.el.classList.remove('open');
       }
-      const cur = b.el && b.el.querySelector && b.el.querySelector('.cursor');
-      if (cur) cur.remove();
+      b.el.querySelector('.cursor')?.remove();
     }
     blocks = {};
   }
@@ -766,6 +937,7 @@ const context = { sessionId: null, workspaceId: null };
 
   function setRunning(v) {
     running = v;
+    updateConversationControls();
     sidebar.updateLabel();
     if (v) {
       sendBtn.classList.add('stop');
@@ -785,12 +957,30 @@ const context = { sessionId: null, workspaceId: null };
   // ---------- event handling ----------
   function handleEvent(ev) {
     if (!ev) return;
+    if (sharedChat && ev.type === 'conversation:activity') {
+      void sidebar.load();
+      if (restoringRun) { eventsDuringRestore.push(ev); return; }
+      if (ev.session_id === context.sessionId) { conversationActivity = ev.activity; updateConversationControls(); }
+      return;
+    }
     if (restoringRun) { eventsDuringRestore.push(ev); return; }
+    if (sharedChat && ev.session_id !== context.sessionId) return;
+    if (ev.handoff && ev.type === 'gui:permission') { permissionQueue.push(ev); if (!permRequestId) showPermissionDialog(ev); return; }
     if (!acceptSessionEvents) return;
+    if (ev.type === 'conversation:started') {
+      if (ev.runId !== currentRunId) {
+        currentRunId = ev.runId;
+        turnEl = null; blocks = {}; pendingTools = {};
+        addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now() });
+        setRunning(true);
+      }
+      return;
+    }
     if (currentRunId != null && ev.runId != null && currentRunId !== ev.runId) return;
     const was = nearBottom();
 
     if (ev.type === 'system' && ev.subtype === 'init') {
+      loadedEngine = harnessId;
       context.sessionId = ev.session_id || context.sessionId;
       context.workspaceId = ev.workspaceId || null;
       sidebar.render();
@@ -866,8 +1056,8 @@ const context = { sessionId: null, workspaceId: null };
       renderTodoPanel();
       return;
     }
-    if (ev.type === 'gui:config' && harnessId === 'kimi') {
-      const thinking = (ev.options || []).find(option => option.id === 'thinking');
+    if (ev.type === 'gui:config' && harnessId !== 'claude') {
+      const thinking = (ev.options || []).find(option => ['thinking', 'reasoning_effort'].includes(option.id));
       LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' },
         ...(thinking?.options || []).map(option => ({ id: option.value, label: option.name })));
       currentLevel = thinking?.currentValue || '';
@@ -882,6 +1072,8 @@ const context = { sessionId: null, workspaceId: null };
     }
 
     if (ev.type === 'result') {
+      finishQuestion(ev.subtype === 'stopped' ? 'Stopped' : 'This request is no longer active');
+      permissionSubmission = null;
       permRequestId = null;
       permissionQueue.length = 0;
       $('permMask').classList.remove('visible');
@@ -889,6 +1081,7 @@ const context = { sessionId: null, workspaceId: null };
       clearRunStatus();
       const stopped = ev.subtype === 'stopped';
       const ok = !ev.is_error && ev.subtype !== 'error_max_turns' && !stopped;
+      for (const card of Object.values(pendingTools)) if (!card.finished) card.setOutput(stopped ? 'Stopped before a tool result was received.' : 'No tool result was received before the response ended.', true);
       const stats = resultStats(ev);
       const chip = document.createElement('div');
       chip.className = 'run-result ' + (ok ? 'ok' : 'err');
@@ -919,56 +1112,72 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function updateSendEnabled() {
-    sendBtn.disabled = loadingSession || (!running && !input.value.trim() && !attachments.length);
+    sendBtn.disabled = loadingSession || sending || Boolean(editingMessage) || (sharedChat && !running && goalUI.isActive()) || (!running && !input.value.trim() && !attachments.length);
   }
 
   async function send() {
     if (running) {
-      if (currentRunId) {
-        await chatApi.cancel(currentRunId);
-        setStatus("Stopping…");
+      if (currentRunId || sharedChat) {
+        await chatApi.cancel(sharedChat ? { sessionId: context.sessionId, runId: currentRunId } : currentRunId);
+        if (running) setStatus("Stopping…");
       }
       return;
     }
-    if (!canChangeContext()) return;
+    if (editingMessage || !canChangeContext() || (sharedChat && conversationBusy())) return;
+    if (sharedChat && context.sessionId && loadedEngine !== harnessId) {
+      const settings = await window.dshDesktop.workbenchSettings();
+      if (settings.conversations?.warnOnSwitch) { await switchOptions(harnessId); return; }
+    }
     const text = input.value.trim();
     const atts = attachments.slice();
     if (!text && !atts.length) return;
+    if (chatProfile.supportsImages === false && atts.some(a => a.isImage)) {
+      setStatus('This engine cannot accept images. Your attachments are retained; switch engines or remove the images to continue.');
+      return;
+    }
+    saveDraft();
+    const sentDraftKey = draftKey();
+    sending = true;
+    if (sharedChat) restoringRun = true;
     input.value = '';
     attachments = [];
     renderAttachments();
     autoResize();
-    addUser(text || "[Attachments]", atts);
+    const userMessage = addUser(text || "[Attachments]", atts, { at: Date.now() });
     if (!context.sessionId && !$('headerTitle').dataset.titled && text) {
       $('headerTitle').textContent = text.length > 24 ? text.slice(0, 24) + '…' : text;
       $('headerTitle').dataset.titled = '1';
     }
     setRunning(true);
+    updateSendEnabled();
     acceptSessionEvents = true;
     sidebar.render();
     let res;
     try {
-      const settings = await chatApi.getSettings();
+      const settings = await chatApi.getSettings({ sessionId: context.sessionId });
       res = await chatApi.send({
         prompt: buildPrompt(text, atts),
+        displayText: text,
         attachments: atts,
         sessionId: context.sessionId || null,
         workspaceId: context.workspaceId,
-        resumeLast: resumeNext,
         fork: Boolean(pendingForkId),
-        settings: settings || {},
+        settings,
       });
     } catch (err) { res = { ok: false, error: err.message }; }
-    resumeNext = false;
-    if (!res || !res.ok) {
+    sending = false;
+    if (!res.ok) {
+      if (!input.value && !attachments.length) { input.value = text; attachments = atts; renderAttachments(); autoResize(); }
+      saveDraft();
       finalizeStreamBlocks();
       const chip = document.createElement('div');
       chip.className = 'run-result err';
-      chip.textContent = "Failed to start: " + ((res && res.error) || "Unknown error");
+      chip.textContent = "Failed to start: " + res.error;
       chat.appendChild(chip);
       setStatus("Failed to start");
       setRunning(false);
       acceptSessionEvents = false;
+      restoringRun = false; eventsDuringRestore.length = 0;
       return;
     }
     if (pendingForkId) {
@@ -976,6 +1185,16 @@ const context = { sessionId: null, workspaceId: null };
       if (running) setStatus("Forking session…");
     }
     if (running) currentRunId = res.runId;
+    if (res.sessionId) context.sessionId = res.sessionId;
+    userMessage.messageData.seq = res.userSeq;
+    loadedEngine = harnessId;
+    if (sharedChat) {
+      restoringRun = false;
+      for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
+      updateSendEnabled(); void sidebar.load();
+    }
+    if (sharedChat) writeUi('draft:' + sentDraftKey, {});
+    saveDraft();
   }
 
   function autoResize() {
@@ -985,6 +1204,7 @@ const context = { sessionId: null, workspaceId: null };
   input.addEventListener('input', () => {
     autoResize();
     if (!running) updateSendEnabled();
+    saveDraft();
   });
   sendBtn.addEventListener('click', send);
   input.addEventListener('keydown', (e) => {
@@ -993,11 +1213,18 @@ const context = { sessionId: null, workspaceId: null };
 
   async function newSession(workspaceId = null) {
     if (!canChangeContext()) return;
+    saveDraft();
+    const wasReady = uiReady; uiReady = false;
     ++sessionOpenSeq;
+    resetConversationView();
+    loadingSession = true; input.disabled = true;
+    updateConversationControls();
     closePops();
     acceptSessionEvents = false;
     currentRunId = null;
     context.sessionId = null;
+    loadedEngine = harnessId;
+    $('conversationOrigin').hidden = true;
     context.workspaceId = workspaceId;
     pendingForkId = null;
     turnEl = null;
@@ -1005,8 +1232,7 @@ const context = { sessionId: null, workspaceId: null };
     pendingTools = {};
     todoItems = null;
     if (todoPanelEl) { todoPanelEl.remove(); todoPanelEl = null; }
-    resumeNext = false;
-    $('headerTitle').textContent = "New session";
+    $('headerTitle').textContent = window.CamelliaI18n.t("New session");
     delete $('headerTitle').dataset.titled;
     chat.replaceChildren(emptyStateTemplate.cloneNode(true));
     input.value = '';
@@ -1019,63 +1245,150 @@ const context = { sessionId: null, workspaceId: null };
     if (ws && ws.collapsed) await sidebar.metaOp({ op: 'toggle-collapse', workspaceId });
     sidebar.render();
     await sidebar.load();
+    await loadSettings();
+    await goalUI.refresh();
+    restoreDraft(); uiReady = wasReady; loadingSession = false; input.disabled = false; updateSendEnabled(); updateConversationControls(); sidebar.updateLabel(); saveDraft();
     setStatus(workspaceId ? "New workspace session created" : "Standalone session · No workspace");
     input.focus();
   }
   $('newSessionBtn').addEventListener('click', () => void newSession(null));
 
-  $('resumeLastBtn').addEventListener('click', async () => {
-    if (!canChangeContext()) return;
-    if (!await sidebar.load()) return;
-    if (sidebar.latestSessionId) await openHistorySession(sidebar.latestSessionId);
-    else setStatus("No sessions yet. Send a message to start.");
-  });
-
-  $('backToDsh').addEventListener('click', () => window.dshDesktop.switchMode('dsh'));
   $('backToHome').addEventListener('click', () => window.dshDesktop.switchMode('home'));
 
   // Permission select auto-persists (applies to the next run).
-  $('selPermission').addEventListener('change', async () => {
-    await chatApi.saveSettings({ permissionMode: $('selPermission').value });
-    setStatus("Permission mode saved. Applies to the next message.");
-  });
+  $('selPermission').addEventListener('change', () => void persistSettings(
+    { permissionMode: $('selPermission').value }, "Permission mode saved. Applies to the next message."));
 
   // ---------- P3: permission dialog ----------
+  function questionError(text) {
+    if (!pendingQuestion) return;
+    pendingQuestion.status.textContent = text;
+    pendingQuestion.status.classList.add('error');
+    pendingQuestion.status.setAttribute('role', 'alert');
+  }
+  function finishQuestion(text) {
+    if (!pendingQuestion) return;
+    const state = pendingQuestion;
+    for (const control of state.card.querySelectorAll('input, textarea, button')) control.disabled = true;
+    state.status.textContent = text; state.status.classList.remove('error'); state.status.setAttribute('role', 'status');
+    questionDrafts.delete(state.key); pendingQuestion = null;
+  }
+  function showQuestion(ev) {
+    $('permMask').classList.remove('visible');
+    const was = nearBottom(), key = JSON.stringify([context.sessionId, ev.runId, ev.requestId]);
+    const saved = questionDrafts.get(key) || {};
+    const card = document.createElement('form'); card.className = 'question-card';
+    const title = document.createElement('h3'); title.dataset.i18n = ''; title.textContent = 'Your input is needed';
+    const hint = document.createElement('p'); hint.className = 'question-hint'; hint.dataset.i18n = '';
+    hint.textContent = 'Allow all covers tool permissions. This is a question about your task.';
+    card.append(title, hint);
+    const fields = [];
+    for (const [index, question] of ev.questions.entries()) {
+      const field = document.createElement('fieldset');
+      const legend = document.createElement('legend'); legend.textContent = question.question; field.append(legend);
+      if (question.multiSelect) { const note = document.createElement('p'); note.className = 'question-hint'; note.dataset.i18n = ''; note.textContent = 'Select one or more'; field.append(note); }
+      const choices = [];
+      for (const option of question.options || []) {
+        const label = document.createElement('label'); label.className = 'question-choice';
+        const choice = document.createElement('input'); choice.type = question.multiSelect ? 'checkbox' : 'radio';
+        choice.name = 'question-' + index; choice.value = option.label; choice.checked = Boolean(saved[question.id]?.selected?.includes(option.label));
+        const content = document.createElement('span'), name = document.createElement('strong'); name.textContent = option.label; content.append(name);
+        if (option.description) { const description = document.createElement('span'); description.textContent = option.description; content.append(description); }
+        label.append(choice, content); field.append(label); choices.push(choice);
+      }
+      const customLabel = document.createElement('label'); customLabel.className = 'question-custom';
+      const customTitle = document.createElement('span'); customTitle.dataset.i18n = ''; customTitle.textContent = choices.length ? 'Or write your own answer' : 'Your answer';
+      const custom = document.createElement('input'); custom.type = question.isSecret ? 'password' : 'text'; custom.autocomplete = 'off';
+      custom.value = question.isSecret ? '' : saved[question.id]?.custom || '';
+      customLabel.append(customTitle, custom); field.append(customLabel); card.append(field);
+      const entry = { question, choices, custom }; fields.push(entry);
+      const save = () => questionDrafts.set(key, Object.fromEntries(fields.filter(f => !f.question.isSecret).map(f => [f.question.id, { selected: f.choices.filter(c => c.checked).map(c => c.value), custom: f.custom.value }])));
+      custom.oninput = () => { if (!question.multiSelect && custom.value) choices.forEach(choice => choice.checked = false); save(); };
+      choices.forEach(choice => { choice.onchange = () => { if (!question.multiSelect) custom.value = ''; save(); }; });
+    }
+    const status = document.createElement('div'); status.className = 'question-status'; status.dataset.i18n = ''; status.setAttribute('role', 'status');
+    const actions = document.createElement('div'); actions.className = 'question-actions';
+    const skip = document.createElement('button'); skip.type = 'button'; skip.className = 'perm-deny'; skip.dataset.i18n = ''; skip.textContent = 'Skip questions';
+    skip.onclick = () => void answerPermission(false);
+    const submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'perm-allow'; submit.dataset.i18n = ''; submit.textContent = 'Submit answers';
+    actions.append(skip, submit); card.append(status, actions);
+    card.onsubmit = event => { event.preventDefault(); void answerPermission(true); };
+    pendingQuestion = { card, status, fields, key, requestId: ev.requestId };
+    // Keep the card outside the streamed body so canonical assistant messages
+    // cannot replace an unanswered form or erase the user's selections.
+    ensureTurn().append(card); setRunStatus('Waiting for your answer'); setStatus('Waiting for your answer');
+    if (was) card.scrollIntoView({ block: 'start' });
+  }
   function showPermissionDialog(ev) {
     permRequestId = ev.requestId;
+    if (ev.questions?.length) { showQuestion(ev); return; }
     $('permTool').textContent = "Tool: " + (ev.toolName || "(Unknown)");
+    $('permReason').hidden = !ev.reason;
+    $('permReason').textContent = ev.reason ? 'Native permission rule: ' + ev.reason : '';
     const data = ev.input || {};
     $('permInput').textContent = typeof data.command === 'string' ? data.command : JSON.stringify(data, null, 2);
     $('permOptions').replaceChildren();
+    $('permAllow').textContent = 'Allow';
     $('permDefaultActions').hidden = Boolean(ev.options);
     if (ev.options) {
       for (const option of ev.options) {
         const button = document.createElement('button');
         button.className = option.kind.startsWith('allow') ? 'perm-allow' : 'perm-deny';
-        button.textContent = ({ 'Approve once': "Allow once", 'Approve for this session': "Allow for this session", 'Reject': "Deny" })[option.name] || option.name;
+        button.dataset.i18n = ''; button.textContent = ({ 'Approve once': "Allow once", 'Approve for this session': "Allow for this session", 'Reject': "Deny" })[option.name] || option.name;
         button.addEventListener('click', () => void answerPermission(false, option.optionId));
         $('permOptions').appendChild(button);
       }
       const cancel = document.createElement('button');
       cancel.className = 'perm-deny';
-      cancel.textContent = "Cancel";
+      cancel.dataset.i18n = ''; cancel.textContent = "Cancel";
       cancel.addEventListener('click', () => void answerPermission(false));
       if (!ev.options.some(option => option.kind.startsWith('reject'))) $('permOptions').appendChild(cancel);
     }
     $('permMask').classList.add('visible');
   }
   async function answerPermission(allow, optionId) {
-    if (!permRequestId) return;
-    const answered = permRequestId;
-    await chatApi.controlRespond({ requestId: answered, allow, optionId });
+    if (!permRequestId || permissionSubmission) return;
+    const answered = permRequestId, sessionId = context.sessionId, runId = permissionQueue[0]?.runId;
+    // A plain Allow click must keep the native tool's original input. Sending
+    // an empty object here replaces Bash's command (or Write's file/content).
+    let input;
+    const question = pendingQuestion;
+    if (question && allow) {
+      const entries = question.fields.map(({ question: q, choices, custom }) => {
+        const selected = choices.filter(choice => choice.checked).map(choice => choice.value), text = custom.value.trim();
+        return [q.id, q.multiSelect ? [...selected, ...(text ? [text] : [])].join(', ') : text || selected[0] || ''];
+      });
+      if (entries.some(([, value]) => !value)) { questionError('Answer each question before submitting'); return; }
+      input = Object.fromEntries(entries);
+    }
+    const submission = {}; permissionSubmission = submission;
+    if (question) { question.status.textContent = 'Sending…'; question.status.classList.remove('error'); question.status.setAttribute('role', 'status'); question.card.querySelectorAll('input, button').forEach(el => el.disabled = true); }
+    let result;
+    try {
+      result = await chatApi.controlRespond({ requestId: answered, allow, optionId, input,
+        ...(question && !allow ? { message: 'The user skipped these questions without selecting an answer. Continue from the existing request; no option has been confirmed.' } : {}),
+        ...(sharedChat ? { sessionId, runId } : {}) });
+    } catch (error) { result = { ok: false, error: error.message }; }
+    if (permissionSubmission === submission) permissionSubmission = null;
+    if (sharedChat && (context.sessionId !== sessionId || permissionQueue[0]?.runId !== runId)) return;
     if (permRequestId !== answered) return;
+    if (!result?.ok) {
+      const error = result?.error || 'This request is no longer active';
+      if (question && pendingQuestion === question) { question.card.querySelectorAll('input, button').forEach(el => el.disabled = false); questionError(error); }
+      setStatus(error); return;
+    }
+    finishQuestion(allow ? 'Answers sent' : 'Questions skipped');
+    setStatus(allow ? 'Answers sent' : 'Questions skipped');
     permRequestId = null;
     permissionQueue.shift();
     $('permMask').classList.remove('visible');
     if (permissionQueue.length) showPermissionDialog(permissionQueue[0]);
+    else if (running) setRunStatus('Working…');
   }
   $('permAllow').addEventListener('click', () => void answerPermission(true));
   $('permDeny').addEventListener('click', () => void answerPermission(false));
+  $('permLater').hidden = !sharedChat;
+  $('permLater').onclick = () => $('permMask').classList.remove('visible');
 
   // ---------- P3: prompt suggestion ----------
   function hideSuggestion() {
@@ -1092,6 +1405,7 @@ const context = { sessionId: null, workspaceId: null };
     $('suggestion').classList.remove('visible');
     autoResize();
     updateSendEnabled();
+    saveDraft();
     input.focus();
   });
 
@@ -1110,6 +1424,8 @@ const context = { sessionId: null, workspaceId: null };
       row.disabled = Boolean(action.disabled);
       row.innerHTML = '<span></span>';
       row.querySelector('span').textContent = action.label;
+      if (action.localize !== false) row.querySelector('span').dataset.i18n = '';
+      if (!action.title && action.localize !== false) row.dataset.i18nAttrs = 'title';
       row.title = action.title || action.label;
       row.addEventListener('click', () => { closePops(); action.run(); });
       pop.appendChild(row);
@@ -1128,44 +1444,79 @@ const context = { sessionId: null, workspaceId: null };
     openPops.push(pop);
     pop.querySelector('button:not(:disabled)')?.focus();
   }
+  function conversationBusy() { return running || Boolean(conversationActivity) || goalUI.isActive(); }
   function contextBusy() {
-    return running || loadingSession || goalUI.isActive();
+    return loadingSession || switchingEngine || sending || (!sharedChat && (running || goalUI.isActive()));
   }
   function canChangeContext() {
     if (!contextBusy()) return true;
-    setStatus("Stop the current response or pause the goal before switching sessions or workspaces");
+    setStatus(sharedChat ? 'Please wait for the conversation to open.' : 'Stop the current response or pause the goal before switching sessions or workspaces');
     return false;
   }
+  function updateConversationControls() {
+    const locked = sharedChat && (conversationBusy() || loadingSession || switchingEngine || sending || Boolean(editingMessage));
+    $('engineSwitch').disabled = !sharedChat || locked;
+    $('engineSwitch').title = locked ? 'Available when this conversation stops working' : 'Switch harness';
+    $('handoffBtn').disabled = locked;
+    $('modelPill').disabled = locked;
+    $('selPermission').disabled = locked;
+    updateSendEnabled();
+    updateMessageActions();
+  }
+  function resetConversationView() {
+    cancelMessageEdit();
+    pendingQuestion = null; permissionSubmission = null;
+    acceptSessionEvents = false; currentRunId = null; conversationActivity = null;
+    restoringRun = false; eventsDuringRestore.length = 0;
+    permRequestId = null; permissionQueue.length = 0; $('permMask').classList.remove('visible');
+    clearRunStatus(); setRunning(false);
+  }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
-    newSession, openHistorySession, forkSession, openActionMenu, closePops });
-  const goalUI = createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, setStatus,
-    acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => sidebar.updateLabel() });
+    newSession, openHistorySession, forkSession, canFork: s => sharedChat || harnessId !== 'antigravity' || !s.id.startsWith('agy-'), openActionMenu, closePops });
+  const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && canChangeContext() && (!sharedChat || !running), openHistorySession, setStatus,
+    acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); } });
 
   let pendingForkId = null;
   async function forkSession(s) {
     if (!await openHistorySession(s.id)) return;
+    if (sharedChat && conversationBusy()) { setStatus('Wait for this conversation to finish before forking it'); return; }
     pendingForkId = s.id;
     setStatus("The next message will fork this session and keep its workspace");
     input.focus();
   }
   async function openHistorySession(id) {
     if (!canChangeContext()) return false;
+    saveDraft();
     const seq = ++sessionOpenSeq;
-    loadingSession = true;
+    resetConversationView();
+    loadingSession = true; input.disabled = true;
+    restoringRun = sharedChat;
+    updateConversationControls();
     updateSendEnabled();
     sidebar.updateLabel();
     setStatus("Loading history…");
     try {
       const res = await chatApi.loadSession(id);
       if (seq !== sessionOpenSeq) return false;
-      if (!res || !res.ok) throw new Error((res && res.error) || "Could not read session");
+      if (!res.ok) throw new Error(res.error);
       const s = sidebar.sessions.find((entry) => entry.id === id);
+      if (sharedChat && res.activity && res.currentEngine !== harnessId) {
+        writeUi('location', { sessionId: id, workspaceId: res.workspaceId });
+        const opened = await window.dshDesktop.conversationSwitch({ engine: res.currentEngine, sessionId: id, navigate: true });
+        if (!opened.ok) throw new Error(opened.error);
+        return false;
+      }
       context.sessionId = id;
       context.workspaceId = res.workspaceId || null;
+      conversationPrefs = res.preferences || conversationPrefs;
+      loadedEngine = res.currentEngine || harnessId;
+      conversationActivity = res.activity || null;
+      $('conversationOrigin').hidden = !conversationPrefs.showOrigin || !res.origin;
+      $('conversationOrigin').textContent = res.origin === harnessId ? 'Created in this engine' : 'Created in ' + res.origin;
+      if (res.settings) await loadSettings();
       acceptSessionEvents = false;
       currentRunId = null;
       pendingForkId = null;
-      resumeNext = false;
       turnEl = null;
       blocks = {};
       pendingTools = {};
@@ -1175,51 +1526,72 @@ const context = { sessionId: null, workspaceId: null };
       chat.innerHTML = '';
       $('headerTitle').textContent = s ? s.title : "Session " + id.slice(0, 8);
       $('headerTitle').dataset.titled = '1';
-      renderHistoryMessages(res.messages || []);
-      if (!chat.childElementCount) chat.innerHTML = "<div class=\"empty-state\"><div class=\"empty-state-desc\">No messages to display. Send a message to continue this session.</div></div>";
+      renderHistoryMessages(res.messages);
+      if (!chat.childElementCount) chat.innerHTML = "<div class=\"empty-state\"><div class=\"empty-state-desc\" data-i18n>No messages to display. Send a message to continue this session.</div></div>";
       sidebar.render();
       chatScroll.scrollTop = chatScroll.scrollHeight;
-      setStatus(res.truncated ? "Showing the latest 200 messages. Continuation uses the full history." : "History loaded. Your next message continues this session.");
+      restoreDraft();
+      setStatus(res.interrupted ? 'The last turn was interrupted. Review its result before continuing.' : res.truncated ? "Showing the latest 200 messages. Continuation uses the full history." : "History loaded. Your next message continues this session.");
+      if (sharedChat) {
+        applyLiveRun(res.live);
+        const lastSeq = res.live?.eventSeq || 0;
+        const liveRun = res.live?.runId;
+        restoringRun = false;
+        for (const event of eventsDuringRestore.splice(0)) if (event.type === 'conversation:activity' || event.runId !== liveRun || event.eventSeq > lastSeq) handleEvent(event);
+        await goalUI.refresh();
+      }
       return true;
     } catch (err) { setStatus("Could not load: " + err.message); return false; }
     finally {
-      if (seq === sessionOpenSeq) { loadingSession = false; updateSendEnabled(); sidebar.updateLabel(); }
+      if (seq === sessionOpenSeq) { loadingSession = false; input.disabled = false; restoringRun = false; updateSendEnabled(); updateConversationControls(); sidebar.updateLabel(); saveDraft(); }
     }
   }
 
   function renderHistoryMessages(messages) {
       for (const m of messages) {
-        if (m.role === 'user') addUser(m.text);
+        if (m.role === 'notice') {
+          if (!conversationPrefs.showOrigin) continue;
+          const note = document.createElement('div'); note.className = 'handoff-notice'; note.textContent = m.text;
+          if (m.file) { const button = document.createElement('button'); button.textContent = 'Open Markdown'; button.onclick = () => window.dshDesktop.conversationOpenHandoff({ sessionId: context.sessionId, file: m.file }); note.appendChild(button); }
+          chat.appendChild(note);
+        }
+        else if (m.role === 'user') addUser(m.displayText ?? m.text, m.attachments, m);
         else {
           const div = document.createElement('div');
           div.className = 'turn';
-          div.innerHTML = '<div class="turn-meta"><div class="turn-avatar">' + chatProfile.initial + '</div><span>' + chatProfile.shortName + '</span></div><div class="turn-body"><div class="md"></div></div>';
+          div.innerHTML = '<div class="turn-meta">' + chatAvatar + '<span>' + esc(conversationPrefs.showOrigin && m.engine ? m.engine : 'Assistant') + '</span></div><div class="turn-body"><div class="md"></div></div>';
           div.querySelector('.md').innerHTML = mdRender(m.text);
           chat.appendChild(div);
         }
       }
   }
 
+  function applyLiveRun(live) {
+    if (!live) { acceptSessionEvents = true; return; }
+    context.sessionId = live.sessionId; context.workspaceId = live.workspaceId;
+    currentRunId = live.runId; acceptSessionEvents = true;
+    turnEl = null; blocks = {}; pendingTools = {}; todoItems = null; todoPanelEl = null;
+    chat.innerHTML = '';
+    renderHistoryMessages(live.messages);
+    addUser(live.displayText ?? live.prompt, live.attachments || [], { seq: live.userSeq, at: live.startedAt });
+    setRunning(true);
+    runStartedAt = live.startedAt || Date.now();
+    sidebar.render();
+    // Snapshot events are already ordered. New arrivals remain buffered until
+    // this snapshot has been painted, then replay only events after its cursor.
+    const buffering = restoringRun; restoringRun = false;
+    for (const event of live.events) handleEvent(event);
+    restoringRun = buffering;
+  }
   async function restoreLiveRun() {
     let lastSeq = 0;
     try {
       const { live } = await chatApi.getLive();
-      restoringRun = false;
       if (!live) return;
-      context.sessionId = live.sessionId;
-      context.workspaceId = live.workspaceId;
-      currentRunId = live.runId;
-      acceptSessionEvents = true;
-      chat.innerHTML = '';
-      renderHistoryMessages(live.messages);
-      addUser(live.prompt);
-      $('headerTitle').textContent = live.prompt.slice(0, 24) || "Active session";
-      $('headerTitle').dataset.titled = '1';
-      setRunning(true);
-      sidebar.render();
-      for (const event of live.events) handleEvent(event);
-      lastSeq = live.eventSeq;
-    } catch (error) { setStatus("Could not restore the active run: " + error.message); }
+      context.sessionId = live.sessionId; context.workspaceId = live.workspaceId;
+      await loadSettings();
+      applyLiveRun(live); lastSeq = live.eventSeq;
+    } catch (error) { setStatus('Could not restore the active run: ' + error.message); }
     finally {
       restoringRun = false;
       for (const event of eventsDuringRestore.splice(0)) if (event.eventSeq > lastSeq) handleEvent(event);
@@ -1228,7 +1600,9 @@ const context = { sessionId: null, workspaceId: null };
 
   // ---------- settings panel ----------
   $('settingsBtn').addEventListener('click', () => { closePops(); void window.dshDesktop.openSettingsWindow({ page: 'engines', engine: harnessId }); });
+  $('connectionInfo').onclick = () => void window.dshDesktop.openSettingsWindow({ page: 'engines', engine: harnessId });
   function applyRouterModels(state) {
+    if (accountSubscription()) return;
     if (!Array.isArray(state?.models)) return;
     const models = state.enabled ? state.models : [];
     const canonical = currentModel.replace(/:cloud$/, '');
@@ -1245,10 +1619,25 @@ const context = { sessionId: null, workspaceId: null };
     }
   }
 
-  async function loadSettings() {
-    const s = await chatApi.getSettings();
-    if (!s) return;
-    $('selPermission').value = s.permissionMode || chatProfile.permission;
+  function applySessionSettings(s) {
+    currentConnection = s.connection || 'api';
+    if (harnessId === 'codex') {
+      $('connectionInfo').hidden = false;
+      $('connectionInfo').textContent = accountSubscription() ? 'ChatGPT account · Switch to API in settings' : 'API key / third-party API · Connection settings';
+    }
+    if (harnessId === 'kimi') {
+      $('connectionInfo').hidden = false;
+      $('connectionInfo').textContent = accountSubscription() ? 'Kimi subscription · Manage account' : 'Shared API routes · Connection settings';
+    }
+    if (harnessId === 'antigravity') {
+      $('connectionInfo').hidden = false;
+      $('connectionInfo').textContent = googleSubscription() ? 'Google subscription · Manage account' : 'Shared API routes · Connection settings';
+      $('selPermission').querySelector('[value="default"]').textContent = googleSubscription() ? 'CLI defaults' : 'Default permissions';
+      $('selPermission').querySelector('[value="plan"]').textContent = googleSubscription() ? 'Planning' : 'Plan only';
+      $('selPermission').title = googleSubscription() ? 'CLI permission rules apply. Tools requiring interactive review are declined in headless mode.' : '';
+    }
+    currentPermission = s.permissionMode || chatProfile.permission;
+    $('selPermission').value = currentPermission;
     currentLevel = s.thinkingBudget || '';
     currentModel = s.model || '';
     // Keep previously saved custom model selectable even if not in the list.
@@ -1256,15 +1645,87 @@ const context = { sessionId: null, workspaceId: null };
       MODELS.push({ id: currentModel, label: currentModel });
     }
     renderModelPill();
-    if (window.dshDesktop.apiRouterGetState) applyRouterModels(await window.dshDesktop.apiRouterGetState());
+  }
+
+  function applyCodexLevels() {
+    const model = accountModels.find(m => m.id === currentModel);
+    const efforts = accountSubscription() ? (model?.supportedReasoningEfforts || []).map(e => e.reasoningEffort) : ['low', 'medium', 'high'];
+    LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' }, ...efforts.map(id => ({ id, label: id[0].toUpperCase() + id.slice(1) })));
+  }
+  async function loadSettings() {
+    const seq = ++settingsLoadSeq, sessionId = context.sessionId;
+    try {
+      const selected = await chatApi.getSettings({ sessionId });
+      if (selected.ok === false) throw new Error(selected.error);
+      const subscription = ['codex', 'kimi', 'antigravity'].includes(harnessId) && selected.connection === 'subscription';
+      const state = subscription ? await window.dshDesktop[harnessId + 'AccountState']() : await window.dshDesktop.apiRouterGetState();
+      if (seq !== settingsLoadSeq || sessionId !== context.sessionId) return;
+      applySessionSettings(selected);
+      if (subscription) {
+        const account = state;
+        accountModels = account.models || [];
+        if (!account.ok) throw new Error(account.error);
+        MODELS.splice(0, MODELS.length, { id: '', label: account.models.length ? 'Select model' : 'Connect ' + accountName + ' in settings' },
+          ...account.models.map(model => ({ id: model.id, label: model.name })));
+        if (currentModel && !account.models.some(model => model.id === currentModel)) MODELS.push({ id: currentModel, label: currentModel + ' (refresh account)' });
+        $('modelPill').title = 'Models available to your ' + accountName + ' account';
+        renderModelPill();
+      } else applyRouterModels(state);
+      if (harnessId === 'codex') applyCodexLevels();
+    } catch (error) { setStatus("Could not load settings: " + error.message); }
   }
 
   window.dshDesktop.onEngineSettingsChanged(({ engine }) => { if (engine === harnessId) void loadSettings(); });
 
   sidebar.render();
-  void loadSettings();
-  void sidebar.load();
   void goalUI.refresh();
   chatApi.onEvent((ev) => handleEvent(ev));
-  if (harnessId === 'kimi') void restoreLiveRun();
-  if (window.dshDesktop.onApiRouterState) window.dshDesktop.onApiRouterState(applyRouterModels);
+  void (async () => {
+    input.disabled = true;
+    await sidebar.load();
+    if (!sharedChat && harnessId !== 'claude') await restoreLiveRun();
+    const previous = sharedChat ? readUi('location') : null;
+    const id = new URLSearchParams(location.search).get('conversation') || previous?.sessionId;
+    if (!running) {
+      if (id) await openHistorySession(id);
+      else if (previous?.workspaceId && sidebar.workspaces.some(w => w.id === previous.workspaceId)) context.workspaceId = previous.workspaceId;
+    }
+    restoringRun = false; eventsDuringRestore.length = 0;
+    await loadSettings();
+    await goalUI.refresh();
+    restoreDraft(); uiReady = true; input.disabled = false; saveDraft(); sidebar.render();
+  })().catch(error => { input.disabled = false; setStatus('Could not restore the conversation: ' + error.message); });
+  window.dshDesktop.onApiRouterState(applyRouterModels);
+
+  $('engineSwitch').value = harnessId;
+  $('engineSwitch').disabled = !sharedChat;
+  $('handoffBtn').hidden = !sharedChat;
+  async function switchConversation(target, mode) {
+    if (switchingEngine || conversationBusy() || sending || loadingSession) { setStatus('Available when this conversation stops working'); return; }
+    switchingEngine = true; $('engineSwitch').disabled = true; $('handoffBtn').disabled = true; $('handoffStop').hidden = false; input.disabled = true;
+    saveDraft();
+    setStatus('Preparing conversation…');
+    try {
+      if (!context.sessionId && currentConnection !== 'subscription' && currentModel) {
+        const saved = await chatApi.saveSettings({ model: currentModel });
+        if (!saved.ok) throw new Error(saved.error);
+      }
+      const result = await window.dshDesktop.conversationSwitch({ engine: target, sessionId: context.sessionId, mode });
+      if (!result.ok) throw new Error(result.error);
+    } catch (error) { setStatus(error.message); }
+    finally { switchingEngine = false; updateConversationControls(); $('engineSwitch').value = harnessId; $('handoffStop').hidden = true; input.disabled = false; }
+  }
+  async function switchOptions(target, force = false) {
+    if (conversationBusy() || sending || loadingSession) { setStatus('Available when this conversation stops working'); return; }
+    const settings = await window.dshDesktop.workbenchSettings(); conversationPrefs = settings.conversations || conversationPrefs;
+    if (force || conversationPrefs.warnOnSwitch && context.sessionId) {
+      $('switchTarget').value = target; $('switchMethod').value = force ? 'markdown' : conversationPrefs.mode; $('switchDialog').showModal();
+    } else await switchConversation(target, conversationPrefs.mode);
+  }
+  $('engineSwitch').onchange = () => { const target = $('engineSwitch').value; $('engineSwitch').value = harnessId; void switchOptions(target); };
+  window.dshDesktop.onHarnessNavigate?.(target => { if (target !== harnessId) void switchOptions(target); });
+  $('handoffBtn').onclick = () => void switchOptions(harnessId, true);
+  $('switchCancel').onclick = () => $('switchDialog').close();
+  $('switchConfirm').onclick = () => { $('switchDialog').close(); void switchConversation($('switchTarget').value, $('switchMethod').value); };
+  $('handoffStop').onclick = () => void chatApi.cancel(sharedChat ? { sessionId: context.sessionId } : currentRunId);
+  if (sharedChat) window.dshDesktop.onConversationStatus(({ sessionId, text }) => { if (sessionId !== context.sessionId) return; $('handoffStop').hidden = !text; if (text) setStatus(text); });

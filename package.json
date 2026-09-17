@@ -1,13 +1,15 @@
 {
   "name": "camellia-desktop",
   "version": "0.1.0",
-  "description": "Camellia: a shared workbench for DSH, Claude Code and Kimi Code",
+  "description": "Camellia: a shared workbench for Claude Code, Codex CLI, DSH, Kimi Code and Antigravity",
   "main": "src/main/main.js",
   "author": "Camellia contributors",
   "license": "MIT",
   "private": true,
   "scripts": {
-    "setup:kimi": "npm --prefix runtimes/kimi ci --omit=optional --ignore-scripts --no-audit --no-fund",
+    "setup:kimi": "node scripts/prepare-runtimes.cjs kimi",
+    "setup:dsh": "node scripts/prepare-runtimes.cjs dsh",
+    "setup:claude": "node scripts/prepare-runtimes.cjs claude",
     "test:kimi": "node tests/kimi-cli-smoke.cjs",
     "test": "node --test tests/*.test.js",
     "dev": "electron .",
@@ -16,16 +18,25 @@
     "dist": "electron-builder",
     "build:icons": "electron scripts/build-icons.cjs",
     "setup:runtimes": "node scripts/prepare-runtimes.cjs",
-    "postinstall": "node scripts/prepare-runtimes.cjs",
+    "postinstall": "node scripts/prepare-runtimes.cjs --check",
     "prestart": "node scripts/prepare-runtimes.cjs --check",
     "predev": "node scripts/prepare-runtimes.cjs --check",
     "dist:win": "electron-builder --win --x64",
     "dist:mac": "electron-builder --mac --arm64",
-    "pack:mac": "electron-builder --mac --arm64 --dir"
+    "pack:mac": "electron-builder --mac --arm64 --dir",
+    "setup:antigravity": "node scripts/prepare-runtimes.cjs antigravity",
+    "test:antigravity": "node tests/antigravity-smoke.cjs",
+    "test:benchmark": "node tests/benchmark-native-smoke.cjs",
+    "test:benchmark:science": "node tests/benchmark-science-smoke.cjs",
+    "setup:antigravity:subscription": "node scripts/prepare-runtimes.cjs antigravity --google-subscription",
+    "test:antigravity:subscription": "node tests/antigravity-subscription-smoke.cjs",
+    "setup:codex": "node scripts/prepare-runtimes.cjs codex",
+    "test:codex": "node tests/codex-smoke.cjs",
+    "test:tools": "node tests/tools-native-audit.cjs"
   },
   "devDependencies": {
-    "electron": "^39.2.7",
-    "electron-builder": "^26.0.12"
+    "electron": "^44.4.1",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "com.dsh.desktop",
@@ -37,6 +48,7 @@
     "files": [
       "src/**/*",
       "assets/icon-256.png",
+      "assets/brands/**/*",
       "scripts/ollama-proxy-cli.js",
       "scripts/ollama-switch-account.ps1",
       "integrations/dsh/**/*",
@@ -53,28 +65,11 @@
         ]
       },
       {
-        "from": "runtimes/kimi/node_modules",
-        "to": "runtimes/kimi/node_modules",
-        "filter": [
-          "**/*",
-          "!@moonshot-ai/kimi-code/dist-web/**/*"
-        ]
-      },
-      {
         "from": "runtimes/dsh",
         "to": "runtimes/dsh",
         "filter": [
           "package.json",
           "package-lock.json"
-        ]
-      },
-      {
-        "from": "runtimes/dsh/node_modules",
-        "to": "runtimes/dsh/node_modules",
-        "filter": [
-          "**/*",
-          "!**/*.map",
-          "!**/*.workbench-original"
         ]
       },
       {
@@ -86,10 +81,27 @@
         ]
       },
       {
+        "from": "runtimes/codex",
+        "to": "runtimes/codex",
+        "filter": [
+          "package.json",
+          "package-lock.json"
+        ]
+      },
+      {
         "from": "build/runtime-assets",
         "to": "runtime",
         "filter": [
           "**/*"
+        ]
+      },
+      {
+        "from": "runtimes/antigravity",
+        "to": "runtimes/antigravity",
+        "filter": [
+          "runtime.json",
+          "requirements.lock",
+          "README.md"
         ]
       }
     ],
@@ -134,10 +146,15 @@
       "extendInfo": {
         "CFBundleDevelopmentRegion": "en"
       }
-    }
+    },
+    "asarUnpack": [
+      "src/engines/antigravity/**",
+      "src/benchmark/python/**"
+    ]
   },
   "dependencies": {
     "smol-toml": "^1.8.0",
+    "undici": "^8.10.2",
     "yaml": "^2.9.1"
   },
   "engines": {

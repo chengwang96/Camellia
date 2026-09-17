@@ -39,6 +39,8 @@ jobs:
             package-lock.json
             runtimes/*/package-lock.json
       - run: npm ci
+      - name: Prepare engines used by integration tests
+        run: npm run setup:runtimes -- claude codex dsh kimi
       - run: npm test
       - name: Electron smoke test
         run: node tests/electron-smoke.cjs
@@ -46,15 +48,25 @@ jobs:
         run: node tests/native-settings-electron.cjs
       - name: Kimi ACP smoke test
         run: npm run test:kimi
+      - name: Codex app-server smoke test
+        run: npm run test:codex
       - name: Build desktop artifacts
         run: npm run ${{ matrix.command }} -- --publish never
-      - name: Verify bundled sources and native runtimes
+      - name: Verify lightweight package and download manifests
         run: node tests/verify-package.cjs "${{ matrix.bundle }}"
+      - name: Verify optional engine downloads with bundled installer tools
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = macos ]; then
+            node tests/optional-download-electron.cjs "${{ matrix.bundle }}/Contents/Resources"
+            node tests/runtime-install-smoke.cjs "${{ matrix.bundle }}/Contents/Resources" --all
+          else
+            node tests/optional-download-electron.cjs "${{ matrix.bundle }}/resources"
+            node tests/runtime-install-smoke.cjs "${{ matrix.bundle }}/resources" --all
+          fi
       - name: Verify Windows portable extraction and startup
         if: matrix.platform == 'windows'
         run: node tests/portable-smoke.cjs
-      - name: Install official Claude with bundled Node and npm
-        run: node tests/runtime-install-smoke.cjs
       - uses: actions/upload-artifact@v7
         with:
           name: Camellia-${{ matrix.platform }}-${{ matrix.arch }}

@@ -7,7 +7,8 @@ const http = require('node:http');
 const yaml = require('js-yaml');
 const {createHarness} = require('./claude-harness.cjs');
 const {loadConfig, writeConfig, normalizeConfig} = require('../src/api/api-router-config');
-async function freePort() { const s=http.createServer(); await new Promise(r=>s.listen(0,'127.0.0.1',r)); const p=s.address().port; await new Promise(r=>s.close(r)); return p; }
+const {BAD_PORTS} = require('./bad-ports.cjs');
+async function freePort() { for (;;) { const s=http.createServer(); await new Promise(r=>s.listen(0,'127.0.0.1',r)); const p=s.address().port; await new Promise(r=>s.close(r)); if (!BAD_PORTS.has(p)) return p; } }
 function pool(port) { return {port,providers:[{id:'p',name:'Local',baseUrl:'http://127.0.0.1:19099/v1',type:'ollama',protocol:'openai',models:[{id:'kimi-k3',upstream:'kimi-k3:cloud'}],keys:[{id:'k',key:'isolated-test-secret'}]}]}; }
 test('desktop IPC masks keys, hot reloads and changes ports without losing saved keys',async t=>{
   const h=createHarness(); t.after(async()=>{await h.api.stopRouter(); h.cleanup();});

@@ -22,13 +22,14 @@ function createHarness(existingRoot) {
   const electron = {
     app: { getPath: () => userData, getName: () => 'camellia-desktop', setName() {}, commandLine: { appendSwitch() {} }, getVersion: () => '0.1.0', requestSingleInstanceLock: () => true, on() {}, whenReady: () => ({ then() {} }) },
     nativeTheme: { themeSource: 'system' },
+    Menu: { buildFromTemplate: template => template, setApplicationMenu(menu) { this.current = menu; } },
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
     dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
   };
   const mockProcess = Object.create(process);
   mockProcess.env = { ...process.env, DSH_HOME: path.join(home, '.dsh'), APPDATA: home, LOCALAPPDATA: home, CLAUDE_CONFIG_DIR: '' };
   const mockFs = Object.create(fs);
-  mockFs.createWriteStream = () => ({ write() {}, end() {} });
+  mockFs.createWriteStream = () => Object.assign(new EventEmitter(), { write() {}, end() {} });
   function spawn(exe, args, options) {
     const proc = new EventEmitter();
     Object.assign(proc, { exe, args, cwd: options.cwd, stdout: new EventEmitter(), stderr: new EventEmitter(), messages: [], killed: false });
@@ -52,7 +53,7 @@ function createHarness(existingRoot) {
     clearTimeout: (id) => timers.delete(id),
   };
   const source = fs.readFileSync(path.join(__dirname, '..', 'src/main/main.js'), 'utf8');
-  vm.runInNewContext(source + '\nmodule.exports = { claudeSessionMeta, resolveClaudeSessionContext, claudeGoalDrive: () => goalDriver.drive(), syncOllamaBaseUrl, resolveClaudeRoute, claudeSpawnSpec, stopRouter: stopOllamaProxyHandle, getSession: () => claudeSession, setWindow: (w) => { mainWindow = w; } };', sandbox, { filename: 'src/main/main.js' });
+  vm.runInNewContext(source + '\nmodule.exports = { claudeSessionMeta, resolveClaudeSessionContext, claudeGoalDrive: () => goalDriver.drive(), syncOllamaBaseUrl, resolveClaudeRoute, claudeSpawnSpec, stopRouter: stopOllamaProxyHandle, getSession: () => claudeSessions.legacy, sharedConversations, claudeSessions, kimiSessions, codex, antigravity, dshChat, setWindow: (w) => { mainWindow = w; } };', sandbox, { filename: 'src/main/main.js' });
   const api = sandbox.module.exports;
   api.setWindow({ isDestroyed: () => false, webContents: { send: (channel, data) => events.push({ channel, data }) } });
   function call(channel, payload) {
@@ -77,8 +78,7 @@ function createHarness(existingRoot) {
     fs.utimesSync(file, mtimeMs / 1000, mtimeMs / 1000);
     return file;
   }
-  function finishTurn() {
-    const proc = processes.at(-1);
+  function finishTurn(proc = processes.at(-1)) {
     if (!proc) throw new Error('No CLI process');
     const target = proc.args.includes('--resume') ? proc.args[proc.args.indexOf('--resume') + 1] : null;
     const resumed = target && target.endsWith('.jsonl') ? path.basename(target, '.jsonl') : target;
@@ -93,7 +93,8 @@ function createHarness(existingRoot) {
     return proc.sid;
   }
   function cleanup() {
-    api.getSession()?.kill();
+    api.sharedConversations.pauseGoals();
+    for (const session of api.claudeSessions.sessions.values()) session.kill();
     timers.clear();
     // The only recursive deletion is the explicitly verified, per-test sandbox.
     const resolved = path.resolve(root);

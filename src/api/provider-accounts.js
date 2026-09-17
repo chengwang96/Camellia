@@ -134,6 +134,9 @@ const adapters = [
 function accountCapability(provider) {
   const u = new URL(provider.baseUrl);
   const adapter = adapters.find(a => a.matches(u));
+  if (u.hostname === 'generativelanguage.googleapis.com') return { supported: false,
+    label: 'Gemini billing and quotas are managed in Google AI Studio. Camellia tracks usage for each key and model',
+    source: 'official', docs: 'https://aistudio.google.com/usage' };
   if (!adapter) return { supported: false, label: u.hostname === 'opencode.ai' ? "OpenCode Zen does not provide API-key balance queries" : "Balance queries not supported", source: null };
   return { supported: true, id: adapter.id, label: adapter.label, source: adapter.source, docs: adapter.docs };
 }

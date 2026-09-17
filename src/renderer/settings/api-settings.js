@@ -1,19 +1,19 @@
 'use strict';
 const api = window.dshDesktop, $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmt = value => new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value || 0);
-const compact = value => new Intl.NumberFormat("en-US", { maximumFractionDigits: 1, notation: 'compact' }).format(value || 0);
-const when = value => value ? new Date(value).toLocaleString("en-US", { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : "Not queried yet";
+const fmt = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { maximumFractionDigits: 2 }).format(value || 0);
+const compact = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { maximumFractionDigits: 1, notation: 'compact' }).format(value || 0);
+const when = value => value ? new Date(value).toLocaleString(window.CamelliaI18n.locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : "Not queried yet";
 const uid = () => crypto.randomUUID();
 const keyName = (key, index = 0) => key.name || key.maskedKey || `Key ${index + 1}`;
-const mark = type => ({ ollama: 'O', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC' }[type] || 'API');
+const mark = type => ({ gemini: 'G', ollama: 'O', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC' }[type] || 'API');
 const titles = {
-  providers: ["Providers & Keys", "Configure once. Use across all engines."],
+  providers: ["Providers & Keys", "Manage API keys and subscription accounts."],
   usage: ["Usage", "Track requests by model and route."],
   balances: ["Balances & Quotas", "Account balances, subscription limits, and trends."],
-  general: ["General", "Appearance and local preferences."],
+  general: ["General", "Language, appearance, and local preferences."],
   engines: ["Engine Settings", "Manage native settings in one place."],
-  runtimes: ["Runtime", "Installation, detection, and runtime status."],
+  runtimes: ["Runtime", "Download only the engines you need."],
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'providers';
 let dirty = false, saving = false, balanceKey = null, balanceMetric = '', usageData = [];
@@ -22,7 +22,7 @@ function status(text, error = false) { $('status').textContent = text; $('status
 function edited() { dirty = true; $('save').disabled = false; status("You have unsaved changes"); }
 function current() { return config?.providers.find(p => p.id === selected); }
 function assertClean() { if (dirty) throw new Error("Save your changes before querying or validating keys"); }
-function setView(next, engine) {
+function setView(next, engine, focus) {
   if (!titles[next]) next = 'providers';
   view = next;
   for (const id of Object.keys(titles)) $(id + 'Page').hidden = id !== next;
@@ -32,13 +32,15 @@ function setView(next, engine) {
   engineUI.setVisible(next === 'engines');
   if (next === 'usage') { fillUsageFilters(); renderUsage(); }
   if (next === 'balances') renderBalances();
-  if (next === 'engines') void engineUI.select(engine || engineUI.selected());
-  if (next === 'runtimes') void engineUI.runtimePage();
+  if (next === 'engines') void (focus === 'account' ? engineUI.openAccount(engine) : engineUI.select(engine || engineUI.selected()));
+  if (next === 'runtimes') void engineUI.runtimePage(focus);
 }
 function navigateSettings(target = {}) {
-  setView(target.page || 'providers', target.engine);
+  if (target.subscriptionId) balanceKey = target.subscriptionId;
+  setView(target.page || 'providers', target.engine, target.focus);
 }
 const engineUI = window.createEngineSettingsUI({ api, status, navigate: navigateSettings });
+$('kimiUsage').onclick = () => navigateSettings({ page: 'balances', subscriptionId: 'kimi-subscription' });
 api.onSettingsNavigate(navigateSettings);
 function showLive() {
   $('routerLabel').textContent = live.running ? "Router running" : "Setup required";
@@ -62,28 +64,28 @@ function renderProviders() {
   $('providers').innerHTML = config.providers.map((p,i) => {
     const connected = p.keys.filter(k => keyBadge(k)[1] === 'good').length;
     const requests = p.keys.reduce((sum,k) => sum + (live.usage?.[k.id]?.requests || 0), 0);
-    return `<article class="provider"><button data-select="${p.id}"><span class="provider-title"><span class="provider-mark">${mark(p.type)}</span>${esc(p.name)}</span><p class="hint">Keys: ${p.keys.length} · Models: ${p.models.length}${p.enabled ? '' : " · Disabled"}</p><span class="badge ${connected ? 'good' : ''}">${connected ? connected + " connected" : "Not connected"}</span></button><div class="provider-footer"><small>Total ${fmt(requests)} successful requests</small><button data-up="${i}" aria-label="Move up ${esc(p.name)}" ${i ? '' : 'disabled'}>↑</button><button data-down="${i}" aria-label="Move down ${esc(p.name)}" ${i === config.providers.length-1 ? 'disabled' : ''}>↓</button></div></article>`;
-  }).join('') || "<div class=\"empty\"><img src=\"../../../assets/icon-256.png\" alt=\"\"><h2>Add your first provider</h2><p>Choose a service, paste your keys, and select models.</p><p class=\"hint\">DSH, Claude, and Kimi share these connections.</p></div>";
+    return `<article class="provider"><button data-select="${p.id}"><span class="provider-title"><span class="provider-mark">${mark(p.type)}</span>${esc(p.name)}</span><p class="hint" data-i18n>Keys: ${p.keys.length} · Models: ${p.models.length}${p.enabled ? '' : " · Disabled"}</p><span data-i18n class="badge ${connected ? 'good' : ''}">${connected ? connected + " connected" : "Not connected"}</span></button><div class="provider-footer"><small data-i18n>Total ${fmt(requests)} successful requests</small><button data-up="${i}" aria-label="Move up ${esc(p.name)}" ${i ? '' : 'disabled'} data-i18n-attrs="aria-label">↑</button><button data-down="${i}" aria-label="Move down ${esc(p.name)}" ${i === config.providers.length-1 ? 'disabled' : ''} data-i18n-attrs="aria-label">↓</button></div></article>`;
+  }).join('') || "<div class=\"empty\"><img src=\"../../../assets/icon-256.png\" alt=\"\"><h2 data-i18n>Add your first provider</h2><p data-i18n>Choose a service, paste your keys, and select models.</p><p class=\"hint\" data-i18n>DSH, Claude, and Kimi share these connections.</p></div>";
 }
 function renderEditor() {
   renderProviders();
   const p = current(); $('editor').hidden = !p;
   if (!p) { $('editor').innerHTML = ''; return; }
-  $('editor').innerHTML = `<button class="back" id="backProviders">← All providers</button>
-    <div class="editor-heading"><span class="provider-mark">${mark(p.type)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name"><label><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}>Enabled</label></div>
-    <div class="section-head"><h2>API Key</h2><button id="showImport">Import keys</button><button id="addKey">+ Add key</button></div>
-    <p class="hint">Keys are tried in order. Leave a key blank to keep it. Use labels to identify accounts.</p><div id="keyRows"></div>
-    <div id="keyImport" class="key-import" hidden><label for="bulkKeys">One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false"></textarea><button id="importKeys">Add to key pool</button><p class="hint">Duplicate keys for this provider are merged on save.</p></div>
-    <div class="section"><div class="section-head"><h2>Model</h2><button id="discoverModels">Fetch models</button></div><div id="modelChips" class="model-chips"></div>
-      <details class="advanced" id="modelAdvanced"><summary>Manual models and mappings</summary><p class="hint">Routes switch only within the same model ID. Keep versions and aliases such as latest and chat separate.</p><div class="table-scroll"><table class="model-table"><thead><tr><th>Canonical model ID</th><th>Upstream model ID</th><th>Protocol</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><button id="addModel">+ Add model</button></details>
-      <div class="row" style="margin-top:18px"><label>Validation model<select id="verifyModel" aria-label="Validation model"></select></label></div><p class="hint">Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
+  $('editor').innerHTML = `<button class="back" id="backProviders" data-i18n>← All providers</button>
+    <div class="editor-heading"><span class="provider-mark">${mark(p.type)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name" data-i18n-attrs="aria-label"><label><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}>Enabled</label></div>
+    <div class="section-head"><h2 data-i18n>API Key</h2><button id="showImport" data-i18n>Import keys</button><button id="addKey" data-i18n>+ Add key</button></div>
+    <p class="hint" data-i18n>Keys are tried in order. Leave a key blank to keep it. Use labels to identify accounts.</p><div id="keyRows"></div>
+    <div id="keyImport" class="key-import" hidden><label for="bulkKeys" data-i18n>One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false" data-i18n-attrs="placeholder"></textarea><button id="importKeys" data-i18n>Add to key pool</button><p class="hint" data-i18n>Duplicate keys for this provider are merged on save.</p></div>
+    <div class="section"><div class="section-head"><h2 data-i18n>Model</h2><button id="discoverModels" data-i18n>Fetch models</button></div><div id="modelChips" class="model-chips"></div>
+      <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Routes switch only within the same model ID. Keep versions and aliases such as latest and chat separate.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Canonical model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><button id="addModel" data-i18n>+ Add model</button></details>
+      <div class="row" style="margin-top:18px"><label data-i18n>Validation model<select id="verifyModel" aria-label="Validation model" data-i18n-attrs="aria-label"></select></label></div><p class="hint" data-i18n>Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
     </div>
-    <details class="advanced section" id="connectionAdvanced" ${p.type === 'custom' ? 'open' : ''}><summary>Advanced connection settings</summary><div class="grid">
-      <div class="full"><label for="pUrl">API URL</label><input id="pUrl" value="${esc(p.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false"></div>
-      <div><label for="pProtocol">Default protocol</label><select id="pProtocol"><option value="openai">OpenAI Chat Completions</option><option value="anthropic">Anthropic Messages</option><option value="dual">Both protocols</option></select></div>
-      <div class="full" id="aUrlField"><label for="pAUrl">Anthropic URL (leave blank if the same)</label><input id="pAUrl" value="${esc(p.anthropicBaseUrl || '')}" spellcheck="false"></div></div></details>
-    <details class="advanced section"><summary>Active routes and priority</summary><div id="routeRows"></div></details>
-    <button id="deleteProvider" class="danger" style="margin-top:24px">Remove provider</button>`;
+    <details class="advanced section" id="connectionAdvanced" ${p.type === 'custom' ? 'open' : ''}><summary data-i18n>Advanced connection settings</summary><div class="grid">
+      <div class="full"><label for="pUrl" data-i18n>API URL</label><input id="pUrl" value="${esc(p.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false" data-i18n-attrs="placeholder"></div>
+      <div><label for="pProtocol" data-i18n>Default protocol</label><select id="pProtocol"><option value="openai" data-i18n>OpenAI Chat Completions</option><option value="anthropic" data-i18n>Anthropic Messages</option><option value="dual" data-i18n>Both protocols</option></select></div>
+      <div class="full" id="aUrlField"><label for="pAUrl" data-i18n>Anthropic URL (leave blank if the same)</label><input id="pAUrl" value="${esc(p.anthropicBaseUrl || '')}" spellcheck="false"></div></div></details>
+    <details class="advanced section"><summary data-i18n>Active routes and priority</summary><div id="routeRows"></div></details>
+    <button id="deleteProvider" class="danger" style="margin-top:24px" data-i18n>Remove provider</button>`;
   $('pProtocol').value = p.protocol; $('aUrlField').hidden = p.protocol !== 'dual';
   $('backProviders').onclick = () => { selected = null; renderEditor(); };
   for (const [id, field] of [['pName','name'], ['pUrl','baseUrl'], ['pAUrl','anthropicBaseUrl']]) $(id).oninput = e => { p[field] = e.target.value; edited(); };
@@ -105,7 +107,7 @@ function renderEditor() {
 }
 function renderKeys() {
   const p = current(); if (!p) return;
-  $('keyRows').innerHTML = p.keys.map((k,i) => `<div class="key-card" data-key-card="${k.id}"><div class="key-row"><input type="checkbox" data-key="${i}" data-field="enabled" ${k.enabled ? 'checked' : ''} aria-label="Enable key ${i+1}"><input class="key-name" data-key="${i}" data-field="name" value="${esc(k.name)}" placeholder="Key ${i+1}" aria-label="Key label ${i+1}"><input type="password" data-key="${i}" data-field="key" value="${esc(k.key || '')}" placeholder="${esc(k.maskedKey ? k.maskedKey + " · Leave blank to keep" : "Paste API key")}" aria-label="API Key ${i+1}" autocomplete="new-password" spellcheck="false"></div><div class="key-actions"><span data-badge="${k.id}"></span><button data-verify="${k.id}">Validate</button><button data-key-usage="${k.id}">Usage</button><button data-key-balance="${k.id}">Balance</button><button data-up-key="${i}" aria-label="Move key up ${i+1}" ${i ? '' : 'disabled'}>↑</button><button data-down-key="${i}" aria-label="Move key down ${i+1}" ${i === p.keys.length-1 ? 'disabled' : ''}>↓</button><button data-reset-key="${k.id}">Reset</button><button data-remove-key="${i}" aria-label="Remove key ${i+1}">×</button></div><div class="key-note" data-note="${k.id}"></div></div>`).join('') || "<p class=\"hint\">Add a key to connect this provider.</p>";
+  $('keyRows').innerHTML = p.keys.map((k,i) => `<div class="key-card" data-key-card="${k.id}"><div class="key-row"><input type="checkbox" data-key="${i}" data-field="enabled" ${k.enabled ? 'checked' : ''} aria-label="Enable key ${i+1}" data-i18n-attrs="aria-label"><input class="key-name" data-key="${i}" data-field="name" value="${esc(k.name)}" placeholder="Key ${i+1}" aria-label="Key label ${i+1}" data-i18n-attrs="aria-label placeholder"><input type="password" data-key="${i}" data-field="key" value="${esc(k.key || '')}" placeholder="${esc(k.maskedKey ? k.maskedKey + " · Leave blank to keep" : "Paste API key")}" aria-label="API Key ${i+1}" autocomplete="new-password" spellcheck="false" data-i18n-attrs="aria-label placeholder"></div><div class="key-actions"><span data-i18n data-badge="${k.id}"></span><button data-verify="${k.id}" data-i18n>Validate</button><button data-key-usage="${k.id}" data-i18n>Usage</button><button data-key-balance="${k.id}" data-i18n>Balance</button><button data-up-key="${i}" aria-label="Move key up ${i+1}" ${i ? '' : 'disabled'} data-i18n-attrs="aria-label">↑</button><button data-down-key="${i}" aria-label="Move key down ${i+1}" ${i === p.keys.length-1 ? 'disabled' : ''} data-i18n-attrs="aria-label">↓</button><button data-reset-key="${k.id}" data-i18n>Reset</button><button data-remove-key="${i}" aria-label="Remove key ${i+1}" data-i18n-attrs="aria-label">×</button></div><div class="key-note" data-i18n data-note="${k.id}"></div></div>`).join('') || "<p class=\"hint\" data-i18n>Add a key to connect this provider.</p>";
   updateKeyStats();
 }
 function updateKeyStats() {
@@ -120,8 +122,8 @@ function updateKeyStats() {
 }
 function renderModels() {
   const p = current(); if (!p) return;
-  $('modelChips').innerHTML = p.models.filter(m => m.id).map(m => `<span class="model-chip">${esc(m.id)}</span>`).join('') || "<p class=\"hint\">Fetch the provider catalog and choose models, or add them manually.</p>";
-  $('modelRows').innerHTML = p.models.map((m,i) => `<tr><td><input data-model="${i}" data-field="id" value="${esc(m.id)}" aria-label="Canonical model ID ${i+1}" spellcheck="false"></td><td><input data-model="${i}" data-field="upstream" value="${esc(m.upstream)}" aria-label="Upstream model ID ${i+1}" spellcheck="false"></td><td><select data-model="${i}" data-field="protocol" aria-label="Model protocol ${i+1}"><option value="auto">Default</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></td><td><button data-remove-model="${i}" aria-label="Remove model ${i+1}">×</button></td></tr>`).join('');
+  $('modelChips').innerHTML = p.models.filter(m => m.id).map(m => `<span class="model-chip">${esc(m.id)}</span>`).join('') || "<p class=\"hint\" data-i18n>Fetch the provider catalog and choose models, or add them manually.</p>";
+  $('modelRows').innerHTML = p.models.map((m,i) => `<tr><td><input data-model="${i}" data-field="id" value="${esc(m.id)}" aria-label="Canonical model ID ${i+1}" spellcheck="false" data-i18n-attrs="aria-label"></td><td><input data-model="${i}" data-field="upstream" value="${esc(m.upstream)}" aria-label="Upstream model ID ${i+1}" spellcheck="false" data-i18n-attrs="aria-label"></td><td><select data-model="${i}" data-field="protocol" aria-label="Model protocol ${i+1}" data-i18n-attrs="aria-label"><option value="auto" data-i18n>Default</option><option value="openai" data-i18n>OpenAI</option><option value="anthropic" data-i18n>Anthropic</option></select></td><td><button data-remove-model="${i}" aria-label="Remove model ${i+1}" data-i18n-attrs="aria-label">×</button></td></tr>`).join('');
   document.querySelectorAll('[data-model][data-field=protocol]').forEach(el => { el.value = p.models[Number(el.dataset.model)].protocol || 'auto'; });
   fillSelect($('verifyModel'), p.models.filter(m => m.id).map(m => [m.id, m.id]), "Select model", false);
 }
@@ -130,8 +132,8 @@ function renderRoutes() {
   $('routeRows').innerHTML = (live.models || []).filter(id => p.models.some(m => m.id === id)).map(id => {
     const active = (live.providers || []).find(p => p.keys.some(k => k.id === live.active?.[id]));
     const key = active?.keys.find(k => k.id === live.active?.[id]);
-    return `<div class="route-row"><span>${esc(id)}<br><small>${active ? esc(active.name + ' · ' + keyName(key)) : "Use priority order"}</small></span><button data-rotate="${esc(id)}">Next route</button><button data-reset-model="${esc(id)}">Reset priority</button></div>`;
-  }).join('') || "<p class=\"hint\">Save models and keys to see available routes.</p>";
+    return `<div class="route-row"><span>${esc(id)}<br><small>${active ? esc(active.name + ' · ' + keyName(key)) : "Use priority order"}</small></span><button data-rotate="${esc(id)}" data-i18n>Next route</button><button data-reset-model="${esc(id)}" data-i18n>Reset priority</button></div>`;
+  }).join('') || "<p class=\"hint\" data-i18n>Save models and keys to see available routes.</p>";
 }
 async function discoverModels(p) {
   const button = $('discoverModels'); button.disabled = true; status("Fetching model catalog…");
@@ -146,13 +148,13 @@ function renderCatalog() {
   const query = $('modelSearch').value.trim().toLowerCase(), p = config.providers.find(p => p.id === catalogProvider);
   $('catalogList').innerHTML = catalog.filter(m => m.id.toLowerCase().includes(query)).map((m) => {
     const existing = p?.models.some(x => x.id === m.id);
-    return `<label class="catalog-option"><input type="checkbox" data-catalog="${esc(m.id)}" ${existing || catalogSelected.has(m.id) ? 'checked' : ''} ${existing ? 'disabled' : ''}>${esc(m.id)}${existing ? "<small>Added</small>" : ''}</label>`;
-  }).join('') || "<p class=\"hint\">No matching models</p>";
+    return `<label class="catalog-option"><input type="checkbox" data-catalog="${esc(m.id)}" ${existing || catalogSelected.has(m.id) ? 'checked' : ''} ${existing ? 'disabled' : ''}>${esc(m.id)}${existing ? "<small data-i18n>Added</small>" : ''}</label>`;
+  }).join('') || "<p class=\"hint\" data-i18n>No matching models</p>";
 }
 
 function fillSelect(el, options, placeholder, includeAll = true) {
   const old = el.value;
-  el.innerHTML = (includeAll || !options.length ? `<option value="">${esc(placeholder)}</option>` : '') + options.map(([id, label]) => `<option value="${esc(id)}">${esc(label)}</option>`).join('');
+  el.innerHTML = (includeAll || !options.length ? `<option data-i18n value="">${esc(placeholder)}</option>` : '') + options.map(([id, label]) => `<option value="${esc(id)}">${esc(label)}</option>`).join('');
   if ([...el.options].some(o => o.value === old)) el.value = old;
 }
 function fillUsageFilters() {
@@ -200,53 +202,79 @@ function usageRows() {
 function renderUsage() {
   const { rows, days } = usageRows(); usageData = rows;
   const sum = rows.reduce(addStats, blankStats());
-  $('usageSummary').innerHTML = [["Successful requests", sum.requests, "requests"], ["Input tokens", sum.inputTokens, "Includes cache"], ["Output tokens", sum.outputTokens, "Reported by provider"], ["Failed / Canceled", sum.failures + sum.cancelled, "requests"]].map(([label,value,note]) => `<div><small>${label}</small><strong>${compact(value)}</strong><small>${note}</small></div>`).join('');
+  $('usageSummary').innerHTML = [["Successful requests", sum.requests, "requests"], ["Input tokens", sum.inputTokens, "Includes cache"], ["Output tokens", sum.outputTokens, "Reported by provider"], ["Failed / Canceled", sum.failures + sum.cancelled, "requests"]].map(([label,value,note]) => `<div><small data-i18n>${label}</small><strong>${compact(value)}</strong><small data-i18n>${note}</small></div>`).join('');
   const metric = $('usageMetric').value;
   const points = [...days].map(([day, stats]) => ({ at: day + 'T12:00:00', value: metric === 'tokens' ? stats.inputTokens + stats.outputTokens : stats[metric] }));
-  $('usageChart').innerHTML = SettingsCharts.line(points, { label: "Request trends", unit: metric === 'tokens' ? ' Token' : " requests" }) + (sum.unreported ? `<p class="hint">${fmt(sum.unreported)} successful requests did not report token usage. No estimate was added.</p>` : '') + ($('usageRange').value === 'all' ? "<p class=\"hint\">The chart shows the last 90 recorded days. Totals and details are cumulative.</p>" : '');
-  $('usageRows').innerHTML = rows.map(row => `<tr><td>${esc(row.model)}<small>${esc(row.provider)}</small></td><td>${esc(row.key)}</td><td>${fmt(row.requests)}</td><td>${fmt(row.inputTokens)}</td><td>${fmt(row.outputTokens)}</td><td>${fmt(row.cacheReadTokens)}</td><td>${fmt(row.failures)}</td></tr>`).join('') || "<tr><td colspan=\"7\"><div class=\"chart-empty\">No requests in this period.</div></td></tr>";
+  $('usageChart').innerHTML = SettingsCharts.line(points, { label: "Request trends", width: $('usageChart').clientWidth, unit: metric === 'tokens' ? ' Token' : " requests" }) + (sum.unreported ? `<p class="hint">${fmt(sum.unreported)} successful requests did not report token usage. No estimate was added.</p>` : '') + ($('usageRange').value === 'all' ? "<p class=\"hint\" data-i18n>The chart shows the last 90 recorded days. Totals and details are cumulative.</p>" : '');
+  $('usageRows').innerHTML = rows.map(row => `<tr><td>${esc(row.model)}<small>${esc(row.provider)}</small></td><td>${esc(row.key)}</td><td>${fmt(row.requests)}</td><td>${fmt(row.inputTokens)}</td><td>${fmt(row.outputTokens)}</td><td>${fmt(row.cacheReadTokens)}</td><td>${fmt(row.failures)}</td></tr>`).join('') || "<tr><td colspan=\"7\"><div class=\"chart-empty\" data-i18n>No requests in this period.</div></td></tr>";
 }
 function money(balance) { return `${balance.currency === 'CNY' ? '¥' : balance.currency === 'USD' ? '$' : ''}${fmt(balance.value)}${balance.currency === 'credits' ? ' Credits' : !['CNY','USD'].includes(balance.currency) ? ' ' + balance.currency : ''}`; }
 function remaining(window) { return Math.max(0, 100 - window.usedPercent); }
 function meter(window) { const value = remaining(window); return `<div class="meter ${value < 15 ? 'low' : ''}"><span style="width:${Math.min(100,value)}%"></span></div>`; }
-function accountsList() { return live.providers.flatMap(p => p.keys.map((k,i) => ({ p, k, name: keyName(k,i), info: insight.keys[k.id] || {}, capability: insight.providers[p.id] || { supported: false, label: "Balance queries not supported" } }))); }
+function accountsList() {
+  return [...(insight.subscriptions || []).map(s => ({ id: s.id, providerId: s.id, provider: s.name, name: s.label,
+    subscriptionId: s.id, engine: s.engine, enabled: true, info: s.info, capability: s.capability })),
+  ...live.providers.flatMap(p => p.keys.map((k,i) => ({ id: k.id, providerId: p.id, provider: p.name, type: p.type,
+    name: keyName(k,i), maskedKey: k.maskedKey, enabled: k.enabled && p.enabled, info: insight.keys[k.id] || {},
+    capability: insight.providers[p.id] || { supported: false, label: "Balance queries not supported" } })))];
+}
+function accountCard(account, selected = false) {
+  const { id, provider, name, info, capability, subscriptionId, engine, type, enabled } = account;
+  const t = window.CamelliaI18n.t;
+  const latest = info.latest, balance = latest?.balances?.[0], quota = latest?.windows?.[0];
+  const summary = balance ? money(balance) : quota ? t(`${fmt(remaining(quota))}% remaining`) : capability.supported ? t('Not queried') : t('Not supported');
+  const brand = subscriptionId ? `<img src="../../../assets/brands/${engine}.svg" alt="">` : mark(type);
+  return `<button class="balance-card ${selected ? 'selected' : ''}" data-balance="${esc(id)}"><span class="provider-title"><span class="provider-mark${subscriptionId ? ' engine-mark' : ''}"${subscriptionId ? ` data-engine="${engine}"` : ''}>${brand}</span>${esc(provider)}</span>
+    <p>${esc(subscriptionId ? t(name) : name)}${enabled ? '' : ' · ' + t('Disabled')}${subscriptionId ? ' · ' + t('Signed in') : ''}</p>
+    <strong>${esc(summary)}</strong>${quota && !balance ? meter(quota) : ''}
+    <p>${quota && !balance ? esc(t(quota.label)) + ' · ' : ''}${esc(info.refreshing ? t('Querying…') : latest ? t('Updated ' + when(latest.at)) : t(capability.label))}</p>
+    ${subscriptionId ? `<div class="quota-preview">${(latest?.windows || []).slice(balance ? 0 : 1).map(w => `<small>${esc(t(w.label))} · ${esc(t(`${fmt(remaining(w))}% remaining`))}</small>`).join('')}</div>` : ''}
+    ${info.error ? `<p class="error">${esc(t(info.error))}</p>` : ''}</button>`;
+}
+function renderSubscriptions() {
+  const accounts = accountsList().filter(a => a.subscriptionId);
+  $('subscriptionOverview').hidden = !accounts.length;
+  $('subscriptionUsage').hidden = !accounts.length;
+  const cards = accounts.map(a => accountCard(a)).join('');
+  $('subscriptionCards').innerHTML = cards;
+  $('subscriptionUsageCards').innerHTML = cards;
+}
 function renderBalances() {
-  fillSelect($('balanceProvider'), live.providers.map(p => [p.id, p.name]), "All providers");
+  const all = accountsList();
+  fillSelect($('balanceProvider'), [...new Map(all.map(a => [a.providerId, a.provider])).entries()], "All providers");
   const query = $('balanceSearch').value.trim().toLowerCase();
-  const accounts = accountsList().filter(a => (!$('balanceProvider').value || a.p.id === $('balanceProvider').value) && `${a.p.name} ${a.name} ${a.k.maskedKey || ''}`.toLowerCase().includes(query));
-  if (!accounts.some(a => a.k.id === balanceKey)) balanceKey = accounts[0]?.k.id || null;
-  $('balanceCards').innerHTML = accounts.map(({p,k,name,info,capability}) => {
-    const latest = info.latest, balance = latest?.balances?.[0], window = latest?.windows?.[0];
-    const summary = balance ? money(balance) : window ? `${fmt(remaining(window))}% remaining` : capability.supported ? "Not queried" : "Not supported";
-    return `<button class="balance-card ${k.id === balanceKey ? 'selected' : ''}" data-balance="${k.id}"><span class="provider-title"><span class="provider-mark">${mark(p.type)}</span>${esc(p.name)}</span><p>${esc(name)}${k.enabled && p.enabled ? '' : " · Disabled"}</p><strong>${esc(summary)}</strong>${window && !balance ? meter(window) : ''}<p>${window && !balance ? esc(window.label) + ' · ' : ''}${info.refreshing ? "Querying…" : latest ? "Updated " + when(latest.at) : esc(capability.label)}</p>${info.error ? `<p class="error">${esc(info.error)}</p>` : ''}</button>`;
-  }).join('') || (live.providers.some(p => p.keys.length) ? "<div class=\"empty\">No matching accounts.</div>" : "<div class=\"empty\"><h2>Connect an account to view its balance</h2><p class=\"hint\">Add a connection in Providers & Keys.</p></div>");
+  const accounts = all.filter(a => (!$('balanceProvider').value || a.providerId === $('balanceProvider').value) && `${a.provider} ${a.name} ${a.maskedKey || ''}`.toLowerCase().includes(query));
+  if (!accounts.some(a => a.id === balanceKey)) balanceKey = accounts[0]?.id || null;
+  $('balanceCards').innerHTML = accounts.map(a => accountCard(a, a.id === balanceKey)).join('') || (all.length ? "<div class=\"empty\" data-i18n>No matching accounts.</div>" : "<div class=\"empty\"><h2 data-i18n>Connect an account to view its balance</h2><p class=\"hint\" data-i18n>Add a connection in Providers & Keys.</p></div>");
   renderBalanceDetail();
 }
 function renderBalanceDetail() {
-  const account = accountsList().find(a => a.k.id === balanceKey);
+  const t = window.CamelliaI18n.t;
+  const account = accountsList().find(a => a.id === balanceKey);
   if (!account) { $('balanceDetail').innerHTML = ''; return; }
-  const { p, k, name, info, capability } = account, latest = info.latest;
-  const metrics = [...(latest?.balances || []).map(b => ({ id: 'balance/' + b.id, label: b.label + ' · ' + b.currency, type: 'balances', key: b.id, unit: b.currency })), ...(latest?.windows || []).map(w => ({ id: 'window/' + w.id, label: w.label + " · Remaining", type: 'windows', key: w.id, unit: '%' }))];
+  const { id, providerId, provider, name, info, capability, subscriptionId } = account, latest = info.latest;
+  const metrics = [...(latest?.balances || []).map(b => ({ id: 'balance/' + b.id, label: t(b.label) + ' · ' + b.currency, type: 'balances', key: b.id, unit: b.currency })), ...(latest?.windows || []).map(w => ({ id: 'window/' + w.id, label: t(w.label) + ' · ' + t('Remaining'), type: 'windows', key: w.id, unit: '%' }))];
   if (!metrics.some(m => m.id === balanceMetric)) balanceMetric = metrics[0]?.id || '';
   const metric = metrics.find(m => m.id === balanceMetric);
   const sourceNote = capability.source === 'observed' ? "Uses an undocumented endpoint. Upstream changes may affect account queries." : capability.source === 'client' ? "Uses an endpoint from the provider's official client or open-source service." : "Uses the provider's documented account API.";
   const points = metric ? (info.history || []).map(sample => { const item = sample[metric.type]?.find(x => x.id === metric.key); return { at: sample.at, value: item ? metric.type === 'windows' ? remaining(item) : item.value : null }; }) : [];
-  $('balanceDetail').innerHTML = `<div class="chart-panel"><div class="section-head"><h2>${esc(p.name)} · ${esc(name)}</h2><button id="refreshOneBalance" ${info.refreshing || !capability.supported ? 'disabled' : ''}>${info.refreshing ? "Querying…" : "Refresh this key"}</button></div>
-    ${!capability.supported ? `<p class="hint">${esc(capability.label)}. Local token and request records remain available in Usage.</p>` : `<p class="hint">${esc(capability.label)} · ${sourceNote}</p>`}
-    ${info.error ? `<p class="error">${esc(info.error)}${latest ? ". The last successful result is shown below." : ''}</p>` : ''}
-    <div class="balance-values">${(latest?.balances || []).map(b => `<div><small>${esc(b.label)}</small><strong>${esc(money(b))}</strong><small>${(b.parts || []).filter(part => part.value !== null).map(part => `${esc(part.label)} ${fmt(part.value)}`).join(' · ')}</small></div>`).join('')}${(latest?.windows || []).map(w => `<div class="window-item"><small>${esc(w.label)}</small><strong>${fmt(remaining(w))}% remaining</strong>${meter(w)}<small>${w.resetsAt ? "Resets " + when(w.resetsAt) : "Reset time not provided"}</small></div>`).join('')}</div>
-    ${metrics.length ? `<div class="section-head"><h2>30-day observations</h2><select id="balanceMetric" aria-label="Balance metric">${metrics.map(m => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('')}</select></div>${SettingsCharts.line(points, { label: metric.label, unit: metric.unit, percent: metric.type === 'windows' })}` : capability.supported ? "<div class=\"chart-empty\">Refresh this key to start recording balances and quotas.</div>" : ''}
-    ${(latest?.modelUsage || []).length ? `<details class="advanced"><summary>Model request counts reported by provider</summary><div class="table-scroll"><table><thead><tr><th>Model</th><th>Reporting window</th><th>Requests</th></tr></thead><tbody>${latest.modelUsage.map(m => `<tr><td>${esc(m.model)}</td><td>${esc(m.period)}</td><td>${m.requests === null ? "Not provided" : fmt(m.requests)}</td></tr>`).join('')}</tbody></table></div><p class="hint">Account-level data may include other applications. It is not added to local usage.</p></details>` : ''}</div>`;
-  $('refreshOneBalance').onclick = () => refreshBalances({ providerId: p.id, keyId: k.id });
+  $('balanceDetail').innerHTML = `<div class="chart-panel"><div class="section-head"><h2>${esc(provider)} · ${esc(subscriptionId ? window.CamelliaI18n.t(name) : name)}</h2><button data-i18n id="refreshOneBalance" ${info.refreshing || !capability.supported ? 'disabled' : ''}>${info.refreshing ? "Querying…" : subscriptionId ? "Refresh account" : "Refresh this key"}</button></div>
+    ${subscriptionId ? '<p class="hint" data-i18n>Subscription quota is separate from API billing. A balance appears only when Kimi reports an extra usage wallet.</p>' : ''}
+    ${subscriptionId ? '' : !capability.supported ? `<p class="hint">${esc(t(capability.label))}. <span data-i18n>Local token and request records remain available in Usage.</span></p>` : `<p class="hint">${esc(t(capability.label))} · ${esc(t(sourceNote))}</p>`}
+    ${info.error ? `<p class="error">${esc(t(info.error))}${latest ? ' ' + esc(t('The last successful result is shown below.')) : ''}</p>` : ''}
+    <div class="balance-values">${(latest?.balances || []).map(b => `<div><small>${esc(t(b.label))}</small><strong>${esc(money(b))}</strong><small>${(b.parts || []).filter(part => part.value !== null).map(part => `${esc(t(part.label))} ${fmt(part.value)}`).join(' · ')}</small></div>`).join('')}${(latest?.windows || []).map(w => `<div class="window-item"><small>${esc(t(w.label))}</small><strong data-i18n>${fmt(remaining(w))}% remaining</strong>${meter(w)}<small data-i18n>${w.resetsAt ? "Resets " + when(w.resetsAt) : "Reset time not provided"}</small></div>`).join('')}</div>
+    ${metrics.length ? `<div class="section-head"><h2 data-i18n>30-day observations</h2><select id="balanceMetric" aria-label="Balance metric" data-i18n-attrs="aria-label">${metrics.map(m => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('')}</select></div>${SettingsCharts.line(points, { label: metric.label, width: $('balanceDetail').clientWidth - 38, unit: metric.unit, percent: metric.type === 'windows' })}` : capability.supported ? `<div class="chart-empty" data-i18n>${subscriptionId ? 'Refresh account to start recording quotas.' : 'Refresh this key to start recording balances and quotas.'}</div>` : ''}
+    ${(latest?.modelUsage || []).length ? `<details class="advanced"><summary data-i18n>Model request counts reported by provider</summary><div class="table-scroll"><table><thead><tr><th data-i18n>Model</th><th data-i18n>Reporting window</th><th data-i18n>Requests</th></tr></thead><tbody>${latest.modelUsage.map(m => `<tr><td>${esc(m.model)}</td><td>${esc(m.period)}</td><td>${m.requests === null ? "Not provided" : fmt(m.requests)}</td></tr>`).join('')}</tbody></table></div><p class="hint" data-i18n>Account-level data may include other applications. It is not added to local usage.</p></details>` : ''}</div>`;
+  $('refreshOneBalance').onclick = () => refreshBalances(subscriptionId ? { subscriptionId } : { providerId, keyId: id });
   if ($('balanceMetric')) { $('balanceMetric').value = balanceMetric; $('balanceMetric').onchange = e => { balanceMetric = e.target.value; renderBalanceDetail(); }; }
 }
 async function refreshBalances(payload = {}) {
   try {
-    assertClean(); $('refreshBalances').disabled = true; status("Querying balances and quotas…");
+    if (!payload.subscriptionId) assertClean(); $('refreshBalances').disabled = true; status("Querying balances and quotas…");
     const result = await api.providerRefresh(payload); if (!result.ok) throw new Error(result.error);
-    insight = result; renderBalances(); updateKeyStats();
-    const errors = Object.values(insight.keys).filter(info => info.status === 'error').length;
-    status(errors ? `Query complete. ${errors} keys could not be queried. See their cards for details.` : "Account status updated.");
+    insight = result; renderBalances(); renderSubscriptions(); updateKeyStats();
+    const errors = [...Object.values(insight.keys), ...(insight.subscriptions || []).map(a => a.info)].filter(info => info.status === 'error').length;
+    status(errors ? `Query complete. ${errors} accounts could not be queried. See their cards for details.` : "Account status updated.");
   } catch (e) { status(e.message, true); } finally { $('refreshBalances').disabled = false; }
 }
 document.querySelector('.settings-nav nav').onclick = e => { const button = e.target.closest('[data-view]'); if (button && config) setView(button.dataset.view); };
@@ -286,7 +314,26 @@ $('editor').onclick = async e => {
     }
   } catch (e) { status(e.message, true); } finally { if (d.verify) button.disabled = false; }
 };
-$('addProvider').onclick = () => { if (config) $('addDialog').showModal(); };
+function openAccountSettings(engine) {
+  if ($('addDialog').open) $('addDialog').close();
+  setView('engines', engine, 'account');
+}
+document.querySelectorAll('[data-account-engine]').forEach(button => {
+  button.onclick = () => openAccountSettings(button.dataset.accountEngine);
+});
+function renderPresetAccount() {
+  const provider = $('preset').value;
+  const engine = ['kimi', 'kimi-code'].includes(provider) ? 'kimi' : provider === 'gemini' ? 'antigravity' : '';
+  $('presetAccount').hidden = !engine;
+  $('openPresetAccount').dataset.accountEngine = engine;
+  $('openPresetAccount').textContent = engine === 'kimi' ? 'Open Kimi sign-in settings' : 'Open Google sign-in settings';
+  $('presetAccountHint').textContent = engine === 'kimi'
+    ? 'Have a Kimi subscription? Use browser sign-in in Kimi Code. This API provider requires a key.'
+    : 'Google account sign-in is available in Antigravity. Choose it to see your eligible account models; this Gemini API connection requires an API key.';
+}
+$('openPresetAccount').onclick = () => openAccountSettings($('openPresetAccount').dataset.accountEngine);
+$('preset').onchange = renderPresetAccount;
+$('addProvider').onclick = () => { if (config) { renderPresetAccount(); $('addDialog').showModal(); } };
 $('confirmAdd').onclick = () => {
   const p = structuredClone(presets.find(p => p.type === $('preset').value));
   p.id = uid(); p.enabled = true; p.keys = [{ id: uid(), name: '', key: '', enabled: true }];
@@ -314,6 +361,10 @@ $('save').onclick = async () => {
 };
 for (const id of ['usageRange','usageProvider','usageKey','usageModel','usageMetric']) $(id).onchange = () => { fillUsageFilters(); renderUsage(); };
 $('balanceCards').onclick = e => { const button = e.target.closest('[data-balance]'); if (button) { balanceKey = button.dataset.balance; renderBalances(); } };
+for (const id of ['subscriptionCards', 'subscriptionUsageCards']) $(id).onclick = e => {
+  const button = e.target.closest('[data-balance]');
+  if (button) { balanceKey = button.dataset.balance; $('balanceProvider').value = ''; $('balanceSearch').value = ''; setView('balances'); }
+};
 $('balanceProvider').onchange = renderBalances;
 $('balanceSearch').oninput = renderBalances;
 $('refreshBalances').onclick = () => refreshBalances();
@@ -326,8 +377,10 @@ $('exportUsage').onclick = () => {
 $('openLogs').onclick = () => api.openLogs();
 $('saveGeneral').onclick = async () => {
   try {
-    const result = await api.workbenchSaveSettings({ theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked });
-    if (!result.ok) throw new Error(result.error); status("Preferences saved");
+    const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked,
+      conversations: { mode: $('conversationMode').value, warnOnSwitch: $('conversationWarn').checked, showOrigin: $('conversationOriginSetting').checked } });
+    if (!result.ok) throw new Error(result.error);
+    window.CamelliaI18n.setLanguage($('language').value); status("Preferences saved");
   } catch (e) { status(e.message, true); }
 };
 async function refresh(initial = false) {
@@ -338,15 +391,21 @@ async function refresh(initial = false) {
     if (details.ok) insight = details;
     if (initial || !dirty) {
       config = structuredClone(live); $('enabled').checked = config.enabled; $('port').value = config.port;
+      const selectedPreset = $('preset').value;
       $('preset').innerHTML = presets.map(p => `<option value="${p.type}">${esc(p.name)}</option>`).join('');
+      if (presets.some(p => p.type === selectedPreset)) $('preset').value = selectedPreset;
+      renderPresetAccount();
       renderEditor();
     }
-    showLive(); if (view === 'usage') { fillUsageFilters(); renderUsage(); } if (view === 'balances') renderBalances();
+    showLive(); renderSubscriptions(); if (view === 'usage') { fillUsageFilters(); renderUsage(); } if (view === 'balances') renderBalances();
     if (!dirty) status(details.ok ? '' : details.error, !details.ok);
     if (initial) {
       const preferences = await api.workbenchSettings();
       if (!preferences.ok) throw new Error(preferences.error);
+      $('language').value = preferences.language || 'en';
       $('theme').value = preferences.theme; $('autoRefreshBalances').checked = preferences.autoRefreshBalances;
+      $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;
+      $('conversationOriginSetting').checked = !!preferences.conversations?.showOrigin;
       $('dataPath').textContent = preferences.dataPath; $('version').textContent = 'v' + preferences.version;
     }
   } catch (e) { status(e.message, true); }
@@ -359,7 +418,23 @@ api.onApiRouterState(state => {
 });
 api.onProviderInsights(state => {
   insight = state; if (!config) return;
-  updateKeyStats(); if (view === 'balances') renderBalances();
+  updateKeyStats(); renderSubscriptions(); if (view === 'balances') renderBalances();
   if (!dirty && !current()) renderProviders();
 });
+let chartLayoutWidth = 0, chartLayoutFrame;
+new ResizeObserver(() => {
+  const width = document.querySelector('.scroll-content').clientWidth;
+  if (width === chartLayoutWidth) return;
+  chartLayoutWidth = width;
+  cancelAnimationFrame(chartLayoutFrame);
+  chartLayoutFrame = requestAnimationFrame(() => {
+    if (!live) return;
+    if (view === 'usage') renderUsage();
+    if (view === 'balances') renderBalances();
+  });
+}).observe(document.querySelector('.scroll-content'));
 void refresh(true).then(() => navigateSettings(Object.fromEntries(new URLSearchParams(location.search))));
+window.addEventListener('camellia:language', () => {
+  if (!live) return;
+  renderSubscriptions(); if (view === 'balances') renderBalances();
+});

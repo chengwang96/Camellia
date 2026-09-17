@@ -13,7 +13,7 @@ registration markers are checked before modifying the module.
 - CLI package: `@deepseek-ai/dsh@0.1.5-rc.1`.
 - Settings plugin: `@deepseek-ai/dsh-client-ui-settings-general@0.1.5-rc.2`.
 - Client module host: `@deepseek-ai/dsh-client-modules@0.1.5-rc.2`.
-- Locale plugin: `@deepseek-ai/dsh-client-locale@0.1.5-rc.2`; new profiles default to English independently of the operating system language. Explicit native language preferences remain effective.
+- Locale plugin: `@deepseek-ai/dsh-client-locale@0.1.5-rc.2`; the embedded panel follows **Settings → General → Language** in Camellia. Its duplicate language control is hidden. Standalone DSH retains its native preference; new profiles default to English independently of the operating system language.
 - The complete dependency graph is pinned in `runtimes/dsh/package-lock.json`.
 - Upstream: <https://github.com/deepseek-ai/deepseek-harness>, MIT (`UPSTREAM-LICENSE`).
 

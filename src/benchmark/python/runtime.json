@@ -1,0 +1,17 @@
+{
+  "uv": "0.12.15",
+  "platforms": {
+    "win32-x64": {
+      "archive": "uv-runtime.whl",
+      "sha256": "39af7d437b6d1f962f11c0b77f891d302ea675a0ebbcfe9792f633d843740a25",
+      "uv": "uv-0.12.15.data/scripts/uv.exe",
+      "url": "https://files.pythonhosted.org/packages/ac/d8/0b4fdfb56c79a307237295f8a0f7c64a34d5d1e8c090fab0bc1201cab2a8/uv-0.12.15-py3-none-win_amd64.whl"
+    },
+    "darwin-arm64": {
+      "archive": "uv-runtime.whl",
+      "sha256": "03b2c763f8b3c5595fa103221bc667e3af0146f8cb327aa06630ebcf5cfe16e9",
+      "uv": "uv-0.12.15.data/scripts/uv",
+      "url": "https://files.pythonhosted.org/packages/84/62/82e86e03e111463ab224c132c0f0e6b649d98d22710b177fbc000d379103/uv-0.12.15-py3-none-macosx_11_0_arm64.whl"
+    }
+  }
+}

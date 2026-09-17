@@ -1,25 +1,25 @@
 'use strict';
 const path = require('node:path');
 const fs = require('node:fs');
-const { createRuntimeManager } = require('../src/main/runtime-manager');
+const { createRuntimeManager, ENGINES } = require('../src/main/runtime-manager');
 const { npmCandidates } = require('../src/main/runtime-paths');
-const patchDsh = require('../integrations/dsh/patch.cjs');
-const root = path.resolve(__dirname, '..');
-async function prepare({ strict = false, engines = ['dsh', 'kimi', 'claude'] } = {}) {
+async function prepare({ engines = [], check = false, googleSubscription = false, root = path.resolve(__dirname, '..') } = {}) {
   const npm = npmCandidates(process.execPath).find(file => fs.existsSync(file));
   const manager = createRuntimeManager({ root, installRoot: root, node: process.execPath, npm,
+    runtimeMode: engine => engine === 'antigravity' && googleSubscription ? 'subscription' : 'api',
     onChange: rows => { for (const row of rows) if (row.status === 'installing' || row.status === 'error') console.log(`${row.name}: ${row.message}`); } });
-  for (const engine of engines) {
-    try {
-      if (process.argv.includes('--check') && !manager.locate(engine)) continue;
-      await manager.ensure(engine);
-      if (engine === 'dsh') patchDsh(path.join(root, 'runtimes/dsh'));
-      console.log(`${engine}: ready`);
-    } catch (error) {
-      if (strict) throw error;
-      console.warn(`${engine}: ${error.message}\nOpen Camellia and retry in Settings → Runtime.`);
-    }
+  for (const engine of check ? Object.keys(ENGINES) : engines) {
+    if (check && !manager.locate(engine)) continue;
+    await manager.ensure(engine);
+    console.log(`${engine}: ready`);
   }
+  if (!check && !engines.length) console.log('Choose engines to download: npm run setup:runtimes -- dsh kimi\nAvailable: claude, codex, dsh, kimi, antigravity. Use --all to install every engine.');
+  return manager.state();
 }
-if (require.main === module) prepare().catch(error => { console.error(error.message); process.exitCode = 1; });
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  prepare({ check: args.includes('--check'), googleSubscription: args.includes('--google-subscription'),
+    engines: args.includes('--all') ? Object.keys(ENGINES) : args.filter(arg => !['--check', '--google-subscription'].includes(arg)) })
+    .catch(error => { console.error(error.message); process.exitCode = 1; });
+}
 module.exports = prepare;

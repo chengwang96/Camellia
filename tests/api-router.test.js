@@ -9,8 +9,15 @@ const { once } = require('node:events');
 const { startApiRouter, retryDelay } = require('../src/api/api-router');
 const { normalizeConfig, writeConfig, loadConfig, publicState } = require('../src/api/api-router-config');
 const { frame, SSEParser, convertRequest } = require('../src/api/api-protocol');
+const { BAD_PORTS } = require('./bad-ports.cjs');
 
-async function port() { const server = http.createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const p = server.address().port; await new Promise(r => server.close(r)); return p; }
+async function port() {
+  for (;;) {
+    const server = http.createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const p = server.address().port; await new Promise(r => server.close(r));
+    if (!BAD_PORTS.has(p)) return p; // fetch() refuses blocklisted ports.
+  }
+}
 const mapping = (id = 'kimi-k3', upstream = 'vendor/Kimi-K3', protocol = 'auto') => ({ id, upstream, protocol });
 const provider = (id, url, keys = ['secret-' + id], models = [mapping()], protocol = 'openai') => ({ id, name: id, type: 'custom', baseUrl: url, protocol, enabled: true, models, keys: keys.map((key,i) => ({ id: id+'-key-'+i, key, enabled: true })) });
 const completion = (model, text = '你好') => ({ id:'test', model, choices:[{ index:0, message:{ role:'assistant', content:text }, finish_reason:'stop' }], usage:{ prompt_tokens:10, completion_tokens:4 } });
@@ -50,6 +57,169 @@ async function fixture(t, respond, makeProviders, options = {}) {
   const post=(body, endpoint='/v1/chat/completions', opts={}) => fetch(router.url+endpoint,{ method:'POST', headers:{ 'content-type':'application/json', authorization:'Bearer client-placeholder', 'x-api-key':'client-private', ...opts.headers }, body:JSON.stringify({ model:'kimi-k3', messages:[{role:'user',content:'hello'}], ...body }), signal:opts.signal });
   return {router,requests,file,post,url};
 }
+
+test('scoped requests preserve the actual output cap and stream finish reason after a recovered quota error', async t => {
+  const f = await fixture(t, (request, res) => {
+    if (request.headers.authorization === 'Bearer exhausted') return reply(res, 402, { error: 'monthly usage limit reached' });
+    const events = openEvents('');
+    events.find(event => event.choices?.[0]?.finish_reason).choices[0].finish_reason = 'length';
+    stream(res, events);
+  }, url => [provider('p', url, ['exhausted', 'working'])]);
+  const usage = [], requests = [], scope = f.router.createScope({ model: 'kimi-k3', providerId: 'p',
+    onUsage: record => usage.push(record), onRequest: request => requests.push(request) });
+  const response = await f.post({ stream: true, max_tokens: 8192 }, scope.path + '/v1/messages');
+  assert.match(await response.text(), /max_tokens/); await scope.close();
+  assert.equal(usage.length, 2); assert.equal(usage[0].failureKind, 'quota');
+  assert.equal(usage[1].outcome, 'success'); assert.equal(usage[1].finishReason, 'length');
+  assert.equal(usage[1].maxOutputTokens, 8192);
+  assert.deepEqual(requests.map(r => r.sequence), [1, 2]);
+  assert.deepEqual(usage.map(r => r.sequence), [1, 2]);
+  assert.ok(usage.every(r => Number.isFinite(r.durationMs) && r.durationMs >= 0));
+});
+
+test('Codex Responses streams preserve tool calls, same-model failover and per-key usage', async t => {
+  const f = await fixture(t, (r, res) => r.headers.authorization === 'Bearer empty' ? reply(res, 402, { error: 'quota exhausted' })
+    : stream(res, openEvents('Codex reply', true)), url => [provider('p', url, ['empty', 'working'])]);
+  const response = await f.post({ input: [{ role: 'user', content: [{ type: 'input_text', text: 'read the document' }] }],
+    tools: [{ type: 'function', name: 'read', parameters: { type: 'object', properties: { path: { type: 'string' } } } }], stream: true }, '/v1/responses');
+  assert.equal(response.status, 200);
+  const events = []; const parser = new SSEParser(event => events.push(event)); parser.feed(Buffer.from(await response.text())); parser.end();
+  const complete = events.find(e => e.type === 'response.completed').response;
+  assert.equal(complete.output[0].summary[0].text, '先思考');
+  assert.equal(complete.output[1].content[0].text, 'Codex reply');
+  assert.equal(complete.output[2].name, 'read'); assert.deepEqual(JSON.parse(complete.output[2].arguments), { path: '文档' });
+  assert.deepEqual(complete.usage.input_tokens_details, { cached_tokens: 5 });
+  assert.deepEqual(f.requests.map(r => r.headers.authorization), ['Bearer empty', 'Bearer working']);
+  assert.ok(f.requests.every(r => r.body.model === 'vendor/Kimi-K3'));
+  assert.equal(f.requests[1].body.messages[0].content[0].text, 'read the document');
+  assert.equal(f.router.getState().usage['p-key-1'].byModel['kimi-k3'].inputTokens, 15);
+});
+
+test('Responses tool continuation retains reasoning and groups parallel calls', async t => {
+  const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('p', url)]);
+  const response = await f.post({ input: [
+    { role: 'user', content: 'read both files' },
+    { type: 'reasoning', summary: [{ type: 'summary_text', text: 'Read the two files together.' }] },
+    ...['one', 'two'].map(id => ({ type: 'function_call', call_id: id, namespace: 'files', name: 'read', arguments: JSON.stringify({ path: id }) })),
+    ...['one', 'two'].map(id => ({ type: 'function_call_output', call_id: id, output: 'contents of ' + id })),
+  ] }, '/v1/responses');
+  assert.equal(response.status, 200);
+  const messages = f.requests[0].body.messages;
+  assert.equal(messages.length, 4); assert.equal(messages[1].reasoning_content, 'Read the two files together.');
+  assert.deepEqual(messages[1].tool_calls.map(call => call.function.name), ['files__read', 'files__read']);
+});
+
+test('Antigravity compatibility routes coalesce tools while preserving scoped usage and ordinary OpenAI streaming', async t => {
+  const f = await fixture(t, (_r, res) => stream(res, openEvents('Working', true)), url => [provider('p', url)]);
+  const observed = [], route = f.router.createScope({ model: 'kimi-k3', providerId: 'p', onToolResult: result => observed.push(result) });
+  const endpoint = route.path + '/compat/antigravity/v1/chat/completions';
+  const response = await f.post({ stream: true, messages: [
+    { role: 'assistant', tool_calls: [{ id: 'old', type: 'function', function: { name: 'run_command', arguments: '{"CommandLine":"exit 7"}' } }] },
+    { role: 'tool', tool_call_id: 'old', content: '\nThe command exited with code 7.\nOutput:\nx' },
+  ] }, endpoint);
+  const events = [], parser = new SSEParser(obj => events.push(obj)); parser.feed(Buffer.from(await response.text())); parser.end();
+  const calls = events.flatMap(e => e.choices || []).flatMap(c => c.delta?.tool_calls || []);
+  assert.equal(calls.length, 1); assert.deepEqual(JSON.parse(calls[0].function.arguments), { path: '文档' });
+  assert.equal(observed[0].name, 'run_command'); assert.equal(observed[0].is_error, true);
+  assert.equal(route.scope.requests, 1); assert.ok(route.scope.tokens > 0);
+  assert.equal(f.requests[0].url, '/chat/completions', 'Client compatibility prefix never reaches the provider');
+  const ordinary = await f.post({ stream: true });
+  const native = [], parseNative = new SSEParser(obj => native.push(obj)); parseNative.feed(Buffer.from(await ordinary.text()));
+  assert.equal(native.flatMap(e => e.choices || []).flatMap(c => c.delta?.tool_calls || []).length, 2, 'Other clients retain streamed tool arguments');
+  await route.close();
+  assert.equal((await f.post({ stream: true }, endpoint)).status, 410, 'A compatibility path cannot bypass closed scopes');
+});
+
+test('Antigravity compatibility buffers tools after Anthropic to OpenAI conversion', async t => {
+  const f = await fixture(t, (_r, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    for (const event of [
+      { type: 'message_start', message: { id: 'a', role: 'assistant', content: [], usage: { input_tokens: 3, output_tokens: 0 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'read-a', name: 'read', input: {} } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"path":' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '"词🙂"}' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } },
+      { type: 'message_stop' },
+    ]) res.write(frame(event, event.type));
+    res.end();
+  }, url => [provider('p', url, ['local'], [mapping()], 'anthropic')]);
+  const response = await f.post({ stream: true }, '/compat/antigravity/v1/chat/completions');
+  const events = [], parser = new SSEParser(obj => events.push(obj)); parser.feed(Buffer.from(await response.text()));
+  assert.equal(events.at(-1), '[DONE]');
+  const calls = events.flatMap(e => e.choices || []).flatMap(c => c.delta?.tool_calls || []);
+  assert.equal(calls.length, 1); assert.equal(calls[0].id, 'read-a');
+  assert.deepEqual(JSON.parse(calls[0].function.arguments), { path: '词🙂' });
+});
+
+test('Responses stream failure is terminal and does not fail over after partial output', async t => {
+  const f = await fixture(t, (_r, res) => stream(res, [
+    { choices: [{ delta: { content: 'Partial answer' } }] },
+    { error: { message: 'quota exceeded', status: 429 } },
+  ]), url => [provider('p', url, ['first', 'unused'])]);
+  const response = await f.post({ input: 'hello', stream: true }, '/v1/responses');
+  const events = [], parser = new SSEParser(event => events.push(event)); parser.feed(Buffer.from(await response.text())); parser.end();
+  assert.equal(events.at(-1).type, 'response.failed'); assert.equal(events.at(-1).response.status, 'failed');
+  assert.equal(events.some(event => event.type === 'response.completed'), false);
+  assert.equal(f.requests.length, 1); assert.equal(f.router.getState().activeRequests, 0);
+});
+
+test('Responses adapts custom tools and Anthropic replies without losing tool input', async t => {
+  const f = await fixture(t, (r, res) => reply(res, 200, { id: 'msg-native', role: 'assistant', type: 'message',
+    content: [{ type: 'tool_use', id: 'tool-patch', name: 'apply_patch', input: { input: '*** Begin Patch\n*** End Patch' } }],
+    stop_reason: 'tool_use', usage: { input_tokens: 4, output_tokens: 8 } }), url => [provider('a', url, ['local'], [mapping()], 'anthropic')]);
+  const response = await f.post({ input: 'edit the file', tools: [{ type: 'custom', name: 'apply_patch', format: { type: 'grammar' } }] }, '/v1/responses');
+  assert.equal(response.status, 200); const value = await response.json();
+  assert.equal(value.output[0].type, 'custom_tool_call'); assert.equal(value.output[0].input, '*** Begin Patch\n*** End Patch');
+  assert.equal(f.requests[0].url, '/messages'); assert.equal(value.usage.input_tokens, 4);
+});
+
+test('benchmark routes pin provider and model, isolate usage, and expire on close', async t => {
+  const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('chat', url + '/chat'), provider('bench', url + '/bench')]);
+  const usage = [];
+  const scoped = f.router.createScope({ model: 'kimi-k3', providerId: 'bench', onUsage: record => usage.push(record) });
+  assert.equal((await f.post({})).status, 200);
+  assert.equal((await f.post({}, scoped.path + '/v1/chat/completions')).status, 200);
+  assert.deepEqual(f.requests.map(r => r.headers.authorization), ['Bearer secret-chat', 'Bearer secret-bench']);
+  assert.equal(usage.length, 1); assert.equal(usage[0].tokens.input, 10); assert.equal(usage[0].tokens.output, 4);
+  assert.equal(f.router.getState().usage['chat-key-0'].requests, 1);
+  assert.equal(f.router.getState().usage['bench-key-0'].requests, 1);
+  assert.equal((await f.post({ model: 'another' }, scoped.path + '/v1/chat/completions')).status, 400);
+  assert.equal((await fetch(scoped.baseUrl + '/__router/state')).status, 404);
+  assert.deepEqual((await fetch(scoped.baseUrl + '/v1/models').then(r => r.json())).data.map(m => m.id), ['kimi-k3']);
+  await scoped.close();
+  assert.equal((await f.post({}, scoped.path + '/v1/chat/completions')).status, 410);
+  assert.equal(f.requests.length, 2);
+});
+
+test('benchmark API limits stop requests without falling through to other keys or models', async t => {
+  const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('p', url, ['one', 'two'])]);
+  let limits = 0;
+  const limited = f.router.createScope({ model: 'kimi-k3', providerId: 'p', maxRequests: 1, onLimit: () => limits++ });
+  assert.equal((await f.post({}, limited.path + '/v1/chat/completions')).status, 200);
+  assert.equal((await f.post({}, limited.path + '/v1/chat/completions')).status, 429);
+  assert.equal(limits, 1); assert.equal(f.requests.length, 1); await limited.close();
+  const tokens = f.router.createScope({ model: 'kimi-k3', providerId: 'p', maxTokens: 14, onLimit: () => limits++ });
+  assert.equal((await f.post({}, tokens.path + '/v1/chat/completions')).status, 200);
+  assert.equal((await f.post({}, tokens.path + '/v1/chat/completions')).status, 429);
+  assert.equal(limits, 2); assert.equal(f.requests.length, 2); await tokens.close();
+});
+
+test('benchmark routes reject endpoint changes and close in-flight provider connections', async t => {
+  let received;
+  const entered = new Promise(resolve => { received = resolve; });
+  const f = await fixture(t, async (r, res) => { received(res); }, url => [provider('p', url)]);
+  const scoped = f.router.createScope({ model: 'kimi-k3', providerId: 'p' });
+  const pending = f.post({}, scoped.path + '/v1/chat/completions').catch(error => error);
+  const upstream = await entered, closed = once(upstream, 'close');
+  await scoped.close(); await closed;
+  assert.ok((await pending) instanceof Error); assert.equal(f.router.getState().activeRequests, 0);
+  const pinned = f.router.createScope({ model: 'kimi-k3', providerId: 'p' });
+  const config = f.router.getState(); config.providers[0].baseUrl += '/changed'; f.router.updateConfig(config);
+  assert.equal((await f.post({}, pinned.path + '/v1/chat/completions')).status, 404);
+  assert.throws(() => f.router.createScope({ model: 'kimi-k3', providerId: 'p', routeFingerprint: pinned.scope.routeFingerprint }), /route changed/);
+  assert.equal(f.requests.length, 1); await pinned.close();
+});
 
 test('per-model, per-day and per-key token counts survive config saves and keep old unclassified totals', async t => {
   const f=await fixture(t,(r,res)=> r.headers.authorization==='Bearer bad-key' ? reply(res,402,{error:'quota'}) : r.body.stream ? stream(res,openEvents()) : reply(res,200,completion(r.body.model)), url=>[
@@ -293,4 +463,35 @@ test('failed config persistence cannot change the live router', async t => {
   rename.mock.restore();
   assert.equal(f.router.getState().providers[0].name, 'original');
   assert.equal(loadConfig(f.file).providers[0].name, 'original');
+});
+
+test('Gemini tool signatures round-trip through streamed Anthropic conversion and same-model key failover', async t => {
+  const f = await fixture(t, (r, res) => {
+    if (r.headers.authorization === 'Bearer exhausted') return reply(res, 429, { error: 'quota exhausted' });
+    if (r.body.messages.some(message => message.role === 'tool')) return reply(res, 200, completion(r.body.model, 'read complete'));
+    stream(res, [
+      { choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'google-tool', type: 'function', function: { name: 'read', arguments: '{"path":"marker.txt"}' } }] } }] },
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, extra_content: { google: { thought_signature: 'opaque-signature' } } }] } }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 15, completion_tokens: 9 } }, '[DONE]',
+    ]);
+  }, url => [{ ...provider('google', url, ['exhausted', 'working'], [mapping('gemini-test', 'gemini-upstream')]), type: 'gemini' },
+    provider('unrelated', url, ['never-use'], [mapping('different-model', 'different-model')])]);
+  const user = { role: 'user', content: 'read marker.txt' };
+  const first = await f.post({ model: 'gemini-test', messages: [user], stream: true, max_tokens: 100,
+    thinking: { type: 'enabled', budget_tokens: 50 }, tools: [{ name: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' } } } }] }, '/v1/messages');
+  const events = [], parser = new SSEParser(value => events.push(value));
+  parser.feed(Buffer.from(await first.text())); parser.end();
+  const tool = events.find(event => event.type === 'content_block_start' && event.content_block.type === 'tool_use').content_block;
+  const args = events.filter(event => event.type === 'content_block_delta' && event.delta.type === 'input_json_delta').map(event => event.delta.partial_json).join('');
+  const second = await f.post({ model: 'gemini-test', max_tokens: 100, messages: [user,
+    { role: 'assistant', content: [{ ...tool, input: JSON.parse(args) }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: tool.id, content: 'file contents' }] },
+  ] }, '/v1/messages');
+  assert.equal(second.status, 200);
+  assert.equal((await second.json()).content[0].text, 'read complete');
+  assert.equal(f.requests.at(-1).body.messages.find(message => message.tool_calls).tool_calls[0].extra_content.google.thought_signature, 'opaque-signature');
+  assert.equal(f.requests[1].body.thinking, undefined);
+  assert.deepEqual(f.requests.map(request => request.headers.authorization), ['Bearer exhausted', 'Bearer working', 'Bearer working']);
+  assert.ok(f.requests.every(request => request.body.model === 'gemini-upstream'));
+  assert.equal(f.router.getState().usage['google-key-1'].byModel['gemini-test'].requests, 2);
 });

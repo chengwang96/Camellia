@@ -32,6 +32,21 @@ module.exports = function patchDsh(runtimeDir) {
   const localeSource = fs.readFileSync(localeOriginal, 'utf8');
   const browserDefault = 'return detectBrowserLocale(locales) ?? "en";';
   if (localeSource.split(browserDefault).length !== 2) throw new Error('The DSH default locale entry point changed');
-  // Keep an explicit native preference, but use English for new profiles on every OS.
-  fs.writeFileSync(localeFile, localeSource.replace(browserDefault, 'return "en"; // Camellia default; explicit preferences still take precedence.'));
+  // Camellia owns the display language. Standalone DSH keeps its native preference.
+  const localeConstructor = 'new LocaleRuntime(ctx, ctx.settingsScope.bind({ namespace: LOCALE_SETTINGS_NAMESPACE }))';
+  const installLocale = 'ctx.slots.installLocale(locale);';
+  const languageRow = 'ctx.slots.inject("settings.general.item", () => ctx.slots.register({';
+  for (const marker of [localeConstructor, installLocale, languageRow]) {
+    if (localeSource.split(marker).length !== 2) throw new Error('The DSH locale integration entry point changed');
+  }
+  fs.writeFileSync(localeFile, localeSource
+    .replace(browserDefault, 'return "en"; // Camellia default')
+    .replace(localeConstructor, 'new LocaleRuntime(ctx, window.dshDesktop ? undefined : ctx.settingsScope.bind({ namespace: LOCALE_SETTINGS_NAMESPACE }))')
+    .replace(installLocale, `${installLocale}
+      if (window.dshDesktop) {
+        const setLanguage = language => locale.setLocale(language === 'zh-CN' ? 'zh' : 'en');
+        window.dshDesktop.workbenchSettings().then(settings => { if (settings.ok) setLanguage(settings.language); });
+        ctx.effect(() => window.dshDesktop.onLanguageChanged(setLanguage), 'locale: Camellia language');
+      }`)
+    .replace(languageRow, 'if (!window.dshDesktop) ' + languageRow));
 };

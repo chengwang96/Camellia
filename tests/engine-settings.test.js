@@ -67,6 +67,14 @@ test('fresh profiles can save native settings before choosing a model', t => {
   const saved = f.service.save('kimi', { ...f.service.get('kimi'), common: { default_permission_mode: 'manual' } });
   assert.equal(parse(saved.files[0].text, 'toml').default_permission_mode, 'manual');
 });
+test('saving subscription preferences retains the API model in global Kimi routes', t => {
+  const f = fixture(t);
+  f.desktop.kimi = { connection: 'subscription', model: 'kimi-code/coding', apiModel: 'api-remembered', contextWindow: 131072 };
+  f.service.save('kimi', { ...f.service.get('kimi'), common: { default_permission_mode: 'manual' } });
+  const config = parse(fs.readFileSync(path.join(f.home, '.kimi-code/config.toml'), 'utf8'), 'toml');
+  assert.equal(config.default_model, 'api-remembered');
+  assert.equal(config.models['kimi-code/coding'], undefined);
+});
 test('changing the router port follows only connections already managed by the workbench', t => {
   const f = fixture(t);
   const claude = f.put('.claude/settings.json', '{"env":{"ANTHROPIC_AUTH_TOKEN":"proxy-managed","ANTHROPIC_BASE_URL":"http://127.0.0.1:10000"},"language":"Chinese"}');
@@ -86,20 +94,39 @@ test('managed runtime install resolves linked prefixes, coalesces installs, and 
   for (const engine of ['kimi']) {
     for (const file of ['package.json', 'package-lock.json']) f.put(path.join('distribution/runtimes', engine, file), '{}');
   }
-  let calls = 0, fail = true;
-  const manager = createRuntimeManager({ root, installRoot: target, node: process.execPath, npm: 'fixture-npm', runCommand: async (_exe, args, options) => {
+  let calls = 0, prompts = 0, fail = true;
+  const manager = createRuntimeManager({ root, installRoot: target, node: process.execPath, npm: 'fixture-npm',
+    downloadOptions: () => { prompts++; return { mode: fail ? 'proxy' : 'direct', url: 'http://proxy.example:8080/' }; },
+    runCommand: async (_exe, args, options) => {
     calls++; assert.ok(args.includes('ci')); assert.ok(args.includes('--ignore-scripts'));
     const installedDir = fs.realpathSync.native(path.join(physical, 'runtimes/kimi'));
     assert.equal(args[args.indexOf('--prefix') + 1], installedDir);
     assert.equal(options.cwd, installedDir);
+    assert.equal(options.env.HTTPS_PROXY, fail ? 'http://proxy.example:8080/' : '');
     if (fail) throw new Error('temporary network failure');
     const info = ENGINES.kimi, dir = path.join(target, 'runtimes/kimi/node_modules', info.package);
     fs.mkdirSync(path.dirname(path.join(dir, info.entry)), { recursive: true });
     fs.writeFileSync(path.join(dir, info.entry), ''); fs.writeFileSync(path.join(dir, 'package.json'), '{"version":"0.43.0"}');
   } });
+  assert.ok(manager.state().every(row => row.status === 'missing'));
+  assert.equal(calls, 0, 'Listing runtimes must not start downloads');
   const a = manager.ensure('kimi'); assert.equal(a, manager.ensure('kimi')); await assert.rejects(a, /network/);
   assert.equal(manager.state().find(row => row.id === 'kimi').status, 'error');
   fail = false; const ready = await manager.ensure('kimi');
   assert.equal(ready.source, "Installed by Camellia"); assert.equal(calls, 2);
-  await manager.ensure('kimi'); assert.equal(calls, 2);
+  await manager.ensure('kimi'); assert.equal(calls, 2); assert.equal(prompts, 2, 'Retry can choose a new connection; installed engines do not prompt');
+  assert.ok(manager.state().filter(row => row.id !== 'kimi').every(row => row.status === 'missing'));
+  assert.deepEqual(fs.readdirSync(path.join(target, 'runtimes')), ['kimi'], 'Only the selected engine is installed');
+});
+
+test('source setup and startup checks leave missing engines uninstalled', async t => {
+  const f = fixture(t), root = path.join(f.home, 'fresh-checkout');
+  fs.mkdirSync(root);
+  const prepare = require('../scripts/prepare-runtimes.cjs');
+  for (const options of [{}, { check: true }]) {
+    const rows = await prepare({ root, ...options });
+    assert.deepEqual(rows.map(row => row.id), ['claude', 'codex', 'dsh', 'kimi', 'antigravity']);
+    assert.ok(rows.every(row => row.status === 'missing'));
+    assert.deepEqual(fs.readdirSync(root), [], 'No engine files are downloaded by default');
+  }
 });
