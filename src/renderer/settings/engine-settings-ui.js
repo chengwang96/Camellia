@@ -206,9 +206,34 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     const target = $(prefix + (current().dirty ? 'SaveConnection' : 'SignIn'));
     target.scrollIntoView({ block: 'center' }); target.focus({ preventScroll: true });
   }
-  function renderRuntimes(rows) {
-    $('runtimeCards').innerHTML = rows.map(row => `<article class="runtime-card"><div><h2>${esc(row.name)}${row.id === 'antigravity' ? ` · ${row.mode === 'subscription' ? 'Google subscription' : 'API'}` : ''}</h2><span data-i18n class="badge ${row.status === 'ready' ? 'good' : row.status === 'error' ? 'bad' : ''}">${({ready:"Ready",installing:"Downloading",missing:"Not downloaded",error:"Download failed"})[row.status]}</span><button data-i18n data-install="${row.id}" ${row.status === 'ready' || row.status === 'installing' ? 'disabled' : ''}>${row.status === 'error' ? "Retry download" : row.status === 'ready' ? "Installed" : row.status === 'installing' ? "Downloading…" : "Download"}</button></div><p class="hint" data-i18n>${esc(row.status === 'ready' ? `v${row.version} · ${row.source}` : row.message || (row.id === 'antigravity' ? row.mode === 'subscription' ? 'Downloads the official CLI for Google sign-in. No Python environment is needed.' : 'Downloads the official SDK and its own Python environment. Other engines stay uninstalled.' : 'Download this engine when you need it. Other engines stay uninstalled.'))}</p>${row.file ? `<details><summary data-i18n>Installation path</summary><code>${esc(row.file)}</code></details>` : ''}</article>`).join('');
+  let runtimeRows = [], runtimeUpdateInfo = {}, runtimeUpdatesBusy = false;
+  function updateInfoLine(id) {
+    const info = runtimeUpdateInfo[id];
+    if (!info) return '';
+    if (!info.checkable) return `<p class="hint" data-i18n>Updates ship with the app</p>`;
+    if (info.error) return `<p class="hint"><span data-i18n>Update check failed</span> · ${esc(info.error)}</p>`;
+    if (!info.installed) return '';
+    if (info.updateAvailable) return `<p class="hint"><span data-i18n>v${esc(info.latest)} is available</span> <button data-update="${id}" data-i18n ${runtimeUpdatesBusy ? 'disabled' : ''}>Update</button></p>`;
+    return `<p class="hint" data-i18n>Up to date</p>`;
   }
+  function renderRuntimes(rows) {
+    runtimeRows = rows;
+    $('runtimeCards').innerHTML = rows.map(row => `<article class="runtime-card"><div><h2>${esc(row.name)}${row.id === 'antigravity' ? ` · ${row.mode === 'subscription' ? 'Google subscription' : 'API'}` : ''}</h2><span data-i18n class="badge ${row.status === 'ready' ? 'good' : row.status === 'error' ? 'bad' : ''}">${({ready:"Ready",installing:"Downloading",missing:"Not downloaded",error:"Download failed"})[row.status]}</span><button data-i18n data-install="${row.id}" ${row.status === 'ready' || row.status === 'installing' ? 'disabled' : ''}>${row.status === 'error' ? "Retry download" : row.status === 'ready' ? "Installed" : row.status === 'installing' ? "Downloading…" : "Download"}</button></div><p class="hint" data-i18n>${esc(row.status === 'ready' ? `v${row.version} · ${row.source}` : row.message || (row.id === 'antigravity' ? row.mode === 'subscription' ? 'Downloads the official CLI for Google sign-in. No Python environment is needed.' : 'Downloads the official SDK and its own Python environment. Other engines stay uninstalled.' : 'Download this engine when you need it. Other engines stay uninstalled.'))}</p>${updateInfoLine(row.id)}${row.file ? `<details><summary data-i18n>Installation path</summary><code>${esc(row.file)}</code></details>` : ''}</article>`).join('');
+  }
+  async function checkRuntimeUpdates() {
+    if (runtimeUpdatesBusy) return;
+    runtimeUpdatesBusy = true;
+    $('checkRuntimeUpdates').disabled = true;
+    status('Checking for updates…');
+    try {
+      const result = await api.runtimeCheckUpdates();
+      if (!result.ok) throw new Error(result.error);
+      runtimeUpdateInfo = Object.fromEntries(result.engines.map(row => [row.id, row]));
+      status('');
+    } catch (error) { status(error.message, true); }
+    finally { runtimeUpdatesBusy = false; $('checkRuntimeUpdates').disabled = false; renderRuntimes(runtimeRows); }
+  }
+  $('checkRuntimeUpdates').onclick = checkRuntimeUpdates;
   async function runtimePage(focus) {
     try {
       const [result, settings] = await Promise.all([api.runtimeState(), api.downloadSettings()]);
@@ -311,9 +336,26 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     finally { $('engineContent').inert = false; }
   };
   $('runtimeCards').onclick = async e => {
+    const updateButton = e.target.closest('[data-update]');
+    if (updateButton) {
+      updateButton.disabled = true;
+      status('Updating…');
+      try {
+        const result = await api.runtimeUpdate({ engine: updateButton.dataset.update });
+        if (!result.ok) throw new Error(result.error);
+        if (result.restarting) return;
+        await checkRuntimeUpdates();
+        if (result.changed) {
+          const name = (runtimeRows.find(row => row.id === result.engine) || {}).name || result.engine;
+          status(`Updated ${name} to v${result.to}`);
+        } else status('Up to date');
+      } catch (error) { status(error.message, true); }
+      finally { void runtimePage(); }
+      return;
+    }
     const button = e.target.closest('[data-install]'); if (!button) return;
     button.disabled = true;
-    try { const result = await api.runtimeEnsure({ engine: button.dataset.install }); if (!result.ok) throw new Error(result.error); status(result.canceled ? '' : "Runtime ready"); }
+    try { const result = await api.runtimeEnsure({ engine: button.dataset.install }); if (!result.ok) throw new Error(result.error); status(result.canceled ? '' : "Runtime ready"); delete runtimeUpdateInfo[button.dataset.install]; }
     catch (e) { status(e.message, true); } finally { void runtimePage(); }
   };
   api.onRuntimeState(renderRuntimes);

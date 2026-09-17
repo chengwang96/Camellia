@@ -56,7 +56,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     }
     for (const key of ['cwd', 'permissionMode', 'proxyUrl']) if (patch[key] !== undefined) next[key] = String(patch[key]).trim();
     if (patch.model !== undefined) {
-      const connection = patch.sessionId ? sessionConnection(patch.sessionId) : next.connection;
+      const connection = patch.connection || (patch.sessionId ? sessionConnection(patch.sessionId) : next.connection);
       next[connection + 'Model'] = String(patch.model).trim();
       if (connection === next.connection) next.model = next[connection + 'Model'];
     }
@@ -136,7 +136,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     'goal-pause': () => goal.setPhase('paused'), 'goal-resume': () => goal.resume(),
     'goal-complete': () => goal.setPhase('complete'), 'goal-clear': () => goal.clear(),
   };
-  return { get session() { return sessions.legacy; }, home, goal, settings, saveSettings, handlers, ensureSession, history, sessions,
+  return { get session() { return sessions.legacy; }, home, goal, settings, saveSettings, handlers, ensureSession, history, sessions, workspaces,
     async shutdown() { await sessions.shutdown(); } };
 }
 

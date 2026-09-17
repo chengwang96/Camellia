@@ -17,6 +17,7 @@
     <button data-view="engines" data-i18n><span aria-hidden="true">◇</span>Engine Settings</button>
     <button data-view="runtimes" data-i18n><span aria-hidden="true">↓</span>Runtime</button>
     <button data-view="general" data-i18n><span aria-hidden="true">⚙</span>General</button>
+    <button data-view="archived" data-i18n><span aria-hidden="true">▤</span>Archived</button>
   </nav>
   <div class="nav-foot"><span class="status-dot" id="routerDot"></span><span id="routerLabel" data-i18n>Connecting</span><small data-i18n>Automatic failover within the same model</small></div>
 </aside>
@@ -35,7 +36,6 @@
       <details class="advanced router-options"><summary data-i18n>Router options</summary><div class="row"><label data-i18n><input id="enabled" type="checkbox">Enable shared router</label><label data-i18n>Local port <input id="port" type="number" min="1024" max="65535"></label></div><div id="live" class="hint" data-i18n></div></details>
     </section>
     <section id="usagePage" class="page" hidden>
-      <section id="subscriptionUsage" class="subscription-overview" hidden><h2 data-i18n>Subscription usage</h2><p class="hint" data-i18n>Account-wide quota reported by your subscription. Select an account for limits, reset times, and trends.</p><div id="subscriptionUsageCards" class="balance-grid"></div></section>
       <h2 class="usage-api-title" data-i18n>API request history</h2>
       <div class="filter-row"><label data-i18n>Date<select id="usageRange"><option value="7" data-i18n>Last 7 days</option><option value="30" data-i18n>Last 30 days</option><option value="90" data-i18n>Last 90 days</option><option value="all" data-i18n>Total</option></select></label><label data-i18n>Provider<select id="usageProvider"></select></label><label data-i18n>Key<select id="usageKey"></select></label><label data-i18n>Model<select id="usageModel"></select></label></div>
       <div id="usageSummary" class="usage-summary"></div>
@@ -62,6 +62,10 @@
       <div class="setting-row"><div><h2 data-i18n>Local data</h2><p class="hint" id="dataPath"></p></div><button id="openLogs" data-i18n>View logs</button></div>
       <div class="setting-row"><div><h2>Camellia</h2><p class="hint">Claude Code · Codex CLI · DeepSeek Harness · Kimi Code · Antigravity</p></div><span id="version" class="hint"></span></div>
       <button id="saveGeneral" class="primary" data-i18n>Save preferences</button>
+    </section>
+    <section id="archivedPage" class="page" hidden>
+      <p class="hint" data-i18n>Archived conversations are hidden from the sidebar. Restore one to continue it, or delete it permanently.</p>
+      <div id="archivedList"></div>
     </section>
     <section id="enginesPage" class="page" hidden>
       <div class="engine-tabs" role="tablist" aria-label="Engine" data-i18n-attrs="aria-label"><button role="tab" data-engine="claude">Claude Code</button><button role="tab" data-engine="codex">Codex CLI</button><button role="tab" data-engine="dsh">DeepSeek Harness</button><button role="tab" data-engine="kimi">Kimi Code</button><button role="tab" data-engine="antigravity">Antigravity</button></div>
@@ -123,6 +127,7 @@
         <div class="engine-field"><label for="downloadProxyUrl" data-i18n>Proxy address<small class="hint" data-i18n>HTTP or HTTPS proxy, including mixed proxy ports.</small></label><input id="downloadProxyUrl" type="url" placeholder="http://proxy.example:8080" spellcheck="false" autocomplete="off"></div>
         <div class="download-save"><p class="hint" data-i18n>Applies only to engine downloads. Saved on this device.</p><button id="saveDownload" type="submit" disabled data-i18n>Save connection</button></div>
       </form>
+      <div class="download-save"><p class="hint" data-i18n>Engine updates are installed in place and take effect after a restart.</p><button id="checkRuntimeUpdates" type="button" data-i18n>Check for updates</button></div>
       <div id="runtimeCards"></div>
       <p class="hint footnote" data-i18n>DSH and Kimi use pinned open-source runtimes. Claude Code is installed from the official package and remains subject to Anthropic's terms. Antigravity downloads the official CLI for Google subscriptions, or the SDK and managed Python for API mode. Downloads do not change global CLI settings; saving native CLI settings does.</p>
     </section>
@@ -131,6 +136,7 @@
 </div>
 <dialog id="addDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Add API provider</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p class="hint" data-i18n>Connect with an API key. Choose a service to fill in its API address.</p><label for="preset" data-i18n>Provider</label><select id="preset"></select><div id="presetAccount" class="preset-account" hidden><p id="presetAccountHint" class="hint"></p><button id="openPresetAccount"></button></div><button id="confirmAdd" class="primary" data-i18n>Add API provider</button></dialog>
 <dialog id="modelDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Select model</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><input id="modelSearch" placeholder="Search models" aria-label="Search models" data-i18n-attrs="aria-label placeholder"><div id="catalogList"></div><button id="applyModels" class="primary" data-i18n>Add selected models</button></dialog>
+<dialog id="deleteArchivedDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Delete conversation</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="deleteArchivedTitle"></p><p class="hint" data-i18n>Deleting removes this conversation and its files permanently. This cannot be undone.</p><button id="confirmDeleteArchived" class="danger" data-i18n>Delete permanently</button></dialog>
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>

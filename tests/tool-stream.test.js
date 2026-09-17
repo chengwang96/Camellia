@@ -51,6 +51,8 @@ test('Tool diagnostics identify native failures without treating successfully re
   assert.equal(failedToolResult('run_command', '\nThe command exited with code 7.\nOutput:\nx'), true);
   assert.equal(failedToolResult('Bash', '<system>ERROR: Tool execution failed.</system>\nx'), true);
   assert.equal(failedToolResult('apply_patch', 'apply_patch verification failed: no match'), true);
+  assert.equal(failedToolResult('exec_command', 'Chunk ID: 7302aa\nWall time: 0.3 seconds\nProcess exited with code 7\nOriginal token count: 6\nOutput:\nEXPECTED_SHELL_ERROR_7'), true);
+  assert.equal(failedToolResult('exec_command', 'Chunk ID: 7302aa\nWall time: 0.3 seconds\nProcess exited with code 0\nOriginal token count: 9\nOutput:\nProcess exited with code 3 in a log'), false);
   assert.equal(failedToolResult('Read', 'documentation mentions error and failure'), false);
   const body = { messages: [
     { role: 'assistant', content: [{ type: 'tool_use', id: 'edit', name: 'edit', input: { file_path: 'x' } }] },

@@ -12,7 +12,8 @@ function failedToolResult(name, output, explicit = false) {
   if (name === 'apply_patch' && /^(?:apply_patch verification failed:|Invalid patch:|Failed to apply patch)/.test(output)) return true;
   const exit = name === 'pwsh' ? /\[exit code: (-?\d+)\]\s*$/.exec(output)
     : ['shell_command', 'exec_command', 'run_command', 'Bash'].includes(name)
-      ? /^\s*(?:Exit code: ?|The command exited with code |Process exited with code )(-?\d+)/.exec(output) : null;
+      ? (/^\s*(?:Exit code: ?|The command exited with code |Process exited with code )(-?\d+)/.exec(output)
+        || /^\s*Chunk ID: [^\n]+\nWall time: [^\n]+\nProcess exited with code (-?\d+)/.exec(output)) : null;
   return Boolean(exit && Number(exit[1]) !== 0);
 }
 

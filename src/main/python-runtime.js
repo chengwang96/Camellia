@@ -62,4 +62,25 @@ async function installPythonRuntime({ source, dir, run, report, connection }) {
   return locatePythonRuntime(dir);
 }
 
-module.exports = { locatePythonRuntime, installPythonRuntime, pythonEnvironment };
+async function upgradePythonRuntime({ dir, run, connection, report = () => {}, sdk }) {
+  const config = JSON.parse(fs.readFileSync(path.join(dir, 'runtime.json'), 'utf8'));
+  const platform = config.platforms[process.platform + '-' + process.arch];
+  if (!platform) throw new Error('Antigravity supports Windows x64 and macOS ARM64');
+  const uv = path.join(dir, 'installer', platform.uv);
+  if (!fs.existsSync(uv)) throw new Error('The bundled installer is missing. Reinstall the engine instead.');
+  const python = path.join(dir, 'python', platform.python);
+  const env = { ...connection.env, UV_NO_CONFIG: '1', UV_PYTHON_INSTALL_DIR: path.join(dir, 'python'), UV_CACHE_DIR: path.join(dir, 'installer', 'cache') };
+  const requirements = path.join(dir, 'requirements.in'), lock = path.join(dir, 'requirements.lock');
+  fs.writeFileSync(requirements, `google-antigravity==${sdk}
+`);
+  report('Resolving the official Antigravity SDK…');
+  await run(uv, ['pip', 'compile', requirements, '--python-version', '3.13', '--universal', '--generate-hashes', '--output-file', lock], { env, cwd: dir });
+  report('Installing the official Antigravity SDK…');
+  await run(uv, ['pip', 'install', '--python', python, '--target', path.join(dir, 'packages'), '--require-hashes', '--only-binary', ':all:', '-r', lock], { env, cwd: dir });
+  await run(python, ['-c', 'from google.antigravity import Agent, LocalOpenAIAgentConfig'], { env: pythonEnvironment(dir), cwd: dir });
+  writeJson(path.join(dir, 'runtime.json'), { ...config, sdk });
+  writeJson(path.join(dir, 'installed.json'), { sdk, python: config.python });
+  return locatePythonRuntime(dir);
+}
+
+module.exports = { locatePythonRuntime, installPythonRuntime, upgradePythonRuntime, pythonEnvironment };

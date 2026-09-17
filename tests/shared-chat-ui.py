@@ -354,6 +354,10 @@ with sync_playwright() as p:
         expect(card.get_by_role('button',name='Submit answers')).to_be_disabled()
         page.evaluate('window.releaseAnswer()')
         expect(card.locator('.question-status')).to_have_text('Answers sent')
+        # Submitted cards collapse to an answer summary; options fold away.
+        expect(card.locator('.question-answers')).to_contain_text('Main workflow')
+        expect(card.locator('.question-answers')).to_contain_text('Markdown report')
+        expect(card.locator('.question-review fieldset').first).not_to_be_visible()
         sent=page.evaluate('actions.filter(a=>a.action==="control-respond").at(-1).payload')
         assert sent['sessionId']==a and sent['runId']==arun and sent['allow']
         assert sent['input']=={'scope':'Main workflow','outputs':'CSV, JSON, Markdown report'}
@@ -382,6 +386,79 @@ with sync_playwright() as p:
         page.wait_for_function('actions.some(a=>a.action==="switch" && a.payload.navigate)')
         assert page.evaluate('actions.filter(a=>a.action==="cancel").length') == 2
         page.close()
+    # A subscription composer also offers shared API routes as a model group.
+    subscription_bridge = r"""(() => {
+      const settings = {model:'k3',permissionMode:'default',connection:'subscription'};
+      window.actions = [];
+      window.dshDesktop = {
+        sharedConversations:true,
+        onLanguageChanged:()=>()=>{}, onEngineSettingsChanged:()=>{}, onApiRouterState:()=>{},
+        onConversationEvent:()=>{},onConversationGoal:()=>{}, onConversationStatus:()=>{}, onHarnessNavigate:()=>{},
+        apiRouterGetState:async()=>({enabled:true,models:['fixture-model','kimi-k2.5']}),
+        kimiAccountState:async()=>({ok:true,account:{id:'acct'},models:[{id:'k3',name:'K3'},{id:'k2.8',name:'K2.8 Preview'}]}),
+        workbenchSettings:async()=>({ok:true,conversations:{mode:'direct'}}),
+        conversationSwitch:async()=>({ok:true}), openSettingsWindow:()=>{},
+        conversationCommand:async ({action,payload})=>{
+          window.actions.push({action,payload});
+          if(action==='get-settings') return {...settings};
+          if(action==='save-settings') { Object.assign(settings,payload); return {ok:true,settings:{...settings}}; }
+          if(action==='list-sessions') return {ok:true,sessions:[],workspaces:[],pagination:{}};
+          if(action==='get-live') return {ok:true,live:null};
+          if(action==='goal-get') return {ok:true,goal:null};
+          return {ok:true};
+        },
+      };
+    })();"""
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    page.add_init_script(subscription_bridge)
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=kimi',wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    page.locator('#modelPill').click()
+    page.locator('.pop-row').first.click()
+    menu = page.locator('.dsh-pop').last
+    expect(menu.locator('.pop-group')).to_have_count(2)
+    expect(menu).to_contain_text('Model · Kimi account')
+    expect(menu).to_contain_text('Model · Shared API routes')
+    expect(menu).to_contain_text('K2.8 Preview')
+    menu.get_by_text('kimi-k2.5',exact=True).click()
+    page.wait_for_function("actions.some(a=>a.action==='save-settings' && a.payload.connection==='api' && a.payload.model==='kimi-k2.5')")
+    page.wait_for_function("document.querySelector('#modelPillName').textContent==='kimi-k2.5'")
+    page.close()
+    # Cross-harness history labels every reply and announces the switch mode.
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    page.add_init_script(bridge)
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=kimi&conversation=shared-fixture',wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    expect(page.locator('#chat .turn-meta').first).to_contain_text('Claude')
+    expect(page.locator('#chat .turn-meta img[src*="claude.svg"]')).to_have_count(1)
+    hint = page.locator('#chat .switch-hint')
+    expect(hint).to_contain_text('Claude')
+    expect(hint).to_contain_text('Kimi Code')
+    expect(hint).to_contain_text('Continue directly')
+    page.close()
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    page.add_init_script(bridge)
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude&conversation=shared-fixture',wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    expect(page.locator('#chat .turn-meta').first).to_contain_text('Assistant')
+    expect(page.locator('#chat .switch-hint')).to_have_count(0)
+    page.close()
+    # Archived conversations stay archived across reloads.
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    page.add_init_script(bridge.replace("if(action==='load-session') return","if(action==='archive-session'){localStorage.setItem('fixture-archived',payload.id);return {ok:true};} if(action==='load-session' && localStorage.getItem('fixture-archived')===payload) return {ok:false,error:'This conversation is archived'}; if(action==='load-session') return"))
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude&conversation=shared-fixture',wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    expect(page.locator('#chat')).to_contain_text('Experiment review')
+    page.evaluate("dshDesktop.conversationCommand({engine:'claude',action:'archive-session',payload:{id:'shared-fixture',archived:true}})")
+    page.reload(wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    expect(page.locator('#chat')).not_to_contain_text('Experiment review')
+    assert page.evaluate('context.sessionId') is None
+    page.close()
     browser.close()
     assert not errors, errors
     print('PASS: inline questions, answer mapping, selection drafts, failed-submit retry and skips; concurrent conversations, independent stop and approval, restored streams and drafts, harness locks, plus five-engine goal lifecycle and elapsed-time bars, logos, aligned composers, shared history, switch preferences, persistent drafts and attachments, reload, light/dark layouts')

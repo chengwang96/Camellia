@@ -36,6 +36,7 @@ class SharedConversations {
       find: id => this.items.has(id) ? this.file(id) : null,
       head: file => this.head(path.basename(file, '.json')),
       readHead: async file => this.head(path.basename(file, '.json')),
+      remove: id => this.purge(id),
       transcript: async id => ({ messages: this.messages(this.get(id)), cwd: this.get(id).cwd, truncated: false }),
     };
     this.workspaces = createSessionWorkspaces({ history: this.history, loadConfig, saveConfig, metaKey: 'sharedMeta', settingsKey: 'sharedChat',
@@ -100,6 +101,21 @@ class SharedConversations {
   get(id) { const c = this.items.get(id); if (!c) throw new Error('Conversation not found'); return c; }
   head(id) { const c = this.get(id); return { title: c.title, summary: '', cwd: c.cwd }; }
   save(c) { writeJson(this.file(c.id), c); this.items.set(c.id, c); }
+  // Permanent delete: index, append-only log, goal, handoffs and torn backups.
+  purge(id) {
+    if (this.busy(id)) throw new Error('Stop this conversation before deleting it');
+    const c = this.items.get(id);
+    this.goals.get(id)?.cancelTimer();
+    this.items.delete(id); this.facades.delete(id); this.goals.delete(id);
+    const rm = file => { try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; } };
+    rm(this.file(id));
+    rm(path.join(this.dir, id + '.jsonl'));
+    for (const name of fs.readdirSync(this.dir)) if (name.startsWith(id + '.jsonl.torn-')) rm(path.join(this.dir, name));
+    rm(path.join(this.dir, 'goals', id + '.json'));
+    const handoffs = path.resolve(path.join(this.dir, 'handoffs'));
+    for (const handoff of c?.handoffs || []) if (handoff.file && path.resolve(path.dirname(handoff.file)) === handoffs) rm(handoff.file);
+    return Boolean(c);
+  }
   rawRows(c) {
     try {
       const file = path.join(this.dir, c.id + '.jsonl'), text = fs.readFileSync(file, 'utf8');
@@ -158,6 +174,9 @@ class SharedConversations {
   }
   load(engine, id) {
     const c = this.get(id), prefs = preferences(this.loadConfig());
+    // Archived conversations stay archived: reloads and stale locations must
+    // not resurrect them.
+    if (this.workspaces.sessionMeta().archived[id]) return { ok: false, error: 'This conversation is archived. Restore it from Settings → Archived first.' };
     return { ok: true, ...c, activity: this.activity(id), live: this.live(c.currentEngine, id).live, preferences: prefs, messages: this.messages(c), settings: this.settings(engine, id), truncated: false };
   }
   settings(engine, id) {
@@ -184,12 +203,18 @@ class SharedConversations {
     if (c && this.busy(c.id)) throw new Error('Wait for this conversation to finish or stop it before changing its settings');
     const previous = this.settings(engine, c?.id);
     const saved = this.drivers[engine].saveSettings({ ...payload, sessionId: c?.segments[engine]?.nativeId });
+    // Crossing between subscription and API routes: the driver's reply still
+    // reports the session's previous connection, so bookkeep from the payload.
+    const crossing = payload.connection !== undefined && payload.connection !== previous.connection;
+    const targetConnection = payload.connection ?? previous.connection;
     const changes = Object.fromEntries(['model', 'permissionMode', 'thinkingBudget', 'contextWindow']
-      .filter(key => payload[key] !== undefined).map(key => [key, saved[key]]));
-    if (payload.model !== undefined && saved.connection !== 'subscription') {
-      if (c) c.apiModel = saved.model;
+      .filter(key => payload[key] !== undefined).map(key => [key, crossing && key === 'model' ? payload.model : saved[key]]));
+    if (payload.connection !== undefined) changes.connection = targetConnection;
+    if (payload.model !== undefined && targetConnection !== 'subscription') {
+      const apiModel = crossing ? payload.model : saved.model;
+      if (c) c.apiModel = apiModel;
       const config = this.loadConfig();
-      this.saveConfig({ sharedChat: { ...config.sharedChat, apiModel: saved.model } });
+      this.saveConfig({ sharedChat: { ...config.sharedChat, apiModel } });
     }
     if (c) {
       c.engineSettings ||= {};
@@ -241,7 +266,17 @@ class SharedConversations {
     }
     assertAvailable();
     const settings = this.settings(engine, c.id);
-    const oldSegment = c.segments[engine];
+    let oldSegment = c.segments[engine];
+    const segmentConnection = oldSegment ? this.drivers[engine].settings(oldSegment.nativeId).connection : undefined;
+    if (!edit && oldSegment && segmentConnection && settings.connection && segmentConnection !== settings.connection) {
+      // The connection changed (subscription ↔ API routes). Each connection
+      // keeps its own native home, so continue on a fresh native session; the
+      // logical history is injected as context below.
+      (c.retiredSegments ||= []).push({ engine, ...oldSegment });
+      delete c.segments[engine];
+      this.save(c);
+      oldSegment = null;
+    }
     if (!edit && oldSegment && !oldSegment.isolated && ['codex', 'kimi', 'dsh'].includes(engine) && settings.connection !== 'subscription') {
       // Earlier builds kept these API profiles in one shared directory. Start
       // a private native session once, carrying the complete logical history.

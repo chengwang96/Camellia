@@ -46,7 +46,7 @@ function updateKimiConnectionSettings(config, patch) {
   if (patch.contextWindow !== undefined) value.contextWindow = Number(patch.contextWindow);
   if (!Number.isInteger(value.contextWindow) || value.contextWindow < 4096 || value.contextWindow > 2000000) throw new Error('Context window must be an integer between 4096 and 2000000');
   if (patch.model !== undefined) {
-    const connection = patch.sessionId ? kimiConnectionSettings(config, patch.sessionId).connection : value.connection;
+    const connection = patch.connection || (patch.sessionId ? kimiConnectionSettings(config, patch.sessionId).connection : value.connection);
     value[connection + 'Model'] = String(patch.model).trim();
   }
   delete value.model; delete value.sessionId;

@@ -25,25 +25,26 @@ function createZoomController({ loadConfig, saveConfig, legacyLevel, log = () =>
     level = clamp(legacyLevel);
     saveConfig({ zoomLevel: level });
   }
-  const contents = new Set();
+  const contents = new Map();
   function apply(wc) {
-    if (!wc.isDestroyed() && Math.abs(wc.getZoomLevel() - level) > 0.000001) wc.setZoomLevel(level);
+    const target = clamp(level + (contents.get(wc) || 0));
+    if (!wc.isDestroyed() && Math.abs(wc.getZoomLevel() - target) > 0.000001) wc.setZoomLevel(target);
   }
   function set(value) {
     if (!valid(value)) throw new Error('Invalid zoom level');
     const next = clamp(value);
     saveConfig({ zoomLevel: next });
     level = next;
-    for (const wc of contents) apply(wc);
+    for (const wc of contents.keys()) apply(wc);
     return { ok: true, zoomLevel: level, zoomFactor: 1.2 ** level };
   }
   function adjust(direction) {
     if (direction !== 1 && direction !== -1) throw new Error('Invalid zoom direction');
     return set(level + direction * 0.5);
   }
-  function attach(wc) {
+  function attach(wc, offset = 0) {
     if (contents.has(wc)) return;
-    contents.add(wc);
+    contents.set(wc, offset);
     apply(wc);
     for (const event of ['did-navigate', 'dom-ready', 'did-finish-load']) wc.on(event, () => apply(wc));
     wc.once('destroyed', () => contents.delete(wc));
@@ -59,7 +60,8 @@ function createZoomController({ loadConfig, saveConfig, legacyLevel, log = () =>
       try { action(); } catch (error) { log('Could not save zoom: ' + error.message); }
     });
   }
-  return { attach, set, adjust, get level() { return level; }, get factor() { return 1.2 ** level; } };
+  return { attach, set, adjust, get level() { return level; }, get factor() { return 1.2 ** level; },
+    factorAt(offset) { return 1.2 ** clamp(level + offset); } };
 }
 
 module.exports = { createZoomController, readLegacyZoom };

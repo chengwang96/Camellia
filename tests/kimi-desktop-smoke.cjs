@@ -44,8 +44,12 @@ async function main() {
     requests.push(body);
     const userIndex = body.messages.findLastIndex(m => m.role === 'user' && JSON.stringify(m.content).includes('UI '));
     const user = JSON.stringify(body.messages[userIndex].content);
+    // Shared-conversation context stuffing embeds earlier prompts as JSON data;
+    // only the tail after them is the current instruction.
+    const promptStart = Math.max(user.lastIndexOf('\\n\\nUI '), user.lastIndexOf('"UI '));
+    const current = promptStart > 0 ? user.slice(promptStart) : user;
     const written = body.messages.slice(userIndex).some(m => m.role === 'tool');
-    const useTool = user.includes('UI write') && !written;
+    const useTool = current.includes('UI write') && !written;
     const delta = useTool ? { tool_calls: [{ index: 0, id: 'write-test', type: 'function', function: {
       name: 'Write', arguments: JSON.stringify({ path: path.join(cwd, 'result.txt'), content: 'Kimi UI fixture passed' }),
     } }] } : { content: '已完成文件写入，工作区和 API 线路正常。' };
@@ -94,7 +98,7 @@ async function main() {
     }
     const log = path.join(root, 'app', 'logs', 'dsh-desktop.log');
     throw new Error('UI condition timed out: ' + code + '\n' + await js("JSON.stringify({chat:document.querySelector('#chat')?.textContent,status:document.querySelector('#statusLine')?.textContent,running,currentRunId,acceptSessionEvents})")
-      + '\nErrors: ' + JSON.stringify(errors) + '\nRequests: ' + requests.length + '\n' + (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').slice(-5000) : 'No log'));
+      + '\nErrors: ' + JSON.stringify(errors) + '\nRequests: ' + requests.length + '\nLast request: ' + JSON.stringify(requests.at(-1)?.messages.map(m => ({ role: m.role, content: JSON.stringify(m.content).slice(0, 160) }))) + '\n' + (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').slice(-5000) : 'No log'));
   }
   const shots = path.resolve(__dirname, '../dist/ui-preview');
   fs.mkdirSync(shots, { recursive: true });
@@ -130,7 +134,7 @@ async function main() {
   assert.equal(fs.readFileSync(path.join(cwd, 'result.txt'), 'utf8'), 'Kimi UI fixture passed');
   assert.equal(await js("document.querySelectorAll('.tool-card').length"), 1);
   assert.ok(await js("document.querySelector('.tool-state.done') !== null"));
-  assert.match(await js("document.querySelector('#chat').textContent"), /Completed文件写入/);
+  assert.match(await js("document.querySelector('#chat').textContent"), /Completed先检查工作区，再写入文件。已完成文件写入/);
   assert.equal(await js("document.querySelector('.turn-meta span').textContent"), 'Kimi');
   await js('sidebar.load()');
   const id = await js('context.sessionId');

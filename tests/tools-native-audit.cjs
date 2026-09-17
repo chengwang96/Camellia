@@ -30,25 +30,26 @@ function nativeCall(ctx, operation, options = {}) {
   const annotation = { toolSummary: 'Isolated tool audit', toolAction: 'Checking tool integration' };
   let name, args;
   if (operation === 'read') {
-    name = { claude: 'Read', codex: 'shell_command', dsh: 'read', kimi: 'Read', antigravity: 'view_file' }[engine];
-    args = engine === 'codex' ? { command: '[System.IO.File]::ReadAllText(' + quotePs(target) + ')', login: false }
+    name = { claude: 'Read', codex: 'exec_command', dsh: 'read', kimi: 'Read', antigravity: 'view_file' }[engine];
+    args = engine === 'codex' ? { cmd: '[System.IO.File]::ReadAllText(' + quotePs(target) + ')', login: false }
       : engine === 'antigravity' ? { AbsolutePath: target, ...annotation }
       : { [engine === 'kimi' ? 'path' : 'file_path']: target };
   } else if (operation === 'glob' || operation === 'grep') {
-    name = engine === 'codex' ? 'shell_command' : engine === 'antigravity' ? (operation === 'glob' ? 'find_by_name' : 'grep_search')
+    name = engine === 'codex' ? 'exec_command' : engine === 'antigravity' ? (operation === 'glob' ? 'find_by_name' : 'grep_search')
       : engine === 'dsh' ? operation : operation === 'glob' ? 'Glob' : 'Grep';
-    args = engine === 'codex' ? { command: (operation === 'glob' ? 'rg --files ' : "rg -n 'READ_BETA' ") + quotePs(ctx.cwd), login: false }
+    args = engine === 'codex' ? { cmd: (operation === 'glob' ? 'rg --files ' : "rg -n 'READ_BETA' ") + quotePs(ctx.cwd), login: false }
       : engine === 'antigravity' ? operation === 'glob' ? { SearchDirectory: ctx.cwd, Pattern: '*.txt', ...annotation }
         : { SearchPath: ctx.cwd, Query: 'READ_BETA', MatchPerLine: true, ...annotation }
       : { path: ctx.cwd, pattern: operation === 'glob' ? '*.txt' : 'READ_BETA', ...(operation === 'grep' && engine !== 'dsh' ? { output_mode: 'content' } : {}) };
   } else if (operation === 'shell') {
-    name = { claude: 'Bash', codex: 'shell_command', dsh: 'pwsh', kimi: 'Bash', antigravity: 'run_command' }[engine];
+    name = { claude: 'Bash', codex: 'exec_command', dsh: 'pwsh', kimi: 'Bash', antigravity: 'run_command' }[engine];
     // echo/exit work in both native Bash (Claude/Kimi) and pwsh.
     const command = engine === 'claude' && process.argv.includes('--complex-shell')
       ? 'echo "=== fixture references ==="; grep -rn "ARDS/tex\\|ARDS\\\\tex\\|build_compile_test\\|/tex/fig\\|tex/ards" "' + ctx.cwd.replace(/\\/g, '/') + '" 2>/dev/null | head -20; echo "(empty = no script depends on it)"; echo; find "' + ctx.cwd.replace(/\\/g, '/') + '" -maxdepth 2 -name ".git" 2>/dev/null; echo EXPECTED_SHELL_ERROR_7; exit 7'
       : 'echo EXPECTED_SHELL_ERROR_7; exit 7';
     args = engine === 'antigravity' ? { CommandLine: command, Cwd: ctx.cwd, WaitMsBeforeAsync: 10000, ...annotation }
-      : { command, description: 'Exercise a known failing command', ...(engine === 'codex' ? { login: false } : {}) };
+      : engine === 'codex' ? { cmd: command, login: false }
+      : { command, description: 'Exercise a known failing command' };
   } else if (engine === 'codex') {
     name = 'apply_patch';
     const file = path.basename(target);

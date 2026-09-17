@@ -47,8 +47,16 @@ async function fixture(t, respond, makeProviders, options = {}) {
   backend.listen(0,'127.0.0.1'); await once(backend,'listening');
   const url = 'http://127.0.0.1:'+backend.address().port;
   const file = path.join(root,'pool.json');
-  writeConfig(file, normalizeConfig({ port:await port(), providers:makeProviders(url) }));
-  const router=startApiRouter({ configPath:file, timeoutMs:options.timeoutMs || 2000 }); await router.ready;
+  let router;
+  for (let attempt = 0; ; attempt++) {
+    writeConfig(file, normalizeConfig({ port:await port(), providers:makeProviders(url) }));
+    router = startApiRouter({ configPath:file, timeoutMs:options.timeoutMs || 2000 });
+    try { await router.ready; break; }
+    catch (error) { // Another parallel test file may claim a probed port first.
+      if (attempt >= 2 || !/EADDRINUSE/.test(error.message)) throw error;
+      await router.stop().catch(() => {});
+    }
+  }
   t.after(async () => {
     await router.stop(); backend.closeAllConnections(); await new Promise(r=>backend.close(r));
     if (path.dirname(path.resolve(root)) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('dsh-api-router-')) throw new Error('Unsafe fixture cleanup');

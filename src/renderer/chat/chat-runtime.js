@@ -11,8 +11,10 @@ const chatProfile = {
   dsh: { name: 'DeepSeek Harness', shortName: 'DSH', fixedCwd: true, permission: 'default' },
   antigravity: { name: 'Antigravity', shortName: 'Antigravity', fixedCwd: true, permission: 'default', supportsImages: false },
 }[harnessId];
+const ENGINE_SHORT_NAMES = { claude: 'Claude', codex: 'Codex', dsh: 'DSH', kimi: 'Kimi', antigravity: 'Antigravity' };
+const engineAvatar = engine => '<div class="turn-avatar engine-mark" data-engine="' + engine + '" aria-hidden="true"><img src="../../../assets/brands/' + (engine === 'dsh' ? 'deepseek' : engine) + (engine === 'codex' ? '.png' : '.svg') + '" alt=""></div>';
 const chatLogoUrl = '../../../assets/brands/' + (harnessId === 'dsh' ? 'deepseek' : harnessId) + (harnessId === 'codex' ? '.png' : '.svg');
-const chatAvatar = '<div class="turn-avatar engine-mark" data-engine="' + harnessId + '" aria-hidden="true"><img src="' + chatLogoUrl + '" alt=""></div>';
+const chatAvatar = engineAvatar(harnessId);
 const chatApi = Object.fromEntries(['Send', 'Cancel', 'GetSettings', 'SaveSettings', 'ControlRespond',
   'ListSessions', 'LoadSession', 'RenameSession', 'ArchiveSession', 'MetaOp',
   'GoalGet', 'GoalStart', 'GoalPause', 'GoalResume', 'GoalComplete', 'GoalClear'].map(action => [

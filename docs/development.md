@@ -88,6 +88,7 @@ Prepare the engines needed for these integration checks explicitly with `npm run
 ```powershell
 node tests/electron-smoke.cjs
 node tests/native-settings-electron.cjs
+node tests/archived-settings-electron.cjs
 npm run test:codex
 npm run test:kimi
 npm run test:antigravity

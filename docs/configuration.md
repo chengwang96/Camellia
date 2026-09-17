@@ -250,7 +250,7 @@ Engine configurations receive a loopback router URL and placeholder credentials.
 
 ## Usage statistics
 
-The **Subscription usage** section shows Kimi's reported account-wide quota. It may include activity outside Camellia and is not added to local API totals or attributed to individual models. **API request history** covers business requests passing through the local router, with provider, key, model, and date filters.
+Subscription quota (such as Kimi's account-wide windows) appears in **Balances & Quotas** and on the Providers & Keys account cards. It may include activity outside Camellia and is not added to local API totals or attributed to individual models. **API request history** covers business requests passing through the local router, with provider, key, model, and date filters.
 
 - Daily records cover the most recent 90 days; cumulative model totals are retained. CSV export uses the selected filters.
 - Successes, failures, and cancellations are recorded separately. Tokens reported by failed attempts remain attributed to the key that incurred them.
@@ -283,7 +283,7 @@ Charts retain locally observed values for 30 days, starting when observations ar
 
 ## Workspaces and sessions
 
-Page zoom is shared across the application and saved between launches. Use Ctrl/Cmd + `+` or `−`, Ctrl/Cmd + mouse wheel, or the View menu to adjust it; Ctrl/Cmd + `0` resets it. Home, conversations, settings and native DSH use the same saved scale. The first upgrade adopts the last selected page's existing zoom when available.
+Page zoom is shared across the application and saved between launches. Use Ctrl/Cmd + `+` or `−`, Ctrl/Cmd + mouse wheel, or the View menu to adjust it; Ctrl/Cmd + `0` resets it. Home, conversations, settings and native DSH use the same saved scale; the embedded DSH settings panel renders one zoom step finer so its density matches the surrounding settings. The first upgrade adopts the last selected page's existing zoom when available.
 
 All five engines share a sidebar with pinned sessions, folder workspaces, and standalone conversations. Adding a workspace registers a local folder. Its `+` action creates a conversation in that folder; the top-level action starts a standalone conversation. Shared conversations retain their execution directory across engine switches.
 
