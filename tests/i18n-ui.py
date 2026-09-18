@@ -71,7 +71,7 @@ try:
         expect(chat.locator('#input')).to_have_value('Settings / Ready / Keep this draft 原样保留')
         expect(chat.locator('#input')).to_have_attribute('placeholder', '给 Claude Code 发送消息')
         # Newly created menus and buttons use the current language too.
-        chat.locator('#workspacePicker').click()
+        chat.locator('#sessionCurrent .session-more').click()
         expect(chat.get_by_text('无工作区 · 独立会话', exact=True)).to_be_visible()
         expect(chat.locator('.dsh-pop').get_by_text('Settings', exact=True)).to_be_visible()
         chat.locator('#input').click()

@@ -307,6 +307,23 @@
     padding: 10px 12px;
   }
   .tool-card.open .tool-body { display: block; }
+
+  /* Finished-turn tool group: every card of the turn folds behind one row. */
+  .tool-group {
+    margin: 6px 0 10px;
+    border: 1px dashed var(--dsw-alias-border-l3);
+    border-radius: 12px; background: var(--dsw-alias-bg-soft); overflow: hidden;
+  }
+  .tool-group-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; cursor: pointer; user-select: none;
+    font: var(--f-xs-13); color: var(--dsw-alias-label-tertiary);
+  }
+  .tool-group-head:hover { background: var(--dsw-alias-interactive-bg-hover); }
+  .tool-group-head .arrow { transition: transform var(--dt-fast); font-size: 9px; }
+  .tool-group.open .tool-group-head .arrow { transform: rotate(90deg); }
+  .tool-group-body { display: none; padding: 0 8px 2px; }
+  .tool-group.open .tool-group-body { display: block; }
   .tool-section-label {
     font: var(--f-xxxs-11); color: var(--dsw-alias-label-caption);
     text-transform: uppercase; letter-spacing: .5px; margin: 4px 0;
@@ -664,7 +681,6 @@
   .ws-create-link { width: 100%; text-align: left; border: 0; background: transparent; color: var(--dsw-alias-label-secondary); font: var(--f-xs-13); padding: 10px 12px; cursor: pointer; border-radius: 8px; }
   .ws-create-link:hover { background: var(--dsw-specific-sidebar-nav-item-hover); }
   .workspace-picker { max-width: 240px; }
-  #workspaceLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ws-error { color: var(--dsw-alias-state-error-primary); font: var(--f-xxs-12); margin-bottom: 12px; }
   .ws-hint { color: var(--dsw-alias-label-tertiary); font: var(--f-xxs-12); margin-bottom: 12px; }
   button:focus-visible, .session-item:focus-visible { outline: 2px solid var(--dsw-static-deepseek-400); outline-offset: -2px; }
@@ -761,13 +777,26 @@
 .connection-note { display: block; margin: 7px auto 0; padding: 0; border: 0; background: none; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 11px; cursor: pointer; }
 .connection-note:hover { color: var(--dsw-static-deepseek-500); }
 .connection-note { height: 16px; line-height: 16px; }
-.connection-note[hidden] { display: block; visibility: hidden; }
+.connection-note[hidden] { display: none; }
+.status-row { display: flex; justify-content: center; align-items: center; gap: 4px; margin-top: 8px; }
+.status-row .connection-note { margin: 0; }
+.status-row .status-line { margin-top: 0; }
+.status-row .connection-note:not([hidden]) + .status-line::before { content: '· '; }
 .conversation-origin { padding: 8px 24px; color: var(--dsw-alias-label-tertiary); font-size: 12px; }
 .conversation-origin[hidden] { display: none; }
 #handoffStop[hidden], #handoffBtn[hidden] { display: none; }
 .session-origin { display: block; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
 .handoff-notice { margin: 18px 0; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
 .handoff-notice button { border: 0; background: none; color: var(--dsw-static-deepseek-500); cursor: pointer; margin-left: 8px; }
+.slash-pop { min-width: 320px; max-width: 480px; padding: 6px; }
+.slash-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; }
+.slash-row svg { flex: none; width: 16px; height: 16px; color: var(--dsw-alias-label-secondary); }
+.slash-row strong { flex: none; font-weight: 600; }
+.slash-row span { min-width: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-card { margin: 16px 0; padding: 14px 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); font-size: 13px; }
+.usage-card strong { display: block; margin-bottom: 6px; }
+.usage-card-body { white-space: pre-wrap; color: var(--dsw-alias-label-secondary); line-height: 1.6; }
+.usage-card button { margin-top: 10px; padding: 6px 14px; border-radius: 14px; border: 1px solid var(--dsw-alias-border-l2); background: none; color: inherit; cursor: pointer; font: inherit; }
 .switch-hint { margin: 18px 0 4px; padding: 8px 12px; border: 1px dashed var(--dsw-alias-border-l2); border-radius: 10px; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
 .switch-dialog { margin: auto; width: min(500px, calc(100vw - 32px)); border: 1px solid var(--dsw-alias-border-l2); border-radius: 16px; padding: 24px; color: inherit; background: var(--dsw-alias-bg-layer-1); }
 .switch-dialog::backdrop { background: var(--dsw-alias-bg-mask-1); }

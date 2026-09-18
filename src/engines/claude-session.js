@@ -1,6 +1,7 @@
 'use strict';
 
 const { StringDecoder } = require('node:string_decoder');
+const { nativeMode } = require('./permission-levels');
 
 // Owns one CLI process. Application state stays in main; the callbacks below
 // also make process failures and fragmented output testable without Electron.
@@ -32,7 +33,7 @@ class ClaudeSession {
     // In the app, Allow all is the user's chosen execution mode. EnterPlanMode
     // silently replaces it with read-only planning inside a persistent CLI.
     // Keep this UI choice stable; users can still select Plan only themselves.
-    if (this.opts.lockPermissionMode && this.settings.permissionMode === 'bypassPermissions') args.push('--disallowedTools', 'EnterPlanMode');
+    if (this.opts.lockPermissionMode && nativeMode('claude', this.settings.permissionMode) === 'bypassPermissions') args.push('--disallowedTools', 'EnterPlanMode');
     this.log(`claude: persistent session gen=${this.gen} resume=${this.opts.sessionId || 'no'} ${args.join(' ')}`);
     const proc = this.spawn(exe, args, { cwd: spec.cwd, env: spec.env, windowsHide: true, shell: exe === 'claude' });
     this.proc = proc;

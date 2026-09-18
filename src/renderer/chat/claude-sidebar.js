@@ -24,10 +24,6 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     return Math.floor(min / 1440) + ' days ago';
   }
   function updateWorkspaceLabel() {
-    const ws = workspaces.find((w) => w.id === context.workspaceId);
-    $('workspaceLabel').textContent = ws ? ws.name : window.CamelliaI18n.t("No workspace");
-    $('workspacePicker').title = ws ? ws.path : "Standalone session without a workspace";
-    $('workspacePicker').disabled = contextBusy();
     $('newSessionBtn').disabled = contextBusy();
   }
   async function loadSessionHistory() {
@@ -265,7 +261,6 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     await loadSessionHistory();
     setStatus(workspaceId ? "Moved to workspace. The next message will run in that folder." : "Session is now standalone");
   }
-  $('workspacePicker').addEventListener('click', () => openWorkspacePicker($('workspacePicker'), context.sessionId ? (sessionHistory.find((s) => s.id === context.sessionId) || { id: context.sessionId, workspaceId: context.workspaceId }) : null));
 
   let editingWorkspace = null;
   let workspaceReturnFocus = null;
@@ -288,7 +283,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     if ($('wsCreate').disabled) return;
     $('wsMask').classList.remove('visible');
     if (workspaceReturnFocus && workspaceReturnFocus.isConnected) workspaceReturnFocus.focus();
-    else $('workspacePicker').focus();
+    else $('input').focus();
   }
   $('wsCancel').addEventListener('click', closeWorkspaceDialog);
   $('wsMask').addEventListener('click', (e) => { if (e.target === $('wsMask')) closeWorkspaceDialog(); });

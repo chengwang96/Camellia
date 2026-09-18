@@ -173,7 +173,7 @@ async function main() {
     startupSettings.close();
     assert.equal(home.getTitle(), 'Camellia');
     await home.webContents.executeJavaScript("document.querySelector('#enterClaude').click()");
-    const claude = await waitWindow("document.querySelector('#workspacePicker')");
+    const claude = await waitWindow("document.querySelector('#engineSwitch')");
     assert.equal(await claude.webContents.executeJavaScript("getComputedStyle(document.querySelector('#selPermission')).appearance"), 'base-select');
     assert.equal(await claude.webContents.executeJavaScript("CSS.supports('color', 'light-dark(white, black)')"), true);
     const picker = await claude.webContents.executeJavaScript(`(() => {
@@ -184,7 +184,7 @@ async function main() {
     assert.equal(picker.open, true);
     assert.ok(picker.optionHeight >= 40);
     claude.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
-    assert.equal(await claude.webContents.executeJavaScript("document.querySelector('#workspaceLabel').textContent"), "No workspace");
+    assert.equal(await claude.webContents.executeJavaScript("document.querySelector('#engineSwitch').value"), "claude");
     assert.equal(await claude.webContents.executeJavaScript("typeof window.dshDesktop.onApiRouterState(() => {})"), 'function');
     const folder = path.join(root, 'workspace'); fs.mkdirSync(folder, { recursive: true });
     const workspace = await claude.webContents.executeJavaScript(`chatApi.metaOp(${JSON.stringify({ op: 'create-workspace', name: 'Electron 工作区', path: folder })})`);
@@ -202,7 +202,7 @@ async function main() {
     await claude.webContents.executeJavaScript("document.querySelector('#backToHome').click()");
     await waitWindow("document.querySelector('#enterClaude')");
     await home.webContents.executeJavaScript("document.querySelector('#enterClaude').click()");
-    await waitWindow("document.querySelector('#workspacePicker')");
+    await waitWindow("document.querySelector('#engineSwitch')");
     await home.webContents.executeJavaScript('sidebar.load()');
     assert.match(await home.webContents.executeJavaScript("document.querySelector('#sessionList').textContent"), /Electron 工作区/);
     await home.webContents.executeJavaScript("document.querySelector('#backToHome').click()");

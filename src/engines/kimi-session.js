@@ -27,6 +27,8 @@ function managedKimiConfig(home) {
   return { ...config, providers: { [MANAGED_PROVIDER]: { ...provider, api_key: '' } }, models };
 }
 
+const { valid } = require('./permission-levels');
+
 function kimiConnectionSettings(config, sessionId) {
   const saved = config.kimi || {};
   const connection = sessionId ? config.kimiSessionConnections?.[sessionId] || 'api' : saved.connection || 'api';
@@ -42,7 +44,7 @@ function updateKimiConnectionSettings(config, patch) {
   }
   for (const key of ['cwd', 'permissionMode', 'thinkingBudget', 'region']) if (patch[key] !== undefined) value[key] = String(patch[key]).trim();
   if (!['mainland-cn', 'global'].includes(value.region)) throw new Error('Invalid Kimi login region');
-  if (!['default', 'plan', 'yolo', 'auto'].includes(value.permissionMode)) throw new Error('Invalid Kimi permission mode');
+  if (!valid('kimi', value.permissionMode)) throw new Error('Invalid Kimi permission mode');
   if (patch.contextWindow !== undefined) value.contextWindow = Number(patch.contextWindow);
   if (!Number.isInteger(value.contextWindow) || value.contextWindow < 4096 || value.contextWindow > 2000000) throw new Error('Context window must be an integer between 4096 and 2000000');
   if (patch.model !== undefined) {
@@ -71,7 +73,7 @@ function kimiSpawnSpec({ home, runtime, model, contextWindow = 131072, route, co
   } else merged = routeKimi({ telemetry: false, ...config, providers: {}, models: {} }, { route, model, contextWindow });
   writeText(path.join(home, 'config.toml'), TOML.stringify(merged));
   writeText(path.join(home, 'mcp.json'), mcp || '{"mcpServers":{}}');
-  return { args: [runtime, 'acp'], env: { ...kimiEnvironment(home, env), KIMI_DISABLE_TELEMETRY: merged.telemetry ? '0' : '1' } };
+  return { args: [runtime, 'acp'], env: { ...kimiEnvironment(home, env), KIMI_DISABLE_TELEMETRY: merged.telemetry ? '0' : '1' }, modeEngine: 'kimi' };
 }
 
 module.exports = { KimiSession: AcpSession, kimiSpawnSpec, kimiEnvironment, managedKimiConfig, kimiConnectionSettings, updateKimiConnectionSettings };

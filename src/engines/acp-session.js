@@ -6,6 +6,7 @@ const readline = require('node:readline');
 const { StreamingSession } = require('./streaming-session');
 const { validSessionId } = require('./claude-history');
 const { failedToolResult } = require('../api/tool-results');
+const { nativeMode } = require('./permission-levels');
 
 // ACP stays at the process boundary. The renderer receives the same stream and
 // session events as the other harness, never upstream keys or CLI internals.
@@ -80,9 +81,11 @@ class AcpSession extends StreamingSession {
         if (message.method === 'session/request_permission' && message.params.sessionId === this.sessionId && this.running && !this.cancelled) {
           const requestId = String(message.id);
           this.permissions.set(requestId, message);
-          const tool = message.params.toolCall;
-          this.emit({ type: 'gui:permission', requestId, toolName: tool.title,
-            input: tool.rawInput || { command: toolContent(tool.content) }, options: message.params.options });
+          const tool = message.params.toolCall || {};
+          const content = toolContent(tool.content);
+          this.emit({ type: 'gui:permission', requestId, toolName: tool.title || tool.kind || '',
+            input: tool.rawInput || (content ? { command: content } : tool.locations?.length ? { paths: tool.locations.map(loc => loc.path).join('\n') } : {}),
+            options: message.params.options });
         } else if (message.method === 'session/request_permission') {
           this.write({ id: message.id, result: { outcome: { outcome: 'cancelled' } } });
         } else this.write({ id: message.id, error: { code: -32601, message: 'Unsupported client method: ' + message.method } });
@@ -114,7 +117,7 @@ class AcpSession extends StreamingSession {
     let config = await this.request('session/set_config_option', { sessionId: this.sessionId, configId: 'model', value: this.spec.modelValue || this.settings.model });
     if (this.settings.thinkingBudget) config = await this.request('session/set_config_option', {
       sessionId: this.sessionId, configId: this.spec.thinkingId || 'thinking', value: this.settings.thinkingBudget });
-    if (!this.spec.noModes) await this.request('session/set_mode', { sessionId: this.sessionId, modeId: this.settings.permissionMode || 'default' });
+    if (!this.spec.noModes) await this.request('session/set_mode', { sessionId: this.sessionId, modeId: nativeMode(this.spec.modeEngine || 'kimi', this.settings.permissionMode || 'default') });
     this.onSessionId(this.sessionId);
     this.emit({ type: 'gui:config', options: config.configOptions });
   }

@@ -42,16 +42,11 @@
   <main class="main">
     <div class="main-header">
       <span class="header-title" id="headerTitle">New session</span>
-      <button class="header-pill workspace-picker" id="workspacePicker" title="Choose a workspace for this session" aria-haspopup="menu" data-i18n-attrs="title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg><span id="workspaceLabel">No workspace</span><span class="header-chevron" aria-hidden="true"></span></button>
       <select class="header-pill" id="engineSwitch" aria-label="Conversation engine" data-i18n-attrs="aria-label title"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="dsh">DeepSeek Harness</option><option value="kimi">Kimi Code</option><option value="antigravity">Antigravity</option></select>
       <button class="header-pill" id="handoffBtn" title="Choose how to continue in another engine" data-i18n data-i18n-attrs="title">Switch options</button>
       <button class="header-pill" id="handoffStop" hidden data-i18n>Stop handoff</button>
       <span style="flex:1"></span>
-      <button class="header-pill" id="goalPillBtn" type="button" title="Goal mode (Ctrl/Cmd+G)" data-i18n data-i18n-attrs="title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
-        Goal mode
-      </button>
-    </div>
+          </div>
 
 <div id="conversationOrigin" class="conversation-origin" hidden data-i18n></div>
 <div class="chat-scroll" id="chatScroll">
@@ -105,10 +100,9 @@
             <span class="pill-select" title="Permission mode" data-i18n-attrs="title">
               <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               <select id="selPermission" aria-label="Permission mode" data-i18n-attrs="aria-label">
-                <option value="acceptEdits" data-i18n>Accept edits</option>
-                <option value="plan" data-i18n>Plan only</option>
-                <option value="bypassPermissions" data-i18n>Allow all</option>
-                <option value="default" data-i18n>Default permissions</option>
+                <option value="ask" data-i18n>Ask before acting</option>
+                <option value="auto" data-i18n>Act, ask when risky</option>
+                <option value="full" data-i18n>Never ask</option>
               </select>
             </span>
             <span class="input-spacer"></span>
@@ -125,8 +119,7 @@
             </button>
           </div>
         </div>
-        <button class="connection-note" id="connectionInfo" hidden data-i18n></button>
-        <div class="status-line" id="statusLine" data-i18n>Ready</div>
+        <div class="status-row"><button class="connection-note" id="connectionInfo" hidden data-i18n></button><div class="status-line" id="statusLine" data-i18n>Ready</div></div>
       </div>
     </div>
   </main>

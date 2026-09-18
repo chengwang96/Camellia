@@ -11,6 +11,9 @@ const PERMISSIONS = {
   plan: { approvalPolicy: 'never', sandbox: 'read-only' },
   bypassPermissions: { approvalPolicy: 'never', sandbox: 'danger-full-access' },
 };
+// Universal levels reuse the closest native combination.
+const LEVEL_MODES = { ask: 'default', auto: 'acceptEdits', full: 'bypassPermissions' };
+const permissionModeOf = settings => LEVEL_MODES[settings.permissionMode] || settings.permissionMode || 'default';
 
 class CodexSession extends StreamingSession {
   constructor(options) {
@@ -35,8 +38,8 @@ class CodexSession extends StreamingSession {
     const sourceId = this.opts.sessionId;
     const params = { cwd: this.settings.cwd, model: this.settings.model,
       modelProvider: this.settings.connection === 'api' ? 'camellia' : 'openai',
-      ...PERMISSIONS[this.settings.permissionMode || 'default'],
-      ...(!this.settings.permissionMode || this.settings.permissionMode === 'default' ? this.spec.permissions : {}) };
+      ...PERMISSIONS[permissionModeOf(this.settings)],
+      ...(permissionModeOf(this.settings) === 'default' ? this.spec.permissions : {}) };
     const result = await this.client.request(sourceId ? this.opts.fork ? 'thread/fork' : 'thread/resume' : 'thread/start',
       { ...params, ...(sourceId ? { threadId: sourceId } : { allowProviderModelFallback: false }) });
     this.sessionId = result.thread.id;

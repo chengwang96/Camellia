@@ -108,7 +108,7 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
   });
   $('goalInput').addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); $('goalStartBtn').click(); }
-    if (event.key === 'Escape' && !goalState) { $('goalBar').classList.remove('visible'); $('goalPillBtn').focus(); }
+    if (event.key === 'Escape' && !goalState) { $('goalBar').classList.remove('visible'); $('input').focus(); }
   });
   $('goalPauseBtn').addEventListener('click', () => updateGoal(() => chatApi.goalPause(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal paused. Stopping the current response…'));
   $('goalResumeBtn').addEventListener('click', async () => {
@@ -120,7 +120,7 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
   });
   $('goalCompleteBtn').addEventListener('click', () => updateGoal(() => chatApi.goalComplete(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal marked complete.'));
   $('goalClearBtn').addEventListener('click', async () => {
-    if (await updateGoal(() => chatApi.goalClear(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal removed. Automatic work has stopped.')) $('goalPillBtn').focus();
+    if (await updateGoal(() => chatApi.goalClear(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal removed. Automatic work has stopped.')) $('input').focus();
   });
   $('goalExpandBtn').addEventListener('click', () => { expanded = !expanded; renderDetails(); });
   chatApi.onGoal(event => {
@@ -134,10 +134,13 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
     else if ($('goalBar').classList.contains('visible')) $('goalBar').classList.remove('visible');
     else showGoalInput();
   }
-  $('goalPillBtn').addEventListener('click', toggleGoal);
+  function reveal() {
+    if (goalState) { $('goalBar').classList.add('visible'); expanded = true; renderGoalBar(); }
+    else showGoalInput();
+  }
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'g') { event.preventDefault(); toggleGoal(); }
   });
   window.addEventListener('beforeunload', () => clearInterval(ticker));
-  return { refresh: refreshGoal, isActive: active };
+  return { refresh: refreshGoal, isActive: active, reveal };
 }

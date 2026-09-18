@@ -71,7 +71,8 @@ with sync_playwright() as p:
             rects.append((empty, active))
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             page.screenshot(path=str(preview/f'shared-{engine}-{theme}.png'), animations='disabled')
-            page.locator('#goalPillBtn').click()
+            page.locator('#input').fill('/goal')
+            page.locator('#input').press('Enter')
             expect(page.locator('#goalRounds')).to_have_count(0)
             objective = 'Complete the experiment, compare the implementations, and verify the final results.'
             page.locator('#goalInput').fill(objective)
@@ -316,9 +317,10 @@ with sync_playwright() as p:
         answered = page.evaluate('actions.find(a=>a.action==="control-respond").payload')
         assert 'input' not in answered or answered['input'] is None, 'ordinary Allow must preserve native tool arguments'
         assert answered['sessionId'] == a and answered['runId'] == arun
-        # Clarifying questions never open an approval modal, even under Allow
-        # all. Answers survive navigation, serialize correctly and are scoped.
-        page.evaluate('currentPermission="bypassPermissions"')
+        # Clarifying questions never open an approval modal, even under the
+        # middle automation tier. Answers survive navigation, serialize
+        # correctly and are scoped. (The top tier auto-skips questions.)
+        page.evaluate('currentPermission="auto"')
         question_event = {'type':'gui:permission','session_id':a,'runId':arun,'engine':engine,'requestId':'question-1','toolName':'AskUserQuestion','permissionMode':'bypassPermissions','questions':[
             {'id':'scope','question':'Which files should be included?','options':[{'label':'Main workflow','description':'Only maintained experiment code'},{'label':'All files','description':'Include older exploration'}],'multiSelect':False},
             {'id':'outputs','question':'Which outputs should be generated?','options':[{'label':'CSV'},{'label':'JSON'}],'multiSelect':True}]}
@@ -458,6 +460,30 @@ with sync_playwright() as p:
     page.wait_for_function('uiReady')
     expect(page.locator('#chat')).not_to_contain_text('Experiment review')
     assert page.evaluate('context.sessionId') is None
+    page.close()
+    # Slash commands: palette lists all, prefix filters, /goal reveals the goal input, /usage shows a card.
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    page.add_init_script(bridge)
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude',wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    page.locator('#input').fill('/')
+    expect(page.locator('.slash-pop .slash-row')).to_have_count(3)
+    page.locator('#input').fill('/g')
+    expect(page.locator('.slash-pop .slash-row')).to_have_count(1)
+    expect(page.locator('.slash-pop')).to_contain_text('/goal')
+    page.locator('#input').press('Enter')
+    expect(page.locator('#goalBar.visible #goalEntry')).to_be_visible()
+    expect(page.locator('#goalInput')).to_be_focused()
+    page.evaluate("document.querySelector('#goalBar').classList.remove('visible')")
+    page.locator('#input').fill('/us')
+    expect(page.locator('.slash-pop')).to_contain_text('/usage')
+    page.locator('.slash-pop .slash-row').first.click()
+    expect(page.locator('.usage-card')).to_contain_text('Local API usage')
+    page.locator('#input').fill('/c')
+    page.locator('#input').press('Enter')
+    expect(page.locator('#statusLine')).to_contain_text('Start a conversation first')
+    expect(page.locator('#input')).to_have_value('')
     page.close()
     browser.close()
     assert not errors, errors

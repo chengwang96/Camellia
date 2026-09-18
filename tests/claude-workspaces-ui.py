@@ -41,6 +41,9 @@ bridge = r"""
   };
   window.dshDesktop = new Proxy({}, { get: (_, method) => {
     if (method === 'onEngineSettingsChanged') return () => () => {};
+    if (method === 'onLanguageChanged') return () => () => {};
+    if (method === 'onArchivedChanged') return () => () => {};
+    if (method === 'onHarnessNavigate') return () => () => {};
     if (method === 'onClaudeEvent') return (fn) => { onEvent = fn; };
     if (method === 'onClaudeGoal') return (fn) => { onGoal = fn; };
     if (method === 'onApiRouterState') return (fn) => { onRouter = fn; };
@@ -61,7 +64,7 @@ try:
         page.add_init_script(bridge)
         page.goto((repo / 'src/renderer/chat/claude.html').as_uri())
         page.wait_for_load_state('networkidle')
-        expect(page.locator('#workspaceLabel')).to_have_text('No workspace')
+        expect(page.locator('.ws-row.active')).to_have_count(0)
         expect(page.locator('#independentSessions [data-sid="legacy-chat"]')).to_be_visible()
 
         # Native folder picker path/name, keyboard submission, and first workspace.
@@ -71,7 +74,7 @@ try:
         expect(page.locator('#wsPath')).to_have_value(fixtures['alpha'])
         page.locator('#wsName').press('Enter')
         expect(page.locator('#wsMask')).not_to_be_visible()
-        expect(page.locator('#workspaceLabel')).to_have_text('Alpha Project')
+        expect(page.locator('.ws-row.active')).to_have_count(1)
         alpha = page.locator('section[data-workspace-id]').first.get_attribute('data-workspace-id')
 
         # Drafts stay under their workspace; send uses that directory and records ID.
@@ -87,7 +90,7 @@ try:
 
         # Top-level new session must be independent after a workspace conversation.
         page.locator('#newSessionBtn').click()
-        expect(page.locator('#workspaceLabel')).to_have_text('No workspace')
+        expect(page.locator('.ws-row.active')).to_have_count(0)
         page.locator('#input').fill('不关联任何工作区的会话')
         page.locator('#send').click()
         page.wait_for_function('currentRunId !== null')
@@ -96,7 +99,8 @@ try:
         expect(page.locator(f'#independentSessions [data-sid="{independent_id}"]')).to_be_visible()
 
         # Move the open session in and out via the header picker; resume ID is stable.
-        page.locator('#workspacePicker').click()
+        page.locator(f'[data-sid="{independent_id}"]').get_by_role('button', name='Session actions').click()
+        page.get_by_role('menuitem', name='Move to workspace…', exact=True).click()
         page.get_by_role('menuitem', name='Alpha Project', exact=True).click()
         expect(page.locator(f'section[data-workspace-id="{alpha}"] [data-sid="{independent_id}"]')).to_be_visible()
         page.locator('#input').fill('继续在 Alpha 工作')
@@ -104,9 +108,9 @@ try:
         page.wait_for_function('currentRunId !== null')
         assert rpc('lastProcess')['result']['cwd'] == fixtures['alpha']
         assert page.evaluate("window.testCall('finishTurn')") == independent_id
-        page.locator('#workspacePicker').click()
-        page.get_by_role('menuitem', name='No workspace · Standalone session', exact=True).click()
-        expect(page.locator('#workspaceLabel')).to_have_text('No workspace')
+        page.locator(f'[data-sid="{independent_id}"]').get_by_role('button', name='Session actions').click()
+        page.get_by_role('menuitem', name='Move out of workspace', exact=True).click()
+        expect(page.locator('.ws-row.active')).to_have_count(0)
         expect(page.locator(f'#independentSessions [data-sid="{independent_id}"]')).to_be_visible()
 
         # Add another workspace, rename it, collapse Alpha and verify durable state.
@@ -133,7 +137,7 @@ try:
         # Add in a collapsed workspace automatically expands it and starts a draft.
         page.get_by_role('button', name='New session in Alpha Project', exact=True).click()
         expect(page.locator(f'section[data-workspace-id="{alpha}"] #sessionCurrent')).to_be_visible()
-        expect(page.locator('#workspaceLabel')).to_have_text('Alpha Project')
+        expect(page.locator(f'section[data-workspace-id="{alpha}"] .ws-row.active')).to_have_count(1)
 
         # Pin, fork, rename and archive still work with grouped history.
         grouped = page.locator(f'[data-sid="{grouped_id}"]')
@@ -165,12 +169,12 @@ try:
             page.screenshot(path=str(args.screenshot), full_page=True)
         page.set_viewport_size({'width': 960, 'height': 680})
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-        expect(page.locator('#workspacePicker')).to_be_visible()
+        expect(page.locator('#engineSwitch')).to_be_visible()
         page.set_viewport_size({'width': 1320, 'height': 900})
         page.get_by_role('button', name='Alpha Project workspace actions', exact=True).click()
         page.get_by_role('menuitem', name='Remove workspace (keep sessions)', exact=True).click()
         expect(page.locator(f'section[data-workspace-id="{alpha}"]')).to_have_count(0)
-        expect(page.locator('#workspaceLabel')).to_have_text('No workspace')
+        expect(page.locator('.ws-row.active')).to_have_count(0)
         expect(page.locator(f'#independentSessions [data-sid="{fork_id}"]')).to_be_visible()
         assert Path(fixtures['alpha']).exists()
         assert Path(fixtures['legacy']).exists()
@@ -227,26 +231,29 @@ try:
         expect(section.locator('[data-history]')).to_have_count(0)
         section.locator('.ws-row').click()
         section.locator('[data-sid="paged-0"]').click()
-        expect(page.locator('#workspaceLabel')).to_have_text('分页工作区')
+        assert 'active' in section.locator('.ws-row').get_attribute('class')
         expect(page.locator('#chat')).to_contain_text('分页会话 0')
 
         # The extracted goal UI retains start/pause/resume/complete/clear behavior.
-        page.locator('#goalPillBtn').click()
+        page.locator('#input').fill('/goal')
+        page.locator('#input').press('Enter')
         page.locator('#goalInput').fill('整理这份项目')
         page.locator('#goalInput').dispatch_event('keydown', {'key': 'Enter', 'isComposing': True})
         expect(page.locator('#goalInputRow')).to_be_visible()
         page.locator('#goalStartBtn').click()
-        expect(page.locator('#goalPhase')).to_have_text('In progress')
+        expect(page.locator('#goalPhase')).to_have_text('Goal in progress')
         expect(page.locator('#newSessionBtn')).to_be_disabled()
         page.locator('#goalPauseBtn').click()
-        expect(page.locator('#goalPhase')).to_have_text('Paused')
+        expect(page.locator('#goalPhase')).to_have_text('Goal paused')
         expect(page.locator('#newSessionBtn')).to_be_enabled()
         page.locator('#goalResumeBtn').click()
-        expect(page.locator('#goalPhase')).to_have_text('In progress')
+        expect(page.locator('#goalPhase')).to_have_text('Goal in progress')
+        page.locator('#goalExpandBtn').click()
+        expect(page.locator('#goalDetails')).to_be_visible()
         page.locator('#goalCompleteBtn').click()
-        expect(page.locator('#goalPhase')).to_have_text('Completed')
+        expect(page.locator('#goalPhase')).to_have_text('Goal completed')
         page.locator('#goalClearBtn').click()
-        expect(page.locator('#goalInputRow')).to_be_visible()
+        expect(page.locator('#goalBar')).not_to_be_visible()
 
         assert not errors, errors
         print('PASS: workspaces, moves, restart, paginated history, goals, pin/fork/archive, layout, Chinese IME, batched streaming and special paths; no browser errors')
