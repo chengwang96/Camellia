@@ -98,7 +98,11 @@ function normalizeConfig(raw = {}, previous = null) {
       if (!['auto', 'openai', 'anthropic'].includes(protocol)) throw new Error("Unsupported model API protocol");
       const upstream = String(m.upstream || '').trim();
       if (!upstream || upstream.length > 200 || /[\s\x00-\x1f]/.test(upstream)) throw new Error("Enter the provider's upstream model ID");
-      return { id: modelId(m.id), upstream, protocol };
+      const contextWindow = m.contextWindow === undefined || m.contextWindow === null || m.contextWindow === '' ? undefined : Number(m.contextWindow);
+      if (contextWindow !== undefined && (!Number.isInteger(contextWindow) || contextWindow < 4096 || contextWindow > 2000000)) throw new Error("Context window must be an integer between 4096 and 2000000");
+      const maxContext = Number.isInteger(m.maxContext) && m.maxContext >= 4096 ? m.maxContext : undefined;
+      if (contextWindow !== undefined && maxContext && contextWindow > maxContext) throw new Error("Context window exceeds the model's maximum (" + maxContext + ")");
+      return { id: modelId(m.id), upstream, protocol, ...(contextWindow !== undefined ? { contextWindow } : {}), ...(maxContext !== undefined ? { maxContext } : {}) };
     });
     if (new Set(models.map(m => m.id)).size !== models.length) throw new Error("A provider cannot contain duplicate entries for the same model");
     const seenKeys = new Set();

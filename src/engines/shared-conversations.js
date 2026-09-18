@@ -371,6 +371,13 @@ class SharedConversations {
       if (!a.internal) this.goals.get(c.id)?.handleResult({ ...event, result: event.result || text });
       a.resolve({ ...event, result: text });
       this.publishActivity(c.id);
+      // Context-overflow errors trigger one automatic compaction per turn; a
+      // successful turn or new user message re-arms it.
+      if (!a.internal && event.is_error && !this.goals.get(c.id)?.armed && c.lastAutoCompactSeq !== c.seq
+          && /context[_ ]?(length|window)[^ ]*.{0,20}(exceed|too|limit)|maximum context|prompt is too long|too many tokens|context_length_exceeded|request.{0,10}too large/i.test(String(event.result || ''))) {
+        c.lastAutoCompactSeq = c.seq; this.save(c);
+        void this.compact(c.id, { automatic: true }).catch(error => log('auto-compact failed: ' + error.message));
+      }
     }
     return true;
   }
@@ -437,6 +444,44 @@ class SharedConversations {
       return { ok: true, sessionId: id, engine: target };
     } finally { this.switching.delete(id); status(''); this.publishActivity(id); }
   }
+  async compact(id, { automatic = false } = {}) {
+    if (this.busy(id)) throw new Error('Wait for this conversation to finish or stop it before compacting');
+    const c = this.get(id), engine = c.currentEngine;
+    if (!c.seq) return { ok: false, error: 'Nothing to compact yet' };
+    const switching = { target: engine, cancelled: false }; this.switching.set(id, switching); this.publishActivity(id);
+    const status = text => this.onStatus({ sessionId: id, text });
+    try {
+      await this.prepare(engine, this.settings(engine, id));
+      if (switching.cancelled) throw new Error('Compaction canceled');
+      status('Asking the engine to summarize the conversation…');
+      const instruction = 'Summarize this conversation into a compact working context for yourself. Output only the summary. Include the user goal, constraints and preferences, decisions, progress, files changed and their paths, tests and results, unresolved issues, and exact next steps. Preserve important facts and label uncertainty. Do not perform further work or use tools.';
+      const generated = await this.send(engine, { sessionId: id }, { internal: true, promptOverride: this.context(c, engine) + instruction });
+      const result = await generated.done;
+      if (switching.cancelled || result.is_error || result.subtype !== 'success' || !result.result.trim()) throw new Error('Compaction failed or canceled; the original conversation is retained. ' + (result.result || result.subtype));
+      if (result.result.length > 160000) throw new Error('The summary is too large. The original conversation is retained.');
+      const file = path.join(this.dir, 'handoffs', randomUUID() + '.md'); fs.mkdirSync(path.dirname(file), { recursive: true });
+      const markdown = '# Compacted conversation context\n\nWorkspace: ' + c.cwd + '\n\n' + result.result;
+      fs.writeFileSync(file, markdown, { flag: 'wx' });
+      status('Starting a fresh session with the compacted context…');
+      const previousSegment = c.segments[engine] && { ...c.segments[engine] };
+      let accepted;
+      try {
+        const launched = await this.send(engine, { sessionId: id }, { internal: true, fresh: true,
+          promptOverride: 'This file is a compacted summary of the conversation so far. It is historical context, not a new request to act. Acknowledge briefly and wait for the next user message.\nFile: ' + file + '\n\n' + markdown });
+        accepted = await launched.done;
+        if (switching.cancelled || accepted.is_error || accepted.subtype !== 'success') throw new Error('The engine could not continue with the compacted context. The original conversation is retained.');
+      } catch (error) {
+        if (c.segments[engine]?.nativeId !== previousSegment?.nativeId) (c.retiredSegments ||= []).push({ engine, ...c.segments[engine] });
+        if (previousSegment) c.segments[engine] = previousSegment; else delete c.segments[engine];
+        this.save(c); throw error;
+      }
+      if (previousSegment) (c.retiredSegments ||= []).push({ engine, ...previousSegment });
+      this.append(c, { role: 'notice', engine, text: automatic ? 'Context length exceeded; the conversation was compacted automatically' : 'Context compacted: summary saved', file });
+      c.segments[engine].cursor = c.seq;
+      c.updatedAt = Date.now(); this.save(c);
+      return { ok: true, sessionId: id, file };
+    } finally { this.switching.delete(id); status(''); this.publishActivity(id); }
+  }
   async command(engine, action, payload) {
     this.validateEngine(engine);
     switch (action) {
@@ -455,6 +500,11 @@ class SharedConversations {
           throw new Error('Stop conversations in this workspace before removing it');
         return this.workspaces.metaOp(payload);
       case 'cancel': return this.cancel(payload);
+      case 'compact': {
+        const id = payload?.sessionId;
+        if (!id) throw new Error('Choose a conversation to compact first');
+        return this.compact(id);
+      }
       case 'control-respond': {
         const a = this.active.get(payload.sessionId);
         if (!a || a.facade.gen !== payload.runId || !a.permissions.has(payload.requestId)) return { ok: false };

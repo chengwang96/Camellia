@@ -9,8 +9,7 @@ const keyName = (key, index = 0) => key.name || key.maskedKey || `Key ${index + 
 const mark = type => ({ gemini: 'G', ollama: 'O', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC' }[type] || 'API');
 const titles = {
   providers: ["Providers & Keys", "Manage API keys and subscription accounts."],
-  usage: ["Usage", "Track requests by model and route."],
-  balances: ["Balances & Quotas", "Account balances, subscription limits, and trends."],
+  usage: ["Usage", "Track requests, balances, and quotas."],
   general: ["General", "Language, appearance, and local preferences."],
   archived: ["Archived", "Restore or permanently delete archived conversations."],
   engines: ["Engine Settings", "Manage native settings in one place."],
@@ -24,6 +23,7 @@ function edited() { dirty = true; $('save').disabled = false; status("You have u
 function current() { return config?.providers.find(p => p.id === selected); }
 function assertClean() { if (dirty) throw new Error("Save your changes before querying or validating keys"); }
 function setView(next, engine, focus) {
+  if (next === 'balances') next = 'usage';
   if (!titles[next]) next = 'providers';
   view = next;
   for (const id of Object.keys(titles)) $(id + 'Page').hidden = id !== next;
@@ -31,8 +31,7 @@ function setView(next, engine, focus) {
   [$('pageTitle').textContent, $('pageSubtitle').textContent] = titles[next];
   $('save').hidden = next !== 'providers';
   engineUI.setVisible(next === 'engines');
-  if (next === 'usage') { fillUsageFilters(); renderUsage(); }
-  if (next === 'balances') renderBalances();
+  if (next === 'usage') { fillUsageFilters(); renderUsage(); renderBalances(); }
   if (next === 'engines') void (focus === 'account' ? engineUI.openAccount(engine) : engineUI.select(engine || engineUI.selected()));
   if (next === 'runtimes') void engineUI.runtimePage(focus);
   if (next === 'archived') void renderArchived();
@@ -42,7 +41,7 @@ function navigateSettings(target = {}) {
   setView(target.page || 'providers', target.engine, target.focus);
 }
 const engineUI = window.createEngineSettingsUI({ api, status, navigate: navigateSettings });
-$('kimiUsage').onclick = () => navigateSettings({ page: 'balances', subscriptionId: 'kimi-subscription' });
+$('kimiUsage').onclick = () => navigateSettings({ page: 'usage', subscriptionId: 'kimi-subscription' });
 api.onSettingsNavigate(navigateSettings);
 function showLive() {
   $('routerLabel').textContent = live.running ? "Router running" : "Setup required";
@@ -79,7 +78,7 @@ function renderEditor() {
     <p class="hint" data-i18n>Keys are tried in order. Leave a key blank to keep it. Use labels to identify accounts.</p><div id="keyRows"></div>
     <div id="keyImport" class="key-import" hidden><label for="bulkKeys" data-i18n>One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false" data-i18n-attrs="placeholder"></textarea><button id="importKeys" data-i18n>Add to key pool</button><p class="hint" data-i18n>Duplicate keys for this provider are merged on save.</p></div>
     <div class="section"><div class="section-head"><h2 data-i18n>Model</h2><button id="discoverModels" data-i18n>Fetch models</button></div><div id="modelChips" class="model-chips"></div>
-      <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Routes switch only within the same model ID. Keep versions and aliases such as latest and chat separate.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Canonical model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><button id="addModel" data-i18n>+ Add model</button></details>
+      <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Routes switch only within the same model ID. Keep versions and aliases such as latest and chat separate.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Canonical model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th data-i18n>Context</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><button id="addModel" data-i18n>+ Add model</button></details>
       <div class="row" style="margin-top:18px"><label data-i18n>Validation model<select id="verifyModel" aria-label="Validation model" data-i18n-attrs="aria-label"></select></label></div><p class="hint" data-i18n>Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
     </div>
     <details class="advanced section" id="connectionAdvanced" ${p.type === 'custom' ? 'open' : ''}><summary data-i18n>Advanced connection settings</summary><div class="grid">
@@ -125,7 +124,7 @@ function updateKeyStats() {
 function renderModels() {
   const p = current(); if (!p) return;
   $('modelChips').innerHTML = p.models.filter(m => m.id).map(m => `<span class="model-chip">${esc(m.id)}</span>`).join('') || "<p class=\"hint\" data-i18n>Fetch the provider catalog and choose models, or add them manually.</p>";
-  $('modelRows').innerHTML = p.models.map((m,i) => `<tr><td><input data-model="${i}" data-field="id" value="${esc(m.id)}" aria-label="Canonical model ID ${i+1}" spellcheck="false" data-i18n-attrs="aria-label"></td><td><input data-model="${i}" data-field="upstream" value="${esc(m.upstream)}" aria-label="Upstream model ID ${i+1}" spellcheck="false" data-i18n-attrs="aria-label"></td><td><select data-model="${i}" data-field="protocol" aria-label="Model protocol ${i+1}" data-i18n-attrs="aria-label"><option value="auto" data-i18n>Default</option><option value="openai" data-i18n>OpenAI</option><option value="anthropic" data-i18n>Anthropic</option></select></td><td><button data-remove-model="${i}" aria-label="Remove model ${i+1}" data-i18n-attrs="aria-label">×</button></td></tr>`).join('');
+  $('modelRows').innerHTML = p.models.map((m,i) => `<tr><td><input data-model="${i}" data-field="id" value="${esc(m.id)}" aria-label="Canonical model ID ${i+1}" spellcheck="false" data-i18n-attrs="aria-label"></td><td><input data-model="${i}" data-field="upstream" value="${esc(m.upstream)}" aria-label="Upstream model ID ${i+1}" spellcheck="false" data-i18n-attrs="aria-label"></td><td><select data-model="${i}" data-field="protocol" aria-label="Model protocol ${i+1}" data-i18n-attrs="aria-label"><option value="auto" data-i18n>Default</option><option value="openai" data-i18n>OpenAI</option><option value="anthropic" data-i18n>Anthropic</option></select></td><td><input type="number" min="4096" max="${m.maxContext || 2000000}" step="1024" data-model="${i}" data-field="contextWindow" value="${m.contextWindow || ''}" placeholder="${m.maxContext ? '\u2264 ' + m.maxContext : 'Auto'}" aria-label="Context window ${i+1}" data-i18n-attrs="aria-label" style="width:96px"></td><td><button data-remove-model="${i}" aria-label="Remove model ${i+1}" data-i18n-attrs="aria-label">×</button></td></tr>`).join('');
   document.querySelectorAll('[data-model][data-field=protocol]').forEach(el => { el.value = p.models[Number(el.dataset.model)].protocol || 'auto'; });
   fillSelect($('verifyModel'), p.models.filter(m => m.id).map(m => [m.id, m.id]), "Select model", false);
 }
@@ -142,15 +141,25 @@ async function discoverModels(p) {
   try {
     const result = await api.providerModels({ provider: p }); if (!result.ok) throw new Error(result.error);
     catalog = result.models; catalogProvider = p.id; catalogSelected = new Set();
+    // Catalogs that report context limits backfill models added earlier, so the
+    // cap is known (and enforced) before a value is typed into the table.
+    let limits = 0;
+    for (const m of p.models) {
+      const hit = catalog.find(x => x.id === m.id && x.maxContext);
+      if (hit && m.maxContext !== hit.maxContext) { m.maxContext = hit.maxContext; limits++; }
+    }
+    if (limits) { edited(); renderModels(); }
     $('modelSearch').value = ''; renderCatalog(); $('modelDialog').showModal();
-    status(`Found ${catalog.length} models. Catalog access does not verify inference access for this key.`);
+    status(limits
+      ? `Found ${catalog.length} models. Context limits updated for ${limits} of your models.`
+      : `Found ${catalog.length} models. Catalog access does not verify inference access for this key.`);
   } catch (e) { status(e.message, true); } finally { button.disabled = false; }
 }
 function renderCatalog() {
   const query = $('modelSearch').value.trim().toLowerCase(), p = config.providers.find(p => p.id === catalogProvider);
   $('catalogList').innerHTML = catalog.filter(m => m.id.toLowerCase().includes(query)).map((m) => {
     const existing = p?.models.some(x => x.id === m.id);
-    return `<label class="catalog-option"><input type="checkbox" data-catalog="${esc(m.id)}" ${existing || catalogSelected.has(m.id) ? 'checked' : ''} ${existing ? 'disabled' : ''}>${esc(m.id)}${existing ? "<small data-i18n>Added</small>" : ''}</label>`;
+    return `<label class="catalog-option"><input type="checkbox" data-catalog="${esc(m.id)}" ${existing || catalogSelected.has(m.id) ? 'checked' : ''} ${existing ? 'disabled' : ''}>${esc(m.id)}${m.maxContext ? `<small class="hint">· ${Math.round(m.maxContext / 1024)}K ctx</small>` : ''}${existing ? "<small data-i18n>Added</small>" : ''}</label>`;
   }).join('') || "<p class=\"hint\" data-i18n>No matching models</p>";
 }
 
@@ -162,7 +171,13 @@ function fillSelect(el, options, placeholder, includeAll = true) {
 function fillUsageFilters() {
   fillSelect($('usageProvider'), live.providers.map(p => [p.id, p.name]), "All providers");
   const providers = live.providers.filter(p => !$('usageProvider').value || p.id === $('usageProvider').value);
-  fillSelect($('usageKey'), providers.flatMap(p => p.keys.map((k,i) => [k.id, p.name + ' · ' + keyName(k,i)])), "All keys");
+  // Key labels stay short — just enough to tell keys apart; the provider
+  // dropdown sits immediately to the left. Duplicated labels gain the provider.
+  const shortKey = (k, i) => { const s = keyName(k, i); return s.length > 18 ? s.slice(0, 16) + '…' : s; };
+  const keyEntries = providers.flatMap(p => p.keys.map((k,i) => ({ id: k.id, label: shortKey(k,i), provider: p.name })));
+  const labelCount = new Map();
+  for (const e of keyEntries) labelCount.set(e.label, (labelCount.get(e.label) || 0) + 1);
+  fillSelect($('usageKey'), keyEntries.map(e => [e.id, labelCount.get(e.label) > 1 ? e.label + ' · ' + e.provider : e.label]), "All keys");
   const models = new Set(providers.flatMap(p => p.keys.filter(k => !$('usageKey').value || k.id === $('usageKey').value).flatMap(k => [...Object.keys(live.usage?.[k.id]?.byModel || {}), ...p.models.map(m => m.id)])));
   fillSelect($('usageModel'), [...models].sort().map(id => [id,id]), "All models");
 }
@@ -233,11 +248,6 @@ function accountCard(account, selected = false) {
     ${subscriptionId ? `<div class="quota-preview">${(latest?.windows || []).slice(balance ? 0 : 1).map(w => `<small>${esc(t(w.label))} · ${esc(t(`${fmt(remaining(w))}% remaining`))}</small>`).join('')}</div>` : ''}
     ${info.error ? `<p class="error">${esc(t(info.error))}</p>` : ''}</button>`;
 }
-function renderSubscriptions() {
-  const accounts = accountsList().filter(a => a.subscriptionId);
-  $('subscriptionOverview').hidden = !accounts.length;
-  $('subscriptionCards').innerHTML = accounts.map(a => accountCard(a)).join('');
-}
 function renderBalances() {
   const all = accountsList();
   fillSelect($('balanceProvider'), [...new Map(all.map(a => [a.providerId, a.provider])).entries()], "All providers");
@@ -271,7 +281,7 @@ async function refreshBalances(payload = {}) {
   try {
     if (!payload.subscriptionId) assertClean(); $('refreshBalances').disabled = true; status("Querying balances and quotas…");
     const result = await api.providerRefresh(payload); if (!result.ok) throw new Error(result.error);
-    insight = result; renderBalances(); renderSubscriptions(); updateKeyStats();
+    insight = result; renderBalances(); updateKeyStats();
     const errors = [...Object.values(insight.keys), ...(insight.subscriptions || []).map(a => a.info)].filter(info => info.status === 'error').length;
     status(errors ? `Query complete. ${errors} accounts could not be queried. See their cards for details.` : "Account status updated.");
   } catch (e) { status(e.message, true); } finally { $('refreshBalances').disabled = false; }
@@ -288,6 +298,20 @@ $('editor').oninput = e => {
   if (el.dataset.model !== undefined) { p.models[Number(el.dataset.model)][el.dataset.field] = el.value; edited(); }
   if (el.dataset.key !== undefined) { p.keys[Number(el.dataset.key)][el.dataset.field] = el.type === 'checkbox' ? el.checked : el.value; edited(); }
 };
+// Clamp the context window to the model's known limit once editing finishes,
+// so a value beyond the catalog maximum never reaches save-time validation.
+$('editor').onchange = e => {
+  const el = e.target, p = current();
+  if (!p || el.dataset.model === undefined || el.dataset.field !== 'contextWindow') return;
+  const m = p.models[Number(el.dataset.model)], raw = String(el.value).trim();
+  if (!raw) { m.contextWindow = ''; return; }
+  const value = Number(raw);
+  if (!Number.isInteger(value)) return;
+  const cap = m.maxContext || 2000000, clamped = Math.min(cap, Math.max(4096, value));
+  if (clamped === value) return;
+  el.value = clamped; m.contextWindow = clamped;
+  status(value > cap ? `Context window capped at the model's maximum (${cap})` : "Context window must be an integer between 4096 and 2000000", true);
+};
 $('editor').onclick = async e => {
   const button = e.target.closest('button'), p = current(); if (!button || !p) return;
   const d = button.dataset;
@@ -296,7 +320,7 @@ $('editor').onclick = async e => {
   if (d.upKey !== undefined || d.downKey !== undefined) { const i = Number(d.upKey ?? d.downKey), j = d.upKey !== undefined ? i-1 : i+1; [p.keys[i], p.keys[j]] = [p.keys[j], p.keys[i]]; edited(); renderKeys(); }
   try {
     if (d.keyUsage) { assertClean(); setView('usage'); $('usageProvider').value = p.id; fillUsageFilters(); $('usageKey').value = d.keyUsage; fillUsageFilters(); renderUsage(); }
-    if (d.keyBalance) { assertClean(); balanceKey = d.keyBalance; setView('balances'); }
+    if (d.keyBalance) { assertClean(); balanceKey = d.keyBalance; setView('usage'); }
     if (d.verify) {
       assertClean(); const model = $('verifyModel').value; if (!model) throw new Error("Add and select a model first");
       button.disabled = true; status(`Validating ${model}…`);
@@ -360,10 +384,6 @@ $('save').onclick = async () => {
 };
 for (const id of ['usageRange','usageProvider','usageKey','usageModel','usageMetric']) $(id).onchange = () => { fillUsageFilters(); renderUsage(); };
 $('balanceCards').onclick = e => { const button = e.target.closest('[data-balance]'); if (button) { balanceKey = button.dataset.balance; renderBalances(); } };
-for (const id of ['subscriptionCards']) $(id).onclick = e => {
-  const button = e.target.closest('[data-balance]');
-  if (button) { balanceKey = button.dataset.balance; $('balanceProvider').value = ''; $('balanceSearch').value = ''; setView('balances'); }
-};
 $('balanceProvider').onchange = renderBalances;
 $('balanceSearch').oninput = renderBalances;
 $('refreshBalances').onclick = () => refreshBalances();
@@ -396,7 +416,7 @@ async function refresh(initial = false) {
       renderPresetAccount();
       renderEditor();
     }
-    showLive(); renderSubscriptions(); if (view === 'usage') { fillUsageFilters(); renderUsage(); } if (view === 'balances') renderBalances(); if (view === 'archived') void renderArchived();
+    showLive(); if (view === 'usage') { fillUsageFilters(); renderUsage(); renderBalances(); } if (view === 'archived') void renderArchived();
     if (!dirty) status(details.ok ? '' : details.error, !details.ok);
     if (initial) {
       const preferences = await api.workbenchSettings();
@@ -463,7 +483,7 @@ api.onApiRouterState(state => {
 });
 api.onProviderInsights(state => {
   insight = state; if (!config) return;
-  updateKeyStats(); renderSubscriptions(); if (view === 'balances') renderBalances();
+  updateKeyStats(); if (view === 'usage') renderBalances();
   if (!dirty && !current()) renderProviders();
 });
 let chartLayoutWidth = 0, chartLayoutFrame;
@@ -474,12 +494,11 @@ new ResizeObserver(() => {
   cancelAnimationFrame(chartLayoutFrame);
   chartLayoutFrame = requestAnimationFrame(() => {
     if (!live) return;
-    if (view === 'usage') renderUsage();
-    if (view === 'balances') renderBalances();
+    if (view === 'usage') { renderUsage(); renderBalances(); }
   });
 }).observe(document.querySelector('.scroll-content'));
 void refresh(true).then(() => navigateSettings(Object.fromEntries(new URLSearchParams(location.search))));
 window.addEventListener('camellia:language', () => {
   if (!live) return;
-  renderSubscriptions(); if (view === 'balances') renderBalances(); if (view === 'archived') void renderArchived();
+  if (view === 'usage') { renderUsage(); renderBalances(); } if (view === 'archived') void renderArchived();
 });

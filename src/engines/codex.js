@@ -12,7 +12,7 @@ const { readJson, writeJson } = require('../shared/json-store');
 const { modelId } = require('../api/api-router-config');
 const { downloadSettings } = require('../main/download-network');
 
-function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = () => [], runtimes, environment = () => process.env,
+function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = () => [], getContextWindow = () => undefined, runtimes, environment = () => process.env,
   openExternal, onEvent, onGoal, onAccount = () => {}, isBusy = () => false, log = () => {} }) {
   const home = path.join(dataDir, 'codex');
   const history = new ClaudeHistory(path.join(dataDir, 'codex-history'));
@@ -43,7 +43,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   }
   function spec(connection, runtime, cwd, model, conversationId) {
     return codexSpawnSpec({ runtime, home: path.join(home, connection, ...(connection === 'api' && conversationId ? ['conversations', conversationId] : [])), configHome: home, cwd,
-      connection, model, route: connection === 'api' ? getRoute() : null, env: environment(), proxyUrl: settings().proxyUrl });
+      connection, model, route: connection === 'api' ? getRoute() : null, contextWindow: connection === 'api' ? getContextWindow(model) : undefined, env: environment(), proxyUrl: settings().proxyUrl });
   }
   function accountState() {
     return { ...account, installed: Boolean(runtimes().locate('codex')), loginPending: Boolean(loginId), home };

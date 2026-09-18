@@ -40,9 +40,7 @@ p { margin: 5px 0; }
 .account-connections { border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; padding: 18px; margin-bottom: 24px; }
 .account-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .account-shortcuts button { white-space: normal; text-align: left; }
-.subscription-overview { margin-bottom: 28px; }
-.subscription-overview > h2, .usage-api-title { margin-bottom: 14px; }
-.subscription-overview > p { margin-bottom: 16px; }
+.usage-api-title { margin-bottom: 14px; }
 .balance-card .provider-mark img { width: 27px; height: 27px; }
 .balance-card .quota-preview { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .preset-account { border-top: 1px solid var(--dsw-alias-border-l2); margin-top: 18px; padding-top: 14px; }
@@ -101,7 +99,7 @@ td { border-top: 1px solid var(--dsw-alias-border-l2); padding: 10px 8px; overfl
 .route-row button { font-size: 11px; padding: 4px 8px; }
 .filter-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
 .filter-row label { flex: 1; min-width: 130px; font-size: 13px; color: var(--dsw-alias-label-secondary); }
-.filter-row select { display: flex; width: 100%; margin-top: 6px; font-size: 12px; }
+.filter-row select { display: flex; width: 100%; min-width: 0; margin-top: 6px; font-size: 12px; }
 .usage-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding-bottom: 24px; }
 .usage-summary small { display: block; }
 .usage-summary strong { display: block; font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; margin: 7px 0 2px; }

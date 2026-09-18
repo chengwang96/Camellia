@@ -12,7 +12,6 @@
   <nav aria-label="Settings categories" data-i18n-attrs="aria-label">
     <button data-view="providers" class="active" data-i18n><span aria-hidden="true">⌘</span>Providers &amp; Keys</button>
     <button data-view="usage" data-i18n><span aria-hidden="true">▥</span>Usage</button>
-    <button data-view="balances" data-i18n><span aria-hidden="true">◴</span>Balances &amp; Quotas</button>
     <div class="nav-divider"></div>
     <button data-view="engines" data-i18n><span aria-hidden="true">◇</span>Engine Settings</button>
     <button data-view="runtimes" data-i18n><span aria-hidden="true">↓</span>Runtime</button>
@@ -29,13 +28,18 @@
         <div><h2 id="accountConnectionsTitle" data-i18n>Account sign-in</h2><p class="hint" data-i18n>Use account models and quota in the matching engine.</p></div>
         <div class="account-shortcuts"><button data-account-engine="kimi" data-i18n>Kimi account</button><button data-account-engine="antigravity" data-i18n>Google account · Antigravity</button><button data-account-engine="codex" data-i18n>ChatGPT account</button></div>
       </section>
-      <section id="subscriptionOverview" class="subscription-overview" hidden><h2 data-i18n>Subscription accounts</h2><div id="subscriptionCards" class="balance-grid"></div></section>
       <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div>
       <div id="providers" class="provider-grid"></div>
       <div id="editor" hidden></div>
       <details class="advanced router-options"><summary data-i18n>Router options</summary><div class="row"><label data-i18n><input id="enabled" type="checkbox">Enable shared router</label><label data-i18n>Local port <input id="port" type="number" min="1024" max="65535"></label></div><div id="live" class="hint" data-i18n></div></details>
     </section>
     <section id="usagePage" class="page" hidden>
+      <h2 class="usage-api-title" data-i18n>Balances &amp; Quotas</h2>
+      <div class="toolbar"><p class="hint" data-i18n>Balances and subscription quotas as reported by each provider.</p><button id="refreshBalances" class="primary" data-i18n>Refresh all</button></div>
+      <div class="balance-filter"><select id="balanceProvider" aria-label="Balance provider" data-i18n-attrs="aria-label"></select><input id="balanceSearch" aria-label="Filter accounts" placeholder="Filter by account label or masked key" data-i18n-attrs="aria-label placeholder"></div>
+      <div id="balanceCards" class="balance-grid"></div>
+      <div id="balanceDetail"></div>
+      <p class="hint footnote" data-i18n>Keys may share an account balance, so card amounts are not added together. Charts show local observations, including top-ups and resets; earlier history is not reconstructed.</p>
       <h2 class="usage-api-title" data-i18n>API request history</h2>
       <div class="filter-row"><label data-i18n>Date<select id="usageRange"><option value="7" data-i18n>Last 7 days</option><option value="30" data-i18n>Last 30 days</option><option value="90" data-i18n>Last 90 days</option><option value="all" data-i18n>Total</option></select></label><label data-i18n>Provider<select id="usageProvider"></select></label><label data-i18n>Key<select id="usageKey"></select></label><label data-i18n>Model<select id="usageModel"></select></label></div>
       <div id="usageSummary" class="usage-summary"></div>
@@ -43,13 +47,6 @@
       <div class="section-head table-head"><h2 data-i18n>Model and key details</h2><button id="exportUsage" data-i18n>Export CSV</button></div>
       <div class="table-scroll"><table class="usage-table"><thead><tr><th data-i18n>Model / Provider</th><th data-i18n>Key</th><th data-i18n>Success</th><th data-i18n>Input</th><th data-i18n>Output</th><th data-i18n>Cache read</th><th data-i18n>Failed</th></tr></thead><tbody id="usageRows"></tbody></table></div>
       <p class="hint footnote" data-i18n>Business requests through this router, excluding validation. Tokens come from provider responses. Model and date breakdowns accumulate from this version; legacy aggregates appear under Total. Cache reads are included in input tokens.</p>
-    </section>
-    <section id="balancesPage" class="page" hidden>
-      <div class="toolbar"><p class="hint" data-i18n>Balances and subscription quotas as reported by each provider.</p><button id="refreshBalances" class="primary" data-i18n>Refresh all</button></div>
-      <div class="balance-filter"><select id="balanceProvider" aria-label="Balance provider" data-i18n-attrs="aria-label"></select><input id="balanceSearch" aria-label="Filter accounts" placeholder="Filter by account label or masked key" data-i18n-attrs="aria-label placeholder"></div>
-      <div id="balanceCards" class="balance-grid"></div>
-      <div id="balanceDetail"></div>
-      <p class="hint footnote" data-i18n>Keys may share an account balance, so card amounts are not added together. Charts show local observations, including top-ups and resets; earlier history is not reconstructed.</p>
     </section>
     <section id="generalPage" class="page" hidden>
       <div class="setting-row"><div><h2 data-i18n>Language</h2><p class="hint" data-i18n>Choose the display language for Camellia.</p></div><select id="language" aria-label="Language" data-i18n-attrs="aria-label"><option value="en" lang="en">English</option><option value="zh-CN" lang="zh-CN">简体中文</option></select></div>

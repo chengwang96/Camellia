@@ -399,6 +399,44 @@ test('archived conversations cannot be loaded back into the chat surface', async
   await f.manager.command('kimi', 'archive-session', { id: run.sessionId, archived: false });
   assert.equal(f.manager.load('kimi', run.sessionId).ok, true);
 });
+
+test('compact summarizes onto a fresh native session and re-fires on later context overflow', async t => {
+  const f = fixture(t);
+  const waitFor = async check => { for (let i = 0; i < 200 && !check(); i++) await new Promise(r => setImmediate(r)); };
+  const first = await f.manager.send('kimi', { prompt: 'Long work' }); f.finish('kimi');
+  const nativeBefore = f.manager.get(first.sessionId).segments.kimi.nativeId;
+  const compacting = f.manager.command('kimi', 'compact', { sessionId: first.sessionId });
+  await waitFor(() => /compact working context/.test(f.sent.at(-1)?.prompt || ''));
+  f.finish('kimi', 'success', '## Summary Long work in progress');
+  await waitFor(() => /compacted summary/.test(f.sent.at(-1)?.prompt || ''));
+  f.finish('kimi');
+  const res = await compacting;
+  assert.equal(res.ok, true);
+  const c = f.manager.get(first.sessionId);
+  assert.notEqual(c.segments.kimi.nativeId, nativeBefore);
+  assert.equal(c.segments.kimi.cursor, c.seq);
+  assert.ok(c.retiredSegments.some(s => s.nativeId === nativeBefore));
+  assert.ok(f.manager.messages(c).some(m => m.role === 'notice' && /Context compacted/.test(m.text)));
+
+  await f.manager.send('kimi', { sessionId: first.sessionId, prompt: 'continue' });
+  f.finish('kimi', 'error', 'Request failed: context_length_exceeded, maximum context length reached');
+  await waitFor(() => /compact working context/.test(f.sent.at(-1)?.prompt || ''));
+  f.finish('kimi', 'success', '## Summary shrunk');
+  await waitFor(() => /compacted summary/.test(f.sent.at(-1)?.prompt || ''));
+  f.finish('kimi');
+  await waitFor(() => f.manager.messages(f.manager.get(first.sessionId)).some(m => m.role === 'notice' && /compacted automatically/.test(m.text)));
+  assert.ok(f.manager.messages(f.manager.get(first.sessionId)).some(m => m.role === 'notice' && /compacted automatically/.test(m.text)));
+
+  await f.manager.send('kimi', { sessionId: first.sessionId, prompt: 'again' }); f.finish('kimi');
+  await f.manager.send('kimi', { sessionId: first.sessionId, prompt: 'again2' });
+  f.finish('kimi', 'error', 'context_length_exceeded');
+  await waitFor(() => /compact working context/.test(f.sent.at(-1)?.prompt || ''));
+  f.finish('kimi', 'success', '## Summary again');
+  await waitFor(() => /compacted summary/.test(f.sent.at(-1)?.prompt || ''));
+  f.finish('kimi');
+  await waitFor(() => f.manager.messages(f.manager.get(first.sessionId)).filter(m => m.role === 'notice' && /compacted automatically/.test(m.text)).length === 2);
+  assert.equal(f.manager.messages(f.manager.get(first.sessionId)).filter(m => m.role === 'notice' && /compacted automatically/.test(m.text)).length, 2);
+});
 
 test('permissions and live snapshots are addressed by conversation and run, including duplicate request IDs', async t => {
   const f = fixture(t);
