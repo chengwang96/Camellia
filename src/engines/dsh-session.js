@@ -8,15 +8,25 @@ const { AcpSession } = require('./acp-session');
 const { ClaudeHistory } = require('./claude-history');
 const { writeText } = require('../shared/json-store');
 const { modelId } = require('../api/api-router-config');
+const { valid, nativeMode } = require('./permission-levels');
 // Match the pinned DSH provider default. 8K can truncate a reasoning-only reply
 // before the model emits code or a tool call, ending the native turn early.
 const DSH_MAX_OUTPUT_TOKENS = 32768;
+// The three universal levels as DSH permission presets (sandbox × approval).
+const DSH_PRESETS = {
+  'read-only': { sandbox: 'read-only', approval: 'ask', name: 'read-only',
+    description: 'Reads run directly; every change asks for confirmation.' },
+  'workspace-write': { sandbox: 'workspace-write', approval: 'ask', name: 'workspace-write',
+    description: 'Write inside the workspace; wider access asks for confirmation.' },
+  'danger-full-access': { sandbox: 'danger-full-access', approval: 'never', name: 'danger-full-access',
+    description: 'Full access without confirmation prompts.' },
+};
 
 function dshAcpSpec({ runtime, home, model, route, permissionMode, env }) {
   fs.mkdirSync(home, { recursive: true });
   writeText(path.join(home, 'settings.yaml'), YAML.stringify({
     'agent-default-model': { provider: 'api-pool', model },
-    permission: { defaultPreset: permissionMode === 'bypassPermissions' ? 'danger-full-access' : 'workspace-write' },
+    permission: { presets: DSH_PRESETS, defaultPreset: nativeMode('dsh', permissionMode, 'auto') },
     'llm-pi-ai': { providers: { 'api-pool': { displayName: 'Camellia API', apiKeyEnv: 'DSH_API_ROUTER_KEY',
       api: 'anthropic-messages', baseURL: route.baseUrl, defaultContextWindow: 65536, defaultMaxTokens: DSH_MAX_OUTPUT_TOKENS, models: [{ id: model }] } } },
   }));
@@ -31,7 +41,7 @@ function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, r
   function saveSettings(patch) {
     const value = settings();
     for (const key of ['model', 'permissionMode', 'thinkingBudget']) if (patch[key] !== undefined) value[key] = String(patch[key]);
-    if (!['default', 'bypassPermissions'].includes(value.permissionMode)) throw new Error('Invalid DSH permission mode');
+    if (!valid('dsh', value.permissionMode)) throw new Error('Invalid DSH permission mode');
     saveConfig({ dshChat: value }); return value;
   }
   function ensure(opts) {

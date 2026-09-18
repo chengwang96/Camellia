@@ -11,7 +11,7 @@ with sync_playwright() as p:
         page.goto((shots / (name + '.html')).as_uri())
         page.wait_for_load_state('networkidle')
         expect(page.locator('.logo-text')).to_have_text('Kimi Code')
-        expect(page.locator('#workspaceLabel')).to_have_text('示例工作区')
+        expect(page.locator('.ws-name')).to_have_text('示例工作区')
         if name == 'kimi-chat':
             expect(page.locator('.run-result.ok')).to_be_visible()
             expect(page.locator('.tool-card')).to_have_count(1)

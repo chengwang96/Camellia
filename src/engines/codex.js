@@ -5,6 +5,7 @@ const { spawn } = require('node:child_process');
 const { SessionPool } = require('./session-pool');
 const { CodexClient, codexSpawnSpec } = require('./codex-client');
 const { CodexSession, PERMISSIONS } = require('./codex-session');
+const { valid } = require('./permission-levels');
 const { ClaudeHistory } = require('./claude-history');
 const { ClaudeGoal } = require('./claude-goal');
 const { createSessionWorkspaces } = require('./session-workspaces');
@@ -35,7 +36,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       value.connection = patch.connection;
     }
     for (const key of ['cwd', 'permissionMode', 'thinkingBudget', 'proxyUrl']) if (patch[key] !== undefined) value[key] = String(patch[key]).trim();
-    if (!PERMISSIONS[value.permissionMode]) throw new Error('Invalid Codex permission mode');
+    if (!PERMISSIONS[value.permissionMode] && !valid('codex', value.permissionMode)) throw new Error('Invalid Codex permission mode');
     if (value.proxyUrl) value.proxyUrl = downloadSettings({ mode: 'proxy', url: value.proxyUrl }).url;
     if (patch.model !== undefined) value[(patch.connection || (patch.sessionId ? connectionFor(patch.sessionId) : value.connection)) + 'Model'] = String(patch.model).trim();
     delete value.model;

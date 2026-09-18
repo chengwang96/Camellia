@@ -54,6 +54,13 @@ const context = { sessionId: null, workspaceId: null };
   if (harnessId !== 'claude') LEVELS.splice(1);
   let currentModel = '';
   let currentLevel = '';
+  // Three universal automation levels; stored native values fold into them.
+  function permissionLevel(engine, value) {
+    if (['ask', 'auto', 'full'].includes(value)) return value;
+    if (value === 'default') return engine === 'dsh' ? 'auto' : 'ask';
+    return { plan: 'ask', acceptEdits: 'auto', auto: 'auto', 'workspace-write': 'auto',
+      bypassPermissions: 'full', yolo: 'full', 'danger-full-access': 'full' }[value] || 'ask';
+  }
   let currentPermission = chatProfile.permission;
   let currentConnection = 'api';
   const accountSubscription = () => ['codex', 'kimi', 'antigravity'].includes(harnessId) && currentConnection === 'subscription';
@@ -824,6 +831,33 @@ const context = { sessionId: null, workspaceId: null };
     blocks = {};
   }
 
+  // Final layout of a finished turn: reasoning segments merge into one folded
+  // record, tool calls tuck into a single folded group; the reply text stays.
+  function consolidateFinishedTurn() {
+    const body = turnEl ? turnEl.querySelector('.turn-body') : null;
+    if (!body) return;
+    const thinks = [...body.querySelectorAll(':scope > .think')];
+    if (thinks.length > 1) {
+      const first = thinks[0];
+      first.querySelector('.think-body').textContent = thinks
+        .map(el => el.querySelector('.think-body').textContent.trim()).filter(Boolean).join('\n\n');
+      first.classList.remove('open', 'live');
+      const st = first.querySelector('.think-status');
+      if (st) st.textContent = "Completed";
+      for (const el of thinks.slice(1)) el.remove();
+    }
+    const cards = [...body.querySelectorAll(':scope > .tool-card')];
+    if (cards.length) {
+      const group = document.createElement('div');
+      group.className = 'tool-group';
+      group.innerHTML = `<div class="tool-group-head"><span class="arrow">▶</span><span data-i18n>${cards.length} tool calls</span></div><div class="tool-group-body"></div>`;
+      group.querySelector('.tool-group-head').addEventListener('click', () => group.classList.toggle('open'));
+      body.insertBefore(group, cards[0]);
+      const bucket = group.querySelector('.tool-group-body');
+      for (const card of cards) bucket.appendChild(card);
+    }
+  }
+
   // ---------- streaming ----------
   const pendingBlockRenders = new Set();
   let blockRenderFrame = null;
@@ -882,6 +916,14 @@ const context = { sessionId: null, workspaceId: null };
     const b = blocks[index];
     if (!b) return;
     const was = nearBottom();
+    // A finished thinking segment settles immediately instead of spinning
+    // "In progress…" until the turn ends.
+    if (b.type === 'thinking' && b.el.classList.contains('live')) {
+      b.el.classList.remove('live');
+      const st = b.el.querySelector('.think-status');
+      if (st) st.textContent = "Completed";
+      if (!b.userToggled) b.el.classList.remove('open');
+    }
     if (b.type === 'tool' && b.inputJson) {
       let parsed = null;
       try { parsed = JSON.parse(b.inputJson); } catch (_e) { /* keep raw */ }
@@ -986,8 +1028,14 @@ const context = { sessionId: null, workspaceId: null };
     }
     if (restoringRun) { eventsDuringRestore.push(ev); return; }
     if (sharedChat && ev.session_id !== context.sessionId) return;
-    if (ev.handoff && ev.type === 'gui:permission') { permissionQueue.push(ev); if (!permRequestId) showPermissionDialog(ev); return; }
+    if (ev.handoff && ev.type === 'gui:permission') {
+      if (currentPermission === 'full') { void autoAllowPermission(ev); return; }
+      permissionQueue.push(ev); if (!permRequestId) showPermissionDialog(ev); return;
+    }
     if (!acceptSessionEvents) return;
+    // Highest automation level: approvals never surface a dialog. Permission
+    // checks are allowed; question prompts continue without a confirmed answer.
+    if (ev.type === 'gui:permission' && currentPermission === 'full') { void autoAllowPermission(ev); return; }
     if (ev.type === 'conversation:started') {
       if (ev.runId !== currentRunId) {
         currentRunId = ev.runId;
@@ -1100,6 +1148,7 @@ const context = { sessionId: null, workspaceId: null };
       $('permMask').classList.remove('visible');
       finalizeStreamBlocks();
       clearRunStatus();
+      consolidateFinishedTurn();
       const stopped = ev.subtype === 'stopped';
       const ok = !ev.is_error && ev.subtype !== 'error_max_turns' && !stopped;
       for (const card of Object.values(pendingTools)) if (!card.finished) card.setOutput(stopped ? 'Stopped before a tool result was received.' : 'No tool result was received before the response ended.', true);
@@ -1228,9 +1277,100 @@ const context = { sessionId: null, workspaceId: null };
     autoResize();
     if (!running) updateSendEnabled();
     saveDraft();
+    renderSlash();
   });
   sendBtn.addEventListener('click', send);
+  // ---------- slash commands ----------
+  const SLASH_COMMANDS = [
+    { id: 'goal', label: '/goal', desc: 'Set a goal; the engine keeps working until done or blocked',
+      icon: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+      run: () => goalUI.reveal() },
+    { id: 'usage', label: '/usage', desc: 'Show request and token usage through the local router',
+      icon: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+      run: () => void showUsageCard() },
+    { id: 'compact', label: '/compact', desc: 'Summarize and compact the conversation context',
+      icon: '<path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"/>',
+      run: () => void compactConversation() },
+  ];
+  let slashPop = null, slashIndex = 0;
+  function slashMatches() {
+    const m = /^\/([a-z]*)$/i.exec(input.value);
+    return m ? SLASH_COMMANDS.filter(c => c.id.startsWith(m[1].toLowerCase())) : [];
+  }
+  function closeSlash() { slashPop?.remove(); slashPop = null; }
+  function renderSlash() {
+    const matches = slashMatches();
+    if (!matches.length) { closeSlash(); return; }
+    slashIndex = Math.min(slashIndex, matches.length - 1);
+    if (!slashPop) {
+      slashPop = document.createElement('div');
+      slashPop.className = 'dsh-pop slash-pop';
+      document.body.appendChild(slashPop);
+    }
+    slashPop.replaceChildren(...matches.map((command, i) => {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'pop-row slash-row' + (i === slashIndex ? ' current' : '');
+      row.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">' + command.icon + '</svg><strong></strong><span></span>';
+      row.querySelector('strong').textContent = command.label;
+      const desc = row.querySelector('span'); desc.dataset.i18n = ''; desc.textContent = command.desc;
+      row.addEventListener('click', () => { slashIndex = i; runSlashActive(); });
+      return row;
+    }));
+    const rect = input.getBoundingClientRect();
+    slashPop.style.left = Math.max(8, rect.left) + 'px';
+    slashPop.style.bottom = (innerHeight - rect.top + 8) + 'px';
+  }
+  function runSlashActive() {
+    const command = slashMatches()[slashIndex];
+    input.value = ''; closeSlash(); autoResize(); updateSendEnabled();
+    if (command) command.run();
+  }
+  async function showUsageCard() {
+    const card = document.createElement('div');
+    card.className = 'usage-card';
+    const title = document.createElement('strong'); title.dataset.i18n = ''; title.textContent = 'Local API usage';
+    const body = document.createElement('div'); body.className = 'usage-card-body'; body.textContent = '...';
+    card.append(title, body);
+    chat.appendChild(card); chatScroll.scrollTop = chatScroll.scrollHeight;
+    try {
+      const state = await window.dshDesktop.apiRouterGetState();
+      const days = [...Array(7)].map((_, i) => { const d = new Date(Date.now() - i * 86400000); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); });
+      const blank = () => ({ requests: 0, failures: 0, inputTokens: 0, outputTokens: 0 });
+      const today = blank(), week = blank();
+      for (const entry of Object.values(state?.usage || {})) {
+        for (const [day, models] of Object.entries(entry.daily || {})) {
+          if (!days.includes(day)) continue;
+          const target = day === days[0] ? today : week;
+          for (const m of Object.values(models)) {
+            target.requests += m.requests || 0; target.failures += m.failures || 0;
+            target.inputTokens += m.inputTokens || 0; target.outputTokens += m.outputTokens || 0;
+          }
+        }
+      }
+      const t = window.CamelliaI18n.t;
+      const line = (label, u) => label + ': ' + u.requests + ' requests, ' + fmtTokens(u.inputTokens) + ' in, ' + fmtTokens(u.outputTokens) + ' out' + (u.failures ? ', ' + u.failures + ' failed' : '');
+      body.textContent = [line(t('Today'), today), line(t('Last 7 days'), week), t('Requests through the shared router on this computer')].join(String.fromCharCode(10));
+      const open = document.createElement('button'); open.type = 'button'; open.dataset.i18n = ''; open.textContent = 'Open Usage settings';
+      open.addEventListener('click', () => window.dshDesktop.openSettingsWindow({ page: 'usage' }));
+      card.appendChild(open);
+    } catch (error) { body.textContent = error.message; }
+  }
+  async function compactConversation() {
+    if (!sharedChat || !context.sessionId) { setStatus('Start a conversation first, then compact it.'); return; }
+    if (conversationBusy()) { setStatus('Available when this conversation stops working'); return; }
+    try {
+      const res = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'compact', payload: { sessionId: context.sessionId } });
+      if (!res?.ok) setStatus(res?.error || 'Compaction failed');
+      else setStatus('Context compacted. The conversation continues with the summary.');
+    } catch (error) { setStatus(error.message); }
+  }
   input.addEventListener('keydown', (e) => {
+    if (slashPop) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); const n = slashMatches().length; slashIndex = (((slashIndex + (e.key === 'ArrowDown' ? 1 : -1)) % n) + n) % n; renderSlash(); return; }
+      if ((e.key === 'Enter' || e.key === 'Tab') && !e.isComposing) { e.preventDefault(); runSlashActive(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
 
@@ -1323,7 +1463,7 @@ const context = { sessionId: null, workspaceId: null };
     const card = document.createElement('form'); card.className = 'question-card';
     const title = document.createElement('h3'); title.dataset.i18n = ''; title.textContent = 'Your input is needed';
     const hint = document.createElement('p'); hint.className = 'question-hint'; hint.dataset.i18n = '';
-    hint.textContent = 'Allow all covers tool permissions. This is a question about your task.';
+    hint.textContent = 'Never ask covers tool permissions. This is a question about your task.';
     card.append(title, hint);
     const fields = [];
     for (const [index, question] of ev.questions.entries()) {
@@ -1362,14 +1502,23 @@ const context = { sessionId: null, workspaceId: null };
     ensureTurn().append(card); setRunStatus('Waiting for your answer'); setStatus('Waiting for your answer');
     if (was) card.scrollIntoView({ block: 'start' });
   }
+  async function autoAllowPermission(ev) {
+    const payload = ev.questions?.length
+      ? { requestId: ev.requestId, allow: false, message: 'Fully automatic mode: no question is shown. Continue from the existing request; no option has been confirmed.' }
+      : { requestId: ev.requestId, allow: true };
+    if (sharedChat) Object.assign(payload, { sessionId: context.sessionId, runId: ev.runId });
+    try { await chatApi.controlRespond(payload); } catch { /* the request may already be gone */ }
+  }
   function showPermissionDialog(ev) {
     permRequestId = ev.requestId;
     if (ev.questions?.length) { showQuestion(ev); return; }
-    $('permTool').textContent = "Tool: " + (ev.toolName || "(Unknown)");
+    $('permTool').textContent = "Tool: " + (ev.toolName || "Unnamed action");
     $('permReason').hidden = !ev.reason;
     $('permReason').textContent = ev.reason ? 'Native permission rule: ' + ev.reason : '';
     const data = ev.input || {};
-    $('permInput').textContent = typeof data.command === 'string' ? data.command : JSON.stringify(data, null, 2);
+    const detail = typeof data.command === 'string' ? data.command : Object.keys(data).length ? JSON.stringify(data, null, 2) : '';
+    $('permInput').hidden = !detail;
+    $('permInput').textContent = detail;
     $('permOptions').replaceChildren();
     $('permAllow').textContent = 'Allow';
     $('permDefaultActions').hidden = Boolean(ev.options);
@@ -1507,6 +1656,7 @@ const context = { sessionId: null, workspaceId: null };
     updateMessageActions();
   }
   function resetConversationView() {
+    closeSlash();
     cancelMessageEdit();
     pendingQuestion = null; permissionSubmission = null;
     acceptSessionEvents = false; currentRunId = null; conversationActivity = null;
@@ -1693,11 +1843,10 @@ const context = { sessionId: null, workspaceId: null };
     if (harnessId === 'antigravity') {
       $('connectionInfo').hidden = false;
       $('connectionInfo').textContent = googleSubscription() ? 'Google subscription · Manage account' : 'Shared API routes · Connection settings';
-      $('selPermission').querySelector('[value="default"]').textContent = googleSubscription() ? 'CLI defaults' : 'Default permissions';
-      $('selPermission').querySelector('[value="plan"]').textContent = googleSubscription() ? 'Planning' : 'Plan only';
+      $('selPermission').querySelector('[value="ask"]').textContent = googleSubscription() ? 'CLI defaults' : 'Ask before acting';
       $('selPermission').title = googleSubscription() ? 'CLI permission rules apply. Tools requiring interactive review are declined in headless mode.' : '';
     }
-    currentPermission = s.permissionMode || chatProfile.permission;
+    currentPermission = permissionLevel(harnessId, s.permissionMode || chatProfile.permission);
     $('selPermission').value = currentPermission;
     currentLevel = s.thinkingBudget || '';
     currentModel = s.model || '';

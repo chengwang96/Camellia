@@ -386,6 +386,7 @@ function saveClaudeSettings(patch) {
 
 let claudeGen = 0;        // session generation; also reported as runId to the renderer
 const { SessionPool } = require('../engines/session-pool');
+const { nativeMode } = require('../engines/permission-levels');
 const claudeSessions = new SessionPool();
 
 // Build spawn args/env for one persistent claude process.
@@ -407,7 +408,7 @@ function claudeSpawnSpec(settings, opts) {
     args.push('--resume', findClaudeSessionFile(opts.sessionId) || opts.sessionId);
     if (opts.fork) args.push('--fork-session'); // fork: same history, new session id
   }
-  if (settings.permissionMode && settings.permissionMode !== 'default') args.push('--permission-mode', settings.permissionMode);
+  if (settings.permissionMode) { const mode = nativeMode('claude', settings.permissionMode); if (mode !== 'default') args.push('--permission-mode', mode); }
   if (settings.model) args.push('--model', settings.model);
   // Thinking intensity → --effort (matches DSH 推理等级: low|medium|high|xhigh|max).
   // '' = Default (flag omitted); 'off' goes through MAX_THINKING_TOKENS=0.

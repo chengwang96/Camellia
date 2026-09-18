@@ -13,16 +13,17 @@ const { modelId } = require('../api/api-router-config');
 const { pythonEnvironment } = require('../main/python-runtime');
 const { downloadSettings } = require('../main/download-network');
 const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider } = require('./antigravity/subscription');
+const { valid } = require('./permission-levels');
 
 function antigravitySpawnSpec({ runtime, home, route, config = {}, env }) {
-  return { args: ['-u', path.join(__dirname, 'antigravity/bridge.py').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], env: {
+  return { args: ['-u', path.join(__dirname, 'antigravity/bridge.py').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', env: {
     ...pythonEnvironment(runtime.dir, env),
     CAMELLIA_ANTIGRAVITY_CONFIG: JSON.stringify({ home, baseUrl: route.baseUrl + '/compat/antigravity/v1', settings: config }),
   } };
 }
 
 function subscriptionSpawnSpec({ runtime, home, env, proxyUrl }) {
-  return { args: [path.join(__dirname, 'antigravity/cli-bridge.cjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], env: {
+  return { args: [path.join(__dirname, 'antigravity/cli-bridge.cjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', env: {
     ...subscriptionEnvironment(env, proxyUrl), CAMELLIA_ANTIGRAVITY_CLI: JSON.stringify({ exe: runtime.file, home }),
   } };
 }
@@ -61,7 +62,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
       if (connection === next.connection) next.model = next[connection + 'Model'];
     }
     if (next.proxyUrl) next.proxyUrl = downloadSettings({ mode: 'proxy', url: next.proxyUrl }).url;
-    if (!['default', 'acceptEdits', 'bypassPermissions', 'plan'].includes(next.permissionMode)) throw new Error('Invalid Antigravity permission mode');
+    if (!valid('antigravity', next.permissionMode)) throw new Error('Invalid Antigravity permission mode');
     saveConfig({ antigravity: next });
     return settings(patch.sessionId);
   }
