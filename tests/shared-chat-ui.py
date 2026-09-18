@@ -485,6 +485,20 @@ with sync_playwright() as p:
     expect(page.locator('#statusLine')).to_contain_text('Start a conversation first')
     expect(page.locator('#input')).to_have_value('')
     page.close()
+    # The context ring appears after a turn reports usage, with exact numbers on hover.
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    page.add_init_script(bridge.replace("onConversationEvent:()=>{},onConversationGoal:","onConversationEvent:fn=>window.receiveEvent=fn,onConversationGoal:"))
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude&conversation=shared-fixture',wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    expect(page.locator('#ctxRing')).to_be_hidden()
+    page.evaluate("receiveEvent({type:'result',subtype:'success',session_id:'shared-fixture',engine:'claude',result:'done',usage:{input_tokens:100000,cache_read_input_tokens:5000,output_tokens:500}})")
+    expect(page.locator('#ctxRing')).to_be_visible()
+    tip = page.evaluate("document.querySelector('#ctxRing').dataset.tip")
+    assert 'tokens (53%)' in tip and '105.0K / 200.0K' in tip, tip
+    page.locator('#ctxRing').hover()
+    expect(page.locator('.ctx-tip')).to_contain_text('tokens')
+    page.close()
     browser.close()
     assert not errors, errors
     print('PASS: inline questions, answer mapping, selection drafts, failed-submit retry and skips; concurrent conversations, independent stop and approval, restored streams and drafts, harness locks, plus five-engine goal lifecycle and elapsed-time bars, logos, aligned composers, shared history, switch preferences, persistent drafts and attachments, reload, light/dark layouts')

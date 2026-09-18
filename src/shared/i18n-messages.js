@@ -127,6 +127,7 @@
   "Date": "日期",
   "Last 7 days": "最近 7 天",
   "Context": "上下文",
+  "Context used: {0} / {1} tokens ({2}%)": "已用上下文 {0} / {1} tokens（{2}%）",
   "Auto": "自动",
   "Context window must be an integer between 4096 and 2000000": "上下文长度必须是 4096 到 2000000 之间的整数",
   "Context window exceeds the model's maximum ({0})": "上下文长度超过模型支持的最大值（{0}）",

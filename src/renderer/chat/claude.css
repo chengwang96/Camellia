@@ -465,7 +465,13 @@
   .model-pill .chev { flex-shrink: 0; opacity: .55; transition: transform var(--dt-fast); }
   .model-pill.open .chev { transform: rotate(180deg); }
 
-  .usage-dot {
+  .ctx-ring { width: 22px; height: 22px; padding: 0; border: 0; background: none; align-self: center; }
+.ctx-ring svg { width: 18px; height: 18px; transform: rotate(-90deg); display: block; }
+.ctx-track { fill: none; stroke: var(--dsw-alias-border-l2); stroke-width: 4; }
+.ctx-fill { fill: none; stroke: var(--dsw-static-deepseek-500); stroke-width: 4; stroke-linecap: round; transition: stroke-dasharray .3s ease; }
+.ctx-fill.hot { stroke: var(--dsw-alias-state-danger-primary, #cf3535); }
+.ctx-tip { position: fixed; z-index: 40; padding: 6px 10px; border-radius: 8px; background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base); font-size: 12px; white-space: nowrap; box-shadow: 0 4px 16px rgba(0,0,0,.18); pointer-events: none; }
+.usage-dot {
     width: 26px; height: 26px; border: none; border-radius: 50%;
     background: transparent; color: var(--dsw-alias-label-tertiary);
     cursor: pointer; display: grid; place-items: center; flex-shrink: 0;

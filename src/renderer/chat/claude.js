@@ -226,6 +226,7 @@ const context = { sessionId: null, workspaceId: null };
       if (sessionId !== context.sessionId) return;
       if (harnessId !== 'claude' && patch.model !== undefined) LEVELS.splice(1);
       applySessionSettings(result.settings);
+      updateCtxRing();
       if (harnessId === 'codex') applyCodexLevels();
       setStatus(message);
     } catch (error) {
@@ -982,6 +983,35 @@ const context = { sessionId: null, workspaceId: null };
   }
   function stopRunTicker() { clearInterval(runTimer); runTimer = null; }
 
+  // ---------- context usage ring ----------
+  const ENGINE_CTX_DEFAULTS = { claude: 200000, codex: 272000, dsh: 131072, kimi: 131072, antigravity: 1048576 };
+  let modelCtxCaps = new Map();
+  let ctxTip = null;
+  function updateCtxRing() {
+    const ring = $('ctxRing');
+    const cap = (currentModel && (modelCtxCaps.get(currentModel) || modelCtxCaps.get(currentModel.replace(/:cloud$/, '')))) || ENGINE_CTX_DEFAULTS[harnessId];
+    const used = lastUsage ? (lastUsage.input_tokens || lastUsage.prompt_tokens || 0) + (lastUsage.cache_read_input_tokens || 0) + (lastUsage.cache_creation_input_tokens || 0) : 0;
+    if (!cap || !used) { ring.hidden = true; return; }
+    const pct = Math.min(100, Math.round(used / cap * 100));
+    ring.hidden = false;
+    $('ctxFill').style.strokeDasharray = (97.39 * pct / 100) + ' 97.39';
+    $('ctxFill').classList.toggle('hot', pct >= 80);
+    ring.dataset.tip = window.CamelliaI18n.t('Context used: {0} / {1} tokens ({2}%)').replace('{0}', fmtTokens(used)).replace('{1}', fmtTokens(cap)).replace('{2}', pct);
+    ring.title = ring.dataset.tip;
+  }
+  $('ctxRing').addEventListener('mouseenter', () => {
+    const text = $('ctxRing').dataset.tip;
+    if (!text) return;
+    ctxTip = document.createElement('div');
+    ctxTip.className = 'ctx-tip';
+    ctxTip.textContent = text;
+    document.body.appendChild(ctxTip);
+    const rect = $('ctxRing').getBoundingClientRect();
+    ctxTip.style.left = Math.max(8, rect.left + rect.width / 2 - ctxTip.offsetWidth / 2) + 'px';
+    ctxTip.style.bottom = (innerHeight - rect.top + 8) + 'px';
+  });
+  $('ctxRing').addEventListener('mouseleave', () => { ctxTip?.remove(); ctxTip = null; });
+
   function resultStats(ev) {
     const parts = [];
     if (ev.num_turns != null) parts.push(ev.num_turns + " ");
@@ -990,6 +1020,7 @@ const context = { sessionId: null, workspaceId: null };
     const u = ev.usage;
     if (u) {
       lastUsage = u;
+      updateCtxRing();
       const input = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
       parts.push("Input " + fmtTokens(input) + ' tok');
       parts.push("Output " + fmtTokens(u.output_tokens) + ' tok');
@@ -1395,6 +1426,7 @@ const context = { sessionId: null, workspaceId: null };
     turnEl = null;
     blocks = {};
     pendingTools = {};
+    lastUsage = null; updateCtxRing();
     todoItems = null;
     if (todoPanelEl) { todoPanelEl.remove(); todoPanelEl = null; }
     $('headerTitle').textContent = window.CamelliaI18n.t("New session");
@@ -1812,6 +1844,10 @@ const context = { sessionId: null, workspaceId: null };
   $('settingsBtn').addEventListener('click', () => { closePops(); void window.dshDesktop.openSettingsWindow({ page: 'engines', engine: harnessId }); });
   $('connectionInfo').onclick = () => void window.dshDesktop.openSettingsWindow({ page: 'engines', engine: harnessId });
   function applyRouterModels(state) {
+    for (const p of state?.providers || []) for (const m of p.models || []) {
+      const cap = m.contextWindow || m.maxContext;
+      if (cap) modelCtxCaps.set(m.id, cap);
+    }
     if (Array.isArray(state?.models)) routeModels = state.enabled ? state.models : [];
     if (accountSubscription()) return;
     if (!Array.isArray(state?.models)) return;
