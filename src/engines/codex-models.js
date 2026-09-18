@@ -11,7 +11,7 @@ function nativeModel(model) {
   return nativeCatalog.models.some(entry => model.startsWith(entry.slug) || suffix?.startsWith(entry.slug));
 }
 
-function configureApiModel(config, home, model) {
+function configureApiModel(config, home, model, contextWindow) {
   const target = path.join(home, 'camellia-api-models.json');
   const managed = config.model_catalog_json && path.resolve(config.model_catalog_json) === path.resolve(target);
   // An explicit user catalog owns its tool choices and model instructions.
@@ -32,7 +32,7 @@ function configureApiModel(config, home, model) {
     supports_reasoning_summary_parameter: true, default_reasoning_summary: 'auto',
     support_verbosity: false, apply_patch_tool_type: 'freeform',
     truncation_policy: { mode: 'bytes', limit: 10000 }, supports_parallel_tool_calls: false,
-    context_window: 272000, max_context_window: 272000, effective_context_window_percent: 95,
+    context_window: contextWindow || 272000, max_context_window: contextWindow || 272000, effective_context_window_percent: 95,
     experimental_supported_tools: [], input_modalities: ['text', 'image'],
   };
   fs.writeFileSync(target, JSON.stringify({ models: [...nativeCatalog.models, fallback] }));

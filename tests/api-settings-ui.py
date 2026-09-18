@@ -169,7 +169,7 @@ try:
                     {'at':(now-timedelta(hours=2)).isoformat(),'balances':[dict(b,value=132) for b in cash],'windows':[dict(w,usedPercent=14) for w in quota]},
                     {'at':now.isoformat(),'balances':cash,'windows':quota}]}
         page.evaluate('s=>window.testEmitInsights(s)',snapshot)
-        page.locator('[data-view=balances]').click()
+        page.locator('[data-view=usage]').click()
         page.locator('#balanceSearch').fill('Backup account')
         expect(page.locator('.balance-card')).to_have_count(1)
         page.locator('#balanceSearch').fill('')

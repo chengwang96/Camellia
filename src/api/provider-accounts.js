@@ -154,7 +154,10 @@ function catalogModel(provider, entry) {
   try { id = modelId(id); } catch { return null; }
   const wire = typeof entry === 'object' ? entry.api || entry.protocol : '';
   const protocol = /anthropic|messages/i.test(wire) || (provider.type === 'commandcode' && /claude/.test(id)) ? 'anthropic' : 'auto';
-  return { id, upstream, protocol };
+  // Catalogs like OpenRouter report the model's context limit; keep it as the cap.
+  const maxContext = typeof entry === 'object' && entry !== null
+    ? Number(entry.context_length ?? entry.context_window ?? entry.max_context_length ?? entry.max_context) || undefined : undefined;
+  return { id, upstream, protocol, ...(maxContext ? { maxContext } : {}) };
 }
 async function fetchModels(provider, key, options = {}) {
   const base = endpoint(provider.baseUrl);

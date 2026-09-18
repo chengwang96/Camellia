@@ -441,6 +441,9 @@ function managedClaudeModelEnv(model) {
   return { ANTHROPIC_MODEL: model, ANTHROPIC_DEFAULT_OPUS_MODEL: model, ANTHROPIC_DEFAULT_SONNET_MODEL: model,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: model, ANTHROPIC_SMALL_FAST_MODEL: model, CLAUDE_CODE_SUBAGENT_MODEL: model };
 }
+function modelContextWindow(model) {
+  for (const p of readOllamaProxyConfig().providers || []) for (const m of p.models || []) if (m.id === model && m.contextWindow) return m.contextWindow;
+}
 function resolveClaudeRoute() {
   const cfg = readOllamaProxyConfig();
   if (!routerConfig.hasRoutes(cfg)) throw new Error("Enable API routing and configure a model and key in Camellia settings");
@@ -570,6 +573,8 @@ function ensureKimiSession(settings, opts) {
     settings.model = routerConfig.modelId(settings.model);
     route = resolveClaudeRoute();
     if (!routerConfig.publicState(readOllamaProxyConfig()).models.includes(settings.model)) throw new Error("No route is available for this model. Add one in Camellia settings.");
+    const configuredContext = modelContextWindow(settings.model);
+    if (configuredContext) settings.contextWindow = configuredContext;
   }
   if (current && !current.dead && !opts.fork && current.sessionId === (opts.sessionId || null)
       && current.opts.workspaceId === opts.workspaceId && sessionSettingsEqual(current.settings, settings)
@@ -627,6 +632,7 @@ const kimiAccount = createKimiAccount({ home: path.join(app.getPath('userData'),
 
 const codex = createCodex({ dataDir: app.getPath('userData'), loadConfig, saveConfig,
   getRoute: resolveClaudeRoute, getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
+  getContextWindow: modelContextWindow,
   runtimes, log, environment: () => runtimeEnvironment(detectNode(), 'codex'), openExternal: url => shell.openExternal(url),
   isBusy: () => sharedConversations?.isBusy('codex'),
   onEvent: event => publishChatEvent('codex', event),

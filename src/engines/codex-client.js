@@ -84,7 +84,7 @@ function codexEnvironment(home, inherited = process.env, proxyUrl = '') {
   return env;
 }
 
-function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscription', model, route, env = process.env, proxyUrl = '', cwd = home }) {
+function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscription', model, route, contextWindow, env = process.env, proxyUrl = '', cwd = home }) {
   fs.mkdirSync(home, { recursive: true });
   const file = path.join(configHome, 'config.toml');
   const config = fs.existsSync(file) ? TOML.parse(fs.readFileSync(file, 'utf8')) : {};
@@ -96,7 +96,7 @@ function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscr
   config.model_provider = connection === 'api' ? 'camellia' : 'openai';
   const environment = codexEnvironment(home, env, proxyUrl);
   environment.PATH = path.join(path.dirname(path.dirname(runtime.file)), 'codex-path') + path.delimiter + (environment.PATH || '');
-  configureApiModel(config, home, connection === 'api' ? model : undefined);
+  configureApiModel(config, home, connection === 'api' ? model : undefined, contextWindow);
   if (connection === 'api') {
     config.web_search = 'disabled';
     config.model_providers = { camellia: { name: 'Camellia API routes', base_url: route.baseUrl + '/v1',
