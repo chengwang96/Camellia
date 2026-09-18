@@ -394,14 +394,18 @@ $('exportUsage').onclick = () => {
   const link = document.createElement('a'); link.href = url; link.download = `workbench-usage-${localDay(new Date())}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 $('openLogs').onclick = () => api.openLogs();
-$('saveGeneral').onclick = async () => {
+// General preferences apply on change, like the engines' own settings pages.
+async function saveGeneral() {
   try {
-    const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked,
+    const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked, closeToTray: $('closeToTray').checked,
       conversations: { mode: $('conversationMode').value, warnOnSwitch: $('conversationWarn').checked, showOrigin: $('conversationOriginSetting').checked } });
     if (!result.ok) throw new Error(result.error);
     window.CamelliaI18n.setLanguage($('language').value); status("Preferences saved");
   } catch (e) { status(e.message, true); }
-};
+}
+for (const id of ['language', 'theme', 'autoRefreshBalances', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting']) {
+  $(id).addEventListener('change', saveGeneral);
+}
 async function refresh(initial = false) {
   try {
     const [state, details] = await Promise.all([api.apiRouterGetState(), api.providerInsights()]);
@@ -422,7 +426,7 @@ async function refresh(initial = false) {
       const preferences = await api.workbenchSettings();
       if (!preferences.ok) throw new Error(preferences.error);
       $('language').value = preferences.language || 'en';
-      $('theme').value = preferences.theme; $('autoRefreshBalances').checked = preferences.autoRefreshBalances;
+      $('theme').value = preferences.theme; $('autoRefreshBalances').checked = preferences.autoRefreshBalances; $('closeToTray').checked = !!preferences.closeToTray;
       $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;
       $('conversationOriginSetting').checked = !!preferences.conversations?.showOrigin;
       $('dataPath').textContent = preferences.dataPath; $('version').textContent = 'v' + preferences.version;

@@ -56,6 +56,16 @@ test('invalid new API config shapes cannot be mistaken for an empty legacy pool'
   assert.deepEqual(normalizeConfig().providers, []);
 });
 
+test('per-model context windows are validated against catalog-learned limits', () => {
+  const model = { id: 'm', upstream: 'u', contextWindow: 128000, maxContext: 200000 };
+  const ok = normalizeConfig({ providers: [{ id: 'p', baseUrl: 'https://example.test/v1', models: [model], keys: [{ id: 'k', key: 's' }] }] });
+  assert.equal(ok.providers[0].models[0].contextWindow, 128000);
+  assert.equal(ok.providers[0].models[0].maxContext, 200000);
+  assert.throws(() => normalizeConfig({ providers: [{ id: 'p', baseUrl: 'https://example.test/v1', models: [{ id: 'm', upstream: 'u', contextWindow: 1000 }], keys: [{ id: 'k', key: 's' }] }] }), /Context window/);
+  assert.throws(() => normalizeConfig({ providers: [{ id: 'p', baseUrl: 'https://example.test/v1', models: [{ id: 'm', upstream: 'u', contextWindow: 256000, maxContext: 200000 }], keys: [{ id: 'k', key: 's' }] }] }), /exceeds the model's maximum/);
+  assert.equal(normalizeConfig({ providers: [{ id: 'p', baseUrl: 'https://example.test/v1', models: [{ id: 'm', upstream: 'u', contextWindow: '' }], keys: [{ id: 'k', key: 's' }] }] }).providers[0].models[0].contextWindow, undefined);
+});
+
 test('API state snapshots cannot mutate live model mappings or usage; saved counters are finite numbers', () => {
   const when = '2026-09-14T10:00:00.000Z';
   const cfg = normalizeConfig({ providers: [{ id: 'p', baseUrl: 'https://example.test/v1', models: [{ id: 'model', upstream: 'upstream' }], keys: [{ id: 'k', key: 'secret' }] }],

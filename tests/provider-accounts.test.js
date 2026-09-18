@@ -44,8 +44,9 @@ test('unsupported relay/Zen hosts never forward secrets to an official balance e
 });
 test('model discovery deduplicates exact model aliases without merging versions; validation requires a real response', async () => {
   const p=provider('https://api.commandcode.ai/provider/v1','commandcode');
-  const models=await fetchModels(p,'secret',{fetchImpl:async()=>response({data:[{id:'moonshotai/kimi-k3'},{id:'moonshotai/kimi-k3'},{id:'moonshotai/kimi-k2.6'},{id:'claude-sonnet-4-6'}]})});
+  const models=await fetchModels(p,'secret',{fetchImpl:async()=>response({data:[{id:'moonshotai/kimi-k3',context_length:262144},{id:'moonshotai/kimi-k3'},{id:'moonshotai/kimi-k2.6'},{id:'claude-sonnet-4-6'}]})});
   assert.deepEqual(models.map(m=>m.id),['kimi-k3','kimi-k2.6','claude-sonnet-4-6']); assert.equal(models[2].protocol,'anthropic');
+  assert.equal(models[0].maxContext,262144);
   let calls=0;
   await verifyModel(p,'secret',models[0],{fetchImpl:async (url,options)=>{ calls++; assert.match(url,/chat\/completions$/); assert.equal(JSON.parse(options.body).model,'moonshotai/kimi-k3'); return response({choices:[{message:{content:'OK'}}]}); }});
   assert.equal(calls,1);
