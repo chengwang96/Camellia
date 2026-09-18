@@ -61,6 +61,10 @@ test('Kimi settings reach the actual spawn config with MCP, hooks and tools pres
   assert.deepEqual(Object.keys(config.providers), ['workbench']); assert.deepEqual(Object.keys(config.models), ['model-exact']);
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'mcp.json'))).mcpServers.fixture.command, 'test');
   assert.equal(spec.env.KIMI_CODE_HOME, process.platform === 'win32' ? fs.realpathSync.native(home) : home);
+  const tunedHome = path.join(f.home, 'isolated-tuned');
+  kimiSpawnSpec({ home: tunedHome, runtime: 'fixture', route: f.route, model: 'model-exact', contextWindow: 65536 });
+  const tuned = parse(fs.readFileSync(path.join(tunedHome, 'config.toml'), 'utf8'), 'toml');
+  assert.equal(tuned.models['model-exact'].max_context_size, 65536);
 });
 test('fresh profiles can save native settings before choosing a model', t => {
   const f = fixture(t); delete f.desktop.kimi.model;

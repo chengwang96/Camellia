@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, nativeTheme } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeTheme } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -98,6 +98,7 @@ function defaultConfig() {
     port: DEFAULT_PORT,
     dshHome: DSH_HOME,      // pass through as DSH_HOME env to the backend
     firstRunComplete: false, // set true after onboarding
+    closeToTray: false,     // close button hides to the tray; the model router keeps serving other apps
     mode: 'dsh',            // Last selected agent; startup always opens the home panel.
     claude: {},             // Claude Code GUI settings
     language: 'en',         // Workbench UI language, independent of the engines' prompts.
@@ -844,6 +845,8 @@ function engineStatusText() {
 // Window helpers / UI
 // ---------------------------------------------------------------------------
 let mainWindow = null;
+let tray = null;
+let appQuitting = false;
 let currentMode = 'home';
 
 let settingsWindow = null;
@@ -909,6 +912,9 @@ function createMainWindow() {
 
   desktopZoom().attach(mainWindow.webContents);
 
+  mainWindow.on('close', event => {
+    if (!appQuitting && loadConfig().closeToTray) { event.preventDefault(); mainWindow.hide(); }
+  });
   mainWindow.on('closed', () => { mainWindow = null; });
   mainWindow.on('page-title-updated', event => event.preventDefault());
   mainWindow.once('ready-to-show', () => { mainWindow.show(); });
@@ -931,13 +937,7 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
+  app.on('second-instance', () => showMainWindow());
 
   ipcMain.handle('dsh:save-credentials', (_event, payload) => {
     try {
@@ -1117,15 +1117,19 @@ if (!gotSingleInstanceLock) {
     try { return await handler(payload); } catch (e) { return { ok: false, error: e.message }; }
   });
   ipcMain.handle('dsh:workbench-settings', () => ({ ok: true, language: normalizeLanguage(loadConfig().language), theme: loadConfig().theme || 'system',
-    conversations: conversationPreferences(loadConfig()), autoRefreshBalances: loadConfig().autoRefreshBalances !== false, dataPath: app.getPath('userData'), version: app.getVersion() }));
+    conversations: conversationPreferences(loadConfig()), autoRefreshBalances: loadConfig().autoRefreshBalances !== false, closeToTray: loadConfig().closeToTray === true,
+    dataPath: app.getPath('userData'), version: app.getVersion() }));
   ipcMain.handle('dsh:workbench-save-settings', (_event, payload) => {
     try {
       const theme = ['system', 'light', 'dark'].includes(payload?.theme) ? payload.theme : 'system';
       const language = normalizeLanguage(payload?.language ?? loadConfig().language);
-      saveConfig({ theme, language, autoRefreshBalances: payload?.autoRefreshBalances !== false });
+      const patch = { theme, language, autoRefreshBalances: payload?.autoRefreshBalances !== false };
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'closeToTray')) patch.closeToTray = payload.closeToTray === true;
+      saveConfig(patch);
       if (payload?.conversations) saveConfig({ conversations: conversationPreferences({ conversations: payload.conversations }) });
       nativeTheme.themeSource = theme;
       setMenu();
+      refreshTrayMenu();
       for (const window of [mainWindow, settingsWindow]) {
         if (window && !window.isDestroyed()) window.webContents.send('dsh:language-changed', language);
       }
@@ -1416,6 +1420,41 @@ if (!gotSingleInstanceLock) {
     }
   });
 
+  // The tray keeps Camellia (and its model router) one click away. When the
+  // close-to-tray preference is on, closing the window only hides it; Quit
+  // here is the real exit.
+  function showMainWindow() {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      return;
+    }
+    createMainWindow();
+    const mode = ['home', 'benchmark', 'claude', 'codex', 'dsh', 'kimi', 'antigravity'].includes(currentMode) ? currentMode : 'home';
+    currentMode = mode;
+    void loadMode(mode);
+  }
+  function refreshTrayMenu() {
+    if (!tray) return;
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: uiText('Open Camellia'), click: () => showMainWindow() },
+      { label: uiText('Settings…'), click: () => openSettingsWindow() },
+      { type: 'separator' },
+      { label: uiText('Quit'), click: () => app.quit() },
+    ]));
+  }
+  function setupTray() {
+    if (tray) return;
+    try {
+      tray = new Tray(path.join(APP_ROOT, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon-256.png'));
+      tray.setToolTip(APP_NAME);
+      tray.on('click', () => showMainWindow());
+      refreshTrayMenu();
+    } catch (error) { log('tray setup failed: ' + error.message); tray = null; }
+  }
+  app.on('activate', () => showMainWindow());
+
   app.whenReady().then(async () => {
     nativeTheme.themeSource = loadConfig().theme || 'system';
     setMenu();
@@ -1426,6 +1465,7 @@ if (!gotSingleInstanceLock) {
     antigravity.goal.load();
     codex.goal.load();
     createMainWindow();
+    setupTray();
     void refreshAccountBalances();
     switchMode('home');
 
@@ -1458,6 +1498,7 @@ if (!gotSingleInstanceLock) {
 
   let kimiClosing = false;
   app.on('before-quit', event => {
+    appQuitting = true;
     clearTimeout(balanceRefreshTimer);
     for (const goal of [goalDriver, kimiGoalDriver, antigravity.goal, codex.goal]) {
       if (goal.armed) goal.setPhase('paused');

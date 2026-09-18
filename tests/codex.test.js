@@ -119,6 +119,10 @@ test('Codex API metadata adds native patch support without overriding known mode
   assert.equal(model.apply_patch_tool_type, 'freeform');
   assert.equal(model.default_reasoning_level, null); assert.equal(first.model_reasoning_effort, undefined);
   assert.equal(model.model_messages.instructions_template, fs.readFileSync(path.join(__dirname, '../src/engines/codex-metadata/fallback-prompt.md'), 'utf8'));
+  codexSpawnSpec({ ...options, contextWindow: 65536 });
+  const tuned = JSON.parse(fs.readFileSync(read().model_catalog_json, 'utf8'));
+  assert.equal(tuned.models.find(m => m.slug === 'kimi-k3').context_window, 65536);
+  assert.equal(tuned.models.find(m => m.slug === 'kimi-k3').max_context_window, 65536);
   codexSpawnSpec({ ...options, model: 'deepseek-v4.1-flash' });
   const next = JSON.parse(fs.readFileSync(read().model_catalog_json, 'utf8'));
   assert.ok(next.models.some(m => m.slug === 'deepseek-v4.1-flash'));
