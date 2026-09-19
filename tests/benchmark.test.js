@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -16,7 +17,7 @@ const { RequestScopes } = require('../src/api/request-scopes');
 
 function temp(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-bench-test-'));
-  t.after(() => { assert.equal(path.dirname(dir), os.tmpdir()); assert.ok(path.basename(dir).startsWith('camellia-bench-test-')); fs.rmSync(dir, { recursive: true, force: true }); });
+  t.after(() => { assert.equal(path.dirname(dir), os.tmpdir()); assert.ok(path.basename(dir).startsWith('camellia-bench-test-')); removeTree(dir); });
   return dir;
 }
 const fixes = {

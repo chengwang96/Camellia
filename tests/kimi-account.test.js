@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -55,7 +56,7 @@ function fixture(t, extra = {}) {
     for (const proc of processes) { proc.stdout.destroy(); proc.stderr.destroy(); }
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
     assert.ok(path.basename(root).startsWith('camellia-kimi-account-'));
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   });
   return { root, home, account, put, processes, calls, events, clients, opened };
 }

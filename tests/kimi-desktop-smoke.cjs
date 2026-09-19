@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 
 // Exercise the actual Electron UI, IPC, router and installed Kimi process
 // together. Fixtures are loopback only and all windows/storage are isolated.
@@ -27,7 +28,7 @@ async function main() {
     } finally {
       assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
       assert.ok(path.basename(root).startsWith('kimi-desktop-smoke-'));
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTree(root);
     }
     return;
   }

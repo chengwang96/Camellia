@@ -103,10 +103,13 @@ function pathKey(p) {
   return process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
 }
 
-// Match a Codex project to an existing workspace by path, or create one.
+// Match a Codex project to an existing workspace by real path, or create one.
+// Workspaces are stored canonicalized (create-workspace realpaths folders), so
+// compare in the same form or symlinked temp paths would miss and duplicate.
 function resolveWorkspace(shared, project) {
   if (!project?.path || !fs.existsSync(cleanPath(project.path))) return null;
-  const target = cleanPath(project.path);
+  let target;
+  try { target = fs.realpathSync(cleanPath(project.path)); } catch { return null; }
   const meta = shared.workspaces.sessionMeta();
   const existing = meta.workspaces.find(w => w.path && pathKey(w.path) === pathKey(target));
   if (existing) return existing.id;

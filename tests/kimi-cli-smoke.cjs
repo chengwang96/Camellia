@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 
 // Real, pinned Kimi CLI -> workbench adapter -> same-model router failover.
 // Every model request goes to a loopback fixture; no paid APIs or global config.
@@ -164,7 +165,7 @@ async function run() {
     await new Promise(resolve => server.close(resolve));
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
     assert.ok(path.basename(root).startsWith('workbench-kimi-smoke-'));
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+    removeTree(root);
   }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

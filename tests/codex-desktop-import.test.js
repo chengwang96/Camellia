@@ -135,11 +135,33 @@ test('importing a project thread creates one workspace reused by sibling threads
   const second = shared.get(result.imported[1].id);
   assert.ok(first.workspaceId);
   assert.equal(second.workspaceId, first.workspaceId);
-  assert.equal(first.cwd, projectDir);
+  assert.equal(first.cwd, fs.realpathSync(projectDir));
   const workspaces = shared.workspaces.sessionMeta().workspaces;
   assert.equal(workspaces.length, 1);
   assert.equal(workspaces[0].name, 'ARDS');
-  assert.equal(workspaces[0].path, projectDir);
+  assert.equal(workspaces[0].path, fs.realpathSync(projectDir));
+});
+
+test('workspace lookup matches by real path so symlinked project roots still reuse', t => {
+  const { root, file, db, close } = stateFixture(t);
+  const real = path.join(root, 'real-proj'); fs.mkdirSync(real);
+  const link = path.join(root, 'link-proj');
+  try { fs.symlinkSync(real, link, 'dir'); } catch { t.skip('symlink creation unavailable'); return; }
+  addProject(db, { id: 'p1', name: 'Linked', roots: [link] });
+  const r1 = writeRollout(root, 'l1.jsonl', [responseItem('user', 'q1')]);
+  const r2 = writeRollout(root, 'l2.jsonl', [responseItem('user', 'q2')]);
+  addThread(db, { id: 'lt-1', name: 'one', projectId: 'p1', rollout: r1 });
+  addThread(db, { id: 'lt-2', name: 'two', projectId: 'p1', rollout: r2 });
+  close();
+  const shared = sharedFixture(root);
+  const result = importDesktopSessions(shared, file, ['lt-1', 'lt-2']);
+  assert.equal(result.imported.length, 2);
+  assert.equal(result.skipped.length, 0);
+  const first = shared.get(result.imported[0].id);
+  const second = shared.get(result.imported[1].id);
+  assert.ok(first.workspaceId);
+  assert.equal(second.workspaceId, first.workspaceId);
+  assert.equal(shared.workspaces.sessionMeta().workspaces.length, 1);
 });
 
 test('manual sync overwrites the Camellia copy, retires segments and updates the title', t => {

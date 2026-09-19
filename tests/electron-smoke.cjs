@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 // Real Electron main + preload + renderer, with isolated storage and hidden
 // windows. No model requests, installed user credentials, or live CLI sessions.
 const fs = require('node:fs');
@@ -441,7 +442,7 @@ async function main() {
   } finally {
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
     assert.ok(path.basename(root).startsWith('dsh-electron-smoke-'));
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 }
 main().catch(error => {
