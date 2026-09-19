@@ -164,7 +164,7 @@ async function run() {
     await new Promise(resolve => server.close(resolve));
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
     assert.ok(path.basename(root).startsWith('workbench-kimi-smoke-'));
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
   }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

@@ -71,7 +71,7 @@ async function run() {
     const result = events.find((ev) => ev.type === 'result');
     assert.equal(code, 0, errors + '\n' + output);
     assert.equal(init?.session_id, sid, output);
-    assert.equal(path.resolve(init.cwd), destination);
+    assert.equal(fs.realpathSync(init.cwd), fs.realpathSync(destination));
     assert.equal(result?.is_error, false, output);
     assert.ok(requests.some((req) => JSON.stringify(req.messages).includes('workspace-smoke-9274')), 'Resumed request must include the original history');
     console.log('PASS: installed Claude CLI resumed the original session ID and history from an absolute transcript path in a different cwd; local API only');
