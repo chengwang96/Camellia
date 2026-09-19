@@ -66,6 +66,16 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     const list = $('sessionList');
     const scroll = list.scrollTop;
     list.replaceChildren();
+    if (importableCount > 0) {
+      const hint = document.createElement('button');
+      hint.type = 'button';
+      hint.className = 'import-hint';
+      hint.innerHTML = '<span data-i18n></span><span class="import-dismiss" role="button" aria-label="Dismiss">×</span>';
+      hint.querySelector('span[data-i18n]').textContent = importableCount + ' local Codex sessions can be imported';
+      hint.addEventListener('click', () => void openImportDialog());
+      hint.querySelector('.import-dismiss').addEventListener('click', (e) => { e.stopPropagation(); importableCount = 0; renderSessionSidebar(); });
+      list.appendChild(hint);
+    }
     const sessions = sessionHistory.slice();
     if (context.sessionId && !sessions.some((s) => s.id === context.sessionId)) {
       sessions.unshift({ id: context.sessionId, title: $('headerTitle').textContent, workspaceId: context.workspaceId, mtimeMs: Date.now() });
@@ -367,6 +377,52 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       setStatus("Session archived");
     } catch (err) { setStatus(err.message); }
   }
+
+  // ---------- local Codex desktop session import ----------
+  let importableCount = 0;
+  async function checkImportable() {
+    try {
+      const res = await window.dshDesktop.codexDesktopSessions();
+      importableCount = res?.ok ? res.sessions.length : 0;
+    } catch { importableCount = 0; }
+    renderSessionSidebar();
+  }
+  async function openImportDialog() {
+    const list = $('importList');
+    list.innerHTML = '<p class="hint" data-i18n>Reading local Codex sessions\u2026</p>';
+    $('importMask').classList.add('visible');
+    try {
+      const res = await window.dshDesktop.codexDesktopSessions();
+      if (!res?.ok) throw new Error(res?.error || 'Could not read the Codex desktop state');
+      if (!res.sessions.length) { list.innerHTML = '<p class="hint" data-i18n>No local Codex sessions to import.</p>'; return; }
+      list.replaceChildren(...res.sessions.map(s => {
+        const label = document.createElement('label');
+        label.className = 'import-row';
+        const box = document.createElement('input'); box.type = 'checkbox'; box.value = s.id; box.checked = s.importable; box.disabled = !s.importable;
+        const text = document.createElement('span');
+        text.textContent = s.title + (s.importable ? '' : ' (rollout file missing)');
+        label.append(box, text);
+        return label;
+      }));
+    } catch (error) { list.replaceChildren(); const p = document.createElement('p'); p.className = 'hint'; p.textContent = error.message; list.appendChild(p); }
+  }
+  $('importConfirm').onclick = async () => {
+    const ids = [...$('importList').querySelectorAll('input:checked')].map(i => i.value);
+    $('importMask').classList.remove('visible');
+    if (!ids.length) return;
+    setStatus('Importing\u2026');
+    try {
+      const res = await window.dshDesktop.codexDesktopImport(ids);
+      if (!res?.ok) throw new Error(res?.error || 'Import failed');
+      importableCount = Math.max(0, importableCount - (res.imported?.length || 0));
+      const skipped = res.skipped?.length || 0;
+      setStatus(skipped ? 'Imported ' + (res.imported?.length || 0) + ' sessions \u00b7 ' + skipped + ' skipped' : 'Imported ' + (res.imported?.length || 0) + ' sessions');
+      await loadSessionHistory();
+    } catch (error) { setStatus(error.message); }
+  };
+  $('importCancel').onclick = () => $('importMask').classList.remove('visible');
+  $('importBtn').addEventListener('click', () => void openImportDialog());
+  void checkImportable();
 
   window.addEventListener('camellia:language', updateWorkspaceLabel);
   return {
