@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 // Installed Claude CLI -> router -> two local OpenAI-format providers.
 // Exercises an actual Read tool round after a quota failure, with isolated auth.
 const fs=require('node:fs'), path=require('node:path'), os=require('node:os'), http=require('node:http');
@@ -60,7 +61,7 @@ async function run(){
   }finally{
     await router.stop();backend.closeAllConnections();await new Promise(r=>backend.close(r));
     assert.equal(path.dirname(path.resolve(root)),path.resolve(os.tmpdir()));assert.ok(path.basename(root).startsWith('dsh-router-cli-'));
-    fs.rmSync(root,{recursive:true,force:true});
+    removeTree(root);
   }
 }
 run().catch(e=>{console.error(e.message);process.exitCode=1;});

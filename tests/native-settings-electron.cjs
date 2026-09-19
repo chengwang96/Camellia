@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const assert = require('node:assert/strict');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -73,7 +74,7 @@ async function main() {
   try { assert.equal(code, 0); }
   finally {
     assert.equal(path.dirname(root), os.tmpdir()); assert.ok(path.basename(root).startsWith('workbench-native-electron-'));
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 }
 main().catch(error => { console.error(error); if (process.versions.electron) require('electron').app.exit(1); else process.exitCode = 1; });

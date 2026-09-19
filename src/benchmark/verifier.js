@@ -45,9 +45,13 @@ process.stdin.on('end', async () => {
 
 function verifyCode(probe, cwd, node, env) {
   readArtifact(cwd, probe.file);
+  // The permission model checks real paths and macOS temp dirs are symlinks
+  // (/var → /private/var), so the grant, the working directory and the module
+  // path must all use the resolved spelling.
+  const real = fs.realpathSync(cwd);
   return new Promise((resolve, reject) => {
-    const proc = spawn(node, ['--permission', '--allow-fs-read=' + cwd, '--input-type=commonjs', '-e', PROBE_SCRIPT],
-      { cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const proc = spawn(node, ['--permission', '--allow-fs-read=' + real, '--input-type=commonjs', '-e', PROBE_SCRIPT],
+      { cwd: real, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '', error = '';
     const timer = setTimeout(() => { proc.kill('SIGKILL'); reject(new Error('Result verification timed out')); }, 5000);
     proc.stdout.on('data', data => { out += data; if (out.length > 1000000) { proc.kill('SIGKILL'); reject(new Error('Result output exceeded limit')); } });
@@ -66,7 +70,7 @@ function verifyCode(probe, cwd, node, env) {
       } catch (e) { reject(e); }
     });
     proc.stdin.on('error', () => {});
-    proc.stdin.end(JSON.stringify({ ...probe, file: path.join(cwd, probe.file) }));
+    proc.stdin.end(JSON.stringify({ ...probe, file: path.join(real, probe.file) }));
   });
 }
 

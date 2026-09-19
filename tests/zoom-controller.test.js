@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -14,7 +15,7 @@ function content() {
 }
 test('keyboard and wheel persist one zoom level across pages, windows and controller restarts', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-zoom-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => removeTree(dir));
   const file = path.join(dir, 'desktop.json');
   writeJson(file, { mode: 'claude', theme: 'dark' });
   const options = { loadConfig: () => readJson(file, {}), saveConfig: patch => writeJson(file, { ...readJson(file, {}), ...patch }), legacyLevel: 1.5 };
@@ -47,7 +48,7 @@ test('an attached surface can keep a fixed zoom offset across zoom changes and n
 });
 
 test('legacy migration uses only the selected page and never rewrites Chromium preferences', t => {  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-zoom-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => removeTree(dir));
   const file = path.join(dir, 'Preferences');
   writeJson(file, { partition: { per_host_zoom_levels: { partition: { 'file:///selected': 1.5, 'file:///other': 4, 'bad': '2' } } } });
   const before = fs.readFileSync(file, 'utf8');

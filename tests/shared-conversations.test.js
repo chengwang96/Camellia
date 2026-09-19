@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -8,7 +9,7 @@ const { SharedConversations, preferences, ENGINES } = require('../src/engines/sh
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shared-chat-'));
-  t.after(() => { manager?.pauseGoals(); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(() => { manager?.pauseGoals(); removeTree(root); });
   let config = {}, gen = 0, manager;
   const sent = [], events = [], sessions = {};
   const drivers = Object.fromEntries(ENGINES.map(engine => [engine, { settings: () => ({ model: 'fixture' }), saveSettings: v => v,

@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 // Real Electron main + preload + renderer, isolated storage, hidden windows.
 // Verifies the Archived settings page: archived conversations from native
 // engine histories and shared conversations are listed, restored and deleted.
@@ -26,7 +27,7 @@ async function main() {
       console.log(stdout.trim());
     } finally {
       assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTree(root);
     }
     return;
   }

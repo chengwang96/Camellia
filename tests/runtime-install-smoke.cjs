@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 // Install selected engines from a lightweight distribution into empty app data,
 // using its Node/npm and no global Node, Python, or harness installations.
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
@@ -67,7 +68,7 @@ async function main() {
   } finally {
     process.env.PATH = previous;
     assert.equal(path.dirname(tempRoot), os.tmpdir()); assert.ok(path.basename(tempRoot).startsWith('workbench-install-test-'));
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTree(tempRoot);
   }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

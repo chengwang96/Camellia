@@ -64,6 +64,9 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   archivedSessionsList: () => ipcRenderer.invoke('dsh:archived-sessions-list'),
   archivedSessionAction: (payload) => ipcRenderer.invoke('dsh:archived-session-action', payload),
   onArchivedChanged: (callback) => subscribe('dsh:archived-changed', callback),
+  codexDesktopSessions: () => ipcRenderer.invoke('dsh:codex-desktop-sessions'),
+  codexDesktopImport: (ids) => ipcRenderer.invoke('dsh:codex-desktop-import', { ids }),
+  codexDesktopSync: (id) => ipcRenderer.invoke('dsh:codex-desktop-sync', { id }),
   // Claude Code GUI
   claudeSend: (payload) => ipcRenderer.invoke('dsh:claude-send', payload),
   claudeCancel: (runId) => ipcRenderer.invoke('dsh:claude-cancel', runId),

@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 // Pinned CLI protocol check in an empty account home. No real credentials,
 // browser login, external model calls, or desktop interaction.
 const assert = require('node:assert/strict');
@@ -32,7 +33,7 @@ async function main() {
     await account.shutdown();
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
     assert.ok(path.basename(root).startsWith('kimi-subscription-smoke-'));
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

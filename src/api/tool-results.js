@@ -10,7 +10,7 @@ function failedToolResult(name, output, explicit = false) {
   if (explicit) return true;
   if (/^(?:Tool error: |<tool_use_error>|<system>ERROR: Tool execution failed\.<\/system>|Error invalid tool call:)/.test(output)) return true;
   if (name === 'apply_patch' && /^(?:apply_patch verification failed:|Invalid patch:|Failed to apply patch)/.test(output)) return true;
-  const exit = name === 'pwsh' ? /\[exit code: (-?\d+)\]\s*$/.exec(output)
+  const exit = ['pwsh', 'bash', 'sh', 'shell'].includes(name) ? /\[exit code: (-?\d+)\]\s*$/.exec(output)
     : ['shell_command', 'exec_command', 'run_command', 'Bash'].includes(name)
       ? (/^\s*(?:Exit code: ?|The command exited with code |Process exited with code )(-?\d+)/.exec(output)
         || /^\s*Chunk ID: [^\n]+\nWall time: [^\n]+\nProcess exited with code (-?\d+)/.exec(output)) : null;

@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -15,7 +16,7 @@ const { createEngineSettings } = require('../src/engines/engine-settings');
 
 function temporary(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-codex-test-'));
-  t.after(() => { assert.equal(path.dirname(root), os.tmpdir()); assert.ok(path.basename(root).startsWith('camellia-codex-test-')); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(() => { assert.equal(path.dirname(root), os.tmpdir()); assert.ok(path.basename(root).startsWith('camellia-codex-test-')); removeTree(root); });
   return root;
 }
 function transport() {

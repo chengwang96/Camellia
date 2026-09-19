@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
@@ -60,7 +61,7 @@ async function fixture(t, respond, makeProviders, options = {}) {
   t.after(async () => {
     await router.stop(); backend.closeAllConnections(); await new Promise(r=>backend.close(r));
     if (path.dirname(path.resolve(root)) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('dsh-api-router-')) throw new Error('Unsafe fixture cleanup');
-    fs.rmSync(root,{recursive:true,force:true});
+    removeTree(root);
   });
   const post=(body, endpoint='/v1/chat/completions', opts={}) => fetch(router.url+endpoint,{ method:'POST', headers:{ 'content-type':'application/json', authorization:'Bearer client-placeholder', 'x-api-key':'client-private', ...opts.headers }, body:JSON.stringify({ model:'kimi-k3', messages:[{role:'user',content:'hello'}], ...body }), signal:opts.signal });
   return {router,requests,file,post,url};

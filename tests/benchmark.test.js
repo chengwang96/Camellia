@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -16,7 +17,7 @@ const { RequestScopes } = require('../src/api/request-scopes');
 
 function temp(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-bench-test-'));
-  t.after(() => { assert.equal(path.dirname(dir), os.tmpdir()); assert.ok(path.basename(dir).startsWith('camellia-bench-test-')); fs.rmSync(dir, { recursive: true, force: true }); });
+  t.after(() => { assert.equal(path.dirname(dir), os.tmpdir()); assert.ok(path.basename(dir).startsWith('camellia-bench-test-')); removeTree(dir); });
   return dir;
 }
 const fixes = {
@@ -153,6 +154,18 @@ test('file checks distinguish wrong output, malformed JSON and modified required
   fs.writeFileSync(path.join(cwd, task.preserve[0]), 'modified');
   const changed = await verifyTask(task, cwd, process.execPath, env);
   assert.equal(changed.passed, false); assert.equal(changed.checks.failures[0].kind, 'input_changed');
+});
+
+test('grading works when the workspace sits behind a symlink, like the macOS temp dir', async t => {
+  const root = temp(t), real = path.join(root, 'real'), link = path.join(root, 'link');
+  fs.mkdirSync(real, { recursive: true });
+  fs.symlinkSync(real, link, 'junction');
+  const cwd = path.join(link, 'workspace'), task = TASKS.find(t => t.id === 'slug'); prepareTask(task, cwd);
+  const env = isolatedEnvironment(path.join(root, 'home'), process.execPath);
+  fs.writeFileSync(path.join(cwd, 'slug.cjs'), fixes.slug);
+  const verdict = await verifyTask(task, cwd, process.execPath, env);
+  assert.equal(verdict.passed, true, verdict.detail);
+  assert.equal(verdict.checks.evaluated, 12);
 });
 function setupRunner(t, execute) {
   const root = temp(t), scopes = new RequestScopes();

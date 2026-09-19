@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -119,7 +120,7 @@ test('a broken selected proxy reports failure without falling back to a direct d
 test('Antigravity bootstrap and both uv download commands use the chosen connection', async t => {
   const f = await networkFixture(t);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-download-test-'));
-  t.after(() => { assert.equal(path.dirname(root), path.resolve(os.tmpdir())); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(() => { assert.equal(path.dirname(root), path.resolve(os.tmpdir())); removeTree(root); });
   const source = path.join(root, 'runtimes/antigravity'), target = path.join(root, 'installed');
   fs.mkdirSync(source, { recursive: true });
   fs.writeFileSync(path.join(source, 'runtime.json'), JSON.stringify({ sdk: 'fixture', python: '3.13', platforms: {
@@ -146,7 +147,7 @@ test('Antigravity bootstrap and both uv download commands use the chosen connect
 
 test('canceling download confirmation creates no runtime files or failed status', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-download-test-'));
-  t.after(() => { assert.equal(path.dirname(root), path.resolve(os.tmpdir())); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(() => { assert.equal(path.dirname(root), path.resolve(os.tmpdir())); removeTree(root); });
   const manager = createRuntimeManager({ root, installRoot: root,
     downloadOptions: () => { throw Object.assign(new Error('Download cancelled'), { code: 'DOWNLOAD_CANCELLED' }); } });
   await assert.rejects(manager.ensure('kimi'), { code: 'DOWNLOAD_CANCELLED' });

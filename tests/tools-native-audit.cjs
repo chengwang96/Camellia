@@ -31,7 +31,7 @@ function nativeCall(ctx, operation, options = {}) {
   let name, args;
   if (operation === 'read') {
     name = { claude: 'Read', codex: 'exec_command', dsh: 'read', kimi: 'Read', antigravity: 'view_file' }[engine];
-    args = engine === 'codex' ? { cmd: '[System.IO.File]::ReadAllText(' + quotePs(target) + ')', login: false }
+    args = engine === 'codex' ? { cmd: "rg -N --no-filename -- '' " + quotePs(target), login: false }
       : engine === 'antigravity' ? { AbsolutePath: target, ...annotation }
       : { [engine === 'kimi' ? 'path' : 'file_path']: target };
   } else if (operation === 'glob' || operation === 'grep') {
@@ -67,11 +67,24 @@ function nativeCall(ctx, operation, options = {}) {
       AllowMultiple: false, StartLine: 1, EndLine: 2, Instruction: 'Replace the fixture marker', Description: 'Check native editing', ...annotation }
       : { [engine === 'kimi' ? 'path' : 'file_path']: target, old_string: old, new_string: 'EDITED_词🙂' };
   }
-  const declaration = ctx.tools.find(t => t.function.name === name);
+  let declaration = ctx.tools.find(t => t.function.name === name)
+    || ctx.tools.find(t => t.function.name.toLowerCase() === String(name).toLowerCase())
+    || (operation === 'shell' ? ctx.tools.find(t => /^(ba|z)?sh$|^shell$/i.test(t.function.name)) : null);
+  if (!declaration && engine === 'claude' && (operation === 'glob' || operation === 'grep')) {
+    // Some Claude builds skip Glob/Grep (e.g. when the bundled ripgrep is
+    // unavailable). Audit the same file discovery through the Bash tool.
+    const bash = ctx.tools.find(t => t.function.name === 'Bash');
+    if (bash) {
+      name = 'Bash';
+      args = { command: operation === 'glob' ? 'find ' + quotePs(ctx.cwd) + ' -name "*.txt"' : "grep -rn 'READ_BETA' " + quotePs(ctx.cwd), description: 'Audit fallback for missing Glob/Grep' };
+      declaration = bash;
+      console.log('note: claude declared no Glob/Grep; auditing discovery through Bash');
+    }
+  }
   if (options.escalate) Object.assign(args, { sandbox_permissions: 'danger-full-access', justification: 'Check denial of an isolated fixture write' });
-  assert.ok(declaration, ctx.id + ': missing native ' + name);
+  assert.ok(declaration, ctx.id + ': missing native ' + name + '; declared tools: ' + ctx.tools.map(t => t.function.name).join(', '));
   for (const required of declaration.function.parameters.required || []) assert.ok(required in args, name + ': missing ' + required);
-  return { id: ctx.id + '_' + ctx.stage + '_' + operation + '_' + (options.suffix || '0'), type: 'function', function: { name, arguments: JSON.stringify(args) } };
+  return { id: ctx.id + '_' + ctx.stage + '_' + operation + '_' + (options.suffix || '0'), type: 'function', function: { name: declaration.function.name, arguments: JSON.stringify(args) } };
 }
 
 function nextCalls(ctx, body) {
@@ -267,7 +280,12 @@ async function main() {
         assert.equal(ctx.stage, 8, id + ': native tool loop ended early');
         assert.equal(events.filter(event => event.type === 'gui:permission').length, 0, id + ': Allow all must execute ordinary native tools without approval');
         assert.equal(observedTools.length, process.argv.includes('--single-read') ? 8 : 9, id + ': duplicate or missing tool observations');
-        assert.deepEqual(observedTools.filter(tool => tool.is_error).map(tool => tool.id), [id + '_4_shell_0', id + '_5_edit_0'], id + ': tool failures missing from benchmark diagnostics');
+        const flagged = observedTools.filter(tool => tool.is_error).map(tool => tool.id);
+        if (flagged.join() !== [id + '_4_shell_0', id + '_5_edit_0'].join()) {
+          const detail = observedTools.filter(tool => [id + '_4_shell_0', id + '_5_edit_0'].includes(tool.id))
+            .map(tool => tool.id + ' [' + tool.name + '] => ' + JSON.stringify(tool.output).slice(0, 300)).join(' ; ');
+          throw new Error(id + ': tool failures missing from benchmark diagnostics; flagged=' + JSON.stringify(flagged) + ' declared=' + ctx.tools.map(t => t.function.name).join(',') + ' outputs: ' + detail);
+        }
         console.log('PASS ' + id + ': parallel reads/searches, split arguments, native write/edit, shell and edit errors, exact result IDs');
       } finally { clearTimeout(timer); await route.close(); }
     }));

@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 // Run packaged sources with a fresh profile. Download attempts are intercepted;
 // real downloads are exercised separately by runtime-install-smoke.cjs.
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
@@ -120,7 +121,7 @@ async function main() {
   try { assert.equal(code, 0); }
   finally {
     assert.equal(path.dirname(root), path.resolve(os.tmpdir())); assert.ok(path.basename(root).startsWith('camellia-optional-ui-'));
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 }
 main().catch(error => { console.error(error); if (process.versions.electron) require('electron').app.exit(1); else process.exitCode = 1; });

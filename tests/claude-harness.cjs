@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 
 // Exercise the real main-process IPC handlers with isolated storage and a local
 // fake CLI. No application startup, network calls, or user configuration access.
@@ -99,7 +100,7 @@ function createHarness(existingRoot) {
     // The only recursive deletion is the explicitly verified, per-test sandbox.
     const resolved = path.resolve(root);
     if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith('dsh-workspaces-')) throw new Error('Unsafe test cleanup path');
-    fs.rmSync(resolved, { recursive: true, force: true });
+    removeTree(resolved);
   }
   return { root, userData, home, call, folder, configureApi, seedSession, finishTurn, processes, events, api, cleanup };
 }

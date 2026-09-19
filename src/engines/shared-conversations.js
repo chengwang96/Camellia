@@ -153,6 +153,17 @@ class SharedConversations {
     fs.appendFileSync(path.join(this.dir, c.id + '.jsonl'), JSON.stringify(entry) + '\n');
     return entry;
   }
+  // Replace the logical history wholesale (manual sync from the source app).
+  // Native sessions no longer match and are retired; one backup is kept.
+  resetHistory(c) {
+    const file = path.join(this.dir, c.id + '.jsonl');
+    if (fs.existsSync(file) && fs.statSync(file).size) fs.copyFileSync(file, file + '.pre-sync');
+    fs.writeFileSync(file, '');
+    c.seq = 0;
+    for (const [engine, segment] of Object.entries(c.segments)) (c.retiredSegments ||= []).push({ engine, ...segment });
+    c.segments = {};
+    this.save(c);
+  }
   create(engine, workspaceId, title = 'New session', cwd) {
     this.validateEngine(engine);
     const context = this.workspaces.resolveContext({}, { workspaceId });
@@ -170,7 +181,7 @@ class SharedConversations {
     const data = await this.workspaces.listSessions(payload);
     const prefs = preferences(this.loadConfig());
     return { ok: true, ...data, preferences: prefs, sessions: data.sessions.map(s => ({ ...s,
-      origin: this.get(s.id).origin, showOrigin: prefs.showOrigin, currentEngine: this.get(s.id).currentEngine, activity: this.activity(s.id) })) };
+      origin: this.get(s.id).origin, showOrigin: prefs.showOrigin, currentEngine: this.get(s.id).currentEngine, imported: Boolean(this.get(s.id).importThreadId), activity: this.activity(s.id) })) };
   }
   load(engine, id) {
     const c = this.get(id), prefs = preferences(this.loadConfig());
