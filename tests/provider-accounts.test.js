@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -55,7 +56,7 @@ test('model discovery deduplicates exact model aliases without merging versions;
 
 test('balance history survives reload, coalesces refreshes, preserves last success, and never crosses replacement keys', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'dsh-insights-'));
-  t.after(()=>{assert.equal(path.dirname(path.resolve(root)),path.resolve(os.tmpdir()));assert.ok(path.basename(root).startsWith('dsh-insights-'));fs.rmSync(root,{recursive:true,force:true});});
+  t.after(()=>{assert.equal(path.dirname(path.resolve(root)),path.resolve(os.tmpdir()));assert.ok(path.basename(root).startsWith('dsh-insights-'));removeTree(root);});
   const file=path.join(root,'insights.json');
   let cfg=normalizeConfig({providers:[provider('https://api.deepseek.com/v1')]}), now=Date.parse('2026-09-15T00:00:00Z'), calls=0, fail=false, release;
   const fetchImpl=async()=>{calls++; if(release)await release.promise; return fail ? response({},401) : response(deepseek(12));};
@@ -73,7 +74,7 @@ test('balance history survives reload, coalesces refreshes, preserves last succe
 
 test('account refresh and model verification preserve both results regardless of completion order', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'dsh-insights-race-'));
-  t.after(()=>{assert.equal(path.dirname(root),os.tmpdir());assert.ok(path.basename(root).startsWith('dsh-insights-race-'));fs.rmSync(root,{recursive:true,force:true});});
+  t.after(()=>{assert.equal(path.dirname(root),os.tmpdir());assert.ok(path.basename(root).startsWith('dsh-insights-race-'));removeTree(root);});
   const cfg=normalizeConfig({providers:[provider('https://api.deepseek.com/v1')]});
   for (const finishFirst of ['balance','verify']) {
     const gates={};

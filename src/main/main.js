@@ -1314,6 +1314,28 @@ if (!gotSingleInstanceLock) {
       return { ok: true, sessions };
     } catch (error) { return { ok: false, error: error.message }; }
   });
+  // ---- Codex desktop session import ------------------------------------------
+  const codexDesktop = () => require('./codex-desktop-import.js');
+  ipcMain.handle('dsh:codex-desktop-sessions', async () => {
+    try {
+      const mod = codexDesktop();
+      const imported = new Set([...sharedConversations.items.values()].map(c => c.importThreadId).filter(Boolean));
+      return { ok: true, sessions: mod.listDesktopSessions(mod.desktopStatePath(), { excludeIds: imported }) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('dsh:codex-desktop-sync', async (_event, payload) => {
+    try {
+      const mod = codexDesktop();
+      return { ok: true, ...mod.syncDesktopSession(sharedConversations, mod.desktopStatePath(), payload?.id) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('dsh:codex-desktop-import', async (_event, payload) => {
+    try {
+      const mod = codexDesktop();
+      const result = mod.importDesktopSessions(sharedConversations, mod.desktopStatePath(), payload?.ids || [], log);
+      return { ok: true, ...result };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
   ipcMain.handle('dsh:archived-session-action', async (_event, payload) => {
     try {
       const { source, id, action } = payload || {};

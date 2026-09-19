@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 // Real Electron main + preload + renderer, with isolated storage and hidden
 // windows. No model requests, installed user credentials, or live CLI sessions.
 const fs = require('node:fs');
@@ -98,13 +99,16 @@ async function main() {
     assert.equal(app.getPath('userData'), userData, 'Renaming preserves old data and explicit profiles');
     if (!firstRun) assert.equal(app.getPath('sessionData'), userData, 'Browser cookies and caches stay with existing data');
     const waitWindow = async match => {
-      for (let i = 0; i < 150; i++) {
+      // CI runners can be slow to render the first page; keep the budget generous
+      // and report live window state so a timeout is diagnosable.
+      for (let i = 0; i < 600; i++) {
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.webContents.isLoading() && await window.webContents.executeJavaScript(`Boolean(${match})`)) return window;
         }
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
-      throw new Error('Electron window did not finish loading: ' + match);
+      const states = BrowserWindow.getAllWindows().map(w => `${w.getTitle()} loading=${w.webContents.isLoading()} url=${w.webContents.getURL()}`).join('; ');
+      throw new Error('Electron window did not finish loading: ' + match + ' | windows: ' + (states || '(none)'));
     };
     const home = await waitWindow("document.querySelector('#enterDsh')");
     assert.equal(await home.webContents.executeJavaScript('document.documentElement.lang'), 'en');
@@ -441,7 +445,7 @@ async function main() {
   } finally {
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
     assert.ok(path.basename(root).startsWith('dsh-electron-smoke-'));
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 }
 main().catch(error => {

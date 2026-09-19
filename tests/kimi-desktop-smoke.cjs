@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 
 // Exercise the actual Electron UI, IPC, router and installed Kimi process
 // together. Fixtures are loopback only and all windows/storage are isolated.
@@ -27,7 +28,7 @@ async function main() {
     } finally {
       assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
       assert.ok(path.basename(root).startsWith('kimi-desktop-smoke-'));
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTree(root);
     }
     return;
   }
@@ -134,7 +135,9 @@ async function main() {
   assert.equal(fs.readFileSync(path.join(cwd, 'result.txt'), 'utf8'), 'Kimi UI fixture passed');
   assert.equal(await js("document.querySelectorAll('.tool-card').length"), 1);
   assert.ok(await js("document.querySelector('.tool-state.done') !== null"));
-  assert.match(await js("document.querySelector('#chat').textContent"), /Completed先检查工作区，再写入文件。已完成文件写入/);
+  const chatText = await js("document.querySelector('#chat').textContent");
+  assert.match(chatText, /先检查工作区，再写入文件。/);
+  assert.match(chatText, /已完成文件写入，工作区和 API 线路正常。/);
   assert.equal(await js("document.querySelector('.turn-meta span').textContent"), 'Kimi');
   await js('sidebar.load()');
   const id = await js('context.sessionId');

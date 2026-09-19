@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -12,7 +13,7 @@ const { BAD_PORTS } = require('./bad-ports.cjs');
 
 function fixtureRoot(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-updates-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  t.after(() => removeTree(root));
   return root;
 }
 

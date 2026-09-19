@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -12,7 +13,7 @@ const { RequestScopes } = require('../src/api/request-scopes');
 
 function temp(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-library-test-'));
-  t.after(() => { assert.equal(path.dirname(dir), os.tmpdir()); assert.ok(path.basename(dir).startsWith('camellia-library-test-')); fs.rmSync(dir, { recursive: true, force: true }); });
+  t.after(() => { assert.equal(path.dirname(dir), os.tmpdir()); assert.ok(path.basename(dir).startsWith('camellia-library-test-')); removeTree(dir); });
   return dir;
 }
 const ds = { prompt: 'Public question: compute the result.', metadata: { problem_id: 42, library: 'Numpy', test_case_cnt: 2 },

@@ -89,6 +89,16 @@ jobs:
       - name: Verify Windows portable extraction and startup
         if: matrix.platform == 'windows'
         run: node tests/portable-smoke.cjs
+      - name: Upload smoke diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            dist/tools-native-audit*.json
+            dist/benchmark-native-smoke.json
       - uses: actions/upload-artifact@v7
         with:
           name: Camellia-${{ matrix.platform }}-${{ matrix.arch }}

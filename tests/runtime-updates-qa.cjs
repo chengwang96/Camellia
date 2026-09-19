@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 // Throwaway QA: drive Settings → Runtime in a real Electron window, click
 // "Check for updates", and verify update info renders on every engine card.
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
@@ -57,7 +58,7 @@ async function main() {
   try { assert.equal(code, 0); }
   finally {
     assert.equal(path.dirname(root), os.tmpdir()); assert.ok(path.basename(root).startsWith('runtime-updates-qa-'));
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 }
 main().catch(error => { console.error(error); if (process.versions.electron) require('electron').app.exit(1); else process.exitCode = 1; });

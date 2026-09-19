@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 // Optional smoke test using the installed CLI, synthetic history, and a loopback
 // response server. All Claude configuration is isolated; no model API is used.
 const fs = require('node:fs');
@@ -71,7 +72,7 @@ async function run() {
     const result = events.find((ev) => ev.type === 'result');
     assert.equal(code, 0, errors + '\n' + output);
     assert.equal(init?.session_id, sid, output);
-    assert.equal(path.resolve(init.cwd), destination);
+    assert.equal(fs.realpathSync(init.cwd), fs.realpathSync(destination));
     assert.equal(result?.is_error, false, output);
     assert.ok(requests.some((req) => JSON.stringify(req.messages).includes('workspace-smoke-9274')), 'Resumed request must include the original history');
     console.log('PASS: installed Claude CLI resumed the original session ID and history from an absolute transcript path in a different cwd; local API only');
@@ -80,7 +81,7 @@ async function run() {
     const resolved = path.resolve(root);
     assert.equal(path.dirname(resolved), path.resolve(os.tmpdir()));
     assert.ok(path.basename(resolved).startsWith('dsh-cli-resume-'));
-    fs.rmSync(resolved, { recursive: true, force: true });
+    removeTree(resolved);
   }
 }
 run().catch((err) => { console.error(err.message); process.exitCode = 1; });

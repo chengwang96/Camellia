@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -10,7 +11,7 @@ const { kimiSpawnSpec } = require('../src/engines/kimi-session');
 
 function fixture(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-engine-test-'));
-  t.after(() => { assert.equal(path.dirname(home), os.tmpdir()); assert.ok(path.basename(home).startsWith('workbench-engine-test-')); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(() => { assert.equal(path.dirname(home), os.tmpdir()); assert.ok(path.basename(home).startsWith('workbench-engine-test-')); removeTree(home); });
   const desktop = { claude: { model: 'model-exact' }, kimi: { model: 'model-exact', contextWindow: 131072 } };
   const route = { baseUrl: 'http://127.0.0.1:17890', authToken: 'proxy-managed' };
   const service = createEngineSettings({ home, dshHome: () => path.join(home, '.dsh'), kimiHome: path.join(home, '.kimi-code'),

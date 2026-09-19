@@ -31,6 +31,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Settings
       </button>
+      <button class="btn-footer" id="importBtn" title="Import local Codex sessions" data-i18n data-i18n-attrs="title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Import
+      </button>
       <button class="btn-footer" id="backToHome" title="Home (Ctrl/Cmd+Shift+H)" data-i18n data-i18n-attrs="title">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg>
         Home
@@ -143,6 +147,29 @@
 </div>
 
 <!-- Workspace create modal -->
+<div class="ws-mask" id="syncMask">
+  <div class="ws-dialog" role="dialog" aria-modal="true" aria-labelledby="syncDialogTitle">
+    <div class="perm-title" id="syncDialogTitle" data-i18n>Sync from Codex desktop</div>
+    <p id="syncTitle"></p>
+    <p class="ws-hint" data-i18n>Syncing replaces this conversation's Camellia history with the latest content from the Codex desktop app. This cannot be undone.</p>
+    <div class="perm-actions" style="margin-top:14px">
+      <button type="button" class="perm-deny" id="syncCancel" data-i18n>Cancel</button>
+      <button type="button" class="perm-allow" id="syncConfirm" data-i18n>Sync now</button>
+    </div>
+  </div>
+</div>
+<div class="ws-mask" id="importMask">
+  <div class="ws-dialog" role="dialog" aria-modal="true" aria-labelledby="importTitle">
+    <div class="perm-title" id="importTitle" data-i18n>Import local Codex sessions</div>
+    <p class="ws-hint" data-i18n>Read from the Codex desktop app on this computer. Sessions are copied into Camellia; the originals stay untouched.</p>
+    <label class="import-row import-all"><input type="checkbox" id="importAll"><span data-i18n>Select all</span></label>
+    <div class="import-list" id="importList"></div>
+    <div class="perm-actions" style="margin-top:14px">
+      <button type="button" class="perm-deny" id="importCancel" data-i18n>Cancel</button>
+      <button type="button" class="perm-allow" id="importConfirm" data-i18n>Import selected</button>
+    </div>
+  </div>
+</div>
 <div class="ws-mask" id="wsMask">
   <form class="ws-dialog" id="wsForm" role="dialog" aria-modal="true" aria-labelledby="wsDialogTitle">
     <div class="perm-title" id="wsDialogTitle" data-i18n>Add workspace</div>

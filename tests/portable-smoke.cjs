@@ -51,5 +51,5 @@ try {
 } finally {
   assert.equal(path.dirname(temporary), path.resolve(os.tmpdir()));
   assert.ok(path.basename(temporary).startsWith('cml-portable-'));
-  fs.rmSync(temporary, { recursive: true, force: true });
+  fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
 }
