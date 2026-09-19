@@ -808,6 +808,10 @@
 .import-hint .import-dismiss { float: right; padding: 0 4px; color: var(--dsw-alias-label-caption); }
 .import-all { margin-top: 10px; padding: 4px 10px; border: 0; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary); }
 .import-list { max-height: 320px; overflow-y: auto; margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+.import-project { display: flex; gap: 8px; align-items: center; padding: 8px 10px 3px; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-tertiary); cursor: pointer; }
+.import-project input { flex: none; accent-color: var(--dsw-static-deepseek-500); }
+.import-project span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-row[data-project] { margin-left: 18px; }
 .import-row { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px; cursor: pointer; font-size: 13px; line-height: 1.4; }
 .import-row input { flex: none; margin-top: 3px; accent-color: var(--dsw-static-deepseek-500); }
 .import-row span { min-width: 0; overflow-wrap: anywhere; }

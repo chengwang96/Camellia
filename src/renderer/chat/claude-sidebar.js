@@ -70,7 +70,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       const hint = document.createElement('button');
       hint.type = 'button';
       hint.className = 'import-hint';
-      hint.innerHTML = '<span data-i18n></span><span class="import-dismiss" role="button" aria-label="Dismiss">�</span>';
+      hint.innerHTML = '<span data-i18n></span><span class="import-dismiss" role="button" aria-label="Dismiss">×</span>';
       hint.querySelector('span[data-i18n]').textContent = importableCount + ' local Codex sessions can be imported';
       hint.addEventListener('click', () => void openImportDialog());
       hint.querySelector('.import-dismiss').addEventListener('click', (e) => { e.stopPropagation(); importableCount = 0; renderSessionSidebar(); });
@@ -240,6 +240,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       ...(!chatProfile.fixedCwd ? [{ label: "Move to workspace…", disabled: contextBusy(), run: () => openWorkspacePicker(anchor, s) }] : []),
       ...(s.workspaceId && !chatProfile.fixedCwd ? [{ label: "Move out of workspace", disabled: contextBusy(), run: () => void assignWorkspace(s, null) }] : []),
       ...(canFork(s) ? [{ label: "Fork session", disabled: contextBusy(), run: () => void forkSession(s) }] : []),
+      ...(s.imported ? [{ label: "Sync from Codex desktop", run: () => openSyncDialog(s) }] : []),
       { label: "Archive session", disabled: contextBusy(), run: () => void archiveSession(s) },
     ]);
   }
@@ -387,6 +388,58 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     } catch { importableCount = 0; }
     renderSessionSidebar();
   }
+  function importRow(s) {
+    const label = document.createElement('label');
+    label.className = 'import-row';
+    if (s.project) label.dataset.project = s.project.id;
+    const box = document.createElement('input'); box.type = 'checkbox'; box.value = s.id; box.checked = s.importable; box.disabled = !s.importable;
+    const text = document.createElement('span');
+    text.textContent = s.title + (s.importable ? '' : ' (rollout file missing)');
+    label.append(box, text);
+    return label;
+  }
+  function projectHead(project, sessions) {
+    const head = document.createElement('label');
+    head.className = 'import-project';
+    head.dataset.project = project.id;
+    const box = document.createElement('input'); box.type = 'checkbox';
+    const text = document.createElement('span');
+    text.textContent = (project.name || project.path || '') + ' \u00b7 ' + sessions.length + ' sessions';
+    text.title = project.path || '';
+    head.append(box, text);
+    return head;
+  }
+  function groupedImportNodes(sessions) {
+    const byProject = new Map();
+    for (const s of sessions) {
+      if (!s.project) continue;
+      if (!byProject.has(s.project.id)) byProject.set(s.project.id, { project: s.project, sessions: [] });
+      byProject.get(s.project.id).sessions.push(s);
+    }
+    const nodes = [], seen = new Set();
+    for (const s of sessions) {
+      if (!s.project) { nodes.push(importRow(s)); continue; }
+      if (seen.has(s.project.id)) continue;
+      seen.add(s.project.id);
+      const group = byProject.get(s.project.id);
+      nodes.push(projectHead(group.project, group.sessions));
+      for (const member of group.sessions) nodes.push(importRow(member));
+    }
+    return nodes;
+  }
+  function syncImportBoxes() {
+    const list = $('importList');
+    for (const head of list.querySelectorAll('.import-project')) {
+      const boxes = [...list.querySelectorAll('.import-row[data-project="' + head.dataset.project + '"] input[type=checkbox]:not(:disabled)')];
+      const box = head.querySelector('input');
+      box.checked = boxes.length > 0 && boxes.every(b => b.checked);
+      box.indeterminate = !box.checked && boxes.some(b => b.checked);
+    }
+    const boxes = [...list.querySelectorAll('.import-row input[type=checkbox]:not(:disabled)')];
+    const all = $('importAll');
+    all.checked = boxes.length > 0 && boxes.every(b => b.checked);
+    all.indeterminate = !all.checked && boxes.some(b => b.checked);
+  }
   async function openImportDialog() {
     const list = $('importList');
     $('importAll').disabled = true;
@@ -397,19 +450,12 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       if (!res?.ok) throw new Error(res?.error || 'Could not read the Codex desktop state');
       if (!res.sessions.length) { $('importAll').checked = false; list.innerHTML = '<p class="hint" data-i18n>No local Codex sessions to import.</p>'; return; }
       const all = $('importAll'); all.disabled = false; all.checked = true; all.indeterminate = false;
-      list.replaceChildren(...res.sessions.map(s => {
-        const label = document.createElement('label');
-        label.className = 'import-row';
-        const box = document.createElement('input'); box.type = 'checkbox'; box.value = s.id; box.checked = s.importable; box.disabled = !s.importable;
-        const text = document.createElement('span');
-        text.textContent = s.title + (s.importable ? '' : ' (rollout file missing)');
-        label.append(box, text);
-        return label;
-      }));
+      list.replaceChildren(...groupedImportNodes(res.sessions));
+      syncImportBoxes();
     } catch (error) { list.replaceChildren(); const p = document.createElement('p'); p.className = 'hint'; p.textContent = error.message; list.appendChild(p); }
   }
   $('importConfirm').onclick = async () => {
-    const ids = [...$('importList').querySelectorAll('input:checked')].map(i => i.value);
+    const ids = [...$('importList').querySelectorAll('.import-row input:checked')].map(i => i.value);
     $('importMask').classList.remove('visible');
     if (!ids.length) return;
     setStatus('Importing\u2026');
@@ -423,17 +469,42 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     } catch (error) { setStatus(error.message); }
   };
   $('importAll').onchange = e => {
-    for (const box of $('importList').querySelectorAll('input[type=checkbox]:not(:disabled)')) box.checked = e.target.checked;
+    for (const box of $('importList').querySelectorAll('.import-row input[type=checkbox]:not(:disabled)')) box.checked = e.target.checked;
+    $('importAll').indeterminate = false;
+    syncImportBoxes();
   };
-  $('importList').onchange = () => {
-    const boxes = [...$('importList').querySelectorAll('input[type=checkbox]:not(:disabled)')];
-    const all = $('importAll');
-    all.checked = boxes.length > 0 && boxes.every(b => b.checked);
-    all.indeterminate = !all.checked && boxes.some(b => b.checked);
+  $('importList').onchange = (e) => {
+    const headBox = e.target.closest ? e.target.closest('.import-project') : null;
+    if (headBox) {
+      for (const b of $('importList').querySelectorAll('.import-row[data-project="' + headBox.dataset.project + '"] input[type=checkbox]:not(:disabled)')) b.checked = e.target.checked;
+    }
+    syncImportBoxes();
   };
   $('importCancel').onclick = () => $('importMask').classList.remove('visible');
   $('importBtn').addEventListener('click', () => void openImportDialog());
   void checkImportable();
+
+  // ---------- manual re-sync of an imported conversation ----------
+  let syncTarget = null;
+  function openSyncDialog(s) {
+    syncTarget = s;
+    $('syncTitle').textContent = s.title || '';
+    $('syncMask').classList.add('visible');
+  }
+  $('syncCancel').onclick = () => { syncTarget = null; $('syncMask').classList.remove('visible'); };
+  $('syncConfirm').onclick = async () => {
+    const target = syncTarget; syncTarget = null;
+    $('syncMask').classList.remove('visible');
+    if (!target) return;
+    setStatus('Syncing from the Codex desktop app\u2026');
+    try {
+      const res = await window.dshDesktop.codexDesktopSync(target.id);
+      if (!res?.ok) throw new Error(res?.error || 'Sync failed');
+      if (target.id === context.sessionId) await openHistorySession(target.id);
+      await loadSessionHistory();
+      setStatus('Synced from Codex desktop \u00b7 ' + (res.messages || 0) + ' messages');
+    } catch (error) { setStatus(error.message); }
+  };
 
   window.addEventListener('camellia:language', updateWorkspaceLabel);
   return {

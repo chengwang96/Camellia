@@ -147,6 +147,17 @@
 </div>
 
 <!-- Workspace create modal -->
+<div class="ws-mask" id="syncMask">
+  <div class="ws-dialog" role="dialog" aria-modal="true" aria-labelledby="syncDialogTitle">
+    <div class="perm-title" id="syncDialogTitle" data-i18n>Sync from Codex desktop</div>
+    <p id="syncTitle"></p>
+    <p class="ws-hint" data-i18n>Syncing replaces this conversation's Camellia history with the latest content from the Codex desktop app. This cannot be undone.</p>
+    <div class="perm-actions" style="margin-top:14px">
+      <button type="button" class="perm-deny" id="syncCancel" data-i18n>Cancel</button>
+      <button type="button" class="perm-allow" id="syncConfirm" data-i18n>Sync now</button>
+    </div>
+  </div>
+</div>
 <div class="ws-mask" id="importMask">
   <div class="ws-dialog" role="dialog" aria-modal="true" aria-labelledby="importTitle">
     <div class="perm-title" id="importTitle" data-i18n>Import local Codex sessions</div>

@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { SharedConversations } = require('../src/engines/shared-conversations');
-const { listDesktopSessions, readRolloutMessages, importDesktopSessions, desktopStatePath } = require('../src/main/codex-desktop-import');
+const { listDesktopSessions, readRolloutMessages, importDesktopSessions, syncDesktopSession, desktopStatePath } = require('../src/main/codex-desktop-import');
 
 function stateFixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-desktop-import-test-'));
@@ -16,21 +16,38 @@ function stateFixture(t) {
   const file = path.join(root, 'state_5.sqlite');
   db = new DatabaseSync(file);
   db.exec(`CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
-    first_user_message TEXT NOT NULL DEFAULT '', preview TEXT NOT NULL DEFAULT '', cwd TEXT NOT NULL DEFAULT '',
-    source TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    name TEXT NOT NULL DEFAULT '', first_user_message TEXT NOT NULL DEFAULT '', preview TEXT NOT NULL DEFAULT '',
+    cwd TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
+    project_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
     created_at_ms INTEGER, updated_at_ms INTEGER)`);
+  db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0)`);
+  db.exec(`CREATE TABLE project_roots (project_id TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, path TEXT NOT NULL DEFAULT '')`);
   return { root, file, get db() { return db; }, close: () => db.close() };
 }
 
-function addThread(db, { id, title = '', first = '', cwd = 'D:/work', source = 'vscode', archived = 0, rollout = '' }) {
-  db.prepare(`INSERT INTO threads (id, rollout_path, title, first_user_message, cwd, source, archived, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, rollout, title, first, cwd, source, archived, 1789000000, 1789000000);
+function addThread(db, { id, title = '', name = '', first = '', cwd = 'D:/work', source = 'vscode', archived = 0, projectId = null, rollout = '' }) {
+  db.prepare(`INSERT INTO threads (id, rollout_path, title, name, first_user_message, cwd, source, archived, project_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, rollout, title, name, first, cwd, source, archived, projectId, 1789000000, 1789000000);
+}
+
+function addProject(db, { id, name = '', roots = [] }) {
+  db.prepare('INSERT INTO projects (id, name) VALUES (?, ?)').run(id, name);
+  for (const [position, rootPath] of roots.entries()) {
+    db.prepare('INSERT INTO project_roots (project_id, position, path) VALUES (?, ?, ?)').run(id, position, rootPath);
+  }
 }
 
 function writeRollout(root, name, rows) {
   const file = path.join(root, name);
   fs.writeFileSync(file, rows.map(r => JSON.stringify(r)).join('\n') + '\n');
   return file;
+}
+
+function sharedFixture(root) {
+  const dir = path.join(root, 'conversations');
+  let config = {};
+  return new SharedConversations({ dir, loadConfig: () => config, saveConfig: p => { config = { ...config, ...p }; },
+    drivers: { codex: { settings: () => ({ connection: 'api', model: 'fixture' }) } } });
 }
 
 const responseItem = (role, text, at = '2026-09-16T10:00:00.000Z') =>
@@ -50,6 +67,21 @@ test('desktop session listing skips subagents, archived rows and missing rollout
   assert.equal(sessions[1].importable, false);
   assert.equal(sessions[1].title, 'No file left');
   assert.deepEqual(listDesktopSessions(file, { excludeIds: new Set(['main']) }).map(s => s.id), ['gone']);
+});
+
+test('the user-visible name column wins over the raw title, projects join their primary root', t => {
+  const { root, file, db, close } = stateFixture(t);
+  const rollout = writeRollout(root, 'n.jsonl', [responseItem('user', 'hello')]);
+  const projectDir = path.join(root, 'proj'); fs.mkdirSync(projectDir);
+  addProject(db, { id: 'p1', name: 'ARDS', roots: [projectDir, path.join(root, 'secondary')] });
+  addThread(db, { id: 'named', title: 'Raw title wrapper', name: '## My request:\n real working session', projectId: 'p1', rollout });
+  addThread(db, { id: 'plain', title: 'No project here', rollout });
+  close();
+  const sessions = listDesktopSessions(file);
+  const named = sessions.find(s => s.id === 'named');
+  assert.equal(named.title, 'real working session');
+  assert.deepEqual(named.project, { id: 'p1', name: 'ARDS', path: projectDir });
+  assert.equal(sessions.find(s => s.id === 'plain').project, null);
 });
 
 test('rollout parsing keeps user and assistant text, unwraps the desktop request wrapper, skips environment blocks', t => {
@@ -73,10 +105,7 @@ test('import creates shared conversations with codex history and skips re-import
   const rollout = writeRollout(root, 'c.jsonl', [responseItem('user', 'first question'), responseItem('assistant', 'first answer')]);
   addThread(db, { id: 'thread-1', title: 'Imported chat', cwd, rollout });
   close();
-  const dir = path.join(root, 'conversations');
-  let config = {};
-  const shared = new SharedConversations({ dir, loadConfig: () => config, saveConfig: p => { config = { ...config, ...p }; },
-    drivers: { codex: { settings: () => ({ connection: 'api', model: 'fixture' }) } } });
+  const shared = sharedFixture(root);
   const result = importDesktopSessions(shared, file, ['thread-1']);
   assert.equal(result.imported.length, 1);
   const c = result.imported[0];
@@ -88,4 +117,63 @@ test('import creates shared conversations with codex history and skips re-import
   assert.equal(record.cwd, cwd);
   assert.deepEqual(shared.messages(record).map(m => m.role + ':' + m.text), ['user:first question', 'assistant:first answer']);
   assert.equal(listDesktopSessions(file, { excludeIds: new Set(['thread-1']) }).length, 0);
+});
+
+test('importing a project thread creates one workspace reused by sibling threads', t => {
+  const { root, file, db, close } = stateFixture(t);
+  const projectDir = path.join(root, 'ards-work'); fs.mkdirSync(projectDir);
+  addProject(db, { id: 'p1', name: 'ARDS', roots: [projectDir] });
+  const r1 = writeRollout(root, 'p1.jsonl', [responseItem('user', 'q1')]);
+  const r2 = writeRollout(root, 'p2.jsonl', [responseItem('user', 'q2')]);
+  addThread(db, { id: 'pt-1', name: 'session one', projectId: 'p1', rollout: r1 });
+  addThread(db, { id: 'pt-2', name: 'session two', projectId: 'p1', rollout: r2 });
+  close();
+  const shared = sharedFixture(root);
+  const result = importDesktopSessions(shared, file, ['pt-1', 'pt-2']);
+  assert.equal(result.imported.length, 2);
+  const first = shared.get(result.imported[0].id);
+  const second = shared.get(result.imported[1].id);
+  assert.ok(first.workspaceId);
+  assert.equal(second.workspaceId, first.workspaceId);
+  assert.equal(first.cwd, projectDir);
+  const workspaces = shared.workspaces.sessionMeta().workspaces;
+  assert.equal(workspaces.length, 1);
+  assert.equal(workspaces[0].name, 'ARDS');
+  assert.equal(workspaces[0].path, projectDir);
+});
+
+test('manual sync overwrites the Camellia copy, retires segments and updates the title', t => {
+  const { root, file, db, close } = stateFixture(t);
+  const rollout = writeRollout(root, 's.jsonl', [responseItem('user', 'old question'), responseItem('assistant', 'old answer')]);
+  addThread(db, { id: 'sync-1', name: 'before rename', rollout });
+  const shared = sharedFixture(root);
+  const result = importDesktopSessions(shared, file, ['sync-1']);
+  const record = shared.get(result.imported[0].id);
+  shared.append(record, { role: 'user', engine: 'codex', text: 'local only turn', displayText: 'local only turn', attachments: [] });
+  record.segments = { codex: { native: 'abc' } };
+  shared.save(record);
+  writeRollout(root, 's.jsonl', [responseItem('user', 'old question'), responseItem('assistant', 'old answer'), responseItem('user', 'new question'), responseItem('assistant', 'new answer')]);
+  db.prepare('UPDATE threads SET name = ? WHERE id = ?').run('after rename', 'sync-1');
+  close();
+  const synced = syncDesktopSession(shared, file, record.id);
+  assert.equal(synced.messages, 4);
+  assert.equal(synced.title, 'after rename');
+  const after = shared.get(record.id);
+  assert.deepEqual(shared.messages(after).map(m => m.role + ':' + m.text),
+    ['user:old question', 'assistant:old answer', 'user:new question', 'assistant:new answer']);
+  assert.deepEqual(after.segments, {});
+  assert.equal(after.retiredSegments.length, 1);
+  assert.ok(fs.existsSync(path.join(root, 'conversations', record.id + '.jsonl.pre-sync')));
+});
+
+test('sync rejects conversations that were not imported from the desktop app', t => {
+  const { root, file, db, close } = stateFixture(t);
+  close();
+  const shared = sharedFixture(root);
+  const c = shared.create('codex', null, 'local chat');
+  assert.throws(() => syncDesktopSession(shared, file, c.id), /not imported/);
+});
+
+test('desktopStatePath points inside the user home .codex directory', () => {
+  assert.equal(desktopStatePath('/home/u'), path.join('/home/u', '.codex', 'state_5.sqlite'));
 });

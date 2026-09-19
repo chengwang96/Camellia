@@ -1319,6 +1319,12 @@ if (!gotSingleInstanceLock) {
       return { ok: true, sessions: mod.listDesktopSessions(mod.desktopStatePath(), { excludeIds: imported }) };
     } catch (error) { return { ok: false, error: error.message }; }
   });
+  ipcMain.handle('dsh:codex-desktop-sync', async (_event, payload) => {
+    try {
+      const mod = codexDesktop();
+      return { ok: true, ...mod.syncDesktopSession(sharedConversations, mod.desktopStatePath(), payload?.id) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
   ipcMain.handle('dsh:codex-desktop-import', async (_event, payload) => {
     try {
       const mod = codexDesktop();
