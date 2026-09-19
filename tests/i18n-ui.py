@@ -58,7 +58,6 @@ try:
         settings.locator('[data-view=general]').click()
         expect(settings.locator('#language')).to_have_value('en')
         settings.locator('#language').select_option('zh-CN')
-        settings.locator('#saveGeneral').click()
         expect(settings.locator('#status')).to_have_text('偏好设置已保存')
         expect(settings.locator('#pageTitle')).to_have_text('通用')
         assert rpc('workbenchSettings')['result']['language'] == 'zh-CN'
@@ -90,7 +89,6 @@ try:
         expect(home.locator('h1')).to_have_text('开始工作')
         settings.locator('[data-view=general]').click()
         settings.locator('#language').select_option('en')
-        settings.locator('#saveGeneral').click()
         expect(settings.locator('#pageTitle')).to_have_text('General')
         expect(settings.locator('#status')).to_have_text('Preferences saved')
         for page in [home, chat]:

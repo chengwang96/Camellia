@@ -195,14 +195,15 @@ try:
         page.screenshot(path=str(repo/'dist/ui-preview/settings-balances-dark-compact.png'))
         page.locator('[data-view=general]').click();page.locator('#theme').select_option('dark')
         assert page.locator('#closeToTray').is_checked() is False
-        page.locator('#autoRefreshBalances').uncheck();page.locator('#closeToTray').check();page.locator('#saveGeneral').click()
+        page.locator('#autoRefreshBalances').uncheck();page.locator('#closeToTray').check()
         expect(page.locator('#status')).to_contain_text('Preferences saved')
         assert rpc('workbenchSettings')['result']['theme']=='dark'
         assert rpc('workbenchSettings')['result']['autoRefreshBalances'] is False
         assert rpc('workbenchSettings')['result']['closeToTray'] is True
         page.reload(wait_until='domcontentloaded');page.locator('[data-view=general]').click()
         assert page.locator('#closeToTray').is_checked() is True
-        page.locator('#closeToTray').uncheck();page.locator('#saveGeneral').click()
+        page.locator('#closeToTray').uncheck()
+        expect(page.locator('#status')).to_contain_text('Preferences saved')
         assert rpc('workbenchSettings')['result']['closeToTray'] is False
         screenshot=repo/'dist/api-router-preview.png';screenshot.parent.mkdir(exist_ok=True)
         page.screenshot(path=str(screenshot),full_page=True)
