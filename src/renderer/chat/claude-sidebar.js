@@ -389,12 +389,14 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   }
   async function openImportDialog() {
     const list = $('importList');
+    $('importAll').disabled = true;
     list.innerHTML = '<p class="hint" data-i18n>Reading local Codex sessions\u2026</p>';
     $('importMask').classList.add('visible');
     try {
       const res = await window.dshDesktop.codexDesktopSessions();
       if (!res?.ok) throw new Error(res?.error || 'Could not read the Codex desktop state');
-      if (!res.sessions.length) { list.innerHTML = '<p class="hint" data-i18n>No local Codex sessions to import.</p>'; return; }
+      if (!res.sessions.length) { $('importAll').checked = false; list.innerHTML = '<p class="hint" data-i18n>No local Codex sessions to import.</p>'; return; }
+      const all = $('importAll'); all.disabled = false; all.checked = true; all.indeterminate = false;
       list.replaceChildren(...res.sessions.map(s => {
         const label = document.createElement('label');
         label.className = 'import-row';
@@ -419,6 +421,15 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       setStatus(skipped ? 'Imported ' + (res.imported?.length || 0) + ' sessions \u00b7 ' + skipped + ' skipped' : 'Imported ' + (res.imported?.length || 0) + ' sessions');
       await loadSessionHistory();
     } catch (error) { setStatus(error.message); }
+  };
+  $('importAll').onchange = e => {
+    for (const box of $('importList').querySelectorAll('input[type=checkbox]:not(:disabled)')) box.checked = e.target.checked;
+  };
+  $('importList').onchange = () => {
+    const boxes = [...$('importList').querySelectorAll('input[type=checkbox]:not(:disabled)')];
+    const all = $('importAll');
+    all.checked = boxes.length > 0 && boxes.every(b => b.checked);
+    all.indeterminate = !all.checked && boxes.some(b => b.checked);
   };
   $('importCancel').onclick = () => $('importMask').classList.remove('visible');
   $('importBtn').addEventListener('click', () => void openImportDialog());

@@ -499,6 +499,26 @@ with sync_playwright() as p:
     page.locator('#ctxRing').hover()
     expect(page.locator('.ctx-tip')).to_contain_text('tokens')
     page.close()
+    # Import dialog: select-all toggles every row and tracks partial state.
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    page.add_init_script(bridge.replace("apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),",
+        "apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),codexDesktopSessions:async()=>({ok:true,sessions:[{id:'a',title:'Alpha chat',importable:true},{id:'b',title:'Beta chat',importable:true}]}),codexDesktopImport:async()=>({ok:true,imported:[],skipped:[]}),"))
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude',wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    page.locator('#importBtn').click()
+    expect(page.locator('#importMask')).to_be_visible()
+    rows = page.locator('#importList input[type=checkbox]')
+    expect(rows).to_have_count(2)
+    expect(page.locator('#importAll')).to_be_checked()
+    rows.nth(1).uncheck()
+    expect(page.locator('#importAll')).not_to_be_checked()
+    assert page.evaluate("document.querySelector('#importAll').indeterminate") is True
+    page.locator('#importAll').click()
+    expect(rows.nth(0)).to_be_checked(); expect(rows.nth(1)).to_be_checked()
+    page.locator('#importAll').click()
+    expect(rows.nth(0)).not_to_be_checked(); expect(rows.nth(1)).not_to_be_checked()
+    page.close()
     browser.close()
     assert not errors, errors
     print('PASS: inline questions, answer mapping, selection drafts, failed-submit retry and skips; concurrent conversations, independent stop and approval, restored streams and drafts, harness locks, plus five-engine goal lifecycle and elapsed-time bars, logos, aligned composers, shared history, switch preferences, persistent drafts and attachments, reload, light/dark layouts')

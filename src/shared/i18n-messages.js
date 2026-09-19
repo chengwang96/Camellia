@@ -156,6 +156,7 @@
   "Reading local Codex sessions…": "正在读取本地 Codex 会话…",
   "No local Codex sessions to import.": "没有可导入的本地 Codex 会话。",
   "Import selected": "导入所选",
+  "Select all": "全选",
   "Importing…": "正在导入…",
   "{0} local Codex sessions can be imported": "有 {0} 个本地 Codex 会话可导入",
   "Imported {0} sessions": "已导入 {0} 个会话",

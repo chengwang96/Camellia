@@ -806,6 +806,7 @@
 .import-hint { display: block; width: 100%; margin: 4px 0 10px; padding: 7px 10px; border: 1px dashed var(--dsw-alias-border-l2); border-radius: 10px; background: none; color: var(--dsw-alias-label-tertiary); font-size: 12px; text-align: left; cursor: pointer; }
 .import-hint:hover { color: var(--dsw-static-deepseek-500); border-color: var(--dsw-static-deepseek-500); }
 .import-hint .import-dismiss { float: right; padding: 0 4px; color: var(--dsw-alias-label-caption); }
+.import-all { margin-top: 10px; padding: 4px 10px; border: 0; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary); }
 .import-list { max-height: 320px; overflow-y: auto; margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
 .import-row { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px; cursor: pointer; font-size: 13px; line-height: 1.4; }
 .import-row input { flex: none; margin-top: 3px; accent-color: var(--dsw-static-deepseek-500); }
