@@ -4,6 +4,7 @@ main { max-width: 1240px; margin: auto; padding: 20px 40px 48px; }
 button { border: 0; border-radius: 10px; padding: 9px 16px; cursor: pointer; color: inherit; background: var(--dsw-alias-bg-module-platform); }
 .quiet { background: transparent; }
 .quiet:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.quiet.danger:not(:disabled) { color: var(--dsw-alias-state-error-primary); }
 .primary { color: white; background: var(--dsw-alias-state-business-primary); font-weight: 600; }
 .danger { color: var(--dsw-alias-state-error-primary); background: var(--dsw-alias-state-error-tertiary); }
 .page-header { display: flex; align-items: center; gap: 16px; color: var(--dsw-alias-label-secondary); font: var(--f-xs-13); }

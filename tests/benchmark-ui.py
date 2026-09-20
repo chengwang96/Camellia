@@ -249,6 +249,12 @@ with sync_playwright() as p:
     page.locator('#closeDetail').click()
     page.locator('#export').click()
     assert page.evaluate("calls.some(c=>c.method==='benchmarkExport'&&c.payload===savedReport.id)")
+    # Deleting a run arms the button first; the second click sends the call.
+    page.locator('#deleteRun').click()
+    expect(page.locator('#deleteRun')).to_have_text('Delete this run?')
+    assert not page.evaluate("calls.some(c=>c.method==='benchmarkDelete')")
+    page.locator('#deleteRun').click()
+    assert page.evaluate("calls.some(c=>c.method==='benchmarkDelete'&&c.payload===savedReport.id)")
     page.locator('#history').select_option('')
     page.locator('#history').select_option(report['id'])
     expect(page.locator('#runMeta')).to_contain_text('Simulated results')

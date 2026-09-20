@@ -875,6 +875,7 @@
   "Archive a conversation from its ⋯ menu in the sidebar and it will appear here.": "在侧边栏会话的 ⋯ 菜单中选择「归档会话」后，会显示在这里。",
   "Restore": "恢复",
   "Delete": "删除",
+  "Delete this run?": "确认删除这次测试？",
   "Files missing": "文件缺失",
   "Conversation restored": "对话已恢复",
   "Conversation deleted": "对话已删除",

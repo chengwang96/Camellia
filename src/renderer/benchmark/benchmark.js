@@ -160,6 +160,8 @@ function renderResults(report) {
   // or a newer application ships a different task catalog.
   const suite = report?.tasks ? { name: report.suiteName || currentSuite?.name || report.suite, tasks: report.tasks } : currentSuite || { name: report?.suite || '', tasks: [] };
   $('export').disabled = !report;
+  $('deleteRun').disabled = !report || report.status === 'running' || report.status === 'cancelling';
+  if (deleteArmed && deleteArmed !== report?.id) { deleteArmed = null; $('deleteRun').textContent = t('Delete'); }
   const scheduling = report?.execution?.mode === 'parallel-engines' ? `${report.execution.maxConcurrentTrials} engines in parallel` : 'Sequential run';
   const metadata = report ? [report.model, report.provider, t(report.library?.name || 'Camellia built-in'), t(suite.name)] : [];
   const configuration = report ? [t(`${report.repeats} attempt${report.repeats > 1 ? 's' : ''} per task`),
@@ -362,6 +364,23 @@ $('history').addEventListener('change', async () => {
   catch (error) { notice(error.message); }
 });
 $('export').addEventListener('click', async () => { try { await checked(api.benchmarkExport(selectedId)); } catch (error) { notice(error.message); } });
+// Two-step delete: first click arms the button, second click removes the run.
+let deleteArmed = null;
+$('deleteRun').addEventListener('click', async () => {
+  if (!selectedId) return;
+  if (deleteArmed !== selectedId) {
+    deleteArmed = selectedId;
+    $('deleteRun').textContent = t('Delete this run?');
+    setTimeout(() => { if (deleteArmed) { deleteArmed = null; $('deleteRun').textContent = t('Delete'); } }, 3000);
+    return;
+  }
+  deleteArmed = null;
+  try {
+    await checked(api.benchmarkDelete(selectedId));
+    selectedId = ''; selectedReport = null; $('trialDetail').hidden = true;
+    await refresh();
+  } catch (error) { notice(error.message); }
+});
 $('closeDetail').addEventListener('click', () => { $('trialDetail').hidden = true; });
 api.onBenchmarkState(render);
 api.onApiRouterState(() => { void refresh(); });
