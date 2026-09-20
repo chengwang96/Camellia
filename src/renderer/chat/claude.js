@@ -26,6 +26,7 @@ const context = { sessionId: null, workspaceId: null };
   let runStartedAt = 0;
   let runTimer = null;
   let lastUsage = null;       // usage object from the last result event
+  let lastCallUsage = null;   // usage of the latest single API call in the turn
   let attachments = [];       // [{ path, name, isImage }]
   let openPops = [];          // currently open popover elements
   let runAnchorMs = 0;        // timestamp of message_start (drives the 15s clock)
@@ -990,9 +991,9 @@ const context = { sessionId: null, workspaceId: null };
   function updateCtxRing() {
     const ring = $('ctxRing');
     const cap = (currentModel && (modelCtxCaps.get(currentModel) || modelCtxCaps.get(currentModel.replace(/:cloud$/, '')))) || ENGINE_CTX_DEFAULTS[harnessId];
-    const used = lastUsage ? (lastUsage.input_tokens || lastUsage.prompt_tokens || 0) + (lastUsage.cache_read_input_tokens || 0) + (lastUsage.cache_creation_input_tokens || 0) : 0;
-    if (!cap || !used) { ring.hidden = true; return; }
-    const pct = Math.min(100, Math.round(used / cap * 100));
+    const usage = lastCallUsage || lastUsage;
+    const used = usage ? (usage.input_tokens || usage.prompt_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0) : 0;
+    if (!cap || !used) { ring.hidden = true; return; }    const pct = Math.min(100, Math.round(used / cap * 100));
     ring.hidden = false;
     $('ctxFill').style.strokeDasharray = (97.39 * pct / 100) + ' 97.39';
     $('ctxFill').classList.toggle('hot', pct >= 80);
@@ -1117,6 +1118,9 @@ const context = { sessionId: null, workspaceId: null };
     }
 
     if (ev.type === 'assistant' && ev.message) {
+      // Per-call usage reflects the real context footprint of the latest API
+      // request; the result event sums it across every call in the turn.
+      if (ev.message.usage) { lastCallUsage = ev.message.usage; updateCtxRing(); }
       rebuildTurn(ev.message.content || []);
       return;
     }
@@ -1230,6 +1234,15 @@ const context = { sessionId: null, workspaceId: null };
       if (settings.conversations?.warnOnSwitch) { await switchOptions(harnessId); return; }
     }
     const text = input.value.trim();
+    if (goalUI.isDraft()) {
+      // Goal draft mode turns the composer into the goal starter; attachments
+      // stay put for the following message.
+      if (!text) return;
+      input.value = '';
+      autoResize();
+      await goalUI.startFromComposer(text);
+      return;
+    }
     const atts = attachments.slice();
     if (!text && !atts.length) return;
     if (chatProfile.supportsImages === false && atts.some(a => a.isImage)) {
@@ -1426,7 +1439,7 @@ const context = { sessionId: null, workspaceId: null };
     turnEl = null;
     blocks = {};
     pendingTools = {};
-    lastUsage = null; updateCtxRing();
+    lastUsage = null; lastCallUsage = null; updateCtxRing();
     todoItems = null;
     if (todoPanelEl) { todoPanelEl.remove(); todoPanelEl = null; }
     $('headerTitle').textContent = window.CamelliaI18n.t("New session");
@@ -1699,7 +1712,7 @@ const context = { sessionId: null, workspaceId: null };
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
     newSession, openHistorySession, forkSession, canFork: s => sharedChat || harnessId !== 'antigravity' || !s.id.startsWith('agy-'), openActionMenu, closePops });
   const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && canChangeContext() && (!sharedChat || !running), openHistorySession, setStatus,
-    acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); } });
+    acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); }, openActionMenu, closePops });
 
   let pendingForkId = null;
   async function forkSession(s) {

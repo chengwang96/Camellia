@@ -64,37 +64,9 @@
 
     <div class="input-zone">
       <div class="column">
-        <div class="goal-bar" id="goalBar">
-          <div id="goalEntry">
-            <div class="goal-input-row" id="goalInputRow">
-              <input id="goalInput" type="text" aria-label="Goal" aria-describedby="goalInputHint" placeholder="What would you like to complete?" data-i18n-attrs="aria-label placeholder">
-              <button class="goal-start-btn" id="goalStartBtn" data-i18n>Start goal</button>
-            </div>
-            <p class="goal-input-hint" id="goalInputHint" data-i18n>Keeps working until complete or blocked. You can pause at any time.</p>
-          </div>
-          <section class="goal-card" id="goalCard" aria-label="Current goal" hidden data-i18n-attrs="aria-label">
-            <div class="goal-card-top">
-              <svg class="goal-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
-              <span class="goal-phase" id="goalPhase" role="status" data-i18n></span>
-              <span class="goal-objective" id="goalObjective"></span>
-              <span class="goal-elapsed" id="goalElapsed" title="Active time" data-i18n data-i18n-attrs="title"></span>
-              <div class="goal-controls">
-                <button class="goal-icon-btn" id="goalClearBtn" aria-label="Remove goal" title="Remove goal and stop working" data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M5 6l1 14a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1l1-14M10 10v7M14 10v7"/></svg></button>
-                <button class="goal-icon-btn" id="goalPauseBtn" aria-label="Pause goal" title="Pause goal and stop the current response" data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M10 8v8M14 8v8"/></svg></button>
-                <button class="goal-icon-btn" id="goalResumeBtn" aria-label="Resume goal" title="Resume goal" hidden data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4z"/></svg></button>
-                <button class="goal-icon-btn" id="goalExpandBtn" aria-label="Show goal details" title="Show goal details" aria-expanded="false" aria-controls="goalDetails" data-i18n-attrs="aria-label title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"/></svg></button>
-              </div>
-            </div>
-            <div class="goal-details" id="goalDetails" hidden>
-              <p class="goal-full-objective" id="goalFullObjective"></p>
-              <p class="goal-meta" id="goalMeta" data-i18n></p>
-              <p class="goal-reason" id="goalReason" hidden></p>
-              <div class="goal-actions"><button id="goalCompleteBtn" data-i18n>Mark complete</button></div>
-            </div>
-          </section>
-        </div>
         <div class="suggestion" id="suggestion"></div>
         <div class="input-card" id="inputCard">
+          <div class="goal-chip-row" id="goalChipRow" hidden></div>
           <div class="attach-row" id="attachRow"></div>
           <textarea id="input" placeholder="Message Claude Code" rows="2" data-i18n-attrs="placeholder"></textarea>
           <div class="input-row">
@@ -110,6 +82,10 @@
               </select>
             </span>
             <span class="input-spacer"></span>
+            <button class="goal-toggle" id="goalToggle" title="Goal mode" aria-pressed="false" hidden data-i18n-attrs="title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
+              <span data-i18n>Goal</span>
+            </button>
             <button class="ctx-ring" id="ctxRing" hidden aria-label="Context usage" data-i18n-attrs="aria-label"><svg viewBox="0 0 36 36"><circle class="ctx-track" cx="18" cy="18" r="15.5"/><circle class="ctx-fill" id="ctxFill" cx="18" cy="18" r="15.5"/></svg></button>
             <button class="model-pill" id="modelPill" title="Model and reasoning level" data-i18n-attrs="title">
               <span class="model-name" id="modelPillName">Default model</span>

@@ -543,66 +543,37 @@
   .todo-item.completed { color: var(--dsw-alias-label-tertiary); text-decoration: line-through; }
   .todo-item.in_progress .todo-activeform { color: var(--dsw-static-deepseek-500); font: var(--f-xxs-12); margin-left: 6px; }
 
-  /* ===== Persistent goal above the composer ===== */
-  .goal-bar { display: none; margin-bottom: 10px; }
-  .goal-bar.visible { display: block; }
-  .goal-bar [hidden] { display: none !important; }
-  .goal-input-row { display: flex; gap: 8px; align-items: center; }
-  .goal-input-row input {
-    flex: 1; min-width: 0; padding: 8px 14px;
-    border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px;
-    font: var(--f-s-14); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary);
-    outline: none;
-  }
-  .goal-input-row input:focus { border-color: var(--dsw-static-deepseek-400); }
-  .goal-input-hint { margin: 6px 14px 0; font: var(--f-xxs-12); color: var(--dsw-alias-label-tertiary); }
-  .goal-start-btn {
-    height: 40px; padding: 8px 16px; border: none; border-radius: 999px;
-    background: var(--dsw-static-deepseek-500); color: #fff;
-    font: var(--f-s-strong-14); cursor: pointer; white-space: nowrap;
-  }
-  .goal-start-btn:hover { background: var(--dsw-static-deepseek-400); }
-  .goal-card {
-    border: 1px solid var(--dsw-alias-border-l2);
-    background: var(--dsw-alias-bg-soft);
-    border-radius: 16px; padding: 8px 12px;
-  }
-  .goal-card-top { display: flex; align-items: center; gap: 8px; min-height: 28px; }
-  .goal-icon { width: 17px; height: 17px; flex-shrink: 0; color: var(--dsw-alias-label-tertiary); }
-  .goal-objective {
-    flex: 1; min-width: 0; font: var(--f-xs-13); color: var(--dsw-alias-label-tertiary);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .goal-phase { font: var(--f-xs-strong-13); color: var(--dsw-alias-label-primary); flex-shrink: 0; }
-  .goal-phase.blocked { color: var(--dsw-alias-state-error-primary); }
-  .goal-phase.complete { color: var(--dsw-alias-state-success-primary); }
-  .goal-elapsed { font: var(--f-xxs-12); font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
-  .goal-controls { display: flex; gap: 2px; flex-shrink: 0; }
-  .goal-icon-btn {
-    width: 28px; height: 28px; display: grid; place-items: center;
-    border: none; border-radius: 7px; background: transparent;
-    color: var(--dsw-alias-label-tertiary); cursor: pointer;
-  }
-  .goal-icon-btn svg { width: 16px; height: 16px; }
-  .goal-icon-btn:hover, .goal-icon-btn[aria-expanded="true"] { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
-  .goal-details { margin-top: 8px; padding: 10px 4px 4px; border-top: 1px solid var(--dsw-alias-border-l2); }
-  .goal-full-objective { font: var(--f-s-14); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow-y: auto; }
-  .goal-meta { font: var(--f-xxs-12); color: var(--dsw-alias-label-tertiary); margin-top: 6px; }
-  .goal-actions { display: flex; gap: 6px; margin-top: 8px; }
-  .goal-actions button {
-    padding: 4px 12px; border-radius: 999px; font: var(--f-xxs-12);
-    border: 1px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-layer-1);
+  /* ===== Goal chip inside the composer ===== */
+  .goal-chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .goal-chip-row[hidden] { display: none; }
+  .goal-chip {
+    display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+    padding: 4px 10px; border-radius: 999px; font: var(--f-xxs-12);
+    border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-soft);
     color: var(--dsw-alias-label-secondary); cursor: pointer;
   }
-  .goal-actions button:hover { background: var(--dsw-alias-interactive-bg-hover); }
-  .goal-reason { font: var(--f-xs-13); color: var(--dsw-alias-state-error-primary); margin-top: 6px; overflow-wrap: anywhere; }
-  @media (max-width: 800px) {
-    .goal-card-top { flex-wrap: wrap; }
-    .goal-objective { flex-basis: calc(100% - 180px); }
-    .goal-elapsed { margin-left: 25px; }
-    .goal-controls { margin-left: auto; }
+  .goal-chip:hover { border-color: var(--dsw-static-deepseek-400); color: var(--dsw-alias-label-primary); }
+  .goal-chip svg { width: 13px; height: 13px; flex: none; }
+  .goal-chip .goal-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .goal-chip.active { border-color: var(--dsw-static-deepseek-400); color: var(--dsw-static-deepseek-500); }
+  .goal-chip.blocked { border-color: var(--dsw-alias-state-error-primary); color: var(--dsw-alias-state-error-primary); }
+  .goal-chip.complete { border-color: var(--dsw-alias-state-success-primary); color: var(--dsw-alias-state-success-primary); }
+  .goal-chip .attchip-x { display: grid; place-items: center; width: 16px; height: 16px; border: none; border-radius: 50%; background: none; color: inherit; cursor: pointer; font-size: 10px; padding: 0; }
+  .goal-chip .attchip-x:hover { background: var(--dsw-alias-interactive-bg-hover); }
+  .goal-criterion-input {
+    flex: 1; min-width: 140px; padding: 4px 10px; border-radius: 999px; font: var(--f-xxs-12);
+    border: 1px solid var(--dsw-static-deepseek-400); background: var(--dsw-alias-bg-layer-1);
+    color: var(--dsw-alias-label-primary); outline: none;
   }
-
+  .goal-toggle {
+    display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 11px;
+    border: none; border-radius: 999px; background: transparent; cursor: pointer;
+    font: var(--f-xxs-12); color: var(--dsw-alias-label-tertiary);
+  }
+  .goal-toggle[hidden] { display: none; }
+  .goal-toggle svg { width: 14px; height: 14px; }
+  .goal-toggle:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+  .goal-toggle[aria-pressed="true"] { background: var(--dsw-alias-bg-soft); color: var(--dsw-static-deepseek-500); }
   /* ===== P3: permission modal ===== */
   .perm-mask {
     position: fixed; inset: 0; z-index: 2000;

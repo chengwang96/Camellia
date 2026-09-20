@@ -2,10 +2,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { ClaudeGoal } = require('../src/engines/claude-goal');
+const { ClaudeGoal, verifySignal } = require('../src/engines/claude-goal');
 const { createHarness } = require('./claude-harness.cjs');
 
-function setup(t) {
+function setup(t, extra = {}) {
   const h = createHarness(); t.after(() => h.cleanup());
   const timers = new Set(), prompts = [];
   let now = 1000, interrupts = 0;
@@ -13,11 +13,12 @@ function setup(t) {
     interrupt() { interrupts++; this.running = false; } };
   const options = { file: () => path.join(h.root, 'goal.json'), getSession: () => session, ensureSession: () => session,
     resolveWorkspace: p => p.workspaceId || null, onChange() {}, log() {},
-    setTimer: fn => { timers.add(fn); return fn; }, clearTimer: fn => timers.delete(fn), now: () => now };
+    setTimer: fn => { timers.add(fn); return fn; }, clearTimer: fn => timers.delete(fn), now: () => now, ...extra };
   const goal = new ClaudeGoal(options);
   const tick = () => { assert.equal(timers.size, 1); [...timers][0](); };
   const result = event => { session.running = false; goal.handleResult(event); };
-  return { goal, session, options, prompts, timers, tick, result, advance: ms => { now += ms; }, interrupts: () => interrupts };
+  const settle = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); };
+  return { goal, session, options, prompts, timers, tick, result, settle, advance: ms => { now += ms; }, interrupts: () => interrupts };
 }
 
 test('goals continue past the former 10, 25 and 50 turn limits and finish only on completion', t => {
@@ -127,4 +128,73 @@ test('a goal never interrupts a different conversation and session launch failur
   h.session.sendUserMessage = () => { throw new Error('Engine unavailable'); };
   h.tick(); assert.equal(h.goal.view().phase, 'blocked');
   assert.match(h.goal.view().blockedReason.message, /Engine unavailable/);
+});
+
+test('completion claims are verified independently; a pass completes with evidence recorded', async t => {
+  const claims = [];
+  const h = setup(t, { verifyCompletion: async claim => { claims.push(claim); return { pass: true, reason: 'tests green, diff reviewed' }; } });
+  h.goal.start({ objective: 'Finish', criterion: 'npm test passes' });
+  h.tick();
+  assert.match(h.prompts[0], /Completion criterion.*npm test passes/);
+  assert.match(h.prompts[0], /independent verifier/);
+  h.result({ result: 'Done.\n<goal:complete>' });
+  assert.equal(h.goal.view().phase, 'active');
+  assert.ok(h.goal.view().verifying);
+  await h.settle();
+  assert.equal(claims.length, 1);
+  assert.deepEqual({ objective: claims[0].objective, criterion: claims[0].criterion }, { objective: 'Finish', criterion: 'npm test passes' });
+  assert.equal(h.goal.view().phase, 'complete');
+  assert.equal(h.goal.view().verified.evidence, 'tests green, diff reviewed');
+  assert.equal(h.timers.size, 0);
+});
+
+test('rejected claims feed back into the next round and three rejections block', async t => {
+  const reasons = ['tests still failing', 'diff has no migration', 'criterion unmet'];
+  const h = setup(t, { verifyCompletion: async () => ({ pass: false, reason: reasons.shift() }) });
+  h.goal.start({ objective: 'Finish', criterion: 'all green' });
+  for (let i = 1; i <= 2; i++) {
+    h.tick(); h.result({ result: 'Done.\n<goal:complete>' });
+    await h.settle();
+    assert.equal(h.goal.view().phase, 'active');
+    assert.equal(h.goal.view().verifyStreak, i);
+  }
+  h.tick(); assert.match(h.prompts.at(-1), /verifier rejected the completion claim \(2\/3\): diff has no migration/);
+  h.result({ result: 'Done again.\n<goal:complete>' });
+  await h.settle();
+  assert.equal(h.goal.view().phase, 'blocked');
+  assert.equal(h.goal.view().blockedReason.code, 'verification-failed');
+  assert.equal(h.timers.size, 0);
+  h.goal.resume(); assert.equal(h.goal.view().verifyStreak, 0);
+});
+
+test('a verifier that cannot run counts as an execution error and blocks after three', async t => {
+  const h = setup(t, { verifyCompletion: async () => { throw new Error('engine down'); } });
+  h.goal.start({ objective: 'Finish' });
+  for (let i = 0; i < 3; i++) {
+    h.tick(); h.result({ result: 'Done.\n<goal:complete>' });
+    await h.settle();
+  }
+  assert.equal(h.goal.view().phase, 'blocked');
+  assert.equal(h.goal.view().blockedReason.code, 'repeated-errors');
+});
+
+test('pausing mid-verification discards the verdict', async t => {
+  let release;
+  const h = setup(t, { verifyCompletion: () => new Promise(resolve => { release = resolve; }) });
+  h.goal.start({ objective: 'Finish' });
+  h.tick(); h.result({ result: 'Done.\n<goal:complete>' });
+  assert.ok(h.goal.view().verifying);
+  h.goal.setPhase('paused');
+  release({ pass: true, reason: 'ok' });
+  await h.settle();
+  assert.equal(h.goal.view().phase, 'paused');
+  assert.equal(h.goal.view().verified, null);
+  assert.equal(h.timers.size, 0);
+});
+
+test('verify verdicts ignore fenced or quoted markers', () => {
+  assert.equal(verifySignal('```\n<verify:pass>\n```'), null);
+  assert.equal(verifySignal('> <verify:pass>'), null);
+  assert.deepEqual(verifySignal('Checked.\n<verify:fail> tests missing'), { type: 'fail', reason: 'tests missing' });
+  assert.deepEqual(verifySignal('<verify:pass> all green'), { type: 'pass', reason: 'all green' });
 });

@@ -32,7 +32,7 @@ for (const el of document.querySelectorAll('[data-harness-name]')) el.textConten
 document.querySelector('.logo-icon').dataset.engine = harnessId;
 document.querySelector('.logo-icon img').src = chatLogoUrl;
 document.getElementById('input').placeholder = 'Message ' + chatProfile.name;
-document.getElementById('goalInput').placeholder = 'Set a long-term goal. ' + chatProfile.shortName + ' will work through it automatically…';
+window.goalDraftPlaceholder = 'Set a long-term goal. ' + chatProfile.shortName + ' will work through it automatically…';
 document.querySelector('.perm-dialog .perm-title').textContent = chatProfile.shortName + ' requests the following action';
 if (harnessId === 'kimi') {
   document.getElementById('selPermission').replaceChildren(...[
