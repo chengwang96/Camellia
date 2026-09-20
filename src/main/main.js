@@ -676,7 +676,7 @@ const dshChat = createDshChat({ dataDir: app.getPath('userData'), loadConfig, sa
   getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
   runtime: () => ({ file: detectDshBin() }), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'dsh'),
   onEvent: event => publishChatEvent('dsh', event), log });
-sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log,
+sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow,
   drivers: {
     claude: { history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts) },
     kimi: { history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts) },
