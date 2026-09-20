@@ -46,6 +46,13 @@
   </section>
   <section class="results" aria-labelledby="resultsHeading">
     <div class="section-heading"><div><h2 id="resultsHeading" data-i18n>Results</h2><p id="runMeta" data-i18n>Choose a model to start your first comparison.</p></div><div class="report-actions"><label class="sr-only" for="history" data-i18n>Previous runs</label><select id="history"><button type="button"><selectedcontent></selectedcontent></button><option value="" data-i18n>Run history</option></select><button id="export" class="quiet" disabled data-i18n>Export JSON</button><button id="deleteRun" class="quiet danger" disabled data-i18n>Delete</button></div></div>
+    <div class="confirm-mask" id="deleteMask" hidden>
+      <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="deleteTitle">
+        <h3 id="deleteTitle" data-i18n>Delete this run?</h3>
+        <p class="hint" data-i18n>The selected benchmark report will be deleted permanently. This cannot be undone.</p>
+        <div class="confirm-actions"><button id="deleteCancel" class="quiet" data-i18n>Cancel</button><button id="deleteConfirm" class="danger-solid" data-i18n>Delete</button></div>
+      </div>
+    </div>
     <details id="runDetails" class="run-details" hidden><summary data-i18n>Run details</summary><p id="runConfiguration" data-i18n></p></details>
     <div id="progressSection" hidden><div class="progress-label"><span id="progressText" data-i18n></span><span id="runStatus" data-i18n></span></div><progress id="progress" value="0" max="15"></progress></div>
     <p id="runClock" class="score-note" data-i18n></p>

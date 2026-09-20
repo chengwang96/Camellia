@@ -161,7 +161,6 @@ function renderResults(report) {
   const suite = report?.tasks ? { name: report.suiteName || currentSuite?.name || report.suite, tasks: report.tasks } : currentSuite || { name: report?.suite || '', tasks: [] };
   $('export').disabled = !report;
   $('deleteRun').disabled = !report || report.status === 'running' || report.status === 'cancelling';
-  if (deleteArmed && deleteArmed !== report?.id) { deleteArmed = null; $('deleteRun').textContent = t('Delete'); }
   const scheduling = report?.execution?.mode === 'parallel-engines' ? `${report.execution.maxConcurrentTrials} engines in parallel` : 'Sequential run';
   const metadata = report ? [report.model, report.provider, t(report.library?.name || 'Camellia built-in'), t(suite.name)] : [];
   const configuration = report ? [t(`${report.repeats} attempt${report.repeats > 1 ? 's' : ''} per task`),
@@ -364,17 +363,13 @@ $('history').addEventListener('change', async () => {
   catch (error) { notice(error.message); }
 });
 $('export').addEventListener('click', async () => { try { await checked(api.benchmarkExport(selectedId)); } catch (error) { notice(error.message); } });
-// Two-step delete: first click arms the button, second click removes the run.
-let deleteArmed = null;
-$('deleteRun').addEventListener('click', async () => {
+// Deleting a run goes through a confirmation dialog; the button never changes.
+$('deleteRun').addEventListener('click', () => { if (selectedId) $('deleteMask').hidden = false; });
+$('deleteCancel').addEventListener('click', () => { $('deleteMask').hidden = true; });
+$('deleteMask').addEventListener('click', (event) => { if (event.target === $('deleteMask')) $('deleteMask').hidden = true; });
+$('deleteConfirm').addEventListener('click', async () => {
+  $('deleteMask').hidden = true;
   if (!selectedId) return;
-  if (deleteArmed !== selectedId) {
-    deleteArmed = selectedId;
-    $('deleteRun').textContent = t('Delete this run?');
-    setTimeout(() => { if (deleteArmed) { deleteArmed = null; $('deleteRun').textContent = t('Delete'); } }, 3000);
-    return;
-  }
-  deleteArmed = null;
   try {
     await checked(api.benchmarkDelete(selectedId));
     selectedId = ''; selectedReport = null; $('trialDetail').hidden = true;
