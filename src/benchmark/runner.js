@@ -137,6 +137,15 @@ class BenchmarkRunner {
     for (const trial of snapshot.trials) trial.checkScore = percent(checkFraction(trial));
     return { ...snapshot, engines: summarize(report) };
   }
+  deleteReport(id) {
+    if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)) throw new Error('Invalid benchmark run');
+    if (this.active?.id === id) throw new Error('Stop the running benchmark before deleting it');
+    const file = path.join(this.directory, id + '.json');
+    if (!fs.existsSync(file)) throw new Error('Benchmark report not found');
+    fs.rmSync(file, { force: true });
+    this.emit(true);
+    return { ok: true };
+  }
   state() {
     const router = this.getRouter()?.getState();
     const engines = ENGINES.map(id => {

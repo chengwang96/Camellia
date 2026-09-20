@@ -552,3 +552,25 @@ test('benchmark environment does not inherit API keys, personal settings, or Nod
   assert.equal(env.SOME_API_KEY, undefined); assert.equal(env.NODE_OPTIONS, undefined); assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined);
   assert.equal(env.CLAUDE_CONFIG_DIR, undefined); assert.equal(env.DSH_HOME, undefined); assert.equal(env.HOME, root);
 });
+
+test('benchmark reports can be deleted individually, and the active run is protected', t => {
+  const dir = temp(t);
+  const runner = new BenchmarkRunner({ directory: dir, runtimes: () => ({ locate: () => null }), node: process.execPath, getRouter: () => null });
+  const mk = status => {
+    const id = crypto.randomUUID();
+    fs.writeFileSync(path.join(dir, id + '.json'), JSON.stringify({ id, version: VERSION, status, startedAt: new Date().toISOString(), trials: [] }));
+    return id;
+  };
+  const a = mk('completed'), b = mk('completed');
+  assert.equal(runner.history().length, 2);
+  assert.equal(runner.deleteReport(a).ok, true);
+  assert.equal(runner.history().length, 1);
+  assert.throws(() => runner.deleteReport(a), /not found/);
+  assert.throws(() => runner.deleteReport('bad-id'), /Invalid/);
+  const active = mk('running');
+  runner.active = { id: active };
+  assert.throws(() => runner.deleteReport(active), /Stop the running benchmark/);
+  runner.active = null;
+  assert.equal(runner.deleteReport(active).ok, true);
+  assert.equal(runner.history().length, 1);
+});
