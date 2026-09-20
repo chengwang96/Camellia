@@ -455,7 +455,7 @@ class SharedConversations {
     const a = this.active.get(id);
     if (!a || a.engine !== engine || a.internal) return { ok: true, live: null };
     const messages = this.messages(a.c); if (messages.at(-1)?.role === 'user') messages.pop();
-    return { ok: true, live: { sessionId: a.c.id, workspaceId: a.c.workspaceId, runId: a.facade.gen, startedAt: a.startedAt,
+    return { ok: true, live: { sessionId: a.c.id, workspaceId: a.c.workspaceId, engine: a.engine, runId: a.facade.gen, startedAt: a.startedAt,
       prompt: a.prompt, displayText: a.displayText, userSeq: a.userSeq, attachments: a.attachments, messages,
       events: a.events.filter(e => e.type !== 'gui:permission' || a.permissions.has(e.requestId)), eventSeq: a.eventSeq } };
   }

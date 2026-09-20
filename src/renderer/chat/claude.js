@@ -21,6 +21,7 @@ const context = { sessionId: null, workspaceId: null };
   let loadedEngine = harnessId;
   const eventsDuringRestore = [];
   let turnEl = null;          // current assistant turn container
+  let turnEngine = null;      // harness that owns the in-flight turn, which may differ from this page's
   let blocks = {};            // stream block index -> { type, raw, el, ... }
   let pendingTools = {};      // tool_use_id -> card handle
   let runStartedAt = 0;
@@ -580,13 +581,19 @@ const context = { sessionId: null, workspaceId: null };
     updateConversationControls(); void sidebar.load();
   }
 
+  function turnMetaHtml() {
+    return turnEngine && turnEngine !== harnessId
+      ? engineAvatar(turnEngine) + '<span>' + esc(ENGINE_SHORT_NAMES[turnEngine] || turnEngine) + '</span>'
+      : chatAvatar + '<span>' + chatProfile.shortName + '</span>';
+  }
+  function applyTurnMeta() { const meta = turnEl?.querySelector('.turn-meta'); if (meta) meta.innerHTML = turnMetaHtml(); }
   function ensureTurn() {
     if (turnEl) return turnEl;
     clearEmpty();
     const div = document.createElement('div');
     div.className = 'turn';
     div.innerHTML =
-      '<div class="turn-meta">' + chatAvatar + '<span>' + chatProfile.shortName + '</span></div>' +
+      '<div class="turn-meta">' + turnMetaHtml() + '</div>' +
       '<div class="turn-body"></div>';
     chat.appendChild(div);
     turnEl = div;
@@ -1060,6 +1067,7 @@ const context = { sessionId: null, workspaceId: null };
     }
     if (restoringRun) { eventsDuringRestore.push(ev); return; }
     if (sharedChat && ev.session_id !== context.sessionId) return;
+    if (ev.engine && ev.engine !== turnEngine) { turnEngine = ev.engine; applyTurnMeta(); }
     if (ev.handoff && ev.type === 'gui:permission') {
       if (currentPermission === 'full') { void autoAllowPermission(ev); return; }
       permissionQueue.push(ev); if (!permRequestId) showPermissionDialog(ev); return;
@@ -1252,6 +1260,7 @@ const context = { sessionId: null, workspaceId: null };
     saveDraft();
     const sentDraftKey = draftKey();
     sending = true;
+    turnEngine = harnessId;
     if (sharedChat) restoringRun = true;
     input.value = '';
     attachments = [];
@@ -1437,6 +1446,7 @@ const context = { sessionId: null, workspaceId: null };
     writeUi('location', { sessionId: null, workspaceId });
     pendingForkId = null;
     turnEl = null;
+    turnEngine = null;
     blocks = {};
     pendingTools = {};
     lastUsage = null; lastCallUsage = null; updateCtxRing();
@@ -1756,6 +1766,7 @@ const context = { sessionId: null, workspaceId: null };
       currentRunId = null;
       pendingForkId = null;
       turnEl = null;
+      turnEngine = null;
       blocks = {};
       pendingTools = {};
       todoItems = null;
@@ -1826,6 +1837,7 @@ const context = { sessionId: null, workspaceId: null };
     context.sessionId = live.sessionId; context.workspaceId = live.workspaceId;
     currentRunId = live.runId; acceptSessionEvents = true;
     turnEl = null; blocks = {}; pendingTools = {}; todoItems = null; todoPanelEl = null;
+    if (live.engine) turnEngine = live.engine;
     chat.innerHTML = '';
     renderHistoryMessages(live.messages);
     addUser(live.displayText ?? live.prompt, live.attachments || [], { seq: live.userSeq, at: live.startedAt });
