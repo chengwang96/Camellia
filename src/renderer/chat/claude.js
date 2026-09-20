@@ -43,7 +43,7 @@ const context = { sessionId: null, workspaceId: null };
   const questionDrafts = new Map();
 
   // Offline defaults; a configured pool supplies its explicit model groups.
-  const MODELS = [{ id: '', label: "Select model" }];
+  const MODELS = [];
   const LEVELS = [
     { id: '', label: 'Default' },
     { id: 'off', label: 'Off' },
@@ -1867,7 +1867,7 @@ const context = { sessionId: null, workspaceId: null };
     const models = state.enabled ? state.models : [];
     const canonical = currentModel.replace(/:cloud$/, '');
     // Keep the saved selection ID on its canonical row, including legacy :cloud IDs.
-    MODELS.splice(0, MODELS.length, { id: '', label: models.length ? "Select model" : "Configure models in Camellia first" },
+    MODELS.splice(0, MODELS.length, ...(models.length ? [] : [{ id: '', label: "Configure models in Camellia first" }]),
       ...models.map(id => ({ id: id === canonical ? currentModel : id, label: id })));
     if (currentModel && !models.includes(canonical)) {
       MODELS.push({ id: currentModel, label: canonical + " (no route configured)" });
@@ -1929,7 +1929,7 @@ const context = { sessionId: null, workspaceId: null };
         const account = state;
         accountModels = account.models || [];
         if (!account.ok) throw new Error(account.error);
-        MODELS.splice(0, MODELS.length, { id: '', label: account.models.length ? 'Select model' : 'Connect ' + accountName + ' in settings' },
+        MODELS.splice(0, MODELS.length, ...(account.models.length ? [] : [{ id: '', label: 'Connect ' + accountName + ' in settings' }]),
           ...account.models.map(model => ({ id: model.id, label: model.name })));
         if (currentModel && !account.models.some(model => model.id === currentModel)) MODELS.push({ id: currentModel, label: currentModel + ' (refresh account)' });
         $('modelPill').title = 'Models available to your ' + accountName + ' account';
