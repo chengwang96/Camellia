@@ -6,7 +6,7 @@ const { randomUUID } = require('node:crypto');
 const { readJson, writeJson } = require('../shared/json-store');
 const { validSessionId } = require('./claude-history');
 const { createSessionWorkspaces } = require('./session-workspaces');
-const { ClaudeGoal } = require('./claude-goal');
+const { ClaudeGoal, verifyPrompt, verifySignal } = require('./claude-goal');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity'];
 const conversationSettings = value => ({ ...Object.fromEntries(['connection', 'permissionMode', 'thinkingBudget', 'contextWindow']
@@ -78,6 +78,7 @@ class SharedConversations {
         this.facades.set(id, facade);
         return facade;
       }, resolveWorkspace: payload => payload.workspaceId || this.get(id).workspaceId || null,
+      verifyCompletion: claim => this.verifyCompletion(id, claim),
       onChange: value => {
         this.onGoal({ sessionId: id, goal: value });
         this.publishActivity(id);
@@ -96,6 +97,28 @@ class SharedConversations {
     this.onEvent({ type: 'conversation:activity', session_id: id, engine: c.currentEngine, activity: this.activity(id) });
   }
   pauseGoals() { for (const goal of this.goals.values()) { if (goal.armed) goal.setPhase('paused'); else goal.cancelTimer(); } }
+
+  // Independent completion check: a throwaway session with no shared history
+  // inspects the workspace against the goal and criterion, then is purged.
+  async verifyCompletion(id, { objective, criterion, report }) {
+    const c = this.get(id);
+    const engine = this.goals.get(id)?.goal?.engine || c.currentEngine;
+    const settings = this.settings(engine, id);
+    const v = this.create(engine, c.workspaceId, 'Goal verification', c.cwd);
+    try {
+      v.engineSettings[engine] = conversationSettings(settings);
+      this.save(v);
+      const res = await this.send(engine, { sessionId: v.id, prompt: verifyPrompt({ objective, criterion, report, cwd: c.cwd }) });
+      if (!res.ok) throw new Error(res.error || 'Verification could not start');
+      const outcome = await res.done;
+      if (outcome.is_error) throw new Error(outcome.result || 'Verification turn failed');
+      const signal = verifySignal(outcome.result);
+      if (!signal) throw new Error('The verifier did not return a verdict');
+      return { pass: signal.type === 'pass', reason: signal.reason };
+    } finally {
+      try { this.purge(v.id); } catch (error) { this.log(`goal: verifier cleanup failed: ${error.message}`); }
+    }
+  }
 
   file(id) { if (!validSessionId(id)) throw new Error('Invalid conversation'); return path.join(this.dir, id + '.json'); }
   get(id) { const c = this.items.get(id); if (!c) throw new Error('Conversation not found'); return c; }
@@ -295,9 +318,29 @@ class SharedConversations {
       delete c.segments[engine];
       this.save(c);
     }
-    const editContext = edit && this.formatContext(c, [...edit.prior, { role: 'notice', text: 'This user message restarts the last turn. Its previous reply and tool history have been discarded. Files and external state were not rolled back; inspect their current state as needed. Follow the request below.' }]);
-    const prompt = promptOverride ?? ((edit ? editContext : this.context(c, engine)) + String(payload.prompt || ''));
-    if (!internal && prompt.length > 220000) throw new Error('The shared context is too large to send directly. Choose Markdown handoff in the engine menu to summarize it. Nothing was sent.');
+    const editNotice = { role: 'notice', text: 'This user message restarts the last turn. Its previous reply and tool history have been discarded. Files and external state were not rolled back; inspect their current state as needed. Follow the request below.' };
+    let editContext = edit && this.formatContext(c, [...edit.prior, editNotice]);
+    let prompt = promptOverride ?? ((edit ? editContext : this.context(c, engine)) + String(payload.prompt || ''));
+    if (!internal && prompt.length > 220000) {
+      // Give automatic compaction one chance before refusing to send; a huge
+      // new message is beyond what compaction can help with.
+      if (String(payload.prompt || '').length > 200000) throw new Error('The message is too large to send. Split it up or attach it as a file instead. Nothing was sent.');
+      if (this.busy(c.id)) throw new Error('The conversation is too large to send. Stop the current work and compact it from the engine menu. Nothing was sent.');
+      await this.compact(c.id, { automatic: true });
+      if (edit) {
+        // A resend replays the logical history, so rebuild it as the compaction
+        // summary plus only the turns that came after it.
+        const rows = this.rows(c);
+        const compacted = rows.findLast(r => r.role === 'notice' && r.file);
+        const summary = compacted && fs.existsSync(compacted.file) ? fs.readFileSync(compacted.file, 'utf8') + '\n\n' : '';
+        const recent = rows.filter(r => r.seq > (compacted?.seq || 0) && r.seq < edit.row.seq);
+        editContext = summary + this.formatContext(c, [...recent, editNotice]);
+        prompt = editContext + String(payload.prompt || '');
+      } else {
+        prompt = this.context(c, engine) + String(payload.prompt || '');
+      }
+      if (prompt.length > 220000) throw new Error('The conversation is still too large after automatic compaction. Compact it manually from the engine menu or start a new conversation. Nothing was sent.');
+    }
     const a = { c, engine, internal, prompt: payload.prompt || '', attachments: payload.attachments || [], events: [], permissions: new Map(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
       facade: facade || { gen: ++this.sequence, sessionId: c.id, opts: { workspaceId: c.workspaceId } }, priorCursor: c.segments[engine]?.cursor || 0 };
     a.done = new Promise(resolve => { a.resolve = resolve; });

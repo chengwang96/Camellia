@@ -30,7 +30,8 @@ function fixture(t) {
   function finish(engine, subtype = 'success', text = 'Answer from ' + engine, session = sessions[engine]) { session.running = false;
     manager.capture(engine, { type: 'result', subtype, is_error: subtype === 'error', result: text, session_id: session.sessionId, runId: session.gen });
   }
-  return { manager, args, root, sent, events, finish, drivers, get goal() { return [...manager.goals.values()].at(-1); }, setConfig: c => { config = c; },
+  const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); };
+  return { manager, args, root, sent, events, finish, drivers, flush, get goal() { return [...manager.goals.values()].at(-1); }, setConfig: c => { config = c; },
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
 test('defaults continue directly with no warning or origin badge', () => assert.deepEqual(preferences({}), { mode: 'direct', warnOnSwitch: false, showOrigin: false }));
@@ -90,6 +91,31 @@ test('a failed turn with oversized tool output can be discarded and resent withi
   assert.equal(f.manager.messages(c).filter(row => row.role === 'user').at(-1).seq, again.userSeq);
 });
 
+test('an edit resend that replays an oversized history is auto-compacted instead of refused', async t => {
+  const f = fixture(t), c = f.manager.create('claude', null, 'Edit a huge conversation');
+  f.manager.append(c, { role: 'user', text: 'First task' });
+  f.manager.append(c, { role: 'tool', text: 'EARLY_WORK_' + 'a'.repeat(129000) });
+  f.manager.append(c, { role: 'assistant', text: 'Early work done' });
+  f.manager.append(c, { role: 'user', text: 'Second task' });
+  f.manager.append(c, { role: 'tool', text: 'MORE_WORK_' + 'b'.repeat(129000) });
+  f.manager.append(c, { role: 'assistant', text: 'More work done' });
+  const old = f.manager.append(c, { role: 'user', text: 'ORIGINAL_REQUEST' });
+  f.manager.save(c);
+  const revised = f.manager.send('claude', { sessionId: c.id, editSeq: old.seq, prompt: 'REVISED_REQUEST' });
+  await f.flush();
+  f.finish('claude', 'success', 'SUMMARY_TEXT of the earlier work');
+  await f.flush();
+  f.finish('claude', 'success', 'Acknowledged');
+  const run = await revised;
+  const sent = f.sent.at(-1).prompt;
+  assert.ok(sent.length < 220000);
+  assert.match(sent, /SUMMARY_TEXT/);
+  assert.doesNotMatch(sent, /EARLY_WORK_|MORE_WORK_|ORIGINAL_REQUEST/);
+  f.finish('claude', 'success', 'Revised response');
+  assert.equal((await run.done).result, 'Revised response');
+  assert.equal(f.manager.messages(c).filter(row => row.role === 'user').at(-1).seq, run.userSeq);
+});
+
 test('revision guards reject busy, stale, oversized and forked edits without changing saved history', async t => {
   const f = fixture(t), run = await f.manager.send('claude', { prompt: 'Original' }), c = f.manager.get(run.sessionId);
   const payload = { sessionId: c.id, editSeq: run.userSeq, prompt: 'Edited' };
@@ -145,7 +171,15 @@ test('each engine continues a shared goal in the same conversation and recognize
     const session = f.sent.at(-1).session;
     f.manager.capture(engine, { type: 'stream_event', runId: session.gen, event: { delta: { type: 'text_delta', text: 'Verification passed.\n<goal:complete>' } } });
     f.finish(engine, 'success', '');
+    assert.equal(f.goal.view().phase, 'active');
+    assert.ok(f.goal.view().verifying);
+    await f.flush();
+    assert.match(f.sent.at(-1).prompt, /independent verifier/);
+    assert.match(f.sent.at(-1).prompt, /Complete and verify/);
+    f.finish(engine, 'success', 'Checked.\n<verify:pass> confirmed by re-running the tests');
+    await f.flush();
     assert.equal(f.goal.view().phase, 'complete');
+    assert.ok(f.goal.view().verified);
     assert.equal(f.goal.timer, null);
   }
 });
@@ -507,6 +541,10 @@ test('two goals and an ordinary conversation progress independently on one engin
   const chat = await f.manager.send('claude', { prompt: 'Ordinary question' });
   assert.equal(f.manager.active.size, 3);
   f.finish('claude', 'success', 'A finished.\n<goal:complete>', sa);
+  assert.equal(a.goal.phase, 'active'); assert.ok(a.goal.verifying);
+  await f.flush();
+  f.finish('claude', 'success', '<verify:pass> A verified');
+  await f.flush();
   assert.equal(a.goal.phase, 'complete'); assert.equal(b.armed, true);
   f.finish('claude', 'success', 'B continues', sb);
   assert.ok(b.timer);
