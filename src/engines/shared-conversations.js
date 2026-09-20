@@ -9,6 +9,9 @@ const { createSessionWorkspaces } = require('./session-workspaces');
 const { ClaudeGoal, verifyPrompt, verifySignal } = require('./claude-goal');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity'];
+// Last-resort caps when neither the conversation nor the router catalog knows
+// the model's window; mirrors the composer's defaults.
+const ENGINE_CTX_DEFAULTS = { claude: 200000, codex: 272000, dsh: 131072, kimi: 131072, antigravity: 1048576 };
 const conversationSettings = value => ({ ...Object.fromEntries(['connection', 'permissionMode', 'thinkingBudget', 'contextWindow']
   .filter(key => value[key] !== undefined).map(key => [key, value[key]])),
   ...(value.connection === 'subscription' ? { subscriptionModel: value.model } : {}) });
@@ -19,8 +22,8 @@ const textOf = content => typeof content === 'string' ? content : (content || []
 // The logical ID belongs to Camellia. Native IDs and synchronization cursors
 // are private to each engine. Original native histories are never rewritten.
 class SharedConversations {
-  constructor({ dir, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, log = () => {} }) {
-    Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, log });
+  constructor({ dir, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, log = () => {}, modelContextWindow = () => undefined }) {
+    Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, log, modelContextWindow });
     fs.mkdirSync(dir, { recursive: true });
     this.items = new Map(); this.active = new Map(); this.facades = new Map(); this.switching = new Map(); this.goals = new Map(); this.sequence = 0;
     this.onGoal = onGoal;
@@ -300,6 +303,16 @@ class SharedConversations {
     }
     assertAvailable();
     const settings = this.settings(engine, c.id);
+    if (!internal && c.seq) {
+      // Switching to a shorter-context model must not discover the overflow
+      // from the provider's error: compact first when the estimate says the
+      // native history no longer fits.
+      const cap = this.contextCap(engine, settings);
+      if (cap && this.estimateTokens(c) > cap * 0.85 && !this.busy(c.id)) {
+        try { await this.compact(c.id, { automatic: true }); }
+        catch (error) { this.log('pre-send compaction failed: ' + error.message); }
+      }
+    }
     let oldSegment = c.segments[engine];
     const segmentConnection = oldSegment ? this.drivers[engine].settings(oldSegment.nativeId).connection : undefined;
     if (!edit && oldSegment && segmentConnection && settings.connection && segmentConnection !== settings.connection) {
@@ -326,7 +339,10 @@ class SharedConversations {
       // new message is beyond what compaction can help with.
       if (String(payload.prompt || '').length > 200000) throw new Error('The message is too large to send. Split it up or attach it as a file instead. Nothing was sent.');
       if (this.busy(c.id)) throw new Error('The conversation is too large to send. Stop the current work and compact it from the engine menu. Nothing was sent.');
-      await this.compact(c.id, { automatic: true });
+      // Skip a second compaction when a fresh summary already covers the history.
+      const before = this.rows(c);
+      const fresh = before.findLast(r => r.role === 'notice' && r.file);
+      if (!(fresh && before.length - before.indexOf(fresh) < 10)) await this.compact(c.id, { automatic: true });
       if (edit) {
         // A resend replays the logical history, so rebuild it as the compaction
         // summary plus only the turns that came after it.
@@ -497,6 +513,19 @@ class SharedConversations {
       c.currentEngine = target; c.updatedAt = Date.now(); this.save(c);
       return { ok: true, sessionId: id, engine: target };
     } finally { this.switching.delete(id); status(''); this.publishActivity(id); }
+  }
+  // Rough token estimate of what the native session currently carries: the
+  // last compaction summary plus everything after it, or the full logical
+  // history when never compacted. Deliberately conservative (chars / 3).
+  estimateTokens(c) {
+    const rows = this.rows(c).filter(r => !r.internal);
+    const compacted = rows.findLast(r => r.role === 'notice' && r.file);
+    let chars = compacted && fs.existsSync(compacted.file) ? fs.statSync(compacted.file).size : 0;
+    for (const r of rows) if (r.seq > (compacted?.seq || 0)) chars += String(r.text || '').length + 200;
+    return chars / 3;
+  }
+  contextCap(engine, settings) {
+    return settings.contextWindow || this.modelContextWindow(settings.model) || ENGINE_CTX_DEFAULTS[engine];
   }
   async compact(id, { automatic = false } = {}) {
     if (this.busy(id)) throw new Error('Wait for this conversation to finish or stop it before compacting');

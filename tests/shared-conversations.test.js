@@ -473,6 +473,63 @@ test('compact summarizes onto a fresh native session and re-fires on later conte
   assert.equal(f.manager.messages(f.manager.get(first.sessionId)).filter(m => m.role === 'notice' && /compacted automatically/.test(m.text)).length, 2);
 });
 
+test('switching to a shorter window pre-compacts instead of failing on the provider', async t => {
+  const f = fixture(t);
+  f.manager.modelContextWindow = () => 8000;
+  const c = f.manager.create('claude', null, 'Long conversation');
+  f.manager.append(c, { role: 'user', text: 'Task' });
+  f.manager.append(c, { role: 'tool', text: 'WORK_' + 'a'.repeat(30000) });
+  f.manager.append(c, { role: 'assistant', text: 'Done' });
+  f.manager.save(c);
+  const pending = f.manager.send('claude', { sessionId: c.id, prompt: 'Next' });
+  await f.flush();
+  f.finish('claude', 'success', 'SUMMARY of earlier work');
+  await f.flush();
+  f.finish('claude', 'success', 'Acknowledged');
+  const run = await pending;
+  assert.equal(run.ok, true);
+  const sent = f.sent.at(-1).prompt;
+  assert.match(sent, /Next/);
+  assert.doesNotMatch(sent, /WORK_|Conversation context/);
+  f.finish('claude');
+});
+
+test('a conversation under its window cap sends without pre-compaction', async t => {
+  const f = fixture(t);
+  f.manager.modelContextWindow = () => 8000;
+  const first = await f.manager.send('claude', { prompt: 'Small question' });
+  f.finish('claude');
+  assert.equal(f.sent.length, 1);
+  const again = await f.manager.send('claude', { sessionId: first.sessionId, prompt: 'Another small question' });
+  f.finish('claude');
+  assert.equal(f.sent.length, 2);
+  assert.doesNotMatch(f.sent.at(-1).prompt, /compact working context/);
+});
+
+test('the estimate follows the compaction summary, and an explicit contextWindow wins over the catalog', async t => {
+  const f = fixture(t);
+  const c = f.manager.create('claude', null, 'Estimate');
+  f.manager.append(c, { role: 'tool', text: 'x'.repeat(30000) });
+  f.manager.save(c);
+  const full = f.manager.estimateTokens(c);
+  assert.ok(full > 9000);
+  f.manager.append(c, { role: 'notice', text: 'Context compacted: summary saved', file: path.join(f.root, 'summary.md') });
+  fs.writeFileSync(path.join(f.root, 'summary.md'), 'short summary');
+  f.manager.save(c);
+  const shrunk = f.manager.estimateTokens(c);
+  assert.ok(shrunk < full / 10);
+  let catalogCalls = 0;
+  f.manager.modelContextWindow = () => { catalogCalls++; return 99999; };
+  const settings = f.manager.settings('claude', c.id);
+  settings.contextWindow = 5000;
+  assert.equal(f.manager.contextCap('claude', settings), 5000);
+  assert.equal(catalogCalls, 0);
+  delete settings.contextWindow;
+  assert.equal(f.manager.contextCap('claude', settings), 99999);
+  f.manager.modelContextWindow = () => undefined;
+  assert.equal(f.manager.contextCap('claude', settings), 200000);
+});
+
 test('permissions and live snapshots are addressed by conversation and run, including duplicate request IDs', async t => {
   const f = fixture(t);
   const a = await f.manager.send('kimi', { prompt: 'private A' }), sa = f.sent.at(-1).session;
