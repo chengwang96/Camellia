@@ -249,11 +249,15 @@ with sync_playwright() as p:
     page.locator('#closeDetail').click()
     page.locator('#export').click()
     assert page.evaluate("calls.some(c=>c.method==='benchmarkExport'&&c.payload===savedReport.id)")
-    # Deleting a run arms the button first; the second click sends the call.
+    # Deleting a run asks in a dialog; the button label never changes.
     page.locator('#deleteRun').click()
-    expect(page.locator('#deleteRun')).to_have_text('Delete this run?')
+    expect(page.locator('#deleteMask')).to_be_visible()
     assert not page.evaluate("calls.some(c=>c.method==='benchmarkDelete')")
+    page.locator('#deleteCancel').click()
+    expect(page.locator('#deleteMask')).to_be_hidden()
     page.locator('#deleteRun').click()
+    page.locator('#deleteConfirm').click()
+    expect(page.locator('#deleteMask')).to_be_hidden()
     assert page.evaluate("calls.some(c=>c.method==='benchmarkDelete'&&c.payload===savedReport.id)")
     page.locator('#history').select_option('')
     page.locator('#history').select_option(report['id'])
