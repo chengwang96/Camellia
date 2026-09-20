@@ -189,8 +189,9 @@ with sync_playwright() as p:
             const snapshot = {ok:true,...structuredClone(sessions.get(payload)),settings};
             if(window.finishOnLoad===payload) {
               window.finishOnLoad=null;
-              pushEvent({type:'assistant',session_id:payload,engine,runId:snapshot.live.runId,message:{content:[{type:'text',text:'Finished during navigation'}]}});
-              pushEvent({type:'result',subtype:'success',session_id:payload,engine,runId:snapshot.live.runId,result:'Finished during navigation'});
+              snapshot.live.engine = window.finishEngine || snapshot.live.engine || engine;
+              pushEvent({type:'assistant',session_id:payload,engine:window.finishEngine||engine,runId:snapshot.live.runId,message:{content:[{type:'text',text:'Finished during navigation'}]}});
+              pushEvent({type:'result',subtype:'success',session_id:payload,engine:window.finishEngine||engine,runId:snapshot.live.runId,result:'Finished during navigation'});
             }
             return snapshot;
           }
@@ -204,7 +205,7 @@ with sync_playwright() as p:
             const userSeq=(prior?.messages.at(-1)?.seq||0)+1;
             let history=prior?.messages||[];
             if(payload.editSeq) history=history.slice(0,history.findIndex(m=>m.seq===payload.editSeq));
-            const live={sessionId:id,workspaceId:null,runId,userSeq,prompt:payload.prompt,displayText:payload.displayText,attachments:payload.attachments,messages:history,events:[],eventSeq:0};
+            const live={sessionId:id,workspaceId:null,engine,runId,userSeq,prompt:payload.prompt,displayText:payload.displayText,attachments:payload.attachments,messages:history,events:[],eventSeq:0};
             const s={id,title:payload.displayText||payload.prompt,mtimeMs:Date.now(),currentEngine:engine,activity:'running',messages:[...history,{role:'user',seq:userSeq,text:payload.prompt,displayText:payload.displayText,attachments:payload.attachments}],live};
             sessions.set(id,s);
             receiveEvent({type:'conversation:started',session_id:id,engine,runId,prompt:payload.prompt});
@@ -380,11 +381,13 @@ with sync_playwright() as p:
         expect(page.locator('#goalChipRow')).to_be_hidden()
         page.locator(f'[data-sid="{b}"]').click()
         page.wait_for_function('!loadingSession')
-        page.evaluate('(id)=>window.finishOnLoad=id',a)
+        page.evaluate('(id)=>{window.finishOnLoad=id;window.finishEngine="claude";}',a)
         page.locator(f'[data-sid="{a}"]').click()
         page.wait_for_function('!loadingSession && !running')
         expect(page.locator('#engineSwitch')).to_be_enabled()
         expect(page.locator('#chat')).to_contain_text('Finished during navigation')
+        # The restored turn is labeled by the harness that produced it, not this page's.
+        expect(page.locator('.turn-meta').last).to_contain_text('Claude')
         page.evaluate('(id)=>{ const s=sessionFixtures.get(id);s.currentEngine=document.body.dataset.harness==="kimi"?"codex":"kimi";s.activity="running"; }',b)
         page.locator(f'[data-sid="{b}"]').click()
         page.wait_for_function('actions.some(a=>a.action==="switch" && a.payload.navigate)')
