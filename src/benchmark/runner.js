@@ -377,7 +377,9 @@ class BenchmarkRunner {
       };
       if (!timeLimitMs) { timeout(); throw new Error(String(control.signal.reason)); }
       timer = setTimeout(timeout, timeLimitMs);
-      const result = await this.execute({ engine: trial.engine, runtime: this.runtimes().locate(trial.engine, 'api'), node, cwd, home,
+      const trialRuntime = this.runtimes().locate(trial.engine, 'api');
+      if (!trialRuntime) throw new Error(`${NAMES[trial.engine]} runtime is not installed or is incomplete. Reinstall it in Settings → Runtime, then start a new benchmark.`);
+      const result = await this.execute({ engine: trial.engine, runtime: trialRuntime, node, cwd, home,
         model: report.model, route, signal: control.signal,
         python: this.execution.runtime?.python,
         prompt: `Complete the task in ${cwd}. Read TASK.md and inspect the provided files. Use tools to make and check the required changes. Only work in this directory. Do not ask the user questions.\n\n${this.execution.runtime ? `Use this prepared Python interpreter with ${PYTHON_SCRATCH_FLAGS.join(' ')} for scratch tests: ${this.execution.runtime.python}. Imports from your task directory are supported. Required scientific packages are already installed. Solve from the supplied description and files. Do not retrieve or inspect benchmark datasets, hidden tests, expected targets, or reference solutions, either locally or on the network. Do not browse the application data or benchmark-library directories. The interpreter path is provided only for executing Python and importing installed packages, not for discovering the grader or its files.\n\n` : ''}${task.instruction}`,

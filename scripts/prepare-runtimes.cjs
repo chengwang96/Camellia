@@ -9,7 +9,13 @@ async function prepare({ engines = [], check = false, googleSubscription = false
     runtimeMode: engine => engine === 'antigravity' && googleSubscription ? 'subscription' : 'api',
     onChange: rows => { for (const row of rows) if (row.status === 'installing' || row.status === 'error') console.log(`${row.name}: ${row.message}`); } });
   for (const engine of check ? Object.keys(ENGINES) : engines) {
-    if (check && !manager.locate(engine)) continue;
+    if (check && !manager.locate(engine)) {
+      // A leftover node_modules without the package entry means an interrupted
+      // install; say so instead of silently skipping the engine.
+      const dir = path.join(root, 'runtimes', engine);
+      if (fs.existsSync(path.join(dir, 'node_modules'))) console.log(`${engine}: runtime incomplete — reinstall with: npm run setup:runtimes -- ${engine}`);
+      continue;
+    }
     await manager.ensure(engine);
     console.log(`${engine}: ready`);
   }
