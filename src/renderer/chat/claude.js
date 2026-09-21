@@ -420,18 +420,22 @@ const context = { sessionId: null, workspaceId: null };
     if (openPops.length) { closePops(); return; }
     const rect = $('usageDot').getBoundingClientRect();
     showPop(rect, (pop) => {
-      if (!lastUsage) {
+      pop.classList.add('usage-pop');
+      const usage = lastUsage || lastCallUsage;
+      if (!usage) {
+        pop.style.width = 'max-content';
+        pop.style.maxWidth = 'calc(100vw - 16px)';
         const d = document.createElement('div');
-        d.className = 'pop-group'; d.dataset.i18n = '';
+        d.className = 'usage-empty'; d.dataset.i18n = '';
         d.textContent = "Usage appears here after a completed turn";
         pop.appendChild(d);
         return;
       }
       const rows = [
-        ["System prompt (cache read)", fmtTokens(lastUsage.cache_read_input_tokens)],
-        ["Cache write", fmtTokens(lastUsage.cache_creation_input_tokens)],
-        ["Input tokens", fmtTokens(lastUsage.input_tokens)],
-        ["Output tokens", fmtTokens(lastUsage.output_tokens)],
+        ["System prompt (cache read)", fmtTokens(usage.cache_read_input_tokens)],
+        ["Cache write", fmtTokens(usage.cache_creation_input_tokens)],
+        ["Input tokens", fmtTokens(usage.input_tokens)],
+        ["Output tokens", fmtTokens(usage.output_tokens)],
       ];
       const g = document.createElement('div');
       g.className = 'pop-group'; g.dataset.i18n = '';
@@ -460,6 +464,68 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   const fileViewer = $('fileViewer');
+  const fileViewerResize = $('fileViewerResize');
+  let preferredPreviewWidth = readUi('preview-width');
+  if (!Number.isFinite(preferredPreviewWidth) || preferredPreviewWidth <= 0) preferredPreviewWidth = null;
+  let previewDrag = null;
+  function previewWidthBounds() {
+    const available = window.innerWidth - document.querySelector('.sidebar').getBoundingClientRect().width;
+    const max = window.innerWidth <= 800 ? Math.max(1, window.innerWidth - 32) : Math.max(300, available - 320);
+    return { min: Math.min(300, max), max };
+  }
+  function updatePreviewWidth(width = preferredPreviewWidth) {
+    const { min, max } = previewWidthBounds();
+    if (width === null) {
+      width = window.innerWidth <= 800 ? Math.min(window.innerWidth * .88, 520)
+        : window.innerWidth <= 1050 ? Math.min(window.innerWidth * .46, 500)
+        : Math.max(340, Math.min(window.innerWidth * .34, 560));
+    }
+    const clamped = Math.round(Math.max(min, Math.min(max, width)));
+    fileViewer.style.setProperty('--file-viewer-width', clamped + 'px');
+    fileViewerResize.setAttribute('aria-valuemin', min);
+    fileViewerResize.setAttribute('aria-valuemax', max);
+    fileViewerResize.setAttribute('aria-valuenow', clamped);
+    return clamped;
+  }
+  function savePreviewWidth() {
+    try { localStorage.setItem(uiPrefix + 'preview-width', JSON.stringify(preferredPreviewWidth)); } catch {}
+  }
+  function finishPreviewResize() {
+    if (!previewDrag) return;
+    const pointerId = previewDrag.pointerId;
+    previewDrag = null;
+    document.body.classList.remove('resizing-file-viewer');
+    if (fileViewerResize.hasPointerCapture(pointerId)) fileViewerResize.releasePointerCapture(pointerId);
+    savePreviewWidth();
+  }
+  fileViewerResize.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !event.isPrimary || previewDrag) return;
+    event.preventDefault();
+    previewDrag = { pointerId: event.pointerId, x: event.clientX, width: fileViewer.getBoundingClientRect().width };
+    fileViewerResize.setPointerCapture(event.pointerId);
+    fileViewerResize.focus();
+    document.body.classList.add('resizing-file-viewer');
+  });
+  fileViewerResize.addEventListener('pointermove', event => {
+    if (!previewDrag || event.pointerId !== previewDrag.pointerId) return;
+    preferredPreviewWidth = updatePreviewWidth(previewDrag.width + previewDrag.x - event.clientX);
+  });
+  for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    fileViewerResize.addEventListener(name, finishPreviewResize);
+  }
+  fileViewerResize.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const { min, max } = previewWidthBounds();
+    const step = event.shiftKey ? 50 : 10;
+    const width = event.key === 'Home' ? min : event.key === 'End' ? max
+      : fileViewer.getBoundingClientRect().width + (event.key === 'ArrowLeft' ? step : -step);
+    preferredPreviewWidth = updatePreviewWidth(width);
+    savePreviewWidth();
+  });
+  window.addEventListener('blur', finishPreviewResize);
+  window.addEventListener('resize', () => { finishPreviewResize(); updatePreviewWidth(); });
+  updatePreviewWidth();
   let previewedFile = null;
   function formatFileSize(bytes) {
     if (!Number.isFinite(bytes)) return '';
@@ -524,6 +590,7 @@ const context = { sessionId: null, workspaceId: null };
     if (!result.ok) setStatus(result.error || 'Could not open the file.');
   }
   function closeFilePreview() {
+    finishPreviewResize();
     fileViewer.hidden = true;
     $('fileViewerBody').replaceChildren();
     previewedFile = null;
@@ -640,9 +707,13 @@ const context = { sessionId: null, workspaceId: null };
   });
 
   // Paste path-backed files directly; persist in-memory screenshots first.
+  // Very long pasted text becomes a .txt attachment instead of a huge prompt.
   input.addEventListener('paste', async (e) => {
     const files = Array.from(e.clipboardData?.files || []).filter(file => file.type.startsWith('image/'));
-    if (!files.length) return;
+    if (!files.length) {
+      await attachLongPastedText(e);
+      return;
+    }
     e.preventDefault();
     if (chatProfile.supportsImages === false) {
       setStatus('Antigravity currently supports text and code attachments. Use Claude or Kimi for images.');
@@ -665,6 +736,36 @@ const context = { sessionId: null, workspaceId: null };
     }
     if (paths.length) addAttachments(paths);
   });
+
+  async function attachLongPastedText(event) {
+    const data = event.clipboardData;
+    if (!data || Array.from(data.types || []).includes('Files')) return;
+    // The goal starter accepts text only; keep its draft inline.
+    if (goalUI.isDraft()) return;
+    const text = data.getData('text/plain');
+    if (!window.CamelliaLongPaste.shouldAttach(text)) return;
+    event.preventDefault();
+    let result;
+    try {
+      result = await window.dshDesktop.savePastedText({ text });
+    } catch (error) {
+      result = { ok: false, error: error?.message };
+    }
+    if (!result?.ok) { insertPlainText(text); setStatus(result?.error || 'Could not save the pasted text.'); return; }
+    addAttachments([result.attachment.path]);
+    setStatus('Pasted text is now a .txt attachment · ' + text.length + ' characters');
+  }
+
+  // Fall back to a normal insertion when the pasted block cannot be saved.
+  function insertPlainText(text) {
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    input.setRangeText(text, start, end, 'end');
+    autoResize();
+    updateSendEnabled();
+    renderSlash();
+    saveDraft();
+  }
 
   // ---------- messages ----------
   function addUser(text, atts, meta = {}) {
@@ -962,10 +1063,52 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   // ---------- blocks ----------
+  function appendTurnBlock(el) {
+    const body = turnBody();
+    (body.processBlocks ||= []).push(el);
+    body.appendChild(el);
+  }
+
+  function layoutTurnProcess(finished = false) {
+    const body = turnEl?.querySelector('.turn-body');
+    const entries = body?.processBlocks;
+    if (!entries?.length) return;
+    const texts = entries.filter(el => el.classList.contains('md') && el.textContent.trim());
+    let visible = texts.slice(-1);
+    if (finished) {
+      const lastActivity = entries.findLastIndex(el => !el.classList.contains('md'));
+      if (lastActivity >= 0) visible = entries.slice(lastActivity + 1).filter(el => texts.includes(el));
+    }
+    const previous = body.processLayout;
+    if (!finished && previous?.count === entries.length && previous.visible.length === visible.length
+      && previous.visible.every((el, index) => el === visible[index])) return;
+    body.processLayout = { count: entries.length, visible };
+    const archived = entries.filter(el => !visible.includes(el));
+    let process = body.querySelector(':scope > .execution-process');
+    if (archived.length && !process) {
+      process = document.createElement('details');
+      process.className = 'execution-process';
+      process.innerHTML = '<summary><span data-i18n>Execution process</span><span class="execution-process-count" data-i18n></span></summary><div class="execution-process-body"></div>';
+      body.prepend(process);
+    }
+    if (process) {
+      const bucket = process.querySelector('.execution-process-body');
+      let next = bucket.firstElementChild;
+      for (const el of archived) {
+        if (el === next) next = next.nextElementSibling;
+        else bucket.insertBefore(el, next);
+      }
+      process.querySelector('.execution-process-count').textContent = entries.filter(el => el.classList.contains('tool-card')).length + ' tool calls';
+      if (finished) process.open = false;
+      process.hidden = !archived.length;
+    }
+    for (const el of visible) body.appendChild(el);
+  }
+
   function makeTextBlock() {
     const el = document.createElement('div');
     el.className = 'md';
-    turnBody().appendChild(el);
+    appendTurnBlock(el);
     return el;
   }
 
@@ -976,7 +1119,7 @@ const context = { sessionId: null, workspaceId: null };
       "<div class=\"think-head\"><span class=\"arrow\">▶</span><span>💭 Reasoning</span><span class=\"think-status\" data-i18n>In progress…</span></div>" +
       '<div class="think-body"></div>';
     el.querySelector('.think-head').addEventListener('click', () => el.classList.toggle('open'));
-    turnBody().appendChild(el);
+    appendTurnBlock(el);
     return el;
   }
 
@@ -1006,39 +1149,6 @@ const context = { sessionId: null, workspaceId: null };
     return typeof candidate === 'string' ? candidate : '';
   }
 
-  function makeToolGroup() {
-    const group = document.createElement('div');
-    group.className = 'tool-group';
-    group.innerHTML = '<div class="tool-group-head"><span class="arrow">▶</span><span class="tool-group-count" data-i18n></span><span class="tool-group-last"></span></div><div class="tool-group-body"></div>';
-    group.querySelector('.tool-group-head').addEventListener('click', () => group.classList.toggle('open'));
-    return group;
-  }
-
-  function updateToolGroupHead(group) {
-    const cards = group.querySelectorAll(':scope > .tool-group-body > .tool-card');
-    group.querySelector('.tool-group-count').textContent = cards.length + ' tool calls';
-    const last = cards[cards.length - 1];
-    group.querySelector('.tool-group-last').textContent = last
-      ? last.querySelector('.tool-summary').textContent || last.querySelector('.tool-name').textContent : '';
-  }
-
-  // Consecutive tool calls fold into one collapsed row as they stream in; a
-  // text or thinking block between them starts a separate group.
-  function groupToolCard(el) {
-    const prev = el.previousElementSibling;
-    let group = null;
-    if (prev && prev.classList.contains('tool-group')) group = prev;
-    else if (prev && prev.classList.contains('tool-card')) {
-      group = makeToolGroup();
-      el.before(group);
-      group.querySelector('.tool-group-body').appendChild(prev);
-    }
-    if (group) {
-      group.querySelector('.tool-group-body').appendChild(el);
-      updateToolGroupHead(group);
-    }
-  }
-
   function makeToolCard(name, inputData, id) {
     const el = document.createElement('div');
     el.className = 'tool-card';
@@ -1058,8 +1168,8 @@ const context = { sessionId: null, workspaceId: null };
       '</div>';
     el.querySelector('.tool-name').textContent = name || 'tool';
     el.querySelector('.tool-head').addEventListener('click', () => el.classList.toggle('open'));
-    turnBody().appendChild(el);
-    groupToolCard(el);
+    appendTurnBlock(el);
+    layoutTurnProcess();
     const card = {
       name, el,
       inputEl: el.querySelector('.tool-input'),
@@ -1070,8 +1180,6 @@ const context = { sessionId: null, workspaceId: null };
         this.inputData = data;
         this.previewPath = previewableToolPath(this.name, data);
         this.summaryEl.textContent = toolSummary(this.name, data);
-        const group = this.el.closest('.tool-group');
-        if (group) updateToolGroupHead(group);
         if (data && data.command) {
           this.inputEl.textContent = data.command +
             Object.keys(data).filter((k) => k !== 'command')
@@ -1116,34 +1224,8 @@ const context = { sessionId: null, workspaceId: null };
     blocks = {};
   }
 
-  // Final layout of a finished turn: reasoning segments merge into one folded
-  // record, tool calls tuck into a single folded group; the reply text stays.
   function consolidateFinishedTurn() {
-    const body = turnEl ? turnEl.querySelector('.turn-body') : null;
-    if (!body) return;
-    const thinks = [...body.querySelectorAll(':scope > .think')];
-    if (thinks.length > 1) {
-      const first = thinks[0];
-      first.querySelector('.think-body').textContent = thinks
-        .map(el => el.querySelector('.think-body').textContent.trim()).filter(Boolean).join('\n\n');
-      first.classList.remove('open', 'live');
-      const st = first.querySelector('.think-status');
-      if (st) st.textContent = "Completed";
-      for (const el of thinks.slice(1)) el.remove();
-    }
-    const members = [...body.querySelectorAll(':scope > .tool-card, :scope > .tool-group')];
-    if (members.length) {
-      const group = makeToolGroup();
-      body.insertBefore(group, members[0]);
-      const bucket = group.querySelector('.tool-group-body');
-      for (const member of members) {
-        if (member.classList.contains('tool-group')) {
-          for (const card of [...member.querySelectorAll(':scope > .tool-group-body > .tool-card')]) bucket.appendChild(card);
-          member.remove();
-        } else bucket.appendChild(member);
-      }
-      updateToolGroupHead(group);
-    }
+    layoutTurnProcess(true);
   }
 
   // ---------- streaming ----------
@@ -1153,6 +1235,7 @@ const context = { sessionId: null, workspaceId: null };
     if (!b.el.isConnected) return;
     if (b.type === 'text') b.el.innerHTML = mdRender(b.raw) + (b.stopped ? '' : '<span class="cursor"></span>');
     else if (b.type === 'thinking') b.el.querySelector('.think-body').textContent = b.raw;
+    layoutTurnProcess();
   }
   function flushBlockRenders() {
     if (blockRenderFrame !== null) cancelAnimationFrame(blockRenderFrame);
@@ -1231,7 +1314,10 @@ const context = { sessionId: null, workspaceId: null };
     finalizeStreamBlocks();
     const was = nearBottom();
     const body = turnBody();
+    const processOpen = body.querySelector('.execution-process')?.open;
     body.innerHTML = '';
+    body.processBlocks = [];
+    body.processLayout = null;
     pendingTools = {};
     for (const blk of content || []) {
       if (blk.type === 'text' && blk.text) {
@@ -1247,6 +1333,8 @@ const context = { sessionId: null, workspaceId: null };
         makeToolCard(blk.name, blk.input, blk.id);
       }
     }
+    layoutTurnProcess();
+    if (processOpen && body.querySelector('.execution-process')) body.querySelector('.execution-process').open = true;
     maybeScroll(was);
   }
 
@@ -1259,7 +1347,8 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   // ---------- status ----------
-  function setStatus(text) { statusLine.textContent = text; }
+  let statusText = '';
+  function setStatus(text) { statusText = text; statusLine.textContent = text; }
   function startRunTicker() {
     runStartedAt = Date.now();
     clearInterval(runTimer);
@@ -1276,8 +1365,8 @@ const context = { sessionId: null, workspaceId: null };
   let ctxTip = null;
   function updateCtxRing() {
     const ring = $('ctxRing');
-    const cap = (currentModel && (modelCtxCaps.get(currentModel) || modelCtxCaps.get(currentModel.replace(/:cloud$/, '')))) || ENGINE_CTX_DEFAULTS[harnessId];
     const usage = lastCallUsage || lastUsage;
+    const cap = usage?.context_window || (currentModel && (modelCtxCaps.get(currentModel) || modelCtxCaps.get(currentModel.replace(/:cloud$/, '')))) || ENGINE_CTX_DEFAULTS[harnessId];
     const used = usage ? (usage.input_tokens || usage.prompt_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0) : 0;
     if (!cap || !used) { ring.hidden = true; return; }    const pct = Math.min(100, Math.round(used / cap * 100));
     ring.hidden = false;
@@ -1321,6 +1410,7 @@ const context = { sessionId: null, workspaceId: null };
     updateConversationControls();
     sidebar.updateLabel();
     if (v) {
+      lastCallUsage = null;
       startRunTicker();
     } else {
       stopRunTicker();
@@ -1337,6 +1427,7 @@ const context = { sessionId: null, workspaceId: null };
       if (ev.session_id === context.sessionId) {
         conversationActivity = ev.activity;
         updateConversationControls();
+        if (!conversationActivity && !running && statusText === 'Stopping…') setStatus('Stopped');
         if (!conversationActivity) drainMessageQueue();
       }
       return;
@@ -1349,6 +1440,13 @@ const context = { sessionId: null, workspaceId: null };
       permissionQueue.push(ev); if (!permRequestId) showPermissionDialog(ev); return;
     }
     if (!acceptSessionEvents) return;
+    if (ev.type === 'conversation:continued') {
+      if (currentRunId !== ev.runId) return;
+      finalizeStreamBlocks();
+      turnEl = null; blocks = {}; pendingTools = {};
+      setRunning(true);
+      return;
+    }
     // Highest automation level: approvals never surface a dialog. Permission
     // checks are allowed; question prompts continue without a confirmed answer.
     if (ev.type === 'gui:permission' && currentPermission === 'full') { void autoAllowPermission(ev); return; }
@@ -1370,6 +1468,12 @@ const context = { sessionId: null, workspaceId: null };
     }
     if (currentRunId != null && ev.runId != null && currentRunId !== ev.runId) return;
     const was = nearBottom();
+
+    if (ev.type === 'gui:usage') {
+      lastCallUsage = ev.usage;
+      updateCtxRing();
+      return;
+    }
 
     if (ev.type === 'system' && ev.subtype === 'init') {
       loadedEngine = harnessId;
@@ -1528,8 +1632,16 @@ const context = { sessionId: null, workspaceId: null };
     if (active && !queuedMessage) {
       if (queueComposerMessage()) return;
       if (currentRunId || sharedChat) {
-        await chatApi.cancel(sharedChat ? { sessionId: context.sessionId, ...(running ? { runId: currentRunId } : {}) } : currentRunId);
+        const stopSessionId = context.sessionId, stopRunId = currentRunId, stopOpenSeq = sessionOpenSeq;
         setStatus("Stopping…");
+        try {
+          const result = await chatApi.cancel(sharedChat ? { sessionId: stopSessionId, ...(running ? { runId: stopRunId } : {}) } : stopRunId);
+          if (result?.ok === false) throw new Error(result.error || 'Could not stop the response');
+        } catch (error) {
+          if (context.sessionId === stopSessionId && currentRunId === stopRunId && sessionOpenSeq === stopOpenSeq && statusText === 'Stopping…') {
+            setStatus(error.message || 'Could not stop the response');
+          }
+        }
       }
       return;
     }
@@ -2008,6 +2120,9 @@ const context = { sessionId: null, workspaceId: null };
     updateMessageActions();
   }
   function resetConversationView() {
+    closePops();
+    lastUsage = null; lastCallUsage = null; updateCtxRing();
+    ctxTip?.remove(); ctxTip = null;
     closeSlash();
     cancelMessageEdit();
     pendingQuestion = null; permissionSubmission = null;
@@ -2095,6 +2210,10 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function renderHistoryMessages(messages) {
+      const latest = messages.filter(message => message.role === 'assistant').at(-1);
+      lastUsage = latest?.usage || null;
+      lastCallUsage = latest?.lastCallUsage || null;
+      updateCtxRing();
       for (const m of messages) {
         if (m.role === 'notice') {
           if (!conversationPrefs.showOrigin) continue;

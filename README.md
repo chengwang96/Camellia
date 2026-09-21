@@ -18,6 +18,7 @@ Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, and Antig
 
 - **Multiple engines, one application.** Switch between Claude Code, Codex CLI, DSH, Kimi Code, and Antigravity with shared navigation and settings.
 - **Shared conversations across five engines.** Keep one conversation and workspace while switching harnesses. Continue directly or use an automatic Markdown handoff. Start pages and active chats share an aligned composer.
+- **Large pastes become attachments.** Pasting a long text block stores it as a `pasted-text-*.txt` attachment instead of a huge prompt; short pastes stay inline.
 - **Centralized API management.** Configure providers, import and label keys, discover models, and validate connections in one place.
 - **Same-model failover.** Retry eligible failures through another key or provider serving the same configured model. Camellia never substitutes a different model automatically.
 - **Usage and account visibility.** Filter local requests and token statistics by provider, key, model, and date. View balances, subscription limits, and observed trends for supported account APIs.
@@ -126,7 +127,7 @@ The installer and portable downloads contain no harness runtimes. They include t
 
 Camellia keeps shared conversation records and a separate native session for each engine. Shared conversations retain their working directory; start a new conversation to change folders. The shared sidebar lists conversations created in Camellia. Pre-release and external CLI histories are not imported; legacy session format compatibility is not maintained. DSH's native web view remains available from the sidebar.
 
-Switching engines keeps the conversation's API model, working directory, unsent text, attachment paths and reading position. Each conversation remembers its own API model; ChatGPT and Google account models stay separate. Permissions and reasoning choices remain specific to each engine. The top **Engine** menu uses the same switch flow as the conversation selector. Returning from Home or reloading restores the last conversation or workspace draft; zoom is saved across restarts.
+Switching engines keeps the conversation's API model, working directory, unsent text, attachment paths and reading position. Each conversation remembers its own API model; ChatGPT and Google account models stay separate. Permissions and reasoning choices remain specific to each engine. The top **Engine** menu uses the same switch flow as the conversation selector. Returning from Home or reloading restores the last conversation or workspace draft; zoom is saved across restarts. Pasting more than **5,000 characters** of text saves it as a `pasted-text-*.txt` attachment under application data instead of inserting a huge prompt; shorter pastes stay inline.
 
 Codex CLI also supports API keys and third-party APIs. Select **Settings → Engine Settings → Codex CLI → API key / third-party API**, save, and use a model configured in **Providers & Keys**. No ChatGPT sign-in is required in API mode. Existing Codex native sessions retain their original connection; the connection setting applies to new native sessions.
 

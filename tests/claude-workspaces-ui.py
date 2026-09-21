@@ -183,6 +183,28 @@ try:
         expect(page.locator(f'[data-sid="{fork_id}"]')).to_have_count(0)
         expect(page.locator('#headerTitle')).to_have_text('New session')
 
+        page.get_by_role('button', name='New session in Beta 研究', exact=True).click()
+        page.locator('#input').fill('批量归档工作区会话')
+        page.locator('#send').click()
+        page.wait_for_function('currentRunId !== null')
+        archived_workspace_id = page.evaluate('context.workspaceId')
+        archived_session_id = page.evaluate("window.testCall('finishTurn')")
+        expect(page.locator(f'[data-sid="{archived_session_id}"]')).to_be_visible()
+        page.get_by_role('button', name='Beta 研究 workspace actions', exact=True).click()
+        page.get_by_role('menuitem', name='Remove workspace (archive sessions)', exact=True).click()
+        expect(page.locator(f'section[data-workspace-id="{archived_workspace_id}"]')).to_have_count(0)
+        expect(page.locator(f'[data-sid="{archived_session_id}"]')).to_have_count(0)
+        expect(page.locator('#headerTitle')).to_have_text('New session')
+        assert page.evaluate('context.sessionId') is None
+        assert page.evaluate('context.workspaceId') is None
+        expect(page.locator(f'[data-sid="{grouped_id}"]')).to_be_visible()
+        expect(page.locator(f'[data-sid="{independent_id}"]')).to_be_visible()
+        assert Path(fixtures['beta']).exists()
+        rpc('restart')
+        page.reload(wait_until='networkidle')
+        expect(page.locator(f'[data-sid="{archived_session_id}"]')).to_have_count(0)
+        expect(page.locator(f'section[data-workspace-id="{archived_workspace_id}"]')).to_have_count(0)
+
         # Validation errors remain in the modal, with keyboard dismissal.
         page.locator('#wsCreateBtn').click()
         page.locator('#wsName').fill('Invalid folder')
@@ -262,7 +284,7 @@ try:
         expect(page.locator('#goalChipRow')).to_be_hidden()
 
         assert not errors, errors
-        print('PASS: workspaces, moves, restart, paginated history, goals, pin/fork/archive, layout, Chinese IME, batched streaming and special paths; no browser errors')
+        print('PASS: workspaces, keep/archive removal, moves, restart, paginated history, goals, pin/fork/archive, layout, Chinese IME, batched streaming and special paths; no browser errors')
         browser.close()
 finally:
     try:

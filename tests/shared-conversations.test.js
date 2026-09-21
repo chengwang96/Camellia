@@ -36,6 +36,29 @@ function fixture(t, overrides = {}) {
 }
 test('defaults continue directly with no warning or origin badge', () => assert.deepEqual(preferences({}), { mode: 'direct', warnOnSwitch: false, showOrigin: false }));
 
+test('usage survives reloading shared conversations without mixing per-call and turn totals', async t => {
+  for (const engine of ['claude', 'codex']) {
+    const f = fixture(t);
+    const run = await f.manager.send(engine, { prompt: 'Check usage' });
+    const runId = f.sent.at(-1).session.gen;
+    const lastCallUsage = { input_tokens: 40000, cache_read_input_tokens: 5000, output_tokens: 100 };
+    const usage = { input_tokens: 1300000, output_tokens: 500 };
+    f.manager.capture(engine, engine === 'claude'
+      ? { type: 'assistant', runId, message: { content: [{ type: 'text', text: 'Answer' }], usage: lastCallUsage } }
+      : { type: 'gui:usage', runId, usage: lastCallUsage });
+    f.manager.capture(engine, { type: 'result', runId, subtype: 'success', result: 'Answer', usage });
+    await run.done;
+    const manager = f.restart();
+    const reloaded = manager.load(engine, run.sessionId).messages.at(-1);
+    assert.deepEqual(reloaded.usage, usage);
+    assert.deepEqual(reloaded.lastCallUsage, lastCallUsage);
+    const next = await manager.send(engine, { sessionId: run.sessionId, prompt: 'No usage' });
+    f.finish(engine); await next.done;
+    assert.equal(manager.load(engine, run.sessionId).messages.at(-1).usage, undefined);
+    assert.equal(manager.load(engine, run.sessionId).messages.at(-1).lastCallUsage, undefined);
+  }
+});
+
 test('new conversations use the default model to generate a title of at most ten characters', async t => {
   const calls = [];
   const f = fixture(t, { generateTitle: async (message, model) => { calls.push({ message, model }); return '  修复会话默认标题生成逻辑。  '; } });
@@ -479,6 +502,9 @@ test('compact summarizes once, defers the fresh native session, and re-fires on 
   f.finish('kimi', 'success', '## Summary shrunk');
   await waitFor(() => f.manager.messages(f.manager.get(first.sessionId)).some(m => m.role === 'notice' && /compacted automatically/.test(m.text)));
   assert.ok(f.manager.messages(f.manager.get(first.sessionId)).some(m => m.role === 'notice' && /compacted automatically/.test(m.text)));
+  await f.flush();
+  assert.match(f.sent.at(-1).prompt, /Continue the unfinished user task/);
+  f.finish('kimi');
 
   await f.manager.send('kimi', { sessionId: first.sessionId, prompt: 'again' }); f.finish('kimi');
   await f.manager.send('kimi', { sessionId: first.sessionId, prompt: 'again2' });
@@ -487,6 +513,7 @@ test('compact summarizes once, defers the fresh native session, and re-fires on 
   f.finish('kimi', 'success', '## Summary again');
   await waitFor(() => f.manager.messages(f.manager.get(first.sessionId)).filter(m => m.role === 'notice' && /compacted automatically/.test(m.text)).length === 2);
   assert.equal(f.manager.messages(f.manager.get(first.sessionId)).filter(m => m.role === 'notice' && /compacted automatically/.test(m.text)).length, 2);
+  await f.flush(); f.finish('kimi');
 });
 
 test('manual compaction after an overflow abandons the full native session and includes its logical history', async t => {
@@ -538,8 +565,10 @@ test('switching to a shorter window pre-compacts instead of failing on the provi
   f.manager.save(c);
   const pending = f.manager.send('claude', { sessionId: c.id, prompt: 'Next' });
   await f.flush();
-  f.finish('claude', 'success', 'SUMMARY of earlier work');
-  await f.flush();
+  while (/compact working context/.test(f.sent.at(-1).prompt)) {
+    f.finish('claude', 'success', 'SUMMARY of earlier work');
+    await f.flush();
+  }
   f.finish('claude', 'success', 'Acknowledged');
   const run = await pending;
   assert.equal(run.ok, true);
@@ -547,6 +576,73 @@ test('switching to a shorter window pre-compacts instead of failing on the provi
   assert.match(sent, /Next/);
   assert.doesNotMatch(sent, /WORK_|Conversation context/);
   f.finish('claude');
+});
+
+test('stopping ordinary pre-send compaction never sends the pending task on any engine', async t => {
+  for (const engine of ENGINES) {
+    const f = fixture(t, { modelContextWindow: () => 20000 });
+    const first = await f.manager.send(engine, { prompt: 'Earlier task' });
+    f.finish(engine);
+    const conversation = f.manager.get(first.sessionId);
+    f.manager.append(conversation, { role: 'tool', text: 'x'.repeat(52000) });
+    const nativeId = conversation.segments[engine].nativeId;
+    const sending = f.manager.send(engine, { sessionId: conversation.id, prompt: 'Do not run after stop' });
+    const rejected = assert.rejects(sending, /canceled/);
+    await f.flush();
+    assert.match(f.sent.at(-1).prompt, /compact working context/);
+    await f.manager.cancel({ sessionId: conversation.id });
+    await rejected;
+    await f.flush();
+    assert.equal(f.sent.length, 2);
+    assert.equal(conversation.segments[engine].nativeId, nativeId);
+    assert.equal(f.manager.busy(conversation.id), false);
+    assert.equal(f.manager.messages(conversation).some(row => row.text === 'Do not run after stop' || row.file), false);
+    assert.equal(f.events.filter(event => event.type === 'conversation:started').length, 1);
+  }
+});
+
+test('stopping pre-send compaction during setup sends neither summary nor task', async t => {
+  const f = fixture(t, { modelContextWindow: () => 20000 });
+  const conversation = f.manager.create('codex', null, 'Pending setup');
+  f.manager.append(conversation, { role: 'tool', text: 'x'.repeat(52000) });
+  let release;
+  f.manager.prepare = () => new Promise(resolve => { release = resolve; });
+  const rejected = assert.rejects(f.manager.send('codex', { sessionId: conversation.id, prompt: 'Do not run' }), /canceled/);
+  await f.manager.cancel({ sessionId: conversation.id });
+  release();
+  await rejected;
+  assert.equal(f.sent.length, 0);
+  assert.equal(f.manager.busy(conversation.id), false);
+});
+
+test('stopping a later summary chunk discards partial compaction and the pending task', async t => {
+  const f = fixture(t, { modelContextWindow: () => 20000 });
+  const conversation = f.manager.create('kimi', null, 'Chunked history');
+  f.manager.append(conversation, { role: 'tool', text: 'x'.repeat(100000) });
+  const rejected = assert.rejects(f.manager.send('kimi', { sessionId: conversation.id, prompt: 'Do not run' }), /canceled/);
+  await f.flush();
+  f.finish('kimi', 'success', 'Partial summary');
+  await f.flush();
+  assert.equal(f.sent.length, 2);
+  assert.match(f.sent.at(-1).prompt, /Partial summary/);
+  await f.manager.cancel({ sessionId: conversation.id });
+  await rejected;
+  assert.equal(f.sent.length, 2);
+  assert.equal(f.manager.messages(conversation).some(row => row.file), false);
+  assert.equal(f.manager.busy(conversation.id), false);
+});
+
+test('failed pre-send compaction rejects the task instead of sending oversized history', async t => {
+  const f = fixture(t, { modelContextWindow: () => 20000 });
+  const conversation = f.manager.create('dsh', null, 'Failed summary');
+  f.manager.append(conversation, { role: 'tool', text: 'x'.repeat(52000) });
+  const rejected = assert.rejects(f.manager.send('dsh', { sessionId: conversation.id, prompt: 'Do not run' }), /Provider unavailable/);
+  await f.flush();
+  f.finish('dsh', 'error', 'Provider unavailable');
+  await rejected;
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.manager.busy(conversation.id), false);
+  assert.equal(f.manager.messages(conversation).some(row => row.role === 'user' || row.file), false);
 });
 
 test('a conversation under its window cap sends without pre-compaction', async t => {
@@ -583,6 +679,221 @@ test('the estimate follows the compaction summary, and an explicit contextWindow
   assert.equal(f.manager.contextCap('claude', settings), 99999);
   f.manager.modelContextWindow = () => undefined;
   assert.equal(f.manager.contextCap('claude', settings), 200000);
+});
+
+test('all engines compact at tool boundaries and resume the same logical turn without duplicating the user request', async t => {
+  for (const engine of ENGINES) {
+    const f = fixture(t, { modelContextWindow: () => 20000 });
+    const run = await f.manager.send(engine, { prompt: 'Finish the original task', attachments: [{ path: 'input.txt' }] });
+    const original = f.sent.at(-1).session;
+    const emit = event => f.manager.capture(engine, { ...event, runId: original.gen });
+    emit({ type: 'gui:tool', id: 'write', status: 'in_progress', output: 'x'.repeat(52000) });
+    assert.equal(f.manager.recovering.size, 0);
+    emit({ type: 'gui:tool', id: 'write', status: 'completed', output: 'File written successfully' });
+    assert.equal(f.manager.recovering.has(run.sessionId), true);
+    assert.equal(f.manager.busy(run.sessionId), true);
+    assert.equal(f.manager.live(engine, run.sessionId).live.runId, run.runId);
+    assert.equal(f.events.filter(event => event.type === 'result').length, 0);
+    await f.flush();
+    let chunks = 0;
+    while (/compact working context/.test(f.sent.at(-1).prompt)) {
+      assert.ok(f.sent.at(-1).prompt.length <= 36000);
+      assert.equal(f.sent.at(-1).opts.sessionId, null);
+      assert.ok(++chunks < 10);
+      f.finish(engine, 'success', 'Summary: original task; file already written. Next: verify.');
+      await f.flush();
+    }
+    assert.ok(chunks >= 2);
+    assert.match(f.sent.at(-1).prompt, /file already written/);
+    assert.match(f.sent.at(-1).prompt, /Do not restart or repeat completed actions/);
+    assert.notEqual(f.sent.at(-1).session.sessionId, original.sessionId);
+    assert.equal(f.manager.active.get(run.sessionId).facade.gen, run.runId);
+    assert.equal(f.events.filter(event => event.type === 'conversation:started').length, 1);
+    assert.equal(f.manager.messages(f.manager.get(run.sessionId)).filter(row => row.role === 'user').length, 1);
+    assert.equal(emit({ type: 'result', subtype: 'success', result: 'Stale native result' }), false);
+    f.finish(engine, 'success', 'Verified and done');
+    assert.equal((await run.done).result, 'Verified and done');
+    assert.equal(f.events.filter(event => event.type === 'result').length, 1);
+    assert.equal(f.manager.busy(run.sessionId), false);
+  }
+});
+
+test('parallel Claude tools and pending approvals delay proactive compaction', async t => {
+  const f = fixture(t, { modelContextWindow: () => 20000 });
+  const run = await f.manager.send('claude', { prompt: 'Work' });
+  const emit = event => f.manager.capture('claude', { ...event, runId: f.sent.at(-1).session.gen });
+  emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'first' }, { type: 'tool_use', id: 'second' }] } });
+  emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'first', content: 'x'.repeat(52000) }] } });
+  assert.equal(f.manager.recovering.size, 0);
+  emit({ type: 'gui:permission', requestId: 'approval' });
+  emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'second', content: 'Done' }] } });
+  assert.equal(f.manager.recovering.size, 0);
+  await f.manager.cancel({ sessionId: run.sessionId, runId: run.runId });
+  assert.equal((await run.done).subtype, 'stopped');
+});
+
+test('automatic compaction waits for native stop acknowledgement and a user stop prevents recovery', async t => {
+  for (const stopByUser of [false, true]) {
+    const f = fixture(t, { modelContextWindow: () => 20000 });
+    const run = await f.manager.send('codex', { prompt: 'Finish the task' });
+    const original = f.sent.at(-1).session;
+    let interrupts = 0;
+    original.interrupt = () => { interrupts++; };
+    f.manager.capture('codex', { type: 'gui:tool', id: 'tool', status: 'completed', output: 'x'.repeat(52000), runId: original.gen });
+    await f.flush();
+    assert.equal(interrupts, 1);
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.manager.busy(run.sessionId), true);
+    if (stopByUser) await f.manager.cancel({ sessionId: run.sessionId, runId: run.runId });
+    f.finish('codex', 'stopped', 'Stopped', original);
+    await f.flush();
+    if (stopByUser) {
+      assert.equal((await run.done).subtype, 'stopped');
+      assert.equal(f.sent.length, 1);
+    } else {
+      assert.match(f.sent.at(-1).prompt, /compact working context/);
+      while (/compact working context/.test(f.sent.at(-1).prompt)) {
+        f.finish('codex', 'success', 'Tool finished. Verify next.');
+        await f.flush();
+      }
+      f.finish('codex', 'success', 'Verified');
+      assert.equal((await run.done).result, 'Verified');
+    }
+    assert.equal(f.events.filter(event => event.type === 'result').length, 1);
+    assert.equal(f.manager.busy(run.sessionId), false);
+  }
+});
+
+test('overflow retries once without progress, and the original done promise waits for recovery', async t => {
+  const f = fixture(t), run = await f.manager.send('kimi', { prompt: 'Finish' });
+  let settled = false; run.done.then(() => { settled = true; });
+  f.finish('kimi', 'error', 'context_length_exceeded');
+  await f.flush();
+  assert.equal(settled, false);
+  f.finish('kimi', 'success', 'Compact summary');
+  await f.flush();
+  f.finish('kimi', 'error', 'context_length_exceeded');
+  assert.equal((await run.done).is_error, true);
+  await f.flush();
+  assert.equal(f.sent.length, 3);
+  assert.equal(f.manager.busy(run.sessionId), false);
+});
+
+test('stopping automatic compaction preserves history and never resumes the task', async t => {
+  const f = fixture(t), run = await f.manager.send('codex', { prompt: 'Original task' });
+  const nativeId = f.sent.at(-1).session.sessionId;
+  f.finish('codex', 'error', 'maximum context length exceeded');
+  await f.flush();
+  assert.equal(f.manager.live('codex', run.sessionId).live.runId, run.runId);
+  await f.manager.cancel({ sessionId: run.sessionId, runId: run.runId });
+  assert.equal((await run.done).subtype, 'stopped');
+  await f.flush();
+  assert.equal(f.sent.length, 2);
+  assert.equal(f.manager.get(run.sessionId).segments.codex.nativeId, nativeId);
+  assert.equal(f.manager.busy(run.sessionId), false);
+  assert.equal(f.manager.messages(f.manager.get(run.sessionId)).filter(row => row.file).length, 0);
+});
+
+test('summary failure surfaces a terminal error without replaying the original task', async t => {
+  const f = fixture(t), run = await f.manager.send('dsh', { prompt: 'Original task' });
+  f.finish('dsh', 'error', 'too many tokens');
+  await f.flush();
+  f.finish('dsh', 'error', 'Provider unavailable');
+  assert.match((await run.done).result, /Context recovery failed.*Provider unavailable/);
+  await f.flush();
+  assert.equal(f.sent.length, 2);
+  assert.equal(f.manager.busy(run.sessionId), false);
+});
+
+test('goal overflow compacts and continues without advancing goal rounds or losing ownership', async t => {
+  const f = fixture(t);
+  const { sessionId } = await f.manager.command('claude', 'goal-start', { objective: 'Finish the experiment' });
+  f.goal.drive(); await f.flush();
+  const facade = f.manager.facades.get(sessionId);
+  f.finish('claude', 'error', 'context_length_exceeded');
+  await f.flush();
+  assert.equal(f.goal.timer, null);
+  assert.equal(f.goal.ownedSession(), facade);
+  f.finish('claude', 'success', 'Summary of the experiment');
+  await f.flush();
+  assert.match(f.sent.at(-1).prompt, /<goal:complete>/);
+  assert.equal(f.goal.goal.roundsStarted, 1);
+  assert.equal(f.goal.ownedSession(), facade);
+  f.finish('claude', 'success', 'More work remains');
+  assert.equal(f.goal.goal.phase, 'active');
+  assert.equal(f.goal.goal.errorStreak, 0);
+  assert.notEqual(f.goal.timer, null);
+});
+
+test('goal pause during recovery cancels summarization and does not resume', async t => {
+  const f = fixture(t);
+  const { sessionId } = await f.manager.command('kimi', 'goal-start', { objective: 'Finish' });
+  f.goal.drive(); await f.flush();
+  f.finish('kimi', 'error', 'context_length_exceeded');
+  await f.flush();
+  await f.manager.command('kimi', 'goal-pause', { sessionId });
+  await f.flush();
+  assert.equal(f.goal.goal.phase, 'paused');
+  assert.equal(f.sent.length, 2);
+  assert.equal(f.manager.busy(sessionId), false);
+});
+
+test('goal rounds pre-compact oversized history and rebuild the goal prompt from the summary', async t => {
+  const f = fixture(t, { modelContextWindow: () => 20000 });
+  const { sessionId } = await f.manager.command('claude', 'goal-start', { objective: 'Finish the experiment' });
+  f.goal.cancelTimer();
+  const conversation = f.manager.get(sessionId);
+  f.manager.append(conversation, { role: 'tool', text: 'OLD_CONTEXT_' + 'x'.repeat(52000) });
+  f.manager.save(conversation);
+  f.goal.drive(); await f.flush();
+  while (/compact working context/.test(f.sent.at(-1).prompt)) {
+    f.finish('claude', 'success', 'Summary: experiment in progress'); await f.flush();
+  }
+  assert.match(f.sent.at(-1).prompt, /Summary: experiment/);
+  assert.match(f.sent.at(-1).prompt, /<goal:complete>/);
+  assert.doesNotMatch(f.sent.at(-1).prompt, /OLD_CONTEXT_/);
+  f.finish('claude', 'success', 'Progress');
+  assert.equal(f.goal.goal.phase, 'active');
+  assert.notEqual(f.goal.timer, null);
+});
+
+test('pausing a goal during pre-send compaction never sends the goal request', async t => {
+  const f = fixture(t, { modelContextWindow: () => 20000 });
+  const { sessionId } = await f.manager.command('claude', 'goal-start', { objective: 'Finish' });
+  f.goal.cancelTimer();
+  const conversation = f.manager.get(sessionId);
+  f.manager.append(conversation, { role: 'tool', text: 'x'.repeat(52000) });
+  f.goal.drive(); await f.flush();
+  await f.manager.command('claude', 'goal-pause', { sessionId });
+  await f.flush();
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.goal.goal.phase, 'paused');
+  assert.equal(f.manager.busy(sessionId), false);
+});
+
+test('summary failure before a goal round blocks the goal without starting its task', async t => {
+  const f = fixture(t, { modelContextWindow: () => 20000 });
+  const { sessionId } = await f.manager.command('claude', 'goal-start', { objective: 'Finish' });
+  f.goal.cancelTimer();
+  f.manager.append(f.manager.get(sessionId), { role: 'tool', text: 'x'.repeat(52000) });
+  f.goal.drive(); await f.flush();
+  f.finish('claude', 'error', 'Summary unavailable');
+  await f.flush();
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.goal.goal.phase, 'blocked');
+  assert.equal(f.goal.timer, null);
+  assert.equal(f.manager.busy(sessionId), false);
+});
+
+test('continuation setup failure finishes once and releases the conversation', async t => {
+  const f = fixture(t), run = await f.manager.send('dsh', { prompt: 'Finish' });
+  f.finish('dsh', 'error', 'context_length_exceeded'); await f.flush();
+  f.manager.prepare = async () => { throw new Error('Engine unavailable'); };
+  f.finish('dsh', 'success', 'Summary');
+  assert.equal((await run.done).is_error, true);
+  await f.flush();
+  assert.equal(f.events.filter(event => event.type === 'result').length, 1);
+  assert.equal(f.manager.busy(run.sessionId), false);
 });
 
 test('permissions and live snapshots are addressed by conversation and run, including duplicate request IDs', async t => {

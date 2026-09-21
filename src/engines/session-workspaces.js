@@ -211,11 +211,14 @@ function metaOp(payload) {
       return { ok: true, meta: sessionMeta() };
     }
     case 'delete-workspace': {
-      // Sessions float free again; nothing is deleted on disk.
       saveSessionMeta((m) => {
         m.workspaces = m.workspaces.filter((w) => w.id !== payload.id);
         for (const [sid, wid] of Object.entries(m.sessionWorkspace)) {
-          if (wid === payload.id) { m.sessionWorkspace[sid] = null; if (!fixedCwd) delete m.sessionCwd[sid]; }
+          if (wid === payload.id) {
+            if (payload.archiveSessions === true && !m.archived[sid]) m.archived[sid] = Date.now();
+            m.sessionWorkspace[sid] = null;
+            if (!fixedCwd) delete m.sessionCwd[sid];
+          }
         }
         delete m.collapsed[payload.id];
       });

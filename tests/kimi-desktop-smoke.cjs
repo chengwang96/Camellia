@@ -39,9 +39,23 @@ async function main() {
   const cwd = path.join(root, 'Kimi Example');
   fs.mkdirSync(cwd);
   const requests = [];
+  const titles = [];
   const fixture = http.createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
-    const body = JSON.parse(Buffer.concat(chunks));
+    let body;
+    try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
+    catch { res.writeHead(400, { 'content-type': 'application/json' }); res.end('{"error":"invalid JSON body"}'); return; }
+    // Background conversation titles ask for a non-streaming completion. Answer
+    // them as JSON and keep them out of the chat log: an SSE reply here would
+    // look like a broken provider and cool the only key down before the real
+    // turn is sent, and their position in the log is not deterministic.
+    if (!body.stream) {
+      titles.push(body);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: 'title', model: body.model, usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+        choices: [{ index: 0, message: { role: 'assistant', content: '标题生成通过' }, finish_reason: 'stop' }] }));
+      return;
+    }
     requests.push(body);
     const userIndex = body.messages.findLastIndex(m => m.role === 'user' && JSON.stringify(m.content).includes('UI '));
     const user = JSON.stringify(body.messages[userIndex].content);
@@ -142,6 +156,13 @@ async function main() {
   await js('sidebar.load()');
   const id = await js('context.sessionId');
   assert.equal((await js(`chatApi.loadSession(${JSON.stringify(id)})`)).workspaceId, ws.workspace.id);
+  // The background title request must be a plain completion and must not leave
+  // a cooldown behind: the turn above already proves the key stayed usable, and
+  // this pins the title feature itself to the local fixture.
+  await until(`sidebar.sessions.some(s => s.id === ${JSON.stringify(id)} && s.title === '标题生成通过')`);
+  assert.ok(titles.length >= 1, 'The first user message generates a background conversation title');
+  assert.equal(titles[0].model, 'kimi-k2.5');
+  assert.equal(await js(`sidebar.sessions.find(s => s.id === ${JSON.stringify(id)}).title`), '标题生成通过');
   await snapshot('kimi-chat');
 
   // Force a process restart immediately after completion. The last native turn

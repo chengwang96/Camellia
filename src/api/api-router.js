@@ -320,9 +320,13 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
     if (scope && model !== scope.model) return apiError(res, 400, 'Benchmark requests must use the selected model', protocol, 'benchmark_model_mismatch');
     const routes = candidates(model, protocol).filter(route => !scope || (route.provider.id === scope.providerId && route.model.upstream === scope.upstream && routeFingerprint(route) === scope.routeFingerprint));
     if (!routes.length) return apiError(res, 404, `Model "${model}" has no configured routes. Add a route for this model; no other model will be used.`, protocol, 'model_not_found');
+    // Auxiliary requests (conversation titles) never block a route or a key for
+    // real work: a title failing must not make the model look unhealthy.
+    const auxiliary = String(req.headers['x-camellia-aux'] || '') !== '';
     const secrets = cfg.providers.flatMap(p => p.keys.map(k => k.key));
     if (!pathname.endsWith('/count_tokens')) scope?.observeTools(body, protocol);
     const attempts = [];
+    let auxiliaryFailure = null;
     for (const route of routes) {
       if (res.destroyed || stopped) return;
       const current = candidates(model, protocol).find(r => r.provider.id === route.provider.id && r.key.id === route.key.id);
@@ -357,8 +361,15 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
       }
       attempts.push(`${route.provider.name}: ${reasonText[result.kind]}`);
       // Unsupported features are request-specific, not an exhausted credential.
-      if (result.kind !== 'protocol') failed(route, model, result.status, result.kind, result.headers, result.tokens, !pathname.endsWith('/count_tokens'));
+      if (result.kind !== 'protocol' && !auxiliary) failed(route, model, result.status, result.kind, result.headers, result.tokens, !pathname.endsWith('/count_tokens'));
+      // Auxiliary callers are told what actually went wrong, so they can skip a
+      // rejected credential or model instead of retrying the same way.
+      if (auxiliary) auxiliaryFailure = { status: result.status, kind: result.kind };
       if (result.committed) return; // Never replay a partially delivered answer/tool call.
+    }
+    if (auxiliary && auxiliaryFailure) {
+      const status = Number.isInteger(auxiliaryFailure.status) && auxiliaryFailure.status >= 400 && auxiliaryFailure.status < 600 ? auxiliaryFailure.status : 503;
+      return apiError(res, status, `Model "${model}" failed this auxiliary request. ${attempts.join('; ') || reasonText[auxiliaryFailure.kind]}`, protocol, 'model_routes_exhausted');
     }
     const waits = routes.map(r => cfg.usage[r.key.id]?.models[model]?.until - Date.now()).filter(ms => ms > 0);
     const headers = waits.length ? { 'retry-after': String(Math.ceil(Math.min(...waits) / 1000)) } : {};
