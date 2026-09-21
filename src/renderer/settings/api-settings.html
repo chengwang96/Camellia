@@ -28,7 +28,7 @@
         <div><h2 id="accountConnectionsTitle" data-i18n>Account sign-in</h2><p class="hint" data-i18n>Use account models and quota in the matching engine.</p></div>
         <div class="account-shortcuts"><button data-account-engine="kimi" data-i18n>Kimi account</button><button data-account-engine="antigravity" data-i18n>Google account · Antigravity</button><button data-account-engine="codex" data-i18n>ChatGPT account</button></div>
       </section>
-      <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div>
+      <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><div class="toolbar-actions"><button id="exportConfig" data-i18n>Export config</button><button id="importConfig" data-i18n>Import config</button><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div></div>
       <div id="providers" class="provider-grid"></div>
       <div id="editor" hidden></div>
       <details class="advanced router-options"><summary data-i18n>Router options</summary><div class="row"><label data-i18n><input id="enabled" type="checkbox">Enable shared router</label><label data-i18n>Local port <input id="port" type="number" min="1024" max="65535"></label></div><div id="live" class="hint" data-i18n></div></details>
@@ -128,6 +128,7 @@
       <div class="download-save"><p class="hint" data-i18n>Engine updates are installed in place and take effect after a restart.</p><button id="checkRuntimeUpdates" type="button" data-i18n>Check for updates</button></div>
       <div id="runtimeCards"></div>
       <p class="hint footnote" data-i18n>DSH and Kimi use pinned open-source runtimes. Claude Code is installed from the official package and remains subject to Anthropic's terms. Antigravity downloads the official CLI for Google subscriptions, or the SDK and managed Python for API mode. Downloads do not change global CLI settings; saving native CLI settings does.</p>
+      <p class="hint footnote" data-i18n>If an engine stops working after being installed, security software may be removing its unsigned files. Add Camellia's runtimes folder to your antivirus exclusion list — steps are in docs/troubleshooting-runtimes.md.</p>
     </section>
   </main>
   <footer><span id="status" role="status" aria-live="polite" data-i18n></span><button id="save" class="primary" disabled data-i18n>Save changes</button></footer>

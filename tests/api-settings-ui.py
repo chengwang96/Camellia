@@ -92,12 +92,12 @@ try:
             claude.locator('#modelPill').click()
 
         configured = rpc('apiRouterGetState')['result']
-        check_model_menu(canonical_model, len(configured['models']) + 1)
+        check_model_menu(canonical_model, len(configured['models']))
         assert rpc('claudeGetSettings')['result']['model'] == legacy_model
         # Repeated router updates keep one checked entry and never change model.
         for _ in range(2):
             claude.evaluate("state => window.testCall('apiRouterSaveConfig', state)", configured)
-            check_model_menu(canonical_model, len(configured['models']) + 1)
+            check_model_menu(canonical_model, len(configured['models']))
         (repo/'dist/ui-preview').mkdir(parents=True, exist_ok=True)
         claude.locator('#modelPill').click()
         claude.locator('.dsh-pop .pop-row').first.click()
@@ -108,16 +108,16 @@ try:
         for provider in removed['providers']:
             provider['models'] = [m for m in provider['models'] if m['id'] != canonical_model]
         claude.evaluate("state => window.testCall('apiRouterSaveConfig', state)", removed)
-        check_model_menu(canonical_model + ' (no route configured)', len(configured['models']) + 1)
+        check_model_menu(canonical_model + ' (no route configured)', len(configured['models']))
         claude.evaluate("state => window.testCall('apiRouterSaveConfig', state)", configured)
-        check_model_menu(canonical_model, len(configured['models']) + 1)
+        check_model_menu(canonical_model, len(configured['models']))
         claude.locator('#modelPill').click()
         claude.locator('.dsh-pop .pop-row').first.click()
         claude.locator('.pop-opt').filter(has_text='deepseek-v4-pro').click()
         expect(claude.locator('#statusLine')).to_contain_text('Model changed: deepseek-v4-pro')
         assert rpc('claudeGetSettings')['result']['model'] == 'deepseek-v4-pro'
         claude.reload(); claude.wait_for_load_state('networkidle')
-        check_model_menu('deepseek-v4-pro', len(configured['models']) + 1)
+        check_model_menu('deepseek-v4-pro', len(configured['models']))
         page.locator('#refresh').click();page.wait_for_load_state('networkidle')
         # Bulk import, model discovery and verification exercise real IPC against
         # the loopback provider, including masked saves and usage attribution.
@@ -135,6 +135,8 @@ try:
         page.locator('#save').click();expect(page.locator('#status')).to_contain_text('Saved')
         page.locator('#verifyModel').select_option('model-test')
         page.locator('[data-verify]').nth(1).click();expect(page.locator('#status')).to_contain_text('Validation succeeded for model-test')
+        # The verify button next to the model picker validates with the first usable key.
+        page.locator('#verifyNow').click();expect(page.locator('#status')).to_contain_text('Validation succeeded for model-test')
         expect(page.locator('.key-card').nth(1)).to_contain_text('Model verified')
         state=rpc('apiRouterGetState')['result'];extra=state['providers'][0]['keys'][1]['id']
         assert state['usage'][extra]['requests']==0, 'Connection checks are not business usage'

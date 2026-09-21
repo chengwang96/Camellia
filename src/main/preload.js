@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   benchmarkPrepareLibrary: library => ipcRenderer.invoke('dsh:benchmark-prepare-library', { library }),
   benchmarkExport: id => ipcRenderer.invoke('dsh:benchmark-export', { id }),
   benchmarkDelete: id => ipcRenderer.invoke('dsh:benchmark-delete', { id }),
+  apiRouterExport: () => ipcRenderer.invoke('dsh:api-router-export'),
+  apiRouterImport: () => ipcRenderer.invoke('dsh:api-router-import'),
   onBenchmarkState: callback => subscribe('dsh:benchmark-state', callback),
   onSettingsNavigate: (callback) => subscribe('dsh:settings-navigate', callback),
   onEngineSettingsChanged: (callback) => subscribe('dsh:engine-settings-changed', callback),

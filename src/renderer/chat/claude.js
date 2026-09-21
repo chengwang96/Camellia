@@ -229,7 +229,7 @@ const context = { sessionId: null, workspaceId: null };
       if (harnessId !== 'claude' && patch.model !== undefined) LEVELS.splice(1);
       applySessionSettings(result.settings);
       updateCtxRing();
-      if (harnessId === 'codex') applyCodexLevels();
+      if (harnessId !== 'claude') applyApiLevels();
       setStatus(message);
     } catch (error) {
       $('selPermission').value = currentPermission;
@@ -1918,9 +1918,9 @@ const context = { sessionId: null, workspaceId: null };
     renderModelPill();
   }
 
-  function applyCodexLevels() {
+  function applyApiLevels() {
     const model = accountModels.find(m => m.id === currentModel);
-    const efforts = accountSubscription() ? (model?.supportedReasoningEfforts || []).map(e => e.reasoningEffort) : ['low', 'medium', 'high'];
+    const efforts = accountSubscription() ? (model?.supportedReasoningEfforts || []).map(e => e.reasoningEffort) : window.CamelliaModelLevels.levelsFor(currentModel);
     LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' }, ...efforts.map(id => ({ id, label: id[0].toUpperCase() + id.slice(1) })));
   }
   async function loadSettings() {
@@ -1947,7 +1947,7 @@ const context = { sessionId: null, workspaceId: null };
         $('modelPill').title = 'Models available to your ' + accountName + ' account';
         renderModelPill();
       } else applyRouterModels(state);
-      if (harnessId === 'codex') applyCodexLevels();
+      if (harnessId !== 'claude') applyApiLevels();
     } catch (error) { setStatus("Could not load settings: " + error.message); }
   }
 

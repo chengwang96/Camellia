@@ -20,12 +20,16 @@ function createHarness(existingRoot) {
   const events = [];
   const timers = new Map();
   let timerId = 0;
+  const dialogBehavior = {
+    open: async () => ({ canceled: true, filePaths: [] }),
+    save: async () => ({ canceled: true }),
+  };
   const electron = {
     app: { getPath: () => userData, getName: () => 'camellia-desktop', setName() {}, commandLine: { appendSwitch() {} }, getVersion: () => '0.1.0', requestSingleInstanceLock: () => true, on() {}, whenReady: () => ({ then() {} }) },
     nativeTheme: { themeSource: 'system' },
     Menu: { buildFromTemplate: template => template, setApplicationMenu(menu) { this.current = menu; } },
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
-    dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+    dialog: { showOpenDialog: async (...args) => dialogBehavior.open(...args), showSaveDialog: async (...args) => dialogBehavior.save(...args) },
   };
   const mockProcess = Object.create(process);
   mockProcess.env = { ...process.env, DSH_HOME: path.join(home, '.dsh'), APPDATA: home, LOCALAPPDATA: home, CLAUDE_CONFIG_DIR: '' };
@@ -102,6 +106,6 @@ function createHarness(existingRoot) {
     if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith('dsh-workspaces-')) throw new Error('Unsafe test cleanup path');
     removeTree(resolved);
   }
-  return { root, userData, home, call, folder, configureApi, seedSession, finishTurn, processes, events, api, cleanup };
+  return { root, userData, home, call, folder, configureApi, seedSession, finishTurn, processes, events, api, cleanup, dialogBehavior };
 }
 module.exports = { createHarness };

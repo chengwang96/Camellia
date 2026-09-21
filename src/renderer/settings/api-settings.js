@@ -79,7 +79,7 @@ function renderEditor() {
     <div id="keyImport" class="key-import" hidden><label for="bulkKeys" data-i18n>One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false" data-i18n-attrs="placeholder"></textarea><button id="importKeys" data-i18n>Add to key pool</button><p class="hint" data-i18n>Duplicate keys for this provider are merged on save.</p></div>
     <div class="section"><div class="section-head"><h2 data-i18n>Model</h2><button id="discoverModels" data-i18n>Fetch models</button></div><div id="modelChips" class="model-chips"></div>
       <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Routes switch only within the same model ID. Keep versions and aliases such as latest and chat separate.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Canonical model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th data-i18n>Context</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><button id="addModel" data-i18n>+ Add model</button></details>
-      <div class="row" style="margin-top:18px"><label data-i18n>Validation model<select id="verifyModel" aria-label="Validation model" data-i18n-attrs="aria-label"></select></label></div><p class="hint" data-i18n>Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
+      <div class="row verify-row" style="margin-top:18px"><label data-i18n>Validation model<select id="verifyModel" aria-label="Validation model" data-i18n-attrs="aria-label"></select></label><button id="verifyNow" data-verify-now data-i18n>Validate</button></div><p class="hint" data-i18n>Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
     </div>
     <details class="advanced section" id="connectionAdvanced" ${p.type === 'custom' ? 'open' : ''}><summary data-i18n>Advanced connection settings</summary><div class="grid">
       <div class="full"><label for="pUrl" data-i18n>API URL</label><input id="pUrl" value="${esc(p.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false" data-i18n-attrs="placeholder"></div>
@@ -321,6 +321,17 @@ $('editor').onclick = async e => {
   try {
     if (d.keyUsage) { assertClean(); setView('usage'); $('usageProvider').value = p.id; fillUsageFilters(); $('usageKey').value = d.keyUsage; fillUsageFilters(); renderUsage(); }
     if (d.keyBalance) { assertClean(); balanceKey = d.keyBalance; setView('usage'); }
+    if (d.verifyNow !== undefined) {
+      assertClean();
+      const model = $('verifyModel').value; if (!model) throw new Error("Add and select a model first");
+      const key = p.keys.find(k => k.enabled !== false && (k.key || k.maskedKey));
+      if (!key) throw new Error("Add a key to validate with first");
+      button.disabled = true; status(`Validating ${model}…`);
+      const result = await api.providerVerify({ providerId: p.id, keyId: key.id, model });
+      if (result.state) insight = result.state;
+      updateKeyStats(); if (!result.ok) throw new Error(result.error);
+      status(`Validation succeeded for ${model}. Select other models to validate them separately.`);
+    }
     if (d.verify) {
       assertClean(); const model = $('verifyModel').value; if (!model) throw new Error("Add and select a model first");
       button.disabled = true; status(`Validating ${model}…`);
@@ -335,7 +346,7 @@ $('editor').onclick = async e => {
       if (!result.ok) throw new Error(result.error);
       live = { ...live, ...result.state }; showLive(); updateKeyStats(); renderRoutes(); status(d.rotate ? "Switched to the next available route for the same model" : "Route checks reset. Usage history retained.");
     }
-  } catch (e) { status(e.message, true); } finally { if (d.verify) button.disabled = false; }
+  } catch (e) { status(e.message, true); } finally { if (d.verify || d.verifyNow !== undefined) button.disabled = false; }
 };
 function openAccountSettings(engine) {
   if ($('addDialog').open) $('addDialog').close();
@@ -392,6 +403,20 @@ $('exportUsage').onclick = () => {
   const rows = [["Model", "Provider", 'Key', "Successful requests", "Input tokens", "Output tokens", "Cache-read tokens", "Failed", "Cancel"], ...usageData.map(r => [r.model, r.provider, r.key, r.requests, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.failures, r.cancelled])];
   const url = URL.createObjectURL(new Blob(['\ufeff' + rows.map(r => r.map(field).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a'); link.href = url; link.download = `workbench-usage-${localDay(new Date())}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+$('exportConfig').onclick = async () => {
+  try {
+    const result = await api.apiRouterExport();
+    if (result?.ok && !result.canceled) status("Configuration exported. The file contains raw API keys — store it carefully.");
+    else if (result && !result.ok) throw new Error(result.error);
+  } catch (e) { status(e.message, true); }
+};
+$('importConfig').onclick = async () => {
+  try {
+    const result = await api.apiRouterImport();
+    if (result?.ok && !result.canceled) { status(`Configuration imported: ${result.providers} providers. Subscriptions still need a local sign-in.`); await refresh(); }
+    else if (result && !result.ok) throw new Error(result.error);
+  } catch (e) { status(e.message, true); }
 };
 $('openLogs').onclick = () => api.openLogs();
 // General preferences apply on change, like the engines' own settings pages.
