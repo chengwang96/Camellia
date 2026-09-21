@@ -249,6 +249,23 @@
     display: block; font: var(--f-xxxs-11); color: var(--dsw-alias-label-caption);
     margin-bottom: 6px; text-transform: uppercase; letter-spacing: .5px;
   }
+  .md .md-table-wrap {
+    margin: 8px 0; overflow-x: auto; white-space: normal;
+    border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px;
+  }
+  .md .md-table {
+    width: 100%; border-collapse: collapse; font: inherit;
+  }
+  .md .md-table th, .md .md-table td {
+    padding: 7px 12px; text-align: left; vertical-align: top;
+    border-right: 1px solid var(--dsw-alias-border-l2);
+    border-bottom: 1px solid var(--dsw-alias-border-l2);
+  }
+  .md .md-table th {
+    background: var(--dsw-alias-bg-soft); font-weight: 600;
+  }
+  .md .md-table th:last-child, .md .md-table td:last-child { border-right: 0; }
+  .md .md-table tbody tr:last-child td { border-bottom: 0; }
 
   /* Thinking box */
   .think {

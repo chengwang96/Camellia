@@ -212,6 +212,11 @@ try:
         expect(page.locator('.cursor')).to_have_count(0)
         assert page.evaluate(r"fileUrl('C:\\文档 #1\\why?.png')").endswith('%23' + '1/why%3F.png')
         assert page.evaluate(r"mdRender('\x01999\x01')") == '\x01999\x01'
+        table_html = page.evaluate(r"mdRender('| Model | Score |\n| :--- | ---: |\n| **AutoARDS** | `9.5` |\n| TOMA | 8 |')")
+        assert '<table class="md-table">' in table_html
+        assert '<strong>AutoARDS</strong>' in table_html
+        assert '<code class="md-inline">9.5</code>' in table_html
+        assert 'text-align:left' in table_html and 'text-align:right' in table_html
         # Each history group loads independently; collapse keeps accurate totals.
         paged_ws = page.evaluate("window.testCall('seedPagedHistory')")
         page.reload()

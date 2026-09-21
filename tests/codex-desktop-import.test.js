@@ -85,7 +85,17 @@ test('only the user-visible name is used, and cwd falls back to a matching proje
   assert.equal(sessions.find(s => s.id === 'plain').project, null);
 });
 
-test('rollout parsing keeps user and assistant text, unwraps the desktop request wrapper, skips environment blocks', t => {
+test('desktop session listing is capped and reports truncation', t => {
+  const { root, file, db, close } = stateFixture(t);
+  const rollout = writeRollout(root, 'limit.jsonl', [responseItem('user', 'hello')]);
+  for (let index = 0; index < 3; index++) addThread(db, { id: 'limit-' + index, name: 'Session ' + index, rollout });
+  close();
+  const sessions = listDesktopSessions(file, { maxSessions: 2 });
+  assert.equal(sessions.length, 2);
+  assert.equal(sessions.truncated, true);
+});
+
+test('rollout parsing keeps user and assistant text, unwraps the desktop request wrapper, skips environment blocks', async t => {
   const { root } = stateFixture(t);
   const rollout = writeRollout(root, 'b.jsonl', [
     { type: 'session_meta', payload: { id: 'x' } },
@@ -95,19 +105,19 @@ test('rollout parsing keeps user and assistant text, unwraps the desktop request
     responseItem('assistant', 'working on it', '2026-09-16T10:00:03.100Z'),
     { timestamp: '2026-09-16T10:00:04.000Z', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', text: 'duplicate copy' } } },
   ]);
-  const messages = readRolloutMessages(rollout);
+  const messages = await readRolloutMessages(rollout);
   assert.deepEqual(messages.map(m => m.role + ':' + m.text), ['user:do the thing', 'assistant:working on it']);
   assert.equal(messages[0].at, Date.parse('2026-09-16T10:00:01.000Z'));
 });
 
-test('import creates shared conversations with codex history and skips re-imports', t => {
+test('import creates shared conversations with codex history and skips re-imports', async t => {
   const { root, file, db, close } = stateFixture(t);
   const cwd = path.join(root, 'work'); fs.mkdirSync(cwd);
   const rollout = writeRollout(root, 'c.jsonl', [responseItem('user', 'first question'), responseItem('assistant', 'first answer')]);
   addThread(db, { id: 'thread-1', name: 'Imported chat', cwd, rollout });
   close();
   const shared = sharedFixture(root);
-  const result = importDesktopSessions(shared, file, ['thread-1']);
+  const result = await importDesktopSessions(shared, file, ['thread-1']);
   assert.equal(result.imported.length, 1);
   const c = result.imported[0];
   const record = shared.get(c.id);
@@ -120,7 +130,7 @@ test('import creates shared conversations with codex history and skips re-import
   assert.equal(listDesktopSessions(file, { excludeIds: new Set(['thread-1']) }).length, 0);
 });
 
-test('importing a project thread creates one workspace reused by sibling threads', t => {
+test('importing a project thread creates one workspace reused by sibling threads', async t => {
   const { root, file, db, close } = stateFixture(t);
   const projectDir = path.join(root, 'ards-work'); fs.mkdirSync(projectDir);
   addProject(db, { id: 'p1', name: 'ARDS', roots: [projectDir] });
@@ -130,7 +140,7 @@ test('importing a project thread creates one workspace reused by sibling threads
   addThread(db, { id: 'pt-2', name: 'session two', projectId: 'p1', rollout: r2 });
   close();
   const shared = sharedFixture(root);
-  const result = importDesktopSessions(shared, file, ['pt-1', 'pt-2']);
+  const result = await importDesktopSessions(shared, file, ['pt-1', 'pt-2']);
   assert.equal(result.imported.length, 2);
   const first = shared.get(result.imported[0].id);
   const second = shared.get(result.imported[1].id);
@@ -143,7 +153,7 @@ test('importing a project thread creates one workspace reused by sibling threads
   assert.equal(workspaces[0].path, fs.realpathSync(projectDir));
 });
 
-test('workspace lookup matches by real path so symlinked project roots still reuse', t => {
+test('workspace lookup matches by real path so symlinked project roots still reuse', async t => {
   const { root, file, db, close } = stateFixture(t);
   const real = path.join(root, 'real-proj'); fs.mkdirSync(real);
   const link = path.join(root, 'link-proj');
@@ -155,7 +165,7 @@ test('workspace lookup matches by real path so symlinked project roots still reu
   addThread(db, { id: 'lt-2', name: 'two', projectId: 'p1', rollout: r2 });
   close();
   const shared = sharedFixture(root);
-  const result = importDesktopSessions(shared, file, ['lt-1', 'lt-2']);
+  const result = await importDesktopSessions(shared, file, ['lt-1', 'lt-2']);
   assert.equal(result.imported.length, 2);
   assert.equal(result.skipped.length, 0);
   const first = shared.get(result.imported[0].id);
@@ -165,12 +175,12 @@ test('workspace lookup matches by real path so symlinked project roots still reu
   assert.equal(shared.workspaces.sessionMeta().workspaces.length, 1);
 });
 
-test('manual sync overwrites the Camellia copy, retires segments and updates the title', t => {
+test('manual sync overwrites the Camellia copy, retires segments and updates the title', async t => {
   const { root, file, db, close } = stateFixture(t);
   const rollout = writeRollout(root, 's.jsonl', [responseItem('user', 'old question'), responseItem('assistant', 'old answer')]);
   addThread(db, { id: 'sync-1', name: 'before rename', rollout });
   const shared = sharedFixture(root);
-  const result = importDesktopSessions(shared, file, ['sync-1']);
+  const result = await importDesktopSessions(shared, file, ['sync-1']);
   const record = shared.get(result.imported[0].id);
   shared.append(record, { role: 'user', engine: 'codex', text: 'local only turn', displayText: 'local only turn', attachments: [] });
   record.segments = { codex: { native: 'abc' } };
@@ -178,7 +188,7 @@ test('manual sync overwrites the Camellia copy, retires segments and updates the
   writeRollout(root, 's.jsonl', [responseItem('user', 'old question'), responseItem('assistant', 'old answer'), responseItem('user', 'new question'), responseItem('assistant', 'new answer')]);
   db.prepare('UPDATE threads SET name = ? WHERE id = ?').run('after rename', 'sync-1');
   close();
-  const synced = syncDesktopSession(shared, file, record.id);
+  const synced = await syncDesktopSession(shared, file, record.id);
   assert.equal(synced.messages, 4);
   assert.equal(synced.title, 'after rename');
   const after = shared.get(record.id);
@@ -189,12 +199,12 @@ test('manual sync overwrites the Camellia copy, retires segments and updates the
   assert.ok(fs.existsSync(path.join(root, 'conversations', record.id + '.jsonl.pre-sync')));
 });
 
-test('sync rejects conversations that were not imported from the desktop app', t => {
+test('sync rejects conversations that were not imported from the desktop app', async t => {
   const { root, file, db, close } = stateFixture(t);
   close();
   const shared = sharedFixture(root);
   const c = shared.create('codex', null, 'local chat');
-  assert.throws(() => syncDesktopSession(shared, file, c.id), /not imported/);
+  await assert.rejects(() => syncDesktopSession(shared, file, c.id), /not imported/);
 });
 
 test('desktopStatePath points inside the user home .codex directory', () => {

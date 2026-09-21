@@ -35,7 +35,9 @@ const context = { sessionId: null, workspaceId: null };
   let runAnchorMs = 0;        // timestamp of message_start (drives the 15s clock)
   let statusClockTimer = null;
   let followRunOutput = false;
-  let programmaticScroll = false;
+  let userScrollActive = false;
+  let userScrollIntentUntil = 0;
+  let followScrollFrame = null;
   let todoItems = null;       // latest task snapshot: [{ content, status, activeForm }]
   let todoPanelEl = null;
 
@@ -102,10 +104,17 @@ const context = { sessionId: null, workspaceId: null };
   window.addEventListener('beforeunload', saveDraft);
   let scrollSaveTimer;
   chatScroll.addEventListener('scroll', () => {
-    if (running && !programmaticScroll) followRunOutput = nearBottom();
-    programmaticScroll = false;
+    if (running && (userScrollActive || performance.now() < userScrollIntentUntil)) followRunOutput = nearBottom();
     clearTimeout(scrollSaveTimer); scrollSaveTimer = setTimeout(saveDraft, 120);
   });
+  chatScroll.addEventListener('wheel', event => {
+    userScrollIntentUntil = performance.now() + 250;
+    if (running && event.deltaY < 0) followRunOutput = false;
+  }, { passive: true });
+  chatScroll.addEventListener('touchstart', () => { userScrollActive = true; }, { passive: true });
+  chatScroll.addEventListener('touchend', () => { userScrollActive = false; userScrollIntentUntil = performance.now() + 250; }, { passive: true });
+  chatScroll.addEventListener('pointerdown', () => { userScrollActive = true; });
+  window.addEventListener('pointerup', () => { userScrollActive = false; userScrollIntentUntil = performance.now() + 250; });
 
   const SENT = '\x01'; // escaped SOH sentinel — never appears in prose
 
@@ -114,7 +123,35 @@ const context = { sessionId: null, workspaceId: null };
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  // Minimal markdown: fenced code, inline code, bold, headings.
+  function splitTableRow(line) {
+    let value = line.trim();
+    if (value.startsWith('|')) value = value.slice(1);
+    if (value.endsWith('|') && !value.endsWith('\\|')) value = value.slice(0, -1);
+    const cells = [];
+    let cell = '';
+    for (let i = 0; i < value.length; i++) {
+      if (value[i] === '\\' && value[i + 1] === '|') {
+        cell += '|';
+        i++;
+      } else if (value[i] === '|') {
+        cells.push(cell.trim());
+        cell = '';
+      } else {
+        cell += value[i];
+      }
+    }
+    cells.push(cell.trim());
+    return cells;
+  }
+
+  function tableDelimiter(line) {
+    if (!line.includes('|')) return null;
+    const cells = splitTableRow(line);
+    if (!cells.length || cells.some(cell => !/^:?-{3,}:?$/.test(cell))) return null;
+    return cells.map(cell => cell.startsWith(':') && cell.endsWith(':') ? 'center' : cell.endsWith(':') ? 'right' : cell.startsWith(':') ? 'left' : '');
+  }
+
+  // Minimal markdown: fenced code, inline code, GFM tables, bold, headings.
   function mdRender(src) {
     const tokens = [];
     let text = String(src);
@@ -126,19 +163,52 @@ const context = { sessionId: null, workspaceId: null };
       tokens.push({ t: 'inline', code });
       return SENT + (tokens.length - 1) + SENT;
     });
+    const lines = text.split('\n');
+    const rendered = [];
+    for (let i = 0; i < lines.length; i++) {
+      const align = i + 1 < lines.length ? tableDelimiter(lines[i + 1]) : null;
+      if (!align || !lines[i].includes('|')) {
+        rendered.push(lines[i]);
+        continue;
+      }
+      const header = splitTableRow(lines[i]);
+      if (header.length !== align.length) {
+        rendered.push(lines[i]);
+        continue;
+      }
+      const rows = [];
+      i += 2;
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+        const row = splitTableRow(lines[i]);
+        rows.push(Array.from({ length: header.length }, (_unused, index) => row[index] || ''));
+        i++;
+      }
+      i--;
+      tokens.push({ t: 'table', header, align, rows });
+      rendered.push(SENT + (tokens.length - 1) + SENT);
+    }
+    text = rendered.join('\n');
     text = esc(text);
     text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     text = text.replace(/^(#{1,4})\s*(.+)$/gm, '<strong>$2</strong>');
     const sentRe = new RegExp(SENT + '(\\d+)' + SENT, 'g');
-    text = text.replace(sentRe, (_m, idx) => {
+    const renderToken = (_m, idx) => {
       const tk = tokens[+idx];
       if (!tk) return _m;
       if (tk.t === 'code') {
         const langAttr = tk.lang ? ' data-lang="' + esc(tk.lang) + '"' : '';
         return '<pre class="md-code"' + langAttr + '><code>' + esc(tk.code.replace(/\n+$/, '')) + '</code></pre>';
       }
-      return '<code class="md-inline">' + esc(tk.code) + '</code>';
-    });
+      if (tk.t === 'inline') return '<code class="md-inline">' + esc(tk.code) + '</code>';
+      const renderCell = value => esc(value).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(sentRe, renderToken);
+      const cells = (tag, values) => values.map((value, index) => {
+        const alignAttr = tk.align[index] ? ' style="text-align:' + tk.align[index] + '"' : '';
+        return '<' + tag + alignAttr + '>' + renderCell(value) + '</' + tag + '>';
+      }).join('');
+      return '<div class="md-table-wrap"><table class="md-table"><thead><tr>' + cells('th', tk.header) +
+        '</tr></thead><tbody>' + tk.rows.map(row => '<tr>' + cells('td', row) + '</tr>').join('') + '</tbody></table></div>';
+    };
+    text = text.replace(sentRe, renderToken);
     return text;
   }
 
@@ -157,12 +227,20 @@ const context = { sessionId: null, workspaceId: null };
   function nearBottom() {
     return chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 140;
   }
-  function maybeScroll(was) {
-    if (was || running && followRunOutput) {
-      programmaticScroll = true;
-      chatScroll.scrollTop = chatScroll.scrollHeight;
-    }
+  function scrollToLatest() {
+    chatScroll.scrollTop = chatScroll.scrollHeight;
+    if (followScrollFrame !== null) cancelAnimationFrame(followScrollFrame);
+    followScrollFrame = requestAnimationFrame(() => {
+      followScrollFrame = null;
+      if (running && followRunOutput) chatScroll.scrollTop = chatScroll.scrollHeight;
+    });
   }
+  function maybeScroll(was) {
+    if (was || running && followRunOutput) scrollToLatest();
+  }
+  new ResizeObserver(() => {
+    if (running && followRunOutput) scrollToLatest();
+  }).observe(chat);
 
   function clearEmpty() {
     const e = chat.querySelector('.empty-state');
@@ -635,7 +713,7 @@ const context = { sessionId: null, workspaceId: null };
     div.appendChild(actions);
     chat.appendChild(div);
     updateMessageActions();
-    if (meta.scrollToBottom) { programmaticScroll = true; chatScroll.scrollTop = chatScroll.scrollHeight; }
+    if (meta.scrollToBottom) scrollToLatest();
     else maybeScroll(was);
     return div;
   }

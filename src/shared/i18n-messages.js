@@ -153,6 +153,8 @@
   "Import": "导入",
   "Import local Codex sessions": "导入本地 Codex 会话",
   "Read from the Codex desktop app on this computer. Sessions are copied into Camellia; the originals stay untouched.": "从本机 Codex 桌面应用读取。会话会被复制进 Camellia，原文件保持不动。",
+  "Scanning starts only when you open this dialog. Sessions are copied into Camellia; the originals stay untouched. Very large histories are skipped for safety.": "仅在打开此对话框时才会开始扫描。会话会被复制进 Camellia，原文件保持不动；为确保安全，超大历史记录会被跳过。",
+  "Only the newest 1,000 sessions are shown for safety.": "为确保安全，仅显示最新的 1,000 个会话。",
   "Reading local Codex sessions…": "正在读取本地 Codex 会话…",
   "No local Codex sessions to import.": "没有可导入的本地 Codex 会话。",
   "Import selected": "导入所选",

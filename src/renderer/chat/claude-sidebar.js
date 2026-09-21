@@ -381,20 +381,13 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
 
   // ---------- local Codex desktop session import ----------
   let importableCount = 0;
-  async function checkImportable() {
-    try {
-      const res = await window.dshDesktop.codexDesktopSessions();
-      importableCount = res?.ok ? res.sessions.length : 0;
-    } catch { importableCount = 0; }
-    renderSessionSidebar();
-  }
   function importRow(s) {
     const label = document.createElement('label');
     label.className = 'import-row';
     if (s.project) label.dataset.project = s.project.id;
     const box = document.createElement('input'); box.type = 'checkbox'; box.value = s.id; box.checked = s.importable; box.disabled = !s.importable;
     const text = document.createElement('span');
-    text.textContent = s.title + (s.importable ? '' : ' (rollout file missing)');
+    text.textContent = s.title + (s.tooLarge ? ' (history too large to import safely)' : s.importable ? '' : ' (rollout file missing)');
     label.append(box, text);
     return label;
   }
@@ -460,6 +453,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   async function openImportDialog() {
     const list = $('importList');
     $('importAll').disabled = true;
+    $('importConfirm').disabled = true;
     list.innerHTML = '<p class="hint" data-i18n>Reading local Codex sessions\u2026</p>';
     $('importMask').classList.add('visible');
     try {
@@ -467,7 +461,14 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       if (!res?.ok) throw new Error(res?.error || 'Could not read the Codex desktop state');
       if (!res.sessions.length) { $('importAll').checked = false; list.innerHTML = '<p class="hint" data-i18n>No local Codex sessions to import.</p>'; return; }
       const all = $('importAll'); all.disabled = false; all.checked = true; all.indeterminate = false;
-      list.replaceChildren(...groupedImportNodes(res.sessions));
+      $('importConfirm').disabled = false;
+      const nodes = groupedImportNodes(res.sessions);
+      if (res.truncated) {
+        const warning = document.createElement('p'); warning.className = 'hint';
+        warning.textContent = window.CamelliaI18n.t('Only the newest 1,000 sessions are shown for safety.');
+        nodes.unshift(warning);
+      }
+      list.replaceChildren(...nodes);
       syncImportBoxes();
     } catch (error) { list.replaceChildren(); const p = document.createElement('p'); p.className = 'hint'; p.textContent = error.message; list.appendChild(p); }
   }
@@ -507,7 +508,6 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   };
   $('importCancel').onclick = () => $('importMask').classList.remove('visible');
   $('importBtn').addEventListener('click', () => void openImportDialog());
-  void checkImportable();
 
   // ---------- manual re-sync of an imported conversation ----------
   let syncTarget = null;
