@@ -62,7 +62,7 @@
       <p class="hint" data-i18n>Changes save automatically.</p>
     </section>
     <section id="archivedPage" class="page" hidden>
-      <p class="hint" data-i18n>Archived conversations are hidden from the sidebar. Restore one to continue it, or delete it permanently.</p>
+      <div class="toolbar"><p class="hint" data-i18n>Archived conversations are hidden from the sidebar. Restore one to continue it, or delete it permanently.</p><div class="toolbar-actions"><button id="deleteAllArchived" class="danger" disabled data-i18n>Delete all</button></div></div>
       <div id="archivedList"></div>
     </section>
     <section id="enginesPage" class="page" hidden>
@@ -136,6 +136,7 @@
 <dialog id="addDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Add API provider</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p class="hint" data-i18n>Connect with an API key. Choose a service to fill in its API address.</p><label for="preset" data-i18n>Provider</label><select id="preset"></select><div id="presetAccount" class="preset-account" hidden><p id="presetAccountHint" class="hint"></p><button id="openPresetAccount"></button></div><button id="confirmAdd" class="primary" data-i18n>Add API provider</button></dialog>
 <dialog id="modelDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Select model</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><input id="modelSearch" placeholder="Search models" aria-label="Search models" data-i18n-attrs="aria-label placeholder"><div id="catalogList"></div><button id="applyModels" class="primary" data-i18n>Add selected models</button></dialog>
 <dialog id="deleteArchivedDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Delete conversation</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="deleteArchivedTitle"></p><p class="hint" data-i18n>Deleting removes this conversation and its files permanently. This cannot be undone.</p><button id="confirmDeleteArchived" class="danger" data-i18n>Delete permanently</button></dialog>
+<dialog id="deleteAllArchivedDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Delete all archived conversations</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="deleteAllArchivedCount"></p><p class="hint" data-i18n>Deleting removes every archived conversation and its files permanently. This cannot be undone.</p><button id="confirmDeleteAllArchived" class="danger" data-i18n>Delete permanently</button></dialog>
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>

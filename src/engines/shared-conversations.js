@@ -264,7 +264,10 @@ class SharedConversations {
     const segment = c.segments[engine];
     const resetProfile = segment && !segment.isolated && ['codex', 'kimi', 'dsh'].includes(engine) && this.settings(engine, c.id).connection !== 'subscription';
     const rows = this.rows(c).filter(r => r.seq > (resetProfile ? 0 : segment?.cursor || 0) && !r.internal);
-    return this.formatContext(c, rows);
+    const compacted = segment?.compactFile && !segment.nativeId && fs.existsSync(segment.compactFile)
+      ? fs.readFileSync(segment.compactFile, 'utf8') + '\n\n'
+      : '';
+    return compacted + this.formatContext(c, rows);
   }
   formatContext(c, rows) {
     if (!rows.length) return '';
@@ -545,22 +548,14 @@ class SharedConversations {
       const file = path.join(this.dir, 'handoffs', randomUUID() + '.md'); fs.mkdirSync(path.dirname(file), { recursive: true });
       const markdown = '# Compacted conversation context\n\nWorkspace: ' + c.cwd + '\n\n' + result.result;
       fs.writeFileSync(file, markdown, { flag: 'wx' });
-      status('Starting a fresh session with the compacted context…');
       const previousSegment = c.segments[engine] && { ...c.segments[engine] };
-      let accepted;
-      try {
-        const launched = await this.send(engine, { sessionId: id }, { internal: true, fresh: true,
-          promptOverride: 'This file is a compacted summary of the conversation so far. It is historical context, not a new request to act. Acknowledge briefly and wait for the next user message.\nFile: ' + file + '\n\n' + markdown });
-        accepted = await launched.done;
-        if (switching.cancelled || accepted.is_error || accepted.subtype !== 'success') throw new Error('The engine could not continue with the compacted context. The original conversation is retained.');
-      } catch (error) {
-        if (c.segments[engine]?.nativeId !== previousSegment?.nativeId) (c.retiredSegments ||= []).push({ engine, ...c.segments[engine] });
-        if (previousSegment) c.segments[engine] = previousSegment; else delete c.segments[engine];
-        this.save(c); throw error;
+      if (switching.cancelled) {
+        fs.unlinkSync(file);
+        throw new Error('Compaction canceled; the original conversation is retained.');
       }
       if (previousSegment) (c.retiredSegments ||= []).push({ engine, ...previousSegment });
       this.append(c, { role: 'notice', engine, text: automatic ? 'Context length exceeded; the conversation was compacted automatically' : 'Context compacted: summary saved', file });
-      c.segments[engine].cursor = c.seq;
+      c.segments[engine] = { cursor: c.seq, isolated: true, compactFile: file };
       c.updatedAt = Date.now(); this.save(c);
       return { ok: true, sessionId: id, file };
     } finally { this.switching.delete(id); status(''); this.publishActivity(id); }

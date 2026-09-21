@@ -107,6 +107,20 @@ async function main() {
   assert.equal(fs.existsSync(sharedLog), false);
   assert.ok(!JSON.parse(fs.readFileSync(path.join(userData, 'desktop-config.json'), 'utf8')).sharedMeta?.archived?.[sharedId]);
 
+  // With nothing left archived, Delete all stays disabled; re-archive and clear everything.
+  assert.equal(await run("document.querySelector('#deleteAllArchived').disabled"), true, 'delete-all disabled when empty');
+  await run(`window.dshDesktop.claudeArchiveSession(${JSON.stringify({ id: legacyId, archived: true })})`);
+  await homeWindow.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({ page: 'archived' })");
+  await wait(async () => (await run("document.querySelectorAll('#archivedList .archived-row').length")) === 1, 're-archived row appears');
+  assert.equal(await run("document.querySelector('#deleteAllArchived').disabled"), false, 'delete-all enabled with rows');
+  await run("document.querySelector('#deleteAllArchived').click()");
+  await wait(() => run("document.querySelector('#deleteAllArchivedDialog').open"), 'delete-all dialog opens');
+  assert.equal(await run("document.querySelector('#deleteAllArchivedCount').textContent"), 'All 1 archived conversations will be deleted.');
+  await run("document.querySelector('#confirmDeleteAllArchived').click()");
+  await wait(() => run("!!document.querySelector('#archivedList .empty')"), 'empty state after delete-all');
+  assert.equal(fs.existsSync(legacyFile), false);
+  assert.ok(!JSON.parse(fs.readFileSync(path.join(userData, 'desktop-config.json'), 'utf8')).claudeMeta?.archived?.[legacyId]);
+
   assert.deepEqual(errors, []);
   console.log('PASS: archived settings page lists, restores and deletes archived conversations');
   app.exit(0);

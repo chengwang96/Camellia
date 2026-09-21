@@ -1,5 +1,6 @@
 """Shared conversation UI, alignment and switch preferences. No model calls."""
 import json
+import re
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
@@ -46,6 +47,7 @@ bridge = r"""(() => {
     apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),
     onConversationEvent:()=>{},onConversationGoal:fn=>{window.deliverGoal=goal=>{window.currentGoal=goal;fn(goal);};},onConversationStatus:()=>{},
     onEngineSettingsChanged:()=>{},onApiRouterState:()=>{},openSettingsWindow:()=>{},
+    previewFile:async()=>({ok:false,error:'fixture'}),openFileExternally:async()=>({ok:true}),
   };
 })();""".replace('FIXTURE', json.dumps(fixture))
 
@@ -178,6 +180,7 @@ with sync_playwright() as p:
         onLanguageChanged:()=>()=>{}, onEngineSettingsChanged:()=>{}, onApiRouterState:()=>{},
         onConversationEvent:fn=>window.receiveEvent=fn, onConversationGoal:fn=>window.receiveGoal=fn,
         onConversationStatus:()=>{},onHarnessNavigate:fn=>window.navigateHarness=fn,
+        previewFile:async()=>({ok:false,error:'fixture'}),openFileExternally:async()=>({ok:true}),
         apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),
         workbenchSettings:async()=>({ok:true,conversations:{mode:'direct'}}),
         conversationSwitch:async payload=>{actions.push({action:'switch',payload});return {ok:true};},
@@ -312,7 +315,17 @@ with sync_playwright() as p:
         assert page.evaluate('actions.filter(a=>a.action==="send").at(-1).payload.editSeq')>0
         assert page.evaluate('actions.filter(a=>a.action==="send").at(-1).payload.attachments[0].path')=='D:/Fixture/data.csv'
         expect(page.locator('#input')).to_have_value('Unsent next message')
-        page.locator('#send').click(); page.wait_for_function('!running')
+        page.evaluate("chat.insertAdjacentHTML('beforeend','<div style=\"height:1200px\"></div>');chatScroll.scrollTop=0")
+        page.locator('#send').click()
+        expect(page.locator('#messageQueue')).to_be_visible()
+        expect(page.locator('.queue-text')).to_have_text('Unsent next message')
+        page.wait_for_function('chatScroll.scrollTop + chatScroll.clientHeight >= chatScroll.scrollHeight - 2')
+        page.evaluate("chat.insertAdjacentHTML('beforeend','<div style=\"height:900px\">Late agent output</div>');maybeScroll(false)")
+        page.wait_for_function('chatScroll.scrollTop + chatScroll.clientHeight >= chatScroll.scrollHeight - 2')
+        # Stop needs an empty composer; drop the queued draft first so stopping does not drain it into a new run.
+        page.locator('.queue-remove').click()
+        page.locator('#send').click()
+        page.wait_for_function('!running')
         page.locator(f'[data-sid="{a}"]').click()
         expect(page.locator('#permMask')).to_have_class('perm-mask visible')
         page.locator('#permAllow').click()
@@ -405,6 +418,7 @@ with sync_playwright() as p:
         kimiAccountState:async()=>({ok:true,account:{id:'acct'},models:[{id:'k3',name:'K3'},{id:'k2.8',name:'K2.8 Preview'}]}),
         workbenchSettings:async()=>({ok:true,conversations:{mode:'direct'}}),
         conversationSwitch:async()=>({ok:true}), openSettingsWindow:()=>{},
+        previewFile:async()=>({ok:false,error:'fixture'}),openFileExternally:async()=>({ok:true}),
         conversationCommand:async ({action,payload})=>{
           window.actions.push({action,payload});
           if(action==='get-settings') return {...settings};
@@ -432,7 +446,7 @@ with sync_playwright() as p:
     page.wait_for_function("actions.some(a=>a.action==='save-settings' && a.payload.connection==='api' && a.payload.model==='kimi-k2.5')")
     page.wait_for_function("document.querySelector('#modelPillName').textContent==='kimi-k2.5'")
     page.close()
-    # Cross-harness history labels every reply and announces the switch mode.
+    # Every reply keeps its own harness label, independent of the currently open harness.
     page = browser.new_page(viewport={'width':1200,'height':820})
     page.on('pageerror',lambda e:errors.append(str(e)))
     page.add_init_script(bridge)
@@ -450,8 +464,25 @@ with sync_playwright() as p:
     page.add_init_script(bridge)
     page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude&conversation=shared-fixture',wait_until='networkidle')
     page.wait_for_function('uiReady')
-    expect(page.locator('#chat .turn-meta').first).to_contain_text('Assistant')
+    expect(page.locator('#chat .turn-meta').first).to_contain_text('Claude')
+    expect(page.locator('#chat .turn-meta img[src*="claude.svg"]')).to_have_count(1)
     expect(page.locator('#chat .switch-hint')).to_have_count(0)
+    page.close()
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    mixed_fixture = {**fixture, 'messages': [
+        {'role': 'assistant', 'engine': 'claude', 'text': 'Claude reply'},
+        {'role': 'assistant', 'engine': 'codex', 'text': 'Codex reply'},
+        {'role': 'assistant', 'engine': 'kimi', 'text': 'Kimi reply'},
+        {'role': 'assistant', 'text': 'Legacy reply'},
+    ]}
+    mixed_bridge = bridge.replace(json.dumps(fixture), json.dumps(mixed_fixture))
+    page.add_init_script(mixed_bridge)
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex&conversation=shared-fixture',wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    labels = page.locator('#chat .turn-meta span')
+    expect(labels).to_have_count(4)
+    assert labels.all_text_contents() == ['Claude', 'Codex', 'Kimi', 'Assistant']
     page.close()
     # Archived conversations stay archived across reloads.
     page = browser.new_page(viewport={'width':1200,'height':820})
@@ -543,6 +574,16 @@ with sync_playwright() as p:
     heads = page.locator('#importList .import-project')
     expect(heads).to_have_count(1)
     expect(heads.nth(0)).to_contain_text('ARDS')
+    expect(heads.nth(0)).to_contain_text('2 sessions')
+    group = page.locator('#importList .import-project-group').first
+    toggle = heads.nth(0).locator('.import-project-toggle')
+    expect(toggle).to_have_attribute('aria-expanded', 'true')
+    toggle.click()
+    expect(group).to_have_class(re.compile(r'\bcollapsed\b'))
+    expect(toggle).to_have_attribute('aria-expanded', 'false')
+    expect(group.locator('.import-project-sessions')).to_be_hidden()
+    toggle.click()
+    expect(group.locator('.import-project-sessions')).to_be_visible()
     rows = page.locator('#importList .import-row input[type=checkbox]')
     expect(rows).to_have_count(3)
     expect(page.locator('#importAll')).to_be_checked()

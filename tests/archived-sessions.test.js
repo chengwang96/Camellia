@@ -119,3 +119,52 @@ test('unknown sources and actions are rejected', async (t) => {
   assert.equal((await h.call('archived-session-action', { source: 'claude', id: 'x', action: 'wipe' })).ok, false);
   assert.equal((await h.call('archived-session-action', { source: 'claude', id: '__proto__', action: 'delete' })).ok, false);
 });
+
+test('delete-all removes every archived session across sources', async (t) => {
+  const h = setup(t);
+  const fileA = h.seedSession('old-one', h.folder('proj'), 'First');
+  const fileB = h.seedSession('old-two', h.folder('proj'), 'Second');
+  h.call('claude-archive-session', { id: 'old-one' });
+  h.call('claude-archive-session', { id: 'old-two' });
+  const shared = h.api.sharedConversations;
+  const c = shared.create('kimi', null, 'Shared archived');
+  shared.append(c, { role: 'user', engine: 'kimi', text: 'hello' });
+  shared.save(c);
+  const jsonFile = path.join(shared.dir, c.id + '.json');
+  const logFile = path.join(shared.dir, c.id + '.jsonl');
+  shared.workspaces.archiveSession(c.id, true);
+  assert.equal((await archivedList(h)).length, 3);
+
+  const res = await h.call('archived-session-action', { action: 'delete-all' });
+  assert.equal(res.ok, true, res.error);
+  assert.equal(res.deleted, 3);
+  for (const file of [fileA, fileB, jsonFile, logFile]) assert.equal(fs.existsSync(file), false);
+  assert.equal(shared.items.has(c.id), false);
+  assert.equal((await archivedList(h)).length, 0);
+  const meta = h.api.claudeSessionMeta();
+  for (const key of ['titles', 'archived', 'pinned', 'sessionWorkspace', 'sessionCwd']) {
+    assert.equal(meta[key]['old-one'], undefined);
+    assert.equal(meta[key]['old-two'], undefined);
+  }
+  for (const id of ['old-one', 'old-two', c.id]) {
+    assert.equal(h.events.some(e => e.channel === 'dsh:archived-changed' && e.data.action === 'delete' && e.data.id === id), true);
+  }
+});
+
+test('delete-all stops at a busy conversation and reports the error', async (t) => {
+  const h = setup(t);
+  const file = h.seedSession('busy-peer', h.folder('proj'), 'Deletable');
+  h.call('claude-archive-session', { id: 'busy-peer' });
+  const shared = h.api.sharedConversations;
+  const c = shared.create('claude', null, 'Busy chat');
+  shared.active.set(c.id, { facade: { gen: 1 }, permissions: new Map() });
+  shared.workspaces.archiveSession(c.id, true);
+  const res = await h.call('archived-session-action', { action: 'delete-all' });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /Stop this conversation/);
+  assert.equal(fs.existsSync(file), false); // earlier sources were already cleared
+  const remaining = await archivedList(h);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].id, c.id);
+  shared.active.delete(c.id);
+});
