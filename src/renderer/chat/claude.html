@@ -11,7 +11,8 @@
 <body>
 <div class="app">
   <!-- Sidebar -->
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-resize" id="sidebarResize" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="sidebar" aria-label="Resize sidebar" title="Drag to resize sidebar" data-i18n-attrs="aria-label title"></div>
     <div class="sidebar-header">
       <div class="logo">
         <div class="logo-icon engine-mark" data-engine="claude" aria-hidden="true"><img src="../../../assets/brands/claude.svg" alt=""></div>
@@ -83,6 +84,10 @@
               </select>
             </span>
             <span class="input-spacer"></span>
+            <button class="goal-toggle" id="tasksToggle" title="Scheduled tasks" data-i18n-attrs="title" hidden>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+              <span data-i18n>Tasks</span>
+            </button>
             <button class="goal-toggle" id="goalToggle" title="Goal mode" aria-pressed="false" hidden data-i18n-attrs="title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
               <span data-i18n>Goal</span>
@@ -198,14 +203,34 @@
   <p class="switch-hint" data-i18n>Markdown asks the previous engine to summarize, saves a .md file, and opens a new session in the target engine automatically. The conversation stays in this shared list.</p>
   <div class="perm-actions"><button id="switchCancel" class="btn-secondary" data-i18n>Cancel</button><button id="switchConfirm" class="btn-primary" data-i18n>Continue</button></div>
 </dialog>
+<dialog id="tasksDialog" class="switch-dialog tasks-dialog" aria-labelledby="tasksTitle">
+  <h2 id="tasksTitle" data-i18n>Scheduled tasks</h2>
+  <p class="switch-hint" data-i18n>Checks run while Camellia is open. Restart pauses tasks. Cancelling monitoring does not stop the experiment. Each check uses model tokens and keeps native permissions.</p>
+  <div id="tasksList" aria-live="polite"></div>
+  <form id="tasksForm">
+    <label for="taskInstruction" data-i18n>What to check</label>
+    <textarea id="taskInstruction" required maxlength="12000" rows="3"></textarea>
+    <div class="task-fields">
+      <label data-i18n>Interval (minutes)<input id="taskInterval" type="number" min="1" max="1440" value="10" required></label>
+      <label data-i18n>Maximum checks<input id="taskRuns" type="number" min="1" max="1000" value="24" required></label>
+      <label data-i18n>Maximum hours<input id="taskHours" type="number" min="1" max="168" value="24" required></label>
+      <label data-i18n>Allowed recovery attempts<input id="taskRepairs" type="number" min="0" max="5" value="0" required></label>
+    </div>
+    <p class="switch-hint" data-i18n>Zero recovery attempts means inspect only. A higher limit authorizes recovery within your instruction, not data deletion, protocol changes or extra paid resources.</p>
+    <p id="tasksError" role="alert"></p>
+    <div class="perm-actions"><button type="button" id="tasksClose" class="btn-secondary" data-i18n>Close</button><button type="submit" id="taskSave" class="btn-primary" data-i18n>Create task</button></div>
+  </form>
+</dialog>
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../../shared/model-levels.js"></script>
 <script src="../../shared/long-paste.js"></script>
 <script src="../shared/i18n.js"></script>
 <script src="./chat-runtime.js"></script>
+<script src="../../shared/turn-artifacts.js"></script>
 <script src="./claude-sidebar.js"></script>
 <script src="./claude-goal-ui.js"></script>
+<script src="./scheduled-tasks-ui.js"></script>
 <script src="./claude.js"></script>
 </body>
 </html>

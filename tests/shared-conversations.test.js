@@ -34,7 +34,535 @@ function fixture(t, overrides = {}) {
   return { manager, args, root, sent, events, finish, drivers, flush, get goal() { return [...manager.goals.values()].at(-1); }, setConfig: c => { config = c; },
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
+for (const engine of ENGINES) test(engine + ' conversation tools create, fork, configure, send, read and cancel owned children', async context => {
+  const harness = fixture(context, {
+    createGoalBridge: async options => ({ call: options.call, close() {} }),
+    conversationModels: () => [{ id: 'fixture', thinking: ['high'] }, { id: 'alternative', thinking: ['low'], contextWindow: 64000 }],
+  });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  harness.drivers[engine].settings = () => ({ model: 'fixture', connection: 'api', permissionMode: 'default', thinkingBudget: 'high', contextWindow: 100000 });
+  const prior = await manager.send(engine, { prompt: 'First request' });
+  harness.finish(engine); await prior.done;
+  manager.append(manager.get(prior.sessionId), { role: 'assistant', text: 'Internal secret', internal: true });
+  const parent = await manager.send(engine, { sessionId: prior.sessionId, prompt: 'Delegate the next task' });
+  const parentSession = harness.sent.at(-1).session;
+  const bridge = harness.sent.at(-1).opts.goalBridge;
+  const token = manager.active.get(parent.sessionId).goalRunToken;
+  const call = (operation, args = {}) => bridge.call('camellia_conversation_' + operation, { run_token: token, ...args });
+  manager.capture(engine, { type: 'assistant', conversationId: parent.sessionId, runId: parentSession.gen, message: { content: [{ type: 'text', text: 'In-flight answer' }] } });
+  assert.equal(call('models').models.length, 2);
+  const fork = call('fork', { request_id: 'fork', title: 'Snapshot', model: 'alternative', thinking: 'low' });
+  assert.equal(fork.ok, true, fork.error);
+  const child = manager.get(fork.conversation.id);
+  assert.equal(child.cwd, manager.get(parent.sessionId).cwd);
+  assert.equal(child.workspaceId, manager.get(parent.sessionId).workspaceId);
+  assert.deepEqual(child.segments, {});
+  assert.deepEqual(manager.messages(child).map(row => row.text), ['First request', 'Answer from ' + engine, 'Delegate the next task']);
+  assert.equal(manager.settings(engine, child.id).contextWindow, 64000);
+  assert.equal(manager.settings(engine, child.id).permissionMode, 'default');
+  assert.equal(manager.settings(engine, parent.sessionId).model, 'fixture');
+  assert.equal(call('fork', { request_id: 'fork', title: 'Snapshot', model: 'alternative', thinking: 'low' }).replayed, true);
+  assert.equal(call('create', { request_id: 'fork', title: 'Snapshot' }).ok, false);
+  assert.equal(call('configure', { conversation_id: child.id, thinking: 'high' }).ok, false);
+  assert.equal(call('configure', { conversation_id: child.id, model: 'missing' }).ok, false);
+  assert.equal(call('configure', { conversation_id: child.id, thinking: '' }).ok, true);
+  assert.equal(call('configure', { conversation_id: child.id, permissionMode: 'dangerous' }).ok, false);
+  const stranger = manager.create(engine);
+  assert.equal(call('read', { conversation_id: stranger.id }).ok, false);
+  assert.equal(call('models', { conversation_id: stranger.id }).ok, false);
+  assert.equal(call('send', { conversation_id: parent.sessionId, request_id: 'self', prompt: 'No' }).ok, false);
+  assert.equal(call('list').conversations.length, 2);
+  assert.equal(bridge.call('camellia_conversation_list', { run_token: 'stale' }).ok, false);
+  const sendArgs = { conversation_id: child.id, request_id: 'work', prompt: 'Set a goal: Keep working' };
+  assert.equal(call('send', sendArgs).ok, true);
+  assert.equal(call('send', sendArgs).replayed, true);
+  assert.equal(call('send', { ...sendArgs, prompt: 'Different' }).ok, false);
+  assert.equal(call('send', { ...sendArgs, request_id: 'duplicate' }).ok, false);
+  assert.equal(call('configure', { conversation_id: child.id, model: 'fixture' }).ok, false);
+  assert.throws(() => manager.purge(child.id), /Stop/);
+  await harness.flush();
+  const childSession = harness.sent.at(-1).session;
+  assert.equal(childSession.opts.sessionId, undefined);
+  assert.equal(childSession.opts.settings.model, 'alternative');
+  const childToken = manager.active.get(child.id).goalRunToken;
+  const childCall = (name, args) => manager.callGoalTool(child.id, name, { run_token: childToken, ...args });
+  assert.equal(childCall('camellia_conversation_create', { request_id: 'recursive', title: 'Forbidden' }).ok, false);
+  assert.equal(childCall('camellia_create_goal', { objective: 'Keep working', user_request: 'Set a goal:' }).ok, false);
+  assert.equal(childCall('camellia_task_create', { instruction: 'Loop', user_request: '创建定时任务' }).ok, false);
+  harness.finish(engine, 'success', 'Child answer', childSession);
+  await harness.flush();
+  const read = call('read', { conversation_id: child.id });
+  assert.equal(read.requests.at(-1).state, 'finished');
+  assert.equal(read.messages.at(-1).text, 'Child answer');
+  assert.equal(call('send', { ...sendArgs, request_id: 'second' }).ok, true);
+  await harness.flush();
+  assert.equal((await call('cancel', { conversation_id: child.id })).ok, true);
+  await harness.flush();
+  assert.equal(call('read', { conversation_id: child.id }).requests.at(-1).state, 'stopped');
+  const empty = call('create', { request_id: 'empty', title: 'Empty' });
+  assert.equal(manager.messages(manager.get(empty.conversation.id)).length, 0);
+  harness.finish(engine, 'success', 'Parent finished', parentSession); await parent.done;
+  assert.equal(call('list').ok, false);
+});
+
+for (const mode of ['cancel', 'close', 'failure', 'compact-cancel', 'compact-close']) test('child startup reservation handles ' + mode, async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  const parent = await manager.send('codex', { prompt: 'Delegate work' });
+  const token = manager.active.get(parent.sessionId).goalRunToken;
+  const call = (operation, args = {}) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation, { run_token: token, ...args });
+  const created = call(mode.startsWith('compact-') ? 'fork' : 'create', { request_id: 'child', title: 'Worker' });
+  const child = manager.get(created.conversation.id);
+  let release, rejectStart;
+  manager.prepare = () => new Promise((resolve, reject) => { release = resolve; rejectStart = reject; });
+  if (mode.startsWith('compact-')) manager.estimateTokens = () => 1000000;
+  assert.equal(call('send', { conversation_id: child.id, request_id: 'start', prompt: 'Work' }).ok, true);
+  assert.equal(manager.busy(child.id), true);
+  await assert.rejects(manager.send('codex', { sessionId: child.id, prompt: 'Race' }), /starting/);
+  assert.equal(call('configure', { conversation_id: child.id, thinking: '' }).ok, false);
+  assert.throws(() => manager.purge(child.id), /Stop/);
+  if (mode.endsWith('close')) manager.closeGoalTools();
+  else if (mode !== 'failure') await call('cancel', { conversation_id: child.id });
+  if (mode === 'failure') rejectStart(new Error('Runtime unavailable'));
+  else release();
+  await harness.flush();
+  assert.equal(harness.sent.length, 1);
+  assert.equal(child.controlSends[0].state, mode === 'failure' ? 'error' : 'stopped');
+  assert.equal(manager.busy(child.id), false);
+  if (mode === 'failure') assert.match(call('read', { conversation_id: child.id }).requests[0].error, /Runtime unavailable/);
+});
+
+test('cancelling a child during MCP bridge startup prevents native dispatch', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  const parent = await manager.send('codex', { prompt: 'Delegate' });
+  const token = manager.active.get(parent.sessionId).goalRunToken;
+  const call = (operation, args = {}) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation, { run_token: token, ...args });
+  const child = manager.get(call('create', { request_id: 'child', title: 'Worker' }).conversation.id);
+  let release;
+  manager.createGoalBridge = () => new Promise(resolve => { release = resolve; });
+  call('send', { conversation_id: child.id, request_id: 'work', prompt: 'Work' });
+  await harness.flush();
+  await call('cancel', { conversation_id: child.id });
+  release({ close() {} });
+  await harness.flush();
+  assert.equal(harness.sent.length, 1);
+  assert.equal(child.controlSends[0].state, 'stopped');
+  assert.equal(manager.busy(child.id), false);
+});
+
+test('fork uses revised visible history rather than superseded requests and responses', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  const initial = await manager.send('codex', { prompt: 'Superseded request' });
+  harness.finish('codex', 'success', 'Superseded response'); await initial.done;
+  const revised = await manager.send('codex', { sessionId: initial.sessionId, editSeq: initial.userSeq, prompt: 'Revised request' });
+  const token = manager.active.get(revised.sessionId).goalRunToken;
+  const fork = manager.callGoalTool(revised.sessionId, 'camellia_conversation_fork', { run_token: token, request_id: 'fork', title: 'Revised snapshot' });
+  assert.equal(fork.ok, true);
+  assert.deepEqual(manager.messages(manager.get(fork.conversation.id)).map(row => row.text), ['Revised request']);
+});
+
+test('child sends survive pre-compaction and overflow recovery without duplicate dispatch', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  const parent = await manager.send('codex', { prompt: 'Delegate' });
+  const token = manager.active.get(parent.sessionId).goalRunToken;
+  const call = (operation, args = {}) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation, { run_token: token, ...args });
+  const child = manager.get(call('fork', { request_id: 'child', title: 'Worker' }).conversation.id);
+  manager.modelContextWindow = () => 8000;
+  manager.append(child, { role: 'assistant', text: 'Prior work ' + 'x'.repeat(30000) });
+  manager.save(child);
+  assert.equal(call('send', { conversation_id: child.id, request_id: 'work', prompt: 'Finish the work' }).ok, true);
+  await harness.flush();
+  for (let attempt = 0; /compact working context/.test(harness.sent.at(-1).prompt); attempt++) {
+    assert.ok(attempt < 10);
+    assert.equal(manager.active.get(child.id).internal, true);
+    harness.finish('codex', 'success', 'Summary of prior work');
+    await harness.flush();
+  }
+  assert.match(harness.sent.at(-1).prompt, /Finish the work/);
+  assert.equal(child.controlSends[0].state, 'running');
+  harness.finish('codex', 'error', 'context_length_exceeded');
+  await harness.flush();
+  assert.equal(manager.active.get(child.id).internal, true);
+  harness.finish('codex', 'success', 'Recovered summary');
+  await harness.flush();
+  assert.equal(manager.active.get(child.id).internal, false);
+  harness.finish('codex', 'success', 'Completed');
+  await harness.flush();
+  assert.equal(child.controlSends[0].state, 'finished');
+  assert.equal(manager.busy(child.id), false);
+});
+
+test('subscription child settings remain local and archived children stay inaccessible', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }),
+    conversationModels: (engine, settings) => settings.connection === 'subscription' ? [{ id: 'account', thinking: [] }] : [] });
+  context.after(() => harness.manager.closeGoalTools());
+  harness.drivers.kimi.settings = () => ({ model: 'account', connection: 'subscription', permissionMode: 'default' });
+  harness.drivers.kimi.saveSettings = () => { throw new Error('Must not mutate global settings'); };
+  const manager = harness.manager;
+  const parent = await manager.send('kimi', { prompt: 'Delegate' });
+  const token = manager.active.get(parent.sessionId).goalRunToken;
+  const call = (operation, args = {}) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation, { run_token: token, ...args });
+  const child = call('create', { request_id: 'child', title: 'Account worker', model: 'account', thinking: '' }).conversation;
+  assert.equal(manager.settings('kimi', child.id).connection, 'subscription');
+  assert.equal(manager.get(child.id).engineSettings.kimi.subscriptionModel, 'account');
+  assert.equal(call('configure', { conversation_id: child.id, thinking: 'high' }).ok, false);
+  assert.equal(call('configure', { conversation_id: child.id, thinking: '' }).ok, true);
+  manager.workspaces.archiveSession(child.id, true);
+  assert.equal(call('list').conversations.length, 1);
+  assert.equal(call('read', { conversation_id: child.id }).ok, false);
+  assert.equal(call('create', { request_id: 'child', title: 'Account worker', model: 'account', thinking: '' }).ok, false);
+});
+
+test('late child callbacks never overwrite a replaced conversation object', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  const parent = await manager.send('codex', { prompt: 'Delegate' });
+  const token = manager.active.get(parent.sessionId).goalRunToken;
+  const call = (operation, args = {}) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation, { run_token: token, ...args });
+  const child = manager.get(call('create', { request_id: 'child', title: 'Worker' }).conversation.id);
+  let release;
+  manager.send = () => new Promise(resolve => { release = resolve; });
+  call('send', { conversation_id: child.id, request_id: 'work', prompt: 'Work' });
+  const replacement = { ...child, title: 'Replacement', controlSends: [] };
+  manager.save(replacement);
+  release({ ok: true, runId: 999, done: Promise.resolve({ subtype: 'success', result: 'Late' }) });
+  await harness.flush();
+  assert.equal(manager.get(child.id), replacement);
+  assert.equal(JSON.parse(fs.readFileSync(manager.file(child.id))).title, 'Replacement');
+  assert.deepEqual(manager.get(child.id).controlSends, []);
+});
+
+test('child request limits, bounded reads and interrupted restart states are persisted', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  const parent = await manager.send('codex', { prompt: 'Delegate' });
+  const token = manager.active.get(parent.sessionId).goalRunToken;
+  const call = (operation, args = {}) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation, { run_token: token, ...args });
+  const child = manager.get(call('create', { request_id: 'child', title: 'Worker' }).conversation.id);
+  for (let index = 1; index < 8; index++) assert.equal(call('create', { request_id: 'child-' + index, title: 'Worker' }).ok, true);
+  assert.equal(call('create', { request_id: 'overflow', title: 'Worker' }).ok, false);
+  manager.active.get(parent.sessionId).controlSendCount = 32;
+  assert.equal(call('send', { conversation_id: child.id, request_id: 'limit', prompt: 'Work' }).ok, false);
+  for (let index = 0; index < 10; index++) manager.append(child, { role: 'assistant', text: 'x'.repeat(5000) });
+  const read = call('read', { conversation_id: child.id });
+  assert.equal(read.messages.length, 8);
+  assert.equal(read.messages[0].text.length, 4000);
+  assert.equal(read.truncated, true);
+  child.controlSends = [{ requestId: 'starting', state: 'starting' }, { requestId: 'running', state: 'running' }, { requestId: 'finished', state: 'finished' }];
+  manager.save(child);
+  manager.closeGoalTools();
+  const restarted = harness.restart();
+  context.after(() => restarted.closeGoalTools());
+  assert.deepEqual(restarted.get(child.id).controlSends.map(entry => entry.state), ['interrupted', 'interrupted', 'finished']);
+  assert.equal(restarted.busy(child.id), false);
+  assert.equal(harness.sent.length, 1);
+  assert.deepEqual(JSON.parse(fs.readFileSync(restarted.file(child.id))).controlSends.map(entry => entry.state), ['interrupted', 'interrupted', 'finished']);
+});
+
+test('scheduled checks use current-turn tools, report once and cannot create autonomous loops', async t => {
+  const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  t.after(() => harness.manager.closeGoalTools());
+  const run = await harness.manager.send('codex', { prompt: '创建定时任务：每分钟检查日志，允许自动恢复一次' });
+  const bridge = harness.sent.at(-1).opts.goalBridge;
+  const token = harness.manager.active.get(run.sessionId).goalRunToken;
+  const created = bridge.call('camellia_task_create', { run_token: token, user_request: '创建定时任务', instruction: 'Inspect logs', intervalMinutes: 1, maxRepairs: 1 });
+  assert.equal(created.ok, true);
+  assert.equal(harness.sent.length, 1);
+  assert.equal(bridge.call('camellia_task_report', { run_token: token, task_id: created.task.id, status: 'complete', summary: 'Fake' }).ok, false);
+  harness.finish('codex'); await run.done;
+  assert.equal(bridge.call('camellia_task_list', { run_token: token }).ok, false);
+  const task = harness.manager.tasks.get(created.task.id, run.sessionId);
+  task.nextRunAt = Date.now() - 1;
+  await harness.manager.tasks.tick(); await harness.flush();
+  const active = harness.manager.active.get(run.sessionId), checkToken = active.goalRunToken;
+  assert.equal(active.scheduledTaskId, task.id);
+  assert.equal(bridge.call('camellia_conversation_create', { run_token: checkToken, request_id: 'scheduled', title: 'No' }).ok, false);
+  assert.match(harness.sent.at(-1).prompt, /Inspect logs/);
+  assert.equal(bridge.call('camellia_create_goal', { run_token: checkToken, objective: 'Loop', user_request: 'Set a goal' }).ok, false);
+  assert.equal(bridge.call('camellia_task_create', { run_token: checkToken, instruction: 'Loop', user_request: '创建定时任务' }).ok, false);
+  assert.equal(bridge.call('camellia_task_repair', { run_token: checkToken, task_id: task.id }).ok, true);
+  assert.equal(bridge.call('camellia_task_repair', { run_token: checkToken, task_id: task.id }).ok, false);
+  assert.equal(bridge.call('camellia_task_report', { run_token: checkToken, task_id: task.id, status: 'complete', summary: 'Output validated' }).ok, true);
+  assert.equal(task.status, 'running');
+  harness.finish('codex'); await active.done; await harness.flush();
+  assert.equal(task.status, 'complete');
+});
+
+test('tasks defer to Goal, reject unsupported engines and pause with conversation cancellation', async t => {
+  const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  t.after(() => harness.manager.closeGoalTools());
+  const run = await harness.manager.send('claude', { prompt: 'Discuss scheduled tasks' });
+  const bridge = harness.sent.at(-1).opts.goalBridge, token = harness.manager.active.get(run.sessionId).goalRunToken;
+  assert.equal(bridge.call('camellia_task_create', { run_token: token, instruction: 'Check', user_request: 'scheduled tasks' }).ok, false);
+  harness.finish('claude'); await run.done;
+  const created = await harness.manager.command('claude', 'task-create', { sessionId: run.sessionId, instruction: 'Check logs' });
+  const task = harness.manager.tasks.get(created.task.id, run.sessionId);
+  const goal = harness.manager.goalFor(run.sessionId); goal.armed = true;
+  task.nextRunAt = Date.now() - 1; await harness.manager.tasks.tick();
+  assert.equal(harness.sent.length, 1); assert.equal(task.status, 'scheduled'); goal.armed = false;
+  task.nextRunAt = Date.now() - 1; await harness.manager.tasks.tick(); await harness.flush();
+  assert.equal(harness.sent.length, 2);
+  await harness.manager.cancel({ sessionId: run.sessionId }); await harness.flush();
+  assert.equal(task.status, 'paused');
+  const unsupported = fixture(t);
+  const conversation = unsupported.manager.create('codex');
+  await assert.rejects(unsupported.manager.command('codex', 'task-create', { sessionId: conversation.id, instruction: 'Check' }), /tool support/);
+});
+
+test('task cancellation during preparation cannot send a late check', async t => {
+  let release, hold = false;
+  const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }),
+    prepare: async () => { if (hold) await new Promise(resolve => { release = resolve; }); } });
+  t.after(() => harness.manager.closeGoalTools());
+  const run = await harness.manager.send('codex', { prompt: 'Experiment' }); harness.finish('codex'); await run.done;
+  const created = await harness.manager.command('codex', 'task-create', { sessionId: run.sessionId, instruction: 'Check logs' });
+  const task = harness.manager.tasks.get(created.task.id, run.sessionId); task.nextRunAt = Date.now() - 1;
+  hold = true; await harness.manager.tasks.tick(); await harness.flush();
+  await harness.manager.command('codex', 'task-cancel', { sessionId: run.sessionId, id: task.id });
+  release(); await harness.flush();
+  assert.equal(harness.sent.length, 1); assert.equal(task.status, 'cancelled');
+  assert.equal(harness.manager.active.has(run.sessionId), false);
+});
+
+test('periodic checks finish through the shared tool bridge on all five engines', async t => {
+  for (const engine of ENGINES) {
+    const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+    t.after(() => harness.manager.closeGoalTools());
+    const conversation = harness.manager.create(engine);
+    const created = await harness.manager.command(engine, 'task-create', { sessionId: conversation.id, instruction: 'Inspect existing experiment' });
+    const task = harness.manager.tasks.get(created.task.id, conversation.id); task.nextRunAt = Date.now() - 1;
+    await harness.manager.tasks.tick(); await harness.flush();
+    const active = harness.manager.active.get(conversation.id), bridge = harness.sent.at(-1).opts.goalBridge;
+    assert.equal(bridge.call('camellia_task_report', { run_token: active.goalRunToken, task_id: task.id, status: 'complete', summary: 'Artifacts checked' }).ok, true, engine);
+    harness.finish(engine); await active.done; await harness.flush();
+    assert.equal(task.status, 'complete', engine);
+  }
+});
+
+test('turn artifacts survive restart, deduplicate references, and do not leak into the next turn', async t => {
+  const harness = fixture(t);
+  const run = await harness.manager.send('codex', { prompt: 'Create a report' });
+  const conversation = harness.manager.get(run.sessionId);
+  const file = path.join(conversation.cwd, 'report.txt');
+  t.after(() => { try { fs.unlinkSync(file); } catch {} });
+  fs.writeFileSync(file, 'Report');
+  const session = harness.sent.at(-1).session;
+  harness.manager.capture('codex', { type: 'gui:tool', runId: session.gen, id: 'write', name: 'write_file', input: { path: 'report.txt' }, status: 'completed' });
+  harness.finish('codex', 'success', 'Created `report.txt`.');
+  await run.done;
+  assert.equal(harness.events.findLast(event => event.type === 'result').artifacts.length, 1);
+  const restored = harness.restart();
+  assert.equal(restored.messages(restored.get(run.sessionId)).at(-1).artifacts[0].path, file);
+  const next = await restored.send('codex', { sessionId: run.sessionId, prompt: 'Thanks' });
+  harness.finish('codex', 'success', 'You are welcome.');
+  await next.done;
+  assert.deepEqual(restored.messages(restored.get(run.sessionId)).at(-1).artifacts, []);
+});
+
+test('model goal tools adopt the current turn once and verify completion across all engines', async t => {
+  for (const engine of ENGINES) {
+    const changes = [];
+    const harness = fixture(t, { onGoal: event => changes.push(event), createGoalBridge: async options => ({ call: options.call, close() {} }) });
+    const run = await harness.manager.send(engine, { prompt: '请设定目标：完成测试' });
+    const active = harness.manager.active.get(run.sessionId);
+    const bridge = harness.sent.at(-1).opts.goalBridge;
+    const args = { run_token: active.goalRunToken, objective: '完成测试', user_request: '请设定目标' };
+    const created = bridge.call('camellia_create_goal', args);
+    assert.equal(created.ok, true);
+    const driver = harness.manager.goalFor(run.sessionId);
+    assert.equal(driver.view().roundsStarted, 1);
+    assert.equal(driver.timer, null);
+    assert.equal(harness.sent.length, 1);
+    assert.equal(driver.ownedSession(), active.facade);
+    assert.equal(changes.at(-1).goal.engine, engine);
+    assert.equal(bridge.call('camellia_create_goal', args).goal.id, created.goal.id);
+    assert.equal(bridge.call('camellia_get_goal', { run_token: 'stale' }).ok, false);
+    const report = { run_token: active.goalRunToken, status: 'complete', reason: 'Tests passed' };
+    assert.equal(bridge.call('camellia_update_goal', report).status, 'verification_pending');
+    assert.equal(driver.view().phase, 'active');
+    harness.finish(engine, 'success', 'Done');
+    await run.done; await harness.flush();
+    assert.equal(driver.view().phase, 'active');
+    assert.ok(driver.view().verifying);
+    assert.equal(harness.sent.at(-1).opts.goalBridge, undefined);
+    assert.equal(bridge.call('camellia_update_goal', report).ok, false);
+    harness.finish(engine, 'success', '<verify:pass> Independently checked');
+    await harness.flush();
+    assert.equal(driver.view().phase, 'complete');
+  }
+});
+
+test('model goal creation refuses discussion and paused adopted turns cannot continue', async t => {
+  const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const run = await harness.manager.send('claude', { prompt: '检查实现，如果用户要求设定目标是否可以自动进入？' });
+  const bridge = harness.sent.at(-1).opts.goalBridge;
+  const token = harness.manager.active.get(run.sessionId).goalRunToken;
+  assert.equal(bridge.call('camellia_create_goal', { run_token: token, objective: 'Check', user_request: '设定目标' }).ok, false);
+  assert.equal(harness.manager.goalFor(run.sessionId).view(), null);
+  harness.finish('claude'); await run.done;
+  const next = await harness.manager.send('claude', { sessionId: run.sessionId, prompt: 'Set a goal: finish' });
+  assert.equal(bridge.call('camellia_get_goal', { run_token: token }).ok, false);
+  const currentToken = harness.manager.active.get(run.sessionId).goalRunToken;
+  assert.equal(bridge.call('camellia_create_goal', { run_token: currentToken, objective: 'Finish', user_request: 'Set a goal' }).ok, true);
+  await harness.manager.command('claude', 'goal-pause', { sessionId: run.sessionId });
+  await next.done;
+  assert.equal(harness.manager.goalFor(run.sessionId).view().phase, 'paused');
+  assert.equal(harness.sent.at(-1).session.running, false);
+  assert.equal(bridge.call('camellia_update_goal', { run_token: currentToken, status: 'complete', reason: 'Late' }).ok, false);
+});
+
+test('goal tools isolate conversations, reject paused goal replacement and stop after shutdown', async t => {
+  const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const first = await harness.manager.send('claude', { prompt: 'Set a goal: first' });
+  const firstBridge = harness.sent.at(-1).opts.goalBridge;
+  const firstToken = harness.manager.active.get(first.sessionId).goalRunToken;
+  assert.equal(firstBridge.call('camellia_create_goal', { run_token: firstToken, objective: 'First', user_request: 'Set a goal' }).ok, true);
+  await harness.manager.command('claude', 'goal-pause', { sessionId: first.sessionId });
+  await first.done;
+  const next = await harness.manager.send('claude', { sessionId: first.sessionId, prompt: 'Set a goal: replacement' });
+  assert.equal(harness.sent.at(-1).opts.goalBridge, firstBridge);
+  const nextToken = harness.manager.active.get(first.sessionId).goalRunToken;
+  const replacement = firstBridge.call('camellia_create_goal', { run_token: nextToken, objective: 'Replacement', user_request: 'Set a goal' });
+  assert.equal(replacement.ok, false);
+  assert.match(replacement.error, /unfinished goal/);
+  assert.equal(harness.manager.goalFor(first.sessionId).view().objective, 'First');
+  const other = await harness.manager.send('codex', { prompt: 'Set a goal: other' });
+  const otherBridge = harness.sent.at(-1).opts.goalBridge;
+  const otherToken = harness.manager.active.get(other.sessionId).goalRunToken;
+  assert.equal(firstBridge.call('camellia_get_goal', { run_token: otherToken }).ok, false);
+  assert.equal(otherBridge.call('camellia_get_goal', { run_token: nextToken }).ok, false);
+  harness.manager.active.get(other.sessionId).steering = true;
+  assert.equal(otherBridge.call('camellia_get_goal', { run_token: otherToken }).ok, false);
+  harness.manager.active.get(other.sessionId).steering = false;
+  harness.manager.closeGoalTools();
+  assert.equal(otherBridge.call('camellia_get_goal', { run_token: otherToken }).ok, false);
+  harness.finish('claude'); harness.finish('codex');
+  await Promise.all([next.done, other.done]);
+});
+
+test('internal and disabled turns do not inherit an existing goal bridge', async t => {
+  const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const first = await harness.manager.send('claude', { prompt: 'Inspect' });
+  const bridge = harness.sent.at(-1).opts.goalBridge;
+  harness.finish('claude'); await first.done;
+  for (const options of [{ internal: true }, { goalToolsDisabled: true }]) {
+    const run = await harness.manager.send('claude', { sessionId: first.sessionId, prompt: 'Set a goal: forbidden' }, options);
+    assert.equal(harness.sent.at(-1).opts.goalBridge, undefined);
+    assert.doesNotMatch(harness.sent.at(-1).prompt, /Camellia goal run token/);
+    assert.equal(bridge.call('camellia_create_goal', { run_token: 'stale', objective: 'Forbidden', user_request: 'Set a goal' }).ok, false);
+    harness.finish('claude'); await run.done;
+  }
+  harness.drivers.antigravity.settings = () => ({ model: 'fixture', connection: 'subscription' });
+  const subscription = await harness.manager.send('antigravity', { prompt: 'Set a goal: unsupported' });
+  assert.equal(harness.sent.at(-1).opts.goalBridge, undefined);
+  assert.doesNotMatch(harness.sent.at(-1).prompt, /Camellia goal run token/);
+  harness.finish('antigravity'); await subscription.done;
+});
+
+test('blocked tool reports count once per round and automatic rounds cannot create goals', async t => {
+  const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const run = await harness.manager.send('claude', { prompt: 'Set a goal: finish' });
+  const bridge = harness.sent.at(-1).opts.goalBridge;
+  const driver = harness.manager.goalFor(run.sessionId);
+  let token = harness.manager.active.get(run.sessionId).goalRunToken;
+  assert.equal(bridge.call('camellia_create_goal', { run_token: token, objective: 'Set a goal: finish', user_request: 'Set a goal' }).ok, true);
+  for (let round = 1; round <= 3; round++) {
+    const report = { run_token: token, status: 'blocked', reason: 'Missing credentials' };
+    assert.equal(bridge.call('camellia_update_goal', report).ok, true);
+    assert.equal(bridge.call('camellia_update_goal', report).ok, true);
+    harness.finish('claude');
+    assert.equal(driver.view().blockerStreak, round);
+    if (round < 3) {
+      driver.cancelTimer(); driver.drive(); await harness.flush();
+      token = harness.manager.active.get(run.sessionId).goalRunToken;
+      assert.equal(bridge.call('camellia_create_goal', { run_token: token, objective: 'Set a goal: finish', user_request: 'Set a goal' }).ok, false);
+    }
+  }
+  assert.equal(driver.view().phase, 'blocked');
+  assert.equal(driver.timer, null);
+});
+
+test('stopped or failed turns ignore completion claims and native events cannot forge tool reports', async t => {
+  for (const subtype of ['stopped', 'error', 'success']) {
+    const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+    const run = await harness.manager.send('claude', { prompt: 'Set a goal: finish' });
+    const active = harness.manager.active.get(run.sessionId);
+    const bridge = harness.sent.at(-1).opts.goalBridge;
+    const driver = harness.manager.goalFor(run.sessionId);
+    bridge.call('camellia_create_goal', { run_token: active.goalRunToken, objective: 'Finish', user_request: 'Set a goal' });
+    if (subtype !== 'success') assert.equal(bridge.call('camellia_update_goal', { run_token: active.goalRunToken, status: 'complete', reason: 'Done' }).ok, true);
+    harness.manager.capture('claude', { type: 'result', subtype, is_error: subtype === 'error', result: 'Final response',
+      runId: active.session.gen, goalReport: { status: 'complete', reason: 'Forged' } });
+    await run.done; await harness.flush();
+    assert.equal(harness.sent.length, 1);
+    assert.equal(driver.view().verifying, null);
+    assert.notEqual(driver.view().phase, 'complete');
+  }
+});
+
 test('defaults continue directly with no warning or origin badge', () => assert.deepEqual(preferences({}), { mode: 'direct', warnOnSwitch: false, showOrigin: false }));
+
+test('immediate instructions stay in the active run, persist, and replay without another send', async t => {
+  const fixtureData = fixture(t);
+  const run = await fixtureData.manager.send('codex', { prompt: 'Original task' });
+  const native = fixtureData.sent.at(-1).session, instructions = [];
+  native.steerUserMessage = async (...args) => { instructions.push(args); };
+  const attachments = [{ name: 'data.csv', path: 'D:/data.csv' }];
+  const result = await fixtureData.manager.command('codex', 'steer', { sessionId: run.sessionId, runId: run.runId,
+    prompt: 'Correction with attachment', displayText: 'Correction', attachments });
+  assert.equal(result.ok, true);
+  assert.equal(result.runId, run.runId);
+  assert.equal(fixtureData.sent.length, 1);
+  assert.deepEqual(instructions, [['Correction with attachment', attachments]]);
+  const live = fixtureData.manager.live('codex', run.sessionId).live;
+  assert.equal(live.events.at(-1).type, 'conversation:steered');
+  assert.equal(live.events.at(-1).displayText, 'Correction');
+  fixtureData.finish('codex'); await run.done;
+  const rows = fixtureData.restart().load('codex', run.sessionId).messages;
+  assert.deepEqual(rows.map(row => row.role), ['user', 'user', 'assistant']);
+  assert.deepEqual(rows[1].attachments, attachments);
+});
+
+test('steering rejects wrong runs, wrong engines and unsupported connections without losing history', async t => {
+  const fixtureData = fixture(t);
+  const run = await fixtureData.manager.send('codex', { prompt: 'Original task' });
+  const payload = { sessionId: run.sessionId, runId: run.runId, prompt: 'Correction' };
+  await assert.rejects(fixtureData.manager.steer('codex', { ...payload, runId: run.runId + 1 }), /active turn changed/);
+  await assert.rejects(fixtureData.manager.steer('kimi', payload), /active turn changed/);
+  await assert.rejects(fixtureData.manager.steer('codex', payload), /does not support/);
+  fixtureData.sent.at(-1).session.steerUserMessage = async () => { throw new Error('Native rejection'); };
+  await assert.rejects(fixtureData.manager.steer('codex', payload), /Native rejection/);
+  assert.equal(fixtureData.manager.load('codex', run.sessionId).messages.length, 1);
+  assert.equal(fixtureData.manager.active.get(run.sessionId).steering, false);
+});
+
+test('result arriving before steering acknowledgment is committed after the accepted instruction', async t => {
+  const fixtureData = fixture(t);
+  const run = await fixtureData.manager.send('codex', { prompt: 'Original task' });
+  const native = fixtureData.sent.at(-1).session;
+  let acknowledge;
+  native.steerUserMessage = () => new Promise(resolve => { acknowledge = resolve; });
+  const payload = { sessionId: run.sessionId, runId: run.runId, prompt: 'Correction' };
+  const pending = fixtureData.manager.steer('codex', payload);
+  await assert.rejects(fixtureData.manager.steer('codex', payload), /previous instruction/);
+  fixtureData.finish('codex');
+  assert.equal(fixtureData.manager.active.has(run.sessionId), true);
+  acknowledge(); await pending; await run.done;
+  assert.equal(fixtureData.manager.active.has(run.sessionId), false);
+  const events = fixtureData.events.filter(event => ['conversation:steered', 'result'].includes(event.type));
+  assert.deepEqual(events.map(event => event.type), ['conversation:steered', 'result']);
+  assert.deepEqual(fixtureData.manager.load('codex', run.sessionId).messages.map(row => row.role), ['user', 'user', 'assistant']);
+});
 
 test('usage survives reloading shared conversations without mixing per-call and turn totals', async t => {
   for (const engine of ['claude', 'codex']) {
@@ -215,6 +743,59 @@ test('each engine continues a shared goal in the same conversation and recognize
     assert.ok(f.goal.view().verified);
     assert.equal(f.goal.timer, null);
   }
+});
+
+test('goal lifecycle actions cancel and purge only their own verifier for every engine', async t => {
+  for (const engine of ENGINES) {
+    for (const action of ['goal-pause', 'goal-clear', 'goal-complete', 'cancel', 'shutdown']) {
+      const harness = fixture(t);
+      const started = await harness.manager.command(engine, 'goal-start', { objective: 'Finish' });
+      const goal = harness.manager.goalFor(started.sessionId);
+      goal.drive(); await harness.flush();
+      harness.finish(engine, 'success', '<goal:complete>');
+      await harness.flush();
+      const verifier = harness.sent.at(-1);
+      const verifierId = verifier.opts.conversationId;
+      assert.notEqual(verifierId, started.sessionId);
+      assert.equal(verifier.session.running, true);
+      const unrelated = await harness.manager.send(engine, { prompt: 'Unrelated work' });
+      const unrelatedSession = harness.sent.at(-1).session;
+      if (action === 'cancel') await harness.manager.cancel({ sessionId: started.sessionId });
+      else if (action === 'shutdown') harness.manager.pauseGoals();
+      else await harness.manager.command(engine, action, { sessionId: started.sessionId });
+      await harness.flush();
+      assert.equal(verifier.session.running, false, engine + ': ' + action);
+      assert.equal(harness.manager.active.has(verifierId), false);
+      assert.equal(harness.manager.items.has(verifierId), false);
+      assert.equal(harness.manager.goals.has(verifierId), false);
+      assert.equal(fs.existsSync(harness.manager.file(verifierId)), false);
+      assert.equal(unrelatedSession.running, true);
+      assert.equal(goal.view()?.verified ?? null, null);
+      assert.equal(goal.view()?.phase ?? null, action === 'goal-clear' ? null : action === 'goal-complete' ? 'complete' : 'paused');
+      harness.finish(engine, 'success', 'Done', unrelatedSession);
+      await unrelated.done;
+    }
+  }
+});
+
+test('pausing during verifier setup prevents dispatch and cleans up after setup settles', async t => {
+  const harness = fixture(t);
+  const started = await harness.manager.command('codex', 'goal-start', { objective: 'Finish' });
+  const goal = harness.manager.goalFor(started.sessionId);
+  goal.drive(); await harness.flush();
+  let release;
+  harness.manager.prepare = () => new Promise(resolve => { release = resolve; });
+  harness.finish('codex', 'success', '<goal:complete>');
+  await harness.flush();
+  const verifierId = [...harness.manager.active.keys()][0];
+  assert.notEqual(verifierId, started.sessionId);
+  await harness.manager.command('codex', 'goal-pause', { sessionId: started.sessionId });
+  release(); await harness.flush();
+  assert.equal(harness.sent.length, 1);
+  assert.equal(harness.manager.active.has(verifierId), false);
+  assert.equal(harness.manager.items.has(verifierId), false);
+  assert.equal(goal.view().phase, 'paused');
+  assert.equal(goal.view().verified, null);
 });
 
 test('pausing during engine setup cancels the pending goal before it can send; resume and clear work', async t => {

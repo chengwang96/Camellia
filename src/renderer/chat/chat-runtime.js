@@ -15,7 +15,7 @@ const ENGINE_SHORT_NAMES = { claude: 'Claude', codex: 'Codex', dsh: 'DSH', kimi:
 const engineAvatar = engine => '<div class="turn-avatar engine-mark" data-engine="' + engine + '" aria-hidden="true"><img src="../../../assets/brands/' + (engine === 'dsh' ? 'deepseek' : engine) + (engine === 'codex' ? '.png' : '.svg') + '" alt=""></div>';
 const chatLogoUrl = '../../../assets/brands/' + (harnessId === 'dsh' ? 'deepseek' : harnessId) + (harnessId === 'codex' ? '.png' : '.svg');
 const chatAvatar = engineAvatar(harnessId);
-const chatApi = Object.fromEntries(['Send', 'Cancel', 'GetSettings', 'SaveSettings', 'ControlRespond',
+const chatApi = Object.fromEntries(['Send', 'Steer', 'Cancel', 'GetSettings', 'SaveSettings', 'ControlRespond',
   'ListSessions', 'LoadSession', 'RenameSession', 'ArchiveSession', 'MetaOp',
   'GoalGet', 'GoalStart', 'GoalPause', 'GoalResume', 'GoalComplete', 'GoalClear'].map(action => [
   action[0].toLowerCase() + action.slice(1), payload => sharedChat

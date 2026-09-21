@@ -227,7 +227,11 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript('typeof chatApi.onEvent(() => {})'), 'function');
     assert.equal((await home.webContents.executeJavaScript('chatApi.getSettings()')).contextWindow, 131072);
     await home.webContents.executeJavaScript("document.querySelector('#settingsBtn').click()");
+    const generalSettings = await waitWindow("document.querySelector('#generalPage') && !document.querySelector('#generalPage').hidden");
+    assert.equal(await generalSettings.webContents.executeJavaScript("document.querySelector('[data-view=general]').getAttribute('aria-current')"), 'page');
+    await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').click()");
     const engineSettings = await waitWindow("document.querySelector('#engineContext')");
+    assert.equal(engineSettings, generalSettings);
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('[data-engine=kimi]').getAttribute('aria-selected')"), 'true');
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('#settingsPanel') === null"), true);
     const globalState = await engineSettings.webContents.executeJavaScript("window.dshDesktop.engineSettingsGet({engine:'kimi'})");
@@ -304,7 +308,7 @@ async function main() {
     await home.webContents.executeJavaScript('sidebar.load()');
     assert.match(await home.webContents.executeJavaScript("document.querySelector('#sessionList').textContent"), /Antigravity project/);
     assert.equal(await home.webContents.executeJavaScript('typeof chatApi.onEvent(() => {})'), 'function');
-    await home.webContents.executeJavaScript("document.querySelector('#settingsBtn').click()");
+    await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').click()");
     await waitWindow("document.querySelector('[data-field=instructions]')");
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('[data-engine=antigravity]').getAttribute('aria-selected')"), 'true');
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#engineScopeTitle').textContent"), 'Antigravity in Camellia');
@@ -322,7 +326,7 @@ async function main() {
     const codexWs = await home.webContents.executeJavaScript(`chatApi.metaOp(${JSON.stringify({ op: 'create-workspace', name: 'Codex project', path: codexFolder })})`);
     assert.equal(codexWs.ok, true); await home.webContents.executeJavaScript('sidebar.load()');
     assert.match(await home.webContents.executeJavaScript("document.querySelector('#sessionList').textContent"), /Codex project/);
-    await home.webContents.executeJavaScript("document.querySelector('#settingsBtn').click()");
+    await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').click()");
     await waitWindow("document.querySelector('#codexConnectionPanel') && !document.querySelector('#codexConnectionPanel').hidden");
     const codexSettings = await engineSettings.webContents.executeJavaScript("window.dshDesktop.engineSettingsGet({engine:'codex'})");
     assert.equal(codexSettings.scope, 'app'); assert.ok(codexSettings.files.every(file => file.path.startsWith(userData)));

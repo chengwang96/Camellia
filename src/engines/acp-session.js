@@ -105,7 +105,9 @@ class AcpSession extends StreamingSession {
     await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '0.1.0' } });
     const sourceId = this.opts.sessionId;
     const method = sourceId ? this.opts.fork ? 'session/fork' : 'session/resume' : 'session/new';
-    const result = await this.request(method, { ...(sourceId ? { sessionId: sourceId } : {}), cwd: this.cwd, mcpServers: [] });
+    const bridge = this.opts.goalBridge?.config;
+    const mcpServers = bridge ? [{ name: 'camellia_goals', command: bridge.command, args: bridge.args, env: Object.entries(bridge.env).map(([name, value]) => ({ name, value })) }] : [];
+    const result = await this.request(method, { ...(sourceId ? { sessionId: sourceId } : {}), cwd: this.cwd, mcpServers });
     this.sessionId = result.sessionId || sourceId;
     if (!validSessionId(this.sessionId)) throw new Error(`${this.name} returned an invalid session ID`);
     if (this.opts.fork) {

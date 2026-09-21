@@ -192,6 +192,48 @@ test('pausing mid-verification discards the verdict', async t => {
   assert.equal(h.timers.size, 0);
 });
 
+test('clearing and replacing a goal discards every stale verification outcome', async t => {
+  for (const outcome of [{ pass: true, reason: 'old success' }, { pass: false, reason: 'old failure' }, new Error('old error')]) {
+    let release, reject, signal;
+    const harness = setup(t, { verifyCompletion: (claim, options) => {
+      signal = options.signal;
+      return new Promise((resolve, fail) => { release = resolve; reject = fail; });
+    } });
+    harness.goal.start({ objective: 'Old goal' }); harness.tick();
+    harness.result({ result: '<goal:complete>' });
+    const oldId = harness.goal.view().id;
+    harness.goal.clear();
+    assert.equal(signal.aborted, true);
+    harness.goal.start({ objective: 'Replacement goal' });
+    assert.equal(harness.goal.view().id, oldId);
+    const expected = harness.goal.view();
+    if (outcome instanceof Error) reject(outcome); else release(outcome);
+    await harness.settle();
+    assert.deepEqual(harness.goal.view(), expected);
+    assert.equal(harness.timers.size, 1);
+  }
+});
+
+test('pause and resume isolates a new verification from the old verdict', async t => {
+  const pending = [];
+  const harness = setup(t, { verifyCompletion: (claim, { signal }) => new Promise(resolve => pending.push({ signal, resolve })) });
+  harness.goal.start({ objective: 'Finish' }); harness.tick();
+  harness.result({ result: '<goal:complete>' });
+  harness.goal.setPhase('paused');
+  assert.equal(pending[0].signal.aborted, true);
+  harness.goal.resume(); harness.tick();
+  harness.result({ result: '<goal:complete>' });
+  const expected = harness.goal.view();
+  pending[0].resolve({ pass: true, reason: 'stale evidence' });
+  await harness.settle();
+  assert.deepEqual(harness.goal.view(), expected);
+  assert.equal(pending[1].signal.aborted, false);
+  pending[1].resolve({ pass: true, reason: 'current evidence' });
+  await harness.settle();
+  assert.equal(harness.goal.view().phase, 'complete');
+  assert.equal(harness.goal.view().verified.evidence, 'current evidence');
+});
+
 test('verify verdicts ignore fenced or quoted markers', () => {
   assert.equal(verifySignal('```\n<verify:pass>\n```'), null);
   assert.equal(verifySignal('> <verify:pass>'), null);

@@ -36,6 +36,20 @@ test('ACP consumes a final reply after process exit before closing the transport
   assert.equal(session.pending.size, 0);
 });
 
+test('ACP sends the conversation-scoped goal MCP server on creation and resume', async t => {
+  for (const sourceId of [undefined, 'saved-session']) {
+    const { session } = fixture(t);
+    const requests = [];
+    session.opts = { sessionId: sourceId, goalBridge: { config: { command: process.execPath, args: ['goal-mcp-stdio.js'], env: { CAMELLIA_GOAL_TOKEN: 'private' } } } };
+    session.onSessionId = () => {};
+    session.onEvent = () => {};
+    session.request = async (method, params) => { requests.push({ method, params }); return { sessionId: sourceId || 'new-session', configOptions: [] }; };
+    await session.open();
+    const request = requests.find(entry => entry.method === (sourceId ? 'session/resume' : 'session/new'));
+    assert.deepEqual(request.params.mcpServers, [{ name: 'camellia_goals', command: process.execPath, args: ['goal-mcp-stdio.js'], env: [{ name: 'CAMELLIA_GOAL_TOKEN', value: 'private' }] }]);
+  }
+});
+
 test('ACP rejects unfinished requests when the process closes without a reply', async t => {
   const { proc, session } = fixture(t);
   const rejected = assert.rejects(session.request('initialize', {}), /process exited \(1\)/);

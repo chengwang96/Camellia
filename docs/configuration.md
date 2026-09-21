@@ -1,5 +1,13 @@
 # Configuration
 
+## Instructions during a response
+
+While a response is running, Enter or the send button submits an immediate instruction to the current turn, without stopping it or starting another turn. The shared Codex connection uses native `turn/steer` with the expected turn ID. Acceptance means the engine received the instruction, not that an already-running command was interrupted or undone.
+
+Other current engine connections, including Kimi over ACP, do not yet expose this capability; they report it as unsupported and retain the composer text and attachments. Rejected instructions also stay in the composer and are not automatically retried against another turn. Use Alt+Enter to explicitly queue a message for after the current work ends. An empty composer retains the Stop action.
+
+On Windows, an opt-in paid integration check is available with `$env:CAMELLIA_LIVE_STEER='1'; node tests/codex-steer-live.cjs`. It uses the configured Codex API model and an already-running local API router, with isolated temporary conversation/history files. It verifies a correction after real streaming begins, same-turn identity, rejected stale instructions, and persisted history. This is not part of `npm test` and incurs provider usage; its JSON report is saved under the printed temporary directory. It tests the shared manager and native transport, not Electron UI automation. Steering may be consumed after the current model response finishes rather than interrupting its token stream.
+
 [Back to Camellia](../README.md) · [Documentation index](README.md)
 
 Camellia separates the engine that executes a task from the provider that supplies inference. Connections and routing are managed centrally; each engine retains its own history and native options.

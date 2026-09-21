@@ -101,6 +101,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   saveClipboardImage: (payload) => ipcRenderer.invoke('dsh:save-clipboard-image', payload),
   savePastedText: (payload) => ipcRenderer.invoke('dsh:save-pasted-text', payload),
   previewFile: (filePath) => ipcRenderer.invoke('dsh:preview-file', filePath),
+  resolveArtifacts: (payload) => ipcRenderer.invoke('dsh:resolve-artifacts', payload),
   openFileExternally: (filePath) => ipcRenderer.invoke('dsh:open-file-externally', filePath),
   onClaudeEvent: (callback) => subscribe('dsh:claude-event', callback),
   onClaudeGoal: (callback) => subscribe('dsh:claude-goal', callback),

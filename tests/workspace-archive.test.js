@@ -19,6 +19,7 @@ for (const archiveSessions of [false, true]) {
     const shared = harness.api.sharedConversations;
     const command = (action, payload) => harness.call('conversation-command', { engine: 'codex', action, payload });
     const folder = harness.folder('Archive project');
+    const canonicalFolder = fs.realpathSync(folder);
     const projectFile = path.join(folder, 'keep.txt');
     fs.writeFileSync(projectFile, 'Do not delete project files');
     const created = await command('meta-op', { op: 'create-workspace', name: 'Archive project', path: folder });
@@ -54,7 +55,7 @@ for (const archiveSessions of [false, true]) {
       assert.equal(removed.meta.sessionWorkspace[conversation.id], null);
       assert.equal(Boolean(removed.meta.archived[conversation.id]), archiveSessions || conversation === grouped[1]);
       assert.equal(shared.get(conversation.id).workspaceId, null);
-      assert.equal(shared.get(conversation.id).cwd, folder);
+      assert.equal(shared.get(conversation.id).cwd, canonicalFolder);
       assert.equal(JSON.parse(fs.readFileSync(path.join(shared.dir, conversation.id + '.json'), 'utf8')).workspaceId, null);
     }
     for (const [file, content] of transcripts) assert.equal(fs.readFileSync(file, 'utf8'), content);
@@ -78,7 +79,7 @@ for (const archiveSessions of [false, true]) {
       const loaded = await restarted.call('conversation-command', { engine: 'codex', action: 'load-session', payload: entry.id });
       assert.equal(loaded.ok, true, loaded.error);
       assert.equal(loaded.workspaceId, null);
-      assert.equal(loaded.cwd, folder);
+      assert.equal(loaded.cwd, canonicalFolder);
       assert.ok(loaded.messages.some(message => message.text === 'Retain this transcript'));
     }
     assert.equal((await restarted.call('archived-sessions-list')).sessions.length, 0);

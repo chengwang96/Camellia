@@ -200,7 +200,18 @@ with sync_playwright() as p:
           }
           if(action==='get-live') return {ok:true,live:sessions.get(payload?.sessionId)?.live || null};
           if(action==='goal-get') return {ok:true,goal:null};
+          if(action==='steer') {
+            if(engine!=='codex') return {ok:false,error:'This engine connection does not support immediate instructions. Your message has been retained.'};
+            if(window.failSteer) return {ok:false,error:'Fixture instruction rejected'};
+            const session=sessions.get(payload.sessionId);
+            const userSeq=session.messages.at(-1).seq+1;
+            session.messages.push({role:'user',seq:userSeq,text:payload.prompt,displayText:payload.displayText,attachments:payload.attachments});
+            pushEvent({type:'conversation:steered',session_id:session.id,engine,runId:session.live.runId,userSeq,
+              prompt:payload.prompt,displayText:payload.displayText,attachments:payload.attachments});
+            return {ok:true,runId:session.live.runId,userSeq};
+          }
           if(action==='send') {
+            if(window.failQueuedSend) return {ok:false,error:'Fixture queued send rejected'};
             if(payload.editSeq && window.holdEdit) await new Promise(resolve=>window.releaseEdit=resolve);
             if(payload.editSeq && window.failEdit) return {ok:false,error:'Fixture send rejected'};
             const id = payload.sessionId || 'run-' + (++serial);
@@ -233,6 +244,79 @@ with sync_playwright() as p:
       };
       window.sessionFixtures = sessions;
     })();"""
+    for engine in ['claude','codex','dsh','kimi','antigravity']:
+        page = browser.new_page(viewport={'width':1200,'height':820})
+        page.on('pageerror',lambda error:errors.append(str(error)))
+        page.add_init_script(concurrent_bridge)
+        page.goto((repo/'src/renderer/chat/claude.html').as_uri()+f'?harness={engine}',wait_until='networkidle')
+        page.wait_for_function('uiReady')
+        page.locator('#input').fill('Active task'); page.locator('#send').click()
+        page.wait_for_function('running && !sending')
+        run_id = page.evaluate('currentRunId')
+        page.evaluate('attachments=[{name:"steer.csv",path:"D:/Fixture/steer.csv",isImage:false}];renderAttachments()')
+        page.locator('#input').fill('Focus on tests now'); page.locator('#send').click()
+        page.wait_for_function('!sending')
+        assert page.evaluate('currentRunId') == run_id
+        assert page.evaluate('running') is True
+        assert page.evaluate('actions.filter(action=>action.action==="send").length') == 1
+        assert page.evaluate('actions.filter(action=>action.action==="cancel").length') == 0
+        expect(page.locator('#messageQueue')).to_be_hidden()
+        if engine == 'codex':
+            expect(page.locator('#input')).to_have_value('')
+            expect(page.locator('.msg-user')).to_have_count(2)
+            expect(page.locator('.msg-user').last).to_contain_text('Focus on tests now')
+            assert page.evaluate('actions.find(action=>action.action==="steer").payload.attachments[0].path') == 'D:/Fixture/steer.csv'
+            page.evaluate('window.failSteer=true')
+            page.locator('#input').fill('Keep rejected instruction'); page.locator('#input').press('Enter')
+            page.wait_for_function('!sending')
+            expect(page.locator('#input')).to_have_value('Keep rejected instruction')
+            expect(page.locator('.msg-user')).to_have_count(2)
+        else:
+            expect(page.locator('#input')).to_have_value('Focus on tests now')
+            assert page.evaluate('attachments.length') == 1
+            expect(page.locator('.msg-user')).to_have_count(1)
+        page.close()
+    for engine in ['claude','codex','dsh','kimi','antigravity']:
+        page = browser.new_page(viewport={'width':1200,'height':820})
+        page.on('pageerror',lambda error:errors.append(str(error)))
+        page.add_init_script(concurrent_bridge)
+        page.goto((repo/'src/renderer/chat/claude.html').as_uri()+f'?harness={engine}',wait_until='networkidle')
+        page.wait_for_function('uiReady')
+        page.locator('#input').fill('Queue leader'); page.locator('#send').click()
+        page.wait_for_function('running && !sending')
+        page.evaluate('attachments=[{name:"queued.csv",path:"D:/Fixture/queued.csv",isImage:false}];renderAttachments()')
+        page.locator('#input').fill('Queued first'); page.locator('#input').press('Alt+Enter')
+        page.locator('#input').fill('Queued second'); page.locator('#input').press('Alt+Enter')
+        page.locator('#input').fill('Keep this unsent draft')
+        page.evaluate('''() => {
+          window.finishQueuedTurn = () => pushEvent({type:'result',subtype:'success',session_id:context.sessionId,
+            engine:document.body.dataset.harness,runId:currentRunId,result:'Queue turn completed'});
+          receiveGoal({sessionId:context.sessionId,goal:{id:'queue-goal',sessionId:context.sessionId,
+            objective:'Finish the current goal',phase:'active',armed:true,elapsedMs:0,activeSince:Date.now()}});
+          finishQueuedTurn();
+        }''')
+        expect(page.locator('.queue-text')).to_have_text(['Queued first','Queued second'])
+        assert page.evaluate('actions.filter(action=>action.action==="send").length') == 1
+        page.evaluate('receiveGoal({sessionId:context.sessionId,goal:{id:"queue-goal",sessionId:context.sessionId,objective:"Done",phase:"complete",armed:false}})')
+        page.wait_for_function('running && !sending && !drainingQueue')
+        expect(page.locator('.queue-text')).to_have_text(['Queued second'])
+        payload = page.evaluate('actions.filter(action=>action.action==="send").at(-1).payload')
+        assert payload['displayText'] == 'Queued first'
+        assert payload['attachments'][0]['path'] == 'D:/Fixture/queued.csv'
+        expect(page.locator('#input')).to_have_value('Keep this unsent draft')
+        page.evaluate('finishQueuedTurn()')
+        page.wait_for_function('running && !sending && !drainingQueue')
+        expect(page.locator('#messageQueue')).to_be_hidden()
+        assert page.evaluate('actions.filter(action=>action.action==="send").at(-1).payload.displayText') == 'Queued second'
+        page.locator('#input').fill('Retain after failure'); page.locator('#input').press('Alt+Enter')
+        page.locator('#input').fill('Another unsent draft')
+        page.evaluate('window.failQueuedSend=true;finishQueuedTurn()')
+        page.wait_for_function('!running && !sending && !drainingQueue')
+        expect(page.locator('.queue-text')).to_have_text(['Retain after failure'])
+        expect(page.locator('#chat')).to_contain_text('Fixture queued send rejected')
+        expect(page.locator('#input')).to_have_value('Another unsent draft')
+        assert page.evaluate('actions.filter(action=>action.action==="send").length') == 4
+        page.close()
     for engine in ['claude','codex','dsh','kimi','antigravity']:
         page = browser.new_page(viewport={'width':1200,'height':820})
         page.on('pageerror',lambda e:errors.append(str(e)))
@@ -316,7 +400,7 @@ with sync_playwright() as p:
         assert page.evaluate('actions.filter(a=>a.action==="send").at(-1).payload.attachments[0].path')=='D:/Fixture/data.csv'
         expect(page.locator('#input')).to_have_value('Unsent next message')
         page.evaluate("chat.insertAdjacentHTML('beforeend','<div style=\"height:1200px\"></div>');chatScroll.scrollTop=0")
-        page.locator('#send').click()
+        page.locator('#input').press('Alt+Enter')
         expect(page.locator('#messageQueue')).to_be_visible()
         expect(page.locator('.queue-text')).to_have_text('Unsent next message')
         page.wait_for_function('chatScroll.scrollTop + chatScroll.clientHeight >= chatScroll.scrollHeight - 2')
@@ -504,7 +588,7 @@ with sync_playwright() as p:
     page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude',wait_until='networkidle')
     page.wait_for_function('uiReady')
     page.locator('#input').fill('/')
-    expect(page.locator('.slash-pop .slash-row')).to_have_count(3)
+    expect(page.locator('.slash-pop .slash-row')).to_have_count(4)
     page.locator('#input').fill('/g')
     expect(page.locator('.slash-pop .slash-row')).to_have_count(1)
     expect(page.locator('.slash-pop')).to_contain_text('/goal')
@@ -544,13 +628,14 @@ with sync_playwright() as p:
     page.evaluate("receiveEvent({type:'result',subtype:'success',session_id:'shared-fixture',engine:'claude',result:'done',usage:{input_tokens:1300000,cache_read_input_tokens:0,output_tokens:500}})")
     tip = page.evaluate("document.querySelector('#ctxRing').dataset.tip")
     assert '45.0K / 200.0K' in tip, tip
+    expect(page.locator('.ctx-tip')).to_contain_text('45.0K / 200.0K')
     page.close()
     page = browser.new_page(viewport={'width':1200,'height':820})
     page.on('pageerror',lambda e:errors.append(str(e)))
     usage_bridge = bridge.replace("onConversationEvent:()=>{},onConversationGoal:", "onConversationEvent:fn=>window.receiveEvent=fn,onConversationGoal:")
     usage_bridge = usage_bridge.replace(
         'window.fixturePreferences =',
-        "fixture.messages.at(-1).usage={input_tokens:1300000,output_tokens:500};fixture.messages.at(-1).lastCallUsage={input_tokens:40000,cache_read_input_tokens:5000,output_tokens:100,context_window:128000};window.fixturePreferences =")
+        "fixture.messages.at(-1).usage={input_tokens:1300000,output_tokens:500};fixture.messages.at(-1).lastCallUsage={input_tokens:40000,cache_read_input_tokens:5000,output_tokens:100,context_window:128000};fixture.messages.push({role:'assistant',engine:'claude',text:'Request failed before usage was reported'});window.fixturePreferences =")
     page.add_init_script(usage_bridge)
     page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex&conversation=shared-fixture',wait_until='networkidle')
     page.wait_for_function('uiReady')
@@ -561,11 +646,33 @@ with sync_playwright() as p:
     page.locator('#usageDot').click()
     page.evaluate("receiveEvent({type:'gui:usage',session_id:'shared-fixture',engine:'codex',usage:{input_tokens:60000,cache_read_input_tokens:4000,context_window:128000}})")
     assert '64.0K / 128.0K' in page.locator('#ctxRing').get_attribute('data-tip')
+    page.locator('#ctxRing').hover()
+    page.evaluate("receiveEvent({type:'conversation:started',session_id:'shared-fixture',engine:'codex',runId:42,prompt:'Continue'});receiveEvent({type:'result',subtype:'error',session_id:'shared-fixture',engine:'codex',runId:42,result:'Request failed',usage:{input_tokens:0,output_tokens:0}})")
+    assert '64.0K / 128.0K' in page.locator('#ctxRing').get_attribute('data-tip')
+    page.evaluate("changeLanguage('zh-CN')")
+    expect(page.locator('.ctx-tip')).to_contain_text('已用上下文')
+    page.evaluate("document.querySelector('#newSessionBtn').click()")
+    expect(page.locator('.ctx-tip')).to_have_count(0)
+    assert page.locator('#ctxRing').get_attribute('data-tip') is None
+    page.evaluate("changeLanguage('en')")
     page.locator('#newSessionBtn').click()
     expect(page.locator('#ctxRing')).to_be_hidden()
     page.locator('#usageDot').click()
     expect(page.locator('.usage-empty')).to_be_visible()
     page.locator('.usage-pop').screenshot(path=str(preview/'usage-empty-compact.png'), animations='disabled')
+    page.close()
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror',lambda error:errors.append(str(error)))
+    page.add_init_script(bridge.replace("onConversationEvent:()=>{},onConversationGoal:", "onConversationEvent:fn=>window.receiveEvent=fn,onConversationGoal:")
+        .replace("onApiRouterState:()=>{}", "onApiRouterState:fn=>window.updateRouter=fn"))
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude&conversation=shared-fixture',wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    page.evaluate("receiveEvent({type:'gui:usage',session_id:'shared-fixture',engine:'claude',usage:{input_tokens:40000}})")
+    assert '40.0K / 200.0K' in page.locator('#ctxRing').get_attribute('data-tip')
+    page.evaluate("updateRouter({enabled:true,models:['fixture-model'],providers:[{models:[{id:'fixture-model',contextWindow:128000}]}]})")
+    assert '40.0K / 128.0K' in page.locator('#ctxRing').get_attribute('data-tip')
+    page.evaluate("updateRouter({enabled:true,models:['fixture-model'],providers:[{models:[{id:'fixture-model'}]}]})")
+    assert '40.0K / 200.0K' in page.locator('#ctxRing').get_attribute('data-tip')
     page.close()
     # Goal draft mode: the criterion chip feeds into goal-start.
     page = browser.new_page(viewport={'width':1200,'height':820})

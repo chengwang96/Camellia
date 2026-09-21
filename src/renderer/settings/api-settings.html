@@ -10,20 +10,20 @@
 <aside class="settings-nav">
   <div class="settings-brand"><img src="../../../assets/icon-256.png" alt="Camellia cat" width="36" height="36"><span>Camellia<small data-i18n>Settings</small></span></div>
   <nav aria-label="Settings categories" data-i18n-attrs="aria-label">
-    <button data-view="providers" class="active" data-i18n><span aria-hidden="true">⌘</span>Providers &amp; Keys</button>
+    <button data-view="providers" data-i18n><span aria-hidden="true">⌘</span>Providers &amp; Keys</button>
     <button data-view="usage" data-i18n><span aria-hidden="true">▥</span>Usage</button>
     <div class="nav-divider"></div>
+    <button data-view="general" class="active" aria-current="page" data-i18n><span aria-hidden="true">⚙</span>General</button>
     <button data-view="engines" data-i18n><span aria-hidden="true">◇</span>Engine Settings</button>
     <button data-view="runtimes" data-i18n><span aria-hidden="true">↓</span>Runtime</button>
-    <button data-view="general" data-i18n><span aria-hidden="true">⚙</span>General</button>
     <button data-view="archived" data-i18n><span aria-hidden="true">▤</span>Archived</button>
   </nav>
   <div class="nav-foot"><span class="status-dot" id="routerDot"></span><span id="routerLabel" data-i18n>Connecting</span><small data-i18n>Automatic failover within the same model</small></div>
 </aside>
 <div class="settings-main">
-  <header class="page-head"><div><h1 id="pageTitle" data-i18n>Providers &amp; Keys</h1><p id="pageSubtitle" data-i18n>Configure once. Use across all engines.</p></div><button id="refresh" aria-label="Refresh status" data-i18n data-i18n-attrs="aria-label">Refresh</button></header>
+  <header class="page-head"><div><h1 id="pageTitle" data-i18n>General</h1><p id="pageSubtitle" data-i18n>Language, appearance, and local preferences.</p></div><button id="refresh" aria-label="Refresh status" data-i18n data-i18n-attrs="aria-label">Refresh</button></header>
   <main class="scroll-content">
-    <section id="providersPage" class="page">
+    <section id="providersPage" class="page" hidden>
       <section class="account-connections" aria-labelledby="accountConnectionsTitle">
         <div><h2 id="accountConnectionsTitle" data-i18n>Account sign-in</h2><p class="hint" data-i18n>Use account models and quota in the matching engine.</p></div>
         <div class="account-shortcuts"><button data-account-engine="kimi" data-i18n>Kimi account</button><button data-account-engine="antigravity" data-i18n>Google account · Antigravity</button><button data-account-engine="codex" data-i18n>ChatGPT account</button></div>
@@ -48,7 +48,7 @@
       <div class="table-scroll"><table class="usage-table"><thead><tr><th data-i18n>Model / Provider</th><th data-i18n>Key</th><th data-i18n>Success</th><th data-i18n>Input</th><th data-i18n>Output</th><th data-i18n>Cache read</th><th data-i18n>Failed</th></tr></thead><tbody id="usageRows"></tbody></table></div>
       <p class="hint footnote" data-i18n>Business requests through this router, excluding validation. Tokens come from provider responses. Model and date breakdowns accumulate from this version; legacy aggregates appear under Total. Cache reads are included in input tokens.</p>
     </section>
-    <section id="generalPage" class="page" hidden>
+    <section id="generalPage" class="page">
       <div class="setting-row"><div><h2 data-i18n>Language</h2><p class="hint" data-i18n>Choose the display language for Camellia.</p></div><select id="language" aria-label="Language" data-i18n-attrs="aria-label"><option value="en" lang="en">English</option><option value="zh-CN" lang="zh-CN">简体中文</option></select></div>
       <div class="setting-row"><div><h2 data-i18n>Appearance</h2><p class="hint" data-i18n>Applies throughout Camellia.</p></div><select id="theme" aria-label="Appearance" data-i18n-attrs="aria-label"><option value="system" data-i18n>System</option><option value="light" data-i18n>Light</option><option value="dark" data-i18n>Dark</option></select></div>
       <div class="setting-row"><div><h2 data-i18n>Refresh balances automatically</h2><p class="hint" data-i18n>Refresh API balances and supported subscription quotas every 15 minutes while the app is running.</p></div><input id="autoRefreshBalances" type="checkbox" aria-label="Refresh balances automatically" data-i18n-attrs="aria-label"></div>
@@ -131,7 +131,7 @@
       <p class="hint footnote" data-i18n>If an engine stops working after being installed, security software may be removing its unsigned files. Add Camellia's runtimes folder to your antivirus exclusion list — steps are in docs/troubleshooting-runtimes.md.</p>
     </section>
   </main>
-  <footer><span id="status" role="status" aria-live="polite" data-i18n></span><button id="save" class="primary" disabled data-i18n>Save changes</button></footer>
+  <footer><span id="status" role="status" aria-live="polite" data-i18n></span><button id="save" class="primary" disabled hidden data-i18n>Save changes</button></footer>
 </div>
 <dialog id="addDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Add API provider</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p class="hint" data-i18n>Connect with an API key. Choose a service to fill in its API address.</p><label for="preset" data-i18n>Provider</label><select id="preset"></select><div id="presetAccount" class="preset-account" hidden><p id="presetAccountHint" class="hint"></p><button id="openPresetAccount"></button></div><button id="confirmAdd" class="primary" data-i18n>Add API provider</button></dialog>
 <dialog id="modelDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Select model</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><input id="modelSearch" placeholder="Search models" aria-label="Search models" data-i18n-attrs="aria-label placeholder"><div id="catalogList"></div><button id="applyModels" class="primary" data-i18n>Add selected models</button></dialog>

@@ -8,7 +8,7 @@ const manifest = require('../package.json');
 
 assert.equal(process.platform, 'win32', 'Run the portable smoke test on Windows');
 const root = path.resolve(__dirname, '..');
-const artifact = path.resolve(process.argv[2] || path.join(root, 'dist', `${manifest.build.productName}-${manifest.version}-win-x64-portable.zip`));
+const artifact = path.resolve(process.argv[2] || path.join(root, 'dist', `${manifest.build.productName}-${manifest.version}-win-x64.zip`));
 assert.ok(fs.existsSync(artifact), 'Build the portable ZIP before testing');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'cml-portable-'));
 const application = path.join(temporary, 'application');

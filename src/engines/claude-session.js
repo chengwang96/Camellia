@@ -35,6 +35,7 @@ class ClaudeSession {
     // Keep this UI choice stable; users can still select Plan only themselves.
     if (this.opts.lockPermissionMode && nativeMode('claude', this.settings.permissionMode) === 'bypassPermissions') args.push('--disallowedTools', 'EnterPlanMode');
     this.log(`claude: persistent session gen=${this.gen} resume=${this.opts.sessionId || 'no'} ${args.join(' ')}`);
+    if (this.opts.goalBridge) args.push('--mcp-config', JSON.stringify({ mcpServers: { camellia_goals: this.opts.goalBridge.config } }));
     const proc = this.spawn(exe, args, { cwd: spec.cwd, env: spec.env, windowsHide: true, shell: exe === 'claude' });
     this.proc = proc;
     proc.stdout.on('data', chunk => {

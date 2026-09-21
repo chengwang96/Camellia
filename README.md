@@ -19,6 +19,7 @@ Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, and Antig
 - **Multiple engines, one application.** Switch between Claude Code, Codex CLI, DSH, Kimi Code, and Antigravity with shared navigation and settings.
 - **Shared conversations across five engines.** Keep one conversation and workspace while switching harnesses. Continue directly or use an automatic Markdown handoff. Start pages and active chats share an aligned composer.
 - **Large pastes become attachments.** Pasting a long text block stores it as a `pasted-text-*.txt` attachment instead of a huge prompt; short pastes stay inline.
+- **Deliverables appear below replies.** Successful file-writing tools and local file links or inline-code paths in replies produce deduplicated cards after an existence check. **Open with** offers Camellia or the system default app. Built-in previews cover images, audio/video, PDF, text, and DOCX/PPTX/XLSX content. Office previews do not reproduce original layout, images, charts or animations, or recalculate formulas; legacy DOC/PPT/XLS previews are not supported. Script-generated files should be linked in the reply. Shared conversations retain per-turn artifact records without scanning the workspace.
 - **Centralized API management.** Configure providers, import and label keys, discover models, and validate connections in one place.
 - **Same-model failover.** Retry eligible failures through another key or provider serving the same configured model. Camellia never substitutes a different model automatically.
 - **Usage and account visibility.** Filter local requests and token statistics by provider, key, model, and date. View balances, subscription limits, and observed trends for supported account APIs.
@@ -139,9 +140,15 @@ Use the engine selector in a conversation to switch. **Settings → General → 
 
 Multiple conversations can work at the same time, including several using the same harness. Switch conversations or start a new one without stopping background work; the sidebar shows work and pending approvals. Stop and permission actions apply only to the selected conversation. Harness switching and Markdown handoff are disabled while that conversation is working, including an active goal; stop or pause it first. Failed handoffs keep the original conversation and generated Markdown; interrupted requests are not retried automatically. See [implementation and limits](docs/design/shared-conversations.md) (Chinese).
 
+### Conversation control
+
+Models can also create/fork owned child conversations, choose configured models and thinking levels, send work, read results and cancel responses through [conversation-control tools](docs/conversation-tools.md). Children share files and existing permissions; they run independently and cannot recursively delegate or start Goals/tasks.
+
 ### Goal mode
 
-Use **Goal mode** (Ctrl/Cmd+G) to set an objective. All five engines continue working without a fixed turn limit, until the model reports completion, you pause or remove the goal, or progress is blocked. Recoverable execution errors and model-reported blockers receive up to three consecutive attempts before the goal stops with a reason; an unavailable workspace or engine stops it immediately. Completion is reported by the model and should include verification of the requested result.
+Use **Goal mode** (Ctrl/Cmd+G) to set an objective. All five engines continue working without a fixed turn limit, until completion passes independent verification, you pause or remove the goal, or progress is blocked. Recoverable execution errors and model-reported blockers receive up to three consecutive attempts before the goal stops with a reason; an unavailable workspace or engine stops it immediately. A model completion report triggers a separate verification session rather than marking the goal complete directly.
+
+You can also start a message with **“Set a goal: finish this feature and run its tests”** or **“设定目标：完成这个功能并通过测试”**. The model can then activate the same Goal bar through Camellia's conversation-scoped tools, adopting the current response without launching another turn. Discussion of Goal mode alone does not activate it. Intent matching is conservative: use a direct first-line request rather than a question, quote, or example. Conversational activation supports Claude, Codex, DSH, Kimi, and Antigravity **Shared API routes**; Antigravity **Google subscription** currently requires the Goal button because its CLI has no per-session MCP configuration. Existing permissions still apply; approve the Goal tool if prompted.
 
 The compact goal bar shows the objective, status and active time. Pause also stops the current response; expand the bar for the full objective, blocker details or **Mark complete**. Resume preserves progress and accumulated active time. Goals run independently in each conversation. Opening another conversation leaves them running. Closing Camellia pauses goals; continuing requires **Resume goal**. Pause a working goal before changing its harness. Goals use the selected model and permissions.
 
@@ -231,6 +238,8 @@ docs/           Guides, technical notes, and historical records
 Build instructions, runtime pins, regression commands, and contribution guidance are in the [development guide](docs/development.md). Generated files under `build/` and `dist/` are not committed.
 
 ## Documentation and upstream projects
+
+Shared conversations support **scheduled tasks** through **Tasks** beside the composer or `/tasks`: periodically check experiments with check-count, lifetime and recovery limits, and pause, edit, resume or cancel monitoring. The app must remain open; restarting requires manual resume. Each check invokes the model. See [scheduled experiment checks](docs/scheduled-tasks.md).
 
 - [Configuration guide](docs/configuration.md) — providers, failover, native settings, usage, and local data.
 - [Development guide](docs/development.md) — architecture, runtimes, testing, and packaging.

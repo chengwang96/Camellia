@@ -37,6 +37,7 @@ class CodexSession extends StreamingSession {
     await this.starting;
     const sourceId = this.opts.sessionId;
     const params = { cwd: this.settings.cwd, model: this.settings.model,
+      ...(this.opts.goalBridge ? { config: { 'mcp_servers.camellia_goals': this.opts.goalBridge.config } } : {}),
       modelProvider: this.settings.connection === 'api' ? 'camellia' : 'openai',
       ...PERMISSIONS[permissionModeOf(this.settings)],
       ...(permissionModeOf(this.settings) === 'default' ? this.spec.permissions : {}) };
@@ -74,6 +75,17 @@ class CodexSession extends StreamingSession {
       this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: error.message });
       this.kill();
     }
+  }
+  async steerUserMessage(prompt, attachments = []) {
+    if (!this.running || this.dead || this.cancelled || !this.turnId) throw new Error('The active turn is not ready or has already finished. Your message was not sent.');
+    const turnId = this.turnId;
+    const result = await this.client.request('turn/steer', {
+      threadId: this.sessionId, expectedTurnId: turnId,
+      input: [{ type: 'text', text: prompt }, ...attachments.filter(attachment => attachment.isImage).map(attachment => ({ type: 'localImage', path: attachment.path }))],
+    });
+    if (result?.turnId !== turnId) throw new Error('The engine did not confirm the expected turn. Check the conversation before retrying.');
+    this.appendHistory('user', prompt);
+    return { turnId };
   }
   textDelta(id, type, text) {
     if (!text) return;
