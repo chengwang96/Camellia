@@ -176,7 +176,12 @@ class BenchmarkRunner {
       // A cancelled run may still be stopping its engines; wait for the cleanup
       // to release the runner instead of refusing outright.
       if (!(this.active && ['cancelling', 'cancelled'].includes(this.active.status))) throw new Error('A benchmark is already running');
-      await Promise.race([this.pending, new Promise(resolve => setTimeout(resolve, 15000))]);
+      let timeout;
+      try {
+        await Promise.race([this.pending, new Promise(resolve => { timeout = setTimeout(resolve, 15000); })]);
+      } finally {
+        clearTimeout(timeout);
+      }
       if (this.pending) throw new Error('The previous run is still stopping. Try again in a few seconds');
     }
     if (this.libraries?.busy) throw new Error('Wait for question library preparation to finish');

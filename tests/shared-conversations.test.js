@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { SharedConversations, preferences, ENGINES } = require('../src/engines/shared-conversations');
 
-function fixture(t) {
+function fixture(t, overrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shared-chat-'));
   t.after(() => { manager?.pauseGoals(); removeTree(root); });
   let config = {}, gen = 0, manager;
@@ -25,7 +25,7 @@ function fixture(t) {
       sessions[engine] = session; return session;
     } }]));
   const args = { dir: root, loadConfig: () => config, saveConfig: patch => { config = { ...config, ...patch }; }, drivers,
-    onEvent: event => events.push(event) };
+    onEvent: event => events.push(event), ...overrides };
   manager = new SharedConversations(args);
   function finish(engine, subtype = 'success', text = 'Answer from ' + engine, session = sessions[engine]) { session.running = false;
     manager.capture(engine, { type: 'result', subtype, is_error: subtype === 'error', result: text, session_id: session.sessionId, runId: session.gen });
@@ -35,6 +35,17 @@ function fixture(t) {
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
 test('defaults continue directly with no warning or origin badge', () => assert.deepEqual(preferences({}), { mode: 'direct', warnOnSwitch: false, showOrigin: false }));
+
+test('new conversations use the default model to generate a title of at most ten characters', async t => {
+  const calls = [];
+  const f = fixture(t, { generateTitle: async (message, model) => { calls.push({ message, model }); return '  修复会话默认标题生成逻辑。  '; } });
+  const run = await f.manager.send('claude', { prompt: '请不要直接使用这条消息作为会话标题' });
+  await f.flush();
+  assert.deepEqual(calls, [{ message: '请不要直接使用这条消息作为会话标题', model: 'fixture' }]);
+  assert.equal(f.manager.get(run.sessionId).title, '修复会话默认标题生成');
+  assert.ok([...f.manager.get(run.sessionId).title].length <= 10);
+  assert.ok(f.events.some(event => event.type === 'conversation:title' && event.title === '修复会话默认标题生成'));
+});
 
 test('all five engines restart the last turn without its old reply or tool context, preserving earlier turns', async t => {
   for (const engine of ENGINES) {
