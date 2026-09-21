@@ -13,7 +13,7 @@ async function prepare({ engines = [], check = false, googleSubscription = false
       // A leftover node_modules without the package entry means an interrupted
       // install; say so instead of silently skipping the engine.
       const dir = path.join(root, 'runtimes', engine);
-      if (fs.existsSync(path.join(dir, 'node_modules'))) console.log(`${engine}: runtime incomplete — reinstall with: npm run setup:runtimes -- ${engine}`);
+      if (fs.existsSync(path.join(dir, 'node_modules'))) console.log(`${engine}: runtime incomplete — reinstall with: npm run setup:runtimes -- ${engine} (if it keeps disappearing, see docs/troubleshooting-runtimes.md)`);
       continue;
     }
     await manager.ensure(engine);

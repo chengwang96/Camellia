@@ -171,8 +171,14 @@ class BenchmarkRunner {
     if (immediate) send(); else this.timer = setTimeout(send, 250);
   }
   save() { if (this.active) writeJson(path.join(this.directory, this.active.id + '.json'), this.active); }
-  start(options = {}) {
-    if (this.pending) throw new Error('A benchmark is already running');
+  async start(options = {}) {
+    if (this.pending) {
+      // A cancelled run may still be stopping its engines; wait for the cleanup
+      // to release the runner instead of refusing outright.
+      if (!(this.active && ['cancelling', 'cancelled'].includes(this.active.status))) throw new Error('A benchmark is already running');
+      await Promise.race([this.pending, new Promise(resolve => setTimeout(resolve, 15000))]);
+      if (this.pending) throw new Error('The previous run is still stopping. Try again in a few seconds');
+    }
     if (this.libraries?.busy) throw new Error('Wait for question library preparation to finish');
     const mode = options.mode || 'custom';
     if (!['preview', 'full', 'custom'].includes(mode)) throw new Error('Unknown benchmark mode');
@@ -387,7 +393,7 @@ class BenchmarkRunner {
       if (!timeLimitMs) { timeout(); throw new Error(String(control.signal.reason)); }
       timer = setTimeout(timeout, timeLimitMs);
       const trialRuntime = this.runtimes().locate(trial.engine, 'api');
-      if (!trialRuntime) throw new Error(`${NAMES[trial.engine]} runtime is not installed or is incomplete. Reinstall it in Settings → Runtime, then start a new benchmark.`);
+      if (!trialRuntime) throw new Error(`${NAMES[trial.engine]} runtime is not installed or is incomplete. Reinstall it in Settings → Runtime, then start a new benchmark. If the runtime keeps disappearing, your antivirus may be removing it — see docs/troubleshooting-runtimes.md for the exclusion steps.`);
       const result = await this.execute({ engine: trial.engine, runtime: trialRuntime, node, cwd, home,
         model: report.model, route, signal: control.signal,
         python: this.execution.runtime?.python,

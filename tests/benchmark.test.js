@@ -191,7 +191,7 @@ function controlledRunner(t) {
 
 test('preview enforces the same small sample and limits regardless of stale setup selections', async t => {
   const { runner } = setupRunner(t, async () => ({ ok: true }));
-  const { id } = runner.start({ model: 'm', providerId: 'p', mode: 'preview', suite: 'scicode-full', repeats: 3,
+  const { id } = await runner.start({ model: 'm', providerId: 'p', mode: 'preview', suite: 'scicode-full', repeats: 3,
     timeoutSeconds: 3600, maxTokensPerTask: 5000000, tokenBudget: 10000 });
   const report = runner.report(id);
   for (const [key, value] of Object.entries(PREVIEW)) assert.equal(report[key], value, key);
@@ -213,7 +213,7 @@ test('benchmark captures API tool failures without GUI events and deduplicates n
     args.route.scope.observeTools(request, 'openai'); args.route.scope.observeTools(request, 'openai');
     return { ok: true };
   });
-  const { id } = runner.start({ model: 'm', providerId: 'p', mode: 'preview' }); await runner.pending;
+  const { id } = await runner.start({ model: 'm', providerId: 'p', mode: 'preview' }); await runner.pending;
   for (const trial of runner.report(id).trials) {
     assert.equal(trial.toolFailureCount, 1, trial.engine);
     assert.match(trial.toolFailures[0].output, /actual native diagnostic/);
@@ -229,7 +229,7 @@ test('native success cannot conceal an unrecovered agent API failure behind a su
     return { ok: true };
   });
   runner.verify = async () => { verifications++; return { passed: true, detail: 'Should not grade after terminal API error' }; };
-  const { id } = runner.start({ model: 'm', providerId: 'p', mode: 'preview' }); await runner.pending;
+  const { id } = await runner.start({ model: 'm', providerId: 'p', mode: 'preview' }); await runner.pending;
   for (const trial of runner.report(id).trials) {
     assert.equal(trial.status, 'error'); assert.equal(trial.checkScore, 0);
     assert.equal(trial.error, 'EXPECTED_UPSTREAM_FAILURE');
@@ -239,7 +239,7 @@ test('native success cannot conceal an unrecovered agent API failure behind a su
 
 test('full-library mode selects every built-in task and has no preview deadline', async t => {
   const { runner } = setupRunner(t, async () => ({ ok: true }));
-  const { id } = runner.start({ model: 'm', providerId: 'p', mode: 'full', library: 'builtin', suite: 'quick' });
+  const { id } = await runner.start({ model: 'm', providerId: 'p', mode: 'full', library: 'builtin', suite: 'quick' });
   const report = runner.report(id);
   assert.equal(report.suite, 'standard'); assert.equal(report.mode, 'full'); assert.equal(report.maxDurationSeconds, null);
   assert.equal(report.trials.length, TASKS.length * ENGINES.length);
@@ -250,7 +250,7 @@ test('full-library mode selects every built-in task and has no preview deadline'
 test('preview tasks share time so early or late tasks can exceed 90 seconds within the same whole-run deadline', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000000 });
   const { runner, calls } = controlledRunner(t);
-  const { id } = runner.start({ model: 'm', providerId: 'p', mode: 'preview' }); await tick();
+  const { id } = await runner.start({ model: 'm', providerId: 'p', mode: 'preview' }); await tick();
   t.mock.timers.tick(110000);
   assert.ok(calls.every(c => !c.signal.aborted));
   for (const call of calls.filter(c => !c.done)) call.finish(); await tick();
@@ -270,7 +270,7 @@ test('preview tasks share time so early or late tasks can exceed 90 seconds with
 test('timed-out work saves request duration, activity and changed files without changing its score', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000000 });
   const { runner, calls } = controlledRunner(t);
-  const { id } = runner.start({ model: 'm', providerId: 'p', mode: 'preview' }); await tick();
+  const { id } = await runner.start({ model: 'm', providerId: 'p', mode: 'preview' }); await tick();
   const call = calls.find(c => c.engine === 'codex');
   call.onEvent({ type: 'gui:tool', name: 'fileChange', status: 'completed' });
   for (let i = 0; i < 12; i++) call.onEvent({ type: 'gui:tool', name: 'commandExecution', status: 'completed', is_error: true,
@@ -301,7 +301,7 @@ test('timed-out work saves request duration, activity and changed files without 
 test('preview deadline closes all routes, keeps partial evidence and excludes unstarted work', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000000 });
   const { runner, calls, scopes } = controlledRunner(t);
-  const { id } = runner.start({ model: 'm', providerId: 'p', mode: 'preview' }); await tick();
+  const { id } = await runner.start({ model: 'm', providerId: 'p', mode: 'preview' }); await tick();
   for (const call of calls) call.finish(); await tick();
   assert.ok(runner.report(id).engines.every(e => e.observedCheckScore === 100 && e.coverage === 33.3 && e.checkScore === null));
   // Simulate slow work between trials. The run deadline must cover time outside
@@ -330,7 +330,7 @@ test('live scores retain equal attempt weights and never count pending work as f
 });
 test('all engines run concurrently and advance independently with one active trial per engine', async t => {
   const { runner, calls, scopes, root } = controlledRunner(t);
-  const { id } = runner.start({ model: 'm', providerId: 'p' });
+  const { id } = await runner.start({ model: 'm', providerId: 'p' });
   assert.equal(runner.state().busy, true);
   await tick();
   assert.equal(calls.length, ENGINES.length);
@@ -371,11 +371,11 @@ test('runner isolates every attempt, counts every repeat, saves evidence and kee
     route.scope.record({ tokens: { input: 12, output: 5, reported: true }, outcome: 'success' });
     return { ok: engine !== 'kimi', error: engine === 'kimi' ? 'Fixture error' : null };
   });
-  const { id } = runner.start({ model: 'm', providerId: 'p', repeats: 3 });
+  const { id } = await runner.start({ model: 'm', providerId: 'p', repeats: 3 });
   assert.equal(runner.report(id).timeoutSeconds, 300);
   assert.equal(runner.report(id).tokenBudget, null);
   assert.equal(runner.report(id).maxTokensPerTask, 250000);
-  assert.throws(() => runner.start({ model: 'm', providerId: 'p' }), /already running/);
+  await assert.rejects(runner.start({ model: 'm', providerId: 'p' }), /already running/);
   await runner.pending;
   const report = runner.report(id);
   assert.equal(report.status, 'completed'); assert.equal(report.trials.length, 45); assert.equal(folders.size, 45);
@@ -394,7 +394,7 @@ test('response truncation is diagnosed separately from task budgets and a recove
     route.scope.record({ outcome: 'success', finishReason: 'stop', maxOutputTokens: 64, hasTools: false, tokens: { output: 10, reported: true } });
     return { ok: engine !== 'dsh', error: 'DSH exited (1)', exitCode: engine === 'dsh' ? 1 : 0 };
   });
-  const { id } = runner.start({ model: 'm', providerId: 'p' }); await runner.pending;
+  const { id } = await runner.start({ model: 'm', providerId: 'p' }); await runner.pending;
   const report = runner.report(id);
   assert.ok(report.trials.every(trial => trial.apiError === undefined && trial.apiFailures.quota === 1));
   const errors = report.trials.filter(trial => trial.engine === 'dsh');
@@ -408,7 +408,7 @@ test('11/12 checks earns 91.7 check points while the full-task pass rate remains
   const { runner, root } = setupRunner(t, async () => ({ ok: true, text: 'All my checks passed' }));
   runner.verify = async () => ({ passed: false, detail: '11/12 checks passed', graderVersion: '1.1.0',
     checks: { passed: 11, total: 12, evaluated: 12, failures: [{ case: 11, expected: '"ab"', actual: '"a-b"' }] } });
-  const { id } = runner.start({ model: 'm', providerId: 'p' }); await runner.pending;
+  const { id } = await runner.start({ model: 'm', providerId: 'p' }); await runner.pending;
   const report = runner.report(id);
   assert.ok(report.engines.every(e => e.score === 0 && e.checkScore === 91.7));
   assert.ok(report.trials.every(t => t.status === 'failed' && t.checkScore === 91.7));
@@ -459,19 +459,25 @@ test('unexecuted checks and engine errors cannot inflate check scores; missing h
 test('cancel closes every active scope immediately and waits for all accounting before allowing another run', async t => {
   const drain = Promise.withResolvers(); t.after(() => drain.resolve());
   const { runner, calls, scopes } = controlledRunner(t);
-  const { id } = runner.start({ model: 'm', providerId: 'p', tokenBudget: 10000 }); await tick();
+  const { id } = await runner.start({ model: 'm', providerId: 'p', tokenBudget: 10000 }); await tick();
   assert.equal(calls.length, ENGINES.length);
   calls[0].route.scope.pending.add(drain.promise);
   runner.cancel();
   assert.ok(calls.every(c => c.signal.aborted && c.route.scope.closed));
   await tick();
   assert.equal(runner.state().busy, true); assert.equal(runner.report(id).finishedAt, null);
-  assert.throws(() => runner.start({ model: 'm', providerId: 'p' }), /already running/);
+  // A start while the cancelled run drains waits for the cleanup, then proceeds.
+  const restarting = runner.start({ model: 'm', providerId: 'p' });
   // An in-flight response can report usage after cancellation. Account for it
   // without replacing the user's stop reason with a budget status.
   calls[0].route.scope.record({ tokens: { input: 11000, reported: true } });
   assert.equal(runner.report(id).status, 'cancelling');
   drain.resolve(); await runner.pending;
+  const restarted = await restarting;
+  assert.ok(restarted.id);
+  runner.cancel();
+  for (const call of calls) call.finish();
+  await runner.pending;
   const report = runner.report(id);
   assert.equal(report.status, 'cancelled'); assert.equal(report.trials.filter(t => t.status === 'pending').length, 10);
   assert.equal(report.trials.filter(t => t.status === 'cancelled').length, ENGINES.length);
@@ -481,7 +487,7 @@ test('cancel closes every active scope immediately and waits for all accounting 
 });
 test('the shared token budget aborts all concurrent engines and prevents queued trials from starting', async t => {
   const { runner, calls, scopes } = controlledRunner(t);
-  const { id } = runner.start({ model: 'm', providerId: 'p', tokenBudget: 10000 }); await tick();
+  const { id } = await runner.start({ model: 'm', providerId: 'p', tokenBudget: 10000 }); await tick();
   assert.equal(calls.length, ENGINES.length);
   for (const call of calls) call.route.scope.record({ tokens: { input: 4000, output: 0, reported: true } });
   assert.ok(calls.every(c => c.signal.aborted && c.route.scope.closed));
@@ -495,7 +501,7 @@ test('the shared token budget aborts all concurrent engines and prevents queued 
 test('reported token budget stops remaining billable work and restart does not resume it', async t => {
   let called = 0;
   const { runner, options } = setupRunner(t, async ({ route }) => { called++; route.scope.record({ tokens: { input: 11000, reported: true } }); return { ok: true }; });
-  const { id } = runner.start({ model: 'm', providerId: 'p', tokenBudget: 10000 }); await runner.pending;
+  const { id } = await runner.start({ model: 'm', providerId: 'p', tokenBudget: 10000 }); await runner.pending;
   assert.equal(called, 1); assert.equal(runner.report(id).status, 'budget_exceeded');
   const saved = JSON.parse(fs.readFileSync(path.join(options.directory, id + '.json'))); saved.status = 'running'; saved.trials[0].status = 'running';
   fs.writeFileSync(path.join(options.directory, id + '.json'), JSON.stringify(saved));
@@ -508,14 +514,14 @@ test('per-task limit failures remain scored failures when the engine throws on a
     route.scope.record({ tokens: { input: 1000000, reported: true } });
     throw new Error('Engine interrupted by request limit');
   });
-  const { id } = runner.start({ model: 'm', providerId: 'p', tokenBudget: 20000000 }); await runner.pending;
+  const { id } = await runner.start({ model: 'm', providerId: 'p', tokenBudget: 20000000 }); await runner.pending;
   const report = runner.report(id);
   assert.ok(report.trials.every(t => t.status === 'limit'));
   assert.ok(report.engines.every(e => e.score === 0));
 });
 test('a single trial limit does not abort other engines or stop the remaining task queues', async t => {
   const { runner, calls } = controlledRunner(t);
-  const { id } = runner.start({ model: 'm', providerId: 'p', maxTokensPerTask: 10000 }); await tick();
+  const { id } = await runner.start({ model: 'm', providerId: 'p', maxTokensPerTask: 10000 }); await tick();
   const limited = calls[0]; limited.route.scope.record({ tokens: { input: 10000, reported: true } });
   await tick();
   assert.equal(calls.length, ENGINES.length + 1);
@@ -534,7 +540,7 @@ test('a single trial limit does not abort other engines or stop the remaining ta
 test('failure to save stops all workers and waits for cleanup without rejecting the run promise', async t => {
   const drain = Promise.withResolvers(); t.after(() => drain.resolve());
   const { runner, calls, scopes } = controlledRunner(t);
-  const { id } = runner.start({ model: 'm', providerId: 'p' }); await tick();
+  const { id } = await runner.start({ model: 'm', providerId: 'p' }); await tick();
   calls[1].route.scope.pending.add(drain.promise);
   runner.save = () => { throw new Error('Fixture disk full'); };
   calls[0].finish(); await tick();
@@ -573,4 +579,21 @@ test('benchmark reports can be deleted individually, and the active run is prote
   runner.active = null;
   assert.equal(runner.deleteReport(active).ok, true);
   assert.equal(runner.history().length, 1);
+});
+
+test('starting after a cancel waits for the previous run to release the runner', async t => {
+  const dir = temp(t);
+  const router = { running: true, enabled: true, providers: [{ id: 'p', enabled: true, keys: [{ id: 'k', enabled: true }], models: [{ id: 'm', upstream: 'm' }] }], usage: {} };
+  const routerHandle = { getState: () => router, createScope: () => ({ scope: { upstream: 'm', routeFingerprint: 'x' }, close: async () => {} }) };
+  const runtimes = () => ({ locate: () => ({ file: 'x', version: '1' }) });
+  const execute = ({ signal }) => new Promise(resolve => signal.addEventListener('abort', () => resolve({ ok: false, error: 'cancelled', cancelled: true })), { once: true });
+  const runner = new BenchmarkRunner({ directory: dir, runtimes, node: () => process.execPath, getRouter: () => routerHandle, execute });
+  const first = await runner.start({ providerId: 'p', model: 'm', mode: 'custom', suite: 'quick' });
+  assert.ok(first.id);
+  runner.cancel();
+  const second = await runner.start({ providerId: 'p', model: 'm', mode: 'custom', suite: 'quick' });
+  assert.ok(second.id);
+  assert.notEqual(second.id, first.id);
+  runner.cancel();
+  await runner.shutdown();
 });
