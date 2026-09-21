@@ -582,6 +582,18 @@ test('benchmark reports can be deleted individually, and the active run is prote
 });
 
 test('starting after a cancel waits for the previous run to release the runner', async t => {
+  const nativeSetTimeout = global.setTimeout;
+  const nativeClearTimeout = global.clearTimeout;
+  let restartTimeout = null;
+  let restartTimeoutCleared = false;
+  t.mock.method(global, 'setTimeout', (callback, delay, ...args) => {
+    if (delay === 15000) return (restartTimeout = { delay });
+    return nativeSetTimeout(callback, delay, ...args);
+  });
+  t.mock.method(global, 'clearTimeout', timeout => {
+    if (timeout === restartTimeout) restartTimeoutCleared = true;
+    else nativeClearTimeout(timeout);
+  });
   const dir = temp(t);
   const router = { running: true, enabled: true, providers: [{ id: 'p', enabled: true, keys: [{ id: 'k', enabled: true }], models: [{ id: 'm', upstream: 'm' }] }], usage: {} };
   const routerHandle = { getState: () => router, createScope: () => ({ scope: { upstream: 'm', routeFingerprint: 'x' }, close: async () => {} }) };
@@ -594,6 +606,7 @@ test('starting after a cancel waits for the previous run to release the runner',
   const second = await runner.start({ providerId: 'p', model: 'm', mode: 'custom', suite: 'quick' });
   assert.ok(second.id);
   assert.notEqual(second.id, first.id);
+  assert.equal(restartTimeoutCleared, true);
   runner.cancel();
   await runner.shutdown();
 });

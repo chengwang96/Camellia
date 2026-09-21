@@ -454,6 +454,21 @@ function resolveClaudeRoute() {
   if (ollamaProxyHandle && !ollamaProxyHandle.getState().running) throw new Error(ollamaProxyHandle.getState().error || "The API router has not started");
   return { baseUrl: `http://127.0.0.1:${cfg.port}`, authToken: 'proxy-managed' };
 }
+async function generateConversationTitle(message, model) {
+  if (!model) throw new Error('No default API model is selected');
+  const route = resolveClaudeRoute();
+  const response = await fetch(route.baseUrl + '/v1/chat/completions', {
+    method: 'POST', signal: AbortSignal.timeout(30000),
+    headers: { Authorization: `Bearer ${route.authToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, stream: false, temperature: 0.2, max_tokens: 32, messages: [
+      { role: 'system', content: '为用户消息生成一个简短、准确的会话标题。只输出标题，不要引号、标点或解释；最多10个字符。' },
+      { role: 'user', content: JSON.stringify(String(message || '').slice(0, 12000)) },
+    ] }),
+  });
+  if (!response.ok) throw new Error(`Title request failed (HTTP ${response.status})`);
+  const data = await response.json();
+  return data?.choices?.[0]?.message?.content || '';
+}
 
 // Fields that require a fresh process when changed (mid-session switching is
 // not possible for model/effort/permission via the stream-json control API we use).
@@ -678,7 +693,7 @@ const dshChat = createDshChat({ dataDir: app.getPath('userData'), loadConfig, sa
   getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
   runtime: () => ({ file: detectDshBin() }), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'dsh'),
   onEvent: event => publishChatEvent('dsh', event), log });
-sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow,
+sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
   drivers: {
     claude: { history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts) },
     kimi: { history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts) },

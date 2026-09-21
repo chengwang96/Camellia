@@ -1362,6 +1362,12 @@ const context = { sessionId: null, workspaceId: null };
       }
       return;
     }
+    if (ev.type === 'conversation:title') {
+      $('headerTitle').textContent = ev.title;
+      $('headerTitle').dataset.titled = '1';
+      void sidebar.load();
+      return;
+    }
     if (currentRunId != null && ev.runId != null && currentRunId !== ev.runId) return;
     const was = nearBottom();
 
@@ -1562,10 +1568,6 @@ const context = { sessionId: null, workspaceId: null };
     }
     chat.querySelector('.switch-hint')?.remove();
     const userMessage = addUser(text || "[Attachments]", atts, { at: Date.now(), scrollToBottom: true });
-    if (!context.sessionId && !$('headerTitle').dataset.titled && text) {
-      $('headerTitle').textContent = text.length > 24 ? text.slice(0, 24) + '…' : text;
-      $('headerTitle').dataset.titled = '1';
-    }
     setRunning(true);
     updateSendEnabled();
     acceptSessionEvents = true;

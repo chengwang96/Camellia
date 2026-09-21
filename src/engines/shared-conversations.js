@@ -18,12 +18,13 @@ const conversationSettings = value => ({ ...Object.fromEntries(['connection', 'p
 const preferences = config => ({ mode: config.conversations?.mode === 'markdown' ? 'markdown' : 'direct',
   warnOnSwitch: config.conversations?.warnOnSwitch === true, showOrigin: config.conversations?.showOrigin === true });
 const textOf = content => typeof content === 'string' ? content : (content || []).filter(p => p.type === 'text').map(p => p.text).join('\n');
+const shortTitle = value => [...String(value || '').replace(/^[\s"'`#*-]+|[\s"'`#*-.。！!？?：:]+$/gu, '').replace(/\s+/g, ' ').trim()].slice(0, 10).join('');
 
 // The logical ID belongs to Camellia. Native IDs and synchronization cursors
 // are private to each engine. Original native histories are never rewritten.
 class SharedConversations {
-  constructor({ dir, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, log = () => {}, modelContextWindow = () => undefined }) {
-    Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, log, modelContextWindow });
+  constructor({ dir, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, generateTitle = async () => '', log = () => {}, modelContextWindow = () => undefined }) {
+    Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, generateTitle, log, modelContextWindow });
     fs.mkdirSync(dir, { recursive: true });
     this.items = new Map(); this.active = new Map(); this.facades = new Map(); this.switching = new Map(); this.goals = new Map(); this.sequence = 0;
     this.onGoal = onGoal;
@@ -127,6 +128,16 @@ class SharedConversations {
   get(id) { const c = this.items.get(id); if (!c) throw new Error('Conversation not found'); return c; }
   head(id) { const c = this.get(id); return { title: c.title, summary: '', cwd: c.cwd }; }
   save(c) { writeJson(this.file(c.id), c); this.items.set(c.id, c); }
+  async titleFromFirstMessage(c, prompt) {
+    try {
+      const title = shortTitle(await this.generateTitle(String(prompt || ''), c.apiModel));
+      if (!title || !this.items.has(c.id) || this.workspaces.sessionMeta().titles[c.id]) return;
+      const current = this.get(c.id);
+      if (current.title !== 'New session') return;
+      current.title = title; current.updatedAt = Date.now(); this.save(current);
+      this.onEvent({ type: 'conversation:title', session_id: current.id, title });
+    } catch (error) { this.log('conversation title generation failed: ' + error.message); }
+  }
   // Permanent delete: index, append-only log, goal, handoffs and torn backups.
   purge(id) {
     if (this.busy(id)) throw new Error('Stop this conversation before deleting it');
@@ -278,7 +289,8 @@ class SharedConversations {
   async send(engine, payload, { internal = false, fresh = false, facade, promptOverride } = {}) {
     this.validateEngine(engine);
     if (payload.editSeq !== undefined && (internal || payload.fork || !payload.sessionId)) throw new Error('Choose an existing conversation to edit; editing cannot be combined with a handoff or fork');
-    let c = payload.sessionId ? this.get(payload.sessionId) : this.create(engine, payload.workspaceId, String(payload.prompt || '').slice(0, 80));
+    const created = !payload.sessionId;
+    let c = payload.sessionId ? this.get(payload.sessionId) : this.create(engine, payload.workspaceId);
     if (payload.fork) {
       if (this.busy(c.id)) throw new Error('Wait for this conversation to finish before forking it');
       const source = c; c = this.create(engine, source.workspaceId, source.title, source.cwd);
@@ -381,6 +393,9 @@ class SharedConversations {
         c.currentEngine = engine;
       }
       this.save(c);
+      if (created && !internal && String(payload.displayText ?? payload.prompt ?? '').trim()) {
+        void this.titleFromFirstMessage(c, payload.displayText ?? payload.prompt);
+      }
       this.publishActivity(c.id);
       if (!internal) this.onEvent({ type: 'conversation:started', session_id: c.id, engine, runId: a.facade.gen,
         prompt: a.prompt, displayText: a.displayText, attachments: a.attachments, userSeq: a.userSeq, workspaceId: c.workspaceId });
