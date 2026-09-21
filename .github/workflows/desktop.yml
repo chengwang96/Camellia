@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: ${{ matrix.platform }} / ${{ matrix.arch }}
@@ -43,7 +47,9 @@ jobs:
         run: npm run setup:runtimes -- claude codex dsh kimi antigravity
       - name: Prepare the Antigravity subscription CLI
         run: npm run setup:antigravity:subscription
-      - run: npm test
+      - name: Unit tests
+        timeout-minutes: 10
+        run: node --test --test-force-exit tests/*.test.js
       - name: Electron smoke test
         run: node tests/electron-smoke.cjs
       - name: Native DSH settings

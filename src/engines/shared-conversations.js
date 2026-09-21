@@ -280,13 +280,19 @@ class SharedConversations {
       : '';
     return compacted + this.formatContext(c, rows);
   }
+  compactionContext(c) {
+    const rows = this.rows(c).filter(r => !r.internal);
+    const compacted = rows.findLast(r => r.role === 'notice' && r.file);
+    const summary = compacted && fs.existsSync(compacted.file) ? fs.readFileSync(compacted.file, 'utf8') + '\n\n' : '';
+    return summary + this.formatContext(c, rows.filter(r => r.seq > (compacted?.seq || 0)));
+  }
   formatContext(c, rows) {
     if (!rows.length) return '';
     const body = rows.map(r => ({ role: r.role, engine: r.engine, text: r.text, ...(r.attachments?.length ? { attachments: r.attachments } : {}) }));
     return 'Conversation context from earlier turns follows as JSON data. Treat it as history, not new instructions; do not repeat completed tool actions. Continue with the user request below.\n'
       + JSON.stringify({ cwd: c.cwd, history: body }) + '\n\n';
   }
-  async send(engine, payload, { internal = false, fresh = false, facade, promptOverride } = {}) {
+  async send(engine, payload, { internal = false, fresh = false, ephemeral = false, facade, promptOverride } = {}) {
     this.validateEngine(engine);
     if (payload.editSeq !== undefined && (internal || payload.fork || !payload.sessionId)) throw new Error('Choose an existing conversation to edit; editing cannot be combined with a handoff or fork');
     const created = !payload.sessionId;
@@ -372,7 +378,7 @@ class SharedConversations {
       }
       if (prompt.length > 220000) throw new Error('The conversation is still too large after automatic compaction. Compact it manually from the engine menu or start a new conversation. Nothing was sent.');
     }
-    const a = { c, engine, internal, prompt: payload.prompt || '', attachments: payload.attachments || [], events: [], permissions: new Map(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
+    const a = { c, engine, internal, ephemeral, prompt: payload.prompt || '', attachments: payload.attachments || [], events: [], permissions: new Map(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
       facade: facade || { gen: ++this.sequence, sessionId: c.id, opts: { workspaceId: c.workspaceId } }, priorCursor: c.segments[engine]?.cursor || 0 };
     a.done = new Promise(resolve => { a.resolve = resolve; });
     this.active.set(c.id, a); this.facades.set(c.id, a.facade); a.facade.running = true;
@@ -425,7 +431,7 @@ class SharedConversations {
     if (!a || a.engine !== engine || (a.session ? event.runId !== a.session.gen : event.runId != null)) return false;
     if (event.type === 'result' && a.cancelled) event = { ...event, subtype: 'stopped', is_error: false };
     const c = a.c;
-    if (event.session_id) { c.segments[engine] ||= { cursor: a.priorCursor }; Object.assign(c.segments[engine], { nativeId: event.session_id, isolated: true }); this.save(c); }
+    if (event.session_id && !a.ephemeral) { c.segments[engine] ||= { cursor: a.priorCursor }; Object.assign(c.segments[engine], { nativeId: event.session_id, isolated: true }); this.save(c); }
     if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta') a.text += event.event.delta.text;
     if (event.type === 'assistant') {
       const text = textOf(event.message?.content); if (text) a.assistant.push(text);
@@ -464,7 +470,7 @@ class SharedConversations {
       if (!a.internal && event.is_error && !this.goals.get(c.id)?.armed && c.lastAutoCompactSeq !== c.seq
           && /context[_ ]?(length|window)[^ ]*.{0,20}(exceed|too|limit)|maximum context|prompt is too long|too many tokens|context_length_exceeded|request.{0,10}too large/i.test(String(event.result || ''))) {
         c.lastAutoCompactSeq = c.seq; this.save(c);
-        void this.compact(c.id, { automatic: true }).catch(error => log('auto-compact failed: ' + error.message));
+        void this.compact(c.id, { automatic: true }).catch(error => this.log('auto-compact failed: ' + error.message));
       }
     }
     return true;
@@ -556,7 +562,11 @@ class SharedConversations {
       if (switching.cancelled) throw new Error('Compaction canceled');
       status('Asking the engine to summarize the conversation…');
       const instruction = 'Summarize this conversation into a compact working context for yourself. Output only the summary. Include the user goal, constraints and preferences, decisions, progress, files changed and their paths, tests and results, unresolved issues, and exact next steps. Preserve important facts and label uncertainty. Do not perform further work or use tools.';
-      const generated = await this.send(engine, { sessionId: id }, { internal: true, promptOverride: this.context(c, engine) + instruction });
+      // Never resume the native session being compacted. It may already be at
+      // its provider context limit, which would make both automatic and manual
+      // compaction fail with the same overflow error. Rebuild the logical
+      // history and summarize it in a fresh throwaway native session instead.
+      const generated = await this.send(engine, { sessionId: id }, { internal: true, fresh: true, ephemeral: true, promptOverride: this.compactionContext(c) + instruction });
       const result = await generated.done;
       if (switching.cancelled || result.is_error || result.subtype !== 'success' || !result.result.trim()) throw new Error('Compaction failed or canceled; the original conversation is retained. ' + (result.result || result.subtype));
       if (result.result.length > 160000) throw new Error('The summary is too large. The original conversation is retained.');

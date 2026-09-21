@@ -460,13 +460,18 @@ async function generateConversationTitle(message, model) {
   const response = await fetch(route.baseUrl + '/v1/chat/completions', {
     method: 'POST', signal: AbortSignal.timeout(30000),
     headers: { Authorization: `Bearer ${route.authToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, stream: false, temperature: 0.2, max_tokens: 32, messages: [
+    body: JSON.stringify({ model, stream: false, max_tokens: 32, messages: [
       { role: 'system', content: '为用户消息生成一个简短、准确的会话标题。只输出标题，不要引号、标点或解释；最多10个字符。' },
       { role: 'user', content: JSON.stringify(String(message || '').slice(0, 12000)) },
     ] }),
   });
-  if (!response.ok) throw new Error(`Title request failed (HTTP ${response.status})`);
-  const data = await response.json();
+  const text = await response.text();
+  if (!response.ok) {
+    let detail = text;
+    try { detail = JSON.parse(text)?.error?.message || text; } catch {}
+    throw new Error(`Title request failed (HTTP ${response.status}): ${String(detail).slice(0, 500)}`);
+  }
+  const data = JSON.parse(text);
   return data?.choices?.[0]?.message?.content || '';
 }
 

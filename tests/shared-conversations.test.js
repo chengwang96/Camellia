@@ -462,6 +462,7 @@ test('compact summarizes once, defers the fresh native session, and re-fires on 
   const nativeBefore = f.manager.get(first.sessionId).segments.kimi.nativeId;
   const compacting = f.manager.command('kimi', 'compact', { sessionId: first.sessionId });
   await waitFor(() => /compact working context/.test(f.sent.at(-1)?.prompt || ''));
+  assert.equal(f.sent.at(-1).opts.sessionId, null);
   f.finish('kimi', 'success', '## Summary Long work in progress');
   const res = await compacting;
   assert.equal(res.ok, true);
@@ -486,6 +487,31 @@ test('compact summarizes once, defers the fresh native session, and re-fires on 
   f.finish('kimi', 'success', '## Summary again');
   await waitFor(() => f.manager.messages(f.manager.get(first.sessionId)).filter(m => m.role === 'notice' && /compacted automatically/.test(m.text)).length === 2);
   assert.equal(f.manager.messages(f.manager.get(first.sessionId)).filter(m => m.role === 'notice' && /compacted automatically/.test(m.text)).length, 2);
+});
+
+test('manual compaction after an overflow abandons the full native session and includes its logical history', async t => {
+  const f = fixture(t);
+  const first = await f.manager.send('kimi', { prompt: 'Remember UNIQUE_EARLY_CONTEXT' });
+  f.finish('kimi', 'success', 'Early work complete');
+  const nativeBefore = f.manager.get(first.sessionId).segments.kimi.nativeId;
+  await f.manager.send('kimi', { sessionId: first.sessionId, prompt: 'Continue after a long pause' });
+  f.finish('kimi', 'error', 'context_length_exceeded');
+  await f.flush();
+
+  const automatic = f.sent.at(-1);
+  assert.equal(automatic.opts.sessionId, null);
+  assert.match(automatic.prompt, /UNIQUE_EARLY_CONTEXT/);
+  f.finish('kimi', 'error', 'Compaction interrupted');
+  await f.flush();
+
+  const compacting = f.manager.command('kimi', 'compact', { sessionId: first.sessionId });
+  await f.flush();
+  const manual = f.sent.at(-1);
+  assert.equal(manual.opts.sessionId, null);
+  assert.match(manual.prompt, /UNIQUE_EARLY_CONTEXT/);
+  assert.notEqual(manual.session.sessionId, nativeBefore);
+  f.finish('kimi', 'success', 'Recovered compact summary');
+  assert.equal((await compacting).ok, true);
 });
 
 test('an in-progress compaction can be stopped without replacing the native session', async t => {
