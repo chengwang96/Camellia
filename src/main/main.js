@@ -1015,7 +1015,7 @@ if (!gotSingleInstanceLock) {
     || (engine === 'antigravity' && (antigravity.session?.running || antigravity.goal.armed));
   for (const [name, handler] of Object.entries({
     'benchmark-state': () => ({ ok: true, ...benchmarks().state() }),
-    'benchmark-start': payload => ({ ok: true, ...benchmarks().start(payload) }),
+    'benchmark-start': async payload => ({ ok: true, ...await benchmarks().start(payload) }),
     'benchmark-cancel': () => benchmarks().cancel(),
     'benchmark-report': ({ id }) => ({ ok: true, report: benchmarks().report(id) }),
     'benchmark-delete': ({ id }) => benchmarks().deleteReport(id),
@@ -1037,6 +1037,32 @@ if (!gotSingleInstanceLock) {
       if (result.canceled || !result.filePath) return { ok: true, canceled: true };
       writeJson(result.filePath, report);
       return { ok: true };
+    },
+    'api-router-export': async () => {
+      const cfg = readOllamaProxyConfig();
+      // Full-fidelity export: providers, endpoints and raw keys. Subscriptions
+      // are device-local by design and are never included.
+      const bundle = { format: 'camellia-api-routes', version: 2, exportedAt: new Date().toISOString(),
+        config: { enabled: cfg.enabled, port: cfg.port, providers: cfg.providers } };
+      const result = await dialog.showSaveDialog(settingsWindow || mainWindow, { title: uiText('Export API route configuration'),
+        defaultPath: `camellia-api-routes-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: 'JSON configuration', extensions: ['json'] }] });
+      if (result.canceled || !result.filePath) return { ok: true, canceled: true };
+      writeJson(result.filePath, bundle);
+      return { ok: true, keys: cfg.providers.reduce((n, p) => n + p.keys.length, 0) };
+    },
+    'api-router-import': async () => {
+      const result = await dialog.showOpenDialog(settingsWindow || mainWindow, { title: uiText('Import API route configuration'),
+        filters: [{ name: 'JSON configuration', extensions: ['json'] }], properties: ['openFile'] });
+      if (result.canceled || !result.filePaths.length) return { ok: true, canceled: true };
+      const bundle = readJson(result.filePaths[0], null);
+      if (bundle?.format !== 'camellia-api-routes' || !bundle.config || !Array.isArray(bundle.config.providers)) {
+        throw new Error('This file is not a Camellia API route export');
+      }
+      const prev = readOllamaProxyConfig();
+      // Keep live usage counters and per-model active route state; replace the rest.
+      const imported = routerConfig.normalizeConfig({ ...bundle.config, usage: prev.usage, active: prev.active }, prev);
+      const saved = await saveApiRouter(imported);
+      return { ...saved, providers: imported.providers.length };
     },
     'engine-settings-get': ({ engine }) => ({ ok: true, ...engineSettings().get(engine) }),
     'engine-settings-save': async ({ engine, ...payload }) => {
