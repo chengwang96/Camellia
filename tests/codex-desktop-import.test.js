@@ -53,13 +53,14 @@ function sharedFixture(root) {
 const responseItem = (role, text, at = '2026-09-16T10:00:00.000Z') =>
   ({ timestamp: at, type: 'response_item', payload: { type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] } });
 
-test('desktop session listing skips subagents, archived rows and missing rollouts', t => {
+test('desktop session listing skips subagents, archived rows, unnamed rows and missing rollouts', t => {
   const { root, file, db, close } = stateFixture(t);
   const rollout = writeRollout(root, 'a.jsonl', [responseItem('user', 'hello')]);
-  addThread(db, { id: 'main', title: 'Main chat', rollout });
-  addThread(db, { id: 'sub', source: '{"subagent":{"other":"x"}}', rollout });
-  addThread(db, { id: 'archived', archived: 1, rollout });
-  addThread(db, { id: 'gone', first: 'No file left', rollout: path.join(root, 'missing.jsonl') });
+  addThread(db, { id: 'main', name: 'Main chat', rollout });
+  addThread(db, { id: 'sub', name: 'Subagent', source: '{"subagent":{"other":"x"}}', rollout });
+  addThread(db, { id: 'archived', name: 'Archived', archived: 1, rollout });
+  addThread(db, { id: 'unnamed', title: 'Generated title', first: 'First message', rollout });
+  addThread(db, { id: 'gone', name: 'No file left', rollout: path.join(root, 'missing.jsonl') });
   close();
   const sessions = listDesktopSessions(file);
   assert.deepEqual(sessions.map(s => s.id), ['main', 'gone']);
@@ -69,13 +70,13 @@ test('desktop session listing skips subagents, archived rows and missing rollout
   assert.deepEqual(listDesktopSessions(file, { excludeIds: new Set(['main']) }).map(s => s.id), ['gone']);
 });
 
-test('the user-visible name column wins over the raw title, projects join their primary root', t => {
+test('only the user-visible name is used, and cwd falls back to a matching project root', t => {
   const { root, file, db, close } = stateFixture(t);
   const rollout = writeRollout(root, 'n.jsonl', [responseItem('user', 'hello')]);
   const projectDir = path.join(root, 'proj'); fs.mkdirSync(projectDir);
   addProject(db, { id: 'p1', name: 'ARDS', roots: [projectDir, path.join(root, 'secondary')] });
-  addThread(db, { id: 'named', title: 'Raw title wrapper', name: '## My request:\n real working session', projectId: 'p1', rollout });
-  addThread(db, { id: 'plain', title: 'No project here', rollout });
+  addThread(db, { id: 'named', title: 'Raw title wrapper', name: '## My request:\n real working session', cwd: projectDir, rollout });
+  addThread(db, { id: 'plain', name: 'No project here', rollout });
   close();
   const sessions = listDesktopSessions(file);
   const named = sessions.find(s => s.id === 'named');
@@ -103,7 +104,7 @@ test('import creates shared conversations with codex history and skips re-import
   const { root, file, db, close } = stateFixture(t);
   const cwd = path.join(root, 'work'); fs.mkdirSync(cwd);
   const rollout = writeRollout(root, 'c.jsonl', [responseItem('user', 'first question'), responseItem('assistant', 'first answer')]);
-  addThread(db, { id: 'thread-1', title: 'Imported chat', cwd, rollout });
+  addThread(db, { id: 'thread-1', name: 'Imported chat', cwd, rollout });
   close();
   const shared = sharedFixture(root);
   const result = importDesktopSessions(shared, file, ['thread-1']);

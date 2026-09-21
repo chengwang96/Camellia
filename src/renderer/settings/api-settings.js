@@ -461,11 +461,13 @@ async function refresh(initial = false) {
 $('refresh').onclick = () => refresh();
 // ---------- Archived conversations ----------
 const engineNames = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity' };
-let archivedPendingDelete = null;
+let archivedPendingDelete = null, archivedCount = 0;
 async function renderArchived() {
   try {
     const result = await api.archivedSessionsList();
     if (!result.ok) throw new Error(result.error);
+    archivedCount = result.sessions.length;
+    $('deleteAllArchived').disabled = !archivedCount;
     const t = window.CamelliaI18n.t;
     $('archivedList').innerHTML = result.sessions.map(s => `<div class="setting-row archived-row">
       <div><h2>${esc(s.title)}</h2><p class="hint">${esc(engineNames[s.origin || s.source] || s.source)} · ${esc(t("Archived"))} ${when(s.archivedAt)}${s.missing ? ' · ' + esc(t("Files missing")) : ''}</p></div>
@@ -502,6 +504,19 @@ $('confirmDeleteArchived').onclick = async () => {
     const result = await api.archivedSessionAction({ ...target, action: 'delete' });
     if (!result.ok) throw new Error(result.error);
     status("Conversation deleted");
+  } catch (err) { status(err.message, true); }
+  await renderArchived();
+};
+$('deleteAllArchived').onclick = () => {
+  $('deleteAllArchivedCount').textContent = window.CamelliaI18n.t(`All ${archivedCount} archived conversations will be deleted.`);
+  $('deleteAllArchivedDialog').showModal();
+};
+$('confirmDeleteAllArchived').onclick = async () => {
+  $('deleteAllArchivedDialog').close();
+  try {
+    const result = await api.archivedSessionAction({ action: 'delete-all' });
+    if (!result.ok) throw new Error(result.error);
+    status("All archived conversations deleted");
   } catch (err) { status(err.message, true); }
   await renderArchived();
 };

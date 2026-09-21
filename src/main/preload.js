@@ -98,6 +98,9 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   // Attachments: pick via native dialog / resolve dropped File objects
   pickAttachments: () => ipcRenderer.invoke('dsh:pick-attachments'),
   attachmentPath: (file) => webUtils.getPathForFile(file),
+  saveClipboardImage: (payload) => ipcRenderer.invoke('dsh:save-clipboard-image', payload),
+  previewFile: (filePath) => ipcRenderer.invoke('dsh:preview-file', filePath),
+  openFileExternally: (filePath) => ipcRenderer.invoke('dsh:open-file-externally', filePath),
   onClaudeEvent: (callback) => subscribe('dsh:claude-event', callback),
   onClaudeGoal: (callback) => subscribe('dsh:claude-goal', callback),
   // Shared ACP conversation API; no arbitrary IPC forwarding.

@@ -109,10 +109,14 @@
     "win": {
       "target": [
         "nsis",
-        "zip"
+        "zip",
+        "portable"
       ],
-      "artifactName": "${productName}-${version}-win-${arch}-portable.${ext}",
+      "artifactName": "${productName}-${version}-win-${arch}.${ext}",
       "icon": "assets/icon.ico"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-win-${arch}-portable.${ext}"
     },
     "nsis": {
       "artifactName": "${productName}-Setup-${version}-win-${arch}.${ext}",

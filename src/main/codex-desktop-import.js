@@ -48,6 +48,13 @@ function cleanTitle(text) {
   return text;
 }
 
+function projectForRow(row, projectsByPath) {
+  if (row.projectId) return { id: row.projectId, name: row.projectName || '', path: cleanPath(row.projectPath || '') };
+  const cwd = cleanPath(row.cwd || '');
+  if (!cwd) return null;
+  return projectsByPath.get(pathKey(cwd)) || null;
+}
+
 function listDesktopSessions(stateFile, { excludeIds = new Set() } = {}) {
   if (!fs.existsSync(stateFile)) return [];
   return withSnapshot(stateFile, db => {
@@ -57,14 +64,21 @@ function listDesktopSessions(stateFile, { excludeIds = new Set() } = {}) {
       FROM threads t LEFT JOIN projects p ON p.id = t.project_id
       LEFT JOIN project_roots r ON r.project_id = t.project_id AND r.position = 0
       WHERE t.archived = 0 ORDER BY createdAt DESC`).all();
-    return rows.filter(r => !isSubagentSource(r.source) && !excludeIds.has(r.id)).map(r => ({
-      id: r.id,
-      title: (cleanTitle(r.name) || cleanTitle(r.title) || cleanTitle(r.first_user_message || r.preview)).slice(0, 60) || '(Untitled)',
-      cwd: r.cwd || '', createdAt: r.createdAt, updatedAt: r.updatedAt,
-      source: r.source, rolloutPath: cleanPath(r.rollout_path),
-      project: r.projectId ? { id: r.projectId, name: r.projectName || '', path: cleanPath(r.projectPath || '') } : null,
-      importable: fs.existsSync(cleanPath(r.rollout_path)),
-    }));
+    const projectsByPath = new Map(db.prepare(`SELECT p.id, p.name, r.path FROM projects p
+      JOIN project_roots r ON r.project_id = p.id AND r.position = 0`).all()
+      .filter(project => cleanPath(project.path || ''))
+      .map(project => [pathKey(cleanPath(project.path)), { id: project.id, name: project.name || '', path: cleanPath(project.path) }]));
+    return rows.filter(r => !isSubagentSource(r.source) && !excludeIds.has(r.id)).flatMap(r => {
+      const title = cleanTitle(r.name);
+      if (!title) return [];
+      return [{
+        id: r.id, title: title.slice(0, 60),
+        cwd: cleanPath(r.cwd || ''), createdAt: r.createdAt, updatedAt: r.updatedAt,
+        source: r.source, rolloutPath: cleanPath(r.rollout_path),
+        project: projectForRow(r, projectsByPath),
+        importable: fs.existsSync(cleanPath(r.rollout_path)),
+      }];
+    });
   });
 }
 

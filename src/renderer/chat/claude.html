@@ -50,7 +50,7 @@
       <button class="header-pill" id="handoffBtn" title="Choose how to continue in another engine" data-i18n data-i18n-attrs="title">Switch options</button>
       <button class="header-pill" id="handoffStop" hidden data-i18n>Stop handoff</button>
       <span style="flex:1"></span>
-          </div>
+    </div>
 
 <div id="conversationOrigin" class="conversation-origin" hidden data-i18n></div>
 <div class="chat-scroll" id="chatScroll">
@@ -67,6 +67,7 @@
         <div class="suggestion" id="suggestion"></div>
         <div class="input-card" id="inputCard">
           <div class="goal-chip-row" id="goalChipRow" hidden></div>
+          <div class="message-queue" id="messageQueue" hidden></div>
           <div class="attach-row" id="attachRow"></div>
           <textarea id="input" placeholder="Message Claude Code" rows="2" data-i18n-attrs="placeholder"></textarea>
           <div class="input-row">
@@ -104,6 +105,25 @@
       </div>
     </div>
   </main>
+
+  <aside class="file-viewer" id="fileViewer" hidden aria-label="File preview" data-i18n-attrs="aria-label">
+    <header class="file-viewer-header">
+      <div class="file-viewer-title-wrap">
+        <span class="file-viewer-kicker" id="fileViewerType" data-i18n>Preview</span>
+        <strong class="file-viewer-title" id="fileViewerTitle"></strong>
+      </div>
+      <div class="file-viewer-actions">
+        <button id="fileViewerExternal" title="Open with system app" aria-label="Open with system app" data-i18n-attrs="title aria-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3h7v7"/><path d="m10 14 11-11"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>
+        </button>
+        <button id="fileViewerClose" title="Close preview" aria-label="Close preview" data-i18n-attrs="title aria-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+    </header>
+    <div class="file-viewer-meta" id="fileViewerMeta"></div>
+    <div class="file-viewer-body" id="fileViewerBody"></div>
+  </aside>
 </div>
 
 <!-- Permission modal (P3): answers can_use_tool control requests -->

@@ -31,6 +31,8 @@ const { createLibraryManager } = require('../benchmark/libraries');
 const { SharedConversations, preferences: conversationPreferences } = require('../engines/shared-conversations');
 const { createDshChat } = require('../engines/dsh-session');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
+const { saveClipboardImage } = require('./clipboard-attachments');
+const { describePreview } = require('./file-preview');
 let sharedConversations = null;
 function publishChatEvent(engine, event) {
   // Persistence is best-effort here: a failed save must not escape into the
@@ -1364,27 +1366,43 @@ if (!gotSingleInstanceLock) {
     } catch (error) { return { ok: false, error: error.message }; }
   });
   ipcMain.handle('dsh:archived-session-action', async (_event, payload) => {
+    const notify = (source, id, action) => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:archived-changed', { source, id, action });
+    };
+    const removeArchived = async (source, id) => {
+      const goal = { claude: goalDriver, kimi: kimiGoalDriver, codex: codex.goal, antigravity: antigravity.goal }[source];
+      if (goal?.goal?.sessionId === id) {
+        if (goal.armed) throw new Error('Pause the goal before deleting its conversation');
+        goal.clear();
+      }
+      await archivedSources()[source].removeSession(id);
+      const connectionKey = { kimi: 'kimiSessionConnections', codex: 'codexSessionConnections' }[source];
+      if (connectionKey && loadConfig()[connectionKey]?.[id]) {
+        const connections = { ...loadConfig()[connectionKey] };
+        delete connections[id];
+        saveConfig({ [connectionKey]: connections });
+      }
+    };
     try {
       const { source, id, action } = payload || {};
+      if (!['restore', 'delete', 'delete-all'].includes(action)) throw new Error('Unknown action');
+      if (action === 'delete-all') {
+        // Notify per deleted conversation so open chats reset like a single delete.
+        let deleted = 0;
+        for (const [each, workspaces] of Object.entries(archivedSources())) {
+          for (const session of await workspaces.listArchived()) {
+            await removeArchived(each, session.id);
+            deleted += 1;
+            notify(each, session.id, 'delete');
+          }
+        }
+        return { ok: true, deleted };
+      }
       const workspaces = archivedSources()[source];
       if (!workspaces) throw new Error('Unknown conversation source');
-      if (!['restore', 'delete'].includes(action)) throw new Error('Unknown action');
       if (action === 'restore') workspaces.archiveSession(id, false);
-      else {
-        const goal = { claude: goalDriver, kimi: kimiGoalDriver, codex: codex.goal, antigravity: antigravity.goal }[source];
-        if (goal?.goal?.sessionId === id) {
-          if (goal.armed) throw new Error('Pause the goal before deleting its conversation');
-          goal.clear();
-        }
-        await workspaces.removeSession(id);
-        const connectionKey = { kimi: 'kimiSessionConnections', codex: 'codexSessionConnections' }[source];
-        if (connectionKey && loadConfig()[connectionKey]?.[id]) {
-          const connections = { ...loadConfig()[connectionKey] };
-          delete connections[id];
-          saveConfig({ [connectionKey]: connections });
-        }
-      }
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:archived-changed', { source, id, action });
+      else await removeArchived(source, id);
+      notify(source, id, action);
       return { ok: true };
     } catch (error) { return { ok: false, error: error.message }; }
   });
@@ -1421,6 +1439,24 @@ if (!gotSingleInstanceLock) {
     };
     const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
     return result.canceled ? { canceled: true, paths: [] } : { canceled: false, paths: result.filePaths };
+  });
+
+  ipcMain.handle('dsh:preview-file', (_event, filePath) => {
+    try { return { ok: true, file: describePreview(filePath) }; }
+    catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:open-file-externally', async (_event, filePath) => {
+    try {
+      const preview = describePreview(filePath);
+      const error = await shell.openPath(preview.path);
+      return error ? { ok: false, error } : { ok: true };
+    } catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:save-clipboard-image', (_event, payload) => {
+    try { return { ok: true, attachment: saveClipboardImage(app.getPath('userData'), payload) }; }
+    catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 
   // Test that the given (or detected) node + dsh actually run.

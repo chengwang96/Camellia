@@ -399,14 +399,25 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     return label;
   }
   function projectHead(project, sessions) {
-    const head = document.createElement('label');
+    const head = document.createElement('div');
     head.className = 'import-project';
     head.dataset.project = project.id;
     const box = document.createElement('input'); box.type = 'checkbox';
+    box.setAttribute('aria-label', window.CamelliaI18n.t('Select workspace'));
     const text = document.createElement('span');
-    text.textContent = (project.name || project.path || '') + ' \u00b7 ' + sessions.length + ' sessions';
+    text.className = 'import-project-name';
+    text.textContent = project.name || project.path || window.CamelliaI18n.t('Unnamed workspace');
     text.title = project.path || '';
-    head.append(box, text);
+    const count = document.createElement('span');
+    count.className = 'import-project-count';
+    count.textContent = window.CamelliaI18n.t('{0} sessions').replace('{0}', sessions.length);
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'import-project-toggle';
+    toggle.setAttribute('aria-expanded', 'true');
+    toggle.setAttribute('aria-label', window.CamelliaI18n.t('Collapse workspace'));
+    toggle.innerHTML = sidebarIcon('chevron');
+    head.append(box, text, count, toggle);
     return head;
   }
   function groupedImportNodes(sessions) {
@@ -422,8 +433,14 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       if (seen.has(s.project.id)) continue;
       seen.add(s.project.id);
       const group = byProject.get(s.project.id);
-      nodes.push(projectHead(group.project, group.sessions));
-      for (const member of group.sessions) nodes.push(importRow(member));
+      const section = document.createElement('section');
+      section.className = 'import-project-group';
+      section.dataset.project = group.project.id;
+      const children = document.createElement('div');
+      children.className = 'import-project-sessions';
+      children.append(...group.sessions.map(importRow));
+      section.append(projectHead(group.project, group.sessions), children);
+      nodes.push(section);
     }
     return nodes;
   }
@@ -474,11 +491,19 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     syncImportBoxes();
   };
   $('importList').onchange = (e) => {
-    const headBox = e.target.closest ? e.target.closest('.import-project') : null;
-    if (headBox) {
-      for (const b of $('importList').querySelectorAll('.import-row[data-project="' + headBox.dataset.project + '"] input[type=checkbox]:not(:disabled)')) b.checked = e.target.checked;
+    const head = e.target.closest ? e.target.closest('.import-project') : null;
+    if (head && e.target.matches('input[type=checkbox]')) {
+      for (const b of $('importList').querySelectorAll('.import-row[data-project="' + head.dataset.project + '"] input[type=checkbox]:not(:disabled)')) b.checked = e.target.checked;
     }
     syncImportBoxes();
+  };
+  $('importList').onclick = (e) => {
+    const toggle = e.target.closest ? e.target.closest('.import-project-toggle') : null;
+    if (!toggle) return;
+    const group = toggle.closest('.import-project-group');
+    const collapsed = group.classList.toggle('collapsed');
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.setAttribute('aria-label', window.CamelliaI18n.t(collapsed ? 'Expand workspace' : 'Collapse workspace'));
   };
   $('importCancel').onclick = () => $('importMask').classList.remove('visible');
   $('importBtn').addEventListener('click', () => void openImportDialog());

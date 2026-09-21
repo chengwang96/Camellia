@@ -29,9 +29,13 @@ const context = { sessionId: null, workspaceId: null };
   let lastUsage = null;       // usage object from the last result event
   let lastCallUsage = null;   // usage of the latest single API call in the turn
   let attachments = [];       // [{ path, name, isImage }]
+  const messageQueue = [];    // messages waiting for the active response to finish
+  let drainingQueue = false;
   let openPops = [];          // currently open popover elements
   let runAnchorMs = 0;        // timestamp of message_start (drives the 15s clock)
   let statusClockTimer = null;
+  let followRunOutput = false;
+  let programmaticScroll = false;
   let todoItems = null;       // latest task snapshot: [{ content, status, activeForm }]
   let todoPanelEl = null;
 
@@ -98,6 +102,8 @@ const context = { sessionId: null, workspaceId: null };
   window.addEventListener('beforeunload', saveDraft);
   let scrollSaveTimer;
   chatScroll.addEventListener('scroll', () => {
+    if (running && !programmaticScroll) followRunOutput = nearBottom();
+    programmaticScroll = false;
     clearTimeout(scrollSaveTimer); scrollSaveTimer = setTimeout(saveDraft, 120);
   });
 
@@ -152,7 +158,10 @@ const context = { sessionId: null, workspaceId: null };
     return chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 140;
   }
   function maybeScroll(was) {
-    if (was) chatScroll.scrollTop = chatScroll.scrollHeight;
+    if (was || running && followRunOutput) {
+      programmaticScroll = true;
+      chatScroll.scrollTop = chatScroll.scrollHeight;
+    }
   }
 
   function clearEmpty() {
@@ -372,6 +381,79 @@ const context = { sessionId: null, workspaceId: null };
     return normalized.startsWith('//') ? 'file:' + encoded : 'file:///' + encoded.replace(/^\//, '');
   }
 
+  const fileViewer = $('fileViewer');
+  let previewedFile = null;
+  function formatFileSize(bytes) {
+    if (!Number.isFinite(bytes)) return '';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(bytes < 10240 ? 1 : 0) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(bytes < 1024 * 1024 * 10 ? 1 : 0) + ' MB';
+  }
+  function previewLabel(file) {
+    return file.extension || { text: 'TEXT', image: 'IMAGE', video: 'VIDEO', audio: 'AUDIO', pdf: 'PDF' }[file.kind] || 'FILE';
+  }
+  function renderUnsupportedPreview(message) {
+    const empty = document.createElement('div');
+    empty.className = 'file-preview-empty';
+    empty.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><strong></strong><span></span><button type="button"></button>';
+    empty.querySelector('strong').textContent = message || window.CamelliaI18n.t('This file type cannot be previewed in Camellia.');
+    empty.querySelector('span').textContent = window.CamelliaI18n.t('Open it with the system app instead.');
+    empty.querySelector('button').textContent = window.CamelliaI18n.t('Open with system app');
+    empty.querySelector('button').onclick = () => openPreviewExternally();
+    $('fileViewerBody').replaceChildren(empty);
+  }
+  function renderFilePreview(file) {
+    previewedFile = file;
+    $('fileViewerTitle').textContent = file.name;
+    $('fileViewerTitle').title = file.path;
+    $('fileViewerType').textContent = previewLabel(file);
+    $('fileViewerMeta').textContent = [formatFileSize(file.size), file.path].filter(Boolean).join('  ·  ');
+    const body = $('fileViewerBody');
+    body.replaceChildren();
+    if (file.kind === 'text') {
+      const text = document.createElement('pre'); text.className = 'file-preview-text';
+      text.textContent = file.text + (file.truncated ? '\n\n— ' + window.CamelliaI18n.t('Text preview is limited to the first 2 MB.') + ' —' : '');
+      body.appendChild(text);
+    } else if (file.kind === 'image') {
+      const stage = document.createElement('div'); stage.className = 'file-preview-image';
+      const image = document.createElement('img'); image.src = file.url; image.alt = file.name; stage.appendChild(image); body.appendChild(stage);
+    } else if (file.kind === 'pdf') {
+      const frame = document.createElement('iframe'); frame.src = file.url; frame.title = file.name; body.appendChild(frame);
+    } else if (file.kind === 'video' || file.kind === 'audio') {
+      const media = document.createElement(file.kind); media.src = file.url; media.controls = true; media.preload = 'metadata';
+      if (file.kind === 'video') media.setAttribute('playsinline', '');
+      body.appendChild(media);
+    } else renderUnsupportedPreview();
+    fileViewer.hidden = false;
+  }
+  async function openFilePreview(filePath) {
+    if (!filePath) return;
+    const result = await window.dshDesktop.previewFile(filePath);
+    if (!result.ok) {
+      previewedFile = { path: filePath, name: String(filePath).split(/[\\/]/).pop(), kind: 'unsupported' };
+      $('fileViewerTitle').textContent = previewedFile.name;
+      $('fileViewerType').textContent = window.CamelliaI18n.t('Preview');
+      $('fileViewerMeta').textContent = filePath;
+      fileViewer.hidden = false;
+      renderUnsupportedPreview(result.error || window.CamelliaI18n.t('The file could not be opened.'));
+      return;
+    }
+    renderFilePreview(result.file);
+  }
+  async function openPreviewExternally() {
+    if (!previewedFile?.path) return;
+    const result = await window.dshDesktop.openFileExternally(previewedFile.path);
+    if (!result.ok) setStatus(result.error || 'Could not open the file.');
+  }
+  function closeFilePreview() {
+    fileViewer.hidden = true;
+    $('fileViewerBody').replaceChildren();
+    previewedFile = null;
+  }
+  $('fileViewerClose').onclick = closeFilePreview;
+  $('fileViewerExternal').onclick = () => void openPreviewExternally();
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && !fileViewer.hidden) closeFilePreview(); });
+
   function addAttachments(paths) {
     let unsupportedImage = false;
     for (const p of paths || []) {
@@ -396,7 +478,10 @@ const context = { sessionId: null, workspaceId: null };
         ? '<img src="' + esc(fileUrl(a.path)) + '" alt="">'
         : '<span class="attchip-fileicon">📎</span>';
       chip.innerHTML = visual + "<span class=\"attchip-name\"></span><button class=\"attchip-x\" title=\"Remove\">✕</button>";
-      chip.querySelector('.attchip-name').textContent = a.name;
+      const name = chip.querySelector('.attchip-name');
+      name.textContent = a.name; name.tabIndex = 0; name.role = 'button'; name.title = window.CamelliaI18n.t('Preview');
+      name.addEventListener('click', () => void openFilePreview(a.path));
+      name.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void openFilePreview(a.path); } });
       chip.querySelector('.attchip-x').addEventListener('click', () => {
         attachments.splice(i, 1);
         renderAttachments();
@@ -404,6 +489,50 @@ const context = { sessionId: null, workspaceId: null };
       row.appendChild(chip);
     });
     saveDraft();
+    updateSendEnabled();
+  }
+
+  function renderMessageQueue() {
+    const list = $('messageQueue');
+    list.hidden = messageQueue.length === 0;
+    list.replaceChildren(...messageQueue.map((message, index) => {
+      const row = document.createElement('div');
+      row.className = 'queue-item';
+      const label = document.createElement('span');
+      label.className = 'queue-index';
+      label.textContent = window.CamelliaI18n.t('Queued') + ' ' + (index + 1);
+      const text = document.createElement('span');
+      text.className = 'queue-text';
+      text.textContent = message.text || message.attachments.map(item => item.name).join(', ');
+      const remove = document.createElement('button');
+      remove.type = 'button'; remove.className = 'queue-remove'; remove.title = 'Remove from queue';
+      remove.setAttribute('aria-label', 'Remove from queue'); remove.textContent = '✕';
+      remove.addEventListener('click', () => { messageQueue.splice(index, 1); renderMessageQueue(); });
+      row.append(label, text, remove);
+      return row;
+    }));
+  }
+
+  function queueComposerMessage() {
+    const text = input.value.trim();
+    const queuedAttachments = attachments.slice();
+    if (!text && !queuedAttachments.length) return false;
+    if (goalUI.isDraft()) { setStatus('Finish setting the goal before queueing messages.'); return false; }
+    messageQueue.push({ text, attachments: queuedAttachments });
+    input.value = ''; attachments = [];
+    renderAttachments(); autoResize(); renderMessageQueue(); saveDraft();
+    followRunOutput = true;
+    maybeScroll(true);
+    setStatus('Message queued · ' + messageQueue.length + ' waiting');
+    return true;
+  }
+
+  function drainMessageQueue() {
+    if (drainingQueue || !messageQueue.length || running || sending || loadingSession || conversationActivity) return;
+    const next = messageQueue.shift();
+    drainingQueue = true;
+    renderMessageQueue();
+    void send(next).finally(() => { drainingQueue = false; if (!running) drainMessageQueue(); });
   }
 
   $('attachBtn').addEventListener('click', async () => {
@@ -432,18 +561,31 @@ const context = { sessionId: null, workspaceId: null };
     addAttachments(paths);
   });
 
-  // Paste images from clipboard
-  input.addEventListener('paste', (e) => {
-    const files = e.clipboardData && e.clipboardData.files;
-    if (!files || !files.length) return;
+  // Paste path-backed files directly; persist in-memory screenshots first.
+  input.addEventListener('paste', async (e) => {
+    const files = Array.from(e.clipboardData?.files || []).filter(file => file.type.startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault();
+    if (chatProfile.supportsImages === false) {
+      setStatus('Antigravity currently supports text and code attachments. Use Claude or Kimi for images.');
+      return;
+    }
     const paths = [];
     for (const f of files) {
       try {
-        const p = window.dshDesktop.attachmentPath(f) || f.path;
-        if (p) paths.push(p);
-      } catch (_err) { /* clipboard temp files without a path are ignored */ }
+        let p = f.path || '';
+        try { p = window.dshDesktop.attachmentPath(f) || p; }
+        catch (_error) { /* in-memory clipboard images do not have filesystem paths */ }
+        if (p) { paths.push(p); continue; }
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        const result = await window.dshDesktop.saveClipboardImage({ type: f.type, bytes });
+        if (!result.ok) throw new Error(result.error);
+        paths.push(result.attachment.path);
+      } catch (error) {
+        setStatus(error?.message || 'Could not attach the pasted image.');
+      }
     }
-    if (paths.length) { e.preventDefault(); addAttachments(paths); }
+    if (paths.length) addAttachments(paths);
   });
 
   // ---------- messages ----------
@@ -464,6 +606,9 @@ const context = { sessionId: null, workspaceId: null };
         const c = document.createElement('span');
         c.className = 'attchip-inline';
         c.textContent = (a.isImage ? '🖼 ' : '📎 ') + a.name;
+        c.tabIndex = 0; c.role = 'button'; c.title = window.CamelliaI18n.t('Preview');
+        c.addEventListener('click', () => void openFilePreview(a.path));
+        c.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void openFilePreview(a.path); } });
         chips.appendChild(c);
       }
       div.appendChild(chips);
@@ -490,7 +635,8 @@ const context = { sessionId: null, workspaceId: null };
     div.appendChild(actions);
     chat.appendChild(div);
     updateMessageActions();
-    maybeScroll(was);
+    if (meta.scrollToBottom) { programmaticScroll = true; chatScroll.scrollTop = chatScroll.scrollHeight; }
+    else maybeScroll(was);
     return div;
   }
 
@@ -574,17 +720,18 @@ const context = { sessionId: null, workspaceId: null };
     editingMessage = null;
     while (state.div.nextSibling) state.div.nextSibling.remove();
     state.div.remove(); turnEl = null; blocks = {}; pendingTools = {}; todoItems = null; todoPanelEl = null;
-    addUser(text, atts, { seq: res.userSeq, at: Date.now() });
+    addUser(text, atts, { seq: res.userSeq, at: Date.now(), scrollToBottom: true });
     currentRunId = res.runId; acceptSessionEvents = true; loadedEngine = harnessId;
+    followRunOutput = true;
     setRunning(true); restoringRun = false;
     for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
     updateConversationControls(); void sidebar.load();
   }
 
   function turnMetaHtml() {
-    return turnEngine && turnEngine !== harnessId
+    return turnEngine
       ? engineAvatar(turnEngine) + '<span>' + esc(ENGINE_SHORT_NAMES[turnEngine] || turnEngine) + '</span>'
-      : chatAvatar + '<span>' + chatProfile.shortName + '</span>';
+      : chatAvatar + '<span>Assistant</span>';
   }
   function applyTurnMeta() { const meta = turnEl?.querySelector('.turn-meta'); if (meta) meta.innerHTML = turnMetaHtml(); }
   function ensureTurn() {
@@ -774,6 +921,46 @@ const context = { sessionId: null, workspaceId: null };
     return line.length > 90 ? line.slice(0, 90) + '…' : line;
   }
 
+  function previewableToolPath(name, inputData) {
+    if (!inputData || typeof inputData !== 'object') return '';
+    if (!/(write|edit|create|save|output|export|patch)/.test(String(name || '').toLowerCase())) return '';
+    const candidate = inputData.file_path || inputData.path || inputData.output_path || inputData.destination || inputData.filename || '';
+    return typeof candidate === 'string' ? candidate : '';
+  }
+
+  function makeToolGroup() {
+    const group = document.createElement('div');
+    group.className = 'tool-group';
+    group.innerHTML = '<div class="tool-group-head"><span class="arrow">▶</span><span class="tool-group-count" data-i18n></span><span class="tool-group-last"></span></div><div class="tool-group-body"></div>';
+    group.querySelector('.tool-group-head').addEventListener('click', () => group.classList.toggle('open'));
+    return group;
+  }
+
+  function updateToolGroupHead(group) {
+    const cards = group.querySelectorAll(':scope > .tool-group-body > .tool-card');
+    group.querySelector('.tool-group-count').textContent = cards.length + ' tool calls';
+    const last = cards[cards.length - 1];
+    group.querySelector('.tool-group-last').textContent = last
+      ? last.querySelector('.tool-summary').textContent || last.querySelector('.tool-name').textContent : '';
+  }
+
+  // Consecutive tool calls fold into one collapsed row as they stream in; a
+  // text or thinking block between them starts a separate group.
+  function groupToolCard(el) {
+    const prev = el.previousElementSibling;
+    let group = null;
+    if (prev && prev.classList.contains('tool-group')) group = prev;
+    else if (prev && prev.classList.contains('tool-card')) {
+      group = makeToolGroup();
+      el.before(group);
+      group.querySelector('.tool-group-body').appendChild(prev);
+    }
+    if (group) {
+      group.querySelector('.tool-group-body').appendChild(el);
+      updateToolGroupHead(group);
+    }
+  }
+
   function makeToolCard(name, inputData, id) {
     const el = document.createElement('div');
     el.className = 'tool-card';
@@ -794,6 +981,7 @@ const context = { sessionId: null, workspaceId: null };
     el.querySelector('.tool-name').textContent = name || 'tool';
     el.querySelector('.tool-head').addEventListener('click', () => el.classList.toggle('open'));
     turnBody().appendChild(el);
+    groupToolCard(el);
     const card = {
       name, el,
       inputEl: el.querySelector('.tool-input'),
@@ -802,7 +990,10 @@ const context = { sessionId: null, workspaceId: null };
       summaryEl: el.querySelector('.tool-summary'),
       setInput(data) {
         this.inputData = data;
+        this.previewPath = previewableToolPath(this.name, data);
         this.summaryEl.textContent = toolSummary(this.name, data);
+        const group = this.el.closest('.tool-group');
+        if (group) updateToolGroupHead(group);
         if (data && data.command) {
           this.inputEl.textContent = data.command +
             Object.keys(data).filter((k) => k !== 'command')
@@ -818,6 +1009,13 @@ const context = { sessionId: null, workspaceId: null };
         this.outputEl.textContent = text || "(No output)";
         this.outputEl.classList.toggle('err', !!isErr);
         this.stateEl.className = 'tool-state ' + (isErr ? 'err' : 'done');
+        if (!isErr && this.previewPath && !this.el.querySelector('.tool-preview-file')) {
+          const button = document.createElement('button');
+          button.type = 'button'; button.className = 'tool-preview-file';
+          button.textContent = window.CamelliaI18n.t('Preview') + ' · ' + String(this.previewPath).split(/[\\/]/).pop();
+          button.addEventListener('click', event => { event.stopPropagation(); void openFilePreview(this.previewPath); });
+          this.outputEl.after(button);
+        }
       },
     };
     card.setInput(inputData || null);
@@ -855,15 +1053,18 @@ const context = { sessionId: null, workspaceId: null };
       if (st) st.textContent = "Completed";
       for (const el of thinks.slice(1)) el.remove();
     }
-    const cards = [...body.querySelectorAll(':scope > .tool-card')];
-    if (cards.length) {
-      const group = document.createElement('div');
-      group.className = 'tool-group';
-      group.innerHTML = `<div class="tool-group-head"><span class="arrow">▶</span><span data-i18n>${cards.length} tool calls</span></div><div class="tool-group-body"></div>`;
-      group.querySelector('.tool-group-head').addEventListener('click', () => group.classList.toggle('open'));
-      body.insertBefore(group, cards[0]);
+    const members = [...body.querySelectorAll(':scope > .tool-card, :scope > .tool-group')];
+    if (members.length) {
+      const group = makeToolGroup();
+      body.insertBefore(group, members[0]);
       const bucket = group.querySelector('.tool-group-body');
-      for (const card of cards) bucket.appendChild(card);
+      for (const member of members) {
+        if (member.classList.contains('tool-group')) {
+          for (const card of [...member.querySelectorAll(':scope > .tool-group-body > .tool-card')]) bucket.appendChild(card);
+          member.remove();
+        } else bucket.appendChild(member);
+      }
+      updateToolGroupHead(group);
     }
   }
 
@@ -1042,18 +1243,11 @@ const context = { sessionId: null, workspaceId: null };
     updateConversationControls();
     sidebar.updateLabel();
     if (v) {
-      sendBtn.classList.add('stop');
-      sendBtn.disabled = false;
-      sendBtn.title = "Stop";
-      sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>';
       startRunTicker();
     } else {
-      sendBtn.classList.remove('stop');
-      updateSendEnabled();
-      sendBtn.title = "Send";
-      sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
       stopRunTicker();
     }
+    updateSendEnabled();
   }
 
   // ---------- event handling ----------
@@ -1062,7 +1256,11 @@ const context = { sessionId: null, workspaceId: null };
     if (sharedChat && ev.type === 'conversation:activity') {
       void sidebar.load();
       if (restoringRun) { eventsDuringRestore.push(ev); return; }
-      if (ev.session_id === context.sessionId) { conversationActivity = ev.activity; updateConversationControls(); }
+      if (ev.session_id === context.sessionId) {
+        conversationActivity = ev.activity;
+        updateConversationControls();
+        if (!conversationActivity) drainMessageQueue();
+      }
       return;
     }
     if (restoringRun) { eventsDuringRestore.push(ev); return; }
@@ -1080,7 +1278,8 @@ const context = { sessionId: null, workspaceId: null };
       if (ev.runId !== currentRunId) {
         currentRunId = ev.runId;
         turnEl = null; blocks = {}; pendingTools = {};
-        addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now() });
+        addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now(), scrollToBottom: true });
+        followRunOutput = true;
         setRunning(true);
       }
       return;
@@ -1212,6 +1411,7 @@ const context = { sessionId: null, workspaceId: null };
       currentRunId = null;
       void sidebar.load();
       maybeScroll(true);
+      drainMessageQueue();
       return;
     }
   }
@@ -1225,14 +1425,27 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function updateSendEnabled() {
-    sendBtn.disabled = loadingSession || sending || Boolean(editingMessage) || (sharedChat && !running && goalUI.isActive()) || (!running && !input.value.trim() && !attachments.length);
+    const hasMessage = Boolean(input.value.trim() || attachments.length);
+    const active = running || Boolean(conversationActivity);
+    sendBtn.classList.toggle('stop', active && !hasMessage);
+    sendBtn.classList.toggle('queue', active && hasMessage);
+    if (active && !hasMessage) {
+      sendBtn.title = 'Stop';
+      sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>';
+    } else {
+      sendBtn.title = active ? 'Queue message' : 'Send';
+      sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
+    }
+    sendBtn.disabled = loadingSession || sending || Boolean(editingMessage) || (sharedChat && !active && goalUI.isActive()) || (!active && !hasMessage);
   }
 
-  async function send() {
-    if (running) {
+  async function send(queuedMessage = null) {
+    const active = running || Boolean(conversationActivity);
+    if (active && !queuedMessage) {
+      if (queueComposerMessage()) return;
       if (currentRunId || sharedChat) {
-        await chatApi.cancel(sharedChat ? { sessionId: context.sessionId, runId: currentRunId } : currentRunId);
-        if (running) setStatus("Stopping…");
+        await chatApi.cancel(sharedChat ? { sessionId: context.sessionId, ...(running ? { runId: currentRunId } : {}) } : currentRunId);
+        setStatus("Stopping…");
       }
       return;
     }
@@ -1241,8 +1454,8 @@ const context = { sessionId: null, workspaceId: null };
       const settings = await window.dshDesktop.workbenchSettings();
       if (settings.conversations?.warnOnSwitch) { await switchOptions(harnessId); return; }
     }
-    const text = input.value.trim();
-    if (goalUI.isDraft()) {
+    const text = queuedMessage ? queuedMessage.text : input.value.trim();
+    if (!queuedMessage && goalUI.isDraft()) {
       // Goal draft mode turns the composer into the goal starter; attachments
       // stay put for the following message.
       if (!text) return;
@@ -1251,7 +1464,7 @@ const context = { sessionId: null, workspaceId: null };
       await goalUI.startFromComposer(text);
       return;
     }
-    const atts = attachments.slice();
+    const atts = queuedMessage ? queuedMessage.attachments : attachments.slice();
     if (!text && !atts.length) return;
     if (chatProfile.supportsImages === false && atts.some(a => a.isImage)) {
       setStatus('This engine cannot accept images. Your attachments are retained; switch engines or remove the images to continue.');
@@ -1261,13 +1474,16 @@ const context = { sessionId: null, workspaceId: null };
     const sentDraftKey = draftKey();
     sending = true;
     turnEngine = harnessId;
+    followRunOutput = true;
     if (sharedChat) restoringRun = true;
-    input.value = '';
-    attachments = [];
-    renderAttachments();
-    autoResize();
+    if (!queuedMessage) {
+      input.value = '';
+      attachments = [];
+      renderAttachments();
+      autoResize();
+    }
     chat.querySelector('.switch-hint')?.remove();
-    const userMessage = addUser(text || "[Attachments]", atts, { at: Date.now() });
+    const userMessage = addUser(text || "[Attachments]", atts, { at: Date.now(), scrollToBottom: true });
     if (!context.sessionId && !$('headerTitle').dataset.titled && text) {
       $('headerTitle').textContent = text.length > 24 ? text.slice(0, 24) + '…' : text;
       $('headerTitle').dataset.titled = '1';
@@ -1290,6 +1506,7 @@ const context = { sessionId: null, workspaceId: null };
       });
     } catch (err) { res = { ok: false, error: err.message }; }
     sending = false;
+    updateSendEnabled();
     if (!res.ok) {
       if (!input.value && !attachments.length) { input.value = text; attachments = atts; renderAttachments(); autoResize(); }
       saveDraft();
@@ -1328,11 +1545,11 @@ const context = { sessionId: null, workspaceId: null };
   }
   input.addEventListener('input', () => {
     autoResize();
-    if (!running) updateSendEnabled();
+    updateSendEnabled();
     saveDraft();
     renderSlash();
   });
-  sendBtn.addEventListener('click', send);
+  sendBtn.addEventListener('click', () => void send());
   // ---------- slash commands ----------
   const SLASH_COMMANDS = [
     { id: 'goal', label: '/goal', desc: 'Set a goal; the engine keeps working until done or blocked',
@@ -1718,6 +1935,7 @@ const context = { sessionId: null, workspaceId: null };
     restoringRun = false; eventsDuringRestore.length = 0;
     permRequestId = null; permissionQueue.length = 0; $('permMask').classList.remove('visible');
     clearRunStatus(); setRunning(false);
+    messageQueue.length = 0; renderMessageQueue();
   }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
     newSession, openHistorySession, forkSession, canFork: s => sharedChat || harnessId !== 'antigravity' || !s.id.startsWith('agy-'), openActionMenu, closePops });
@@ -1797,9 +2015,6 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function renderHistoryMessages(messages) {
-      // Label every reply once a conversation's history spans harnesses.
-      const replyEngines = new Set(messages.filter(m => m.role === 'assistant' && m.engine).map(m => m.engine));
-      const mixed = replyEngines.size > 1 || (replyEngines.size === 1 && !replyEngines.has(harnessId));
       for (const m of messages) {
         if (m.role === 'notice') {
           if (!conversationPrefs.showOrigin) continue;
@@ -1811,8 +2026,8 @@ const context = { sessionId: null, workspaceId: null };
         else {
           const div = document.createElement('div');
           div.className = 'turn';
-          const label = m.engine && (mixed || conversationPrefs.showOrigin) ? ENGINE_SHORT_NAMES[m.engine] || m.engine : 'Assistant';
-          div.innerHTML = '<div class="turn-meta">' + (m.engine && m.engine !== harnessId ? engineAvatar(m.engine) : chatAvatar) + '<span>' + esc(label) + '</span></div><div class="turn-body"><div class="md"></div></div>';
+          const label = m.engine ? ENGINE_SHORT_NAMES[m.engine] || m.engine : 'Assistant';
+          div.innerHTML = '<div class="turn-meta">' + (m.engine ? engineAvatar(m.engine) : chatAvatar) + '<span>' + esc(label) + '</span></div><div class="turn-body"><div class="md"></div></div>';
           div.querySelector('.md').innerHTML = mdRender(m.text);
           chat.appendChild(div);
         }
@@ -1838,6 +2053,7 @@ const context = { sessionId: null, workspaceId: null };
     currentRunId = live.runId; acceptSessionEvents = true;
     turnEl = null; blocks = {}; pendingTools = {}; todoItems = null; todoPanelEl = null;
     if (live.engine) turnEngine = live.engine;
+    followRunOutput = true;
     chat.innerHTML = '';
     renderHistoryMessages(live.messages);
     addUser(live.displayText ?? live.prompt, live.attachments || [], { seq: live.userSeq, at: live.startedAt });
