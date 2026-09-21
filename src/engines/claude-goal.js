@@ -12,9 +12,11 @@ class ClaudeGoal {
     this.armed = false;
     this.timer = null;
     this.owner = null;
+    this.verification = null;
   }
 
   load() {
+    this.cancelVerification();
     try {
       const saved = readJson(this.file(), null);
       if (saved && typeof saved.objective === 'string') {
@@ -49,20 +51,28 @@ class ClaudeGoal {
     this.timer = null;
   }
 
+  cancelVerification() {
+    const verification = this.verification;
+    this.verification = null;
+    verification?.abort();
+  }
+
   schedule(delay) {
     this.cancelTimer();
     this.timer = this.setTimer(() => this.drive(), delay);
   }
 
-  start(payload) {
-    if (this.getSession()?.running) return { ok: false, error: "Wait for the response to finish or stop it before starting a goal" };
+  start(payload, { adoptSession } = {}) {
+    if (adoptSession && (this.getSession() !== adoptSession || !adoptSession.running)) return { ok: false, error: 'The current turn is no longer available' };
+    if (this.getSession()?.running && !adoptSession) return { ok: false, error: "Wait for the response to finish or stop it before starting a goal" };
     const objective = String(payload.objective || '').trim();
     if (!objective) return { ok: false, error: "Goal cannot be empty" };
     if (this.goal && this.goal.phase !== 'complete') return { ok: false, error: "An unfinished goal already exists. Complete or clear it first." };
+    this.cancelVerification();
     this.goal = {
       id: 'goal-' + this.now().toString(36), objective, phase: 'active',
       criterion: String(payload.criterion || '').trim() || null,
-      roundsStarted: 0, createdAt: this.now(), updatedAt: this.now(),
+      roundsStarted: adoptSession ? 1 : 0, createdAt: this.now(), updatedAt: this.now(),
       elapsedMs: 0, activeSince: this.now(),
       blockedReason: null, errorStreak: 0, lastErrorSubtype: null,
       blockerStreak: 0, lastBlocker: null,
@@ -70,9 +80,9 @@ class ClaudeGoal {
       sessionId: payload.sessionId || null, workspaceId: this.resolveWorkspace(payload),
     };
     this.armed = true;
-    this.owner = null;
+    this.owner = adoptSession ? { goalId: this.goal.id, gen: adoptSession.gen } : null;
     this.publish();
-    this.schedule(100);
+    if (!adoptSession) this.schedule(100);
     return { ok: true, goal: this.view() };
   }
 
@@ -81,6 +91,7 @@ class ClaudeGoal {
     const session = this.ownedSession();
     this.armed = false;
     this.cancelTimer();
+    this.cancelVerification();
     this.touch({ ...this.stoppedClock(), phase, blockedReason: null, verifying: null });
     this.interrupt(session);
     return { ok: true, goal: this.view() };
@@ -91,6 +102,7 @@ class ClaudeGoal {
     if (this.goal.phase === 'complete') return { ok: false, error: "This goal is already complete. Start a new goal to do more work." };
     if (this.getSession()?.running) return { ok: false, error: "Wait for the response to finish or stop it before resuming the goal" };
     if (this.armed) return { ok: true, goal: this.view() };
+    this.cancelVerification();
     this.armed = true;
     this.touch({ phase: 'active', activeSince: this.now(), blockedReason: null, errorStreak: 0, lastErrorSubtype: null, blockerStreak: 0, lastBlocker: null, verifyStreak: 0, lastVerify: null, verifying: null });
     this.schedule(100);
@@ -103,6 +115,7 @@ class ClaudeGoal {
     this.owner = null;
     this.armed = false;
     this.cancelTimer();
+    this.cancelVerification();
     this.publish();
     this.interrupt(session);
     return { ok: true, goal: null };
@@ -152,7 +165,8 @@ class ClaudeGoal {
     if (!this.goal) return;
     this.armed = false;
     this.cancelTimer();
-    this.touch({ ...this.stoppedClock(), phase: 'blocked', blockedReason: { code, message } });
+    this.cancelVerification();
+    this.touch({ ...this.stoppedClock(), phase: 'blocked', blockedReason: { code, message }, verifying: null });
     this.log(`goal: blocked (${code}): ${message}`);
   }
 
@@ -171,8 +185,8 @@ class ClaudeGoal {
       this.schedule(1200 * streak);
       return;
     }
-    const signal = goalSignal(event.result);
-    if (signal?.type === 'complete') { void this.verify(event.result); return; }
+    const signal = event.goalReport ? { type: event.goalReport.status, reason: event.goalReport.reason } : goalSignal(event.result);
+    if (signal?.type === 'complete') { void this.verify(event.goalReport?.reason || event.result); return; }
     if (signal?.type === 'blocked') {
       const streak = (this.goal.blockerStreak || 0) + 1;
       const reason = signal.reason || 'The model reported that it cannot make further progress';
@@ -186,12 +200,17 @@ class ClaudeGoal {
   // an independent session checks it against the goal and criterion first.
   async verify(report) {
     if (!this.goal || this.goal.phase !== 'active' || !this.armed) return;
+    if (this.verification) return;
     if (typeof this.verifyCompletion !== 'function') { this.setPhase('complete'); return; }
+    const goal = this.goal;
+    const verification = new AbortController();
+    this.verification = verification;
     this.touch({ verifying: { at: this.now(), report: String(report || '').slice(0, 4000) } });
     let verdict;
-    try { verdict = await this.verifyCompletion({ objective: this.goal.objective, criterion: this.goal.criterion || '', report }); }
+    try { verdict = await this.verifyCompletion({ objective: goal.objective, criterion: goal.criterion || '', report }, { signal: verification.signal }); }
     catch (error) { verdict = { error: error.message }; }
-    if (!this.goal || this.goal.phase !== 'active' || !this.armed) return;
+    if (this.verification !== verification || this.goal !== goal || this.goal.phase !== 'active' || !this.armed) return;
+    this.verification = null;
     this.touch({ verifying: null });
     if (verdict.pass === true) {
       this.touch({ verifyStreak: 0, lastVerify: null, verified: { at: this.now(), evidence: verdict.reason || '' } });

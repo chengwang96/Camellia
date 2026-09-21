@@ -1,0 +1,48 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+const { removeTree } = require('./test-fs.cjs');
+const { textPaths, toolPaths, collector } = require('../src/shared/turn-artifacts');
+const { resolveArtifacts } = require('../src/main/turn-artifacts');
+
+test('final file references include spaces, Unicode and links but not web links or code fences', () => {
+  assert.deepEqual(textPaths('[报告](<outputs/实验 report.docx>)\n`table.xlsx`\n[web](https://example.com/file.pdf)\n```\n`not.txt`\n```'), ['outputs/实验 report.docx', 'table.xlsx']);
+  assert.deepEqual(textPaths('[报告](outputs/report(final).pdf)已生成。'), ['outputs/report(final).pdf']);
+  assert.deepEqual(toolPaths('Read', { path: 'input.pdf' }), []);
+  assert.deepEqual(toolPaths('apply_patch', '*** Begin Patch\n*** Add File: new.txt\n*** Update File: old.md\n*** Delete File: removed.txt'), ['new.txt', 'old.md']);
+  assert.deepEqual(toolPaths('fileChange', { changes: [{ path: 'new.svg', kind: 'add' }, { path: 'gone.svg', kind: 'delete' }] }), ['new.svg']);
+});
+
+test('only successful writes become tool artifacts across event formats', () => {
+  const state = collector();
+  state.capture({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'one', name: 'Write', input: { file_path: 'report.txt' } }] } });
+  assert.equal(state.paths.size, 0);
+  state.capture({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'one', content: 'done' }] } });
+  state.capture({ type: 'gui:tool', id: 'two', name: 'write_file', input: { path: 'failed.txt' }, status: 'failed' });
+  state.capture({ type: 'gui:tool', id: 'three', name: 'write_file', input: { path: 'cancelled.txt' }, status: 'cancelled' });
+  state.capture({ type: 'gui:tool', id: 'four', name: 'write_file', input: { path: 'plot.svg' }, status: 'in_progress' });
+  state.capture({ type: 'gui:tool', id: 'four', status: 'completed' });
+  assert.deepEqual([...state.paths], ['report.txt', 'plot.svg']);
+});
+
+test('artifacts resolve against the workspace and are existing, supported, deduplicated files', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-'));
+  t.after(() => removeTree(cwd));
+  const file = path.join(cwd, '实验 report.pdf');
+  fs.writeFileSync(file, 'pdf');
+  fs.writeFileSync(path.join(cwd, 'report.docx'), 'fixture');
+  fs.writeFileSync(path.join(cwd, 'archive.zip'), 'fixture');
+  fs.mkdirSync(path.join(cwd, 'directory.txt'));
+  const result = resolveArtifacts({ cwd, paths: [file, pathToFileURL(file).href, './实验 report.pdf', 'missing.txt', 'archive.zip', 'directory.txt'],
+    text: '`report.docx` [report](%E5%AE%9E%E9%AA%8C%20report.pdf)' });
+  assert.deepEqual(result.map(entry => entry.kind), ['pdf', 'word']);
+  assert.equal(result[0].path, file);
+  assert.equal(result[0].size, 3);
+  assert.deepEqual(resolveArtifacts({ paths: ['report.docx'] }), []);
+  assert.deepEqual(resolveArtifacts({ cwd, paths: ['https://example.com/report.pdf'] }), []);
+});

@@ -49,7 +49,7 @@ function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, r
     const selected = { ...settings(), ...opts.settings, cwd: opts.cwd };
     selected.model = modelId(selected.model);
     if (!selected.model || !getModels().includes(selected.model)) throw new Error('Select a configured model first');
-    if (current && !current.dead && current.sessionId === opts.sessionId && JSON.stringify(current.settings) === JSON.stringify(selected)) return current;
+    if (current && !current.dead && current.opts.goalBridge === opts.goalBridge && current.sessionId === opts.sessionId && JSON.stringify(current.settings) === JSON.stringify(selected)) return current;
     const spec = dshAcpSpec({ runtime: runtime(), home: path.join(dataDir, 'dsh-chat', ...(opts.conversationId ? ['conversations', opts.conversationId] : [])), model: selected.model,
       route: getRoute(), permissionMode: selected.permissionMode, env: environment() });
     const previous = current?.shutdown();

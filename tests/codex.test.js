@@ -40,6 +40,43 @@ function transport() {
   return { proc, send, messages, requests };
 }
 
+test('Codex steers the expected active turn without starting or interrupting it', async () => {
+  const calls = [], history = [];
+  const session = new CodexSession({});
+  Object.assign(session, { running: true, turnId: 'active-turn', sessionId: 'active-thread',
+    client: { request: async (method, params) => { calls.push({ method, params }); return { turnId: 'active-turn' }; } },
+    appendHistory: (...args) => history.push(args) });
+  await session.steerUserMessage('Focus on tests', [{ isImage: true, path: 'D:/reference.png' }]);
+  assert.deepEqual(calls, [{ method: 'turn/steer', params: { threadId: 'active-thread', expectedTurnId: 'active-turn',
+    input: [{ type: 'text', text: 'Focus on tests' }, { type: 'localImage', path: 'D:/reference.png' }] } }]);
+  assert.deepEqual(history, [['user', 'Focus on tests']]);
+  assert.equal(session.running, true);
+  session.running = false;
+  await assert.rejects(session.steerUserMessage('Too late'), /already finished/);
+  assert.equal(calls.length, 1);
+});
+
+test('Codex rejected steering does not add a phantom user message', async () => {
+  const session = new CodexSession({});
+  Object.assign(session, { running: true, turnId: 'active-turn', sessionId: 'active-thread',
+    client: { request: async () => { throw new Error('Turn mismatch'); } },
+    appendHistory: () => assert.fail('Rejected instruction must not enter history') });
+  await assert.rejects(session.steerUserMessage('Correction'), /Turn mismatch/);
+  assert.equal(session.running, true);
+});
+
+test('Codex goal MCP registration is scoped to both new and resumed threads', async () => {
+  for (const sourceId of [undefined, 'saved-thread']) {
+    const config = { command: process.execPath, args: ['goal-mcp-stdio.js'], env: { CAMELLIA_GOAL_TOKEN: 'private' } };
+    const session = new CodexSession({ settings: { cwd: os.tmpdir(), model: 'fixture', connection: 'api' }, opts: { sessionId: sourceId, goalBridge: { config } }, spec: {}, onSessionId() {} });
+    const requests = [];
+    session.client = { request: async (method, params) => { requests.push({ method, params }); return { thread: { id: 'thread-fixture' } }; } };
+    await session.open();
+    assert.equal(requests[0].method, sourceId ? 'thread/resume' : 'thread/start');
+    assert.deepEqual(requests[0].params.config, { 'mcp_servers.camellia_goals': config });
+  }
+});
+
 test('Codex transport initializes before turns, relays approval and question answers, and reports process failure once', async t => {
   const root = temporary(t), wire = transport(), events = [];
   const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'fixture', connection: 'api', permissionMode: 'default' },

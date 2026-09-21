@@ -34,6 +34,7 @@ class Bridge:
         self.mode = "default"
         self.pending = {}
         self.turn = None
+        self.mcp_servers = []
 
     def update(self, update):
         emit({"method": "session/update", "params": {"sessionId": self.session_id, "update": update}})
@@ -105,8 +106,12 @@ class Bridge:
 
         native = self.config.get("settings", {})
         servers = []
-        for name, server in native.get("mcpServers", {}).items():
-            if self.mode == "plan" or server.get("disabled"):
+        configured_servers = dict(native.get("mcpServers", {}))
+        for server in self.mcp_servers:
+            configured_servers[server["name"]] = {"command": server["command"], "args": server.get("args", []),
+                                                  "env": {entry["name"]: entry["value"] for entry in server.get("env", [])}}
+        for name, server in configured_servers.items():
+            if (self.mode == "plan" and (name != "camellia_goals" or not any(entry["name"] == name for entry in self.mcp_servers))) or server.get("disabled"):
                 continue
             if "command" in server:
                 servers.append(types.McpStdioServer(name=name, command=server["command"], args=server.get("args", []), env=server.get("env")))
@@ -181,6 +186,7 @@ class Bridge:
                         raise ValueError("The saved Antigravity session is unavailable")
                 self.session_id = source if method == "session/resume" else str(uuid.uuid4())
                 self.cwd = params["cwd"]
+                self.mcp_servers = params.get("mcpServers", [])
                 if method == "session/fork":
                     shutil.copytree(self.root / "sessions" / source, self.root / "sessions" / self.session_id)
                 result = {"sessionId": self.session_id}

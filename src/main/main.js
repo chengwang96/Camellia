@@ -32,7 +32,10 @@ const { SharedConversations, preferences: conversationPreferences, shortTitle } 
 const { createDshChat } = require('../engines/dsh-session');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
 const { saveClipboardImage, savePastedText } = require('./clipboard-attachments');
+const { attachInputContextMenu } = require('./input-context-menu');
 const { describePreview } = require('./file-preview');
+const { resolveArtifacts } = require('./turn-artifacts');
+const { readOfficePreview } = require('./office-preview');
 const { createConversationTitles, titleCandidates, titleErrorKind, TitleRequestError,
   TITLE_INSTRUCTION, MINIMAL_INSTRUCTION, AUXILIARY_HEADER, MAX_MESSAGE_CHARS, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } = require('./conversation-title.js');
 let sharedConversations = null;
@@ -517,13 +520,13 @@ function ensureClaudeSession(settings, opts) {
     const liveConvId = current.sessionId || current.opts.sessionId || null;
     const wantConvId = opts.sessionId || null;
     const sameConversation = liveConvId === wantConvId;
-    if (sameConversation && !opts.fork && current.opts.workspaceId === opts.workspaceId && sessionSettingsEqual(current.settings, settings)) {
+    if (sameConversation && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.opts.workspaceId === opts.workspaceId && sessionSettingsEqual(current.settings, settings)) {
       return current;
     }
   }
   // The selected ID is the resume target, including after a settings change.
   // An absent ID starts a new conversation.
-  const sessionOpts = { sessionId: opts.sessionId || null, fork: Boolean(opts.fork), workspaceId: opts.workspaceId, conversationId: opts.conversationId, lockPermissionMode: true };
+  const sessionOpts = { sessionId: opts.sessionId || null, fork: Boolean(opts.fork), workspaceId: opts.workspaceId, conversationId: opts.conversationId, lockPermissionMode: true, goalBridge: opts.goalBridge };
   // Validate the new route before retiring the current conversation process.
   const spec = claudeSpawnSpec(settings, sessionOpts);
   const exe = detectClaudeExe();
@@ -621,7 +624,7 @@ function ensureKimiSession(settings, opts) {
     const configuredContext = modelContextWindow(settings.model);
     if (configuredContext) settings.contextWindow = configuredContext;
   }
-  if (current && !current.dead && !opts.fork && current.sessionId === (opts.sessionId || null)
+  if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
       && current.opts.workspaceId === opts.workspaceId && sessionSettingsEqual(current.settings, settings)
       && current.settings.contextWindow === settings.contextWindow && current.settings.connection === settings.connection) return current;
   const runtime = runtimes().locate('kimi')?.file;
@@ -720,6 +723,10 @@ const dshChat = createDshChat({ dataDir: app.getPath('userData'), loadConfig, sa
   runtime: () => ({ file: detectDshBin() }), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'dsh'),
   onEvent: event => publishChatEvent('dsh', event), log });
 sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
+  conversationModels: (engine, settings) => require('../engines/conversation-models').conversationModels(engine, settings, {
+    router: readOllamaProxyConfig, codex: () => codex.handlers['account-state'](), kimi: () => kimiAccount.state(),
+  }),
+  createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: detectNode() }),
   drivers: {
     claude: { history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts) },
     kimi: { history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts) },
@@ -932,7 +939,7 @@ function openSettingsWindow(target = {}) {
     nativeSettingsView?.webContents.close(); nativeSettingsView = null; nativeSettingsLoad = null;
     settingsWindow = null;
   });
-  settingsWindow.loadFile(path.join(RENDERER_ROOT, 'settings/api-settings.html'), { query: { page: target.page || 'providers', engine: target.engine || 'dsh' } });
+  settingsWindow.loadFile(path.join(RENDERER_ROOT, 'settings/api-settings.html'), { query: { page: target.page || 'general', engine: target.engine || 'dsh' } });
 }
 
 function createMainWindow() {
@@ -981,6 +988,9 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', () => showMainWindow());
+  app.on('web-contents-created', (_event, contents) => {
+    attachInputContextMenu(contents, { Menu, uiText });
+  });
 
   ipcMain.handle('dsh:save-credentials', (_event, payload) => {
     try {
@@ -1483,9 +1493,20 @@ if (!gotSingleInstanceLock) {
     return result.canceled ? { canceled: true, paths: [] } : { canceled: false, paths: result.filePaths };
   });
 
-  ipcMain.handle('dsh:preview-file', (_event, filePath) => {
-    try { return { ok: true, file: describePreview(filePath) }; }
+  ipcMain.handle('dsh:preview-file', async (_event, filePath) => {
+    try {
+      const file = describePreview(filePath);
+      if (['word', 'presentation', 'spreadsheet'].includes(file.kind)) file.office = await readOfficePreview(file.path, file.kind);
+      return { ok: true, file };
+    }
     catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:resolve-artifacts', (_event, payload) => {
+    try {
+      const cwd = payload?.sessionId ? sharedConversations.get(payload.sessionId).cwd : payload?.cwd || '';
+      return { ok: true, files: resolveArtifacts({ paths: payload?.paths, text: payload?.text, cwd }) };
+    } catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 
   ipcMain.handle('dsh:open-file-externally', async (_event, filePath) => {
@@ -1637,6 +1658,7 @@ if (!gotSingleInstanceLock) {
       else goal.cancelTimer();
     }
     sharedConversations.pauseGoals();
+    sharedConversations.closeGoalTools();
     if ((claudeSessions.active || codex.active || kimiAccount.active || dshChat.sessions.active || kimiSessions.active || antigravity.sessions.active || benchmarkRunner?.pending) && !kimiClosing) {
       event.preventDefault();
       kimiClosing = true;

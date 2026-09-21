@@ -107,7 +107,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       selected.model = modelId(selected.model);
       if (!getModels().includes(selected.model)) throw new Error('No API route is configured for this model');
     }
-    if (current && !current.dead && !opts.fork && current.sessionId === (opts.sessionId || null)
+    if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
       && current.opts.workspaceId === opts.workspaceId && ['cwd', 'model', 'permissionMode', 'thinkingBudget', 'connection', 'proxyUrl'].every(key => current.settings[key] === selected[key])) return current;
     const runtime = runtimes().locate('codex');
     if (!runtime) throw new Error('Download Codex CLI in Settings → Runtime first');

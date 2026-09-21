@@ -152,13 +152,19 @@
       }
     },
     "asarUnpack": [
+      "src/engines/goal-mcp-stdio.js",
+      "src/engines/goal-tools.js",
+      "src/engines/task-tools.js",
+      "src/engines/conversation-tools.js",
       "src/engines/antigravity/**",
       "src/benchmark/python/**"
     ]
   },
   "dependencies": {
+    "@xmldom/xmldom": "^0.9.12",
     "smol-toml": "^1.8.0",
     "undici": "^8.10.2",
+    "unzipper": "^0.12.5",
     "yaml": "^2.9.1"
   },
   "engines": {

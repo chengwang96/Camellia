@@ -11,6 +11,7 @@ Release notes: [v0.1.0 — Windows preview](releases/v0.1.0.md).
 | [Configuration](configuration.md) | Providers, routing, native settings, usage, and local data | English |
 | [Development](development.md) | Code layout, runtime preparation, testing, and packaging | English |
 | [Troubleshooting: runtimes](troubleshooting-runtimes.md) | Engines disappearing or failing to start; antivirus exclusions for the runtimes folder | English |
+| [WBL API usage](wbl-api.md) | Direct curl requests, tested Responses behavior, and proxy troubleshooting | 简体中文 |
 
 ## Implementation references
 

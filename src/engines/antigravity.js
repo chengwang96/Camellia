@@ -84,7 +84,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
       selected.model = modelId(selected.model);
       if (!getModels().includes(selected.model)) throw new Error('No route is available for this model. Add one in Camellia settings.');
     }
-    if (current && !current.dead && !opts.fork && current.sessionId === (opts.sessionId || null)
+    if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
       && current.opts.workspaceId === opts.workspaceId && ['cwd', 'model', 'permissionMode', 'connection', 'proxyUrl'].every(key => current.settings[key] === selected[key])) return current;
     const runtime = runtimes().locate('antigravity', selected.connection);
     if (!runtime) throw new Error('Prepare Antigravity in Settings → Runtime, then retry');

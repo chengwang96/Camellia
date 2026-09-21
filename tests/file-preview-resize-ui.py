@@ -129,9 +129,66 @@ with sync_playwright() as playwright:
     page.set_viewport_size({'width': 1440, 'height': 900})
     handle.press('End')
     assert width() == preferred
+
+    sidebar = page.locator('#sidebar')
+    sidebar_handle = page.locator('#sidebarResize')
+
+    def sidebar_width():
+        return sidebar.bounding_box()['width']
+
+    def drag_sidebar(delta):
+        bounds = sidebar_handle.bounding_box()
+        start = bounds['x'] + bounds['width'] / 2
+        page.mouse.move(start, 250)
+        page.mouse.down()
+        page.mouse.move(start + delta, 250, steps=10)
+        page.mouse.up()
+        assert not page.evaluate("document.body.classList.contains('resizing-sidebar')")
+
+    assert sidebar_width() == 260
+    drag_sidebar(140)
+    assert sidebar_width() == 400
+    assert page.locator('.main').bounding_box()['width'] >= 320
+    assert viewer.bounding_box()['x'] + width() <= 1441
+    page.reload(wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    assert sidebar_width() == 400
+    sidebar_handle.press('ArrowLeft')
+    assert sidebar_width() == 390
+    sidebar_handle.press('Shift+ArrowRight')
+    assert sidebar_width() == 440
+    sidebar_handle.press('Home')
+    assert sidebar_width() == 210
+    drag_sidebar(-100)
+    assert sidebar_width() == 210
+    sidebar_handle.press('End')
+    assert sidebar_width() == 520
+    drag_sidebar(100)
+    assert sidebar_width() == 520
+    open_preview('pdf')
+    for event in ['pointercancel', 'lostpointercapture', 'blur', 'resize']:
+        bounds = sidebar_handle.bounding_box()
+        page.mouse.move(bounds['x'] + 3, 250)
+        page.mouse.down()
+        page.mouse.move(bounds['x'] - 20, 250)
+        page.evaluate("event => (['blur', 'resize'].includes(event) ? window : document.getElementById('sidebarResize')).dispatchEvent(new Event(event))", event)
+        assert not page.evaluate("document.body.classList.contains('resizing-sidebar')")
+        page.mouse.up()
+    sidebar_handle.press('End')
+    for viewport_width in [960, 801, 760, 360]:
+        page.set_viewport_size({'width': viewport_width, 'height': 820})
+        page.wait_for_function("Number(document.getElementById('sidebarResize').getAttribute('aria-valuenow')) === Math.max(210, Math.min(520, innerWidth - (innerWidth > 800 ? 540 : 320)))")
+        assert sidebar_width() >= 210
+        assert sidebar_width() < viewport_width
+        assert viewer.bounding_box()['x'] + width() <= viewport_width + 1
+        if viewport_width > 800:
+            assert page.locator('.main').bounding_box()['width'] >= 240
+    page.set_viewport_size({'width': 1440, 'height': 900})
+    page.wait_for_function("document.getElementById('sidebarResize').getAttribute('aria-valuenow') === '520'")
+    assert sidebar_width() == 520
     screenshots = repo / 'dist/ui-preview'
     screenshots.mkdir(parents=True, exist_ok=True)
     page.screenshot(path=str(screenshots / 'file-preview-resized.png'), animations='disabled')
     assert errors == [], errors
     browser.close()
-print('PASS file preview resize: image/video/PDF/text, persistence, keyboard, bounds, pointer cleanup')
+print('PASS sidebar and file preview resize: persistence, keyboard, bounds, pointer cleanup, PDF interaction')

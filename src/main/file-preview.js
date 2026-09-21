@@ -19,6 +19,9 @@ function previewKind(filePath) {
   const name = path.basename(filePath).toLowerCase();
   const extension = path.extname(name);
   if (extension === '.pdf') return 'pdf';
+  if (extension === '.docx') return 'word';
+  if (extension === '.pptx') return 'presentation';
+  if (extension === '.xlsx') return 'spreadsheet';
   if (IMAGE_EXTENSIONS.has(extension)) return 'image';
   if (VIDEO_EXTENSIONS.has(extension)) return 'video';
   if (AUDIO_EXTENSIONS.has(extension)) return 'audio';

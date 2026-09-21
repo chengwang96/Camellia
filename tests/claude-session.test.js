@@ -7,19 +7,28 @@ const { createHarness } = require('./claude-harness.cjs');
 const path = require('node:path');
 const { normalizeConfig, writeConfig } = require('../src/api/api-router-config');
 
-function fixture(t) {
+function fixture(t, opts = {}) {
   const proc = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), killed: false });
   const writes = [], events = [], results = [], timers = new Map();
   proc.stdin = Object.assign(new EventEmitter(), { writable: true, write: line => writes.push(JSON.parse(line)) });
   proc.kill = () => { proc.killed = true; };
   const spawns = [];
-  const session = new ClaudeSession({ gen: 1, settings: { cwd: 'test' }, opts: {}, exe: 'fake', spec: { args: [], cwd: 'test' },
+  const session = new ClaudeSession({ gen: 1, settings: { cwd: 'test' }, opts, exe: 'fake', spec: { args: [], cwd: 'test' },
     spawn: (exe, args) => { spawns.push({ exe, args }); return proc; }, onEvent: ev => events.push(ev), onResult: ev => results.push(ev),
     setTimer: fn => { timers.set(1, fn); return 1; }, clearTimer: id => timers.delete(id) });
   session.start();
   t.after(() => session.kill());
   return { session, proc, writes, events, results, timers, spawns };
 }
+
+test('Claude registers the goal MCP server without changing normal tool permissions', t => {
+  const config = { command: process.execPath, args: ['goal-mcp-stdio.js'], env: { CAMELLIA_GOAL_TOKEN: 'private' } };
+  const harness = fixture(t, { goalBridge: { config } });
+  const args = harness.spawns[0].args;
+  assert.deepEqual(JSON.parse(args[args.indexOf('--mcp-config') + 1]), { mcpServers: { camellia_goals: config } });
+  assert.equal(args.includes('--permission-prompt-tool'), true);
+  assert.equal(args.includes('--dangerously-skip-permissions'), false);
+});
 
 test('CLI JSON survives one-byte UTF-8 chunks and a final line without a newline', t => {
   const f = fixture(t); f.session.sendUserMessage('问题');

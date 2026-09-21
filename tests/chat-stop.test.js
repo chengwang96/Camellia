@@ -12,7 +12,7 @@ const activitySource = source.slice(source.indexOf('  function handleEvent(ev)')
 
 function harness(cancel, overrides = {}) {
   const state = {
-    running: true, conversationActivity: 'running', currentRunId: 12, sessionOpenSeq: 1,
+    running: true, sending: false, loadingSession: false, input: { value: '' }, attachments: [], conversationActivity: 'running', currentRunId: 12, sessionOpenSeq: 1,
     context: { sessionId: 'conversation-a' }, sharedChat: true, restoringRun: false,
     statusText: 'Running…', statusLine: { textContent: 'Running…' }, queueComposerMessage: () => false,
     chatApi: { cancel: payload => cancel(state, payload) },

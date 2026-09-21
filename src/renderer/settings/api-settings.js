@@ -15,7 +15,7 @@ const titles = {
   engines: ["Engine Settings", "Manage native settings in one place."],
   runtimes: ["Runtime", "Download only the engines you need."],
 };
-let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'providers';
+let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
 let dirty = false, saving = false, balanceKey = null, balanceMetric = '', usageData = [];
 let catalog = [], catalogSelected = new Set(), catalogProvider = null;
 function status(text, error = false) { $('status').textContent = text; $('status').className = error ? 'error' : ''; }
@@ -24,7 +24,7 @@ function current() { return config?.providers.find(p => p.id === selected); }
 function assertClean() { if (dirty) throw new Error("Save your changes before querying or validating keys"); }
 function setView(next, engine, focus) {
   if (next === 'balances') next = 'usage';
-  if (!titles[next]) next = 'providers';
+  if (!titles[next]) next = 'general';
   view = next;
   for (const id of Object.keys(titles)) $(id + 'Page').hidden = id !== next;
   document.querySelectorAll('[data-view]').forEach(button => { button.classList.toggle('active', button.dataset.view === next); button.setAttribute('aria-current', button.dataset.view === next ? 'page' : 'false'); });
@@ -38,7 +38,7 @@ function setView(next, engine, focus) {
 }
 function navigateSettings(target = {}) {
   if (target.subscriptionId) balanceKey = target.subscriptionId;
-  setView(target.page || 'providers', target.engine, target.focus);
+  setView(target.page || 'general', target.engine, target.focus);
 }
 const engineUI = window.createEngineSettingsUI({ api, status, navigate: navigateSettings });
 $('kimiUsage').onclick = () => navigateSettings({ page: 'usage', subscriptionId: 'kimi-subscription' });
