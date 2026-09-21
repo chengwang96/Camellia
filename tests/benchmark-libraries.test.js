@@ -91,7 +91,7 @@ test('external runs use the selected tasks for every engine, preserve provenance
     execute:async args=>{calls.push(args); assert.match(fs.readFileSync(path.join(args.cwd,'TASK.md'),'utf8'),/Public question/);return {ok:true}},
     verify:()=>{throw Error('Wrong verifier')},verifyPython:async task=>{assert.equal(task.sourceId,'42');return {passed:false,checks:{passed:2,total:3,evaluated:3,failures:[]}}}});
   t.after(()=>runner.shutdown());
-  const {id}=runner.start({suite:'ds1000-quick',model:'m',providerId:'p',repeats:3}); await runner.pending;
+  const {id}=await runner.start({suite:'ds1000-quick',model:'m',providerId:'p',repeats:3}); await runner.pending;
   const report=runner.report(id);
   assert.equal(report.timeoutSeconds, 600);
   assert.equal(report.tokenBudget, null);
@@ -107,17 +107,17 @@ test('external runs use the selected tasks for every engine, preserve provenance
   assert.deepEqual(report.tasks,[publicTask(tasks[0])]);
   calls.length = 0;
   runner.preflightPython = async () => { throw new Error('Missing official comparison helper'); };
-  const stopped = runner.start({suite:'ds1000-quick',model:'m',providerId:'p'}); await runner.pending;
+  const stopped = await runner.start({suite:'ds1000-quick',model:'m',providerId:'p'}); await runner.pending;
   assert.equal(calls.length, 0, 'A broken grader must be detected before any model request');
   assert.equal(runner.report(stopped.id).status, 'error');
   assert.match(runner.report(stopped.id).error, /Missing official comparison helper/);
   assert.ok(runner.report(stopped.id).trials.every(t => t.status === 'pending'));
   runner.preflightPython = async () => {};
   runner.verifyPython = async () => ({ passed: false, invalid: true, detail: 'Official target became unavailable', checks: { passed: 0, total: 3, evaluated: 0, failures: [] } });
-  assert.throws(() => runner.start({suite:'ds1000-quick',model:'m',providerId:'p',timeoutSeconds:3601}), /between 30 and 3600/);
-  assert.throws(() => runner.start({suite:'ds1000-quick',model:'m',providerId:'p',tokenBudget:1000000001}), /between 10000 and 1000000000/);
-  assert.throws(() => runner.start({suite:'ds1000-quick',model:'m',providerId:'p',maxTokensPerTask:5000001}), /between 10000 and 5000000/);
-  const invalid = runner.start({suite:'ds1000-quick',model:'m',providerId:'p',repeats:3,timeoutSeconds:3600,tokenBudget:1000000000,maxTokensPerTask:2000000}); await runner.pending;
+  await assert.rejects(runner.start({suite:'ds1000-quick',model:'m',providerId:'p',timeoutSeconds:3601}), /between 30 and 3600/);
+  await assert.rejects(runner.start({suite:'ds1000-quick',model:'m',providerId:'p',tokenBudget:1000000001}), /between 10000 and 1000000000/);
+  await assert.rejects(runner.start({suite:'ds1000-quick',model:'m',providerId:'p',maxTokensPerTask:5000001}), /between 10000 and 5000000/);
+  const invalid = await runner.start({suite:'ds1000-quick',model:'m',providerId:'p',repeats:3,timeoutSeconds:3600,tokenBudget:1000000000,maxTokensPerTask:2000000}); await runner.pending;
   assert.equal(runner.report(invalid.id).timeoutSeconds, 3600);
   assert.equal(runner.report(invalid.id).tokenBudget, 1000000000);
   assert.equal(runner.report(invalid.id).maxTokensPerTask, 2000000);
