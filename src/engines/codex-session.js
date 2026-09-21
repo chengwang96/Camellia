@@ -108,12 +108,19 @@ class CodexSession extends StreamingSession {
       }
     } else if (method === 'turn/plan/updated') {
       this.emit({ type: 'gui:plan', entries: params.plan.map(p => ({ content: p.step, status: p.status === 'inProgress' ? 'in_progress' : p.status })) });
-    } else if (method === 'thread/tokenUsage/updated') this.usage = params.tokenUsage.last;
+    } else if (method === 'thread/tokenUsage/updated') {
+      const usage = params.tokenUsage?.last;
+      if (!usage) return;
+      this.usage = { input_tokens: Math.max(0, usage.inputTokens - (usage.cachedInputTokens || 0)),
+        cache_read_input_tokens: usage.cachedInputTokens || 0, output_tokens: usage.outputTokens,
+        ...(params.tokenUsage.modelContextWindow ? { context_window: params.tokenUsage.modelContextWindow } : {}) };
+      this.emit({ type: 'gui:usage', usage: this.usage });
+    }
     else if (method === 'turn/completed') {
       const turn = params.turn, failed = turn.status === 'failed';
       this.finish({ subtype: this.cancelled || turn.status === 'interrupted' ? 'stopped' : failed ? 'error' : 'success',
         is_error: failed, ...(failed ? { result: turn.error?.message || 'Codex turn failed' } : {}),
-        ...(this.usage ? { usage: { input_tokens: this.usage.inputTokens, output_tokens: this.usage.outputTokens } } : {}) });
+        ...(this.usage ? { usage: this.usage } : {}) });
     }
   }
   requestApproval(request) {

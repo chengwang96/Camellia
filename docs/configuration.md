@@ -300,6 +300,8 @@ All five engines share a sidebar with pinned sessions, folder workspaces, and st
 
 The sidebar indicates background work and pending approvals. Opening another conversation restores its stream, draft, model and goal; stop and approval actions remain scoped to that conversation. Conversations in the same workspace still share its files, and concurrent API requests share provider limits.
 
+New conversations are named automatically from their first message. Naming tries the conversation's own model first, then the workbench default model, then up to one other model with a configured route; account-only models are skipped because no route can reach them. The generated title is short, keeps the message's language, and appears in the header and sidebar as soon as it is ready; renaming a conversation always wins over the automatic title. Naming is advisory: it runs at the same time as the reply, never blocks or fails the first turn, shares no history with the conversation, and never starts a route cooldown or counts as a failed request in **Usage**. When every candidate is unavailable the conversation keeps `New session` and the reason is written to the log.
+
 ## Data locations
 
 The application data directory is `%APPDATA%/dsh-desktop` on Windows and `~/Library/Application Support/dsh-desktop` on macOS. In the table below, `<app-data>` refers to that directory and `~` refers to the user's home directory (`%USERPROFILE%` on Windows).

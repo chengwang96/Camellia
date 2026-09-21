@@ -28,11 +28,13 @@ const { createEngineSettings, backup } = require('../engines/engine-settings.js'
 const runtimePaths = require('./runtime-paths.js');
 const { BenchmarkRunner } = require('../benchmark/runner');
 const { createLibraryManager } = require('../benchmark/libraries');
-const { SharedConversations, preferences: conversationPreferences } = require('../engines/shared-conversations');
+const { SharedConversations, preferences: conversationPreferences, shortTitle } = require('../engines/shared-conversations');
 const { createDshChat } = require('../engines/dsh-session');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
-const { saveClipboardImage } = require('./clipboard-attachments');
+const { saveClipboardImage, savePastedText } = require('./clipboard-attachments');
 const { describePreview } = require('./file-preview');
+const { createConversationTitles, titleCandidates, titleErrorKind, TitleRequestError,
+  TITLE_INSTRUCTION, MINIMAL_INSTRUCTION, AUXILIARY_HEADER, MAX_MESSAGE_CHARS, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } = require('./conversation-title.js');
 let sharedConversations = null;
 function publishChatEvent(engine, event) {
   // Persistence is best-effort here: a failed save must not escape into the
@@ -454,26 +456,45 @@ function resolveClaudeRoute() {
   if (ollamaProxyHandle && !ollamaProxyHandle.getState().running) throw new Error(ollamaProxyHandle.getState().error || "The API router has not started");
   return { baseUrl: `http://127.0.0.1:${cfg.port}`, authToken: 'proxy-managed' };
 }
-async function generateConversationTitle(message, model) {
-  if (!model) throw new Error('No default API model is selected');
+// Marked as auxiliary so the router counts it apart from agent requests, and
+// so a title request never shares the per-model cooldown of real work.
+async function requestConversationTitle({ model, message, minimal }) {
   const route = resolveClaudeRoute();
+  const instruction = minimal ? MINIMAL_INSTRUCTION : TITLE_INSTRUCTION;
+  // The retry drops the legacy cap because some providers reject it outright.
+  const body = { model, stream: false, messages: [
+    { role: 'system', content: instruction },
+    { role: 'user', content: JSON.stringify(String(message || '').slice(0, minimal ? 600 : MAX_MESSAGE_CHARS)) },
+  ] };
+  if (!minimal) body.max_tokens = MAX_OUTPUT_TOKENS;
   const response = await fetch(route.baseUrl + '/v1/chat/completions', {
-    method: 'POST', signal: AbortSignal.timeout(30000),
-    headers: { Authorization: `Bearer ${route.authToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, stream: false, max_tokens: 32, messages: [
-      { role: 'system', content: '为用户消息生成一个简短、准确的会话标题。只输出标题，不要引号、标点或解释；最多10个字符。' },
-      { role: 'user', content: JSON.stringify(String(message || '').slice(0, 12000)) },
-    ] }),
+    method: 'POST', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    headers: { Authorization: `Bearer ${route.authToken}`, 'Content-Type': 'application/json', [AUXILIARY_HEADER]: 'title' },
+    body: JSON.stringify(body),
   });
   const text = await response.text();
   if (!response.ok) {
     let detail = text;
     try { detail = JSON.parse(text)?.error?.message || text; } catch {}
-    throw new Error(`Title request failed (HTTP ${response.status}): ${String(detail).slice(0, 500)}`);
+    throw new TitleRequestError(titleErrorKind(response.status),
+      `HTTP ${response.status}: ${String(detail).slice(0, 200)}`);
   }
-  const data = JSON.parse(text);
+  let data;
+  try { data = JSON.parse(text); } catch { throw new TitleRequestError('transient', 'The title response was not valid JSON'); }
   return data?.choices?.[0]?.message?.content || '';
 }
+
+const conversationTitles = createConversationTitles({
+  candidates: model => {
+    try {
+      return titleCandidates(model, { fallback: loadConfig().sharedChat?.apiModel, router: readOllamaProxyConfig() });
+    } catch (error) { log(`conversation title: cannot read API routes (${error.message})`); return []; }
+  },
+  request: requestConversationTitle,
+  normalize: shortTitle,
+  log,
+});
+async function generateConversationTitle(message, model) { return conversationTitles.generate(message, model); }
 
 // Fields that require a fresh process when changed (mid-session switching is
 // not possible for model/effort/permission via the stream-json control API we use).
@@ -1477,6 +1498,11 @@ if (!gotSingleInstanceLock) {
 
   ipcMain.handle('dsh:save-clipboard-image', (_event, payload) => {
     try { return { ok: true, attachment: saveClipboardImage(app.getPath('userData'), payload) }; }
+    catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:save-pasted-text', (_event, payload) => {
+    try { return { ok: true, attachment: savePastedText(app.getPath('userData'), payload) }; }
     catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 

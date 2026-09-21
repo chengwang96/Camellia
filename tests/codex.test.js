@@ -65,6 +65,25 @@ test('Codex transport initializes before turns, relays approval and question ans
   assert.equal(session.running, false);
 });
 
+test('Codex publishes live context usage with cache accounting and the native context limit', async t => {
+  const root = temporary(t), wire = transport(), events = [];
+  const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'fixture', connection: 'api' }, opts: {}, spec: {},
+    spawn: () => wire.proc, log() {}, history: new ClaudeHistory(path.join(root, 'history')), onEvent: event => events.push(event), onSessionId() {}, onResult() {} });
+  session.start(); session.sendUserMessage('Report usage'); await session.ready;
+  await new Promise(resolve => setImmediate(resolve));
+  const tokenUsage = { last: { inputTokens: 45000, cachedInputTokens: 5000, outputTokens: 100 }, modelContextWindow: 128000 };
+  wire.send({ method: 'thread/tokenUsage/updated', params: { threadId: 'unrelated', tokenUsage } });
+  assert.equal(events.some(event => event.type === 'gui:usage'), false);
+  wire.send({ method: 'thread/tokenUsage/updated', params: { threadId: session.sessionId, tokenUsage } });
+  const usage = { input_tokens: 40000, cache_read_input_tokens: 5000, output_tokens: 100, context_window: 128000 };
+  assert.deepEqual(events.at(-1).usage, usage);
+  assert.equal(events.at(-1).type, 'gui:usage');
+  assert.deepEqual((await session.liveState()).events.at(-1).usage, usage);
+  wire.send({ method: 'turn/completed', params: { threadId: session.sessionId, turn: { status: 'completed' } } });
+  assert.deepEqual(events.at(-1).usage, usage);
+  await session.shutdown();
+});
+
 test('cancel during Codex initialization stops before sending a turn and closes the process', async t => {
   const root = temporary(t), wire = transport(), events = [];
   const session = new CodexSession({ gen: 2, settings: { cwd: root, model: 'fixture', connection: 'api' }, opts: {}, spec: {},

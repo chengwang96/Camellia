@@ -299,6 +299,34 @@ test('cooldowns are per model and authentication failures pause the entire key',
   assert.equal(f.router.getState().usage['a-key-0'].blocked,false);
 });
 
+test('auxiliary title requests never cool down a model or block a key for real work', async t => {
+  // The provider is unhealthy exactly while the title is generated, which is
+  // the failure that used to leave conversations named "New session".
+  let unhealthy = true;
+  const f=await fixture(t,(_r,res)=>unhealthy ? reply(res,503,{error:'temporarily unavailable'}) : reply(res,200,completion('kimi-k3')),
+    url=>[provider('a',url)]);
+  const title=await f.post({max_tokens:256}, '/v1/chat/completions', {headers:{'x-camellia-aux':'title'}});
+  assert.equal(title.status,503);
+  assert.deepEqual(f.router.getState().usage['a-key-0'].models,{}, 'A failed title must not start a model cooldown');
+  assert.equal(f.router.getState().usage['a-key-0'].blocked,false);
+  assert.equal(f.router.getState().usage['a-key-0'].failures,0,'Titles are not counted as failed agent requests');
+
+  // The very next real request still reaches the provider and succeeds.
+  unhealthy=false;
+  assert.equal((await f.post({})).status,200);
+  assert.equal(f.requests.length,2);
+});
+
+test('an authentication failure from a title request does not block the shared key', async t => {
+  // The shared internal marker is never forwarded upstream, so the provider
+  // distinguishes the small auxiliary request by its output budget.
+  const f=await fixture(t,(r,res)=>r.body.max_tokens===256 ? reply(res,401,{error:'invalid key'}) : reply(res,200,completion(r.body.model)),
+    url=>[provider('a',url,['secret'])]);
+  assert.equal((await f.post({max_tokens:256}, '/v1/chat/completions', {headers:{'x-camellia-aux':'title'}})).status,401);
+  assert.equal(f.router.getState().usage['a-key-0'].blocked,false);
+  assert.equal((await f.post({})).status,200,'Real work still uses a key that only failed for a title');
+});
+
 test('401 key is skipped; replacing it clears its block and does not inherit old usage', async t => {
   const f=await fixture(t,(r,res)=>r.headers.authorization==='Bearer bad-secret' ? reply(res,401,{error:'invalid key'}) : reply(res,200,completion(r.body.model)),url=>[provider('a',url,['bad-secret','good-secret'])]);
   assert.equal((await f.post({})).status,200);

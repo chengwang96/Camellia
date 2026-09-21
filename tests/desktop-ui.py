@@ -1,5 +1,6 @@
 """Visual and keyboard checks for desktop menus and settings. No external API calls."""
 import json
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -263,6 +264,28 @@ try:
         page.locator('#usageDot').click()
         page.screenshot(animations='disabled', path=str(screenshots / 'claude-usage-menu.png'))
         page.locator('#input').click()
+
+        # A long paste becomes a .txt attachment; short pastes stay inline.
+        def paste(text):
+            page.evaluate("""text => {
+              const data = new DataTransfer();
+              data.setData('text/plain', text);
+              document.getElementById('input').dispatchEvent(new ClipboardEvent('paste',
+                {clipboardData: data, bubbles: true, cancelable: true}));
+            }""", text)
+
+        paste('短文本粘贴')
+        expect(page.locator('#attachRow .attchip')).to_have_count(0)
+        paste('会议纪要 ' + '内容足够长' * 1200)
+        expect(page.locator('#attachRow .attchip')).to_have_count(1)
+        expect(page.locator('#attachRow .attchip-name')).to_have_text(re.compile(r'^pasted-text-.*\.txt$'))
+        expect(page.locator('#statusLine')).to_contain_text('.txt attachment')
+        expect(page.locator('#input')).to_have_value('')
+        attachment_path = page.locator('#attachRow .attchip').get_attribute('title')
+        assert Path(attachment_path).read_text(encoding='utf-8').startswith('会议纪要 ')
+        page.locator('#attachRow .attchip-x').click()
+        expect(page.locator('#attachRow .attchip')).to_have_count(0)
+
         page.locator('#input').fill('/goal')
         page.locator('#input').press('Enter')
         expect(page.locator('#goalChipRow')).to_be_visible()

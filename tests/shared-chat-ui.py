@@ -529,6 +529,10 @@ with sync_playwright() as p:
     page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude&conversation=shared-fixture',wait_until='networkidle')
     page.wait_for_function('uiReady')
     expect(page.locator('#ctxRing')).to_be_hidden()
+    page.locator('#usageDot').click()
+    expect(page.locator('.usage-empty')).to_be_visible()
+    assert page.locator('.usage-pop').bounding_box()['height'] <= 40
+    page.locator('#usageDot').click()
     page.evaluate("receiveEvent({type:'result',subtype:'success',session_id:'shared-fixture',engine:'claude',result:'done',usage:{input_tokens:100000,cache_read_input_tokens:5000,output_tokens:500}})")
     expect(page.locator('#ctxRing')).to_be_visible()
     tip = page.evaluate("document.querySelector('#ctxRing').dataset.tip")
@@ -540,6 +544,28 @@ with sync_playwright() as p:
     page.evaluate("receiveEvent({type:'result',subtype:'success',session_id:'shared-fixture',engine:'claude',result:'done',usage:{input_tokens:1300000,cache_read_input_tokens:0,output_tokens:500}})")
     tip = page.evaluate("document.querySelector('#ctxRing').dataset.tip")
     assert '45.0K / 200.0K' in tip, tip
+    page.close()
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    usage_bridge = bridge.replace("onConversationEvent:()=>{},onConversationGoal:", "onConversationEvent:fn=>window.receiveEvent=fn,onConversationGoal:")
+    usage_bridge = usage_bridge.replace(
+        'window.fixturePreferences =',
+        "fixture.messages.at(-1).usage={input_tokens:1300000,output_tokens:500};fixture.messages.at(-1).lastCallUsage={input_tokens:40000,cache_read_input_tokens:5000,output_tokens:100,context_window:128000};window.fixturePreferences =")
+    page.add_init_script(usage_bridge)
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex&conversation=shared-fixture',wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    expect(page.locator('#ctxRing')).to_be_visible()
+    assert '45.0K / 128.0K' in page.locator('#ctxRing').get_attribute('data-tip')
+    page.locator('#usageDot').click()
+    expect(page.locator('.usage-pop')).to_contain_text('1.3M')
+    page.locator('#usageDot').click()
+    page.evaluate("receiveEvent({type:'gui:usage',session_id:'shared-fixture',engine:'codex',usage:{input_tokens:60000,cache_read_input_tokens:4000,context_window:128000}})")
+    assert '64.0K / 128.0K' in page.locator('#ctxRing').get_attribute('data-tip')
+    page.locator('#newSessionBtn').click()
+    expect(page.locator('#ctxRing')).to_be_hidden()
+    page.locator('#usageDot').click()
+    expect(page.locator('.usage-empty')).to_be_visible()
+    page.locator('.usage-pop').screenshot(path=str(preview/'usage-empty-compact.png'), animations='disabled')
     page.close()
     # Goal draft mode: the criterion chip feeds into goal-start.
     page = browser.new_page(viewport={'width':1200,'height':820})
@@ -623,6 +649,29 @@ with sync_playwright() as p:
     page.locator('#syncConfirm').click()
     expect(page.locator('#syncMask')).to_be_hidden()
     page.wait_for_function("window.synced==='another-session'")
+    page.close()
+    page = browser.new_page(viewport={'width': 1200, 'height': 820})
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    page.add_init_script(bridge.replace('onConversationEvent:()=>{}', 'onConversationEvent:fn=>{window.deliverEvent=fn;}'))
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude&conversation=shared-fixture', wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    page.evaluate("""() => {
+      const emit = event => deliverEvent({session_id:'shared-fixture',engine:'claude',runId:700,...event});
+      window.compactEmit = emit;
+      emit({type:'conversation:started',prompt:'Continue the experiment',userSeq:3});
+      emit({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text',text:''}}});
+      emit({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Progress before compaction.'}}});
+      emit({type:'conversation:continued'});
+      emit({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text',text:''}}});
+      emit({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Verified after compaction.'}}});
+    }""")
+    expect(page.locator('#chat')).to_contain_text('Progress before compaction.')
+    expect(page.locator('#chat')).to_contain_text('Verified after compaction.')
+    assert page.locator('#chat').inner_text().count('Continue the experiment') == 1
+    assert page.evaluate('running') is True
+    page.evaluate("compactEmit({type:'result',subtype:'success',is_error:false,result:'Verified after compaction.'})")
+    assert page.evaluate('running') is False
+    expect(page.locator('.run-result')).to_have_count(1)
     page.close()
     browser.close()
     assert not errors, errors

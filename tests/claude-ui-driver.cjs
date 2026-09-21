@@ -24,6 +24,7 @@ const methods = {
   codexAccountState: 'codex-account-state', codexAccountRefresh: 'codex-account-refresh', codexSignIn: 'codex-sign-in',
   kimiAccountState: 'kimi-account-state',
   workbenchSettings: 'workbench-settings', workbenchSaveSettings: 'workbench-save-settings',
+  savePastedText: 'save-pasted-text',
 };
 for (const engine of ['codex', 'kimi', 'antigravity']) {
   for (const action of ['GetLive', 'GetSettings', 'SaveSettings', 'ListSessions', 'LoadSession', 'MetaOp', 'GoalGet']) {

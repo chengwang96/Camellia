@@ -221,15 +221,18 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     openActionMenu(anchor, [
       { label: "New session in this workspace", disabled: contextBusy(), run: () => void newSession(ws.id) },
       { label: "Rename workspace", run: () => openWorkspaceDialog(ws) },
-      { label: "Remove workspace (keep sessions)", disabled: contextBusy(), run: async () => {
-        if (!canChangeContext()) return;
-        if (await runMetaOp({ op: 'delete-workspace', id: ws.id })) {
-          if (context.workspaceId === ws.id) context.workspaceId = null;
-          await loadSessionHistory();
-          setStatus("Workspace removed. Sessions and files were kept.");
-        }
-      } },
+      { label: "Remove workspace (keep sessions)", disabled: contextBusy(), run: () => removeWorkspace(ws, false) },
+      { label: "Remove workspace (archive sessions)", disabled: contextBusy(), run: () => removeWorkspace(ws, true) },
     ]);
+  }
+  async function removeWorkspace(ws, archiveSessions) {
+    if (!canChangeContext()) return;
+    const res = await runMetaOp({ op: 'delete-workspace', id: ws.id, archiveSessions });
+    if (!res) return;
+    if (context.workspaceId === ws.id) context.workspaceId = null;
+    if (archiveSessions && context.sessionId && res.meta.archived[context.sessionId]) await newSession(null);
+    await loadSessionHistory();
+    setStatus(archiveSessions ? "Workspace removed. Sessions were archived and files were kept." : "Workspace removed. Sessions and files were kept.");
   }
   function openSessionActions(anchor, item, s) {
     openActionMenu(anchor, [
