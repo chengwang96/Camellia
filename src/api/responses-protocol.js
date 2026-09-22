@@ -9,6 +9,12 @@ function responseTools(tools = []) {
     ? tool.tools.map(t => ({ ...t, namespace: tool.name })) : [tool]);
 }
 const wireName = tool => tool.namespace ? `${tool.namespace}__${tool.name}` : tool.name;
+function resolveTool(tools, name) {
+  const exact = tools.get(name);
+  if (exact) return exact;
+  const matches = [...tools.values()].filter(tool => tool.namespace && tool.name === name);
+  return matches.length === 1 ? matches[0] : undefined;
+}
 function responsesToChat(body) {
   if (body.previous_response_id) throw new Error('The shared router requires full Responses input, without previous_response_id');
   const tools = responseTools(body.tools), byName = new Map(tools.map(t => [wireName(t), t]));
@@ -110,7 +116,7 @@ class ResponsesStream {
     for (const call of delta.tool_calls || []) {
       let state = this.calls.get(call.index);
       if (!state) {
-        const tool = this.tools.get(call.function?.name);
+        const tool = resolveTool(this.tools, call.function?.name);
         if (!tool) throw new Error('The provider returned an unknown tool: ' + call.function?.name);
         const custom = tool.type === 'custom';
         const item = { id: 'fc_' + randomUUID(), type: custom ? 'custom_tool_call' : 'function_call', call_id: call.id || 'call_' + randomUUID(),

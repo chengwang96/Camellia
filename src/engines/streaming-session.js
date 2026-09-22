@@ -15,8 +15,9 @@ class StreamingSession {
     return path.join(dir, this.sessionId + '.jsonl');
   }
 
-  appendHistory(role, text) {
+  appendHistory(role, text, outputBlocks) {
     fs.appendFileSync(this.historyFile(), JSON.stringify({ type: role, cwd: this.settings.cwd,
+      ...(outputBlocks ? { outputBlocks } : {}),
       message: { role, content: [{ type: 'text', text }] } }) + '\n');
   }
 
@@ -24,9 +25,9 @@ class StreamingSession {
     if (!this.running) return;
     clearTimeout(this.cancelTimer);
     this.endBlock();
-    if (this.sessionId && this.text) {
-      try { this.appendHistory('assistant', this.text); }
-      catch (error) { this.log(this.name + ': history write failed: ' + error.message); result = { subtype: 'error', is_error: true, result: "Could not save session history: " + error.message }; }
+    if (this.sessionId && (this.text || result.outputBlocks?.length)) {
+      try { this.appendHistory('assistant', this.text, result.outputBlocks); }
+      catch (error) { this.log(this.name + ': history write failed: ' + error.message); result = { ...result, subtype: 'error', is_error: true, result: "Could not save session history: " + error.message }; }
     }
     this.permissions.clear();
     this.running = false;

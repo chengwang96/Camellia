@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { readJson, writeJson } = require('../shared/json-store');
+const { translate } = require('../shared/i18n');
 const { validSessionId } = require('./claude-history');
 const { createSessionWorkspaces } = require('./session-workspaces');
 const { ClaudeGoal, verifyPrompt, verifySignal } = require('./claude-goal');
@@ -258,9 +259,13 @@ class SharedConversations {
   // Permanent delete: index, append-only log, goal, handoffs and torn backups.
   purge(id) {
     if (this.busy(id)) throw new Error('Stop this conversation before deleting it');
+    const c = this.items.get(id);
+    const files = c ? this.handoffFiles(c) : new Set();
+    if (files.size) for (const other of this.items.values()) {
+      if (other.id !== id) for (const file of this.handoffFiles(other)) files.delete(file);
+    }
     this.goalBridges.get(id)?.close(); this.goalBridges.delete(id);
     this.tasks.removeSession(id);
-    const c = this.items.get(id);
     this.goals.get(id)?.cancelTimer();
     this.items.delete(id); this.facades.delete(id); this.goals.delete(id);
     const rm = file => { try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; } };
@@ -268,9 +273,14 @@ class SharedConversations {
     rm(path.join(this.dir, id + '.jsonl'));
     for (const name of fs.readdirSync(this.dir)) if (name.startsWith(id + '.jsonl.torn-')) rm(path.join(this.dir, name));
     rm(path.join(this.dir, 'goals', id + '.json'));
-    const handoffs = path.resolve(path.join(this.dir, 'handoffs'));
-    for (const handoff of c?.handoffs || []) if (handoff.file && path.resolve(path.dirname(handoff.file)) === handoffs) rm(handoff.file);
+    for (const file of files) rm(file);
     return Boolean(c);
+  }
+  handoffFiles(c) {
+    const directory = path.resolve(this.dir, 'handoffs');
+    const references = [...c.handoffs, ...this.rows(c).filter(row => row.role === 'notice' && !row.internal)];
+    return new Set(references.filter(entry => entry.file).map(entry => path.resolve(entry.file))
+      .filter(file => path.dirname(file) === directory));
   }
   rawRows(c) {
     try {
@@ -333,6 +343,25 @@ class SharedConversations {
     return c;
   }
   validateEngine(engine) { if (!ENGINES.includes(engine)) throw new Error('Unknown engine'); }
+  fork(engine, { sessionId, title } = {}) {
+    this.validateEngine(engine);
+    const source = this.get(sessionId);
+    if (this.busy(source.id)) throw new Error('Wait for this conversation to finish before forking it');
+    const meta = this.workspaces.sessionMeta();
+    if (meta.archived[source.id]) throw new Error('Restore this conversation before forking it');
+    const rows = this.rows(source).filter(row => !row.internal);
+    const baseTitle = String(title || '').trim() || translate('Fork of {0}', this.loadConfig().language)
+      .replace('{0}', () => meta.titles[source.id] || source.title);
+    const titles = new Set([...this.items.values()].map(item => meta.titles[item.id] || item.title));
+    let forkTitle = baseTitle;
+    for (let number = 2; titles.has(forkTitle); number++) forkTitle = baseTitle + ' (' + number + ')';
+    const conversation = this.create(engine, source.workspaceId, forkTitle, source.cwd);
+    conversation.apiModel = source.apiModel;
+    conversation.engineSettings = JSON.parse(JSON.stringify(source.engineSettings || {}));
+    for (const row of rows) this.append(conversation, row);
+    this.save(conversation);
+    return conversation;
+  }
   async list(engine, payload) {
     const data = await this.workspaces.listSessions(payload);
     const prefs = preferences(this.loadConfig());
@@ -344,7 +373,9 @@ class SharedConversations {
     // Archived conversations stay archived: reloads and stale locations must
     // not resurrect them.
     if (this.workspaces.sessionMeta().archived[id]) return { ok: false, error: 'This conversation is archived. Restore it from Settings → Archived first.' };
-    return { ok: true, ...c, activity: this.activity(id), live: this.live(c.currentEngine, id).live, preferences: prefs, messages: this.messages(c), settings: this.settings(engine, id), truncated: false };
+    const messages = this.messages(c);
+    const live = this.live(c.currentEngine, id, messages).live;
+    return { ok: true, ...c, activity: this.activity(id), compaction: this.switching.get(id)?.compaction || null, live, preferences: prefs, messages, settings: this.settings(engine, id), truncated: false };
   }
   settings(engine, id) {
     this.validateEngine(engine);
@@ -399,8 +430,8 @@ class SharedConversations {
       : '';
     return compacted + this.formatContext(c, rows);
   }
-  compactionContext(c) {
-    const rows = this.rows(c).filter(r => !r.internal);
+  compactionContext(c, history = this.rows(c)) {
+    const rows = history.filter(r => !r.internal);
     const compacted = rows.findLast(r => r.role === 'notice' && r.file);
     const summary = compacted && fs.existsSync(compacted.file) ? fs.readFileSync(compacted.file, 'utf8') + '\n\n' : '';
     return summary + this.formatContext(c, rows.filter(r => r.seq > (compacted?.seq || 0)));
@@ -417,12 +448,7 @@ class SharedConversations {
     const created = !payload.sessionId;
     let c = payload.sessionId ? this.get(payload.sessionId) : this.create(engine, payload.workspaceId);
     if (payload.fork) {
-      if (this.busy(c.id)) throw new Error('Wait for this conversation to finish before forking it');
-      const source = c; c = this.create(engine, source.workspaceId, source.title, source.cwd);
-      c.apiModel = source.apiModel;
-      c.engineSettings = JSON.parse(JSON.stringify(source.engineSettings || {}));
-      for (const row of this.rows(source).filter(r => !r.internal)) this.append(c, row);
-      this.save(c);
+      c = this.fork(engine, { sessionId: c.id });
     }
     const assertAvailable = () => {
       if (controlStart && (controlStart.cancelled || this.goalToolsClosed || this.items.get(c.id) !== c || this.controlStarts.get(c.id) !== controlStart)) throw new Error('Child start was cancelled');
@@ -445,14 +471,13 @@ class SharedConversations {
     }
     assertAvailable();
     const settings = this.settings(engine, c.id);
-    if (!internal && !continuation && c.seq) {
-      // Switching to a shorter-context model must not discover the overflow
-      // from the provider's error: compact first when the estimate says the
-      // native history no longer fits.
-      const cap = this.contextCap(engine, settings);
-      if (cap && this.estimateTokens(c) > cap * 0.85 && (!this.busy(c.id) || (facade || controlStart) && !this.active.has(c.id) && !this.switching.has(c.id))) {
+    if (!internal && !continuation && String(payload.prompt || '').length > 200000) throw new Error('The message is too large to send. Split it up or attach it as a file instead. Nothing was sent.');
+    if (!internal && !continuation && !edit && c.seq) {
+      const context = this.contextPressure(c, engine, settings);
+      const pendingTokens = String(payload.prompt || '').length / 3;
+      if (context.used + pendingTokens > context.cap * 0.85 && (!this.busy(c.id) || (facade || controlStart) && !this.active.has(c.id) && !this.switching.has(c.id))) {
         if (facade) facade.running = true;
-        try { await this.compact(c.id, { automatic: true, allowGoal: Boolean(facade), controlStart }); }
+        try { await this.compact(c.id, { automatic: true, allowGoal: Boolean(facade), controlStart, trigger: { reason: 'before-send', ...context, pendingTokens } }); }
         finally { if (facade) facade.running = false; }
         if (facade && !this.goals.get(c.id)?.armed) throw new Error('Goal was stopped during compaction');
         assertAvailable();
@@ -477,31 +502,29 @@ class SharedConversations {
       this.save(c);
     }
     const editNotice = { role: 'notice', text: 'This user message restarts the last turn. Its previous reply and tool history have been discarded. Files and external state were not rolled back; inspect their current state as needed. Follow the request below.' };
-    let editContext = edit && this.formatContext(c, [...edit.prior, editNotice]);
+    let editContext = edit && (this.compactionContext(c, edit.prior) + this.formatContext(c, [editNotice]));
     let prompt = promptOverride ?? ((edit ? editContext : this.context(c, engine)) + String(promptSuffix ?? payload.prompt ?? ''));
-    if (!internal && !continuation && prompt.length > 220000) {
+    const promptCap = this.contextPressure(c, engine, settings).cap;
+    if (!internal && !continuation && prompt.length / 3 > promptCap * 0.85) {
       // Give automatic compaction one chance before refusing to send; a huge
       // new message is beyond what compaction can help with.
-      if (String(payload.prompt || '').length > 200000) throw new Error('The message is too large to send. Split it up or attach it as a file instead. Nothing was sent.');
       if (this.busy(c.id) && !controlStart) throw new Error('The conversation is too large to send. Stop the current work and compact it from the engine menu. Nothing was sent.');
       // Skip a second compaction when a fresh summary already covers the history.
       const before = this.rows(c);
       const fresh = before.findLast(r => r.role === 'notice' && r.file);
-      if (!(fresh && before.length - before.indexOf(fresh) < 10)) await this.compact(c.id, { automatic: true, controlStart });
+      const trigger = { reason: 'replayed-prompt', source: 'estimate', used: prompt.length / 3, cap: promptCap };
+      const compactedEdit = edit
+        ? await this.compact(c.id, { automatic: true, controlStart, history: edit.prior, trigger })
+        : null;
+      if (!edit && !(fresh && before.length - before.indexOf(fresh) < 10)) await this.compact(c.id, { automatic: true, controlStart, trigger });
       assertAvailable();
       if (edit) {
-        // A resend replays the logical history, so rebuild it as the compaction
-        // summary plus only the turns that came after it.
-        const rows = this.rows(c);
-        const compacted = rows.findLast(r => r.role === 'notice' && r.file);
-        const summary = compacted && fs.existsSync(compacted.file) ? fs.readFileSync(compacted.file, 'utf8') + '\n\n' : '';
-        const recent = rows.filter(r => r.seq > (compacted?.seq || 0) && r.seq < edit.row.seq);
-        editContext = summary + this.formatContext(c, [...recent, editNotice]);
+        editContext = compactedEdit.summary + '\n\n' + this.formatContext(c, [editNotice]);
         prompt = editContext + String(payload.prompt || '');
       } else {
         prompt = this.context(c, engine) + String(promptSuffix ?? payload.prompt ?? '');
       }
-      if (prompt.length > 220000) throw new Error('The conversation is still too large after automatic compaction. Compact it manually from the engine menu or start a new conversation. Nothing was sent.');
+      if (prompt.length / 3 > promptCap * 0.85) throw new Error('The conversation is still too large after automatic compaction. Compact it manually from the engine menu or start a new conversation. Nothing was sent.');
     }
     assertAvailable();
     const a = continuation || { c, engine, internal, ephemeral, scheduledTaskId, goalContinuation: Boolean(facade), prompt: payload.prompt || '', promptSuffix, attachments: payload.attachments || [], events: [], permissions: new Map(), tools: new Set(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
@@ -553,6 +576,7 @@ class SharedConversations {
         return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
       }
       a.session = this.drivers[engine].ensure({ conversationId: c.id, sessionId: fresh ? null : c.segments[engine]?.nativeId, workspaceId: null, cwd: c.cwd, settings, goalBridge });
+      a.contextSettings = { model: settings.model, connection: settings.connection, contextWindow: settings.contextWindow };
       if (!a.session.sendUserMessage(prompt, payload.attachments || [])) throw new Error('Engine did not accept the message');
       return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
     } catch (error) {
@@ -582,9 +606,14 @@ class SharedConversations {
     }
     if (event.type === 'result' && !a.internal && !a.cancelled
         && (a.compactRequested && event.subtype === 'stopped' || contextOverflow(event) && !a.overflowRetried)) {
-      if (contextOverflow(event)) a.overflowRetried = true;
-      const text = a.assistant.length ? a.assistant.join('\n\n') : a.text;
-      if (text) this.append(c, { role: 'assistant', engine, text });
+      if (contextOverflow(event)) {
+        a.overflowRetried = true;
+        a.compactionTrigger = { reason: 'provider-overflow', ...this.contextPressure(c, engine, this.settings(engine, c.id), a) };
+      }
+      const output = Array.isArray(event.outputBlocks) ? { outputBlocks: event.outputBlocks } : {};
+      const text = output.outputBlocks ? output.outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text).join('\n\n')
+        : a.assistant.length ? a.assistant.join('\n\n') : a.text;
+      if (text || output.outputBlocks?.length) this.append(c, { role: 'assistant', engine, text, ...output });
       this.active.delete(c.id);
       a.session = null; a.compactRequested = false; a.text = ''; a.assistant = []; a.lastCallUsage = null; a.tools.clear(); a.permissions.clear();
       this.recovering.set(c.id, a);
@@ -593,7 +622,11 @@ class SharedConversations {
       void this.recoverContext(a);
       return true;
     }
-    if (event.session_id && !a.ephemeral) { c.segments[engine] ||= { cursor: a.priorCursor }; Object.assign(c.segments[engine], { nativeId: event.session_id, isolated: true }); this.save(c); }
+    if (event.session_id && !a.ephemeral) {
+      c.segments[engine] ||= { cursor: a.priorCursor };
+      if (c.segments[engine].nativeId !== event.session_id) delete c.segments[engine].contextUsage;
+      Object.assign(c.segments[engine], { nativeId: event.session_id, isolated: true }); this.save(c);
+    }
     if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta') a.text += event.event.delta.text;
     if (event.type === 'assistant') {
       if (event.message?.usage) a.lastCallUsage = event.message.usage;
@@ -604,6 +637,15 @@ class SharedConversations {
       }
     }
     if (event.type === 'gui:usage') a.lastCallUsage = event.usage;
+    if (!a.internal && (event.type === 'gui:usage' || event.type === 'assistant' && event.message?.usage)) {
+      const usage = a.lastCallUsage;
+      const used = (usage?.input_tokens || usage?.prompt_tokens || 0) + (usage?.cache_read_input_tokens || 0) + (usage?.cache_creation_input_tokens || 0);
+      if (Number.isFinite(used) && used > 0 && c.segments[engine]?.nativeId) {
+        const settings = a.contextSettings;
+        c.segments[engine].contextUsage = { used, cap: usage.context_window, model: settings.model, connection: settings.connection, contextWindow: settings.contextWindow };
+        this.save(c);
+      }
+    }
     if (event.type === 'gui:tool' || event.type === 'gui:plan' || event.type === 'user') {
       this.append(c, { role: 'tool', engine, text: JSON.stringify(event), internal: a.internal });
     }
@@ -635,8 +677,10 @@ class SharedConversations {
       this.onEvent(out);
     } else if (event.type === 'gui:permission') this.onEvent({ ...out, handoff: true });
     if (event.type === 'result') {
-      const text = a.assistant.length ? a.assistant.join('\n\n') : a.text || String(event.result || '');
-      if (text || event.usage || a.lastCallUsage || event.artifacts?.length) this.append(c, { role: 'assistant', engine, text, internal: a.internal, artifacts: event.artifacts,
+      const output = Array.isArray(event.outputBlocks) ? { outputBlocks: event.outputBlocks } : {};
+      const text = output.outputBlocks ? output.outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text).join('\n\n')
+        : a.assistant.length ? a.assistant.join('\n\n') : a.text || String(event.result || '');
+      if (text || output.outputBlocks?.length || event.usage || a.lastCallUsage || event.artifacts?.length) this.append(c, { role: 'assistant', engine, text, ...output, internal: a.internal, artifacts: event.artifacts,
         ...(event.usage ? { usage: event.usage } : {}), ...(a.lastCallUsage ? { lastCallUsage: a.lastCallUsage } : {}) });
       c.pending = null; c.updatedAt = Date.now(); c.interrupted = Boolean(event.is_error || event.subtype === 'stopped');
       if (c.segments[engine] && !c.interrupted) c.segments[engine].cursor = c.seq;
@@ -646,10 +690,10 @@ class SharedConversations {
       a.resolve({ ...event, result: text });
       this.publishActivity(c.id);
     } else if (toolBoundary && !a.internal && !a.cancelled && !a.compactRequested && !a.tools.size && !a.permissions.size) {
-      const cap = this.contextCap(engine, this.settings(engine, c.id));
-      const estimate = this.estimateTokens(c) + a.text.length / 3;
-      if (cap && estimate > cap * 0.85 && estimate - (a.compactedTokens || 0) > cap * 0.15) {
+      const context = this.contextPressure(c, engine, this.settings(engine, c.id), a);
+      if (context.used > context.cap * 0.85 && (context.source === 'usage' || context.used - (a.compactedTokens || 0) > context.cap * 0.15)) {
         a.compactRequested = true;
+        a.compactionTrigger = { reason: 'tool-boundary', ...context };
         this.onStatus({ sessionId: c.id, text: 'Compacting context before continuing the task…' });
         try { a.session.interrupt(); }
         catch (error) { a.compactRequested = false; this.log('context interruption failed: ' + error.message); }
@@ -662,7 +706,7 @@ class SharedConversations {
     a.goalReport = undefined;
     if (a.scheduledTaskId) delete this.tasks.get(a.scheduledTaskId, c.id).pendingReport;
     try {
-      await this.compact(c.id, { automatic: true, recovery: a, allowGoal: true });
+      await this.compact(c.id, { automatic: true, recovery: a, allowGoal: true, trigger: a.compactionTrigger });
       if (a.cancelled) throw new Error('Context recovery canceled');
       a.compactedTokens = this.estimateTokens(c);
       a.priorCursor = c.segments[engine]?.cursor || 0;
@@ -685,10 +729,10 @@ class SharedConversations {
       this.publishActivity(c.id);
     }
   }
-  live(engine, id) {
+  live(engine, id, history) {
     const a = this.recovering.get(id) || this.active.get(id);
     if (!a || a.engine !== engine || a.internal) return { ok: true, live: null };
-    const messages = this.messages(a.c).filter(row => row.seq < a.userSeq);
+    const messages = (history || this.messages(a.c)).filter(row => row.seq < a.userSeq);
     return { ok: true, live: { sessionId: a.c.id, workspaceId: a.c.workspaceId, engine: a.engine, runId: a.facade.gen, startedAt: a.startedAt,
       prompt: a.prompt, displayText: a.displayText, userSeq: a.userSeq, attachments: a.attachments, messages,
       events: a.events.filter(e => e.type !== 'gui:permission' || a.permissions.has(e.requestId)), eventSeq: a.eventSeq } };
@@ -789,34 +833,50 @@ class SharedConversations {
   estimateTokens(c) {
     const rows = this.rows(c).filter(r => !r.internal);
     const compacted = rows.findLast(r => r.role === 'notice' && r.file);
-    let chars = compacted && fs.existsSync(compacted.file) ? fs.statSync(compacted.file).size : 0;
+    let chars = compacted && fs.existsSync(compacted.file) ? fs.readFileSync(compacted.file, 'utf8').length : 0;
     for (const r of rows) if (r.seq > (compacted?.seq || 0)) chars += String(r.text || '').length + 200;
     return chars / 3;
   }
   contextCap(engine, settings) {
     return settings.contextWindow || this.modelContextWindow(settings.model) || ENGINE_CTX_DEFAULTS[engine];
   }
-  async compact(id, { automatic = false, recovery, allowGoal = false, controlStart } = {}) {
+  contextPressure(c, engine, settings, active) {
+    const segment = c.segments[engine];
+    const usage = segment?.contextUsage;
+    const estimate = this.estimateTokens(c) + (active?.text.length || 0) / 3;
+    const reusable = c.currentEngine === engine && segment?.nativeId && usage && usage.model === settings.model && usage.connection === settings.connection
+      && usage.contextWindow === settings.contextWindow
+      && (segment.isolated || !['codex', 'kimi', 'dsh'].includes(engine) || settings.connection === 'subscription');
+    const cap = reusable && Number.isFinite(usage.cap) && usage.cap > 0 ? usage.cap : this.contextCap(engine, settings);
+    return { source: reusable ? 'usage' : 'estimate', used: reusable ? usage.used : estimate, cap, estimate };
+  }
+  async compact(id, { automatic = false, recovery, allowGoal = false, controlStart, history, trigger } = {}) {
     if (this.controlStarts.has(id) && this.controlStarts.get(id) !== controlStart && !recovery) throw new Error('Child response is starting');
     if (this.active.has(id) || this.switching.has(id) || this.recovering.has(id) && this.recovering.get(id) !== recovery
         || this.goals.get(id)?.armed && !allowGoal) throw new Error('Wait for this conversation to finish or stop it before compacting');
     const c = this.get(id), engine = c.currentEngine;
     if (!c.seq) return { ok: false, error: 'Nothing to compact yet' };
     const switching = { target: engine, cancelled: false }; this.switching.set(id, switching); this.publishActivity(id);
-    const status = text => this.onStatus({ sessionId: id, text });
+    let completed = false;
+    const status = (text, compaction) => {
+      switching.compaction = compaction || null;
+      this.onStatus({ sessionId: id, text, ...(compaction ? { compaction } : {}) });
+    };
     try {
+      status('Compacting context before continuing the task…', { state: 'running' });
       await this.prepare(engine, this.settings(engine, id));
       if (switching.cancelled) throw new Error('Compaction canceled');
-      status('Asking the engine to summarize the conversation…');
+      if (automatic) this.log('context compaction: ' + JSON.stringify({ sessionId: id, engine, ...trigger }));
+      status('Asking the engine to summarize the conversation…', { state: 'running' });
       const instruction = 'Summarize this conversation into a compact working context for yourself. Output only the summary. Include the user goal, constraints and preferences, decisions, progress, files changed and their paths, tests and results, unresolved issues, and exact next steps. Preserve important facts and label uncertainty. Do not perform further work or use tools.';
       // Never resume the native session being compacted. It may already be at
       // its provider context limit, which would make both automatic and manual
       // compaction fail with the same overflow error. Rebuild the logical
       // history and summarize it in a fresh throwaway native session instead.
-      const cap = this.contextCap(engine, this.settings(engine, id));
+      const cap = this.contextPressure(c, engine, this.settings(engine, id)).cap;
       const budget = Math.max(4096, Math.floor(cap * 1.8));
       const summaryLimit = Math.min(160000, Math.floor(budget / 3));
-      const context = this.compactionContext(c);
+      const context = this.compactionContext(c, history);
       let summary = '', offset = 0;
       do {
         const size = Math.max(512, budget - instruction.length - summary.length - 512);
@@ -830,8 +890,13 @@ class SharedConversations {
         if (result.result.length > summaryLimit) throw new Error('The summary is too large. The original conversation is retained.');
         summary = result.result;
       } while (offset < context.length);
-      const file = path.join(this.dir, 'handoffs', randomUUID() + '.md'); fs.mkdirSync(path.dirname(file), { recursive: true });
       const markdown = '# Compacted conversation context\n\nWorkspace: ' + c.cwd + '\n\n' + summary;
+      if (history) {
+        completed = true;
+        status('', { state: 'completed' });
+        return { ok: true, sessionId: id, summary: markdown };
+      }
+      const file = path.join(this.dir, 'handoffs', randomUUID() + '.md'); fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, markdown, { flag: 'wx' });
       const previousSegment = c.segments[engine] && { ...c.segments[engine] };
       if (switching.cancelled) {
@@ -839,11 +904,17 @@ class SharedConversations {
         throw new Error('Compaction canceled; the original conversation is retained.');
       }
       if (previousSegment) (c.retiredSegments ||= []).push({ engine, ...previousSegment });
-      this.append(c, { role: 'notice', engine, text: automatic ? 'Context length exceeded; the conversation was compacted automatically' : 'Context compacted: summary saved', file });
+      const notice = this.append(c, { role: 'notice', engine, text: automatic ? 'Context compacted automatically' : 'Context compacted: summary saved', file, ...(trigger ? { compaction: trigger } : {}) });
       c.segments[engine] = { cursor: c.seq, isolated: true, compactFile: file };
       c.updatedAt = Date.now(); this.save(c);
+      completed = true;
+      status('', { state: 'completed', seq: notice.seq });
       return { ok: true, sessionId: id, file };
-    } finally { this.switching.delete(id); status(''); this.publishActivity(id); }
+    } finally {
+      this.switching.delete(id);
+      status('', completed ? undefined : { state: switching.cancelled || recovery?.cancelled ? 'cancelled' : 'failed' });
+      this.publishActivity(id);
+    }
   }
   async command(engine, action, payload) {
     this.validateEngine(engine);
@@ -855,6 +926,7 @@ class SharedConversations {
       case 'save-settings': return this.saveSettings(engine, payload || {});
       case 'list-sessions': return this.list(engine, payload);
       case 'load-session': return this.load(engine, payload);
+      case 'fork-session': return { ok: true, sessionId: this.fork(engine, payload).id };
       case 'rename-session': return this.workspaces.renameSession(payload.id, payload.title);
       case 'archive-session':
         if (this.busy(payload.id)) throw new Error('Stop this conversation before archiving it');

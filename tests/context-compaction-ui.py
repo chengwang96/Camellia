@@ -1,0 +1,61 @@
+"""Compaction timeline states and history visibility, without model calls."""
+import ast
+from pathlib import Path
+from playwright.sync_api import sync_playwright, expect
+
+repo = Path(__file__).resolve().parents[1]
+fixture_source = ast.parse((repo / 'tests/shared-chat-ui.py').read_text(encoding='utf-8'))
+scope = {'__file__': str(repo / 'tests/shared-chat-ui.py')}
+for statement in fixture_source.body:
+    if isinstance(statement, ast.With):
+        break
+    exec(compile(ast.Module(body=[statement], type_ignores=[]), '<fixture>', 'exec'), scope)
+bridge = scope['bridge'].replace('onConversationStatus:()=>{}', 'onConversationStatus:fn=>{window.deliverStatus=fn;}')
+bridge = bridge.replace('preferences:window.fixturePreferences,settings};', 'preferences:window.fixturePreferences,settings,compaction:window.fixtureCompaction||null};')
+bridge = bridge.replace('const fixture = ', 'const fixture = window.chatFixture = ')
+
+with sync_playwright() as playwright:
+    browser = playwright.chromium.launch(headless=True)
+    for theme in ['light', 'dark']:
+        page = browser.new_page(viewport={'width': 1100, 'height': 800}, color_scheme=theme)
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.add_init_script(bridge)
+        page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+        page.wait_for_function('uiReady')
+        page.locator('[data-sid="shared-fixture"]').click()
+        expect(page.locator('#chat')).to_contain_text('Experiment review')
+        page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Asking the engine to summarize the conversation…',compaction:{state:'running'}})")
+        row = page.locator('.context-compaction')
+        expect(row).to_be_visible()
+        expect(row).to_have_text('Compacting context…')
+        expect(row).to_have_attribute('role', 'status')
+        page.evaluate("deliverStatus({sessionId:'another-session',text:'',compaction:{state:'failed'}})")
+        expect(row).to_have_attribute('data-state', 'running')
+        page.screenshot(path=str(scope['preview'] / f'compaction-running-{theme}.png'))
+        page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'',compaction:{state:'completed',seq:3}});deliverStatus({sessionId:'shared-fixture',text:''})")
+        expect(row).to_have_count(1)
+        expect(row).to_have_text('Context compacted')
+        page.screenshot(path=str(scope['preview'] / f'compaction-completed-{theme}.png'))
+        for state in ['failed', 'cancelled']:
+            page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Compacting context…',compaction:{state:'running'}})")
+            page.evaluate("state=>deliverStatus({sessionId:'shared-fixture',text:'',compaction:{state}})", state)
+            expect(page.locator(f'.context-compaction[data-state="{state}"]')).to_contain_text('original conversation is retained')
+        page.evaluate("fixtureCompaction={state:'running'}")
+        page.locator('[data-sid="another-session"]').click()
+        expect(page.locator('.context-compaction')).to_have_count(1)
+        expect(page.locator('.context-compaction')).to_have_attribute('data-state', 'running')
+        page.evaluate("fixtureCompaction=null;chatFixture.messages.push({role:'notice',text:'Context compacted: summary saved',seq:3})")
+        page.locator('[data-sid="shared-fixture"]').click()
+        expect(page.locator('.context-compaction')).to_have_count(1)
+        expect(page.locator('.context-compaction')).to_have_text('Context compacted')
+        expect(page.locator('.handoff-notice')).to_have_count(0)
+        page.evaluate("changeLanguage('zh-CN')")
+        expect(page.locator('.context-compaction')).to_have_text('上下文已压缩')
+        page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Compacting context…',compaction:{state:'running'}})")
+        expect(page.locator('.context-compaction[data-state="running"]')).to_have_text('正在压缩上下文…')
+        page.screenshot(path=str(scope['preview'] / f'compaction-chinese-{theme}.png'), animations='disabled')
+        assert not errors, errors
+        page.close()
+    browser.close()
+print('PASS compaction timeline: running, completed, failure, cancellation, isolation and restoration')

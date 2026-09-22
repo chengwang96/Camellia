@@ -44,7 +44,7 @@ try:
         page = browser.new_page(viewport={'width': 1100, 'height': 900})
         errors = []; page.on('pageerror', lambda e: errors.append(str(e)))
         page.expose_function('testRpc', rpc); page.add_init_script(bridge)
-        page.goto((repo/'src/renderer/settings/api-settings.html').as_uri()); page.wait_for_load_state('networkidle')
+        page.goto((repo/'src/renderer/settings/api-settings.html').as_uri() + '?page=providers'); page.wait_for_load_state('networkidle')
         page.locator('.router-options > summary').click()
         page.locator('#port').fill(str(rpc('freePort')['result']))
         page.locator('#addProvider').click()

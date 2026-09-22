@@ -133,9 +133,10 @@ class ClaudeHistory {
         if (!['user', 'assistant'].includes(role) || row.isMeta || !row.message) continue;
         if (role === 'user' && row.message.role !== 'user') continue;
         const text = messageText(row.message.content).trim();
-        if (!text || (role === 'user' && /^\s*<system-reminder>/.test(text))) continue;
-        if (full) { messages.push({ role, text }); total++; }
-        else messages[total++ % limit] = { role, text: text.slice(0, role === 'user' ? 8000 : 20000) };
+        const output = role === 'assistant' && Array.isArray(row.outputBlocks) ? { outputBlocks: row.outputBlocks } : {};
+        if ((!text && !output.outputBlocks?.length) || (role === 'user' && /^\s*<system-reminder>/.test(text))) continue;
+        if (full) { messages.push({ role, text, ...output }); total++; }
+        else messages[total++ % limit] = { role, text: text.slice(0, role === 'user' ? 8000 : 20000), ...output };
       }
     } finally {
       lines.close();

@@ -121,8 +121,53 @@ async function main() {
   assert.equal(fs.existsSync(legacyFile), false);
   assert.ok(!JSON.parse(fs.readFileSync(path.join(userData, 'desktop-config.json'), 'utf8')).claudeMeta?.archived?.[legacyId]);
 
+  const attachmentDir = path.join(userData, 'clipboard-attachments');
+  fs.mkdirSync(attachmentDir, { recursive: true });
+  const orphanAttachment = path.join(attachmentDir, 'pasted-text-123-11111111-1111-4111-8111-111111111111.txt');
+  const draftAttachment = path.join(attachmentDir, 'pasted-text-123-22222222-2222-4222-8222-222222222222.txt');
+  const recentAttachment = path.join(attachmentDir, 'pasted-text-123-33333333-3333-4333-8333-333333333333.txt');
+  const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  for (const file of [orphanAttachment, draftAttachment, recentAttachment]) {
+    fs.writeFileSync(file, 'attachment data');
+    if (file !== recentAttachment) fs.utimesSync(file, old, old);
+  }
+  await run(`localStorage.setItem('camellia-chat-draft:new:standalone', JSON.stringify({ attachments: [{path: ${JSON.stringify(draftAttachment)}}] }))`);
+  await run("document.querySelector('[data-view=storage]').click()");
+  assert.equal(await run("document.querySelector('#storagePage').hidden"), false);
+  assert.equal(await run("document.querySelector('#storageStatus').textContent"), 'No scan yet.');
+  assert.equal(await run("document.querySelector('#cleanStorage').disabled"), true);
+  await run("document.querySelector('#scanStorage').click()");
+  await wait(() => run("!document.querySelector('#scanStorage').disabled"), 'manual storage scan');
+  assert.equal(await run("document.querySelectorAll('#storageFiles .storage-file').length"), 1);
+  assert.ok(fs.existsSync(orphanAttachment));
+  await run("document.querySelector('#cleanStorage').click()");
+  assert.equal(await run("document.querySelector('#cleanStorageDialog').open"), true);
+  await run("document.querySelector('#cleanStorageDialog').close()");
+  assert.ok(fs.existsSync(orphanAttachment));
+  await run("document.querySelector('#cleanStorage').click(); document.querySelector('#confirmCleanStorage').click()");
+  await wait(() => run("!document.querySelector('#scanStorage').disabled"), 'manual storage cleanup');
+  assert.match(await run("document.querySelector('#storageStatus').textContent"), /Removed 1 files/);
+  assert.equal(fs.existsSync(orphanAttachment), false);
+  assert.ok(fs.existsSync(draftAttachment)); assert.ok(fs.existsSync(recentAttachment));
+  await run("window.CamelliaI18n.setLanguage('zh-CN')");
+  assert.equal(await run("document.querySelector('#scanStorage').textContent"), '扫描可清理文件');
+  await homeWindow.loadFile(path.join(__dirname, '../src/renderer/chat/claude.html'), { query: { harness: 'claude' } });
+  await wait(() => homeWindow.webContents.executeJavaScript('uiReady'), 'chat initialized');
+  const queuedAttachment = path.join(attachmentDir, 'pasted-text-123-44444444-4444-4444-8444-444444444444.txt');
+  fs.writeFileSync(queuedAttachment, 'queued attachment'); fs.utimesSync(queuedAttachment, old, old);
+  await homeWindow.webContents.executeJavaScript(`messageQueue.push({ text: 'queued', attachments: [{ path: ${JSON.stringify(queuedAttachment)} }] })`);
+  await run("document.querySelector('#scanStorage').click()");
+  await wait(() => run("!document.querySelector('#scanStorage').disabled"), 'scan with live chat queue');
+  assert.equal(await run("document.querySelector('#storageStatus').textContent"), '未发现可安全清理的文件。');
+  assert.ok(fs.existsSync(queuedAttachment));
+  await homeWindow.webContents.executeJavaScript('sending = true');
+  const busyScan = await run('window.dshDesktop.storageScan()');
+  assert.equal(busyScan.ok, false);
+  assert.match(busyScan.error, /Stop running conversations/);
+  await homeWindow.webContents.executeJavaScript('sending = false');
+
   assert.deepEqual(errors, []);
-  console.log('PASS: archived settings page lists, restores and deletes archived conversations');
+  console.log('PASS: archived settings and manual space cleanup; saved drafts, recent files and confirmation protected');
   app.exit(0);
 }
 main().catch(error => {

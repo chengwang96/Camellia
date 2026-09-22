@@ -14,8 +14,7 @@ function conversationModels(engine, settings, { router, codex, kimi }) {
   const config = router();
   if (!routerConfig.hasRoutes(config)) return [];
   return routerConfig.publicState(config).models.map(id => ({ id, name: id, thinking: levelsFor(id),
-    contextWindow: config.providers.filter(provider => provider.enabled && provider.keys.some(key => key.enabled))
-      .flatMap(provider => provider.models).find(model => model.id === id)?.contextWindow || 0 }));
+    contextWindow: routerConfig.modelContextWindow(config, id) || 0 }));
 }
 
 module.exports = { conversationModels };

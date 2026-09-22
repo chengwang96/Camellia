@@ -54,6 +54,17 @@ test('model discovery deduplicates exact model aliases without merging versions;
   await assert.rejects(verifyModel(p,'secret',models[0],{fetchImpl:async()=>response({data:[]})}),/valid model response/);
 });
 
+test('model discovery leaves absent or malformed context limits unknown', async () => {
+  const entries = [{ id: 'missing' }, { id: 'negative', context_length: -10000 },
+    { id: 'fraction', context_length: 128000.5 }, { id: 'infinite', context_length: 'Infinity' },
+    { id: 'valid', context_window: '1000000' }];
+  const models = await fetchModels(provider('https://relay.example/v1'), 'secret', {
+    fetchImpl: async () => response({ data: entries }),
+  });
+  for (const model of models.slice(0, 4)) assert.equal(model.maxContext, undefined);
+  assert.equal(models[4].maxContext, 1000000);
+});
+
 test('balance history survives reload, coalesces refreshes, preserves last success, and never crosses replacement keys', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'dsh-insights-'));
   t.after(()=>{assert.equal(path.dirname(path.resolve(root)),path.resolve(os.tmpdir()));assert.ok(path.basename(root).startsWith('dsh-insights-'));removeTree(root);});

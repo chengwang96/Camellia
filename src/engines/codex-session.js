@@ -55,6 +55,7 @@ class CodexSession extends StreamingSession {
     if (this.running || this.dead) return false;
     this.running = true; this.cancelled = false; this.prompt = prompt; this.text = '';
     this.replayEvents = []; this.blockIndex = 0; this.activeBlock = null;
+    this.outputBlocks = []; this.outputItems = new Map(); this.lastOutputItem = null;
     this.turnId = null; this.items = new Map(); this.startedAt = Date.now(); this.usage = null;
     void this.run(prompt, attachments); return true;
   }
@@ -92,24 +93,59 @@ class CodexSession extends StreamingSession {
     if (type === 'text') this.text += text;
     if (this.activeBlock?.id !== id || this.activeBlock.type !== type) {
       this.endBlock(); this.activeBlock = { id, type, index: this.blockIndex++ };
-      this.emitStream({ type: 'content_block_start', index: this.activeBlock.index, content_block: { type } });
+      const output = type === 'text' ? this.outputItems?.get(id) : null;
+      if (output) output.indices.push(this.activeBlock.index);
+      this.emitStream({ type: 'content_block_start', index: this.activeBlock.index,
+        content_block: { type, ...(output ? { phase: output.phase || 'commentary' } : {}) } });
     }
     this.emitStream({ type: 'content_block_delta', index: this.activeBlock.index,
       delta: type === 'text' ? { type: 'text_delta', text } : { type: 'thinking_delta', thinking: text } });
+  }
+  outputItem(id, phase) {
+    let output = this.outputItems.get(id);
+    if (!output) {
+      output = { type: 'text', text: '', phase: phase || null, indices: [] };
+      this.outputItems.set(id, output); this.outputBlocks.push(output);
+    } else if (phase) output.phase = phase;
+    this.lastOutputItem = output;
+    return output;
+  }
+  finish(result) {
+    if (!this.running) return;
+    if (this.outputBlocks) {
+      const success = result.subtype === 'success' && !result.is_error && !this.cancelled;
+      const outputBlocks = this.outputBlocks.filter(block => block.text).map(block => {
+        const phase = block.phase || (success && block === this.lastOutputItem ? 'final_answer' : 'commentary');
+        for (const index of block.indices) this.emit({ type: 'gui:message-phase', index, phase });
+        return { type: 'text', text: block.text, phase };
+      });
+      this.text = outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text).join('\n\n');
+      result = { ...result, outputBlocks };
+    }
+    super.finish(result);
   }
   notify(method, params) {
     if (!this.running || params.threadId !== this.sessionId) return;
     if (method === 'turn/started') { this.turnId = params.turn.id; if (this.cancelled) this.interrupt(); }
     else if (method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
+      const output = this.outputItem(params.itemId, method === 'item/plan/delta' ? 'commentary' : null);
+      output.text += params.delta;
       this.items.set(params.itemId, true); this.textDelta(params.itemId, 'text', params.delta);
     } else if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
       this.textDelta(params.itemId, 'thinking', params.delta);
     } else if (method === 'item/started' || method === 'item/completed') {
       const item = params.item, complete = method === 'item/completed';
       if (['agentMessage', 'plan'].includes(item.type)) {
-        if (complete && !this.items.has(item.id)) this.textDelta(item.id, 'text', item.text);
-        if (complete) this.endBlock();
+        const output = this.outputItem(item.id, item.type === 'plan' ? 'commentary' : item.phase);
+        if (complete && !this.items.has(item.id)) {
+          output.text = item.text || ''; this.textDelta(item.id, 'text', item.text);
+        }
+        if (complete) {
+          if (output.phase) for (const index of output.indices) this.emit({ type: 'gui:message-phase', index, phase: output.phase });
+          this.endBlock();
+        }
       } else if (!['userMessage', 'reasoning'].includes(item.type)) {
+        this.lastOutputItem = null;
         this.endBlock();
         const output = item.aggregatedOutput ?? item.result ?? item.contentItems ?? (item.changes && item.changes.map(c => c.path + '\n' + c.diff).join('\n'));
         const failed = Boolean(item.error || ['failed', 'declined'].includes(item.status) || item.exitCode);

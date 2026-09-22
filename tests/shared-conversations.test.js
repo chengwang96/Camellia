@@ -34,6 +34,188 @@ function fixture(t, overrides = {}) {
   return { manager, args, root, sent, events, finish, drivers, flush, get goal() { return [...manager.goals.values()].at(-1); }, setConfig: c => { config = c; },
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
+
+for (const finalText of ['Verified answer', '']) test('Codex structured output survives shared history reload: ' + (finalText || 'process only'), async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const run = await manager.send('codex', { prompt: 'Inspect the code' });
+  const session = harness.sent.at(-1).session;
+  const outputBlocks = [{ type: 'text', phase: 'commentary', text: 'I will inspect.' },
+    ...(finalText ? [{ type: 'text', phase: 'final_answer', text: finalText }] : [])];
+  manager.capture('codex', { type: 'stream_event', runId: session.gen, event: {
+    type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'I will inspect.' + finalText },
+  } });
+  manager.capture('codex', { type: 'result', subtype: 'success', runId: session.gen, result: finalText, outputBlocks });
+  assert.equal((await run.done).result, finalText);
+  const answer = harness.restart().load('codex', run.sessionId).messages.at(-1);
+  assert.equal(answer.text, finalText);
+  assert.deepEqual(answer.outputBlocks, outputBlocks);
+});
+test('loading a live conversation reads its historical messages only once', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const conversation = manager.create('codex');
+  manager.append(conversation, { role: 'user', text: 'Earlier request' });
+  manager.append(conversation, { role: 'assistant', text: 'Earlier answer' });
+  const run = await manager.send('codex', { sessionId: conversation.id, prompt: 'Continue' });
+  const original = manager.messages.bind(manager);
+  let reads = 0;
+  manager.messages = conversation => { reads++; return original(conversation); };
+  const loaded = manager.load('codex', conversation.id);
+  assert.equal(reads, 1);
+  assert.deepEqual(loaded.messages.map(row => row.text), ['Earlier request', 'Earlier answer', 'Continue']);
+  assert.deepEqual(loaded.live.messages.map(row => row.text), ['Earlier request', 'Earlier answer']);
+  assert.equal(loaded.live.prompt, 'Continue');
+  harness.finish('codex');
+  await run.done;
+  assert.equal(manager.load('codex', conversation.id).messages.length, 4);
+});
+
+for (const engine of ENGINES) test(engine + ' sidebar fork is immediately persisted, renameable and independent before sending', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const workspace = manager.workspaces.metaOp({ op: 'create-workspace', name: 'Research', path: harness.root }).workspace;
+  const source = manager.create(engine, workspace.id, 'Original');
+  source.apiModel = 'chosen-model';
+  source.engineSettings[engine] = { thinkingBudget: 'high', permissionMode: 'plan' };
+  source.segments[engine] = { nativeId: 'source-native', cursor: 0 };
+  manager.append(source, { role: 'user', text: 'Initial request' });
+  manager.append(source, { role: 'assistant', text: 'Initial answer' });
+  manager.append(source, { role: 'assistant', text: 'Internal details', internal: true });
+  manager.save(source);
+  await manager.command(engine, 'rename-session', { id: source.id, title: 'Renamed original' });
+  const snapshot = JSON.stringify(source);
+  const result = await manager.command(engine, 'fork-session', { sessionId: source.id });
+  assert.equal(result.ok, true);
+  assert.notEqual(result.sessionId, source.id);
+  assert.equal(harness.sent.length, 0);
+  const fork = manager.get(result.sessionId);
+  assert.equal(fork.title, 'Fork of Renamed original');
+  assert.equal(fork.workspaceId, workspace.id);
+  assert.equal(fork.cwd, source.cwd);
+  assert.equal(fork.apiModel, source.apiModel);
+  assert.deepEqual(fork.engineSettings, source.engineSettings);
+  assert.notEqual(fork.engineSettings[engine], source.engineSettings[engine]);
+  assert.deepEqual(fork.segments, {});
+  assert.deepEqual(manager.messages(fork).map(row => row.text), ['Initial request', 'Initial answer']);
+  assert.equal(JSON.stringify(source), snapshot);
+  const second = await manager.command(engine, 'fork-session', { sessionId: source.id });
+  assert.equal(manager.get(second.sessionId).title, 'Fork of Renamed original (2)');
+  const localized = await manager.command(engine, 'fork-session', { sessionId: source.id, title: '分叉 · Renamed original' });
+  assert.equal(manager.get(localized.sessionId).title, '分叉 · Renamed original');
+  const listed = (await manager.list(engine)).sessions.find(session => session.id === fork.id);
+  assert.equal(listed.title, fork.title);
+  await manager.command(engine, 'rename-session', { id: fork.id, title: 'Alternative approach' });
+  const restarted = harness.restart();
+  assert.equal((await restarted.list(engine)).sessions.find(session => session.id === fork.id).title, 'Alternative approach');
+  assert.deepEqual(restarted.load(engine, fork.id).messages.map(row => row.text), ['Initial request', 'Initial answer']);
+  const run = await restarted.send(engine, { sessionId: fork.id, prompt: 'Continue the branch' });
+  assert.equal(run.sessionId, fork.id);
+  assert.equal(restarted.items.size, 4);
+  assert.match(harness.sent.at(-1).prompt, /Initial request/);
+  assert.equal(restarted.messages(restarted.get(source.id)).length, 2);
+  harness.finish(engine);
+  await run.done;
+});
+
+test('default fork prefixes follow the configured language without renaming existing branches', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const source = manager.create('codex', null, 'Research $&');
+  harness.args.saveConfig({ language: 'zh-CN' });
+  const chinese = manager.fork('codex', { sessionId: source.id });
+  assert.equal(chinese.title, '分叉 · Research $&');
+  assert.equal(manager.fork('codex', { sessionId: source.id }).title, '分叉 · Research $& (2)');
+  harness.args.saveConfig({ language: 'en' });
+  assert.equal(manager.fork('codex', { sessionId: source.id }).title, 'Fork of Research $&');
+  assert.equal(manager.get(chinese.id).title, '分叉 · Research $&');
+  assert.equal(manager.fork('codex', { sessionId: source.id, title: 'Custom title' }).title, 'Custom title');
+});
+
+test('sidebar fork rejects busy, archived and missing sources without creating conversations', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const run = await manager.send('claude', { prompt: 'Working' });
+  await assert.rejects(manager.command('claude', 'fork-session', { sessionId: run.sessionId }), /finish before forking/);
+  harness.finish('claude');
+  await run.done;
+  await manager.command('claude', 'archive-session', { id: run.sessionId });
+  await assert.rejects(manager.command('claude', 'fork-session', { sessionId: run.sessionId }), /Restore/);
+  await assert.rejects(manager.command('claude', 'fork-session', { sessionId: 'missing' }), /not found/);
+  assert.equal(manager.items.size, 1);
+});
+
+test('sidebar fork copies revised history without discarded turns', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const source = manager.create('codex', null, 'Revised conversation');
+  const original = manager.append(source, { role: 'user', text: 'Discarded request' });
+  manager.append(source, { role: 'assistant', text: 'Discarded answer' });
+  manager.append(source, { role: 'revision', replacesSeq: original.seq, text: 'Revised request' });
+  manager.append(source, { role: 'assistant', text: 'Revised answer' });
+  manager.save(source);
+  const result = await manager.command('codex', 'fork-session', { sessionId: source.id });
+  assert.deepEqual(manager.messages(manager.get(result.sessionId)).map(row => row.text), ['Revised request', 'Revised answer']);
+  assert.equal(harness.sent.length, 0);
+});
+
+for (const mode of ['sidebar', 'tool']) for (const first of ['source', 'fork']) test(`${mode} fork retains shared handoffs after deleting ${first}, including after restart`, context => {
+  const harness = fixture(context, { conversationModels: () => [{ id: 'fixture', thinking: [] }] });
+  let manager = harness.manager;
+  const source = manager.create('claude', null, 'Original');
+  const file = path.join(harness.root, 'handoffs', 'shared.md');
+  const summary = path.join(harness.root, 'handoffs', 'summary.md');
+  fs.mkdirSync(path.dirname(file));
+  fs.writeFileSync(file, 'Important handoff');
+  fs.writeFileSync(summary, 'Important compacted context');
+  source.handoffs.push({ file, status: 'complete' });
+  manager.append(source, { role: 'notice', text: 'Markdown handoff', file });
+  manager.append(source, { role: 'notice', text: 'Context compacted: summary saved', file: summary });
+  manager.save(source);
+  const fork = mode === 'sidebar' ? manager.fork('claude', { sessionId: source.id })
+    : manager.get(require('../src/engines/conversation-control').callConversationTool(manager, source.id,
+      'camellia_conversation_fork', { request_id: 'fork-with-handoff', title: 'Fork' }, { userSeq: source.seq }).conversation.id);
+  const kept = first === 'source' ? fork.id : source.id;
+  manager.workspaces.archiveSession(kept, true);
+  manager = harness.restart();
+  manager.purge(first === 'source' ? source.id : fork.id);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'Important handoff');
+  assert.equal(fs.readFileSync(summary, 'utf8'), 'Important compacted context');
+  assert.deepEqual([...manager.handoffFiles(manager.get(kept))].sort(), [file, summary].sort());
+  assert.match(manager.compactionContext(manager.get(kept)), /Important compacted context/);
+  const handlers = new Map(), opened = [];
+  const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+  const start = main.indexOf("  ipcMain.handle('dsh:conversation-open-handoff'");
+  require('node:vm').runInNewContext(main.slice(start, main.indexOf('\n  });', start) + 6), {
+    ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, sharedConversations: manager,
+    path, shell: { openPath: target => { opened.push(target); } },
+  });
+  const open = target => handlers.get('dsh:conversation-open-handoff')(null, { sessionId: kept, file: target });
+  assert.equal(open(file).ok, true);
+  assert.equal(open(summary).ok, true);
+  assert.equal(open(path.join(harness.root, 'unrelated.md')).ok, false);
+  assert.deepEqual(opened, [file, summary]);
+  manager.purge(kept);
+  assert.equal(fs.existsSync(file), false);
+  assert.equal(fs.existsSync(summary), false);
+});
+
+test('shared conversation pagination selects the newest entries before and after restart', async context => {
+  const harness = fixture(context);
+  let manager = harness.manager;
+  const conversations = Array.from({ length: 65 }, (_, index) => {
+    const conversation = manager.create('claude', null, `Conversation ${index}`);
+    conversation.updatedAt = 1000 + index;
+    manager.save(conversation);
+    return conversation;
+  });
+  for (const restart of [false, true]) {
+    if (restart) manager = harness.restart();
+    const page = await manager.list('claude', {});
+    assert.equal(page.pagination.recent.total, 65);
+    assert.deepEqual(page.sessions.map(entry => entry.id), conversations.slice(5).reverse().map(entry => entry.id));
+    const more = await manager.list('claude', { limits: { recent: 65 } });
+    assert.deepEqual(more.sessions.map(entry => entry.id), [...conversations].reverse().map(entry => entry.id));
+  }
+  const updated = manager.get(conversations[0].id);
+  updated.updatedAt = 2000; manager.save(updated);
+  assert.equal((await manager.list('claude', {})).sessions[0].id, updated.id);
+});
+
 for (const engine of ENGINES) test(engine + ' conversation tools create, fork, configure, send, read and cancel owned children', async context => {
   const harness = fixture(context, {
     createGoalBridge: async options => ({ call: options.call, close() {} }),
@@ -653,8 +835,55 @@ test('a failed turn with oversized tool output can be discarded and resent withi
   assert.equal(f.manager.messages(c).filter(row => row.role === 'user').at(-1).seq, again.userSeq);
 });
 
+test('editing a stopped turn ignores its oversized reply instead of waiting for compaction', async t => {
+  for (const engine of ENGINES) {
+    const harness = fixture(t);
+    harness.drivers[engine].settings = () => ({ model: 'fixture', contextWindow: 8000 });
+    const original = await harness.manager.send(engine, { prompt: 'ORIGINAL_REQUEST' });
+    const conversation = harness.manager.get(original.sessionId);
+    harness.finish(engine, 'stopped', 'DISCARDED_REPLY_' + 'x'.repeat(30000));
+    const resending = harness.manager.send(engine, { sessionId: conversation.id, editSeq: original.userSeq, prompt: 'REVISED_REQUEST' });
+    await harness.flush();
+    assert.equal(harness.sent.length, 2);
+    assert.match(harness.sent.at(-1).prompt, /REVISED_REQUEST/);
+    assert.doesNotMatch(harness.sent.at(-1).prompt, /ORIGINAL_REQUEST|DISCARDED_REPLY|Earlier summary:/);
+    const revised = await resending;
+    harness.finish(engine);
+    await revised.done;
+  }
+});
+
+test('editing reuses only the compaction summary preceding the revised turn', async t => {
+  const harness = fixture(t), conversation = harness.manager.create('codex');
+  harness.manager.append(conversation, { role: 'user', text: 'EARLY_REQUEST' });
+  harness.manager.append(conversation, { role: 'assistant', text: 'EARLY_REPLY_' + 'x'.repeat(230000) });
+  const summaryFile = path.join(harness.root, 'prior-summary.md');
+  fs.writeFileSync(summaryFile, 'SAFE_PRIOR_SUMMARY');
+  harness.manager.append(conversation, { role: 'notice', text: 'Context compacted', file: summaryFile });
+  harness.manager.append(conversation, { role: 'user', text: 'RECENT_REQUEST' });
+  harness.manager.append(conversation, { role: 'assistant', text: 'RECENT_REPLY' });
+  const original = harness.manager.append(conversation, { role: 'user', text: 'ORIGINAL_REQUEST' });
+  const discardedFile = path.join(harness.root, 'discarded-summary.md');
+  fs.writeFileSync(discardedFile, 'DISCARDED_SUMMARY');
+  harness.manager.append(conversation, { role: 'notice', text: 'Context compacted', file: discardedFile });
+  harness.manager.append(conversation, { role: 'assistant', text: 'DISCARDED_REPLY' });
+  const resending = harness.manager.send('codex', { sessionId: conversation.id, editSeq: original.seq, prompt: 'REVISED_REQUEST' });
+  await harness.flush();
+  assert.equal(harness.sent.length, 1);
+  const prompt = harness.sent.at(-1).prompt;
+  assert.match(prompt, /SAFE_PRIOR_SUMMARY/);
+  assert.match(prompt, /RECENT_REQUEST/);
+  assert.match(prompt, /RECENT_REPLY/);
+  assert.match(prompt, /REVISED_REQUEST/);
+  assert.doesNotMatch(prompt, /EARLY_REQUEST|EARLY_REPLY|ORIGINAL_REQUEST|DISCARDED_/);
+  const revised = await resending;
+  harness.finish('codex');
+  await revised.done;
+});
+
 test('an edit resend that replays an oversized history is auto-compacted instead of refused', async t => {
   const f = fixture(t), c = f.manager.create('claude', null, 'Edit a huge conversation');
+  f.manager.modelContextWindow = () => 100000;
   f.manager.append(c, { role: 'user', text: 'First task' });
   f.manager.append(c, { role: 'tool', text: 'EARLY_WORK_' + 'a'.repeat(129000) });
   f.manager.append(c, { role: 'assistant', text: 'Early work done' });
@@ -662,11 +891,15 @@ test('an edit resend that replays an oversized history is auto-compacted instead
   f.manager.append(c, { role: 'tool', text: 'MORE_WORK_' + 'b'.repeat(129000) });
   f.manager.append(c, { role: 'assistant', text: 'More work done' });
   const old = f.manager.append(c, { role: 'user', text: 'ORIGINAL_REQUEST' });
+  f.manager.append(c, { role: 'assistant', text: 'DISCARDED_REPLY' });
   f.manager.save(c);
   const revised = f.manager.send('claude', { sessionId: c.id, editSeq: old.seq, prompt: 'REVISED_REQUEST' });
   await f.flush();
-  f.finish('claude', 'success', 'SUMMARY_TEXT of the earlier work');
-  await f.flush();
+  assert.doesNotMatch(f.sent.at(-1).prompt, /ORIGINAL_REQUEST|DISCARDED_REPLY/);
+  while (/compact working context/.test(f.sent.at(-1).prompt)) {
+    f.finish('claude', 'success', 'SUMMARY_TEXT of the earlier work');
+    await f.flush();
+  }
   const run = await revised;
   const sent = f.sent.at(-1).prompt;
   assert.ok(sent.length < 220000);
@@ -696,6 +929,44 @@ test('revision guards reject busy, stale, oversized and forked edits without cha
   assert.equal((await failed.done).is_error, true);
   assert.equal(f.manager.active.size, 0);
   assert.equal(f.manager.messages(c).filter(m => m.role === 'user').at(-1).seq, failed.userSeq);
+});
+
+test('edit compaction respects the model window and cancellation preserves the original turn', async t => {
+  for (const cancel of [false, true]) {
+    const harness = fixture(t);
+    harness.drivers.codex.settings = () => ({ model: 'fixture', contextWindow: 16000 });
+    const conversation = harness.manager.create('codex');
+    harness.manager.append(conversation, { role: 'user', text: 'PRIOR_REQUEST' });
+    harness.manager.append(conversation, { role: 'assistant', text: 'p'.repeat(45000) });
+    const original = harness.manager.append(conversation, { role: 'user', text: 'ORIGINAL_REQUEST' });
+    harness.manager.append(conversation, { role: 'assistant', text: 'DISCARDED_REPLY' });
+    const before = harness.manager.messages(conversation);
+    const resending = harness.manager.send('codex', { sessionId: conversation.id, editSeq: original.seq, prompt: 'REVISED_REQUEST' });
+    const rejected = cancel ? assert.rejects(resending, /canceled/) : null;
+    await harness.flush();
+    assert.equal(harness.manager.switching.has(conversation.id), true);
+    assert.match(harness.sent.at(-1).prompt, /PRIOR_REQUEST/);
+    assert.doesNotMatch(harness.sent.at(-1).prompt, /ORIGINAL_REQUEST|DISCARDED_REPLY/);
+    if (cancel) {
+      await harness.manager.cancel({ sessionId: conversation.id });
+      await rejected;
+      assert.deepEqual(harness.manager.messages(conversation), before);
+      assert.equal(harness.sent.length, 1);
+    } else {
+      harness.finish('codex', 'success', 'PARTIAL_SUMMARY');
+      await harness.flush();
+      assert.doesNotMatch(harness.sent.at(-1).prompt, /ORIGINAL_REQUEST|DISCARDED_REPLY/);
+      harness.finish('codex', 'success', 'SAFE_PRIOR_SUMMARY');
+      const revised = await resending;
+      assert.match(harness.sent.at(-1).prompt, /SAFE_PRIOR_SUMMARY/);
+      assert.match(harness.sent.at(-1).prompt, /REVISED_REQUEST/);
+      assert.doesNotMatch(harness.sent.at(-1).prompt, /ORIGINAL_REQUEST|DISCARDED_REPLY/);
+      assert.equal(harness.manager.messages(conversation).some(row => row.file), false);
+      harness.finish('codex');
+      await revised.done;
+    }
+    assert.equal(harness.manager.busy(conversation.id), false);
+  }
 });
 
 test('live replay merges only adjacent supported deltas and retains message boundaries and usage', async t => {
@@ -1183,17 +1454,56 @@ test('stopping ordinary pre-send compaction never sends the pending task on any 
 });
 
 test('stopping pre-send compaction during setup sends neither summary nor task', async t => {
-  const f = fixture(t, { modelContextWindow: () => 20000 });
+  const statuses = [];
+  const f = fixture(t, { modelContextWindow: () => 20000, onStatus: status => statuses.push(status) });
   const conversation = f.manager.create('codex', null, 'Pending setup');
   f.manager.append(conversation, { role: 'tool', text: 'x'.repeat(52000) });
   let release;
   f.manager.prepare = () => new Promise(resolve => { release = resolve; });
   const rejected = assert.rejects(f.manager.send('codex', { sessionId: conversation.id, prompt: 'Do not run' }), /canceled/);
+  assert.deepEqual(statuses.at(-1), { sessionId: conversation.id, text: 'Compacting context before continuing the task…', compaction: { state: 'running' } });
+  assert.equal(f.manager.load('codex', conversation.id).compaction.state, 'running');
   await f.manager.cancel({ sessionId: conversation.id });
   release();
   await rejected;
   assert.equal(f.sent.length, 0);
   assert.equal(f.manager.busy(conversation.id), false);
+  assert.equal(statuses.at(-1).text, '');
+  assert.equal(statuses.at(-1).compaction.state, 'cancelled');
+  assert.equal(f.manager.load('codex', conversation.id).compaction, null);
+});
+
+test('resending after stop reports internal compaction before the visible turn starts', async context => {
+  const statuses = [];
+  const harness = fixture(context, { modelContextWindow: () => 20000, onStatus: status => statuses.push(status) });
+  const first = await harness.manager.send('codex', { prompt: 'Inspect the project' });
+  await harness.manager.cancel({ sessionId: first.sessionId, runId: first.runId });
+  assert.equal((await first.done).subtype, 'stopped');
+  const conversation = harness.manager.get(first.sessionId);
+  harness.manager.append(conversation, { role: 'tool', text: 'x'.repeat(52000) });
+  let accepted = false;
+  const pending = harness.manager.command('codex', 'send', { sessionId: conversation.id, prompt: 'Continue' }).then(result => {
+    accepted = true;
+    return result;
+  });
+  await harness.flush();
+  assert.equal(accepted, false);
+  assert.equal(statuses.at(-1).text, 'Asking the engine to summarize the conversation…');
+  assert.equal(harness.events.filter(event => event.type === 'conversation:started').length, 1);
+  while (/compact working context/.test(harness.sent.at(-1).prompt)) {
+    harness.finish('codex', 'success', 'Summary of earlier work');
+    await harness.flush();
+  }
+  const next = await pending;
+  assert.equal(next.ok, true);
+  assert.equal(statuses.at(-1).text, '');
+  const completed = statuses.find(status => status.compaction?.state === 'completed');
+  assert.equal(completed.compaction.seq, harness.manager.messages(conversation).findLast(row => row.role === 'notice').seq);
+  assert.equal(harness.manager.load('codex', conversation.id).compaction, null);
+  assert.equal(harness.events.filter(event => event.type === 'conversation:started').length, 2);
+  harness.finish('codex', 'success', 'Continued response');
+  assert.equal(harness.events.filter(event => event.type === 'result').at(-1).runId, next.runId);
+  assert.equal(harness.manager.busy(conversation.id), false);
 });
 
 test('stopping a later summary chunk discards partial compaction and the pending task', async t => {
@@ -1236,6 +1546,109 @@ test('a conversation under its window cap sends without pre-compaction', async t
   f.finish('claude');
   assert.equal(f.sent.length, 2);
   assert.doesNotMatch(f.sent.at(-1).prompt, /compact working context/);
+});
+
+test('native usage including cache overrides inflated history and survives reload', async t => {
+  for (const engine of ENGINES) {
+    const harness = fixture(t, { modelContextWindow: () => 20000 });
+    const run = await harness.manager.send(engine, { prompt: 'Work' });
+    const conversation = harness.manager.get(run.sessionId);
+    const emit = event => harness.manager.capture(engine, { ...event, runId: harness.sent.at(-1).session.gen });
+    emit({ type: 'gui:usage', usage: { input_tokens: 1000, cache_read_input_tokens: 3000, cache_creation_input_tokens: 1000, context_window: 40000 } });
+    emit({ type: 'gui:tool', id: 'large', status: 'completed', output: 'x'.repeat(90000) });
+    assert.equal(harness.manager.recovering.size, 0);
+    const pressure = harness.manager.contextPressure(conversation, engine, harness.manager.settings(engine, conversation.id));
+    assert.equal(pressure.source, 'usage');
+    assert.equal(pressure.used, 5000);
+    assert.equal(pressure.cap, 40000);
+    assert.ok(pressure.estimate > 30000);
+    harness.finish(engine);
+    await run.done;
+    const manager = harness.restart();
+    const next = await manager.send(engine, { sessionId: conversation.id, prompt: 'Continue' });
+    assert.equal(harness.sent.length, 2);
+    assert.doesNotMatch(harness.sent.at(-1).prompt, /compact working context/);
+    harness.finish(engine);
+    await next.done;
+  }
+});
+
+test('usage approaching the reported window triggers compaction with diagnostics', async t => {
+  for (const engine of ENGINES) {
+    const logs = [];
+    const harness = fixture(t, { modelContextWindow: () => 200000, log: text => logs.push(text) });
+    const run = await harness.manager.send(engine, { prompt: 'Work' });
+    const emit = event => harness.manager.capture(engine, { ...event, runId: harness.sent.at(-1).session.gen });
+    emit({ type: 'gui:usage', usage: { input_tokens: 1000, cache_read_input_tokens: 17000, context_window: 20000 } });
+    emit({ type: 'gui:tool', id: 'done', status: 'completed', output: 'Done' });
+    await harness.flush();
+    assert.match(harness.sent.at(-1).prompt, /compact working context/);
+    emit({ type: 'gui:usage', usage: { input_tokens: 999999, context_window: 1000000 } });
+    harness.finish(engine, 'success', 'Working summary');
+    await harness.flush();
+    const conversation = harness.manager.get(run.sessionId);
+    const notice = harness.manager.rows(conversation).findLast(row => row.compaction);
+    assert.equal(notice.compaction.reason, 'tool-boundary');
+    assert.equal(notice.compaction.source, 'usage');
+    assert.equal(notice.compaction.used, 18000);
+    assert.equal(notice.compaction.cap, 20000);
+    assert.doesNotMatch(notice.text, /exceeded/);
+    assert.ok(logs.some(text => text.includes('tool-boundary')));
+    assert.equal(conversation.segments[engine].contextUsage, undefined);
+    harness.finish(engine);
+    await run.done;
+  }
+});
+
+test('pre-send usage triggers compaction and changed settings discard stale usage', async t => {
+  const harness = fixture(t, { modelContextWindow: () => 200000 });
+  const run = await harness.manager.send('codex', { prompt: 'Work' });
+  const manager = harness.manager, conversation = manager.get(run.sessionId);
+  manager.capture('codex', { type: 'gui:usage', runId: harness.sent.at(-1).session.gen, usage: { input_tokens: 18000, context_window: 20000 } });
+  harness.finish('codex');
+  const settings = manager.settings('codex', conversation.id);
+  for (const patch of [{ model: 'other' }, { connection: 'subscription' }, { contextWindow: 10000 }]) {
+    const pressure = manager.contextPressure(conversation, 'codex', { ...settings, ...patch });
+    assert.equal(pressure.source, 'estimate');
+    assert.equal(pressure.cap, patch.contextWindow || 200000);
+  }
+  const pending = manager.send('codex', { sessionId: conversation.id, prompt: 'Next' });
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /compact working context/);
+  harness.finish('codex', 'success', 'Summary');
+  const next = await pending;
+  assert.equal(manager.rows(conversation).findLast(row => row.compaction).compaction.reason, 'before-send');
+  harness.finish('codex');
+  await next.done;
+});
+
+test('large replay below the token window is not compacted at the old character cutoff', async t => {
+  const harness = fixture(t), manager = harness.manager;
+  const conversation = manager.create('codex');
+  manager.append(conversation, { role: 'user', text: 'Earlier task' });
+  manager.append(conversation, { role: 'assistant', text: 'x'.repeat(250000) });
+  const run = await manager.send('codex', { sessionId: conversation.id, prompt: 'Continue' });
+  assert.ok(harness.sent.at(-1).prompt.length > 220000);
+  assert.doesNotMatch(harness.sent.at(-1).prompt, /compact working context/);
+  harness.finish('codex');
+  await run.done;
+});
+
+test('native compaction lowers pressure and replacing the native session clears usage', async t => {
+  const harness = fixture(t, { modelContextWindow: () => 20000 });
+  const run = await harness.manager.send('codex', { prompt: 'Work' });
+  const manager = harness.manager, conversation = manager.get(run.sessionId);
+  const emit = event => manager.capture('codex', { ...event, runId: harness.sent.at(-1).session.gen });
+  emit({ type: 'gui:usage', usage: { input_tokens: 19000, context_window: 20000 } });
+  emit({ type: 'gui:usage', usage: { input_tokens: 2000, context_window: 20000 } });
+  emit({ type: 'gui:tool', id: 'large', status: 'completed', output: 'x'.repeat(90000) });
+  assert.equal(manager.recovering.size, 0);
+  assert.equal(manager.contextPressure(conversation, 'codex', manager.settings('codex', conversation.id)).used, 2000);
+  emit({ type: 'system', subtype: 'init', session_id: 'replacement-native' });
+  assert.equal(conversation.segments.codex.contextUsage, undefined);
+  assert.equal(manager.contextPressure(conversation, 'codex', manager.settings('codex', conversation.id)).source, 'estimate');
+  harness.finish('codex');
+  await run.done;
 });
 
 test('the estimate follows the compaction summary, and an explicit contextWindow wins over the catalog', async t => {

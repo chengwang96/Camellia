@@ -14,6 +14,7 @@ function harness(cancel, overrides = {}) {
   const state = {
     running: true, sending: false, loadingSession: false, input: { value: '' }, attachments: [], conversationActivity: 'running', currentRunId: 12, sessionOpenSeq: 1,
     context: { sessionId: 'conversation-a' }, sharedChat: true, restoringRun: false,
+    pendingConversationSend: () => null,
     statusText: 'Running…', statusLine: { textContent: 'Running…' }, queueComposerMessage: () => false,
     chatApi: { cancel: payload => cancel(state, payload) },
     sidebar: { load() {} }, updateConversationControls() {}, drainMessageQueue() {},
@@ -104,4 +105,16 @@ test('legacy stop still uses the run ID and accepts an empty IPC reply', async (
   const state = harness((_ui, payload) => { assert.equal(payload, 12); }, { sharedChat: false });
   await state.send();
   assert.equal(state.statusLine.textContent, 'Stopping…');
+});
+
+test('shared run can be stopped while its history is still loading', async () => {
+  let cancelled = false;
+  const state = harness((_ui, payload) => {
+    cancelled = true;
+    assert.equal(payload.sessionId, 'conversation-a');
+    return { ok: true };
+  }, { loadingSession: true });
+  await state.send();
+  assert.equal(cancelled, true);
+  assert.equal(state.statusText, 'Stopping…');
 });

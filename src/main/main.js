@@ -32,6 +32,7 @@ const { SharedConversations, preferences: conversationPreferences, shortTitle } 
 const { createDshChat } = require('../engines/dsh-session');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
 const { saveClipboardImage, savePastedText } = require('./clipboard-attachments');
+const { StorageCleanup } = require('./storage-cleanup');
 const { attachInputContextMenu } = require('./input-context-menu');
 const { describePreview } = require('./file-preview');
 const { resolveArtifacts } = require('./turn-artifacts');
@@ -451,7 +452,7 @@ function managedClaudeModelEnv(model) {
     ANTHROPIC_DEFAULT_HAIKU_MODEL: model, ANTHROPIC_SMALL_FAST_MODEL: model, CLAUDE_CODE_SUBAGENT_MODEL: model };
 }
 function modelContextWindow(model) {
-  for (const p of readOllamaProxyConfig().providers || []) for (const m of p.models || []) if (m.id === model && m.contextWindow) return m.contextWindow;
+  return routerConfig.modelContextWindow(readOllamaProxyConfig(), model);
 }
 function resolveClaudeRoute() {
   const cfg = readOllamaProxyConfig();
@@ -1373,11 +1374,65 @@ if (!gotSingleInstanceLock) {
   });
   ipcMain.handle('dsh:conversation-open-handoff', (_event, { sessionId, file }) => {
     const c = sharedConversations.get(sessionId);
-    if (!c.handoffs.some(h => h.file === file)) return { ok: false, error: 'Handoff not found' };
+    if (!sharedConversations.handoffFiles(c).has(path.resolve(file))) return { ok: false, error: 'Handoff not found' };
     void shell.openPath(file); return { ok: true };
   });
 
   // ---- Archived conversations (Settings → Archived) ------------------------
+  const storageCleanup = new StorageCleanup({
+    dataDir: app.getPath('userData'), conversations: sharedConversations,
+    histories: [claudeHistory, kimiHistory, codex.history, antigravity.history, dshChat.history],
+    liveOwners: () => [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions]
+      .flatMap(pool => [...pool.sessions.entries()].filter(([, session]) => !session.dead).map(([id]) => id)),
+    references: async () => {
+      const assertIdle = () => {
+        if (sharedConversations.isBusy() || goalDriver.armed || kimiGoalDriver.armed || codex.goal.armed || antigravity.goal.armed
+          || [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions].some(pool => pool.running))
+          throw new Error('Stop running conversations before scanning or cleaning space');
+      };
+      assertIdle();
+      const contents = require('electron').webContents.getAllWebContents().filter(contents => {
+        const url = contents.getURL().split('?')[0];
+        return url === pathToFileURL(path.join(RENDERER_ROOT, 'settings/api-settings.html')).href
+          || url === pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href;
+      });
+      if (!contents.length) throw new Error('Could not verify saved drafts; cleanup was stopped');
+      const references = await Promise.all(contents.map(async contents => {
+        let timer;
+        try {
+          const result = await Promise.race([
+            contents.executeJavaScript(`(() => {
+              try {
+                const saved = [];
+                for (let index = 0; index < localStorage.length; index++) {
+                  const key = localStorage.key(index);
+                  if (key.startsWith('camellia-chat-draft:')) saved.push(JSON.parse(localStorage.getItem(key)));
+                }
+                if (document.getElementById('attachRow')) {
+                  if (sending || loadingSession || switchingEngine || !uiReady) throw new Error('Stop running conversations before scanning or cleaning space');
+                  saved.push(attachments, messageQueue);
+                }
+                return { ok: true, references: saved };
+              } catch (error) { return { ok: false, error: error.message }; }
+            })()`),
+            new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Could not verify saved drafts; cleanup was stopped')), 5000); }),
+          ]);
+          if (!result?.ok) throw new Error(result?.error || 'Could not verify saved drafts; cleanup was stopped');
+          return result.references;
+        } finally { clearTimeout(timer); }
+      }));
+      assertIdle();
+      return references;
+    },
+  });
+  ipcMain.handle('dsh:storage-scan', async () => {
+    try { return { ok: true, ...await storageCleanup.scan() }; }
+    catch (error) { return { ok: false, error: error.message }; }
+  });
+  ipcMain.handle('dsh:storage-clean', async (_event, payload) => {
+    try { return { ok: true, ...await storageCleanup.clean(payload?.token) }; }
+    catch (error) { return { ok: false, error: error.message }; }
+  });
   const archivedSources = () => ({
     claude: claudeWorkspaces, kimi: kimiWorkspaces, codex: codex.workspaces,
     antigravity: antigravity.workspaces, shared: sharedConversations.workspaces,
@@ -1622,9 +1677,7 @@ if (!gotSingleInstanceLock) {
     void refreshAccountBalances();
     switchMode('home');
 
-    // Dev-time hot reload: editing claude.html reloads the Claude view right
-    // away (ignored when packaged). Debounced because editors double-fire.
-    if (!app.isPackaged) {
+    if (!app.isPackaged && process.argv.includes('--hot-reload')) {
       try {
         let reloadTimer = null;
         fs.watch(path.join(RENDERER_ROOT, 'chat'), (_event, filename) => {
