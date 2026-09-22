@@ -1697,6 +1697,7 @@ const context = { sessionId: null, workspaceId: null };
   // ---------- event handling ----------
   function handleEvent(ev) {
     if (!ev) return;
+    if (sharedChat && ev.type === 'conversation:workspaces') { void sidebar.load(); return; }
     if (sharedChat && ev.type === 'conversation:activity') {
       void sidebar.load();
       if (restoringRun) { eventsDuringRestore.push(ev); return; }

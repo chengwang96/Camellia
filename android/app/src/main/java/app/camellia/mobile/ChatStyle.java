@@ -42,6 +42,14 @@ final class ChatStyle {
         GradientDrawable shape = rounded(color); shape.setCornerRadius(dp(28)); return shape;
     }
 
+    GradientDrawable floatingBar(android.view.View view) {
+        GradientDrawable shape = capsule(background); view.setBackground(shape); view.setElevation(dp(4));
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            view.setOutlineAmbientShadowColor(0x24000000); view.setOutlineSpotShadowColor(0x32000000);
+        }
+        return shape;
+    }
+
     ColorStateList enabledColors(int enabled, int disabled) {
         return new ColorStateList(new int[][] {{-android.R.attr.state_enabled}, {}}, new int[] {disabled, enabled});
     }
@@ -51,6 +59,17 @@ final class ChatStyle {
         button.setContentDescription(label); button.setTooltipText(label); button.setPadding(dp(13), dp(13), dp(13), dp(13));
         button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), capsule(background), capsule(Color.WHITE)));
         button.setOnClickListener(view -> action.run()); return button;
+    }
+
+    LinearLayout workspaceHeader(String title, String label, String tag, Runnable action) {
+        LinearLayout header = new LinearLayout(context); header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(0, dp(12), 0, 0);
+        TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(14); heading.setTextColor(muted);
+        header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageButton create = lineButton("add", label, action); create.setTag(tag);
+        create.setImageDrawable(new LineIcon("add", muted));
+        header.addView(create, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        return header;
     }
 
     ImageButton backButton(String label, Runnable action) {

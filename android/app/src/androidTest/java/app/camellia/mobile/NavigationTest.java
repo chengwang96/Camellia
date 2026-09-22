@@ -25,6 +25,27 @@ public class NavigationTest extends InstrumentationTestCase {
         return new JSONObject().put("address", address).put("token", token.repeat(43)).put("deviceId", token);
     }
 
+    public void testWorkspaceDialogRequiresCapabilityAndValidatesFields() throws Exception {
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    invoke(activity, "stopNetwork"); invoke(activity, "createWorkspace"); assertNull(currentDialog(activity));
+                    var update = MainActivity.class.getDeclaredMethod("updateCapabilities", JSONObject.class); update.setAccessible(true);
+                    update.invoke(activity, new JSONObject().put("permission", "control").put("capabilities", new org.json.JSONArray().put("create-workspace")));
+                    invoke(activity, "createWorkspace"); android.app.Dialog dialog = currentDialog(activity); assertTrue(dialog.isShowing());
+                    View root = dialog.getWindow().getDecorView();
+                    android.widget.EditText name = root.findViewWithTag("remoteWorkspaceName"), folder = root.findViewWithTag("remoteWorkspacePath");
+                    root.findViewWithTag("remoteWorkspaceCreate").performClick(); assertNotNull(name.getError()); assertTrue(dialog.isShowing());
+                    name.setText("Research"); root.findViewWithTag("remoteWorkspaceCreate").performClick(); assertNotNull(folder.getError()); assertTrue(dialog.isShowing());
+                    assertNotNull(findText(root, "Enter the full path of an existing folder on the computer, not this phone.", "填写电脑上已存在文件夹的完整路径，不是手机路径。"));
+                    dialog.dismiss();
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+        } finally { getInstrumentation().runOnMainSync(activity::finish); }
+    }
+
     public void testStyledRenameValidationCancelAndSave() throws Exception {
         ComputerStore computers = new ComputerStore(encrypted);
         JSONObject profile = computer("http://100.80.1.2:43127", "a"); computers.save(profile);
@@ -157,11 +178,18 @@ public class NavigationTest extends InstrumentationTestCase {
                     assertNull(findText(root, "Network settings", "网络设置")); assertNull(findText(root, "Forget computer", "移除电脑"));
                     assertNull(findText(root, profile.getString("address"), profile.getString("address")));
                     assertNotNull(root.findViewWithTag("searchBar")); assertNotNull(root.findViewWithTag("newIndependent"));
+                    assertTrue(root.findViewWithTag("remoteNewWorkspace") instanceof android.widget.ImageButton);
+                    assertNull(root.findViewWithTag("group:"));
                     assertEquals("Research laptop", ((TextView) root.findViewWithTag("headerComputerName")).getText().toString());
                     JSONObject conversation = new JSONObject().put("id", "12345678-1234-1234-1234-123456789abc").put("title", "Mobile navigation").put("workspaceId", "research").put("workspaceName", "Research");
                     var apply = MainActivity.class.getDeclaredMethod("applyConversationPage", JSONObject.class, boolean.class); apply.setAccessible(true);
                     apply.invoke(activity, new JSONObject().put("conversations", new org.json.JSONArray().put(conversation)), false);
                     assertNotNull(root.findViewWithTag("newWorkspace:research"));
+                    assertNotNull(root.findViewWithTag("remoteNewWorkspace"));
+                    assertNull(root.findViewWithTag("group:"));
+                    JSONObject independent = new JSONObject().put("id", "22345678-1234-1234-1234-123456789abc").put("title", "Independent").put("workspaceId", JSONObject.NULL);
+                    apply.invoke(activity, new JSONObject().put("conversations", new org.json.JSONArray().put(conversation).put(independent)), false);
+                    assertNotNull(root.findViewWithTag("group:"));
                     root.findViewWithTag("conversation:" + conversation.getString("id")).performClick(); invoke(activity, "stopNetwork");
                     root = activity.getWindow().getDecorView(); assertNotNull(root.findViewWithTag("composerBar"));
                     assertEquals("Mobile navigation", ((TextView) root.findViewWithTag("pageTitle")).getText().toString());

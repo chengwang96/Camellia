@@ -390,7 +390,11 @@ public class LocalChatTest extends InstrumentationTestCase {
                     assertTrue(root.getPaddingRight() >= Math.round(18 * activity.getResources().getDisplayMetrics().density));
                 });
                 var monitor = getInstrumentation().addMonitor(SettingsActivity.class.getName(), null, false);
-                ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConfig").performClick());
+                ui(() -> {
+                    View root = activity.getWindow().getDecorView(); assertNull(root.findViewWithTag("localConfig"));
+                    assertTrue(root.findViewWithTag("localNewWorkspace") instanceof android.widget.ImageButton);
+                    root.findViewWithTag("localNewStandalone").performClick();
+                });
                 Activity settings = monitor.waitForActivityWithTimeout(5000); assertNotNull(settings);
                 getInstrumentation().removeMonitor(monitor);
                 String exported = bundle(api.url(), "openai").toString();

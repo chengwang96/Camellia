@@ -58,6 +58,7 @@ class RemoteReadModel {
   listSnapshot(device) {
     const meta = this.manager.workspaces.sessionMeta();
     const hash = createHash('sha256');
+    hash.update(JSON.stringify(meta.workspaces.filter(workspace => device.allWorkspaces === true || device.workspaceIds.includes(workspace.id)).map(({ id, name }) => ({ id, name }))));
     for (const conversation of this.manager.items.values()) {
       if (this.allowed(device, conversation, meta)) hash.update(JSON.stringify(this.summary(conversation, meta)));
     }
