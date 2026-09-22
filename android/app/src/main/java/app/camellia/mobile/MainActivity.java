@@ -34,8 +34,15 @@ import java.util.concurrent.Future;
 
 public final class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final LocationConsent locationConsent = new LocationConsent(this);
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        locationConsent.permissionResult(requestCode);
+    }
     private final ExecutorService worker = Executors.newFixedThreadPool(2);
     private final ExecutorService commandWorker = Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.ThreadPoolExecutor statusWorker = (java.util.concurrent.ThreadPoolExecutor) Executors.newFixedThreadPool(4);
     private final TreeMap<Long, JSONObject> history = new TreeMap<>();
     private ComputerStore store;
     private JSONObject credentials = new JSONObject();
@@ -151,6 +158,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onStop() {
+        locationConsent.cancel();
         if (pages != null) pages.finishTransition();
         foreground = false; stopNetwork();
         EmbeddedNetwork.background();
@@ -159,7 +167,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         if (computerDialog != null) computerDialog.dismiss();
-        stopNetwork(); worker.shutdownNow(); commandWorker.shutdownNow(); networkWorker.shutdownNow(); super.onDestroy();
+        stopNetwork(); worker.shutdownNow(); commandWorker.shutdownNow(); statusWorker.shutdownNow(); networkWorker.shutdownNow(); super.onDestroy();
     }
 
     @Override protected void onSaveInstanceState(Bundle saved) {
@@ -174,6 +182,7 @@ public final class MainActivity extends Activity {
         commandBusy = false;
         if (scroll instanceof RefreshScrollView) ((RefreshScrollView) scroll).setRefreshing(false);
         generation++;
+        statusWorker.getQueue().clear();
         handler.removeCallbacksAndMessages(null);
         if (job != null) job.cancel(true);
         RemoteApi previous = api;
@@ -237,15 +246,17 @@ public final class MainActivity extends Activity {
     }
 
     private void shell(String title, String subtitle) {
+        locationConsent.cancel();
         boolean settingsPage = screen.equals("settings") || screen.equals("network");
+        int bottomPadding = screen.equals("list") || screen.equals("detail") ? chatStyle.dockBottomPadding() : dp(24);
         SettingsStyle settingsStyle = new SettingsStyle(this);
         int pageBackground = settingsPage ? settingsStyle.background : background;
-        root = column(); root.setBackgroundColor(background); root.setPadding(dp(22), dp(12), dp(22), 0);
+        root = column(); root.setBackgroundColor(background); root.setPadding(dp(22), dp(12), dp(22), bottomPadding);
         root.setBackgroundColor(pageBackground); getWindow().setStatusBarColor(pageBackground); getWindow().setNavigationBarColor(pageBackground);
         root.setClipToPadding(false);
         if (screen.equals("detail")) { root.setFocusableInTouchMode(true); root.requestFocus(); }
         root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(dp(18) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(), dp(18) + insets.getSystemWindowInsetRight(), dp(24) + insets.getSystemWindowInsetBottom());
+            view.setPadding(dp(18) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(), dp(18) + insets.getSystemWindowInsetRight(), bottomPadding + insets.getSystemWindowInsetBottom());
             return insets;
         });
         if (pages == null) pages = new PageTransitions(this);
@@ -305,6 +316,7 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout bottomBar(String tag) {
+        chatStyle.dockStatus(status);
         status.setMaxLines(1); status.setMinLines(1); status.setEllipsize(android.text.TextUtils.TruncateAt.END);
         status.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
         LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL); bar.setTag(tag);
@@ -519,7 +531,14 @@ public final class MainActivity extends Activity {
             int[] remaining = {computers.size()};
             for (JSONObject computer : computers) {
                 String address = computer.getString("address");
-                worker.submit(() -> {
+                String checking = tr("正在检查…", "Checking…");
+                computerStates.put(address, checking);
+                TextView label = root.findViewWithTag("computerState:" + address);
+                if (label != null) label.setText(checking);
+            }
+            for (JSONObject computer : computers) {
+                String address = computer.getString("address");
+                statusWorker.submit(() -> {
                     if (ticket != generation) return;
                     String result;
                     RemoteApi client = null;
@@ -1009,7 +1028,7 @@ public final class MainActivity extends Activity {
         composerBar.setPadding(dp(8), dp(6), dp(8), dp(6));
         attachButton = lineButton("plus", tr("添加图片", "Add image"), this::pickImage);
         imageTray = column(); root.addView(imageTray, root.indexOfChild(composerBar)); renderImage();
-        composer = new EditText(this); composer.setTextColor(ink); composer.setTextSize(16); composer.setMaxLines(4); composer.setMinHeight(dp(48));
+        composer = new ComposerInput(this); composer.setTextColor(ink); composer.setTextSize(16); composer.setMaxLines(4); composer.setMinHeight(dp(48));
         composer.setVerticalScrollBarEnabled(false);
         composer.setHint(tr("发消息，继续任务…", "Message your computer…")); composer.setHintTextColor(muted);
         composer.setContentDescription(tr("消息输入框", "Message input")); composer.setGravity(Gravity.TOP | Gravity.START);
@@ -1028,6 +1047,7 @@ public final class MainActivity extends Activity {
         modelButton.setPadding(dp(10), 0, dp(10), 0); modelButton.setFocusable(true); modelButton.setOnClickListener(view -> showRemoteSettings(false));
         tools.addView(modelButton, new LinearLayout.LayoutParams(-2, dp(48)));
         sendButton = composerAction(tr("发送", "Send"), R.drawable.ic_send, this::sendMessage);
+        ((ComposerInput) composer).setSendAction(() -> { if (sendButton.isEnabled() && sendButton.getVisibility() == View.VISIBLE) sendButton.performClick(); });
         stopButton = composerAction(tr("停止", "Stop"), R.drawable.ic_stop, this::stopRun);
         tools.addView(sendButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
         tools.addView(stopButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -1272,11 +1292,23 @@ public final class MainActivity extends Activity {
     }
 
     private void sendMessage() {
+        if (composer == null || !connected || !controlAllowed || lastLive != null || commandBusy || credentials.has("pendingCommand")) return;
+        String prompt = composer.getText().toString(), target = conversationId, address = credentials.optString("address"), server = instance;
+        String image = selectedImage;
+        EditText input = composer;
+        locationConsent.request(prompt, computerName(credentials) + tr("（电脑及其模型服务商；会保存到会话历史）", " (computer and its model provider; saved in conversation history)"), context -> {
+            if (input == composer && prompt.equals(input.getText().toString()) && target.equals(conversationId)
+                    && address.equals(credentials.optString("address")) && server.equals(instance)
+                    && java.util.Objects.equals(image, selectedImage)) sendMessage(context);
+        });
+    }
+
+    private void sendMessage(String locationContext) {
         if (!connected || !controlAllowed || lastLive != null || commandBusy || credentials.has("pendingCommand")) return;
         String prompt = composer.getText().toString();
         if (prompt.trim().isEmpty() && selectedImage == null) return;
         try {
-            JSONObject payload = command("send").put("prompt", prompt.trim().isEmpty() ? tr("请查看这张图片。", "Please review this image.") : prompt).put("expectedSeq", conversationSeq);
+            JSONObject payload = command("send").put("prompt", (prompt.trim().isEmpty() ? tr("请查看这张图片。", "Please review this image.") : prompt) + locationContext).put("expectedSeq", conversationSeq);
             if (selectedImage != null) payload.put("image", selectedImage);
             submitCommand(payload);
         }

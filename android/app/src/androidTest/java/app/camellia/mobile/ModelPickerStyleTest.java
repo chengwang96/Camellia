@@ -85,10 +85,17 @@ public class ModelPickerStyleTest extends InstrumentationTestCase {
         });
         getInstrumentation().runOnMainSync(() -> {
             assertSame(parent, panel().findViewWithTag("modelPickerModels"));
-            assertEquals(.32f, parent.getAlpha());
+            assertEquals(.48f, parent.getAlpha());
             assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS, parent.getImportantForAccessibility());
             View child = panel().findViewWithTag("modelPickerThinking");
             assertTrue(child.getHeight() > 0); assertTrue(child.getBottom() <= panel().getHeight());
+            if (PopupSurface.supportsBlur(activity) && parent.isHardwareAccelerated()) {
+                assertNotNull(parent.findViewWithTag("glassBackdrop"));
+                assertNotNull(child.findViewWithTag("glassBackdrop"));
+                android.graphics.drawable.GradientDrawable tint = (android.graphics.drawable.GradientDrawable)
+                    child.findViewWithTag("glassTint").getBackground();
+                for (int color : tint.getColors()) assertTrue(android.graphics.Color.alpha(color) <= 128);
+            }
             panel().findViewWithTag("thinkingBack").performClick();
             assertNull(panel().findViewWithTag("modelPickerThinking")); assertEquals(1f, parent.getAlpha());
             assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO, parent.getImportantForAccessibility());
@@ -116,5 +123,48 @@ public class ModelPickerStyleTest extends InstrumentationTestCase {
             panel().findViewWithTag("pickerImport").performClick();
             assertEquals("import", chosen); assertFalse(picker.isShowing());
         });
+    }
+
+    public void testBothLayersFollowPageAndReleaseBackdrop() throws Exception {
+        open(false, false);
+        PopupSurface parent = panel().findViewWithTag("modelPickerModels");
+        if (!PopupSurface.supportsBlur(activity) || !parent.isHardwareAccelerated()) return;
+        getInstrumentation().runOnMainSync(() -> panel().findViewWithTag("thinkingSettings").performClick());
+        getInstrumentation().waitForIdleSync();
+        PopupSurface child = panel().findViewWithTag("modelPickerThinking");
+        View page = (View) activity.getWindow().getDecorView().findViewWithTag("pickerTestAnchor").getParent();
+        var snapshotField = PopupSurface.class.getDeclaredField("snapshot"); snapshotField.setAccessible(true);
+        for (int color : new int[] {0xff78aef5, 0xffb99ddd}) {
+            getInstrumentation().runOnMainSync(() -> page.setBackgroundColor(color));
+            screenshot("glass-live-" + Integer.toHexString(color));
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    for (PopupSurface layer : new PopupSurface[] {parent, child}) {
+                        Bitmap image = (Bitmap) snapshotField.get(layer); assertNotNull(image);
+                        assertEquals(color, image.getPixel(image.getWidth() - 12, image.getHeight() / 2));
+                    }
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+        }
+        getInstrumentation().runOnMainSync(picker::dismiss);
+        getInstrumentation().waitForIdleSync();
+        assertNull(snapshotField.get(parent)); assertNull(snapshotField.get(child));
+        var observerField = PopupSurface.class.getDeclaredField("sourceObserver"); observerField.setAccessible(true);
+        assertNull(observerField.get(parent)); assertNull(observerField.get(child));
+    }
+
+    public void testGlassOverConversationText() throws Exception {
+        open(false, false);
+        getInstrumentation().runOnMainSync(() -> {
+            android.widget.LinearLayout page = (android.widget.LinearLayout)
+                activity.getWindow().getDecorView().findViewWithTag("pickerTestAnchor").getParent();
+            android.widget.TextView text = (android.widget.TextView) page.getChildAt(1);
+            text.setTextColor(0xff191a1c); text.setTextSize(17); text.setPadding(0, 60, 0, 0);
+            text.setText(("这是聊天正文，菜单打开后，背景轮廓仍然可见。\n\n"
+                + "当前任务已完成，你可以继续查看结果，或切换模型。\n\n").repeat(6));
+        });
+        screenshot("glass-conversation-models");
+        getInstrumentation().runOnMainSync(() -> panel().findViewWithTag("thinkingSettings").performClick());
+        screenshot("glass-conversation-thinking");
     }
 }

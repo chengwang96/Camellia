@@ -24,9 +24,11 @@ public class MarkdownTest extends InstrumentationTestCase {
     @Override protected void setUp() throws Exception {
         super.setUp(); EmbeddedNetwork.initialize(getInstrumentation().getTargetContext()); EmbeddedNetwork.setEnabled(false);
         new CredentialStore(getInstrumentation().getTargetContext()).clear();
+        getInstrumentation().getTargetContext().getSharedPreferences("markdown", Context.MODE_PRIVATE).edit().clear().commit();
     }
 
     @Override protected void tearDown() throws Exception {
+        getInstrumentation().getTargetContext().getSharedPreferences("markdown", Context.MODE_PRIVATE).edit().clear().commit();
         new CredentialStore(getInstrumentation().getTargetContext()).clear(); super.tearDown();
     }
 
@@ -124,6 +126,45 @@ public class MarkdownTest extends InstrumentationTestCase {
                     assertEquals(1, text.stream().filter(view -> view.getText().toString().equals("Streaming")).count());
                     assertNotNull(root.findViewWithTag("composerBar"));
                 } catch (Exception error) { throw new AssertionError(error); }
+            });
+        } finally { getInstrumentation().runOnMainSync(activity::finish); }
+    }
+
+    public void testCodeWrapTogglePreservesTextAndCopy() {
+        Activity activity = start();
+        try {
+            getInstrumentation().runOnMainSync(() -> {
+                MarkdownView renderer = new MarkdownView(activity, Color.BLACK, Color.GRAY, Color.LTGRAY, Color.BLUE);
+                String value = "    value = \"" + "long_identifier_中文".repeat(60) + "\"\n    second_line\n";
+                String source = "```python\n" + value + "```";
+                View rendered = renderer.render(source);
+                activity.setContentView(rendered);
+                int width = Math.round(320 * activity.getResources().getDisplayMetrics().density);
+                rendered.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+                rendered.layout(0, 0, width, rendered.getMeasuredHeight());
+                TextView code = rendered.findViewWithTag("markdownCodeText");
+                View wrap = rendered.findViewWithTag("markdownCodeWrap");
+                HorizontalScrollView horizontal = rendered.findViewWithTag("markdownCodeScroll");
+                assertFalse(wrap.isSelected()); assertTrue(code.getWidth() > horizontal.getWidth());
+                wrap.performClick();
+                rendered.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+                rendered.layout(0, 0, width, rendered.getMeasuredHeight());
+                assertTrue(wrap.isSelected()); assertEquals(View.GONE, horizontal.getVisibility());
+                assertTrue(code.getWidth() < width); assertTrue(code.getLineCount() > 2);
+                assertEquals(value.substring(0, value.length() - 1), code.getText().toString());
+                findDescription(rendered, "Copy code", "复制代码").performClick();
+                ClipboardManager clipboard = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+                assertEquals(value, clipboard.getPrimaryClip().getItemAt(0).getText().toString());
+                View streamed = renderer.render(source + "\nMore text");
+                assertTrue(streamed.findViewWithTag("markdownCodeWrap").isSelected());
+                View recreated = new MarkdownView(activity, Color.BLACK, Color.GRAY, Color.LTGRAY, Color.BLUE).render(source);
+                assertTrue(recreated.findViewWithTag("markdownCodeWrap").isSelected());
+                wrap.performClick();
+                rendered.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+                rendered.layout(0, 0, width, rendered.getMeasuredHeight());
+                assertFalse(wrap.isSelected()); assertEquals(View.VISIBLE, horizontal.getVisibility());
+                assertTrue(code.getWidth() > horizontal.getWidth());
+                assertEquals(value.substring(0, value.length() - 1), code.getText().toString());
             });
         } finally { getInstrumentation().runOnMainSync(activity::finish); }
     }

@@ -80,12 +80,16 @@ public final class SettingsActivity extends Activity {
         LinearLayout group = settingsStyle.group(content, "");
         preference(group, "language", tr("语言", "Language"), new String[]{tr("跟随系统", "System"), "简体中文", "English"}, new String[]{"system", "zh-CN", "en"});
         preference(group, "theme", tr("外观", "Appearance"), new String[]{tr("跟随系统", "System"), tr("浅色", "Light"), tr("深色", "Dark")}, new String[]{"system", "light", "dark"});
+        preference(group, "enterMode", tr("键盘回车", "Enter key"),
+            new String[]{tr("回车发送，长按换行", "Enter sends; hold for newline"), tr("回车换行，长按发送", "Enter inserts newline; hold to send"), tr("仅点击发送按钮", "Send button only")},
+            new String[]{"send", "newline", "button"});
+        settingsStyle.note(content, tr("仅点击发送按钮模式下，回车始终换行。长按需要键盘提供按键事件；部分软键盘不支持，可切换为回车换行并点击发送按钮。", "In button-only mode, Enter always inserts a newline. Holding Enter requires key events from your keyboard; some software keyboards do not support this. Use newline mode and the send button instead."));
         settingsStyle.note(content, tr("应用于这台手机上的所有页面，不影响电脑设置。", "Applies throughout this phone. Desktop preferences are unchanged."));
     }
     private void preference(LinearLayout group, String key, String title, String[] labels, String[] values) {
         int selected = java.util.Arrays.asList(values).indexOf(MobilePreferences.get(this, key));
         final int current = Math.max(0, selected);
-        settingsStyle.row(group, key.equals("theme") ? "appearance" : "language", title, labels[current], "preference:" + key, () -> {
+        settingsStyle.row(group, key.equals("theme") ? "appearance" : key.equals("enterMode") ? "settings" : "language", title, labels[current], "preference:" + key, () -> {
             dialog = new AlertDialog.Builder(this).setTitle(title).setSingleChoiceItems(labels, current, (choice, which) -> {
                 MobilePreferences.set(this, key, values[which]); choice.dismiss(); recreate();
             }).setNegativeButton(tr("取消", "Cancel"), null).show();
@@ -150,6 +154,20 @@ public final class SettingsActivity extends Activity {
             protocol.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new String[]{"OpenAI", "Anthropic", "Dual"}));
             protocol.setSelection(Math.max(0, java.util.Arrays.asList(protocols).indexOf(original.optString("protocol", "openai")))); form.addView(protocol);
             EditText alternate = field(form, tr("Anthropic Endpoint（可选）", "Anthropic endpoint (optional)"), "providerAlternate", original.optString("anthropicBaseUrl"), false, false);
+            JSONArray existingKeys = original.optJSONArray("keys");
+            if (existingKeys != null && existingKeys.length() > 0) {
+                LinearLayout keyGroup = settingsStyle.group(form, tr("已有密钥", "Existing keys"));
+                for (int keyIndex = 0; keyIndex < existingKeys.length(); keyIndex++) {
+                    JSONObject entry = existingKeys.getJSONObject(keyIndex);
+                    String secret = entry.getString("key");
+                    String masked = secret.length() > 8 ? "•••• " + secret.substring(secret.length() - 4) : "••••";
+                    settingsStyle.toggle(keyGroup, "Key " + (keyIndex + 1), masked, "providerKeyEnabled:" + keyIndex,
+                        entry.optBoolean("enabled", true), (toggle, enabled) -> {
+                            try { entry.put("enabled", enabled); } catch (Exception error) { failure(error); }
+                        });
+                }
+                settingsStyle.note(form, tr("关闭后保留密钥，但不参与请求或重试；点击保存后生效。按列表顺序使用已启用密钥，全部关闭时此供应商的模型不可用。", "Disabled keys are kept but skipped for requests and retries. Changes apply on Save. Enabled keys are tried in order; disabling all keys makes this provider’s models unavailable."));
+            }
             EditText keys = field(form, tr("API Key（每行一个）", "API keys (one per line)"), "providerKeys", "", true, true);
             keys.setHint(index < 0 ? tr("输入 API Key", "Enter API key") : tr("留空保留已有密钥；填写则替换", "Leave blank to keep keys; enter to replace"));
             StringBuilder modelLines = new StringBuilder(); JSONArray models = original.optJSONArray("models");

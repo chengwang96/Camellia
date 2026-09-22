@@ -196,10 +196,31 @@ final class MarkdownView {
         LinearLayout panel = column(); panel.setTag("markdownCode"); panel.setBackground(background(surface, false)); panel.setPadding(dp(12), 0, dp(12), dp(8));
         LinearLayout header = new LinearLayout(context); header.setGravity(Gravity.CENTER_VERTICAL);
         TextView label = text(language.split("\\s+", 2)[0], 11); label.setTextColor(muted); label.setSingleLine(true); label.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        header.addView(label, new LinearLayout.LayoutParams(0, -2, 1)); header.addView(copy(value), new LinearLayout.LayoutParams(-2, dp(48))); panel.addView(header);
+        Button wrap = new Button(context); wrap.setTag("markdownCodeWrap"); wrap.setAllCaps(false);
+        wrap.setText(tr("自动换行", "Word wrap")); wrap.setContentDescription(tr("自动换行", "Word wrap"));
+        wrap.setTextSize(12); wrap.setTextColor(accent); wrap.setMinHeight(dp(48));
+        header.addView(label, new LinearLayout.LayoutParams(0, -2, 1)); header.addView(wrap, new LinearLayout.LayoutParams(-2, dp(48)));
+        header.addView(copy(value), new LinearLayout.LayoutParams(-2, dp(48))); panel.addView(header);
         HorizontalScrollView horizontal = new HorizontalScrollView(context); horizontal.setTag("markdownCodeScroll");
         TextView code = text(value.endsWith("\n") ? value.substring(0, value.length() - 1) : value, 13);
-        code.setTypeface(Typeface.MONOSPACE); code.setHorizontallyScrolling(true); horizontal.addView(code); panel.addView(horizontal);
+        code.setTag("markdownCodeText"); code.setTypeface(Typeface.MONOSPACE);
+        android.content.SharedPreferences preferences = context.getSharedPreferences("markdown", Context.MODE_PRIVATE);
+        Runnable applyWrap = () -> {
+            boolean wrapped = wrap.isSelected();
+            if (code.getParent() == horizontal) horizontal.removeView(code);
+            else if (code.getParent() == panel) panel.removeView(code);
+            code.setHorizontallyScrolling(!wrapped);
+            horizontal.scrollTo(0, 0); horizontal.setVisibility(wrapped ? View.GONE : View.VISIBLE);
+            if (wrapped) panel.addView(code, new LinearLayout.LayoutParams(-1, -2));
+            else horizontal.addView(code, new android.widget.FrameLayout.LayoutParams(-2, -2));
+            wrap.setText(tr("自动换行", "Word wrap") + (wrapped ? " ✓" : ""));
+        };
+        panel.addView(horizontal, new LinearLayout.LayoutParams(-1, -2));
+        wrap.setSelected(preferences.getBoolean("codeWrap", false)); applyWrap.run();
+        wrap.setOnClickListener(view -> {
+            wrap.setSelected(!wrap.isSelected());
+            preferences.edit().putBoolean("codeWrap", wrap.isSelected()).apply(); applyWrap.run();
+        });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(6), 0, dp(10)); target.addView(panel, params);
     }
 

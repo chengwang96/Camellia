@@ -161,6 +161,17 @@ public class LocalChatTest extends InstrumentationTestCase {
         assertFalse(LocalChatHttpError.from(403, "{\"error\":\"Access denied in your region\"}", keys, "ollama.com", 1, 2).tryNextKey);
         assertFalse(LocalChatHttpError.from(403, "{\"error\":\"IP address limit reached\"}", keys, "ollama.com", 1, 2).tryNextKey);
         assertTrue(LocalChatHttpError.from(403, "{\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid API key\"}}", keys, "ollama.com", 1, 2).tryNextKey);
+        for (int code : new int[]{400, 405}) {
+            assertTrue(LocalChatHttpError.from(code, "{\"error\":{\"code\":\"insufficient_quota\"}}", keys, "example.com", 1, 2).tryNextKey);
+            assertFalse(LocalChatHttpError.from(code, "{\"error\":\"context limit exceeded\"}", keys, "example.com", 1, 2).tryNextKey);
+            try (MockApi api = new MockApi(new int[]{code, 200}, new String[]{"application/json", "application/json"},
+                    new String[]{"{\"error\":{\"code\":\"insufficient_quota\"}}", "{\"choices\":[{\"message\":{\"content\":\"Recovered\"}}]}"})) {
+                LocalChatConfig.Route route = new LocalChatConfig.Route("test", "Test", "model", "openai", api.url(), keys);
+                assertEquals("Recovered", new LocalChatClient().chat(route, request(), text -> {}));
+                assertEquals(2, api.requests.size());
+                assertTrue(api.requests.get(1).contains("Bearer second-secret"));
+            }
+        }
         assertTrue(LocalChatHttpError.redact("api_key=unknown-secret sk-other-secret Bearer hidden", keys).indexOf("unknown-secret") < 0);
         try (MockApi api = new MockApi(403, "application/json", source)) {
             try { new LocalChatClient().chat(route(api.url(), "openai"), request(), text -> {}); fail("Accepted quota rejection"); }

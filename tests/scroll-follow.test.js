@@ -80,7 +80,8 @@ test('restoring a draft ignores legacy scroll positions without losing composer 
   for (const saved of [null, { text: 'draft', attachments: [{ path: 'image.png' }], pendingForkId: 'fork', scrollTop: 0, bottom: false }]) {
     const { state, layout } = scrollFixture();
     Object.assign(state, {
-      sharedChat: true, readUi: () => saved, draftKey: () => 'session', input: {},
+      sharedChat: true, readUi: key => key === 'draft:session' ? saved : null, draftKey: () => 'session', input: {},
+      context: { sessionId: 'session' }, conversationQueues: new Map(), messageQueue: [], renderMessageQueue() {},
       attachments: [], pendingForkId: null, renderAttachments() {}, autoResize() {}, updateSendEnabled() {},
     });
     vm.runInContext(source.slice(source.indexOf('  function restoreDraft()'), source.indexOf("  window.addEventListener('beforeunload'")), state);
@@ -92,6 +93,7 @@ test('restoring a draft ignores legacy scroll positions without losing composer 
     assert.equal(state.input.value, saved?.text || '');
     assert.equal(state.pendingForkId, saved?.pendingForkId || null);
     assert.equal(state.attachments.length, saved?.attachments.length || 0);
+    assert.equal(state.messageQueue.length, 0);
   }
 });
 

@@ -25,6 +25,62 @@ public class NavigationTest extends InstrumentationTestCase {
         return new JSONObject().put("address", address).put("token", token.repeat(43)).put("deviceId", token);
     }
 
+    public void testRemoteEntryChecksEveryComputerWithoutWaitingForChatWorker() throws Exception {
+        ComputerStore computers = new ComputerStore(encrypted);
+        java.util.List<String> addresses = new java.util.ArrayList<>();
+        for (int index = 1; index <= 6; index++) {
+            String address = "http://100.80.1." + index + ":43127"; addresses.add(address);
+            computers.save(new JSONObject().put("address", address).put("deviceId", "revoked-" + index));
+        }
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch started = new java.util.concurrent.CountDownLatch(2);
+        try {
+            var field = MainActivity.class.getDeclaredField("worker"); field.setAccessible(true);
+            java.util.concurrent.ExecutorService worker = (java.util.concurrent.ExecutorService) field.get(activity);
+            for (int index = 0; index < 2; index++) worker.submit(() -> {
+                started.countDown();
+                try { release.await(); } catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+            });
+            assertTrue(started.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            getInstrumentation().runOnMainSync(() -> {
+                activity.getWindow().getDecorView().findViewWithTag("remoteControlEntry").performClick();
+                for (String address : addresses) {
+                    TextView label = activity.getWindow().getDecorView().findViewWithTag("computerState:" + address);
+                    assertTrue(label.getText().toString().matches("Checking…|正在检查…"));
+                }
+            });
+            long deadline = android.os.SystemClock.uptimeMillis() + 3000;
+            java.util.concurrent.atomic.AtomicBoolean complete = new java.util.concurrent.atomic.AtomicBoolean();
+            while (!complete.get() && android.os.SystemClock.uptimeMillis() < deadline) {
+                getInstrumentation().runOnMainSync(() -> {
+                    boolean ready = true;
+                    for (String address : addresses) {
+                        TextView label = activity.getWindow().getDecorView().findViewWithTag("computerState:" + address);
+                        ready &= label.getText().toString().matches("Pair again|需要重新配对");
+                    }
+                    complete.set(ready);
+                });
+                if (!complete.get()) android.os.SystemClock.sleep(20);
+            }
+            assertTrue("All computer checks must finish even when chat workers are busy", complete.get());
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    invoke(activity, "refreshComputers");
+                    for (String address : addresses) {
+                        TextView label = activity.getWindow().getDecorView().findViewWithTag("computerState:" + address);
+                        assertTrue(label.getText().toString().matches("Checking…|正在检查…"));
+                    }
+                    activity.onBackPressed();
+                    assertNotNull(activity.getWindow().getDecorView().findViewWithTag("remoteControlEntry"));
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+        } finally {
+            release.countDown(); getInstrumentation().runOnMainSync(activity::finish);
+            getInstrumentation().waitForIdleSync();
+        }
+    }
+
     public void testWorkspaceDialogRequiresCapabilityAndValidatesFields() throws Exception {
         Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
@@ -248,6 +304,15 @@ public class NavigationTest extends InstrumentationTestCase {
             "Cannot connect. Check login in Network connection, that the computer is awake, and Mobile access."
         };
         float density = activity.getResources().getDisplayMetrics().density;
+        assertEquals(Math.round(2 * density), status.getPaddingTop());
+        assertEquals(Math.round(2 * density), status.getPaddingBottom());
+        android.view.WindowInsets original = parent.getRootWindowInsets();
+        assertNotNull(original);
+        for (int bottom : new int[] {0, Math.round(24 * density), Math.round(280 * density)}) {
+            parent.dispatchApplyWindowInsets(original.replaceSystemWindowInsets(0, 0, 0, bottom));
+            assertEquals(Math.round(8 * density) + bottom, parent.getPaddingBottom());
+        }
+        if (original != null) parent.dispatchApplyWindowInsets(original);
         for (int width : new int[] {320, 412}) {
             for (String message : messages) {
                 status.setText(message); status.setTextSize(18);

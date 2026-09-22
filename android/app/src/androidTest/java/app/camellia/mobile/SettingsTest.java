@@ -11,6 +11,21 @@ import android.widget.EditText;
 import org.json.JSONObject;
 
 public class SettingsTest extends InstrumentationTestCase {
+    public void testEnterPreferenceOffersThreeModes() throws Throwable {
+        Activity activity = launch("general");
+        try {
+            ui(() -> {
+                assertEquals("send", MobilePreferences.enterMode(activity));
+                root(activity).findViewWithTag("preference:enterMode").performClick();
+                AlertDialog choice = dialog(activity);
+                assertEquals(3, choice.getListView().getCount());
+                assertEquals(0, choice.getListView().getCheckedItemPosition());
+                choice.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+                assertEquals("send", MobilePreferences.enterMode(activity));
+            });
+        } finally { ui(activity::finish); }
+    }
+
     @Override protected void setUp() throws Exception {
         super.setUp();
         new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private").clear();
@@ -56,6 +71,28 @@ public class SettingsTest extends InstrumentationTestCase {
             store = new LocalChatStore(activity);
             assertEquals(providerId, store.config().getJSONArray("providers").getJSONObject(0).getString("id"));
             assertEquals(2, store.config().getJSONArray("providers").getJSONObject(0).getJSONArray("keys").length());
+            ui(() -> root(activity).findViewWithTag("providerEdit:0").performClick());
+            ui(() -> {
+                AlertDialog edit = dialog(activity);
+                ((android.widget.Switch) edit.getWindow().getDecorView().findViewWithTag("providerKeyEnabled:0")).setChecked(false);
+                edit.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+            });
+            assertEquals("test-secret", LocalChatConfig.routes(new LocalChatStore(activity).config()).get(0).key);
+            ui(() -> root(activity).findViewWithTag("providerEdit:0").performClick());
+            ui(() -> {
+                AlertDialog edit = dialog(activity);
+                ((android.widget.Switch) edit.getWindow().getDecorView().findViewWithTag("providerKeyEnabled:0")).setChecked(false);
+                edit.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            });
+            assertEquals("second-secret", LocalChatConfig.routes(new LocalChatStore(activity).config()).get(0).key);
+            ui(() -> root(activity).findViewWithTag("providerEdit:0").performClick());
+            ui(() -> {
+                AlertDialog edit = dialog(activity);
+                android.widget.Switch first = edit.getWindow().getDecorView().findViewWithTag("providerKeyEnabled:0");
+                assertFalse(first.isChecked()); first.setChecked(true);
+                edit.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            });
+            assertEquals("test-secret", LocalChatConfig.routes(new LocalChatStore(activity).config()).get(0).key);
             String[] copied = new String[1];
             ui(() -> root(activity).findViewWithTag("providerExport").performClick());
             ui(() -> dialog(activity).getButton(AlertDialog.BUTTON_POSITIVE).performClick());

@@ -5,6 +5,7 @@
   if (typeof module === 'object' && module.exports) module.exports = messages;
   else root.CamelliaMessages = messages;
 })(typeof window === 'object' ? window : globalThis, {
+  "Word wrap": "自动换行",
   "Context capacity evidence": "上下文容量证据",
   "Detect context capacity": "检测上下文容量",
   "Cancel probe": "取消探测",

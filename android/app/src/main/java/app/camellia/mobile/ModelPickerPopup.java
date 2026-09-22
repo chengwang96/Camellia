@@ -49,6 +49,7 @@ final class ModelPickerPopup {
     private PopupSurface modelSurface;
     private PopupSurface thinkingSurface;
     private View retreat;
+    private View backdropSource;
     private int heightLimit, modelHeight;
 
     ModelPickerPopup(Context context, boolean chinese, int background, int surface, int ink, int muted, int accent,
@@ -81,7 +82,8 @@ final class ModelPickerPopup {
         int top = Math.max(visible.top + dp(8), Math.min(location[1] + anchor.getHeight() + dp(10), visible.bottom - dp(180)));
         heightLimit = Math.max(1, visible.bottom - top - dp(16));
         popup.setWidth(width); models();
-        modelSurface.capture(anchor.getRootView(), left, top, width, modelHeight);
+        backdropSource = anchor.getRootView();
+        modelSurface.capture(backdropSource, left, top, width, modelHeight);
         int horizontal = anchor.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL
             ? anchor.getRootView().getWidth() - left - width : left;
         popup.showAtLocation(anchor, Gravity.TOP | Gravity.START, horizontal, top);
@@ -215,11 +217,13 @@ final class ModelPickerPopup {
         thinkingSurface = surface(body); thinkingSurface.setTag("modelPickerThinking");
         int childHeight = height(thinkingSurface);
         int totalHeight = Math.min(heightLimit, Math.max(modelHeight, childHeight + dp(96)));
-        modelSurface.setAlpha(.32f);
+        int[] origin = new int[2]; modelSurface.getLocationOnScreen(origin);
+        thinkingSurface.capture(backdropSource, origin[0], origin[1] + totalHeight - childHeight, popup.getWidth(), childHeight);
+        modelSurface.setAlpha(.48f);
         modelSurface.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         modelSurface.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         if (Build.VERSION.SDK_INT >= 31 && PopupSurface.supportsBlur(context))
-            modelSurface.setRenderEffect(RenderEffect.createBlurEffect(dp(2), dp(2), Shader.TileMode.CLAMP));
+            modelSurface.setRenderEffect(RenderEffect.createBlurEffect(dp(6), dp(6), Shader.TileMode.CLAMP));
         retreat = new View(context); retreat.setTag("thinkingRetreat");
         retreat.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         retreat.setOnClickListener(view -> models()); panel.addView(retreat, new FrameLayout.LayoutParams(-1, -1));

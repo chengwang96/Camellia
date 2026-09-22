@@ -35,15 +35,21 @@ test('send button click does not pass the event as a queued message', () => {
 });
 
 function queueHarness(send, overrides = {}) {
+  const storage = new Map();
   const state = {
     messageQueue: [{ text: 'First', attachments: [{ name: 'data.csv', path: 'D:/data.csv' }] }, { text: 'Second', attachments: [] }],
     drainingQueue: false, running: false, sending: false, loadingSession: false,
     sessionOpenSeq: 1,
     conversationActivity: null, switchingEngine: false, editingMessage: null,
+    sharedChat: true, context: { sessionId: 'session' }, conversationQueues: new Map(),
+    pendingConversationSend: () => null, draftKey: () => state.context.sessionId,
+    writeUi: (key, value) => storage.set(key, JSON.stringify(value)),
+    readUi: key => JSON.parse(storage.get(key) || 'null'),
     goalUI: { isActive: () => false }, renderMessageQueue() {}, setStatus(text) { state.status = text; },
     send: message => send(state, message), ...overrides,
   };
   vm.createContext(state);
+  vm.runInContext(source.slice(source.indexOf('  function saveMessageQueue('), source.indexOf("  window.addEventListener('beforeunload'")), state);
   vm.runInContext(source.slice(source.indexOf('  function drainMessageQueue()'), source.indexOf("  $('attachBtn')")), state);
   return state;
 }
@@ -67,6 +73,7 @@ test('queue remains intact until a send is accepted, and drains in order once', 
   accept(true);
   await flushQueue();
   assert.equal(state.messageQueue.length, 1);
+  assert.equal(state.readUi('queue:session')[0].text, 'Second');
   assert.equal(sent.length, 1);
   state.running = false;
   state.drainMessageQueue();
@@ -74,12 +81,14 @@ test('queue remains intact until a send is accepted, and drains in order once', 
   accept(true);
   await flushQueue();
   assert.equal(state.messageQueue.length, 0);
+  assert.equal(state.readUi('queue:session').length, 0);
 });
 
 test('active goal and other send guards retain queued messages', async () => {
   for (const overrides of [
     { goalUI: { isActive: () => true } }, { editingMessage: {} }, { switchingEngine: true },
     { running: true }, { sending: true }, { loadingSession: true }, { conversationActivity: 'running' },
+    { pendingConversationSend: () => ({}) },
   ]) {
     let calls = 0;
     const state = queueHarness(async () => { calls++; return true; }, overrides);

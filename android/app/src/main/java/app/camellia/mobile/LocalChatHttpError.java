@@ -27,13 +27,15 @@ final class LocalChatHttpError extends IOException {
         } catch (Exception ignored) {}
         String evidence = redact(type + " " + detail, keys).toLowerCase(Locale.ROOT);
         boolean quota = evidence.matches("(?s).*(quota|limit|plan|entitle|subscription|exceed|credit|balance|upgrade_required|余额|额度).*");
+        boolean explicitQuota = evidence.matches("(?s).*(insufficient[_ ]quota|quota[_ ]exceeded|insufficient[_ ]balance|insufficient[_ ]credit|credit[_ ]balance[^.]*too low|monthly[^.]*limit[^.]*(exceeded|reached)|月额度[^.]*(用完|耗尽|不足)|余额不足|额度耗尽).*");
         boolean authentication = evidence.matches("(?s).*(invalid[_ ]api[_ ]key|invalid[_ ]key|invalid api token|authentication_error|unauthorized|invalid_token).*");
         boolean html = source.toLowerCase(Locale.ROOT).matches("(?s).*<(html|!doctype|head|body)\\b.*");
         boolean networkRestriction = evidence.matches("(?s).*(region|country|ip address|firewall|cloudflare|waf|地区|地域|防火墙).*");
         if (networkRestriction || html) { quota = false; authentication = false; }
+        boolean quotaRejection = !html && !networkRestriction && explicitQuota && status >= 400 && status < 500;
         String reason;
         if (status == 401 || status == 403 && authentication) reason = "密钥认证被拒绝，请检查 API 密钥 / API key authentication rejected";
-        else if (status == 402 || status == 403 && quota) reason = "额度或套餐权限不足，请检查供应商账户 / Check provider quota or subscription";
+        else if (status == 402 || status == 403 && quota || quotaRejection) reason = "额度或套餐权限不足，请检查供应商账户 / Check provider quota or subscription";
         else if (status == 429) reason = "达到额度或速率限制 / Quota or rate limit reached";
         else if (status == 403) reason = html
             ? "服务商或网络网关拒绝访问；可能是 IP、地区或防护规则，并不能据此判断密钥错误 / Provider or gateway denied access; check network or region"
@@ -45,7 +47,7 @@ final class LocalChatHttpError extends IOException {
         String location = host + (total > 1 ? " · 密钥尝试 / Key attempt " + attempt + "/" + total : "");
         return new LocalChatHttpError("API HTTP " + status + " · " + location + "\n" + reason
             + (safe.isEmpty() ? "" : "\n服务商信息 / Provider: " + safe),
-            !html && !networkRestriction && (status == 401 || status == 402 || status == 429 || status == 403 && (quota || authentication)));
+            !html && !networkRestriction && (status == 401 || status == 402 || status == 429 || status == 403 && (quota || authentication) || quotaRejection));
     }
 
     private static String string(JSONObject object, String key) {
