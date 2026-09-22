@@ -91,10 +91,14 @@ final class ExecutionProcessView extends LinearLayout {
                 String toolKey = key + ":tool:" + index;
                 boolean open = state.open(toolKey, false); detail.setVisibility(open ? VISIBLE : GONE);
                 String toolTitle = title;
-                heading.setText((open ? "⌄  " : "›  ") + toolTitle); heading.setMinHeight(style.dp(48)); heading.setGravity(Gravity.CENTER_VERTICAL); heading.setFocusable(true);
+                LineIcon toolArrow = new LineIcon(open ? "down" : "right", style.muted); toolArrow.setBounds(0, 0, style.dp(18), style.dp(18));
+                heading.setCompoundDrawablesRelative(toolArrow, null, null, null); heading.setCompoundDrawablePadding(style.dp(8));
+                heading.setMinHeight(style.dp(48)); heading.setGravity(Gravity.CENTER_VERTICAL); heading.setFocusable(true);
                 heading.setOnClickListener(view -> {
                     boolean next = detail.getVisibility() != VISIBLE; state.set(toolKey, next);
-                    detail.setVisibility(next ? VISIBLE : GONE); heading.setText((next ? "⌄  " : "›  ") + toolTitle);
+                    detail.setVisibility(next ? VISIBLE : GONE);
+                    LineIcon nextArrow = new LineIcon(next ? "down" : "right", style.muted); nextArrow.setBounds(0, 0, style.dp(18), style.dp(18));
+                    heading.setCompoundDrawablesRelative(nextArrow, null, null, null);
                 });
             }
             body.addView(detail);

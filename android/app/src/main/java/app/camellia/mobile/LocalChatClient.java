@@ -13,15 +13,33 @@ final class LocalChatClient {
     interface Listener {
         void onText(String text);
         default void onThinking(String text) {}
+        default void onResponse(JSONObject response) {}
+        default void onTool(JSONObject entry) {}
     }
     private volatile HttpURLConnection connection;
     private volatile boolean cancelled;
+    private volatile LocalToolLoop.Executor tools;
     private static final int LIMIT = 2 * 1024 * 1024;
 
     void cancel() {
         cancelled = true;
+        LocalToolLoop.Executor executor = tools;
+        if (executor != null) executor.cancel();
         HttpURLConnection current = connection;
         if (current != null) current.disconnect();
+    }
+
+    boolean isCancelled() { return cancelled; }
+    void requestCancel() { cancelled = true; }
+
+    String chatWithTools(LocalChatConfig.Route route, JSONObject body, Listener listener, LocalToolLoop.Executor executor) throws Exception {
+        tools = executor;
+        java.util.concurrent.ScheduledExecutorService timeout = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        timeout.schedule(this::cancel, 180, java.util.concurrent.TimeUnit.SECONDS);
+        try {
+            if (cancelled) { executor.cancel(); throw new IOException("Cancelled"); }
+            return LocalToolLoop.run(this, route, body, listener, executor);
+        } finally { timeout.shutdownNow(); executor.cancel(); tools = null; }
     }
 
     static JSONObject request(LocalChatConfig.Route route, JSONArray history) throws Exception {
@@ -67,6 +85,7 @@ final class LocalChatClient {
             current.setRequestMethod("POST"); current.setDoOutput(true);
             current.setRequestProperty("Content-Type", "application/json");
             current.setRequestProperty("Accept", "text/event-stream, application/json");
+            current.setRequestProperty("User-Agent", "Camellia-Android/LocalChat");
             String key = route.keys.get(keyIndex);
             current.setRequestProperty("Authorization", "Bearer " + key);
             if (route.protocol.equals("anthropic")) {
@@ -83,8 +102,10 @@ final class LocalChatClient {
             }
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(current.getInputStream(), StandardCharsets.UTF_8))) {
                 String contentType = current.getContentType();
-                if (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).contains("text/event-stream"))
+                if (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).contains("text/event-stream")) {
+                    if (body.has("tools")) throw new IOException("工具模式需要完整 JSON 回复，供应商忽略了 stream=false / Tool mode requires JSON; provider ignored stream=false");
                     return stream(reader, route.protocol, listener);
+                }
                 StringBuilder source = new StringBuilder();
                 char[] buffer = new char[4096]; int count;
                 while ((count = reader.read(buffer)) != -1) {
@@ -94,6 +115,7 @@ final class LocalChatClient {
                 }
                 if (cancelled) throw new IOException("Cancelled");
                 JSONObject response = new JSONObject(source.toString());
+                listener.onResponse(response);
                 if (route.protocol.equals("anthropic")) {
                     JSONArray blocks = response.optJSONArray("content"); StringBuilder reasoning = new StringBuilder();
                     if (blocks != null) for (int index = 0; index < blocks.length(); index++) {
@@ -108,7 +130,7 @@ final class LocalChatClient {
                     if (reasoning instanceof String) listener.onThinking((String) reasoning);
                 }
                 String text = responseText(response, route.protocol);
-                if (text.isEmpty()) throw new IOException("API 未返回文字 / API returned no text");
+                if (text.isEmpty() && !(body.has("tools") && LocalToolLoop.hasCalls(response, route.protocol))) throw new IOException("API 未返回文字 / API returned no text");
                 listener.onText(text); return text;
             }
         } finally { connection = null; current.disconnect(); }

@@ -89,9 +89,21 @@ test('Codex without phase folds earlier messages and exposes only the successful
   assert.ok(events.some(event => event.type === 'gui:message-phase' && event.phase === 'final_answer'));
 });
 
-for (const ending of ['interrupted', 'failed', 'tool', 'commentary', 'plan']) test('Codex does not promote process-only output on ' + ending, async context => {
+test('Codex promotes the terminal agent message when a successful turn omits final_answer', async context => {
+  const { events, notify, message } = await outputFixture(context);
+  message('progress', 'The requested change is complete.', 'commentary');
+  notify('turn/completed', { turn: { status: 'completed' } });
+  const result = events.at(-1);
+  assert.equal(result.result, 'The requested change is complete.');
+  assert.deepEqual(result.outputBlocks, [
+    { type: 'text', text: 'The requested change is complete.', phase: 'final_answer' },
+  ]);
+  assert.ok(events.some(event => event.type === 'gui:message-phase' && event.phase === 'final_answer'));
+});
+
+for (const ending of ['interrupted', 'failed', 'tool', 'plan']) test('Codex does not promote process-only output on ' + ending, async context => {
   const { session, events, notify, message } = await outputFixture(context);
-  message('progress', 'I will check.', ending === 'commentary' ? 'commentary' : undefined);
+  message('progress', 'I will check.');
   if (ending === 'tool') notify('item/started', { item: { type: 'commandExecution', id: 'tool', command: 'inspect' } });
   if (ending === 'plan') notify('item/completed', { item: { type: 'plan', id: 'plan', text: 'Inspect then verify.' } });
   notify('turn/completed', { turn: { status: ['interrupted', 'failed'].includes(ending) ? ending : 'completed' } });

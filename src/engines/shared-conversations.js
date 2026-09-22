@@ -374,8 +374,11 @@ class SharedConversations {
   async list(engine, payload) {
     const data = await this.workspaces.listSessions(payload);
     const prefs = preferences(this.loadConfig());
-    return { ok: true, ...data, preferences: prefs, sessions: data.sessions.map(s => ({ ...s,
-      origin: this.get(s.id).origin, showOrigin: prefs.showOrigin, currentEngine: this.get(s.id).currentEngine, imported: Boolean(this.get(s.id).importThreadId), activity: this.activity(s.id) })) };
+    return { ok: true, ...data, preferences: prefs, sessions: data.sessions.map(s => {
+      const conversation = this.get(s.id);
+      return { ...s, origin: conversation.origin, showOrigin: prefs.showOrigin, currentEngine: conversation.currentEngine,
+        imported: Boolean(conversation.importThreadId), activity: this.activity(s.id), lastReplyAt: conversation.lastReplyAt || 0 };
+    }) };
   }
   load(engine, id) {
     const c = this.get(id), prefs = preferences(this.loadConfig());
@@ -748,8 +751,11 @@ class SharedConversations {
       if (text || output.outputBlocks?.length || process.length || event.usage || a.lastCallUsage || event.artifacts?.length) this.append(c, { role: 'assistant', engine, text, ...output, ...(process.length ? { process, mobileText: mobileOutput.text || (!process.some(block => block.type === 'text') ? text : '') } : {}), internal: a.internal, artifacts: event.artifacts,
         ...(event.usage ? { usage: event.usage } : {}), ...(a.lastCallUsage ? { lastCallUsage: a.lastCallUsage } : {}) });
       c.pending = null; c.updatedAt = Date.now(); c.interrupted = Boolean(event.is_error || event.subtype === 'stopped');
+      if (!a.internal && !c.interrupted) c.lastReplyAt = c.updatedAt;
       if (c.segments[engine] && !c.interrupted && !a.ephemeral) c.segments[engine].cursor = c.seq;
-      this.save(c); a.facade.running = false; this.active.delete(c.id);
+      this.save(c);
+      if (!a.internal && !c.interrupted) this.workspaces.promoteSession(c.id);
+      a.facade.running = false; this.active.delete(c.id);
       a.finished = true;
       if (!a.internal) this.goals.get(c.id)?.handleResult({ ...event, result: event.result || text, goalReport: a.goalReport });
       const finalText = a.internal && Array.isArray(event.outputBlocks)
@@ -1139,6 +1145,16 @@ class SharedConversations {
         this.tasks.pauseSession(payload.id);
         return this.workspaces.archiveSession(payload.id, payload.archived !== false);
       case 'meta-op':
+        if (payload.op === 'move-session') {
+          const conversation = this.get(payload.sessionId);
+          const result = await this.workspaces.metaOp(payload);
+          if (result.ok) {
+            conversation.workspaceId = result.meta.sessionWorkspace[conversation.id] || null;
+            this.save(conversation);
+            this.onEvent({ type: 'conversation:workspaces' });
+          }
+          return result;
+        }
         if (payload.op === 'delete-workspace' && [...this.items.values()].some(c => c.workspaceId === payload.id && this.busy(c.id)))
           throw new Error('Stop conversations in this workspace before removing it');
         if (payload.op === 'delete-workspace') for (const conversation of this.items.values()) if (conversation.workspaceId === payload.id) this.tasks.pauseSession(conversation.id);

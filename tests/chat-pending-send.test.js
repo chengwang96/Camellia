@@ -202,3 +202,82 @@ test('same-view completion preserves text typed while sending', async () => {
     assert.equal(harness.drafts.get('draft:conversation-a').text, 'Next draft');
   }
 });
+
+for (const returnToOrigin of [false, true]) {
+  test(`queue preflight cannot follow navigation (returned=${returnToOrigin})`, async () => {
+    const harness = fixture(), { state } = harness;
+    const preflight = deferred();
+    Object.assign(state, {
+      loadedEngine: 'claude', drainingQueue: false, conversationQueues: new Map(),
+      messageQueue: [{ text: 'Queued for A', attachments: [{ path: 'D:/queued.csv' }] }],
+      window: { dshDesktop: { workbenchSettings: () => preflight.promise } },
+    });
+    vm.runInContext([
+      extract('  function saveMessageQueue(', "  window.addEventListener('beforeunload'"),
+      extract('  function drainMessageQueue()', "  $('attachBtn').addEventListener"),
+    ].join('\n'), state);
+    state.saveMessageQueue();
+    state.drainMessageQueue();
+    harness.navigate('conversation-b');
+    state.drainingQueue = false;
+    state.restoreMessageQueue();
+    state.messageQueue.push({ text: 'Queued for B', attachments: [] });
+    state.saveMessageQueue();
+    if (returnToOrigin) {
+      harness.navigate('conversation-a');
+      state.restoreMessageQueue();
+    }
+    state.input.value = 'New composer draft';
+    harness.settings.resolve({});
+    preflight.resolve({ conversations: { warnOnSwitch: false } });
+    await flush();
+    for (const reply of harness.replies) reply.resolve({ ok: true, sessionId: state.context.sessionId, runId: 1 });
+    await flush();
+    assert.equal(harness.requests.length, 0);
+    assert.equal(state.conversationQueues.get('conversation-a')[0].text, 'Queued for A');
+    assert.equal(state.conversationQueues.get('conversation-a')[0].attachments[0].path, 'D:/queued.csv');
+    assert.equal(state.conversationQueues.get('conversation-b')[0].text, 'Queued for B');
+    assert.equal(state.input.value, 'New composer draft');
+    assert.equal(state.sending, false);
+    assert.equal(state.drainingQueue, false);
+  });
+}
+
+test('queue preflight rechecks busy state before dispatch', async () => {
+  for (const overrides of [
+    { loadingSession: true }, { sending: true }, { switchingEngine: true },
+    { editingMessage: {} }, { running: true }, { conversationActivity: 'running' },
+    { pendingConversationSends: new Map([['conversation-a', {}]]) },
+    { goalUI: { isActive: () => true } },
+  ]) {
+    const harness = fixture(), { state } = harness;
+    const preflight = deferred();
+    state.loadedEngine = 'claude';
+    state.window = { dshDesktop: { workbenchSettings: () => preflight.promise } };
+    const pending = state.send({ text: 'Queued for A', attachments: [] });
+    Object.assign(state, overrides);
+    harness.settings.resolve({});
+    preflight.resolve({});
+    await flush();
+    for (const reply of harness.replies) reply.resolve({ ok: true, sessionId: 'conversation-a', runId: 1 });
+    await pending;
+    assert.equal(harness.requests.length, 0);
+    assert.equal(state.input.value, 'Continue');
+  }
+});
+
+test('queue preflight still sends when the original conversation remains idle', async () => {
+  const harness = fixture(), { state } = harness;
+  state.loadedEngine = 'claude';
+  state.window = { dshDesktop: { workbenchSettings: async () => ({}) } };
+  harness.settings.resolve({});
+  const pending = state.send({ text: 'Queued for A', attachments: [{ path: 'D:/queued.csv' }] });
+  await flush();
+  assert.equal(harness.requests.length, 1);
+  assert.equal(harness.requests[0].sessionId, 'conversation-a');
+  assert.equal(harness.requests[0].displayText, 'Queued for A');
+  assert.equal(harness.requests[0].attachments[0].path, 'D:/queued.csv');
+  harness.replies[0].resolve({ ok: true, sessionId: 'conversation-a', runId: 1 });
+  assert.equal(await pending, true);
+  assert.equal(state.input.value, 'Continue');
+});

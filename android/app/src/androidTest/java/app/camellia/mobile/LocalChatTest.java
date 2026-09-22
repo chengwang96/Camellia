@@ -127,6 +127,22 @@ public class LocalChatTest extends InstrumentationTestCase {
     }
     private LocalChatConfig.Route route(String url, String protocol) { return new LocalChatConfig.Route("test", "Test", "upstream-model", protocol, url, "test-secret"); }
 
+    public void testExplicitClientIdentityForBothProtocolsAndResponseModes() throws Exception {
+        for (String protocol : new String[]{"openai", "anthropic"}) for (boolean stream : new boolean[]{false, true}) {
+            String reply = protocol.equals("openai")
+                ? stream ? "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: [DONE]\n\n" : "{\"choices\":[{\"message\":{\"content\":\"OK\"}}]}"
+                : stream ? "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"OK\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n" : "{\"content\":[{\"type\":\"text\",\"text\":\"OK\"}]}";
+            try (MockApi api = new MockApi(200, stream ? "text/event-stream" : "application/json", reply)) {
+                assertEquals("OK", new LocalChatClient().chat(route(api.url(), protocol), request().put("stream", stream), text -> {}));
+                String captured = api.request.get();
+                assertTrue(captured.contains("User-Agent: Camellia-Android/LocalChat\n"));
+                assertFalse(captured.contains("Dalvik/"));
+                assertTrue(captured.contains("Authorization: Bearer test-secret\n"));
+                assertTrue(captured.startsWith("POST /v1/" + (protocol.equals("anthropic") ? "messages" : "chat/completions") + " HTTP/"));
+            }
+        }
+    }
+
     public void testImportedOllamaKeysAndRejectedKeyFallback() throws Exception {
         String reply = "data: {\"choices\":[{\"delta\":{\"content\":\"Recovered reply\"}}]}\n\ndata: [DONE]\n\n";
         for (int code : new int[] {401, 402, 403, 429}) {
@@ -143,6 +159,7 @@ public class LocalChatTest extends InstrumentationTestCase {
                 JSONObject body = LocalChatClient.request(route, new JSONArray().put(new JSONObject().put("role", "user").put("content", "Hello")));
                 assertEquals("Recovered reply", new LocalChatClient().chat(route, body, text -> {}));
                 assertEquals(2, api.requests.size());
+                for (String captured : api.requests) assertTrue(captured.contains("User-Agent: Camellia-Android/LocalChat\n"));
                 assertTrue(api.requests.get(0).contains("Bearer test-secret")); assertTrue(api.requests.get(1).contains("Bearer second-secret"));
                 assertFalse(api.requests.toString().contains("disabled-key"));
                 assertTrue(api.requests.get(1).contains("deepseek-v4.1-flash:cloud"));
@@ -458,6 +475,26 @@ public class LocalChatTest extends InstrumentationTestCase {
         try {
             JSONObject recovered = new LocalChatStore(getInstrumentation().getTargetContext()).conversation(conversation.getString("id")).getJSONArray("messages").getJSONObject(0);
             assertEquals("interrupted", recovered.getString("state")); assertEquals("Partial persisted text", recovered.getString("content"));
+        } finally { finishActivity(activity); }
+    }
+
+    public void testTapLastUserMessageEntersEditMode() throws Throwable {
+        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        JSONObject conversation = store.createConversation("", "missing-route");
+        conversation.getJSONArray("messages")
+            .put(new JSONObject().put("role", "user").put("content", "First question").put("at", 1))
+            .put(new JSONObject().put("role", "assistant").put("content", "First answer").put("state", "complete").put("at", 1))
+            .put(new JSONObject().put("role", "user").put("content", "Latest question").put("at", 2))
+            .put(new JSONObject().put("role", "assistant").put("content", "Latest answer").put("state", "complete").put("at", 2));
+        store.save();
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + conversation.optString("id")).performClick());
+            ui(() -> activity.getWindow().getDecorView().findViewWithTag("localMessage:2").performClick());
+            EditText composer = activity.getWindow().getDecorView().findViewWithTag("localComposer");
+            assertEquals("Latest question", composer.getText().toString());
+            ui(() -> activity.getWindow().getDecorView().findViewWithTag("localMessage:0").performClick());
+            assertEquals("Latest question", composer.getText().toString());
         } finally { finishActivity(activity); }
     }
 }

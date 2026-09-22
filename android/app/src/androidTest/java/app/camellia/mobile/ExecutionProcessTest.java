@@ -51,6 +51,10 @@ public class ExecutionProcessTest extends InstrumentationTestCase {
                 assertEquals(View.GONE, view.findViewWithTag("processBody:turn").getVisibility());
                 view.findViewWithTag("processToggle:turn").performClick();
                 assertEquals(View.VISIBLE, view.findViewWithTag("processBody:turn").getVisibility());
+                LinearLayout processBody = (LinearLayout) view.findViewWithTag("processBody:turn");
+                TextView toolHeading = (TextView) processBody.getChildAt(2);
+                assertNotNull(toolHeading.getCompoundDrawablesRelative()[0]);
+                assertFalse(toolHeading.getText().toString().startsWith("⌄"));
                 ExecutionProcessView rebuilt = new ExecutionProcessView(context, style, state, "turn"); rebuilt.update(process, true);
                 assertEquals(View.VISIBLE, rebuilt.findViewWithTag("processBody:turn").getVisibility());
                 rebuilt.update(process, false); assertEquals(View.GONE, rebuilt.findViewWithTag("processBody:turn").getVisibility());

@@ -21,6 +21,15 @@ final class LineIcon extends Drawable {
         canvas.scale(getBounds().width() / 24f, getBounds().height() / 24f);
         Path path = new Path();
         switch (kind) {
+            case "code-nowrap":
+                path.moveTo(12, 3); path.lineTo(12, 8); path.moveTo(12, 16); path.lineTo(12, 21);
+                path.moveTo(3, 12); path.lineTo(21, 12); path.moveTo(17, 8); path.lineTo(21, 12); path.lineTo(17, 16);
+                canvas.drawPath(path, paint); break;
+            case "code-wrap":
+                path.moveTo(21, 3); path.lineTo(21, 21); path.moveTo(3, 7); path.lineTo(11, 7);
+                path.cubicTo(16.33f, 7, 16.33f, 15, 11, 15); path.lineTo(3, 15);
+                path.moveTo(7, 11); path.lineTo(3, 15); path.lineTo(7, 19);
+                canvas.drawPath(path, paint); break;
             case "copy":
                 canvas.drawRoundRect(8, 8, 21, 21, 2.5f, 2.5f, paint);
                 path.moveTo(5, 16); path.lineTo(4, 16); path.quadTo(2, 16, 2, 14); path.lineTo(2, 4);

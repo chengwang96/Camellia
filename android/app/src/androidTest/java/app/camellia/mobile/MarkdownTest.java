@@ -144,9 +144,14 @@ public class MarkdownTest extends InstrumentationTestCase {
                 rendered.layout(0, 0, width, rendered.getMeasuredHeight());
                 TextView code = rendered.findViewWithTag("markdownCodeText");
                 View wrap = rendered.findViewWithTag("markdownCodeWrap");
+                assertTrue(wrap instanceof android.widget.ImageButton);
+                assertNotNull(((android.widget.ImageButton) wrap).getDrawable());
+                assertTrue(wrap.getContentDescription().length() > 0);
+                android.graphics.drawable.Drawable unwrappedIcon = ((android.widget.ImageButton) wrap).getDrawable();
                 HorizontalScrollView horizontal = rendered.findViewWithTag("markdownCodeScroll");
                 assertFalse(wrap.isSelected()); assertTrue(code.getWidth() > horizontal.getWidth());
                 wrap.performClick();
+                assertNotSame(unwrappedIcon, ((android.widget.ImageButton) wrap).getDrawable());
                 rendered.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
                 rendered.layout(0, 0, width, rendered.getMeasuredHeight());
                 assertTrue(wrap.isSelected()); assertEquals(View.GONE, horizontal.getVisibility());

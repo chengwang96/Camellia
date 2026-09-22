@@ -19,6 +19,13 @@ final class LocalChatStore {
     }
 
     JSONObject config() { return state.optJSONObject("config"); }
+    void configureTools(String id, boolean enabled) throws Exception {
+        JSONObject previous = new JSONObject(state.toString());
+        try {
+            state.remove("webSearchKey");
+            conversation(id).put("webTools", enabled); save();
+        } catch (Exception error) { state = previous; throw error; }
+    }
     JSONArray workspaces() { return state.optJSONArray("workspaces"); }
     JSONArray conversations() { return state.optJSONArray("conversations"); }
     JSONObject conversation(String id) {
@@ -83,5 +90,39 @@ final class LocalChatStore {
             if (conversation.optString("workspaceId").equals(id)) conversation.put("workspaceId", "");
         }
         try { save(); } catch (Exception error) { state = previous; throw error; }
+    }
+
+    java.util.List<JSONObject> orderedConversations(String workspace) {
+        java.util.List<JSONObject> entries = new java.util.ArrayList<>();
+        for (int index = 0; index < conversations().length(); index++) {
+            JSONObject entry = conversations().optJSONObject(index);
+            if (entry != null && !entry.optBoolean("archived") && entry.optString("workspaceId").equals(workspace)) entries.add(entry);
+        }
+        entries.sort(java.util.Comparator.comparingLong((JSONObject entry) -> entry.optLong("order", Long.MAX_VALUE))
+            .thenComparing(java.util.Comparator.comparingLong((JSONObject entry) -> entry.optLong("updatedAt")).reversed()));
+        return entries;
+    }
+
+    void moveConversation(String id, String workspace, String target, boolean after) throws Exception {
+        JSONObject entry = conversation(id);
+        if (entry == null || entry.optBoolean("archived")) throw new IllegalArgumentException("Conversation not found");
+        boolean exists = workspace.isEmpty();
+        for (int index = 0; index < workspaces().length(); index++) if (workspaces().getJSONObject(index).optString("id").equals(workspace)) exists = true;
+        if (!exists) throw new IllegalArgumentException("Workspace not found");
+        java.util.List<JSONObject> ordered = orderedConversations(workspace);
+        ordered.remove(entry);
+        int position = ordered.size();
+        if (target != null) {
+            position = -1;
+            for (int index = 0; index < ordered.size(); index++) if (ordered.get(index).optString("id").equals(target)) position = index + (after ? 1 : 0);
+            if (position < 0) throw new IllegalArgumentException("Invalid drop target");
+        }
+        JSONObject previous = new JSONObject(state.toString());
+        ordered.add(position, entry);
+        try {
+            entry.put("workspaceId", workspace);
+            for (int index = 0; index < ordered.size(); index++) ordered.get(index).put("order", index);
+            save();
+        } catch (Exception error) { state = previous; throw error; }
     }
 }

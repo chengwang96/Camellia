@@ -532,6 +532,37 @@ test('mobile workspace creation requires full control, deduplicates and updates 
   assert.equal((await create(payload)).status, 403);
 });
 
+test('mobile moves enforce both workspace scopes, persist order, update list versions and deduplicate', async context => {
+  const { gateway, manager, access, reader, visible, hidden, pair } = fixture(context);
+  const credential = pair(), token = credential.token;
+  await gateway.start('127.0.0.1', 0);
+  const device = access.devices.find(item => item.id === credential.deviceId);
+  const second = manager.create('codex', 'allowed', 'Second');
+  const move = patch => ({ requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'move', workspaceId: 'allowed', targetSessionId: second.id, placement: 'before', ...patch });
+  const send = payload => request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload });
+  device.permission = 'read';
+  assert.equal((await send(move())).status, 403);
+  device.permission = 'control';
+  const before = reader.listSnapshot(device), cwd = visible.cwd;
+  const payload = move();
+  const first = await send(payload);
+  assert.equal(first.body.ok, true);
+  assert.deepEqual((await send(payload)).body, first.body);
+  assert.deepEqual(reader.list(device).conversations.map(entry => entry.id), [visible.id, second.id]);
+  assert.notDeepEqual(reader.listSnapshot(device), before);
+  assert.equal((await send(move({ workspaceId: 'private', targetSessionId: hidden.id }))).body.ok, false);
+  assert.equal((await send(move({ workspaceId: null, targetSessionId: null }))).body.ok, false);
+  assert.equal((await send(move({ targetSessionId: hidden.id }))).body.ok, false);
+  access.setScope(device.id, ['allowed', 'private']);
+  const moved = await send(move({ workspaceId: 'private', targetSessionId: hidden.id }));
+  assert.equal(moved.body.ok, true);
+  assert.equal(visible.workspaceId, 'private');
+  assert.equal(visible.cwd, cwd);
+  assert.equal(JSON.stringify(moved.body).includes(cwd), false);
+  assert.equal(manager.workspaces.sessionMeta().sessionOrder.private[0], visible.id);
+});
+
 test('mobile images use bounded server-owned paths and retry sends only once', async context => {
   const { gateway, manager, access, visible, pair, root } = fixture(context);
   const credential = pair();

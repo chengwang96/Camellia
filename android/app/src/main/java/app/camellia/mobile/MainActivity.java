@@ -83,7 +83,8 @@ public final class MainActivity extends Activity {
     private android.app.Dialog computerDialog;
     private EditText searchInput;
     private JSONArray availableWorkspaces = new JSONArray();
-    private boolean canCreate, canCreateWorkspace, canImage, allowIndependent;
+    private boolean canCreate, canCreateWorkspace, canImage, allowIndependent, canMove;
+    private ConversationDrag conversationDrag;
     private String listInstance = "", selectedImage, imageConversation, imageComputer;
     private boolean listEventsUnavailable;
     private LinearLayout imageTray;
@@ -158,6 +159,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onStop() {
+        if (conversationDrag != null) conversationDrag.cancel();
         locationConsent.cancel();
         if (pages != null) pages.finishTransition();
         foreground = false; stopNetwork();
@@ -361,7 +363,10 @@ public final class MainActivity extends Activity {
         ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon("settings", muted)); settings.addView(icon, new LinearLayout.LayoutParams(dp(24), dp(24)));
         LinearLayout labels = column(); labels.setPadding(dp(14), 0, 0, 0);
         labels.addView(text(tr("设置", "Settings"), 16, ink)); labels.addView(text(tr("供应商与 Key、通用、已归档、手机访问", "Providers & keys, general, archived, mobile access"), 12, muted));
-        settings.addView(labels, new LinearLayout.LayoutParams(0, -2, 1)); settings.addView(text("→", 20, muted));
+        settings.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageView settingsArrow = new ImageView(this); settingsArrow.setImageDrawable(new LineIcon("right", muted));
+        settingsArrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        settings.addView(settingsArrow, new LinearLayout.LayoutParams(dp(18), dp(18)));
         settings.setOnClickListener(view -> settingsScreen()); content.addView(settings);
         status.setVisibility(View.GONE);
     }
@@ -703,9 +708,11 @@ public final class MainActivity extends Activity {
     }
 
     private void renderConversations() {
+        if (conversationDrag != null && conversationDrag.active()) return;
+        conversationDrag = new ConversationDrag(content, scroll, this::moveConversation);
         int position = scroll.getScrollY();
         content.removeAllViews();
-        if (credentials.has("pendingCreate")) content.addView(button(tr("查询新建结果 / 重试", "Check creation / retry"), this::retryCreate, false));
+        if (credentials.has("pendingCreate")) content.addView(button(tr("查询操作结果 / 重试", "Check operation / retry"), this::retryCreate, false));
         content.addView(chatStyle.workspaceHeader(tr("工作区", "Workspaces"), tr("新建工作区", "New workspace"), "remoteNewWorkspace", this::createWorkspace));
         LinkedHashMap<String, ArrayList<JSONObject>> groups = new LinkedHashMap<>();
         String query = searchInput == null ? "" : searchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
@@ -718,7 +725,7 @@ public final class MainActivity extends Activity {
             groups.computeIfAbsent(workspace, key -> new ArrayList<>()).add(conversation);
         }
         ArrayList<JSONObject> independent = groups.remove("");
-        if (independent != null) groups.put("", independent);
+        if (independent != null || allowIndependent) groups.put("", independent == null ? new ArrayList<>() : independent);
         for (var entry : groups.entrySet()) {
             String workspace = entry.getKey(); ArrayList<JSONObject> entries = entry.getValue();
             String name = workspace.isEmpty() ? tr("独立会话", "Independent conversations") : workspace;
@@ -751,6 +758,7 @@ public final class MainActivity extends Activity {
                 create.setTag("newWorkspace:" + workspace); groupHeader.addView(create, new LinearLayout.LayoutParams(dp(48), dp(48)));
             }
             group.addView(groupHeader);
+            conversationDrag.target(group, workspace, null);
             if (!collapsed || !query.isEmpty()) for (JSONObject conversation : entries) group.addView(conversationCard(conversation));
             content.addView(group);
         }
@@ -765,6 +773,8 @@ public final class MainActivity extends Activity {
         TextView name = text(title, 15, ink); name.setMaxLines(2); name.setMinHeight(dp(36)); name.setGravity(Gravity.CENTER_VERTICAL); name.setEllipsize(android.text.TextUtils.TruncateAt.END); card.addView(name);
         card.setContentDescription(title + " · " + activity(conversation)); card.setFocusable(true); card.setTag("conversation:" + conversation.optString("id"));
         card.setOnClickListener(view -> { conversationId = conversation.optString("id"); conversationTitle = title; detailScreen(); connectEvents(); });
+        if (canMove && !commandBusy && !credentials.has("pendingCreate")) conversationDrag.source(card, conversation.optString("id"));
+        conversationDrag.target(card, conversation.isNull("workspaceId") ? "" : conversation.optString("workspaceId"), conversation.optString("id"));
         return card;
     }
 
@@ -807,8 +817,21 @@ public final class MainActivity extends Activity {
         canCreate = info.optString("permission").equals("control") && capabilities.contains("\"create\"");
         canCreateWorkspace = info.optString("permission").equals("control") && capabilities.contains("\"create-workspace\"");
         canImage = capabilities.contains("\"image\"");
+        canMove = info.optString("permission").equals("control") && capabilities.contains("\"move\"");
         listInstance = info.optString("instanceId"); allowIndependent = info.optBoolean("includeUnassigned");
         availableWorkspaces = info.optJSONArray("workspaces"); if (availableWorkspaces == null) availableWorkspaces = new JSONArray();
+    }
+
+    private void moveConversation(String id, String workspace, String target, boolean after) {
+        if (!canMove || commandBusy || credentials.has("pendingCreate")) return;
+        try {
+            JSONObject payload = command("move").put("instanceId", listInstance)
+                .put("workspaceId", workspace.isEmpty() ? JSONObject.NULL : workspace)
+                .put("targetSessionId", target == null ? JSONObject.NULL : target)
+                .put("placement", after ? "after" : "before").put("moveSessionId", id);
+            JSONObject saved = new JSONObject(credentials.toString()).put("pendingCreate", payload);
+            store.save(saved); credentials = saved; retryCreate();
+        } catch (Exception error) { status.setText(tr("无法保存移动请求", "Could not save move request")); }
     }
 
     private void createWorkspace() {
@@ -859,10 +882,13 @@ public final class MainActivity extends Activity {
         RemoteApi client = begin(); int ticket = generation; commandBusy = true;
         JSONObject payload = credentials.optJSONObject("pendingCreate"); String token = credentials.optString("token");
         boolean workspaceCreation = payload != null && payload.optString("action").equals("create-workspace");
-        status.setText(workspaceCreation ? tr("正在新建工作区…", "Creating workspace…") : tr("正在新建会话…", "Creating conversation…"));
+        boolean moving = payload != null && payload.optString("action").equals("move");
+        status.setText(moving ? tr("正在移动会话…", "Moving conversation…") : workspaceCreation ? tr("正在新建工作区…", "Creating workspace…") : tr("正在新建会话…", "Creating conversation…"));
         job = worker.submit(() -> {
             try {
-                JSONObject result = client.json("/v1/commands", token, payload);
+                JSONObject request = new JSONObject(payload.toString());
+                String targetId = request.optString("moveSessionId"); request.remove("moveSessionId");
+                JSONObject result = client.json(moving ? "/v1/conversations/" + targetId + "/commands" : "/v1/commands", token, request);
                 deliver(ticket, () -> {
                     commandBusy = false;
                     if (result.optString("state").equals("pending")) {
@@ -873,11 +899,16 @@ public final class MainActivity extends Activity {
                     try {
                         JSONObject saved = new JSONObject(credentials.toString()); saved.remove("pendingCreate"); store.save(saved); credentials = saved;
                         JSONObject conversation = result.optJSONObject("conversation");
-                        if (result.optBoolean("ok") && workspaceCreation && result.optJSONObject("workspace") != null) {
+                        if (result.optBoolean("ok") && moving) {
+                            String workspace = payload.isNull("workspaceId") ? "" : payload.optString("workspaceId");
+                            String key = credentials.optString("address") + "/" + workspace;
+                            collapsedGroups.put(key, false); getPreferences(MODE_PRIVATE).edit().putBoolean("collapsed:" + key, false).apply();
+                            loadList(false);
+                        } else if (result.optBoolean("ok") && workspaceCreation && result.optJSONObject("workspace") != null) {
                             loadList(false);
                         } else if (result.optBoolean("ok") && conversation != null) {
                             conversationId = conversation.getString("id"); conversationTitle = conversation.optString("title"); detailScreen(); connectEvents();
-                        } else { renderConversations(); status.setText(tr("新建未确认成功，请先在电脑核对。", "Creation not confirmed. Check the desktop before retrying.") + " " + result.optString("error")); }
+                        } else { renderConversations(); status.setText(tr("操作未确认成功，请先在电脑核对。", "Operation not confirmed. Check the desktop before retrying.") + " " + result.optString("error")); }
                     } catch (Exception error) { status.setText(tr("无法保存结果，请重试同一请求。", "Could not save result. Retry the same request.")); }
                 });
             } catch (Exception error) { deliver(ticket, () -> {
@@ -1042,8 +1073,10 @@ public final class MainActivity extends Activity {
         permissionButton = lineButton("shield", tr("安全级别", "Safety level"), () -> showRemoteSettings(true)); permissionButton.setTag("remotePermissionPicker");
         tools.addView(permissionButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
         tools.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        modelButton = text(tr("模型", "Model") + "  ⌄", 14, ink); modelButton.setTag("remoteModelPicker"); modelButton.setGravity(Gravity.CENTER_VERTICAL);
+        modelButton = text(tr("模型", "Model"), 14, ink); modelButton.setTag("remoteModelPicker"); modelButton.setGravity(Gravity.CENTER_VERTICAL);
         modelButton.setMaxWidth(dp(180)); modelButton.setSingleLine(true); modelButton.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LineIcon modelChevron = new LineIcon("down", muted); modelChevron.setBounds(0, 0, dp(14), dp(14));
+        modelButton.setCompoundDrawablesRelative(null, null, modelChevron, null); modelButton.setCompoundDrawablePadding(dp(4));
         modelButton.setPadding(dp(10), 0, dp(10), 0); modelButton.setFocusable(true); modelButton.setOnClickListener(view -> showRemoteSettings(false));
         tools.addView(modelButton, new LinearLayout.LayoutParams(-2, dp(48)));
         sendButton = composerAction(tr("发送", "Send"), R.drawable.ic_send, this::sendMessage);
@@ -1264,7 +1297,7 @@ public final class MainActivity extends Activity {
         if (!configurable && settingsPopup != null) { settingsPopup.dismiss(); settingsPopup = null; }
         if (modelButton != null) {
             String model = remoteSettings == null ? tr("模型", "Model") : remoteSettings.optString("model", tr("模型", "Model"));
-            modelButton.setText(ModelLabel.compact(model) + "  ⌄"); modelButton.setEnabled(configurable); modelButton.setAlpha(configurable ? 1f : .45f);
+            modelButton.setText(ModelLabel.compact(model)); modelButton.setEnabled(configurable); modelButton.setAlpha(configurable ? 1f : .45f);
             modelButton.setContentDescription(tr("选择模型：", "Choose model: ") + model);
         }
         if (permissionButton != null) {
@@ -1441,6 +1474,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        if (conversationDrag != null && conversationDrag.active()) { conversationDrag.cancel(); return; }
         if (networkScreen) { leaveNetwork(); return; }
         if (screen.equals("detail")) { listScreen(); loadList(false); }
         else if (screen.equals("list") || screen.equals("pair")) { computersScreen(); refreshComputers(); }

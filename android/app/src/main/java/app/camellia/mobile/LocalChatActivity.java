@@ -40,6 +40,7 @@ public final class LocalChatActivity extends Activity {
     private LocalChatClient client;
     private boolean chinese;
     private int background, surface, ink, muted, accent, generation;
+    private int editingMessageIndex = -1;
     private String conversationId, runningId, query = "";
     private String latest = "";
     private final ExecutionProcessView.State processState = new ExecutionProcessView.State();
@@ -51,7 +52,9 @@ public final class LocalChatActivity extends Activity {
     private ScrollView scroll;
     private EditText composer;
     private ImageButton send, stop;
+    private ImageButton toolsButton;
     private ChatStyle chatStyle;
+    private ConversationDrag conversationDrag;
     private LinearLayout modelButton;
     private TextView modelName, thinkingName;
     private ModelPickerPopup modelPicker;
@@ -100,6 +103,11 @@ public final class LocalChatActivity extends Activity {
                     JSONObject message = messages.getJSONObject(row);
                     if (message.optString("state").equals("running")) {
                         message.put("state", "interrupted").put("notice", tr("上次回复已中断，未自动重发。", "Previous reply interrupted; not automatically resent."));
+                        JSONArray process = message.optJSONArray("process");
+                        if (process != null) for (int step = 0; step < process.length(); step++) {
+                            JSONObject entry = process.getJSONObject(step);
+                            if (entry.optString("status").equals("running")) entry.put("status", "cancelled");
+                        }
                         recovered = true;
                     }
                 }
@@ -119,6 +127,7 @@ public final class LocalChatActivity extends Activity {
     }
 
     @Override protected void onStop() {
+        if (conversationDrag != null) conversationDrag.cancel();
         locationConsent.cancel();
         if (pages != null) pages.finishTransition();
         if (modelPicker != null) modelPicker.dismiss();
@@ -135,6 +144,7 @@ public final class LocalChatActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        if (conversationDrag != null && conversationDrag.active()) { conversationDrag.cancel(); return; }
         if (conversationId != null) { persistDraft(); conversationId = null; list(); }
         else super.onBackPressed();
     }
@@ -207,6 +217,8 @@ public final class LocalChatActivity extends Activity {
             modelSlot.addView(modelButton, new android.widget.FrameLayout.LayoutParams(-2, dp(48), Gravity.START | Gravity.CENTER_VERTICAL));
             LinearLayout.LayoutParams modelParams = new LinearLayout.LayoutParams(0, dp(48), 1); modelParams.setMargins(dp(8), 0, dp(8), 0);
             header.addView(modelSlot, modelParams);
+            toolsButton = chatStyle.lineButton("search", tr("联网工具", "Web tools"), this::configureTools);
+            toolsButton.setTag("localTools"); header.addView(toolsButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
             ImageButton menu = chatStyle.lineButton("more", tr("管理会话", "Manage chat"), () -> conversationMenu(store.conversation(conversationId)));
             menu.setTag("localChatMenu");
             header.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48))); root.addView(header);
@@ -272,6 +284,11 @@ public final class LocalChatActivity extends Activity {
     }
 
     private void renderGroups(LinearLayout groups) {
+        if (conversationDrag != null) conversationDrag.cancel();
+        conversationDrag = new ConversationDrag(groups, scroll, (id, workspace, target, after) -> {
+            try { store.moveConversation(id, workspace, target, after); collapsed.remove(workspace); renderGroups(groups); }
+            catch (Exception error) { failure(error); }
+        });
         groups.removeAllViews();
         groups.addView(chatStyle.workspaceHeader(tr("工作区", "Workspaces"), tr("新建工作区", "New workspace"), "localNewWorkspace", () -> nameDialog(null)));
         JSONArray workspaces = store.workspaces();
@@ -285,13 +302,11 @@ public final class LocalChatActivity extends Activity {
     private void group(LinearLayout parent, String id, String name, JSONObject workspace) {
         List<JSONObject> entries = new ArrayList<>();
         String term = query.toLowerCase(java.util.Locale.ROOT);
-        for (int index = 0; index < store.conversations().length(); index++) {
-            JSONObject conversation = store.conversations().optJSONObject(index);
+        for (JSONObject conversation : store.orderedConversations(id)) {
             if (conversation != null && !conversation.optBoolean("archived") && conversation.optString("workspaceId").equals(id)
                 && title(conversation).toLowerCase(java.util.Locale.ROOT).contains(term)) entries.add(conversation);
         }
         if (!query.isEmpty() && entries.isEmpty()) return;
-        entries.sort(Comparator.comparingLong((JSONObject value) -> value.optLong("updatedAt")).reversed());
         LinearLayout group = column(); LinearLayout.LayoutParams groupParams = new LinearLayout.LayoutParams(-1, -2);
         groupParams.setMargins(0, dp(12), 0, dp(4)); parent.addView(group, groupParams);
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
@@ -314,17 +329,22 @@ public final class LocalChatActivity extends Activity {
         }
         ImageButton add = chatStyle.lineButton("new", tr("新建会话：", "New chat: ") + name, () -> createConversation(id)); add.setTag("localAdd:" + id);
         header.addView(add, new LinearLayout.LayoutParams(dp(48), dp(48))); group.addView(header);
+        conversationDrag.target(group, id, null);
         if (collapsed.contains(id) && query.isEmpty()) return;
         for (JSONObject conversation : entries) {
             String selectedId = conversation.optString("id");
             LinearLayout row = column(); row.setPadding(dp(id.isEmpty() ? 2 : 32), dp(8), dp(8), dp(8));
             TextView nameView = text(title(conversation), 15, selectedId.equals(runningId) ? accent : ink);
             nameView.setMaxLines(2); nameView.setMinHeight(dp(36)); nameView.setGravity(Gravity.CENTER_VERTICAL);
-            nameView.setEllipsize(android.text.TextUtils.TruncateAt.END); row.addView(nameView);
+            nameView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            row.setOrientation(LinearLayout.HORIZONTAL); row.setGravity(Gravity.CENTER_VERTICAL);
+            row.addView(nameView, new LinearLayout.LayoutParams(0, -2, 1));
+            ImageButton menu = chatStyle.lineButton("more", tr("会话菜单", "Conversation actions"), () -> conversationMenu(conversation));
+            row.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48)));
             row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), shape(background), shape(Color.WHITE)));
             row.setTag("localConversation:" + selectedId); row.setFocusable(true); row.setContentDescription(title(conversation));
             row.setOnClickListener(view -> { conversationId = selectedId; detail(); });
-            row.setOnLongClickListener(view -> { conversationMenu(conversation); return true; }); group.addView(row);
+            conversationDrag.source(row, selectedId); conversationDrag.target(row, id, selectedId); group.addView(row);
         }
         if (entries.isEmpty()) {
             TextView empty = text(tr("暂无会话", "No conversations yet"), 13, muted);
@@ -393,6 +413,7 @@ public final class LocalChatActivity extends Activity {
     private void detail() {
         JSONObject conversation = store.conversation(conversationId);
         if (conversation == null) { list(); return; }
+        editingMessageIndex = -1;
         shell(title(conversation));
         scroll.setVerticalScrollBarEnabled(false);
         TextView chatTitle = text(title(conversation), 12, muted); chatTitle.setTag("localChatTitle");
@@ -431,6 +452,10 @@ public final class LocalChatActivity extends Activity {
         if (conversationId == null || send == null) return;
         try {
             LocalChatConfig.Route route = selectedRoute();
+            boolean webTools = store.conversation(conversationId).optBoolean("webTools");
+            toolsButton.setEnabled(runningId == null); toolsButton.setAlpha(runningId == null ? 1 : .5f);
+            toolsButton.setContentDescription(tr("联网工具：", "Web tools: ") + (webTools ? tr("已开启", "On") : tr("已关闭", "Off")));
+            toolsButton.setImageDrawable(new LineIcon("search", webTools ? accent : muted));
             modelName.setText(route == null ? tr("选择模型", "Select model") : ModelLabel.compact(route.displayName()));
             String thinking = LocalChatThinking.effective(route, store.conversation(conversationId).optString("thinking", "auto"));
             thinkingName.setText(LocalChatThinking.label(thinking, chinese));
@@ -440,8 +465,37 @@ public final class LocalChatActivity extends Activity {
             stop.setVisibility(conversationId.equals(runningId) ? View.VISIBLE : View.GONE);
             send.setVisibility(conversationId.equals(runningId) ? View.GONE : View.VISIBLE);
             if (runningId != null) status.setText(tr("正在回复 · 离开应用将停止请求", "Replying · Leaving the app stops the request"));
+            else if (editingMessageIndex >= 0) status.setText(tr("正在编辑上一条消息 · 发送后将重新生成后续回复", "Editing previous message · sending regenerates later replies"));
             else status.setText(route == null ? tr("请导入配置或重新选择模型。", "Import configuration or select a model.") : route.baseUrl + " · " + route.model);
         } catch (Exception error) { send.setEnabled(false); failure(error); }
+    }
+
+    private void configureTools() {
+        if (runningId != null || conversationId == null) return;
+        JSONObject conversation = store.conversation(conversationId);
+        LinearLayout panel = column(); panel.setPadding(dp(20), dp(18), dp(20), dp(10)); panel.setBackgroundColor(background);
+        TextView heading = text(tr("联网功能", "Web access"), 20, ink); heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); panel.addView(heading);
+        TextView note = text(tr("使用 Bing 和百度搜索，并读取公开网页", "Search with Bing and Baidu, and read public pages"), 14, muted);
+        note.setPadding(0, dp(8), 0, dp(14)); panel.addView(note);
+        LinearLayout card = column(); card.setPadding(dp(18), dp(4), dp(18), dp(4)); card.setBackground(chatStyle.rounded(surface));
+        SettingsStyle settings = new SettingsStyle(this);
+        android.widget.Switch enabled = settings.toggle(card, tr("联网功能", "Web access"), tr("仅当前会话", "This conversation only"),
+            "localToolsEnabled", conversation.optBoolean("webTools"), (button, checked) -> {});
+        panel.addView(card, new LinearLayout.LayoutParams(-1, -2));
+        dialog = new AlertDialog.Builder(this).setView(panel)
+            .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("保存", "Save"), null).create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            try {
+                store.configureTools(conversationId, enabled.isChecked());
+                dialog.dismiss(); updateControls();
+            } catch (Exception error) { failure(error); }
+        }));
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(chatStyle.rounded(background));
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(accent);
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(muted);
+        }
     }
 
     private void chooseModel() {
@@ -478,6 +532,11 @@ public final class LocalChatActivity extends Activity {
         messageViews.removeAllViews(); liveText = null; liveProcess = null;
         JSONArray messages = store.conversation(conversationId).optJSONArray("messages");
         MarkdownView markdown = new MarkdownView(this, ink, muted, surface, accent);
+        int latestUser = -1;
+        for (int index = messages.length() - 1; index >= 0; index--) {
+            JSONObject message = messages.optJSONObject(index);
+            if (message != null && message.optString("role").equals("user")) { latestUser = index; break; }
+        }
         for (int index = 0; index < messages.length(); index++) {
             JSONObject message = messages.optJSONObject(index); if (message == null) continue;
             boolean user = message.optString("role").equals("user");
@@ -490,12 +549,31 @@ public final class LocalChatActivity extends Activity {
             }
             if (message == runningReply) {
                 liveText = text(latest.isEmpty() ? tr("等待输出…", "Waiting for output…") : latest, 15, ink); liveText.setTextIsSelectable(true); chatStyle.messageTypography(liveText); block.addView(liveText);
-            } else if (user) { TextView body = text(message.optString("content"), 15, ink); body.setTextIsSelectable(true); chatStyle.messageTypography(body); block.addView(body); }
+            } else if (user) {
+                TextView body = text(message.optString("content"), 15, ink); body.setTextIsSelectable(true); chatStyle.messageTypography(body); block.addView(body);
+                if (index == latestUser) {
+                    int messageIndex = index;
+                    View.OnClickListener edit = view -> beginEdit(messageIndex);
+                    block.setOnClickListener(edit); body.setOnClickListener(edit);
+                    block.setContentDescription(tr("点击编辑上一条消息", "Tap to edit previous message"));
+                }
+            }
             else block.addView(markdown.render(message.optString("content")));
             if (!message.optString("notice").isEmpty()) block.addView(text(message.optString("notice"), 12, muted));
             messageViews.addView(chatStyle.messageWithFooter(block, user,
                 () -> message == runningReply ? latest : message.optString("content"), message.optLong("at"), chinese));
         }
+    }
+
+    private void beginEdit(int index) {
+        if (runningId != null || composer == null || conversationId == null) return;
+        JSONArray messages = store.conversation(conversationId).optJSONArray("messages");
+        JSONObject message = messages == null ? null : messages.optJSONObject(index);
+        if (message == null || !message.optString("role").equals("user")) return;
+        editingMessageIndex = index;
+        composer.setText(message.optString("content")); composer.setSelection(composer.length()); composer.requestFocus();
+        ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(composer, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+        updateControls();
     }
 
     private void persistDraft() {
@@ -528,38 +606,63 @@ public final class LocalChatActivity extends Activity {
             LocalChatConfig.Route route = selectedRoute(); if (route == null) { chooseModel(); return; }
             JSONObject conversation = store.conversation(conversationId);
             JSONArray messages = conversation.getJSONArray("messages");
+            int replaceFrom = editingMessageIndex >= 0 && editingMessageIndex < messages.length() ? editingMessageIndex : messages.length();
             long sentAt = System.currentTimeMillis();
             JSONObject user = new JSONObject().put("role", "user").put("content", value).put("at", sentAt);
-            JSONArray prospective = new JSONArray(messages.toString()); prospective.put(user);
+            JSONArray prospective = new JSONArray();
+            for (int index = 0; index < replaceFrom; index++) prospective.put(new JSONObject(messages.getJSONObject(index).toString()));
+            prospective.put(user);
             if (!locationContext.isEmpty()) prospective.put(prospective.length() - 1,
                 new JSONObject(user.toString()).put("content", value + locationContext));
             JSONObject request = LocalChatClient.request(route, prospective, conversation.optString("thinking", "auto"));
+            boolean useTools = conversation.optBoolean("webTools");
             String previousTitle = conversation.optString("title");
+            JSONArray previousMessages = new JSONArray(messages.toString());
             JSONObject reply = new JSONObject().put("role", "assistant").put("content", "").put("state", "running").put("at", sentAt);
+            while (messages.length() > replaceFrom) messages.remove(messages.length() - 1);
             messages.put(user).put(reply);
             conversation.put("draft", "").put("updatedAt", System.currentTimeMillis());
             if (previousTitle.isEmpty()) conversation.put("title", value.substring(0, Math.min(value.length(), 60)).replace('\n', ' '));
             try { store.save(); }
             catch (Exception error) {
-                messages.remove(messages.length() - 1); messages.remove(messages.length() - 1);
+                while (messages.length() > 0) messages.remove(messages.length() - 1);
+                for (int index = 0; index < previousMessages.length(); index++) messages.put(previousMessages.getJSONObject(index));
                 conversation.put("title", previousTitle).put("draft", value); throw error;
             }
-            composer.setText(""); runningId = conversationId; runningReply = reply; latest = ""; lastCheckpoint = System.currentTimeMillis();
+            editingMessageIndex = -1; composer.setText(""); runningId = conversationId; runningReply = reply; latest = ""; lastCheckpoint = System.currentTimeMillis();
             LocalChatClient active = new LocalChatClient(); client = active; int ticket = ++generation;
             renderMessages(); updateControls(); scroll.post(() -> scroll.scrollTo(0, content.getBottom()));
             worker.submit(() -> {
                 String problem = null;
                 try {
-                    active.chat(route, request, new LocalChatClient.Listener() {
+                    LocalChatClient.Listener listener = new LocalChatClient.Listener() {
                         @Override public void onThinking(String thinking) {
                             handler.post(() -> {
                                 if (generation != ticket) return;
                                 try {
                                     JSONArray process = new JSONArray();
+                                    JSONArray previous = runningReply.optJSONArray("process");
+                                    if (previous != null) for (int index = 0; index < previous.length(); index++) {
+                                        JSONObject entry = previous.getJSONObject(index);
+                                        if (!entry.optString("type").equals("thinking")) process.put(entry);
+                                    }
                                     if (!thinking.isEmpty()) process.put(new JSONObject().put("type", "thinking").put("text", thinking));
                                     runningReply.put("process", process);
                                     if (liveProcess != null && runningId.equals(conversationId)) liveProcess.update(process, true);
                                 } catch (Exception error) { failure(error); }
+                            });
+                        }
+                        @Override public void onTool(JSONObject entry) {
+                            handler.post(() -> {
+                                if (generation != ticket) return;
+                                try {
+                                    JSONArray process = runningReply.optJSONArray("process");
+                                    if (process == null) process = new JSONArray();
+                                    int position = process.length();
+                                    for (int index = 0; index < process.length(); index++) if (process.getJSONObject(index).optString("id").equals(entry.optString("id"))) position = index;
+                                    process.put(position, entry); runningReply.put("process", process); store.save();
+                                    if (liveProcess != null && runningId.equals(conversationId)) liveProcess.update(process, true);
+                                } catch (Exception error) { finishRun(tr("无法保存工具记录，已停止。", "Could not save tool trace; stopped."), "interrupted"); }
                             });
                         }
                         @Override public void onText(String text) {
@@ -576,7 +679,9 @@ public final class LocalChatActivity extends Activity {
                             }
                         });
                         }
-                    });
+                    };
+                    if (useTools) active.chatWithTools(route, request, listener, new LocalWebTools());
+                    else active.chat(route, request, listener);
                 } catch (Exception error) {
                     problem = error instanceof java.io.IOException ? error.getMessage() : tr("API 回复格式不受支持。", "Unsupported API response format.");
                 }
@@ -589,9 +694,15 @@ public final class LocalChatActivity extends Activity {
     private void finishRun(String notice, String state) {
         if (client == null) return;
         LocalChatClient previous = client; client = null; generation++;
+        previous.requestCancel();
         new Thread(previous::cancel, "local-chat-cancel").start();
         Exception saveError = null;
         try {
+            JSONArray process = runningReply.optJSONArray("process");
+            if (process != null) for (int index = 0; index < process.length(); index++) {
+                JSONObject entry = process.getJSONObject(index);
+                if (entry.optString("status").equals("running")) entry.put("status", "cancelled");
+            }
             runningReply.put("content", latest).put("state", state).put("notice", notice == null ? "" : notice);
             store.save();
         } catch (Exception error) { saveError = error; }
