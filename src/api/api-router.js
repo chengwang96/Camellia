@@ -50,7 +50,7 @@ function apiError(res, status, message, protocol, code = 'api_router_error', hea
   json(res, status, protocol === 'anthropic' ? { type: 'error', error: { type: code, message } } : { error: { type: code, code, message } }, headers);
 }
 
-function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeoutMs = 120000 } = {}) {
+function startApiRouter({ configPath, log = () => {}, onState = () => {}, onContextEvidence = () => {}, timeoutMs = 120000 } = {}) {
   let cfg = loadConfig(configPath);
   const geminiTools = new GeminiToolState(configPath + '.gemini-tools.jsonl');
   let running = false, error = null, stopped = false, saveTimer = null, lastRoute = null;
@@ -98,7 +98,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
       for (const k of p.keys) if (k.enabled) all.push({ provider: p, key: k, model: m, protocol: wire });
     }
     const start = all.findIndex(r => r.key.id === cfg.active[model]);
-    return start > 0 ? [...all.slice(start), ...all.slice(0, start)] : all;
+    const ordered = start > 0 ? [...all.slice(start), ...all.slice(0, start)] : all;
+    return ordered.sort((first, second) => second.provider.priority - first.provider.priority);
   }
   function available(r, model) {
     const usage = cfg.usage[r.key.id];
@@ -238,7 +239,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
         function streamError(kind, detail = '') {
           if (settled) return;
           if (committed && !downstream.destroyed) {
-            const message = "The upstream stream was interrupted. Retry the request; started responses are not replayed automatically.";
+            const diagnostic = safeDetail(detail, cfg.providers.flatMap(provider => provider.keys.map(key => key.key)));
+            const message = "The upstream stream was interrupted. Retry the request; started responses are not replayed automatically." + (diagnostic ? ` ${diagnostic}` : '');
             endStreamError(message);
           }
           finish({ status: 502, kind, detail });
@@ -263,7 +265,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
           // Preserve native SSE event names, including tool and thinking deltas.
           converter.push(obj, event || (typeof obj === 'object' ? obj.type || '' : ''));
         });
-        response.on('data', chunk => { try { parser.feed(chunk); } catch { streamError('upstream'); } });
+        response.on('data', chunk => { try { parser.feed(chunk); } catch (error) { streamError(error.code === 'invalid_tool_call' ? 'protocol' : 'upstream', error.message); } });
         response.on('error', () => streamError('network'));
         response.on('end', () => {
           if (settled) return;
@@ -274,7 +276,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
             converter.end();
             downstream.end();
             finish({ ok: true });
-          } catch { streamError('upstream'); }
+          } catch (error) { streamError(error.code === 'invalid_tool_call' ? 'protocol' : 'upstream', error.message); }
         });
       });
       upstreams.add(upstream);
@@ -342,6 +344,9 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
       const pending = forward(route, protocol, body, pathname, res, req.headers, bufferTools);
       scope?.pending.add(pending);
       const result = await pending;
+      if (!pathname.endsWith('/count_tokens') && !result.cancelled) {
+        try { onContextEvidence({ ...route, ok: result.ok, tokens: result.tokens, status: result.status, detail: result.detail, maxOutputTokens: result.maxOutputTokens }); } catch {}
+      }
       if (scope && !pathname.endsWith('/count_tokens')) scope.record({ model, upstreamModel: route.model.upstream,
         sequence: requestSequence, durationMs: Date.now() - requestStarted,
         providerId: route.provider.id, tokens: result.tokens, outcome: result.cancelled ? 'cancelled' : result.ok ? 'success' : 'error',
@@ -406,9 +411,9 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, timeou
   }
   function rotate(model) {
     const id = modelId(model);
-    const routes = candidates(id, 'openai');
-    const next = routes.slice(1).find(r => available(r, id));
-    if (!next) throw new Error("No other route is available for this model");
+    const routes = candidates(id, 'openai').filter(route => available(route, id));
+    const next = routes.slice(1).find(route => route.provider.priority === routes[0].provider.priority);
+    if (!next) throw new Error("No other route with the same priority is available for this model");
     cfg.active[id] = next.key.id; changed(); return getState();
   }
   async function stop() {

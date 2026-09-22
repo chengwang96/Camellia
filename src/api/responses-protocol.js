@@ -117,7 +117,7 @@ class ResponsesStream {
       let state = this.calls.get(call.index);
       if (!state) {
         const tool = resolveTool(this.tools, call.function?.name);
-        if (!tool) throw new Error('The provider returned an unknown tool: ' + call.function?.name);
+        if (!tool) throw Object.assign(new Error('The provider returned an unknown tool: ' + call.function?.name), { code: 'invalid_tool_call' });
         const custom = tool.type === 'custom';
         const item = { id: 'fc_' + randomUUID(), type: custom ? 'custom_tool_call' : 'function_call', call_id: call.id || 'call_' + randomUUID(),
           name: tool.name, ...(tool.namespace ? { namespace: tool.namespace } : {}), status: 'in_progress', [custom ? 'input' : 'arguments']: '' };

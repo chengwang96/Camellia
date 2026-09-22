@@ -18,6 +18,7 @@ const methods = {
   apiRouterGetState: 'api-router-get-state', apiRouterSaveConfig: 'api-router-save-config',
   apiRouterReset: 'api-router-reset', apiRouterRotate: 'api-router-rotate',
   providerInsights: 'provider-insights', providerRefresh: 'provider-refresh', providerModels: 'provider-models', providerVerify: 'provider-verify',
+  contextCapacity: 'context-capacity', contextCapacityStart: 'context-capacity-start', contextCapacityCancel: 'context-capacity-cancel',
   engineSettingsGet: 'engine-settings-get', engineSettingsSave: 'engine-settings-save', runtimeState: 'runtime-state', runtimeEnsure: 'runtime-ensure',
   downloadSettings: 'download-settings', downloadSaveSettings: 'download-save-settings',
   antigravityAccountState: 'antigravity-account-state', antigravityAccountRefresh: 'antigravity-account-refresh', antigravitySignIn: 'antigravity-sign-in',

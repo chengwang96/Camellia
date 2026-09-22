@@ -31,6 +31,7 @@ try:
         errors=[]; page.on('pageerror',lambda e:errors.append(str(e)))
         page.expose_function('testRpc',rpc);page.add_init_script(bridge)
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri());page.wait_for_load_state('networkidle')
+        page.locator('[data-view=providers]').click()
         expect(page.locator('#providers')).to_contain_text('Add your first provider')
         page.locator('.router-options > summary').click()
         page.locator('#port').fill(str(port))
@@ -46,8 +47,12 @@ try:
         expect(page.locator('#pUrl')).to_have_value('https://api.commandcode.ai/provider/v1')
         page.locator('#pUrl').fill(upstream+'/command/v1')
         page.get_by_role('textbox',name='API Key 1',exact=True).fill('test-command-account')
+        expect(page.locator('#pPriority')).to_have_value('0')
+        expect(page.locator('#pPriority option')).to_have_text(['Low', 'Default', 'High'])
+        page.locator('#pPriority').select_option('1')
         page.locator('#save').click();expect(page.locator('#status')).to_contain_text('Saved')
         state=rpc('apiRouterGetState')['result'];assert len(state['providers'])==2
+        assert state['providers'][1]['priority']==1
         assert 'test-command-account' not in json.dumps(state)
         result=rpc('routerRequest','kimi-k3')['result'];assert result['status']==200
         page.locator('#refresh').click();expect(page.locator('#live')).to_contain_text('Command Code GOAT')
@@ -57,8 +62,19 @@ try:
         page.get_by_role('button',name='Move up Command Code GOAT',exact=True).click()
         page.locator('#save').click();expect(page.locator('#status')).to_contain_text('Saved')
         page.reload();page.wait_for_load_state('networkidle')
+        page.locator('[data-view=providers]').click()
         expect(page.locator('.provider').first).to_contain_text('Command Code GOAT')
         page.locator('.provider [data-select]').first.click()
+        expect(page.locator('#pPriority')).to_have_value('1')
+        page.locator('#pPriority').select_option('-1');page.locator('#save').click()
+        expect(page.locator('#status')).to_contain_text('Saved')
+        assert rpc('apiRouterGetState')['result']['providers'][0]['priority']==-1
+        expect(page.locator('#pPriority')).to_have_value('-1')
+        page.locator('#pPriority').select_option('0');page.locator('#save').click()
+        expect(page.locator('#status')).to_contain_text('Saved')
+        assert rpc('apiRouterGetState')['result']['providers'][0]['priority']==0
+        page.locator('#pPriority').select_option('1');page.locator('#save').click()
+        expect(page.locator('#status')).to_contain_text('Saved')
         expect(page.locator('#keyRows')).to_contain_text('1 successful')
         page.locator('#connectionAdvanced > summary').click()
         page.locator('#pUrl').fill('http://remote.invalid/v1');page.locator('#save').click()

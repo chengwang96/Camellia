@@ -147,8 +147,18 @@
 <dialog id="deleteArchivedDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Delete conversation</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="deleteArchivedTitle"></p><p class="hint" data-i18n>Deleting removes this conversation and its files permanently. This cannot be undone.</p><button id="confirmDeleteArchived" class="danger" data-i18n>Delete permanently</button></dialog>
 <dialog id="deleteAllArchivedDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Delete all archived conversations</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="deleteAllArchivedCount"></p><p class="hint" data-i18n>Deleting removes every archived conversation and its files permanently. This cannot be undone.</p><button id="confirmDeleteAllArchived" class="danger" data-i18n>Delete permanently</button></dialog>
 <dialog id="cleanStorageDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Clean unused files</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="cleanStorageEstimate"></p><p class="hint" data-i18n>Files are permanently deleted, not moved to the recycle bin. References are checked again; changed or newly referenced files are skipped.</p><button id="confirmCleanStorage" class="danger" data-i18n>Confirm cleanup</button></dialog>
+<dialog id="contextProbeDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Detect context capacity</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form>
+  <p id="contextProbeTarget"></p><p class="hint" data-i18n>This sends increasingly large paid requests, up to 524,288 estimated input tokens in total. Actual tokens and cost may be higher. No fallback, automatic retries or background scheduling. Stops after five minutes.</p>
+  <label for="contextProbeKey" data-i18n>API Key</label><select id="contextProbeKey"></select>
+  <label for="contextProbeProtocol" data-i18n>Protocol</label><select id="contextProbeProtocol"></select>
+  <label for="contextProbeMax" data-i18n>Maximum estimated input per request</label><select id="contextProbeMax"><option value="8192">≈8K</option><option value="32768">≈32K</option><option value="65536" selected>≈64K</option><option value="131072">≈128K</option><option value="262144">≈256K</option></select>
+  <label for="contextProbeRequests" data-i18n>Maximum requests (1–12)</label><input id="contextProbeRequests" type="number" min="1" max="12" value="8">
+  <p class="hint" data-i18n>Reserves 128 output tokens per request. Providers that reject this output parameter stop the probe; no compatibility retries are made. Cancelling cannot undo charges already incurred.</p>
+  <label><input id="contextProbeConfirm" type="checkbox"><span data-i18n>I understand this probe may incur significant API charges.</span></label>
+  <button id="contextProbeSubmit" disabled data-i18n>Start paid probe</button>
+</dialog>
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>
-<script src="./settings-charts.js"></script><script src="./engine-settings-ui.js"></script><script src="./api-settings.js"></script>
+<script src="./settings-charts.js"></script><script src="./engine-settings-ui.js"></script><script src="./context-capacity-ui.js"></script><script src="./api-settings.js"></script>
 </body></html>

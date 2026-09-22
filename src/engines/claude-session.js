@@ -100,6 +100,13 @@ class ClaudeSession {
     const errorText = Array.isArray(obj.errors) ? obj.errors.filter(e => typeof e === 'string').join('\n') : '';
     const result = { ...obj, result: obj.result || (obj.is_error ? errorText : '') || '', session_id: this.sessionId,
       ...(this.cancelled ? { subtype: 'stopped', is_error: false } : {}) };
+    if (this.compaction) {
+      const operation = this.compaction; this.compaction = null;
+      this.clearTimer(operation.timer);
+      if (!this.cancelled && !result.is_error && result.subtype === 'success' && operation.boundary) operation.resolve({ ok: true });
+      else operation.reject(new Error(result.result || 'Claude compaction failed or canceled; no completed compaction was confirmed.'));
+      return;
+    }
     try { this.onResult?.(result); }
     catch (err) { this.log(`claude result hook failed: ${err.message}`); }
     this.sendChannel(result);
@@ -126,6 +133,11 @@ class ClaudeSession {
       this.rememberSession(obj.session_id);
     }
     if (obj.type === 'result') { this.complete(obj); return; }
+    if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
+      if (this.compaction) this.compaction.boundary = true;
+      else this.sendChannel({ type: 'gui:compaction', state: 'completed' });
+    }
+    if (this.compaction) return;
     this.sendChannel(obj);
   }
 
@@ -136,7 +148,7 @@ class ClaudeSession {
       this.clearWatchdog();
       this.answer(msg.request_id, {});
     } else if (req.subtype === 'can_use_tool') {
-      if (!this.running || this.cancelled) {
+      if (!this.running || this.cancelled || this.compaction) {
         this.answer(msg.request_id, { behavior: 'deny', message: 'This response was stopped or is no longer active.' });
         return;
       }
@@ -220,9 +232,21 @@ class ClaudeSession {
     return sent;
   }
 
+  compact({ timeoutMs = 120000 } = {}) {
+    if (this.running || this.dead) return Promise.reject(new Error('Claude is busy or unavailable'));
+    const done = new Promise((resolve, reject) => {
+      this.compaction = { resolve, reject, boundary: false, timer: this.setTimer(() => {
+        this.fail('compaction_timeout', 'Claude context compaction timed out; the original session is retained.');
+      }, timeoutMs) };
+    });
+    this.sendUserMessage('/compact');
+    return done;
+  }
+
   clearWatchdog() { this.clearTimer(this.watchdog); this.watchdog = null; }
 
   kill() {
+    if (this.compaction) this.complete({ type: 'result', subtype: 'stopped', is_error: true, result: 'Claude process stopped during compaction' });
     this.dead = true;
     this.closed = true;
     this.running = false;

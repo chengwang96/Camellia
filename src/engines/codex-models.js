@@ -2,9 +2,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const CODEX_API_TOOL_PROFILE = 'native-apply-patch-v1';
+const CODEX_API_TOOL_PROFILE = 'native-apply-patch-v2';
 const nativeCatalog = require('./codex-metadata/models.json');
 const fallbackPrompt = fs.readFileSync(path.join(__dirname, 'codex-metadata/fallback-prompt.md'), 'utf8');
+const toolAwareFallbackPrompt = fallbackPrompt.replace(/^## (?:Planning|`update_plan`)\r?\n[\s\S]*?(?=^#{1,2} |$(?![\s\S]))/gm, '');
 
 function nativeModel(model) {
   const suffix = /^[a-zA-Z0-9_-]+\/([^/]+)$/.exec(model)?.[1];
@@ -27,7 +28,7 @@ function configureApiModel(config, home, model, contextWindow) {
     slug: model, display_name: model, description: null,
     default_reasoning_level: null, supported_reasoning_levels: [],
     shell_type: 'default', visibility: 'none', supported_in_api: true, priority: 99,
-    model_messages: { instructions_template: fallbackPrompt },
+    model_messages: { instructions_template: toolAwareFallbackPrompt },
     include_skills_usage_instructions: false, include_plugin_usage_instructions: false, include_apps_usage_instructions: false,
     supports_reasoning_summary_parameter: true, default_reasoning_summary: 'auto',
     support_verbosity: false, apply_patch_tool_type: 'freeform',

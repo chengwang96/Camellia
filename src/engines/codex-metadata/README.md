@@ -7,8 +7,10 @@ These unmodified files come from OpenAI Codex `rust-v0.154.0` and are covered by
 
 `codex-models.js` copies the pinned CLI's unknown-model descriptor from
 `codex-rs/models-manager/src/model_info.rs`, changing `apply_patch_tool_type`
-from `null` to `freeform`. Its instructions, shell type, reasoning defaults,
-context window and truncation policy stay the same. The generated catalog also
+from `null` to `freeform`. The generated instructions omit the two `update_plan`
+sections, matching the native unknown-model prompt: the pinned CLI does not
+register that tool for this profile. The vendored prompt remains unmodified.
+Shell type, reasoning defaults, context window and truncation policy stay the same. The generated catalog also
 retains the native entries. Known native models and user-supplied catalogs keep
 their own configuration. Subscription connections do not use this catalog.
 

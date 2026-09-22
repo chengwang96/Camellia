@@ -42,6 +42,7 @@ function navigateSettings(target = {}) {
   setView(target.page || 'general', target.engine, target.focus);
 }
 const engineUI = window.createEngineSettingsUI({ api, status, navigate: navigateSettings });
+const capacityUI = window.createContextCapacityUI({ api, current, assertClean, status, esc, fmt, keyName });
 $('kimiUsage').onclick = () => navigateSettings({ page: 'usage', subscriptionId: 'kimi-subscription' });
 api.onSettingsNavigate(navigateSettings);
 function showLive() {
@@ -75,6 +76,8 @@ function renderEditor() {
   if (!p) { $('editor').innerHTML = ''; return; }
   $('editor').innerHTML = `<button class="back" id="backProviders" data-i18n>← All providers</button>
     <div class="editor-heading"><span class="provider-mark">${mark(p.type)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name" data-i18n-attrs="aria-label"><label><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}>Enabled</label></div>
+    <label for="pPriority" data-i18n>API priority</label><select id="pPriority"><option value="-1" data-i18n>Low</option><option value="0" data-i18n>Default</option><option value="1" data-i18n>High</option></select>
+    <p class="hint" data-i18n>Routes are tried in order: High, Default, Low. Unavailable routes are skipped. Equal priorities retain the current route, then follow provider and key order. Next route switches only within the highest available priority.</p>
     ${p.type.startsWith('mimo-token-plan-') ? '<p class="hint" data-i18n>Use your Token Plan tp- key and the region shown in your console. Coding use only. Do not add a pay-as-you-go route for the same model unless you want paid fallback. Check remaining Credits in the MiMo console.</p>' : ''}
     ${p.type === 'mimo' ? '<p class="hint" data-i18n>Use a regular MiMo API key, not a Token Plan tp- key. Requests are billed to your API balance. Adding this provider alongside Token Plan for the same model allows paid fallback.</p>' : ''}
     <div class="section-head"><h2 data-i18n>API Key</h2><button id="showImport" data-i18n>Import keys</button><button id="addKey" data-i18n>+ Add key</button></div>
@@ -84,6 +87,7 @@ function renderEditor() {
       <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Routes switch only within the same model ID. Keep versions and aliases such as latest and chat separate.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Canonical model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th data-i18n>Context</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><button id="addModel" data-i18n>+ Add model</button></details>
       <div class="row verify-row" style="margin-top:18px"><label data-i18n>Validation model<select id="verifyModel" aria-label="Validation model" data-i18n-attrs="aria-label"></select></label><button id="verifyNow" data-verify-now data-i18n>Validate</button></div><p class="hint" data-i18n>Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
     </div>
+    <div id="contextCapacityPanel"></div>
     <details class="advanced section" id="connectionAdvanced" ${p.type === 'custom' ? 'open' : ''}><summary data-i18n>Advanced connection settings</summary><div class="grid">
       <div class="full"><label for="pUrl" data-i18n>API URL</label><input id="pUrl" value="${esc(p.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false" data-i18n-attrs="placeholder"></div>
       <div><label for="pProtocol" data-i18n>Default protocol</label><select id="pProtocol"><option value="openai" data-i18n>OpenAI Chat Completions</option><option value="anthropic" data-i18n>Anthropic Messages</option><option value="dual" data-i18n>Both protocols</option></select></div>
@@ -91,10 +95,13 @@ function renderEditor() {
     <details class="advanced section"><summary data-i18n>Active routes and priority</summary><div id="routeRows"></div></details>
     <button id="deleteProvider" class="danger" style="margin-top:24px" data-i18n>Remove provider</button>`;
   $('pProtocol').value = p.protocol; $('aUrlField').hidden = p.protocol !== 'dual';
+  capacityUI.mount();
   $('backProviders').onclick = () => { selected = null; renderEditor(); };
   for (const [id, field] of [['pName','name'], ['pUrl','baseUrl'], ['pAUrl','anthropicBaseUrl']]) $(id).oninput = e => { p[field] = e.target.value; edited(); };
   $('pProtocol').onchange = e => { p.protocol = e.target.value; $('aUrlField').hidden = p.protocol !== 'dual'; edited(); };
   $('pEnabled').onchange = e => { p.enabled = e.target.checked; edited(); };
+  $('pPriority').value = String(Math.sign(p.priority ?? 0));
+  $('pPriority').onchange = e => { p.priority = Number(e.target.value); edited(); };
   $('addKey').onclick = () => { p.keys.push({ id: uid(), key: '', name: '', enabled: true }); edited(); renderKeys(); };
   $('showImport').onclick = () => { $('keyImport').hidden = !$('keyImport').hidden; if (!$('keyImport').hidden) $('bulkKeys').focus(); };
   $('importKeys').onclick = () => {
