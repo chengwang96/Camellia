@@ -29,6 +29,10 @@ async function main() {
     try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks)); requests.push({ body, key: req.headers.authorization });
+      if (!body.tools?.some(tool => /(?:^|__)update_plan$/.test(tool.function.name))) {
+        assert.ok(!body.messages.filter(message => ['system', 'developer'].includes(message.role)).some(message => /update_plan/.test(JSON.stringify(message.content))),
+          'The native request must not instruct the model to call an unavailable plan tool');
+      }
       if (req.headers.authorization === 'Bearer exhausted') { res.writeHead(402); res.end('{"error":"quota exhausted"}'); return; }
       assert.equal(body.model, 'fixture-codex');
       const last = body.messages.findLastIndex(m => m.role === 'user' && JSON.stringify(m.content).includes('SMOKE'));

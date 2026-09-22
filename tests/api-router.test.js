@@ -51,7 +51,7 @@ async function fixture(t, respond, makeProviders, options = {}) {
   let router;
   for (let attempt = 0; ; attempt++) {
     writeConfig(file, normalizeConfig({ port:await port(), providers:makeProviders(url) }));
-    router = startApiRouter({ configPath:file, timeoutMs:options.timeoutMs || 2000 });
+    router = startApiRouter({ configPath:file, timeoutMs:options.timeoutMs || 2000, onContextEvidence: options.onContextEvidence });
     try { await router.ready; break; }
     catch (error) { // Another parallel test file may claim a probed port first.
       if (attempt >= 2 || !/EADDRINUSE/.test(error.message)) throw error;
@@ -66,6 +66,41 @@ async function fixture(t, respond, makeProviders, options = {}) {
   const post=(body, endpoint='/v1/chat/completions', opts={}) => fetch(router.url+endpoint,{ method:'POST', headers:{ 'content-type':'application/json', authorization:'Bearer client-placeholder', 'x-api-key':'client-private', ...opts.headers }, body:JSON.stringify({ model:'kimi-k3', messages:[{role:'user',content:'hello'}], ...body }), signal:opts.signal });
   return {router,requests,file,post,url};
 }
+
+test('router reports context evidence on its actual route without letting observers break requests', async t => {
+  const evidence = [];
+  const harness = await fixture(t, (request, response) => {
+    if (request.body.max_tokens === 999) return reply(response, 400, { error: { code: 'context_length_exceeded', message: 'maximum context length is 32768 tokens' } });
+    reply(response, 200, completion(request.body.model));
+  }, url => [provider('first', url)], { onContextEvidence: result => { evidence.push(result); throw new Error('observer error'); } });
+  assert.equal((await harness.post({ max_tokens: 128 })).status, 200);
+  assert.equal(evidence.length, 1); assert.equal(evidence[0].tokens.input, 10);
+  assert.equal(evidence[0].provider.id, 'first'); assert.equal(evidence[0].model.upstream, 'vendor/Kimi-K3');
+  assert.equal(evidence[0].protocol, 'openai'); assert.equal(evidence[0].maxOutputTokens, 128);
+  assert.equal((await harness.post({ max_tokens: 999 })).status, 400);
+  assert.equal(evidence.length, 2); assert.match(evidence[1].detail, /context_length_exceeded/);
+});
+
+test('unknown Responses tools report the cause without cooling down a healthy route', async t => {
+  const harness = await fixture(t, (request, response) => {
+    if (!request.body.tools) return reply(response, 200, completion(request.body.model));
+    stream(response, [
+      { choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'bad-call', type: 'function', function: { name: 'update_plan', arguments: '{}' } }] } }] },
+      '[DONE]',
+    ]);
+  }, url => [provider('mimo', url)]);
+  const response = await harness.post({ stream: true, input: 'Plan a code change', tools: [{ type: 'function', name: 'exec_command', parameters: { type: 'object', properties: {} } }] }, '/v1/responses');
+  assert.equal(response.status, 200);
+  const output = await response.text();
+  assert.match(output, /response.failed/);
+  assert.match(output, /unknown tool: update_plan/);
+  assert.doesNotMatch(output, /response.completed/);
+  const usage = harness.router.getState().usage['mimo-key-0'];
+  assert.ok(!usage?.blocked);
+  assert.ok(!usage?.models?.['kimi-k3']);
+  assert.equal((await harness.post({})).status, 200);
+  assert.equal(harness.requests.length, 2);
+});
 
 test('MiMo Token Plan presets use regional subscription endpoints and current coding models', () => {
   const presets = PRESETS.filter(preset => preset.type.startsWith('mimo-token-plan-'));
@@ -319,6 +354,80 @@ test('legacy Ollama pool migrates keys, active order and usage without exposing 
   const next=normalizeConfig(edited,cfg);
   assert.equal(next.providers[0].keys[0].key,'original-account-secret-2');
   assert.equal(next.usage[cfg.providers[0].keys[0].id].requests,7);
+});
+
+test('provider priority defaults, validation and masked configuration roundtrip', () => {
+  const raw = { providers: [provider('first', 'https://example.com/v1')] };
+  assert.equal(normalizeConfig(raw).providers[0].priority, 0);
+  assert.equal(normalizeConfig({ keys: ['legacy-secret'] }).providers[0].priority, 0);
+  for (const priority of [-1, 0, 1, '-1', '0', '1', 9999, '25']) {
+    raw.providers[0].priority = priority;
+    const config = normalizeConfig(raw);
+    const next = normalizeConfig(publicState(config), config);
+    assert.equal(next.providers[0].priority, Math.sign(Number(priority)));
+    assert.equal(next.providers[0].keys[0].key, 'secret-first');
+  }
+  for (const priority of [-2, 10000, 1.5, '', ' ', 'invalid', null, true, [], {}, Infinity]) {
+    raw.providers[0].priority = priority;
+    assert.throws(() => normalizeConfig(raw), /API priority/);
+  }
+});
+
+test('higher provider priority overrides sticky routes and updates without restart', async t => {
+  const harness = await fixture(t, (request, response) => reply(response, 200, completion(request.body.model)), url => [
+    provider('low', url + '/low'),
+    provider('high', url + '/high'),
+    { ...provider('disabled', url + '/disabled'), priority: 9999, enabled: false },
+    { ...provider('unrelated', url + '/unrelated', ['other'], [mapping('other-model')]), priority: 9999 },
+    { ...provider('disabled-key', url + '/disabled-key'), priority: 9999, keys: [{ id: 'off', key: 'off', enabled: false }] },
+  ]);
+  assert.equal((await harness.post({})).status, 200);
+  const config = harness.router.getState();
+  config.providers[1].priority = 1;
+  harness.router.updateConfig(config);
+  assert.equal(loadConfig(harness.file).providers[1].priority, 1);
+  assert.equal((await harness.post({})).status, 200);
+  const changed = harness.router.getState();
+  changed.providers[1].priority = -1;
+  harness.router.updateConfig(changed);
+  assert.equal((await harness.post({})).status, 200);
+  assert.deepEqual(harness.requests.map(request => request.url), ['/low/chat/completions', '/high/chat/completions', '/low/chat/completions']);
+});
+
+test('priority failover tries higher-priority keys first and returns after cooldown', async t => {
+  let fail = true;
+  const harness = await fixture(t, (request, response) => request.url.startsWith('/high') && fail
+    ? reply(response, 429, { error: 'rate limit' }) : reply(response, 200, completion(request.body.model)), url => [
+    provider('low', url + '/low'),
+    { ...provider('high', url + '/high', ['high-one', 'high-two']), priority: 1 },
+  ]);
+  assert.equal((await harness.post({})).status, 200);
+  assert.equal((await harness.post({})).status, 200);
+  assert.deepEqual(harness.requests.map(request => request.headers.authorization), [
+    'Bearer high-one', 'Bearer high-two', 'Bearer secret-low', 'Bearer secret-low',
+  ]);
+  fail = false;
+  const afterCooldown = Date.now() + 61000;
+  t.mock.method(Date, 'now', () => afterCooldown);
+  assert.equal((await harness.post({})).status, 200);
+  assert.equal(harness.requests.at(-1).headers.authorization, 'Bearer high-one');
+});
+
+test('manual rotation respects priority and preserves equal-priority key rotation', async t => {
+  const harness = await fixture(t, (request, response) => reply(response, 200, completion(request.body.model)), url => [
+    provider('low', url + '/low'),
+    { ...provider('high', url + '/high', ['high-one', 'high-two']), priority: 1 },
+  ]);
+  harness.router.rotate('kimi-k3');
+  assert.equal((await harness.post({})).status, 200);
+  assert.equal(harness.requests.at(-1).headers.authorization, 'Bearer high-two');
+  harness.router.reset('kimi-k3');
+  assert.equal((await harness.post({})).status, 200);
+  assert.equal(harness.requests.at(-1).headers.authorization, 'Bearer high-one');
+  const config = harness.router.getState();
+  config.providers[1].keys[1].enabled = false;
+  harness.router.updateConfig(config);
+  assert.throws(() => harness.router.rotate('kimi-k3'), /same priority/);
 });
 
 test('quota failure advances across providers for the same model, then stays on that key', async t => {

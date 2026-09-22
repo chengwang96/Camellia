@@ -21,6 +21,49 @@ function fixture(t, opts = {}) {
   return { session, proc, writes, events, results, timers, spawns };
 }
 
+test('Claude native compact requires a compact boundary and a successful result without a user result', async context => {
+  const harness = fixture(context, { sessionId: 'original' });
+  const done = harness.session.compact();
+  assert.equal(harness.writes.at(-1).message.content[0].text, '/compact');
+  harness.session.emitLine(JSON.stringify({ type: 'system', subtype: 'compact_boundary', session_id: 'original' }));
+  assert.equal(harness.session.running, true);
+  harness.session.emitLine(JSON.stringify({ type: 'result', subtype: 'success', session_id: 'original' }));
+  assert.deepEqual(await done, { ok: true });
+  assert.equal(harness.results.length, 0);
+  assert.equal(harness.events.length, 0);
+  assert.equal(harness.session.sessionId, 'original');
+});
+
+for (const mode of ['no-boundary', 'cancel', 'exit']) test('Claude compact rejects ' + mode, async context => {
+  const harness = fixture(context);
+  const rejected = assert.rejects(harness.session.compact());
+  if (mode === 'exit') harness.session.kill();
+  else {
+    if (mode === 'cancel') harness.session.interrupt();
+    harness.session.emitLine(JSON.stringify({ type: 'result', subtype: 'success' }));
+  }
+  await rejected;
+  assert.equal(harness.results.length, 0);
+  assert.equal(harness.session.running, false);
+});
+
+test('Claude automatic compact boundary publishes a context event', context => {
+  const harness = fixture(context);
+  harness.session.sendUserMessage('Continue');
+  harness.session.emitLine(JSON.stringify({ type: 'system', subtype: 'compact_boundary' }));
+  assert.ok(harness.events.some(event => event.type === 'gui:compaction' && event.state === 'completed'));
+});
+
+test('Claude compaction timeout terminates the process without publishing a user result', async context => {
+  const harness = fixture(context);
+  harness.session.initialized = true;
+  const rejected = assert.rejects(harness.session.compact(), /timed out/);
+  harness.timers.get(1)();
+  await rejected;
+  assert.equal(harness.proc.killed, true);
+  assert.equal(harness.results.length, 0);
+});
+
 test('Claude registers the goal MCP server without changing normal tool permissions', t => {
   const config = { command: process.execPath, args: ['goal-mcp-stdio.js'], env: { CAMELLIA_GOAL_TOKEN: 'private' } };
   const harness = fixture(t, { goalBridge: { config } });

@@ -76,9 +76,13 @@ class AcpSession extends StreamingSession {
 
   receive(message) {
     if (message.method) {
+      if (message.method === 'session/update' && message.params.update?.sessionUpdate === 'available_commands_update'
+          && (!this.sessionId || message.params.sessionId === this.sessionId)) {
+        this.availableCommands = message.params.update.availableCommands; return;
+      }
       if (message.method === 'session/update' && message.params.sessionId === this.sessionId && this.running) this.update(message.params.update);
       else if (message.id !== undefined) {
-        if (message.method === 'session/request_permission' && message.params.sessionId === this.sessionId && this.running && !this.cancelled) {
+        if (message.method === 'session/request_permission' && message.params.sessionId === this.sessionId && this.running && !this.cancelled && !this.compaction) {
           const requestId = String(message.id);
           this.permissions.set(requestId, message);
           const tool = message.params.toolCall || {};
@@ -164,8 +168,61 @@ class AcpSession extends StreamingSession {
     }
   }
 
+  compact({ timeoutMs = 120000 } = {}) {
+    if (this.running || this.dead) return Promise.reject(new Error(`${this.name} is busy or unavailable`));
+    this.running = true; this.cancelled = false; this.replayEvents = [];
+    const done = new Promise((resolve, reject) => {
+      this.compaction = { resolve, reject, timer: setTimeout(() => {
+        this.settleCompaction(new Error(`${this.name} context compaction timed out; the original session is retained.`));
+        this.kill();
+      }, timeoutMs) };
+    });
+    const operation = this.compaction;
+    void (async () => {
+      try {
+        await (this.ready ||= this.open());
+        if (this.compaction !== operation) return;
+        if (this.cancelled) throw new Error('Compaction canceled');
+        if (this.spec.modeEngine !== 'kimi' || !this.availableCommands?.some(command => command.name === 'compact'))
+          throw Object.assign(new Error('Native manual compaction is not advertised by this harness'), { code: -32601 });
+        const response = await this.request('session/prompt', { sessionId: this.sessionId, prompt: [{ type: 'text', text: '/compact' }] }, 0);
+        if (this.compaction !== operation) return;
+        if (response.stopReason !== 'end_turn') throw new Error('Native compaction was not accepted: ' + response.stopReason);
+        operation.accepted = true;
+        if (operation.completed) this.settleCompaction();
+      } catch (error) {
+        if (this.compaction === operation) {
+          this.settleCompaction(error);
+          if (error.code !== -32601) this.kill();
+        }
+      }
+    })();
+    return done;
+  }
+
+  settleCompaction(error) {
+    const operation = this.compaction;
+    if (!operation) return;
+    this.compaction = null; this.running = false;
+    clearTimeout(operation.timer); clearTimeout(this.cancelTimer);
+    if (error || this.cancelled) operation.reject(error || new Error('Compaction canceled'));
+    else operation.resolve({ ok: true });
+  }
+
   update(update) {
     const kind = update.sessionUpdate;
+    if (kind === 'available_commands_update') { this.availableCommands = update.availableCommands; return; }
+    if (this.compaction) {
+      if (kind === 'agent_message_chunk' && update.content?.type === 'text') {
+        const text = update.content.text;
+        if (/^Compaction completed\.\n- Messages compacted: [\d,]+\n- Tokens before: [\d,]+\n- Tokens after: [\d,]+$/.test(text)) {
+          this.compaction.completed = true;
+          if (this.compaction.accepted) this.settleCompaction();
+        } else if (text === 'Compaction cancelled.' || text.startsWith('Compaction is blocked by the current turn;')) this.settleCompaction(new Error(text));
+      }
+      return;
+    }
+    if (kind === 'camellia_compaction') { this.emit({ type: 'gui:compaction', state: update.state }); return; }
     if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') {
       if (update.content.type !== 'text') return;
       const text = update.content.text;
@@ -208,6 +265,7 @@ class AcpSession extends StreamingSession {
   interrupt() {
     if (!this.running || this.dead) return;
     this.cancelled = true;
+    if (this.compaction) { this.kill(); return; }
     for (const id of this.permissions.keys()) this.answerPermission(id, false);
     if (this.sessionId) this.write({ method: 'session/cancel', params: { sessionId: this.sessionId } });
     // A stuck tool must not leave the stop button spinning forever.
@@ -215,6 +273,7 @@ class AcpSession extends StreamingSession {
   }
 
   close(error) {
+    this.settleCompaction(error);
     this.dead = true;
     clearTimeout(this.cancelTimer);
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }

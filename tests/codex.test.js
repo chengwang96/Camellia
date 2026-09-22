@@ -247,7 +247,13 @@ test('Codex API metadata adds native patch support without overriding known mode
   const model = catalog.models.find(m => m.slug === 'kimi-k3');
   assert.equal(model.apply_patch_tool_type, 'freeform');
   assert.equal(model.default_reasoning_level, null); assert.equal(first.model_reasoning_effort, undefined);
-  assert.equal(model.model_messages.instructions_template, fs.readFileSync(path.join(__dirname, '../src/engines/codex-metadata/fallback-prompt.md'), 'utf8'));
+  const instructions = model.model_messages.instructions_template;
+  assert.doesNotMatch(instructions, /update_plan|^## Planning/m);
+  assert.match(instructions, /## Task execution/);
+  assert.match(instructions, /## Shell commands/);
+  const original = fs.readFileSync(path.join(__dirname, '../src/engines/codex-metadata/fallback-prompt.md'), 'utf8');
+  assert.equal(instructions, original.slice(0, original.indexOf('## Planning'))
+    + original.slice(original.indexOf('## Task execution'), original.indexOf('## `update_plan`')));
   const limited = codexSpawnSpec({ ...options, contextWindow: 65536 });
   assert.deepEqual(limited.args, ['app-server', '-c', 'model_context_window=65536']);
   assert.equal(read().model_context_window, undefined);

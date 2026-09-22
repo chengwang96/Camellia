@@ -66,6 +66,10 @@ class Bridge:
         async def approve(tool):
             return await self.approve(tool)
 
+        @hooks.on_compaction
+        async def on_compaction(step):
+            self.update({"sessionUpdate": "camellia_compaction", "state": "completed"})
+
         reads = [types.BuiltinTools.VIEW_FILE, types.BuiltinTools.LIST_DIR,
                  types.BuiltinTools.FIND_FILE, types.BuiltinTools.SEARCH_DIR,
                  types.BuiltinTools.FINISH]
@@ -129,7 +133,7 @@ class Bridge:
             conversation_id=metadata.get("conversationId"), system_instructions=instructions or None,
             # SDK 0.1.16's OpenAI strategy does not forward config.policies.
             # Enforce through its public tool-decision hook instead.
-            policies=[], hooks=[before_tool, policy.enforce(policies), after_tool, tool_error], capabilities=capabilities,
+            policies=[], hooks=[before_tool, policy.enforce(policies), after_tool, tool_error, on_compaction], capabilities=capabilities,
             mcp_servers=servers, skills_paths=native.get("skillsPaths", []),
         )
         self.agent = Agent(config)

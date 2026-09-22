@@ -20,6 +20,55 @@ function fixture(t) {
   return { proc, session };
 }
 
+test('Kimi compaction waits for background completion, not the slash command acknowledgement', async context => {
+  const { session } = fixture(context), requests = [];
+  session.ready = Promise.resolve(); session.sessionId = 'kimi-native'; session.spec.modeEngine = 'kimi';
+  session.availableCommands = [{ name: 'compact' }];
+  session.request = async (method, params) => { requests.push({ method, params }); return { stopReason: 'end_turn' }; };
+  let settled = false;
+  const done = session.compact().then(result => { settled = true; return result; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.deepEqual(requests, [{ method: 'session/prompt', params: { sessionId: 'kimi-native', prompt: [{ type: 'text', text: '/compact' }] } }]);
+  session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Context compaction started — it runs in the background.' } });
+  assert.equal(settled, false);
+  session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Compaction completed.\n- Messages compacted: 10\n- Tokens before: 20,000\n- Tokens after: 2,000' } });
+  assert.deepEqual(await done, { ok: true });
+  assert.equal(session.running, false);
+  assert.equal(session.sessionId, 'kimi-native');
+});
+
+for (const mode of ['unsupported', 'cancel', 'timeout', 'exit', 'blocked']) test('ACP compaction safely handles ' + mode, async context => {
+  const { session } = fixture(context);
+  session.ready = Promise.resolve(); session.sessionId = 'kimi-native'; session.spec.modeEngine = 'kimi';
+  session.availableCommands = mode === 'unsupported' ? [] : [{ name: 'compact' }];
+  let calls = 0;
+  session.request = async () => { calls++; return { stopReason: 'end_turn' }; };
+  const done = session.compact({ timeoutMs: mode === 'timeout' ? 15 : 1000 });
+  const rejected = assert.rejects(done, mode === 'unsupported' ? { code: -32601 } : /stopped|timed out|blocked/i);
+  await new Promise(resolve => setImmediate(resolve));
+  if (mode === 'cancel') session.interrupt();
+  if (mode === 'exit') session.kill();
+  if (mode === 'blocked') session.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Compaction is blocked by the current turn; retry when the turn is idle.' } });
+  await rejected;
+  assert.equal(session.running, false);
+  if (mode === 'unsupported') assert.equal(calls, 0);
+});
+
+test('ACP records command advertisements before session initialization completes', context => {
+  const { session } = fixture(context);
+  session.receive({ method: 'session/update', params: { sessionId: 'opening', update: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'compact' }] } } });
+  assert.deepEqual(session.availableCommands, [{ name: 'compact' }]);
+});
+
+test('Antigravity compaction hook updates are progress, not tools or replies', context => {
+  const { session } = fixture(context), events = [];
+  session.onEvent = event => events.push(event);
+  session.update({ sessionUpdate: 'camellia_compaction', state: 'completed' });
+  assert.equal(events[0].type, 'gui:compaction');
+  assert.equal(events[0].state, 'completed');
+});
+
 test('ACP consumes a final reply after process exit before closing the transport', async t => {
   const { proc, session } = fixture(t);
   const reply = session.request('session/prompt', {}).then(value => ({ value }), error => ({ error }));

@@ -13,6 +13,7 @@ for statement in fixture_source.body:
 bridge = scope['bridge'].replace('onConversationStatus:()=>{}', 'onConversationStatus:fn=>{window.deliverStatus=fn;}')
 bridge = bridge.replace('preferences:window.fixturePreferences,settings};', 'preferences:window.fixturePreferences,settings,compaction:window.fixtureCompaction||null};')
 bridge = bridge.replace('const fixture = ', 'const fixture = window.chatFixture = ')
+bridge = bridge.replace('onConversationEvent:()=>{}', 'onConversationEvent:fn=>{window.deliverEvent=fn;}')
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
@@ -30,6 +31,10 @@ with sync_playwright() as playwright:
         expect(row).to_be_visible()
         expect(row).to_have_text('Compacting context…')
         expect(row).to_have_attribute('role', 'status')
+        page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Asking the engine to summarize the conversation…',compaction:{state:'running',stage:'summarizing',chunk:2,finalChunk:true}})")
+        expect(row).to_have_text('Summarizing context: chunk 2 (last)…')
+        page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Saving compacted context…',compaction:{state:'running',stage:'saving'}})")
+        expect(row).to_have_text('Saving compacted context…')
         page.evaluate("deliverStatus({sessionId:'another-session',text:'',compaction:{state:'failed'}})")
         expect(row).to_have_attribute('data-state', 'running')
         page.screenshot(path=str(scope['preview'] / f'compaction-running-{theme}.png'))
@@ -54,7 +59,19 @@ with sync_playwright() as playwright:
         expect(page.locator('.context-compaction')).to_have_text('上下文已压缩')
         page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Compacting context…',compaction:{state:'running'}})")
         expect(page.locator('.context-compaction[data-state="running"]')).to_have_text('正在压缩上下文…')
+        page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Asking the engine to summarize the conversation…',compaction:{state:'running',stage:'summarizing',chunk:3}})")
+        expect(page.locator('.context-compaction[data-state="running"]')).to_have_text('正在总结上下文：第 3 块…')
         page.screenshot(path=str(scope['preview'] / f'compaction-chinese-{theme}.png'), animations='disabled')
+        page.evaluate("""() => {
+          deliverStatus({sessionId:'shared-fixture',text:'',compaction:{state:'completed'}});
+          deliverEvent({type:'conversation:started',session_id:'shared-fixture',engine:'codex',runId:91,prompt:'Continue'});
+          deliverEvent({type:'gui:compaction',session_id:'shared-fixture',engine:'codex',runId:91,state:'running'});
+        }""")
+        expect(page.locator('.context-compaction[data-state="running"]')).to_have_count(1)
+        page.evaluate("deliverEvent({type:'gui:compaction',session_id:'shared-fixture',engine:'codex',runId:91,state:'completed',compactionSeq:9})")
+        expect(page.locator('.context-compaction[data-state="running"]')).to_have_count(0)
+        expect(page.locator('.context-compaction[data-seq="9"]')).to_have_text('上下文已压缩')
+        page.evaluate("deliverEvent({type:'result',session_id:'shared-fixture',engine:'codex',runId:91,subtype:'success',result:'Continued'})")
         assert not errors, errors
         page.close()
     browser.close()

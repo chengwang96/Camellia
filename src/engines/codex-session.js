@@ -59,6 +59,31 @@ class CodexSession extends StreamingSession {
     this.turnId = null; this.items = new Map(); this.startedAt = Date.now(); this.usage = null;
     void this.run(prompt, attachments); return true;
   }
+  compact({ onProgress = () => {}, timeoutMs = 120000 } = {}) {
+    if (this.running || this.dead) return Promise.reject(new Error('Codex is busy or unavailable'));
+    this.running = true; this.cancelled = false; this.turnId = null;
+    const done = new Promise((resolve, reject) => {
+      this.compaction = { resolve, reject, onProgress, timer: setTimeout(() => {
+        this.finish({ subtype: 'error', is_error: true, result: 'Codex context compaction timed out; the original thread is retained.' });
+        void this.kill();
+      }, timeoutMs) };
+    });
+    const operation = this.compaction;
+    void (async () => {
+      try {
+        await (this.ready ||= this.open());
+        if (this.compaction !== operation) return;
+        if (this.cancelled) { this.finish({ subtype: 'stopped' }); return; }
+        await this.client.request('thread/compact/start', { threadId: this.sessionId });
+      } catch (error) {
+        if (this.compaction !== operation) return;
+        this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled,
+          result: error.message, code: error.code });
+        if (error.code !== -32601) void this.kill();
+      }
+    })();
+    return done;
+  }
   async run(prompt, attachments) {
     try {
       await (this.ready ||= this.open());
@@ -112,6 +137,18 @@ class CodexSession extends StreamingSession {
   }
   finish(result) {
     if (!this.running) return;
+    if (this.compaction) {
+      const operation = this.compaction;
+      this.compaction = null; this.running = false;
+      clearTimeout(operation.timer); clearTimeout(this.cancelTimer);
+      if (result.subtype === 'success' && !result.is_error && !this.cancelled) operation.resolve({ ok: true });
+      else operation.reject(Object.assign(new Error(result.result || 'Codex compaction canceled'), { code: result.code }));
+      return;
+    }
+    if (this.autoCompacting) {
+      this.autoCompacting = false;
+      this.emit({ type: 'gui:compaction', state: this.cancelled ? 'cancelled' : 'failed' });
+    }
     if (this.outputBlocks) {
       const success = result.subtype === 'success' && !result.is_error && !this.cancelled;
       const outputBlocks = this.outputBlocks.filter(block => block.text).map(block => {
@@ -126,6 +163,16 @@ class CodexSession extends StreamingSession {
   }
   notify(method, params) {
     if (!this.running || params.threadId !== this.sessionId) return;
+    if (this.compaction) {
+      if (method === 'turn/started') { this.turnId = params.turn.id; if (this.cancelled) this.interrupt(); }
+      else if (['item/started', 'item/completed'].includes(method) && params.item?.type === 'contextCompaction') {
+        this.compaction.onProgress({ state: 'running' });
+      } else if (method === 'turn/completed') {
+        this.finish({ subtype: params.turn.status === 'completed' ? 'success' : params.turn.status === 'interrupted' ? 'stopped' : 'error',
+          result: params.turn.error?.message });
+      }
+      return;
+    }
     if (method === 'turn/started') { this.turnId = params.turn.id; if (this.cancelled) this.interrupt(); }
     else if (method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
       const output = this.outputItem(params.itemId, method === 'item/plan/delta' ? 'commentary' : null);
@@ -144,6 +191,9 @@ class CodexSession extends StreamingSession {
           if (output.phase) for (const index of output.indices) this.emit({ type: 'gui:message-phase', index, phase: output.phase });
           this.endBlock();
         }
+      } else if (item.type === 'contextCompaction') {
+        this.autoCompacting = !complete;
+        this.emit({ type: 'gui:compaction', state: complete ? 'completed' : 'running' });
       } else if (!['userMessage', 'reasoning'].includes(item.type)) {
         this.lastOutputItem = null;
         this.endBlock();
@@ -173,6 +223,9 @@ class CodexSession extends StreamingSession {
   }
   requestApproval(request) {
     const { method, params, id } = request;
+    if (this.compaction) {
+      this.client.write({ id, error: { code: -32600, message: 'Interactions are unavailable during compaction' } }); return;
+    }
     if (!this.running || params.threadId !== this.sessionId || this.cancelled) {
       this.client.write({ id, error: { code: -32600, message: 'No active turn' } }); return;
     }
@@ -199,7 +252,7 @@ class CodexSession extends StreamingSession {
     } else if (request.method === 'item/permissions/requestApproval') result = { permissions: approved ? request.params.permissions : {}, scope: 'turn' };
     else result = { decision: approved ? 'accept' : 'decline' };
     this.client.write({ id: request.id, result }); this.permissions.delete(requestId);
-    this.replayEvents = this.replayEvents.filter(e => e.type !== 'gui:permission' || e.requestId !== requestId);
+    this.replayEvents = (this.replayEvents || []).filter(e => e.type !== 'gui:permission' || e.requestId !== requestId);
     return true;
   }
   interrupt() {

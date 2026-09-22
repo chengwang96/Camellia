@@ -65,7 +65,7 @@ p { margin: 5px 0; }
 .editor-heading input { font-size: 20px; font-weight: 600; border-color: transparent; background: transparent; padding-left: 0; }
 .editor-heading label { display: flex; align-items: center; white-space: nowrap; gap: 6px; margin: 0; font-size: 12px; }
 .section { border-top: 1px solid var(--dsw-alias-border-l2); padding-top: 22px; margin-top: 24px; }
-.key-card { border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; margin: 12px 0; padding: 12px 14px; }
+.key-card, .context-capacity-card { border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; margin: 12px 0; padding: 12px 14px; }
 .key-row { display: flex; gap: 8px; align-items: center; }
 .key-row .key-name { width: 118px; flex: 0 0 118px; }
 .key-row input[type=password] { flex: 1; font-family: var(--ds-font-family-code); font-size: 12px; }

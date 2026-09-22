@@ -57,6 +57,6 @@ function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, r
       onEvent: event => { if (sessions.get(opts) === session) onEvent({ ...event, conversationId: opts.conversationId }); }, onSessionId: () => {}, onResult: () => {} });
     sessions.set(opts, session); session.start(previous); return session;
   }
-  return { history, settings, saveSettings, ensure, sessions, get session() { return sessions.legacy; }, shutdown: () => sessions.shutdown() };
+  return { history, settings, saveSettings, ensure, sessions, nativeAutoCompaction: true, get session() { return sessions.legacy; }, shutdown: () => sessions.shutdown() };
 }
 module.exports = { dshAcpSpec, createDshChat, DSH_MAX_OUTPUT_TOKENS };

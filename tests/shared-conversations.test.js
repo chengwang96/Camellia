@@ -35,6 +35,179 @@ function fixture(t, overrides = {}) {
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
 
+async function nativeFixture(context, compact) {
+  const harness = fixture(context);
+  harness.drivers.codex.nativeCompaction = true;
+  const ensure = harness.drivers.codex.ensure;
+  harness.drivers.codex.ensure = options => {
+    const session = ensure(options);
+    session.compact = options => compact(session, options);
+    return session;
+  };
+  const run = await harness.manager.send('codex', { prompt: 'Remember the original task' });
+  harness.finish('codex'); await run.done;
+  const conversation = harness.manager.get(run.sessionId);
+  return { ...harness, conversation };
+}
+
+for (const engine of ['claude', 'kimi', 'dsh', 'antigravity']) test(engine + ' native automatic compaction owns same-session pressure without requiring a manual API', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  harness.drivers[engine].nativeAutoCompaction = true;
+  const first = await manager.send(engine, { prompt: 'Task' });
+  harness.finish(engine); await first.done;
+  const conversation = manager.get(first.sessionId);
+  conversation.engineSettings[engine].contextWindow = 1000;
+  manager.append(conversation, { role: 'tool', text: 'Old history '.repeat(1000) });
+  conversation.segments[engine].cursor = conversation.seq;
+  const next = await manager.send(engine, { sessionId: conversation.id, prompt: 'Continue' });
+  const session = harness.sent.at(-1).session;
+  manager.capture(engine, { type: 'gui:tool', id: 'read', status: 'completed', runId: session.gen });
+  assert.equal(harness.sent.length, 2);
+  assert.equal(manager.recovering.size, 0);
+  harness.finish(engine); await next.done;
+  conversation.engineSettings[engine].contextWindow = 200000;
+  const manual = manager.compact(conversation.id);
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /compact working context/);
+  harness.finish(engine, 'success', 'Portable summary');
+  assert.ok((await manual).file);
+});
+
+test('native manual compaction retains thread/history and resumes without replay even after restart', async context => {
+  let complete;
+  const harness = await nativeFixture(context, () => new Promise(resolve => { complete = resolve; }));
+  const { manager, conversation } = harness;
+  const nativeId = conversation.segments.codex.nativeId;
+  const messages = manager.messages(conversation);
+  const pending = manager.compact(conversation.id);
+  await harness.flush();
+  assert.equal(manager.busy(conversation.id), true);
+  assert.equal(harness.sent.length, 1);
+  assert.equal(manager.load('codex', conversation.id).compaction.state, 'running');
+  complete({ ok: true });
+  assert.equal((await pending).native, true);
+  assert.equal(conversation.segments.codex.nativeId, nativeId);
+  assert.equal(conversation.segments.codex.compactFile, undefined);
+  assert.deepEqual(manager.messages(conversation).slice(0, messages.length), messages);
+  const restarted = harness.restart();
+  const run = await restarted.send('codex', { sessionId: conversation.id, prompt: 'Continue now' });
+  assert.equal(harness.sent.at(-1).opts.sessionId, nativeId);
+  assert.equal(harness.sent.at(-1).prompt, 'Continue now');
+  harness.finish('codex'); await run.done;
+});
+
+test('native-owned context bypasses proactive thresholds but still shows native progress', async context => {
+  const harness = await nativeFixture(context, async () => { throw new Error('Should not compact manually'); });
+  const { manager, conversation } = harness;
+  conversation.engineSettings.codex.contextWindow = 1000;
+  manager.append(conversation, { role: 'tool', text: 'old'.repeat(4000) });
+  conversation.segments.codex.cursor = conversation.seq;
+  const run = await manager.send('codex', { sessionId: conversation.id, prompt: 'Continue' });
+  const session = harness.sent.at(-1).session;
+  manager.capture('codex', { type: 'gui:tool', id: 'tool', status: 'completed', runId: session.gen });
+  assert.equal(harness.sent.length, 2);
+  assert.equal(manager.recovering.size, 0);
+  manager.capture('codex', { type: 'gui:compaction', state: 'running', runId: session.gen });
+  assert.equal(manager.load('codex', conversation.id).compaction.state, 'running');
+  manager.capture('codex', { type: 'gui:compaction', state: 'completed', runId: session.gen });
+  assert.equal(manager.load('codex', conversation.id).compaction, null);
+  assert.equal(manager.rows(conversation).at(-1).compaction.native, true);
+  harness.finish('codex'); await run.done;
+  assert.equal(harness.events.filter(event => event.type === 'result').length, 2);
+});
+
+test('native compaction failure and cancellation retain mappings without silent summary requests', async context => {
+  for (const mode of ['failure', 'cancel']) {
+    let started;
+    const harness = await nativeFixture(context, session => {
+      if (mode === 'failure') return Promise.reject(new Error('Provider unavailable'));
+      return new Promise((resolve, reject) => { started = true; session.interrupt = () => reject(new Error('Canceled')); });
+    });
+    const { manager, conversation } = harness;
+    const snapshot = JSON.stringify(conversation.segments);
+    const done = manager.compact(conversation.id);
+    const rejected = assert.rejects(done, mode === 'failure' ? /Provider unavailable/ : /Canceled/);
+    await harness.flush();
+    if (mode === 'cancel') { assert.ok(started); await manager.cancel({ sessionId: conversation.id }); }
+    await rejected;
+    assert.equal(JSON.stringify(conversation.segments), snapshot);
+    assert.equal(harness.sent.length, 1);
+    assert.equal(manager.busy(conversation.id), false);
+    assert.equal(conversation.pending, null);
+  }
+});
+
+test('unsupported native compaction falls back to portable summary', async context => {
+  const harness = await nativeFixture(context, async () => { throw Object.assign(new Error('Unknown method'), { code: -32601 }); });
+  const { manager, conversation } = harness;
+  const done = manager.compact(conversation.id);
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /compact working context/);
+  harness.finish('codex', 'success', 'Keep the original task.');
+  const result = await done;
+  assert.ok(result.file);
+  assert.equal(conversation.segments.codex.nativeCompactionUnsupported, true);
+  assert.equal(conversation.segments.codex.nativeId, undefined);
+});
+
+test('native overflow recovery keeps one user turn and waits for the continued result', async context => {
+  const harness = await nativeFixture(context, async () => ({ ok: true }));
+  const { manager, conversation } = harness;
+  const nativeId = conversation.segments.codex.nativeId;
+  const run = await manager.send('codex', { sessionId: conversation.id, prompt: 'Finish the work' });
+  harness.finish('codex', 'error', 'context_length_exceeded');
+  await harness.flush();
+  assert.equal(harness.sent.length, 3);
+  assert.equal(harness.sent.at(-1).opts.sessionId, nativeId);
+  assert.match(harness.sent.at(-1).prompt, /Continue the unfinished user task/);
+  assert.equal(manager.messages(conversation).filter(row => row.role === 'user').length, 2);
+  harness.finish('codex', 'success', 'Finished');
+  assert.equal((await run.done).result, 'Finished');
+});
+
+test('pausing a goal during native overflow compaction interrupts it without advancing rounds', async context => {
+  let interrupted = false;
+  const harness = await nativeFixture(context, session => new Promise((resolve, reject) => {
+    session.interrupt = () => { interrupted = true; reject(new Error('Canceled')); };
+  }));
+  const { manager, conversation } = harness;
+  await manager.command('codex', 'goal-start', { sessionId: conversation.id, objective: 'Finish the experiment' });
+  const goal = manager.goals.get(conversation.id);
+  goal.drive(); await harness.flush();
+  const rounds = goal.goal.roundsStarted;
+  harness.finish('codex', 'error', 'context_length_exceeded');
+  await harness.flush();
+  assert.ok(manager.switching.get(conversation.id)?.session);
+  await manager.command('codex', 'goal-pause', { sessionId: conversation.id });
+  await harness.flush();
+  assert.equal(interrupted, true);
+  assert.equal(goal.goal.phase, 'paused');
+  assert.equal(goal.goal.roundsStarted, rounds);
+  assert.equal(manager.busy(conversation.id), false);
+  assert.equal(harness.sent.length, 2);
+});
+
+test('unsynchronized history uses portable compaction instead of discarding records after the native cursor', async context => {
+  const harness = await nativeFixture(context, async () => { throw new Error('Must not compact an incomplete native history'); });
+  const { manager, conversation } = harness;
+  manager.append(conversation, { role: 'assistant', text: 'Imported work not yet sent to Codex' });
+  const done = manager.compact(conversation.id);
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /Imported work not yet sent/);
+  harness.finish('codex', 'success', 'Portable checkpoint with imported work');
+  assert.ok((await done).file);
+});
+
+test('switching harness after native compaction retains public history for the receiving engine', async context => {
+  const harness = await nativeFixture(context, async () => ({ ok: true }));
+  const { manager, conversation } = harness;
+  await manager.compact(conversation.id);
+  const run = await manager.send('kimi', { sessionId: conversation.id, prompt: 'Take over' });
+  assert.match(harness.sent.at(-1).prompt, /Remember the original task/);
+  assert.match(harness.sent.at(-1).prompt, /Answer from codex/);
+  harness.finish('kimi'); await run.done;
+});
+
 for (const finalText of ['Verified answer', '']) test('Codex structured output survives shared history reload: ' + (finalText || 'process only'), async context => {
   const harness = fixture(context), manager = harness.manager;
   const run = await manager.send('codex', { prompt: 'Inspect the code' });
@@ -1368,6 +1541,102 @@ test('compact summarizes once, defers the fresh native session, and re-fires on 
   await f.flush(); f.finish('kimi');
 });
 
+test('portable compaction retains recent interactions exactly across restart and subsequent compaction', async context => {
+  const logs = [], statuses = [];
+  const harness = fixture(context, { log: value => logs.push(value), onStatus: value => statuses.push(value) });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  manager.append(conversation, { role: 'user', text: 'OLD_TASK_MARKER' });
+  manager.append(conversation, { role: 'assistant', text: 'Old result' });
+  manager.append(conversation, { role: 'user', text: 'RECENT_TASK_MARKER', attachments: [{ path: 'recent.csv' }] });
+  manager.append(conversation, { role: 'tool', text: 'EXACT_TOOL_RESULT_中文😀' });
+  manager.append(conversation, { role: 'assistant', text: 'EXACT_RECENT_ANSWER' });
+  const pending = manager.compact(conversation.id);
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /OLD_TASK_MARKER/);
+  assert.doesNotMatch(harness.sent.at(-1).prompt, /RECENT_TASK_MARKER|EXACT_TOOL_RESULT/);
+  const session = harness.sent.at(-1).session;
+  manager.capture('kimi', { type: 'stream_event', runId: session.gen, event: { delta: { type: 'thinking_delta', thinking: 'Working' } } });
+  manager.capture('kimi', { type: 'gui:usage', runId: session.gen, usage: { input_tokens: 100, cache_read_input_tokens: 80, output_tokens: 10 } });
+  harness.finish('kimi', 'success', 'SUMMARY_OF_OLD_TASK');
+  const compacted = await pending;
+  const markdown = fs.readFileSync(compacted.file, 'utf8');
+  assert.match(markdown, /SUMMARY_OF_OLD_TASK/);
+  assert.match(markdown, /RECENT_TASK_MARKER/);
+  assert.match(markdown, /EXACT_TOOL_RESULT_中文😀/);
+  assert.match(markdown, /recent.csv/);
+  assert.equal(conversation.lastCompaction.reason, 'manual-native-unavailable');
+  assert.equal(conversation.lastCompaction.requests, 1);
+  assert.equal(conversation.lastCompaction.boundary, 5);
+  assert.ok(conversation.lastCompaction.retainedChars > 0);
+  assert.ok(conversation.lastCompaction.chunks[0].firstDeltaMs >= 0);
+  assert.equal(conversation.lastCompaction.chunks[0].usage.cache_read_input_tokens, 80);
+  assert.ok(statuses.some(value => value.compaction?.chunk === 1 && value.compaction.finalChunk));
+  assert.ok(statuses.some(value => value.compaction?.stage === 'saving'));
+  assert.ok(logs.some(value => value.includes('context compaction metrics:')));
+  assert.ok(logs.every(value => !/EXACT_TOOL_RESULT|RECENT_TASK_MARKER|SUMMARY_OF_OLD_TASK/.test(value)));
+  const restored = harness.restart(), restoredConversation = restored.get(conversation.id);
+  assert.match(restored.context(restoredConversation, 'kimi'), /EXACT_RECENT_ANSWER/);
+  assert.equal(restoredConversation.lastCompaction.requests, 1);
+  const again = restored.compact(conversation.id);
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /SUMMARY_OF_OLD_TASK/);
+  assert.match(harness.sent.at(-1).prompt, /RECENT_TASK_MARKER/);
+  harness.finish('kimi', 'success', 'Second summary');
+  await again;
+});
+
+test('portable summary enforces a bounded output without replacing context on failure', async context => {
+  const harness = fixture(context);
+  const manager = harness.manager, conversation = manager.create('dsh');
+  manager.append(conversation, { role: 'user', text: 'Task' });
+  const pending = manager.compact(conversation.id);
+  const rejected = assert.rejects(pending, /summary is too large/);
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /under 12000 characters/);
+  harness.finish('dsh', 'success', 'x'.repeat(12001));
+  await rejected;
+  assert.equal(manager.rows(conversation).some(row => row.file), false);
+  assert.equal(conversation.lastCompaction.outcome, 'failed');
+  assert.equal(conversation.lastCompaction.chunks[0].outputChars, 12001);
+});
+
+test('native compaction diagnostics distinguish supported and unsupported routes', async context => {
+  const native = await nativeFixture(context, async () => {});
+  await native.manager.compact(native.conversation.id);
+  assert.equal(native.conversation.lastCompaction.route, 'native');
+  assert.equal(native.conversation.lastCompaction.reason, 'native-eligible');
+  assert.equal(native.conversation.lastCompaction.requests, 0);
+  assert.ok(native.conversation.lastCompaction.nativeMs >= 0);
+  const fallback = await nativeFixture(context, async () => { throw Object.assign(new Error('Unsupported'), { code: -32601 }); });
+  const pending = fallback.manager.compact(fallback.conversation.id);
+  await fallback.flush();
+  fallback.finish('codex', 'success', 'Portable summary');
+  await pending;
+  assert.equal(fallback.conversation.lastCompaction.route, 'portable');
+  assert.equal(fallback.conversation.lastCompaction.reason, 'native-unsupported');
+});
+
+test('overflow moves an over-budget recent tail into summarization instead of losing it', async context => {
+  const harness = fixture(context, { modelContextWindow: () => 20000 });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  manager.append(conversation, { role: 'user', text: 'OLD_HISTORY ' + 'x'.repeat(16000) });
+  manager.append(conversation, { role: 'user', text: 'RETAINED_HISTORY ' + 'z'.repeat(5000) });
+  const pending = manager.compact(conversation.id);
+  await harness.flush();
+  assert.doesNotMatch(harness.sent.at(-1).prompt, /RETAINED_HISTORY/);
+  harness.finish('kimi', 'error', 'maximum context length is 4000 tokens');
+  await harness.flush();
+  for (let index = 0; manager.busy(conversation.id); index++) {
+    assert.ok(index < 10);
+    harness.finish('kimi', 'success', 'Small summary');
+    await harness.flush();
+  }
+  await pending;
+  assert.ok(harness.sent.some(request => request.prompt.includes('RETAINED_HISTORY')));
+  assert.equal(conversation.lastCompaction.retainedChars, 0);
+  assert.equal(conversation.lastCompaction.retries, 1);
+});
+
 test('manual compaction after an overflow abandons the full native session and includes its logical history', async t => {
   const f = fixture(t);
   const first = await f.manager.send('kimi', { prompt: 'Remember UNIQUE_EARLY_CONTEXT' });
@@ -1756,6 +2025,140 @@ test('automatic compaction waits for native stop acknowledgement and a user stop
     assert.equal(f.events.filter(event => event.type === 'result').length, 1);
     assert.equal(f.manager.busy(run.sessionId), false);
   }
+});
+
+test('learned context budgets persist and stay isolated by model, connection and route', async context => {
+  let route = 'provider-one';
+  const harness = fixture(context, { modelContextWindow: () => 128000, contextRoute: () => route });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  const settings = manager.settings('kimi', conversation.id);
+  assert.equal(manager.reduceContextBudget(conversation, 'kimi', settings, 'maximum context length is 32,768 tokens'), 32768);
+  assert.equal(manager.contextPressure(conversation, 'kimi', settings).cap, 32768);
+  assert.equal(manager.reduceContextBudget(conversation, 'kimi', settings, 'context_length_exceeded'), 16384);
+  for (const patch of [{ model: 'other' }, { connection: 'subscription' }])
+    assert.equal(manager.contextPressure(conversation, 'kimi', { ...settings, ...patch }).cap, 128000);
+  route = 'provider-two';
+  assert.equal(manager.contextPressure(conversation, 'kimi', settings).cap, 128000);
+  route = 'provider-one';
+  const restarted = harness.restart();
+  assert.equal(restarted.contextPressure(restarted.get(conversation.id), 'kimi', settings).cap, 16384);
+});
+
+test('summary overflow shrinks fresh requests and retries the same history fragment', async context => {
+  const harness = fixture(context, { modelContextWindow: () => 20000 });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  manager.append(conversation, { role: 'user', text: 'START-OF-HISTORY ' + 'x'.repeat(30000) + ' END-OF-HISTORY' });
+  const pending = manager.compact(conversation.id);
+  await harness.flush();
+  const originalSize = harness.sent.at(-1).prompt.length;
+  harness.finish('kimi', 'error', 'maximum context length is 8000 tokens');
+  await harness.flush();
+  assert.ok(harness.sent.at(-1).prompt.length < originalSize);
+  assert.match(harness.sent.at(-1).prompt, /START-OF-HISTORY/);
+  let fragments = 0;
+  while (manager.busy(conversation.id)) {
+    assert.ok(++fragments < 10);
+    assert.equal(harness.sent.at(-1).opts.sessionId, null);
+    harness.finish('kimi', 'success', 'Saved task and progress');
+    await harness.flush();
+  }
+  assert.ok((await pending).file);
+  assert.ok(harness.sent.some(request => request.prompt.includes('END-OF-HISTORY')));
+  assert.equal(conversation.compactionRecovery, undefined);
+  assert.equal(manager.contextPressure(conversation, 'kimi', manager.settings('kimi', conversation.id)).cap, 8000);
+});
+
+test('summary rescue rebuilds from full history if the accumulated summary no longer fits', async context => {
+  const harness = fixture(context, { modelContextWindow: () => 20000 });
+  const manager = harness.manager, conversation = manager.create('dsh');
+  manager.append(conversation, { role: 'user', text: 'HISTORY-START ' + 'x'.repeat(60000) + ' HISTORY-END' });
+  const pending = manager.compact(conversation.id);
+  await harness.flush();
+  harness.finish('dsh', 'success', 's'.repeat(11000));
+  await harness.flush();
+  harness.finish('dsh', 'error', 'maximum context length is 4000 tokens');
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /HISTORY-START/);
+  assert.ok(harness.sent.at(-1).prompt.length <= 7200);
+  let fragments = 0;
+  while (manager.busy(conversation.id)) {
+    assert.ok(++fragments < 20);
+    harness.finish('dsh', 'success', 'Small summary');
+    await harness.flush();
+  }
+  assert.ok((await pending).file);
+  assert.ok(harness.sent.at(-1).prompt.includes('HISTORY-END'));
+});
+
+test('summary rescue exhaustion retains native mapping, full history and a partial checkpoint', async context => {
+  const harness = fixture(context, { modelContextWindow: () => 100000 });
+  const run = await harness.manager.send('kimi', { prompt: 'Original task' });
+  harness.finish('kimi'); await run.done;
+  const manager = harness.manager, conversation = manager.get(run.sessionId);
+  manager.append(conversation, { role: 'tool', text: 'x'.repeat(200000) });
+  const snapshot = JSON.stringify(conversation.segments);
+  const pending = manager.compact(conversation.id);
+  const rejected = assert.rejects(pending, /rescue retry limit.*original history is retained/);
+  await harness.flush();
+  harness.finish('kimi', 'success', 'Checkpoint: file already written');
+  await harness.flush();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    harness.finish('kimi', 'error', 'context_length_exceeded');
+    await harness.flush();
+  }
+  await rejected;
+  assert.equal(manager.busy(conversation.id), false);
+  assert.equal(JSON.stringify(conversation.segments), snapshot);
+  assert.equal(conversation.compactionRecovery.summary, 'Checkpoint: file already written');
+  assert.equal(conversation.compactionRecovery.partial, true);
+  assert.equal(manager.rows(conversation).filter(row => row.role === 'notice' && row.file).length, 0);
+  assert.ok(manager.rows(conversation).some(row => row.text.length === 200000));
+  assert.equal(harness.restart().get(conversation.id).compactionRecovery.summary, 'Checkpoint: file already written');
+});
+
+test('native compaction overflow falls back to a fresh portable summary without disabling native support', async context => {
+  const harness = await nativeFixture(context, async () => { throw new Error('maximum context length is 8192 tokens'); });
+  const pending = harness.manager.compact(harness.conversation.id);
+  await harness.flush();
+  assert.equal(harness.sent.at(-1).opts.sessionId, null);
+  assert.match(harness.sent.at(-1).prompt, /compact working context/);
+  harness.finish('codex', 'success', 'Task checkpoint');
+  assert.ok((await pending).file);
+  assert.equal(harness.conversation.segments.codex.nativeCompactionUnsupported, undefined);
+});
+
+test('stopping a shrinking summary request never retries or continues the task', async context => {
+  const harness = fixture(context);
+  const run = await harness.manager.send('kimi', { prompt: 'Work' });
+  harness.finish('kimi', 'error', 'context_length_exceeded');
+  await harness.flush();
+  harness.finish('kimi', 'error', 'context_length_exceeded');
+  await harness.flush();
+  const sent = harness.sent.length;
+  await harness.manager.cancel({ sessionId: run.sessionId, runId: run.runId });
+  assert.equal((await run.done).subtype, 'stopped');
+  await harness.flush();
+  assert.equal(harness.sent.length, sent);
+  assert.equal(harness.manager.busy(run.sessionId), false);
+});
+
+test('an oversized continuation stops without sending the original task again', async context => {
+  const harness = fixture(context, { modelContextWindow: () => 20000 });
+  const run = await harness.manager.send('kimi', { prompt: 'x'.repeat(15000) });
+  harness.finish('kimi', 'error', 'maximum context length is 4096 tokens');
+  await harness.flush();
+  let summaries = 0;
+  while (harness.manager.busy(run.sessionId)) {
+    assert.ok(++summaries < 10);
+    assert.match(harness.sent.at(-1).prompt, /compact working context/);
+    harness.finish('kimi', 'success', 'Compact task');
+    await harness.flush();
+  }
+  const result = await run.done;
+  assert.equal(result.is_error, true);
+  assert.match(result.result, /continuation is still too large.*[\s\S]*Split oversized messages/);
+  assert.equal(harness.sent.length, summaries + 1);
+  assert.equal(harness.manager.busy(run.sessionId), false);
 });
 
 test('overflow retries once without progress, and the original done promise waits for recovery', async t => {

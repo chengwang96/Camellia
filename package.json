@@ -49,6 +49,7 @@
     "files": [
       "src/**/*",
       "assets/icon-256.png",
+      "assets/icon-1024.png",
       "assets/brands/**/*",
       "scripts/ollama-proxy-cli.js",
       "scripts/ollama-switch-account.ps1",

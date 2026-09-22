@@ -80,7 +80,7 @@ function normalizeConfig(raw = {}, previous = null) {
   if (!Array.isArray(raw.providers)) {
     const keys = [...new Set((raw.keys || []).map(k => String(k).trim()).filter(Boolean))];
     if (keys.length) {
-      const provider = { ...structuredClone(PRESETS[0]), id: 'ollama-legacy', enabled: true,
+      const provider = { ...structuredClone(PRESETS[0]), id: 'ollama-legacy', enabled: true, priority: 0,
         keys: keys.map(key => ({ id: keyId('ollama-legacy', key), key, enabled: true })) };
       cfg.providers.push(provider);
       provider.keys.forEach((key, i) => {
@@ -99,6 +99,9 @@ function normalizeConfig(raw = {}, previous = null) {
     const id = validId(p.id) ? p.id : randomUUID();
     if (ids.has(id)) throw new Error("Duplicate provider ID");
     ids.add(id);
+    const rawPriority = p.priority === undefined ? 0 : Number(p.priority);
+    if (!['number', 'string', 'undefined'].includes(typeof p.priority) || (typeof p.priority === 'string' && !p.priority.trim()) || !Number.isInteger(rawPriority) || rawPriority < -1 || rawPriority > 9999) throw new Error("Choose Low, Default, or High API priority");
+    const priority = Math.sign(rawPriority);
     const protocol = p.protocol || 'openai';
     if (!['openai', 'anthropic', 'dual'].includes(protocol)) throw new Error("Unsupported API protocol");
     const models = (p.models || []).map(m => {
@@ -132,7 +135,7 @@ function normalizeConfig(raw = {}, previous = null) {
       cfg.usage[kid] = normalizeUsage(stats);
     }
     cfg.providers.push({ id, type: String(p.type || 'custom'), name: String(p.name || "Provider").trim().slice(0, 100),
-      enabled: p.enabled !== false, protocol, baseUrl: endpoint(p.baseUrl),
+      enabled: p.enabled !== false, priority, protocol, baseUrl: endpoint(p.baseUrl),
       anthropicBaseUrl: p.anthropicBaseUrl ? endpoint(p.anthropicBaseUrl) : '', models, keys });
   }
   const availableKeys = new Set(cfg.providers.flatMap(p => p.keys.map(k => k.id)));

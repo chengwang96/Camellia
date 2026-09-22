@@ -21,6 +21,7 @@ const { createKimiAccount } = require('../engines/kimi-account.js');
 const { createCodex } = require('../engines/codex');
 const { createAntigravity } = require('../engines/antigravity');
 const { createProviderInsights } = require('../api/provider-insights.js');
+const { createContextCapacity } = require('../api/context-capacity.js');
 const { createRuntimeManager, ENGINES, run: runtimeRun } = require('./runtime-manager.js');
 const { createRuntimeUpdates } = require('./runtime-updates.js');
 const { downloadSettings } = require('./download-network.js');
@@ -273,6 +274,14 @@ function broadcastApiRouter(state) {
   }
 }
 let providerInsights = null, balanceRefreshTimer = null;
+let contextCapacity = null;
+function capacity() {
+  if (!contextCapacity) contextCapacity = createContextCapacity({
+    file: path.join(app.getPath('userData'), 'context-capacity.json'), getConfig: readOllamaProxyConfig,
+    onChange: state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('dsh:context-capacity', state); },
+  });
+  return contextCapacity;
+}
 function insights() {
   if (!providerInsights) providerInsights = createProviderInsights({
     file: path.join(app.getPath('userData'), 'provider-insights.json'), getConfig: readOllamaProxyConfig,
@@ -316,7 +325,8 @@ async function startOllamaProxyHandle() {
   try {
     const cfg = readOllamaProxyConfig();
     if (!routerConfig.hasRoutes(cfg)) { syncOllamaBaseUrl(false); return; }
-    ollamaProxyHandle = startApiRouter({ configPath: ollamaProxyConfigPath(), log: msg => log(`[api-router] ${msg}`), onState: broadcastApiRouter });
+    ollamaProxyHandle = startApiRouter({ configPath: ollamaProxyConfigPath(), log: msg => log(`[api-router] ${msg}`), onState: broadcastApiRouter,
+      onContextEvidence: evidence => capacity().observe(evidence) });
     await ollamaProxyHandle.ready;
     syncOllamaBaseUrl(true);
     log(`api-router: listening on ${ollamaProxyHandle.url}`);
@@ -724,15 +734,24 @@ const dshChat = createDshChat({ dataDir: app.getPath('userData'), loadConfig, sa
   runtime: () => ({ file: detectDshBin() }), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'dsh'),
   onEvent: event => publishChatEvent('dsh', event), log });
 sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
+  contextRoute: (engine, settings) => {
+    if (settings.connection === 'subscription') return settings.subscriptionId || engine;
+    const config = readOllamaProxyConfig();
+    const routes = config.providers.filter(provider => provider.enabled && provider.keys.some(key => key.enabled))
+      .flatMap(provider => provider.models.filter(model => model.id === settings.model).map(model =>
+        [provider.id, provider.baseUrl, provider.anthropicBaseUrl, provider.protocol, model.upstream, model.protocol,
+          model.contextWindow, model.maxContext, provider.keys.filter(key => key.enabled).map(key => key.id).sort()]));
+    return require('node:crypto').createHash('sha256').update(JSON.stringify(routes)).digest('hex');
+  },
   conversationModels: (engine, settings) => require('../engines/conversation-models').conversationModels(engine, settings, {
     router: readOllamaProxyConfig, codex: () => codex.handlers['account-state'](), kimi: () => kimiAccount.state(),
   }),
   createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: detectNode() }),
   drivers: {
-    claude: { history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts) },
-    kimi: { history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts) },
-    codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession },
-    antigravity: { history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession },
+    claude: { history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
+    kimi: { history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
+    codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession, nativeCompaction: true },
+    antigravity: { history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, nativeAutoCompaction: true },
     dsh: dshChat,
   },
   prepare: async (engine, settings) => {
@@ -1194,6 +1213,9 @@ if (!gotSingleInstanceLock) {
     'provider-refresh': payload => refreshInsights(payload),
     'provider-models': payload => insights().models(payload),
     'provider-verify': payload => insights().verify(payload),
+    'context-capacity': () => capacity().state(),
+    'context-capacity-start': payload => capacity().start(payload),
+    'context-capacity-cancel': () => capacity().cancel(),
   })) ipcMain.handle('dsh:' + channel, async (_event, payload) => {
     try { return await handler(payload); } catch (e) { return { ok: false, error: e.message }; }
   });
@@ -1664,6 +1686,9 @@ if (!gotSingleInstanceLock) {
   app.on('activate', () => showMainWindow());
 
   app.whenReady().then(async () => {
+    if (process.platform === 'darwin' && app.dock) {
+      app.dock.setIcon(path.join(APP_ROOT, 'assets/icon-1024.png'));
+    }
     nativeTheme.themeSource = loadConfig().theme || 'system';
     setMenu();
     cleanupOpencodeProxyRoute(); // strip the removed OpenCode proxy's stale route
@@ -1705,6 +1730,7 @@ if (!gotSingleInstanceLock) {
   let kimiClosing = false;
   app.on('before-quit', event => {
     appQuitting = true;
+    contextCapacity?.cancel();
     clearTimeout(balanceRefreshTimer);
     for (const goal of [goalDriver, kimiGoalDriver, antigravity.goal, codex.goal]) {
       if (goal.armed) goal.setPhase('paused');

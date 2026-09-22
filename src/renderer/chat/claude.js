@@ -1491,7 +1491,10 @@ const context = { sessionId: null, workspaceId: null };
     row.dataset.state = compaction.state;
     if (compaction.seq) row.dataset.seq = compaction.seq;
     const labels = { running: 'Compacting context…', completed: 'Context compacted', failed: 'Context compaction failed. The original conversation is retained.', cancelled: 'Context compaction canceled. The original conversation is retained.' };
-    row.querySelector('span').textContent = labels[compaction.state] || labels.running;
+    const progress = compaction.stage === 'summarizing' && Number.isInteger(compaction.chunk)
+      ? (compaction.finalChunk ? 'Summarizing context: chunk {0} (last)…' : 'Summarizing context: chunk {0}…').replace('{0}', compaction.chunk)
+      : compaction.stage === 'saving' ? 'Saving compacted context…' : labels.running;
+    row.querySelector('span').textContent = compaction.state === 'running' ? progress : labels[compaction.state] || labels.running;
     if (historyBefore === undefined) maybeScroll(was);
   }
   let statusText = '';
@@ -1664,6 +1667,11 @@ const context = { sessionId: null, workspaceId: null };
     }
     if (currentRunId != null && ev.runId != null && currentRunId !== ev.runId) return;
     const was = nearBottom();
+
+    if (ev.type === 'gui:compaction') {
+      handleConversationStatus({ sessionId: ev.session_id, text: ev.state === 'running' ? 'Compacting context…' : '', compaction: { state: ev.state, seq: ev.compactionSeq } });
+      return;
+    }
 
     if (ev.type === 'gui:usage') {
       lastCallUsage = ev.usage;
@@ -2083,7 +2091,7 @@ const context = { sessionId: null, workspaceId: null };
     try {
       const res = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'compact', payload: { sessionId: context.sessionId } });
       if (!res?.ok) setStatus(res?.error || 'Compaction failed');
-      else setStatus('Context compacted. The conversation continues with the summary.');
+      else setStatus(res.native ? 'Context compacted' : 'Context compacted. The conversation continues with the summary.');
     } catch (error) { setStatus(error.message); }
   }
   input.addEventListener('keydown', (e) => {
