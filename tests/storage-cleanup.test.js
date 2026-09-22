@@ -145,6 +145,90 @@ test('per-conversation engine directories require absent owners and no live proc
   for (const file of [alive, live, subscription]) assert.ok(fs.existsSync(file));
 });
 
+test('active cleanup removes orphan records and engine directories but protects shared files and live owners', async context => {
+  const harness = setup(context);
+  const attachment = harness.attachment();
+  const summary = harness.write(`conversations/handoffs/${randomUUID()}.md`);
+  const orphan = harness.write('conversations/removed.jsonl', '{}\n');
+  const unusedEngine = harness.write('codex/api/conversations/deleted/state.txt');
+  const liveEngine = harness.write('codex/api/conversations/alive/state.txt');
+  const liveLog = harness.write('conversations/alive.jsonl', '{}\n');
+  harness.owners(['alive']);
+  harness.cleaner.isActive = () => true;
+  harness.advance(PROTECTION_MS * 2);
+  const preview = await harness.cleaner.scan();
+  assert.equal(preview.active, true);
+  assert.equal(preview.candidates.length, 2);
+  assert.equal((await harness.cleaner.clean(preview.token)).files, 2);
+  for (const file of [attachment, summary, liveEngine, liveLog]) assert.ok(fs.existsSync(file));
+  for (const file of [orphan, unusedEngine]) assert.equal(fs.existsSync(file), false);
+  harness.cleaner.isActive = () => false;
+  assert.equal((await harness.cleaner.scan()).candidates.length, 2);
+});
+
+test('activity starting during reference collection protects shared candidates approved while idle', async context => {
+  const harness = setup(context);
+  const attachment = harness.attachment();
+  const summary = harness.write(`conversations/handoffs/${randomUUID()}.md`);
+  const orphan = harness.write('conversations/removed.jsonl', '{}\n');
+  const preview = await harness.cleaner.scan();
+  harness.cleaner.references = async () => {
+    harness.cleaner.isActive = () => true;
+    return [];
+  };
+  const result = await harness.cleaner.clean(preview.token);
+  assert.equal(result.files, 1);
+  assert.equal(result.skipped, 2);
+  assert.ok(fs.existsSync(attachment));
+  assert.ok(fs.existsSync(summary));
+  assert.equal(fs.existsSync(orphan), false);
+});
+
+test('renderer activity protects shared files even without a running backend session', async context => {
+  const harness = setup(context);
+  const attachment = harness.attachment();
+  harness.refs({ references: [], active: true });
+  const preview = await harness.cleaner.scan();
+  assert.equal(preview.active, true);
+  assert.equal(preview.candidates.length, 0);
+  assert.ok(fs.existsSync(attachment));
+});
+
+test('a live owner appearing during reference collection protects a previously approved directory', async context => {
+  const harness = setup(context);
+  const file = harness.write('codex/api/conversations/restored/state.txt');
+  harness.advance(PROTECTION_MS * 2);
+  const preview = await harness.cleaner.scan();
+  assert.equal(preview.candidates.length, 1);
+  harness.cleaner.references = async () => {
+    harness.owners(['restored']);
+    return { references: [], active: true };
+  };
+  assert.equal((await harness.cleaner.clean(preview.token)).files, 0);
+  assert.ok(fs.existsSync(file));
+});
+
+test('reference files modified during verification stop deletion', async context => {
+  const harness = setup(context);
+  const attachment = harness.attachment();
+  harness.conversation('live', {}, [{ text: 'existing reference data' }]);
+  const transcript = path.join(harness.dataDir, 'conversations/live.jsonl');
+  const preview = await harness.cleaner.scan();
+  const readSync = fs.readSync;
+  const transcriptInode = fs.statSync(transcript).ino;
+  let changed = false;
+  context.mock.method(fs, 'readSync', (...args) => {
+    const bytes = readSync(...args);
+    if (!changed && fs.fstatSync(args[0]).ino === transcriptInode) {
+      changed = true;
+      fs.appendFileSync(transcript, '{"text":"new reference"}\n');
+    }
+    return bytes;
+  });
+  await assert.rejects(harness.cleaner.clean(preview.token), /Reference files changed/);
+  assert.ok(fs.existsSync(attachment));
+});
+
 test('unreadable or damaged ownership data fails closed before any deletion', async context => {
   const harness = setup(context);
   const file = harness.attachment();
@@ -266,5 +350,83 @@ test('missing expected transcript fails closed', async context => {
   const attachment = harness.attachment();
   harness.write('conversations/live.json', JSON.stringify({ id: 'live', seq: 4 }));
   await assert.rejects(harness.cleaner.scan(), /reference file is missing/);
+  assert.ok(fs.existsSync(attachment));
+});
+
+test('history larger than 256 MiB is scanned in bounded reads and still protects references near the end', async context => {
+  const harness = setup(context);
+  const retained = harness.attachment(), unused = harness.attachment();
+  harness.conversation('large');
+  const file = path.join(harness.dataDir, 'conversations/large.jsonl');
+  const descriptor = fs.openSync(file, 'w');
+  const row = Buffer.from(JSON.stringify({ text: 'x'.repeat(64 * 1024) }) + '\n');
+  try {
+    for (let index = 0; index < 4112; index += 1) fs.writeSync(descriptor, row);
+    fs.writeSync(descriptor, JSON.stringify({ path: retained }));
+  } finally { fs.closeSync(descriptor); }
+  assert.ok(fs.statSync(file).size > 256 * 1024 * 1024);
+  const readFile = fs.readFileSync;
+  context.mock.method(fs, 'readFileSync', (target, ...args) => {
+    assert.notEqual(target, file, 'large histories must not be read into memory in full');
+    return readFile(target, ...args);
+  });
+  const preview = await harness.cleaner.scan();
+  assert.deepEqual(preview.candidates.map(entry => entry.path), [path.relative(harness.dataDir, unused)]);
+  assert.equal((await harness.cleaner.clean(preview.token)).files, 1);
+  assert.ok(fs.existsSync(retained));
+  assert.ok(fs.existsSync(file));
+});
+
+test('raw references crossing UTF-8 and escaped path chunk boundaries remain protected', async context => {
+  const harness = setup(context);
+  const attachment = harness.write(`clipboard-attachments/pasted-text-123-${randomUUID()}.txt`);
+  const escapedFile = harness.write('codex/api/conversations/escaped/中文/data.txt');
+  const unicodeFile = harness.write('codex/api/conversations/unicode/中文/data.txt');
+  const relative = path.relative(harness.dataDir, path.dirname(unicodeFile)).replace(/\\/g, '/');
+  const escaped = path.relative(harness.dataDir, path.dirname(escapedFile)).replace(/\\/g, '/').replace(/\//g, '\\\\');
+  const boundary = 64 * 1024;
+  harness.write('codex/api/conversations/live/paths.txt', ' '.repeat(boundary - escaped.indexOf('\\') - 1) + escaped);
+  harness.write('codex/api/conversations/live/utf8.txt', ' '.repeat(boundary - Buffer.byteLength(relative.slice(0, relative.indexOf('中'))) - 1) + relative);
+  const name = path.basename(attachment);
+  harness.write('codex/api/conversations/live/attachment.txt', ' '.repeat(boundary - 15) + name);
+  harness.owners(['live']);
+  harness.advance(PROTECTION_MS * 2);
+  assert.equal((await harness.cleaner.scan()).candidates.length, 0);
+});
+
+test('escaped JSON references are decoded across blocks and final records without newlines', async context => {
+  const harness = setup(context);
+  const attachment = harness.attachment();
+  harness.conversation('live');
+  const escaped = path.basename(attachment).replace(/p/g, '\\u0070');
+  harness.write('conversations/live.jsonl', ' '.repeat(64 * 1024 - 4) + '{"path":"' + escaped + '"}');
+  assert.equal((await harness.cleaner.scan()).candidates.length, 0);
+});
+
+test('malformed records late in a streamed transcript stop confirmation without deletion', async context => {
+  const harness = setup(context);
+  const attachment = harness.attachment();
+  harness.conversation('live');
+  const preview = await harness.cleaner.scan();
+  harness.write('conversations/live.jsonl', ('{"text":"ok"}\n').repeat(10000) + '{broken');
+  await assert.rejects(harness.cleaner.clean(preview.token), SyntaxError);
+  assert.ok(fs.existsSync(attachment));
+  assert.equal(harness.cleaner.preview, null);
+});
+
+test('an oversized individual JSON record fails closed instead of buffering unbounded data', async context => {
+  const harness = setup(context);
+  const attachment = harness.attachment();
+  harness.conversation('live');
+  const preview = await harness.cleaner.scan();
+  const file = path.join(harness.dataDir, 'conversations/live.jsonl');
+  const descriptor = fs.openSync(file, 'w');
+  try {
+    fs.writeSync(descriptor, '{"text":"');
+    const block = Buffer.alloc(1024 * 1024, 'x');
+    for (let index = 0; index < 33; index += 1) fs.writeSync(descriptor, block);
+    fs.writeSync(descriptor, '"}');
+  } finally { fs.closeSync(descriptor); }
+  await assert.rejects(harness.cleaner.clean(preview.token), /reference JSON record is too large/);
   assert.ok(fs.existsSync(attachment));
 });

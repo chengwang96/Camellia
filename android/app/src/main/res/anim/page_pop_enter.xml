@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<translate xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="@integer/page_transition_duration"
+    android:interpolator="@interpolator/page_ease"
+    android:fromXDelta="-30%p" android:toXDelta="0"
+    android:zAdjustment="bottom" />

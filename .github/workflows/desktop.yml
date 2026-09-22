@@ -43,6 +43,17 @@ jobs:
             package-lock.json
             runtimes/*/package-lock.json
       - run: npm ci
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: integrations/tailnet/go.mod
+          cache-dependency-path: integrations/tailnet/go.sum
+      - name: Embedded network tests
+        working-directory: integrations/tailnet
+        run: go test ./...
+      - name: Build embedded network helper
+        run: npm run build:tailnet
+      - name: Embedded network native smoke test
+        run: node tests/embedded-network-electron.cjs
       - name: Prepare engines used by integration tests
         run: npm run setup:runtimes -- claude codex dsh kimi antigravity
       - name: Prepare the Antigravity subscription CLI

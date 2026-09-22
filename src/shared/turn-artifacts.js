@@ -4,6 +4,21 @@
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.CamelliaArtifacts = factory();
 })(typeof window === 'object' ? window : globalThis, function () {
+  const VISIBLE_ARTIFACT_LIMIT = 4;
+
+  function documentFormat(file) {
+    const extension = String(file.extension || (file.name || file.path || '').split('.').pop()).toLowerCase();
+    if (['md', 'markdown'].includes(extension)) return 'markdown';
+    if (['html', 'htm'].includes(extension)) return 'html';
+    return '';
+  }
+
+  function sortArtifacts(files) {
+    const priority = file => ['image', 'video', 'presentation'].includes(file.kind) || documentFormat(file) ? 0
+      : ['pdf', 'word', 'spreadsheet', 'audio'].includes(file.kind) ? 1 : 2;
+    return [...files].sort((first, second) => priority(first) - priority(second));
+  }
+
   function textPaths(text) {
     const paths = [];
     const source = String(text || '').replace(/```[\s\S]*?(?:```|$)/g, '');
@@ -47,5 +62,5 @@
       },
     };
   }
-  return { textPaths, toolPaths, collector };
+  return { textPaths, toolPaths, collector, documentFormat, sortArtifacts, VISIBLE_ARTIFACT_LIMIT };
 });

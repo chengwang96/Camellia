@@ -72,6 +72,25 @@ async function main() {
     session.start();
     const initial = await turn('Remember NATIVE_MARKER_7391. No tools needed.');
     assert.equal(initial.subtype, 'success', JSON.stringify(initial) + '\n' + logs.slice(-15).join('\n'));
+    if (engine === 'codex') {
+      const sourceId = session.sessionId, lastTurnId = session.lastTurnId;
+      assert.equal((await turn('SUPERSEDED_REQUEST_8297')).subtype, 'success');
+      await session.shutdown();
+      session = new CodexSession({ gen: 2, settings: { cwd: root, model: 'compact-fixture', connection: 'api', permissionMode: 'bypassPermissions' },
+        opts: { sessionId: sourceId, fork: true, lastTurnId }, spec, spawn, history: new ClaudeHistory(path.join(root, 'history')), log: text => logs.push(text),
+        onEvent: event => events.push(event), onResult: result => complete?.(result), onSessionId() {} });
+      const notify = session.notify.bind(session);
+      session.notify = (method, params) => { notifications.push({ method, params }); notify(method, params); };
+      session.start();
+      assert.equal((await turn('REVISED_REQUEST_8297')).subtype, 'success', logs.slice(-15).join('\n'));
+      assert.notEqual(session.sessionId, sourceId);
+      assert.match(JSON.stringify(requests.at(-1)), /NATIVE_MARKER_7391/);
+      assert.match(JSON.stringify(requests.at(-1)), /REVISED_REQUEST_8297/);
+      assert.doesNotMatch(JSON.stringify(requests.at(-1)), /SUPERSEDED_REQUEST_8297/);
+      const original = await session.client.request('thread/read', { threadId: sourceId, includeTurns: true });
+      assert.match(JSON.stringify(original), /SUPERSEDED_REQUEST_8297/);
+      console.log('PASS installed Codex: edit forks at exact native turn boundary, omits superseded request, preserves original; loopback only');
+    }
     for (let index = 0; index < 4; index++) assert.equal((await turn('Keep this checkpoint. ' + 'History to summarize. '.repeat(700))).subtype, 'success');
     const threadId = session.sessionId, proc = session.client?.proc || session.proc, before = requests.length, results = events.filter(event => event.type === 'result').length;
     try { await session.compact({ timeoutMs: 45000 }); }

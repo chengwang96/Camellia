@@ -18,6 +18,7 @@
     <button data-view="runtimes" data-i18n><span aria-hidden="true">↓</span>Runtime</button>
     <button data-view="archived" data-i18n><span aria-hidden="true">▤</span>Archived</button>
     <button data-view="storage" data-i18n><span aria-hidden="true">▱</span>Space cleanup</button>
+    <button data-view="mobile" data-i18n><span aria-hidden="true">▯</span>Mobile access</button>
   </nav>
   <div class="nav-foot"><span class="status-dot" id="routerDot"></span><span id="routerLabel" data-i18n>Connecting</span><small data-i18n>Automatic failover within the same model</small></div>
 </aside>
@@ -39,12 +40,13 @@
       <div class="toolbar"><p class="hint" data-i18n>Balances and subscription quotas as reported by each provider.</p><button id="refreshBalances" class="primary" data-i18n>Refresh all</button></div>
       <div class="balance-filter"><select id="balanceProvider" aria-label="Balance provider" data-i18n-attrs="aria-label"></select><input id="balanceSearch" aria-label="Filter accounts" placeholder="Filter by account label or masked key" data-i18n-attrs="aria-label placeholder"></div>
       <div id="balanceCards" class="balance-grid"></div>
-      <div id="balanceDetail"></div>
       <p class="hint footnote" data-i18n>Keys may share an account balance, so card amounts are not added together. Charts show local observations, including top-ups and resets; earlier history is not reconstructed.</p>
       <h2 class="usage-api-title" data-i18n>API request history</h2>
       <div class="filter-row"><label data-i18n>Date<select id="usageRange"><option value="7" data-i18n>Last 7 days</option><option value="30" data-i18n>Last 30 days</option><option value="90" data-i18n>Last 90 days</option><option value="all" data-i18n>Total</option></select></label><label data-i18n>Provider<select id="usageProvider"></select></label><label data-i18n>Key<select id="usageKey"></select></label><label data-i18n>Model<select id="usageModel"></select></label></div>
       <div id="usageSummary" class="usage-summary"></div>
-      <div class="chart-panel"><div class="section-head"><h2 data-i18n>Request trends</h2><select id="usageMetric" aria-label="Trend metric" data-i18n-attrs="aria-label"><option value="requests" data-i18n>Successful requests</option><option value="tokens" data-i18n>Token usage</option><option value="failures" data-i18n>Failed requests</option></select></div><div id="usageChart"></div></div>
+      <div class="section-head"><h2 data-i18n>Quota and key/model trends</h2><select id="usageMetric" aria-label="Usage chart metric" data-i18n-attrs="aria-label"><option value="tokens" data-i18n>Token usage</option><option value="requests" data-i18n>Successful requests</option><option value="inputTokens" data-i18n>Input tokens</option><option value="outputTokens" data-i18n>Output tokens</option><option value="failures" data-i18n>Failed / Canceled</option></select></div>
+      <div id="usageChart" class="chart-grid-layout"></div>
+      <div id="usageChartNotes"></div>
       <div class="section-head table-head"><h2 data-i18n>Model and key details</h2><button id="exportUsage" data-i18n>Export CSV</button></div>
       <div class="table-scroll"><table class="usage-table"><thead><tr><th data-i18n>Model / Provider</th><th data-i18n>Key</th><th data-i18n>Success</th><th data-i18n>Input</th><th data-i18n>Output</th><th data-i18n>Cache read</th><th data-i18n>Failed</th></tr></thead><tbody id="usageRows"></tbody></table></div>
       <p class="hint footnote" data-i18n>Business requests through this router, excluding validation. Tokens come from provider responses. Model and date breakdowns accumulate from this version; legacy aggregates appear under Total. Cache reads are included in input tokens.</p>
@@ -73,6 +75,27 @@
       <div id="storageSummary"></div>
       <details id="storageDetails" hidden><summary data-i18n>Review candidate paths</summary><p class="hint" data-i18n>Paths are relative to the Camellia data folder. Sizes are logical file sizes; actual recovered disk space may differ.</p><div id="storageFiles"></div></details>
       <button id="cleanStorage" class="danger" disabled data-i18n>Clean reviewed files</button>
+    </section>
+    <section id="mobilePage" class="page" hidden>
+      <section class="mobile-section" aria-labelledby="mobile-connectionTitle">
+        <div class="mobile-heading"><h2 id="mobile-connectionTitle" data-copy="connection">连接</h2><span id="mobile-status" role="status"></span></div>
+        <p id="mobile-address" class="mobile-address"></p>
+        <button id="mobile-toggle" class="primary" disabled>…</button>
+        <div id="mobile-networkControls" hidden><p id="mobile-networkState" class="hint" role="status"></p><button id="mobile-login" hidden data-copy="login">登录 Tailscale</button> <button id="mobile-logout" hidden data-copy="logout">退出 Tailscale 登录</button></div>
+        <p class="hint" data-copy="network"></p><p id="mobile-lifetime" class="hint"></p>
+      </section>
+      <section class="mobile-section" aria-labelledby="mobile-pairTitle">
+        <h2 id="mobile-pairTitle" data-copy="pair">配对设备</h2>
+        <p class="hint" data-copy="scope"></p>
+        <button id="mobile-invite" disabled data-copy="generate">生成一次性配对码</button>
+        <div id="mobile-invitation" hidden><code id="mobile-code"></code><p id="mobile-expires" class="hint"></p><p class="hint" data-copy="pairHint"></p></div>
+        <div id="mobile-pending"></div>
+      </section>
+      <section class="mobile-section" aria-labelledby="mobile-devicesTitle"><h2 id="mobile-devicesTitle" data-copy="devices">已授权设备</h2><div id="mobile-devices"></div></section>
+      <p id="mobile-error" role="alert"></p>
+      <button id="mobile-retry" hidden data-copy="retry">重试</button>
+      <button id="mobile-openPanel" hidden data-copy="openPanel">打开独立手机访问面板</button>
+      <p class="hint" data-copy="footer"></p>
     </section>
     <section id="enginesPage" class="page" hidden>
       <div class="engine-tabs" role="tablist" aria-label="Engine" data-i18n-attrs="aria-label"><button role="tab" data-engine="claude">Claude Code</button><button role="tab" data-engine="codex">Codex CLI</button><button role="tab" data-engine="dsh">DeepSeek Harness</button><button role="tab" data-engine="kimi">Kimi Code</button><button role="tab" data-engine="antigravity">Antigravity</button></div>
@@ -160,5 +183,5 @@
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>
-<script src="./settings-charts.js"></script><script src="./engine-settings-ui.js"></script><script src="./context-capacity-ui.js"></script><script src="./api-settings.js"></script>
+<script src="./settings-charts.js"></script><script src="./engine-settings-ui.js"></script><script src="./context-capacity-ui.js"></script><script src="../remote/remote.js"></script><script src="./api-settings.js"></script>
 </body></html>

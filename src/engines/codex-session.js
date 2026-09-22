@@ -42,14 +42,28 @@ class CodexSession extends StreamingSession {
       ...PERMISSIONS[permissionModeOf(this.settings)],
       ...(permissionModeOf(this.settings) === 'default' ? this.spec.permissions : {}) };
     const result = await this.client.request(sourceId ? this.opts.fork ? 'thread/fork' : 'thread/resume' : 'thread/start',
-      { ...params, ...(sourceId ? { threadId: sourceId } : { allowProviderModelFallback: false }) });
+      { ...params, ...(sourceId ? { threadId: sourceId, ...(this.opts.lastTurnId ? { lastTurnId: this.opts.lastTurnId } : {}) } : { allowProviderModelFallback: false }) });
+    if (this.opts.lastTurnId && result.thread.turns?.at(-1)?.id !== this.opts.lastTurnId)
+      throw new Error('Codex could not restore the selected turn boundary. Update the Codex runtime before retrying. Nothing was sent.');
     this.sessionId = result.thread.id;
+    this.lastTurnId = result.thread.turns?.at(-1)?.id || null;
+    this.threadTurns = result.thread.turns || [];
     if (!validSessionId(this.sessionId)) throw new Error('Codex returned an invalid thread ID');
-    if (this.opts.fork) {
+    if (this.opts.fork && !this.opts.lastTurnId) {
       const source = this.history.find(sourceId);
       if (source) fs.copyFileSync(source, this.historyFile());
     }
     this.onSessionId(this.sessionId);
+  }
+  async editBoundary(prompt) {
+    await (this.ready ||= this.open());
+    const turns = this.threadTurns;
+    const latest = turns.at(-1);
+    const users = latest?.items?.filter(item => item.type === 'userMessage') || [];
+    const text = users[0]?.content?.filter(item => item.type === 'text').map(item => item.text).join('\n');
+    if (users.length !== 1 || !text || text.includes('Conversation context from earlier turns follows as JSON data.')
+        || !(text === prompt || text.endsWith('\n\n' + prompt))) return null;
+    return turns.at(-2)?.id || null;
   }
   sendUserMessage(prompt, attachments = []) {
     if (this.running || this.dead) return false;
@@ -87,7 +101,7 @@ class CodexSession extends StreamingSession {
   async run(prompt, attachments) {
     try {
       await (this.ready ||= this.open());
-      this.emit({ type: 'system', subtype: 'init', session_id: this.sessionId });
+      this.emit({ type: 'system', subtype: 'init', session_id: this.sessionId, editBaseTurnId: this.lastTurnId });
       if (this.cancelled) return this.finish({ subtype: 'stopped' });
       this.appendHistory('user', prompt); this.emitStream({ type: 'message_start' });
       const input = [{ type: 'text', text: prompt }, ...attachments.filter(a => a.isImage).map(a => ({ type: 'localImage', path: a.path }))];
@@ -96,7 +110,7 @@ class CodexSession extends StreamingSession {
       if (this.settings.permissionMode === 'plan') params.collaborationMode = { mode: 'plan', settings: {
         model: this.settings.model, reasoning_effort: this.settings.thinkingBudget || null, developer_instructions: null } };
       const result = await this.client.request('turn/start', params);
-      if (this.running) { this.turnId = result.turn.id; if (this.cancelled) this.interrupt(); }
+      if (this.running) { this.turnId = result.turn.id; this.lastTurnId = result.turn.id; if (this.cancelled) this.interrupt(); }
     } catch (error) {
       this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: error.message });
       this.kill();
@@ -173,7 +187,7 @@ class CodexSession extends StreamingSession {
       }
       return;
     }
-    if (method === 'turn/started') { this.turnId = params.turn.id; if (this.cancelled) this.interrupt(); }
+    if (method === 'turn/started') { this.turnId = params.turn.id; this.lastTurnId = params.turn.id; if (this.cancelled) this.interrupt(); }
     else if (method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
       const output = this.outputItem(params.itemId, method === 'item/plan/delta' ? 'commentary' : null);
       output.text += params.delta;

@@ -2,7 +2,9 @@
 
 Open an existing shared conversation and click **Tasks** beside the composer, or use `/tasks`. Describe an already-running experiment, its log/checkpoint paths, completion evidence, and any permitted recovery. Configure the interval, maximum checks, lifetime and allowed recovery attempts. The default is every 10 minutes, up to 24 checks over 24 hours, with no automatic recovery.
 
-A model can create a task after a direct current request such as `创建定时任务：每隔 10 分钟检查训练日志，最多检查 24 次，异常时允许自动恢复一次。` or `Create a scheduled task: check the training logs every 10 minutes.` Ambiguous requests should use the panel. Creating a task does not itself launch or detach an experiment.
+A model can create a task from a natural-language request such as `训练已经启动了，能每十分钟帮我看一下日志吗？` or `Could you check the training logs every ten minutes?` No command prefix, fixed wording or first-line placement is required. The model interprets intent and asks a natural-language clarification if needed. Creating a task does not itself launch or detach an experiment.
+
+Goal requests likewise accept natural language, for example `帮我完成这个任务，设定一个 goal` or a goal request later in a multiline message. The harness/model decides whether the user is actually requesting automation rather than discussing, quoting or negating it. The backend checks that `user_request` comes from the current user message; this is a provenance check, not a semantic authorization classifier. Current-turn tokens, automatic-turn restrictions, scheduling bounds, recovery authorization and independent Goal completion verification still apply.
 
 ## Behavior
 

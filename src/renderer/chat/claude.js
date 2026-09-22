@@ -30,7 +30,8 @@ const context = { sessionId: null, workspaceId: null };
   let lastCallUsage = null;   // usage of the latest single API call in the turn
   let contextUsage = null;
   let attachments = [];       // [{ path, name, isImage }]
-  const messageQueue = [];    // messages waiting for the active response to finish
+  let messageQueue = [];
+  const conversationQueues = new Map();
   let drainingQueue = false;
   let openPops = [];          // currently open popover elements
   let runAnchorMs = 0;        // timestamp of message_start (drives the 15s clock)
@@ -46,6 +47,7 @@ const context = { sessionId: null, workspaceId: null };
   let loadingSession = false;
   let historyOpening = false;
   let editingMessage = null;
+  const failedMessageEdits = new Map();
   let permRequestId = null;   // pending can_use_tool control request id
   const permissionQueue = [];
   let pendingQuestion = null, permissionSubmission = null;
@@ -101,7 +103,20 @@ const context = { sessionId: null, workspaceId: null };
     input.value = typeof saved?.text === 'string' ? saved.text : '';
     attachments = Array.isArray(saved?.attachments) ? saved.attachments : [];
     pendingForkId = saved?.pendingForkId || null;
+    restoreMessageQueue();
     renderAttachments(); autoResize(); updateSendEnabled();
+  }
+  function saveMessageQueue(key = draftKey(), queue = messageQueue) {
+    if (!sharedChat) return;
+    conversationQueues.set(key, queue);
+    writeUi('queue:' + key, queue);
+  }
+  function restoreMessageQueue() {
+    const key = draftKey();
+    const saved = conversationQueues.get(key) || readUi('queue:' + key);
+    messageQueue = Array.isArray(saved) ? saved : [];
+    if (context.sessionId) conversationQueues.set(key, messageQueue);
+    renderMessageQueue();
   }
   window.addEventListener('beforeunload', saveDraft);
   let scrollSaveTimer;
@@ -154,7 +169,7 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   // Minimal markdown: fenced code, inline code, GFM tables, bold, headings.
-  function mdRender(src) {
+  function mdRender(src, documentMode = false) {
     const tokens = [];
     let text = String(src);
     text = text.replace(/```(\w*)[ \t]*\n?([\s\S]*?)(?:```|$)/g, (_m, lang, code) => {
@@ -192,7 +207,9 @@ const context = { sessionId: null, workspaceId: null };
     text = rendered.join('\n');
     text = esc(text);
     text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    text = text.replace(/^(#{1,4})\s*(.+)$/gm, '<strong>$2</strong>');
+    text = documentMode
+      ? text.replace(/^(#{1,6})\s+(.+)$/gm, (_match, hashes, heading) => '<h' + hashes.length + '>' + heading + '</h' + hashes.length + '>')
+      : text.replace(/^(#{1,4})\s*(.+)$/gm, '<strong>$2</strong>');
     const sentRe = new RegExp(SENT + '(\\d+)' + SENT, 'g');
     const renderToken = (_m, idx) => {
       const tk = tokens[+idx];
@@ -582,9 +599,27 @@ const context = { sessionId: null, workspaceId: null };
     const body = $('fileViewerBody');
     body.replaceChildren();
     if (file.kind === 'text') {
-      const text = document.createElement('pre'); text.className = 'file-preview-text';
-      text.textContent = file.text + (file.truncated ? '\n\n— ' + window.CamelliaI18n.t('Text preview is limited to the first 2 MB.') + ' —' : '');
-      body.appendChild(text);
+      const format = window.CamelliaArtifacts.documentFormat(file);
+      if (format === 'html') {
+        const frame = document.createElement('iframe'); frame.title = file.name;
+        frame.className = 'file-preview-html'; frame.setAttribute('sandbox', '');
+        frame.referrerPolicy = 'no-referrer';
+        frame.srcdoc = '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data: file: https:; media-src data: file: https:; style-src \'unsafe-inline\' file: https:; font-src data: file: https:; script-src \'none\'; frame-src \'none\'; connect-src \'none\'; form-action \'none\'; base-uri file:">' +
+          '<base href="' + esc(file.url || '') + '">' + (file.text || '');
+        body.appendChild(frame);
+      } else if (format === 'markdown') {
+        const article = document.createElement('article'); article.className = 'file-preview-markdown md';
+        article.setAttribute('translate', 'no'); article.innerHTML = mdRender(file.text || '', true);
+        body.appendChild(article);
+      } else {
+        const text = document.createElement('pre'); text.className = 'file-preview-text'; text.textContent = file.text;
+        body.appendChild(text);
+      }
+      if (file.truncated) {
+        const notice = document.createElement('p'); notice.className = 'file-preview-notice';
+        notice.dataset.i18n = ''; notice.textContent = 'Text preview is limited to the first 2 MB.';
+        body.appendChild(notice);
+      }
     } else if (file.kind === 'image') {
       const stage = document.createElement('div'); stage.className = 'file-preview-image';
       const image = document.createElement('img'); image.src = file.url; image.alt = file.name; stage.appendChild(image); body.appendChild(stage);
@@ -717,7 +752,7 @@ const context = { sessionId: null, workspaceId: null };
       remove.type = 'button'; remove.className = 'queue-remove'; remove.title = 'Remove from queue';
       remove.setAttribute('aria-label', 'Remove from queue'); remove.textContent = '✕';
       remove.disabled = sending || drainingQueue;
-      remove.addEventListener('click', () => { messageQueue.splice(index, 1); renderMessageQueue(); });
+      remove.addEventListener('click', () => { messageQueue.splice(index, 1); saveMessageQueue(); renderMessageQueue(); });
       row.append(label, text, steer, remove);
       return row;
     }));
@@ -730,6 +765,7 @@ const context = { sessionId: null, workspaceId: null };
     if (!text && !queuedAttachments.length) return false;
     if (goalUI.isDraft()) { setStatus('Finish setting the goal before queueing messages.'); return false; }
     messageQueue.push({ text, attachments: queuedAttachments });
+    saveMessageQueue();
     input.value = ''; attachments = [];
     renderAttachments(); autoResize(); renderMessageQueue(); saveDraft();
     followRunOutput = true;
@@ -739,18 +775,20 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function drainMessageQueue() {
-    if (drainingQueue || !messageQueue.length || running || sending || loadingSession || conversationActivity || switchingEngine || editingMessage || goalUI.isActive()) return;
+    if (drainingQueue || !messageQueue.length || running || sending || loadingSession || conversationActivity || pendingConversationSend() || switchingEngine || editingMessage || goalUI.isActive()) return;
     const next = messageQueue[0];
+    const queue = messageQueue, key = draftKey();
     const openSeq = sessionOpenSeq;
     drainingQueue = true;
     void send(next).then(sent => {
-      if (openSeq !== sessionOpenSeq) return;
-      if (sent && messageQueue[0] === next) {
-        messageQueue.shift();
+      if (sent && queue[0] === next) {
+        queue.shift();
+        saveMessageQueue(key, queue);
       }
+      if (queue !== messageQueue) return;
       drainingQueue = false;
       renderMessageQueue();
-      if (sent && !running) drainMessageQueue();
+      if (sent && !running && openSeq === sessionOpenSeq) drainMessageQueue();
     }).catch(error => {
       if (openSeq !== sessionOpenSeq) return;
       drainingQueue = false;
@@ -952,7 +990,19 @@ const context = { sessionId: null, workspaceId: null };
     if (conversationBusy() || contextBusy()) { showMessageEditStatus(state, 'Wait for this conversation to finish or stop it first.', true); return; }
     const text = state.textarea.value.trim(), atts = state.div.messageData.attachments;
     if (!text && !atts.length) { showMessageEditStatus(state, 'Message cannot be empty', true); return; }
-    sending = true; restoringRun = true; state.submit.disabled = true; state.cancel.disabled = true; state.textarea.disabled = true;
+    const sendContext = { sessionId: state.sessionId, openSeq: sessionOpenSeq, dispatched: true, cancelled: false };
+    pendingConversationSends.set(state.sessionId, sendContext);
+    sending = true; restoringRun = true; state.submit.disabled = true; state.textarea.disabled = true;
+    state.cancel.textContent = 'Stop';
+    state.cancel.onclick = async () => {
+      state.cancel.disabled = true;
+      try {
+        const result = await chatApi.cancel({ sessionId: state.sessionId });
+        if (result?.ok === false) throw new Error(result.error || 'Could not stop the response');
+      } catch (error) {
+        if (editingMessage === state) { showMessageEditStatus(state, error.message, true); state.cancel.disabled = false; }
+      }
+    };
     state.submit.textContent = 'Sending…'; state.form.setAttribute('aria-busy', 'true');
     // Clear the old reply immediately. Keep its nodes until the backend accepts
     // the revision so a rejected request can restore the unchanged transcript.
@@ -965,12 +1015,24 @@ const context = { sessionId: null, workspaceId: null };
       res = await chatApi.send({ sessionId: state.sessionId, workspaceId: context.workspaceId, editSeq: state.div.messageData.seq,
         prompt: buildPrompt(text, atts), displayText: text, attachments: atts });
     } catch (error) { res = { ok: false, error: error.message }; }
+    if (pendingConversationSends.get(state.sessionId) === sendContext) pendingConversationSends.delete(state.sessionId);
+    if (sendContext.openSeq !== sessionOpenSeq) {
+      void sidebar.load();
+      if (!res?.ok) failedMessageEdits.set(state.sessionId, { seq: state.div.messageData.seq, text,
+        error: 'Could not resend: ' + (res?.error || 'No response from the app') });
+      if (context.sessionId === state.sessionId && !loadingSession && !sending) {
+        await openHistorySession(state.sessionId);
+      }
+      updateConversationControls();
+      return;
+    }
     sending = false;
     if (!res?.ok) {
       state.div.after(...previousReply);
       restoringRun = false;
       for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
       state.submit.disabled = false; state.cancel.disabled = false; state.textarea.disabled = false;
+      state.cancel.textContent = 'Cancel'; state.cancel.onclick = cancelMessageEdit;
       state.submit.textContent = 'Send'; state.form.removeAttribute('aria-busy');
       const error = 'Could not resend: ' + (res?.error || 'No response from the app');
       showMessageEditStatus(state, error, true); setStatus(error); updateConversationControls(); state.textarea.focus({ preventScroll: true }); return;
@@ -984,6 +1046,18 @@ const context = { sessionId: null, workspaceId: null };
     setRunning(true); restoringRun = false;
     for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
     updateConversationControls(); void sidebar.load();
+  }
+
+  function restoreFailedMessageEdit() {
+    const failed = failedMessageEdits.get(context.sessionId);
+    if (!failed || conversationBusy() || contextBusy()) return;
+    const user = [...chat.querySelectorAll('.msg-user')].find(div => div.messageData.seq === failed.seq);
+    if (!user) return;
+    beginMessageEdit(user);
+    if (!editingMessage) return;
+    failedMessageEdits.delete(context.sessionId);
+    editingMessage.textarea.value = failed.text;
+    showMessageEditStatus(editingMessage, failed.error, true);
   }
 
   function turnMetaHtml() {
@@ -1020,8 +1094,16 @@ const context = { sessionId: null, workspaceId: null };
       const list = document.createElement('div');
       list.className = 'turn-artifacts'; list.setAttribute('role', 'group');
       list.dataset.i18nAttrs = 'aria-label'; list.setAttribute('aria-label', 'Files from this turn');
+      const sortedFiles = window.CamelliaArtifacts.sortArtifacts(result.files);
+      const limit = window.CamelliaArtifacts.VISIBLE_ARTIFACT_LIMIT;
+      const overflow = document.createElement('details'); overflow.className = 'artifact-overflow';
+      const summary = document.createElement('summary');
+      const more = document.createElement('span'); more.className = 'artifact-show-more'; more.dataset.i18n = '';
+      more.textContent = 'Show ' + (sortedFiles.length - limit) + ' more files';
+      const less = document.createElement('span'); less.className = 'artifact-show-less'; less.dataset.i18n = ''; less.textContent = 'Show fewer files';
+      summary.append(more, less); overflow.appendChild(summary);
       const labels = { image: 'Image', video: 'Video', audio: 'Audio', text: 'Text', pdf: 'Document', word: 'Document', spreadsheet: 'Spreadsheet', presentation: 'Presentation' };
-      for (const file of result.files) {
+      for (const [index, file] of sortedFiles.entries()) {
         const row = document.createElement('div'); row.className = 'artifact-row';
         const open = document.createElement('button'); open.type = 'button'; open.className = 'artifact-file'; open.title = file.path;
         const icon = document.createElement('span'); icon.className = 'artifact-icon artifact-' + file.kind;
@@ -1042,8 +1124,9 @@ const context = { sessionId: null, workspaceId: null };
             catch (error) { setStatus(error.message); }
           } },
         ]);
-        row.append(open, menu); list.appendChild(row);
+        row.append(open, menu); (index < limit ? list : overflow).appendChild(row);
       }
+      if (sortedFiles.length > limit) list.appendChild(overflow);
       const resultChip = turn.querySelector('.run-result');
       if (resultChip) resultChip.before(list); else turn.appendChild(list);
       maybeScroll(was);
@@ -1627,6 +1710,18 @@ const context = { sessionId: null, workspaceId: null };
     }
     if (restoringRun) { eventsDuringRestore.push(ev); return; }
     if (sharedChat && ev.session_id !== context.sessionId) return;
+    if (sharedChat && ev.type === 'conversation:approval-resolved') {
+      const index = permissionQueue.findIndex(request => request.requestId === ev.requestId && request.runId === ev.runId);
+      if (index >= 0) {
+        permissionQueue.splice(index, 1);
+        if (permRequestId === ev.requestId) {
+          permRequestId = null; $('permMask').classList.remove('visible');
+          if (permissionQueue.length) showPermissionDialog(permissionQueue[0]);
+        }
+      }
+      return;
+    }
+    if (sharedChat && ev.type === 'conversation:started') acceptSessionEvents = true;
     if (ev.engine && ev.engine !== turnEngine) { turnEngine = ev.engine; applyTurnMeta(); }
     if (ev.handoff && ev.type === 'gui:permission') {
       if (currentPermission === 'full') { void autoAllowPermission(ev); return; }
@@ -1835,7 +1930,7 @@ const context = { sessionId: null, workspaceId: null };
       sendBtn.title = active ? 'Queue message' : 'Send';
       sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
     }
-    sendBtn.disabled = (loadingSession && !(sharedChat && active && !hasMessage)) || (sending && !(pendingConversationSend() && active && !hasMessage)) || (Boolean(pendingConversationSend()) && hasMessage) || Boolean(editingMessage) || (sharedChat && !active && goalUI.isActive()) || (!active && !hasMessage);
+    sendBtn.disabled = (loadingSession && !(sharedChat && active && !hasMessage)) || (sending && !(pendingConversationSend() && active && !hasMessage)) || (Boolean(pendingConversationSend()) && hasMessage) || (Boolean(editingMessage) && !(pendingConversationSend() && active && !hasMessage)) || (sharedChat && !active && goalUI.isActive()) || (!active && !hasMessage);
     renderMessageQueue();
   }
 
@@ -1853,6 +1948,7 @@ const context = { sessionId: null, workspaceId: null };
       if (context.sessionId !== sessionId || sessionOpenSeq !== openSeq) return;
       const index = messageQueue.indexOf(message);
       if (index !== -1) messageQueue.splice(index, 1);
+      saveMessageQueue();
       setStatus('Instruction accepted by the active turn');
     } catch (error) {
       if (context.sessionId === sessionId && sessionOpenSeq === openSeq) setStatus(error.message);
@@ -2405,7 +2501,7 @@ const context = { sessionId: null, workspaceId: null };
     permRequestId = null; permissionQueue.length = 0; $('permMask').classList.remove('visible');
     clearRunStatus(); setRunning(false);
     $('handoffStop').hidden = true;
-    messageQueue.length = 0; renderMessageQueue();
+    messageQueue = []; renderMessageQueue();
   }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
     newSession, openHistorySession, forkSession, canFork: s => sharedChat || harnessId !== 'antigravity' || !s.id.startsWith('agy-'), openActionMenu, closePops });
@@ -2527,7 +2623,7 @@ const context = { sessionId: null, workspaceId: null };
       return true;
     } catch (err) { if (seq === sessionOpenSeq && !/archived/i.test(err.message)) setStatus("Could not load: " + err.message); return false; }
     finally {
-      if (seq === sessionOpenSeq) { historyOpening = false; loadingSession = false; input.disabled = false; restoringRun = false; updateSendEnabled(); updateConversationControls(); sidebar.updateLabel(); saveDraft(); }
+      if (seq === sessionOpenSeq) { historyOpening = false; loadingSession = false; input.disabled = false; restoringRun = false; updateSendEnabled(); updateConversationControls(); sidebar.updateLabel(); saveDraft(); restoreFailedMessageEdit(); }
     }
   }
 

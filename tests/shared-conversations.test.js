@@ -627,10 +627,10 @@ test('child request limits, bounded reads and interrupted restart states are per
 test('scheduled checks use current-turn tools, report once and cannot create autonomous loops', async t => {
   const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
   t.after(() => harness.manager.closeGoalTools());
-  const run = await harness.manager.send('codex', { prompt: '创建定时任务：每分钟检查日志，允许自动恢复一次' });
+  const run = await harness.manager.send('codex', { prompt: '实验已经启动了。\n能每分钟帮我看看日志吗？异常时允许自动恢复一次' });
   const bridge = harness.sent.at(-1).opts.goalBridge;
   const token = harness.manager.active.get(run.sessionId).goalRunToken;
-  const created = bridge.call('camellia_task_create', { run_token: token, user_request: '创建定时任务', instruction: 'Inspect logs', intervalMinutes: 1, maxRepairs: 1 });
+  const created = bridge.call('camellia_task_create', { run_token: token, user_request: '能每分钟帮我看看日志吗？', instruction: 'Inspect logs', intervalMinutes: 1, maxRepairs: 1 });
   assert.equal(created.ok, true);
   assert.equal(harness.sent.length, 1);
   assert.equal(bridge.call('camellia_task_report', { run_token: token, task_id: created.task.id, status: 'complete', summary: 'Fake' }).ok, false);
@@ -653,12 +653,39 @@ test('scheduled checks use current-turn tools, report once and cannot create aut
   assert.equal(task.status, 'complete');
 });
 
+test('scheduled task creation and updates accept conversational requests across engines', async t => {
+  for (const engine of ENGINES) {
+    const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+    t.after(() => harness.manager.closeGoalTools());
+    const run = await harness.manager.send(engine, { prompt: '实验正在运行。\n能每十分钟帮我看看日志吗？不允许自动恢复。' });
+    const bridge = harness.sent.at(-1).opts.goalBridge;
+    const token = harness.manager.active.get(run.sessionId).goalRunToken;
+    const args = { run_token: token, user_request: '能每十分钟帮我看看日志吗？', instruction: 'Inspect logs', intervalMinutes: 10 };
+    assert.equal(bridge.call('camellia_task_create', { ...args, maxRepairs: 1 }).ok, false);
+    const created = bridge.call('camellia_task_create', args);
+    assert.equal(created.ok, true, engine);
+    assert.equal(created.task.maxRepairs, 0);
+    assert.equal(bridge.call('camellia_task_pause', { run_token: token, task_id: created.task.id }).ok, true);
+    harness.finish(engine); await run.done;
+    const next = await harness.manager.send(engine, { sessionId: run.sessionId, prompt: '检查不用太频繁。\n改成每半小时一次吧。' });
+    const currentToken = harness.manager.active.get(run.sessionId).goalRunToken;
+    const update = { run_token: currentToken, task_id: created.task.id, user_request: '改成每半小时一次吧', intervalMinutes: 30 };
+    assert.equal(bridge.call('camellia_task_update', { ...update, user_request: args.user_request }).ok, false);
+    assert.equal(bridge.call('camellia_task_update', { ...update, run_token: token }).ok, false);
+    const updated = bridge.call('camellia_task_update', update);
+    assert.equal(updated.ok, true, engine);
+    assert.equal(updated.task.intervalMinutes, 30);
+    assert.equal(updated.task.status, 'paused');
+    harness.finish(engine); await next.done;
+  }
+});
+
 test('tasks defer to Goal, reject unsupported engines and pause with conversation cancellation', async t => {
   const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
   t.after(() => harness.manager.closeGoalTools());
   const run = await harness.manager.send('claude', { prompt: 'Discuss scheduled tasks' });
   const bridge = harness.sent.at(-1).opts.goalBridge, token = harness.manager.active.get(run.sessionId).goalRunToken;
-  assert.equal(bridge.call('camellia_task_create', { run_token: token, instruction: 'Check', user_request: 'scheduled tasks' }).ok, false);
+  assert.equal(bridge.call('camellia_task_create', { run_token: token, instruction: 'Check', user_request: 'Monitor logs every hour' }).ok, false);
   harness.finish('claude'); await run.done;
   const created = await harness.manager.command('claude', 'task-create', { sessionId: run.sessionId, instruction: 'Check logs' });
   const task = harness.manager.tasks.get(created.task.id, run.sessionId);
@@ -728,10 +755,10 @@ test('model goal tools adopt the current turn once and verify completion across 
   for (const engine of ENGINES) {
     const changes = [];
     const harness = fixture(t, { onGoal: event => changes.push(event), createGoalBridge: async options => ({ call: options.call, close() {} }) });
-    const run = await harness.manager.send(engine, { prompt: '请设定目标：完成测试' });
+    const run = await harness.manager.send(engine, { prompt: '请帮我完成测试。\n做这个任务时，设定一个 goal，直到测试通过。' });
     const active = harness.manager.active.get(run.sessionId);
     const bridge = harness.sent.at(-1).opts.goalBridge;
-    const args = { run_token: active.goalRunToken, objective: '完成测试', user_request: '请设定目标' };
+    const args = { run_token: active.goalRunToken, objective: '完成测试', user_request: '做这个任务时，设定一个 goal' };
     const created = bridge.call('camellia_create_goal', args);
     assert.equal(created.ok, true);
     const driver = harness.manager.goalFor(run.sessionId);
@@ -757,12 +784,12 @@ test('model goal tools adopt the current turn once and verify completion across 
   }
 });
 
-test('model goal creation refuses discussion and paused adopted turns cannot continue', async t => {
+test('model goal creation refuses fabricated request quotes and paused adopted turns cannot continue', async t => {
   const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
   const run = await harness.manager.send('claude', { prompt: '检查实现，如果用户要求设定目标是否可以自动进入？' });
   const bridge = harness.sent.at(-1).opts.goalBridge;
   const token = harness.manager.active.get(run.sessionId).goalRunToken;
-  assert.equal(bridge.call('camellia_create_goal', { run_token: token, objective: 'Check', user_request: '设定目标' }).ok, false);
+  assert.equal(bridge.call('camellia_create_goal', { run_token: token, objective: 'Check', user_request: '帮我设定一个 goal' }).ok, false);
   assert.equal(harness.manager.goalFor(run.sessionId).view(), null);
   harness.finish('claude'); await run.done;
   const next = await harness.manager.send('claude', { sessionId: run.sessionId, prompt: 'Set a goal: finish' });
@@ -1593,11 +1620,108 @@ test('portable summary enforces a bounded output without replacing context on fa
   const rejected = assert.rejects(pending, /summary is too large/);
   await harness.flush();
   assert.match(harness.sent.at(-1).prompt, /under 12000 characters/);
-  harness.finish('dsh', 'success', 'x'.repeat(12001));
+  for (let attempt = 0; attempt < 3; attempt++) {
+    harness.finish('dsh', 'success', 'x'.repeat(12001));
+    await harness.flush();
+  }
   await rejected;
   assert.equal(manager.rows(conversation).some(row => row.file), false);
   assert.equal(conversation.lastCompaction.outcome, 'failed');
   assert.equal(conversation.lastCompaction.chunks[0].outputChars, 12001);
+  assert.equal(conversation.lastCompaction.requests, 3);
+});
+
+test('an oversized portable summary is shortened without losing the processed history', async context => {
+  const harness = fixture(context), manager = harness.manager, conversation = manager.create('codex');
+  manager.append(conversation, { role: 'user', text: 'TASK_TO_PRESERVE' });
+  const pending = manager.compact(conversation.id);
+  await harness.flush();
+  harness.finish('codex', 'success', 'TASK_TO_PRESERVE ' + 'x'.repeat(12000));
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /TASK_TO_PRESERVE/);
+  assert.match(harness.sent.at(-1).prompt, /previous answer exceeded/);
+  harness.finish('codex', 'success', 'Short summary preserving TASK_TO_PRESERVE');
+  const result = await pending;
+  assert.match(fs.readFileSync(result.file, 'utf8'), /TASK_TO_PRESERVE/);
+  assert.equal(conversation.lastCompaction.requests, 2);
+});
+
+test('portable compaction takes only the Codex final answer, not streamed commentary', async context => {
+  const harness = fixture(context), manager = harness.manager, conversation = manager.create('codex');
+  manager.append(conversation, { role: 'user', text: 'Task' });
+  const pending = manager.compact(conversation.id);
+  await harness.flush();
+  const session = harness.sent.at(-1).session;
+  manager.capture('codex', { type: 'stream_event', runId: session.gen,
+    event: { delta: { type: 'text_delta', text: 'COMMENTARY '.repeat(2000) } } });
+  session.running = false;
+  manager.capture('codex', { type: 'result', subtype: 'success', runId: session.gen,
+    result: 'FINAL_SUMMARY', outputBlocks: [{ phase: 'commentary', text: 'COMMENTARY '.repeat(2000) }, { phase: 'final_answer', text: 'FINAL_SUMMARY' }] });
+  const result = await pending;
+  const summary = fs.readFileSync(result.file, 'utf8');
+  assert.match(summary, /FINAL_SUMMARY/);
+  assert.doesNotMatch(summary, /COMMENTARY/);
+});
+
+test('Codex edit forks at the persisted native boundary without replay or compaction', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const first = await manager.send('codex', { prompt: 'Earlier task' });
+  harness.finish('codex'); await first.done;
+  const conversation = manager.get(first.sessionId);
+  manager.append(conversation, { role: 'tool', text: 'OLD_LARGE_TOOL '.repeat(50000) });
+  conversation.segments.codex.cursor = conversation.seq;
+  harness.drivers.codex.nativeCompaction = true;
+  const original = await manager.send('codex', { sessionId: conversation.id, prompt: 'ORIGINAL_TASK' });
+  manager.capture('codex', { type: 'system', subtype: 'init', runId: harness.sent.at(-1).session.gen,
+    session_id: conversation.segments.codex.nativeId, editBaseTurnId: 'prior-turn' });
+  harness.finish('codex'); await original.done;
+  const nativeId = conversation.segments.codex.nativeId;
+  const restarted = harness.restart();
+  const revised = await restarted.send('codex', { sessionId: conversation.id, editSeq: original.userSeq, prompt: 'REVISED_TASK' });
+  const sent = harness.sent.at(-1);
+  assert.equal(sent.opts.sessionId, nativeId);
+  assert.equal(sent.opts.fork, true);
+  assert.equal(sent.opts.lastTurnId, 'prior-turn');
+  assert.match(sent.prompt, /REVISED_TASK/);
+  assert.doesNotMatch(sent.prompt, /OLD_LARGE_TOOL|ORIGINAL_TASK|compact working context/);
+  assert.equal(harness.sent.length, 3);
+  harness.finish('codex'); await revised.done;
+});
+
+for (const cancel of [false, true]) test('legacy Codex edit boundary lookup ' + (cancel ? 'is cancellable without revising history' : 'avoids replay after migration'), async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const original = await manager.send('codex', { prompt: 'ORIGINAL_TASK' });
+  harness.finish('codex'); await original.done;
+  const conversation = manager.get(original.sessionId), before = manager.messages(conversation);
+  let resolveBoundary;
+  harness.drivers.codex.nativeEditing = true;
+  const ensure = harness.drivers.codex.ensure;
+  harness.drivers.codex.ensure = options => {
+    const session = ensure(options);
+    session.editBoundary = prompt => {
+      assert.equal(prompt, 'ORIGINAL_TASK');
+      return new Promise(resolve => { resolveBoundary = resolve; });
+    };
+    session.kill = () => resolveBoundary(null);
+    return session;
+  };
+  const pending = manager.send('codex', { sessionId: conversation.id, editSeq: original.userSeq, prompt: 'REVISED_TASK' });
+  const rejected = cancel ? assert.rejects(pending, /Edit canceled/) : null;
+  await harness.flush();
+  assert.equal(manager.busy(conversation.id), true);
+  if (cancel) {
+    await manager.cancel({ sessionId: conversation.id });
+    await rejected;
+    assert.deepEqual(manager.messages(conversation), before);
+    assert.equal(harness.sent.length, 1);
+  } else {
+    resolveBoundary('prior-turn');
+    const result = await pending;
+    assert.equal(harness.sent.at(-1).opts.lastTurnId, 'prior-turn');
+    assert.equal(harness.sent.at(-1).opts.fork, true);
+    harness.finish('codex'); await result.done;
+  }
+  assert.equal(manager.busy(conversation.id), false);
 });
 
 test('native compaction diagnostics distinguish supported and unsupported routes', async context => {

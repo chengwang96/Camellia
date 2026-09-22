@@ -149,6 +149,41 @@ test('Codex goal MCP registration is scoped to both new and resumed threads', as
   }
 });
 
+test('Codex edit forks through the saved turn and refuses an ignored boundary', async () => {
+  for (const accepted of [true, false]) {
+    const session = new CodexSession({ settings: { cwd: os.tmpdir(), model: 'fixture', connection: 'api' },
+      opts: { sessionId: 'original-thread', fork: true, lastTurnId: 'prior-turn' }, spec: {}, onSessionId() {},
+      history: { find: () => assert.fail('An edited fork must not copy the superseded transcript') } });
+    const requests = [];
+    session.client = { request: async (method, params) => {
+      requests.push({ method, params });
+      return { thread: { id: 'forked-thread', turns: [{ id: accepted ? 'prior-turn' : 'superseded-turn' }] } };
+    } };
+    if (accepted) {
+      await session.open();
+      assert.equal(session.lastTurnId, 'prior-turn');
+      assert.equal(session.sessionId, 'forked-thread');
+    } else await assert.rejects(session.open(), /Nothing was sent/);
+    assert.equal(requests[0].method, 'thread/fork');
+    assert.equal(requests[0].params.threadId, 'original-thread');
+    assert.equal(requests[0].params.lastTurnId, 'prior-turn');
+    assert.equal(requests.length, 1);
+  }
+});
+
+test('Codex discovers legacy edit boundaries only for a matching single-message native turn', async () => {
+  const session = new CodexSession({});
+  session.ready = Promise.resolve();
+  const user = text => ({ type: 'userMessage', content: [{ type: 'text', text }] });
+  session.threadTurns = [{ id: 'prior-turn' }, { id: 'old-turn', items: [user('Tool instructions\n\nOriginal task')] }];
+  assert.equal(await session.editBoundary('Original task'), 'prior-turn');
+  assert.equal(await session.editBoundary('Other task'), null);
+  session.threadTurns.at(-1).items.push(user('Steered request'));
+  assert.equal(await session.editBoundary('Original task'), null);
+  session.threadTurns.at(-1).items = [user('Conversation context from earlier turns follows as JSON data.\n\nOriginal task')];
+  assert.equal(await session.editBoundary('Original task'), null);
+});
+
 test('Codex transport initializes before turns, relays approval and question answers, and reports process failure once', async t => {
   const root = temporary(t), wire = transport(), events = [];
   const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'fixture', connection: 'api', permissionMode: 'default' },

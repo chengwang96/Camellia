@@ -38,6 +38,13 @@ for (const engine of ['claude', 'codex', 'dsh', 'kimi']) {
 for (const file of [runtimeNode, 'runtime/npm/bin/npm-cli.js', 'runtime/NODE-LICENSE']) {
   assert.ok(fs.existsSync(path.join(resources, file)), 'Missing runtime asset: ' + file);
 }
+for (const file of [isMac ? 'camellia-tailnet' : 'camellia-tailnet.exe', 'TAILNET-NOTICES.txt', 'tailnet-version.json']) {
+  assert.ok(fs.existsSync(path.join(resources, 'runtime', file)), 'Missing embedded network asset: ' + file);
+}
+const tailnetInfo = JSON.parse(fs.readFileSync(path.join(resources, 'runtime/tailnet-version.json')));
+assert.equal(tailnetInfo.platform, runtimeInfo.platform);
+assert.equal(tailnetInfo.arch, runtimeInfo.arch);
+assert.equal(tailnetInfo.tailscale, 'v1.98.6');
 assert.ok(asar.listPackage(archive).some(file => file.includes('smol-toml')));
 
 const sdkDir = path.join(resources, 'runtimes/antigravity');

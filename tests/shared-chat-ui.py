@@ -328,6 +328,45 @@ with sync_playwright() as p:
             expect(page.locator('#chat')).to_contain_text('Streaming Continue pending A')
             assert page.evaluate('running')
         page.close()
+    for finish in ['cancel', 'complete']:
+        page = browser.new_page(viewport={'width':1200,'height':820})
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.add_init_script(concurrent_bridge)
+        page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex', wait_until='networkidle')
+        page.wait_for_function('uiReady')
+        page.evaluate('''async () => {
+          for(const id of ['edit-a','idle-b']) sessionFixtures.set(id,{id,title:id,mtimeMs:Date.now(),
+            currentEngine:'codex',activity:null,messages:[{role:'user',seq:1,text:'History '+id}],live:null});
+          await sidebar.load();
+        }''')
+        page.locator('[data-sid="edit-a"]').click()
+        page.wait_for_function('context.sessionId === "edit-a" && !loadingSession')
+        page.locator('.msg-user').hover()
+        page.locator('.message-edit').click()
+        page.locator('.message-editor textarea').fill('Revised A')
+        page.evaluate('window.holdSend="edit-a"')
+        page.locator('.message-editor button.primary').click()
+        page.wait_for_function('typeof releaseSend === "function"')
+        expect(page.locator('#send')).to_be_enabled()
+        page.locator('[data-sid="idle-b"]').click()
+        page.wait_for_function('context.sessionId === "idle-b" && !loadingSession')
+        page.locator('#input').fill('Unsent B')
+        if finish == 'cancel':
+            page.locator('[data-sid="edit-a"]').click()
+            page.wait_for_function('context.sessionId === "edit-a" && !loadingSession')
+            expect(page.locator('#send')).to_be_enabled()
+            page.locator('#send').click()
+            expect(page.locator('.message-editor textarea')).to_have_value('Revised A')
+            expect(page.locator('.message-edit-status')).to_contain_text('Fixture compaction canceled')
+            assert page.evaluate('actions.find(entry=>entry.action==="cancel").payload') == {'sessionId':'edit-a'}
+        else:
+            page.evaluate('releaseSend(true)')
+            page.wait_for_function('pendingConversationSends.size === 0')
+            expect(page.locator('#input')).to_have_value('Unsent B')
+            expect(page.locator('#chat')).not_to_contain_text('Revised A')
+            page.locator('[data-sid="edit-a"]').click()
+            expect(page.locator('#chat')).to_contain_text('Streaming Revised A')
+        page.close()
     for engine in ['claude','codex','dsh','kimi','antigravity']:
         page = browser.new_page(viewport={'width':1200,'height':820})
         page.on('pageerror',lambda error:errors.append(str(error)))
@@ -388,6 +427,23 @@ with sync_playwright() as p:
         page.locator('#input').fill('Queued first'); page.locator('#input').press('Enter')
         page.locator('#input').fill('Queued second'); page.locator('#send').click()
         page.locator('#input').fill('Keep this unsent draft')
+        queue_session = page.evaluate('context.sessionId')
+        page.locator('#newSessionBtn').click()
+        page.wait_for_function('!loadingSession && context.sessionId === null')
+        expect(page.locator('#messageQueue')).to_be_hidden()
+        page.locator('#input').fill('Other queue leader'); page.locator('#send').click()
+        page.wait_for_function('running && !sending')
+        other_queue_session = page.evaluate('context.sessionId')
+        page.locator('#input').fill('Other queued message'); page.locator('#input').press('Enter')
+        page.evaluate('(id) => openHistorySession(id)', queue_session)
+        expect(page.locator('.queue-text')).to_have_text(['Queued first', 'Queued second'])
+        expect(page.locator('#input')).to_have_value('Keep this unsent draft')
+        assert page.evaluate('messageQueue[0].attachments[0].path') == 'D:/Fixture/queued.csv'
+        page.evaluate('(id) => openHistorySession(id)', other_queue_session)
+        expect(page.locator('.queue-text')).to_have_text(['Other queued message'])
+        page.locator('.queue-remove').click()
+        page.evaluate('(id) => openHistorySession(id)', queue_session)
+        expect(page.locator('.queue-text')).to_have_text(['Queued first', 'Queued second'])
         page.evaluate('''() => {
           window.finishQueuedTurn = () => pushEvent({type:'result',subtype:'success',session_id:context.sessionId,
             engine:document.body.dataset.harness,runId:currentRunId,result:'Queue turn completed'});
@@ -396,7 +452,7 @@ with sync_playwright() as p:
           finishQueuedTurn();
         }''')
         expect(page.locator('.queue-text')).to_have_text(['Queued first','Queued second'])
-        assert page.evaluate('actions.filter(action=>action.action==="send").length') == 1
+        assert page.evaluate('actions.filter(action=>action.action==="send").length') == 2
         page.evaluate('receiveGoal({sessionId:context.sessionId,goal:{id:"queue-goal",sessionId:context.sessionId,objective:"Done",phase:"complete",armed:false}})')
         page.wait_for_function('running && !sending && !drainingQueue')
         expect(page.locator('.queue-text')).to_have_text(['Queued second'])
@@ -415,7 +471,7 @@ with sync_playwright() as p:
         expect(page.locator('.queue-text')).to_have_text(['Retain after failure'])
         expect(page.locator('#chat')).to_contain_text('Fixture queued send rejected')
         expect(page.locator('#input')).to_have_value('Another unsent draft')
-        assert page.evaluate('actions.filter(action=>action.action==="send").length') == 4
+        assert page.evaluate('actions.filter(action=>action.action==="send").length') == 5
         page.close()
     for engine in ['claude','codex','dsh','kimi','antigravity']:
         page = browser.new_page(viewport={'width':1200,'height':820})
@@ -472,18 +528,19 @@ with sync_playwright() as p:
         expect(user.locator('.bubble')).to_have_text('Task B')
         user.hover(); user.locator('.message-edit').focus(); user.locator('.message-edit').press('Enter')
         editor.fill('Corrected task B')
-        page.evaluate('window.holdEdit=true')
+        page.evaluate('window.holdSend=context.sessionId')
         page.evaluate('window.failEdit=true')
         page.locator('.message-editor button.primary').click()
         expect(page.locator('.message-editor button.primary')).to_have_text('Sending…')
         expect(page.locator('.message-edit-status')).to_contain_text('Restarting this turn')
         expect(page.locator('#chat')).not_to_contain_text('Streaming Task B')
-        page.evaluate('window.releaseEdit()')
+        expect(page.locator('.message-editor').get_by_role('button',name='Stop',exact=True)).to_be_enabled()
+        page.locator('.message-editor').get_by_role('button',name='Stop',exact=True).click()
         expect(editor).to_have_value('Corrected task B')
-        expect(page.locator('.message-edit-status[role="alert"]')).to_contain_text('Fixture send rejected')
+        expect(page.locator('.message-edit-status[role="alert"]')).to_contain_text('Fixture compaction canceled')
         expect(page.locator('#chat')).to_contain_text('Streaming Task B')
-        expect(page.locator('#statusLine')).to_contain_text('Fixture send rejected')
-        page.evaluate('window.failEdit=false')
+        expect(page.locator('#statusLine')).to_contain_text('Fixture compaction canceled')
+        page.evaluate('window.failEdit=false;window.holdEdit=true')
         page.screenshot(path=str(preview/f'edit-message-{engine}.png'),animations='disabled')
         page.locator('.message-editor button.primary').click()
         expect(page.locator('.message-editor button.primary')).to_be_disabled()
@@ -588,7 +645,7 @@ with sync_playwright() as p:
         page.evaluate('(id)=>{ const s=sessionFixtures.get(id);s.currentEngine=document.body.dataset.harness==="kimi"?"codex":"kimi";s.activity="running"; }',b)
         page.locator(f'[data-sid="{b}"]').click()
         page.wait_for_function('actions.some(a=>a.action==="switch" && a.payload.navigate)')
-        assert page.evaluate('actions.filter(a=>a.action==="cancel").length') == 2
+        assert page.evaluate('actions.filter(a=>a.action==="cancel").length') == 3
         page.close()
     # A subscription composer also offers shared API routes as a model group.
     subscription_bridge = r"""(() => {
@@ -833,6 +890,55 @@ with sync_playwright() as p:
     expect(rows.nth(0)).not_to_be_checked(); expect(rows.nth(1)).not_to_be_checked(); expect(rows.nth(2)).not_to_be_checked()
     page.locator('#importCancel').click()
     expect(page.locator('#importMask')).to_be_hidden()
+    page.evaluate("""() => {
+      window.dshDesktop.codexDesktopSessions = async () => ({ok:true,sessions:Array.from({length:24}, (_, index) => ({
+        id:'overflow-'+index,title:'Long session title that wraps across multiple lines '.repeat(3),importable:true,
+        project:index%3 ? {id:'project-'+Math.floor(index/3),name:'Workspace '+Math.floor(index/3),path:'D:/workspace-'+Math.floor(index/3)} : null
+      }))});
+    }""")
+    page.locator('#importBtn').click()
+    expect(page.locator('#importList .import-row')).to_have_count(24)
+    dimensions = page.evaluate("""() => {
+      const list = document.querySelector('#importList');
+      return {height:list.clientHeight,scrollHeight:list.scrollHeight,groups:[...list.querySelectorAll('.import-project-group')].map(group => ({
+        height:group.clientHeight,content:group.scrollHeight,header:group.querySelector('.import-project').clientHeight
+      }))};
+    }""")
+    assert dimensions['scrollHeight'] > dimensions['height'], dimensions
+    assert all(group['height'] >= group['content'] - 1 and group['header'] >= 40 for group in dimensions['groups']), dimensions
+    last_row = page.locator('#importList .import-row').last
+    last_row.scroll_into_view_if_needed()
+    expect(last_row).to_be_in_viewport()
+    last_row.locator('input').uncheck()
+    expect(last_row.locator('input')).not_to_be_checked()
+    page.screenshot(path=str(preview/'codex-import-overflow.png'))
+    page.locator('#importCancel').click()
+    page.evaluate("""() => {
+      window.dshDesktop.codexDesktopSessions = async () => ({ok:true,sessions:[
+        {id:'large',title:'Large history',rolloutBytes:1024*1024*1024,importable:true},
+        {id:'missing',title:'Missing history',importable:false,project:{id:'missing-project',name:'Unavailable workspace',path:'D:/missing'}}
+      ]});
+    }""")
+    page.locator('#importBtn').click()
+    expect(page.locator('.import-all')).to_contain_text('Select all importable sessions')
+    expect(page.locator('#importAll')).to_be_checked()
+    expect(page.locator('#importList input[value="large"]')).to_be_checked()
+    expect(page.locator('#importList input[value="missing"]')).to_be_disabled()
+    expect(page.locator('#importList')).to_contain_text('(history file missing or unreadable)')
+    expect(page.locator('#importList .import-project input')).to_be_disabled()
+    expect(page.locator('#importConfirm')).to_be_enabled()
+    page.locator('#importAll').uncheck()
+    expect(page.locator('#importConfirm')).to_be_disabled()
+    page.locator('#importAll').check()
+    expect(page.locator('#importList input[value="large"]')).to_be_checked()
+    expect(page.locator('#importConfirm')).to_be_enabled()
+    page.locator('#importCancel').click()
+    page.evaluate("window.dshDesktop.codexDesktopSessions = async () => ({ok:true,sessions:[{id:'missing',title:'Missing',importable:false}]})")
+    page.locator('#importBtn').click()
+    expect(page.locator('#importAll')).to_be_disabled()
+    expect(page.locator('#importAll')).not_to_be_checked()
+    expect(page.locator('#importConfirm')).to_be_disabled()
+    page.locator('#importCancel').click()
     page.close()
     # Imported sessions offer a guarded manual sync from their action menu.
     page = browser.new_page(viewport={'width':1200,'height':820})

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'">
+  <title>Mobile access — Camellia</title>
+  <link rel="stylesheet" href="../shared/ui-theme.css">
+  <link rel="stylesheet" href="remote.css">
+</head>
+<body>
+  <main>
+    <header><span class="eyebrow">CAMELLIA / TAILSCALE</span><h1 data-copy="title">手机访问</h1><p data-copy="intro">通过私有网络查看和操作电脑会话。授权设备即可使用，无需另设权限。</p></header>
+    <section aria-labelledby="connectionTitle">
+      <div class="heading"><h2 id="connectionTitle" data-copy="connection">连接</h2><span id="status" class="status"></span></div>
+      <p id="address" class="address"></p>
+      <button id="toggle" class="primary" disabled>…</button>
+      <div id="networkControls" hidden><p id="networkState" class="hint" role="status"></p><button id="login" hidden data-copy="login">登录 Tailscale</button> <button id="logout" hidden data-copy="logout">退出 Tailscale 登录</button></div>
+      <p class="hint" data-copy="network">已内置 Tailscale，无需另装客户端。</p>
+      <p id="lifetime" class="hint"></p>
+    </section>
+    <section aria-labelledby="pairTitle">
+      <h2 id="pairTitle" data-copy="pair">配对设备</h2>
+      <p data-copy="scope">授权后可访问当前及今后新增的全部工作区和独立会话。会话正文可能包含敏感内容，仅授权可信设备。</p>
+      <button id="invite" disabled data-copy="generate">生成一次性配对码</button>
+      <div id="invitation" hidden><code id="code"></code><p id="expires" class="hint"></p><p class="hint" data-copy="pairHint">将地址和配对码交给客户端，然后在下方确认设备。配对码不等于长期访问凭据。</p></div>
+      <div id="pending"></div>
+    </section>
+    <section aria-labelledby="devicesTitle"><h2 id="devicesTitle" data-copy="devices">已授权设备</h2><div id="devices"></div></section>
+    <p id="error" role="alert"></p>
+    <button id="retry" hidden data-copy="retry">重试</button>
+    <footer data-copy="footer">授权设备可发送指令、停止任务和处理工具审批。操作在电脑执行，并沿用会话当前权限；仅授权可信设备。</footer>
+  </main>
+  <script src="remote.js"></script>
+</body>
+</html>

@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   getState: () => ipcRenderer.invoke('dsh:get-state'),
   openLogs: () => ipcRenderer.invoke('dsh:open-logs'),
   openSettingsWindow: (target) => ipcRenderer.invoke('dsh:open-settings-window', target),
+  openMobileAccess: () => ipcRenderer.invoke('dsh:open-mobile-access'),
+  remoteControl: (action, payload) => ipcRenderer.invoke('dsh:remote-control', { action, payload }),
   engineSettingsGet: (payload) => ipcRenderer.invoke('dsh:engine-settings-get', payload),
   engineSettingsSave: (payload) => ipcRenderer.invoke('dsh:engine-settings-save', payload),
   runtimeState: () => ipcRenderer.invoke('dsh:runtime-state'),

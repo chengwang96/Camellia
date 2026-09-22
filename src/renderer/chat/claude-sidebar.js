@@ -387,10 +387,11 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   function importRow(s) {
     const label = document.createElement('label');
     label.className = 'import-row';
+    label.title = s.cwd || s.project?.path || '';
     if (s.project) label.dataset.project = s.project.id;
     const box = document.createElement('input'); box.type = 'checkbox'; box.value = s.id; box.checked = s.importable; box.disabled = !s.importable;
     const text = document.createElement('span');
-    text.textContent = s.title + (s.tooLarge ? ' (history too large to import safely)' : s.importable ? '' : ' (rollout file missing)');
+    text.textContent = s.title + (s.importable ? '' : ' ' + window.CamelliaI18n.t('(history file missing or unreadable)'));
     label.append(box, text);
     return label;
   }
@@ -445,13 +446,16 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     for (const head of list.querySelectorAll('.import-project')) {
       const boxes = [...list.querySelectorAll('.import-row[data-project="' + head.dataset.project + '"] input[type=checkbox]:not(:disabled)')];
       const box = head.querySelector('input');
+      box.disabled = boxes.length === 0;
       box.checked = boxes.length > 0 && boxes.every(b => b.checked);
       box.indeterminate = !box.checked && boxes.some(b => b.checked);
     }
     const boxes = [...list.querySelectorAll('.import-row input[type=checkbox]:not(:disabled)')];
     const all = $('importAll');
+    all.disabled = boxes.length === 0;
     all.checked = boxes.length > 0 && boxes.every(b => b.checked);
     all.indeterminate = !all.checked && boxes.some(b => b.checked);
+    $('importConfirm').disabled = !boxes.some(b => b.checked);
   }
   async function openImportDialog() {
     const list = $('importList');

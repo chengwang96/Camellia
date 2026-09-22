@@ -1,0 +1,28 @@
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font: var(--f-s-14); }
+main { max-width: 680px; margin: auto; padding: 32px; }
+header { margin-bottom: 28px; }
+.eyebrow { font: var(--f-xxs-strong-12); letter-spacing: .1em; color: var(--dsw-alias-label-tertiary); }
+h1 { font-size: 26px; line-height: 1.4; font-weight: 600; margin: 8px 0; }
+h2 { font: var(--f-m-18); margin: 0 0 12px; }
+p { color: var(--dsw-alias-label-secondary); margin: 8px 0 16px; overflow-wrap: anywhere; }
+section { border-top: 1px solid var(--dsw-alias-border-l2); padding: 22px 0; }
+.heading, .device { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.heading h2 { margin: 0; }
+.status { color: var(--dsw-alias-label-tertiary); font: var(--f-xxs-strong-12); }
+.status.online { color: var(--dsw-alias-state-success-primary); }
+.address, code { font: var(--f-code); overflow-wrap: anywhere; }
+button { border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px; background: var(--dsw-alias-bg-layer-1); color: inherit; padding: 8px 14px; cursor: pointer; }
+button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+button.primary { background: var(--dsw-static-deepseek-500); color: #fff; border-color: transparent; }
+button.primary:hover:not(:disabled) { background: var(--dsw-static-deepseek-400); }
+.hint, footer { font: var(--f-xxs-12); color: var(--dsw-alias-label-tertiary); }
+.hint { margin: 12px 0 0; }
+#invitation { background: var(--dsw-alias-bg-soft); border-radius: 10px; padding: 16px; margin-top: 16px; }
+.device { margin-top: 12px; padding: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
+.device .name { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.device small { display: block; color: var(--dsw-alias-label-tertiary); }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; }
+#error { color: var(--dsw-alias-state-error-primary); }
+footer { padding-bottom: 12px; }
+@media (max-width: 520px) { main { padding: 22px; } .device { flex-wrap: wrap; } }
