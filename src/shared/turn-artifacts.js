@@ -15,7 +15,8 @@
 
   function sortArtifacts(files) {
     const priority = file => ['image', 'video', 'presentation'].includes(file.kind) || documentFormat(file) ? 0
-      : ['pdf', 'word', 'spreadsheet', 'audio'].includes(file.kind) ? 1 : 2;
+      : ['pdf', 'word', 'spreadsheet', 'audio'].includes(file.kind)
+        || /\.(?:txt|csv|tsv|rst|tex)$/i.test(file.name || file.path || '') ? 1 : 2;
     return [...files].sort((first, second) => priority(first) - priority(second));
   }
 

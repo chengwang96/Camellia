@@ -67,3 +67,20 @@ test('artifacts resolve against the workspace and are existing, supported, dedup
   assert.deepEqual(resolveArtifacts({ paths: ['report.docx'] }), []);
   assert.deepEqual(resolveArtifacts({ cwd, paths: ['https://example.com/report.pdf'] }), []);
 });
+
+test('edited source and configuration are not deliverables unless explicitly linked without line numbers', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-'));
+  t.after(() => removeTree(cwd));
+  const paths = ['main.js', 'main.test.js', 'package.json', 'debug.log', 'helper.py',
+    'report.md', 'page.html', 'figure.png', 'video.mp4', 'slides.pptx', 'data.csv', 'notes.txt'];
+  for (const file of paths) fs.writeFileSync(path.join(cwd, file), 'fixture');
+  const result = resolveArtifacts({ cwd, paths, text: '`main.js:12` [test](main.test.js#L3) [script](helper.py)' });
+  assert.deepEqual(sortArtifacts(result).map(file => file.name), [
+    'report.md', 'page.html', 'figure.png', 'video.mp4', 'slides.pptx', 'data.csv', 'notes.txt', 'helper.py',
+  ]);
+  assert.deepEqual(resolveArtifacts({ cwd, paths: ['main.js', 'package.json', 'debug.log'] }), []);
+  assert.deepEqual(resolveArtifacts({ cwd, text: '`main.test.js` `package.json` `debug.log`' }), []);
+  const restored = resolveArtifacts({ cwd, paths: result.map(file => file.path), text: '[script](helper.py)' });
+  assert.deepEqual(restored, result);
+  assert.deepEqual(resolveArtifacts({ cwd, text: '`main.js:12:5` [source](main.js#L12C5)' }), []);
+});

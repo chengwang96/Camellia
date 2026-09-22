@@ -115,7 +115,7 @@ class RemoteGateway {
     if (request.method !== 'GET') fail(405, 'Remote access is read-only');
     for (const key of url.searchParams.keys()) if (!['before', 'offset'].includes(key)) fail(400, 'Unsupported query parameter');
     if (url.pathname === '/v1/status') {
-      this.json(response, 200, { protocol: 1, permission: device.permission, capabilities: this.commands ? ['send', 'stop', 'approve', 'create', 'image', 'configure', ...(device.permission === 'control' && device.allWorkspaces === true ? ['create-workspace'] : [])] : [],
+      this.json(response, 200, { protocol: 1, permission: device.permission, capabilities: this.commands ? ['send', 'stop', 'approve', 'create', 'image', 'configure', 'move', ...(device.permission === 'control' && device.allWorkspaces === true ? ['create-workspace'] : [])] : [],
         workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
         includeUnassigned: Boolean(device.allWorkspaces || device.includeUnassigned), ...this.stamp() });
     } else if (url.pathname === '/v1/conversations') {

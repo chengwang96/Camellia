@@ -5,6 +5,18 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   let sessionHistory = [], workspaces = [];
   let historyLoadSeq = 0;
   let pagination = {}, limits = {};
+  let drag = null, suppressClickUntil = 0;
+  const replyReadKey = id => 'reply-read:' + id;
+  function replyReadAt(id) {
+    const value = Number(localStorage.getItem('camellia-chat-' + replyReadKey(id)));
+    return Number.isFinite(value) ? value : 0;
+  }
+  function markReplyRead(id, at = Date.now()) {
+    if (!id) return;
+    localStorage.setItem('camellia-chat-' + replyReadKey(id), String(at));
+    const session = sessionHistory.find(entry => entry.id === id);
+    if (session) session.unread = false;
+  }
   // ---------- Workspaces and session history ----------
   const SIDEBAR_ICONS = {
     chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
@@ -32,7 +44,8 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       const res = await chatApi.listSessions({ limits, activeSessionId: context.sessionId });
       if (seq !== historyLoadSeq) return false;
       if (!res.ok) throw new Error(res.error);
-      sessionHistory = res.sessions;
+      sessionHistory = res.sessions.map(session => ({ ...session,
+        unread: session.id !== context.sessionId && session.lastReplyAt > replyReadAt(session.id) }));
       workspaces = res.workspaces;
       pagination = res.pagination;
       const active = sessionHistory.find((s) => s.id === context.sessionId);
@@ -61,8 +74,10 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     group.dataset.i18n = ''; group.textContent = label;
     if (button) group.appendChild(button);
     list.appendChild(group);
+    return group;
   }
   function renderSessionSidebar() {
+    if (drag?.active) return;
     const list = $('sessionList');
     const scroll = list.scrollTop;
     list.replaceChildren();
@@ -88,7 +103,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       groupedSessions.get(key).push(s);
     }
     if (pinned.length) {
-      appendGroup(list, "Pinned");
+      appendGroup(list, "Pinned").dataset.dropGroup = 'pinned';
       pinned.forEach((s) => list.appendChild(makeSessionItem(s)));
       appendMore(list, 'pinned');
     }
@@ -99,6 +114,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       const workspaceSessions = groupedSessions.get(ws.id) || [];
       const section = document.createElement('section');
       section.dataset.workspaceId = ws.id;
+      section.dataset.dropGroup = ws.id;
       section.setAttribute('aria-label', ws.name);
       const row = document.createElement('div');
       row.className = 'session-item ws-row' + (ws.collapsed ? ' collapsed' : '') + (context.workspaceId === ws.id ? ' active' : '');
@@ -146,9 +162,10 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       empty.addEventListener('click', () => openWorkspaceDialog());
       list.appendChild(empty);
     }
-    appendGroup(list, "Standalone sessions");
+    appendGroup(list, "Standalone sessions").dataset.dropGroup = 'recent';
     const independent = document.createElement('div');
     independent.id = 'independentSessions';
+    independent.dataset.dropGroup = 'recent';
     if (!context.sessionId && !context.workspaceId) independent.appendChild(makeSessionItem(null));
     (groupedSessions.get(null) || []).filter((s) => !s.pinned).forEach((s) => independent.appendChild(makeSessionItem(s)));
     appendMore(independent, 'recent');
@@ -184,11 +201,12 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     item.tabIndex = 0;
     item.setAttribute('role', 'button');
     if (active) item.setAttribute('aria-current', 'true');
-    if (s) { item.dataset.history = '1'; item.dataset.sid = s.id; }
+    if (s) { item.dataset.history = '1'; item.dataset.sid = s.id; item.dataset.dropGroup = s.pinned ? 'pinned' : s.workspaceId || 'recent'; }
     else item.id = 'sessionCurrent';
     const title = s ? s.title : $('headerTitle').textContent;
     item.title = title + (s && s.cwd ? '\n' + s.cwd : '');
-    item.innerHTML = sidebarIcon('chat') + '<span class="session-item-text"><span></span></span><span class="session-item-time" data-i18n></span>';
+    item.innerHTML = sidebarIcon('chat') + '<span class="session-item-text"><span></span></span><span class="session-unread" title="Unread agent reply" aria-label="Unread agent reply" data-i18n-attrs="title aria-label"></span><span class="session-item-time" data-i18n></span>';
+    item.classList.toggle('unread', Boolean(s?.unread));
     item.querySelector('.session-item-text > span').textContent = title || "(Empty session)";
     if (s?.showOrigin && s.origin) {
       const badge = document.createElement('span'); badge.className = 'session-origin'; badge.dataset.i18n = '';
@@ -204,10 +222,17 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       if (e.target !== item) return;
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
     });
-    item.appendChild(sidebarButton('more', "Session actions", (button) => {
-      if (s) openSessionActions(button, item, s);
-      else openWorkspacePicker(button, null);
-    }));
+    const showActions = (button, position) => {
+      openSessionActions(button, item, s, position);
+    };
+    const moreButton = sidebarButton('more', "Session actions", showActions);
+    item.appendChild(moreButton);
+    item.addEventListener('contextmenu', (event) => {
+      if (event.target.closest('input, textarea, [contenteditable]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      showActions(moreButton, { x: event.clientX, y: event.clientY });
+    });
     return item;
   }
   async function runMetaOp(payload) {
@@ -225,6 +250,155 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       { label: "Remove workspace (archive sessions)", disabled: contextBusy(), run: () => removeWorkspace(ws, true) },
     ]);
   }
+  function clearDropIndicator() {
+    $('sessionList').querySelectorAll('.session-drop-before, .session-drop-after, .session-drop-group').forEach(element => {
+      element.classList.remove('session-drop-before', 'session-drop-after', 'session-drop-group');
+    });
+    $('sessionList').querySelectorAll('[data-sid]').forEach(item => item.style.removeProperty('--session-drag-offset'));
+  }
+  function dragMotionDuration(duration) {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : duration;
+  }
+  function createDragPreview() {
+    const rect = drag.item.getBoundingClientRect();
+    const preview = document.createElement('div');
+    preview.className = 'session-drag-preview';
+    preview.setAttribute('aria-hidden', 'true');
+    preview.inert = true;
+    preview.style.width = rect.width + 'px';
+    const card = drag.item.cloneNode(true);
+    card.removeAttribute('id'); card.removeAttribute('data-sid'); card.removeAttribute('data-drop-group');
+    card.removeAttribute('aria-current'); card.removeAttribute('role'); card.removeAttribute('tabindex');
+    card.querySelectorAll('[id]').forEach(element => element.removeAttribute('id'));
+    card.className = 'session-item session-drag-card';
+    card.style.height = rect.height + 'px';
+    preview.appendChild(card);
+    document.body.appendChild(preview);
+    drag.preview = preview;
+    drag.offsetX = drag.x - rect.left; drag.offsetY = drag.y - rect.top;
+    drag.origin = rect;
+    drag.scrollTop = $('sessionList').scrollTop;
+    drag.dropRects = [...$('sessionList').querySelectorAll('[data-drop-group]')].map(element => ({ element, rect: element.getBoundingClientRect() }));
+    positionDragPreview();
+    card.animate([{ transform: 'scale(1)', opacity: .8 }, { transform: 'scale(1.035)', opacity: 1 }],
+      { duration: dragMotionDuration(220), easing: 'cubic-bezier(.2,.8,.2,1)' });
+  }
+  function positionDragPreview() {
+    drag.preview.style.transform = `translate3d(${drag.x - drag.offsetX}px, ${drag.y - drag.offsetY}px, 0)`;
+  }
+  function updateDropTarget() {
+    const list = $('sessionList');
+    const bounds = list.getBoundingClientRect();
+    const scrollDelta = list.scrollTop - drag.scrollTop;
+    let hit = null;
+    if (drag.x >= bounds.left && drag.x <= bounds.right && drag.y >= bounds.top && drag.y <= bounds.bottom) {
+      for (const candidate of drag.dropRects) {
+        const rect = candidate.rect;
+        if (drag.x >= rect.left && drag.x <= rect.right && drag.y >= rect.top - scrollDelta && drag.y <= rect.bottom - scrollDelta) hit = candidate;
+      }
+    }
+    const hovered = hit?.element.dataset.sid === drag.sessionId ? null : hit?.element;
+    const targetSessionId = hovered?.dataset.sid;
+    const placement = hit && drag.y < hit.rect.top - scrollDelta + hit.rect.height / 2 ? 'before' : 'after';
+    if (drag.targetElement === hovered && (!hovered || drag.target?.placement === placement)) return;
+    clearDropIndicator();
+    drag.target = null; drag.targetElement = hovered;
+    if (!hovered) return;
+    hovered.classList.add(targetSessionId ? 'session-drop-' + placement : 'session-drop-group');
+    drag.target = { group: hovered.dataset.dropGroup, targetSessionId, placement };
+    if (targetSessionId) {
+      const siblings = [...hovered.parentElement.children].filter(element => element.dataset.sid && element.dataset.dropGroup === hovered.dataset.dropGroup);
+      const split = siblings.indexOf(hovered) + (placement === 'after' ? 1 : 0);
+      siblings.forEach((element, index) => {
+        if (element !== drag.item) element.style.setProperty('--session-drag-offset', index < split ? '-5px' : '5px');
+      });
+    }
+  }
+  function animateDrag(time = performance.now()) {
+    if (!drag?.active) return;
+    const list = $('sessionList');
+    const rect = list.getBoundingClientRect();
+    if (drag.x >= rect.left && drag.x <= rect.right && drag.y >= rect.top && drag.y <= rect.bottom) {
+      const distance = drag.y < rect.top + 32 ? drag.y - rect.top - 32 : drag.y > rect.bottom - 32 ? drag.y - rect.bottom + 32 : 0;
+      const elapsed = drag.lastFrame === undefined ? 16 : Math.min(32, time - drag.lastFrame);
+      list.scrollTop += distance * elapsed / 64;
+    }
+    drag.lastFrame = time;
+    positionDragPreview();
+    updateDropTarget();
+    drag.frame = requestAnimationFrame(animateDrag);
+  }
+  function finishDrag(commit = false) {
+    if (!drag) return;
+    const finished = drag;
+    drag = null;
+    clearTimeout(finished.timer);
+    cancelAnimationFrame(finished.frame);
+    if (!finished.active) return;
+    const destination = commit && finished.target ? finished.targetElement : finished.item;
+    const rect = destination?.getBoundingClientRect() || finished.origin;
+    const preview = finished.preview;
+    const animation = preview.animate([
+      { transform: preview.style.transform, opacity: 1 },
+      { transform: `translate3d(${rect.left}px, ${rect.top}px, 0)`, opacity: 0 },
+    ], { duration: dragMotionDuration(180), easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' });
+    animation.finished.then(() => preview.remove(), () => preview.remove());
+    suppressClickUntil = Date.now() + 350;
+    finished.item.classList.remove('session-dragging');
+    document.body.classList.remove('session-drag-active');
+    if (finished.item.hasPointerCapture(finished.pointerId)) finished.item.releasePointerCapture(finished.pointerId);
+    clearDropIndicator();
+    renderSessionSidebar();
+    if (commit && finished.target) void (async () => {
+      const result = await runMetaOp({ op: 'move-session', sessionId: finished.sessionId, ...finished.target });
+      if (result) await loadSessionHistory();
+    })();
+  }
+  const sessionList = $('sessionList');
+  sessionList.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || event.isPrimary === false || drag || contextBusy()) return;
+    if (event.target.closest('button, input, textarea, [contenteditable]')) return;
+    const item = event.target.closest('[data-sid]');
+    if (!item) return;
+    drag = { item, sessionId: item.dataset.sid, pointerId: event.pointerId, x: event.clientX, y: event.clientY, active: false };
+    drag.timer = setTimeout(() => {
+      if (!drag || !item.isConnected || contextBusy()) { finishDrag(); return; }
+      drag.active = true;
+      closePops();
+      window.getSelection()?.removeAllRanges();
+      item.setPointerCapture(drag.pointerId);
+      createDragPreview();
+      item.classList.add('session-dragging');
+      document.body.classList.add('session-drag-active');
+      animateDrag();
+    }, 350);
+  });
+  window.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (!drag.active && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 6) { finishDrag(); return; }
+    drag.x = event.clientX; drag.y = event.clientY;
+    if (drag.active) { event.preventDefault(); updateDropTarget(); }
+  }, { passive: false });
+  window.addEventListener('pointerup', event => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (drag.active) { drag.x = event.clientX; drag.y = event.clientY; updateDropTarget(); }
+    finishDrag(true);
+  });
+  window.addEventListener('pointercancel', () => finishDrag());
+  window.addEventListener('blur', () => finishDrag());
+  window.addEventListener('resize', () => finishDrag());
+  window.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && drag) { event.preventDefault(); finishDrag(); }
+  }, true);
+  sessionList.addEventListener('lostpointercapture', () => finishDrag());
+  sessionList.addEventListener('dragstart', event => event.preventDefault());
+  sessionList.addEventListener('click', event => {
+    if (Date.now() < suppressClickUntil) { event.preventDefault(); event.stopImmediatePropagation(); }
+  }, true);
+  sessionList.addEventListener('contextmenu', event => {
+    if (drag?.active) { event.preventDefault(); event.stopImmediatePropagation(); }
+    else finishDrag();
+  }, true);
   async function removeWorkspace(ws, archiveSessions) {
     if (!canChangeContext()) return;
     const res = await runMetaOp({ op: 'delete-workspace', id: ws.id, archiveSessions });
@@ -234,26 +408,32 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     await loadSessionHistory();
     setStatus(archiveSessions ? "Workspace removed. Sessions were archived and files were kept." : "Workspace removed. Sessions and files were kept.");
   }
-  function openSessionActions(anchor, item, s) {
+  function openSessionActions(anchor, item, s, position) {
+    if (!s) {
+      openActionMenu(anchor, [
+        { label: "Change workspace…", disabled: contextBusy(), run: () => openWorkspacePicker(anchor, null, position) },
+      ], position);
+      return;
+    }
     openActionMenu(anchor, [
       { label: "Rename", run: () => startInlineRename(item, s) },
       { label: s.pinned ? "Unpin" : "Pin session", run: async () => {
         if (await runMetaOp({ op: 'toggle-pin', sessionId: s.id })) await loadSessionHistory();
       } },
-      ...(!chatProfile.fixedCwd ? [{ label: "Move to workspace…", disabled: contextBusy(), run: () => openWorkspacePicker(anchor, s) }] : []),
+      ...(!chatProfile.fixedCwd ? [{ label: "Move to workspace…", disabled: contextBusy(), run: () => openWorkspacePicker(anchor, s, position) }] : []),
       ...(s.workspaceId && !chatProfile.fixedCwd ? [{ label: "Move out of workspace", disabled: contextBusy(), run: () => void assignWorkspace(s, null) }] : []),
       ...(canFork(s) ? [{ label: "Fork session", disabled: contextBusy(), run: () => void forkSession(s) }] : []),
       ...(s.imported ? [{ label: "Sync from Codex desktop", run: () => openSyncDialog(s) }] : []),
       { label: "Archive session", disabled: contextBusy(), run: () => void archiveSession(s) },
-    ]);
+    ], position);
   }
-  function openWorkspacePicker(anchor, s) {
+  function openWorkspacePicker(anchor, s, position) {
     if (s && chatProfile.fixedCwd) {
       openActionMenu(anchor, [
         { label: "This session's directory was set when it was created", disabled: true },
         { label: "New standalone session", disabled: contextBusy(), run: () => void newSession(null) },
         ...workspaces.map(ws => ({ label: "New session in " + ws.name, title: ws.path, disabled: contextBusy(), run: () => void newSession(ws.id) })),
-      ]);
+      ], position);
       return;
     }
     const selected = s ? s.workspaceId : context.workspaceId;
@@ -261,7 +441,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       { label: "No workspace · Standalone session", current: !selected, disabled: contextBusy(), run: () => void assignWorkspace(s, null) },
       ...workspaces.map((ws) => ({ label: ws.name, title: ws.path, localize: false, current: selected === ws.id, disabled: contextBusy(), run: () => void assignWorkspace(s, ws.id) })),
       { label: "Add workspace…", run: () => openWorkspaceDialog() },
-    ]);
+    ], position);
   }
   async function assignWorkspace(s, workspaceId) {
     if (!canChangeContext()) return;
@@ -541,6 +721,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   window.addEventListener('camellia:language', updateWorkspaceLabel);
   return {
     load: loadSessionHistory, render: renderSessionSidebar, updateLabel: updateWorkspaceLabel, metaOp: runMetaOp,
+    markReplyRead,
     get sessions() { return sessionHistory; }, get workspaces() { return workspaces; },
   };
 }

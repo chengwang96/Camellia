@@ -34,6 +34,14 @@ test('send button click does not pass the event as a queued message', () => {
   assert.match(source, /sendBtn\.addEventListener\('click', \(\) => void send\(\)\)/);
 });
 
+test('immediate instruction uses a move-to-top icon with a localized hover label', () => {
+  const render = source.slice(source.indexOf('  function renderMessageQueue()'), source.indexOf('  function editQueuedMessage('));
+  assert.match(render, /steer\.title = window\.CamelliaI18n\.t\('Send instruction now'\)/);
+  assert.match(render, /steer\.setAttribute\('aria-label', steer\.title\)/);
+  assert.match(render, /steer\.innerHTML = '<svg[^>]*aria-hidden="true"[^>]*><path d="M4 4h16M12 20V9m-5 5 5-5 5 5"/);
+  assert.doesNotMatch(render, /steer\.textContent\s*=/);
+});
+
 function queueHarness(send, overrides = {}) {
   const storage = new Map();
   const state = {
@@ -55,6 +63,76 @@ function queueHarness(send, overrides = {}) {
 }
 
 const flushQueue = () => new Promise(resolve => setImmediate(resolve));
+
+function queueEditorHarness(overrides = {}) {
+  const state = queueHarness(async () => { assert.fail('Editing must not send'); }, {
+    running: true, input: { value: '', focus() {}, setSelectionRange() {} }, attachments: [],
+    goalUI: { isActive: () => false, isDraft: () => false },
+    renderAttachments() {}, autoResize() {}, updateSendEnabled() {},
+    ...overrides,
+  });
+  state.saveDraft = () => state.writeUi('draft:session', { text: state.input.value, attachments: state.attachments });
+  vm.runInContext(source.slice(source.indexOf('  function editQueuedMessage('), source.indexOf('  function queueComposerMessage(')), state);
+  return state;
+}
+
+test('return to editor moves queued text, files and images into a persisted draft', () => {
+  const state = queueEditorHarness();
+  const message = state.messageQueue[0];
+  message.attachments.push({ name: 'image.png', path: 'D:/image.png', isImage: true });
+  const originalAttachments = message.attachments.slice();
+  let focused = false, selection;
+  state.input.focus = () => { focused = true; };
+  state.input.setSelectionRange = (...range) => { selection = range; };
+  assert.equal(state.editQueuedMessage(message), true);
+  assert.equal(state.input.value, 'First');
+  assert.deepEqual(state.attachments, originalAttachments);
+  assert.notEqual(state.attachments, message.attachments);
+  assert.deepEqual(state.readUi('draft:session'), { text: 'First', attachments: originalAttachments });
+  assert.deepEqual(state.readUi('queue:session').map(item => item.text), ['Second']);
+  assert.equal(focused, true);
+  assert.deepEqual(selection, [5, 5]);
+  assert.equal(state.editQueuedMessage(message), false);
+  state.attachments.splice(0, 1);
+  assert.equal(message.attachments.length, 2);
+});
+
+test('return to editor preserves existing draft text and attachments', () => {
+  const state = queueEditorHarness();
+  state.input.value = 'Unsent draft';
+  state.attachments.push({ name: 'draft.txt', path: 'D:/draft.txt' });
+  state.editQueuedMessage(state.messageQueue[0]);
+  assert.equal(state.input.value, 'Unsent draft\n\nFirst');
+  assert.deepEqual(state.attachments.map(item => item.path), ['D:/draft.txt', 'D:/data.csv']);
+  assert.equal(state.readUi('draft:session').text, state.input.value);
+  assert.equal(state.messageQueue[0].text, 'Second');
+});
+
+test('attachment-only messages return without changing existing draft text', () => {
+  const state = queueEditorHarness();
+  state.input.value = 'Draft';
+  state.messageQueue[0].text = '';
+  state.editQueuedMessage(state.messageQueue[0]);
+  assert.equal(state.input.value, 'Draft');
+  assert.equal(state.attachments[0].path, 'D:/data.csv');
+});
+
+test('busy and stale queue edit actions cannot consume a message or overwrite a draft', () => {
+  for (const overrides of [
+    { sending: true }, { drainingQueue: true }, { loadingSession: true },
+    { switchingEngine: true }, { editingMessage: {} }, { pendingConversationSend: () => ({}) },
+    { goalUI: { isDraft: () => true } },
+  ]) {
+    const state = queueEditorHarness(overrides);
+    assert.equal(state.editQueuedMessage(state.messageQueue[0]), false);
+    assert.equal(state.messageQueue.length, 2);
+    assert.equal(state.input.value, '');
+    assert.equal(state.attachments.length, 0);
+  }
+  const state = queueEditorHarness();
+  assert.equal(state.editQueuedMessage({ text: 'Other conversation', attachments: [] }), false);
+  assert.equal(state.messageQueue.length, 2);
+});
 
 test('queue remains intact until a send is accepted, and drains in order once', async () => {
   const sent = [];

@@ -29,6 +29,8 @@ async function listSessions({ limits = {}, activeSessionId = null } = {}) {
   const visible = new Map();
   const pagination = {};
   for (const [group, all] of groups) {
+    const ranks = new Map((meta.sessionOrder[group] || []).map((id, index) => [id, index]));
+    all.sort((first, second) => (ranks.get(first.id) ?? Infinity) - (ranks.get(second.id) ?? Infinity));
     const limit = Number.isSafeInteger(limits[group]) && limits[group] > 0 ? limits[group] : 60;
     const page = workspaceById.get(group)?.id && meta.collapsed[group] ? [] : all.slice(0, limit);
     for (const entry of page) visible.set(entry.id, entry);
@@ -36,7 +38,15 @@ async function listSessions({ limits = {}, activeSessionId = null } = {}) {
   }
   // Keep the open conversation addressable even outside the visible page.
   if (active) visible.set(active.id, active);
-  const sessions = await Promise.all([...visible.values()].sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file)).map(async entry => {
+  const ordered = [...visible.values()].sort((first, second) => second.mtimeMs - first.mtimeMs || first.file.localeCompare(second.file));
+  const groupFor = entry => meta.pinned[entry.id] ? 'pinned' : workspaceById.has(meta.sessionWorkspace[entry.id]) ? meta.sessionWorkspace[entry.id] : 'recent';
+  for (const [group, order] of Object.entries(meta.sessionOrder)) {
+    const ranks = new Map(order.map((id, index) => [id, index]));
+    const slots = ordered.map((entry, index) => groupFor(entry) === group ? index : -1).filter(index => index >= 0);
+    const sorted = slots.map(index => ordered[index]).sort((first, second) => (ranks.get(first.id) ?? Infinity) - (ranks.get(second.id) ?? Infinity));
+    slots.forEach((slot, index) => { ordered[slot] = sorted[index]; });
+  }
+  const sessions = await Promise.all(ordered.map(async entry => {
     let head = { summary: '', title: '', cwd: '' };
     try { head = await history.readHead(entry.file, entry); }
     catch (err) { if (err.code !== 'ENOENT') throw err; }
@@ -66,15 +76,17 @@ function metaDefaults() {
     sessionCwd: {},        // last execution directory; explicit null membership stays independent
     workspaces: [],        // [{ id, name, path, createdAt }] in user order
     collapsed: {},         // workspaceId -> true when collapsed
+    sessionOrder: {},
   };
 }
 
 function sessionMeta(config = loadConfig()) {
   const meta = { ...metaDefaults(), ...(config[metaKey] || {}) };
   if (!Array.isArray(meta.workspaces)) throw new Error("Invalid workspace configuration");
-  for (const key of ['titles', 'archived', 'pinned', 'sessionWorkspace', 'sessionCwd', 'collapsed']) {
+  for (const key of ['titles', 'archived', 'pinned', 'sessionWorkspace', 'sessionCwd', 'collapsed', 'sessionOrder']) {
     if (!meta[key] || typeof meta[key] !== 'object' || Array.isArray(meta[key])) throw new Error("Invalid session configuration: " + key);
   }
+  if (Object.values(meta.sessionOrder).some(order => !Array.isArray(order))) throw new Error('Invalid session order');
   return meta;
 }
 
@@ -86,6 +98,19 @@ function saveSessionMeta(mutator) {
   return meta;
 }
 
+function promoteSession(id) {
+  if (!validSessionId(id)) return false;
+  const meta = sessionMeta();
+  if (meta.archived[id]) return false;
+  const workspaceIds = new Set(meta.workspaces.map(workspace => workspace.id));
+  const group = meta.pinned[id] ? 'pinned' : workspaceIds.has(meta.sessionWorkspace[id]) ? meta.sessionWorkspace[id] : 'recent';
+  saveSessionMeta(saved => {
+    for (const key of Object.keys(saved.sessionOrder)) saved.sessionOrder[key] = saved.sessionOrder[key].filter(sessionId => sessionId !== id);
+    saved.sessionOrder[group] = [id, ...(saved.sessionOrder[group] || [])];
+  });
+  return true;
+}
+
 
 
 function resolveContext(settings, opts = {}, legacyCwd, meta = sessionMeta()) {
@@ -95,7 +120,7 @@ function resolveContext(settings, opts = {}, legacyCwd, meta = sessionMeta()) {
     const workspace = meta.workspaces.find((w) => w.id === workspaceId);
     if (!workspace) throw new Error("Workspace no longer exists. Choose another workspace.");
     if (!workspace.path) throw new Error("Workspace has no directory. Add the folder again.");
-    return { workspaceId, cwd: workspace.path };
+    return { workspaceId, cwd: meta.sessionCwd[opts.sessionId] || workspace.path };
   }
   // Imported CLI sessions keep their original directory until explicitly moved.
   if (!assigned && opts.sessionId && legacyCwd === undefined) {
@@ -153,6 +178,7 @@ async function removeSession(id) {
   const removed = history.remove ? await history.remove(id) : false;
   saveSessionMeta((m) => {
     for (const key of ['titles', 'archived', 'pinned', 'sessionWorkspace', 'sessionCwd']) delete m[key][id];
+    for (const group of Object.keys(m.sessionOrder)) m.sessionOrder[group] = m.sessionOrder[group].filter(entry => entry !== id);
   });
   return { ok: true, removed: Boolean(removed) };
 }
@@ -170,6 +196,7 @@ function archiveSession(id, archived) {
 // Returns the full meta snapshot so the renderer can re-render without a second call.
 function metaOp(payload) {
   const op = payload && payload.op;
+  if (op === 'move-session') return moveSession(payload);
   const meta = sessionMeta();
   const workspaceId = payload.id || payload.workspaceId;
   if (['rename-workspace', 'delete-workspace', 'toggle-collapse'].includes(op)
@@ -221,6 +248,7 @@ function metaOp(payload) {
           }
         }
         delete m.collapsed[payload.id];
+        delete m.sessionOrder[payload.id];
       });
       onDetach(payload.id);
       return { ok: true, meta: sessionMeta() };
@@ -252,6 +280,39 @@ function metaOp(payload) {
   }
 }
 
+async function moveSession(payload) {
+  const entries = [...await history.list()].sort((first, second) => second.mtimeMs - first.mtimeMs || first.file.localeCompare(second.file));
+  const meta = sessionMeta();
+  const id = payload.sessionId;
+  const entry = entries.find(candidate => candidate.id === id);
+  if (!validSessionId(id) || !entry || meta.archived[id]) return { ok: false, error: 'Invalid session' };
+  const group = payload.group;
+  const workspace = meta.workspaces.find(candidate => candidate.id === group);
+  if (!workspace && group !== 'recent' && group !== 'pinned') return { ok: false, error: 'Workspace no longer exists' };
+  const groupFor = candidate => meta.pinned[candidate.id] ? 'pinned' : meta.sessionWorkspace[candidate.id] || 'recent';
+  const ranks = new Map((meta.sessionOrder[group] || []).map((sessionId, index) => [sessionId, index]));
+  const order = entries.filter(candidate => candidate.id !== id && !meta.archived[candidate.id] && groupFor(candidate) === group)
+    .sort((first, second) => (ranks.get(first.id) ?? Infinity) - (ranks.get(second.id) ?? Infinity)).map(candidate => candidate.id);
+  const target = payload.targetSessionId;
+  if (target && (!order.includes(target) || !['before', 'after'].includes(payload.placement))) return { ok: false, error: 'Invalid drop target' };
+  const position = target ? order.indexOf(target) + (payload.placement === 'after' ? 1 : 0) : order.length;
+  order.splice(position, 0, id);
+  const head = await history.readHead(entry.file, entry);
+  const cwd = resolveContext(loadConfig()[settingsKey] || {}, { sessionId: id }, head.cwd, meta).cwd;
+  saveSessionMeta(saved => {
+    for (const key of Object.keys(saved.sessionOrder)) saved.sessionOrder[key] = saved.sessionOrder[key].filter(sessionId => sessionId !== id);
+    saved.sessionOrder[group] = order;
+    if (group === 'pinned') saved.pinned[id] = saved.pinned[id] || Date.now();
+    else {
+      delete saved.pinned[id];
+      saved.sessionWorkspace[id] = workspace?.id || null;
+      saved.sessionCwd[id] = cwd;
+      if (workspace) delete saved.collapsed[workspace.id];
+    }
+  });
+  return { ok: true, meta: sessionMeta() };
+}
+
 async function transcript(id) {
   const meta = sessionMeta();
   // Archived sessions stay out of the chat surface; restore them first.
@@ -261,7 +322,7 @@ async function transcript(id) {
 }
 
 
-return { listSessions, listArchived, removeSession, sessionMeta, resolveContext, recordContext, renameSession, archiveSession, metaOp, transcript };
+return { listSessions, listArchived, removeSession, sessionMeta, resolveContext, recordContext, renameSession, archiveSession, metaOp, promoteSession, transcript };
 }
 
 module.exports = { createSessionWorkspaces };

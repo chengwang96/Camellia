@@ -52,6 +52,12 @@ class RemoteReadModel {
     const meta = this.manager.workspaces.sessionMeta();
     const conversations = [...this.manager.items.values()].filter(conversation => this.allowed(device, conversation, meta))
       .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
+    for (const [group, order] of Object.entries(meta.sessionOrder)) {
+      const ranks = new Map(order.map((id, index) => [id, index]));
+      const slots = conversations.map((conversation, index) => (meta.pinned[conversation.id] ? 'pinned' : meta.sessionWorkspace[conversation.id] || 'recent') === group ? index : -1).filter(index => index >= 0);
+      const sorted = slots.map(index => conversations[index]).sort((first, second) => (ranks.get(first.id) ?? Infinity) - (ranks.get(second.id) ?? Infinity));
+      slots.forEach((slot, index) => { conversations[slot] = sorted[index]; });
+    }
     return { conversations: conversations.slice(offset, offset + 100).map(conversation => this.summary(conversation, meta)),
       nextOffset: conversations.length > offset + 100 ? offset + 100 : null };
   }
@@ -60,7 +66,10 @@ class RemoteReadModel {
     const hash = createHash('sha256');
     hash.update(JSON.stringify(meta.workspaces.filter(workspace => device.allWorkspaces === true || device.workspaceIds.includes(workspace.id)).map(({ id, name }) => ({ id, name }))));
     for (const conversation of this.manager.items.values()) {
-      if (this.allowed(device, conversation, meta)) hash.update(JSON.stringify(this.summary(conversation, meta)));
+      if (this.allowed(device, conversation, meta)) {
+        const group = meta.pinned[conversation.id] ? 'pinned' : meta.sessionWorkspace[conversation.id] || 'recent';
+        hash.update(JSON.stringify([this.summary(conversation, meta), group, (meta.sessionOrder[group] || []).indexOf(conversation.id)]));
+      }
     }
     return { listVersion: hash.digest('hex') };
   }

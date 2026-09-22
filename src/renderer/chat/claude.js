@@ -171,12 +171,18 @@ const context = { sessionId: null, workspaceId: null };
   // Minimal markdown: fenced code, inline code, GFM tables, bold, headings.
   let codeWrap = readUi('code-wrap') === true;
   function codeWrapLabel() { return window.CamelliaI18n.t('Word wrap'); }
+  function codeWrapIcon() {
+    const path = codeWrap ? 'M12 3v5m0 8v5M3 12h18m-4-4 4 4-4 4' : 'M21 3v18M3 7h8a4 4 0 0 1 0 8H3m4-4-4 4 4 4';
+    return '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="' + path + '"/></svg>';
+  }
   function refreshCodeWrap() {
     document.querySelectorAll('.md-code-block').forEach(panel => {
       panel.classList.toggle('is-wrapped', codeWrap);
       const button = panel.querySelector('.md-code-wrap');
       button.setAttribute('aria-pressed', String(codeWrap));
-      button.textContent = codeWrapLabel();
+      button.setAttribute('aria-label', codeWrapLabel());
+      button.title = codeWrapLabel();
+      button.innerHTML = codeWrapIcon();
     });
   }
   document.addEventListener('click', event => {
@@ -186,6 +192,47 @@ const context = { sessionId: null, workspaceId: null };
     refreshCodeWrap();
   });
   window.addEventListener('camellia:language', refreshCodeWrap);
+  function refreshCodeCopy(button) {
+    const copied = button.dataset.copied === 'true';
+    const label = window.CamelliaI18n.t(copied ? 'Code copied' : 'Copy code');
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    button.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+      (copied ? '<path d="m5 12 4 4L19 6"/>' : '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/>') + '</svg>';
+  }
+  function codeCopyButton() {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'md-code-copy';
+    refreshCodeCopy(button);
+    return button.outerHTML;
+  }
+  document.addEventListener('click', async event => {
+    const button = event.target.closest('.md-code-copy');
+    if (!button || button.disabled) return;
+    const code = button.closest('.md-code-block')?.querySelector('.md-code > code');
+    if (!code) return;
+    button.disabled = true;
+    clearTimeout(button.copyResetTimer);
+    try {
+      await navigator.clipboard.writeText(code.textContent);
+      button.dataset.copied = 'true';
+      setStatus(window.CamelliaI18n.t('Code copied'));
+    } catch {
+      delete button.dataset.copied;
+      setStatus(window.CamelliaI18n.t('Could not copy the code'));
+    } finally {
+      button.disabled = false;
+      refreshCodeCopy(button);
+      button.copyResetTimer = setTimeout(() => {
+        delete button.dataset.copied;
+        refreshCodeCopy(button);
+      }, 2000);
+    }
+  });
+  window.addEventListener('camellia:language', () => {
+    document.querySelectorAll('.md-code-copy').forEach(refreshCodeCopy);
+  });
   function mdRender(src, documentMode = false) {
     const tokens = [];
     let text = String(src);
@@ -233,8 +280,8 @@ const context = { sessionId: null, workspaceId: null };
       if (!tk) return _m;
       if (tk.t === 'code') {
         return '<div class="md-code-block' + (codeWrap ? ' is-wrapped' : '') + '"><div class="md-code-header"><span>' + esc(tk.lang) +
-          '</span><button type="button" class="md-code-wrap" aria-pressed="' + codeWrap + '">' + esc(codeWrapLabel()) +
-          '</button></div><pre class="md-code"><code>' + esc(tk.code.replace(/\n+$/, '')) + '</code></pre></div>';
+          '</span><div class="md-code-actions"><button type="button" class="md-code-wrap" aria-pressed="' + codeWrap + '" aria-label="' + esc(codeWrapLabel()) + '" title="' + esc(codeWrapLabel()) + '">' + codeWrapIcon() +
+          '</button>' + codeCopyButton() + '</div></div><pre class="md-code"><code>' + esc(tk.code.replace(/\n+$/, '')) + '</code></pre></div>';
       }
       if (tk.t === 'inline') return '<code class="md-inline">' + esc(tk.code) + '</code>';
       const renderCell = value => esc(value).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(sentRe, renderToken);
@@ -760,10 +807,18 @@ const context = { sessionId: null, workspaceId: null };
       const text = document.createElement('span');
       text.className = 'queue-text';
       text.textContent = message.text || message.attachments.map(item => item.name).join(', ');
+      const edit = document.createElement('button');
+      edit.type = 'button'; edit.className = 'queue-edit';
+      edit.title = window.CamelliaI18n.t('Return to editor');
+      edit.setAttribute('aria-label', edit.title);
+      edit.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m14 5 5 5M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15z"/></svg>';
+      edit.disabled = sending || drainingQueue || loadingSession || switchingEngine || Boolean(editingMessage) || Boolean(pendingConversationSend()) || goalUI.isDraft();
+      edit.addEventListener('click', () => editQueuedMessage(message));
       const steer = document.createElement('button');
       steer.type = 'button'; steer.className = 'queue-steer';
-      steer.textContent = window.CamelliaI18n.t('Send instruction now');
-      steer.title = steer.textContent;
+      steer.title = window.CamelliaI18n.t('Send instruction now');
+      steer.setAttribute('aria-label', steer.title);
+      steer.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4h16M12 20V9m-5 5 5-5 5 5"/></svg>';
       steer.disabled = !sharedChat || !running || !currentRunId || sending || loadingSession || switchingEngine || Boolean(editingMessage) || Boolean(pendingConversationSend()) || drainingQueue;
       steer.addEventListener('click', () => void steerQueuedMessage(message));
       const remove = document.createElement('button');
@@ -771,9 +826,25 @@ const context = { sessionId: null, workspaceId: null };
       remove.setAttribute('aria-label', 'Remove from queue'); remove.textContent = '✕';
       remove.disabled = sending || drainingQueue;
       remove.addEventListener('click', () => { messageQueue.splice(index, 1); saveMessageQueue(); renderMessageQueue(); });
-      row.append(label, text, steer, remove);
+      row.append(label, text, edit, steer, remove);
       return row;
     }));
+  }
+
+  function editQueuedMessage(message) {
+    if (sending || drainingQueue || loadingSession || switchingEngine || editingMessage || pendingConversationSend() || goalUI.isDraft()) return false;
+    const index = messageQueue.indexOf(message);
+    if (index === -1) return false;
+    input.value += (input.value && message.text ? '\n\n' : '') + message.text;
+    attachments = attachments.concat(message.attachments);
+    saveDraft();
+    messageQueue.splice(index, 1);
+    saveMessageQueue();
+    renderAttachments(); autoResize(); renderMessageQueue(); updateSendEnabled();
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    setStatus('Queued message and attachments returned to the editor.');
+    return true;
   }
 
   function queueComposerMessage() {
@@ -972,6 +1043,10 @@ const context = { sessionId: null, workspaceId: null };
     state.div.querySelector('.message-edit')?.focus();
   }
 
+  document.addEventListener('pointerdown', event => {
+    if (editingMessage && !editingMessage.form.contains(event.target)) cancelMessageEdit();
+  }, true);
+
   function beginMessageEdit(div) {
     if (!sharedChat || conversationBusy() || contextBusy() || !div.messageData.seq || div !== [...chat.querySelectorAll('.msg-user')].at(-1)) return;
     cancelMessageEdit();
@@ -1105,7 +1180,7 @@ const context = { sessionId: null, workspaceId: null };
       || sidebar.workspaces.find(workspace => workspace.id === context.workspaceId)?.path || '';
     try {
       const result = await window.dshDesktop.resolveArtifacts({ sessionId: sharedChat ? sessionId : null, cwd,
-        paths: files ? files.map(file => file.path) : paths, text: files ? '' : text });
+        paths: files ? files.map(file => file.path) : paths, text });
       if (!turn.isConnected || !result.ok || !result.files.length) return;
       const was = nearBottom();
       turn.querySelector('.turn-artifacts')?.remove();
@@ -1928,6 +2003,7 @@ const context = { sessionId: null, workspaceId: null };
       pendingTools = {};
       setRunning(false);
       currentRunId = null;
+      if (sharedChat && ok && ev.session_id === context.sessionId) sidebar.markReplyRead(ev.session_id);
       void sidebar.load();
       maybeScroll(true);
       drainMessageQueue();
@@ -2008,7 +2084,9 @@ const context = { sessionId: null, workspaceId: null };
     }
     if (editingMessage || !canChangeContext() || (sharedChat && conversationBusy())) return;
     if (sharedChat && context.sessionId && loadedEngine !== harnessId) {
+      const openSeq = sessionOpenSeq, sessionId = context.sessionId;
       const settings = await window.dshDesktop.workbenchSettings();
+      if (openSeq !== sessionOpenSeq || sessionId !== context.sessionId || loadingSession || sending || switchingEngine || editingMessage || conversationBusy()) return;
       if (settings.conversations?.warnOnSwitch) { await switchOptions(harnessId); return; }
     }
     const text = queuedMessage ? queuedMessage.text : input.value.trim();
@@ -2456,7 +2534,7 @@ const context = { sessionId: null, workspaceId: null };
     input.focus();
   });
 
-  function openActionMenu(anchor, actions) {
+  function openActionMenu(anchor, actions, position) {
     const rect = anchor.getBoundingClientRect();
     closePops();
     const pop = document.createElement('div');
@@ -2487,7 +2565,8 @@ const context = { sessionId: null, workspaceId: null };
       if (e.key === 'Escape') { closePops(); anchor.focus(); }
     });
     document.body.appendChild(pop);
-    clampPopPosition(pop, rect.bottom + 4, Math.min(window.innerWidth - 8, rect.left + pop.offsetWidth));
+    clampPopPosition(pop, position ? position.y : rect.bottom + 4,
+      (position ? position.x : rect.left) + pop.offsetWidth);
     openPops.push(pop);
     pop.querySelector('button:not(:disabled)')?.focus();
   }
@@ -2501,7 +2580,7 @@ const context = { sessionId: null, workspaceId: null };
     return false;
   }
   function updateConversationControls() {
-    const locked = sharedChat && (conversationBusy() || loadingSession || switchingEngine || sending || Boolean(editingMessage));
+    const locked = sharedChat && (conversationBusy() || loadingSession || switchingEngine || sending);
     $('engineSwitch').disabled = !sharedChat || locked;
     $('engineSwitch').title = locked ? 'Available when this conversation stops working' : 'Switch harness';
     $('handoffBtn').disabled = locked;
@@ -2568,6 +2647,7 @@ const context = { sessionId: null, workspaceId: null };
       }
       return;
     }
+
     pendingForkId = s.id;
     setStatus("The next message will fork this session and keep its workspace");
     input.focus();
@@ -2645,6 +2725,7 @@ const context = { sessionId: null, workspaceId: null };
         void goalUI.refresh();
       }
       scrollToLatest();
+      if (sharedChat && res.lastReplyAt) sidebar.markReplyRead(id, res.lastReplyAt);
       return true;
     } catch (err) { if (seq === sessionOpenSeq && !/archived/i.test(err.message)) setStatus("Could not load: " + err.message); return false; }
     finally {

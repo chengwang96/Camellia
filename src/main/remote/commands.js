@@ -55,8 +55,8 @@ class RemoteCommands {
     if (action === 'create-workspace' && id === null) this.authorizeWorkspace(device.id);
     else if (action === 'create' && id === null) this.authorizeCreate(device.id, payload.workspaceId);
     else this.authorize(device.id, id);
-    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'stop', 'approve', 'create', 'create-workspace', 'configure'].includes(action) || ['create', 'create-workspace'].includes(action) !== (id === null)) fail(400, 'Invalid command');
-    const fields = ['requestId', 'action', 'instanceId', ...(action === 'create-workspace' ? ['name', 'path'] : action === 'configure' ? ['settings', 'expectedSettings'] : action === 'create' ? ['workspaceId', 'engine'] : action === 'send' ? ['prompt', 'expectedSeq', ...(payload.image === undefined ? [] : ['image'])] : action === 'stop' ? ['runId'] : ['runId', 'approvalId', 'fingerprint', 'allow'])];
+    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'stop', 'approve', 'create', 'create-workspace', 'configure', 'move'].includes(action) || ['create', 'create-workspace'].includes(action) !== (id === null)) fail(400, 'Invalid command');
+    const fields = ['requestId', 'action', 'instanceId', ...(action === 'move' ? ['workspaceId', 'targetSessionId', 'placement'] : action === 'create-workspace' ? ['name', 'path'] : action === 'configure' ? ['settings', 'expectedSettings'] : action === 'create' ? ['workspaceId', 'engine'] : action === 'send' ? ['prompt', 'expectedSeq', ...(payload.image === undefined ? [] : ['image'])] : action === 'stop' ? ['runId'] : ['runId', 'approvalId', 'fingerprint', 'allow'])];
     if (Object.keys(payload).some(key => !fields.includes(key))) fail(400, 'Unsupported command field');
     const fingerprint = digest([id, ...fields.map(field => payload[field])]);
     const key = device.id + ':' + requestId;
@@ -97,6 +97,20 @@ class RemoteCommands {
       return { ok: true, state: 'accepted', conversation: this.reader.summary(created) };
     }
     const conversation = this.authorize(deviceId, id), manager = this.reader.manager;
+    if (payload.action === 'move') {
+      this.authorizeCreate(deviceId, payload.workspaceId);
+      if (payload.targetSessionId != null) {
+        if (typeof payload.targetSessionId !== 'string' || !['before', 'after'].includes(payload.placement)) fail(400, 'Invalid drop target');
+        const target = this.authorize(deviceId, payload.targetSessionId);
+        if (this.reader.summary(target).workspaceId !== payload.workspaceId) fail(409, 'Drop target moved; refresh the list');
+      }
+      const result = await manager.command(conversation.currentEngine, 'meta-op', {
+        op: 'move-session', sessionId: id, group: payload.workspaceId || 'recent',
+        targetSessionId: payload.targetSessionId, placement: payload.placement,
+      });
+      if (!result.ok) fail(409, result.error);
+      return { ok: true, state: 'accepted' };
+    }
     if (payload.action === 'configure') return configure(manager, conversation, payload);
     if (payload.action === 'send') {
       if (typeof payload.prompt !== 'string' || !payload.prompt.trim() || payload.prompt.length > 16_000 || payload.expectedSeq !== conversation.seq) fail(409, 'Message or conversation changed; refresh before sending');

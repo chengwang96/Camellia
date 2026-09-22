@@ -56,8 +56,13 @@ public class RemoteSettingsTest extends InstrumentationTestCase {
                     PopupWindow popup = (PopupWindow) field(selector, "popup");
                     assertTrue(popup.isShowing());
                     View panel = popup.getContentView();
+                    assertTrue(panel instanceof PopupSurface);
+                    assertNotNull(((TextView) anchor).getCompoundDrawablesRelative()[2]);
                     assertNotNull(panel.findViewWithTag("remoteModelOption:second-model"));
                     panel.findViewWithTag("remoteThinkingSettings").performClick();
+                    LinearLayout back = (LinearLayout) panel.findViewWithTag("remoteThinkingBack");
+                    assertFalse(((TextView) ((LinearLayout) back.getChildAt(0)).getChildAt(0)).getText().toString().startsWith("‹"));
+                    assertTrue(back.getChildAt(back.getChildCount() - 1) instanceof android.widget.ImageView);
                     assertTrue(panel.findViewWithTag("remoteThinkingOption:high").isSelected());
                     selector.dismiss();
                     activity.getWindow().getDecorView().findViewWithTag("remotePermissionPicker").performClick();

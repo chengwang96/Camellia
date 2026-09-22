@@ -24,6 +24,7 @@ final class RemoteSettingsPopup {
     private final JSONObject settings;
     private final Listener listener;
     private final PopupWindow popup = new PopupWindow();
+    private final PopupSurface surface;
     private final LinearLayout body;
     private View anchor;
     private int left, bottom, width, heightLimit;
@@ -33,9 +34,10 @@ final class RemoteSettingsPopup {
         this.context = context; this.chinese = chinese; this.background = background; this.ink = ink;
         this.muted = muted; this.accent = accent; this.settings = settings; this.listener = listener;
         body = new LinearLayout(context); body.setOrientation(LinearLayout.VERTICAL); body.setPadding(dp(12), dp(12), dp(12), dp(12));
-        body.setTag("remoteSettingsPanel");
+        surface = new PopupSurface(context, background); surface.setTag("remoteSettingsPanel");
         ScrollView scroll = new ScrollView(context); scroll.setFillViewport(false); scroll.addView(body);
-        popup.setContentView(scroll); popup.setBackgroundDrawable(round(background, 26)); popup.setElevation(dp(12));
+        surface.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        popup.setContentView(surface); popup.setBackgroundDrawable(round(background, 26)); popup.setElevation(dp(8));
         popup.setFocusable(true); popup.setOutsideTouchable(true); popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
     }
 
@@ -56,6 +58,12 @@ final class RemoteSettingsPopup {
         if (!description.isEmpty()) { TextView detail = text(description, 12, muted); detail.setPadding(0, dp(6), 0, 0); words.addView(detail); }
         row.addView(words, new LinearLayout.LayoutParams(0, -2, 1));
         if (selected) { TextView check = text("✓", 22, accent); check.setGravity(Gravity.CENTER); row.addView(check, new LinearLayout.LayoutParams(dp(32), dp(32))); }
+        else if (tag.equals("remoteThinkingSettings") || tag.equals("remoteThinkingBack")) {
+            android.widget.ImageView arrow = new android.widget.ImageView(context);
+            arrow.setImageDrawable(new LineIcon(tag.equals("remoteThinkingBack") ? "down" : "right", muted));
+            arrow.setPadding(dp(4), dp(4), dp(4), dp(4)); arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            row.addView(arrow, new LinearLayout.LayoutParams(dp(26), dp(26)));
+        }
         row.setContentDescription(title + ", " + description + (selected ? tr("，已选择", ", selected") : ""));
         row.setOnClickListener(view -> action.run()); body.addView(row);
     }
@@ -79,7 +87,7 @@ final class RemoteSettingsPopup {
     }
     private void thinking() {
         body.removeAllViews();
-        row(tr("‹ 返回模型", "‹ Back to models"), "", false, "remoteThinkingBack", this::models); divider();
+        row(tr("返回模型", "Back to models"), "", false, "remoteThinkingBack", this::models); divider();
         row(tr("默认", "Default"), tr("遵循引擎默认设置", "Use engine defaults"), settings.optString("thinking").isEmpty(), "remoteThinkingOption:", () -> choose("thinking", ""));
         JSONArray models = settings.optJSONArray("models");
         if (models != null) for (int index = 0; index < models.length(); index++) {
@@ -113,10 +121,9 @@ final class RemoteSettingsPopup {
         this.anchor = anchor;
         Rect visible = new Rect(); anchor.getWindowVisibleDisplayFrame(visible);
         int[] location = new int[2]; anchor.getLocationOnScreen(location);
-        int[] composerLocation = new int[2]; ((View) anchor.getParent().getParent()).getLocationOnScreen(composerLocation);
         width = Math.min(dp(320), visible.width() - dp(24));
         left = Math.max(visible.left + dp(12), Math.min(location[0], visible.right - width - dp(12)));
-        bottom = Math.min(composerLocation[1] - dp(10), visible.bottom - dp(12));
+        bottom = Math.min(location[1] - dp(6), visible.bottom - dp(12));
         heightLimit = Math.max(dp(48), bottom - visible.top - dp(12));
         popup.setWidth(width);
         if (permissions) permissions(); else models();
@@ -126,7 +133,10 @@ final class RemoteSettingsPopup {
         int height = Math.min(heightLimit, body.getMeasuredHeight());
         popup.setHeight(height);
         if (popup.isShowing()) popup.update(left, bottom - height, width, height);
-        else popup.showAtLocation(anchor, Gravity.TOP | Gravity.LEFT, left, bottom - height);
+        else {
+            surface.capture(anchor.getRootView(), left, bottom - height, width, height);
+            popup.showAtLocation(anchor, Gravity.TOP | Gravity.LEFT, left, bottom - height);
+        }
     }
     void dismiss() { popup.dismiss(); }
 }

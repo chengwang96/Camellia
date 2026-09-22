@@ -140,12 +140,15 @@ class CodexSession extends StreamingSession {
     this.emitStream({ type: 'content_block_delta', index: this.activeBlock.index,
       delta: type === 'text' ? { type: 'text_delta', text } : { type: 'thinking_delta', thinking: text } });
   }
-  outputItem(id, phase) {
+  outputItem(id, phase, kind) {
     let output = this.outputItems.get(id);
     if (!output) {
-      output = { type: 'text', text: '', phase: phase || null, indices: [] };
+      output = { type: 'text', text: '', phase: phase || null, kind: kind || null, indices: [] };
       this.outputItems.set(id, output); this.outputBlocks.push(output);
-    } else if (phase) output.phase = phase;
+    } else {
+      if (phase) output.phase = phase;
+      if (kind) output.kind = kind;
+    }
     this.lastOutputItem = output;
     return output;
   }
@@ -165,8 +168,11 @@ class CodexSession extends StreamingSession {
     }
     if (this.outputBlocks) {
       const success = result.subtype === 'success' && !result.is_error && !this.cancelled;
+      const hasFinalAnswer = this.outputBlocks.some(block => block.text && block.phase === 'final_answer');
       const outputBlocks = this.outputBlocks.filter(block => block.text).map(block => {
-        const phase = block.phase || (success && block === this.lastOutputItem ? 'final_answer' : 'commentary');
+        const terminalAgentMessage = success && !hasFinalAnswer && block === this.lastOutputItem && block.kind === 'agentMessage';
+        const phase = terminalAgentMessage ? 'final_answer'
+          : block.phase || (success && block === this.lastOutputItem ? 'final_answer' : 'commentary');
         for (const index of block.indices) this.emit({ type: 'gui:message-phase', index, phase });
         return { type: 'text', text: block.text, phase };
       });
@@ -189,7 +195,8 @@ class CodexSession extends StreamingSession {
     }
     if (method === 'turn/started') { this.turnId = params.turn.id; this.lastTurnId = params.turn.id; if (this.cancelled) this.interrupt(); }
     else if (method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
-      const output = this.outputItem(params.itemId, method === 'item/plan/delta' ? 'commentary' : null);
+      const kind = method === 'item/plan/delta' ? 'plan' : 'agentMessage';
+      const output = this.outputItem(params.itemId, kind === 'plan' ? 'commentary' : null, kind);
       output.text += params.delta;
       this.items.set(params.itemId, true); this.textDelta(params.itemId, 'text', params.delta);
     } else if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
@@ -197,7 +204,7 @@ class CodexSession extends StreamingSession {
     } else if (method === 'item/started' || method === 'item/completed') {
       const item = params.item, complete = method === 'item/completed';
       if (['agentMessage', 'plan'].includes(item.type)) {
-        const output = this.outputItem(item.id, item.type === 'plan' ? 'commentary' : item.phase);
+        const output = this.outputItem(item.id, item.type === 'plan' ? 'commentary' : item.phase, item.type);
         if (complete && !this.items.has(item.id)) {
           output.text = item.text || ''; this.textDelta(item.id, 'text', item.text);
         }

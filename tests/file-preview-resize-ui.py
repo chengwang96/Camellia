@@ -136,12 +136,19 @@ with sync_playwright() as playwright:
     def sidebar_width():
         return sidebar.bounding_box()['width']
 
+    def assert_sidebar_resize_style():
+        expect(sidebar_handle).to_have_css('cursor', 'col-resize')
+        expect(sidebar_handle).to_have_css('background-color', 'rgba(0, 0, 0, 0)')
+        expect(sidebar).to_have_css('border-right-width', '1px')
+
     def drag_sidebar(delta):
         bounds = sidebar_handle.bounding_box()
         start = bounds['x'] + bounds['width'] / 2
         page.mouse.move(start, 250)
+        assert_sidebar_resize_style()
         page.mouse.down()
         page.mouse.move(start + delta, 250, steps=10)
+        assert_sidebar_resize_style()
         page.mouse.up()
         assert not page.evaluate("document.body.classList.contains('resizing-sidebar')")
 
@@ -155,6 +162,7 @@ with sync_playwright() as playwright:
     assert sidebar_width() == 400
     sidebar_handle.press('ArrowLeft')
     assert sidebar_width() == 390
+    assert_sidebar_resize_style()
     sidebar_handle.press('Shift+ArrowRight')
     assert sidebar_width() == 440
     sidebar_handle.press('Home')
