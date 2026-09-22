@@ -76,7 +76,7 @@ public final class MainActivity extends Activity {
     private android.app.Dialog computerDialog;
     private EditText searchInput;
     private JSONArray availableWorkspaces = new JSONArray();
-    private boolean canCreate, canImage, allowIndependent;
+    private boolean canCreate, canCreateWorkspace, canImage, allowIndependent;
     private String listInstance = "", selectedImage, imageConversation, imageComputer;
     private boolean listEventsUnavailable;
     private LinearLayout imageTray;
@@ -309,18 +309,22 @@ public final class MainActivity extends Activity {
         status.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
         LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL); bar.setTag(tag);
         bar.setClipChildren(false); bar.setClipToPadding(false);
-        GradientDrawable shape = capsule(background); shape.setStroke(dp(1), surface); bar.setBackground(shape); bar.setElevation(dp(3));
+        chatStyle.floatingBar(bar);
         bar.setPadding(dp(6), dp(6), dp(6), dp(6));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(10), 0, dp(12));
         root.addView(bar, root.indexOfChild(status), params); return bar;
     }
 
     private EditText input(String label, String value, int type) {
-        content.addView(text(label, 12, muted));
+        return input(content, label, value, type);
+    }
+
+    private EditText input(LinearLayout parent, String label, String value, int type) {
+        parent.addView(text(label, 12, muted));
         EditText input = new EditText(this); input.setSingleLine(true); input.setTextSize(15); input.setTextColor(ink); input.setHintTextColor(muted);
         input.setInputType(type); input.setText(value); input.setPadding(dp(18), dp(12), dp(18), dp(12)); input.setBackground(capsule(surface));
         input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO); input.setContentDescription(label);
-        content.addView(input, new LinearLayout.LayoutParams(-1, dp(52))); return input;
+        parent.addView(input, new LinearLayout.LayoutParams(-1, dp(52))); return input;
     }
 
     private String computerName(JSONObject computer) {
@@ -417,7 +421,7 @@ public final class MainActivity extends Activity {
 
     private void openComputer(JSONObject computer) {
         try {
-            canCreate = false; canImage = false; availableWorkspaces = new JSONArray();
+            canCreate = false; canCreateWorkspace = false; canImage = false; availableWorkspaces = new JSONArray();
             stopNetwork(); store.save(computer); credentials = store.load();
             if (credentials.has("token")) { listScreen(); loadList(false); }
             else pairScreen();
@@ -662,7 +666,8 @@ public final class MainActivity extends Activity {
             }
             @Override public void afterTextChanged(android.text.Editable value) {}
         });
-        if (credentials.has("pendingCreate")) content.addView(button(tr("重试新建会话", "Retry creating conversation"), this::retryCreate, false));
+        if (credentials.has("pendingCreate")) content.addView(button(tr("查询新建结果 / 重试", "Check creation / retry"), this::retryCreate, false));
+        content.addView(chatStyle.workspaceHeader(tr("工作区", "Workspaces"), tr("新建工作区", "New workspace"), "remoteNewWorkspace", this::createWorkspace));
         ((RefreshScrollView) scroll).setRefreshAction(() -> loadList(false), ready -> status.setText(ready
             ? tr("松开刷新", "Release to refresh") : computerStates.getOrDefault(credentials.optString("address"), tr("下拉刷新", "Pull to refresh"))));
     }
@@ -681,7 +686,8 @@ public final class MainActivity extends Activity {
     private void renderConversations() {
         int position = scroll.getScrollY();
         content.removeAllViews();
-        if (credentials.has("pendingCreate")) content.addView(button(tr("重试新建会话", "Retry creating conversation"), this::retryCreate, false));
+        if (credentials.has("pendingCreate")) content.addView(button(tr("查询新建结果 / 重试", "Check creation / retry"), this::retryCreate, false));
+        content.addView(chatStyle.workspaceHeader(tr("工作区", "Workspaces"), tr("新建工作区", "New workspace"), "remoteNewWorkspace", this::createWorkspace));
         LinkedHashMap<String, ArrayList<JSONObject>> groups = new LinkedHashMap<>();
         String query = searchInput == null ? "" : searchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
         if (query.isEmpty()) for (int index = 0; index < availableWorkspaces.length(); index++) {
@@ -780,9 +786,36 @@ public final class MainActivity extends Activity {
     private void updateCapabilities(JSONObject info) {
         String capabilities = String.valueOf(info.optJSONArray("capabilities"));
         canCreate = info.optString("permission").equals("control") && capabilities.contains("\"create\"");
+        canCreateWorkspace = info.optString("permission").equals("control") && capabilities.contains("\"create-workspace\"");
         canImage = capabilities.contains("\"image\"");
         listInstance = info.optString("instanceId"); allowIndependent = info.optBoolean("includeUnassigned");
         availableWorkspaces = info.optJSONArray("workspaces"); if (availableWorkspaces == null) availableWorkspaces = new JSONArray();
+    }
+
+    private void createWorkspace() {
+        if (!canCreateWorkspace) {
+            status.setText(tr("请更新电脑端，并授权控制所有工作区后再新建。", "Update the desktop and authorize control of all workspaces to create one.")); return;
+        }
+        if (commandBusy) return;
+        if (credentials.has("pendingCreate")) { retryCreate(); return; }
+        LinearLayout panel = computerDialogPanel(tr("新建工作区", "New workspace"),
+            tr("填写电脑上已存在文件夹的完整路径，不是手机路径。", "Enter the full path of an existing folder on the computer, not this phone."));
+        EditText name = input(panel, tr("工作区名称", "Workspace name"), "", android.text.InputType.TYPE_CLASS_TEXT);
+        name.setTag("remoteWorkspaceName"); name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(200)});
+        EditText folder = input(panel, tr("电脑文件夹绝对路径", "Absolute computer folder path"), "", android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        folder.setTag("remoteWorkspacePath"); folder.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(1024)});
+        android.app.Dialog dialog = createComputerDialog(panel);
+        Button submit = button(tr("创建", "Create"), () -> {
+            if (name.getText().toString().trim().isEmpty()) { name.setError(tr("请输入名称", "Enter a name")); return; }
+            if (folder.getText().toString().trim().isEmpty()) { folder.setError(tr("请输入电脑文件夹路径", "Enter a computer folder path")); return; }
+            try {
+                JSONObject payload = command("create-workspace").put("instanceId", listInstance).put("name", name.getText().toString().trim()).put("path", folder.getText().toString().trim());
+                JSONObject saved = new JSONObject(credentials.toString()).put("pendingCreate", payload); store.save(saved); credentials = saved;
+                dialog.dismiss(); retryCreate();
+            } catch (Exception error) { status.setText(tr("无法保存新建请求", "Could not save creation request")); }
+        }, true);
+        submit.setTag("remoteWorkspaceCreate"); panel.addView(submit);
+        panel.addView(button(tr("取消", "Cancel"), dialog::dismiss, false)); showComputerDialog(dialog);
     }
 
     private void createConversation(String workspace) {
@@ -806,7 +839,8 @@ public final class MainActivity extends Activity {
         if (!foreground || !screen.equals("list") || !credentials.has("pendingCreate") || commandBusy) return;
         RemoteApi client = begin(); int ticket = generation; commandBusy = true;
         JSONObject payload = credentials.optJSONObject("pendingCreate"); String token = credentials.optString("token");
-        status.setText(tr("正在新建会话…", "Creating conversation…"));
+        boolean workspaceCreation = payload != null && payload.optString("action").equals("create-workspace");
+        status.setText(workspaceCreation ? tr("正在新建工作区…", "Creating workspace…") : tr("正在新建会话…", "Creating conversation…"));
         job = worker.submit(() -> {
             try {
                 JSONObject result = client.json("/v1/commands", token, payload);
@@ -820,9 +854,11 @@ public final class MainActivity extends Activity {
                     try {
                         JSONObject saved = new JSONObject(credentials.toString()); saved.remove("pendingCreate"); store.save(saved); credentials = saved;
                         JSONObject conversation = result.optJSONObject("conversation");
-                        if (result.optBoolean("ok") && conversation != null) {
+                        if (result.optBoolean("ok") && workspaceCreation && result.optJSONObject("workspace") != null) {
+                            loadList(false);
+                        } else if (result.optBoolean("ok") && conversation != null) {
                             conversationId = conversation.getString("id"); conversationTitle = conversation.optString("title"); detailScreen(); connectEvents();
-                        } else { renderConversations(); status.setText(tr("新建未确认成功，请先在电脑核对。", "Creation not confirmed. Check the desktop before retrying.")); }
+                        } else { renderConversations(); status.setText(tr("新建未确认成功，请先在电脑核对。", "Creation not confirmed. Check the desktop before retrying.") + " " + result.optString("error")); }
                     } catch (Exception error) { status.setText(tr("无法保存结果，请重试同一请求。", "Could not save result. Retry the same request.")); }
                 });
             } catch (Exception error) { deliver(ticket, () -> {
@@ -909,6 +945,7 @@ public final class MainActivity extends Activity {
             try {
                 client.listEvents(token, snapshot -> {
                     streamOpened[0] = true;
+                    JSONObject info = client.json("/v1/status", token, null);
                     JSONArray entries = new JSONArray();
                     int offset = 0;
                     JSONObject page;
@@ -923,6 +960,7 @@ public final class MainActivity extends Activity {
                     JSONObject updated = page;
                     received[0] = true;
                     deliver(ticket, () -> {
+                        updateCapabilities(info);
                         applyConversationPage(updated, false);
                         computerStates.put(credentials.optString("address"), tr("已连接", "Connected"));
                         status.setText(tr("已连接", "Connected"));
@@ -967,8 +1005,7 @@ public final class MainActivity extends Activity {
         messages = column(); content.addView(messages);
         approvals = column(); content.addView(approvals); approvalSignature = "";
         LinearLayout composerBar = bottomBar("composerBar"); composerBar.setOrientation(LinearLayout.VERTICAL);
-        GradientDrawable composerShape = capsule(background);
-        composerShape.setStroke(dp(1), surface); composerBar.setBackground(composerShape); composerBar.setElevation(dp(3));
+        GradientDrawable composerShape = chatStyle.floatingBar(composerBar);
         composerBar.setPadding(dp(8), dp(6), dp(8), dp(6));
         attachButton = lineButton("plus", tr("添加图片", "Add image"), this::pickImage);
         imageTray = column(); root.addView(imageTray, root.indexOfChild(composerBar)); renderImage();
@@ -999,7 +1036,7 @@ public final class MainActivity extends Activity {
             @Override public void onTextChanged(CharSequence text, int start, int before, int count) { updateControls(); }
             @Override public void afterTextChanged(android.text.Editable text) {}
         });
-        composer.setOnFocusChangeListener((view, focused) -> composerShape.setStroke(dp(1), focused ? accent : surface));
+        composer.setOnFocusChangeListener((view, focused) -> composerShape.setStroke(dp(1), focused ? accent : Color.TRANSPARENT));
         retryButton = button(tr("重试未确认操作（不会重复执行）", "Retry unconfirmed operation (deduplicated)"), this::retryCommand, false); root.addView(retryButton, root.indexOfChild(composerBar));
         updateControls();
     }

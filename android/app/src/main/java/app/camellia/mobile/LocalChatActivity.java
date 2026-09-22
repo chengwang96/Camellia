@@ -222,7 +222,7 @@ public final class LocalChatActivity extends Activity {
     private LinearLayout bottomBar(String tag) {
         LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL); bar.setTag(tag);
         bar.setClipChildren(false); bar.setClipToPadding(false);
-        GradientDrawable shape = chatStyle.capsule(background); shape.setStroke(dp(1), surface); bar.setBackground(shape); bar.setElevation(dp(3));
+        chatStyle.floatingBar(bar);
         bar.setPadding(dp(6), dp(6), dp(6), dp(6));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(10), 0, dp(12));
         root.addView(bar, root.indexOfChild(status), params); return bar;
@@ -238,17 +238,12 @@ public final class LocalChatActivity extends Activity {
         conversationId = null; shell(tr("本机聊天", "Local chat"));
         status.setText(tr("本机模式 · 聊天记录仅保存在此设备", "Local mode · Chat history stays on this device"));
         root.setClipChildren(false);
-        LinearLayout actions = new LinearLayout(this);
-        actions.addView(button(tr("供应商与 Key", "Providers & keys"), "localConfig", this::providerSettings), new LinearLayout.LayoutParams(0, -2, 1));
-        LinearLayout.LayoutParams workspaceAction = new LinearLayout.LayoutParams(0, -2, 1); workspaceAction.setMarginStart(dp(10));
-        actions.addView(button(tr("新建工作区", "New workspace"), "localNewWorkspace", () -> nameDialog(null)), workspaceAction);
-        content.addView(actions);
         try { if (LocalChatConfig.routes(store.config()).isEmpty()) content.addView(text(tr("先在「供应商与 Key」填写 API 配置，或粘贴导入。无需配对电脑，聊天记录仅存于本机。", "Add a provider and API key, or paste an export. No computer pairing required; chats stay on this phone."), 14, muted)); }
         catch (Exception error) { failure(error); }
         LinearLayout groups = column(); groups.setTag("localGroups"); content.addView(groups);
         renderGroups(groups);
         LinearLayout bottom = bottomBar("localSearchBar"); bottom.setBackgroundColor(Color.TRANSPARENT); bottom.setElevation(0); bottom.setPadding(0, dp(6), 0, dp(6));
-        LinearLayout searchPill = new LinearLayout(this); searchPill.setGravity(Gravity.CENTER_VERTICAL); searchPill.setBackground(chatStyle.capsule(background)); searchPill.setElevation(dp(2));
+        LinearLayout searchPill = new LinearLayout(this); searchPill.setGravity(Gravity.CENTER_VERTICAL); chatStyle.floatingBar(searchPill);
         LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(0, -2, 1); searchParams.setMargins(0, 0, dp(10), 0); bottom.addView(searchPill, searchParams);
         ImageView searchIcon = new ImageView(this); searchIcon.setImageDrawable(new LineIcon("search", ink)); searchIcon.setPadding(dp(10), dp(10), dp(10), dp(10));
         searchPill.addView(searchIcon, new LinearLayout.LayoutParams(dp(44), dp(44)));
@@ -266,6 +261,7 @@ public final class LocalChatActivity extends Activity {
 
     private void renderGroups(LinearLayout groups) {
         groups.removeAllViews();
+        groups.addView(chatStyle.workspaceHeader(tr("工作区", "Workspaces"), tr("新建工作区", "New workspace"), "localNewWorkspace", () -> nameDialog(null)));
         JSONArray workspaces = store.workspaces();
         for (int index = 0; index < workspaces.length(); index++) {
             JSONObject workspace = workspaces.optJSONObject(index);
@@ -402,7 +398,7 @@ public final class LocalChatActivity extends Activity {
         bar.addView(send, new LinearLayout.LayoutParams(dp(48), dp(48)));
         stop = chatStyle.composerAction(tr("停止", "Stop"), R.drawable.ic_stop, () -> finishRun(tr("已停止，部分回复已保留。", "Stopped; partial reply kept."), "stopped"));
         stop.setTag("localStop"); bar.addView(stop, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        composer.setOnFocusChangeListener((view, focused) -> ((GradientDrawable) bar.getBackground()).setStroke(dp(1), focused ? accent : surface));
+        composer.setOnFocusChangeListener((view, focused) -> ((GradientDrawable) bar.getBackground()).setStroke(dp(1), focused ? accent : Color.TRANSPARENT));
         composer.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
             public void onTextChanged(CharSequence value, int start, int before, int count) { updateControls(); }

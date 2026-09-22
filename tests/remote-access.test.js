@@ -500,6 +500,38 @@ test('mobile creation is scoped, deduplicated and does not start engines', async
   assert.equal(independent.body.ok, true); assert.equal(independent.body.conversation.workspaceId, null);
 });
 
+test('mobile workspace creation requires full control, deduplicates and updates scoped list versions', async context => {
+  const { gateway, manager, access, reader, pair, root } = fixture(context);
+  const credential = pair(), token = credential.token;
+  await gateway.start('127.0.0.1', 0);
+  const folder = path.join(root, 'mobile-workspace'); fs.mkdirSync(folder);
+  const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'create-workspace', name: 'Mobile research', path: folder };
+  const create = value => request(gateway, '/v1/commands', { token, method: 'POST', payload: value });
+  assert.equal((await create(payload)).status, 403);
+  assert.equal((await request(gateway, '/v1/status', { token })).body.capabilities.includes('create-workspace'), false);
+  const scoped = { workspaceIds: ['allowed'] }, scopedVersion = reader.listSnapshot(scoped);
+  access.setScope(credential.deviceId, [], { allWorkspaces: true });
+  const device = access.devices.find(item => item.id === credential.deviceId), before = reader.listSnapshot(device);
+  assert.ok((await request(gateway, '/v1/status', { token })).body.capabilities.includes('create-workspace'));
+  device.permission = 'read'; assert.equal((await create(payload)).status, 403); device.permission = 'control';
+  const first = await create(payload), repeat = await create(payload);
+  assert.equal(first.body.ok, true); assert.deepEqual(repeat.body, first.body);
+  assert.deepEqual(Object.keys(first.body.workspace).sort(), ['id', 'name']);
+  assert.equal(first.body.workspace.name, 'Mobile research');
+  assert.equal(manager.workspaces.sessionMeta().workspaces.length, 3);
+  assert.equal(manager.active.size, 0); assert.equal(manager.items.size, 3);
+  assert.notDeepEqual(reader.listSnapshot(device), before); assert.deepEqual(reader.listSnapshot(scoped), scopedVersion);
+  assert.equal(JSON.stringify(first.body).includes(folder), false);
+  assert.equal((await create({ ...payload, name: 'Changed' })).status, 409);
+  for (const patch of [{}, { path: 'relative' }, { path: path.join(root, 'missing') }, { path: path.join(root, 'devices.json') }, { name: '' }, { name: 'bad\nname' }, { name: 'x'.repeat(201) }, { path: 42 }]) {
+    const result = await create({ ...payload, ...patch, requestId: require('node:crypto').randomUUID() });
+    assert.equal(result.body.ok, false);
+  }
+  assert.equal(manager.workspaces.sessionMeta().workspaces.length, 3);
+  access.setScope(credential.deviceId, ['allowed']);
+  assert.equal((await create(payload)).status, 403);
+});
+
 test('mobile images use bounded server-owned paths and retry sends only once', async context => {
   const { gateway, manager, access, visible, pair, root } = fixture(context);
   const credential = pair();

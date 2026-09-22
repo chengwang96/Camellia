@@ -45,13 +45,18 @@ class RemoteCommands {
       if (!device.allWorkspaces && !device.includeUnassigned) fail(403, 'Independent conversations are not authorized');
     } else if (!this.reader.workspaces().some(item => item.id === workspaceId) || !device.allWorkspaces && !device.workspaceIds.includes(workspaceId)) fail(403, 'Workspace is not authorized');
   }
+  authorizeWorkspace(deviceId) {
+    const device = this.access.devices.find(item => item.id === deviceId);
+    if (!device || device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Creating workspaces requires control of all workspaces');
+  }
   async execute(device, id, payload, instanceId) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail(400, 'Invalid command');
     const { requestId, action } = payload;
-    if (action === 'create' && id === null) this.authorizeCreate(device.id, payload.workspaceId);
+    if (action === 'create-workspace' && id === null) this.authorizeWorkspace(device.id);
+    else if (action === 'create' && id === null) this.authorizeCreate(device.id, payload.workspaceId);
     else this.authorize(device.id, id);
-    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'stop', 'approve', 'create', 'configure'].includes(action) || (action === 'create') !== (id === null)) fail(400, 'Invalid command');
-    const fields = ['requestId', 'action', 'instanceId', ...(action === 'configure' ? ['settings', 'expectedSettings'] : action === 'create' ? ['workspaceId', 'engine'] : action === 'send' ? ['prompt', 'expectedSeq', ...(payload.image === undefined ? [] : ['image'])] : action === 'stop' ? ['runId'] : ['runId', 'approvalId', 'fingerprint', 'allow'])];
+    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'stop', 'approve', 'create', 'create-workspace', 'configure'].includes(action) || ['create', 'create-workspace'].includes(action) !== (id === null)) fail(400, 'Invalid command');
+    const fields = ['requestId', 'action', 'instanceId', ...(action === 'create-workspace' ? ['name', 'path'] : action === 'configure' ? ['settings', 'expectedSettings'] : action === 'create' ? ['workspaceId', 'engine'] : action === 'send' ? ['prompt', 'expectedSeq', ...(payload.image === undefined ? [] : ['image'])] : action === 'stop' ? ['runId'] : ['runId', 'approvalId', 'fingerprint', 'allow'])];
     if (Object.keys(payload).some(key => !fields.includes(key))) fail(400, 'Unsupported command field');
     const fingerprint = digest([id, ...fields.map(field => payload[field])]);
     const key = device.id + ':' + requestId;
@@ -76,6 +81,15 @@ class RemoteCommands {
     return this.acknowledgement(operation);
   }
   async perform(deviceId, id, payload) {
+    if (payload.action === 'create-workspace') {
+      this.authorizeWorkspace(deviceId);
+      if (typeof payload.name !== 'string' || !payload.name.trim() || payload.name.length > 200 || /[\x00-\x1f\x7f]/.test(payload.name)
+        || typeof payload.path !== 'string' || !payload.path.trim() || payload.path.length > 1024 || /[\x00-\x1f\x7f]/.test(payload.path)) fail(400, 'Invalid workspace name or computer folder');
+      const result = this.reader.manager.workspaces.metaOp({ op: 'create-workspace', name: payload.name, path: payload.path });
+      if (!result.ok) fail(400, result.error);
+      this.reader.manager.onEvent({ type: 'conversation:workspaces' });
+      return { ok: true, state: 'accepted', workspace: { id: result.workspace.id, name: result.workspace.name } };
+    }
     if (payload.action === 'create') {
       this.authorizeCreate(deviceId, payload.workspaceId);
       if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity'].includes(payload.engine)) fail(400, 'Invalid engine');
