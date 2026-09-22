@@ -34,6 +34,10 @@ final class ChatStyle {
 
     int dp(int value) { return Math.round(value * context.getResources().getDisplayMetrics().density); }
 
+    int dockBottomPadding() { return dp(8); }
+
+    void dockStatus(TextView status) { status.setPadding(0, dp(2), 0, dp(2)); }
+
     GradientDrawable rounded(int color) {
         GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(12)); return shape;
     }

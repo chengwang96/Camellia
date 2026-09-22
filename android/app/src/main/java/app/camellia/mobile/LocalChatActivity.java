@@ -58,6 +58,12 @@ public final class LocalChatActivity extends Activity {
     private TextView status, liveText;
     private AlertDialog dialog;
     private boolean reloadSettings;
+    private final LocationConsent locationConsent = new LocationConsent(this);
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        locationConsent.permissionResult(requestCode);
+    }
 
     @Override protected void attachBaseContext(android.content.Context context) { super.attachBaseContext(MobilePreferences.wrap(context)); }
 
@@ -113,6 +119,7 @@ public final class LocalChatActivity extends Activity {
     }
 
     @Override protected void onStop() {
+        locationConsent.cancel();
         if (pages != null) pages.finishTransition();
         if (modelPicker != null) modelPicker.dismiss();
         if (client != null) finishRun(tr("已暂停：离开应用后不继续请求；不会自动重发。", "Paused on leaving the app; not automatically resent."), "interrupted");
@@ -154,20 +161,21 @@ public final class LocalChatActivity extends Activity {
         button.setOnClickListener(view -> action.run()); return button;
     }
     private EditText input(String hint, String tag) {
-        EditText input = new EditText(this); input.setHint(hint); input.setTag(tag); input.setTextSize(15);
+        EditText input = tag.equals("localComposer") ? new ComposerInput(this) : new EditText(this); input.setHint(hint); input.setTag(tag); input.setTextSize(15);
         input.setTextColor(ink); input.setHintTextColor(muted); input.setBackground(chatStyle.capsule(surface));
         input.setContentDescription(hint); input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         input.setPadding(dp(14), dp(12), dp(14), dp(12)); input.setMinHeight(dp(48)); return input;
     }
     private void shell(String title) {
+        locationConsent.cancel();
         if (modelPicker != null) modelPicker.dismiss();
         composer = null; liveText = null;
-        root = column(); root.setBackgroundColor(background); root.setPadding(dp(18), dp(12), dp(18), dp(24));
+        root = column(); root.setBackgroundColor(background); root.setPadding(dp(18), dp(12), dp(18), chatStyle.dockBottomPadding());
         root.setClipToPadding(false);
         if (conversationId != null) { root.setFocusableInTouchMode(true); root.requestFocus(); }
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             view.setPadding(dp(18) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(),
-                dp(18) + insets.getSystemWindowInsetRight(), dp(24) + insets.getSystemWindowInsetBottom());
+                dp(18) + insets.getSystemWindowInsetRight(), chatStyle.dockBottomPadding() + insets.getSystemWindowInsetBottom());
             return insets;
         });
         if (pages == null) pages = new PageTransitions(this);
@@ -180,10 +188,13 @@ public final class LocalChatActivity extends Activity {
         if (conversationId != null && store != null && store.conversation(conversationId) != null) {
             modelButton = new LinearLayout(this); modelButton.setGravity(Gravity.CENTER_VERTICAL); modelButton.setTag("localModel");
             modelButton.setPadding(dp(12), 0, dp(10), 0); modelButton.setMinimumHeight(dp(48));
-            GradientDrawable pill = shape(background); pill.setCornerRadius(dp(28));
-            pill.setStroke(dp(1), ModelPickerPopup.blend(background, muted, .08f));
-            modelButton.setBackground(new RippleDrawable(ColorStateList.valueOf(0x184176e6), pill, shape(Color.WHITE)));
-            modelButton.setElevation(dp(3)); modelButton.setFocusable(true); modelButton.setOnClickListener(view -> chooseModel());
+            GradientDrawable pill = chatStyle.capsule(Color.red(background) < 128 ? surface : background);
+            modelButton.setBackground(new RippleDrawable(ColorStateList.valueOf(0x184176e6), pill, chatStyle.capsule(Color.WHITE)));
+            modelButton.setElevation(dp(2));
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                modelButton.setOutlineAmbientShadowColor(0x18000000); modelButton.setOutlineSpotShadowColor(0x20000000);
+            }
+            modelButton.setFocusable(true); modelButton.setOnClickListener(view -> chooseModel());
             modelName = text("", 16, ink); modelName.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
             modelName.setSingleLine(true); modelName.setEllipsize(android.text.TextUtils.TruncateAt.END);
             modelButton.addView(modelName, new LinearLayout.LayoutParams(-2, -2, 1));
@@ -220,6 +231,7 @@ public final class LocalChatActivity extends Activity {
     }
 
     private LinearLayout bottomBar(String tag) {
+        chatStyle.dockStatus(status);
         LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL); bar.setTag(tag);
         bar.setClipChildren(false); bar.setClipToPadding(false);
         chatStyle.floatingBar(bar);
@@ -395,6 +407,7 @@ public final class LocalChatActivity extends Activity {
         composer.setFilters(new android.text.InputFilter[] { new android.text.InputFilter.LengthFilter(100000) });
         bar.addView(composer, new LinearLayout.LayoutParams(0, -2, 1));
         send = chatStyle.composerAction(tr("发送", "Send"), R.drawable.ic_send, this::sendMessage); send.setTag("localSend");
+        ((ComposerInput) composer).setSendAction(() -> { if (send.isEnabled() && send.getVisibility() == View.VISIBLE) send.performClick(); });
         bar.addView(send, new LinearLayout.LayoutParams(dp(48), dp(48)));
         stop = chatStyle.composerAction(tr("停止", "Stop"), R.drawable.ic_stop, () -> finishRun(tr("已停止，部分回复已保留。", "Stopped; partial reply kept."), "stopped"));
         stop.setTag("localStop"); bar.addView(stop, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -492,6 +505,23 @@ public final class LocalChatActivity extends Activity {
     }
 
     private void sendMessage() {
+        if (runningId != null || composer == null) return;
+        String prompt = composer.getText().toString();
+        if (prompt.trim().isEmpty()) return;
+        try {
+            LocalChatConfig.Route route = selectedRoute(); if (route == null) { chooseModel(); return; }
+            String target = conversationId;
+            EditText input = composer;
+            locationConsent.request(prompt, route.providerName() + " · " + java.net.URI.create(route.baseUrl).getHost(), context -> {
+                try {
+                    if (input == composer && prompt.equals(input.getText().toString()) && target.equals(conversationId)
+                            && selectedRoute() != null && route.id.equals(selectedRoute().id)) sendMessage(context);
+                } catch (Exception error) { failure(error); }
+            });
+        } catch (Exception error) { failure(error); }
+    }
+
+    private void sendMessage(String locationContext) {
         if (runningId != null) return;
         String value = composer.getText().toString().trim(); if (value.isEmpty()) return;
         try {
@@ -501,6 +531,8 @@ public final class LocalChatActivity extends Activity {
             long sentAt = System.currentTimeMillis();
             JSONObject user = new JSONObject().put("role", "user").put("content", value).put("at", sentAt);
             JSONArray prospective = new JSONArray(messages.toString()); prospective.put(user);
+            if (!locationContext.isEmpty()) prospective.put(prospective.length() - 1,
+                new JSONObject(user.toString()).put("content", value + locationContext));
             JSONObject request = LocalChatClient.request(route, prospective, conversation.optString("thinking", "auto"));
             String previousTitle = conversation.optString("title");
             JSONObject reply = new JSONObject().put("role", "assistant").put("content", "").put("state", "running").put("at", sentAt);

@@ -169,6 +169,23 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   // Minimal markdown: fenced code, inline code, GFM tables, bold, headings.
+  let codeWrap = readUi('code-wrap') === true;
+  function codeWrapLabel() { return window.CamelliaI18n.t('Word wrap'); }
+  function refreshCodeWrap() {
+    document.querySelectorAll('.md-code-block').forEach(panel => {
+      panel.classList.toggle('is-wrapped', codeWrap);
+      const button = panel.querySelector('.md-code-wrap');
+      button.setAttribute('aria-pressed', String(codeWrap));
+      button.textContent = codeWrapLabel();
+    });
+  }
+  document.addEventListener('click', event => {
+    if (!event.target.closest('.md-code-wrap')) return;
+    codeWrap = !codeWrap;
+    writeUi('code-wrap', codeWrap);
+    refreshCodeWrap();
+  });
+  window.addEventListener('camellia:language', refreshCodeWrap);
   function mdRender(src, documentMode = false) {
     const tokens = [];
     let text = String(src);
@@ -215,8 +232,9 @@ const context = { sessionId: null, workspaceId: null };
       const tk = tokens[+idx];
       if (!tk) return _m;
       if (tk.t === 'code') {
-        const langAttr = tk.lang ? ' data-lang="' + esc(tk.lang) + '"' : '';
-        return '<pre class="md-code"' + langAttr + '><code>' + esc(tk.code.replace(/\n+$/, '')) + '</code></pre>';
+        return '<div class="md-code-block' + (codeWrap ? ' is-wrapped' : '') + '"><div class="md-code-header"><span>' + esc(tk.lang) +
+          '</span><button type="button" class="md-code-wrap" aria-pressed="' + codeWrap + '">' + esc(codeWrapLabel()) +
+          '</button></div><pre class="md-code"><code>' + esc(tk.code.replace(/\n+$/, '')) + '</code></pre></div>';
       }
       if (tk.t === 'inline') return '<code class="md-inline">' + esc(tk.code) + '</code>';
       const renderCell = value => esc(value).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(sentRe, renderToken);
@@ -1731,8 +1749,14 @@ const context = { sessionId: null, workspaceId: null };
     if (!acceptSessionEvents) return;
     if (ev.type === 'conversation:steered') {
       if (currentRunId !== ev.runId) return;
+      const previousTurn = turnEl;
+      const previousStatus = previousTurn?.querySelector('.run-status');
       addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now(), scrollToBottom: true });
       turnEl = null;
+      if (previousStatus) {
+        ensureTurn().insertBefore(previousStatus, turnBody());
+        if (previousTurn.children.length === 2 && !previousTurn.querySelector('.turn-body').childElementCount) previousTurn.remove();
+      }
       return;
     }
     if (ev.type === 'conversation:continued') {

@@ -274,17 +274,30 @@
     font: var(--f-code); background: var(--dsw-alias-bg-muted);
     padding: 1px 5px; border-radius: 5px;
   }
-  .md .md-code {
-    display: block; margin: 8px 0; padding: 10px 14px;
+  .md .md-code-block {
+    margin: 8px 0; min-width: 0; max-width: 100%; overflow: hidden;
     background: var(--dsw-alias-bg-soft);
     border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px;
-    font: var(--f-code); overflow-x: auto; white-space: pre;
+    white-space: normal;
   }
-  .md .md-code[data-lang]::before {
-    content: attr(data-lang);
-    display: block; font: var(--f-xxxs-11); color: var(--dsw-alias-label-caption);
-    margin-bottom: 6px; text-transform: uppercase; letter-spacing: .5px;
+  .md .md-code-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 4px 10px 0 14px; font: var(--f-xxxs-11); color: var(--dsw-alias-label-caption);
   }
+  .md .md-code-header > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; }
+  .md .md-code-wrap {
+    flex-shrink: 0; min-height: 32px; padding: 4px 8px; border: 1px solid transparent;
+    border-radius: 6px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; cursor: pointer;
+  }
+  .md .md-code-wrap:hover, .md .md-code-wrap[aria-pressed="true"] {
+    background: var(--dsw-alias-bg-muted); border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary);
+  }
+  .md .md-code-wrap:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
+  .md .md-code {
+    display: block; margin: 0; padding: 6px 14px 10px;
+    font: var(--f-code); overflow-x: auto; white-space: pre; overflow-wrap: normal; word-break: normal;
+  }
+  .md .is-wrapped > .md-code { white-space: pre-wrap; overflow-wrap: anywhere; }
   .md .md-table-wrap {
     margin: 8px 0; overflow-x: auto; white-space: normal;
     border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px;

@@ -13,6 +13,11 @@ final class MobilePreferences {
         context.getSharedPreferences("mobile-preferences", Context.MODE_PRIVATE).edit().putString(key, value).apply();
     }
 
+    static String enterMode(Context context) {
+        String value = get(context, "enterMode");
+        return value.equals("newline") || value.equals("button") ? value : "send";
+    }
+
     static String signature(Context context) { return get(context, "language") + ":" + get(context, "theme"); }
 
     static Context wrap(Context context) {

@@ -58,6 +58,7 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
                 View row = root.findViewWithTag("localConversation:" + conversationId);
                 assertEquals(dp(32), row.getPaddingLeft());
                 View bar = root.findViewWithTag("localSearchBar"), status = root.findViewWithTag("localStatus");
+                assertDockInsets(bar, status);
                 assertFalse(((ViewGroup) bar.getParent()).getClipChildren());
                 assertFalse(((ViewGroup) bar.getParent()).getClipToPadding());
                 assertFalse(((ViewGroup) bar).getClipChildren());
@@ -78,6 +79,13 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
                 EditText composer = root.findViewWithTag("localComposer");
+                View model = root.findViewWithTag("localModel");
+                assertEquals((float) dp(2), model.getElevation());
+                assertTrue(model.getBackground() instanceof android.graphics.drawable.RippleDrawable);
+                if (android.os.Build.VERSION.SDK_INT >= 28) {
+                    assertEquals(0x18000000, model.getOutlineAmbientShadowColor());
+                    assertEquals(0x20000000, model.getOutlineSpotShadowColor());
+                }
                 assertFalse(composer.isVerticalScrollBarEnabled());
                 try {
                     var scrollField = LocalChatActivity.class.getDeclaredField("scroll"); scrollField.setAccessible(true);
@@ -91,6 +99,7 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
                 assertEquals(dp(48), send.getWidth()); assertEquals(dp(48), send.getHeight());
                 assertTrue(composer.getRight() <= send.getLeft());
                 View bar = root.findViewWithTag("localComposerBar"), status = root.findViewWithTag("localStatus");
+                assertDockInsets(bar, status);
                 assertFalse(((ViewGroup) bar.getParent()).getClipToPadding());
                 assertTrue(bar.getBottom() <= status.getTop());
                 ViewGroup user = root.findViewWithTag("localMessage:0"), assistant = root.findViewWithTag("localMessage:1");
@@ -128,6 +137,19 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
             });
             assertEquals("First line\nSecond line\nThird line", new LocalChatStore(getInstrumentation().getTargetContext()).conversation(conversationId).getString("draft"));
         } finally { getInstrumentation().runOnMainSync(activity::finish); getInstrumentation().waitForIdleSync(); }
+    }
+
+    private void assertDockInsets(View bar, View status) {
+        assertEquals(dp(2), status.getPaddingTop()); assertEquals(dp(2), status.getPaddingBottom());
+        assertEquals(dp(12), ((LinearLayout.LayoutParams) bar.getLayoutParams()).bottomMargin);
+        View parent = (View) bar.getParent();
+        android.view.WindowInsets original = parent.getRootWindowInsets();
+        assertNotNull(original);
+        for (int bottom : new int[] {0, dp(24), dp(280)}) {
+            parent.dispatchApplyWindowInsets(original.replaceSystemWindowInsets(0, 0, 0, bottom));
+            assertEquals(dp(8) + bottom, parent.getPaddingBottom());
+        }
+        if (original != null) parent.dispatchApplyWindowInsets(original);
     }
 
     private void screenshot(Activity activity, String name) throws Exception {
