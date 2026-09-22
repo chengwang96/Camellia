@@ -40,6 +40,78 @@ function transport() {
   return { proc, send, messages, requests };
 }
 
+async function outputFixture(context) {
+  const root = temporary(context), wire = transport(), events = [];
+  const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'fixture', connection: 'api' }, opts: {}, spec: {},
+    spawn: () => wire.proc, log() {}, history: new ClaudeHistory(path.join(root, 'history')),
+    onEvent: event => events.push(event), onSessionId() {}, onResult() {} });
+  session.start(); session.sendUserMessage('Check the code'); await session.ready;
+  await new Promise(resolve => setImmediate(resolve));
+  context.after(() => session.shutdown());
+  const notify = (method, params) => wire.send({ method, params: { threadId: session.sessionId, ...params } });
+  const message = (id, text, phase, streamed = true) => {
+    notify('item/started', { item: { type: 'agentMessage', id, ...(phase ? { phase } : {}) } });
+    if (streamed) notify('item/agentMessage/delta', { itemId: id, delta: text });
+    notify('item/completed', { item: { type: 'agentMessage', id, text, ...(phase ? { phase } : {}) } });
+  };
+  return { session, events, notify, message };
+}
+
+test('Codex separates commentary from final output in streaming, results and native history', async context => {
+  const { session, events, notify, message } = await outputFixture(context);
+  message('progress', 'Checking the code.', 'commentary');
+  message('answer', 'The fix is ready.', 'final_answer', false);
+  notify('turn/completed', { turn: { status: 'completed' } });
+  const result = events.at(-1);
+  assert.equal(result.result, 'The fix is ready.');
+  assert.deepEqual(result.outputBlocks, [
+    { type: 'text', text: 'Checking the code.', phase: 'commentary' },
+    { type: 'text', text: 'The fix is ready.', phase: 'final_answer' },
+  ]);
+  assert.equal(events.find(event => event.event?.type === 'content_block_start').event.content_block.phase, 'commentary');
+  const history = await session.history.transcript(session.sessionId);
+  assert.equal(history.messages.at(-1).text, result.result);
+  assert.deepEqual(history.messages.at(-1).outputBlocks, result.outputBlocks);
+});
+
+test('Codex without phase folds earlier messages and exposes only the successful terminal message', async context => {
+  const { session, events, notify, message } = await outputFixture(context);
+  message('first', 'I will inspect the code.');
+  message('second', 'Still checking.');
+  notify('item/started', { item: { type: 'commandExecution', id: 'tool', command: 'inspect' } });
+  notify('item/completed', { item: { type: 'commandExecution', id: 'tool', command: 'inspect', status: 'completed' } });
+  message('last', 'Confirmed the issue.');
+  const live = await session.liveState();
+  assert.equal(live.events.filter(event => event.event?.content_block?.phase === 'commentary').length, 3);
+  notify('turn/completed', { turn: { status: 'completed' } });
+  assert.equal(events.at(-1).result, 'Confirmed the issue.');
+  assert.deepEqual(events.at(-1).outputBlocks.map(block => block.phase), ['commentary', 'commentary', 'final_answer']);
+  assert.ok(events.some(event => event.type === 'gui:message-phase' && event.phase === 'final_answer'));
+});
+
+for (const ending of ['interrupted', 'failed', 'tool', 'commentary', 'plan']) test('Codex does not promote process-only output on ' + ending, async context => {
+  const { session, events, notify, message } = await outputFixture(context);
+  message('progress', 'I will check.', ending === 'commentary' ? 'commentary' : undefined);
+  if (ending === 'tool') notify('item/started', { item: { type: 'commandExecution', id: 'tool', command: 'inspect' } });
+  if (ending === 'plan') notify('item/completed', { item: { type: 'plan', id: 'plan', text: 'Inspect then verify.' } });
+  notify('turn/completed', { turn: { status: ['interrupted', 'failed'].includes(ending) ? ending : 'completed' } });
+  const result = events.at(-1);
+  assert.ok(result.outputBlocks.every(block => block.phase === 'commentary'));
+  const history = await session.history.transcript(session.sessionId);
+  assert.equal(history.messages.at(-1).text, '');
+  assert.deepEqual(history.messages.at(-1).outputBlocks, result.outputBlocks);
+});
+
+test('Codex uses phase supplied only at item completion and does not duplicate streamed text', async context => {
+  const { events, notify, message } = await outputFixture(context);
+  message('progress', 'Checking.', 'commentary');
+  notify('item/agentMessage/delta', { itemId: 'answer', delta: 'Answer' });
+  notify('item/completed', { item: { type: 'agentMessage', id: 'answer', text: 'Answer', phase: 'final_answer' } });
+  notify('turn/completed', { turn: { status: 'completed' } });
+  assert.equal(events.at(-1).result, 'Answer');
+  assert.equal(events.at(-1).outputBlocks.length, 2);
+});
+
 test('Codex steers the expected active turn without starting or interrupting it', async () => {
   const calls = [], history = [];
   const session = new CodexSession({});
@@ -176,7 +248,9 @@ test('Codex API metadata adds native patch support without overriding known mode
   assert.equal(model.apply_patch_tool_type, 'freeform');
   assert.equal(model.default_reasoning_level, null); assert.equal(first.model_reasoning_effort, undefined);
   assert.equal(model.model_messages.instructions_template, fs.readFileSync(path.join(__dirname, '../src/engines/codex-metadata/fallback-prompt.md'), 'utf8'));
-  codexSpawnSpec({ ...options, contextWindow: 65536 });
+  const limited = codexSpawnSpec({ ...options, contextWindow: 65536 });
+  assert.deepEqual(limited.args, ['app-server', '-c', 'model_context_window=65536']);
+  assert.equal(read().model_context_window, undefined);
   const tuned = JSON.parse(fs.readFileSync(read().model_catalog_json, 'utf8'));
   assert.equal(tuned.models.find(m => m.slug === 'kimi-k3').context_window, 65536);
   assert.equal(tuned.models.find(m => m.slug === 'kimi-k3').max_context_window, 65536);
@@ -186,7 +260,11 @@ test('Codex API metadata adds native patch support without overriding known mode
   assert.ok(!next.models.some(m => m.slug === 'kimi-k3'));
   for (const native of ['gpt-5.5', 'openai/gpt-5.5-2026']) {
     codexSpawnSpec({ ...options, model: native }); assert.equal(read().model_catalog_json, undefined);
+    assert.deepEqual(codexSpawnSpec({ ...options, model: native, contextWindow: 128000 }).args,
+      ['app-server', '-c', 'model_context_window=128000']);
   }
+  assert.deepEqual(codexSpawnSpec(options).args, ['app-server']);
+  assert.deepEqual(codexSpawnSpec({ ...options, connection: 'subscription', contextWindow: 128000 }).args, ['app-server']);
   codexSpawnSpec(options);
   codexSpawnSpec({ ...options, connection: 'subscription' }); assert.equal(read().model_catalog_json, undefined);
   const own = path.join(root, 'user-models.json');

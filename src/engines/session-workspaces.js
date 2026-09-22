@@ -7,7 +7,7 @@ const { validSessionId } = require('./claude-history');
 
 function createSessionWorkspaces({ history, loadConfig, saveConfig, metaKey, settingsKey, standaloneCwd, getSession, onDetach, fixedCwd = false }) {
 async function listSessions({ limits = {}, activeSessionId = null } = {}) {
-  const entries = await history.list();
+  const entries = [...await history.list()].sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
   const config = loadConfig();
   const meta = sessionMeta(config);
   const settings = config[settingsKey] || {};

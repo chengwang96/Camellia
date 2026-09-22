@@ -27,9 +27,27 @@ The **Account sign-in** section opens the native account settings for Kimi Code,
 3. Fetch the provider's model catalog and select the models to expose. Enter models manually when no catalog is available.
 4. Save, then validate each key against the models you intend to use.
 
-Presets cover Google Gemini API, Ollama Cloud, DeepSeek, Kimi / Moonshot, Kimi Code (API key), Command Code GOAT, OpenCode Go, and OpenCode Zen. These presets require API keys; they do not initiate OAuth. They provide connection defaults; access and quotas depend on the account.
+Presets cover Google Gemini API, Ollama Cloud, DeepSeek, Kimi / Moonshot, Kimi Code (API key), MiMo (pay-as-you-go), MiMo Token Plan (China, Singapore, Europe), Command Code GOAT, OpenCode Go, and OpenCode Zen. These presets require API keys; they do not initiate OAuth. They provide connection defaults; access and quotas depend on the account.
+
+### MiMo pay-as-you-go API
+
+Select **MiMo (pay-as-you-go)** and add a regular MiMo API key, not a Token Plan `tp-…` key. The preset includes `mimo-v2.6-pro` and `mimo-v2.6-flash`, with OpenAI base URL `https://api.xiaomimimo.com/v1` and Anthropic base URL `https://api.xiaomimimo.com/anthropic/v1`. Save the provider, then choose a model in your engine's **API** connection settings. Requests consume your API account balance, not subscription Credits. If you also configure Token Plan for the same model, the router can fall back to this paid route when the subscription route is unavailable. UltraSpeed is not enabled by default; add it manually only if your account has access and you accept its separate pricing.
+
+### MiMo Token Plan
+
+Select the MiMo Token Plan preset matching the region displayed in your MiMo console and add the subscription's dedicated `tp-…` key, not a regular pay-as-you-go key. The presets include `mimo-v2.6-pro` and `mimo-v2.6-flash`; fetching a model catalog is optional. They support OpenAI Chat Completions and Anthropic Messages through the shared API router. Select **API** in your engine settings and choose one of these models.
+
+The OpenAI base URL is `https://token-plan-{region}.xiaomimimo.com/v1`, where `{region}` is `cn`, `sgp`, or `ams`. Camellia's Anthropic base URL is `https://token-plan-{region}.xiaomimimo.com/anthropic/v1`: unlike an Anthropic SDK base URL, it includes `/v1` because the router appends `/messages` itself. Use the endpoints assigned to your subscription; changing a region does not grant access to it.
+
+Token Plan is restricted to permitted coding-tool use, not general automation scripts or custom application backends. Check remaining Credits in the MiMo console; Camellia does not query subscription Credits or infer them from token counts. MiMo stops service when the subscription quota is exhausted, but Camellia can fail over to another configured route for the same model. Do not configure a pay-as-you-go route for these model IDs unless you explicitly want that paid fallback. The presets do not add speech models or the v2.5 language models scheduled for retirement on October 21, 2026, according to the supplied Token Plan documentation.
 
 Model discovery and validation are separate operations. Validation sends a short inference request, may incur a charge, and is excluded from business usage statistics.
+
+Context limits come from the provider's model catalog when it reports them; discovery does not scrape model documentation. Fetch the catalog and save to update previously added models. A manually configured context window takes precedence over the catalog limit for engine configuration. When several enabled routes expose the same model, Camellia uses the smallest known configured/catalog window. Codex API sessions receive this window, including for built-in model IDs, without changing subscription settings.
+
+The chat context tooltip distinguishes the engine-reported window, a configured window, and the model maximum reported by the provider. Missing limits appear as unknown, not a guessed model maximum. An engine may still impose its own fallback window; that is not evidence of the model's actual maximum. If the provider does not publish a limit, set the context window manually using that endpoint's documented limit. Restart an existing native conversation after changing its engine window.
+
+Camellia's automatic compaction uses the latest native input-token usage (including cached input) and engine-reported window for the current session when available, with an 85% threshold. Missing or invalidated usage falls back to a character-based estimate; changing model, connection, or configured window invalidates the saved usage. Replayed history is estimated against the token window rather than a fixed 220,000-character cutoff. Individual new messages still have a separate 200,000-character size guard. Automatic compaction records its reason, usage source, window, and available estimates in the application log and saved compaction notice. Native engines may also compact independently.
 
 DSH exposes the pool as the **API route pool** provider. Claude and the API modes of Codex, Kimi, and Antigravity read their model menus from the shared pool.
 

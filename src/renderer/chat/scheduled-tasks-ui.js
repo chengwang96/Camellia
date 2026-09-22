@@ -2,10 +2,10 @@
 
 function createScheduledTasksUI({ $, context, setStatus }) {
   const dialog = $('tasksDialog'), toggle = $('tasksToggle'), list = $('tasksList');
-  let sessionId = null, editing = null, pending = false, refreshSequence = 0;
+  let sessionId = null, editing = null, pending = false, refreshSequence = 0, toggleSessionId = null;
   const translate = text => window.CamelliaI18n.t(text);
   const call = async (action, payload = {}) => {
-    const result = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'task-' + action, payload: { ...payload, sessionId } });
+    const result = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'task-' + action, payload: { sessionId, ...payload } });
     if (!result.ok) throw new Error(result.error || 'Task operation failed');
     return result;
   };
@@ -16,8 +16,14 @@ function createScheduledTasksUI({ $, context, setStatus }) {
   function resetForm() { editing = null; $('tasksForm').reset(); $('taskSave').textContent = translate('Create task'); }
   async function refresh() {
     const sequence = ++refreshSequence;
-    const result = await call('list');
-    if (!dialog.open || sequence !== refreshSequence) return;
+    const currentSessionId = context.sessionId;
+    if (toggleSessionId !== currentSessionId) toggle.hidden = true;
+    toggleSessionId = currentSessionId;
+    if (!sharedChat || !currentSessionId) { toggle.hidden = true; return; }
+    const result = await call('list', { sessionId: currentSessionId });
+    if (sequence !== refreshSequence || currentSessionId !== context.sessionId) return;
+    toggle.hidden = !result.tasks.some(task => ['scheduled', 'running', 'paused'].includes(task.status));
+    if (!dialog.open || sessionId !== currentSessionId) return;
     list.replaceChildren();
     if (!result.tasks.length) list.append(element('p', 'No scheduled tasks in this conversation.', true));
     for (const task of result.tasks) {
@@ -74,13 +80,13 @@ function createScheduledTasksUI({ $, context, setStatus }) {
       resetForm();
     });
   });
-  toggle.hidden = !sharedChat;
+  toggle.hidden = true;
   toggle.addEventListener('click', () => void reveal());
   $('tasksClose').addEventListener('click', () => dialog.close());
   if (sharedChat) window.dshDesktop.onConversationEvent(event => {
     if (event.type !== 'conversation:task') return;
-    if (dialog.open && event.session_id === sessionId) void refresh().catch(error => { $('tasksError').textContent = error.message; });
+    if (event.session_id === context.sessionId) void refresh().catch(error => { $('tasksError').textContent = error.message; });
     if (event.session_id === context.sessionId && ['complete', 'paused'].includes(event.task.status)) setStatus(event.task.lastResult);
   });
-  return { reveal };
+  return { reveal, refresh: () => refresh().catch(error => setStatus(error.message)) };
 }

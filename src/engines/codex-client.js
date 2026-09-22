@@ -111,7 +111,11 @@ function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscr
     if (fs.existsSync(instructions)) fs.copyFileSync(instructions, target);
     else fs.rmSync(target, { force: true });
   }
-  return { exe: runtime.file, args: ['app-server'], cwd, env: environment,
+  const args = ['app-server'];
+  if (connection === 'api' && Number.isInteger(contextWindow) && contextWindow >= 4096) {
+    args.push('-c', `model_context_window=${contextWindow}`);
+  }
+  return { exe: runtime.file, args, cwd, env: environment,
     permissions: { approvalPolicy: config.approval_policy || 'untrusted', sandbox: config.sandbox_mode || 'workspace-write' } };
 }
 

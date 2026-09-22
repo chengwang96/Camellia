@@ -12,6 +12,7 @@ const titles = {
   usage: ["Usage", "Track requests, balances, and quotas."],
   general: ["General", "Language, appearance, and local preferences."],
   archived: ["Archived", "Restore or permanently delete archived conversations."],
+  storage: ["Space cleanup", "Review unused local files before deleting them."],
   engines: ["Engine Settings", "Manage native settings in one place."],
   runtimes: ["Runtime", "Download only the engines you need."],
 };
@@ -74,6 +75,8 @@ function renderEditor() {
   if (!p) { $('editor').innerHTML = ''; return; }
   $('editor').innerHTML = `<button class="back" id="backProviders" data-i18n>← All providers</button>
     <div class="editor-heading"><span class="provider-mark">${mark(p.type)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name" data-i18n-attrs="aria-label"><label><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}>Enabled</label></div>
+    ${p.type.startsWith('mimo-token-plan-') ? '<p class="hint" data-i18n>Use your Token Plan tp- key and the region shown in your console. Coding use only. Do not add a pay-as-you-go route for the same model unless you want paid fallback. Check remaining Credits in the MiMo console.</p>' : ''}
+    ${p.type === 'mimo' ? '<p class="hint" data-i18n>Use a regular MiMo API key, not a Token Plan tp- key. Requests are billed to your API balance. Adding this provider alongside Token Plan for the same model allows paid fallback.</p>' : ''}
     <div class="section-head"><h2 data-i18n>API Key</h2><button id="showImport" data-i18n>Import keys</button><button id="addKey" data-i18n>+ Add key</button></div>
     <p class="hint" data-i18n>Keys are tried in order. Leave a key blank to keep it. Use labels to identify accounts.</p><div id="keyRows"></div>
     <div id="keyImport" class="key-import" hidden><label for="bulkKeys" data-i18n>One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false" data-i18n-attrs="placeholder"></textarea><button id="importKeys" data-i18n>Add to key pool</button><p class="hint" data-i18n>Duplicate keys for this provider are merged on save.</p></div>
@@ -123,7 +126,7 @@ function updateKeyStats() {
 }
 function renderModels() {
   const p = current(); if (!p) return;
-  $('modelChips').innerHTML = p.models.filter(m => m.id).map(m => `<span class="model-chip">${esc(m.id)}</span>`).join('') || "<p class=\"hint\" data-i18n>Fetch the provider catalog and choose models, or add them manually.</p>";
+  $('modelChips').innerHTML = p.models.map((m, index) => m.id ? `<span class="model-chip"><span>${esc(m.id)}</span><button type="button" data-remove-model="${index}" aria-label="Remove model ${esc(m.id)}" data-i18n-attrs="aria-label">×</button></span>` : '').join('') || "<p class=\"hint\" data-i18n>Fetch the provider catalog and choose models, or add them manually.</p>";
   $('modelRows').innerHTML = p.models.map((m,i) => `<tr><td><input data-model="${i}" data-field="id" value="${esc(m.id)}" aria-label="Canonical model ID ${i+1}" spellcheck="false" data-i18n-attrs="aria-label"></td><td><input data-model="${i}" data-field="upstream" value="${esc(m.upstream)}" aria-label="Upstream model ID ${i+1}" spellcheck="false" data-i18n-attrs="aria-label"></td><td><select data-model="${i}" data-field="protocol" aria-label="Model protocol ${i+1}" data-i18n-attrs="aria-label"><option value="auto" data-i18n>Default</option><option value="openai" data-i18n>OpenAI</option><option value="anthropic" data-i18n>Anthropic</option></select></td><td><input type="number" min="4096" max="${m.maxContext || 2000000}" step="1024" data-model="${i}" data-field="contextWindow" value="${m.contextWindow || ''}" placeholder="${m.maxContext ? '\u2264 ' + m.maxContext : 'Auto'}" aria-label="Context window ${i+1}" data-i18n-attrs="aria-label" style="width:96px"></td><td><button data-remove-model="${i}" aria-label="Remove model ${i+1}" data-i18n-attrs="aria-label">×</button></td></tr>`).join('');
   document.querySelectorAll('[data-model][data-field=protocol]').forEach(el => { el.value = p.models[Number(el.dataset.model)].protocol || 'auto'; });
   fillSelect($('verifyModel'), p.models.filter(m => m.id).map(m => [m.id, m.id]), "Select model", false);
@@ -140,7 +143,7 @@ async function discoverModels(p) {
   const button = $('discoverModels'); button.disabled = true; status("Fetching model catalog…");
   try {
     const result = await api.providerModels({ provider: p }); if (!result.ok) throw new Error(result.error);
-    catalog = result.models; catalogProvider = p.id; catalogSelected = new Set();
+    catalog = result.models; catalogProvider = p.id; catalogSelected = new Set(p.models.map(model => model.id));
     // Catalogs that report context limits backfill models added earlier, so the
     // cap is known (and enforced) before a value is typed into the table.
     let limits = 0;
@@ -159,7 +162,7 @@ function renderCatalog() {
   const query = $('modelSearch').value.trim().toLowerCase(), p = config.providers.find(p => p.id === catalogProvider);
   $('catalogList').innerHTML = catalog.filter(m => m.id.toLowerCase().includes(query)).map((m) => {
     const existing = p?.models.some(x => x.id === m.id);
-    return `<label class="catalog-option"><input type="checkbox" data-catalog="${esc(m.id)}" ${existing || catalogSelected.has(m.id) ? 'checked' : ''} ${existing ? 'disabled' : ''}>${esc(m.id)}${m.maxContext ? `<small class="hint">· ${Math.round(m.maxContext / 1024)}K ctx</small>` : ''}${existing ? "<small data-i18n>Added</small>" : ''}</label>`;
+    return `<label class="catalog-option"><input type="checkbox" data-catalog="${esc(m.id)}" ${catalogSelected.has(m.id) ? 'checked' : ''}>${esc(m.id)}${m.maxContext ? `<small class="hint">· ${Math.round(m.maxContext / 1024)}K ctx</small>` : ''}${existing ? "<small data-i18n>Added</small>" : ''}</label>`;
   }).join('') || "<p class=\"hint\" data-i18n>No matching models</p>";
 }
 
@@ -315,7 +318,7 @@ $('editor').onchange = e => {
 $('editor').onclick = async e => {
   const button = e.target.closest('button'), p = current(); if (!button || !p) return;
   const d = button.dataset;
-  if (d.removeModel !== undefined) { p.models.splice(Number(d.removeModel),1); edited(); renderModels(); }
+  if (d.removeModel !== undefined) { p.models.splice(Number(d.removeModel),1); edited(); renderModels(); renderRoutes(); }
   if (d.removeKey !== undefined) { p.keys.splice(Number(d.removeKey),1); edited(); renderKeys(); }
   if (d.upKey !== undefined || d.downKey !== undefined) { const i = Number(d.upKey ?? d.downKey), j = d.upKey !== undefined ? i-1 : i+1; [p.keys[i], p.keys[j]] = [p.keys[j], p.keys[i]]; edited(); renderKeys(); }
   try {
@@ -377,7 +380,13 @@ $('modelSearch').oninput = renderCatalog;
 $('catalogList').onchange = e => { const id = e.target.dataset.catalog; if (id) e.target.checked ? catalogSelected.add(id) : catalogSelected.delete(id); };
 $('applyModels').onclick = () => {
   const p = config.providers.find(p => p.id === catalogProvider);
-  if (p) { for (const model of catalog) if (catalogSelected.has(model.id) && !p.models.some(m => m.id === model.id)) p.models.push(model); edited(); if (selected === p.id) renderModels(); }
+  if (p) {
+    const catalogIds = new Set(catalog.map(model => model.id));
+    p.models = p.models.filter(model => !catalogIds.has(model.id) || catalogSelected.has(model.id));
+    for (const model of catalog) if (catalogSelected.has(model.id) && !p.models.some(existing => existing.id === model.id)) p.models.push(model);
+    edited();
+    if (selected === p.id) { renderModels(); renderRoutes(); }
+  }
   $('modelDialog').close();
 };
 $('enabled').onchange = e => { config.enabled = e.target.checked; edited(); };
@@ -459,6 +468,75 @@ async function refresh(initial = false) {
   } catch (e) { status(e.message, true); }
 }
 $('refresh').onclick = () => refresh();
+let storagePreview = null, storageBusy = false;
+const storageBytes = bytes => bytes < 1024 ? fmt(bytes) + ' B' : bytes < 1024 ** 2 ? fmt(bytes / 1024) + ' KiB' : bytes < 1024 ** 3 ? fmt(bytes / 1024 ** 2) + ' MiB' : fmt(bytes / 1024 ** 3) + ' GiB';
+function storageControls() {
+  $('scanStorage').disabled = storageBusy;
+  $('cleanStorage').disabled = storageBusy || !storagePreview?.candidates.length;
+}
+function storageEstimate(preview) {
+  const count = preview.candidates.reduce((total, entry) => total + entry.count, 0);
+  const bytes = preview.candidates.reduce((total, entry) => total + entry.bytes, 0);
+  return window.CamelliaI18n.t('{0} files · {1} eligible for cleanup').replace('{0}', () => fmt(count)).replace('{1}', () => storageBytes(bytes));
+}
+$('scanStorage').onclick = async () => {
+  if (storageBusy) return;
+  storageBusy = true; storagePreview = null; storageControls();
+  $('storageStatus').textContent = window.CamelliaI18n.t('Checking file ownership…');
+  $('storageSummary').replaceChildren(); $('storageFiles').replaceChildren(); $('storageDetails').hidden = true;
+  try {
+    const result = await api.storageScan();
+    if (!result.ok) throw new Error(result.error);
+    storagePreview = result;
+    $('storageStatus').textContent = result.candidates.length ? storageEstimate(result) : window.CamelliaI18n.t('No safely removable files found.');
+    const groups = new Map();
+    for (const entry of result.candidates) {
+      const group = groups.get(entry.category) || { count: 0, bytes: 0 };
+      group.count += entry.count; group.bytes += entry.bytes; groups.set(entry.category, group);
+    }
+    $('storageSummary').innerHTML = [...groups].map(([category, group]) => `<div class="setting-row"><h2 data-i18n>${esc(category)}</h2><span>${esc(fmt(group.count))} · ${esc(storageBytes(group.bytes))}</span></div>`).join('');
+    if (result.skipped) {
+      const notice = document.createElement('p');
+      notice.textContent = window.CamelliaI18n.t('{0} protected or unverifiable items skipped.').replace('{0}', () => fmt(result.skipped));
+      $('storageSummary').append(notice);
+    }
+    $('storageDetails').hidden = !result.candidates.length;
+    let shown = 0;
+    const showMore = () => {
+      $('storageFiles').querySelector('button')?.remove();
+      const batch = result.candidates.slice(shown, shown + 200);
+      shown += batch.length;
+      $('storageFiles').insertAdjacentHTML('beforeend', batch.map(entry => `<div class="setting-row storage-file"><code>${esc(entry.path)}</code><span>${esc(storageBytes(entry.bytes))}</span></div>`).join(''));
+      if (shown < result.candidates.length) {
+        const button = document.createElement('button');
+        button.textContent = 'Show more paths'; button.setAttribute('data-i18n', '');
+        button.onclick = showMore; $('storageFiles').append(button);
+      }
+    };
+    showMore();
+  } catch (error) { $('storageStatus').textContent = error.message; }
+  finally { storageBusy = false; storageControls(); }
+};
+$('cleanStorage').onclick = () => {
+  if (storageBusy || !storagePreview?.candidates.length) return;
+  $('cleanStorageEstimate').textContent = storageEstimate(storagePreview);
+  $('cleanStorageDialog').showModal();
+};
+$('confirmCleanStorage').onclick = async () => {
+  $('cleanStorageDialog').close();
+  if (storageBusy || !storagePreview) return;
+  const token = storagePreview.token;
+  storagePreview = null; storageBusy = true; storageControls();
+  $('storageStatus').textContent = window.CamelliaI18n.t('Rechecking references and cleaning…');
+  try {
+    const result = await api.storageClean(token);
+    if (!result.ok) throw new Error(result.error);
+    $('storageStatus').textContent = window.CamelliaI18n.t('Removed {0} files ({1}). Skipped {2} candidates; {3} errors. Scan again to review remaining files.')
+      .replace('{0}', () => fmt(result.files)).replace('{1}', () => storageBytes(result.bytes)).replace('{2}', () => fmt(result.skipped)).replace('{3}', () => fmt(result.errors.length));
+    $('storageSummary').textContent = result.errors.map(entry => entry.path + ': ' + entry.error).join('\n');
+  } catch (error) { $('storageStatus').textContent = error.message; $('storageSummary').replaceChildren(); }
+  finally { $('storageDetails').hidden = true; $('storageFiles').replaceChildren(); storageBusy = false; storageControls(); }
+};
 // ---------- Archived conversations ----------
 const engineNames = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity' };
 let archivedPendingDelete = null, archivedCount = 0;

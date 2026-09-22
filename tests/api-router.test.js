@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { once } = require('node:events');
 const { startApiRouter, retryDelay } = require('../src/api/api-router');
-const { normalizeConfig, writeConfig, loadConfig, publicState } = require('../src/api/api-router-config');
+const { normalizeConfig, writeConfig, loadConfig, publicState, PRESETS } = require('../src/api/api-router-config');
 const { frame, SSEParser, convertRequest } = require('../src/api/api-protocol');
 const { BAD_PORTS } = require('./bad-ports.cjs');
 
@@ -65,6 +65,59 @@ async function fixture(t, respond, makeProviders, options = {}) {
   });
   const post=(body, endpoint='/v1/chat/completions', opts={}) => fetch(router.url+endpoint,{ method:'POST', headers:{ 'content-type':'application/json', authorization:'Bearer client-placeholder', 'x-api-key':'client-private', ...opts.headers }, body:JSON.stringify({ model:'kimi-k3', messages:[{role:'user',content:'hello'}], ...body }), signal:opts.signal });
   return {router,requests,file,post,url};
+}
+
+test('MiMo Token Plan presets use regional subscription endpoints and current coding models', () => {
+  const presets = PRESETS.filter(preset => preset.type.startsWith('mimo-token-plan-'));
+  assert.equal(presets.length, 3);
+  for (const region of ['cn', 'sgp', 'ams']) {
+    const preset = presets.find(entry => entry.type === `mimo-token-plan-${region}`);
+    assert.equal(preset.baseUrl, `https://token-plan-${region}.xiaomimimo.com/v1`);
+    assert.equal(preset.anthropicBaseUrl, `https://token-plan-${region}.xiaomimimo.com/anthropic/v1`);
+    assert.equal(preset.protocol, 'dual');
+    const config = normalizeConfig({ providers: [{ ...preset, keys: [{ key: 'tp-test-subscription' }] }] });
+    assert.deepEqual(config.providers[0].models.map(model => model.id), ['mimo-v2.6-pro', 'mimo-v2.6-flash']);
+    assert.ok(config.providers[0].models.every(model => model.id === model.upstream));
+    assert.ok(!JSON.stringify(publicState(config)).includes('tp-test-subscription'));
+  }
+});
+
+test('MiMo pay-as-you-go preset uses ordinary API endpoints and current coding models', () => {
+  const preset = PRESETS.find(entry => entry.type === 'mimo');
+  assert.equal(preset.name, 'MiMo (pay-as-you-go)');
+  assert.equal(preset.baseUrl, 'https://api.xiaomimimo.com/v1');
+  assert.equal(preset.anthropicBaseUrl, 'https://api.xiaomimimo.com/anthropic/v1');
+  assert.equal(preset.protocol, 'dual');
+  const config = normalizeConfig({ providers: [{ ...preset, keys: [{ key: 'mimo-test-api-key' }] }] });
+  assert.deepEqual(config.providers[0].models.map(model => model.id), ['mimo-v2.6-pro', 'mimo-v2.6-flash']);
+  assert.ok(config.providers[0].models.every(model => model.id === model.upstream));
+  assert.ok(!JSON.stringify(publicState(config)).includes('mimo-test-api-key'));
+});
+
+for (const [type, key] of [['mimo-token-plan-cn', 'tp-test-subscription'], ['mimo', 'mimo-test-api-key']]) {
+test(`${type} routes OpenAI and Anthropic requests to distinct paths with provider auth`, async t => {
+  const preset = PRESETS.find(entry => entry.type === type);
+  const harness = await fixture(t, (request, response) => {
+    if (request.url === '/v1/chat/completions') return stream(response, openEvents('MiMo', true));
+    reply(response, 200, { type: 'message', role: 'assistant', model: request.body.model,
+      content: [{ type: 'text', text: 'MiMo' }], stop_reason: 'end_turn', usage: { input_tokens: 3, output_tokens: 2 } });
+  }, url => [{ ...preset, id: 'mimo', baseUrl: url + '/v1', anthropicBaseUrl: url + '/anthropic/v1',
+    keys: [{ id: 'mimo-key', key }] }]);
+  const streamed = await harness.post({ model: 'mimo-v2.6-pro', stream: true });
+  assert.equal(streamed.status, 200);
+  const output = await streamed.text();
+  assert.match(output, /reasoning_content/);
+  assert.match(output, /tool_calls/);
+  assert.match(output, /\[DONE\]/);
+  const message = await harness.post({ model: 'mimo-v2.6-flash', max_tokens: 32 }, '/v1/messages');
+  assert.equal(message.status, 200);
+  assert.equal((await message.json()).content[0].text, 'MiMo');
+  assert.deepEqual(harness.requests.map(request => request.url), ['/v1/chat/completions', '/anthropic/v1/messages']);
+  assert.deepEqual(harness.requests.map(request => request.body.model), ['mimo-v2.6-pro', 'mimo-v2.6-flash']);
+  assert.ok(harness.requests.every(request => request.headers.authorization === `Bearer ${key}`));
+  assert.equal(harness.requests[1].headers['x-api-key'], key);
+  assert.equal(harness.router.getState().usage['mimo-key'].requests, 2);
+});
 }
 
 test('scoped requests preserve the actual output cap and stream finish reason after a recovered quota error', async t => {

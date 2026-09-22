@@ -261,9 +261,11 @@ try:
         page.screenshot(animations='disabled', path=str(screenshots / 'claude-model-menu.png'))
         page.locator('.pop-opt').first.click()
         expect(page.locator('.dsh-pop')).to_have_count(0)
-        page.locator('#usageDot').click()
-        page.screenshot(animations='disabled', path=str(screenshots / 'claude-usage-menu.png'))
+        expect(page.locator('#usageDot')).to_have_count(0)
+        page.locator('#modelPill').click()
+        expect(page.locator('.dsh-pop')).to_have_count(1)
         page.locator('#input').click()
+        expect(page.locator('.dsh-pop')).to_have_count(0)
 
         # A long paste becomes a .txt attachment; short pastes stay inline.
         def paste(text):

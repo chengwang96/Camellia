@@ -482,6 +482,10 @@
   .queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .queue-remove { flex: none; border: 0; padding: 2px 5px; background: transparent; color: inherit; cursor: pointer; border-radius: 5px; }
   .queue-remove:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+  .queue-steer { flex: none; border: 0; padding: 3px 7px; border-radius: 5px; background: transparent; color: var(--dsw-static-deepseek-500); font: inherit; cursor: pointer; }
+  .queue-steer:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+  .queue-steer:focus-visible, .queue-remove:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 1px; }
+  .queue-steer:disabled, .queue-remove:disabled { opacity: .45; cursor: not-allowed; }
 
   /* Attachment chips inside the input card */
   .attach-row { display: none; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
@@ -563,14 +567,6 @@
 .ctx-fill { fill: none; stroke: var(--dsw-static-deepseek-500); stroke-width: 4; stroke-linecap: round; transition: stroke-dasharray .3s ease; }
 .ctx-fill.hot { stroke: var(--dsw-alias-state-danger-primary, #cf3535); }
 .ctx-tip { position: fixed; z-index: 40; padding: 6px 10px; border-radius: 8px; background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base); font-size: 12px; white-space: nowrap; box-shadow: 0 4px 16px rgba(0,0,0,.18); pointer-events: none; }
-.usage-dot {
-    width: 26px; height: 26px; border: none; border-radius: 50%;
-    background: transparent; color: var(--dsw-alias-label-tertiary);
-    cursor: pointer; display: grid; place-items: center; flex-shrink: 0;
-    transition: all var(--dt-fast);
-  }
-  .usage-dot:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
-  .usage-dot svg { width: 15px; height: 15px; }
 
   .btn-send {
     width: 34px; height: 34px; border: none; border-radius: 50%;
@@ -607,6 +603,18 @@
   }
   @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.8); } }
   .run-status .run-clock { color: var(--dsw-alias-label-caption); font: var(--f-xs-13); }
+
+  .context-compaction {
+    display: flex; align-items: center; gap: 9px;
+    margin: 20px 0; padding: 12px 0;
+    color: var(--dsw-alias-label-secondary); font: var(--f-s-14);
+  }
+  .context-compaction svg { width: 20px; height: 20px; flex-shrink: 0; }
+  .context-compaction[data-state="running"] { color: var(--dsw-alias-label-primary); }
+  .context-compaction[data-state="running"] svg { animation: pulse 1.2s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    .context-compaction[data-state="running"] svg { animation: none; }
+  }
 
   /* ===== P0: todo / task panel ===== */
   .todo-panel {
@@ -817,10 +825,6 @@
     padding: 7px 12px 4px;
     font: var(--f-xxs-12); color: var(--dsw-alias-label-caption);
   }
-  .usage-pop { padding: 4px; border-radius: 10px; }
-  .usage-empty { padding: 4px 10px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-caption); }
-  .usage-pop .pop-row { padding: 5px 10px; cursor: default; }
-  .usage-pop .pop-row:hover { background: transparent; }
   .pop-opt {
     display: flex; align-items: center; gap: 8px;
     padding: 9px 12px; border-radius: 8px;
@@ -861,6 +865,8 @@
 #handoffStop[hidden], #handoffBtn[hidden] { display: none; }
 .session-origin { display: block; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
 .handoff-notice { margin: 18px 0; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.history-earlier { display: block; margin: 12px auto; padding: 8px 14px; border: 0; border-radius: 8px; background: transparent; color: var(--dsw-static-deepseek-500); cursor: pointer; }
+.history-earlier:disabled { opacity: .5; cursor: wait; }
 .handoff-notice button { border: 0; background: none; color: var(--dsw-static-deepseek-500); cursor: pointer; margin-left: 8px; }
 .slash-pop { min-width: 320px; max-width: 480px; padding: 6px; }
 .slash-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; }

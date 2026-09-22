@@ -13,6 +13,8 @@ npm ci
 npm run dev
 ```
 
+Both `npm start` and `npm run dev` leave the chat page intact when source files change, so editing the application does not interrupt typing or reset focus. Reload manually from the application menu when ready to apply renderer changes. For UI development only, `npm run dev:hot` explicitly enables automatic full-page reloads for watched chat files; these reloads can interrupt typing. Packaged builds never enable this watcher.
+
 The installation and startup hooks only check already installed engines and reapply maintained DSH patches. They do not download missing engines. Download your selections in the application or run `npm run setup:runtimes -- dsh kimi`; use `--all` explicitly to prepare every engine. Running the setup script with no selection lists the available choices.
 
 ## Code layout

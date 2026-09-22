@@ -17,6 +17,15 @@ const PRESETS = [
   { type: 'opencode-go', name: 'OpenCode Go', baseUrl: 'https://opencode.ai/zen/go/v1', protocol: 'dual', models: [] },
   { type: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', protocol: 'dual', models: [] },
   { type: 'kimi-code', name: 'Kimi Code (API key)', baseUrl: 'https://api.kimi.com/coding/v1', protocol: 'dual', models: [] },
+  { type: 'mimo', name: 'MiMo (pay-as-you-go)', baseUrl: 'https://api.xiaomimimo.com/v1', protocol: 'dual',
+    anthropicBaseUrl: 'https://api.xiaomimimo.com/anthropic/v1',
+    models: ['mimo-v2.6-pro', 'mimo-v2.6-flash'].map(id => ({ id, upstream: id })) },
+  ...[['cn', 'China'], ['sgp', 'Singapore'], ['ams', 'Europe']].map(([region, label]) => ({
+    type: `mimo-token-plan-${region}`, name: `MiMo Token Plan (${label})`,
+    baseUrl: `https://token-plan-${region}.xiaomimimo.com/v1`, protocol: 'dual',
+    anthropicBaseUrl: `https://token-plan-${region}.xiaomimimo.com/anthropic/v1`,
+    models: ['mimo-v2.6-pro', 'mimo-v2.6-flash'].map(id => ({ id, upstream: id })),
+  })),
   { type: 'gemini', name: 'Google Gemini API', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', protocol: 'openai', models: [] },
   { type: 'custom', name: "Custom provider", baseUrl: '', protocol: 'openai', models: [] },
 ];
@@ -140,10 +149,17 @@ function writeConfig(file, cfg) {
   writeJson(file, cfg);
 }
 function hasRoutes(cfg) { return cfg.enabled && cfg.providers.some(p => p.enabled && p.models.length && p.keys.some(k => k.enabled)); }
+function modelContextWindow(cfg, id) {
+  if (!hasRoutes(cfg)) return undefined;
+  const limits = cfg.providers.filter(provider => provider.enabled && provider.keys.some(key => key.enabled))
+    .flatMap(provider => provider.models).filter(model => model.id === id)
+    .map(model => model.contextWindow || model.maxContext).filter(limit => Number.isInteger(limit) && limit >= 4096);
+  return limits.length ? Math.min(...limits) : undefined;
+}
 function publicState(cfg) {
   const providers = cfg.providers.map(p => ({ ...p, models: p.models.map(m => ({ ...m })), keys: p.keys.map(({ key, ...k }) => ({ ...k, maskedKey: maskKey(key) })) }));
   const models = [...new Set(cfg.providers.filter(p => p.enabled && p.keys.some(k => k.enabled)).flatMap(p => p.models.map(m => m.id)))];
   return { version: 2, enabled: cfg.enabled, port: cfg.port, providers, models, usage: structuredClone(cfg.usage), active: { ...cfg.active } };
 }
 
-module.exports = { DEFAULT_PORT, PRESETS, modelId, endpoint, normalizeConfig, loadConfig, writeConfig, hasRoutes, publicState, maskKey };
+module.exports = { DEFAULT_PORT, PRESETS, modelId, endpoint, normalizeConfig, loadConfig, writeConfig, hasRoutes, publicState, maskKey, modelContextWindow };

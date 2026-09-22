@@ -16,7 +16,7 @@ const engineAvatar = engine => '<div class="turn-avatar engine-mark" data-engine
 const chatLogoUrl = '../../../assets/brands/' + (harnessId === 'dsh' ? 'deepseek' : harnessId) + (harnessId === 'codex' ? '.png' : '.svg');
 const chatAvatar = engineAvatar(harnessId);
 const chatApi = Object.fromEntries(['Send', 'Steer', 'Cancel', 'GetSettings', 'SaveSettings', 'ControlRespond',
-  'ListSessions', 'LoadSession', 'RenameSession', 'ArchiveSession', 'MetaOp',
+  'ListSessions', 'LoadSession', 'ForkSession', 'RenameSession', 'ArchiveSession', 'MetaOp',
   'GoalGet', 'GoalStart', 'GoalPause', 'GoalResume', 'GoalComplete', 'GoalClear'].map(action => [
   action[0].toLowerCase() + action.slice(1), payload => sharedChat
     ? window.dshDesktop.conversationCommand({ engine: harnessId, action: action.replace(/[A-Z]/g, (c, i) => (i ? '-' : '') + c.toLowerCase()), payload })
