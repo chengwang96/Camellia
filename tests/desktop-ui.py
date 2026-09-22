@@ -362,14 +362,14 @@ try:
           const stats = {requests:769,inputTokens:20653512,outputTokens:848891,cacheReadTokens:16123942,failures:3};
           live.usage[key] = {...stats,byModel:{'test-model':stats},daily:{[previousDay]:{'test-model':{requests:1,inputTokens:0}},[currentDay]:{'test-model':stats}}};""")
         api.locator('[data-view=usage]').click()
-        api.locator('#usageMetric').select_option('tokens')
+        expect(api.locator('#usageChart [data-chart-kind=usage] svg')).to_have_count(1)
         for width in [1040, 2160, 760]:
             api.set_viewport_size({'width':width,'height':900})
-            expected_chart_width = api.locator('#usageChart').evaluate('el => el.clientWidth')
-            expect(api.locator('#usageChart svg')).to_have_attribute('width', str(expected_chart_width))
-            dimensions = api.locator('#usageChart svg').evaluate("el => ({height:el.getBoundingClientRect().height,labelSize:parseFloat(getComputedStyle(el.querySelector('text')).fontSize) * el.getScreenCTM().a})")
-            assert abs(dimensions['height'] - 248) < 1, dimensions
-            assert 12 <= dimensions['labelSize'] <= 14, dimensions
+            api.wait_for_function("[...document.querySelectorAll('#usageChart svg')].every(chart => Math.abs(Number(chart.getAttribute('width')) - chart.parentElement.clientWidth) <= 1)")
+            for chart in api.locator('#usageChart svg').all():
+                dimensions = chart.evaluate("el => ({height:el.getBoundingClientRect().height,labelSize:parseFloat(getComputedStyle(el.querySelector('text')).fontSize) * el.getScreenCTM().a})")
+                assert abs(dimensions['height'] - 248) < 1, dimensions
+                assert 12 <= dimensions['labelSize'] <= 14, dimensions
             no_overflow(api)
             api.screenshot(animations='disabled', path=str(screenshots / f'usage-type-scale-{width}.png'))
 

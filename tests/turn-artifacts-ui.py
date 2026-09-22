@@ -11,7 +11,8 @@ fixture = next(ast.literal_eval(node.value) for node in fixture_module.body
 bridge_node = next(node for node in fixture_module.body if isinstance(node, ast.Assign)
                    and any(isinstance(target, ast.Name) and target.id == 'bridge' for target in node.targets))
 files = [{'path': 'C:/outputs/' + name, 'name': name, 'extension': name.split('.')[-1].upper(), 'kind': kind, 'size': 1536}
-         for name, kind in [('实验报告.docx', 'word'), ('figure.svg', 'image'), ('results.xlsx', 'spreadsheet'), ('slides.pptx', 'presentation')]]
+         for name, kind in [('main.js', 'text'), ('实验报告.docx', 'word'), ('report.MD', 'text'), ('report.html', 'text'),
+                            ('figure.svg', 'image'), ('slides.pptx', 'presentation'), ('results.xlsx', 'spreadsheet'), ('test.js', 'text')]]
 fixture['messages'][-1]['artifacts'] = files
 bridge = ast.literal_eval(bridge_node.value.func.value).replace('FIXTURE', json.dumps(fixture))
 bridge = bridge.replace('onConversationEvent:()=>{}', 'onConversationEvent:fn=>{window.deliverEvent=fn;}')
@@ -24,6 +25,9 @@ bridge += r"""(() => {
     return {ok:true,files:files.filter(file => request.paths?.includes(file.path))};
   };
   window.dshDesktop.previewFile = async path => ({ok:true,file:{...files.find(file=>file.path===path),
+    url:'file:///' + path,
+    text:path.endsWith('.MD') ? '# Report\n\n**Readable**\n\n| Name | Value |\n| --- | --- |\n| Result | 42 |\n\n```js\nconst value = 1;\n```\n<script>window.previewEscaped=true</script>'
+      : '<h1>HTML report</h1><style>h1 { color: rgb(12, 34, 56); }</style><script>parent.previewEscaped=true</script><img src="missing.png" onerror="parent.previewEscaped=true"><a href="https://example.com" target="_top">Escape</a>',
     office:{sections:[{title:'Report',paragraphs:['Preview content']}],truncated:false}}});
   window.dshDesktop.openFileExternally = async path => { openedExternally.push(path); return {ok:true}; };
 })();""".replace('FILES', json.dumps(files))
@@ -40,11 +44,43 @@ with sync_playwright() as playwright:
         page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex&conversation=shared-fixture', wait_until='networkidle')
         page.wait_for_function('uiReady')
         cards = page.locator('.turn-artifacts')
-        expect(cards.locator('.artifact-row')).to_have_count(4)
+        expect(cards.locator('.artifact-row')).to_have_count(8)
+        expect(cards.locator('.artifact-row:visible')).to_have_count(4)
+        assert cards.locator('.artifact-file strong').all_text_contents() == [
+            'report.MD', 'report.html', 'figure.svg', 'slides.pptx', '实验报告.docx', 'results.xlsx', 'main.js', 'test.js']
+        expect(cards.locator('summary')).to_have_text('Show 4 more filesShow fewer files')
         cards.locator('.artifact-file').first.click()
         expect(page.locator('#fileViewer')).to_be_visible()
+        expect(page.locator('.file-preview-markdown h1')).to_have_text('Report')
+        expect(page.locator('.file-preview-markdown strong')).to_have_text('Readable')
+        expect(page.locator('.file-preview-markdown td').last).to_have_text('42')
+        expect(page.locator('.file-preview-markdown pre code')).to_have_text('const value = 1;')
+        assert page.evaluate('window.previewEscaped') is None
+        page.screenshot(path=str(preview / f'markdown-preview-{theme}.png'), animations='disabled')
+        page.locator('#fileViewerClose').click()
+        cards.locator('.artifact-file').nth(1).click()
+        frame = page.frame_locator('.file-preview-html')
+        expect(frame.locator('h1')).to_have_text('HTML report')
+        expect(frame.locator('h1')).to_have_css('color', 'rgb(12, 34, 56)')
+        expect(page.locator('.file-preview-html')).to_have_attribute('sandbox', '')
+        assert page.evaluate('window.previewEscaped') is None
+        original_url = page.url
+        frame.locator('a').click()
+        assert page.url == original_url
+        page.screenshot(path=str(preview / f'html-preview-{theme}.png'), animations='disabled')
+        page.locator('#fileViewerClose').click()
+        cards.locator('summary').focus()
+        page.keyboard.press('Enter')
+        expect(cards.locator('.artifact-row:visible')).to_have_count(8)
+        cards.locator('.artifact-file').nth(4).click()
         expect(page.locator('.office-preview-section')).to_contain_text('Preview content')
         page.locator('#fileViewerClose').click()
+        cards.locator('.artifact-file').nth(6).click()
+        expect(page.locator('.file-preview-text')).to_contain_text('<h1>HTML report</h1>')
+        expect(page.locator('#fileViewerBody iframe')).to_have_count(0)
+        page.locator('#fileViewerClose').click()
+        cards.locator('summary').click()
+        expect(cards.locator('.artifact-row:visible')).to_have_count(4)
         menu = cards.locator('.artifact-open').first
         menu.click()
         expect(page.get_by_role('menuitem')).to_have_count(2)
@@ -52,13 +88,14 @@ with sync_playwright() as playwright:
         expect(menu).to_be_focused()
         menu.click()
         page.get_by_role('menuitem').last.click()
-        assert page.evaluate('openedExternally') == [files[0]['path']]
+        assert page.evaluate('openedExternally') == [files[2]['path']]
         menu.click()
         page.get_by_role('menuitem').first.click()
         expect(page.locator('#fileViewer')).to_be_visible()
         page.locator('#fileViewerClose').click()
         page.evaluate("changeLanguage('zh-CN')")
         expect(menu).to_have_text('打开方式')
+        expect(cards.locator('.artifact-show-more')).to_have_text('展开其余 4 个文件')
         menu.click()
         expect(page.get_by_role('menuitem').first).to_have_text('在 Camellia 内打开')
         expect(page.get_by_role('menuitem').last).to_have_text('使用系统默认软件打开')
@@ -70,7 +107,8 @@ with sync_playwright() as playwright:
           emit({type:'assistant',message:{content:[{type:'text',text:'Your files are ready.'}]}});
           emit({type:'result',subtype:'success',artifacts:files});
         }""", files)
-        expect(page.locator('.turn').last.locator('.artifact-row')).to_have_count(4)
+        expect(page.locator('.turn').last.locator('.artifact-row')).to_have_count(8)
+        expect(page.locator('.turn').last.locator('.artifact-row:visible')).to_have_count(4)
         assert page.locator('.turn').last.locator('.turn-artifacts + .run-result').count() == 1
         page.evaluate("""() => {
           emit({type:'conversation:started',runId:902,prompt:'Thanks',userSeq:4});
@@ -79,6 +117,21 @@ with sync_playwright() as playwright:
         }""")
         expect(page.locator('.turn').last.locator('.artifact-row')).to_have_count(0)
         assert page.locator('.turn-artifacts').count() == 2
+        page.evaluate("""files => {
+          emit({type:'conversation:started',runId:903,prompt:'Four files',userSeq:5});
+          emit({type:'assistant',runId:903,message:{content:[{type:'text',text:'Ready.'}]}});
+          emit({type:'result',runId:903,subtype:'success',artifacts:files.slice(0,4)});
+        }""", files)
+        expect(page.locator('.turn').last.locator('.artifact-row:visible')).to_have_count(4)
+        expect(page.locator('.turn').last.locator('details')).to_have_count(0)
+        page.evaluate("""() => {
+          const preview = window.dshDesktop.previewFile;
+          window.dshDesktop.previewFile = async path => {
+            const result = await preview(path); result.file.truncated = true; return result;
+          };
+        }""")
+        page.locator('.turn').last.locator('.artifact-file').first.click()
+        expect(page.locator('.file-preview-notice')).to_be_visible()
         page.close()
     browser.close()
     assert not errors, errors

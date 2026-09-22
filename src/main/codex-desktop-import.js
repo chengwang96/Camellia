@@ -11,8 +11,8 @@ const readline = require('node:readline');
 const { DatabaseSync } = require('node:sqlite');
 
 const MAX_LISTED_SESSIONS = 1000;
-const MAX_ROLLOUT_BYTES = 64 * 1024 * 1024;
-const MAX_IMPORT_BYTES = 512 * 1024 * 1024;
+const MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
+const MAX_MESSAGE_COUNT = 100000;
 
 function desktopStatePath(homeDir = os.homedir()) {
   return path.join(homeDir, '.codex', 'state_5.sqlite');
@@ -53,8 +53,26 @@ function cleanTitle(text) {
   return text;
 }
 
-function projectForRow(row, projectsByPath) {
+function readDesktopProjects(stateFile, projectsByPath) {
+  let state;
+  try { state = JSON.parse(fs.readFileSync(path.join(path.dirname(stateFile), '.codex-global-state.json'), 'utf8')); } catch { return {}; }
+  const projects = new Map();
+  for (const [id, project] of Object.entries(state?.['local-projects'] || {})) {
+    const roots = Array.isArray(project?.rootPaths) ? project.rootPaths.filter(root => typeof root === 'string' && root) : [];
+    if (!roots.length) continue;
+    const existing = roots.map(root => projectsByPath.get(pathKey(cleanPath(root)))).find(Boolean);
+    const resolved = existing || { id, name: project.name || '', path: cleanPath(roots[0]) };
+    projects.set(id, resolved);
+    for (const root of roots) if (!projectsByPath.has(pathKey(cleanPath(root)))) projectsByPath.set(pathKey(cleanPath(root)), resolved);
+  }
+  return { projects, assignments: state?.['thread-project-assignments'] || {}, projectless: new Set(Array.isArray(state?.['projectless-thread-ids']) ? state['projectless-thread-ids'] : []) };
+}
+
+function projectForRow(row, projectsByPath, desktop = {}) {
   if (row.projectId) return { id: row.projectId, name: row.projectName || '', path: cleanPath(row.projectPath || '') };
+  const assignment = desktop.assignments?.[row.id];
+  if (assignment?.projectKind === 'local' && desktop.projects?.has(assignment.projectId)) return desktop.projects.get(assignment.projectId);
+  if (assignment || desktop.projectless?.has(row.id)) return null;
   const cwd = cleanPath(row.cwd || '');
   if (!cwd) return null;
   return projectsByPath.get(pathKey(cwd)) || null;
@@ -72,24 +90,32 @@ function listDesktopSessions(stateFile, { excludeIds = new Set(), maxSessions = 
       WHERE t.archived = 0 ORDER BY createdAt DESC LIMIT ?`).all(limit + 1);
     const truncated = rows.length > limit;
     if (truncated) rows.length = limit;
-    const projectsByPath = new Map(db.prepare(`SELECT p.id, p.name, r.path FROM projects p
-      JOIN project_roots r ON r.project_id = p.id AND r.position = 0`).all()
-      .filter(project => cleanPath(project.path || ''))
-      .map(project => [pathKey(cleanPath(project.path)), { id: project.id, name: project.name || '', path: cleanPath(project.path) }]));
+    const projectRoots = db.prepare(`SELECT p.id, p.name, r.path, r.position FROM projects p
+      JOIN project_roots r ON r.project_id = p.id ORDER BY r.position`).all();
+    const projectsById = new Map();
+    const projectsByPath = new Map();
+    for (const project of projectRoots) {
+      if (!project.path) continue;
+      if (!projectsById.has(project.id)) projectsById.set(project.id, { id: project.id, name: project.name || '', path: cleanPath(project.path) });
+      projectsByPath.set(pathKey(cleanPath(project.path)), projectsById.get(project.id));
+    }
+    const desktop = readDesktopProjects(stateFile, projectsByPath);
     const sessions = rows.filter(r => !isSubagentSource(r.source) && !excludeIds.has(r.id)).flatMap(r => {
       const title = cleanTitle(r.name);
       if (!title) return [];
       const rolloutPath = cleanPath(r.rollout_path);
       let rolloutBytes = null;
-      try { rolloutBytes = fs.statSync(rolloutPath).size; } catch {}
+      try {
+        const stat = fs.statSync(rolloutPath);
+        if (stat.isFile()) { fs.accessSync(rolloutPath, fs.constants.R_OK); rolloutBytes = stat.size; }
+      } catch {}
       return [{
         id: r.id, title: title.slice(0, 60),
         cwd: cleanPath(r.cwd || ''), createdAt: r.createdAt, updatedAt: r.updatedAt,
         source: r.source, rolloutPath,
-        project: projectForRow(r, projectsByPath),
+        project: projectForRow(r, projectsByPath, desktop),
         rolloutBytes,
-        importable: rolloutBytes !== null && rolloutBytes <= MAX_ROLLOUT_BYTES,
-        tooLarge: rolloutBytes !== null && rolloutBytes > MAX_ROLLOUT_BYTES,
+        importable: rolloutBytes !== null,
       }];
     });
     Object.defineProperty(sessions, 'truncated', { value: truncated, enumerable: false });
@@ -100,38 +126,47 @@ function listDesktopSessions(stateFile, { excludeIds = new Set(), maxSessions = 
 // Rollout JSONL keeps both response_item and event_msg copies of a turn; the
 // response_item message rows are canonical here. Tool calls and reasoning are
 // not imported.
-async function readRolloutMessages(rolloutPath, onMessage) {
+async function readRolloutMessages(rolloutPath, onMessage, { maxMessageBytes = MAX_MESSAGE_BYTES, maxMessageCount = MAX_MESSAGE_COUNT } = {}) {
   const file = cleanPath(rolloutPath);
-  const size = fs.statSync(file).size;
-  if (size > MAX_ROLLOUT_BYTES) {
-    throw new Error(`Session history is too large to import safely (${Math.ceil(size / 1024 / 1024)} MB; limit ${MAX_ROLLOUT_BYTES / 1024 / 1024} MB)`);
-  }
   const messages = [];
+  let messageBytes = 0;
+  let messageCount = 0;
   let previous = null;
-  const lines = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
-  for await (const line of lines) {
-    if (!line) continue;
-    let row;
-    try { row = JSON.parse(line); } catch { continue; }
-    if (row.type !== 'response_item') continue;
-    const payload = row.payload || {};
-    if (payload.type !== 'message') continue;
-    const role = payload.role === 'user' ? 'user' : payload.role === 'assistant' ? 'assistant' : null;
-    if (!role) continue;
-    const parts = Array.isArray(payload.content) ? payload.content : [];
-    let text = parts.filter(p => p.type === 'input_text' || p.type === 'output_text').map(p => p.text || '').join('\n').trim();
-    if (!text) continue;
-    if (role === 'user') {
-      if (text.startsWith('<environment_context') || text.startsWith('# AGENTS.md')) continue;
-      const myRequest = text.indexOf('## My request:');
-      if (myRequest >= 0) text = text.slice(myRequest + '## My request:'.length).trim();
+  const input = fs.createReadStream(file, { encoding: 'utf8' });
+  const lines = readline.createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line) continue;
+      let row;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (row?.type !== 'response_item') continue;
+      const payload = row.payload || {};
+      if (payload.type !== 'message') continue;
+      const role = payload.role === 'user' ? 'user' : payload.role === 'assistant' ? 'assistant' : null;
+      if (!role) continue;
+      const parts = Array.isArray(payload.content) ? payload.content : [];
+      let text = parts.filter(part => part && (part.type === 'input_text' || part.type === 'output_text') && typeof part.text === 'string').map(part => part.text).join('\n').trim();
       if (!text) continue;
+      if (role === 'user') {
+        if (text.startsWith('<environment_context') || text.startsWith('# AGENTS.md')) continue;
+        const myRequest = text.indexOf('## My request:');
+        if (myRequest >= 0) text = text.slice(myRequest + '## My request:'.length).trim();
+        if (!text) continue;
+      }
+      const message = { role, text, at: Date.parse(row.timestamp) || Date.now() };
+      if (previous && message.role === previous.role && message.text === previous.text) continue;
+      messageBytes += Buffer.byteLength(text, 'utf8');
+      messageCount++;
+      if (messageBytes > maxMessageBytes || messageCount > maxMessageCount) {
+        throw new Error('Extracted conversation exceeds the safety limit (64 MiB of text or 100,000 messages); no partial history was imported');
+      }
+      previous = message;
+      if (onMessage) await onMessage(message);
+      else messages.push(message);
     }
-    const message = { role, text, at: Date.parse(row.timestamp) || Date.now() };
-    if (previous && message.role === previous.role && message.text === previous.text) continue;
-    previous = message;
-    if (onMessage) await onMessage(message);
-    else messages.push(message);
+  } finally {
+    lines.close();
+    input.destroy();
   }
   return messages;
 }
@@ -159,14 +194,7 @@ async function importDesktopSessions(shared, stateFile, ids, log = () => {}) {
   const sessions = listDesktopSessions(stateFile);
   const selected = sessions.filter(s => ids.includes(s.id));
   const imported = [], skipped = [];
-  let scheduledBytes = 0;
   for (const session of selected) {
-    const rolloutBytes = Number(session.rolloutBytes) || 0;
-    if (scheduledBytes + rolloutBytes > MAX_IMPORT_BYTES) {
-      skipped.push({ threadId: session.id, error: 'Batch import safety limit reached; import fewer sessions at a time' });
-      continue;
-    }
-    scheduledBytes += rolloutBytes;
     let conversation = null;
     try {
       const workspaceId = resolveWorkspace(shared, session.project);
@@ -225,5 +253,5 @@ async function syncDesktopSession(shared, stateFile, conversationId) {
 }
 
 module.exports = { desktopStatePath, listDesktopSessions, readRolloutMessages, importDesktopSessions, syncDesktopSession, resolveWorkspace,
-  MAX_LISTED_SESSIONS, MAX_ROLLOUT_BYTES, MAX_IMPORT_BYTES };
+  MAX_LISTED_SESSIONS, MAX_MESSAGE_BYTES, MAX_MESSAGE_COUNT };
 

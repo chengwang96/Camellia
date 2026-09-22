@@ -18,6 +18,7 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "build:icons": "electron scripts/build-icons.cjs",
+    "build:tailnet": "node scripts/build-tailnet.cjs",
     "setup:runtimes": "node scripts/prepare-runtimes.cjs",
     "postinstall": "node scripts/prepare-runtimes.cjs --check",
     "prestart": "node scripts/prepare-runtimes.cjs --check",

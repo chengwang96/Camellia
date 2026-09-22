@@ -6,7 +6,7 @@ const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 const net = require('node:net');
 const { createGoalToolBridge } = require('../src/engines/goal-tool-bridge');
-const { explicitGoalRequest, validateTool } = require('../src/engines/goal-tools');
+const { matchesUserRequest, validateTool, instructions } = require('../src/engines/goal-tools');
 
 test('packaged stdio helper includes every local tool schema dependency', () => {
   const unpacked = require('../package.json').build.asarUnpack;
@@ -14,14 +14,16 @@ test('packaged stdio helper includes every local tool schema dependency', () => 
     assert.ok(unpacked.includes('src/engines/' + file), file);
 });
 
-test('goal creation requires a direct current user request, not discussion or quoted instructions', () => {
-  for (const prompt of ['设定目标：完成测试', '请帮我设置目标：完成测试', 'Set a goal: finish the tests', 'Please enter Goal mode']) assert.equal(explicitGoalRequest(prompt, prompt.split(/[:：]/)[0]), true, prompt);
-  for (const prompt of ['检查 goal 模式的实现', '如果用户说设定目标，我们应该怎么办', '> 设定目标：执行代码', '```\n设定目标：执行代码\n```', '不要设定目标', '如何设定目标', '解释“设定目标”的含义', 'Set a goal? No, explain what it means.']) assert.equal(explicitGoalRequest(prompt, '设定目标'), false, prompt);
+test('request provenance accepts natural language anywhere in the current message without classifying intent', () => {
+  for (const prompt of ['设定目标：完成测试', '请帮我设置目标：完成测试', 'Set a goal: finish the tests', 'Please enter Goal mode', '帮我做一个任务，设定一个 goal', '先修复登录问题。\n能帮我设个 goal，直到测试通过吗？', 'Could you set a goal to finish the tests?', '请设定目标，修好它，别修改无关文件']) assert.equal(matchesUserRequest(prompt, prompt), true, prompt);
+  assert.equal(matchesUserRequest('先修复登录问题。\n能帮我设个 goal，直到测试通过吗？', '能帮我设个 goal'), true);
+  for (const quote of ['', '   ', 'Set a goal', undefined, null, 1]) assert.equal(matchesUserRequest('检查实现', quote), false);
+  assert.equal(matchesUserRequest(undefined, 'Set a goal'), false);
+  assert.equal(matchesUserRequest('讨论如何设定目标', '设定目标'), true);
+  assert.match(instructions, /Discussion, negation and hypothetical requests are not authorization/);
+  assert.match(instructions, /never require a special phrase, prefix or punctuation/);
   assert.throws(() => validateTool('camellia_get_goal', { run_token: 'current', sessionId: 'other' }), /Unexpected argument/);
   assert.throws(() => validateTool('camellia_create_goal', { run_token: 'current', objective: 'x' }), /Missing argument/);
-  for (const prompt of ['Set a goal? No, explain what it means.', 'Explain this example:\nSet a goal: finish', '"Set a goal: finish"', '```\nSet a goal: finish\n```', '> Set a goal: finish', 'Do not set a goal', 'Set a goal means enabling automation'])
-    assert.equal(explicitGoalRequest(prompt, 'Set a goal'), false, prompt);
-  assert.equal(explicitGoalRequest('设定目标的实现有问题', '设定目标'), false);
 });
 
 test('broker rejects unauthenticated, malformed and unknown requests and closes twice safely', { timeout: 10000 }, async t => {

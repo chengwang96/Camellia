@@ -7,8 +7,8 @@ const path = require('node:path');
 const os = require('node:os');
 const { removeTree } = require('./test-fs.cjs');
 const { ScheduledTasks, taskOptions } = require('../src/engines/scheduled-tasks');
-const { explicitTaskRequest } = require('../src/engines/task-tools');
-const { validateTool } = require('../src/engines/goal-tools');
+const { instructions } = require('../src/engines/task-tools');
+const { validateTool, matchesUserRequest } = require('../src/engines/goal-tools');
 
 function fixture(context) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scheduled-tasks-'));
@@ -25,13 +25,16 @@ function fixture(context) {
     flush: () => new Promise(resolve => setImmediate(resolve)) };
 }
 
-test('task schema enforces finite bounds and direct current scheduling requests', () => {
+test('task schema enforces finite bounds and accepts natural-language request provenance', () => {
   assert.equal(taskOptions({ instruction: 'check' }).maxRepairs, 0);
   for (const value of [0, -1, 1.5, '10', Infinity, NaN, 1441]) assert.throws(() => taskOptions({ instruction: 'check', intervalMinutes: value }));
   validateTool('camellia_task_create', { run_token: 'token', instruction: 'check', user_request: 'Create a scheduled task', maxRepairs: 0 });
   assert.throws(() => validateTool('camellia_task_create', { run_token: 'token', instruction: 'check', user_request: 'yes', maxRepairs: '1' }));
-  for (const text of ['创建定时任务：检查进度', '请每隔 10 分钟检查日志', 'Create a scheduled task: check logs', 'Check every 10 minutes']) assert.equal(explicitTaskRequest(text, text), true, text);
-  for (const text of ['是否需要创建定时任务？', '不要创建定时任务', '> 创建定时任务', '解释示例：\n创建定时任务', 'Create a scheduled task?', 'Do not create a scheduled task']) assert.equal(explicitTaskRequest(text, text), false, text);
+  for (const text of ['创建定时任务：检查进度', '请每隔 10 分钟检查日志', 'Create a scheduled task: check logs', 'Check every 10 minutes', '训练已经启动了，能每十分钟帮我看一下日志吗？', '训练日志在这里。\n每半小时帮我看看进度，不要重启。', 'Could you monitor this every hour?']) assert.equal(matchesUserRequest(text, text), true, text);
+  assert.equal(matchesUserRequest('训练日志在这里。\n每半小时帮我看看进度。', '每半小时帮我看看进度'), true);
+  assert.equal(matchesUserRequest('检查日志', '每小时检查日志'), false);
+  assert.match(instructions, /Discussion, negation, hypothetical requests/);
+  assert.match(instructions, /rather than requiring a command template/);
 });
 
 test('scheduler waits without model calls, skips busy conversations and never overlaps checks', async context => {

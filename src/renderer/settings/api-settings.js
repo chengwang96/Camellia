@@ -13,11 +13,12 @@ const titles = {
   general: ["General", "Language, appearance, and local preferences."],
   archived: ["Archived", "Restore or permanently delete archived conversations."],
   storage: ["Space cleanup", "Review unused local files before deleting them."],
+  mobile: ["Mobile access", "Connect your phone through Tailscale."],
   engines: ["Engine Settings", "Manage native settings in one place."],
   runtimes: ["Runtime", "Download only the engines you need."],
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
-let dirty = false, saving = false, balanceKey = null, balanceMetric = '', usageData = [];
+let dirty = false, saving = false, balanceKey = null, usageData = [];
 let catalog = [], catalogSelected = new Set(), catalogProvider = null;
 function status(text, error = false) { $('status').textContent = text; $('status').className = error ? 'error' : ''; }
 function edited() { dirty = true; $('save').disabled = false; status("You have unsaved changes"); }
@@ -32,6 +33,7 @@ function setView(next, engine, focus) {
   [$('pageTitle').textContent, $('pageSubtitle').textContent] = titles[next];
   $('save').hidden = next !== 'providers';
   engineUI.setVisible(next === 'engines');
+  window.mobileAccessUI.setVisible(next === 'mobile');
   if (next === 'usage') { fillUsageFilters(); renderUsage(); renderBalances(); }
   if (next === 'engines') void (focus === 'account' ? engineUI.openAccount(engine) : engineUI.select(engine || engineUI.selected()));
   if (next === 'runtimes') void engineUI.runtimePage(focus);
@@ -67,7 +69,7 @@ function renderProviders() {
   $('providers').innerHTML = config.providers.map((p,i) => {
     const connected = p.keys.filter(k => keyBadge(k)[1] === 'good').length;
     const requests = p.keys.reduce((sum,k) => sum + (live.usage?.[k.id]?.requests || 0), 0);
-    return `<article class="provider"><button data-select="${p.id}"><span class="provider-title"><span class="provider-mark">${mark(p.type)}</span>${esc(p.name)}</span><p class="hint" data-i18n>Keys: ${p.keys.length} · Models: ${p.models.length}${p.enabled ? '' : " · Disabled"}</p><span data-i18n class="badge ${connected ? 'good' : ''}">${connected ? connected + " connected" : "Not connected"}</span></button><div class="provider-footer"><small data-i18n>Total ${fmt(requests)} successful requests</small><button data-up="${i}" aria-label="Move up ${esc(p.name)}" ${i ? '' : 'disabled'} data-i18n-attrs="aria-label">↑</button><button data-down="${i}" aria-label="Move down ${esc(p.name)}" ${i === config.providers.length-1 ? 'disabled' : ''} data-i18n-attrs="aria-label">↓</button></div></article>`;
+    return `<article class="provider"><button data-select="${p.id}"><span class="provider-title"><span class="provider-mark">${mark(p.type)}</span>${esc(p.name)}</span><p class="hint" data-i18n>Keys: ${p.keys.length} · Models: ${p.models.length}${p.enabled ? '' : " · Disabled"}</p></button><div class="provider-footer"><button data-select="${p.id}"><span data-i18n class="badge ${connected ? 'good' : ''}">${connected ? connected + " connected" : "Not connected"}</span><small data-i18n>Total ${fmt(requests)} successful requests</small></button><button data-up="${i}" aria-label="Move up ${esc(p.name)}" ${i ? '' : 'disabled'} data-i18n-attrs="aria-label">↑</button><button data-down="${i}" aria-label="Move down ${esc(p.name)}" ${i === config.providers.length-1 ? 'disabled' : ''} data-i18n-attrs="aria-label">↓</button></div></article>`;
   }).join('') || "<div class=\"empty\"><img src=\"../../../assets/icon-256.png\" alt=\"\"><h2 data-i18n>Add your first provider</h2><p data-i18n>Choose a service, paste your keys, and select models.</p><p class=\"hint\" data-i18n>DSH, Claude, and Kimi share these connections.</p></div>";
 }
 function renderEditor() {
@@ -196,20 +198,21 @@ const blankStats = () => Object.fromEntries(statsFields.map(key => [key,0]));
 function addStats(target, source) { for (const key of statsFields) target[key] += source[key] || 0; return target; }
 function localDay(date) { return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; }
 function usageRows() {
-  const result = [], days = new Map(), range = $('usageRange').value, selectedModel = $('usageModel').value;
+  const result = [], series = [], range = $('usageRange').value, selectedModel = $('usageModel').value;
   const earliest = new Date(); earliest.setDate(earliest.getDate() - (range === 'all' ? 89 : Number(range)-1));
   const min = localDay(earliest);
   for (const p of live.providers) {
     if ($('usageProvider').value && $('usageProvider').value !== p.id) continue;
     for (const [i,k] of p.keys.entries()) {
       if ($('usageKey').value && $('usageKey').value !== k.id) continue;
-      const usage = live.usage?.[k.id] || {}, totals = {};
+      const usage = live.usage?.[k.id] || {}, totals = {}, modelDays = new Map();
       for (const [day, models] of Object.entries(usage.daily || {})) {
         if (day < min) continue;
         for (const [model, stats] of Object.entries(models)) {
           if (selectedModel && model !== selectedModel) continue;
           totals[model] ||= blankStats(); addStats(totals[model], stats);
-          if (!days.has(day)) days.set(day, blankStats()); addStats(days.get(day), stats);
+          if (!modelDays.has(model)) modelDays.set(model, []);
+          modelDays.get(model).push({ at: day + 'T12:00:00', stats: { ...blankStats(), ...stats } });
         }
       }
       if (range === 'all') {
@@ -222,17 +225,32 @@ function usageRows() {
         }
       }
       for (const [model, stats] of Object.entries(totals)) result.push({ model, provider: p.name, key: keyName(k,i), keyId: k.id, ...stats });
+      for (const [model, points] of modelDays) series.push({ model, provider: p.name, key: keyName(k,i), points });
     }
   }
-  return { rows: result.sort((a,b) => b.requests - a.requests || a.model.localeCompare(b.model)), days };
+  return { rows: result.sort((a,b) => b.requests - a.requests || a.model.localeCompare(b.model)), series };
+}
+function renderChartGrid(container, charts) {
+  container.innerHTML = charts.map(chart => `<section class="chart-panel chart-tile" data-chart-kind="${esc(chart.kind)}"><h3>${esc(chart.label)}</h3><p class="hint">${esc(chart.description)}</p><div class="chart-tile-body"></div></section>`).join('') || '<div class="chart-empty" data-i18n>No requests in this period.</div>';
+  container.querySelectorAll('.chart-tile-body').forEach((body, index) => {
+    const chart = charts[index];
+    body.innerHTML = SettingsCharts.line(chart.points, { ...chart, width: body.clientWidth });
+    SettingsCharts.bindHover(body);
+  });
 }
 function renderUsage() {
-  const { rows, days } = usageRows(); usageData = rows;
+  const { rows, series } = usageRows(); usageData = rows;
   const sum = rows.reduce(addStats, blankStats());
   $('usageSummary').innerHTML = [["Successful requests", sum.requests, "requests"], ["Input tokens", sum.inputTokens, "Includes cache"], ["Output tokens", sum.outputTokens, "Reported by provider"], ["Failed / Canceled", sum.failures + sum.cancelled, "requests"]].map(([label,value,note]) => `<div><small data-i18n>${label}</small><strong>${compact(value)}</strong><small data-i18n>${note}</small></div>`).join('');
+  const t = window.CamelliaI18n.t;
   const metric = $('usageMetric').value;
-  const points = [...days].map(([day, stats]) => ({ at: day + 'T12:00:00', value: metric === 'tokens' ? stats.inputTokens + stats.outputTokens : stats[metric] }));
-  $('usageChart').innerHTML = SettingsCharts.line(points, { label: "Request trends", width: $('usageChart').clientWidth, unit: metric === 'tokens' ? ' Token' : " requests" }) + (sum.unreported ? `<p class="hint">${fmt(sum.unreported)} successful requests did not report token usage. No estimate was added.</p>` : '') + ($('usageRange').value === 'all' ? "<p class=\"hint\" data-i18n>The chart shows the last 90 recorded days. Totals and details are cumulative.</p>" : '');
+  const metricLabel = t({ tokens: 'Token usage', requests: 'Successful requests', inputTokens: 'Input tokens', outputTokens: 'Output tokens', failures: 'Failed / Canceled' }[metric]);
+  renderChartGrid($('usageChart'), [...balanceChartSeries(), ...series.map(series => ({
+    kind: 'usage', label: `${series.key} · ${series.model}`,
+    description: `${series.provider} · ${metricLabel}`, unit: metric === 'tokens' || metric.endsWith('Tokens') ? ' Token' : ' ' + t('requests'),
+    points: series.points.map(({ at, stats }) => ({ at, value: metric === 'tokens' ? stats.inputTokens + stats.outputTokens : metric === 'failures' ? stats.failures + stats.cancelled : stats[metric] })),
+  }))]);
+  $('usageChartNotes').innerHTML = (sum.unreported ? `<p class="hint">${fmt(sum.unreported)} successful requests did not report token usage. No estimate was added.</p>` : '') + ($('usageRange').value === 'all' ? "<p class=\"hint\" data-i18n>The chart shows the last 90 recorded days. Totals and details are cumulative.</p>" : '');
   $('usageRows').innerHTML = rows.map(row => `<tr><td>${esc(row.model)}<small>${esc(row.provider)}</small></td><td>${esc(row.key)}</td><td>${fmt(row.requests)}</td><td>${fmt(row.inputTokens)}</td><td>${fmt(row.outputTokens)}</td><td>${fmt(row.cacheReadTokens)}</td><td>${fmt(row.failures)}</td></tr>`).join('') || "<tr><td colspan=\"7\"><div class=\"chart-empty\" data-i18n>No requests in this period.</div></td></tr>";
 }
 function money(balance) { return `${balance.currency === 'CNY' ? '¥' : balance.currency === 'USD' ? '$' : ''}${fmt(balance.value)}${balance.currency === 'credits' ? ' Credits' : !['CNY','USD'].includes(balance.currency) ? ' ' + balance.currency : ''}`; }
@@ -256,7 +274,7 @@ function accountCard(account, selected = false) {
     <strong>${esc(summary)}</strong>${quota && !balance ? meter(quota) : ''}
     <p>${quota && !balance ? esc(t(quota.label)) + ' · ' : ''}${esc(info.refreshing ? t('Querying…') : latest ? t('Updated ' + when(latest.at)) : t(capability.label))}</p>
     ${subscriptionId ? `<div class="quota-preview">${(latest?.windows || []).slice(balance ? 0 : 1).map(w => `<small>${esc(t(w.label))} · ${esc(t(`${fmt(remaining(w))}% remaining`))}</small>`).join('')}</div>` : ''}
-    ${info.error ? `<p class="error">${esc(t(info.error))}</p>` : ''}</button>`;
+    ${info.error ? `<p class="error">${esc(t(info.error))}${latest ? ' ' + esc(t('The last successful result is shown below.')) : ''}</p>` : ''}</button>`;
 }
 function renderBalances() {
   const all = accountsList();
@@ -265,27 +283,24 @@ function renderBalances() {
   const accounts = all.filter(a => (!$('balanceProvider').value || a.providerId === $('balanceProvider').value) && `${a.provider} ${a.name} ${a.maskedKey || ''}`.toLowerCase().includes(query));
   if (!accounts.some(a => a.id === balanceKey)) balanceKey = accounts[0]?.id || null;
   $('balanceCards').innerHTML = accounts.map(a => accountCard(a, a.id === balanceKey)).join('') || (all.length ? "<div class=\"empty\" data-i18n>No matching accounts.</div>" : "<div class=\"empty\"><h2 data-i18n>Connect an account to view its balance</h2><p class=\"hint\" data-i18n>Add a connection in Providers & Keys.</p></div>");
-  renderBalanceDetail();
+  renderUsage();
 }
-function renderBalanceDetail() {
+function balanceChartSeries() {
   const t = window.CamelliaI18n.t;
-  const account = accountsList().find(a => a.id === balanceKey);
-  if (!account) { $('balanceDetail').innerHTML = ''; return; }
-  const { id, providerId, provider, name, info, capability, subscriptionId } = account, latest = info.latest;
-  const metrics = [...(latest?.balances || []).map(b => ({ id: 'balance/' + b.id, label: t(b.label) + ' · ' + b.currency, type: 'balances', key: b.id, unit: b.currency })), ...(latest?.windows || []).map(w => ({ id: 'window/' + w.id, label: t(w.label) + ' · ' + t('Remaining'), type: 'windows', key: w.id, unit: '%' }))];
-  if (!metrics.some(m => m.id === balanceMetric)) balanceMetric = metrics[0]?.id || '';
-  const metric = metrics.find(m => m.id === balanceMetric);
-  const sourceNote = capability.source === 'observed' ? "Uses an undocumented endpoint. Upstream changes may affect account queries." : capability.source === 'client' ? "Uses an endpoint from the provider's official client or open-source service." : "Uses the provider's documented account API.";
-  const points = metric ? (info.history || []).map(sample => { const item = sample[metric.type]?.find(x => x.id === metric.key); return { at: sample.at, value: item ? metric.type === 'windows' ? remaining(item) : item.value : null }; }) : [];
-  $('balanceDetail').innerHTML = `<div class="chart-panel"><div class="section-head"><h2>${esc(provider)} · ${esc(subscriptionId ? window.CamelliaI18n.t(name) : name)}</h2><button data-i18n id="refreshOneBalance" ${info.refreshing || !capability.supported ? 'disabled' : ''}>${info.refreshing ? "Querying…" : subscriptionId ? "Refresh account" : "Refresh this key"}</button></div>
-    ${subscriptionId ? '<p class="hint" data-i18n>Subscription quota is separate from API billing. A balance appears only when Kimi reports an extra usage wallet.</p>' : ''}
-    ${subscriptionId ? '' : !capability.supported ? `<p class="hint">${esc(t(capability.label))}. <span data-i18n>Local token and request records remain available in Usage.</span></p>` : `<p class="hint">${esc(t(capability.label))} · ${esc(t(sourceNote))}</p>`}
-    ${info.error ? `<p class="error">${esc(t(info.error))}${latest ? ' ' + esc(t('The last successful result is shown below.')) : ''}</p>` : ''}
-    <div class="balance-values">${(latest?.balances || []).map(b => `<div><small>${esc(t(b.label))}</small><strong>${esc(money(b))}</strong><small>${(b.parts || []).filter(part => part.value !== null).map(part => `${esc(t(part.label))} ${fmt(part.value)}`).join(' · ')}</small></div>`).join('')}${(latest?.windows || []).map(w => `<div class="window-item"><small>${esc(t(w.label))}</small><strong data-i18n>${fmt(remaining(w))}% remaining</strong>${meter(w)}<small data-i18n>${w.resetsAt ? "Resets " + when(w.resetsAt) : "Reset time not provided"}</small></div>`).join('')}</div>
-    ${metrics.length ? `<div class="section-head"><h2 data-i18n>30-day observations</h2><select id="balanceMetric" aria-label="Balance metric" data-i18n-attrs="aria-label">${metrics.map(m => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('')}</select></div>${SettingsCharts.line(points, { label: metric.label, width: $('balanceDetail').clientWidth - 38, unit: metric.unit, percent: metric.type === 'windows' })}` : capability.supported ? `<div class="chart-empty" data-i18n>${subscriptionId ? 'Refresh account to start recording quotas.' : 'Refresh this key to start recording balances and quotas.'}</div>` : ''}
-    ${(latest?.modelUsage || []).length ? `<details class="advanced"><summary data-i18n>Model request counts reported by provider</summary><div class="table-scroll"><table><thead><tr><th data-i18n>Model</th><th data-i18n>Reporting window</th><th data-i18n>Requests</th></tr></thead><tbody>${latest.modelUsage.map(m => `<tr><td>${esc(m.model)}</td><td>${esc(m.period)}</td><td>${m.requests === null ? "Not provided" : fmt(m.requests)}</td></tr>`).join('')}</tbody></table></div><p class="hint" data-i18n>Account-level data may include other applications. It is not added to local usage.</p></details>` : ''}</div>`;
-  $('refreshOneBalance').onclick = () => refreshBalances(subscriptionId ? { subscriptionId } : { providerId, keyId: id });
-  if ($('balanceMetric')) { $('balanceMetric').value = balanceMetric; $('balanceMetric').onchange = e => { balanceMetric = e.target.value; renderBalanceDetail(); }; }
+  const account = accountsList().find(account => account.id === balanceKey);
+  if (!account) return [];
+  if (!account.subscriptionId && (($('usageProvider').value && $('usageProvider').value !== account.providerId) || ($('usageKey').value && $('usageKey').value !== account.id))) return [];
+  const latest = account.info.latest;
+  const metrics = [...(latest?.balances || []).map(balance => ({ label: t(balance.label), type: 'balances', key: balance.id, unit: balance.currency })), ...(latest?.windows || []).map(window => ({ label: t(window.label) + ' · ' + t('Remaining'), type: 'windows', key: window.id, unit: '%' }))];
+  return metrics.map(metric => ({
+    kind: 'quota', label: metric.label + ' · ' + metric.unit,
+    description: `${account.provider} · ${t(account.name)} · ${t('30-day observations')}`,
+    unit: metric.unit, percent: metric.type === 'windows',
+    points: (account.info.history || []).map(sample => {
+      const item = sample[metric.type]?.find(entry => entry.id === metric.key);
+      return { at: sample.at, value: item ? metric.type === 'windows' ? remaining(item) : item.value : null };
+    }),
+  }));
 }
 async function refreshBalances(payload = {}) {
   try {
@@ -409,8 +424,23 @@ $('save').onclick = async () => {
   } catch (e) { status(e.message, true); }
   finally { saving = false; $('save').disabled = !dirty; $('refresh').disabled = false; document.querySelector('.scroll-content').inert = false; }
 };
-for (const id of ['usageRange','usageProvider','usageKey','usageModel','usageMetric']) $(id).onchange = () => { fillUsageFilters(); renderUsage(); };
-$('balanceCards').onclick = e => { const button = e.target.closest('[data-balance]'); if (button) { balanceKey = button.dataset.balance; renderBalances(); } };
+for (const id of ['usageRange','usageProvider','usageKey','usageModel','usageMetric']) $(id).onchange = () => {
+  fillUsageFilters();
+  if (id === 'usageKey' && $('usageKey').value) {
+    balanceKey = $('usageKey').value; $('balanceProvider').value = ''; $('balanceSearch').value = ''; renderBalances();
+  } else renderUsage();
+};
+$('balanceCards').onclick = e => {
+  const button = e.target.closest('[data-balance]');
+  if (!button) return;
+  balanceKey = button.dataset.balance;
+  const account = accountsList().find(account => account.id === balanceKey);
+  if (account && !account.subscriptionId) {
+    $('usageProvider').value = account.providerId; fillUsageFilters();
+    $('usageKey').value = account.id; $('usageModel').value = ''; fillUsageFilters();
+  }
+  renderBalances();
+};
 $('balanceProvider').onchange = renderBalances;
 $('balanceSearch').oninput = renderBalances;
 $('refreshBalances').onclick = () => refreshBalances();
@@ -474,7 +504,7 @@ async function refresh(initial = false) {
     }
   } catch (e) { status(e.message, true); }
 }
-$('refresh').onclick = () => refresh();
+$('refresh').onclick = () => view === 'mobile' ? window.mobileAccessUI.refresh() : refresh();
 let storagePreview = null, storageBusy = false;
 const storageBytes = bytes => bytes < 1024 ? fmt(bytes) + ' B' : bytes < 1024 ** 2 ? fmt(bytes / 1024) + ' KiB' : bytes < 1024 ** 3 ? fmt(bytes / 1024 ** 2) + ' MiB' : fmt(bytes / 1024 ** 3) + ' GiB';
 function storageControls() {
@@ -502,6 +532,11 @@ $('scanStorage').onclick = async () => {
       group.count += entry.count; group.bytes += entry.bytes; groups.set(entry.category, group);
     }
     $('storageSummary').innerHTML = [...groups].map(([category, group]) => `<div class="setting-row"><h2 data-i18n>${esc(category)}</h2><span>${esc(fmt(group.count))} · ${esc(storageBytes(group.bytes))}</span></div>`).join('');
+    if (result.active) {
+      const notice = document.createElement('p');
+      notice.textContent = window.CamelliaI18n.t('Conversations are running. Pasted attachments and handoffs/summaries are protected; scan again when idle to include them.');
+      $('storageSummary').append(notice);
+    }
     if (result.skipped) {
       const notice = document.createElement('p');
       notice.textContent = window.CamelliaI18n.t('{0} protected or unverifiable items skipped.').replace('{0}', () => fmt(result.skipped));

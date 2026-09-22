@@ -9,6 +9,27 @@ const { pathToFileURL } = require('node:url');
 const { removeTree } = require('./test-fs.cjs');
 const { textPaths, toolPaths, collector } = require('../src/shared/turn-artifacts');
 const { resolveArtifacts } = require('../src/main/turn-artifacts');
+const { sortArtifacts, documentFormat, VISIBLE_ARTIFACT_LIMIT } = require('../src/shared/turn-artifacts');
+
+test('readable artifacts sort first, stably, without changing the collected order', () => {
+  const files = [
+    { name: 'main.js', kind: 'text' }, { name: 'report.pdf', kind: 'pdf' },
+    { name: 'README.MD', kind: 'text' }, { name: 'figure.png', kind: 'image' },
+    { name: 'demo.mp4', kind: 'video' }, { name: 'slides.pptx', kind: 'presentation' },
+    { name: 'report.html', kind: 'text' }, { name: 'notes.markdown', kind: 'text' },
+    { name: 'legacy.htm', kind: 'text' }, { name: 'test.js', kind: 'text' },
+  ];
+  const original = [...files];
+  assert.deepEqual(sortArtifacts(files).map(file => file.name), [
+    'README.MD', 'figure.png', 'demo.mp4', 'slides.pptx', 'report.html', 'notes.markdown', 'legacy.htm', 'report.pdf', 'main.js', 'test.js',
+  ]);
+  assert.deepEqual(files, original);
+  assert.deepEqual(sortArtifacts([]), []);
+  assert.equal(VISIBLE_ARTIFACT_LIMIT, 4);
+  assert.equal(documentFormat({ extension: 'HTM' }), 'html');
+  assert.equal(documentFormat({ path: 'C:/outputs/report.MARKDOWN' }), 'markdown');
+  assert.equal(documentFormat({ name: 'main.js' }), '');
+});
 
 test('final file references include spaces, Unicode and links but not web links or code fences', () => {
   assert.deepEqual(textPaths('[报告](<outputs/实验 report.docx>)\n`table.xlsx`\n[web](https://example.com/file.pdf)\n```\n`not.txt`\n```'), ['outputs/实验 report.docx', 'table.xlsx']);

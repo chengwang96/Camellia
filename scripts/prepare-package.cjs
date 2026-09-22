@@ -14,6 +14,7 @@ exports.default = async context => {
   const platform = context.electronPlatformName;
   const arch = Arch[context.arch];
   assertBuildHost(platform, arch);
+  require('./build-tailnet.cjs').buildTailnet({ root: context.packager.projectDir, platform, arch });
   const target = path.join(context.packager.projectDir, 'build/runtime-assets');
   const npmCli = npmCandidates(process.execPath).find(file => fs.existsSync(file));
   if (!npmCli) throw new Error('Packaging requires a complete Node.js/npm installation');

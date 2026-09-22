@@ -95,6 +95,59 @@ test('desktop session listing is capped and reports truncation', t => {
   assert.equal(sessions.truncated, true);
 });
 
+test('desktop assignments recover pending project migrations and reuse the database workspace', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const projectDir = path.join(root, 'project'); fs.mkdirSync(projectDir);
+  const outputDir = path.join(root, 'output'); fs.mkdirSync(outputDir);
+  const rollout = writeRollout(root, 'assigned.jsonl', [responseItem('user', 'hello')]);
+  addProject(db, { id: 'migrated', name: 'Workspace', roots: [projectDir] });
+  addThread(db, { id: 'assigned', name: 'Moved into workspace', cwd: outputDir, rollout });
+  addThread(db, { id: 'sibling', name: 'Workspace sibling', cwd: projectDir, rollout });
+  fs.writeFileSync(path.join(root, '.codex-global-state.json'), JSON.stringify({
+    'local-projects': { legacy: { name: 'Old name', rootPaths: [projectDir] } },
+    'thread-project-assignments': { assigned: { projectId: 'legacy', projectKind: 'local' } },
+  }));
+  close();
+  const sessions = listDesktopSessions(file);
+  assert.deepEqual(sessions.map(session => session.project), [
+    { id: 'migrated', name: 'Workspace', path: projectDir },
+    { id: 'migrated', name: 'Workspace', path: projectDir },
+  ]);
+  const shared = sharedFixture(root);
+  const result = await importDesktopSessions(shared, file, ['assigned', 'sibling']);
+  assert.equal(result.imported.length, 2);
+  assert.equal(result.skipped.length, 0);
+  assert.equal(shared.workspaces.sessionMeta().workspaces.length, 1);
+  const records = result.imported.map(item => shared.get(item.id));
+  assert.ok(records[0].workspaceId);
+  assert.equal(records[0].workspaceId, records[1].workspaceId);
+});
+
+test('legacy roots and secondary roots are recognized without grouping explicitly projectless or remote threads', t => {
+  const { root, file, db, close } = stateFixture(t);
+  const primary = path.join(root, 'primary');
+  const secondary = path.join(root, 'secondary');
+  const legacy = path.join(root, 'legacy');
+  const rollout = writeRollout(root, 'roots.jsonl', [responseItem('user', 'hello')]);
+  addProject(db, { id: 'database', name: 'Database', roots: [primary, secondary] });
+  for (const [id, cwd] of [['secondary', secondary], ['legacy', legacy], ['loose', primary], ['remote', primary]]) {
+    addThread(db, { id, name: id, cwd, rollout });
+  }
+  fs.writeFileSync(path.join(root, '.codex-global-state.json'), JSON.stringify({
+    'local-projects': { legacy: { name: 'Legacy workspace', rootPaths: [legacy] } },
+    'projectless-thread-ids': ['loose'],
+    'thread-project-assignments': { remote: { projectId: 'remote', projectKind: 'remote' } },
+  }));
+  close();
+  const sessions = new Map(listDesktopSessions(file).map(session => [session.id, session]));
+  assert.deepEqual(sessions.get('secondary').project, { id: 'database', name: 'Database', path: primary });
+  assert.deepEqual(sessions.get('legacy').project, { id: 'legacy', name: 'Legacy workspace', path: legacy });
+  assert.equal(sessions.get('loose').project, null);
+  assert.equal(sessions.get('remote').project, null);
+  fs.writeFileSync(path.join(root, '.codex-global-state.json'), '{invalid');
+  assert.equal(listDesktopSessions(file).find(session => session.id === 'secondary').project.id, 'database');
+});
+
 test('rollout parsing keeps user and assistant text, unwraps the desktop request wrapper, skips environment blocks', async t => {
   const { root } = stateFixture(t);
   const rollout = writeRollout(root, 'b.jsonl', [
@@ -209,4 +262,58 @@ test('sync rejects conversations that were not imported from the desktop app', a
 
 test('desktopStatePath points inside the user home .codex directory', () => {
   assert.equal(desktopStatePath('/home/u'), path.join('/home/u', '.codex', 'state_5.sqlite'));
+});
+
+test('large tool-heavy histories stream into conversations even above the old batch limit', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const rollout = writeRollout(root, 'large.jsonl', [responseItem('user', 'Large history question')]);
+  const toolLine = JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', output: 'x'.repeat(1024 * 1024) } }) + '\n';
+  for (let index = 0; index < 65; index++) fs.appendFileSync(rollout, toolLine);
+  fs.appendFileSync(rollout, JSON.stringify(responseItem('assistant', 'Large history answer')) + '\n');
+  const ids = Array.from({ length: 8 }, (_, index) => 'large-' + index);
+  for (const id of ids) addThread(db, { id, name: id, rollout });
+  close();
+  const before = fs.statSync(rollout);
+  const sessions = listDesktopSessions(file);
+  assert.ok(sessions.every(session => session.importable && session.rolloutBytes > 64 * 1024 * 1024));
+  assert.ok(sessions.reduce((total, session) => total + session.rolloutBytes, 0) > 512 * 1024 * 1024);
+  const shared = sharedFixture(root);
+  const result = await importDesktopSessions(shared, file, ids);
+  assert.equal(result.imported.length, ids.length);
+  assert.deepEqual(result.skipped, []);
+  for (const item of result.imported) {
+    assert.deepEqual(shared.messages(shared.get(item.id)).map(message => message.text), ['Large history question', 'Large history answer']);
+  }
+  const synced = await syncDesktopSession(shared, file, result.imported[0].id);
+  assert.equal(synced.messages, 2);
+  assert.equal(fs.statSync(rollout).size, before.size);
+  assert.equal(fs.statSync(rollout).mtimeMs, before.mtimeMs);
+});
+
+test('extracted-text safety limits apply after filtering and use UTF-8 bytes', async t => {
+  const { root } = stateFixture(t);
+  const rollout = writeRollout(root, 'limits.jsonl', [
+    { type: 'response_item', payload: { type: 'function_call_output', output: 'ignored'.repeat(100) } },
+    responseItem('user', '你好'), responseItem('assistant', '好'),
+  ]);
+  assert.equal((await readRolloutMessages(rollout, null, { maxMessageBytes: 9, maxMessageCount: 2 })).length, 2);
+  await assert.rejects(readRolloutMessages(rollout, null, { maxMessageBytes: 8 }), /Extracted conversation exceeds/);
+  await assert.rejects(readRolloutMessages(rollout, null, { maxMessageCount: 1 }), /Extracted conversation exceeds/);
+  await assert.rejects(readRolloutMessages(rollout, () => { throw new Error('write failed'); }), /write failed/);
+  assert.equal((await readRolloutMessages(rollout)).length, 2);
+});
+
+test('unreadable history rejects cleanly and a failed import leaves no partial conversation', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const missing = path.join(root, 'missing.jsonl');
+  addThread(db, { id: 'missing', name: 'Missing', rollout: missing });
+  addThread(db, { id: 'directory', name: 'Directory', rollout: root });
+  close();
+  assert.ok(listDesktopSessions(file).every(session => !session.importable));
+  await assert.rejects(readRolloutMessages(missing), /ENOENT/);
+  const shared = sharedFixture(root);
+  const result = await importDesktopSessions(shared, file, ['missing']);
+  assert.equal(result.imported.length, 0);
+  assert.equal(result.skipped.length, 1);
+  assert.equal(shared.items.size, 0);
 });

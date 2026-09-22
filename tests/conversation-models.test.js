@@ -43,4 +43,6 @@ test('subscription catalog uses account metadata, never API guesses or account s
   assert.deepEqual(conversationModels('kimi', { connection: 'subscription' }, sources), [{ id: 'kimi-model', name: 'kimi-model', thinking: [], contextWindow: 100000 }]);
   sources.codex = () => ({ account: null, models: [{ id: 'stale' }] });
   assert.deepEqual(conversationModels('codex', { connection: 'subscription' }, sources), []);
+  sources.antigravity = () => ({ models: [{ id: 'google-model', name: 'Google model' }], verifiedAt: 123 });
+  assert.deepEqual(conversationModels('antigravity', { connection: 'subscription' }, sources), [{ id: 'google-model', name: 'Google model', thinking: [] }]);
 });

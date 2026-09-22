@@ -35,12 +35,14 @@ const { createZoomController, readLegacyZoom } = require('./zoom-controller');
 const { saveClipboardImage, savePastedText } = require('./clipboard-attachments');
 const { StorageCleanup } = require('./storage-cleanup');
 const { attachInputContextMenu } = require('./input-context-menu');
+const { attachImageContextMenu } = require('./image-context-menu');
 const { describePreview } = require('./file-preview');
 const { resolveArtifacts } = require('./turn-artifacts');
 const { readOfficePreview } = require('./office-preview');
 const { createConversationTitles, titleCandidates, titleErrorKind, TitleRequestError,
   TITLE_INSTRUCTION, MINIMAL_INSTRUCTION, AUXILIARY_HEADER, MAX_MESSAGE_CHARS, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } = require('./conversation-title.js');
 let sharedConversations = null;
+let remoteDesktop = null;
 function publishChatEvent(engine, event) {
   // Persistence is best-effort here: a failed save must not escape into the
   // engine event pipeline, or one locked file would freeze the conversation.
@@ -745,22 +747,34 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
   },
   conversationModels: (engine, settings) => require('../engines/conversation-models').conversationModels(engine, settings, {
     router: readOllamaProxyConfig, codex: () => codex.handlers['account-state'](), kimi: () => kimiAccount.state(),
+    antigravity: () => antigravity.handlers['account-state'](),
   }),
   createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: detectNode() }),
   drivers: {
     claude: { history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
     kimi: { history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
-    codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession, nativeCompaction: true },
+    codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
     antigravity: { history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, nativeAutoCompaction: true },
     dsh: dshChat,
   },
   prepare: async (engine, settings) => {
     if (engine !== 'dsh' || !loadConfig().dshBin) await runtimes().ensure(engine, settings?.connection);
   },
-  onEvent: event => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-event', event); },
+  onEvent: event => {
+    if (event.type === 'conversation:settings') {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send('dsh:engine-settings-changed', { engine: event.engine });
+      }
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-event', event);
+    remoteDesktop?.publish();
+  },
   onGoal: goal => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-goal', goal); },
   onStatus: status => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-status', status); },
 });
+
+remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme,
+  manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow });
 
 // Write the credentials key -> env var mapping and the model/provider settings.
 // The harness resolves `llm-pi-ai.providers.<id>.apiKeyEnv` to the env var in
@@ -1010,6 +1024,7 @@ if (!gotSingleInstanceLock) {
   app.on('second-instance', () => showMainWindow());
   app.on('web-contents-created', (_event, contents) => {
     attachInputContextMenu(contents, { Menu, uiText });
+    attachImageContextMenu(contents, { Menu, dialog, BrowserWindow, uiText });
   });
 
   ipcMain.handle('dsh:save-credentials', (_event, payload) => {
@@ -1382,6 +1397,7 @@ if (!gotSingleInstanceLock) {
   ipcMain.handle('dsh:conversation-command', async (_event, { engine, action, payload }) => {
     try { return await sharedConversations.command(engine, action, payload); }
     catch (error) { return { ok: false, error: error.message }; }
+    finally { remoteDesktop?.publish(); }
   });
   ipcMain.handle('dsh:conversation-switch', async (_event, payload) => {
     try {
@@ -1401,18 +1417,16 @@ if (!gotSingleInstanceLock) {
   });
 
   // ---- Archived conversations (Settings → Archived) ------------------------
+  const cleanupActivity = () => sharedConversations.isBusy() || goalDriver.armed || kimiGoalDriver.armed || codex.goal.armed || antigravity.goal.armed
+    || [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions].some(pool => pool.running);
   const storageCleanup = new StorageCleanup({
     dataDir: app.getPath('userData'), conversations: sharedConversations,
+    isActive: cleanupActivity,
     histories: [claudeHistory, kimiHistory, codex.history, antigravity.history, dshChat.history],
     liveOwners: () => [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions]
       .flatMap(pool => [...pool.sessions.entries()].filter(([, session]) => !session.dead).map(([id]) => id)),
     references: async () => {
-      const assertIdle = () => {
-        if (sharedConversations.isBusy() || goalDriver.armed || kimiGoalDriver.armed || codex.goal.armed || antigravity.goal.armed
-          || [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions].some(pool => pool.running))
-          throw new Error('Stop running conversations before scanning or cleaning space');
-      };
-      assertIdle();
+      let active = Boolean(cleanupActivity());
       const contents = require('electron').webContents.getAllWebContents().filter(contents => {
         const url = contents.getURL().split('?')[0];
         return url === pathToFileURL(path.join(RENDERER_ROOT, 'settings/api-settings.html')).href
@@ -1430,21 +1444,24 @@ if (!gotSingleInstanceLock) {
                   const key = localStorage.key(index);
                   if (key.startsWith('camellia-chat-draft:')) saved.push(JSON.parse(localStorage.getItem(key)));
                 }
+                let active = false;
                 if (document.getElementById('attachRow')) {
-                  if (sending || loadingSession || switchingEngine || !uiReady) throw new Error('Stop running conversations before scanning or cleaning space');
+                  if (loadingSession || switchingEngine || !uiReady) throw new Error('Could not verify saved drafts; cleanup was stopped');
+                  active = sending;
                   saved.push(attachments, messageQueue);
                 }
-                return { ok: true, references: saved };
+                return { ok: true, references: saved, active };
               } catch (error) { return { ok: false, error: error.message }; }
             })()`),
             new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Could not verify saved drafts; cleanup was stopped')), 5000); }),
           ]);
           if (!result?.ok) throw new Error(result?.error || 'Could not verify saved drafts; cleanup was stopped');
+          active ||= Boolean(result.active);
           return result.references;
         } finally { clearTimeout(timer); }
       }));
-      assertIdle();
-      return references;
+      active ||= Boolean(cleanupActivity());
+      return { references, active };
     },
   });
   ipcMain.handle('dsh:storage-scan', async () => {
@@ -1670,6 +1687,7 @@ if (!gotSingleInstanceLock) {
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: uiText('Open Camellia'), click: () => showMainWindow() },
       { label: uiText('Settings…'), click: () => openSettingsWindow() },
+      { label: normalizeLanguage(loadConfig().language) === 'en' ? 'Mobile access…' : '手机访问…', click: () => remoteDesktop.open() },
       { type: 'separator' },
       { label: uiText('Quit'), click: () => app.quit() },
     ]));
@@ -1690,6 +1708,7 @@ if (!gotSingleInstanceLock) {
       app.dock.setIcon(path.join(APP_ROOT, 'assets/icon-1024.png'));
     }
     nativeTheme.themeSource = loadConfig().theme || 'system';
+    void remoteDesktop.startTrustedDevices().catch(error => log('Mobile access auto-start failed:', error.message));
     setMenu();
     cleanupOpencodeProxyRoute(); // strip the removed OpenCode proxy's stale route
     await startOllamaProxyHandle();
@@ -1730,6 +1749,7 @@ if (!gotSingleInstanceLock) {
   let kimiClosing = false;
   app.on('before-quit', event => {
     appQuitting = true;
+    void remoteDesktop?.close();
     contextCapacity?.cancel();
     clearTimeout(balanceRefreshTimer);
     for (const goal of [goalDriver, kimiGoalDriver, antigravity.goal, codex.goal]) {
@@ -1822,6 +1842,7 @@ if (!gotSingleInstanceLock) {
           { label: "About", click: () => dialog.showMessageBox({ type: 'info', title: `About ${APP_NAME}`, message: APP_NAME, detail: `Version ${app.getVersion()}\nEngine: ${engineStatusText()}` }) },
           { type: 'separator' },
           { label: "Settings…", accelerator: 'CmdOrCtrl+,', click: () => openSettingsWindow() },
+          { label: normalizeLanguage(loadConfig().language) === 'en' ? 'Mobile access…' : '手机访问…', click: () => remoteDesktop.open() },
           { type: 'separator' },
           { label: "Open logs folder", click: () => shell.openPath(logDir()) },
           { type: 'separator' },

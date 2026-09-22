@@ -1,0 +1,51 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'app.camellia.mobile'
+    compileSdk 35
+    useLibrary 'android.test.runner'
+    useLibrary 'android.test.base'
+
+    defaultConfig {
+        applicationId 'app.camellia.mobile'
+        minSdk 26
+        targetSdk 35
+        versionCode 13
+        versionName '0.3.8'
+        testInstrumentationRunner 'android.test.InstrumentationTestRunner'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    bundle {
+        language { enableSplit = false }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    implementation files('libs/tailnet.aar')
+    implementation 'org.commonmark:commonmark:0.21.0'
+    implementation 'org.commonmark:commonmark-ext-gfm-tables:0.21.0'
+    implementation 'org.commonmark:commonmark-ext-gfm-strikethrough:0.21.0'
+    testImplementation 'junit:junit:4.13.2'
+}
+
+def desktopIconResources = layout.buildDirectory.dir('generated/desktopIcon/res')
+def generateDesktopIcon = tasks.register('generateDesktopIcon', Copy) {
+    from(rootProject.file('../assets/icon-1024.png'))
+    into(desktopIconResources.map { it.dir('drawable-nodpi') })
+    rename { 'desktop_logo.png' }
+}
+android.sourceSets.main.res.srcDir(desktopIconResources)
+tasks.named('preBuild').configure { dependsOn(generateDesktopIcon) }
