@@ -32,6 +32,17 @@ test('manual order is applied before pagination and survives activity and restar
   assert.deepEqual(listed.sessions.map(session => session.id), order);
 });
 
+test('new conversations appear first within their workspace', async context => {
+  const { shared, command, workspace } = fixture(context);
+  const group = workspace('New conversations');
+  const first = shared.create('codex', group.id, 'First');
+  const second = shared.create('codex', group.id, 'Second');
+  await command('meta-op', { op: 'move-session', sessionId: first.id, group: group.id, targetSessionId: second.id, placement: 'before' });
+  const third = shared.create('codex', group.id, 'Third');
+  const listed = await command('list-sessions');
+  assert.deepEqual(listed.sessions.filter(session => session.workspaceId === group.id).map(session => session.id), [third.id, first.id, second.id]);
+});
+
 test('moving between workspaces preserves transcript and execution directory across restart', async context => {
   const { harness, shared, command, workspace } = fixture(context);
   const source = workspace('Source'), target = workspace('Target');
@@ -96,15 +107,17 @@ test('legacy sessions retain their execution directory when reorganized', async 
   assert.equal(JSON.stringify(harness.api.claudeSessionMeta()), before);
 });
 
-test('agent reply metadata promotes its conversation within its current group', async context => {
-  const { shared, command, workspace } = fixture(context);
+test('completed agent replies promote their conversation within its current group', async context => {
+  const { harness, shared, command, workspace } = fixture(context);
+  shared.prepare = async () => {};
   const group = workspace('Replies');
   const first = shared.create('codex', group.id, 'First');
   const second = shared.create('codex', group.id, 'Second');
-  await command('meta-op', { op: 'move-session', sessionId: first.id, group: group.id, targetSessionId: second.id, placement: 'after' });
-  first.lastReplyAt = Date.now();
-  shared.save(first);
-  shared.workspaces.promoteSession(first.id);
+  assert.deepEqual((await command('list-sessions')).sessions.filter(session => session.workspaceId === group.id).map(session => session.id), [second.id, first.id]);
+  const sent = await harness.call('conversation-command', { engine: 'claude', action: 'send', payload: { sessionId: first.id, prompt: 'Reply to this conversation' } });
+  assert.equal(sent.ok, true, sent.error);
+  harness.finishTurn();
+  await new Promise(resolve => setImmediate(resolve));
   const listed = await command('list-sessions');
   assert.deepEqual(listed.sessions.filter(session => session.workspaceId === group.id).map(session => session.id), [first.id, second.id]);
   assert.ok(shared.get(first.id).lastReplyAt > 0);

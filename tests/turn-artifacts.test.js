@@ -24,6 +24,8 @@ test('readable artifacts sort first, stably, without changing the collected orde
     'README.MD', 'figure.png', 'demo.mp4', 'slides.pptx', 'report.html', 'notes.markdown', 'legacy.htm', 'report.pdf', 'main.js', 'test.js',
   ]);
   assert.deepEqual(files, original);
+  assert.deepEqual(sortArtifacts([{ name: 'report.pdf', kind: 'pdf' }, { name: 'app-debug.apk', kind: 'package' },
+    { name: 'figure.png', kind: 'image' }]).map(file => file.name), ['app-debug.apk', 'figure.png', 'report.pdf']);
   assert.deepEqual(sortArtifacts([]), []);
   assert.equal(VISIBLE_ARTIFACT_LIMIT, 4);
   assert.equal(documentFormat({ extension: 'HTM' }), 'html');
@@ -83,4 +85,20 @@ test('edited source and configuration are not deliverables unless explicitly lin
   const restored = resolveArtifacts({ cwd, paths: result.map(file => file.path), text: '[script](helper.py)' });
   assert.deepEqual(restored, result);
   assert.deepEqual(resolveArtifacts({ cwd, text: '`main.js:12:5` [source](main.js#L12C5)' }), []);
+});
+
+test('built application packages stay deliverables instead of being discarded as unsupported', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-'));
+  t.after(() => removeTree(cwd));
+  const apk = path.join(cwd, 'dist/Camellia-Android-0.3.27-debug.apk');
+  for (const file of ['android/README.md', 'dist/Camellia-Android-0.3.27-debug.apk']) {
+    fs.mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, file), 'fixture');
+  }
+  const result = resolveArtifacts({ cwd, paths: ['android/README.md'], text: '- `dist/Camellia-Android-0.3.27-debug.apk`' });
+  assert.deepEqual(sortArtifacts(result).map(file => [file.name, file.kind]), [
+    ['Camellia-Android-0.3.27-debug.apk', 'package'], ['README.md', 'text'],
+  ]);
+  assert.equal(sortArtifacts(result)[0].extension, 'APK');
+  assert.equal(result.find(file => file.kind === 'package').path, apk);
 });

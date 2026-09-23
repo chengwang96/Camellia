@@ -141,15 +141,94 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
 
     private void assertDockInsets(View bar, View status) {
         assertEquals(dp(2), status.getPaddingTop()); assertEquals(dp(2), status.getPaddingBottom());
-        assertEquals(dp(12), ((LinearLayout.LayoutParams) bar.getLayoutParams()).bottomMargin);
+        assertEquals(dp(8), ((LinearLayout.LayoutParams) bar.getLayoutParams()).bottomMargin);
         View parent = (View) bar.getParent();
-        android.view.WindowInsets original = parent.getRootWindowInsets();
+        View fade = ((ViewGroup) parent).getChildAt(0);
+        assertEquals(bar.getTag() + "Fade", fade.getTag()); assertEquals(dp(36), fade.getHeight());
+        assertTrue(fade.getBackground() instanceof android.graphics.drawable.GradientDrawable);
+        assertNotNull("The dock must mask body content behind the composer and status line", parent.getBackground());
+        assertTrue("The dock backdrop below the fade band must be fully opaque, or scrolled text shows through",
+            isOpaqueBelowFade(parent.getBackground()));
+        android.graphics.Rect backdropPadding = new android.graphics.Rect();
+        parent.getBackground().getPadding(backdropPadding);
+        assertEquals("The dock backdrop must not pad its view, or the fade band shifts below the mask",
+            0, backdropPadding.top);
+        assertEquals(0, backdropPadding.bottom);
+        assertEquals(0, backdropPadding.left);
+        assertEquals(0, backdropPadding.right);
+        assertEquals("The dock must not inherit backdrop padding", 0, parent.getPaddingTop());
+        assertEquals("The fade band must sit flush at the dock top so the gradient starts where the mask begins",
+            0, fade.getTop());
+        assertTrue("The backdrop must stay clear inside the fade band so the gradient composites over content",
+            isClearInsideFade(parent.getBackground(), fade.getHeight()));
+        assertDockFadeCompositesOverContent(bar, fade);
+        assertTrue(parent.getLayoutParams() instanceof android.widget.FrameLayout.LayoutParams);
+        assertEquals(android.view.Gravity.BOTTOM, ((android.widget.FrameLayout.LayoutParams) parent.getLayoutParams()).gravity);
+        if (!String.valueOf(bar.getTag()).contains("SearchBar")) {
+            assertEquals(dp(7), bar.getElevation(), 0f); assertEquals(dp(1), bar.getTranslationZ(), 0f);
+        }
+        View page = (View) parent.getParent().getParent();
+        android.view.WindowInsets original = page.getRootWindowInsets();
         assertNotNull(original);
         for (int bottom : new int[] {0, dp(24), dp(280)}) {
-            parent.dispatchApplyWindowInsets(original.replaceSystemWindowInsets(0, 0, 0, bottom));
-            assertEquals(dp(8) + bottom, parent.getPaddingBottom());
+            page.dispatchApplyWindowInsets(original.replaceSystemWindowInsets(0, 0, 0, bottom));
+            assertEquals(dp(8) + bottom, page.getPaddingBottom());
         }
-        if (original != null) parent.dispatchApplyWindowInsets(original);
+        if (original != null) page.dispatchApplyWindowInsets(original);
+    }
+
+    private boolean isOpaqueBelowFade(android.graphics.drawable.Drawable backdrop) {
+        android.graphics.Rect originalBounds = new android.graphics.Rect(backdrop.getBounds());
+        android.graphics.Bitmap probe = android.graphics.Bitmap.createBitmap(4, 400, android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas canvas = new android.graphics.Canvas(probe);
+        backdrop.setBounds(0, 0, 4, 400);
+        backdrop.draw(canvas);
+        boolean opaque = true;
+        for (int y : new int[] {dp(36) + dp(4), 250, 399}) opaque &= android.graphics.Color.alpha(probe.getPixel(2, y)) == 255;
+        backdrop.setBounds(originalBounds);
+        probe.recycle();
+        return opaque;
+    }
+
+    private boolean isClearInsideFade(android.graphics.drawable.Drawable backdrop, int fadeHeight) {
+        android.graphics.Rect originalBounds = new android.graphics.Rect(backdrop.getBounds());
+        android.graphics.Bitmap probe = android.graphics.Bitmap.createBitmap(4, 400, android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas canvas = new android.graphics.Canvas(probe);
+        backdrop.setBounds(0, 0, 4, 400);
+        backdrop.draw(canvas);
+        boolean clear = true;
+        for (int y : new int[] {0, fadeHeight / 2}) clear &= android.graphics.Color.alpha(probe.getPixel(2, y)) == 0;
+        backdrop.setBounds(originalBounds);
+        probe.recycle();
+        return clear;
+    }
+
+    private void assertDockFadeCompositesOverContent(View bar, View fade) {
+        View dock = (View) bar.getParent();
+        ViewGroup stage = (ViewGroup) dock.getParent();
+        View body = stage.getChildAt(0);
+        android.graphics.drawable.Drawable originalForeground = body.getForeground();
+        ChatStyle style = new ChatStyle(bar.getContext());
+        int contrast = android.graphics.Color.red(style.background) < 128 ? android.graphics.Color.WHITE : android.graphics.Color.BLACK;
+        Bitmap probe = Bitmap.createBitmap(stage.getWidth(), stage.getHeight(), Bitmap.Config.ARGB_8888);
+        try {
+            body.setForeground(new android.graphics.drawable.ColorDrawable(contrast));
+            stage.draw(new android.graphics.Canvas(probe));
+            int backgroundRed = android.graphics.Color.red(style.background);
+            int previousDistance = 256;
+            for (int step = 0; step < 4; step++) {
+                int sampleY = dock.getTop() + fade.getTop() + fade.getHeight() * step / 4;
+                int distance = Math.abs(android.graphics.Color.red(probe.getPixel(stage.getWidth() / 2, sampleY)) - backgroundRed);
+                assertTrue("Content must remain visible throughout the upper fade band", distance > 0);
+                assertTrue("Content must fade gradually instead of ending at a solid strip", distance < previousDistance);
+                previousDistance = distance;
+            }
+            assertEquals("The area below the editor must still fully mask content", style.background,
+                probe.getPixel(stage.getWidth() / 2, dock.getTop() + bar.getBottom() + dp(4)));
+        } finally {
+            body.setForeground(originalForeground);
+            probe.recycle();
+        }
     }
 
     private void screenshot(Activity activity, String name) throws Exception {

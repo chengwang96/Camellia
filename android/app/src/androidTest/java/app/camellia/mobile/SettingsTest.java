@@ -120,10 +120,10 @@ public class SettingsTest extends InstrumentationTestCase {
         conversation.put("title", "Archived research"); conversation.put("draft", "Keep this draft"); store.save();
         Activity local = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
-            ui(() -> root(local).findViewWithTag("localConversation:" + id).performLongClick());
+            ui(() -> root(local).findViewWithTag("localConversationMenu:" + id).performClick());
             ui(() -> {
                 AlertDialog menu = dialog(local);
-                menu.getListView().performItemClick(null, 2, 2);
+                menu.getWindow().getDecorView().findViewWithTag("localConversationArchive").performClick();
                 assertNull(root(local).findViewWithTag("localConversation:" + id));
             });
         } finally { ui(local::finish); }

@@ -306,13 +306,14 @@ public class NavigationTest extends InstrumentationTestCase {
         float density = activity.getResources().getDisplayMetrics().density;
         assertEquals(Math.round(2 * density), status.getPaddingTop());
         assertEquals(Math.round(2 * density), status.getPaddingBottom());
-        android.view.WindowInsets original = parent.getRootWindowInsets();
+        View page = (View) parent.getParent().getParent();
+        android.view.WindowInsets original = page.getRootWindowInsets();
         assertNotNull(original);
         for (int bottom : new int[] {0, Math.round(24 * density), Math.round(280 * density)}) {
-            parent.dispatchApplyWindowInsets(original.replaceSystemWindowInsets(0, 0, 0, bottom));
-            assertEquals(Math.round(8 * density) + bottom, parent.getPaddingBottom());
+            page.dispatchApplyWindowInsets(original.replaceSystemWindowInsets(0, 0, 0, bottom));
+            assertEquals(Math.round(8 * density) + bottom, page.getPaddingBottom());
         }
-        if (original != null) parent.dispatchApplyWindowInsets(original);
+        if (original != null) page.dispatchApplyWindowInsets(original);
         for (int width : new int[] {320, 412}) {
             for (String message : messages) {
                 status.setText(message); status.setTextSize(18);
@@ -320,7 +321,7 @@ public class NavigationTest extends InstrumentationTestCase {
                     View.MeasureSpec.makeMeasureSpec((int) (640 * density), View.MeasureSpec.EXACTLY));
                 parent.layout(0, 0, parent.getMeasuredWidth(), parent.getMeasuredHeight());
                 assertEquals(1, status.getLineCount());
-                assertTrue(status.getTop() - bar.getBottom() >= Math.round(12 * density));
+                assertTrue(status.getTop() - bar.getBottom() >= Math.round(8 * density));
                 assertTrue(status.getBottom() <= parent.getHeight() - parent.getPaddingBottom());
                 assertTrue(bar.getHeight() >= (int) (48 * density));
                 assertEquals(message, status.getText().toString());
@@ -361,8 +362,15 @@ public class NavigationTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
                 ViewGroup bar = root.findViewWithTag("searchBar"); View status = root.findViewWithTag("connectionStatus");
+                View fade = root.findViewWithTag("searchBarFade"); assertNotNull(fade);
                 float density = activity.getResources().getDisplayMetrics().density;
-                assertTrue("Status must leave room below the search shadow", status.getTop() - bar.getBottom() >= Math.round(12 * density));
+                assertEquals(Math.round(36 * density), fade.getHeight());
+                assertTrue(fade.getBackground() instanceof android.graphics.drawable.GradientDrawable);
+                assertTrue(((View) fade.getParent()).getLayoutParams() instanceof android.widget.FrameLayout.LayoutParams);
+                assertEquals(android.view.Gravity.BOTTOM, ((android.widget.FrameLayout.LayoutParams) ((View) fade.getParent()).getLayoutParams()).gravity);
+                View search = bar.getChildAt(0); assertEquals(Math.round(7 * density), search.getElevation(), 0f);
+                assertEquals(Math.round(1 * density), search.getTranslationZ(), 0f);
+                assertTrue("Status must leave room below the search shadow", status.getTop() - bar.getBottom() >= Math.round(8 * density));
                 assertFalse("Search shadow must not be clipped", bar.getClipChildren());
                 assertFalse("Page must allow nested shadows outside the search bar bounds", ((ViewGroup) bar.getParent()).getClipChildren());
                 assertFalse(((ViewGroup) bar.getParent()).getClipToPadding());

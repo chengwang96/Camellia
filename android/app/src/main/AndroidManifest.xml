@@ -12,6 +12,15 @@
         android:label="Camellia"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
+        <provider
+            android:name=".CameraFileProvider"
+            android:authorities="app.camellia.mobile.camera"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/camera_paths" />
+        </provider>
         <activity android:name=".SettingsActivity" android:exported="false" android:enableOnBackInvokedCallback="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".LocalChatActivity" android:exported="false" android:enableOnBackInvokedCallback="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".MainActivity" android:exported="true" android:enableOnBackInvokedCallback="false" android:windowSoftInputMode="adjustResize">

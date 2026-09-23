@@ -8,6 +8,9 @@ const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.avif']);
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.ogv']);
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.opus']);
+// Installable application artifacts. They cannot be previewed inline, but they
+// are the deliverable of a build turn, so they must not be discarded as noise.
+const PACKAGE_EXTENSIONS = new Set(['.apk', '.aab', '.ipa', '.exe', '.msi', '.dmg', '.pkg', '.deb', '.rpm', '.appimage']);
 const TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.json', '.jsonl', '.js', '.cjs', '.mjs', '.ts', '.tsx', '.jsx', '.css', '.scss',
   '.html', '.htm', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.log', '.csv', '.tsv', '.sql',
@@ -25,6 +28,7 @@ function previewKind(filePath) {
   if (IMAGE_EXTENSIONS.has(extension)) return 'image';
   if (VIDEO_EXTENSIONS.has(extension)) return 'video';
   if (AUDIO_EXTENSIONS.has(extension)) return 'audio';
+  if (PACKAGE_EXTENSIONS.has(extension)) return 'package';
   if (TEXT_EXTENSIONS.has(extension) || ['dockerfile', 'makefile', 'license', 'readme'].includes(name)) return 'text';
   return 'unsupported';
 }

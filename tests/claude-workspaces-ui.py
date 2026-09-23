@@ -5,6 +5,7 @@ Requires Python Playwright and its Chromium browser; no API credentials needed.
 """
 import argparse
 import json
+import re
 from pathlib import Path
 import subprocess
 from playwright.sync_api import sync_playwright, expect
@@ -178,10 +179,46 @@ try:
         expect(page.locator(f'#independentSessions [data-sid="{fork_id}"]')).to_be_visible()
         assert Path(fixtures['alpha']).exists()
         assert Path(fixtures['legacy']).exists()
+        # The row below the archived one is the expected next conversation.
+        standalone_order = page.eval_on_selector_all('#independentSessions [data-sid]', 'els => els.map(entry => entry.dataset.sid)')
+        position = standalone_order.index(fork_id)
+        expected_next = standalone_order[position + 1] if position + 1 < len(standalone_order) else standalone_order[position - 1]
         page.locator(f'[data-sid="{fork_id}"]').get_by_role('button', name='Session actions').click()
         page.get_by_role('menuitem', name='Archive session', exact=True).click()
         expect(page.locator(f'[data-sid="{fork_id}"]')).to_have_count(0)
+        # The standalone section still holds conversations, so archiving the open
+        # one opens its neighbor there instead of starting a draft.
+        assert page.evaluate('context.sessionId') == expected_next
+        expect(page.locator(f'#independentSessions [data-sid="{expected_next}"]')).to_have_class(re.compile(r'active'))
+        expect(page.locator('#chat')).not_to_be_empty()
+
+        # Two conversations in one workspace: archiving the open one opens its
+        # neighbor, and archiving the last one opens that workspace's draft page.
+        page.get_by_role('button', name='New session in Beta 研究', exact=True).click()
+        page.locator('#input').fill('工作区里的第一个会话')
+        page.locator('#send').click()
+        page.wait_for_function('currentRunId !== null')
+        first_beta_id = page.evaluate("window.testCall('finishTurn')")
+        page.get_by_role('button', name='New session in Beta 研究', exact=True).click()
+        page.locator('#input').fill('工作区里的第二个会话')
+        page.locator('#send').click()
+        page.wait_for_function('currentRunId !== null')
+        second_beta_id = page.evaluate("window.testCall('finishTurn')")
+        beta_workspace_id = page.evaluate('context.workspaceId')
+        assert beta_workspace_id is not None and first_beta_id != second_beta_id
+        page.locator(f'[data-sid="{second_beta_id}"]').get_by_role('button', name='Session actions').click()
+        page.get_by_role('menuitem', name='Archive session', exact=True).click()
+        expect(page.locator(f'[data-sid="{second_beta_id}"]')).to_have_count(0)
+        assert page.evaluate('context.sessionId') == first_beta_id
+        assert page.evaluate('context.workspaceId') == beta_workspace_id
+        expect(page.locator('#headerTitle')).to_have_text('工作区里的第一个会话')
+        page.locator(f'[data-sid="{first_beta_id}"]').get_by_role('button', name='Session actions').click()
+        page.get_by_role('menuitem', name='Archive session', exact=True).click()
+        expect(page.locator(f'[data-sid="{first_beta_id}"]')).to_have_count(0)
         expect(page.locator('#headerTitle')).to_have_text('New session')
+        assert page.evaluate('context.sessionId') is None
+        assert page.evaluate('context.workspaceId') == beta_workspace_id
+        expect(page.locator(f'section[data-workspace-id="{beta_workspace_id}"] #sessionCurrent')).to_be_visible()
 
         page.get_by_role('button', name='New session in Beta 研究', exact=True).click()
         page.locator('#input').fill('批量归档工作区会话')

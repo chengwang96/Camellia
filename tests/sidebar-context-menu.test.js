@@ -13,6 +13,7 @@ const buttonSource = source.slice(source.indexOf('  function sidebarButton('), s
 function element() {
   return {
     dataset: {}, children: [], listeners: {},
+    classList: { toggle() {}, add() {}, remove() {} },
     setAttribute() {},
     querySelector() { return { textContent: '' }; },
     appendChild(child) { this.children.push(child); },

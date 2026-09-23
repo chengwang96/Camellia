@@ -58,7 +58,8 @@ public class RemoteSettingsTest extends InstrumentationTestCase {
                     View panel = popup.getContentView();
                     assertTrue(panel instanceof PopupSurface);
                     assertNotNull(((TextView) anchor).getCompoundDrawablesRelative()[2]);
-                    assertNotNull(panel.findViewWithTag("remoteModelOption:second-model"));
+                    View second = panel.findViewWithTag("remoteModelOption:second-model"); assertNotNull(second);
+                    assertTrue(second.getBackground() instanceof android.graphics.drawable.RippleDrawable);
                     panel.findViewWithTag("remoteThinkingSettings").performClick();
                     LinearLayout back = (LinearLayout) panel.findViewWithTag("remoteThinkingBack");
                     assertFalse(((TextView) ((LinearLayout) back.getChildAt(0)).getChildAt(0)).getText().toString().startsWith("‹"));

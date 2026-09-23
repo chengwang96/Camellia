@@ -40,8 +40,9 @@ with sync_playwright() as playwright:
         process = turn.locator('.execution-process')
         expect(process).to_be_visible()
         expect(process).not_to_have_attribute('open', '')
-        expect(turn.locator('.turn-body > .md')).to_have_count(0)
-        expect(process.locator('.md')).to_have_count(2)
+        expect(turn.locator('.turn-body > .md')).to_have_text('Checking the event history.')
+        expect(process.locator('.md')).to_have_count(1)
+        expect(process.locator('.md')).to_have_text('I will inspect the code.')
         process.locator('summary').click()
         expect(process.locator('.md').first).to_be_visible()
         page.evaluate("""() => {

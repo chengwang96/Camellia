@@ -10,7 +10,7 @@ const { EmbeddedNetwork } = require('./embedded-network');
 
 function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager, rendererRoot, loadConfig, getSettingsWindow = () => null, networkFactory }) {
   let window = null, gateway = null, access = null, busy = false, network = null, enabled = false, closed = false;
-  let startupChecked = false;
+  let startupChecked = false, monitor = null;
   const reader = new RemoteReadModel(manager);
   function initialize() {
     if (gateway) return;
@@ -53,6 +53,7 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager
       if (closed || !enabled) { await network.stop(); return; }
       if (interactive && status.state === 'NeedsLogin') await network.login();
       await refreshNetwork();
+      scheduleMonitor();
     } catch (error) {
       enabled = false;
       await network.stop(); await gateway.stop();
@@ -60,14 +61,21 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager
       throw error;
     }
   }
-  const monitor = setInterval(async () => {
-    if (!enabled || busy || closed) return;
-    busy = true;
-    try { await refreshNetwork(); }
-    catch { enabled = false; await network.stop(); await gateway.stop(); network.snapshot.state = 'Error'; }
-    finally { busy = false; }
-  }, 5000);
-  monitor.unref();
+  function scheduleMonitor() {
+    clearTimeout(monitor);
+    if (closed) return;
+    monitor = setTimeout(async () => {
+      if (enabled && !busy) {
+        busy = true;
+        try { await refreshNetwork(); }
+        catch { enabled = false; await network.stop(); await gateway.stop(); network.snapshot.state = 'Error'; }
+        finally { busy = false; }
+      }
+      scheduleMonitor();
+    }, enabled && !gateway?.server ? 250 : 5000);
+    monitor.unref();
+  }
+  scheduleMonitor();
   ipcMain.handle('dsh:remote-control', async (event, { action, payload } = {}) => {
     const settings = getSettingsWindow();
     const authorized = [window, settings].some(candidate => candidate && !candidate.isDestroyed() && event.sender === candidate.webContents && event.senderFrame === candidate.webContents.mainFrame);
@@ -140,7 +148,7 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager
       void window.loadFile(path.join(rendererRoot, 'remote/remote.html'));
     },
     publish() { gateway?.publish(); },
-    async close() { closed = true; enabled = false; clearInterval(monitor); await network?.stop(); await gateway?.stop(); },
+    async close() { closed = true; enabled = false; clearTimeout(monitor); await network?.stop(); await gateway?.stop(); },
   };
   return controller;
 }

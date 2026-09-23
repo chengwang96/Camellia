@@ -636,6 +636,7 @@ const context = { sessionId: null, workspaceId: null };
   updateSidebarWidth();
   let previewedFile = null;
   let previewRequest = 0;
+  const attachmentDragType = 'application/x-camellia-attachment-path';
   function formatFileSize(bytes) {
     if (!Number.isFinite(bytes)) return '';
     if (bytes < 1024) return bytes + ' B';
@@ -687,7 +688,15 @@ const context = { sessionId: null, workspaceId: null };
       }
     } else if (file.kind === 'image') {
       const stage = document.createElement('div'); stage.className = 'file-preview-image';
-      const image = document.createElement('img'); image.src = file.url; image.alt = file.name; stage.appendChild(image); body.appendChild(stage);
+      const image = document.createElement('img'); image.src = file.url; image.alt = file.name;
+      image.draggable = true;
+      image.addEventListener('dragstart', event => {
+        if (!event.dataTransfer || !file.path) { event.preventDefault(); return; }
+        event.dataTransfer.setData(attachmentDragType, file.path);
+        event.dataTransfer.effectAllowed = 'copy';
+      });
+      image.addEventListener('dragend', () => inputCard.classList.remove('dragging'));
+      stage.appendChild(image); body.appendChild(stage);
     } else if (file.kind === 'pdf') {
       const frame = document.createElement('iframe'); frame.src = file.url; frame.title = file.name; body.appendChild(frame);
     } else if (file.kind === 'video' || file.kind === 'audio') {
@@ -745,6 +754,15 @@ const context = { sessionId: null, workspaceId: null };
     if (!previewedFile?.path) return;
     const result = await window.dshDesktop.openFileExternally(previewedFile.path);
     if (!result.ok) setStatus(result.error || 'Could not open the file.');
+  }
+  // The file manager has a different name and gesture on each desktop, so the
+  // menu label follows the host platform instead of using one generic wording.
+  function revealLabel() {
+    const platform = window.dshDesktop.platform;
+    if (platform === 'darwin') return 'Reveal in Finder';
+    if (platform === 'win32') return 'Show in File Explorer';
+    if (platform === 'linux') return 'Show in file manager';
+    return 'Show in folder';
   }
   function closeFilePreview() {
     previewRequest++;
@@ -902,7 +920,10 @@ const context = { sessionId: null, workspaceId: null };
   inputCard.addEventListener('drop', (e) => {
     e.preventDefault();
     inputCard.classList.remove('dragging');
+    if (!e.dataTransfer) return;
     const paths = [];
+    const previewPath = e.dataTransfer.getData(attachmentDragType);
+    if (previewPath) paths.push(previewPath);
     for (const f of e.dataTransfer.files) {
       try {
         const p = window.dshDesktop.attachmentPath(f) || f.path;
@@ -1195,7 +1216,8 @@ const context = { sessionId: null, workspaceId: null };
       more.textContent = 'Show ' + (sortedFiles.length - limit) + ' more files';
       const less = document.createElement('span'); less.className = 'artifact-show-less'; less.dataset.i18n = ''; less.textContent = 'Show fewer files';
       summary.append(more, less); overflow.appendChild(summary);
-      const labels = { image: 'Image', video: 'Video', audio: 'Audio', text: 'Text', pdf: 'Document', word: 'Document', spreadsheet: 'Spreadsheet', presentation: 'Presentation' };
+      const labels = { image: 'Image', video: 'Video', audio: 'Audio', text: 'Text', pdf: 'Document', word: 'Document',
+        spreadsheet: 'Spreadsheet', presentation: 'Presentation', package: 'Package' };
       for (const [index, file] of sortedFiles.entries()) {
         const row = document.createElement('div'); row.className = 'artifact-row';
         const open = document.createElement('button'); open.type = 'button'; open.className = 'artifact-file'; open.title = file.path;
@@ -1214,6 +1236,10 @@ const context = { sessionId: null, workspaceId: null };
           { label: 'Open in Camellia', run: () => void openFilePreview(file.path) },
           { label: 'Open with system app', run: async () => {
             try { const result = await window.dshDesktop.openFileExternally(file.path); if (!result.ok) setStatus(result.error); }
+            catch (error) { setStatus(error.message); }
+          } },
+          { label: revealLabel(), run: async () => {
+            try { const result = await window.dshDesktop.revealFile(file.path); if (!result.ok) setStatus(result.error); }
             catch (error) { setStatus(error.message); }
           } },
         ]);
@@ -1372,12 +1398,13 @@ const context = { sessionId: null, workspaceId: null };
     const body = turnEl?.querySelector('.turn-body');
     const entries = body?.processBlocks;
     if (!entries?.length) return;
-    const texts = entries.filter(el => el.classList.contains('md') && el.dataset.phase !== 'commentary' && el.textContent.trim());
-    let visible = texts.slice(-1);
+    const texts = entries.filter(el => el.classList.contains('md') && el.textContent.trim());
+    const settled = texts.filter(el => el.dataset.phase !== 'commentary');
+    let visible = (finished ? settled : texts).slice(-1);
     if (finished) {
       const lastActivity = entries.findLastIndex(el => !el.classList.contains('md'));
-      if (lastActivity >= 0) visible = texts.filter(el => el.dataset.phase === 'final_answer' || entries.indexOf(el) > lastActivity);
-      else if (texts.some(el => el.dataset.phase === 'final_answer')) visible = texts.filter(el => el.dataset.phase === 'final_answer');
+      if (lastActivity >= 0) visible = settled.filter(el => el.dataset.phase === 'final_answer' || entries.indexOf(el) > lastActivity);
+      else if (settled.some(el => el.dataset.phase === 'final_answer')) visible = settled.filter(el => el.dataset.phase === 'final_answer');
     }
     const previous = body.processLayout;
     if (!finished && previous?.count === entries.length && previous.visible.length === visible.length
@@ -2123,6 +2150,7 @@ const context = { sessionId: null, workspaceId: null };
     chat.querySelector('.switch-hint')?.remove();
     const userMessage = addUser(text || "[Attachments]", atts, { at: Date.now(), scrollToBottom: true });
     setRunning(true);
+    setRunStatus('Working…');
     updateSendEnabled();
     acceptSessionEvents = true;
     sidebar.render();
@@ -2171,6 +2199,7 @@ const context = { sessionId: null, workspaceId: null };
       chat.appendChild(chip);
       setStatus("Failed to start");
       updateSwitchHint();
+      clearRunStatus();
       setRunning(false);
       acceptSessionEvents = false;
       restoringRun = false; eventsDuringRestore.length = 0;
@@ -2724,8 +2753,8 @@ const context = { sessionId: null, workspaceId: null };
         if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id, text: pending?.phase || 'Compacting context…', compaction: res.compaction });
         void goalUI.refresh();
       }
-      scrollToLatest();
       if (sharedChat && res.lastReplyAt) sidebar.markReplyRead(id, res.lastReplyAt);
+      scrollToLatest();
       return true;
     } catch (err) { if (seq === sessionOpenSeq && !/archived/i.test(err.message)) setStatus("Could not load: " + err.message); return false; }
     finally {

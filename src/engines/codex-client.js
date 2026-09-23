@@ -28,7 +28,7 @@ class CodexClient {
     this.proc.once('error', error => this.close(error));
     this.proc.once('close', code => this.close(new Error(`Codex process exited (${code})`)));
     this.proc.stdin.on('error', error => this.close(error));
-    this.ready = this.request('initialize', { clientInfo: { name: 'camellia', title: 'Camellia', version: '0.1.0' },
+    this.ready = this.request('initialize', { clientInfo: { name: 'camellia', title: 'Camellia', version: '1.0.0' },
       capabilities: { experimentalApi: true } }).then(() => this.write({ method: 'initialized' }));
     this.ready.catch(() => {}); // The caller awaits initialization.
   }

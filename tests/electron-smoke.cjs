@@ -98,12 +98,31 @@ async function main() {
     assert.equal(app.getName(), 'Camellia');
     assert.equal(app.getPath('userData'), userData, 'Renaming preserves old data and explicit profiles');
     if (!firstRun) assert.equal(app.getPath('sessionData'), userData, 'Browser cookies and caches stay with existing data');
+    const closingWindows = new Set();
+    const closeWindow = window => new Promise(resolve => {
+      closingWindows.add(window.id);
+      window.once('closed', resolve);
+      window.close();
+    });
     const waitWindow = async match => {
       // CI runners can be slow to render the first page; keep the budget generous
       // and report live window state so a timeout is diagnosable.
-      for (let i = 0; i < 600; i++) {
+      const deadline = Date.now() + 60000;
+      while (Date.now() < deadline) {
         for (const window of BrowserWindow.getAllWindows()) {
-          if (!window.webContents.isLoading() && await window.webContents.executeJavaScript(`Boolean(${match})`)) return window;
+          if (window.isDestroyed() || closingWindows.has(window.id)) continue;
+          const contents = window.webContents;
+          if (!contents.getURL() || contents.isLoading()) continue;
+          let timer;
+          try {
+            const matched = await Promise.race([
+              contents.executeJavaScript(`Boolean(${match})`),
+              new Promise(resolve => { timer = setTimeout(() => resolve(false), 1000); }),
+            ]);
+            if (matched && !window.isDestroyed() && !closingWindows.has(window.id)) return window;
+          } catch (error) {
+            if (!window.isDestroyed() && !contents.isDestroyed() && !contents.isLoading()) throw error;
+          } finally { clearTimeout(timer); }
         }
         await new Promise(resolve => setTimeout(resolve, 100));
       }
@@ -119,10 +138,13 @@ async function main() {
     assert.ok(mobileMenu);
     assert.equal((await home.webContents.executeJavaScript('window.dshDesktop.openMobileAccess()')).ok, false);
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'general'})");
-    const pairingSettings = await waitWindow("document.querySelector('#openMobileAccess') && typeof document.querySelector('#openMobileAccess').onclick === 'function'");
+    const pairingSettings = await waitWindow("window.mobileAccessUI && typeof window.mobileAccessUI.setVisible === 'function'");
     assert.equal(await pairingSettings.webContents.executeJavaScript("document.querySelector('#generalPage').hidden"), false);
-    assert.equal(await pairingSettings.webContents.executeJavaScript("document.querySelector('#openMobileAccess').textContent"), 'Pair and manage devices');
-    await pairingSettings.webContents.executeJavaScript("document.querySelector('#openMobileAccess').click()");
+    await pairingSettings.webContents.executeJavaScript("setView('mobile')");
+    assert.equal(await pairingSettings.webContents.executeJavaScript("document.querySelector('#mobilePage').hidden"), false);
+    assert.equal(await pairingSettings.webContents.executeJavaScript("document.querySelector('#generalPage').hidden"), true);
+    assert.equal(await pairingSettings.webContents.executeJavaScript("document.querySelector('#mobile-invite').disabled"), true);
+    assert.equal((await pairingSettings.webContents.executeJavaScript('window.dshDesktop.openMobileAccess()')).ok, true);
     const mobile = await waitWindow("document.querySelector('#toggle') && !document.querySelector('#toggle').disabled");
     mobileMenu.click();
     assert.equal(BrowserWindow.getAllWindows().filter(window => window.webContents.getURL().includes('/remote/remote.html')).length, 1);
@@ -135,8 +157,7 @@ async function main() {
     assert.equal(await mobile.webContents.executeJavaScript("document.querySelector('#error').textContent"), '');
     const unsupportedRemote = await mobile.webContents.executeJavaScript("window.camelliaRemote.control('send', { prompt: 'Never execute' })");
     assert.equal(unsupportedRemote.ok, false);
-    mobile.close();
-    pairingSettings.close();
+    await Promise.all([mobile, pairingSettings].map(closeWindow));
     console.log('PASS mobile access: real sandboxed preload, local IPC, disabled startup and read-only controls');
     const marker = path.join(root, 'backend-starts.txt');
     assert.equal(fs.existsSync(marker), false, 'The home panel must not start DSH');
@@ -146,8 +167,7 @@ async function main() {
     assert.equal(await initialSettings.webContents.executeJavaScript("document.querySelector('#dshBin') === null && document.querySelector('#nodeExe') === null"), true);
     await initialSettings.webContents.executeJavaScript("document.querySelector('[data-view=general]').click(); window.dshDesktop.workbenchSaveSettings({ theme: 'system', autoRefreshBalances: false })");
     await initialSettings.webContents.executeJavaScript("document.querySelector('#port').value = '8789'; document.querySelector('#port').dispatchEvent(new Event('input', { bubbles: true }))");
-    initialSettings.close();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await closeWindow(initialSettings);
     assert.equal(initialSettings.isDestroyed(), true, 'Unsaved settings must not trap the Electron window open');
     assert.equal(fs.existsSync(marker), false, 'Saving configuration at home must not enter DSH');
     assert.ok(await home.webContents.executeJavaScript("document.querySelector('#enterDsh') !== null"));
@@ -197,7 +217,7 @@ async function main() {
     }
     assert.equal(ready, true);
     assert.ok(await home.webContents.executeJavaScript("document.querySelector('#enterDsh') !== null"));
-    startupSettings.close();
+    await closeWindow(startupSettings);
     assert.equal(home.getTitle(), 'Camellia');
     await home.webContents.executeJavaScript("document.querySelector('#enterClaude').click()");
     const claude = await waitWindow("document.querySelector('#engineSwitch')");
@@ -462,9 +482,11 @@ async function main() {
       let stdout = '', stderr = '';
       proc.stdout.on('data', chunk => { stdout += chunk; });
       proc.stderr.on('data', chunk => { stderr += chunk; });
-      const timeout = setTimeout(() => proc.kill(), 20000);
+      let timedOut = false;
+      const timeout = setTimeout(() => { timedOut = true; proc.kill(); }, 120000);
       const code = await new Promise((resolve, reject) => { proc.once('close', resolve); proc.once('error', reject); });
       clearTimeout(timeout);
+      assert.equal(timedOut, false, `Electron smoke timed out after 120s (mode=${mode}, firstRunComplete=${firstRunComplete})\n${stderr}\n${stdout}`);
       assert.equal(code, 0, stderr + '\n' + stdout);
       assert.match(stdout, /PASS: real Electron/);
       console.log(stdout.trim());

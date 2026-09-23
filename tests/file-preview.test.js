@@ -15,6 +15,9 @@ test('common files map to built-in preview types', () => {
   assert.equal(previewKind('demo.mp4'), 'video');
   assert.equal(previewKind('voice.mp3'), 'audio');
   assert.equal(previewKind('archive.zip'), 'unsupported');
+  assert.equal(previewKind('Camellia-Android-debug.apk'), 'package');
+  assert.equal(previewKind('Camellia-Setup-1.2.3-win-x64.exe'), 'package');
+  assert.equal(previewKind('release.DMG'), 'package');
 });
 
 test('text previews are bounded and local media receives file URLs', t => {

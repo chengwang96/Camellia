@@ -754,7 +754,8 @@ class SharedConversations {
       if (!a.internal && !c.interrupted) c.lastReplyAt = c.updatedAt;
       if (c.segments[engine] && !c.interrupted && !a.ephemeral) c.segments[engine].cursor = c.seq;
       this.save(c);
-      if (!a.internal && !c.interrupted) this.workspaces.promoteSession(c.id);
+      if (!a.internal && !c.interrupted) this.workspaces.promoteSession(c.id, [...this.items.values()]
+        .sort((first, second) => second.updatedAt - first.updatedAt || first.id.localeCompare(second.id)).map(conversation => conversation.id));
       a.facade.running = false; this.active.delete(c.id);
       a.finished = true;
       if (!a.internal) this.goals.get(c.id)?.handleResult({ ...event, result: event.result || text, goalReport: a.goalReport });

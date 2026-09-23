@@ -9,9 +9,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public class LocationConsentTest extends InstrumentationTestCase {
     public void testConservativeIntentAndApproximateContext() {
-        for (String prompt : new String[]{"我在哪里？", "推荐附近餐厅", "这里天气怎么样", "Find coffee near me", "where am I?"})
+        for (String prompt : new String[]{"我在哪里？", "推荐附近餐厅", "这里天气怎么样", "搜一搜最近今天的天气", "查一下今天天气", "最近天气怎么样", "weather today", "current weather", "Find coffee near me", "where am I?"})
             assertTrue(prompt, LocationConsent.relevant(prompt));
-        for (String prompt : new String[]{"你好", "北京天气", "不要定位，推荐附近餐厅", "翻译：我在哪里", "Explain GPS permissions", "Find restaurants without using my location"})
+        for (String prompt : new String[]{"你好", "北京天气", "北京今天天气", "上海最近天气", "不要定位，推荐附近餐厅", "不要定位，查一下今天天气", "翻译：我在哪里", "翻译：今天天气怎么样", "Explain GPS permissions", "Find restaurants without using my location"})
             assertFalse(prompt, LocationConsent.relevant(prompt));
         Location location = new Location("network"); location.setLatitude(22.319312); location.setLongitude(114.169487);
         location.setAccuracy(400); location.setElapsedRealtimeNanos(android.os.SystemClock.elapsedRealtimeNanos());
