@@ -51,7 +51,8 @@ async function fixture(t, respond, makeProviders, options = {}) {
   let router;
   for (let attempt = 0; ; attempt++) {
     writeConfig(file, normalizeConfig({ port:await port(), providers:makeProviders(url) }));
-    router = startApiRouter({ configPath:file, timeoutMs:options.timeoutMs || 2000, onContextEvidence: options.onContextEvidence });
+    router = startApiRouter({ configPath:file, timeoutMs:options.timeoutMs || 2000, onContextEvidence: options.onContextEvidence,
+      quotaCheck: options.quotaCheck, log: options.log });
     try { await router.ready; break; }
     catch (error) { // Another parallel test file may claim a probed port first.
       if (attempt >= 2 || !/EADDRINUSE/.test(error.message)) throw error;
@@ -693,4 +694,243 @@ test('Gemini tool signatures round-trip through streamed Anthropic conversion an
   assert.deepEqual(f.requests.map(request => request.headers.authorization), ['Bearer exhausted', 'Bearer working', 'Bearer working']);
   assert.ok(f.requests.every(request => request.body.model === 'gemini-upstream'));
   assert.equal(f.router.getState().usage['google-key-1'].byModel['gemini-test'].requests, 2);
+});
+
+test('keys out of quota leave the pool and return once their window recovers', async t => {
+  const exhaustedKeys = new Set(['spent']);
+  const logs = [];
+  const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('ollama', url, ['spent', 'healthy'])],
+    { log: message => logs.push(message),
+      quotaCheck: { intervalMs: 60000, query: async (p, key) => ({ windows: [{ id: 'weekly', label: 'Weekly', usedPercent: exhaustedKeys.has(key) ? 100 : 0.22 }] }) } });
+  await f.router.refreshQuota();
+  assert.equal(f.router.getState().quota['ollama-key-0'].exhausted, true);
+  assert.match(logs.join('\n'), /Weekly quota exhausted/);
+  assert.throws(() => f.router.rotate('kimi-k3'), /No other route/); // Nothing else is left to rotate to.
+  assert.equal((await f.post({})).status, 200);
+  assert.deepEqual(f.requests.map(request => request.headers.authorization), ['Bearer healthy']);
+  // The provider window resets: no manual reset is needed for the key to return.
+  exhaustedKeys.delete('spent');
+  await f.router.refreshQuota();
+  assert.equal(f.router.getState().quota['ollama-key-0'].exhausted, false);
+  assert.match(logs.join('\n'), /quota recovered/);
+  f.router.rotate('kimi-k3');
+  assert.equal((await f.post({})).status, 200);
+  assert.deepEqual(f.requests.map(request => request.headers.authorization), ['Bearer healthy', 'Bearer spent']);
+});
+
+test('a model whose keys are all out of quota reports the quota instead of calling the provider', async t => {
+  const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('ollama', url, ['one', 'two'])],
+    { quotaCheck: { intervalMs: 60000, query: async () => ({ windows: [{ id: 'monthly', label: 'Monthly', usedPercent: 100 }] }) } });
+  await f.router.refreshQuota();
+  const response = await f.post({});
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).error.message, /Monthly quota exhausted/);
+  assert.equal(response.headers.get('retry-after'), '60');
+  assert.equal(f.requests.length, 0); // An exhausted key is never asked to fail again.
+  assert.equal(f.router.getState().usage['ollama-key-0'].failures, 0);
+});
+
+test('a quota probe failure keeps the previous verdict and never resurrects a spent key', async t => {
+  const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('ollama', url, ['spent', 'healthy'])],
+    { quotaCheck: { intervalMs: 60000, query: async (p, key) => {
+      if (key === 'healthy') throw new Error('account API is unreachable');
+      return { windows: [{ id: 'monthly', label: 'Monthly', usedPercent: 100 }] };
+    } } });
+  await f.router.refreshQuota();
+  assert.equal(f.router.getState().quota['ollama-key-0'].exhausted, true);
+  assert.match(f.router.getState().quota['ollama-key-1'].error, /unreachable/);
+  assert.equal((await f.post({})).status, 200);
+  assert.deepEqual(f.requests.map(request => request.headers.authorization), ['Bearer healthy']);
+});
+
+test('an exhausted usage limit cools a key down like a quota verdict, not a 60 second rate limit', async t => {
+  const f = await fixture(t, (r, res) => reply(res, 429, { error: { message: 'you (acct) have reached your monthly usage limit, upgrade for higher limits' } }),
+    url => [provider('ollama', url, ['only'])]);
+  const response = await f.post({});
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).error.message, /Quota exhausted or plan unavailable/);
+  const state = f.router.getState().usage['ollama-key-0'];
+  assert.equal(state.models['kimi-k3'].reason, 'Quota exhausted or plan unavailable');
+  assert.ok(state.models['kimi-k3'].until - Date.now() > 14 * 60 * 1000, 'an exhausted window must not be retried after 60 seconds');
+});
+
+test('the quota check can be switched and re-timed without restarting the router', async t => {
+  const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('ollama', url, ['spent', 'healthy'])],
+    { quotaCheck: { intervalMs: 60000, query: async (p, key) => ({ windows: [{ id: 'weekly', label: 'Weekly', usedPercent: key === 'spent' ? 100 : 0.5 }] }) } });
+  await f.router.refreshQuota();
+  assert.throws(() => f.router.rotate('kimi-k3'), /No other route/); // Only the healthy key is in rotation.
+  // Settings can turn the check off; quota must then stop steering routing.
+  f.router.setQuotaCheck({ enabled: false });
+  assert.equal(f.router.getState().quota['ollama-key-0'].exhausted, false);
+  assert.equal((await f.post({})).status, 200);
+  assert.deepEqual(f.requests.map(request => request.headers.authorization), ['Bearer spent']);
+  // Turning it back on re-reads the account API and skips the spent key again.
+  f.router.setQuotaCheck({ enabled: true, intervalMs: 5 * 60000 });
+  await f.router.refreshQuota();
+  assert.equal((await f.post({})).status, 200);
+  assert.deepEqual(f.requests.map(request => request.headers.authorization), ['Bearer spent', 'Bearer healthy']);
+});
+
+test('zero and negative balances skip a key; top-ups restore it without blocking unknown or mixed balances', async context => {
+  let reading = { balances: [{ value: 0, currency: 'CNY' }], windows: [] };
+  const harness = await fixture(context, (request, response) => reply(response, 200, completion(request.body.model)),
+    url => [provider('balance', url)], { quotaCheck: { query: async () => reading } });
+  for (const values of [[0], [-2], [0, -1]]) {
+    reading = { balances: values.map(value => ({ value, currency: 'CNY' })) };
+    await harness.router.refreshQuota();
+    assert.equal((await harness.post({})).status, 503);
+    assert.equal(harness.router.getState().quota['balance-key-0'].balanceExhausted, true);
+  }
+  assert.equal(harness.requests.length, 0);
+  for (const values of [[12], [0, 12], [0, null]]) {
+    reading = { balances: values.map(value => ({ value, currency: 'CNY' })) };
+    await harness.router.refreshQuota();
+    assert.equal((await harness.post({})).status, 200);
+  }
+  reading = { balances: [{ value: 0 }], windows: [{ id: 'weekly', usedPercent: 25 }] };
+  await harness.router.refreshQuota();
+  assert.equal((await harness.post({})).status, 200);
+});
+
+test('failed quota probes preserve successful timestamp and expire both routing and displayed verdicts', async context => {
+  let fail = false;
+  const harness = await fixture(context, (request, response) => reply(response, 200, completion(request.body.model)),
+    url => [provider('stale', url)], { quotaCheck: { intervalMs: 60000, query: async () => {
+      if (fail) throw new Error('temporary outage');
+      return { windows: [{ id: 'weekly', usedPercent: 100 }] };
+    } } });
+  await harness.router.refreshQuota();
+  const checkedAt = harness.router.getState().quota['stale-key-0'].checkedAt;
+  let clock = checkedAt + 60000;
+  const mockedClock = context.mock.method(Date, 'now', () => clock);
+  fail = true;
+  await harness.router.refreshQuota();
+  assert.equal(harness.router.getState().quota['stale-key-0'].checkedAt, checkedAt);
+  assert.equal(harness.router.getState().quota['stale-key-0'].attemptedAt, clock);
+  assert.equal((await harness.post({})).status, 503);
+  clock += 10 * 60000;
+  await harness.router.refreshQuota();
+  const expired = harness.router.getState().quota['stale-key-0'];
+  assert.equal(expired.checkedAt, checkedAt);
+  assert.equal(expired.exhausted, false);
+  assert.equal(expired.stale, true);
+  assert.equal((await harness.post({})).status, 200);
+  mockedClock.mock.restore();
+});
+
+test('key replacement and endpoint edits invalidate snapshots and discard in-flight quota results', async context => {
+  let release;
+  let delayed = false;
+  const harness = await fixture(context, (request, response) => reply(response, 200, completion(request.body.model)),
+    url => [provider('identity', url)], { quotaCheck: { query: async () => {
+      if (delayed) await new Promise(resolve => { release = resolve; });
+      return { windows: [{ id: 'weekly', usedPercent: 100 }] };
+    } } });
+  await harness.router.refreshQuota();
+  assert.equal(harness.router.getState().quota['identity-key-0'].exhausted, true);
+  delayed = true;
+  const pending = harness.router.refreshQuota();
+  const edit = harness.router.getState();
+  edit.providers[0].keys[0].key = 'replacement-secret';
+  harness.router.updateConfig(edit);
+  assert.equal(harness.router.getState().quota['identity-key-0'], undefined);
+  release();
+  await pending;
+  assert.equal(harness.router.getState().quota['identity-key-0'], undefined);
+  assert.equal((await harness.post({})).status, 200);
+  assert.equal(harness.requests.at(-1).headers.authorization, 'Bearer replacement-secret');
+  delayed = false;
+  await harness.router.refreshQuota();
+  const endpointEdit = harness.router.getState();
+  endpointEdit.providers[0].baseUrl += '/new-endpoint';
+  harness.router.updateConfig(endpointEdit);
+  assert.equal(harness.router.getState().quota['identity-key-0'], undefined);
+});
+
+test('disabled checks and shutdown discard delayed account responses', async context => {
+  let release;
+  let delayed = false;
+  const harness = await fixture(context, (request, response) => reply(response, 200, completion(request.body.model)),
+    url => [provider('lifecycle', url)], { quotaCheck: { query: async () => {
+      if (delayed) await new Promise(resolve => { release = resolve; });
+      return { windows: [{ id: 'weekly', usedPercent: 100 }] };
+    } } });
+  await harness.router.refreshQuota();
+  const checkedAt = harness.router.getState().quota['lifecycle-key-0'].checkedAt;
+  delayed = true;
+  const pending = harness.router.refreshQuota();
+  harness.router.setQuotaCheck({ enabled: false });
+  release();
+  await pending;
+  assert.equal(harness.router.getState().quota['lifecycle-key-0'].exhausted, false);
+  assert.equal(harness.router.getState().quota['lifecycle-key-0'].checkedAt, checkedAt);
+  harness.router.setQuotaCheck({ enabled: true });
+  const stopping = harness.router.refreshQuota();
+  await harness.router.stop();
+  release();
+  await stopping;
+  assert.equal(harness.router.getState().quota['lifecycle-key-0'].checkedAt, checkedAt);
+});
+
+test('recovered balances clear only quota cooldowns and leave authentication and network failures intact', async context => {
+  const harness = await fixture(context, (request, response) => reply(response, 200, completion(request.body.model)),
+    url => [provider('recovery', url)], { quotaCheck: { query: async () => ({ balances: [{ value: 12 }] }) } });
+  await harness.router.refreshQuota();
+  const edit = loadConfig(harness.file);
+  edit.usage['recovery-key-0'].models = {
+    'kimi-k3': { until: Date.now() + 900000, reason: 'Quota exhausted or plan unavailable' },
+    'network-model': { until: Date.now() + 900000, reason: 'Connection failed or timed out' },
+  };
+  edit.usage['recovery-key-0'].blocked = true;
+  writeConfig(harness.file, edit);
+  await harness.router.stop();
+  const saved = loadConfig(harness.file);
+  saved.usage['recovery-key-0'] = edit.usage['recovery-key-0'];
+  writeConfig(harness.file, saved);
+  const router = startApiRouter({ configPath: harness.file, quotaCheck: { query: async () => ({ balances: [{ value: 12 }] }) } });
+  try {
+    await router.ready;
+    await router.refreshQuota();
+    const usage = router.getState().usage['recovery-key-0'];
+    assert.equal(usage.models['kimi-k3'], undefined);
+    assert.ok(usage.models['network-model']);
+    assert.equal(usage.blocked, true);
+  } finally { await router.stop(); }
+});
+
+test('malformed or missing balances never count as a confirmed zero balance', async context => {
+  let reading = { balances: [{ value: null }] };
+  const harness = await fixture(context, (request, response) => reply(response, 200, completion(request.body.model)),
+    url => [provider('unknown', url)], { quotaCheck: { query: async () => reading } });
+  for (const value of [null, undefined, '', 'invalid', NaN]) {
+    reading = { balances: [{ value }] };
+    await harness.router.refreshQuota();
+    const snapshot = harness.router.getState().quota['unknown-key-0'];
+    assert.equal(snapshot.exhausted, false);
+    assert.equal(snapshot.checkedAt, null);
+    assert.match(snapshot.error, /no recognized/);
+    assert.equal((await harness.post({})).status, 200);
+  }
+});
+
+test('disk replacement during a quota query cannot block the replacement credential', async context => {
+  let release, delayed = false;
+  const harness = await fixture(context, (request, response) => reply(response, 200, completion(request.body.model)),
+    url => [provider('disk', url)], { quotaCheck: { query: async () => {
+      if (delayed) await new Promise(resolve => { release = resolve; });
+      return { windows: [{ id: 'weekly', usedPercent: 100 }] };
+    } } });
+  await harness.router.refreshQuota();
+  delayed = true;
+  const pending = harness.router.refreshQuota();
+  const edit = loadConfig(harness.file);
+  edit.providers[0].keys[0].key = 'disk-replacement';
+  writeConfig(harness.file, edit);
+  const future = new Date(Date.now() + 2000);
+  fs.utimesSync(harness.file, future, future);
+  release();
+  await pending;
+  assert.equal(harness.router.getState().quota['disk-key-0'], undefined);
+  assert.equal((await harness.post({})).status, 200);
+  assert.equal(harness.requests.at(-1).headers.authorization, 'Bearer disk-replacement');
 });

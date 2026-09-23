@@ -4,14 +4,18 @@ const assert = require('node:assert/strict');
 const { EventEmitter, once } = require('node:events');
 const { PassThrough } = require('node:stream');
 const os = require('node:os');
+const fs = require('node:fs');
+const path = require('node:path');
 const { AcpSession } = require('../src/engines/acp-session');
 
 function fixture(t) {
   const proc = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() {},
   });
+  const history = { root: fs.mkdtempSync(path.join(os.tmpdir(), 'acp-history-')) };
+  t.after(() => fs.rmSync(history.root, { recursive: true, force: true }));
   const session = new AcpSession({ gen: 1, settings: { cwd: os.tmpdir() }, opts: {}, exe: 'fake',
-    spec: { args: [], env: {} }, spawn: () => proc, log() {} });
+    spec: { args: [], env: {} }, spawn: () => proc, log() {}, history });
   session.start();
   t.after(() => {
     session.kill();
@@ -118,4 +122,42 @@ test('ACP partial updates retain arguments and correctly mark native nonzero she
   assert.equal(tool.name, 'pwsh'); assert.equal(tool.input.command, 'exit 7');
   assert.equal(tool.output, 'output\n[exit code: 7]');
   assert.equal(tool.status, 'failed'); assert.equal(tool.is_error, true);
+});
+
+for (const support of [undefined, false, true]) {
+  test('ACP image attachments follow advertised prompt capabilities (' + support + ')', async t => {
+    const { session } = fixture(t), prompts = [];
+    const image = { isImage: true, path: path.join(os.tmpdir(), 'acp-image-check-' + process.pid + '-' + String(support) + '.png') };
+    fs.writeFileSync(image.path, Buffer.from('fake-png'));
+    t.after(() => fs.rmSync(image.path, { force: true }));
+    session.ready = Promise.resolve();
+    session.sessionId = 'dsh-native';
+    session.promptCapabilities = { ...(support === true ? { image: true } : {}) };
+    session.request = async (method, params) => { if (method === 'session/prompt') prompts.push(params.prompt); return { stopReason: 'end_turn' }; };
+    const done = new Promise(resolve => session.onEvent = event => { if (event.type === 'result') resolve(event); });
+    session.sendUserMessage('describe this', [image]);
+    const result = await done;
+    if (support !== true) {
+      assert.equal(result.is_error, true);
+      assert.match(result.result, /did not advertise inline image prompts/);
+      assert.equal(prompts.length, 0);
+    } else {
+      assert.notEqual(result.is_error, true);
+      assert.equal(prompts[0].length, 2);
+      assert.equal(prompts[0][1].type, 'image');
+      assert.equal(prompts[0][1].mimeType, 'image/png');
+    }
+  });
+}
+
+test('ACP stores inline image capability from the initialize result', async t => {
+  const { session } = fixture(t);
+  session.opts = {};
+  session.onSessionId = () => {};
+  session.onEvent = () => {};
+  session.request = async method =>
+    method === 'initialize' ? { agentCapabilities: { promptCapabilities: { image: true, audio: false, embeddedContext: true } } }
+      : { sessionId: 'native-session', configOptions: [] };
+  await session.open();
+  assert.deepEqual(session.promptCapabilities, { image: true, audio: false, embeddedContext: true });
 });

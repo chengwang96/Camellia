@@ -25,7 +25,7 @@ function createHarness(existingRoot) {
     save: async () => ({ canceled: true }),
   };
   const electron = {
-    app: { getPath: () => userData, getName: () => 'camellia-desktop', setName() {}, commandLine: { appendSwitch() {} }, getVersion: () => '1.0.0', requestSingleInstanceLock: () => true, on() {}, whenReady: () => ({ then() {} }) },
+    app: { getPath: () => userData, getName: () => 'camellia-desktop', setName() {}, commandLine: { appendSwitch() {} }, getVersion: () => '0.1.0', requestSingleInstanceLock: () => true, on() {}, whenReady: () => ({ then() {} }) },
     nativeTheme: { themeSource: 'system' },
     Menu: { buildFromTemplate: template => template, setApplicationMenu(menu) { this.current = menu; } },
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },

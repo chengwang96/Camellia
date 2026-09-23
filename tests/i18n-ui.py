@@ -51,6 +51,7 @@ try:
         expect(chat.locator('.ws-name')).to_have_text('Settings')
         chat.locator('#input').fill('Settings / Ready / Keep this draft 原样保留')
         # Unsaved API entries must survive translating the settings window.
+        settings.locator('[data-view=providers]').click()
         settings.locator('#addProvider').click()
         settings.locator('#confirmAdd').click()
         settings.locator('#pName').fill('Settings')

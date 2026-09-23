@@ -5,22 +5,22 @@ const embedded = Boolean(document.getElementById('mobilePage'));
 const root = embedded ? document.getElementById('mobilePage') : document.querySelector('main');
 let visible = !embedded;
 const copy = {
-  zh: { title: '手机访问', intro: '通过私有网络查看和操作电脑会话。授权设备即可使用，无需另设权限。', connection: '连接', pair: '配对设备', devices: '已授权设备',
+  zh: { title: '手机访问', intro: '通过 Tailscale 连接手机。', connection: '连接', pair: '配对设备', devices: '已授权设备', connectionHelp: '连接与权限说明',
     network: '已内置 Tailscale，无需另装客户端。首次开启后登录与手机相同的 Tailnet；不开放局域网或公网端口。每次启动 Camellia 后需要手动开启。',
-    scope: '授权后可访问当前及今后新增的全部工作区和独立会话。会话正文可能包含敏感内容，仅授权可信设备。', generate: '生成一次性配对码',
-    pairHint: '将地址和配对码交给客户端，然后在下方确认设备。配对码不等于长期访问凭据。',
+    scope: '可查看和操作全部现有及未来会话，仅授权可信设备。', generate: '生成配对码',
+    pairHint: '在手机输入地址和一次性配对码，再在此确认授权。',
     footer: '授权设备可发送指令、停止任务和处理工具审批。操作在电脑执行，并沿用会话当前权限；仅授权可信设备。', online: '运行中', offline: '已关闭',
     start: '开启手机访问', stop: '关闭手机访问', noAddress: '开启后显示 Tailscale 地址',
-    tray: '关闭主窗口后可驻留托盘；退出应用或电脑休眠会断开连接。', noTray: '尚未启用关闭到托盘。请保持主窗口打开，或在设置中启用托盘选项。',
+    tray: '关闭窗口可驻留托盘；退出应用或电脑休眠会断开连接。', noTray: '请保持窗口打开，或在设置中启用关闭到托盘。退出应用或电脑休眠会断开连接。',
     noDevices: '尚未授权任何设备。', approve: '授权设备', reject: '拒绝', revoke: '撤销',
     expires: '配对码失效时间：', expired: '配对码已过期，请重新生成。' },
-  en: { title: 'Mobile access', intro: 'Read and control desktop conversations over your private network. Authorize a device to get started; no separate permissions to configure.', connection: 'Connection', pair: 'Pair a device', devices: 'Authorized devices',
+  en: { title: 'Mobile access', intro: 'Connect your phone with Tailscale.', connection: 'Connection', pair: 'Pair a device', devices: 'Authorized devices', connectionHelp: 'Connection and permissions',
     network: 'Tailscale is built in; no separate client needed. Sign in to the same tailnet as your phone. No LAN or public listener. Enable manually after each Camellia restart.',
-    scope: 'Authorization includes all current and future workspaces and independent conversations. Conversation text may contain sensitive information; authorize trusted devices only.', generate: 'Generate one-time pairing code',
-    pairHint: 'Give the address and code to the client, then confirm its request below. The pairing code is not a permanent access credential.',
+    scope: 'Allows viewing and controlling all current and future conversations. Trust this device before authorizing.', generate: 'Generate pairing code',
+    pairHint: 'Enter the address and one-time code on your phone, then approve it here.',
     footer: 'Authorized devices can send instructions, stop tasks and respond to tool approvals. Tasks execute on this computer under the conversation’s existing permissions; authorize trusted devices only.', online: 'Online', offline: 'Off',
     start: 'Enable mobile access', stop: 'Disable mobile access', noAddress: 'Enable to show the Tailscale address',
-    tray: 'The main window can close to the tray. Quitting the app or suspending the computer disconnects clients.', noTray: 'Close to tray is disabled. Keep the main window open or enable the tray option in Settings.',
+    tray: 'Closing the window keeps the app in the tray. Quitting or computer sleep disconnects clients.', noTray: 'Keep the window open or enable close to tray in Settings. Quitting or computer sleep disconnects clients.',
     noDevices: 'No authorized devices yet.', approve: 'Authorize device', reject: 'Reject', revoke: 'Revoke',
     expires: 'Pairing code expires at: ', expired: 'The pairing code expired. Generate another.' },
 };
@@ -123,6 +123,7 @@ function render() {
   if (network) {
     const label = { Stopped: 'networkOff', Error: 'networkError', NeedsLogin: 'needsLogin', NeedsMachineAuth: 'needsApproval', Running: 'networkReady' }[network.state] || 'connecting';
     element('networkState').textContent = translate(label);
+    element('networkState').hidden = state.running || network.state === 'Stopped';
     element('login').hidden = !state.enabled || state.running || network.state === 'NeedsMachineAuth';
     element('login').textContent = translate(network.loginUrl ? 'openLogin' : 'login');
     element('login').disabled = working;

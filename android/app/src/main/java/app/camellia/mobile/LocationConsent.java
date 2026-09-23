@@ -44,7 +44,7 @@ final class LocationConsent {
         if (pending != null) return;
         if (!relevant(prompt)) { complete.accept(""); return; }
         pending = complete;
-        dialog = new AlertDialog.Builder(activity).setTitle(tr("本次回答使用大致位置？", "Use approximate location for this answer?"))
+        dialog = new CamelliaDialog.Builder(activity).setTitle(tr("本次回答使用大致位置？", "Use approximate location for this answer?"))
             .setMessage(tr("此问题可能需要当前位置。仅在你同意后向 Android 申请大致位置，单次获取，不后台追踪。\n\n发送至：", "This question may need your current location. Only with your consent will Android be asked for approximate location, once, with no background tracking.\n\nSend to: ")
                 + destination + tr("\n\n不会自动再次定位。接收方可能保存位置，回答及后续会话上下文也可能包含它。", "\n\nNo automatic future location access. The recipient may retain the location, and answers or later conversation context may include it."))
             .setPositiveButton(tr("允许本次", "Allow once"), (choice, which) -> authorize())
@@ -76,7 +76,7 @@ final class LocationConsent {
                     || activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
                 finish(unavailable()); return;
             }
-            dialog = new AlertDialog.Builder(activity).setTitle(tr("正在获取大致位置…", "Getting approximate location…"))
+            dialog = new CamelliaDialog.Builder(activity).setTitle(tr("正在获取大致位置…", "Getting approximate location…"))
                 .setMessage(tr("最多等待 10 秒；不会读取历史缓存位置。", "Wait up to 10 seconds. Cached past locations are not used."))
                 .setNegativeButton(tr("不提供位置，继续", "Continue without location"), (choice, which) -> finish(unavailable()))
                 .setNeutralButton(tr("取消发送", "Cancel send"), (choice, which) -> cancel())

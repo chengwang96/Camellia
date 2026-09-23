@@ -317,6 +317,7 @@ try:
         api = new_page(1040)
         api.goto((repo / 'src/renderer/settings/api-settings.html').as_uri())
         api.wait_for_load_state('networkidle')
+        api.locator('[data-view=providers]').click()
         api.locator('#addProvider').click()
         presets = check_picker(api, '#preset')
         presets.get_by_role('option', name='DeepSeek', exact=True).click()
@@ -342,6 +343,8 @@ try:
         assert saved['protocol'] == 'anthropic'
         assert saved['models'][0]['protocol'] == 'openai'
         api.reload()
+        api.wait_for_load_state('networkidle')
+        api.locator('[data-view=providers]').click()
         api.locator('.provider [data-select]').first.click()
         api.locator('#connectionAdvanced > summary').click()
         api.locator('#modelAdvanced > summary').click()
@@ -365,6 +368,8 @@ try:
         expect(api.locator('#usageChart [data-chart-kind=usage] svg')).to_have_count(1)
         for width in [1040, 2160, 760]:
             api.set_viewport_size({'width':width,'height':900})
+            # Let the chart's own resize observer re-render before checking.
+            api.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
             api.wait_for_function("[...document.querySelectorAll('#usageChart svg')].every(chart => Math.abs(Number(chart.getAttribute('width')) - chart.parentElement.clientWidth) <= 1)")
             for chart in api.locator('#usageChart svg').all():
                 dimensions = chart.evaluate("el => ({height:el.getBoundingClientRect().height,labelSize:parseFloat(getComputedStyle(el.querySelector('text')).fontSize) * el.getScreenCTM().a})")

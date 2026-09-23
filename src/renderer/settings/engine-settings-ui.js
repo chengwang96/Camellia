@@ -11,6 +11,44 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   let googleAccount = null, accountBusy = false;
   let codexAccount = null, codexBusy = false;
   let kimiAccount = null, kimiBusy = false;
+  const t = text => window.CamelliaI18n.t(text);
+  // One row per signed-in account. Selecting a row makes it the account used
+  // for new conversations; every engine keeps its own list.
+  function renderAccountList({ containerId, state, onSelect, onRemove, onLabel, readonly = false }) {
+    const container = $(containerId);
+    const accounts = state?.accounts || [];
+    // A background quota refresh must not rebuild the list while a label is
+    // being edited; the next render after the edit writes the saved value.
+    if (container.contains(document.activeElement) && document.activeElement.dataset.accountLabel) return;
+    container.innerHTML = accounts.map(account => {
+      const identity = [account.email, account.plan, account.region ? t(account.region === 'global' ? 'Global · kimi.ai' : 'China · kimi.com') : '',
+        account.signedIn ? t(account.exhausted ? 'Quota exhausted' : 'Signed in') : t('Not signed in')].filter(Boolean).join(' · ');
+      const action = readonly || account.id === 'default' ? '' :
+        `<button type="button" data-account-remove="${esc(account.id)}" aria-label="${esc(t('Remove account'))}" data-i18n-attrs="aria-label">×</button>`;
+      const choice = readonly ? '<span class="account-choice" aria-hidden="true"></span>'
+        : `<button type="button" data-account-select="${esc(account.id)}" aria-pressed="${account.active}" class="account-choice"></button>`;
+      const label = readonly ? `<strong>${esc(account.label || identity || t('Google account'))}</strong><small>${esc(identity)}</small>`
+        : `<input data-account-label="${esc(account.id)}" value="${esc(account.label || '')}" placeholder="${esc(t('Account label'))}" aria-label="${esc(t('Account label'))}" data-i18n-attrs="placeholder aria-label"><small>${esc(identity)}</small>`;
+      return `<div class="account-row${account.active ? ' active' : ''}${readonly ? ' readonly' : ''}">
+        ${choice}
+        <div class="account-body">${label}</div>
+        ${action}</div>`;
+    }).join('') || `<p class="hint">${esc(t('No accounts yet.'))}</p>`;
+    if (readonly) return;
+    container.querySelectorAll('[data-account-select]').forEach(button => {
+      button.onclick = () => onSelect(button.dataset.accountSelect);
+    });
+    container.querySelectorAll('[data-account-remove]').forEach(button => {
+      button.onclick = () => onRemove(button.dataset.accountRemove);
+    });
+    container.querySelectorAll('[data-account-label]').forEach(input => {
+      input.onchange = () => onLabel(input.dataset.accountLabel, input.value);
+    });
+  }
+  async function accountAction(call, apply) {
+    try { const result = await call(); if (!result.ok) throw new Error(result.error); apply(result); }
+    catch (error) { status(error.message); }
+  }
   function renderKimiAccount() {
     $('kimiConnectionPanel').hidden = engine !== 'kimi';
     if (engine !== 'kimi') return;
@@ -23,6 +61,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       : 'Use the providers, API keys and models configured in Providers & Keys.';
     $('kimiSaveConnection').hidden = !state.dirty;
     $('kimiSignIn').disabled = Boolean(busy || state.dirty || pending);
+    $('kimiAddAccount').disabled = Boolean(busy || state.dirty || pending);
     $('kimiRefresh').disabled = Boolean(busy || state.dirty || pending || !kimiAccount?.installed);
     $('kimiSignOut').disabled = Boolean(busy || state.dirty || pending);
     $('kimiSignOut').hidden = !kimiAccount?.account;
@@ -39,6 +78,10 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('kimiOpenLogin').disabled = !kimiAccount?.login?.verificationUrl;
     $('kimiModelDetails').hidden = !kimiAccount?.models?.length;
     $('kimiModelList').innerHTML = (kimiAccount?.models || []).map(model => `<li title="${esc(model.id)}">${esc(model.name)}</li>`).join('');
+    renderAccountList({ containerId: 'kimiAccountList', state: kimiAccount,
+      onSelect: id => accountAction(() => api.kimiAccountSelect(id), result => { kimiAccount = result; renderKimiAccount(); }),
+      onRemove: id => accountAction(() => api.kimiAccountRemove(id), result => { kimiAccount = result; renderKimiAccount(); }),
+      onLabel: (id, label) => accountAction(() => api.kimiAccountLabel(id, label), result => { kimiAccount = result; }) });
   }
   async function loadKimiAccount() {
     const result = await api.kimiAccountState(); if (!result.ok) throw new Error(result.error);
@@ -55,7 +98,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       ? 'Use models from Providers & Keys, including supported third-party APIs. No ChatGPT sign-in is required. The API provider bills this usage.'
       : 'Use the models and quota included with your ChatGPT account. You can choose API key / third-party API above without signing in.';
     $('codexSaveConnection').hidden = !state.dirty;
-    for (const id of ['codexSignIn', 'codexRefresh', 'codexSignOut', 'codexCancelLogin']) $(id).disabled = codexBusy || state.dirty;
+    for (const id of ['codexSignIn', 'codexAddAccount', 'codexRefresh', 'codexSignOut', 'codexCancelLogin']) $(id).disabled = codexBusy || state.dirty;
     $('codexCancelLogin').hidden = !codexAccount?.loginPending;
     $('codexSignOut').hidden = !codexAccount?.account;
     const account = codexAccount?.account;
@@ -75,6 +118,10 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       row.append(label, progress); $('codexQuotas').append(row);
     }
     if (account && !Object.keys(buckets).length) { const hint = document.createElement('p'); hint.className = 'hint'; hint.dataset.i18n = ''; hint.textContent = codexAccount.quotaError || 'Quota information is currently unavailable.'; $('codexQuotas').append(hint); }
+    renderAccountList({ containerId: 'codexAccountList', state: codexAccount,
+      onSelect: id => accountAction(() => api.codexAccountSelect(id), result => { codexAccount = result; renderCodexAccount(); }),
+      onRemove: id => accountAction(() => api.codexAccountRemove(id), result => { codexAccount = result; renderCodexAccount(); }),
+      onLabel: (id, label) => accountAction(() => api.codexAccountLabel(id, label), result => { codexAccount = result; }) });
   }
   async function loadCodexAccount() {
     const result = await api.codexAccountState(); if (!result.ok) throw new Error(result.error);
@@ -102,6 +149,9 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('googleModelDetails').hidden = !googleAccount?.models?.length;
     $('googleModelSummary').textContent = 'Available account models';
     $('googleModelList').innerHTML = (googleAccount?.models || []).map(model => `<li title="${esc(model.id)}">${esc(model.name)}</li>`).join('');
+    // The official CLI owns one global Google credential, so the list is
+    // informational rather than selectable.
+    renderAccountList({ containerId: 'googleAccountList', state: googleAccount, readonly: true });
   }
   async function loadAccount() {
     const result = await api.antigravityAccountState();
@@ -277,11 +327,13 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   $('codexProxyUrl').oninput = e => { current().desktop.proxyUrl = e.target.value; changed(); };
   $('codexSaveConnection').onclick = () => $('saveEngine').click();
   $('codexProviders').onclick = () => navigate('providers');
-  for (const [id, action] of [['codexSignIn', 'codexSignIn'], ['codexRefresh', 'codexAccountRefresh'], ['codexSignOut', 'codexSignOut'], ['codexCancelLogin', 'codexCancelLogin']]) $(id).onclick = async () => {
+  for (const [id, action] of [['codexSignIn', 'codexSignIn'], ['codexAddAccount', 'codexAccountAdd'], ['codexRefresh', 'codexAccountRefresh'],
+    ['codexSignOut', 'codexSignOut'], ['codexCancelLogin', 'codexCancelLogin']]) $(id).onclick = async () => {
     codexBusy = true; renderCodexAccount();
     try {
       const result = await api[action](); if (!result.ok) throw new Error(result.error);
       if (!result.canceled) codexAccount = result;
+      if (id === 'codexAddAccount') status('Account added. Sign in to finish connecting it.');
     } catch (error) { status(error.message, true); }
     finally { codexBusy = false; renderCodexAccount(); }
   };
@@ -290,11 +342,13 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   $('kimiLoginRegion').onchange = e => { current().desktop.region = e.target.value; changed(); };
   $('kimiSaveConnection').onclick = () => $('saveEngine').click();
   $('kimiProviders').onclick = () => navigate('providers');
-  for (const [id, action] of [['kimiSignIn', 'kimiSignIn'], ['kimiRefresh', 'kimiAccountRefresh'], ['kimiSignOut', 'kimiSignOut'], ['kimiCancelLogin', 'kimiCancelLogin'], ['kimiOpenLogin', 'kimiOpenLogin']]) $(id).onclick = async () => {
+  for (const [id, action] of [['kimiSignIn', 'kimiSignIn'], ['kimiAddAccount', 'kimiAccountAdd'], ['kimiRefresh', 'kimiAccountRefresh'],
+    ['kimiSignOut', 'kimiSignOut'], ['kimiCancelLogin', 'kimiCancelLogin'], ['kimiOpenLogin', 'kimiOpenLogin']]) $(id).onclick = async () => {
     kimiBusy = action; renderKimiAccount();
     try {
       const result = await api[action](); if (!result.ok) throw new Error(result.error);
       if (!result.canceled) kimiAccount = result;
+      if (id === 'kimiAddAccount') status('Account added. Sign in to finish connecting it.');
     } catch (error) { status(error.message, true); }
     finally { kimiBusy = false; renderKimiAccount(); }
   };
@@ -365,5 +419,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   window.addEventListener('resize', layout);
   document.querySelector('.scroll-content').addEventListener('scroll', layout);
   new ResizeObserver(layout).observe($('engineContent'));
-  return { select, openAccount, runtimePage, selected: () => engine, setVisible };
+  return { select, openAccount, runtimePage, selected: () => engine, setVisible,
+    // The active Kimi account owns the balance card behind "View usage and quotas".
+    activeSubscriptionId: () => 'kimi:' + (kimiAccount?.activeId || 'default') };
 };

@@ -3,7 +3,13 @@
 const { readJson, writeJson } = require('../shared/json-store.js');
 const { createHash, randomUUID } = require('node:crypto');
 const { counters, normalizeBreakdown } = require('./api-usage');
+const { discoverQclaw, DEFAULT_BASE_URL } = require('./qclaw-provider');
 const DEFAULT_PORT = 8788;
+// QClaw answers through an agent runtime, so the prompt also carries that
+// runtime's own instructions and skills. Measured overflow lands near 110k
+// total tokens, which leaves roughly 90k for the conversation itself; the
+// router's own estimator is deliberately pessimistic, so this stays safe.
+const QCLAW_CONTEXT_WINDOW = 88000;
 const legacyModels = ['kimi-k3', 'deepseek-v4-pro', 'deepseek-v4.1-flash', 'glm-5.3', 'glm-5.3-flash', 'kimi-k2.6', 'kimi-k2.5'];
 const PRESETS = [
   { type: 'ollama', name: 'Ollama Cloud', baseUrl: 'https://ollama.com/v1', protocol: 'dual',
@@ -27,6 +33,8 @@ const PRESETS = [
     models: ['mimo-v2.6-pro', 'mimo-v2.6-flash'].map(id => ({ id, upstream: id })),
   })),
   { type: 'gemini', name: 'Google Gemini API', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', protocol: 'openai', models: [] },
+  { type: 'qclaw', name: 'QClaw (local)', baseUrl: DEFAULT_BASE_URL, protocol: 'openai',
+    models: [{ id: 'openclaw/main', upstream: 'openclaw/main', contextWindow: QCLAW_CONTEXT_WINDOW }] },
   { type: 'custom', name: "Custom provider", baseUrl: '', protocol: 'openai', models: [] },
 ];
 
@@ -69,7 +77,7 @@ function normalizeUsage(value) {
 }
 
 // Keep the historical file name so the desktop app and existing CLI share one pool.
-function normalizeConfig(raw = {}, previous = null) {
+function normalizeConfig(raw = {}, previous = null, options = {}) {
   if (!record(raw)) throw new Error("API route configuration must be a JSON object");
   if (raw.version !== undefined && ![1, 2].includes(raw.version)) throw new Error("Unsupported API route configuration version");
   if ((raw.version === 2 || raw.providers !== undefined) && !Array.isArray(raw.providers)) throw new Error("Providers must be an array");
@@ -77,6 +85,18 @@ function normalizeConfig(raw = {}, previous = null) {
   const port = Number(raw.port ?? DEFAULT_PORT);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Router port must be between 1024 and 65535");
   const cfg = { version: 2, enabled: raw.enabled !== false, port, providers: [], usage: {}, active: {} };
+  // QClaw rewrites its gateway port and token into its own state file on every
+  // start, so a stored endpoint goes stale. Resolve the live one once, and only
+  // when a QClaw route is actually present, so other providers never touch disk.
+  let qclawLive;
+  let qclawResolved = false;
+  const liveQclaw = () => {
+    if (!qclawResolved) {
+      qclawResolved = true;
+      try { qclawLive = (options.discoverQclaw || discoverQclaw)(); } catch { qclawLive = null; }
+    }
+    return qclawLive;
+  };
   if (!Array.isArray(raw.providers)) {
     const keys = [...new Set((raw.keys || []).map(k => String(k).trim()).filter(Boolean))];
     if (keys.length) {
@@ -104,6 +124,9 @@ function normalizeConfig(raw = {}, previous = null) {
     const priority = Math.sign(rawPriority);
     const protocol = p.protocol || 'openai';
     if (!['openai', 'anthropic', 'dual'].includes(protocol)) throw new Error("Unsupported API protocol");
+    const type = String(p.type || 'custom');
+    const live = type === 'qclaw' ? liveQclaw() : null;
+    const declaredBaseUrl = String(p.baseUrl || (type === 'qclaw' ? DEFAULT_BASE_URL : '')).trim();
     const models = (p.models || []).map(m => {
       if (!record(m)) throw new Error("Invalid model configuration");
       const protocol = m.protocol || 'auto';
@@ -119,10 +142,17 @@ function normalizeConfig(raw = {}, previous = null) {
     if (new Set(models.map(m => m.id)).size !== models.length) throw new Error("A provider cannot contain duplicate entries for the same model");
     const seenKeys = new Set();
     const keys = [];
-    for (const k of p.keys || []) {
+    const keySource = live?.token
+      ? [{ id: 'qclaw-auto', key: live.token, name: 'QClaw (auto)', enabled: true }]
+      : (p.keys || []);
+    for (const k of keySource) {
       if (!record(k)) throw new Error("Invalid key configuration");
       const old = previousKeys.get(id + '/' + k.id);
       const key = String(k.key || old?.key || '').trim();
+      // A local QClaw route has no key of its own to store: the token comes
+      // from QClaw's state file, so an empty entry only means QClaw is not
+      // running and the route simply stays unroutable.
+      if (!key && type === 'qclaw') continue;
       if (!key) throw new Error("New routes require an API key. Leave existing keys blank to keep them.");
       if (/[\r\n]/.test(key)) throw new Error("API keys cannot contain line breaks");
       if (seenKeys.has(key)) continue;
@@ -131,11 +161,14 @@ function normalizeConfig(raw = {}, previous = null) {
       if (ids.has(kid)) throw new Error("Duplicate key ID");
       ids.add(kid);
       keys.push({ id: kid, key, name: String(k.name || '').trim().slice(0, 80), enabled: k.enabled !== false });
-      const stats = old && old.key !== key ? {} : (previous?.usage?.[kid] || raw.usage?.[kid] || {});
+      // QClaw rotates its token on purpose, so a changed value must not reset
+      // the counters the way a manually swapped API key does.
+      const rotated = old && old.key !== key && !(type === 'qclaw' && kid === 'qclaw-auto');
+      const stats = rotated ? {} : (previous?.usage?.[kid] || raw.usage?.[kid] || {});
       cfg.usage[kid] = normalizeUsage(stats);
     }
-    cfg.providers.push({ id, type: String(p.type || 'custom'), name: String(p.name || "Provider").trim().slice(0, 100),
-      enabled: p.enabled !== false, priority, protocol, baseUrl: endpoint(p.baseUrl),
+    cfg.providers.push({ id, type, name: String(p.name || "Provider").trim().slice(0, 100),
+      enabled: p.enabled !== false, priority, protocol, baseUrl: endpoint(live?.baseUrl || declaredBaseUrl),
       anthropicBaseUrl: p.anthropicBaseUrl ? endpoint(p.anthropicBaseUrl) : '', models, keys });
   }
   const availableKeys = new Set(cfg.providers.flatMap(p => p.keys.map(k => k.id)));

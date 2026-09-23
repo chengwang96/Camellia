@@ -42,6 +42,16 @@ async function main() {
   const conversation = manager.create('codex', 'fixture', 'Android integration');
   manager.append(conversation, { role: 'user', text: 'Fixture question' });
   manager.append(conversation, { role: 'assistant', text: 'Fixture answer' });
+  const artifactBytes = Buffer.alloc(192 * 1024);
+  for (let index = 0; index < artifactBytes.length; index++) artifactBytes[index] = index % 251;
+  fs.writeFileSync(path.join(root, '手机产物.pdf'), artifactBytes);
+  manager.append(conversation, { role: 'assistant', text: '`手机产物.pdf`' });
+  const download = gateway.download.bind(gateway);
+  let downloads = 0;
+  gateway.download = async (...args) => {
+    if (++downloads >= 2) await new Promise(resolve => setTimeout(resolve, 1800));
+    return download(...args);
+  };
   let sent = 0, answered = 0, stopped = 0;
   manager.drivers.codex.ensure = () => ({ gen: 72, sendUserMessage() {
     sent++;
@@ -87,7 +97,7 @@ async function main() {
     assert.match(result.output, /OK \(1 test\)/, result.output);
     assert.equal(sent, 1); assert.equal(answered, 1); assert.equal(stopped, 1);
     assert.equal(listSubscriptions, 3, 'Unsupported list streams must not be retried during polling');
-    console.log('PASS Android ↔ desktop gateway: live list sync, legacy 404 polling fallback, send deduplication, approval, stop, history, SSE and revocation');
+    console.log('PASS Android ↔ desktop gateway: rename/pin/batch delete with retries and stale-state rejection, artifact list/binary download, live list sync, legacy 404 polling fallback, send deduplication, approval, stop, history, SSE and revocation');
   } finally {
     for (const timer of timers) clearTimeout(timer);
     if (ruleAdded) { const undo = [...rule]; undo[2] = '-D'; command(['shell', 'iptables', ...undo]); }

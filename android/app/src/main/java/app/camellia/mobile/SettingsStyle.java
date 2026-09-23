@@ -15,7 +15,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 final class SettingsStyle {
-    final int background, card, ink, secondary, divider;
+    final int background, card, ink, secondary, divider, error, field, fieldBorder, accent;
     private final Context context;
 
     SettingsStyle(Context context) {
@@ -26,9 +26,48 @@ final class SettingsStyle {
         ink = Color.parseColor(dark ? "#F5F5F7" : "#191A1C");
         secondary = Color.parseColor(dark ? "#ABAEB5" : "#75787E");
         divider = Color.parseColor(dark ? "#37373C" : "#ECECEE");
+        error = Color.parseColor(dark ? "#FF969A" : "#B8323B");
+        field = Color.parseColor(dark ? "#303036" : "#FFFFFF");
+        fieldBorder = Color.parseColor(dark ? "#62626C" : "#B9BEC7");
+        accent = Color.parseColor(dark ? "#679EFE" : "#4176E6");
     }
 
     private int dp(int value) { return Math.round(value * context.getResources().getDisplayMetrics().density); }
+
+    GradientDrawable fieldBackground(int border) {
+        GradientDrawable shape = new GradientDrawable(); shape.setColor(field); shape.setCornerRadius(dp(18));
+        shape.setStroke(dp(1), border); return shape;
+    }
+
+    void sheetPanel(LinearLayout panel) {
+        panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(18), dp(14), dp(18), dp(18));
+        GradientDrawable shape = new GradientDrawable(); shape.setColor(background); shape.setCornerRadius(dp(30)); panel.setBackground(shape);
+        View handle = new View(context); handle.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        GradientDrawable gripShape = new GradientDrawable(); gripShape.setColor(divider); gripShape.setCornerRadius(dp(3)); handle.setBackground(gripShape);
+        LinearLayout.LayoutParams grip = new LinearLayout.LayoutParams(dp(36), dp(4));
+        grip.gravity = Gravity.CENTER_HORIZONTAL; grip.bottomMargin = dp(16); panel.addView(handle, grip);
+    }
+
+    void sheetWindow(android.view.Window window, View panel) {
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
+        window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND); window.setDimAmount(.28f);
+        window.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        var attributes = window.getAttributes(); attributes.y = dp(12); window.setAttributes(attributes);
+        Runnable resize = () -> {
+            View decor = window.peekDecorView();
+            if (decor == null || decor.getWindowToken() == null) return;
+            android.graphics.Rect visible = new android.graphics.Rect(); decor.getWindowVisibleDisplayFrame(visible);
+            int available = visible.height() > 0 ? visible.height() : context.getResources().getDisplayMetrics().heightPixels;
+            int width = Math.min(dp(560), context.getResources().getDisplayMetrics().widthPixels - dp(24));
+            int limit = Math.max(dp(160), available - dp(32));
+            panel.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST));
+            window.setLayout(width, Math.min(limit, panel.getMeasuredHeight()));
+        };
+        panel.setOnApplyWindowInsetsListener((view, insets) -> { view.post(resize); return insets; });
+        panel.post(resize);
+    }
 
     GradientDrawable cardBackground() {
         GradientDrawable shape = new GradientDrawable(); shape.setColor(card); shape.setCornerRadius(dp(26)); return shape;
@@ -113,8 +152,20 @@ final class SettingsStyle {
         note.setPadding(dp(16), 0, dp(16), dp(18)); note.setLineSpacing(dp(3), 1); parent.addView(note);
     }
 
+    android.widget.ProgressBar progressBar() {
+        android.widget.ProgressBar bar = new android.widget.ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
+        GradientDrawable track = new GradientDrawable(); track.setColor(divider); track.setCornerRadius(dp(3));
+        GradientDrawable fill = new GradientDrawable(); fill.setColor(ink); fill.setCornerRadius(dp(3));
+        android.graphics.drawable.ScaleDrawable progress = new android.graphics.drawable.ScaleDrawable(fill, Gravity.START, 1f, -1f);
+        android.graphics.drawable.LayerDrawable layers = new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[]{track, progress});
+        layers.setId(0, android.R.id.background); layers.setId(1, android.R.id.progress);
+        bar.setProgressTintList(null); bar.setProgressBackgroundTintList(null); bar.setProgressDrawable(layers);
+        bar.setIndeterminate(false); bar.setMax(100); bar.setPadding(0, 0, 0, 0); bar.setMinimumHeight(dp(6));
+        bar.setBackground(track.getConstantState().newDrawable().mutate()); bar.setClipToOutline(true); return bar;
+    }
+
     void action(LinearLayout group, String title, String description, String tag, boolean destructive, Runnable action) {
-        int color = destructive ? Color.parseColor("#D34C50") : ink;
+        int color = destructive ? error : ink;
         LinearLayout row = detailRow(group, title, description, color); row.setTag(tag); row.setFocusable(true);
         row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x184176e6), null, new android.graphics.drawable.ColorDrawable(Color.WHITE)));
         row.setContentDescription(description.isEmpty() ? title : title + ", " + description); row.setOnClickListener(view -> action.run());

@@ -93,8 +93,9 @@ public class NavigationTest extends InstrumentationTestCase {
                     invoke(activity, "createWorkspace"); android.app.Dialog dialog = currentDialog(activity); assertTrue(dialog.isShowing());
                     View root = dialog.getWindow().getDecorView();
                     android.widget.EditText name = root.findViewWithTag("remoteWorkspaceName"), folder = root.findViewWithTag("remoteWorkspacePath");
-                    root.findViewWithTag("remoteWorkspaceCreate").performClick(); assertNotNull(name.getError()); assertTrue(dialog.isShowing());
-                    name.setText("Research"); root.findViewWithTag("remoteWorkspaceCreate").performClick(); assertNotNull(folder.getError()); assertTrue(dialog.isShowing());
+                    root.findViewWithTag("remoteWorkspaceCreate").performClick(); assertTrue(name.createAccessibilityNodeInfo().isContentInvalid()); assertNull(name.getError()); assertTrue(dialog.isShowing());
+                    name.setText("Research"); assertFalse(name.createAccessibilityNodeInfo().isContentInvalid());
+                    root.findViewWithTag("remoteWorkspaceCreate").performClick(); assertTrue(folder.createAccessibilityNodeInfo().isContentInvalid()); assertNull(folder.getError()); assertTrue(dialog.isShowing());
                     assertNotNull(findText(root, "Enter the full path of an existing folder on the computer, not this phone.", "填写电脑上已存在文件夹的完整路径，不是手机路径。"));
                     dialog.dismiss();
                 } catch (Exception error) { throw new AssertionError(error); }
@@ -113,10 +114,10 @@ public class NavigationTest extends InstrumentationTestCase {
                     invoke(activity, "stopNetwork");
                     var rename = MainActivity.class.getDeclaredMethod("renameComputer", JSONObject.class); rename.setAccessible(true); rename.invoke(activity, profile);
                     android.app.Dialog dialog = currentDialog(activity);
-                    assertFalse(dialog instanceof android.app.AlertDialog);
+                    assertTrue(dialog instanceof CamelliaDialog);
                     View root = dialog.getWindow().getDecorView();
                     android.widget.EditText input = root.findViewWithTag("computerNameInput");
-                    assertTrue(input.getBackground() instanceof android.graphics.drawable.GradientDrawable);
+                    assertTrue(input.getBackground() instanceof android.graphics.drawable.StateListDrawable);
                     input.setText("   "); root.findViewWithTag("renameSave").performClick(); assertTrue(dialog.isShowing());
                     assertNotNull(findText(root, "Enter a computer name", "请输入电脑名称"));
                     input.setText("Discarded name"); root.findViewWithTag("renameCancel").performClick();
@@ -246,6 +247,7 @@ public class NavigationTest extends InstrumentationTestCase {
                     JSONObject independent = new JSONObject().put("id", "22345678-1234-1234-1234-123456789abc").put("title", "Independent").put("workspaceId", JSONObject.NULL);
                     apply.invoke(activity, new JSONObject().put("conversations", new org.json.JSONArray().put(conversation).put(independent)), false);
                     assertNotNull(root.findViewWithTag("group:"));
+                    assertTrue(root.findViewWithTag("newStandalone") instanceof android.widget.ImageButton);
                     root.findViewWithTag("conversation:" + conversation.getString("id")).performClick(); invoke(activity, "stopNetwork");
                     root = activity.getWindow().getDecorView(); assertNotNull(root.findViewWithTag("composerBar"));
                     assertEquals("Mobile navigation", ((TextView) root.findViewWithTag("pageTitle")).getText().toString());

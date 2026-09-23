@@ -18,6 +18,23 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         assertEquals("control", client.json("/v1/status", token, null).getString("permission"));
         JSONObject conversation = client.json("/v1/conversations", token, null).getJSONArray("conversations").getJSONObject(0);
         String id = conversation.getString("id");
+        JSONObject artifact = client.json("/v1/conversations/" + id + "/artifacts", token, null).getJSONArray("artifacts").getJSONObject(0);
+        assertEquals("手机产物.pdf", artifact.getString("name"));
+        assertFalse(artifact.has("path"));
+        java.io.File downloaded = java.io.File.createTempFile("artifact-test-", ".pdf", getInstrumentation().getTargetContext().getCacheDir());
+        try {
+            java.util.concurrent.atomic.AtomicLong progress = new java.util.concurrent.atomic.AtomicLong();
+            try (var output = new java.io.FileOutputStream(downloaded)) {
+                client.download("/v1/conversations/" + id + "/artifacts/" + artifact.getString("id"), token, output,
+                    artifact.getLong("size"), (receivedBytes, total) -> progress.set(receivedBytes));
+            }
+            assertEquals(192 * 1024L, downloaded.length()); assertEquals(downloaded.length(), progress.get());
+            try (var input = new java.io.FileInputStream(downloaded)) {
+                for (int index = 0; index < 192 * 1024; index++) assertEquals(index % 251, input.read());
+                assertEquals(-1, input.read());
+            }
+        } finally { downloaded.delete(); }
+        verifyBackgroundDownload(artifact, id, token);
         AtomicInteger lists = new AtomicInteger();
         IOException complete = new IOException("List synchronization verified");
         try {
@@ -40,6 +57,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         JSONObject created = client.json("/v1/commands", token, create);
         assertTrue(created.getBoolean("ok"));
         assertEquals(created.getJSONObject("conversation").getString("id"), client.json("/v1/commands", token, create).getJSONObject("conversation").getString("id"));
+        verifyConversationActions(client, token, info.getString("instanceId"), workspace, created.getJSONObject("conversation").getString("id"));
         JSONObject snapshot = client.json("/v1/conversations/" + id, token, null);
         assertEquals("Fixture answer", snapshot.getJSONArray("messages").getJSONObject(1).getString("text"));
         String server = snapshot.getString("instanceId");
@@ -89,6 +107,95 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(activity::finish);
             getInstrumentation().waitForIdleSync();
             encrypted.clear();
+        }
+    }
+
+    private void verifyConversationActions(RemoteApi client, String token, String server, String workspace, String first) throws Exception {
+        JSONObject original = client.json("/v1/conversations/" + first, token, null).getJSONObject("conversation");
+        org.json.JSONArray targets = new org.json.JSONArray().put(new JSONObject().put("id", first).put("seq", original.getLong("seq")));
+        JSONObject rename = operation("rename", server).put("targets", targets).put("title", "手机重命名验证");
+        assertTrue(client.json("/v1/commands", token, rename).getBoolean("ok"));
+        assertTrue(client.json("/v1/commands", token, rename).getBoolean("ok"));
+        JSONObject renamed = client.json("/v1/conversations/" + first, token, null).getJSONObject("conversation");
+        assertEquals("手机重命名验证", renamed.getString("title"));
+        targets.getJSONObject(0).put("seq", renamed.getLong("seq"));
+        JSONObject pin = operation("pin", server).put("targets", targets).put("pinned", true);
+        assertTrue(client.json("/v1/commands", token, pin).getBoolean("ok"));
+        assertTrue(client.json("/v1/commands", token, pin).getBoolean("ok"));
+        JSONObject pinned = client.json("/v1/conversations/" + first, token, null).getJSONObject("conversation");
+        assertTrue(pinned.getBoolean("pinned"));
+        assertEquals(first, client.json("/v1/conversations", token, null).getJSONArray("conversations").getJSONObject(0).getString("id"));
+        JSONObject second = client.json("/v1/commands", token, operation("create", server).put("workspaceId", workspace).put("engine", "codex"))
+            .getJSONObject("conversation");
+        targets.getJSONObject(0).put("seq", pinned.getLong("seq"));
+        targets.put(new JSONObject().put("id", second.getString("id")).put("seq", second.getLong("seq")));
+        org.json.JSONArray staleTargets = new org.json.JSONArray(targets.toString());
+        staleTargets.getJSONObject(1).put("seq", second.getLong("seq") + 1);
+        assertFalse(client.json("/v1/commands", token, operation("delete", server).put("targets", staleTargets)).getBoolean("ok"));
+        assertEquals(first, client.json("/v1/conversations/" + first, token, null).getJSONObject("conversation").getString("id"));
+        assertEquals(second.getString("id"), client.json("/v1/conversations/" + second.getString("id"), token, null).getJSONObject("conversation").getString("id"));
+        JSONObject delete = operation("delete", server).put("targets", targets);
+        assertTrue(client.json("/v1/commands", token, delete).getBoolean("ok"));
+        assertTrue(client.json("/v1/commands", token, delete).getBoolean("ok"));
+        for (String id : new String[] {first, second.getString("id")}) {
+            try { client.json("/v1/conversations/" + id, token, null); fail("Deleted conversation remains accessible"); }
+            catch (RemoteApi.Failure expected) { assertEquals(404, expected.status); }
+        }
+    }
+
+    private void verifyBackgroundDownload(JSONObject artifact, String conversation, String token) throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        java.io.File directory = new java.io.File(context.getCacheDir(), "camera"); directory.mkdirs();
+        java.io.File file = java.io.File.createTempFile("background-artifact-", ".pdf", directory);
+        MainActivity activity = (MainActivity) getInstrumentation().startActivitySync(new android.content.Intent(context, MainActivity.class)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            JSONObject selected = new JSONObject(artifact.toString()).put("address", "http://100.64.0.1:43128").put("conversation", conversation);
+            ArtifactDownloads downloads = new ArtifactDownloads(activity, null);
+            getInstrumentation().runOnMainSync(() -> downloads.show("http://100.64.0.1:43128", token, conversation));
+            Thread.sleep(500);
+            getInstrumentation().waitForIdleSync();
+            var screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
+            if (screenshot != null) {
+                try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalFilesDir(null), "artifact-sheet.png"))) {
+                    screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
+                } finally { screenshot.recycle(); }
+            }
+            getInstrumentation().runOnMainSync(downloads::close);
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    ArtifactDownloadService.start(activity, selected, token, CameraFileProvider.uri(context, file));
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+            Thread.sleep(250);
+            assertTrue(ArtifactDownloadService.snapshot().detail, ArtifactDownloadService.snapshot().active());
+            try { ArtifactDownloadService.start(activity, selected, token, CameraFileProvider.uri(context, file)); fail("Duplicate download accepted"); }
+            catch (IOException expected) { }
+            getInstrumentation().runOnMainSync(activity::finish);
+            getInstrumentation().waitForIdleSync();
+            long deadline = android.os.SystemClock.elapsedRealtime() + 10_000;
+            while (ArtifactDownloadService.snapshot().active() && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(50);
+            assertEquals("complete", ArtifactDownloadService.snapshot().phase);
+            assertEquals(192 * 1024L, file.length());
+            try (var input = new java.io.FileInputStream(file)) {
+                for (int index = 0; index < 192 * 1024; index++) assertEquals(index % 251, input.read());
+            }
+            MainActivity cancelActivity = (MainActivity) getInstrumentation().startActivitySync(new android.content.Intent(context, MainActivity.class)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+            try {
+                getInstrumentation().runOnMainSync(() -> {
+                    try { ArtifactDownloadService.start(cancelActivity, selected, token, CameraFileProvider.uri(context, file)); }
+                    catch (Exception error) { throw new AssertionError(error); }
+                });
+                Thread.sleep(250);
+                getInstrumentation().runOnMainSync(() -> ArtifactDownloadService.cancel(context));
+                deadline = android.os.SystemClock.elapsedRealtime() + 5000;
+                while (ArtifactDownloadService.snapshot().active() && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(25);
+                assertEquals("cancelled", ArtifactDownloadService.snapshot().phase);
+            } finally { getInstrumentation().runOnMainSync(cancelActivity::finish); }
+        } finally {
+            getInstrumentation().runOnMainSync(activity::finish);
+            ArtifactDownloadService.cancel(context); file.delete();
         }
     }
 

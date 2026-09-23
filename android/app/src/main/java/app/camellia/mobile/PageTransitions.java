@@ -16,6 +16,7 @@ import android.view.animation.AnimationUtils;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
+@android.annotation.SuppressLint("ViewConstructor")
 final class PageTransitions extends FrameLayout {
     private View page;
     private String route;

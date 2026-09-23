@@ -1,5 +1,6 @@
 """Real desktop IPC + Chromium + loopback model service; no external API calls."""
 import json
+import re
 from pathlib import Path
 import subprocess
 from playwright.sync_api import sync_playwright, expect
@@ -16,6 +17,7 @@ def rpc(method,payload=None):
 bridge=r"""(() => {
   let onRouter=()=>{},onEvent=()=>{},onGoal=()=>{},onInsights=()=>{};
   window.testEmitInsights=data=>onInsights(data);
+  window.testEmitRouter=data=>onRouter(data);
   window.testCall=async(method,payload)=>{
     const r=await window.testRpc(method,payload);
     for(const e of r.events||[]){if(e.channel==='dsh:api-router-state')onRouter(e.data);if(e.channel==='dsh:claude-event')onEvent(e.data);if(e.channel==='dsh:claude-goal')onGoal(e.data);if(e.channel==='dsh:provider-insights')onInsights(e.data);}
@@ -71,6 +73,33 @@ try:
         result=rpc('routerRequest','kimi-k3')['result'];assert result['status']==200
         page.locator('#refresh').click();expect(page.locator('#live')).to_contain_text('Command Code GOAT')
         expect(page.locator('#keyRows')).to_contain_text('1 successful')
+        # Reported quota is shown per key, and an exhausted window is called out
+        # on the badge because it is what removes the key from rotation.
+        router_state=rpc('apiRouterGetState')['result']
+        key_id=next(p for p in router_state['providers'] if p['type']=='commandcode')['keys'][0]['id']
+        emit="""({state, quota}) => window.testEmitRouter({...state, quota})"""
+        page.evaluate(emit,{'state':router_state,'quota':{key_id:{'exhausted':False,'windows':[
+            {'id':'session','label':'Current session','usedPercent':0.1},
+            {'id':'weekly','label':'Weekly','usedPercent':22.2}],'checkedAt':1700000000000,'error':None}}})
+        expect(page.locator(f'[data-note="{key_id}"]')).to_contain_text('Quota: Current session 0.1% · Weekly 22.2%')
+        page.evaluate(emit,{'state':router_state,'quota':{key_id:{'exhausted':True,'windows':[
+            {'id':'weekly','label':'Weekly','usedPercent':100}],'checkedAt':1700000000000,'error':None}}})
+        expect(page.locator(f'[data-badge="{key_id}"]')).to_have_text(re.compile('Quota exhausted|额度已用尽'))
+        page.evaluate(emit,{'state':router_state,'quota':{key_id:{'exhausted':True,'windows':[
+            {'id':'weekly','label':'Weekly','usedPercent':100}],'error':'HTTP 429'}}})
+        expect(page.locator(f'[data-note="{key_id}"]')).to_contain_text('Weekly 100%')
+        expect(page.locator(f'[data-note="{key_id}"]')).to_contain_text('Quota check failed: HTTP 429')
+        page.evaluate(emit,{'state':dict(router_state,quotaCheck={'enabled':False}),'quota':{key_id:{'exhausted':True,'windows':[]}}})
+        expect(page.locator(f'[data-badge="{key_id}"]')).not_to_have_text('Quota exhausted')
+        expect(page.locator(f'[data-note="{key_id}"]')).to_contain_text('Automatic quota checks disabled')
+        page.evaluate(emit,{'state':router_state,'quota':{key_id:{'exhausted':False,'stale':True,'windows':[]}}})
+        expect(page.locator(f'[data-note="{key_id}"]')).to_contain_text('Quota reading expired')
+        page.evaluate(emit,{'state':router_state,'quota':{key_id:{'exhausted':True,'balanceExhausted':True,'balances':[{'currency':'CNY','value':0}]}}})
+        expect(page.locator(f'[data-badge="{key_id}"]')).to_have_text('Balance exhausted')
+        expect(page.locator(f'[data-note="{key_id}"]')).to_contain_text('Balance: CNY 0')
+        page.evaluate(emit,{'state':router_state,'quota':{key_id:{'exhausted':False,'windows':[],'checkedAt':None,'error':'HTTP 429'}}})
+        expect(page.locator(f'[data-note="{key_id}"]')).to_contain_text(re.compile('Quota check failed|额度查询失败'))
+        page.evaluate("state => window.testEmitRouter(state)",router_state)
         # Reordering keeps credentials and usage attached to the same IDs.
         page.locator('#backProviders').click()
         for width, columns in [(600, 1), (760, 1), (960, 2), (1040, 2), (1160, 2), (1440, 3), (1840, 4)]:
@@ -389,7 +418,7 @@ try:
         page.locator('#mobile-retry').click()
         expect(page.locator('#mobile-retry')).to_be_hidden()
         expect(page.locator('#mobile-openPanel')).to_be_hidden()
-        expect(page.locator('#mobilePage [data-copy=scope]')).to_contain_text('all current and future workspaces')
+        expect(page.locator('#mobilePage [data-copy=scope]')).to_contain_text('all current and future conversations')
         expect(page.locator('#mobile-toggle')).to_have_text('Enable mobile access')
         expect(page.locator('#mobile-invite')).to_be_disabled()
         page.locator('#mobile-toggle').click()

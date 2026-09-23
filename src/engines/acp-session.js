@@ -106,7 +106,8 @@ class AcpSession extends StreamingSession {
 
   async open() {
     await this.starting;
-    await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '1.0.0' } });
+    const initResult = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '0.1.0' } });
+    this.promptCapabilities = initResult?.agentCapabilities?.promptCapabilities || {};
     const sourceId = this.opts.sessionId;
     const method = sourceId ? this.opts.fork ? 'session/fork' : 'session/resume' : 'session/new';
     const bridge = this.opts.goalBridge?.config;
@@ -154,7 +155,10 @@ class AcpSession extends StreamingSession {
       const imageTypes = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
       for (const attachment of attachments) {
         const mimeType = imageTypes[path.extname(attachment.path).toLowerCase()];
-        if (attachment.isImage && mimeType) parts.push({ type: 'image', mimeType, data: fs.readFileSync(attachment.path).toString('base64') });
+        if (!attachment.isImage || !mimeType) continue;
+        if (this.promptCapabilities.image !== true)
+          throw new Error(`${this.name} did not advertise inline image prompts; send this message without the image or use an engine with image input.`);
+        parts.push({ type: 'image', mimeType, data: fs.readFileSync(attachment.path).toString('base64') });
       }
       const response = await this.request('session/prompt', { sessionId: this.sessionId, prompt: parts }, 0);
       const stopped = this.cancelled || response.stopReason === 'cancelled';

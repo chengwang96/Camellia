@@ -73,15 +73,6 @@ final class ChatStyle {
 
     int floatingBarEdge() { return Color.parseColor(Color.red(background) < 128 ? "#3B3B40" : "#ECEEF1"); }
 
-    android.graphics.drawable.LayerDrawable topRoundedBar() {
-        GradientDrawable fill = rounded(background); fill.setCornerRadii(new float[] {
-            dp(28), dp(28), dp(28), dp(28), 0, 0, 0, 0
-        });
-        GradientDrawable edge = rounded(Color.TRANSPARENT); edge.setStroke(dp(1), floatingBarEdge());
-        edge.setCornerRadii(new float[] {dp(28), dp(28), dp(28), dp(28), 0, 0, 0, 0});
-        return new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[] {fill, edge});
-    }
-
     ColorStateList enabledColors(int enabled, int disabled) {
         return new ColorStateList(new int[][] {{-android.R.attr.state_enabled}, {}}, new int[] {disabled, enabled});
     }
@@ -132,6 +123,16 @@ final class ChatStyle {
         button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33ffffff), capsule(accent), capsule(Color.WHITE)));
         button.setBackgroundTintList(enabledColors(accent, surface)); button.setImageTintList(enabledColors(Color.WHITE, muted));
         button.setOnClickListener(view -> action.run()); return button;
+    }
+
+    void reserveDockSpace(android.view.View dock, android.view.View content) {
+        int bottomPadding = content.getPaddingBottom();
+        dock.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            int reserved = bottomPadding + bottom - top;
+            if (content.getPaddingBottom() != reserved) {
+                content.setPadding(content.getPaddingLeft(), content.getPaddingTop(), content.getPaddingRight(), reserved);
+            }
+        });
     }
 
     LinearLayout messageBlock(boolean user) {

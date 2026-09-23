@@ -203,7 +203,7 @@ function metaOp(payload) {
   if (op === 'move-session') return moveSession(payload);
   const meta = sessionMeta();
   const workspaceId = payload.id || payload.workspaceId;
-  if (['rename-workspace', 'delete-workspace', 'toggle-collapse'].includes(op)
+  if (['rename-workspace', 'delete-workspace', 'toggle-collapse', 'move-workspace'].includes(op)
       && !meta.workspaces.some((w) => w.id === workspaceId)) return { ok: false, error: "Workspace no longer exists" };
   if (['assign-session', 'toggle-pin'].includes(op)
       && !validSessionId(payload.sessionId)) return { ok: false, error: "Invalid session" };
@@ -214,6 +214,18 @@ function metaOp(payload) {
   if (busy && ((op === 'assign-session' && payload.sessionId === session.sessionId)
       || (op === 'delete-workspace' && payload.id === session.opts.workspaceId))) return { ok: false, error: "Stop the current response before changing workspaces" };
   switch (op) {
+    case 'move-workspace': {
+      if (!meta.workspaces.some(workspace => workspace.id === payload.targetWorkspaceId)
+          || !['before', 'after'].includes(payload.placement)) return { ok: false, error: 'Invalid drop target' };
+      if (workspaceId === payload.targetWorkspaceId) return { ok: true, meta };
+      saveSessionMeta(saved => {
+        const sourceIndex = saved.workspaces.findIndex(workspace => workspace.id === workspaceId);
+        const [workspace] = saved.workspaces.splice(sourceIndex, 1);
+        const targetIndex = saved.workspaces.findIndex(workspace => workspace.id === payload.targetWorkspaceId);
+        saved.workspaces.splice(targetIndex + (payload.placement === 'after' ? 1 : 0), 0, workspace);
+      });
+      return { ok: true, meta: sessionMeta() };
+    }
     case 'create-workspace': {
       const name = String(payload.name || '').trim();
       if (!name) return { ok: false, error: "Workspace name cannot be empty" };

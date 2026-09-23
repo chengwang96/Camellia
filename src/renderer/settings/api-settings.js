@@ -6,7 +6,7 @@ const compact = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { max
 const when = value => value ? new Date(value).toLocaleString(window.CamelliaI18n.locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : "Not queried yet";
 const uid = () => crypto.randomUUID();
 const keyName = (key, index = 0) => key.name || key.maskedKey || `Key ${index + 1}`;
-const mark = type => ({ gemini: 'G', ollama: 'O', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC' }[type] || 'API');
+const mark = type => ({ gemini: 'G', ollama: 'O', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC', qclaw: 'Q' }[type] || 'API');
 const titles = {
   providers: ["Providers & Keys", "Manage API keys and subscription accounts."],
   usage: ["Usage", "Track requests, balances, and quotas."],
@@ -45,7 +45,7 @@ function navigateSettings(target = {}) {
 }
 const engineUI = window.createEngineSettingsUI({ api, status, navigate: navigateSettings });
 const capacityUI = window.createContextCapacityUI({ api, current, assertClean, status, esc, fmt, keyName });
-$('kimiUsage').onclick = () => navigateSettings({ page: 'usage', subscriptionId: 'kimi-subscription' });
+$('kimiUsage').onclick = () => navigateSettings({ page: 'usage', subscriptionId: engineUI.activeSubscriptionId() });
 api.onSettingsNavigate(navigateSettings);
 function showLive() {
   $('routerLabel').textContent = live.running ? "Router running" : "Setup required";
@@ -54,9 +54,11 @@ function showLive() {
   $('live').textContent = (live.running ? live.url : live.error || "The router starts after you add models and keys.") + (last ? ` · ${last.model} → ${last.providerName} · ${last.reason}` : '');
 }
 function keyBadge(k) {
+  const t = window.CamelliaI18n.t;
   const u = live.usage?.[k.id] || {}, info = insight.keys[k.id] || {}, v = info.verification;
   if (!k.enabled) return ["Disabled", ''];
   if (u.blocked) return ["Authentication failed", 'bad'];
+  if (live.quotaCheck?.enabled !== false && !live.quota?.[k.id]?.stale && live.quota?.[k.id]?.exhausted) return [t(live.quota[k.id].balanceExhausted ? 'Balance exhausted' : 'Quota exhausted'), 'bad'];
   if (v && !v.ok) return ["Validation failed", 'bad'];
   if (u.requests) return ["Used", 'good'];
   if (v?.ok) return ["Model verified", 'good'];
@@ -82,6 +84,7 @@ function renderEditor() {
     <p class="hint" data-i18n>Routes are tried in order: High, Default, Low. Unavailable routes are skipped. Equal priorities retain the current route, then follow provider and key order. Next route switches only within the highest available priority.</p>
     ${p.type.startsWith('mimo-token-plan-') ? '<p class="hint" data-i18n>Use your Token Plan tp- key and the region shown in your console. Coding use only. Do not add a pay-as-you-go route for the same model unless you want paid fallback. Check remaining Credits in the MiMo console.</p>' : ''}
     ${p.type === 'mimo' ? '<p class="hint" data-i18n>Use a regular MiMo API key, not a Token Plan tp- key. Requests are billed to your API balance. Adding this provider alongside Token Plan for the same model allows paid fallback.</p>' : ''}
+    ${p.type === 'qclaw' ? '<p class="hint" data-i18n>QClaw chooses its local gateway port at start time and rotates its token, so Camellia reads both from QClaw state file on every request. Start QClaw first; there is no key or URL to fill in here.</p>' : ''}
     <div class="section-head"><h2 data-i18n>API Key</h2><button id="showImport" data-i18n>Import keys</button><button id="addKey" data-i18n>+ Add key</button></div>
     <p class="hint" data-i18n>Keys are tried in order. Leave a key blank to keep it. Use labels to identify accounts.</p><div id="keyRows"></div>
     <div id="keyImport" class="key-import" hidden><label for="bulkKeys" data-i18n>One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false" data-i18n-attrs="placeholder"></textarea><button id="importKeys" data-i18n>Add to key pool</button><p class="hint" data-i18n>Duplicate keys for this provider are merged on save.</p></div>
@@ -127,10 +130,21 @@ function updateKeyStats() {
   for (const k of current()?.keys || []) {
     const badge = document.querySelector(`[data-badge="${k.id}"]`), note = document.querySelector(`[data-note="${k.id}"]`);
     if (!badge || !note) continue;
+    const t = window.CamelliaI18n.t;
     const [text, cls] = keyBadge(k), u = live.usage?.[k.id] || {}, v = insight.keys[k.id]?.verification;
     badge.className = `badge ${cls}`; badge.textContent = text;
     const cooldown = Object.entries(u.models || {}).filter(([,s]) => s.until > Date.now()).map(([m,s]) => `${m} cooldown until ${when(s.until)}`).join('; ');
-    note.textContent = `${fmt(u.requests)} successful · Input ${fmt(u.inputTokens)} / Output ${fmt(u.outputTokens)} tokens · Failed ${fmt(u.failures)}` + (v ? ` · Last validated ${v.model} ${when(v.at)}${v.error ? ' · ' + v.error : ''}` : '') + (cooldown ? ' · ' + cooldown : '') + (u.lastError ? ' · ' + u.lastError.reason : '');
+    // Reported quota comes from the router, which reads it for every provider
+    // with an account API, and is what keeps an exhausted key out of rotation.
+    const quota = live.quota?.[k.id];
+    const windows = (quota?.windows || []).map(window => `${t(window.label || window.id)} ${window.usedPercent === null ? '—' : fmt(window.usedPercent) + '%'}`).join(' · ');
+    const balances = (quota?.balances || []).map(balance => `${balance.currency || balance.id} ${balance.value === null ? '—' : fmt(balance.value)}`).join(' · ');
+    const quotaNote = (windows ? ` · ${t('Quota')}: ${windows}` : '') + (balances ? ` · ${t('Balance')}: ${balances}` : '')
+      + (quota?.checkedAt ? ` · ${t('Updated ' + when(quota.checkedAt))}` : '')
+      + (quota?.stale ? ` · ${t('Quota reading expired')}` : '')
+      + (live.quotaCheck?.enabled === false && quota ? ` · ${t('Automatic quota checks disabled')}` : '')
+      + (quota?.error ? ` · ${t('Quota check failed')}: ${quota.error}` : '');
+    note.textContent = `${fmt(u.requests)} successful · Input ${fmt(u.inputTokens)} / Output ${fmt(u.outputTokens)} tokens · Failed ${fmt(u.failures)}` + (v ? ` · Last validated ${v.model} ${when(v.at)}${v.error ? ' · ' + v.error : ''}` : '') + (cooldown ? ' · ' + cooldown : '') + (u.lastError ? ' · ' + u.lastError.reason : '') + quotaNote;
   }
 }
 function renderModels() {
@@ -469,12 +483,13 @@ $('openLogs').onclick = () => api.openLogs();
 async function saveGeneral() {
   try {
     const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked, closeToTray: $('closeToTray').checked,
+      accountRefreshMinutes: Number($('accountRefreshMinutes').value),
       conversations: { mode: $('conversationMode').value, warnOnSwitch: $('conversationWarn').checked, showOrigin: $('conversationOriginSetting').checked } });
     if (!result.ok) throw new Error(result.error);
     window.CamelliaI18n.setLanguage($('language').value); status("Preferences saved");
   } catch (e) { status(e.message, true); }
 }
-for (const id of ['language', 'theme', 'autoRefreshBalances', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting']) {
+for (const id of ['language', 'theme', 'autoRefreshBalances', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting']) {
   $(id).addEventListener('change', saveGeneral);
 }
 async function refresh(initial = false) {
@@ -498,6 +513,7 @@ async function refresh(initial = false) {
       if (!preferences.ok) throw new Error(preferences.error);
       $('language').value = preferences.language || 'en';
       $('theme').value = preferences.theme; $('autoRefreshBalances').checked = preferences.autoRefreshBalances; $('closeToTray').checked = !!preferences.closeToTray;
+      $('accountRefreshMinutes').value = String(preferences.accountRefreshMinutes || 15);
       $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;
       $('conversationOriginSetting').checked = !!preferences.conversations?.showOrigin;
       $('dataPath').textContent = preferences.dataPath; $('version').textContent = 'v' + preferences.version;

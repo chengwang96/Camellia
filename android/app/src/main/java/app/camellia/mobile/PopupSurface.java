@@ -14,6 +14,7 @@ import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
+@android.annotation.SuppressLint("ViewConstructor")
 final class PopupSurface extends FrameLayout {
     private Bitmap snapshot;
     private ImageView backdrop;

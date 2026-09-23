@@ -1808,6 +1808,11 @@ const context = { sessionId: null, workspaceId: null };
     if (v) {
       lastCallUsage = null;
       startRunTicker();
+      // A run started in this view shows its animated placeholder immediately.
+      // The engine may stay silent for minutes (long tool runs, compactions or
+      // stalled turns), and a status line outside the transcript is not enough
+      // evidence that the reply is coming.
+      if (!turnEl?.querySelector('.run-status')) setRunStatus('Working…');
     } else {
       stopRunTicker();
     }
@@ -1817,7 +1822,7 @@ const context = { sessionId: null, workspaceId: null };
   // ---------- event handling ----------
   function handleEvent(ev) {
     if (!ev) return;
-    if (sharedChat && ev.type === 'conversation:workspaces') { void sidebar.load(); return; }
+    if (sharedChat && ['conversation:workspaces', 'conversation:read'].includes(ev.type)) { void sidebar.load(); return; }
     if (sharedChat && ev.type === 'conversation:activity') {
       void sidebar.load();
       if (restoringRun) { eventsDuringRestore.push(ev); return; }
@@ -2030,7 +2035,6 @@ const context = { sessionId: null, workspaceId: null };
       pendingTools = {};
       setRunning(false);
       currentRunId = null;
-      if (sharedChat && ok && ev.session_id === context.sessionId) sidebar.markReplyRead(ev.session_id);
       void sidebar.load();
       maybeScroll(true);
       drainMessageQueue();
@@ -2637,6 +2641,7 @@ const context = { sessionId: null, workspaceId: null };
     messageQueue = []; renderMessageQueue();
   }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
+    canReadReply: () => !loadingSession && !restoringRun,
     newSession, openHistorySession, forkSession, canFork: s => sharedChat || harnessId !== 'antigravity' || !s.id.startsWith('agy-'), openActionMenu, closePops });
   const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && canChangeContext() && (!sharedChat || !running), openHistorySession, setStatus,
     acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); queueMicrotask(drainMessageQueue); }, openActionMenu, closePops });

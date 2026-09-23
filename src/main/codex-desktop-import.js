@@ -247,7 +247,7 @@ async function syncDesktopSession(shared, stateFile, conversationId) {
   if (session.title) c.title = session.title.slice(0, 80);
   const workspaceId = resolveWorkspace(shared, session.project);
   if (workspaceId && c.workspaceId !== workspaceId) { c.workspaceId = workspaceId; shared.workspaces.recordContext(c.id, workspaceId, c.cwd); }
-  c.updatedAt = Date.now();
+  c.updatedAt = shared.stamp();
   shared.save(c);
   return { id: c.id, title: c.title, messages: count };
 }

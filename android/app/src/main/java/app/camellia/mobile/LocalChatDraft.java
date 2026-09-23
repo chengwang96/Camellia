@@ -1,0 +1,24 @@
+package app.camellia.mobile;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+final class LocalChatDraft {
+    static int editIndex(JSONObject conversation) {
+        int target = conversation.optInt("draftEditIndex", -1);
+        JSONArray messages = conversation.optJSONArray("messages");
+        if (messages == null || target < 0 || target >= messages.length()) return -1;
+        for (int index = messages.length() - 1; index >= 0; index--) {
+            JSONObject message = messages.optJSONObject(index);
+            if (message != null && message.optString("role").equals("user")) return index == target ? target : -1;
+        }
+        return -1;
+    }
+
+    static void save(JSONObject conversation, String text, int editIndex) throws JSONException {
+        conversation.put("draft", text);
+        if (editIndex >= 0) conversation.put("draftEditIndex", editIndex);
+        else conversation.remove("draftEditIndex");
+    }
+}

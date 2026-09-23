@@ -46,6 +46,167 @@ async function request(gateway, endpoint, { token, method = 'GET', payload, head
   return { status: response.status, body: await response.json() };
 }
 
+test('conversation pages include scoped connection metadata in one round trip', async context => {
+  const { gateway, pair, visible, hidden } = fixture(context);
+  const { token } = pair();
+  await gateway.start('127.0.0.1', 0);
+  const status = (await request(gateway, '/v1/status', { token })).body;
+  const page = (await request(gateway, '/v1/conversations?offset=0', { token })).body;
+  for (const key of ['protocol', 'permission', 'capabilities', 'workspaces', 'includeUnassigned', 'instanceId', 'cursor']) {
+    assert.deepEqual(page[key], status[key], key);
+  }
+  assert.deepEqual(page.workspaces.map(workspace => workspace.id), ['allowed']);
+  assert.ok(page.conversations.some(conversation => conversation.id === visible.id));
+  assert.ok(!page.conversations.some(conversation => conversation.id === hidden.id));
+});
+
+test('remote summaries expose reply markers and invalidate list versions when activity or replies change', context => {
+  const { reader, manager, visible } = fixture(context);
+  const device = { workspaceIds: ['allowed'] };
+  assert.equal(reader.summary(visible).lastReplyAt, 0);
+  const initial = reader.listSnapshot(device).listVersion;
+  manager.controlStarts.set(visible.id, {});
+  assert.equal(reader.list(device).conversations[0].activity, 'running');
+  assert.notEqual(reader.listSnapshot(device).listVersion, initial);
+  manager.controlStarts.delete(visible.id);
+  assert.equal(reader.listSnapshot(device).listVersion, initial);
+  visible.lastReplyAt = 1234;
+  assert.equal(reader.list(device).conversations[0].lastReplyAt, 1234);
+  assert.equal(reader.snapshot(device, visible.id).conversation.lastReplyAt, 1234);
+  assert.notEqual(reader.listSnapshot(device).listVersion, initial);
+  assert.equal(reader.summary(visible).activity, null);
+});
+
+test('mobile and desktop share scoped read acknowledgements without consuming newer replies', async context => {
+  const { gateway, manager, reader, access, visible, hidden, pair } = fixture(context);
+  const { token } = pair();
+  await gateway.start('127.0.0.1', 0);
+  visible.lastReplyAt = 1000;
+  manager.save(visible);
+  const events = await stream(gateway, null, token);
+  context.after(() => events.close());
+  const initial = await events.next();
+  const device = { workspaceIds: ['allowed'] };
+  const version = reader.listSnapshot(device).listVersion;
+  const route = `/v1/conversations/${visible.id}/read`;
+  const options = { token, method: 'POST', payload: { lastReplyAt: 1000 } };
+  assert.equal((await request(gateway, route, { ...options, token: undefined })).status, 401);
+  assert.equal((await request(gateway, `/v1/conversations/${hidden.id}/read`, options)).status, 404);
+  assert.equal((await request(gateway, route, { ...options, payload: { lastReplyAt: -1 } })).status, 400);
+  assert.equal((await request(gateway, route, options)).body.replyReadAt, 1000);
+  assert.notEqual((await events.next()).listVersion, initial.listVersion);
+  assert.equal(manager.load('codex', visible.id).replyReadAt, 1000);
+  assert.notEqual(reader.listSnapshot(device).listVersion, version);
+  visible.lastReplyAt = 2000;
+  await request(gateway, route, options);
+  assert.equal(reader.summary(visible).replyReadAt, 1000);
+  access.authenticate(token).permission = 'read';
+  assert.equal((await request(gateway, route, { ...options, payload: { lastReplyAt: 1500 } })).body.replyReadAt, 1500);
+  await manager.command('codex', 'mark-reply-read', { id: visible.id, at: 2000 });
+  const page = (await request(gateway, '/v1/conversations', { token })).body;
+  assert.equal(page.conversations.find(conversation => conversation.id === visible.id).replyReadAt, 2000);
+});
+
+test('artifact listing and streaming expose only authorized workspace deliverables', async context => {
+  const { root, manager, gateway, access, visible, hidden, pair } = fixture(context);
+  const filename = '报告 #1.pdf', contents = Buffer.from([0, 255, 13, 10, 128, 42]);
+  fs.writeFileSync(path.join(root, filename), contents);
+  fs.writeFileSync(path.join(root, 'empty.txt'), '');
+  fs.writeFileSync(path.join(root, '.env'), 'SECRET');
+  fs.writeFileSync(path.join(root, 'unmentioned.pdf'), 'private');
+  manager.append(visible, { role: 'assistant', text: '', artifacts: [{ path: filename }, { path: '.env' }] });
+  manager.append(visible, { role: 'assistant', text: '`empty.txt`' });
+  manager.append(visible, { role: 'assistant', text: '`unmentioned.pdf`', internal: true });
+  manager.append(visible, { role: 'user', text: '`unmentioned.pdf`' });
+  const { token, deviceId } = pair();
+  await gateway.start('127.0.0.1', 0);
+  const route = `/v1/conversations/${visible.id}/artifacts`;
+  assert.equal((await request(gateway, route)).status, 401);
+  assert.equal((await request(gateway, `/v1/conversations/${hidden.id}/artifacts`, { token })).status, 404);
+  const listing = await request(gateway, route, { token });
+  assert.equal(listing.status, 200);
+  assert.deepEqual(listing.body.artifacts.map(file => file.name), ['empty.txt', filename]);
+  assert.equal(listing.body.nextOffset, null);
+  assert.ok(!JSON.stringify(listing.body).includes(root));
+  const file = listing.body.artifacts.find(file => file.name === filename);
+  assert.equal(file.size, contents.length);
+  assert.equal((await request(gateway, route + '?path=unmentioned.pdf', { token })).status, 400);
+  assert.equal((await request(gateway, route + '/' + '0'.repeat(64), { token })).status, 404);
+  const response = await fetch(gateway.url + route + '/' + file.id, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'application/octet-stream');
+  assert.ok(response.headers.get('content-disposition').includes(encodeURIComponent(filename)));
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), contents);
+  const empty = await fetch(gateway.url + route + '/' + listing.body.artifacts[0].id, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(empty.status, 200); assert.equal((await empty.arrayBuffer()).byteLength, 0);
+  fs.writeFileSync(path.join(root, filename), 'changed');
+  assert.equal((await request(gateway, route + '/' + file.id, { token })).status, 404);
+  const updated = (await request(gateway, route, { token })).body.artifacts.find(entry => entry.name === filename);
+  manager.workspaces.archiveSession(visible.id, true);
+  assert.equal((await request(gateway, route + '/' + updated.id, { token })).status, 404);
+  manager.workspaces.archiveSession(visible.id, false);
+  fs.unlinkSync(path.join(root, filename));
+  assert.equal((await request(gateway, route + '/' + updated.id, { token })).status, 404);
+  access.revoke(deviceId);
+  assert.equal((await request(gateway, route, { token })).status, 401);
+});
+
+test('artifact downloads accept Windows workspace aliases with different path casing', { skip: process.platform !== 'win32' }, async context => {
+  const { root, manager, reader, access, visible, pair } = fixture(context);
+  const { listArtifacts, openArtifact } = require('../src/main/remote/artifacts');
+  const filename = 'Case-Sensitive-Report.pdf', contents = 'artifact casing fixture';
+  fs.writeFileSync(path.join(root, filename), contents);
+  manager.append(visible, { role: 'assistant', text: '`' + filename + '`' });
+  const credential = pair(), device = access.authenticate(credential.token);
+  const original = listArtifacts(reader, device, visible.id).artifacts[0];
+  visible.cwd = root.toUpperCase();
+  const aliased = listArtifacts(reader, device, visible.id).artifacts[0];
+  assert.equal(aliased.id, original.id);
+  const opened = await openArtifact(reader, device, visible.id, aliased.id);
+  try { assert.equal(await opened.handle.readFile('utf8'), contents); }
+  finally { await opened.handle.close(); }
+});
+
+test('artifact scopes reject outside files and directory symlinks and paginate without duplicates', async context => {
+  const { root, manager, reader, access, visible, pair } = fixture(context);
+  const { listArtifacts, openArtifact } = require('../src/main/remote/artifacts');
+  const workspace = path.join(root, 'workspace'); fs.mkdirSync(workspace);
+  visible.cwd = workspace;
+  fs.writeFileSync(path.join(root, 'outside.pdf'), 'private');
+  fs.symlinkSync(root, path.join(workspace, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  manager.append(visible, { role: 'assistant', text: '`../outside.pdf` `linked/outside.pdf`' });
+  const credential = pair(), device = access.authenticate(credential.token);
+  assert.deepEqual(listArtifacts(reader, device, visible.id).artifacts, []);
+  for (let index = 0; index < 102; index++) {
+    const name = `report-${index}.pdf`; fs.writeFileSync(path.join(workspace, name), String(index));
+    manager.append(visible, { role: 'assistant', text: '`' + name + '`', artifacts: [{ path: name }] });
+  }
+  const first = listArtifacts(reader, device, visible.id);
+  const second = listArtifacts(reader, device, visible.id, first.nextOffset);
+  assert.equal(first.artifacts.length, 100); assert.equal(second.artifacts.length, 2); assert.equal(second.nextOffset, null);
+  assert.equal(new Set([...first.artifacts, ...second.artifacts].map(file => file.id)).size, 102);
+  const file = first.artifacts[0];
+  manager.workspaces.recordContext(visible.id, 'private', workspace);
+  await assert.rejects(openArtifact(reader, device, visible.id, file.id), /not found/);
+});
+
+test('revocation interrupts in-flight artifact downloads and releases their handles', async context => {
+  const { root, manager, gateway, access, visible, pair } = fixture(context);
+  const filename = path.join(root, 'large.pdf');
+  const descriptor = fs.openSync(filename, 'w'); fs.ftruncateSync(descriptor, 32 * 1024 * 1024); fs.closeSync(descriptor);
+  manager.append(visible, { role: 'assistant', text: '`large.pdf`' });
+  const { token, deviceId } = pair(); await gateway.start('127.0.0.1', 0);
+  const route = `/v1/conversations/${visible.id}/artifacts`;
+  const file = (await request(gateway, route, { token })).body.artifacts[0];
+  const response = await fetch(gateway.url + route + '/' + file.id, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 200); assert.equal(gateway.downloads.size, 1);
+  access.revoke(deviceId);
+  await assert.rejects(response.arrayBuffer());
+  for (let attempt = 0; attempt < 100 && gateway.downloads.size; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(gateway.downloads.size, 0);
+  fs.unlinkSync(filename);
+});
+
 async function stream(gateway, conversationId, token) {
   const controller = new AbortController();
   const endpoint = conversationId ? `/v1/conversations/${conversationId}/events` : '/v1/conversations/events';
@@ -259,9 +420,9 @@ test('remote settings use desktop models and persistence, reject stale or unsafe
 test('history pagination and text bounds are explicit', context => {
   const { access, reader, manager, visible, pair } = fixture(context);
   const device = access.authenticate(pair().token);
-  for (let index = 0; index < 110; index++) manager.append(visible, { role: 'assistant', text: String(index) });
+  for (let index = 0; index < 210; index++) manager.append(visible, { role: 'assistant', text: String(index) });
   const page = reader.snapshot(device, visible.id);
-  assert.equal(page.messages.length, 100);
+  assert.equal(page.messages.length, 200);
   const older = reader.snapshot(device, visible.id, page.nextBefore);
   assert.equal(older.messages.length, 12);
   assert.equal(older.nextBefore, null);
@@ -269,6 +430,19 @@ test('history pagination and text bounds are explicit', context => {
   const latest = reader.snapshot(device, visible.id).messages.at(-1);
   assert.equal(latest.textTruncated, true);
   assert.equal(latest.text.length, 256 * 1024);
+});
+
+test('history pages include more long replies while retaining a bounded payload', context => {
+  const { access, reader, manager, visible, pair } = fixture(context);
+  const device = access.authenticate(pair().token);
+  for (let index = 0; index < 12; index++) manager.append(visible, { role: 'assistant', text: 'x'.repeat(100_000) });
+  const page = reader.snapshot(device, visible.id);
+  assert.equal(page.messages.length, 10);
+  assert.ok(page.messages.reduce((size, row) => size + row.text.length, 0) <= 1024 * 1024);
+  assert.ok(page.nextBefore);
+  const older = reader.snapshot(device, visible.id, page.nextBefore);
+  assert.equal(older.nextBefore, null);
+  assert.ok(older.messages.every(row => row.seq < page.messages[0].seq));
 });
 
 test('explicit dynamic scope persists, includes new workspaces and independent conversations, and can be restricted', async context => {
@@ -500,6 +674,74 @@ test('mobile creation is scoped, deduplicated and does not start engines', async
   assert.equal(independent.body.ok, true); assert.equal(independent.body.conversation.workspaceId, null);
 });
 
+test('mobile create then send generates a title visible in snapshots and lists', async context => {
+  const { gateway, manager, pair } = fixture(context);
+  const { token } = pair();
+  const calls = [];
+  manager.generateTitle = async message => { calls.push(message); return 'Remote title'; };
+  manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage() { return true; }, interrupt() {} });
+  await gateway.start('127.0.0.1', 0);
+  const created = await request(gateway, '/v1/commands', { token, method: 'POST', payload: {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'create', workspaceId: 'allowed', engine: 'codex',
+  } });
+  assert.equal(created.body.ok, true);
+  assert.deepEqual(calls, []);
+  const conversation = created.body.conversation;
+  const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', expectedSeq: conversation.seq, prompt: 'Name this remote conversation' };
+  const endpoint = `/v1/conversations/${conversation.id}/commands`;
+  assert.equal((await request(gateway, endpoint, { token, method: 'POST', payload })).body.ok, true);
+  assert.equal((await request(gateway, endpoint, { token, method: 'POST', payload })).body.ok, true);
+  assert.deepEqual(calls, [payload.prompt]);
+  const snapshot = await request(gateway, `/v1/conversations/${conversation.id}`, { token });
+  assert.equal(snapshot.body.conversation.title, 'Remote tit');
+  const list = await request(gateway, '/v1/conversations', { token });
+  assert.equal(list.body.conversations.find(item => item.id === conversation.id).title, 'Remote tit');
+});
+
+test('mobile resend rewrites the latest user message through editSeq', async context => {
+  const { gateway, manager, pair, visible } = fixture(context);
+  const { token } = pair();
+  manager.generateTitle = async () => 'Title';
+  manager.drivers.codex.ensure = () => ({ gen: 42, sessionId: 'native-session',
+    sendUserMessage() { manager.capture('codex', { type: 'result', subtype: 'success', result: 'Reply', session_id: 'native-session', runId: 42 }); return true; },
+    interrupt() {}, resume() { return { gen: 42, sendUserMessage() { return true; }, interrupt() {} }; } });
+  await gateway.start('127.0.0.1', 0);
+  const created = await request(gateway, '/v1/commands', { token, method: 'POST', payload: {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'create', workspaceId: 'allowed', engine: 'codex',
+  } });
+  assert.equal(created.body.ok, true);
+  const conversation = created.body.conversation;
+  const endpoint = `/v1/conversations/${conversation.id}/commands`;
+  const post = payload => request(gateway, endpoint, { token, method: 'POST', payload });
+  const sent = await post({ requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', expectedSeq: conversation.seq, prompt: 'Original request' });
+  assert.equal(sent.body.ok, true);
+  await manager.active.get(conversation.id)?.done;
+  const snapshot = await request(gateway, `/v1/conversations/${conversation.id}`, { token });
+  const latestUser = snapshot.body.messages.filter(row => row.role === 'user').at(-1);
+  const resendSnapshot = await request(gateway, `/v1/conversations/${conversation.id}`, { token });
+  const resend = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'resend', expectedSeq: resendSnapshot.body.conversation.seq, editSeq: latestUser.seq, prompt: 'Revised request' };
+  assert.equal((await post(resend)).body.ok, true);
+  await manager.active.get(conversation.id)?.done;
+  const rows = manager.messages(manager.get(conversation.id)).filter(row => row.role === 'user' || row.role === 'revision');
+  assert.deepEqual(rows.map(row => row.text), ['Revised request']);
+  const fresh = await request(gateway, `/v1/conversations/${conversation.id}`, { token });
+  const freshSeq = fresh.body.conversation.seq;
+  const stale = { ...resend, requestId: require('node:crypto').randomUUID(), expectedSeq: freshSeq, editSeq: latestUser.seq };
+  const staleResponse = await post(stale);
+  assert.equal(staleResponse.status, 200);
+  assert.equal(staleResponse.body.ok, false);
+  const wrongSeq = { ...resend, requestId: require('node:crypto').randomUUID(), expectedSeq: freshSeq + 1 };
+  assert.equal((await post(wrongSeq)).body.ok, false);
+  const missingSeq = { ...resend, requestId: require('node:crypto').randomUUID(), expectedSeq: freshSeq };
+  delete missingSeq.editSeq;
+  assert.equal((await post(missingSeq)).body.ok, false);
+});
+
 test('mobile workspace creation requires full control, deduplicates and updates scoped list versions', async context => {
   const { gateway, manager, access, reader, pair, root } = fixture(context);
   const credential = pair(), token = credential.token;
@@ -563,6 +805,71 @@ test('mobile moves enforce both workspace scopes, persist order, update list ver
   assert.equal(manager.workspaces.sessionMeta().sessionOrder.private[0], visible.id);
 });
 
+test('mobile archive hides the conversation, deduplicates and rejects stale state', async context => {
+  const { gateway, manager, access, reader, visible, pair } = fixture(context);
+  const credential = pair(), token = credential.token;
+  await gateway.start('127.0.0.1', 0);
+  const device = access.devices.find(item => item.id === credential.deviceId);
+  const archive = patch => ({ requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'archive', conversationId: visible.id, expectedSeq: visible.seq, ...patch });
+  const send = value => request(gateway, '/v1/commands', { token, method: 'POST', payload: value });
+  assert.ok((await request(gateway, '/v1/status', { token })).body.capabilities.includes('archive'));
+  const before = reader.listSnapshot(device).listVersion;
+  device.permission = 'read';
+  assert.equal((await send(archive())).status, 403);
+  device.permission = 'control';
+  assert.equal((await send(archive({ expectedSeq: visible.seq + 1 }))).body.ok, false);
+  assert.equal(manager.workspaces.sessionMeta().archived[visible.id], undefined);
+  const payload = archive();
+  const archived = await send(payload);
+  assert.equal(archived.body.ok, true);
+  assert.deepEqual((await send(payload)).body, archived.body);
+  assert.ok(manager.workspaces.sessionMeta().archived[visible.id] > 0);
+  assert.equal(reader.list(device).conversations.some(conversation => conversation.id === visible.id), false);
+  assert.notEqual(reader.listSnapshot(device).listVersion, before);
+});
+
+test('mobile conversation actions rename, pin and delete with scoped deduplicated requests', async context => {
+  const { gateway, manager, reader, access, visible, hidden, pair } = fixture(context);
+  const credential = pair(), device = access.devices.find(item => item.id === credential.deviceId);
+  await gateway.start('127.0.0.1', 0);
+  const send = payload => request(gateway, '/v1/commands', { token: credential.token, method: 'POST', payload });
+  const command = (action, targets, extra = {}) => ({ requestId: require('node:crypto').randomUUID(),
+    instanceId: gateway.instanceId, action, targets: targets.map(item => ({ id: item.id, seq: item.seq })), ...extra });
+  assert.ok((await request(gateway, '/v1/status', { token: credential.token })).body.capabilities.includes('conversation-actions'));
+  const rename = command('rename', [visible], { title: 'Renamed on phone' });
+  const before = reader.listSnapshot(device).listVersion;
+  assert.equal((await send(rename)).body.ok, true);
+  assert.equal(reader.summary(visible).title, 'Renamed on phone');
+  assert.notEqual(reader.listSnapshot(device).listVersion, before);
+  assert.equal((await send(command('rename', [visible], { title: '  ' }))).body.ok, false);
+  const pin = command('pin', [visible], { pinned: true });
+  assert.equal((await send(pin)).body.ok, true);
+  assert.equal((await send(pin)).body.ok, true);
+  assert.equal(reader.summary(visible).pinned, true);
+  assert.equal(reader.list(device).conversations[0].id, visible.id);
+  assert.equal((await send(command('pin', [visible], { pinned: false }))).body.ok, true);
+  assert.equal(reader.summary(visible).pinned, false);
+  assert.equal((await send(command('delete', [visible, hidden]))).status, 404);
+  assert.ok(manager.items.has(visible.id));
+  const another = manager.create('codex', 'allowed');
+  manager.controlStarts.set(another.id, {});
+  assert.equal((await send(command('delete', [visible, another]))).body.ok, false);
+  assert.ok(manager.items.has(visible.id)); manager.controlStarts.delete(another.id);
+  const stale = command('delete', [visible]); stale.targets[0].seq++;
+  assert.equal((await send(stale)).body.ok, false);
+  device.permission = 'read';
+  assert.equal((await send(command('pin', [visible], { pinned: true }))).status, 403);
+  device.permission = 'control';
+  const deletion = command('delete', [visible, another]);
+  assert.equal((await send(deletion)).body.ok, true);
+  assert.equal(manager.items.has(visible.id), false); assert.equal(manager.items.has(another.id), false);
+  assert.equal((await send(deletion)).body.ok, true);
+  assert.equal((await send({ ...deletion, targets: [{ id: hidden.id, seq: hidden.seq }] })).status, 404);
+  device.workspaceIds = [];
+  assert.equal((await send(deletion)).status, 403);
+});
+
 test('mobile images use bounded server-owned paths and retry sends only once', async context => {
   const { gateway, manager, access, visible, pair, root } = fixture(context);
   const credential = pair();
@@ -576,6 +883,33 @@ test('mobile images use bounded server-owned paths and retry sends only once', a
   assert.equal((await send(payload)).body.ok, true); assert.equal((await send(payload)).body.ok, true); assert.equal(sent, 1);
   assert.equal(images[0].isImage, true); assert.equal(path.dirname(images[0].path), path.join(root, 'mobile-images'));
   assert.deepEqual(fs.readFileSync(images[0].path), Buffer.from(image, 'base64'));
+});
+
+test('mobile multi-image batches validate every item before writing and retry only once', async context => {
+  const { gateway, manager, visible, pair, root } = fixture(context);
+  const credential = pair();
+  await gateway.start('127.0.0.1', 0);
+  let sent = 0, attachments;
+  manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage(prompt, images) { sent++; attachments = images; return true; }, interrupt() {} });
+  const image = Buffer.from([255, 216, 255, 224, 0, 2, 255, 217]).toString('base64');
+  const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'send', expectedSeq: visible.seq, prompt: 'Describe images', images: [image, image] };
+  const send = value => request(gateway, `/v1/conversations/${visible.id}/commands`, { token: credential.token, method: 'POST', payload: value });
+  for (const invalid of [{ images: [image, '../private.png'] }, { images: [] }, { images: null }, { images: image }, { images: Array(10).fill(image) }, { image }]) {
+    assert.equal((await send({ ...payload, ...invalid, requestId: require('node:crypto').randomUUID() })).body.ok, false);
+    assert.equal(fs.existsSync(path.join(root, 'mobile-images')), false);
+  }
+  const largeImage = Buffer.alloc(1024 * 1024, 0);
+  largeImage.set([255, 216, 255]); largeImage.set([255, 217], largeImage.length - 2);
+  payload.images = Array(9).fill(largeImage.toString('base64'));
+  assert.equal((await send(payload)).body.ok, true);
+  assert.equal((await send(payload)).body.ok, true);
+  assert.equal(sent, 1); assert.equal(attachments.length, 9);
+  assert.equal(new Set(attachments.map(attachment => attachment.path)).size, 9);
+  for (const attachment of attachments) {
+    assert.equal(attachment.isImage, true);
+    assert.equal(path.dirname(attachment.path), path.join(root, 'mobile-images'));
+    assert.deepEqual(fs.readFileSync(attachment.path), largeImage);
+  }
 });
 
 test('startup reservation excludes desktop sends and revocation prevents deferred engine execution', async context => {

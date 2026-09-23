@@ -1,18 +1,14 @@
 package app.camellia.mobile;
 
 import android.content.Context;
-import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Rect;
-import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
 import android.widget.ScrollView;
-import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -47,26 +43,9 @@ final class RemoteSettingsPopup {
     private GradientDrawable round(int color, int radius) {
         GradientDrawable drawable = new GradientDrawable(); drawable.setColor(color); drawable.setCornerRadius(dp(radius)); return drawable;
     }
-    private TextView text(String value, int size, int color) {
-        TextView label = new TextView(context); label.setText(value); label.setTextSize(size); label.setTextColor(color); return label;
-    }
     private void row(String title, String description, boolean selected, String tag, Runnable action) {
-        LinearLayout row = new LinearLayout(context); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(dp(14), dp(14), dp(10), dp(14));
-        row.setTag(tag); row.setMinimumHeight(dp(60)); row.setFocusable(true); row.setSelected(selected);
-        row.setBackground(new RippleDrawable(ColorStateList.valueOf((accent & 0xffffff) | 0x18000000), null, round(Color.WHITE, 18)));
-        LinearLayout words = new LinearLayout(context); words.setOrientation(LinearLayout.VERTICAL);
-        TextView name = text(title, 17, ink); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); words.addView(name);
-        if (!description.isEmpty()) { TextView detail = text(description, 12, muted); detail.setPadding(0, dp(6), 0, 0); words.addView(detail); }
-        row.addView(words, new LinearLayout.LayoutParams(0, -2, 1));
-        if (selected) { TextView check = text("✓", 22, accent); check.setGravity(Gravity.CENTER); row.addView(check, new LinearLayout.LayoutParams(dp(32), dp(32))); }
-        else if (tag.equals("remoteThinkingSettings") || tag.equals("remoteThinkingBack")) {
-            android.widget.ImageView arrow = new android.widget.ImageView(context);
-            arrow.setImageDrawable(new LineIcon(tag.equals("remoteThinkingBack") ? "down" : "right", muted));
-            arrow.setPadding(dp(4), dp(4), dp(4), dp(4)); arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-            row.addView(arrow, new LinearLayout.LayoutParams(dp(26), dp(26)));
-        }
-        row.setContentDescription(title + ", " + description + (selected ? tr("，已选择", ", selected") : ""));
-        row.setOnClickListener(view -> action.run()); body.addView(row);
+        String icon = tag.equals("remoteThinkingBack") ? "down" : tag.equals("remoteThinkingSettings") ? "right" : null;
+        body.addView(new ChatChoiceRow(context, chinese, ink, muted, accent, title, description, icon, selected, tag, action));
     }
     private void choose(String key, String value) { dismiss(); listener.onSelect(key, value); }
     private void divider() {
@@ -129,10 +108,11 @@ final class RemoteSettingsPopup {
         popup.setWidth(width);
         if (permissions) permissions(); else models();
     }
+    @android.annotation.SuppressLint("RtlHardcoded")
     private void position() {
-        int contentWidth = Math.max(1, width - dp(24));
+        int contentWidth = Math.max(1, width);
         body.measure(View.MeasureSpec.makeMeasureSpec(contentWidth, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
-        int height = Math.min(heightLimit, body.getMeasuredHeight() + dp(24));
+        int height = Math.min(heightLimit, body.getMeasuredHeight());
         popup.setHeight(height);
         if (popup.isShowing()) popup.update(left, bottom - height, width, height);
         else {

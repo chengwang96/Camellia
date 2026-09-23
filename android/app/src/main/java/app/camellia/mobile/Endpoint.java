@@ -22,7 +22,7 @@ public final class Endpoint {
     public String origin() { return origin; }
 
     public URI uri(String path) {
-        if (!path.matches("/v1/(status|commands|pair/(request|claim)|conversations(?:/events|/[a-f0-9-]{36}(?:/(?:events|commands))?)?)(?:\\?(?:offset|before)=\\d{1,12})?")) {
+        if (!path.matches("/v1/(status|commands|pair/(request|claim)|conversations(?:/events|/[a-f0-9-]{36}(?:/(?:events|commands|artifacts(?:/[a-f0-9]{64})?))?)?)(?:\\?(?:offset|before)=\\d{1,12})?")) {
             throw new IllegalArgumentException("Unsupported remote endpoint");
         }
         return URI.create(origin + path);

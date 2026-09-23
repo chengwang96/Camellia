@@ -115,6 +115,8 @@ final class LocalChatClient {
                 }
                 if (cancelled) throw new IOException("Cancelled");
                 JSONObject response = new JSONObject(source.toString());
+                if (response.has("error")) throw new IOException("API 返回错误 / API error: "
+                    + LocalChatHttpError.redact(response.toString(), java.util.Collections.emptyList()));
                 listener.onResponse(response);
                 if (route.protocol.equals("anthropic")) {
                     JSONArray blocks = response.optJSONArray("content"); StringBuilder reasoning = new StringBuilder();
@@ -150,7 +152,9 @@ final class LocalChatClient {
                     source.append(buffer, 0, count);
                 }
             }
-        } catch (IOException ignored) {}
+        } catch (Exception error) {
+            return "{\"error\":" + JSONObject.quote("Error body unavailable: " + ErrorDetails.describe(error)) + "}";
+        }
         return "";
     }
 
@@ -172,7 +176,11 @@ final class LocalChatClient {
                 String data = event.toString().trim(); event.setLength(0);
                 if (data.equals("[DONE]")) { completed = true; break; }
                 JSONObject chunk = new JSONObject(data);
-                if (chunk.has("error") || chunk.optString("type").equals("error")) throw new IOException("API 返回错误，已保留部分回复 / API stream error; partial reply kept");
+                if (chunk.has("error") || chunk.optString("type").equals("error")) {
+                    String detail = LocalChatHttpError.redact(chunk.toString(), java.util.Collections.emptyList());
+                    throw new IOException("API 返回错误，已保留部分回复 / API stream error; partial reply kept"
+                        + (detail.isEmpty() ? "" : "\n" + detail));
+                }
                 if (protocol.equals("anthropic")) {
                     if (chunk.optString("type").equals("message_stop")) { completed = true; break; }
                     JSONObject delta = chunk.optJSONObject("delta");

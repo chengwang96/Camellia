@@ -137,7 +137,7 @@ async function run() {
     const beforeImage = requests.length;
     const imageResult = await turn('SMOKE image', [{ path: imageFile, isImage: true }]);
     assert.equal(imageResult.subtype, 'error');
-    assert.match(imageResult.result, /Image attachments are not supported/);
+    assert.match(imageResult.result, /Antigravity did not advertise inline image prompts/);
     assert.equal(requests.length, beforeImage, 'Unsupported images must not silently become text-only API requests');
     await create({}, 'default', mcpSettings);
     success(await turn('SMOKE mcp'));

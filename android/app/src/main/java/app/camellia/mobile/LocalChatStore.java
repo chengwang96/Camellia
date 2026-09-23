@@ -98,9 +98,23 @@ final class LocalChatStore {
             JSONObject entry = conversations().optJSONObject(index);
             if (entry != null && !entry.optBoolean("archived") && entry.optString("workspaceId").equals(workspace)) entries.add(entry);
         }
-        entries.sort(java.util.Comparator.comparingLong((JSONObject entry) -> entry.optLong("order", Long.MAX_VALUE))
+        entries.sort(java.util.Comparator.comparing((JSONObject entry) -> !entry.optBoolean("pinned"))
+            .thenComparingLong(entry -> entry.optLong("order", Long.MAX_VALUE))
             .thenComparing(java.util.Comparator.comparingLong((JSONObject entry) -> entry.optLong("updatedAt")).reversed()));
         return entries;
+    }
+
+    void pinConversation(String id, boolean pinned) throws Exception {
+        JSONObject previous = new JSONObject(state.toString());
+        try { conversation(id).put("pinned", pinned); save(); }
+        catch (Exception error) { state = previous; throw error; }
+    }
+
+    void deleteConversations(java.util.Set<String> ids) throws Exception {
+        JSONObject previous = new JSONObject(state.toString());
+        for (int index = conversations().length() - 1; index >= 0; index--)
+            if (ids.contains(conversations().getJSONObject(index).optString("id"))) conversations().remove(index);
+        try { save(); } catch (Exception error) { state = previous; throw error; }
     }
 
     void moveConversation(String id, String workspace, String target, boolean after) throws Exception {

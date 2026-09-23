@@ -4,6 +4,8 @@ const http = require('node:http');
 const { randomUUID, timingSafeEqual } = require('node:crypto');
 const { fail } = require('./access');
 const { isTailscaleIPv4 } = require('./tailscale');
+const { listArtifacts, openArtifact } = require('./artifacts');
+const { pipeline } = require('node:stream/promises');
 
 function number(value, fallback) {
   if (value === null) return fallback;
@@ -26,6 +28,7 @@ class RemoteGateway {
   constructor({ access, reader, commands, validateHost = isTailscaleIPv4 }) {
     Object.assign(this, { access, reader, commands, validateHost });
     this.streams = new Set();
+    this.downloads = new Set();
     this.sequence = 0;
     this.rate = new Map();
     this.server = null;
@@ -100,6 +103,15 @@ class RemoteGateway {
     const authorization = request.headers.authorization || '';
     if (!/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization)) fail(401, 'Device authentication required');
     const device = this.access.authenticate(authorization.slice(7));
+    const read = /^\/v1\/conversations\/([a-f0-9-]{36})\/read$/.exec(url.pathname);
+    if (read && request.method === 'POST' && !url.search) {
+      this.reader.conversation(device, read[1]);
+      const payload = await body(request);
+      if (!Number.isSafeInteger(payload?.lastReplyAt) || payload.lastReplyAt < 0) fail(400, 'Invalid reply timestamp');
+      this.reader.conversation(device, read[1]);
+      this.json(response, 200, this.reader.manager.markReplyRead(read[1], payload.lastReplyAt));
+      return;
+    }
     if (url.pathname === '/v1/commands' && request.method === 'POST' && !url.search && this.commands) {
       if (device.permission !== 'control') fail(403, 'Control permission required');
       this.json(response, 200, await this.commands.execute(device, null, await body(request), this.instanceId));
@@ -108,18 +120,23 @@ class RemoteGateway {
     const command = /^\/v1\/conversations\/([a-f0-9-]{36})\/commands$/.exec(url.pathname);
     if (command && request.method === 'POST' && !url.search && this.commands) {
       if (device.permission !== 'control') fail(403, 'Control permission required');
-      const payload = await body(request, 1_500_000);
+      const payload = await body(request, 13_000_000);
       this.json(response, 200, await this.commands.execute(device, command[1], payload, this.instanceId));
       return;
     }
     if (request.method !== 'GET') fail(405, 'Remote access is read-only');
+    const artifact = /^\/v1\/conversations\/([a-f0-9-]{36})\/artifacts(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
+    if (artifact) {
+      for (const key of url.searchParams.keys()) if (key !== 'offset' || artifact[2]) fail(400, 'Unsupported query parameter');
+      if (!artifact[2]) this.json(response, 200, listArtifacts(this.reader, device, artifact[1], number(url.searchParams.get('offset'), 0)));
+      else await this.download(response, device, artifact[1], artifact[2]);
+      return;
+    }
     for (const key of url.searchParams.keys()) if (!['before', 'offset'].includes(key)) fail(400, 'Unsupported query parameter');
     if (url.pathname === '/v1/status') {
-      this.json(response, 200, { protocol: 1, permission: device.permission, capabilities: this.commands ? ['send', 'stop', 'approve', 'create', 'image', 'configure', 'move', ...(device.permission === 'control' && device.allWorkspaces === true ? ['create-workspace'] : [])] : [],
-        workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
-        includeUnassigned: Boolean(device.allWorkspaces || device.includeUnassigned), ...this.stamp() });
+      this.json(response, 200, { ...this.connectionInfo(device), ...this.stamp() });
     } else if (url.pathname === '/v1/conversations') {
-      this.json(response, 200, { ...this.reader.list(device, number(url.searchParams.get('offset'), 0)), ...this.stamp() });
+      this.json(response, 200, { ...this.connectionInfo(device), ...this.reader.list(device, number(url.searchParams.get('offset'), 0)), ...this.stamp() });
     } else if (url.pathname === '/v1/conversations/events') {
       this.subscribe(response, device, null);
     } else {
@@ -127,6 +144,29 @@ class RemoteGateway {
       if (!match) fail(404, 'Endpoint not found');
       if (match[2]) this.subscribe(response, device, match[1]);
       else this.json(response, 200, { ...this.reader.snapshot(device, match[1], number(url.searchParams.get('before'), undefined)), ...this.stamp() });
+    }
+  }
+  connectionInfo(device) {
+    return { protocol: 1, permission: device.permission, capabilities: this.commands ? ['artifacts', 'send', 'stop', 'approve', 'create', 'image', 'multi-image', 'configure', 'move', 'archive', 'conversation-actions', ...(device.permission === 'control' && device.allWorkspaces === true ? ['create-workspace'] : [])] : ['artifacts'],
+      workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
+      includeUnassigned: Boolean(device.allWorkspaces || device.includeUnassigned) };
+  }
+  async download(response, device, conversationId, id) {
+    if (this.downloads.size >= 8 || [...this.downloads].filter(entry => entry.device.id === device.id).length >= 2) fail(429, 'Too many downloads');
+    const entry = { response, device };
+    this.downloads.add(entry);
+    let file;
+    try {
+      file = await openArtifact(this.reader, device, conversationId, id);
+      if (response.destroyed) return;
+      response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': file.size,
+        'Content-Disposition': `attachment; filename="artifact"; filename*=UTF-8''${encodeURIComponent(file.name).replace(/['()*]/g, value => '%' + value.charCodeAt(0).toString(16))}`,
+        'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      if (!file.size) response.end();
+      else await pipeline(file.handle.createReadStream({ autoClose: false, start: 0, end: file.size - 1 }), response);
+    } finally {
+      await file?.handle.close();
+      this.downloads.delete(entry);
     }
   }
   subscribe(response, device, id) {
@@ -166,13 +206,18 @@ class RemoteGateway {
     }, 250);
     this.flushTimer.unref();
   }
-  revoke(id) { this.commands?.cancelPending(id); for (const stream of this.streams) if (stream.device.id === id) stream.response.end(); }
+  revoke(id) {
+    this.commands?.cancelPending(id);
+    for (const stream of this.streams) if (stream.device.id === id) stream.response.end();
+    for (const entry of this.downloads) if (entry.device.id === id) entry.response.destroy();
+  }
   async stop() {
     clearInterval(this.heartbeat);
     clearTimeout(this.flushTimer);
     this.flushTimer = null;
     this.access.clearPairing();
     this.commands?.cancelPending();
+    for (const entry of this.downloads) entry.response.destroy();
     for (const stream of this.streams) stream.response.destroy();
     this.streams.clear();
     const server = this.server;

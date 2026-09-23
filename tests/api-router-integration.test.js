@@ -73,3 +73,19 @@ test('Claude cannot bypass an unconfigured pool with legacy credentials', t => {
   assert.match(result.error, /Camellia settings/);
   assert.equal(h.processes.length, 0);
 });
+
+test('the global balance and quota cadence reaches the running router without a restart',async t=>{
+  const h=createHarness(); t.after(async()=>{await h.api.stopRouter(); h.cleanup();});
+  await h.call('api-router-save-config',pool(await freePort()));
+  const initial=await h.call('api-router-get-state');
+  assert.equal(initial.quotaCheck.enabled,true);
+  assert.equal(initial.quotaCheck.intervalMs,15*60000);
+  assert.equal(h.call('workbench-settings').accountRefreshMinutes,15);
+  assert.equal(h.call('workbench-save-settings',{language:'en',theme:'system',autoRefreshBalances:true,accountRefreshMinutes:5}).ok,true);
+  const applied=await h.call('api-router-get-state');
+  assert.equal(applied.quotaCheck.intervalMs,5*60000);
+  assert.equal(applied.quotaCheck.enabled,true);
+  // The master switch also stops quota readings from steering routing.
+  assert.equal(h.call('workbench-save-settings',{autoRefreshBalances:false}).ok,true);
+  assert.equal((await h.call('api-router-get-state')).quotaCheck.enabled,false);
+});

@@ -305,6 +305,35 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript('currentConnection'), 'subscription');
     assert.match(await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').textContent"), /Kimi subscription/);
     assert.equal(await home.webContents.executeJavaScript("MODELS.some(model => model.id === 'kimi-code/subscription-fixture')"), true);
+
+    // Several accounts of the same provider stay signed in side by side: adding
+    // one creates its own home, and removing it cleans that directory up.
+    const firstKimiHome = kimiAccountHome;
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiAddAccount').click()");
+    await waitWindow("document.querySelectorAll('#kimiAccountList .account-row').length === 2");
+    const secondKimiHome = kimiAccountHome;
+    assert.notEqual(secondKimiHome, firstKimiHome);
+    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelectorAll('#kimiAccountList .account-row')[1].classList.contains('active')"), true);
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiSignIn').click()");
+    await waitWindow("document.querySelector('#kimiUserCode')?.textContent === 'TEST-123'");
+    fs.writeFileSync(path.join(secondKimiHome, 'config.toml'), require('smol-toml').stringify({ default_model: 'kimi-code/subscription-fixture',
+      providers: { 'managed:kimi-code': { type: 'kimi', base_url: 'https://api.kimi.com/coding', api_key: '', oauth: { storage: 'file', key: 'oauth/kimi-code' } } },
+      models: { 'kimi-code/subscription-fixture': { provider: 'managed:kimi-code', model: 'subscription-fixture', display_name: 'Kimi account fixture', max_context_size: 262144 } },
+    }));
+    kimiLoginProcesses.at(-1).emit('close', 0);
+    await waitWindow("document.querySelector('#kimiAccountStatus')?.textContent.includes('Signed in')");
+    const twoAccounts = await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState()');
+    assert.equal(twoAccounts.accounts.length, 2);
+    assert.equal(twoAccounts.accounts.filter(account => account.signedIn).length, 2);
+    // Selecting the first account keeps both signs-in and only moves the choice.
+    await engineSettings.webContents.executeJavaScript("document.querySelectorAll('#kimiAccountList [data-account-select]')[0].click()");
+    await waitWindow("document.querySelectorAll('#kimiAccountList .account-row')[0].classList.contains('active')");
+    assert.equal(await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState().then(state => state.activeId)'), 'default');
+    await engineSettings.webContents.executeJavaScript("document.querySelectorAll('#kimiAccountList [data-account-remove]')[0].click()");
+    await waitWindow("document.querySelectorAll('#kimiAccountList .account-row').length === 1");
+    assert.equal(fs.existsSync(secondKimiHome), false);
+    assert.equal(await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState().then(state => state.accounts.length)'), 1);
+
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiModelDetails').open=true; document.querySelector('#kimiConnectionPanel').scrollIntoView({block:'start'})");
     assert.equal(await engineSettings.webContents.executeJavaScript('document.documentElement.scrollWidth <= innerWidth'), true);
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiSignOut').click()");

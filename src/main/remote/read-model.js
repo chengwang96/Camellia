@@ -44,9 +44,10 @@ class RemoteReadModel {
   }
   summary(conversation, meta = this.manager.workspaces.sessionMeta()) {
     return { id: conversation.id, title: String(meta.titles[conversation.id] || conversation.title).slice(0, 200),
-      engine: conversation.currentEngine, workspaceId: meta.sessionWorkspace[conversation.id] || null,
+      engine: conversation.currentEngine, pinned: Boolean(meta.pinned[conversation.id]), workspaceId: meta.sessionWorkspace[conversation.id] || null,
       workspaceName: meta.workspaces.find(workspace => workspace.id === meta.sessionWorkspace[conversation.id])?.name || null,
-      updatedAt: conversation.updatedAt, seq: conversation.seq, activity: this.manager.activity(conversation.id) };
+      updatedAt: conversation.updatedAt, seq: conversation.seq, lastReplyAt: conversation.lastReplyAt || 0, replyReadAt: conversation.replyReadAt || 0,
+      activity: this.manager.activity(conversation.id) };
   }
   list(device, offset = 0) {
     const meta = this.manager.workspaces.sessionMeta();
@@ -58,6 +59,7 @@ class RemoteReadModel {
       const sorted = slots.map(index => conversations[index]).sort((first, second) => (ranks.get(first.id) ?? -1) - (ranks.get(second.id) ?? -1));
       slots.forEach((slot, index) => { conversations[slot] = sorted[index]; });
     }
+    conversations.sort((left, right) => Number(Boolean(meta.pinned[right.id])) - Number(Boolean(meta.pinned[left.id])));
     return { conversations: conversations.slice(offset, offset + 100).map(conversation => this.summary(conversation, meta)),
       nextOffset: conversations.length > offset + 100 ? offset + 100 : null };
   }
@@ -79,10 +81,10 @@ class RemoteReadModel {
       : this.manager.messages(conversation)).filter(row => before === undefined || row.seq < before);
     const messages = [];
     let size = 0;
-    for (const row of rows.slice(-100).reverse()) {
+    for (const row of rows.slice(-200).reverse()) {
       const selected = message(row);
       size += selected.text.length + JSON.stringify(selected.process || []).length;
-      if (messages.length && size > 512 * 1024) break;
+      if (messages.length && size > 1024 * 1024) break;
       messages.unshift(selected);
     }
     const active = this.manager.recovering.get(id) || this.manager.active.get(id);

@@ -1,6 +1,6 @@
 'use strict';
 
-function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus, newSession, openHistorySession, forkSession, canFork = () => true, openActionMenu, closePops }) {
+function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canReadReply = () => true, setStatus, newSession, openHistorySession, forkSession, canFork = () => true, openActionMenu, closePops }) {
   const input = $('input');
   let sessionHistory = [], workspaces = [];
   let historyLoadSeq = 0;
@@ -13,9 +13,16 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   }
   function markReplyRead(id, at = Date.now()) {
     if (!id) return;
-    localStorage.setItem('camellia-chat-' + replyReadKey(id), String(at));
+    if (sharedChat) {
+      void window.dshDesktop.conversationCommand({ engine: harnessId, action: 'mark-reply-read', payload: { id, at } })
+        .then(result => { if (!result.ok) throw new Error(result.error); })
+        .catch(error => setStatus('Could not mark reply read: ' + error.message));
+    } else localStorage.setItem('camellia-chat-' + replyReadKey(id), String(Math.max(at, replyReadAt(id))));
     const session = sessionHistory.find(entry => entry.id === id);
     if (session) session.unread = false;
+    $('sessionList').querySelectorAll('[data-sid]').forEach(item => {
+      if (item.dataset.sid === id) item.classList.remove('unread');
+    });
   }
   // ---------- Workspaces and session history ----------
   const SIDEBAR_ICONS = {
@@ -37,6 +44,8 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   }
   function updateWorkspaceLabel() {
     $('newSessionBtn').disabled = contextBusy();
+    const standaloneCreate = $('standaloneCreateBtn');
+    if (standaloneCreate) standaloneCreate.disabled = contextBusy();
   }
   async function loadSessionHistory() {
     const seq = ++historyLoadSeq;
@@ -45,10 +54,11 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       if (seq !== historyLoadSeq) return false;
       if (!res.ok) throw new Error(res.error);
       sessionHistory = res.sessions.map(session => ({ ...session,
-        unread: session.id !== context.sessionId && session.lastReplyAt > replyReadAt(session.id) }));
+        unread: session.id !== context.sessionId && session.lastReplyAt > (sharedChat ? session.replyReadAt || 0 : replyReadAt(session.id)) }));
       workspaces = res.workspaces;
       pagination = res.pagination;
       const active = sessionHistory.find((s) => s.id === context.sessionId);
+      if (sharedChat && active && canReadReply() && active.lastReplyAt > (active.replyReadAt || 0)) markReplyRead(active.id, active.lastReplyAt);
       if (active) context.workspaceId = active.workspaceId || null;
       if (context.workspaceId && !workspaces.some((w) => w.id === context.workspaceId)) context.workspaceId = null;
       renderSessionSidebar();
@@ -162,7 +172,9 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       empty.addEventListener('click', () => openWorkspaceDialog());
       list.appendChild(empty);
     }
-    appendGroup(list, "Standalone sessions").dataset.dropGroup = 'recent';
+    const standaloneCreate = sidebarButton('plus', "New standalone session", () => void newSession(null));
+    standaloneCreate.id = 'standaloneCreateBtn';
+    appendGroup(list, "Standalone sessions", standaloneCreate).dataset.dropGroup = 'recent';
     const independent = document.createElement('div');
     independent.id = 'independentSessions';
     independent.dataset.dropGroup = 'recent';
@@ -278,7 +290,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     drag.offsetX = drag.x - rect.left; drag.offsetY = drag.y - rect.top;
     drag.origin = rect;
     drag.scrollTop = $('sessionList').scrollTop;
-    drag.dropRects = [...$('sessionList').querySelectorAll('[data-drop-group]')].map(element => ({ element, rect: element.getBoundingClientRect() }));
+    drag.dropRects = [...$('sessionList').querySelectorAll(drag.workspaceId ? 'section[data-workspace-id]' : '[data-drop-group]')].map(element => ({ element, rect: element.getBoundingClientRect() }));
     positionDragPreview();
     card.animate([{ transform: 'scale(1)', opacity: .8 }, { transform: 'scale(1.035)', opacity: 1 }],
       { duration: dragMotionDuration(220), easing: 'cubic-bezier(.2,.8,.2,1)' });
@@ -297,13 +309,19 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
         if (drag.x >= rect.left && drag.x <= rect.right && drag.y >= rect.top - scrollDelta && drag.y <= rect.bottom - scrollDelta) hit = candidate;
       }
     }
-    const hovered = hit?.element.dataset.sid === drag.sessionId ? null : hit?.element;
+    const isSource = drag.workspaceId ? hit?.element.dataset.workspaceId === drag.workspaceId : hit?.element.dataset.sid === drag.sessionId;
+    const hovered = isSource ? null : hit?.element;
     const targetSessionId = hovered?.dataset.sid;
     const placement = hit && drag.y < hit.rect.top - scrollDelta + hit.rect.height / 2 ? 'before' : 'after';
     if (drag.targetElement === hovered && (!hovered || drag.target?.placement === placement)) return;
     clearDropIndicator();
     drag.target = null; drag.targetElement = hovered;
     if (!hovered) return;
+    if (drag.workspaceId) {
+      hovered.classList.add('session-drop-' + placement);
+      drag.target = { targetWorkspaceId: hovered.dataset.workspaceId, placement };
+      return;
+    }
     hovered.classList.add(targetSessionId ? 'session-drop-' + placement : 'session-drop-group');
     drag.target = { group: hovered.dataset.dropGroup, targetSessionId, placement };
     if (targetSessionId) {
@@ -345,12 +363,16 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     animation.finished.then(() => preview.remove(), () => preview.remove());
     suppressClickUntil = Date.now() + 350;
     finished.item.classList.remove('session-dragging');
+    finished.section?.classList.remove('session-dragging');
     document.body.classList.remove('session-drag-active');
     if (finished.item.hasPointerCapture(finished.pointerId)) finished.item.releasePointerCapture(finished.pointerId);
     clearDropIndicator();
     renderSessionSidebar();
     if (commit && finished.target) void (async () => {
-      const result = await runMetaOp({ op: 'move-session', sessionId: finished.sessionId, ...finished.target });
+      const operation = finished.workspaceId
+        ? { op: 'move-workspace', workspaceId: finished.workspaceId }
+        : { op: 'move-session', sessionId: finished.sessionId };
+      const result = await runMetaOp({ ...operation, ...finished.target });
       if (result) await loadSessionHistory();
     })();
   }
@@ -358,9 +380,10 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
   sessionList.addEventListener('pointerdown', event => {
     if (event.button !== 0 || event.isPrimary === false || drag || contextBusy()) return;
     if (event.target.closest('button, input, textarea, [contenteditable]')) return;
-    const item = event.target.closest('[data-sid]');
+    const item = event.target.closest('[data-sid], .ws-row');
     if (!item) return;
-    drag = { item, sessionId: item.dataset.sid, pointerId: event.pointerId, x: event.clientX, y: event.clientY, active: false };
+    const section = item.matches('.ws-row') ? item.closest('section[data-workspace-id]') : null;
+    drag = { item, section, workspaceId: section?.dataset.workspaceId, sessionId: item.dataset.sid, pointerId: event.pointerId, x: event.clientX, y: event.clientY, active: false };
     drag.timer = setTimeout(() => {
       if (!drag || !item.isConnected || contextBusy()) { finishDrag(); return; }
       drag.active = true;
@@ -368,7 +391,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
       window.getSelection()?.removeAllRanges();
       item.setPointerCapture(drag.pointerId);
       createDragPreview();
-      item.classList.add('session-dragging');
+      (section || item).classList.add('session-dragging');
       document.body.classList.add('session-drag-active');
       animateDrag();
     }, 350);
