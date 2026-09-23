@@ -6,6 +6,71 @@ import tailnet.Storage;
 import tailnet.Tailnet;
 
 public class EmbeddedNetworkTest extends InstrumentationTestCase {
+    public void testDefaultNetworkCallbacksDebounceAndNotifyRecovery() throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        EmbeddedNetwork.initialize(context);
+        var manager = (android.net.ConnectivityManager) context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+        var active = manager.getActiveNetwork();
+        assertNotNull("Emulator requires an active network", active);
+        var callbackField = EmbeddedNetwork.class.getDeclaredField("networkCallback"); callbackField.setAccessible(true);
+        var callback = (android.net.ConnectivityManager.NetworkCallback) callbackField.get(null);
+        var routeField = EmbeddedNetwork.class.getDeclaredField("route"); routeField.setAccessible(true);
+        var originalRoute = routeField.get(null);
+        var recovered = new java.util.concurrent.CountDownLatch(1);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            getInstrumentation().runOnMainSync(() -> {
+                try { routeField.set(null, new NetworkRoute(active, "before")); }
+                catch (Exception error) { throw new AssertionError(error); }
+                EmbeddedNetwork.setNetworkListener(() -> { calls.incrementAndGet(); recovered.countDown(); });
+                callback.onLost(active);
+                callback.onAvailable(active);
+                callback.onLinkPropertiesChanged(active, new android.net.LinkProperties());
+                callback.onLinkPropertiesChanged(active, new android.net.LinkProperties());
+            });
+            assertTrue("Recovery was not notified", recovered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(1, calls.get());
+            assertTrue(EmbeddedNetwork.online());
+        } finally {
+            getInstrumentation().runOnMainSync(() -> {
+                EmbeddedNetwork.setNetworkListener(null);
+                try { routeField.set(null, originalRoute); }
+                catch (Exception error) { throw new AssertionError(error); }
+            });
+        }
+    }
+
+    public void testChangedRouteReplacesNativeNodeButKeepsEncryptedIdentity() throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        EmbeddedNetwork.initialize(context);
+        boolean previousMode = EmbeddedNetwork.enabled();
+        EmbeddedNetwork.setEnabled(true);
+        var routeField = EmbeddedNetwork.class.getDeclaredField("route"); routeField.setAccessible(true);
+        var originalRoute = routeField.get(null);
+        EmbeddedNetwork.close();
+        try {
+            NetworkRoute route = new NetworkRoute("wifi", "links");
+            getInstrumentation().runOnMainSync(() -> {
+                try { routeField.set(null, route); } catch (Exception error) { throw new AssertionError(error); }
+            });
+            var first = EmbeddedNetwork.node();
+            assertSame(first, EmbeddedNetwork.node());
+            route.available("cellular");
+            var second = EmbeddedNetwork.node();
+            assertNotSame(first, second);
+            assertSame(second, EmbeddedNetwork.node());
+            try { first.prepare("GET", "http://100.64.0.1:43127/v1/status", "", ""); fail("Old node remains open"); }
+            catch (Exception expected) { assertTrue(expected.getMessage().contains("closed")); }
+            assertTrue(new JSONObject(second.status()).has("state"));
+        } finally {
+            EmbeddedNetwork.close();
+            getInstrumentation().runOnMainSync(() -> {
+                try { routeField.set(null, originalRoute); } catch (Exception error) { throw new AssertionError(error); }
+            });
+            EmbeddedNetwork.setEnabled(previousMode);
+        }
+    }
+
     public void testNativeNodeStartupStatusAndEncryptedState() throws Exception {
         var context = getInstrumentation().getTargetContext();
         EmbeddedNetwork.registerInterfaces();

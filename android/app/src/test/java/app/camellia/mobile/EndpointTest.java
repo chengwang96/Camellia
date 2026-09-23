@@ -4,6 +4,16 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class EndpointTest {
+    @Test public void acceptsOnlyOpaqueArtifactPaths() {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        String base = "/v1/conversations/12345678-1234-1234-1234-123456789abc/artifacts";
+        assertEquals(base, endpoint.uri(base).getPath());
+        assertEquals("offset=100", endpoint.uri(base + "?offset=100").getQuery());
+        assertEquals(base + "/" + "a".repeat(64), endpoint.uri(base + "/" + "a".repeat(64)).getPath());
+        for (String suffix : new String[]{"/../../secret", "/file.pdf", "?path=C:/secret", "/" + "a".repeat(63)}) {
+            assertThrows(IllegalArgumentException.class, () -> endpoint.uri(base + suffix));
+        }
+    }
     @Test public void acceptsConversationListStream() {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
         assertEquals("http://100.64.0.1:43127/v1/conversations/events", endpoint.uri("/v1/conversations/events").toString());

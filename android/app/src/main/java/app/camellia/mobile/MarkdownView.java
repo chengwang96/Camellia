@@ -174,7 +174,7 @@ final class MarkdownView {
 
     private void openLink(String destination) {
         if (!safeLink(destination)) return;
-        new AlertDialog.Builder(context).setTitle(tr("在浏览器中打开？", "Open in browser?"))
+        new CamelliaDialog.Builder(context).setTitle(tr("在浏览器中打开？", "Open in browser?"))
             .setMessage(destination).setNegativeButton(tr("取消", "Cancel"), null)
             .setPositiveButton(tr("打开", "Open"), (dialog, which) -> {
                 try { context.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(destination)).addCategory(Intent.CATEGORY_BROWSABLE)); }

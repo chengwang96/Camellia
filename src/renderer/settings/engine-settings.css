@@ -46,3 +46,15 @@
 .codex-quotas { display: grid; gap: 10px; margin: 16px 0; }
 .codex-quotas p { margin: 0 0 6px; font-size: 12px; }
 .codex-quotas progress { width: 100%; height: 7px; accent-color: var(--dsw-alias-state-business-primary); }
+
+.account-list { display: grid; gap: 8px; margin: 16px 0 0; }
+.account-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 11px; }
+.account-row.active { border-color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-bg-soft); }
+.account-choice { flex: 0 0 auto; width: 14px; height: 14px; padding: 0; border-radius: 50%; border: 2px solid var(--dsw-alias-border-l2); background: transparent; }
+.account-row.active .account-choice { border-color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-state-business-primary); box-shadow: inset 0 0 0 2px var(--dsw-alias-bg-base); }
+.account-row.readonly .account-choice { border-style: dashed; }
+.account-body { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.account-body input { width: 100%; }
+.account-body small, .account-body strong { color: var(--dsw-alias-label-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.account-row > button:last-child:not(.account-choice) { border: 0; background: transparent; color: var(--dsw-alias-label-secondary); padding: 4px 8px; }
+.account-row > button:last-child:not(.account-choice):hover { color: var(--dsw-alias-state-error-primary); }

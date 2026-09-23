@@ -253,3 +253,14 @@ test('API default, account model and existing native connection survive setting 
   assert.throws(() => updateKimiConnectionSettings(config, { region: 'invalid' }), /Invalid Kimi login region/);
   assert.equal(kimiEnvironment('/isolated', { kimi_api_key: 'windows-inherited' }).kimi_api_key, undefined);
 });
+
+test('a Kimi conversation reports the subscription account that own its native session', () => {
+  const config = { kimi: { connection: 'subscription' }, kimiSessionConnections: { native: 'subscription' },
+    kimiSessionAccounts: { native: 'account-1' } };
+  assert.equal(kimiConnectionSettings(config, 'native').subscriptionId, 'account-1');
+  // A session without a binding, or a non-subscription session, has no account.
+  assert.equal(kimiConnectionSettings(config, 'other').subscriptionId, undefined);
+  assert.equal(kimiConnectionSettings({ ...config, kimiSessionConnections: { native: 'api' } }, 'native').subscriptionId, undefined);
+  // Account bindings never leak into the saved engine settings.
+  assert.equal(updateKimiConnectionSettings(config, { sessionId: 'native', model: 'kimi-code/coding' }).subscriptionId, undefined);
+});

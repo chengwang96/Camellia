@@ -83,6 +83,32 @@ test('balance history survives reload, coalesces refreshes, preserves last succe
   assert.equal(insights.state().keys['key-1'].latest,undefined);assert.equal(insights.state().keys['key-1'].history.length,0);
 });
 
+test('account refresh cache follows changed global cadence and manual refresh bypasses it', async context => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-insights-cadence-'));
+  context.after(() => { assert.equal(path.dirname(root), os.tmpdir()); assert.ok(path.basename(root).startsWith('dsh-insights-cadence-')); removeTree(root); });
+  let clock = Date.now(), interval = 15 * 60000, calls = 0;
+  const config = normalizeConfig({ providers: [provider('https://api.deepseek.com/v1')] });
+  const insights = createProviderInsights({ file: path.join(root, 'insights.json'), getConfig: () => config,
+    now: () => clock, getRefreshIntervalMs: () => interval,
+    fetchImpl: async () => { calls++; return response(deepseek(12)); } });
+  await insights.refresh({ force: false });
+  clock += 5 * 60000;
+  await insights.refresh({ force: false });
+  assert.equal(calls, 1);
+  interval = 5 * 60000;
+  await insights.refresh({ force: false });
+  assert.equal(calls, 2);
+  interval = 30 * 60000;
+  clock += 15 * 60000;
+  await insights.refresh({ force: false });
+  assert.equal(calls, 2);
+  await insights.refresh();
+  assert.equal(calls, 3);
+  clock += 30 * 60000;
+  await insights.refresh({ force: false });
+  assert.equal(calls, 4);
+});
+
 test('account refresh and model verification preserve both results regardless of completion order', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'dsh-insights-race-'));
   t.after(()=>{assert.equal(path.dirname(root),os.tmpdir());assert.ok(path.basename(root).startsWith('dsh-insights-race-'));removeTree(root);});

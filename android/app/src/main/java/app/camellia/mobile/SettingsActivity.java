@@ -10,11 +10,9 @@ import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.ArrayAdapter;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.Spinner;
 import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -85,14 +83,27 @@ public final class SettingsActivity extends Activity {
             new String[]{"send", "newline", "button"});
         settingsStyle.note(content, tr("仅点击发送按钮模式下，回车始终换行。长按需要键盘提供按键事件；部分软键盘不支持，可切换为回车换行并点击发送按钮。", "In button-only mode, Enter always inserts a newline. Holding Enter requires key events from your keyboard; some software keyboards do not support this. Use newline mode and the send button instead."));
         settingsStyle.note(content, tr("应用于这台手机上的所有页面，不影响电脑设置。", "Applies throughout this phone. Desktop preferences are unchanged."));
+        LinearLayout remote = settingsStyle.group(content, tr("远程控制", "Remote control"));
+        settingsStyle.toggle(remote, tr("短暂离开时保持连接", "Keep connection while away"),
+            tr("后台最多保持 5 分钟，短暂切换应用后可直接继续。", "Keep the connection for up to 5 minutes in the background so you can return quickly."),
+            "preference:remoteKeepAlive", RemoteKeepAliveService.enabled(this), (view, checked) -> {
+                MobilePreferences.set(this, "remoteKeepAlive", checked ? "enabled" : "disabled");
+                if (!checked) RemoteKeepAliveService.finish(this, false);
+                if (checked && RemoteKeepAliveService.eligible(this) && android.os.Build.VERSION.SDK_INT >= 33
+                        && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 73);
+                }
+            });
+        settingsStyle.note(content, tr("默认关闭。仅已配对远程电脑时生效；未添加电脑不会启动后台服务。到时自动断开，返回应用后重新连接。保持期间会显示通知，可能增加耗电；系统仍可能提前结束后台运行。", "Off by default. Only takes effect with a paired remote computer; no background service runs without one. Disconnects automatically at the limit and reconnects when you return. A notification is shown while active. May use more battery; Android may end background activity earlier."));
     }
     private void preference(LinearLayout group, String key, String title, String[] labels, String[] values) {
         int selected = java.util.Arrays.asList(values).indexOf(MobilePreferences.get(this, key));
         final int current = Math.max(0, selected);
         settingsStyle.row(group, key.equals("theme") ? "appearance" : key.equals("enterMode") ? "settings" : "language", title, labels[current], "preference:" + key, () -> {
-            dialog = new AlertDialog.Builder(this).setTitle(title).setSingleChoiceItems(labels, current, (choice, which) -> {
-                MobilePreferences.set(this, key, values[which]); choice.dismiss(); recreate();
-            }).setNegativeButton(tr("取消", "Cancel"), null).show();
+            dialog = new SettingsChoiceDialog(this, title, labels, current, tr("取消", "Cancel"), which -> {
+                MobilePreferences.set(this, key, values[which]); recreate();
+            });
+            dialog.show();
         });
     }
 
@@ -117,7 +128,7 @@ public final class SettingsActivity extends Activity {
             settingsStyle.action(card, tr("模型与密钥", "Models & keys"), provider.optString("protocol", "openai") + " · " + provider.getJSONArray("models").length() + tr(" 个模型", " models")
                 + " · " + provider.getJSONArray("keys").length() + tr(" 个密钥", " keys"), "providerEdit:" + index, false, () -> editProvider(selected));
             settingsStyle.action(card, tr("移除供应商", "Remove provider"), "", "providerDelete:" + index, true, () -> {
-                dialog = new AlertDialog.Builder(this).setTitle(tr("移除供应商？", "Remove provider?"))
+                dialog = new CamelliaDialog.Builder(this).setTitle(tr("移除供应商？", "Remove provider?"))
                     .setMessage(tr("仅删除 API 配置，保留聊天记录。", "Only removes the API configuration. Chats are kept."))
                     .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("移除", "Remove"), (prompt, which) -> {
                         try { JSONObject config = copyConfig(); config.getJSONArray("providers").remove(selected); store.importConfig(config); providers(); } catch (Exception error) { failure(error); }
@@ -135,24 +146,32 @@ public final class SettingsActivity extends Activity {
         config.put("version", 2); if (!config.has("enabled")) config.put("enabled", true); return config;
     }
     private EditText field(LinearLayout form, String label, String tag, String value, boolean secret, boolean multiline) {
-        form.addView(text(label, 13, style.muted));
+        TextView caption = text(label, 13, settingsStyle.secondary); caption.setPadding(dp(2), dp(16), dp(2), dp(8)); form.addView(caption);
         EditText field = new EditText(this); field.setTextColor(style.ink); field.setTextSize(15); field.setTag(tag);
         field.setInputType(InputType.TYPE_CLASS_TEXT | (secret ? InputType.TYPE_TEXT_VARIATION_PASSWORD : InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
             | (multiline ? InputType.TYPE_TEXT_FLAG_MULTI_LINE : 0));
         field.setSingleLine(!multiline); field.setMinLines(multiline ? 3 : 1); field.setMaxLines(multiline ? 6 : 1);
-        field.setBackground(style.rounded(style.surface)); field.setPadding(dp(12), dp(12), dp(12), dp(12)); field.setText(value);
-        field.setSaveEnabled(false); field.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO); field.setContentDescription(label); form.addView(field, new LinearLayout.LayoutParams(-1, -2)); return field;
+        if (secret) field.setTransformationMethod(new MaskedKeyTransformation());
+        field.setText(value);
+        field.setSaveEnabled(false); field.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO); field.setContentDescription(label); form.addView(new SettingsField(field), new LinearLayout.LayoutParams(-1, -2)); return field;
     }
     private void editProvider(int index) {
         try {
             JSONObject original = index < 0 ? new JSONObject() : copyConfig().getJSONArray("providers").getJSONObject(index);
-            LinearLayout form = column(); form.setPadding(dp(20), dp(8), dp(20), dp(16));
+            LinearLayout form = column(); form.setPadding(0, 0, 0, dp(8));
             EditText name = field(form, tr("供应商名称", "Provider name"), "providerName", original.optString("name"), false, false);
             EditText endpoint = field(form, "Endpoint", "providerEndpoint", original.optString("baseUrl", "https://"), false, false);
             form.addView(text(tr("API 协议", "API protocol"), 13, style.muted));
-            Spinner protocol = new Spinner(this); protocol.setTag("providerProtocol"); String[] protocols = {"openai", "anthropic", "dual"};
-            protocol.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new String[]{"OpenAI", "Anthropic", "Dual"}));
-            protocol.setSelection(Math.max(0, java.util.Arrays.asList(protocols).indexOf(original.optString("protocol", "openai")))); form.addView(protocol);
+            String[] protocols = {"openai", "anthropic", "dual"}, protocolLabels = {"OpenAI", "Anthropic", "Dual"};
+            int[] selectedProtocol = {Math.max(0, java.util.Arrays.asList(protocols).indexOf(original.optString("protocol", "openai")))};
+            TextView protocol = text(protocolLabels[selectedProtocol[0]] + "  ›", 16, style.ink); protocol.setTag("providerProtocol");
+            protocol.setPadding(dp(16), dp(14), dp(16), dp(14)); protocol.setMinHeight(dp(52));
+            protocol.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(settingsStyle.divider),
+                settingsStyle.fieldBackground(settingsStyle.fieldBorder), settingsStyle.fieldBackground(settingsStyle.fieldBorder)));
+            protocol.setFocusable(true); protocol.setContentDescription(tr("选择 API 协议", "Choose API protocol"));
+            protocol.setOnClickListener(view -> new SettingsChoiceDialog(this, tr("API 协议", "API protocol"), protocolLabels, selectedProtocol[0], tr("取消", "Cancel"), which -> {
+                selectedProtocol[0] = which; protocol.setText(protocolLabels[which] + "  ›");
+            }).show()); form.addView(protocol);
             EditText alternate = field(form, tr("Anthropic Endpoint（可选）", "Anthropic endpoint (optional)"), "providerAlternate", original.optString("anthropicBaseUrl"), false, false);
             JSONArray existingKeys = original.optJSONArray("keys");
             if (existingKeys != null && existingKeys.length() > 0) {
@@ -176,9 +195,10 @@ public final class SettingsActivity extends Activity {
                 modelLines.append(model.getString("id")); if (!model.getString("id").equals(model.getString("upstream"))) modelLines.append('=').append(model.getString("upstream"));
             }
             EditText modelInput = field(form, tr("模型（每行一个 ID，或 别名=上游模型）", "Models (one ID or alias=upstream per line)"), "providerModels", modelLines.toString(), false, true);
-            TextView errorLabel = text("", 13, style.muted); errorLabel.setTag("providerError"); form.addView(errorLabel);
+            TextView errorLabel = text("", 13, settingsStyle.error); errorLabel.setTag("providerError");
+            errorLabel.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); form.addView(errorLabel);
             ScrollView scroll = new ScrollView(this); scroll.addView(form);
-            dialog = new AlertDialog.Builder(this).setTitle(index < 0 ? tr("添加供应商", "Add provider") : tr("编辑供应商", "Edit provider"))
+            dialog = new CamelliaDialog.Builder(this).setTitle(index < 0 ? tr("添加供应商", "Add provider") : tr("编辑供应商", "Edit provider"))
                 .setView(scroll).setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("保存", "Save"), null).create();
             dialog.setOnShowListener(shown -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
                 try {
@@ -186,7 +206,7 @@ public final class SettingsActivity extends Activity {
                     String title = name.getText().toString().trim(); if (title.isEmpty()) throw new IllegalArgumentException(tr("请输入供应商名称", "Enter a provider name"));
                     if (!provider.has("id")) provider.put("id", UUID.randomUUID().toString());
                     provider.put("name", title).put("type", original.optString("type", "custom"))
-                        .put("baseUrl", LocalChatConfig.endpoint(endpoint.getText().toString())).put("protocol", protocols[protocol.getSelectedItemPosition()]);
+                        .put("baseUrl", LocalChatConfig.endpoint(endpoint.getText().toString())).put("protocol", protocols[selectedProtocol[0]]);
                     String extra = alternate.getText().toString().trim(); provider.put("anthropicBaseUrl", extra.isEmpty() ? "" : LocalChatConfig.endpoint(extra));
                     String secret = keys.getText().toString().trim();
                     if (!secret.isEmpty()) {
@@ -212,18 +232,19 @@ public final class SettingsActivity extends Activity {
                 } catch (Exception error) { errorLabel.setText(error.getMessage()); }
             }));
             dialog.setOnDismissListener(closed -> keys.setText(""));
-            dialog.show(); dialog.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+            dialog.show();
         } catch (Exception error) { failure(error); }
     }
 
     private void importConfig() {
-        LinearLayout form = column(); form.setPadding(dp(20), 0, dp(20), dp(16));
+        LinearLayout form = column(); form.setPadding(0, 0, 0, dp(8));
         form.addView(text(tr("粘贴完整的 Camellia v2 配置。导入会替换供应商与密钥，不删除会话。", "Paste a complete Camellia v2 export. Replaces providers and keys, not chats."), 14, style.muted));
         EditText source = field(form, "JSON", "providerImportText", "", false, true);
         source.setSaveEnabled(false); source.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(LocalChatConfig.MAX_IMPORT + 1)});
-        TextView errorLabel = text("", 13, style.muted); errorLabel.setTag("providerImportError"); form.addView(errorLabel);
+        TextView errorLabel = text("", 13, settingsStyle.error); errorLabel.setTag("providerImportError");
+        errorLabel.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); form.addView(errorLabel);
         ScrollView scroll = new ScrollView(this); scroll.addView(form);
-        dialog = new AlertDialog.Builder(this).setTitle(tr("粘贴导入", "Paste import")).setView(scroll)
+        dialog = new CamelliaDialog.Builder(this).setTitle(tr("粘贴导入", "Paste import")).setView(scroll)
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("替换配置", "Replace configuration"), null).create();
         dialog.setOnShowListener(shown -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             try { JSONObject config = LocalChatConfig.parse(source.getText().toString()); store.importConfig(config); dialog.dismiss(); providers(); status.setText(tr("已导入配置", "Configuration imported")); }
@@ -233,7 +254,7 @@ public final class SettingsActivity extends Activity {
     }
 
     private void exportConfig() {
-        dialog = new AlertDialog.Builder(this).setTitle(tr("复制包含密钥的配置？", "Copy configuration with API keys?"))
+        dialog = new CamelliaDialog.Builder(this).setTitle(tr("复制包含密钥的配置？", "Copy configuration with API keys?"))
             .setMessage(tr("导出包含明文 API Key。仅粘贴到可信设备，不要发送给他人；剪贴板可能被其他应用读取。", "The export contains raw API keys. Paste only on trusted devices. Other apps may read the clipboard."))
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("复制", "Copy"), (prompt, which) -> {
                 try {
@@ -261,7 +282,7 @@ public final class SettingsActivity extends Activity {
                 try { store.archiveConversation(id, false); archived(); } catch (Exception error) { failure(error); }
             });
             settingsStyle.action(card, tr("永久删除", "Delete permanently"), "", "archiveDelete:" + id, true, () -> {
-                dialog = new AlertDialog.Builder(this).setTitle(tr("永久删除此会话？", "Permanently delete this chat?"))
+                dialog = new CamelliaDialog.Builder(this).setTitle(tr("永久删除此会话？", "Permanently delete this chat?"))
                     .setMessage(tr("聊天记录将被删除，无法恢复。", "The chat history will be deleted. This cannot be undone."))
                     .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("删除", "Delete"), (prompt, which) -> {
                         try { store.deleteConversation(id); archived(); } catch (Exception error) { failure(error); }

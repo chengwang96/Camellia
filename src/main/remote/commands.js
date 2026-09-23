@@ -45,6 +45,16 @@ class RemoteCommands {
       if (!device.allWorkspaces && !device.includeUnassigned) fail(403, 'Independent conversations are not authorized');
     } else if (!this.reader.workspaces().some(item => item.id === workspaceId) || !device.allWorkspaces && !device.workspaceIds.includes(workspaceId)) fail(403, 'Workspace is not authorized');
   }
+  authorizeArchive(deviceId, id) {
+    const device = this.access.devices.find(item => item.id === deviceId);
+    if (!device || device.permission !== 'control') fail(403, 'Control permission required');
+    const conversation = this.reader.manager.items.get(id);
+    const meta = this.reader.manager.workspaces.sessionMeta();
+    const workspaceId = conversation ? meta.sessionWorkspace[id] : null;
+    if (!conversation || workspaceId && (!meta.workspaces.some(item => item.id === workspaceId) || !device.allWorkspaces && !device.workspaceIds.includes(workspaceId))
+      || !workspaceId && !(device.allWorkspaces || device.includeUnassigned)) fail(404, 'Conversation not found');
+    return conversation;
+  }
   authorizeWorkspace(deviceId) {
     const device = this.access.devices.find(item => item.id === deviceId);
     if (!device || device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Creating workspaces requires control of all workspaces');
@@ -52,12 +62,31 @@ class RemoteCommands {
   async execute(device, id, payload, instanceId) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail(400, 'Invalid command');
     const { requestId, action } = payload;
-    if (action === 'create-workspace' && id === null) this.authorizeWorkspace(device.id);
-    else if (action === 'create' && id === null) this.authorizeCreate(device.id, payload.workspaceId);
-    else this.authorize(device.id, id);
-    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'stop', 'approve', 'create', 'create-workspace', 'configure', 'move'].includes(action) || ['create', 'create-workspace'].includes(action) !== (id === null)) fail(400, 'Invalid command');
-    const fields = ['requestId', 'action', 'instanceId', ...(action === 'move' ? ['workspaceId', 'targetSessionId', 'placement'] : action === 'create-workspace' ? ['name', 'path'] : action === 'configure' ? ['settings', 'expectedSettings'] : action === 'create' ? ['workspaceId', 'engine'] : action === 'send' ? ['prompt', 'expectedSeq', ...(payload.image === undefined ? [] : ['image'])] : action === 'stop' ? ['runId'] : ['runId', 'approvalId', 'fingerprint', 'allow'])];
+    const managing = ['rename', 'pin', 'delete'].includes(action);
+    const validTarget = managing ? id === null : action === 'archive' ? id === null && typeof payload.conversationId === 'string'
+      : ['create', 'create-workspace'].includes(action) ? id === null : id !== null;
+    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'resend', 'stop', 'approve', 'create', 'create-workspace', 'configure', 'move', 'archive', 'rename', 'pin', 'delete'].includes(action) || !validTarget) fail(400, 'Invalid command');
+    const fields = ['requestId', 'action', 'instanceId', ...(action === 'move' ? ['workspaceId', 'targetSessionId', 'placement'] : action === 'archive' ? ['conversationId', 'expectedSeq'] : action === 'create-workspace' ? ['name', 'path'] : action === 'configure' ? ['settings', 'expectedSettings'] : action === 'create' ? ['workspaceId', 'engine'] : action === 'send' || action === 'resend' ? ['prompt', 'expectedSeq', ...(payload.editSeq === undefined ? [] : ['editSeq']), ...(payload.image === undefined ? [] : ['image']), ...(payload.images === undefined ? [] : ['images'])] : action === 'stop' ? ['runId'] : ['runId', 'approvalId', 'fingerprint', 'allow'])];
+    if (managing) fields.splice(3, fields.length - 3, 'targets', ...(action === 'rename' ? ['title'] : action === 'pin' ? ['pinned'] : []));
     if (Object.keys(payload).some(key => !fields.includes(key))) fail(400, 'Unsupported command field');
+    if (managing) {
+      if (!Array.isArray(payload.targets) || !payload.targets.length || payload.targets.length > 100
+        || action !== 'delete' && payload.targets.length !== 1
+        || new Set(payload.targets.map(target => target?.id)).size !== payload.targets.length
+        || payload.targets.some(target => !target || typeof target.id !== 'string' || !Number.isSafeInteger(target.seq) || Object.keys(target).some(key => !['id', 'seq'].includes(key)))) fail(400, 'Invalid targets');
+      const prior = this.entries.find(entry => entry.key === device.id + ':' + requestId);
+      const current = this.access.devices.find(item => item.id === device.id);
+      if (!current || current.permission !== 'control') fail(403, 'Control permission required');
+      for (const target of payload.targets) {
+        if (action === 'delete' && prior?.scopes && !this.reader.manager.items.has(target.id) && Object.hasOwn(prior.scopes, target.id)) {
+          const workspace = prior.scopes[target.id];
+          if (!(current.allWorkspaces || (workspace ? current.workspaceIds.includes(workspace) : current.includeUnassigned))) fail(403, 'Conversation scope changed');
+        } else this.authorize(device.id, target.id);
+      }
+    } else if (action === 'create-workspace' && id === null) this.authorizeWorkspace(device.id);
+    else if (action === 'create' && id === null) this.authorizeCreate(device.id, payload.workspaceId);
+    else if (action === 'archive' && id === null) this.authorizeArchive(device.id, payload.conversationId);
+    else this.authorize(device.id, id);
     const fingerprint = digest([id, ...fields.map(field => payload[field])]);
     const key = device.id + ':' + requestId;
     const prior = this.entries.find(entry => entry.key === key);
@@ -69,6 +98,7 @@ class RemoteCommands {
     if (payload.instanceId !== instanceId) fail(409, 'Server restarted; refresh before operating');
     if (this.entries.length >= 10_000) fail(409, 'Remote command journal is full; use the desktop');
     const entry = { key, fingerprint, at: Date.now() };
+    if (managing) entry.scopes = Object.fromEntries(payload.targets.map(target => [target.id, this.reader.summary(this.authorize(device.id, target.id)).workspaceId]));
     this.entries.push(entry);
     try { this.save(); } catch (error) { this.entries.pop(); throw error; }
     const operation = this.perform(device.id, id, payload).then(result => {
@@ -81,6 +111,27 @@ class RemoteCommands {
     return this.acknowledgement(operation);
   }
   async perform(deviceId, id, payload) {
+    if (['rename', 'pin', 'delete'].includes(payload.action)) {
+      const manager = this.reader.manager;
+      if (payload.action === 'rename' && (typeof payload.title !== 'string' || !payload.title.trim() || payload.title.length > 100 || /[\x00-\x1f\x7f]/.test(payload.title))) fail(400, 'Invalid title');
+      if (payload.action === 'pin' && typeof payload.pinned !== 'boolean') fail(400, 'Invalid pinned state');
+      for (const target of payload.targets) {
+        const conversation = this.authorize(deviceId, target.id);
+        if (conversation.seq !== target.seq || manager.busy(target.id)) fail(409, 'Conversation changed or busy; refresh before operating');
+      }
+      for (const target of payload.targets) {
+        const conversation = this.authorize(deviceId, target.id);
+        if (conversation.seq !== target.seq || manager.busy(target.id)) fail(409, 'Conversation changed or busy; refresh before operating');
+        let result = { ok: true };
+        if (payload.action === 'delete') result = await manager.workspaces.removeSession(target.id);
+        else if (payload.action === 'rename') result = await manager.command(conversation.currentEngine, 'rename-session', { id: target.id, title: payload.title.trim() });
+        else if (Boolean(manager.workspaces.sessionMeta().pinned[target.id]) !== payload.pinned)
+          result = await manager.command(conversation.currentEngine, 'meta-op', { op: 'toggle-pin', sessionId: target.id });
+        if (!result.ok) fail(409, result.error || 'Operation failed');
+        manager.onEvent({ type: 'conversation:workspaces' });
+      }
+      return { ok: true, state: 'accepted' };
+    }
     if (payload.action === 'create-workspace') {
       this.authorizeWorkspace(deviceId);
       if (typeof payload.name !== 'string' || !payload.name.trim() || payload.name.length > 200 || /[\x00-\x1f\x7f]/.test(payload.name)
@@ -96,7 +147,15 @@ class RemoteCommands {
       const created = this.reader.manager.create(payload.engine, payload.workspaceId || undefined);
       return { ok: true, state: 'accepted', conversation: this.reader.summary(created) };
     }
-    const conversation = this.authorize(deviceId, id), manager = this.reader.manager;
+    const conversationId = payload.action === 'archive' ? payload.conversationId : id;
+    const conversation = this.authorize(deviceId, conversationId), manager = this.reader.manager;
+    if (payload.action === 'archive') {
+      if (!Number.isSafeInteger(payload.expectedSeq) || payload.expectedSeq !== conversation.seq) fail(409, 'Conversation changed; refresh before archiving');
+      const result = await manager.command(conversation.currentEngine, 'archive-session', { id: conversationId, archived: true });
+      if (!result.ok) fail(409, result.error);
+      manager.onEvent({ type: 'conversation:archived', session_id: conversationId, engine: conversation.currentEngine });
+      return { ok: true, state: 'accepted' };
+    }
     if (payload.action === 'move') {
       this.authorizeCreate(deviceId, payload.workspaceId);
       if (payload.targetSessionId != null) {
@@ -112,27 +171,43 @@ class RemoteCommands {
       return { ok: true, state: 'accepted' };
     }
     if (payload.action === 'configure') return configure(manager, conversation, payload);
-    if (payload.action === 'send') {
+    if (payload.action === 'send' || payload.action === 'resend') {
       if (typeof payload.prompt !== 'string' || !payload.prompt.trim() || payload.prompt.length > 16_000 || payload.expectedSeq !== conversation.seq) fail(409, 'Message or conversation changed; refresh before sending');
+      if (payload.action === 'resend') {
+        if (!Number.isSafeInteger(payload.editSeq)) fail(400, 'Invalid command');
+        const latestUser = this.reader.manager.messages(conversation).filter(row => row.role === 'user' && !row.internal && !row.steered).at(-1);
+        if (latestUser?.seq !== payload.editSeq) fail(409, 'Only the latest message can be edited. Refresh before sending');
+      }
       if (manager.busy(id)) fail(409, 'Conversation is busy');
       const attachments = [];
-      if (payload.image !== undefined) {
-        if (typeof payload.image !== 'string' || payload.image.length > 1_400_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload.image)) fail(400, 'Invalid image');
-        const bytes = Buffer.from(payload.image, 'base64');
-        if (bytes.length > 1024 * 1024 || bytes.length < 4 || bytes.toString('base64') !== payload.image || bytes[0] !== 255 || bytes[1] !== 216 || bytes[2] !== 255 || bytes.at(-2) !== 255 || bytes.at(-1) !== 217) fail(400, 'JPEG image required');
+      if (payload.images !== undefined && (!Array.isArray(payload.images) || !payload.images.length || payload.images.length > 9 || payload.image !== undefined)) fail(400, 'Provide 1 to 9 images');
+      const imageBytes = (payload.images ?? (payload.image === undefined ? [] : [payload.image])).map(image => {
+        if (typeof image !== 'string' || image.length > 1_400_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image)) fail(400, 'Invalid image');
+        const bytes = Buffer.from(image, 'base64');
+        if (bytes.length > 1024 * 1024 || bytes.length < 4 || bytes.toString('base64') !== image || bytes[0] !== 255 || bytes[1] !== 216 || bytes[2] !== 255 || bytes.at(-2) !== 255 || bytes.at(-1) !== 217) fail(400, 'JPEG image required');
+        return bytes;
+      });
+      if (imageBytes.length) {
         const folder = path.join(path.dirname(this.file), 'mobile-images');
         fs.mkdirSync(folder, { recursive: true });
         const used = fs.readdirSync(folder).reduce((total, name) => total + fs.statSync(path.join(folder, name)).size, 0);
-        if (used + bytes.length > 256 * 1024 * 1024) fail(409, 'Mobile image storage is full; manage attachments on the desktop');
-        const target = path.join(folder, createHash('sha256').update(deviceId + ':' + payload.requestId).digest('hex') + '.jpg');
-        fs.writeFileSync(target, bytes, { flag: 'wx', mode: 0o600 });
-        attachments.push({ path: target, name: 'mobile-image.jpg', isImage: true });
+        if (used + imageBytes.reduce((total, bytes) => total + bytes.length, 0) > 256 * 1024 * 1024) fail(409, 'Mobile image storage is full; manage attachments on the desktop');
+        try {
+          imageBytes.forEach((bytes, index) => {
+            const target = path.join(folder, createHash('sha256').update(deviceId + ':' + payload.requestId + ':' + index).digest('hex') + '.jpg');
+            fs.writeFileSync(target, bytes, { flag: 'wx', mode: 0o600 });
+            attachments.push({ path: target, name: `mobile-image-${index + 1}.jpg`, isImage: true });
+          });
+        } catch (error) {
+          for (const attachment of attachments) fs.rmSync(attachment.path, { force: true });
+          throw error;
+        }
       }
       const reservation = { cancelled: false, validate: () => this.authorize(deviceId, id) };
       manager.controlStarts.set(id, reservation);
       this.reservations.set(id, { deviceId, reservation });
       try {
-        const { done, ...result } = await manager.send(conversation.currentEngine, { sessionId: id, prompt: payload.prompt, ...(attachments.length ? { attachments } : {}) }, { controlStart: reservation });
+        const { done, ...result } = await manager.send(conversation.currentEngine, { sessionId: id, prompt: payload.prompt, ...(payload.editSeq !== undefined ? { editSeq: payload.editSeq } : {}), ...(attachments.length ? { attachments } : {}) }, { controlStart: reservation });
         return { ...result, state: 'accepted' };
       } finally {
         if (manager.controlStarts.get(id) === reservation) manager.controlStarts.delete(id);

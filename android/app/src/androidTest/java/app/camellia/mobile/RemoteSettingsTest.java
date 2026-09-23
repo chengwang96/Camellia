@@ -17,6 +17,75 @@ public class RemoteSettingsTest extends InstrumentationTestCase {
     private static Object field(Object target, String name) throws Exception {
         var field = target.getClass().getDeclaredField(name); field.setAccessible(true); return field.get(target);
     }
+    public void testRemoteSearchHasNoOuterFrame() throws Exception {
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    field(activity, "credentials", new JSONObject());
+                    var list = MainActivity.class.getDeclaredMethod("listScreen"); list.setAccessible(true); list.invoke(activity);
+                    View root = activity.getWindow().getDecorView();
+                    LinearLayout bar = root.findViewWithTag("searchBar");
+                    assertNull("The search row must not draw a second frame behind the search pill", bar.getBackground());
+                    assertEquals(0f, bar.getElevation(), 0f); assertEquals(0f, bar.getTranslationZ(), 0f);
+                    View pill = bar.getChildAt(0);
+                    ChatStyle style = new ChatStyle(activity);
+                    assertNotNull(pill.getBackground());
+                    assertEquals(style.dp(7), pill.getElevation(), 0f); assertEquals(style.dp(1), pill.getTranslationZ(), 0f);
+                    assertNotNull(root.findViewWithTag("searchBarDock").getBackground());
+                    assertNotNull(root.findViewWithTag("searchBarFade").getBackground());
+                    assertNotNull(root.findViewWithTag("newIndependent").getBackground());
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+        } finally {
+            getInstrumentation().runOnMainSync(activity::finish);
+            getInstrumentation().waitForIdleSync();
+        }
+    }
+
+    public void testRemoteTitleFollowsSnapshotsWithoutRebuildingComposer() throws Exception {
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    String id = "12345678-1234-1234-1234-123456789abc";
+                    field(activity, "conversationId", id);
+                    field(activity, "conversationTitle", "New session");
+                    field(activity, "credentials", new JSONObject());
+                    var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
+                    var apply = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class); apply.setAccessible(true);
+                    View root = activity.getWindow().getDecorView();
+                    TextView heading = root.findViewWithTag("pageTitle");
+                    android.widget.EditText composer = (android.widget.EditText) field(activity, "composer");
+                    composer.setText("Unsent draft"); composer.setSelection(4);
+                    assertEquals("New session", heading.getText().toString());
+                    JSONObject conversation = new JSONObject().put("id", id).put("seq", 1).put("title", "Generated title");
+                    JSONObject snapshot = new JSONObject().put("instanceId", "preview").put("cursor", 2).put("permission", "control")
+                        .put("conversation", conversation).put("messages", new JSONArray()).put("nextBefore", JSONObject.NULL);
+                    apply.invoke(activity, snapshot);
+                    assertEquals("Generated title", heading.getText().toString());
+                    assertEquals("Generated title", field(activity, "conversationTitle"));
+                    conversation.put("title", "Stale title"); snapshot.put("cursor", 1); apply.invoke(activity, snapshot);
+                    assertEquals("Generated title", heading.getText().toString());
+                    conversation.put("title", "Manual title"); snapshot.put("cursor", 3); apply.invoke(activity, snapshot);
+                    assertEquals("Manual title", heading.getText().toString());
+                    assertEquals("Manual title", field(activity, "conversationTitle"));
+                    conversation.put("id", "another-conversation").put("title", "Wrong title");
+                    snapshot.put("cursor", 4); apply.invoke(activity, snapshot);
+                    assertEquals("Manual title", heading.getText().toString());
+                    assertSame(composer, field(activity, "composer"));
+                    assertEquals("Unsent draft", composer.getText().toString());
+                    assertEquals(4, composer.getSelectionStart());
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+        } finally {
+            getInstrumentation().runOnMainSync(activity::finish);
+            getInstrumentation().waitForIdleSync();
+        }
+    }
+
     public void testRemoteComposerSettingsAndNeutralTitles() throws Exception {
         Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {

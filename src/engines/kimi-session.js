@@ -32,9 +32,14 @@ const { valid } = require('./permission-levels');
 function kimiConnectionSettings(config, sessionId) {
   const saved = config.kimi || {};
   const connection = sessionId ? config.kimiSessionConnections?.[sessionId] || 'api' : saved.connection || 'api';
-  return { permissionMode: 'default', thinkingBudget: '', cwd: '', contextWindow: 131072, region: 'mainland-cn', ...saved,
+  const value = { permissionMode: 'default', thinkingBudget: '', cwd: '', contextWindow: 131072, region: 'mainland-cn', ...saved,
     connection, apiModel: saved.apiModel ?? saved.model ?? '',
     model: connection === 'subscription' ? saved.subscriptionModel || '' : saved.apiModel ?? saved.model ?? '' };
+  // A running subscription conversation reports the account that owns its
+  // native session, so the composer lists that account's models.
+  const account = sessionId ? config.kimiSessionAccounts?.[sessionId] : null;
+  if (account && connection === 'subscription') value.subscriptionId = account;
+  return value;
 }
 function updateKimiConnectionSettings(config, patch) {
   const value = kimiConnectionSettings(config);
@@ -51,7 +56,7 @@ function updateKimiConnectionSettings(config, patch) {
     const connection = patch.connection || (patch.sessionId ? kimiConnectionSettings(config, patch.sessionId).connection : value.connection);
     value[connection + 'Model'] = String(patch.model).trim();
   }
-  delete value.model; delete value.sessionId;
+  delete value.model; delete value.sessionId; delete value.subscriptionId;
   return value;
 }
 

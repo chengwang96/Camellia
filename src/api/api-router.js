@@ -3,6 +3,7 @@
 const http = require('node:http');
 const https = require('node:https');
 const fs = require('node:fs');
+const { createHash } = require('node:crypto');
 const { modelId, normalizeConfig, loadConfig, writeConfig, publicState, DEFAULT_PORT, PRESETS } = require('./api-router-config');
 const { convertRequest, convertResponse, SSEParser, StreamConverter, frame } = require('./api-protocol');
 const { BufferedToolStream } = require('./buffered-tool-stream');
@@ -10,6 +11,7 @@ const { recordUsage } = require('./api-usage');
 const { GeminiToolState } = require('./gemini-tool-state');
 const { RequestScopes } = require('./request-scopes');
 const { responsesToChat, ResponsesStream, chatToResponse } = require('./responses-protocol');
+const { accountCapability, queryAccount } = require('./provider-accounts');
 
 function retryDelay(headers = {}, now = Date.now()) {
   const value = headers['retry-after'];
@@ -29,6 +31,10 @@ function retryDelay(headers = {}, now = Date.now()) {
 function failureKind(status, body = '') {
   if (status === 401) return 'auth';
   if (status === 402) return 'quota';
+  // Ollama Cloud answers an exhausted window with 429 + "you (<account>) have
+  // reached your monthly/weekly usage limit". That is a quota verdict, not a
+  // transient rate limit, so it must cool down far longer than 60 seconds.
+  if (status === 429 && /usage limit|quota|insufficient|credit|额度|余额/i.test(body)) return 'quota';
   if (status === 429) return 'rate_limit';
   if (status === 403 && /quota|limit|plan|entitle|subscription|exceed|credit|balance|upgrade_required|余额|额度/i.test(body)) return 'quota';
   if ([400, 404, 422].includes(status) && /unsupported_model|model_not_found|model.*(not.*(found|available|support)|unavailable)|no.*provider/i.test(body)) return 'model_unavailable';
@@ -50,14 +56,15 @@ function apiError(res, status, message, protocol, code = 'api_router_error', hea
   json(res, status, protocol === 'anthropic' ? { type: 'error', error: { type: code, message } } : { error: { type: code, code, message } }, headers);
 }
 
-function startApiRouter({ configPath, log = () => {}, onState = () => {}, onContextEvidence = () => {}, timeoutMs = 120000 } = {}) {
+function startApiRouter({ configPath, log = () => {}, onState = () => {}, onContextEvidence = () => {}, timeoutMs = 120000, quotaCheck = {} } = {}) {
   let cfg = loadConfig(configPath);
   const geminiTools = new GeminiToolState(configPath + '.gemini-tools.jsonl');
   let running = false, error = null, stopped = false, saveTimer = null, lastRoute = null;
   let diskMtime = fs.existsSync(configPath) ? fs.statSync(configPath).mtimeMs : 0;
   const sockets = new Set(), upstreams = new Set();
   const scopes = new RequestScopes();
-  const getState = () => ({ ...publicState(cfg), running, error, activeRequests: upstreams.size, url: `http://127.0.0.1:${cfg.port}`, lastRoute: lastRoute ? { ...lastRoute } : null });
+  const getState = () => ({ ...publicState(cfg), running, error, activeRequests: upstreams.size, url: `http://127.0.0.1:${cfg.port}`, lastRoute: lastRoute ? { ...lastRoute } : null,
+    quota: quotaState(), quotaCheck: { enabled: quotaProbeEnabled, intervalMs: quotaIntervalMs } });
   const notify = () => { try { onState(getState()); } catch { /* observers must not interrupt a request */ } };
   function refreshDisk() {
     const mtime = fs.existsSync(configPath) ? fs.statSync(configPath).mtimeMs : 0;
@@ -69,7 +76,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       const old = cfg.providers.find(x => x.id === p.id)?.keys.find(x => x.id === k.id && x.key === k.key);
       if (old && cfg.usage[k.id]) latest.usage[k.id] = cfg.usage[k.id];
     }
-    cfg = latest; diskMtime = mtime;
+    cfg = latest; diskMtime = mtime; reconcileQuota();
   }
   function flush() {
     clearTimeout(saveTimer); saveTimer = null;
@@ -88,6 +95,116 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   function usageFor(route) {
     return cfg.providers.some(p => p.id === route.provider.id && p.keys.some(k => k.id === route.key.id && k.key === route.key.key)) ? cfg.usage[route.key.id] : null;
   }
+  // Provider-reported quota is advisory routing state and is never persisted:
+  // the probe below refreshes it, so a key returns to the pool by itself once
+  // its window recovers, and a stale snapshot can never sideline a key forever.
+  let quotaIntervalMs = quotaCheck.intervalMs >= 1000 ? quotaCheck.intervalMs : 15 * 60 * 1000;
+  let quotaTtlMs = Math.max(quotaIntervalMs * 3, 10 * 60 * 1000);
+  const quotaQuery = typeof quotaCheck.query === 'function' ? quotaCheck.query : queryAccount;
+  // An injected probe is authoritative: it lets a caller (or a test) supply
+  // quota data for a host that has no built-in account adapter.
+  const quotaQueryInjected = typeof quotaCheck.query === 'function';
+  let quotaProbeEnabled = quotaCheck.enabled !== false;
+  const quota = new Map();
+  let quotaRevision = 0;
+  let quotaTimer = null, quotaRunning = null;
+  const quotaIdentity = (provider, key) => createHash('sha256').update(JSON.stringify([provider.id, provider.baseUrl, provider.anthropicBaseUrl, key.key])).digest('hex');
+  function currentQuotaIdentity(keyId) {
+    for (const provider of cfg.providers) {
+      const key = provider.enabled && provider.keys.find(entry => entry.id === keyId && entry.enabled);
+      if (key) return quotaIdentity(provider, key);
+    }
+    return null;
+  }
+  function reconcileQuota() {
+    quotaRevision++;
+    for (const [keyId, snapshot] of quota) if (snapshot.identity !== currentQuotaIdentity(keyId)) quota.delete(keyId);
+  }
+  function quotaSnapshot(keyId) {
+    if (!quotaProbeEnabled) return null; // Switching the check off stops quota from steering routing.
+    const snapshot = quota.get(keyId);
+    return snapshot && snapshot.identity === currentQuotaIdentity(keyId) && snapshot.checkedAt !== null
+      && Date.now() - snapshot.checkedAt <= quotaTtlMs ? snapshot : null;
+  }
+  function quotaExhausted(keyId) { return quotaSnapshot(keyId)?.exhausted === true; }
+  function quotaReason(keyId) {
+    const spent = (quotaSnapshot(keyId)?.windows || []).filter(w => w.usedPercent >= 100).map(w => w.label || w.id);
+    return spent.length ? `${spent.join(', ')} quota exhausted` : quotaSnapshot(keyId)?.balanceExhausted ? "Balance exhausted" : "Quota exhausted";
+  }
+  function quotaState() {
+    return Object.fromEntries([...quota].filter(([id, snapshot]) => snapshot.identity === currentQuotaIdentity(id)).map(([id, snapshot]) => [id, {
+      exhausted: quotaExhausted(id), balanceExhausted: quotaExhausted(id) && snapshot.balanceExhausted === true,
+      stale: snapshot.checkedAt !== null && Date.now() - snapshot.checkedAt > quotaTtlMs,
+      windows: snapshot.windows || [], balances: snapshot.balances || [], checkedAt: snapshot.checkedAt ?? null,
+      attemptedAt: snapshot.attemptedAt ?? null, error: snapshot.error || null }]));
+  }
+  function scheduleQuotaProbe() {
+    clearInterval(quotaTimer); quotaTimer = null;
+    if (!quotaProbeEnabled || stopped) return;
+    quotaTimer = setInterval(() => { refreshQuota().catch(() => {}); }, quotaIntervalMs);
+    quotaTimer.unref();
+  }
+  // Settings can change the cadence while the router is serving requests, so
+  // this never restarts the router or drops an in-flight answer.
+  function setQuotaCheck(options = {}) {
+    if (options.intervalMs >= 1000) quotaIntervalMs = options.intervalMs;
+    quotaTtlMs = Math.max(quotaIntervalMs * 3, 10 * 60 * 1000);
+    if (options.enabled !== undefined) quotaProbeEnabled = options.enabled !== false;
+    quotaRevision++;
+    scheduleQuotaProbe();
+    refreshQuota().catch(() => {});
+    notify();
+    return quotaState();
+  }
+  async function refreshQuota() {
+    if (!quotaProbeEnabled || stopped) return quotaState();
+    if (quotaRunning) return quotaRunning; // Join the run already in flight.
+    refreshDisk();
+    quotaRunning = (async () => {
+      for (const provider of cfg.providers) {
+        if (!provider.enabled || (!quotaQueryInjected && !accountCapability(provider).supported)) continue;
+        for (const key of provider.keys) {
+          if (stopped || !quotaProbeEnabled) return quotaState();
+          if (!key.enabled) continue;
+          const identity = quotaIdentity(provider, key), revision = quotaRevision;
+          if (identity !== currentQuotaIdentity(key.id)) continue;
+          const applicable = () => !stopped && quotaProbeEnabled && revision === quotaRevision && identity === currentQuotaIdentity(key.id);
+          const previous = quota.get(key.id);
+          try {
+            const result = await quotaQuery(provider, key.key);
+            refreshDisk();
+            if (!applicable()) continue;
+            if (result.status && result.status !== 'ok') throw new Error('Account query did not return a successful reading');
+            const windows = (result.windows || []).map(window => ({ id: window.id, label: window.label || window.id,
+              usedPercent: typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent) ? window.usedPercent : null }));
+            const balances = (result.balances || []).map(balance => ({ id: balance.id, currency: balance.currency,
+              value: typeof balance.value === 'number' && Number.isFinite(balance.value) ? balance.value : null }));
+            if (!windows.some(window => window.usedPercent !== null) && !balances.some(balance => balance.value !== null)) throw new Error('Account query returned no recognized balance or quota');
+            const balanceExhausted = !windows.length && balances.length > 0 && balances.every(balance => balance.value !== null && balance.value <= 0);
+            const exhausted = windows.some(window => window.usedPercent !== null && window.usedPercent >= 100) || balanceExhausted;
+            quota.set(key.id, { identity, exhausted, balanceExhausted, windows, balances, checkedAt: Date.now(), attemptedAt: Date.now(), error: null });
+            if (!exhausted) {
+              const usage = cfg.usage[key.id];
+              let cleared = false;
+              for (const [model, cooldown] of Object.entries(usage?.models || {})) {
+                if (cooldown.reason === reasonText.quota) { delete usage.models[model]; cleared = true; }
+              }
+              if (cleared) changed();
+            }
+            if (exhausted && !previous?.exhausted) log(`${provider.name} / ${key.id}: ${quotaReason(key.id)}. Skipping this key until the window recovers.`);
+            else if (!exhausted && previous?.exhausted) log(`${provider.name} / ${key.id}: quota recovered. Returning this key to the pool.`);
+          } catch (e) {
+            if (!applicable()) continue;
+            quota.set(key.id, { ...(previous || { identity, windows: [], balances: [], checkedAt: null }),
+              attemptedAt: Date.now(), error: safeDetail(e.message || e, [key.key]) });
+          }
+        }
+      }
+      return quotaState();
+    })();
+    try { return await quotaRunning; }
+    finally { quotaRunning = null; if (!stopped) notify(); }
+  }
   function candidates(model, protocol) {
     const all = [];
     for (const p of cfg.providers) {
@@ -103,7 +220,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   }
   function available(r, model) {
     const usage = cfg.usage[r.key.id];
-    return !usage?.blocked && !(usage?.models[model]?.until > Date.now());
+    return !usage?.blocked && !(usage?.models[model]?.until > Date.now()) && !quotaExhausted(r.key.id);
   }
   function failed(route, model, status, kind, headers = {}, tokens = {}, trackUsage = true) {
     const usage = usageFor(route);
@@ -377,7 +494,10 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       return apiError(res, status, `Model "${model}" failed this auxiliary request. ${attempts.join('; ') || reasonText[auxiliaryFailure.kind]}`, protocol, 'model_routes_exhausted');
     }
     const waits = routes.map(r => cfg.usage[r.key.id]?.models[model]?.until - Date.now()).filter(ms => ms > 0);
-    const headers = waits.length ? { 'retry-after': String(Math.ceil(Math.min(...waits) / 1000)) } : {};
+    const outOfQuota = routes.filter(r => quotaExhausted(r.key.id));
+    for (const r of outOfQuota) attempts.push(`${r.provider.name} / ${r.key.id}: ${quotaReason(r.key.id)}`);
+    const headers = waits.length ? { 'retry-after': String(Math.ceil(Math.min(...waits) / 1000)) }
+      : outOfQuota.length ? { 'retry-after': String(Math.ceil(quotaIntervalMs / 1000)) } : {};
     apiError(res, attempts.length && attempts.every(a => a.endsWith(reasonText.protocol)) ? 400 : 503,
       `Model "${model}" has no available routes. The model was not changed. ${attempts.join('; ') || "Wait for quota to recover, or check the key and reset its cooldown in settings."}`, protocol, 'model_routes_exhausted', headers);
   }
@@ -394,7 +514,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     const next = normalizeConfig(raw, cfg);
     if (next.port !== cfg.port) throw new Error("Changing the port requires a router restart");
     writeConfig(configPath, next);
-    clearTimeout(saveTimer); cfg = next; diskMtime = fs.statSync(configPath).mtimeMs; notify();
+    clearTimeout(saveTimer); cfg = next; diskMtime = fs.statSync(configPath).mtimeMs; reconcileQuota(); notify();
     return getState();
   }
   function reset(model, key) {
@@ -404,6 +524,9 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       u.blocked = false; u.lastError = null;
       if (id) delete u.models[id]; else u.models = {};
     }
+    // An explicit reset also overrides the quota verdict until the next probe.
+    quotaRevision++;
+    if (key) quota.delete(key); else quota.clear();
     if (id) delete cfg.active[id];
     else if (key) { for (const [model, activeKey] of Object.entries(cfg.active)) if (activeKey === key) delete cfg.active[model]; }
     else cfg.active = {};
@@ -418,6 +541,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   }
   async function stop() {
     stopped = true; running = false;
+    clearInterval(quotaTimer); quotaTimer = null;
     scopes.closeAll();
     try { flush(); } catch (e) { log(`Could not save router state: ${e.message}`); }
     for (const upstream of upstreams) upstream.destroy();
@@ -435,7 +559,11 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     const result = scopes.create({ ...options, model, upstream: route.model.upstream, routeFingerprint: fingerprint });
     return { ...result, baseUrl: `http://127.0.0.1:${cfg.port}${result.path}`, authToken: 'proxy-managed' };
   }
-  return { ready, getState, updateConfig, reset, rotate, createScope, reload: () => { refreshDisk(); notify(); return getState(); }, stop, url: `http://127.0.0.1:${cfg.port}` };
+  if (quotaProbeEnabled) {
+    scheduleQuotaProbe();
+    ready.then(() => refreshQuota().catch(() => {}), () => {});
+  }
+  return { ready, getState, updateConfig, reset, rotate, createScope, refreshQuota, setQuotaCheck, reload: () => { refreshDisk(); notify(); return getState(); }, stop, url: `http://127.0.0.1:${cfg.port}` };
 }
 
 function routeFingerprint(route) {

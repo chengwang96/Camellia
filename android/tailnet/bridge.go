@@ -9,12 +9,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"tailscale.com/ipn"
@@ -111,7 +114,11 @@ func NewNode(directory string, storage Storage) (*Node, error) {
 		server.Close()
 		return nil, fmt.Errorf("embedded network could not start: %w", err)
 	}
-	transport := &http.Transport{DialContext: server.Dial, ForceAttemptHTTP2: false, ResponseHeaderTimeout: 25 * time.Second,
+	transport := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+		return server.Dial(ctx, network, address)
+	}, ForceAttemptHTTP2: false, ResponseHeaderTimeout: 25 * time.Second,
 		MaxResponseHeaderBytes: 16 * 1024, MaxIdleConns: 4, IdleConnTimeout: 30 * time.Second}
 	return &Node{server: server, transport: transport, requests: make(map[*Response]context.CancelFunc),
 		client: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
@@ -169,19 +176,24 @@ type Response struct {
 	cancel      context.CancelFunc
 	node        *Node
 	closed      bool
+	request     *http.Request
+	started     bool
 }
 
 func (node *Node) Open(method, target, token, payload string) (*Response, error) {
-	if err := validateTarget(method, target); err != nil {
-		return nil, err
-	}
-	status, err := node.Status()
+	response, err := node.Prepare(method, target, token, payload)
 	if err != nil {
 		return nil, err
 	}
-	var state struct{ State string }
-	if json.Unmarshal([]byte(status), &state) != nil || state.State != "Running" {
-		return nil, errors.New("sign in to the embedded network before connecting")
+	if err := response.Execute(); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+func (node *Node) Prepare(method, target, token, payload string) (*Response, error) {
+	if err := validateTarget(method, target); err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	response := &Response{cancel: cancel, node: node}
@@ -204,17 +216,99 @@ func (node *Node) Open(method, target, token, payload string) (*Response, error)
 	if method == "POST" {
 		request.Header.Set("Content-Type", "application/json; charset=utf-8")
 	}
-	result, err := node.client.Do(request)
+	response.request = request
+	return response, nil
+}
+
+func (response *Response) Execute() error {
+	return response.execute(30 * time.Second)
+}
+
+func connectionError(err error, cancelled, timedOut, connected bool, state string) error {
+	code := "CONNECTION_FAILED"
+	switch {
+	case cancelled:
+		code = "CANCELLED"
+	case state == "NeedsLogin":
+		code = "LOGIN_REQUIRED"
+	case state == "NeedsMachineAuth":
+		code = "DEVICE_APPROVAL_REQUIRED"
+	case state == "Stopped":
+		code = "NETWORK_STOPPED"
+	case state == "Starting" || state == "NoState":
+		code = "NETWORK_STARTING"
+	case timedOut || errors.Is(err, context.DeadlineExceeded):
+		code = "CONNECT_TIMEOUT"
+		if connected {
+			code = "RESPONSE_TIMEOUT"
+		}
+	case errors.Is(err, syscall.ECONNREFUSED):
+		code = "CONNECTION_REFUSED"
+	case errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH):
+		code = "NETWORK_UNREACHABLE"
+	default:
+		var networkError net.Error
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			code = "CONNECT_TIMEOUT"
+			if connected {
+				code = "RESPONSE_TIMEOUT"
+			}
+		}
+	}
+	return errors.New("CAMELLIA_" + code)
+}
+
+func (response *Response) failure(err error, timedOut, connected bool) error {
+	response.mu.Lock()
+	cancelled := response.closed
+	response.mu.Unlock()
+	response.node.mu.Lock()
+	cancelled = cancelled || response.node.closed
+	response.node.mu.Unlock()
+	state := ""
+	if !cancelled && response.node.server != nil {
+		if value, statusError := response.node.Status(); statusError == nil {
+			var status struct{ State string }
+			if json.Unmarshal([]byte(value), &status) == nil {
+				state = status.State
+			}
+		}
+	}
+	return connectionError(err, cancelled, timedOut, connected, state)
+}
+
+func (response *Response) execute(headerTimeout time.Duration) error {
+	response.mu.Lock()
+	if response.closed || response.started {
+		response.mu.Unlock()
+		return errors.New("embedded request closed or already started")
+	}
+	response.started = true
+	response.mu.Unlock()
+	var timedOut, connected atomic.Bool
+	timeout := time.AfterFunc(headerTimeout, func() { timedOut.Store(true); response.cancel() })
+	request := response.request.WithContext(httptrace.WithClientTrace(response.request.Context(), &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
+	}))
+	result, err := response.node.client.Do(request)
+	timeout.Stop()
 	if err != nil {
+		failure := response.failure(err, timedOut.Load(), connected.Load())
 		response.Close()
-		return nil, errors.New("embedded connection failed; check login, desktop and tailnet access")
+		return failure
 	}
 	response.mu.Lock()
+	if response.closed || response.request.Context().Err() != nil {
+		response.mu.Unlock()
+		result.Body.Close()
+		response.Close()
+		return connectionError(context.Canceled, true, false, false, "")
+	}
 	response.body = result.Body
 	response.status = result.StatusCode
 	response.contentType = result.Header.Get("Content-Type")
 	response.mu.Unlock()
-	return response, nil
+	return nil
 }
 
 func (response *Response) StatusCode() int     { return response.status }
@@ -228,7 +322,8 @@ func (response *Response) ReadChunk() ([]byte, error) {
 		return nil, nil
 	}
 	buffer := make([]byte, 16*1024)
-	timeout := time.AfterFunc(25*time.Second, response.cancel)
+	var timedOut atomic.Bool
+	timeout := time.AfterFunc(25*time.Second, func() { timedOut.Store(true); response.cancel() })
 	defer timeout.Stop()
 	count, err := body.Read(buffer)
 	if count > 0 {
@@ -237,7 +332,13 @@ func (response *Response) ReadChunk() ([]byte, error) {
 	if err == io.EOF {
 		return nil, nil
 	}
-	return nil, err
+	if err != nil {
+		if timedOut.Load() {
+			return nil, errors.New("CAMELLIA_READ_TIMEOUT")
+		}
+		return nil, response.failure(err, false, true)
+	}
+	return nil, nil
 }
 
 func (response *Response) Close() {

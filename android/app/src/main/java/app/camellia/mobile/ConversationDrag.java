@@ -109,6 +109,18 @@ final class ConversationDrag {
                 nextAfter = screenY >= visible.exactCenterY();
             }
         }
+        if (next != null && next.id != null && nextAfter) {
+            Target following = null;
+            for (Target candidate : targets) {
+                if (candidate.id == null || candidate.view == source
+                    || candidate.view.getParent() != next.view.getParent()
+                    || !java.util.Objects.equals(candidate.workspace, next.workspace)
+                    || candidate.view.getVisibility() != View.VISIBLE
+                    || candidate.view.getTop() <= next.view.getTop()) continue;
+                if (following == null || candidate.view.getTop() < following.view.getTop()) following = candidate;
+            }
+            if (following != null) { next = following; nextAfter = false; }
+        }
         if (next == target && (next == null || next.id == null || nextAfter == after)) return;
         clearIndicator(); target = next; after = nextAfter;
         previewGap();

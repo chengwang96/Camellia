@@ -80,12 +80,9 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
                 View root = activity.getWindow().getDecorView();
                 EditText composer = root.findViewWithTag("localComposer");
                 View model = root.findViewWithTag("localModel");
-                assertEquals((float) dp(2), model.getElevation());
                 assertTrue(model.getBackground() instanceof android.graphics.drawable.RippleDrawable);
-                if (android.os.Build.VERSION.SDK_INT >= 28) {
-                    assertEquals(0x18000000, model.getOutlineAmbientShadowColor());
-                    assertEquals(0x20000000, model.getOutlineSpotShadowColor());
-                }
+                assertSame(root.findViewWithTag("composerTools"), model.getParent());
+                assertSame(model.getParent(), root.findViewWithTag("localTools").getParent());
                 assertFalse(composer.isVerticalScrollBarEnabled());
                 try {
                     var scrollField = LocalChatActivity.class.getDeclaredField("scroll"); scrollField.setAccessible(true);
@@ -97,7 +94,7 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
                 assertFalse(send.isEnabled()); assertEquals(View.GONE, stop.getVisibility());
                 composer.setText("   "); assertFalse(send.isEnabled()); composer.setText("Draft for later"); assertTrue(send.isEnabled());
                 assertEquals(dp(48), send.getWidth()); assertEquals(dp(48), send.getHeight());
-                assertTrue(composer.getRight() <= send.getLeft());
+                assertTrue(composer.getBottom() <= ((View) send.getParent()).getTop());
                 View bar = root.findViewWithTag("localComposerBar"), status = root.findViewWithTag("localStatus");
                 assertDockInsets(bar, status);
                 assertFalse(((ViewGroup) bar.getParent()).getClipToPadding());
@@ -132,7 +129,7 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
                 View composer = root.findViewWithTag("localComposer"), send = root.findViewWithTag("localSend");
-                assertTrue(composer.getHeight() > dp(48)); assertTrue(composer.getRight() <= send.getLeft());
+                assertTrue(composer.getHeight() > dp(48)); assertTrue(composer.getBottom() <= ((View) send.getParent()).getTop());
                 activity.onBackPressed();
             });
             assertEquals("First line\nSecond line\nThird line", new LocalChatStore(getInstrumentation().getTargetContext()).conversation(conversationId).getString("draft"));
@@ -143,6 +140,8 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
         assertEquals(dp(2), status.getPaddingTop()); assertEquals(dp(2), status.getPaddingBottom());
         assertEquals(dp(8), ((LinearLayout.LayoutParams) bar.getLayoutParams()).bottomMargin);
         View parent = (View) bar.getParent();
+        android.widget.ScrollView scroll = (android.widget.ScrollView) ((ViewGroup) parent.getParent()).getChildAt(0);
+        assertEquals("Scrollable content must reserve the complete dock height", parent.getHeight() + dp(16), scroll.getChildAt(0).getPaddingBottom());
         View fade = ((ViewGroup) parent).getChildAt(0);
         assertEquals(bar.getTag() + "Fade", fade.getTag()); assertEquals(dp(36), fade.getHeight());
         assertTrue(fade.getBackground() instanceof android.graphics.drawable.GradientDrawable);
@@ -166,6 +165,12 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
         assertEquals(android.view.Gravity.BOTTOM, ((android.widget.FrameLayout.LayoutParams) parent.getLayoutParams()).gravity);
         if (!String.valueOf(bar.getTag()).contains("SearchBar")) {
             assertEquals(dp(7), bar.getElevation(), 0f); assertEquals(dp(1), bar.getTranslationZ(), 0f);
+        } else {
+            assertNull("The search row must not draw a second frame behind the search pill", bar.getBackground());
+            assertEquals(0f, bar.getElevation(), 0f); assertEquals(0f, bar.getTranslationZ(), 0f);
+            View pill = ((ViewGroup) bar).getChildAt(0);
+            assertNotNull(pill.getBackground());
+            assertEquals(dp(7), pill.getElevation(), 0f); assertEquals(dp(1), pill.getTranslationZ(), 0f);
         }
         View page = (View) parent.getParent().getParent();
         android.view.WindowInsets original = page.getRootWindowInsets();
@@ -207,11 +212,13 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
         View dock = (View) bar.getParent();
         ViewGroup stage = (ViewGroup) dock.getParent();
         View body = stage.getChildAt(0);
+        int scrollPosition = body.getScrollY();
         android.graphics.drawable.Drawable originalForeground = body.getForeground();
         ChatStyle style = new ChatStyle(bar.getContext());
         int contrast = android.graphics.Color.red(style.background) < 128 ? android.graphics.Color.WHITE : android.graphics.Color.BLACK;
         Bitmap probe = Bitmap.createBitmap(stage.getWidth(), stage.getHeight(), Bitmap.Config.ARGB_8888);
         try {
+            body.scrollTo(0, 0);
             body.setForeground(new android.graphics.drawable.ColorDrawable(contrast));
             stage.draw(new android.graphics.Canvas(probe));
             int backgroundRed = android.graphics.Color.red(style.background);
@@ -227,6 +234,7 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
                 probe.getPixel(stage.getWidth() / 2, dock.getTop() + bar.getBottom() + dp(4)));
         } finally {
             body.setForeground(originalForeground);
+            body.scrollTo(0, scrollPosition);
             probe.recycle();
         }
     }

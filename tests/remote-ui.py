@@ -52,13 +52,13 @@ with sync_playwright() as playwright:
             expect(page.locator('#invite')).to_be_disabled()
             page.get_by_role('button', name='开启手机访问', exact=True).click()
             expect(page.locator('#address')).to_have_text('http://100.80.1.2:43127')
-            page.get_by_role('button', name='生成一次性配对码').click()
+            page.get_by_role('button', name='生成配对码').click()
             expect(page.locator('#code')).to_have_text('preview-pairing-code')
             assert page.evaluate('window.lastInviteScope') == []
             assert page.evaluate('window.lastInviteOptions.allWorkspaces') is True
             assert page.evaluate('window.lastInviteOptions.includeUnassigned') is True
             page.evaluate("remoteTest.workspaces.push({id:'future', name:'Future workspace'})")
-            page.get_by_role('button', name='生成一次性配对码').click()
+            page.get_by_role('button', name='生成配对码').click()
             expect(page.get_by_role('checkbox')).to_have_count(0)
             expect(page.locator('#code')).to_have_text('preview-pairing-code')
             expect(page.locator('#invite')).to_be_enabled()
@@ -96,7 +96,7 @@ with sync_playwright() as playwright:
             expect(page.locator('#invite')).to_be_disabled()
             page.get_by_role('button', name='Enable mobile access', exact=True).click()
             expect(page.locator('#invite')).to_be_enabled()
-            page.get_by_role('button', name='Generate one-time pairing code', exact=True).click()
+            page.get_by_role('button', name='Generate pairing code', exact=True).click()
             assert page.evaluate('window.lastInviteOptions') == {'workspaceIds': [], 'allWorkspaces': True, 'includeUnassigned': True}
             assert not errors, errors
             page.close()

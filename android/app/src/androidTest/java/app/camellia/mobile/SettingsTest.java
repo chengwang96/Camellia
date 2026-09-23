@@ -18,10 +18,55 @@ public class SettingsTest extends InstrumentationTestCase {
                 assertEquals("send", MobilePreferences.enterMode(activity));
                 root(activity).findViewWithTag("preference:enterMode").performClick();
                 AlertDialog choice = dialog(activity);
-                assertEquals(3, choice.getListView().getCount());
-                assertEquals(0, choice.getListView().getCheckedItemPosition());
-                choice.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+                View panel = choice.getWindow().getDecorView();
+                assertNotNull(panel.findViewWithTag("settingsChoice:2"));
+                assertNull(panel.findViewWithTag("settingsChoice:3"));
+                assertTrue(panel.findViewWithTag("settingsChoice:0").isSelected());
+                panel.findViewWithTag("settingsChoiceCancel").performClick();
+                assertFalse(choice.isShowing());
                 assertEquals("send", MobilePreferences.enterMode(activity));
+            });
+        } finally { ui(activity::finish); }
+    }
+
+    public void testPreferenceSheetsAppearanceAndAccessibility() throws Throwable {
+        Context context = getInstrumentation().getTargetContext();
+        for (String theme : new String[]{"light", "dark"}) {
+            MobilePreferences.set(context, "theme", theme); MobilePreferences.set(context, "language", "zh-CN");
+            Activity activity = launch("general");
+            try {
+                for (String key : new String[]{"language", "theme", "enterMode"}) {
+                    ui(() -> root(activity).findViewWithTag("preference:" + key).performClick());
+                    ui(() -> {
+                        AlertDialog sheet = dialog(activity); View decor = sheet.getWindow().getDecorView();
+                        View panel = decor.findViewWithTag("settingsChoicePanel"); assertNotNull(panel);
+                        assertEquals(new SettingsStyle(activity).background, ((android.graphics.drawable.GradientDrawable) panel.getBackground()).getColor().getDefaultColor());
+                        int selected = key.equals("language") ? 1 : key.equals("theme") ? (theme.equals("dark") ? 2 : 1) : 0;
+                        View row = decor.findViewWithTag("settingsChoice:" + selected);
+                        android.view.accessibility.AccessibilityNodeInfo info = row.createAccessibilityNodeInfo();
+                        assertTrue(info.isCheckable()); assertTrue(info.isChecked()); assertTrue(info.isClickable()); info.recycle();
+                        assertTrue(panel.getWidth() < activity.getResources().getDisplayMetrics().widthPixels);
+                        assertTrue(decor.findViewWithTag("settingsChoiceCancel").getHeight() >= Math.round(48 * activity.getResources().getDisplayMetrics().density));
+                    });
+                    capture(activity, "settings-choice-" + key + "-" + theme);
+                    ui(() -> dialog(activity).cancel());
+                }
+            } finally { ui(activity::finish); }
+        }
+    }
+
+    public void testChoiceSheetSelectsOnceAndCancelDoesNotSelect() throws Throwable {
+        Activity activity = launch("general");
+        try {
+            ui(() -> {
+                int[] chosen = {-1};
+                SettingsChoiceDialog sheet = new SettingsChoiceDialog(activity, "Enter key", new String[]{"Send", "Newline", "Button only"}, 0, "Cancel", value -> chosen[0] = value);
+                sheet.show(); sheet.getWindow().getDecorView().findViewWithTag("settingsChoiceCancel").performClick();
+                assertEquals(-1, chosen[0]); assertFalse(sheet.isShowing());
+                sheet.show(); sheet.getWindow().getDecorView().findViewWithTag("settingsChoice:0").performClick();
+                assertEquals(-1, chosen[0]); assertFalse(sheet.isShowing());
+                sheet.show(); sheet.getWindow().getDecorView().findViewWithTag("settingsChoice:2").performClick();
+                assertEquals(2, chosen[0]); assertFalse(sheet.isShowing());
             });
         } finally { ui(activity::finish); }
     }
@@ -44,8 +89,11 @@ public class SettingsTest extends InstrumentationTestCase {
             ui(() -> root(activity).findViewWithTag("providerAdd").performClick());
             ui(() -> {
                 AlertDialog dialog = dialog(activity); View form = dialog.getWindow().getDecorView();
+                assertEquals(0, dialog.getWindow().getAttributes().flags & android.view.WindowManager.LayoutParams.FLAG_SECURE);
                 field(form, "providerName", "Phone API"); field(form, "providerEndpoint", "http://unsafe.example/v1");
                 field(form, "providerKeys", "test-secret\nsecond-secret"); field(form, "providerModels", "phone-model=upstream-model\nother-model");
+                EditText keyInput = form.findViewWithTag("providerKeys");
+                assertEquals("•••••••••••\n•••••••••••••", keyInput.getTransformationMethod().getTransformation(keyInput.getText(), keyInput).toString());
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); assertTrue(dialog.isShowing());
                 field(form, "providerEndpoint", "https://example.com/v1"); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
                 assertFalse(dialog.isShowing());
@@ -65,6 +113,7 @@ public class SettingsTest extends InstrumentationTestCase {
             ui(() -> root(activity).findViewWithTag("providerEdit:0").performClick());
             ui(() -> {
                 AlertDialog dialog = dialog(activity); View form = dialog.getWindow().getDecorView();
+                assertEquals(0, dialog.getWindow().getAttributes().flags & android.view.WindowManager.LayoutParams.FLAG_SECURE);
                 assertEquals("", ((EditText) form.findViewWithTag("providerKeys")).getText().toString());
                 field(form, "providerName", "Edited API"); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); assertFalse(dialog.isShowing());
             });
@@ -114,13 +163,52 @@ public class SettingsTest extends InstrumentationTestCase {
         } finally { ui(activity::finish); }
     }
 
+    public void testProviderScreenshotsMaskKeysAndKeepImportProtectedInBothThemes() throws Throwable {
+        Context context = getInstrumentation().getTargetContext();
+        for (String theme : new String[]{"light", "dark"}) {
+            MobilePreferences.set(context, "theme", theme);
+            Activity activity = launch("providers");
+            try {
+                ui(() -> root(activity).findViewWithTag("providerAdd").performClick());
+                ui(() -> {
+                    AlertDialog sheet = dialog(activity); View form = sheet.getWindow().getDecorView();
+                    assertEquals(0, sheet.getWindow().getAttributes().flags & android.view.WindowManager.LayoutParams.FLAG_SECURE);
+                    EditText keys = form.findViewWithTag("providerKeys"); keys.requestFocus();
+                    keys.getText().append("secret");
+                    CharSequence masked = keys.getTransformationMethod().getTransformation(keys.getText(), keys);
+                    assertEquals("••••••", masked.toString());
+                    keys.getText().append("7"); assertEquals('•', masked.charAt(masked.length() - 1));
+                    keys.clearFocus();
+                    SettingsStyle style = new SettingsStyle(activity);
+                    for (String tag : new String[]{"providerName", "providerEndpoint", "providerAlternate", "providerKeys", "providerModels"}) {
+                        EditText input = form.findViewWithTag(tag);
+                        android.graphics.drawable.GradientDrawable fill = (android.graphics.drawable.GradientDrawable) input.getBackground().getCurrent();
+                        assertEquals(style.field, fill.getColor().getDefaultColor());
+                        assertTrue(style.field != style.background);
+                        assertEquals(style.ink, input.getCurrentTextColor());
+                    }
+                    ((android.view.inputmethod.InputMethodManager) activity.getSystemService(Context.INPUT_METHOD_SERVICE))
+                        .hideSoftInputFromWindow(keys.getWindowToken(), 0);
+                });
+                capture(activity, "provider-form-" + theme);
+                ui(() -> dialog(activity).getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
+                ui(() -> root(activity).findViewWithTag("providerImport").performClick());
+                ui(() -> {
+                    assertTrue((dialog(activity).getWindow().getAttributes().flags & android.view.WindowManager.LayoutParams.FLAG_SECURE) != 0);
+                    dialog(activity).cancel();
+                });
+            } finally { ui(activity::finish); }
+        }
+    }
+
     public void testArchiveHiddenRestoreAndDelete() throws Throwable {
         LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
         JSONObject conversation = store.createConversation("", "missing/model"); String id = conversation.getString("id");
         conversation.put("title", "Archived research"); conversation.put("draft", "Keep this draft"); store.save();
         Activity local = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
-            ui(() -> root(local).findViewWithTag("localConversationMenu:" + id).performClick());
+            ui(() -> root(local).findViewWithTag("localConversation:" + id).performClick());
+            ui(() -> root(local).findViewWithTag("localChatMenu").performClick());
             ui(() -> {
                 AlertDialog menu = dialog(local);
                 menu.getWindow().getDecorView().findViewWithTag("localConversationArchive").performClick();
@@ -157,7 +245,7 @@ public class SettingsTest extends InstrumentationTestCase {
             ui(() -> {
                 assertNotNull(root(general).findViewWithTag("preference:language"));
                 root(general).findViewWithTag("preference:theme").performClick();
-                assertEquals(2, dialog(general).getListView().getCheckedItemPosition());
+                assertTrue(dialog(general).getWindow().getDecorView().findViewWithTag("settingsChoice:2").isSelected());
                 dialog(general).dismiss();
             });
         } finally { ui(general::finish); }

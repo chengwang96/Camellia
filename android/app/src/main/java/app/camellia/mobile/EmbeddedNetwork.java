@@ -1,6 +1,9 @@
 package app.camellia.mobile;
 
 import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.LinkProperties;
+import android.net.Network;
 import android.os.Handler;
 import android.os.Looper;
 import org.json.JSONObject;
@@ -16,19 +19,94 @@ public final class EmbeddedNetwork {
     @android.annotation.SuppressLint("StaticFieldLeak")
     private static Context context;
     private static Node node;
-    private static final Runnable shutdown = () -> new Thread(EmbeddedNetwork::close, "camellia-tailnet-close").start();
+    private static long nodeRevision;
+    private static NetworkRoute route;
+    private static ConnectivityManager connectivity;
+    private static ConnectivityManager.NetworkCallback networkCallback;
+    private static Runnable networkListener;
+    private static final java.util.concurrent.ExecutorService networkWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private static final Runnable recover = () -> {
+        long revision = route.revision();
+        networkWorker.execute(() -> {
+            synchronized (LOCK) {
+                if (node != null && nodeRevision != route.revision()) close();
+            }
+            handler.post(() -> {
+                if (revision == route.revision() && networkListener != null) networkListener.run();
+            });
+        });
+    };
+    private static volatile long backgroundDeadline;
+    private static int transfers;
+    private static final Runnable shutdown = () -> new Thread(() -> {
+        synchronized (LOCK) {
+            if (transfers == 0 && backgroundDeadline > 0 && android.os.SystemClock.elapsedRealtime() >= backgroundDeadline) close();
+        }
+    }, "camellia-tailnet-close").start();
 
-    public static void initialize(Context application) { context = application.getApplicationContext(); }
+    public static void initialize(Context application) {
+        context = application.getApplicationContext();
+        if (networkCallback != null) return;
+        connectivity = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        Network active = connectivity.getActiveNetwork();
+        LinkProperties links = active == null ? null : connectivity.getLinkProperties(active);
+        route = new NetworkRoute(active, links == null ? null : links.toString());
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override public void onAvailable(Network network) { if (route.available(network)) routeChanged(); }
+            @Override public void onLinkPropertiesChanged(Network network, LinkProperties properties) {
+                if (route.links(network, properties.toString())) routeChanged();
+            }
+            @Override public void onLost(Network network) { if (route.lost(network)) routeChanged(); }
+        };
+        connectivity.registerDefaultNetworkCallback(networkCallback, handler);
+    }
+
+    private static void routeChanged() {
+        handler.removeCallbacks(recover); handler.postDelayed(recover, 400);
+    }
+
+    public static void setNetworkListener(Runnable listener) { networkListener = listener; }
+    public static boolean online() { return route == null || route.online(); }
     public static boolean enabled() { return context != null && context.getSharedPreferences("network-mode", 0).getBoolean("embedded", true); }
     public static void setEnabled(boolean value) {
         if (!context.getSharedPreferences("network-mode", 0).edit().putBoolean("embedded", value).commit()) throw new IllegalStateException("Cannot save network mode");
         if (!value) new Thread(EmbeddedNetwork::close, "camellia-tailnet-close").start();
     }
-    public static void foreground() { handler.removeCallbacks(shutdown); }
-    public static void background() { handler.removeCallbacks(shutdown); handler.postDelayed(shutdown, 30_000); }
+    public static void foreground() {
+        backgroundDeadline = 0; handler.removeCallbacks(shutdown);
+        if (connectivity == null) return;
+        Network active = connectivity.getActiveNetwork();
+        boolean changed = route.available(active);
+        LinkProperties links = active == null ? null : connectivity.getLinkProperties(active);
+        if (route.links(active, links == null ? null : links.toString())) changed = true;
+        if (changed) routeChanged();
+    }
+    public static void background() {
+        backgroundDeadline = android.os.SystemClock.elapsedRealtime() + 5 * 60_000;
+        handler.removeCallbacks(shutdown); handler.postDelayed(shutdown, 5 * 60_000);
+    }
+
+    static void endBackground() {
+        backgroundDeadline = android.os.SystemClock.elapsedRealtime();
+        handler.removeCallbacks(shutdown);
+        handler.post(shutdown);
+    }
+
+    static void retainTransfer() { synchronized (LOCK) { transfers++; } }
+    static void releaseTransfer() {
+        synchronized (LOCK) { transfers = Math.max(0, transfers - 1); }
+        handler.post(() -> {
+            if (backgroundDeadline > 0) {
+                handler.removeCallbacks(shutdown);
+                handler.postDelayed(shutdown, Math.max(0, backgroundDeadline - android.os.SystemClock.elapsedRealtime()));
+            }
+        });
+    }
 
     public static Node node() throws IOException {
         synchronized (LOCK) {
+            long revision = route == null ? 0 : route.revision();
+            if (node != null && nodeRevision != revision) close();
             if (node != null) return node;
             if (context == null || !enabled()) throw new IOException("Embedded network is disabled");
             try {
@@ -43,8 +121,9 @@ public final class EmbeddedNetwork {
                 java.io.File directory = new java.io.File(context.getNoBackupFilesDir(), "tailnet");
                 if (!directory.exists() && !directory.mkdirs()) throw new IOException("Cannot create private network directory");
                 node = Tailnet.newNode(directory.getAbsolutePath(), encrypted);
+                nodeRevision = revision;
                 return node;
-            } catch (Exception error) { throw new IOException("Embedded network could not start", error); }
+            } catch (Exception error) { throw ConnectionFailure.failure(ConnectionFailure.Code.NETWORK_START_FAILED, error); }
         }
     }
 

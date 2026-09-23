@@ -21,6 +21,25 @@ final class LineIcon extends Drawable {
         canvas.scale(getBounds().width() / 24f, getBounds().height() / 24f);
         Path path = new Path();
         switch (kind) {
+            case "edit":
+                path.moveTo(4, 16); path.lineTo(16, 4); path.lineTo(20, 8); path.lineTo(8, 20); path.lineTo(3, 21); path.close();
+                path.moveTo(14, 6); path.lineTo(18, 10); canvas.drawPath(path, paint); break;
+            case "select":
+                for (int row = 0; row < 3; row++) {
+                    float top = 5 + row * 7;
+                    path.moveTo(3, top); path.lineTo(5, top + 2); path.lineTo(8, top - 2);
+                    path.moveTo(12, top); path.lineTo(21, top);
+                }
+                canvas.drawPath(path, paint); break;
+            case "pin":
+                path.moveTo(7, 3); path.lineTo(17, 3); path.moveTo(9, 3); path.lineTo(9, 9);
+                path.lineTo(5, 14); path.lineTo(19, 14); path.lineTo(15, 9); path.lineTo(15, 3);
+                path.moveTo(12, 14); path.lineTo(12, 22); canvas.drawPath(path, paint); break;
+            case "delete":
+                path.moveTo(3, 6); path.lineTo(21, 6); path.moveTo(9, 3); path.lineTo(15, 3);
+                path.moveTo(6, 6); path.lineTo(7, 21); path.lineTo(17, 21); path.lineTo(18, 6);
+                path.moveTo(10, 10); path.lineTo(10, 17); path.moveTo(14, 10); path.lineTo(14, 17);
+                canvas.drawPath(path, paint); break;
             case "code-nowrap":
                 path.moveTo(12, 3); path.lineTo(12, 8); path.moveTo(12, 16); path.lineTo(12, 21);
                 path.moveTo(3, 12); path.lineTo(21, 12); path.moveTo(17, 8); path.lineTo(21, 12); path.lineTo(17, 16);
@@ -58,11 +77,12 @@ final class LineIcon extends Drawable {
             case "settings":
                 canvas.drawLine(3, 6, 21, 6, paint); canvas.drawLine(3, 12, 21, 12, paint); canvas.drawLine(3, 18, 21, 18, paint);
                 canvas.drawCircle(8, 6, 2, paint); canvas.drawCircle(16, 12, 2, paint); canvas.drawCircle(10, 18, 2, paint); break;
+            case "close": canvas.drawLine(6, 6, 18, 18, paint); canvas.drawLine(18, 6, 6, 18, paint); break;
             case "back": path.moveTo(15, 4); path.lineTo(7, 12); path.lineTo(15, 20); canvas.drawPath(path, paint); break;
             case "search": canvas.drawCircle(10.5f, 10.5f, 6.5f, paint); canvas.drawLine(16, 16, 21, 21, paint); break;
             case "folder":
-                path.moveTo(3, 19); path.lineTo(3, 6); path.quadTo(3, 4, 5, 4); path.lineTo(10, 4); path.lineTo(13, 7); path.lineTo(19, 7); path.quadTo(21, 7, 21, 9);
-                path.moveTo(3, 19); path.lineTo(6, 10); path.lineTo(22, 10); path.lineTo(19, 20); path.lineTo(3, 20); canvas.drawPath(path, paint); break;
+                path.moveTo(3, 18); path.lineTo(3, 7); path.quadTo(3, 5.2f, 5, 5.2f); path.lineTo(10, 5.2f); path.lineTo(13, 7.8f); path.lineTo(19, 7.8f); path.quadTo(21, 7.8f, 21, 9.5f);
+                path.moveTo(3, 18); path.lineTo(6, 10.3f); path.lineTo(22, 10.3f); path.lineTo(19, 18.8f); path.lineTo(3, 18.8f); canvas.drawPath(path, paint); break;
             case "computer": canvas.drawRoundRect(4, 3, 20, 15, 2, 2, paint); canvas.drawLine(12, 15, 12, 20, paint); canvas.drawLine(7, 20, 17, 20, paint); break;
             case "phone": canvas.drawRoundRect(6, 2, 18, 22, 3, 3, paint); canvas.drawLine(10, 18, 14, 18, paint); break;
             case "more":

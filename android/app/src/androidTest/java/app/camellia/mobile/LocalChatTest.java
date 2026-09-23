@@ -25,6 +25,97 @@ public class LocalChatTest extends InstrumentationTestCase {
 
     @Override protected void tearDown() throws Exception { encrypted.clear(); super.tearDown(); }
 
+    public void testEditingDraftSurvivesReopeningAndCanBeCancelled() throws Throwable {
+        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        store.importConfig(LocalChatConfig.parse(bundle("https://example.com/v1", "openai").toString()));
+        JSONObject conversation = store.createConversation("", LocalChatConfig.routes(store.config()).get(0).id);
+        String id = conversation.getString("id");
+        conversation.getJSONArray("messages").put(new JSONObject().put("role", "user").put("content", "Original"))
+            .put(new JSONObject().put("role", "assistant").put("content", "Reply"));
+        store.save();
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
+            ui(() -> {
+                View root = activity.getWindow().getDecorView();
+                root.findViewWithTag("localMessage:0").performClick();
+                ((EditText) root.findViewWithTag("localComposer")).setText("Edited draft");
+                assertEquals(View.VISIBLE, root.findViewWithTag("composerEditBanner").getVisibility());
+                activity.onBackPressed();
+            });
+            assertEquals(0, LocalChatDraft.editIndex(new LocalChatStore(activity).conversation(id)));
+            ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
+            ui(() -> {
+                View root = activity.getWindow().getDecorView();
+                assertEquals("Edited draft", ((EditText) root.findViewWithTag("localComposer")).getText().toString());
+                assertEquals(View.VISIBLE, root.findViewWithTag("composerEditBanner").getVisibility());
+                root.findViewWithTag("composerCancelEdit").performClick();
+                assertEquals("", ((EditText) root.findViewWithTag("localComposer")).getText().toString());
+                assertEquals(View.GONE, root.findViewWithTag("composerEditBanner").getVisibility());
+                root.findViewWithTag("localMessage:0").performClick();
+                ((EditText) root.findViewWithTag("localComposer")).setText("");
+                assertEquals(View.VISIBLE, root.findViewWithTag("composerEditBanner").getVisibility());
+                assertFalse(root.findViewWithTag("localSend").isEnabled());
+                activity.onBackPressed();
+            });
+            assertEquals(0, LocalChatDraft.editIndex(new LocalChatStore(activity).conversation(id)));
+            ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
+            ui(() -> {
+                View root = activity.getWindow().getDecorView();
+                assertEquals(View.VISIBLE, root.findViewWithTag("composerEditBanner").getVisibility());
+                ((EditText) root.findViewWithTag("localComposer")).setText("Replacement");
+                assertEquals(View.VISIBLE, root.findViewWithTag("composerEditBanner").getVisibility());
+                root.findViewWithTag("composerCancelEdit").performClick();
+                activity.onBackPressed();
+            });
+            JSONObject saved = new LocalChatStore(activity).conversation(id);
+            assertFalse(saved.has("draftEditIndex"));
+            assertEquals("Original", saved.getJSONArray("messages").getJSONObject(0).getString("content"));
+        } finally { ui(activity::finish); }
+    }
+
+    public void testDraftRejectsStaleEditTarget() throws Exception {
+        JSONObject conversation = new JSONObject().put("messages", new JSONArray()
+            .put(new JSONObject().put("role", "user")).put(new JSONObject().put("role", "assistant")));
+        LocalChatDraft.save(conversation, "draft", 0);
+        assertEquals(0, LocalChatDraft.editIndex(conversation));
+        conversation.getJSONArray("messages").put(new JSONObject().put("role", "user"));
+        assertEquals(-1, LocalChatDraft.editIndex(conversation));
+        LocalChatDraft.save(conversation, "draft", 1);
+        assertEquals(-1, LocalChatDraft.editIndex(conversation));
+        LocalChatDraft.save(conversation, "", 2);
+        assertEquals(2, LocalChatDraft.editIndex(conversation));
+        LocalChatDraft.save(conversation, "", -1);
+        assertFalse(conversation.has("draftEditIndex"));
+    }
+
+    public void testRunningReplyUsesMarkdownWithoutRebuildingProcess() throws Throwable {
+        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        JSONObject conversation = store.createConversation("", "missing-route");
+        String id = conversation.getString("id");
+        conversation.getJSONArray("messages").put(new JSONObject().put("role", "assistant").put("content", "")); store.save();
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
+            ui(() -> {
+                try {
+                var storeField = LocalChatActivity.class.getDeclaredField("store"); storeField.setAccessible(true);
+                JSONObject reply = ((LocalChatStore) storeField.get(activity)).conversation(id).getJSONArray("messages").getJSONObject(0);
+                var replyField = LocalChatActivity.class.getDeclaredField("runningReply"); replyField.setAccessible(true); replyField.set(activity, reply);
+                var runningField = LocalChatActivity.class.getDeclaredField("runningId"); runningField.setAccessible(true); runningField.set(activity, id);
+                var latestField = LocalChatActivity.class.getDeclaredField("latest"); latestField.setAccessible(true); latestField.set(activity, "**Streaming**");
+                var render = LocalChatActivity.class.getDeclaredMethod("renderMessages"); render.setAccessible(true); render.invoke(activity);
+                View block = activity.getWindow().getDecorView().findViewWithTag("localMessage:0");
+                assertNotNull(block.findViewWithTag("markdown"));
+                latestField.set(activity, "**Streaming**\n\n- More output");
+                var update = LocalChatActivity.class.getDeclaredMethod("renderLiveBody"); update.setAccessible(true); update.invoke(activity);
+                assertSame(block, activity.getWindow().getDecorView().findViewWithTag("localMessage:0"));
+                assertNotNull(block.findViewWithTag("markdown"));
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+        } finally { ui(activity::finish); }
+    }
+
     private JSONObject bundle(String baseUrl, String protocol) throws Exception {
         JSONObject provider = new JSONObject().put("id", "test-provider").put("name", "Test API").put("protocol", protocol)
             .put("baseUrl", baseUrl).put("keys", new JSONArray().put(new JSONObject().put("key", "test-secret").put("enabled", true)))
@@ -125,6 +216,38 @@ public class LocalChatTest extends InstrumentationTestCase {
             }
         }
     }
+
+    public void testStreamingErrorsPreserveProviderDetail() throws Exception {
+        try (MockApi api = new MockApi(200, "text/event-stream",
+                "data: {\"error\":{\"message\":\"upstream overloaded\",\"code\":\"overloaded\"}}\n\n")) {
+            try {
+                new LocalChatClient().chat(route(api.url(), "openai"), request(), text -> {});
+                fail("Accepted streaming error");
+            } catch (java.io.IOException error) {
+                assertTrue(error.getMessage().contains("upstream overloaded"));
+                assertTrue(error.getMessage().contains("overloaded"));
+            }
+        }
+    }
+
+    public void testLocalStatusOpensSharedErrorDetails() throws Throwable {
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            getInstrumentation().waitForIdleSync();
+            ui(() -> {
+                View status = activity.getWindow().getDecorView().findViewWithTag("localStatus");
+                assertNotNull(status);
+                assertTrue(status.hasOnClickListeners());
+                status.performClick();
+            });
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
+        } finally {
+            finishActivity(activity);
+        }
+    }
+
     private LocalChatConfig.Route route(String url, String protocol) { return new LocalChatConfig.Route("test", "Test", "upstream-model", protocol, url, "test-secret"); }
 
     public void testExplicitClientIdentityForBothProtocolsAndResponseModes() throws Exception {
@@ -304,9 +427,9 @@ public class LocalChatTest extends InstrumentationTestCase {
                 String id = new LocalChatStore(getInstrumentation().getTargetContext()).conversations().getJSONObject(0).getString("id");
                 ui(() -> {
                     View root = activity.getWindow().getDecorView(); View model = root.findViewWithTag("localModel"), back = root.findViewWithTag("localBack");
-                    assertSame(back.getParent(), model.getParent().getParent());
-                    assertTrue(((View) model.getParent()).getLeft() >= back.getRight());
-                    assertEquals("K3", ((android.widget.TextView) ((android.view.ViewGroup) model).getChildAt(0)).getText().toString());
+                    assertSame(root.findViewWithTag("localComposerBar"), model.getParent().getParent());
+                    assertNotSame(back.getParent(), model.getParent());
+                    assertTrue(((android.widget.TextView) model).getText().toString().startsWith("K3 · "));
                     assertTrue(model.getWidth() < ((View) model.getParent()).getWidth());
                     ((EditText) root.findViewWithTag("localComposer")).setText("Hello"); model.performClick();
                     assertTrue(picker(activity).findViewWithTag("modelOption:test-provider/kimi-k3").isSelected());

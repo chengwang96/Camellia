@@ -15,7 +15,7 @@ with sync_playwright() as playwright:
     page.add_script_tag(path=str(repo / 'src/renderer/chat/claude-sidebar.js'))
     page.evaluate("""async () => {
       window.calls = []; window.opened = []; window.menus = [];
-      window.harnessId = 'codex'; window.chatProfile = {fixedCwd:true};
+      window.harnessId = 'codex'; window.chatProfile = {fixedCwd:true}; window.sharedChat = true;
       window.chatApi = {
         listSessions: async () => ({ok:true, sessions:[
           {id:'first',title:'First',workspaceId:'workspace',mtimeMs:Date.now()},
@@ -31,7 +31,7 @@ with sync_playwright() as playwright:
         return element;
       };
       window.sidebar = createClaudeSidebar({$:lookup,context:{sessionId:'first',workspaceId:'workspace'},
-        contextBusy:()=>false,canChangeContext:()=>true,setStatus:()=>{},newSession:()=>{},
+        contextBusy:()=>false,canChangeContext:()=>true,setStatus:message=>{throw new Error(message);},newSession:()=>{},
         openHistorySession:id=>opened.push(id),forkSession:()=>{},closePops:()=>{},
         openActionMenu:(anchor,actions)=>menus.push(actions.map(action=>action.label))});
       await sidebar.load();
@@ -126,6 +126,70 @@ with sync_playwright() as playwright:
     page.mouse.up()
     expect(page.locator('.session-drag-preview')).to_have_count(0)
     expect(page.locator('.session-dragging')).to_have_count(0)
+    page.evaluate("""async () => {
+      document.getElementById('sessionList').style.height = '600px';
+      const state = await chatApi.listSessions();
+      chatApi.listSessions = async () => state;
+      chatApi.metaOp = async payload => {
+        calls.push(payload);
+        if (payload.op === 'move-workspace') {
+          const source = state.workspaces.findIndex(workspace => workspace.id === payload.workspaceId);
+          const [workspace] = state.workspaces.splice(source, 1);
+          const target = state.workspaces.findIndex(workspace => workspace.id === payload.targetWorkspaceId);
+          state.workspaces.splice(target + (payload.placement === 'after' ? 1 : 0), 0, workspace);
+        }
+        return {ok:true};
+      };
+    }""")
+    page.wait_for_timeout(360)
+    page.locator('[data-workspace-id="workspace"] .ws-name').click()
+    page.wait_for_function('calls.length === 4')
+    assert page.evaluate('calls[3]') == dict(op='toggle-collapse', workspaceId='workspace')
+    hold('[data-workspace-id="target"] .ws-row')
+    expect(page.locator('[data-workspace-id="target"]')).to_have_class('session-dragging')
+    target = page.locator('[data-workspace-id="workspace"] .ws-row').bounding_box()
+    page.mouse.move(target['x'] + 70, target['y'] + 3)
+    expect(page.locator('[data-workspace-id="workspace"]')).to_have_class('session-drop-before')
+    page.mouse.up()
+    page.wait_for_function('calls.length === 5')
+    assert page.evaluate('calls[4]') == dict(op='move-workspace', workspaceId='target', targetWorkspaceId='workspace', placement='before')
+    assert page.locator('section[data-workspace-id]').evaluate_all('(elements) => elements.map(element => element.dataset.workspaceId)') == ['target', 'workspace']
+    expect(page.locator('.session-drag-preview')).to_have_count(0)
+    hold('[data-workspace-id="target"] .ws-row')
+    target = page.locator('[data-workspace-id="workspace"]').bounding_box()
+    page.mouse.move(target['x'] + 70, target['y'] + target['height'] - 3)
+    expect(page.locator('[data-workspace-id="workspace"]')).to_have_class('session-drop-after')
+    page.screenshot(path=str(capture / 'workspace-drag-motion.png'))
+    page.mouse.up()
+    page.wait_for_function('calls.length === 6')
+    assert page.evaluate('calls[5]') == dict(op='move-workspace', workspaceId='target', targetWorkspaceId='workspace', placement='after')
+    assert page.locator('section[data-workspace-id]').evaluate_all('(elements) => elements.map(element => element.dataset.workspaceId)') == ['workspace', 'target']
+    hold('[data-workspace-id="workspace"] .ws-row')
+    page.mouse.move(*center('[data-workspace-id="target"] .ws-row'))
+    page.keyboard.press('Escape')
+    page.mouse.up()
+    assert page.evaluate('calls.length') == 6
+    hold('[data-workspace-id="workspace"] .ws-row')
+    page.mouse.up()
+    assert page.evaluate('calls.length') == 6
+    hold('[data-workspace-id="workspace"] .ws-row')
+    page.mouse.move(*center('[data-sid="third"]'))
+    page.mouse.up()
+    assert page.evaluate('calls.length') == 6
+    page.mouse.move(*center('[data-workspace-id="workspace"] .ws-row'))
+    page.mouse.down()
+    page.mouse.move(700, 500)
+    page.wait_for_timeout(400)
+    expect(page.locator('.session-dragging')).to_have_count(0)
+    page.mouse.up()
+    page.locator('[data-workspace-id="workspace"] .ws-row .session-more').last.hover()
+    page.mouse.down()
+    page.wait_for_timeout(400)
+    expect(page.locator('.session-dragging')).to_have_count(0)
+    page.mouse.up()
+    assert 'Rename workspace' in page.evaluate('menus.at(-1)'), page.evaluate('menus')
+    assert page.evaluate('calls.length') == 6
+    assert page.evaluate('opened') == ['second']
     assert not errors, errors
     browser.close()
     print('Sidebar drag UI checks passed')

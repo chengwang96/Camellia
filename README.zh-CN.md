@@ -66,11 +66,11 @@ npm start
 
 使用账号授权时，可直接打开 **Settings → Providers & Keys → Account sign-in**，选择 **Kimi account**、**Google account · Antigravity** 或 **ChatGPT account**。快捷入口会打开对应引擎的账号设置，并选中账号模式；如提示保存，先点 **Save settings**，再点 **Sign in**。添加 API 供应商的弹窗中也提供 Kimi 和 Google 的账号入口；**Kimi Code (API key)** 则用于填写订阅 API Key。
 
-使用 ChatGPT 订阅时，打开 **Settings → Engine Settings → Codex CLI**，选择 **ChatGPT account** 并保存，点击 **Sign in with ChatGPT** 在浏览器完成官方登录，即可读取账号模型和额度。Codex 的配置、凭据与历史保存在 Camellia 自己的数据目录，不会修改个人 `~/.codex`。也可选择 **API key / third-party API** 使用统一 Key 池。
+使用 ChatGPT 订阅时，打开 **Settings → Engine Settings → Codex CLI**，选择 **ChatGPT account** 并保存，点击 **Sign in with ChatGPT** 在浏览器完成官方登录，即可读取账号模型和额度。点击 **Add another account** 可同时登录第二个 ChatGPT 账号：新会话使用选中的账号，额度用尽时自动切换到仍有额度的账号，已开始的会话保持原账号。Codex 的配置、凭据与历史保存在 Camellia 自己的数据目录，不会修改个人 `~/.codex`。也可选择 **API key / third-party API** 使用统一 Key 池。
 
-使用 Google 订阅时，在 **Settings → Engine Settings → Antigravity** 中选择 **Google subscription** 并保存，点击 **Sign in with Google** 完成官方 CLI 登录，再点击 **Refresh account** 获取账号可用模型，无需填写 API Key。
+使用 Google 订阅时，在 **Settings → Engine Settings → Antigravity** 中选择 **Google subscription** 并保存，点击 **Sign in with Google** 完成官方 CLI 登录，再点击 **Refresh account** 获取账号可用模型，无需填写 API Key。官方 CLI 在同一个系统用户下只保留一个 Google 登录，因此 Camellia 只显示一个 Google 账号。
 
-使用 Kimi Code 订阅时，打开 **Settings → Engine Settings → Kimi Code**，选择 **Kimi subscription** 和账号注册地区，保存后点击 **Sign in with Kimi**。在浏览器完成官方设备授权后，账号可用模型会自动加载，无需填写 API Key。已登录账号会显示在 **Providers & Keys** 和 **Usage**，可在 **Balances & Quotas** 查看周期额度、重置时间和历史趋势。此登录与个人 Kimi CLI 独立保存。也可选择 **Shared API routes** 使用统一 Key 池，包括 Kimi Code 订阅 Key。详见 [Kimi 订阅配置](docs/configuration.md#kimi-code-subscription)（英文）。
+使用 Kimi Code 订阅时，打开 **Settings → Engine Settings → Kimi Code**，选择 **Kimi subscription** 和账号注册地区，保存后点击 **Sign in with Kimi**。在浏览器完成官方设备授权后，账号可用模型会自动加载，无需填写 API Key。每个已登录账号都会显示在 **Providers & Keys** 和 **Usage**，可在 **Balances & Quotas** 查看周期额度、重置时间和历史趋势。点击 **Add another account** 可同时登录多个 Kimi 账号，新会话使用选中的账号，或自动切换到仍有额度的账号。这些登录与个人 Kimi CLI 独立保存。也可选择 **Shared API routes** 使用统一 Key 池，包括 Kimi Code 订阅 Key。详见 [Kimi 订阅配置](docs/configuration.md#kimi-code-subscription)（英文）。
 
 连接验证会发送一条简短的模型请求，可能产生少量费用。成功读取模型目录不代表对目录中的所有模型都具有调用权限。
 

@@ -35,6 +35,29 @@ function fixture(t, overrides = {}) {
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
 
+test('reply read state is shared, monotonic, persisted and does not hide later replies', async context => {
+  const harness = fixture(context);
+  const conversation = harness.manager.create('codex', undefined, 'Replies');
+  conversation.lastReplyAt = 1000;
+  harness.manager.save(conversation);
+  const updatedAt = conversation.updatedAt, seq = conversation.seq;
+  assert.deepEqual(await harness.manager.command('codex', 'mark-reply-read', { id: conversation.id, at: 1000 }), { ok: true, replyReadAt: 1000 });
+  assert.equal(harness.events.filter(event => event.type === 'conversation:read').length, 1);
+  harness.manager.markReplyRead(conversation.id, 500);
+  harness.manager.markReplyRead(conversation.id, 9000);
+  assert.equal(harness.events.filter(event => event.type === 'conversation:read').length, 1);
+  assert.equal(conversation.updatedAt, updatedAt);
+  assert.equal(conversation.seq, seq);
+  const restored = harness.restart();
+  assert.equal(restored.load('codex', conversation.id).replyReadAt, 1000);
+  restored.get(conversation.id).lastReplyAt = 2000;
+  restored.markReplyRead(conversation.id, 1000);
+  const listed = (await restored.list('codex', {})).sessions.find(session => session.id === conversation.id);
+  assert.equal(listed.lastReplyAt, 2000);
+  assert.equal(listed.replyReadAt, 1000);
+  for (const at of [-1, NaN, '2000', null, 1.5]) assert.throws(() => restored.markReplyRead(conversation.id, at), /timestamp/);
+});
+
 async function nativeFixture(context, compact) {
   const harness = fixture(context);
   harness.drivers.codex.nativeCompaction = true;
@@ -163,6 +186,68 @@ test('native overflow recovery keeps one user turn and waits for the continued r
   assert.equal(manager.messages(conversation).filter(row => row.role === 'user').length, 2);
   harness.finish('codex', 'success', 'Finished');
   assert.equal((await run.done).result, 'Finished');
+});
+
+test('the Codex app-server input character cap counts as context overflow', async context => {
+  const harness = await nativeFixture(context, async () => ({ ok: true }));
+  const { manager, conversation } = harness;
+  const run = await manager.send('codex', { sessionId: conversation.id, prompt: 'Finish the work' });
+  harness.finish('codex', 'error', 'Input exceeds the maximum length of 1048576 characters.');
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /Continue the unfinished user task/);
+  assert.equal(manager.messages(conversation).filter(row => row.role === 'user').length, 2);
+  harness.finish('codex', 'success', 'Finished');
+  assert.equal((await run.done).result, 'Finished');
+});
+
+test('a replayed history over the Codex input character cap compacts before sending', async context => {
+  const harness = fixture(context);
+  const waitFor = async check => { for (let i = 0; i < 200 && !check(); i++) await new Promise(r => setImmediate(r)); };
+  const first = await harness.manager.send('codex', { prompt: 'Remember the original task' });
+  harness.finish('codex'); await first.done;
+  const conversation = harness.manager.get(first.sessionId);
+  // A million-token window leaves the token guard silent while the app-server
+  // still refuses any single turn whose input text exceeds 1 << 20 characters.
+  conversation.engineSettings.codex.contextWindow = 997500;
+  harness.manager.append(conversation, { role: 'tool', text: 'Oversized tool output '.repeat(44000) });
+  conversation.segments.codex.cursor = 0;
+  harness.manager.save(conversation);
+  const run = harness.manager.send('codex', { sessionId: conversation.id, prompt: 'Continue' });
+  await waitFor(() => /compact working context/.test(harness.sent.at(-1)?.prompt || ''));
+  // One engine summary request has to stay under the same cap as the replay.
+  assert.ok(harness.sent.at(-1).prompt.length <= 1 << 20);
+  harness.finish('codex', 'success', '## Summary of the oversized turn');
+  await waitFor(() => harness.sent.length > 1 && !/Next history fragment/.test(harness.sent.at(-1).prompt));
+  assert.match(harness.sent.at(-1).prompt, /Continue/);
+  assert.doesNotMatch(harness.sent.at(-1).prompt, /Oversized tool output/);
+  assert.ok(harness.manager.get(conversation.id).segments.codex.compactFile);
+  harness.finish('codex');
+  await run.done;
+});
+
+test('a Markdown handoff compacts a Codex replay over the input character cap first', async context => {
+  const harness = fixture(context);
+  const waitFor = async check => { for (let i = 0; i < 200 && !check(); i++) await new Promise(r => setImmediate(r)); };
+  const first = await harness.manager.send('codex', { prompt: 'Remember the original task' });
+  harness.finish('codex'); await first.done;
+  const conversation = harness.manager.get(first.sessionId);
+  conversation.engineSettings.codex.contextWindow = 997500;
+  harness.manager.append(conversation, { role: 'tool', text: 'Oversized tool output '.repeat(44000) });
+  conversation.segments.codex.cursor = 0;
+  harness.manager.save(conversation);
+  const switching = harness.manager.switchEngine(conversation.id, 'kimi', 'markdown');
+  await waitFor(() => /compact working context/.test(harness.sent.at(-1)?.prompt || ''));
+  assert.ok(harness.sent.at(-1).prompt.length <= 1 << 20);
+  harness.finish('codex', 'success', '## Summary of the oversized turn');
+  await waitFor(() => /self-contained Markdown handoff/.test(harness.sent.at(-1)?.prompt || ''));
+  assert.doesNotMatch(harness.sent.at(-1).prompt, /Oversized tool output/);
+  harness.finish('codex', 'success', '# Handoff\n\nA handoff.');
+  await waitFor(() => harness.sent.at(-1)?.engine === 'kimi');
+  harness.finish('kimi', 'success', 'Acknowledged');
+  const result = await switching;
+  assert.equal(result.engine, 'kimi');
+  assert.equal(harness.manager.get(conversation.id).currentEngine, 'kimi');
+  assert.ok(harness.manager.get(conversation.id).handoffs.at(-1).file);
 });
 
 test('pausing a goal during native overflow compaction interrupts it without advancing rounds', async context => {
@@ -980,6 +1065,48 @@ test('new conversations use the default model to generate a title of at most ten
   assert.ok(f.events.some(event => event.type === 'conversation:title' && event.title === '修复会话默认标题生成'));
 });
 
+test('pre-created conversations generate a title only for their first user message', async t => {
+  for (const engine of ENGINES) {
+    const calls = [];
+    const harness = fixture(t, { generateTitle: async message => { calls.push(message); return ''; } });
+    const conversation = harness.manager.create(engine);
+    await harness.manager.send(engine, { sessionId: conversation.id, prompt: 'First request', displayText: 'Visible request' });
+    await harness.flush();
+    assert.deepEqual(calls, ['Visible request']);
+    harness.finish(engine);
+    await harness.manager.send(engine, { sessionId: conversation.id, prompt: 'Second request' });
+    await harness.flush();
+    assert.deepEqual(calls, ['Visible request']);
+    harness.finish(engine);
+  }
+});
+
+test('automatic titles skip custom names and preserve a rename during generation', async t => {
+  let resolveTitle;
+  const calls = [];
+  const harness = fixture(t, { generateTitle: message => {
+    calls.push(message);
+    return new Promise(resolve => { resolveTitle = resolve; });
+  } });
+  const custom = harness.manager.create('codex', undefined, 'Custom name');
+  await harness.manager.send('codex', { sessionId: custom.id, prompt: 'Custom request' });
+  harness.finish('codex');
+  const renamed = harness.manager.create('codex');
+  await harness.manager.command('codex', 'rename-session', { id: renamed.id, title: 'Manual name' });
+  await harness.manager.send('codex', { sessionId: renamed.id, prompt: 'Renamed request' });
+  harness.finish('codex');
+  assert.deepEqual(calls, []);
+  const pending = harness.manager.create('codex');
+  await harness.manager.send('codex', { sessionId: pending.id, prompt: 'Pending request' });
+  await harness.manager.command('codex', 'rename-session', { id: pending.id, title: 'Keep this name' });
+  resolveTitle('Generated');
+  await harness.flush();
+  assert.deepEqual(calls, ['Pending request']);
+  assert.equal(harness.manager.workspaces.sessionMeta().titles[pending.id], 'Keep this name');
+  assert.equal(harness.events.filter(event => event.type === 'conversation:title').length, 0);
+  harness.finish('codex');
+});
+
 test('all five engines restart the last turn without its old reply or tool context, preserving earlier turns', async t => {
   for (const engine of ENGINES) {
     const f = fixture(t);
@@ -1724,6 +1851,196 @@ for (const cancel of [false, true]) test('legacy Codex edit boundary lookup ' + 
   assert.equal(manager.busy(conversation.id), false);
 });
 
+test('an edit whose Codex native session is gone is revised from the stored history', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const first = await manager.send('codex', { prompt: 'EARLIER_TASK' });
+  harness.finish('codex'); await first.done;
+  const conversation = manager.get(first.sessionId);
+  manager.append(conversation, { role: 'tool', text: 'EARLIER_TOOL_RESULT' });
+  conversation.segments.codex.cursor = conversation.seq;
+  const original = await manager.send('codex', { sessionId: conversation.id, prompt: 'ORIGINAL_TASK' });
+  harness.finish('codex'); await original.done;
+  const nativeId = conversation.segments.codex.nativeId;
+  harness.drivers.codex.nativeEditing = true;
+  let killed = false;
+  const ensure = harness.drivers.codex.ensure;
+  harness.drivers.codex.ensure = options => {
+    const session = ensure(options);
+    session.editBoundary = () => { throw new Error('no rollout found for thread id ' + options.sessionId); };
+    session.kill = () => { killed = true; };
+    return session;
+  };
+  const revised = await manager.send('codex', { sessionId: conversation.id, editSeq: original.userSeq, prompt: 'REVISED_TASK' });
+  assert.equal(killed, true);
+  assert.equal(conversation.retiredSegments.at(-1).nativeId, nativeId);
+  const sent = harness.sent.at(-1);
+  assert.equal(sent.opts.sessionId, undefined);
+  assert.equal(sent.opts.fork, undefined);
+  assert.match(sent.prompt, /EARLIER_TOOL_RESULT/);
+  assert.match(sent.prompt, /REVISED_TASK/);
+  assert.doesNotMatch(sent.prompt, /ORIGINAL_TASK/);
+  harness.finish('codex'); await revised.done;
+});
+
+test('a continuation whose Codex native session is gone retries from the stored history', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const first = await manager.send('codex', { prompt: 'FIRST_TASK' });
+  harness.finish('codex'); await first.done;
+  const conversation = manager.get(first.sessionId);
+  const nativeId = conversation.segments.codex.nativeId;
+  manager.append(conversation, { role: 'tool', text: 'NATIVE_ONLY_HISTORY' });
+  conversation.segments.codex.cursor = conversation.seq;
+  const before = harness.sent.length;
+  const ensure = harness.drivers.codex.ensure;
+  harness.drivers.codex.ensure = options => {
+    const session = ensure(options);
+    if (options.sessionId) session.sendUserMessage = prompt => {
+      session.running = true;
+      harness.sent.push({ engine: 'codex', prompt, opts: options, session });
+      manager.capture('codex', { type: 'result', subtype: 'error', is_error: true, session_id: null, runId: session.gen,
+        result: 'no rollout found for thread id ' + options.sessionId });
+      return true;
+    };
+    return session;
+  };
+  const next = await manager.send('codex', { sessionId: conversation.id, prompt: 'CONTINUE_TASK' });
+  await harness.flush();
+  assert.equal(harness.sent.length, before + 2);
+  const retry = harness.sent.at(-1);
+  assert.equal(retry.opts.sessionId, undefined);
+  assert.match(retry.prompt, /NATIVE_ONLY_HISTORY/);
+  assert.match(retry.prompt, /CONTINUE_TASK/);
+  assert.equal(conversation.retiredSegments.at(-1).nativeId, nativeId);
+  assert.equal(conversation.segments.codex.nativeId, retry.session.sessionId);
+  assert.equal(harness.events.filter(event => String(event.result || '').includes('no rollout found')).length, 0);
+  harness.finish('codex'); await next.done;
+});
+
+test('Codex missing-thread matching excludes stderr diagnostics and unrelated errors', context => {
+  const { manager } = fixture(context);
+  for (const message of ['thread 01a0d813-6aac-7c93-b94b-52b7a8698620 not found', 'Thread id: "thread-fixture" not found.', 'no rollout found for thread id fixture']) {
+    assert.equal(manager.nativeSessionLost('codex', new Error(message)), true, message);
+  }
+  for (const message of ['failed to record rollout items: thread fixture not found', 'Tool failed: thread fixture not found',
+    'Model not found', 'Codex request timed out: turn/start', 'thread fixture not found in response text']) {
+    assert.equal(manager.nativeSessionLost('codex', message), false, message);
+  }
+  assert.equal(manager.nativeSessionLost('claude', 'thread fixture not found'), false);
+});
+
+test('Codex missing-thread recovery preserves run identity and retries only once', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const first = await manager.send('codex', { prompt: 'FIRST_TASK' });
+  harness.finish('codex'); await first.done;
+  const next = await manager.send('codex', { sessionId: first.sessionId, prompt: 'CONTINUE_TASK', attachments: [{ path: 'fixture.png', isImage: true }] });
+  const failed = harness.sent.at(-1).session;
+  harness.finish('codex', 'error', 'thread native-fixture not found', failed);
+  await harness.flush();
+  assert.equal(harness.sent.length, 3);
+  const retry = harness.sent.at(-1);
+  assert.equal(retry.opts.sessionId, undefined);
+  assert.match(retry.prompt, /FIRST_TASK/);
+  assert.match(retry.prompt, /CONTINUE_TASK/);
+  const live = manager.live('codex', first.sessionId).live;
+  assert.equal(live.runId, next.runId);
+  assert.equal(live.userSeq, next.userSeq);
+  assert.equal(live.attachments[0].path, 'fixture.png');
+  assert.equal(manager.messages(manager.get(first.sessionId)).filter(row => row.role === 'user').length, 2);
+  harness.finish('codex', 'error', 'thread late-old-thread not found', failed);
+  assert.equal(manager.active.get(first.sessionId).session, retry.session);
+  harness.finish('codex', 'error', 'thread replacement not found');
+  assert.equal((await next.done).is_error, true);
+  assert.equal(harness.sent.length, 3);
+  assert.equal(manager.busy(first.sessionId), false);
+});
+
+for (const progress of ['completed-tool', 'thinking', 'pending-approval', 'text']) {
+  test(`missing native session after ${progress} does not replay executed work`, async context => {
+    const harness = fixture(context), manager = harness.manager;
+    const first = await manager.send('codex', { prompt: 'FIRST_TASK' });
+    harness.finish('codex'); await first.done;
+    const next = await manager.send('codex', { sessionId: first.sessionId, prompt: 'CONTINUE_TASK' });
+    const session = harness.sent.at(-1).session;
+    const emit = event => manager.capture('codex', { ...event, conversationId: first.sessionId, runId: session.gen });
+    if (progress === 'completed-tool') {
+      emit({ type: 'gui:tool', id: 'write-file', name: 'fileChange', status: 'in_progress' });
+      emit({ type: 'gui:tool', id: 'write-file', name: 'fileChange', status: 'completed' });
+      assert.equal(manager.active.get(first.sessionId).tools.size, 0);
+    } else if (progress === 'thinking') {
+      emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Checking the task' } } });
+    } else if (progress === 'pending-approval') {
+      emit({ type: 'gui:permission', requestId: 'approval', toolName: 'shell' });
+    } else emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Started work' } } });
+    harness.finish('codex', 'error', 'no rollout found for thread id fixture');
+    await harness.flush();
+    assert.equal(harness.sent.length, 2);
+    assert.equal((await next.done).is_error, true);
+    assert.equal(manager.busy(first.sessionId), false);
+    assert.equal(harness.events.filter(event => event.runId === next.runId && event.type === 'result').length, 1);
+  });
+}
+
+test('stop during missing-thread recovery prevents a replacement request', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const first = await manager.send('codex', { prompt: 'FIRST_TASK' });
+  harness.finish('codex'); await first.done;
+  const next = await manager.send('codex', { sessionId: first.sessionId, prompt: 'CONTINUE_TASK' });
+  let release;
+  manager.prepare = () => new Promise(resolve => { release = resolve; });
+  harness.finish('codex', 'error', 'thread fixture not found');
+  await harness.flush();
+  assert.equal(typeof release, 'function');
+  await manager.cancel({ sessionId: first.sessionId, runId: next.runId });
+  release();
+  await harness.flush();
+  assert.equal((await next.done).subtype, 'stopped');
+  assert.equal(harness.sent.length, 2);
+  assert.equal(manager.busy(first.sessionId), false);
+});
+
+test('a missing native fork retries an accepted revision without its discarded reply', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const first = await manager.send('codex', { prompt: 'EARLIER_TASK' });
+  harness.finish('codex'); await first.done;
+  const original = await manager.send('codex', { sessionId: first.sessionId, prompt: 'ORIGINAL_TASK' });
+  harness.finish('codex', 'success', 'DISCARDED_REPLY'); await original.done;
+  const conversation = manager.get(first.sessionId);
+  conversation.segments.codex.editCheckpoint = { userSeq: original.userSeq, lastTurnId: 'prior-turn' };
+  const revised = await manager.send('codex', { sessionId: first.sessionId, editSeq: original.userSeq, prompt: 'REVISED_TASK' });
+  assert.equal(harness.sent.at(-1).opts.fork, true);
+  harness.finish('codex', 'error', 'thread fixture not found');
+  await harness.flush();
+  const retry = harness.sent.at(-1);
+  assert.equal(retry.opts.sessionId, undefined);
+  assert.equal(retry.opts.fork, undefined);
+  assert.match(retry.prompt, /EARLIER_TASK/);
+  assert.match(retry.prompt, /REVISED_TASK/);
+  assert.doesNotMatch(retry.prompt, /ORIGINAL_TASK|DISCARDED_REPLY/);
+  harness.finish('codex'); await revised.done;
+});
+
+test('native compaction on a lost Codex session falls back to the portable summary', async context => {
+  const harness = fixture(context);
+  harness.drivers.codex.nativeCompaction = true;
+  const ensure = harness.drivers.codex.ensure;
+  harness.drivers.codex.ensure = options => {
+    const session = ensure(options);
+    session.compact = () => { throw new Error('no rollout found for thread id ' + options.sessionId); };
+    return session;
+  };
+  const first = await harness.manager.send('codex', { prompt: 'Remember the original task' });
+  harness.finish('codex'); await first.done;
+  const conversation = harness.manager.get(first.sessionId);
+  const nativeId = conversation.segments.codex.nativeId;
+  const pending = harness.manager.compact(conversation.id);
+  await harness.flush();
+  harness.finish('codex', 'success', 'Portable summary');
+  await pending;
+  assert.equal(conversation.lastCompaction.route, 'portable');
+  assert.equal(conversation.lastCompaction.reason, 'native-session-unavailable');
+  assert.equal(conversation.retiredSegments.at(-1).nativeId, nativeId);
+});
+
 test('native compaction diagnostics distinguish supported and unsupported routes', async context => {
   const native = await nativeFixture(context, async () => {});
   await native.manager.compact(native.conversation.id);
@@ -2214,6 +2531,26 @@ test('summary rescue rebuilds from full history if the accumulated summary no lo
   assert.ok(harness.sent.at(-1).prompt.includes('HISTORY-END'));
 });
 
+test('pi-ai context overflow wording triggers compression retry instead of failing compaction', async context => {
+  const harness = fixture(context, { modelContextWindow: () => 20000 });
+  const manager = harness.manager, conversation = manager.create('dsh');
+  manager.append(conversation, { role: 'user', text: 'HISTORY-START ' + 'x'.repeat(30000) + ' HISTORY-END' });
+  const pending = manager.compact(conversation.id);
+  await harness.flush();
+  const originalSize = harness.sent.at(-1).prompt.length;
+  harness.finish('dsh', 'error', 'Internal error: turn failed: pi-ai detected context overflow for model "openai/openai/gpt-6-astra"');
+  await harness.flush();
+  assert.ok(harness.sent.at(-1).prompt.length < originalSize);
+  assert.match(harness.sent.at(-1).prompt, /compact working context/);
+  let fragments = 0;
+  while (manager.busy(conversation.id)) {
+    assert.ok(++fragments < 10);
+    harness.finish('dsh', 'success', 'Compact summary retained');
+    await harness.flush();
+  }
+  assert.ok((await pending).file);
+});
+
 test('summary rescue exhaustion retains native mapping, full history and a partial checkpoint', async context => {
   const harness = fixture(context, { modelContextWindow: () => 100000 });
   const run = await harness.manager.send('kimi', { prompt: 'Original task' });
@@ -2512,4 +2849,109 @@ test('late events from a previous native turn cannot finish a conversation durin
   f.finish('claude', 'success', 'New reply');
   assert.equal((await next.done).result, 'New reply');
   assert.ok(!f.manager.messages(f.manager.get(first.sessionId)).some(m => m.text === 'Late old reply'));
+});
+
+test('a routable model compacts through parallel router summaries and starts no engine session', async context => {
+  const calls = [], statuses = [];
+  let running = 0, peak = 0, conversationId, checkpoint = null;
+  const harness = fixture(context, { onStatus: value => statuses.push(value),
+    summarize: { available: model => model === 'fixture', run: async options => {
+      running++; peak = Math.max(peak, running);
+      await new Promise(resolve => setImmediate(resolve));
+      running--;
+      if (options.kind === 'reduce') checkpoint = harness.manager.get(conversationId).compactionRecovery?.summary || null;
+      calls.push(options);
+      return { text: options.kind === 'reduce' ? 'MERGED-CONTEXT' : 'PART ' + calls.length };
+    } } });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  conversationId = conversation.id;
+  manager.append(conversation, { role: 'user', text: 'OLD_TASK_MARKER' });
+  manager.append(conversation, { role: 'assistant', text: 'x'.repeat(300000) });
+  const result = await manager.compact(conversation.id);
+  assert.equal(harness.sent.length, 0);
+  assert.equal(peak, 2);
+  assert.deepEqual(calls.map(call => call.kind), ['map', 'map', 'reduce']);
+  assert.ok(calls.every(call => call.model === 'fixture' && /compact working context/.test(call.system)));
+  assert.match(calls[0].user, /OLD_TASK_MARKER/);
+  assert.match(calls.at(-1).user, /=== SUMMARY 1 ===/);
+  assert.match(checkpoint, /PART/);
+  assert.equal(conversation.compactionRecovery, undefined);
+  assert.equal(conversation.lastCompaction.transport, 'router');
+  assert.equal(conversation.lastCompaction.requests, 3);
+  assert.equal(conversation.lastCompaction.reason, 'manual-native-unavailable');
+  assert.deepEqual(conversation.lastCompaction.chunks.map(chunk => chunk.kind), ['map', 'map', 'reduce']);
+  assert.equal(conversation.lastCompaction.chunks.at(-1).summaryLimit, 12000);
+  assert.ok(conversation.lastCompaction.chunks.every(chunk => chunk.totalMs >= 0 && chunk.outputChars > 0));
+  assert.ok(statuses.some(value => value.compaction?.stage === 'summarizing'));
+  assert.ok(statuses.some(value => value.compaction?.stage === 'saving'));
+  const markdown = fs.readFileSync(result.file, 'utf8');
+  assert.match(markdown, /MERGED-CONTEXT/);
+  assert.equal(conversation.segments.kimi.isolated, true);
+  assert.equal(manager.messages(conversation).at(-1).role, 'notice');
+  assert.match(manager.context(manager.get(conversation.id), 'kimi'), /MERGED-CONTEXT/);
+  // A later compaction re-summarizes the previous handoff summary instead of
+  // dropping it, exactly like the engine-session channel.
+  manager.append(conversation, { role: 'user', text: 'MORE_WORK' });
+  calls.length = 0;
+  await manager.compact(conversation.id);
+  // One fragment is one request: the handoff summary and the new turn are
+  // summarized together, and no separate merge is needed.
+  assert.deepEqual(calls.map(call => call.kind), ['map']);
+  assert.match(calls[0].user, /MERGED-CONTEXT/);
+  assert.match(calls[0].user, /MORE_WORK/);
+});
+
+test('subscription conversations keep the engine summary session instead of the router', async context => {
+  const calls = [];
+  const harness = fixture(context, { summarize: { available: () => true, run: async options => { calls.push(options); return { text: 'router summary' }; } } });
+  harness.drivers.kimi.settings = () => ({ model: 'account', connection: 'subscription', permissionMode: 'default' });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  manager.append(conversation, { role: 'user', text: 'Task' });
+  const pending = manager.compact(conversation.id);
+  await harness.flush();
+  assert.equal(calls.length, 0);
+  assert.equal(harness.sent.at(-1).opts.sessionId, null);
+  assert.match(harness.sent.at(-1).prompt, /compact working context/);
+  harness.finish('kimi', 'success', 'Engine summary');
+  const result = await pending;
+  assert.equal(conversation.lastCompaction.transport, 'engine');
+  assert.match(fs.readFileSync(result.file, 'utf8'), /Engine summary/);
+});
+
+test('a router context overflow re-splits one fragment under the learned budget', async context => {
+  const sizes = [];
+  let overflowed = false;
+  const harness = fixture(context, { summarize: { available: () => true, run: async options => {
+    sizes.push(options.user.length);
+    if (!overflowed) {
+      overflowed = true;
+      throw Object.assign(new Error('HTTP 400: maximum context length is 8000 tokens'), { overflow: true });
+    }
+    return { text: options.kind === 'reduce' ? 'MERGED' : 'ok' };
+  } } });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  manager.append(conversation, { role: 'user', text: 'HISTORY-START' + 'x'.repeat(300000) + 'HISTORY-END' });
+  const result = await manager.compact(conversation.id);
+  assert.ok(overflowed);
+  assert.equal(conversation.lastCompaction.retries, 1);
+  assert.ok(sizes[1] < sizes[0]);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /MERGED/);
+  assert.equal(manager.contextPressure(conversation, 'kimi', manager.settings('kimi', conversation.id)).cap, 8000);
+  assert.ok(manager.rows(conversation).some(row => row.text.includes('HISTORY-END')));
+});
+
+test('a router summary failure keeps the original history and reports the reason', async context => {
+  const harness = fixture(context, { summarize: { available: () => true, run: async () => { throw new Error('HTTP 401: the credential was rejected'); } } });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  manager.append(conversation, { role: 'user', text: 'Task' });
+  const pending = manager.compact(conversation.id);
+  const rejected = assert.rejects(pending, /HTTP 401[\s\S]*original history is retained/);
+  await harness.flush();
+  await rejected;
+  assert.equal(manager.rows(conversation).some(row => row.role === 'notice'), false);
+  assert.equal(conversation.compactionRecovery, undefined);
+  assert.equal(conversation.segments.kimi?.compactFile, undefined);
+  assert.equal(conversation.lastCompaction.transport, 'router');
+  assert.equal(conversation.lastCompaction.outcome, 'failed');
+  assert.equal(manager.busy(conversation.id), false);
 });

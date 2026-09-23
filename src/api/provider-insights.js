@@ -5,7 +5,7 @@ const { readJson, writeJson } = require('../shared/json-store');
 const accounts = require('./provider-accounts');
 
 const fingerprint = (provider, key) => createHash('sha256').update(JSON.stringify([provider.baseUrl, provider.anthropicBaseUrl, key.key])).digest('hex');
-function createProviderInsights({ file, getConfig, onChange = () => {}, now = () => Date.now(), fetchImpl } = {}) {
+function createProviderInsights({ file, getConfig, onChange = () => {}, now = () => Date.now(), fetchImpl, getRefreshIntervalMs = () => 15 * 60000 } = {}) {
   const data = readJson(file, { keys: {} });
   const pending = new Map();
   function find(providerId, keyId) {
@@ -32,7 +32,9 @@ function createProviderInsights({ file, getConfig, onChange = () => {}, now = ()
   async function refreshOne(provider, key, force) {
     if (pending.has(key.id)) return pending.get(key.id);
     const entry = entryFor(provider, key);
-    if (!force && entry.checkedAt && now() - Date.parse(entry.checkedAt) < 15 * 60000) return;
+    const configuredInterval = getRefreshIntervalMs();
+    const refreshInterval = Number.isFinite(configuredInterval) && configuredInterval >= 1000 ? configuredInterval : 15 * 60000;
+    if (!force && entry.checkedAt && now() - Date.parse(entry.checkedAt) < refreshInterval) return;
     const operation = (async () => {
       const checkedAt = new Date(now()).toISOString();
       let result;

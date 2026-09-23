@@ -769,7 +769,7 @@
     transition: all var(--dt-fast);
   }
   .session-item .session-more { opacity: 0; }
-  .session-item[data-sid] {
+  .session-item[data-sid], .ws-row {
     user-select: none; transform: translateY(var(--session-drag-offset, 0px));
     transition: transform 180ms cubic-bezier(.2,.8,.2,1), opacity 180ms ease, background var(--dt-fast) var(--ds-ease-in-out);
   }

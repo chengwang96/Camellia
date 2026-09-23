@@ -66,7 +66,7 @@ function createKimiAccount({ home, runtime, ensureRuntime, node, environment = (
     catch (error) { void client.shutdown(); throw error; }
   }
   async function initialize(client) {
-    await client.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '1.0.0' } });
+    await client.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '0.1.0' } });
   }
   async function refreshUsage({ force = true } = {}) {
     if (closed || !saved.account || login || signingOut) return state();

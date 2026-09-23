@@ -72,7 +72,8 @@ try:
         page.add_init_script(bridge)
         page.goto((repo / 'src/renderer/settings/api-settings.html').as_uri() + '?page=providers')
         page.wait_for_load_state('networkidle')
-        page.locator('[data-select="local"]').click()
+        # A provider card renders two select buttons (title and footer).
+        page.locator('[data-select="local"]').first.click()
         page.locator('#contextCapacityPanel summary').click()
         expect(page.locator('#contextCapacityResults')).to_contain_text('131,072')
         assert requests == []

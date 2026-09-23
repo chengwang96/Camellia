@@ -57,6 +57,27 @@ async function outputFixture(context) {
   return { session, events, notify, message };
 }
 
+test('Codex terminal missing-thread failure reaches the shared recovery layer', async context => {
+  const { session, events, notify } = await outputFixture(context);
+  const message = 'thread native-fixture not found';
+  notify('turn/completed', { turn: { id: session.turnId, status: 'failed', error: { message } } });
+  const result = events.at(-1);
+  assert.equal(result.type, 'result');
+  assert.equal(result.subtype, 'error');
+  assert.equal(result.is_error, true);
+  assert.equal(result.result, message);
+  assert.equal(session.running, false);
+});
+
+test('Codex stderr persistence diagnostics alone do not terminate or replay an active turn', async context => {
+  const { session, events, notify } = await outputFixture(context);
+  session.client.proc.stderr.write('ERROR codex_core::session: failed to record rollout items: thread native-fixture not found\n');
+  assert.equal(session.running, true);
+  assert.equal(events.some(event => event.type === 'result'), false);
+  notify('turn/completed', { turn: { id: session.turnId, status: 'completed' } });
+  assert.equal(events.at(-1).subtype, 'success');
+});
+
 test('Codex separates commentary from final output in streaming, results and native history', async context => {
   const { session, events, notify, message } = await outputFixture(context);
   message('progress', 'Checking the code.', 'commentary');
@@ -282,6 +303,45 @@ test('Codex keeps configuration, auth storage and remembered connections inside 
   assert.equal(engine.settings().permissionMode, 'default');
   const updated = codexSpawnSpec({ runtime: native, home: path.join(home, 'subscription'), configHome: home, env });
   assert.deepEqual(updated.permissions, { approvalPolicy: 'never', sandbox: 'workspace-write' });
+});
+
+test('Codex gives every ChatGPT account its own home and switches to the one with quota', t => {
+  const root = temporary(t), home = path.join(root, 'codex');
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(path.join(home, 'account-state.json'), JSON.stringify({ account: { email: 'primary@example.com' },
+    models: [{ id: 'account-model' }], rateLimits: { primary: { usedPercent: 100 } } }));
+  const second = path.join(root, 'subscription-accounts', 'codex', 'account-1');
+  fs.mkdirSync(second, { recursive: true });
+  fs.writeFileSync(path.join(second, 'account-state.json'), JSON.stringify({ account: { email: 'backup@example.com' },
+    models: [{ id: 'account-model' }], rateLimits: { primary: { usedPercent: 20 } } }));
+  let desktop = { codex: { connection: 'subscription', subscriptionModel: 'account-model' },
+    subscriptionAccounts: { codex: [{ id: 'default' }, { id: 'account-1', label: 'Backup' }] }, subscriptionActive: { codex: 'default' },
+    codexSessionConnections: { nativeThread: 'subscription' }, codexSessionAccounts: { nativeThread: 'account-1' } };
+  const engine = createCodex({ dataDir: root, loadConfig: () => desktop, saveConfig: patch => { desktop = { ...desktop, ...patch }; },
+    runtimes: () => ({ locate: () => null }) });
+  // The default account keeps the earlier single-account home; an added account
+  // gets a directory of its own with its own cached identity and quota.
+  assert.equal(engine.accountState().home, path.join(home, 'subscription'));
+  assert.equal(engine.accountState('account-1').home, second);
+  assert.equal(engine.accountState('account-1').account.email, 'backup@example.com');
+  assert.deepEqual(engine.accountState().accounts, [
+    { id: 'default', label: '', active: true, signedIn: true, exhausted: true, installed: false, loginPending: false, error: '', models: 1, email: 'primary@example.com', plan: '' },
+    { id: 'account-1', label: 'Backup', active: false, signedIn: true, exhausted: false, installed: false, loginPending: false, error: '', models: 1, email: 'backup@example.com', plan: '' },
+  ]);
+  // A conversation that already ran on an account reports that account, so the
+  // composer lists the right models and the thread is resumed in its home.
+  assert.equal(engine.settings('nativeThread').subscriptionId, 'account-1');
+  assert.equal(engine.settings().subscriptionId, undefined);
+  const added = engine.handlers['account-add']({ label: 'Team' });
+  assert.equal(added.activeId, 'account-2');
+  assert.equal(desktop.subscriptionActive.codex, 'account-2');
+  assert.deepEqual(desktop.subscriptionAccounts.codex.map(account => account.id), ['default', 'account-1', 'account-2']);
+  const selected = engine.handlers['account-select']({ id: 'default' });
+  assert.equal(selected.activeId, 'default');
+  engine.handlers['account-label']({ id: 'default', label: 'Personal' });
+  assert.equal(desktop.subscriptionAccounts.codex[0].label, 'Personal');
+  const renamed = engine.accountState().accounts.find(account => account.id === 'default');
+  assert.equal(renamed.label, 'Personal');
 });
 
 test('Codex API metadata adds native patch support without overriding known models, reasoning, or user catalogs', t => {

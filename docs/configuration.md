@@ -59,15 +59,25 @@ The Gemini API uses separately billed API keys. To use Google account subscripti
 
 For Gemini tools, the router retains Google's opaque thought signatures alongside tool IDs so harnesses can resume even when they discard provider-specific extension fields. The signature cache lives next to the route configuration as `ollama-proxy.json.gemini-tools.jsonl`. Preserve it with conversation data when migrating a profile.
 
+### Several accounts of one provider
+
+Kimi and ChatGPT support **several signed-in accounts at the same time**. In **Settings → Engine Settings → Kimi Code** or **Codex CLI**, each account appears as a row in the engine's account list. **Add another account** fills in a new row and selects it, then **Sign in** connects that account; the other accounts keep their own credentials, models and quota. The radio button on a row makes that account the one new conversations start on, the label field names it (useful for several Kimi accounts), and **×** removes an added account together with its directory. The first account is only signed out, never deleted.
+
+Quota steers the choice the same way it does for API keys. A Kimi window or Codex rate-limit window that is fully used marks that account as exhausted, and a **new conversation** then starts on another signed-in account that still has quota. A conversation that already ran on an account keeps it, because its native thread lives in that account's home; its quota error stays visible instead of switching mid-thread. The **Balances & Quotas** page lists one card per signed-in Kimi account.
+
+The Google connection through Antigravity is the exception: the official CLI stores a single Google credential per operating-system user, so it appears as one account and has no **Add another account** action.
+
 ### ChatGPT subscription and API routes (Codex)
 
 1. Download **Codex CLI** from Home or **Settings → Runtime**.
 2. Open **Settings → Engine Settings → Codex CLI** and choose **API key / third-party API** or **ChatGPT account**. API mode is the initial default when API models are configured; an explicitly saved connection is retained.
 3. For API mode, use **Configure API providers & keys** to add a supported endpoint, key and model, then save the connection. ChatGPT sign-in is unnecessary. Camellia adapts its supported API routes to Codex's Responses interface.
-4. For account mode, click **Sign in with ChatGPT** and complete the official browser login. Account models and quota load after login; **Refresh account** checks them again. **Cancel sign-in** cancels a pending login, and **Sign out** removes this application's login.
+4. For account mode, click **Sign in with ChatGPT** and complete the official browser login. Account models and quota load after login; **Refresh account** checks them again. **Cancel sign-in** cancels a pending login, and **Sign out** removes this application's login. **Add another account** starts a second sign-in for the same provider without touching the first one.
 5. Start a new Codex session and select a model. API and account models are remembered separately. Joining a shared conversation in API mode uses that conversation's saved API model.
 
 Existing sessions keep their connection. Subscription requests go through the official CLI and use the account's eligible Codex access. They do not enter the shared Key pool or fall back to API billing. The settings page shows account quota windows and reset times when the official account API returns them; these are separate from provider balance charts. Subscription requests are not included in shared provider/key usage statistics.
+
+Every ChatGPT account keeps its own application-owned `CODEX_HOME` under `<app-data>/subscription-accounts/codex/<account>`, so several sign-ins and their native threads stay separate. The first account keeps using the original single-account directory.
 
 Camellia uses the official [app-server interface](https://developers.openai.com/codex/app-server) for authentication, models, approvals, streaming, native history, resume, fork, and cancellation. No personal Codex login or configuration is copied. The child process gets an application-owned `CODEX_HOME`; the parent environment and personal `~/.codex` remain unchanged.
 
@@ -81,6 +91,8 @@ Shared API mode converts Codex's Responses requests to the router's Chat Complet
 2. If needed, set **Google connection proxy** to your HTTP/HTTPS proxy and save. An empty value inherits the CLI's environment proxy. Engine downloads retain their separate connection prompt.
 3. Click **Sign in with Google**. Camellia downloads the pinned official CLI if missing and opens its interactive sign-in in a terminal. The CLI owns browser authentication and credential storage.
 4. Return to Camellia and click **Refresh account**, then choose an account model in the composer. To change accounts, open the sign-in terminal and use `/logout` first.
+
+The official Antigravity CLI keeps one Google credential for the current operating-system user, so Camellia lists exactly one Google account and does not offer **Add another account** for it. Kimi and ChatGPT keep several accounts at once.
 
 This uses the account's eligible Antigravity models and quota, including supported Google AI plans. Eligibility is determined by Google; see [Antigravity plans](https://antigravity.google/docs/plans/). OAuth credentials are never added to the shared Key pool. Authentication, quota, or model errors do not trigger fallback to API billing or another model.
 
@@ -97,9 +109,9 @@ Kimi Code supports both **Kimi subscription** account sign-in and **Shared API r
 1. Open **Settings → Engine Settings → Kimi Code** and choose **Kimi subscription**.
 2. Select the site where you registered: **China · kimi.com** or **Global · kimi.ai**, then save.
 3. Click **Sign in with Kimi**. The official CLI opens its device authorization page in your browser. If needed, use **Open sign-in page** and the displayed authorization code. **Cancel sign-in** stops a pending attempt.
-4. Finish authorization. Camellia verifies the account and loads its models automatically. Select an account model in the composer and start a new conversation. Use **Refresh account** to check access again, or **Sign out** to remove this app's native login.
+4. Finish authorization. Camellia verifies the account and loads its models automatically. Select an account model in the composer and start a new conversation. Use **Refresh account** to check access again, **Add another account** to sign in a second Kimi account, or **Sign out** to remove this app's native login.
 
-No API key is needed for account sign-in. The official Kimi CLI manages tokens and token refresh under `<app-data>/kimi-subscription`; Camellia stores public model metadata and quota observations separately. It does not import credentials from your personal `~/.kimi-code`. Existing native sessions keep their original connection, and API and subscription models are remembered separately, including when switching harnesses in a shared conversation. Account changes require idle Kimi work. Authentication, model, or quota failures do not fall back to API billing.
+No API key is needed for account sign-in. The official Kimi CLI manages tokens and token refresh under `<app-data>/kimi-subscription` for the first account and `<app-data>/subscription-accounts/kimi/<account>` for additional ones; Camellia stores public model metadata and quota observations separately. It does not import credentials from your personal `~/.kimi-code`. Existing native sessions keep their original connection, and API and subscription models are remembered separately, including when switching harnesses in a shared conversation. Account changes require idle Kimi work. Authentication, model, or quota failures do not fall back to API billing.
 
 After signing in, a Kimi subscription card appears in **Providers & Keys** and **Usage**. Select it, or choose **View usage and quotas** in the engine settings, to see **Balances & Quotas**. Camellia queries the official CLI for available quota windows, remaining percentages, reset times, and any reported extra-usage wallet. Missing balances and limits are not shown as zero. Queries do not call a model or interrupt an active conversation. Automatic refresh follows **General → Refresh balances automatically** (every 15 minutes); manual refresh is also available. The 30-day chart records observations from this version onward, and failed queries retain the last successful result. Signing out removes the subscription card and its observations.
 
@@ -121,6 +133,7 @@ A canonical model ID groups routes serving the same model and version. Each rout
 - Providers and keys are tried in configured order. A successful route remains active for subsequent requests.
 - Quota exhaustion, rate limits, invalid credentials, and eligible transient errors can trigger another route in the group.
 - Rate-limit cooldowns apply to the affected model. Invalid credentials block the key until it is replaced or reset.
+- For providers with an account API, the router also reads reported quota windows and balances. A fully used window removes the key from rotation. For balance-only accounts, all returned available balances must be known and non-positive to skip the key; a missing amount is not zero, and an empty add-on wallet does not override an available subscription window. A successful recovery reading returns the key to eligibility and clears quota-specific cooldowns, not authentication or network blocks. The cadence follows **General → Balance and quota refresh interval**. Failed checks preserve the last successful timestamp; its routing verdict expires after three refresh intervals (at least 10 minutes). Replacing credentials or changing endpoints invalidates their readings. **Reset cooldown** overrides the verdict until the next refresh.
 - Retry timing respects applicable upstream retry hints.
 - Exhausting a group returns an error; it does not select another model.
 - Once content has started, the request is not replayed automatically. Interrupted streams are reported as errors.
@@ -303,7 +316,7 @@ Account APIs may include spending from other clients. Their values should not be
 
 DeepSeek and Moonshot adapters use documented balance APIs. Kimi Code, OpenCode Go, and Command Code adapters are based on official client or service implementations. Apart from a prior read-only Ollama check, account adapters have been tested against response fixtures rather than individually validated with live subscriptions. Endpoint evidence is recorded in the [provider adapter reference](design/provider-balances.md) (Simplified Chinese).
 
-Balances refresh automatically every 15 minutes by default; disable this in General settings if needed. Manual refresh is also available.
+Balances refresh automatically every 15 minutes by default; **General → Refresh balances automatically** turns the periodic queries off, and **Balance and quota refresh interval** changes the cadence (5, 15, 30 or 60 minutes) for every provider with an account API. One setting covers all of them, because balances and quota windows are read the same way regardless of provider. Manual refresh is also available. The route pool reads the same reported quota on the same cadence to keep exhausted keys out of rotation; turning the periodic queries off also stops that, leaving only failure-driven cooldowns.
 
 Charts retain locally observed values for 30 days, starting when observations are collected. They do not reconstruct earlier history. Multiple keys may share an account, so balances are not summed across cards. Cash, credits, and percentages retain their own units. Failed refreshes preserve the last successful value and its timestamp.
 

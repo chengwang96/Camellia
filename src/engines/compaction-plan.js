@@ -2,6 +2,10 @@
 
 const encode = history => JSON.stringify({ history });
 const summaryLimit = budget => Math.min(12000, Math.floor(budget / 3));
+// Partial summaries are merged afterwards, so each map answer stays small. The
+// bound scales with the request budget but never exceeds what a single merge
+// step can still accept without another nesting level.
+const mapSummaryLimit = budget => Math.min(4000, Math.max(1024, Math.floor(budget / 8)));
 
 function planCompaction(rows, budget) {
   const groups = [];
@@ -20,7 +24,11 @@ function planCompaction(rows, budget) {
   return { units: groups, recent: recent.flat(), recentChars: recent.length ? encode(recent.flat()).length : 0 };
 }
 
-function takeFragment(units, limit) {
+// Select one fragment. `consumed` holds the records that the fragment carries,
+// including the prefix of a split record, so a caller that has to shrink the
+// budget afterwards can put the original records back and split them again
+// instead of losing the text it already removed from `remaining`.
+function selectFragment(units, limit) {
   const pending = units.map(group => [...group]);
   const selected = [];
   let splitRecords = 0;
@@ -52,7 +60,27 @@ function takeFragment(units, limit) {
     else pending[0] = [{ ...row, text: row.text.slice(lower), fragment: { offset: offset + lower, total } }];
     break;
   }
-  return { text: encode(selected), remaining: pending, splitRecords };
+  return { text: encode(selected), consumed: selected, remaining: pending, splitRecords };
 }
 
-module.exports = { planCompaction, takeFragment, summaryLimit };
+// Greedy packing keeps one merge request inside the character budget while
+// retaining the order of the summaries it merges.
+function packSummaries(entries, limit) {
+  const batches = [];
+  let batch = [], size = 0;
+  for (const text of entries) {
+    const cost = String(text).length + 96;
+    if (batch.length && size + cost > limit) { batches.push(batch); batch = []; size = 0; }
+    batch.push(text); size += cost;
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
+}
+
+// Kept as the single-fragment view used by callers that only need the text.
+function takeFragment(units, limit) {
+  const { text, remaining, splitRecords } = selectFragment(units, limit);
+  return { text, remaining, splitRecords };
+}
+
+module.exports = { planCompaction, mapSummaryLimit, packSummaries, selectFragment, takeFragment, summaryLimit };

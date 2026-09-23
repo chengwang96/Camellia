@@ -39,7 +39,9 @@ p { margin: 5px 0; }
 #mobilePage p, #mobilePage .name { overflow-wrap: anywhere; }
 #mobilePage .hint { margin: 12px 0; }
 #mobilePage .mobile-address, #mobile-code { font: var(--f-code); overflow-wrap: anywhere; }
-#mobile-invite { margin-top: 20px; }
+#mobilePage .mobile-help { margin-top: 16px; }
+#mobilePage .mobile-help summary { width: fit-content; cursor: pointer; color: var(--dsw-alias-label-secondary); font: var(--f-xxs-12); }
+#mobilePage .mobile-help summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 4px; }
 #mobile-invitation { margin-top: 16px; padding: 16px; border-radius: 12px; background: var(--dsw-alias-bg-soft); }
 #mobilePage .device { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 12px; padding: 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; }
 #mobilePage .name { flex: 1 1 180px; min-width: 0; }

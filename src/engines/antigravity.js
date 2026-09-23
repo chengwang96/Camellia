@@ -14,6 +14,7 @@ const { pythonEnvironment } = require('../main/python-runtime');
 const { downloadSettings } = require('../main/download-network');
 const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider } = require('./antigravity/subscription');
 const { valid } = require('./permission-levels');
+const { accountSummary, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts');
 
 function antigravitySpawnSpec({ runtime, home, route, config = {}, env }) {
   return { args: ['-u', path.join(__dirname, 'antigravity/bridge.py').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', env: {
@@ -109,7 +110,13 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     'save-settings': patch => ({ ok: true, settings: saveSettings(patch || {}) }),
     'list-sessions': async payload => ({ ok: true, ...await workspaces.listSessions(payload || {}) }),
     'load-session': async id => ({ ok: true, ...await workspaces.transcript(id), settings: settings(id) }),
-    'account-state': () => ({ ok: true, ...account.state() }),
+    // The official CLI keeps one global Google credential, so there is exactly
+    // one account to report; the shape matches the multi-account engines.
+    'account-state': () => {
+      const value = account.state();
+      return { ok: true, ...value, activeId: DEFAULT_ACCOUNT_ID,
+        accounts: [{ ...accountSummary('antigravity', { id: DEFAULT_ACCOUNT_ID, label: '' }, value), active: true }] };
+    },
     'account-refresh': async () => {
       const state = await account.refresh();
       if (!settings().subscriptionModel && settings().connection === 'subscription') saveSettings({ model: state.models[0].id });

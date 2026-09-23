@@ -16,7 +16,7 @@ button { border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px; backg
 button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
 button.primary { background: var(--dsw-static-deepseek-500); color: #fff; border-color: transparent; }
 button.primary:hover:not(:disabled) { background: var(--dsw-static-deepseek-400); }
-.hint, footer { font: var(--f-xxs-12); color: var(--dsw-alias-label-tertiary); }
+.hint { font: var(--f-xxs-12); color: var(--dsw-alias-label-tertiary); }
 .hint { margin: 12px 0 0; }
 #invitation { background: var(--dsw-alias-bg-soft); border-radius: 10px; padding: 16px; margin-top: 16px; }
 .device { margin-top: 12px; padding: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
@@ -24,5 +24,8 @@ button.primary:hover:not(:disabled) { background: var(--dsw-static-deepseek-400)
 .device small { display: block; color: var(--dsw-alias-label-tertiary); }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; }
 #error { color: var(--dsw-alias-state-error-primary); }
-footer { padding-bottom: 12px; }
+.mobile-help { margin-top: 16px; }
+.mobile-help summary { width: fit-content; cursor: pointer; color: var(--dsw-alias-label-secondary); font: var(--f-xxs-12); }
+.mobile-help summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 4px; }
+.mobile-help button { margin-top: 12px; }
 @media (max-width: 520px) { main { padding: 22px; } .device { flex-wrap: wrap; } }

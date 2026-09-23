@@ -55,6 +55,8 @@ with sync_playwright() as playwright:
             expect(page.locator(prefix + 'address')).to_have_text('http://100.80.1.2:43127')
             expect(page.locator(prefix + 'invite')).to_be_enabled()
             page.on('dialog', lambda dialog: dialog.accept())
+            # Sign-out lives in the collapsible connection help, so open it first.
+            page.locator('summary[data-copy=connectionHelp]').click()
             page.locator(prefix + 'logout').click()
             expect(page.locator(prefix + 'networkState')).to_have_text('内置网络已关闭')
             expect(page.locator(prefix + 'invite')).to_be_disabled()

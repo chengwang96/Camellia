@@ -8,6 +8,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { startApiRouter } = require('../api/api-router.js');
 const routerConfig = require('../api/api-router-config.js');
+const { createCompactionSummarizer } = require('../api/compaction-summarizer.js');
 const { ClaudeSession } = require('../engines/claude-session.js');
 const { ClaudeHistory } = require('../engines/claude-history.js');
 const { readJson, writeJson } = require('../shared/json-store.js');
@@ -18,6 +19,7 @@ const { ClaudeGoal } = require('../engines/claude-goal.js');
 const { createSessionWorkspaces } = require('../engines/session-workspaces.js');
 const { KimiSession, kimiSpawnSpec, kimiConnectionSettings, updateKimiConnectionSettings } = require('../engines/kimi-session.js');
 const { createKimiAccount } = require('../engines/kimi-account.js');
+const { createAccountPool } = require('../engines/subscription-accounts.js');
 const { createCodex } = require('../engines/codex');
 const { createAntigravity } = require('../engines/antigravity');
 const { createProviderInsights } = require('../api/provider-insights.js');
@@ -277,6 +279,21 @@ function broadcastApiRouter(state) {
   }
 }
 let providerInsights = null, balanceRefreshTimer = null;
+// One global cadence for every provider's account API, not just Ollama: the
+// route pool reads reported balances and quota windows on this interval, and
+// the Insights panel refreshes its balances on the same schedule.
+const ACCOUNT_REFRESH_MINUTES = [5, 15, 30, 60];
+function accountRefreshMinutes() {
+  const value = Number(loadConfig().accountRefreshMinutes);
+  return ACCOUNT_REFRESH_MINUTES.includes(value) ? value : 15;
+}
+function accountRefreshEnabled() { return loadConfig().autoRefreshBalances !== false; }
+function quotaCheckOptions() {
+  return { enabled: accountRefreshEnabled(), intervalMs: accountRefreshMinutes() * 60000 };
+}
+function syncQuotaCheck() {
+  try { ollamaProxyHandle?.setQuotaCheck(quotaCheckOptions()); } catch (e) { log(`api-router: quota check update failed (${e.message})`); }
+}
 let contextCapacity = null;
 function capacity() {
   if (!contextCapacity) contextCapacity = createContextCapacity({
@@ -288,32 +305,44 @@ function capacity() {
 function insights() {
   if (!providerInsights) providerInsights = createProviderInsights({
     file: path.join(app.getPath('userData'), 'provider-insights.json'), getConfig: readOllamaProxyConfig,
+    getRefreshIntervalMs: () => accountRefreshMinutes() * 60000,
     onChange: broadcastAccountInsights,
   });
   return providerInsights;
 }
 function accountInsights(state = insights().state()) {
-  const kimi = kimiAccount.state();
-  return { ...state, subscriptions: kimi.account ? [{ id: 'kimi-subscription', engine: 'kimi', name: 'Kimi Code',
-    label: 'Kimi account', info: kimi.usage, capability: { supported: true, label: 'Kimi Code subscription quota', source: 'client' } }] : [] };
+  const subscriptions = [];
+  const states = kimiAccount.states();
+  for (const profile of kimiAccount.list()) {
+    const kimi = states[profile.id];
+    if (!kimi?.account) continue;
+    subscriptions.push({ id: 'kimi:' + profile.id, engine: 'kimi', name: 'Kimi Code',
+      label: profile.label || (profile.id === 'default' ? 'Kimi account' : 'Kimi account ' + profile.id),
+      info: { ...kimi.usage, refreshing: Boolean(kimi.usage?.refreshing || kimi.refreshing) },
+      capability: { supported: true, label: 'Kimi Code subscription quota', source: 'client' } });
+  }
+  return { ...state, subscriptions };
 }
 function broadcastAccountInsights(state) {
   if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('dsh:provider-insights', accountInsights(state));
 }
 async function refreshInsights(payload = {}) {
+  const wanted = String(payload.subscriptionId || '');
+  const kimiIds = !payload.providerId && !payload.keyId
+    ? kimiAccount.list().map(profile => profile.id).filter(id => !wanted || wanted === 'kimi:' + id) : [];
   await Promise.all([
     payload.subscriptionId ? null : insights().refresh(payload),
-    !payload.providerId && !payload.keyId && (!payload.subscriptionId || payload.subscriptionId === 'kimi-subscription')
-      ? kimiAccount.refreshUsage({ force: payload.force !== false }) : null,
+    ...kimiIds.map(id => kimiAccount.refreshUsage({ force: payload.force !== false }, id)),
   ]);
   return accountInsights();
 }
 function refreshAccountBalances() {
   clearTimeout(balanceRefreshTimer);
-  if (loadConfig().autoRefreshBalances !== false) {
+  const minutes = accountRefreshMinutes();
+  if (accountRefreshEnabled()) {
     try { void refreshInsights({ force: false }).catch(e => log(`account refresh: ${e.message}`)); } catch (e) { log(`account refresh: ${e.message}`); }
   }
-  balanceRefreshTimer = setTimeout(refreshAccountBalances, 15 * 60000);
+  balanceRefreshTimer = setTimeout(refreshAccountBalances, minutes * 60000);
   balanceRefreshTimer.unref?.();
 }
 function apiRouterState() {
@@ -329,7 +358,7 @@ async function startOllamaProxyHandle() {
     const cfg = readOllamaProxyConfig();
     if (!routerConfig.hasRoutes(cfg)) { syncOllamaBaseUrl(false); return; }
     ollamaProxyHandle = startApiRouter({ configPath: ollamaProxyConfigPath(), log: msg => log(`[api-router] ${msg}`), onState: broadcastApiRouter,
-      onContextEvidence: evidence => capacity().observe(evidence) });
+      onContextEvidence: evidence => capacity().observe(evidence), quotaCheck: quotaCheckOptions() });
     await ollamaProxyHandle.ready;
     syncOllamaBaseUrl(true);
     log(`api-router: listening on ${ollamaProxyHandle.url}`);
@@ -513,6 +542,16 @@ const conversationTitles = createConversationTitles({
 });
 async function generateConversationTitle(message, model) { return conversationTitles.generate(message, model); }
 
+// Portable compaction summarizes through the API router whenever it can reach
+// the conversation's model, so the summary never starts an engine process.
+const compactionSummarizer = createCompactionSummarizer({
+  getConfig: readOllamaProxyConfig, getRoute: resolveClaudeRoute,
+  // Routes can be configured while the local proxy is stopped or still
+  // starting; the summary then stays on the engine-session path.
+  isRunning: () => Boolean(ollamaProxyHandle) && ollamaProxyHandle.getState().running,
+  log,
+});
+
 // Fields that require a fresh process when changed (mid-session switching is
 // not possible for model/effort/permission via the stream-json control API we use).
 function sessionSettingsEqual(a, b) {
@@ -625,10 +664,16 @@ function ensureKimiSession(settings, opts) {
   if (!fs.existsSync(settings.cwd) || !fs.statSync(settings.cwd).isDirectory()) throw new Error("Working directory does not exist: " + settings.cwd);
   if (!settings.model) throw new Error("Select a configured model in the composer first");
   const subscription = settings.connection === 'subscription';
-  const account = kimiAccount.state();
-  if (account.loginPending || account.refreshing || account.signingOut) throw new Error('Wait for the Kimi account operation to finish');
   let route;
+  let home = path.join(app.getPath('userData'), 'kimi-code', ...(opts.conversationId ? ['conversations', opts.conversationId] : []));
   if (subscription) {
+    // A conversation keeps the account that owns its native session; a new one
+    // uses whichever signed-in account still has quota.
+    const accountId = kimiAccount.bind(opts.sessionId);
+    if (accountId) settings = { ...settings, subscriptionId: accountId };
+    home = kimiAccount.home(accountId);
+    const account = kimiAccount.state(accountId);
+    if (account.loginPending || account.refreshing || account.signingOut) throw new Error('Wait for the Kimi account operation to finish');
     if (!account.account) throw new Error('Sign in with Kimi in Settings → Engine Settings → Kimi Code first');
     if (!account.models.some(model => model.id === settings.model)) throw new Error('Refresh the Kimi account and select an available model');
   } else {
@@ -640,13 +685,13 @@ function ensureKimiSession(settings, opts) {
   }
   if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
       && current.opts.workspaceId === opts.workspaceId && sessionSettingsEqual(current.settings, settings)
-      && current.settings.contextWindow === settings.contextWindow && current.settings.connection === settings.connection) return current;
+      && current.settings.contextWindow === settings.contextWindow && current.settings.connection === settings.connection
+      && (current.settings.subscriptionId || null) === (settings.subscriptionId || null)) return current;
   const runtime = runtimes().locate('kimi')?.file;
   if (!runtime) throw new Error("Kimi is being prepared. Check progress or retry in Settings → Runtime.");
   const exe = detectNode();
   if (!exe) throw new Error("Kimi Code requires Node.js 22.19 or later. Configure the runtime in settings.");
-  const spec = kimiSpawnSpec({ home: path.join(app.getPath('userData'), subscription ? 'kimi-subscription' : 'kimi-code',
-      ...(!subscription && opts.conversationId ? ['conversations', opts.conversationId] : [])),
+  const spec = kimiSpawnSpec({ home,
     sharedSubscription: Boolean(opts.conversationId), runtime, route, connection: settings.connection,
     model: settings.model, contextWindow: settings.contextWindow, env: runtimeEnvironment(exe, 'kimi'), ...engineSettings().kimiConfig() });
   const previousClosed = current?.shutdown();
@@ -655,7 +700,8 @@ function ensureKimiSession(settings, opts) {
       if (kimiSessions.get(opts) === session) publishChatEvent('kimi', { ...event, conversationId: opts.conversationId });
     },
     onSessionId: id => {
-      saveConfig({ kimiSessionConnections: { ...loadConfig().kimiSessionConnections, [id]: settings.connection || 'api' } });
+      saveConfig({ kimiSessionConnections: { ...loadConfig().kimiSessionConnections, [id]: settings.connection || 'api' },
+        ...(subscription && settings.subscriptionId ? { kimiSessionAccounts: { ...loadConfig().kimiSessionAccounts, [id]: settings.subscriptionId } } : {}) });
       kimiWorkspaces.recordContext(id, opts.workspaceId, settings.cwd);
       if (!opts.conversationId) kimiGoalDriver.rememberSession(session);
     },
@@ -675,15 +721,22 @@ const kimiGoalDriver = new ClaudeGoal({
   log, setTimer: setTimeout, clearTimer: clearTimeout,
 });
 
-const kimiAccount = createKimiAccount({ home: path.join(app.getPath('userData'), 'kimi-subscription'),
-  runtime: () => runtimes().locate('kimi'), ensureRuntime: () => runtimes().ensure('kimi'), node: detectNode,
-  environment: () => runtimeEnvironment(detectNode(), 'kimi'), region: () => kimiSettings().region,
-  isBusy: () => kimiSessions.legacy?.running || kimiGoalDriver.armed || sharedConversations?.isBusy('kimi'),
-  openExternal: url => shell.openExternal(url),
-  onModels: models => {
-    if (!kimiSettings().subscriptionModel && models.length) saveConfig({ kimi: { ...loadConfig().kimi, subscriptionModel: (models.find(model => model.isDefault) || models[0]).id } });
-  },
-  onChange: account => {
+// One Kimi account service per signed-in account. The official CLI keeps every
+// account's credentials inside its own KIMI_CODE_HOME, so several Kimi logins
+// stay valid at once and switch automatically by quota.
+const kimiAccount = createAccountPool({ engine: 'kimi', userData: app.getPath('userData'),
+  root: path.join(app.getPath('userData'), 'kimi-subscription'), bindingsKey: 'kimiSessionAccounts', loadConfig, saveConfig,
+  createService: (profile, notify) => createKimiAccount({ home: profile.home,
+    runtime: () => runtimes().locate('kimi'), ensureRuntime: () => runtimes().ensure('kimi'), node: detectNode,
+    environment: () => runtimeEnvironment(detectNode(), 'kimi'), region: () => kimiSettings().region,
+    isBusy: () => kimiSessions.legacy?.running || kimiGoalDriver.armed || sharedConversations?.isBusy('kimi'),
+    openExternal: url => shell.openExternal(url),
+    onModels: models => {
+      if (!kimiSettings().subscriptionModel && models.length) saveConfig({ kimi: { ...loadConfig().kimi, subscriptionModel: (models.find(model => model.isDefault) || models[0]).id } });
+    },
+    onChange: () => notify(),
+  }),
+  onState: account => {
     broadcastAccountInsights();
     for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) {
       window.webContents.send('dsh:kimi-account', account);
@@ -737,6 +790,7 @@ const dshChat = createDshChat({ dataDir: app.getPath('userData'), loadConfig, sa
   runtime: () => ({ file: detectDshBin() }), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'dsh'),
   onEvent: event => publishChatEvent('dsh', event), log });
 sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
+  summarize: compactionSummarizer,
   contextRoute: (engine, settings) => {
     if (settings.connection === 'subscription') return settings.subscriptionId || engine;
     const config = readOllamaProxyConfig();
@@ -747,7 +801,7 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
     return require('node:crypto').createHash('sha256').update(JSON.stringify(routes)).digest('hex');
   },
   conversationModels: (engine, settings) => require('../engines/conversation-models').conversationModels(engine, settings, {
-    router: readOllamaProxyConfig, codex: () => codex.handlers['account-state'](), kimi: () => kimiAccount.state(),
+    router: readOllamaProxyConfig, codex: id => codex.accountState(id), kimi: id => kimiAccount.state(id),
     antigravity: () => antigravity.handlers['account-state'](),
   }),
   createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: detectNode() }),
@@ -1236,13 +1290,22 @@ if (!gotSingleInstanceLock) {
     try { return await handler(payload); } catch (e) { return { ok: false, error: e.message }; }
   });
   ipcMain.handle('dsh:workbench-settings', () => ({ ok: true, language: normalizeLanguage(loadConfig().language), theme: loadConfig().theme || 'system',
-    conversations: conversationPreferences(loadConfig()), autoRefreshBalances: loadConfig().autoRefreshBalances !== false, closeToTray: loadConfig().closeToTray === true,
+    conversations: conversationPreferences(loadConfig()), autoRefreshBalances: accountRefreshEnabled(), accountRefreshMinutes: accountRefreshMinutes(),
+    closeToTray: loadConfig().closeToTray === true,
     dataPath: app.getPath('userData'), version: app.getVersion() }));
   ipcMain.handle('dsh:workbench-save-settings', (_event, payload) => {
     try {
+      // The router's quota probe follows only its own switch and cadence:
+      // saving a theme, language or tray preference must not re-query every
+      // provider account or re-broadcast router state.
+      const previousQuotaCheck = { enabled: accountRefreshEnabled(), minutes: accountRefreshMinutes() };
       const theme = ['system', 'light', 'dark'].includes(payload?.theme) ? payload.theme : 'system';
       const language = normalizeLanguage(payload?.language ?? loadConfig().language);
       const patch = { theme, language, autoRefreshBalances: payload?.autoRefreshBalances !== false };
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'accountRefreshMinutes')) {
+        const minutes = Number(payload.accountRefreshMinutes);
+        patch.accountRefreshMinutes = ACCOUNT_REFRESH_MINUTES.includes(minutes) ? minutes : accountRefreshMinutes();
+      }
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'closeToTray')) patch.closeToTray = payload.closeToTray === true;
       saveConfig(patch);
       if (payload?.conversations) saveConfig({ conversations: conversationPreferences({ conversations: payload.conversations }) });
@@ -1253,6 +1316,7 @@ if (!gotSingleInstanceLock) {
         if (window && !window.isDestroyed()) window.webContents.send('dsh:language-changed', language);
       }
       if (nativeSettingsView) nativeSettingsView.webContents.send('dsh:language-changed', language);
+      if (accountRefreshEnabled() !== previousQuotaCheck.enabled || accountRefreshMinutes() !== previousQuotaCheck.minutes) syncQuotaCheck();
       void refreshAccountBalances();
       return { ok: true };
     } catch (e) { return { ok: false, error: e.message }; }
@@ -1369,6 +1433,10 @@ if (!gotSingleInstanceLock) {
     'goal-complete': () => kimiGoalDriver.setPhase('complete'), 'goal-clear': () => kimiGoalDriver.clear(),
     'account-state': () => ({ ok: true, ...kimiAccount.state() }),
     'account-refresh': async () => ({ ok: true, ...await kimiAccount.refresh() }),
+    'account-select': payload => ({ ok: true, ...kimiAccount.select(payload?.id) }),
+    'account-add': payload => { kimiAccount.add(payload?.label); return { ok: true, ...kimiAccount.state() }; },
+    'account-remove': async payload => ({ ok: true, ...await kimiAccount.remove(payload?.id) }),
+    'account-label': payload => ({ ok: true, ...kimiAccount.rename(payload?.id, payload?.label) }),
     'sign-in': async () => {
       if (kimiSessions.legacy && !kimiSessions.legacy.running && !kimiGoalDriver.armed) { await kimiSessions.legacy.shutdown(); kimiSessions.legacy = null; }
       return { ok: true, ...await kimiAccount.signIn() };
