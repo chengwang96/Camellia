@@ -34,7 +34,7 @@ function fixture() {
     addUser: () => ({ messageData: {} }), buildPrompt: text => text,
     setRunning: value => { state.running = value; }, setStatus: text => { state.statusText = text; },
     handleEvent() {},
-    clearRunStatus() {}, finalizeStreamBlocks() {}, updateSwitchHint() {},
+    setRunStatus() {}, clearRunStatus() {}, finalizeStreamBlocks() {}, updateSwitchHint() {},
     document: { createElement: () => ({}) },
     chatApi: {
       getSettings: () => settings.promise,

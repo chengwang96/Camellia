@@ -55,7 +55,7 @@ class RemoteReadModel {
     for (const [group, order] of Object.entries(meta.sessionOrder)) {
       const ranks = new Map(order.map((id, index) => [id, index]));
       const slots = conversations.map((conversation, index) => (meta.pinned[conversation.id] ? 'pinned' : meta.sessionWorkspace[conversation.id] || 'recent') === group ? index : -1).filter(index => index >= 0);
-      const sorted = slots.map(index => conversations[index]).sort((first, second) => (ranks.get(first.id) ?? Infinity) - (ranks.get(second.id) ?? Infinity));
+      const sorted = slots.map(index => conversations[index]).sort((first, second) => (ranks.get(first.id) ?? -1) - (ranks.get(second.id) ?? -1));
       slots.forEach((slot, index) => { conversations[slot] = sorted[index]; });
     }
     return { conversations: conversations.slice(offset, offset + 100).map(conversation => this.summary(conversation, meta)),

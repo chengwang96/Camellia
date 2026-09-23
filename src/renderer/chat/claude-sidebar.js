@@ -551,13 +551,47 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, setSta
     inputEl.addEventListener('blur', () => void commit(true));
     inputEl.addEventListener('click', (e) => e.stopPropagation());
   }
+  // Conversations belong to their workspace, or to the standalone group.
+  // Pinning only reorders a conversation, so a pinned one still navigates
+  // inside the workspace it belongs to.
+  function sidebarGroupKey(entry) {
+    return entry.workspaceId || 'recent';
+  }
+  // Neighboring conversation of the same workspace, so archiving the open one
+  // keeps the user there. Prefers the next conversation in the list, then the
+  // previous one, loading another history page first when the next one is not
+  // on this page yet. Reports null when the workspace holds no other one.
+  async function adjacentSession(session, loadMore = true) {
+    const key = sidebarGroupKey(session);
+    const section = sessionHistory.filter((entry) => sidebarGroupKey(entry) === key);
+    const index = section.findIndex((entry) => entry.id === session.id);
+    if (index < 0) return null;
+    if (section[index + 1]) return section[index + 1];
+    const page = pagination[key];
+    if (loadMore && page?.hasMore) {
+      limits[key] = page.loaded + 60;
+      if (await loadSessionHistory()) return adjacentSession(session, false);
+    }
+    return section[index - 1] || null;
+  }
   async function archiveSession(s) {
     if (!canChangeContext()) return;
     try {
+      const wasOpen = context.sessionId === s.id;
+      const neighbor = wasOpen ? await adjacentSession(s) : null;
       const res = await chatApi.archiveSession({ id: s.id, archived: true });
       if (!res.ok) throw new Error(res.error);
-      if (context.sessionId === s.id) await newSession(null);
       await loadSessionHistory();
+      // Archiving the open conversation continues with its neighbor. When the
+      // workspace has no conversation left, its new-session page opens instead;
+      // standalone conversations reuse the standalone section.
+      if (wasOpen) {
+        // A neighbor still in the list opens here; a shared conversation owned
+        // by another engine still switches engines instead of opening a draft.
+        const openable = neighbor && sessionHistory.some((entry) => entry.id === neighbor.id);
+        if (openable) await openHistorySession(neighbor.id);
+        if (context.sessionId !== neighbor?.id) await newSession(s.workspaceId || null);
+      }
       setStatus("Session archived");
     } catch (err) { setStatus(err.message); }
   }

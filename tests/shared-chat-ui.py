@@ -297,6 +297,7 @@ with sync_playwright() as p:
         page.locator('#input').fill('Continue pending A')
         page.locator('#send').click()
         page.wait_for_function('typeof releaseSend === "function"')
+        expect(page.locator('.turn').last.locator('.run-status')).to_be_visible()
         expect(page.locator('#chat')).to_contain_text('Asking the engine to summarize')
         expect(page.locator('#send')).to_be_enabled()
         expect(page.locator('#modelPill')).to_be_disabled()

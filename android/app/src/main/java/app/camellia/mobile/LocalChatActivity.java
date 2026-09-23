@@ -170,6 +170,27 @@ public final class LocalChatActivity extends Activity {
         button.setPadding(dp(14), dp(8), dp(14), dp(8)); button.setMinHeight(dp(48)); button.setStateListAnimator(null);
         button.setOnClickListener(view -> action.run()); return button;
     }
+    private TextView dialogAction(String label, String tag, boolean primary, Runnable action) {
+        TextView view = text(label, 15, primary ? Color.WHITE : ink); view.setTag(tag); view.setGravity(Gravity.CENTER);
+        view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); view.setMinHeight(dp(48));
+        view.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), chatStyle.capsule(primary ? accent : surface), chatStyle.capsule(Color.WHITE)));
+        view.setOnClickListener(clicked -> action.run()); return view;
+    }
+    private TextView dialogMenuRow(String label, String tag, boolean danger, Runnable action) {
+        TextView row = text(label, 17, danger ? Color.parseColor("#D94747") : ink); row.setTag(tag);
+        row.setGravity(Gravity.CENTER_VERTICAL); row.setMinHeight(dp(56)); row.setPadding(dp(16), 0, dp(16), 0);
+        row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), shape(background), shape(Color.WHITE)));
+        row.setOnClickListener(clicked -> action.run()); return row;
+    }
+    private void showStyledDialog(LinearLayout panel) {
+        dialog = new AlertDialog.Builder(this).setView(panel).create(); dialog.show();
+        if (dialog.getWindow() == null) return;
+        dialog.getWindow().setBackgroundDrawable(chatStyle.rounded(background));
+        dialog.getWindow().setDimAmount(.36f);
+        int available = getWindow().getDecorView().getWidth();
+        if (available <= 0) available = getResources().getDisplayMetrics().widthPixels;
+        dialog.getWindow().setLayout(Math.min(dp(420), available - dp(40)), -2);
+    }
     private EditText input(String hint, String tag) {
         EditText input = tag.equals("localComposer") ? new ComposerInput(this) : new EditText(this); input.setHint(hint); input.setTag(tag); input.setTextSize(15);
         input.setTextColor(ink); input.setHintTextColor(muted); input.setBackground(chatStyle.capsule(surface));
@@ -234,7 +255,7 @@ public final class LocalChatActivity extends Activity {
         device.addView(subtitle); titles.addView(device);
         header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); root.addView(header);
         }
-        scroll = new ScrollView(this); scroll.setFillViewport(true);
+        scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         status = text("", 11, muted); status.setTag("localStatus"); status.setGravity(Gravity.CENTER);
@@ -244,12 +265,26 @@ public final class LocalChatActivity extends Activity {
 
     private LinearLayout bottomBar(String tag) {
         chatStyle.dockStatus(status);
+        root.removeView(status);
+        int scrollIndex = root.indexOfChild(scroll);
+        LinearLayout.LayoutParams stageParams = (LinearLayout.LayoutParams) scroll.getLayoutParams();
+        root.removeView(scroll);
+        android.widget.FrameLayout stage = new android.widget.FrameLayout(this); stage.setTag(tag + "Stage");
+        stage.setClipChildren(false); stage.setClipToPadding(false);
+        stage.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        LinearLayout dock = column(); dock.setTag(tag + "Dock"); dock.setBackground(chatStyle.dockBackdrop());
+        dock.setClipChildren(false); dock.setClipToPadding(false);
+        dock.addView(chatStyle.dockFade(tag), new LinearLayout.LayoutParams(-1, chatStyle.dockFadeHeight()));
         LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL); bar.setTag(tag);
         bar.setClipChildren(false); bar.setClipToPadding(false);
         chatStyle.floatingBar(bar);
         bar.setPadding(dp(6), dp(6), dp(6), dp(6));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(10), 0, dp(12));
-        root.addView(bar, root.indexOfChild(status), params); return bar;
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(8));
+        dock.addView(bar, params);
+        if (tag.toLowerCase(java.util.Locale.ROOT).contains("searchbar")) bar.setBackground(chatStyle.topRoundedBar());
+        status.setBackgroundColor(background); dock.addView(status, new LinearLayout.LayoutParams(-1, -2));
+        android.widget.FrameLayout.LayoutParams dockParams = new android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+        stage.addView(dock, dockParams); root.addView(stage, scrollIndex, stageParams); return bar;
     }
     private void failure(Exception error) {
         status.setText(error instanceof IllegalArgumentException || error instanceof java.io.IOException || error instanceof IllegalStateException
@@ -266,7 +301,7 @@ public final class LocalChatActivity extends Activity {
         catch (Exception error) { failure(error); }
         LinearLayout groups = column(); groups.setTag("localGroups"); content.addView(groups);
         renderGroups(groups);
-        LinearLayout bottom = bottomBar("localSearchBar"); bottom.setBackgroundColor(Color.TRANSPARENT); bottom.setElevation(0); bottom.setPadding(0, dp(6), 0, dp(6));
+        LinearLayout bottom = bottomBar("localSearchBar"); bottom.setElevation(0); bottom.setPadding(0, dp(6), 0, dp(6));
         LinearLayout searchPill = new LinearLayout(this); searchPill.setGravity(Gravity.CENTER_VERTICAL); chatStyle.floatingBar(searchPill);
         LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(0, -2, 1); searchParams.setMargins(0, 0, dp(10), 0); bottom.addView(searchPill, searchParams);
         ImageView searchIcon = new ImageView(this); searchIcon.setImageDrawable(new LineIcon("search", ink)); searchIcon.setPadding(dp(10), dp(10), dp(10), dp(10));
@@ -340,6 +375,7 @@ public final class LocalChatActivity extends Activity {
             row.setOrientation(LinearLayout.HORIZONTAL); row.setGravity(Gravity.CENTER_VERTICAL);
             row.addView(nameView, new LinearLayout.LayoutParams(0, -2, 1));
             ImageButton menu = chatStyle.lineButton("more", tr("会话菜单", "Conversation actions"), () -> conversationMenu(conversation));
+            menu.setTag("localConversationMenu:" + selectedId);
             row.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48)));
             row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), shape(background), shape(Color.WHITE)));
             row.setTag("localConversation:" + selectedId); row.setFocusable(true); row.setContentDescription(title(conversation));
@@ -377,12 +413,11 @@ public final class LocalChatActivity extends Activity {
 
     private void conversationMenu(JSONObject conversation) {
         if (conversation.optString("id").equals(runningId)) { status.setText(tr("请先停止此会话的回复。", "Stop this reply first.")); return; }
-        dialog = new AlertDialog.Builder(this).setTitle(title(conversation)).setItems(new String[] {tr("重命名", "Rename"), tr("删除会话", "Delete chat"), tr("归档会话", "Archive chat")}, (selected, which) -> {
-            if (which == 2) {
-                try { store.archiveConversation(conversation.getString("id"), true); list(); } catch (Exception error) { failure(error); }
-                return;
-            }
-            if (which == 0) {
+        LinearLayout panel = column(); panel.setPadding(dp(20), dp(18), dp(20), dp(14)); panel.setBackground(chatStyle.rounded(background));
+        TextView heading = text(title(conversation), 20, ink); heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.setPadding(dp(4), 0, dp(4), dp(10)); heading.setMaxLines(2); heading.setEllipsize(android.text.TextUtils.TruncateAt.END); panel.addView(heading);
+        panel.addView(dialogMenuRow(tr("重命名", "Rename"), "localConversationRename", false, () -> {
+            dialog.dismiss();
                 EditText name = input(tr("会话标题", "Chat title"), "localRename"); name.setText(title(conversation)); name.setSingleLine(true);
                 dialog = new AlertDialog.Builder(this).setTitle(tr("重命名", "Rename")).setView(name).setNegativeButton(tr("取消", "Cancel"), null)
                     .setPositiveButton(tr("保存", "Save"), null).create();
@@ -392,14 +427,64 @@ public final class LocalChatActivity extends Activity {
                     try { conversation.put("title", value); store.save(); dialog.dismiss(); if (conversationId == null) list(); else detail(); }
                     catch (Exception error) { failure(error); }
                 })); dialog.show();
-            } else {
-                dialog = new AlertDialog.Builder(this).setTitle(tr("删除本机会话？", "Delete this local chat?"))
-                    .setMessage(tr("聊天记录将永久删除。", "The chat history will be permanently deleted."))
-                    .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("删除", "Delete"), (confirm, action) -> {
-                        try { store.deleteConversation(conversation.optString("id")); list(); } catch (Exception error) { failure(error); }
-                    }).show();
-            }
-        }).show();
+        }));
+        panel.addView(dialogMenuRow(tr("删除会话", "Delete chat"), "localConversationDelete", true, () -> {
+            dialog.dismiss(); deleteConversationDialog(conversation);
+        }));
+        panel.addView(dialogMenuRow(tr("归档会话", "Archive chat"), "localConversationArchive", false, () -> {
+            dialog.dismiss();
+            archiveConversation(conversation);
+        }));
+        showStyledDialog(panel);
+    }
+
+    // Archiving the open chat continues at its neighboring chat in the same
+    // group; an emptied group falls back to a new chat there, and standalone
+    // chats behave the same way. Other chats keep the current one open.
+    private void archiveConversation(JSONObject conversation) {
+        String id = conversation.optString("id");
+        String workspace = conversation.optString("workspaceId");
+        boolean wasOpen = id.equals(conversationId);
+        String neighbor = wasOpen ? neighborConversation(conversation) : null;
+        try {
+            store.archiveConversation(id, true);
+            if (!wasOpen) { list(); return; }
+            if (neighbor != null && store.conversation(neighbor) != null) { conversationId = neighbor; detail(); return; }
+            if (LocalChatConfig.routes(store.config()).isEmpty()) { conversationId = null; list(); }
+            else createConversation(workspace);
+        } catch (Exception error) { failure(error); }
+    }
+
+    // Neighboring chat inside the same list group: the row below, then the row
+    // above, and null when the group holds no other chat.
+    private String neighborConversation(JSONObject conversation) {
+        List<JSONObject> entries = store.orderedConversations(conversation.optString("workspaceId"));
+        int index = -1;
+        for (int position = 0; position < entries.size(); position++) {
+            if (entries.get(position).optString("id").equals(conversation.optString("id"))) index = position;
+        }
+        if (index < 0) return null;
+        if (index + 1 < entries.size()) return entries.get(index + 1).optString("id");
+        if (index > 0) return entries.get(index - 1).optString("id");
+        return null;
+    }
+
+    private void deleteConversationDialog(JSONObject conversation) {
+        LinearLayout panel = column(); panel.setPadding(dp(24), dp(22), dp(24), dp(20)); panel.setBackground(chatStyle.rounded(background));
+        TextView heading = text(tr("删除本机会话？", "Delete this local chat?"), 21, ink);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); panel.addView(heading);
+        TextView message = text(tr("聊天记录将永久删除，此操作无法撤销。", "The chat history will be permanently deleted. This cannot be undone."), 14, muted);
+        message.setPadding(0, dp(8), 0, dp(18)); panel.addView(message);
+        LinearLayout actions = new LinearLayout(this);
+        TextView cancel = dialogAction(tr("取消", "Cancel"), "localDeleteCancel", false, () -> dialog.dismiss());
+        TextView delete = dialogAction(tr("删除", "Delete"), "localDeleteConfirm", true, () -> {
+            dialog.dismiss();
+            try { store.deleteConversation(conversation.optString("id")); list(); } catch (Exception error) { failure(error); }
+        });
+        LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, dp(48), 1); left.setMargins(0, 0, dp(6), 0);
+        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, dp(48), 1); right.setMargins(dp(6), 0, 0, 0);
+        actions.addView(cancel, left); actions.addView(delete, right); panel.addView(actions);
+        showStyledDialog(panel);
     }
 
     private void createConversation(String workspaceId) {
@@ -432,7 +517,7 @@ public final class LocalChatActivity extends Activity {
         bar.addView(send, new LinearLayout.LayoutParams(dp(48), dp(48)));
         stop = chatStyle.composerAction(tr("停止", "Stop"), R.drawable.ic_stop, () -> finishRun(tr("已停止，部分回复已保留。", "Stopped; partial reply kept."), "stopped"));
         stop.setTag("localStop"); bar.addView(stop, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        composer.setOnFocusChangeListener((view, focused) -> ((GradientDrawable) bar.getBackground()).setStroke(dp(1), focused ? accent : Color.TRANSPARENT));
+        composer.setOnFocusChangeListener((view, focused) -> ((GradientDrawable) bar.getBackground()).setStroke(dp(1), focused ? accent : chatStyle.floatingBarEdge()));
         composer.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
             public void onTextChanged(CharSequence value, int start, int before, int count) { updateControls(); }

@@ -181,7 +181,7 @@ class Bridge:
         try:
             if method == "initialize":
                 result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True},
-                          "agentInfo": {"name": "Camellia Antigravity", "version": "0.1.0"}}
+                          "agentInfo": {"name": "Camellia Antigravity", "version": "1.0.0"}}
             elif method in ("session/new", "session/resume", "session/fork"):
                 source = params.get("sessionId")
                 if source:

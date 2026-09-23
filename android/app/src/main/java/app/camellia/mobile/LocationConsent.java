@@ -28,10 +28,12 @@ final class LocationConsent {
     LocationConsent(Activity activity) { this.activity = activity; }
 
     static boolean relevant(String prompt) {
-        String text = prompt.toLowerCase(Locale.ROOT);
+        String text = prompt.trim().toLowerCase(Locale.ROOT);
         if (text.matches("(?s).*(不要定位|不使用.{0,4}位置|不用.{0,4}定位|不获取.{0,4}位置|不要.{0,4}位置|do not (use|access|share).{0,20}location|don't (use|access|share).{0,20}location|without.{0,10}location).*")
                 || text.contains("```") || text.matches("(?s).*(翻译|引用|translate|quoted).*")) return false;
-        return text.matches("(?s).*(我在哪|我的位置|我现在.{0,6}(位置|哪里|哪儿)|我所在|当前位置|附近.{0,20}(推荐|餐厅|饭店|医院|药店|咖啡|酒店|停车|加油|天气|有什么|哪里)|周边.{0,12}(推荐|餐厅|医院|酒店)|这里.{0,12}(天气|气温|下雨)|near me|my (current )?location|where am i|weather (here|at my location)).*");
+        if (text.matches("(?s).*(我在哪|我的位置|我现在.{0,6}(位置|哪里|哪儿)|我所在|当前位置|附近.{0,20}(推荐|餐厅|饭店|医院|药店|咖啡|酒店|停车|加油|天气|有什么|哪里)|周边.{0,12}(推荐|餐厅|医院|酒店)|这里.{0,12}(天气|气温|下雨)|near me|my (current )?location|where am i|weather (here|at my location)).*")) return true;
+        return text.matches("(?s)^(?:请|帮我|请帮我)?(?:搜一搜|搜一下|搜索|查一查|查一下|查询|看看)?(?:最近)?(?:今天|今日|最近|近期|这几天|近几天).{0,8}(天气|气温|下雨).*$")
+                || text.matches("(?s)^(?:please )?(?:search |check )?(?:today'?s weather|weather today|current weather).*$");
     }
 
     private String tr(String chinese, String english) {

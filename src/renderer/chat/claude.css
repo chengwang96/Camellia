@@ -15,6 +15,7 @@
   .artifact-pdf { color: #ed5362; }
   .artifact-spreadsheet { color: #29875c; }
   .artifact-presentation { color: #c86b31; }
+  .artifact-package { color: #3b6fd4; }
   .artifact-info { display: flex; flex-direction: column; min-width: 0; gap: 4px; }
   .artifact-info strong { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .artifact-info > span { font-size: 12px; color: var(--dsw-alias-label-caption); }

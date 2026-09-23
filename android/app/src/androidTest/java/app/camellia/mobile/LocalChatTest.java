@@ -467,6 +467,68 @@ public class LocalChatTest extends InstrumentationTestCase {
         }
     }
 
+    // Archiving the open chat continues at its neighbor below, then the chat
+    // above; an emptied group opens a new chat there, and standalone chats use
+    // the standalone group the same way.
+    public void testArchiveOpensNeighborThenNewChatInSameGroup() throws Throwable {
+        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        store.importConfig(LocalChatConfig.parse(bundle("https://example.com/v1", "openai").toString()));
+        String group = store.createWorkspace("Phone group").getString("id");
+        JSONObject newerGroup = seedChat(store, group, "Newer group chat", 3000);
+        JSONObject olderGroup = seedChat(store, group, "Older group chat", 1000);
+        JSONObject newerStandalone = seedChat(store, "", "Newer standalone chat", 2000);
+        JSONObject olderStandalone = seedChat(store, "", "Older standalone chat", 500);
+        store.save();
+        Activity activity = getInstrumentation().startActivitySync(
+            new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            // The row below wins, then the row above once that one is archived.
+            openChat(activity, newerGroup);
+            archiveOpenChat(activity);
+            assertEquals(olderGroup.optString("id"), openConversationId(activity));
+            archiveOpenChat(activity);
+            String replacement = openConversationId(activity);
+            assertNotNull(replacement);
+            assertEquals(group, new LocalChatStore(activity).conversation(replacement).getString("workspaceId"));
+            assertTrue(new LocalChatStore(activity).conversation(olderGroup.optString("id")).getBoolean("archived"));
+            assertTrue(new LocalChatStore(activity).conversation(newerGroup.optString("id")).getBoolean("archived"));
+
+            // Standalone chats keep the current workspace-less group too.
+            ui(() -> activity.onBackPressed());
+            openChat(activity, newerStandalone);
+            archiveOpenChat(activity);
+            assertEquals(olderStandalone.optString("id"), openConversationId(activity));
+            archiveOpenChat(activity);
+            String standaloneReplacement = openConversationId(activity);
+            assertNotNull(standaloneReplacement);
+            assertEquals("", new LocalChatStore(activity).conversation(standaloneReplacement).getString("workspaceId"));
+        } finally { finishActivity(activity); }
+    }
+
+    private JSONObject seedChat(LocalChatStore store, String workspace, String title, long updatedAt) throws Exception {
+        JSONObject conversation = store.createConversation(workspace, "missing-route");
+        conversation.put("title", title);
+        conversation.put("updatedAt", updatedAt);
+        return conversation;
+    }
+
+    private void openChat(Activity activity, JSONObject conversation) throws Throwable {
+        ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + conversation.optString("id")).performClick());
+        assertEquals(conversation.optString("id"), openConversationId(activity));
+    }
+
+    private void archiveOpenChat(Activity activity) throws Throwable {
+        ui(() -> activity.getWindow().getDecorView().findViewWithTag("localChatMenu").performClick());
+        ui(() -> dialog(activity).getWindow().getDecorView().findViewWithTag("localConversationArchive").performClick());
+    }
+
+    private String openConversationId(Activity activity) {
+        try {
+            var field = LocalChatActivity.class.getDeclaredField("conversationId"); field.setAccessible(true);
+            return (String) field.get(activity);
+        } catch (Exception error) { throw new AssertionError(error); }
+    }
+
     public void testInterruptedReplyRecovery() throws Exception {
         LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
         JSONObject conversation = store.createConversation("", "missing-route");

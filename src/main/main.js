@@ -37,6 +37,7 @@ const { StorageCleanup } = require('./storage-cleanup');
 const { attachInputContextMenu } = require('./input-context-menu');
 const { attachImageContextMenu } = require('./image-context-menu');
 const { describePreview } = require('./file-preview');
+const { revealInFileManager } = require('./reveal-file');
 const { resolveArtifacts } = require('./turn-artifacts');
 const { readOfficePreview } = require('./office-preview');
 const { createConversationTitles, titleCandidates, titleErrorKind, TitleRequestError,
@@ -1608,6 +1609,13 @@ if (!gotSingleInstanceLock) {
       const preview = describePreview(filePath);
       const error = await shell.openPath(preview.path);
       return error ? { ok: false, error } : { ok: true };
+    } catch (error) { return { ok: false, error: error?.message || String(error) }; }
+  });
+
+  ipcMain.handle('dsh:reveal-file', async (_event, filePath) => {
+    try {
+      await revealInFileManager(filePath, { openPath: folder => shell.openPath(folder) });
+      return { ok: true };
     } catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 

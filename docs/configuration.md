@@ -313,6 +313,8 @@ Page zoom is shared across the application and saved between launches. Use Ctrl/
 
 All five engines share a sidebar with pinned sessions, folder workspaces, and standalone conversations. Adding a workspace registers a local folder. Its `+` action creates a conversation in that folder; the top-level action starts a standalone conversation. Shared conversations retain their execution directory across engine switches.
 
+Archiving the open conversation continues at its neighbor in the same workspace, preferring the row below and then the row above. Once a workspace has no conversation left, its new-session page opens in that workspace; standalone conversations follow the same rule and fall back to a standalone draft. Archiving another conversation keeps the current one open. Restore or permanently delete archived conversations from Settings → Archived.
+
 | Operation | Shared conversations |
 | --- | --- |
 | Workspace and standalone sessions | Supported across five engines |

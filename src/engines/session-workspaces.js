@@ -30,7 +30,7 @@ async function listSessions({ limits = {}, activeSessionId = null } = {}) {
   const pagination = {};
   for (const [group, all] of groups) {
     const ranks = new Map((meta.sessionOrder[group] || []).map((id, index) => [id, index]));
-    all.sort((first, second) => (ranks.get(first.id) ?? Infinity) - (ranks.get(second.id) ?? Infinity));
+    all.sort((first, second) => (ranks.get(first.id) ?? -1) - (ranks.get(second.id) ?? -1));
     const limit = Number.isSafeInteger(limits[group]) && limits[group] > 0 ? limits[group] : 60;
     const page = workspaceById.get(group)?.id && meta.collapsed[group] ? [] : all.slice(0, limit);
     for (const entry of page) visible.set(entry.id, entry);
@@ -43,7 +43,7 @@ async function listSessions({ limits = {}, activeSessionId = null } = {}) {
   for (const [group, order] of Object.entries(meta.sessionOrder)) {
     const ranks = new Map(order.map((id, index) => [id, index]));
     const slots = ordered.map((entry, index) => groupFor(entry) === group ? index : -1).filter(index => index >= 0);
-    const sorted = slots.map(index => ordered[index]).sort((first, second) => (ranks.get(first.id) ?? Infinity) - (ranks.get(second.id) ?? Infinity));
+    const sorted = slots.map(index => ordered[index]).sort((first, second) => (ranks.get(first.id) ?? -1) - (ranks.get(second.id) ?? -1));
     slots.forEach((slot, index) => { ordered[slot] = sorted[index]; });
   }
   const sessions = await Promise.all(ordered.map(async entry => {
@@ -98,15 +98,19 @@ function saveSessionMeta(mutator) {
   return meta;
 }
 
-function promoteSession(id) {
+function promoteSession(id, fallbackOrder = []) {
   if (!validSessionId(id)) return false;
   const meta = sessionMeta();
   if (meta.archived[id]) return false;
   const workspaceIds = new Set(meta.workspaces.map(workspace => workspace.id));
-  const group = meta.pinned[id] ? 'pinned' : workspaceIds.has(meta.sessionWorkspace[id]) ? meta.sessionWorkspace[id] : 'recent';
+  const groupFor = sessionId => meta.pinned[sessionId] ? 'pinned' : workspaceIds.has(meta.sessionWorkspace[sessionId]) ? meta.sessionWorkspace[sessionId] : 'recent';
+  const group = groupFor(id);
+  const ranks = new Map((meta.sessionOrder[group] || []).map((sessionId, index) => [sessionId, index]));
+  const order = fallbackOrder.filter(sessionId => sessionId !== id && validSessionId(sessionId) && !meta.archived[sessionId] && groupFor(sessionId) === group)
+    .sort((first, second) => (ranks.get(first) ?? -1) - (ranks.get(second) ?? -1));
   saveSessionMeta(saved => {
     for (const key of Object.keys(saved.sessionOrder)) saved.sessionOrder[key] = saved.sessionOrder[key].filter(sessionId => sessionId !== id);
-    saved.sessionOrder[group] = [id, ...(saved.sessionOrder[group] || [])];
+    saved.sessionOrder[group] = [id, ...(fallbackOrder.length ? order : saved.sessionOrder[group] || [])];
   });
   return true;
 }

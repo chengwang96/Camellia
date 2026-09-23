@@ -72,6 +72,15 @@ test('expired login waits for manual authorization; connecting nodes can become 
   }
 });
 
+test('automatic startup retries a connecting network without the healthy monitor delay', async context => {
+  const { controller, network, calls } = startupHarness(context, [trustedPhone()], 'Starting');
+  await controller.startTrustedDevices();
+  assert.equal(calls.listen, 0);
+  network.snapshot = { state: 'Running', address: '100.80.1.2' };
+  await new Promise(resolve => setTimeout(resolve, 750));
+  assert.equal(calls.listen, 1);
+});
+
 test('automatic startup failures are closed and can be retried manually', async context => {
   const { controller, command, network, calls } = startupHarness(context, [trustedPhone()]);
   const start = network.start;

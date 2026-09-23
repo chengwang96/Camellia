@@ -25,6 +25,7 @@ final class RemoteSettingsPopup {
     private final Listener listener;
     private final PopupWindow popup = new PopupWindow();
     private final PopupSurface surface;
+    private final ScrollView scroll;
     private final LinearLayout body;
     private View anchor;
     private int left, bottom, width, heightLimit;
@@ -33,9 +34,9 @@ final class RemoteSettingsPopup {
             JSONObject settings, Listener listener) {
         this.context = context; this.chinese = chinese; this.background = background; this.ink = ink;
         this.muted = muted; this.accent = accent; this.settings = settings; this.listener = listener;
-        body = new LinearLayout(context); body.setOrientation(LinearLayout.VERTICAL); body.setPadding(dp(12), dp(12), dp(12), dp(12));
+        body = new LinearLayout(context); body.setOrientation(LinearLayout.VERTICAL); body.setPadding(dp(12), dp(14), dp(12), dp(10));
         surface = new PopupSurface(context, background); surface.setTag("remoteSettingsPanel");
-        ScrollView scroll = new ScrollView(context); scroll.setFillViewport(false); scroll.addView(body);
+        scroll = new ScrollView(context); scroll.setFillViewport(false); scroll.setVerticalScrollBarEnabled(false); scroll.setClipToPadding(false); scroll.addView(body);
         surface.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
         popup.setContentView(surface); popup.setBackgroundDrawable(round(background, 26)); popup.setElevation(dp(8));
         popup.setFocusable(true); popup.setOutsideTouchable(true); popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
@@ -52,7 +53,7 @@ final class RemoteSettingsPopup {
     private void row(String title, String description, boolean selected, String tag, Runnable action) {
         LinearLayout row = new LinearLayout(context); row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(dp(14), dp(14), dp(10), dp(14));
         row.setTag(tag); row.setMinimumHeight(dp(60)); row.setFocusable(true); row.setSelected(selected);
-        row.setBackground(new RippleDrawable(ColorStateList.valueOf((accent & 0xffffff) | 0x18000000), round(background, 16), round(Color.WHITE, 16)));
+        row.setBackground(new RippleDrawable(ColorStateList.valueOf((accent & 0xffffff) | 0x18000000), null, round(Color.WHITE, 18)));
         LinearLayout words = new LinearLayout(context); words.setOrientation(LinearLayout.VERTICAL);
         TextView name = text(title, 17, ink); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); words.addView(name);
         if (!description.isEmpty()) { TextView detail = text(description, 12, muted); detail.setPadding(0, dp(6), 0, 0); words.addView(detail); }
@@ -129,8 +130,9 @@ final class RemoteSettingsPopup {
         if (permissions) permissions(); else models();
     }
     private void position() {
-        body.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
-        int height = Math.min(heightLimit, body.getMeasuredHeight());
+        int contentWidth = Math.max(1, width - dp(24));
+        body.measure(View.MeasureSpec.makeMeasureSpec(contentWidth, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        int height = Math.min(heightLimit, body.getMeasuredHeight() + dp(24));
         popup.setHeight(height);
         if (popup.isShowing()) popup.update(left, bottom - height, width, height);
         else {

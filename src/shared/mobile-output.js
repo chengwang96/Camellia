@@ -71,12 +71,13 @@ function projectOutput(events = [], finished = false) {
       }
     }
   }
-  const texts = entries.filter(entry => entry.type === 'text' && entry.phase !== 'commentary' && entry.text.trim());
-  let visible = texts.slice(-1);
+  const texts = entries.filter(entry => entry.type === 'text' && entry.text.trim());
+  const settled = texts.filter(entry => entry.phase !== 'commentary');
+  let visible = (finished ? settled : texts).slice(-1);
   if (finished) {
     const lastActivity = entries.findLastIndex(entry => entry.type !== 'text');
-    if (lastActivity >= 0) visible = texts.filter(entry => entry.phase === 'final_answer' || entries.indexOf(entry) > lastActivity);
-    else if (texts.some(entry => entry.phase === 'final_answer')) visible = texts.filter(entry => entry.phase === 'final_answer');
+    if (lastActivity >= 0) visible = settled.filter(entry => entry.phase === 'final_answer' || entries.indexOf(entry) > lastActivity);
+    else if (settled.some(entry => entry.phase === 'final_answer')) visible = settled.filter(entry => entry.phase === 'final_answer');
   }
   return { text: visible.map(entry => entry.text).join('\n\n'), process: cleanProcess(entries.filter(entry => !visible.includes(entry))) };
 }

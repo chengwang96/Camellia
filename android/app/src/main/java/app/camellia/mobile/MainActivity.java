@@ -33,6 +33,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 public final class MainActivity extends Activity {
+    private static final int PICK_IMAGE_REQUEST = 42;
+    private static final int TAKE_PHOTO_REQUEST = 43;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final LocationConsent locationConsent = new LocationConsent(this);
 
@@ -81,6 +83,8 @@ public final class MainActivity extends Activity {
     private String approvalSignature = "";
     private boolean networkScreen;
     private android.app.Dialog computerDialog;
+    private android.net.Uri cameraImageUri;
+    private java.io.File cameraImageFile;
     private EditText searchInput;
     private JSONArray availableWorkspaces = new JSONArray();
     private boolean canCreate, canCreateWorkspace, canImage, allowIndependent, canMove;
@@ -132,6 +136,7 @@ public final class MainActivity extends Activity {
             credentials = new JSONObject();
             recovery = tr("无法解密设备凭据，请重新配对。", "Device credentials could not be decrypted. Pair again.");
         }
+        warmEmbeddedNetwork();
         if (saved != null && credentials.has("token")) {
             conversationId = saved.getString("conversationId");
             conversationTitle = saved.getString("conversationTitle", "");
@@ -145,6 +150,14 @@ public final class MainActivity extends Activity {
         else if (restored.equals("settings")) settingsScreen();
         else homeScreen();
         if (recovery != null) status.setText(recovery);
+    }
+
+    private void warmEmbeddedNetwork() {
+        if (!EmbeddedNetwork.enabled() || !credentials.has("address")) return;
+        networkWorker.submit(() -> {
+            try { EmbeddedNetwork.node(); }
+            catch (Exception ignored) {}
+        });
     }
 
     @Override protected void onStart() {
@@ -307,7 +320,8 @@ public final class MainActivity extends Activity {
         if (!subtitle.isEmpty()) root.addView(text(subtitle, 12, muted));
         }
         status = text("", 11, muted); status.setTag("connectionStatus"); status.setGravity(Gravity.CENTER); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        scroll = new RefreshScrollView(this); scroll.setFillViewport(true); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        scroll = new RefreshScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
         if (settingsPage) { content.setPadding(0, dp(12), 0, dp(16)); scroll.setVerticalScrollBarEnabled(false); }
         root.addView(status);
@@ -320,13 +334,26 @@ public final class MainActivity extends Activity {
     private LinearLayout bottomBar(String tag) {
         chatStyle.dockStatus(status);
         status.setMaxLines(1); status.setMinLines(1); status.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        status.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
+        root.removeView(status);
+        int scrollIndex = root.indexOfChild(scroll);
+        LinearLayout.LayoutParams stageParams = (LinearLayout.LayoutParams) scroll.getLayoutParams();
+        root.removeView(scroll);
+        android.widget.FrameLayout stage = new android.widget.FrameLayout(this); stage.setTag(tag + "Stage");
+        stage.setClipChildren(false); stage.setClipToPadding(false);
+        stage.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        LinearLayout dock = column(); dock.setTag(tag + "Dock"); dock.setBackground(chatStyle.dockBackdrop());
+        dock.setClipChildren(false); dock.setClipToPadding(false);
+        dock.addView(chatStyle.dockFade(tag), new LinearLayout.LayoutParams(-1, chatStyle.dockFadeHeight()));
         LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL); bar.setTag(tag);
         bar.setClipChildren(false); bar.setClipToPadding(false);
         chatStyle.floatingBar(bar);
         bar.setPadding(dp(6), dp(6), dp(6), dp(6));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(10), 0, dp(12));
-        root.addView(bar, root.indexOfChild(status), params); return bar;
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(8));
+        dock.addView(bar, params);
+        if (tag.toLowerCase(java.util.Locale.ROOT).contains("searchbar")) bar.setBackground(chatStyle.topRoundedBar());
+        status.setBackgroundColor(background); status.setLayoutParams(new LinearLayout.LayoutParams(-1, -2)); dock.addView(status);
+        android.widget.FrameLayout.LayoutParams dockParams = new android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+        stage.addView(dock, dockParams); root.addView(stage, scrollIndex, stageParams); return bar;
     }
 
     private EditText input(String label, String value, int type) {
@@ -670,8 +697,8 @@ public final class MainActivity extends Activity {
         shell("", "");
         root.setClipChildren(false);
         LinearLayout bar = bottomBar("searchBar");
-        bar.setBackgroundColor(Color.TRANSPARENT); bar.setElevation(0); bar.setPadding(0, dp(6), 0, dp(6));
-        LinearLayout search = new LinearLayout(this); search.setGravity(Gravity.CENTER_VERTICAL); search.setBackground(capsule(background)); search.setElevation(dp(2));
+        bar.setElevation(0); bar.setPadding(0, dp(6), 0, dp(6));
+        LinearLayout search = new LinearLayout(this); search.setGravity(Gravity.CENTER_VERTICAL); chatStyle.floatingBar(search);
         LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(0, -2, 1); searchParams.setMargins(0, 0, dp(10), 0); bar.addView(search, searchParams);
         ImageView searchIcon = new ImageView(this); searchIcon.setImageDrawable(new LineIcon("search", ink)); searchIcon.setPadding(dp(10), dp(10), dp(10), dp(10));
         search.addView(searchIcon, new LinearLayout.LayoutParams(dp(44), dp(44)));
@@ -773,8 +800,10 @@ public final class MainActivity extends Activity {
         TextView name = text(title, 15, ink); name.setMaxLines(2); name.setMinHeight(dp(36)); name.setGravity(Gravity.CENTER_VERTICAL); name.setEllipsize(android.text.TextUtils.TruncateAt.END); card.addView(name);
         card.setContentDescription(title + " · " + activity(conversation)); card.setFocusable(true); card.setTag("conversation:" + conversation.optString("id"));
         card.setOnClickListener(view -> { conversationId = conversation.optString("id"); conversationTitle = title; detailScreen(); connectEvents(); });
-        if (canMove && !commandBusy && !credentials.has("pendingCreate")) conversationDrag.source(card, conversation.optString("id"));
-        conversationDrag.target(card, conversation.isNull("workspaceId") ? "" : conversation.optString("workspaceId"), conversation.optString("id"));
+        if (conversationDrag != null) {
+            if (canMove && !commandBusy && !credentials.has("pendingCreate")) conversationDrag.source(card, conversation.optString("id"));
+            conversationDrag.target(card, conversation.isNull("workspaceId") ? "" : conversation.optString("workspaceId"), conversation.optString("id"));
+        }
         return card;
     }
 
@@ -926,17 +955,42 @@ public final class MainActivity extends Activity {
             status.setText(tr("添加图片需要更新并重启电脑端。", "Images require an updated and restarted desktop.")); return;
         }
         imageConversation = conversationId; imageComputer = credentials.optString("address");
+        LinearLayout panel = computerDialogPanel(tr("添加图片", "Add image"), tr("选择图片来源", "Choose an image source"));
+        android.app.Dialog dialog = createComputerDialog(panel);
+        panel.addView(button(tr("从相册选择", "Choose from gallery"), () -> { dialog.dismiss(); openGallery(); }, true));
+        panel.addView(button(tr("使用相机拍摄", "Take a photo"), () -> { dialog.dismiss(); openCamera(); }, false));
+        panel.addView(button(tr("取消", "Cancel"), dialog::dismiss, false));
+        showComputerDialog(dialog);
+    }
+
+    private void openGallery() {
         android.content.Intent picker = new android.content.Intent(android.content.Intent.ACTION_GET_CONTENT);
         picker.setType("image/*"); picker.addCategory(android.content.Intent.CATEGORY_OPENABLE);
-        try { startActivityForResult(picker, 42); }
+        try { startActivityForResult(picker, PICK_IMAGE_REQUEST); }
         catch (Exception error) { status.setText(tr("无法打开图片选择器", "Cannot open the image picker")); }
+    }
+
+    private void openCamera() {
+        try {
+            java.io.File directory = new java.io.File(getCacheDir(), "camera");
+            if (!directory.exists() && !directory.mkdirs()) throw new IOException();
+            cameraImageFile = java.io.File.createTempFile("photo-", ".jpg", directory);
+            cameraImageUri = CameraFileProvider.uri(this, cameraImageFile);
+            android.content.Intent camera = new android.content.Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+                .putExtra(android.provider.MediaStore.EXTRA_OUTPUT, cameraImageUri)
+                .addFlags(android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION | android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivityForResult(camera, TAKE_PHOTO_REQUEST);
+        } catch (Exception error) {
+            clearCameraImage(); status.setText(tr("无法打开相机", "Cannot open the camera"));
+        }
     }
 
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
-        if (request != 42 || result != RESULT_OK || data == null || data.getData() == null) return;
+        if (request != PICK_IMAGE_REQUEST && request != TAKE_PHOTO_REQUEST) return;
+        android.net.Uri uri = request == TAKE_PHOTO_REQUEST ? cameraImageUri : data == null ? null : data.getData();
+        if (result != RESULT_OK || uri == null) { if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); return; }
         String target = imageConversation, computer = imageComputer;
-        android.net.Uri uri = data.getData();
         worker.submit(() -> {
             try {
                 android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options(); options.inJustDecodeBounds = true;
@@ -956,7 +1010,13 @@ public final class MainActivity extends Activity {
                     selectedImage = encoded; renderImage(); updateControls();
                 });
             } catch (Exception error) { handler.post(() -> { if (!isDestroyed() && java.util.Objects.equals(target, conversationId)) status.setText(tr("无法读取图片，请选择较小的图片。", "Cannot read image. Choose a smaller image.")); }); }
+            finally { if (request == TAKE_PHOTO_REQUEST) handler.post(this::clearCameraImage); }
         });
+    }
+
+    private void clearCameraImage() {
+        if (cameraImageFile != null) cameraImageFile.delete();
+        cameraImageFile = null; cameraImageUri = null;
     }
 
     private void renderImage() {
@@ -1089,7 +1149,7 @@ public final class MainActivity extends Activity {
             @Override public void onTextChanged(CharSequence text, int start, int before, int count) { updateControls(); }
             @Override public void afterTextChanged(android.text.Editable text) {}
         });
-        composer.setOnFocusChangeListener((view, focused) -> composerShape.setStroke(dp(1), focused ? accent : Color.TRANSPARENT));
+        composer.setOnFocusChangeListener((view, focused) -> composerShape.setStroke(dp(1), focused ? accent : chatStyle.floatingBarEdge()));
         retryButton = button(tr("重试未确认操作（不会重复执行）", "Retry unconfirmed operation (deduplicated)"), this::retryCommand, false); root.addView(retryButton, root.indexOfChild(composerBar));
         updateControls();
     }

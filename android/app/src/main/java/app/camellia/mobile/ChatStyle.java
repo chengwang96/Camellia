@@ -38,6 +38,22 @@ final class ChatStyle {
 
     void dockStatus(TextView status) { status.setPadding(0, dp(2), 0, dp(2)); }
 
+    int dockFadeHeight() { return dp(36); }
+
+    android.graphics.drawable.Drawable dockBackdrop() {
+        return new DockBackdrop(background, dockFadeHeight());
+    }
+
+    android.view.View dockFade(String tag) {
+        android.view.View fade = new android.view.View(context);
+        fade.setTag(tag + "Fade");
+        fade.setImportantForAccessibility(android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        fade.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+            new int[] {Color.TRANSPARENT, (background & 0x00ffffff) | 0x28000000,
+                (background & 0x00ffffff) | 0xb8000000, background}));
+        return fade;
+    }
+
     GradientDrawable rounded(int color) {
         GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(12)); return shape;
     }
@@ -47,11 +63,23 @@ final class ChatStyle {
     }
 
     GradientDrawable floatingBar(android.view.View view) {
-        GradientDrawable shape = capsule(background); view.setBackground(shape); view.setElevation(dp(4));
+        GradientDrawable shape = capsule(background); shape.setStroke(dp(1), floatingBarEdge());
+        view.setBackground(shape); view.setElevation(dp(7)); view.setTranslationZ(dp(1));
         if (android.os.Build.VERSION.SDK_INT >= 28) {
-            view.setOutlineAmbientShadowColor(0x24000000); view.setOutlineSpotShadowColor(0x32000000);
+            view.setOutlineAmbientShadowColor(0x18000000); view.setOutlineSpotShadowColor(0x3d000000);
         }
         return shape;
+    }
+
+    int floatingBarEdge() { return Color.parseColor(Color.red(background) < 128 ? "#3B3B40" : "#ECEEF1"); }
+
+    android.graphics.drawable.LayerDrawable topRoundedBar() {
+        GradientDrawable fill = rounded(background); fill.setCornerRadii(new float[] {
+            dp(28), dp(28), dp(28), dp(28), 0, 0, 0, 0
+        });
+        GradientDrawable edge = rounded(Color.TRANSPARENT); edge.setStroke(dp(1), floatingBarEdge());
+        edge.setCornerRadii(new float[] {dp(28), dp(28), dp(28), dp(28), 0, 0, 0, 0});
+        return new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[] {fill, edge});
     }
 
     ColorStateList enabledColors(int enabled, int disabled) {

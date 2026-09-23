@@ -9,6 +9,7 @@ function subscribe(channel, callback) {
 }
 
 contextBridge.exposeInMainWorld('dshDesktop', {
+  platform: process.platform,
   nativeSettingsView: true,
   sharedConversations: true,
   settingsEmbedded: process.argv.includes('--workbench-settings'),
@@ -111,6 +112,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   previewFile: (filePath) => ipcRenderer.invoke('dsh:preview-file', filePath),
   resolveArtifacts: (payload) => ipcRenderer.invoke('dsh:resolve-artifacts', payload),
   openFileExternally: (filePath) => ipcRenderer.invoke('dsh:open-file-externally', filePath),
+  revealFile: (filePath) => ipcRenderer.invoke('dsh:reveal-file', filePath),
   onClaudeEvent: (callback) => subscribe('dsh:claude-event', callback),
   onClaudeGoal: (callback) => subscribe('dsh:claude-goal', callback),
   // Shared ACP conversation API; no arbitrary IPC forwarding.

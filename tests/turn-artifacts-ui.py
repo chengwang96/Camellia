@@ -13,24 +13,35 @@ bridge_node = next(node for node in fixture_module.body if isinstance(node, ast.
 files = [{'path': 'C:/outputs/' + name, 'name': name, 'extension': name.split('.')[-1].upper(), 'kind': kind, 'size': 1536}
          for name, kind in [('main.js', 'text'), ('实验报告.docx', 'word'), ('report.MD', 'text'), ('report.html', 'text'),
                             ('figure.svg', 'image'), ('slides.pptx', 'presentation'), ('results.xlsx', 'spreadsheet'), ('test.js', 'text')]]
+packages = [{'path': 'C:/outputs/Camellia-Android-debug.apk', 'name': 'Camellia-Android-debug.apk',
+             'extension': 'APK', 'kind': 'package', 'size': 46689292}]
 fixture['messages'][-1]['artifacts'] = files
 bridge = ast.literal_eval(bridge_node.value.func.value).replace('FIXTURE', json.dumps(fixture))
 bridge = bridge.replace('onConversationEvent:()=>{}', 'onConversationEvent:fn=>{window.deliverEvent=fn;}')
 bridge += r"""(() => {
   const files = FILES;
+  const packages = PACKAGES;
+  const all = [...packages, ...files];
   window.resolveRequests = [];
   window.openedExternally = [];
+  window.revealed = [];
+  window.dshDesktop.platform = 'win32';
   window.dshDesktop.resolveArtifacts = async request => {
     resolveRequests.push(request);
-    return {ok:true,files:files.filter(file => request.paths?.includes(file.path))};
+    return {ok:true,files:all.filter(file => request.paths?.includes(file.path))};
   };
-  window.dshDesktop.previewFile = async path => ({ok:true,file:{...files.find(file=>file.path===path),
-    url:'file:///' + path,
-    text:path.endsWith('.MD') ? '# Report\n\n**Readable**\n\n| Name | Value |\n| --- | --- |\n| Result | 42 |\n\n```js\nconst value = 1;\n```\n<script>window.previewEscaped=true</script>'
-      : '<h1>HTML report</h1><style>h1 { color: rgb(12, 34, 56); }</style><script>parent.previewEscaped=true</script><img src="missing.png" onerror="parent.previewEscaped=true"><a href="https://example.com" target="_top">Escape</a>',
-    office:{sections:[{title:'Report',paragraphs:['Preview content']}],truncated:false}}});
+  window.dshDesktop.previewFile = async path => {
+    const file = all.find(item => item.path === path);
+    const preview = {...file, url:'file:///' + path,
+      text:path.endsWith('.MD') ? '# Report\n\n**Readable**\n\n| Name | Value |\n| --- | --- |\n| Result | 42 |\n\n```js\nconst value = 1;\n```\n<script>window.previewEscaped=true</script>'
+        : '<h1>HTML report</h1><style>h1 { color: rgb(12, 34, 56); }</style><script>parent.previewEscaped=true</script><img src="missing.png" onerror="parent.previewEscaped=true"><a href="https://example.com" target="_top">Escape</a>'};
+    if (['word', 'presentation', 'spreadsheet'].includes(file.kind))
+      preview.office = {sections:[{title:'Report',paragraphs:['Preview content']}],truncated:false};
+    return {ok:true,file:preview};
+  };
   window.dshDesktop.openFileExternally = async path => { openedExternally.push(path); return {ok:true}; };
-})();""".replace('FILES', json.dumps(files))
+  window.dshDesktop.revealFile = async path => { revealed.push(path); return {ok:true}; };
+})();""".replace('FILES', json.dumps(files)).replace('PACKAGES', json.dumps(packages))
 preview = repo / 'dist/ui-preview'
 preview.mkdir(parents=True, exist_ok=True)
 
@@ -83,12 +94,15 @@ with sync_playwright() as playwright:
         expect(cards.locator('.artifact-row:visible')).to_have_count(4)
         menu = cards.locator('.artifact-open').first
         menu.click()
-        expect(page.get_by_role('menuitem')).to_have_count(2)
+        expect(page.get_by_role('menuitem')).to_have_count(3)
         page.keyboard.press('Escape')
         expect(menu).to_be_focused()
         menu.click()
-        page.get_by_role('menuitem').last.click()
+        page.get_by_role('menuitem').nth(1).click()
         assert page.evaluate('openedExternally') == [files[2]['path']]
+        menu.click()
+        page.get_by_role('menuitem').nth(2).click()
+        assert page.evaluate('revealed') == [files[2]['path']]
         menu.click()
         page.get_by_role('menuitem').first.click()
         expect(page.locator('#fileViewer')).to_be_visible()
@@ -98,7 +112,8 @@ with sync_playwright() as playwright:
         expect(cards.locator('.artifact-show-more')).to_have_text('展开其余 4 个文件')
         menu.click()
         expect(page.get_by_role('menuitem').first).to_have_text('在 Camellia 内打开')
-        expect(page.get_by_role('menuitem').last).to_have_text('使用系统默认软件打开')
+        expect(page.get_by_role('menuitem').nth(1)).to_have_text('使用系统默认软件打开')
+        expect(page.get_by_role('menuitem').last).to_have_text('在文件资源管理器中显示')
         page.keyboard.press('Escape')
         page.screenshot(path=str(preview / f'turn-artifacts-{theme}.png'))
         page.evaluate("""files => {
@@ -132,6 +147,21 @@ with sync_playwright() as playwright:
         }""")
         page.locator('.turn').last.locator('.artifact-file').first.click()
         expect(page.locator('.file-preview-notice')).to_be_visible()
+        page.locator('#fileViewerClose').click()
+        page.evaluate("""deliverables => {
+          emit({type:'conversation:started',runId:904,prompt:'Build the Android app',userSeq:6});
+          emit({type:'assistant',runId:904,message:{content:[{type:'text',text:'Built the APK.'}]}});
+          emit({type:'result',runId:904,subtype:'success',artifacts:deliverables});
+        }""", packages + files[:1])
+        rows = page.locator('.turn').last.locator('.artifact-row')
+        expect(rows).to_have_count(2)
+        assert rows.locator('.artifact-info strong').all_text_contents() == ['Camellia-Android-debug.apk', 'main.js']
+        expect(rows.first.locator('.artifact-info > span')).to_contain_text('安装包')
+        expect(rows.first.locator('.artifact-icon')).to_have_text('APK')
+        rows.first.locator('.artifact-file').click()
+        expect(page.locator('.file-preview-empty')).to_contain_text('Camellia 暂不支持预览此文件类型。')
+        page.screenshot(path=str(preview / f'turn-artifacts-package-{theme}.png'), animations='disabled')
+        page.locator('#fileViewerClose').click()
         page.close()
     browser.close()
     assert not errors, errors

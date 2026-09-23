@@ -1,6 +1,6 @@
 {
   "name": "camellia-desktop",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Camellia: a shared workbench for Claude Code, Codex CLI, DSH, Kimi Code and Antigravity",
   "main": "src/main/main.js",
   "author": "Camellia contributors",
