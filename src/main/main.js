@@ -352,6 +352,13 @@ function apiRouterState() {
       presets: routerConfig.PRESETS, configPath: ollamaProxyConfigPath() };
   } catch (e) { return { ok: false, error: e.message }; }
 }
+// Full-fidelity API route bundle shared by file export and the paired mobile
+// client. Providers, endpoints and raw keys are included; subscription
+// accounts stay device-local and are never part of the payload.
+function apiRoutesBundle(config = readOllamaProxyConfig()) {
+  return { format: 'camellia-api-routes', version: 2, exportedAt: new Date().toISOString(),
+    config: { enabled: config.enabled, port: config.port, providers: config.providers } };
+}
 async function startOllamaProxyHandle() {
   await stopOllamaProxyHandle();
   try {
@@ -527,7 +534,11 @@ async function requestConversationTitle({ model, message, minimal }) {
   }
   let data;
   try { data = JSON.parse(text); } catch { throw new TitleRequestError('transient', 'The title response was not valid JSON'); }
-  return data?.choices?.[0]?.message?.content || '';
+  const choice = data?.choices?.[0];
+  // Reasoning models can stop on the output cap before writing any text; the
+  // retry layer needs that fact so a truncated answer is retried without the
+  // cap instead of being treated as a model that cannot write titles.
+  return { text: choice?.message?.content || '', truncated: choice?.finish_reason === 'length' };
 }
 
 const conversationTitles = createConversationTitles({
@@ -829,7 +840,7 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
 });
 
 remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme,
-  manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow });
+  manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow, apiRoutes: apiRoutesBundle });
 
 // Write the credentials key -> env var mapping and the model/provider settings.
 // The harness resolves `llm-pi-ai.providers.<id>.apiKeyEnv` to the env var in
@@ -1183,14 +1194,10 @@ if (!gotSingleInstanceLock) {
     },
     'api-router-export': async () => {
       const cfg = readOllamaProxyConfig();
-      // Full-fidelity export: providers, endpoints and raw keys. Subscriptions
-      // are device-local by design and are never included.
-      const bundle = { format: 'camellia-api-routes', version: 2, exportedAt: new Date().toISOString(),
-        config: { enabled: cfg.enabled, port: cfg.port, providers: cfg.providers } };
       const result = await dialog.showSaveDialog(settingsWindow || mainWindow, { title: uiText('Export API route configuration'),
         defaultPath: `camellia-api-routes-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: 'JSON configuration', extensions: ['json'] }] });
       if (result.canceled || !result.filePath) return { ok: true, canceled: true };
-      writeJson(result.filePath, bundle);
+      writeJson(result.filePath, apiRoutesBundle(cfg));
       return { ok: true, keys: cfg.providers.reduce((n, p) => n + p.keys.length, 0) };
     },
     'api-router-import': async () => {

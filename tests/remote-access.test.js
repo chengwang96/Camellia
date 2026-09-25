@@ -14,7 +14,7 @@ const { tailscaleAddress, isTailscaleIPv4 } = require('../src/main/remote/tailsc
 const { SharedConversations, ENGINES } = require('../src/engines/shared-conversations');
 const { removeTree } = require('./test-fs.cjs');
 
-function fixture(context) {
+function fixture(context, { apiRoutes = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-remote-'));
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
   let clock = 1000, config = { sharedMeta: { workspaces: [{ id: 'allowed', name: 'Allowed', path: root }, { id: 'private', name: 'Private', path: root }] } }, gateway;
@@ -24,7 +24,7 @@ function fixture(context) {
   const access = new RemoteAccess({ file: path.join(root, 'devices.json'), now: () => clock, onRevoke: id => gateway?.revoke(id) });
   const reader = new RemoteReadModel(manager);
   const commands = new RemoteCommands({ file: path.join(root, 'commands.json'), access, reader, publish: () => gateway.publish() });
-  gateway = new RemoteGateway({ access, reader, commands, validateHost: host => host === '127.0.0.1' });
+  gateway = new RemoteGateway({ access, reader, commands, apiRoutes, validateHost: host => host === '127.0.0.1' });
   context.after(async () => { await gateway.stop(); manager.closeGoalTools(); manager.pauseGoals(); removeTree(root); });
   const visible = manager.create('codex', 'allowed', 'Visible');
   const hidden = manager.create('kimi', 'private', 'Secret');
@@ -513,6 +513,31 @@ test('HTTP pairing, authentication, endpoint allowlist and browser-origin reject
   assert.equal(badHost, 403);
   access.revoke(credential.deviceId);
   assert.equal((await request(gateway, '/v1/status', { token })).status, 401);
+});
+
+test('API key import needs full-device control and returns the desktop export bundle', async context => {
+  const bundle = { format: 'camellia-api-routes', version: 2, exportedAt: '2026-01-01T00:00:00.000Z',
+    config: { enabled: true, port: 8788, providers: [{ id: 'primary', type: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1',
+      protocol: 'dual', models: [{ id: 'chat', upstream: 'chat' }], keys: [{ id: 'key-1', name: 'Main', key: 'sk-fixture-secret', enabled: true }] }] } };
+  const { gateway, access, pair } = fixture(context, { apiRoutes: () => structuredClone(bundle) });
+  const credential = pair();
+  await gateway.start('127.0.0.1', 0);
+  const scoped = access.authenticate(credential.token);
+  assert.equal((await request(gateway, '/v1/status', { token: credential.token })).body.capabilities.includes('api-keys'), false);
+  assert.equal((await request(gateway, '/v1/api-keys', { token: credential.token })).status, 403);
+  access.setScope(scoped.id, [], { allWorkspaces: true, includeUnassigned: true });
+  const full = access.authenticate(credential.token);
+  assert.ok((await request(gateway, '/v1/status', { token: credential.token })).body.capabilities.includes('api-keys'));
+  const exported = await request(gateway, '/v1/api-keys', { token: credential.token });
+  assert.equal(exported.status, 200);
+  assert.equal(exported.body.format, 'camellia-api-routes');
+  assert.equal(exported.body.version, 2);
+  assert.equal(exported.body.config.providers[0].keys[0].key, 'sk-fixture-secret');
+  assert.equal(exported.body.instanceId, gateway.instanceId);
+  assert.equal((await request(gateway, '/v1/api-keys?offset=1', { token: credential.token })).status, 400);
+  assert.equal((await request(gateway, '/v1/api-keys', { token: credential.token, method: 'POST', payload: {} })).status, 405);
+  access.setScope(full.id, ['allowed']);
+  assert.equal((await request(gateway, '/v1/api-keys', { token: credential.token })).status, 403);
 });
 
 test('SSE snapshots catch up after disconnect and close immediately on revocation', { timeout: 8000 }, async context => {

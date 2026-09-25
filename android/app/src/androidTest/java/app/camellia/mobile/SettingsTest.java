@@ -201,6 +201,35 @@ public class SettingsTest extends InstrumentationTestCase {
         }
     }
 
+    public void testComputerImportNeedsPairingThenDispatchesToTheRemote() throws Throwable {
+        Context context = getInstrumentation().getTargetContext();
+        MobilePreferences.set(context, "language", "zh-CN");
+        CredentialStore remote = new CredentialStore(context);
+        remote.clear();
+        EmbeddedNetwork.initialize(context); EmbeddedNetwork.setEnabled(false);
+        Activity unpaired = launch("providers");
+        try {
+            ui(() -> {
+                View root = root(unpaired), row = root.findViewWithTag("providerImportComputer");
+                assertSame(root.findViewWithTag("providerImport").getParent(), row.getParent());
+                assertTrue(row.getContentDescription().toString().contains("连接电脑后可读取"));
+                row.performClick();
+                assertEquals("请先在主界面连接并配对此电脑。", ((android.widget.TextView) root(unpaired).findViewWithTag("settingsStatus")).getText().toString());
+            });
+            assertTrue(LocalChatConfig.routes(new LocalChatStore(context).config()).isEmpty());
+        } finally { ui(unpaired::finish); }
+        new ComputerStore(remote).save(new JSONObject().put("address", "http://100.64.0.1:9").put("token", "a".repeat(43)).put("computerName", "测试电脑"));
+        Activity paired = launch("providers");
+        try {
+            ui(() -> {
+                View row = root(paired).findViewWithTag("providerImportComputer");
+                assertTrue(row.getContentDescription().toString().contains("测试电脑"));
+                row.performClick();
+                assertEquals("正在读取电脑端 API 配置…", ((android.widget.TextView) root(paired).findViewWithTag("settingsStatus")).getText().toString());
+            });
+        } finally { ui(paired::finish); remote.clear(); }
+    }
+
     public void testArchiveHiddenRestoreAndDelete() throws Throwable {
         LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
         JSONObject conversation = store.createConversation("", "missing/model"); String id = conversation.getString("id");
@@ -339,6 +368,7 @@ public class SettingsTest extends InstrumentationTestCase {
                     assertEquals("settingsGroup", ((View) toggle.getParent().getParent()).getTag());
                     assertSame(root.findViewWithTag("providerEdit:0").getParent(), root.findViewWithTag("providerDelete:0").getParent());
                     assertSame(root.findViewWithTag("providerImport").getParent(), root.findViewWithTag("providerExport").getParent());
+                    assertSame(root.findViewWithTag("providerImport").getParent(), root.findViewWithTag("providerImportComputer").getParent());
                 });
                 capture(providers, "settings-providers-cards-" + theme);
             } finally { ui(providers::finish); }

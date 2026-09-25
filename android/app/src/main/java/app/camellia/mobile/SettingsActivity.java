@@ -28,6 +28,8 @@ public final class SettingsActivity extends Activity {
     private LinearLayout content;
     private TextView status;
     private AlertDialog dialog;
+    private java.util.concurrent.ExecutorService worker;
+    private boolean computerBusy;
 
     @Override protected void attachBaseContext(Context context) { super.attachBaseContext(MobilePreferences.wrap(context)); }
 
@@ -38,6 +40,8 @@ public final class SettingsActivity extends Activity {
         section = saved == null ? getIntent().getStringExtra("section") : saved.getString("section");
         if (section == null) section = "providers";
         pages = new PageTransitions(this);
+        worker = java.util.concurrent.Executors.newSingleThreadExecutor();
+        EmbeddedNetwork.initialize(getApplicationContext());
         getWindow().setStatusBarColor(settingsStyle.background); getWindow().setNavigationBarColor(settingsStyle.background);
         if ((getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK) != android.content.res.Configuration.UI_MODE_NIGHT_YES)
             getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
@@ -47,7 +51,7 @@ public final class SettingsActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle saved) { super.onSaveInstanceState(saved); saved.putString("section", section); }
     @Override protected void onStop() { pages.finishTransition(); super.onStop(); }
-    @Override protected void onDestroy() { if (dialog != null) dialog.dismiss(); super.onDestroy(); }
+    @Override protected void onDestroy() { if (dialog != null) dialog.dismiss(); if (worker != null) worker.shutdownNow(); super.onDestroy(); }
     @Override public void finish() { super.finish(); PageTransitions.closeActivity(this); }
 
     private String tr(String zh, String en) { return chinese ? zh : en; }
@@ -111,11 +115,13 @@ public final class SettingsActivity extends Activity {
         shell(tr("供应商与 Key", "Providers & keys"));
         LinearLayout setup = settingsStyle.group(content, "");
         settingsStyle.action(setup, tr("添加供应商", "Add provider"), tr("设置 Endpoint、API Key 和模型", "Set an endpoint, API key and models"), "providerAdd", false, () -> editProvider(-1));
-        settingsStyle.note(content, tr("供本地聊天使用，配置加密保存在这台手机上。", "Used by local chat. Configuration is encrypted on this phone."));
+        settingsStyle.note(content, tr("供本地聊天使用，配置加密保存在这台手机上。导入或从电脑读取会替换现有 API 配置，聊天记录不受影响。",
+            "Used by local chat. Configuration is encrypted on this phone. Importing or reading from a computer replaces the API configuration; chats are kept."));
         JSONArray providers = store.config().optJSONArray("providers");
         if (providers == null || providers.length() == 0) {
             LinearLayout empty = settingsStyle.group(content, tr("我的供应商", "My providers"));
-            settingsStyle.info(empty, tr("暂无供应商", "No providers yet"), tr("手动添加，或粘贴电脑 / 手机导出的配置。", "Add one manually, or paste an export from desktop or mobile."));
+            settingsStyle.info(empty, tr("暂无供应商", "No providers yet"), tr("手动添加，粘贴导出的配置，或从已连接的电脑导入。",
+                "Add one manually, paste an export, or import from a paired computer."));
         }
         for (int index = 0; providers != null && index < providers.length(); index++) {
             final int selected = index; JSONObject provider = providers.getJSONObject(index);
@@ -136,8 +142,45 @@ public final class SettingsActivity extends Activity {
             });
         }
         LinearLayout transfer = settingsStyle.group(content, tr("配置迁移", "Configuration transfer"));
+        JSONObject computer = connectedComputer();
+        String computerName = computer == null ? "" : computer.optString("computerName", "").trim();
+        String importDetail;
+        if (computer == null) importDetail = tr("连接电脑后可读取其 API Key 配置", "Available once a computer is paired; reads its API key configuration");
+        else if (computerName.isEmpty()) importDetail = tr("读取已连接电脑端的 API Key 与模型配置", "Reads API keys and models from the paired computer");
+        else importDetail = tr("使用「" + computerName + "」的 API Key 与模型配置", "Uses API keys and models from “" + computerName + "”");
+        settingsStyle.action(transfer, tr("从电脑导入", "Import from computer"), importDetail, "providerImportComputer", false, this::importFromComputer);
         settingsStyle.action(transfer, tr("粘贴导入", "Paste import"), tr("兼容电脑端配置，不影响聊天记录", "Compatible with desktop exports; chats are kept"), "providerImport", false, this::importConfig);
         settingsStyle.action(transfer, tr("复制导出", "Copy export"), tr("包含 API Key，仅粘贴到可信设备", "Includes API keys; paste only on trusted devices"), "providerExport", false, this::exportConfig);
+    }
+
+    private JSONObject connectedComputer() {
+        try {
+            JSONObject computer = new ComputerStore(new CredentialStore(this)).load();
+            return computer.has("address") && computer.has("token") ? computer : null;
+        } catch (Exception error) { return null; }
+    }
+
+    private void importFromComputer() {
+        JSONObject computer = connectedComputer();
+        if (computer == null) { status.setText(tr("请先在主界面连接并配对此电脑。", "Connect and pair with the computer in the main screen first.")); return; }
+        if (computerBusy) return;
+        computerBusy = true;
+        String address = computer.optString("address"), token = computer.optString("token");
+        status.setText(tr("正在读取电脑端 API 配置…", "Reading the API configuration from the computer…"));
+        worker.execute(() -> {
+            try {
+                JSONObject bundle = new RemoteApi(address).json("/v1/api-keys", token, null);
+                JSONObject config = LocalChatConfig.parse(bundle.toString());
+                runOnUiThread(() -> {
+                    computerBusy = false;
+                    if (isFinishing() || isDestroyed()) return;
+                    try { store.importConfig(config); providers(); status.setText(tr("已从电脑导入 API 配置，聊天记录保留。", "Imported the API configuration from the computer; chats are kept.")); }
+                    catch (Exception error) { failure(error); }
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> { computerBusy = false; if (!isFinishing() && !isDestroyed()) status.setText(RemoteApi.failureMessage(error, chinese)); });
+            }
+        });
     }
 
     private JSONObject copyConfig() throws Exception {

@@ -611,33 +611,59 @@ public final class MainActivity extends Activity {
         stopNetwork(); screen = "computers"; networkScreen = false; conversationId = null;
         history.clear(); conversations.clear();
         shell(tr("远程控制", "Remote control"), tr("选择一台电脑，继续工作。", "Choose a computer to continue."));
-        content.addView(text(tr("已连接的电脑", "Connected computers"), 18, ink));
+        TextView label = text(tr("已连接的电脑", "Connected computers"), 14, muted);
+        label.setPadding(0, dp(10), 0, dp(2)); content.addView(label);
         try {
             var computers = store.all();
-            if (computers.isEmpty()) content.addView(text(tr("添加电脑后，在这里查看工作区和会话。", "Add a computer to browse its workspaces and conversations here."), 14, muted));
-            for (JSONObject computer : computers) {
-                String address = computer.getString("address");
-                LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setBackground(rounded(surface));
-                LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2); rowParams.setMargins(0, dp(6), 0, dp(6));
-                row.setLayoutParams(rowParams);
-                LinearLayout card = column(); card.setPadding(dp(16), dp(10), dp(8), dp(10)); card.setBackground(interactive(surface));
-                card.setTag("computer:" + address); card.setContentDescription(computerName(computer)); card.setFocusable(true);
-                card.addView(text(computerName(computer), 16, ink));
-                card.addView(text(address, 11, muted));
-                TextView state = text(computerStates.getOrDefault(address, tr("待检查", "Not checked")), 12, muted);
-                state.setTag("computerState:" + address); state.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); card.addView(state);
-                card.setOnClickListener(view -> openComputer(computer));
-                row.addView(card, new LinearLayout.LayoutParams(0, -2, 1));
-                Button manage = button("⋯", () -> manageComputer(computer), false);
-                manage.setTag("manage:" + address); manage.setContentDescription(tr("管理电脑", "Manage computer") + " · " + computerName(computer));
-                row.addView(manage, new LinearLayout.LayoutParams(dp(48), dp(48))); content.addView(row);
+            if (computers.isEmpty()) {
+                TextView empty = text(tr("添加电脑后，在这里查看工作区和会话。", "Add a computer to browse its workspaces and conversations here."), 13, muted);
+                empty.setPadding(dp(2), dp(8), dp(8), dp(8)); content.addView(empty);
             }
+            for (JSONObject computer : computers) content.addView(computerRow(computer));
         } catch (Exception error) { reportError("无法读取电脑列表，请重试。", "Could not load computers. Try again.", error); }
         content.addView(button(tr("添加电脑", "Add computer"), () -> { stopNetwork(); credentials = new JSONObject(); pairScreen(); }, true));
         if (credentials.has("claim")) content.addView(button(tr("继续配对", "Resume pairing"), () -> { pairScreen(); waitForApproval(); }, false));
         ((RefreshScrollView) scroll).setRefreshAction(this::refreshComputers,
             ready -> status.setText(ready ? tr("松开检查状态", "Release to check status") : tr("下拉检查电脑状态", "Pull to check computers")));
     }
+
+    // A connected computer follows the chat list rows: line icon, name, address,
+    // live status badge and a trailing icon button, not the platform's default
+    // list styling with text buttons.
+    private View computerRow(JSONObject computer) throws Exception {
+        String address = computer.getString("address"), name = computerName(computer);
+        String state = computerStates.getOrDefault(address, tr("待检查", "Not checked"));
+        LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(2), dp(8), dp(8), dp(8));
+        row.setTag("computer:" + address); row.setFocusable(true);
+        row.setContentDescription(name + ", " + address + ", " + state);
+        row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), rounded(background), rounded(Color.WHITE)));
+        row.setOnClickListener(view -> openComputer(computer));
+        ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon("computer", ink));
+        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(23), dp(23)); iconParams.setMarginEnd(dp(13));
+        row.addView(icon, iconParams);
+        LinearLayout copy = column();
+        TextView heading = text(name, 16, ink); heading.setPadding(0, 0, 0, dp(2));
+        heading.setMaxLines(1); heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        heading.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); copy.addView(heading);
+        TextView detail = text(address, 13, muted); detail.setPadding(0, 0, 0, 0);
+        detail.setMaxLines(1); detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        detail.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); copy.addView(detail);
+        row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView status = text(state, 12, computerStateColor(state));
+        status.setGravity(Gravity.END); status.setMaxWidth(dp(120)); status.setMaxLines(2);
+        status.setEllipsize(android.text.TextUtils.TruncateAt.END); status.setTag("computerState:" + address);
+        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-2, -2); statusParams.setMarginStart(dp(8));
+        row.addView(status, statusParams);
+        ImageButton manage = chatStyle.lineButton("more", tr("管理电脑", "Manage computer") + " · " + name, () -> manageComputer(computer));
+        manage.setImageDrawable(new LineIcon("more", muted)); manage.setTag("manage:" + address);
+        LinearLayout.LayoutParams manageParams = new LinearLayout.LayoutParams(dp(48), dp(48)); manageParams.setMarginStart(dp(2));
+        row.addView(manage, manageParams); return row;
+    }
+
+    private int computerStateColor(String state) { return state.equals(tr("已连接", "Connected")) ? accent : muted; }
 
     private void openComputer(JSONObject computer) {
         try {
@@ -649,30 +675,51 @@ public final class MainActivity extends Activity {
     }
 
     private void manageComputer(JSONObject computer) {
+        SettingsStyle style = new SettingsStyle(this);
         LinearLayout panel = computerDialogPanel(computerName(computer), computer.optString("address"));
         android.app.Dialog dialog = createComputerDialog(panel);
-        panel.addView(button(tr("重命名", "Rename"), () -> { dialog.dismiss(); renameComputer(computer); }, true));
-        panel.addView(button(tr("移除电脑", "Forget computer"), () -> { dialog.dismiss(); forget(computer); }, false));
-        panel.addView(button(tr("取消", "Cancel"), dialog::dismiss, false));
+        LinearLayout group = style.group(panel, "");
+        style.action(group, tr("重命名", "Rename"), tr("更改这台电脑在本机显示的名称", "Change the name shown on this phone"),
+            "manageRename", false, () -> { dialog.dismiss(); renameComputer(computer); });
+        style.action(group, tr("移除电脑", "Forget computer"), tr("删除手机上的凭据，电脑上的会话不受影响", "Deletes the credentials on this phone; chats stay on the computer"),
+            "manageForget", true, () -> { dialog.dismiss(); forget(computer); });
         showComputerDialog(dialog);
     }
 
     private LinearLayout computerDialogPanel(String title, String description) {
+        return computerDialogPanel(title, description, "computer");
+    }
+
+    private LinearLayout computerDialogPanel(String title, String description, String iconKind) {
         LinearLayout panel = column(); panel.setPadding(0, 0, 0, dp(8));
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView logo = new ImageView(this); logo.setImageResource(R.drawable.desktop_logo);
-        logo.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        header.addView(logo, new LinearLayout.LayoutParams(dp(32), dp(32)));
-        TextView heading = text(title, 21, ink); heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        heading.setPadding(dp(12), dp(4), 0, dp(4));
-        header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); panel.addView(header);
-        TextView subtitle = text(description, 13, muted); subtitle.setPadding(0, dp(12), 0, dp(20)); panel.addView(subtitle);
+        SettingsStyle style = new SettingsStyle(this);
+        ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon(iconKind, accent));
+        icon.setPadding(dp(8), dp(8), dp(8), dp(8)); icon.setBackground(rounded(style.card));
+        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        header.addView(icon, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        TextView heading = text(title, 20, ink); heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.setPadding(dp(13), 0, 0, 0);
+        if (android.os.Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageButton close = chatStyle.lineButton("close", tr("关闭", "Close"), () -> { if (computerDialog != null) computerDialog.dismiss(); });
+        close.setImageDrawable(new LineIcon("close", muted)); close.setTag("sheetClose");
+        header.addView(close, new LinearLayout.LayoutParams(dp(40), dp(40))); panel.addView(header);
+        TextView subtitle = text(description, 13, muted); subtitle.setPadding(0, dp(10), 0, description.isEmpty() ? dp(10) : dp(16));
+        panel.addView(subtitle);
         return panel;
     }
 
     private android.app.Dialog createComputerDialog(LinearLayout panel) {
+        return createComputerDialog(panel, null, null);
+    }
+
+    private android.app.Dialog createComputerDialog(LinearLayout panel, CharSequence positive, CharSequence negative) {
         if (computerDialog != null) computerDialog.dismiss();
-        android.app.Dialog dialog = new CamelliaDialog.Builder(this).setView(panel).create();
+        CamelliaDialog.Builder builder = new CamelliaDialog.Builder(this).setView(panel);
+        if (positive != null) builder.setPositiveButton(positive, null);
+        if (negative != null) builder.setNegativeButton(negative, null);
+        android.app.Dialog dialog = builder.create();
         computerDialog = dialog;
         return dialog;
     }
@@ -684,7 +731,6 @@ public final class MainActivity extends Activity {
     private void renameComputer(JSONObject computer) {
         LinearLayout panel = computerDialogPanel(tr("重命名电脑", "Rename computer"),
             tr("取一个容易辨认的名字，仅在这台手机上显示。", "Choose a familiar name. It only changes on this phone."));
-        android.app.Dialog dialog = createComputerDialog(panel);
         TextView label = text(tr("电脑名称", "Computer name"), 12, muted); panel.addView(label);
         EditText name = new EditText(this); name.setTag("computerNameInput"); name.setId(View.generateViewId()); label.setLabelFor(name.getId());
         name.setSingleLine(true); name.setTextSize(16); name.setTextColor(ink); name.setHintTextColor(muted);
@@ -696,25 +742,25 @@ public final class MainActivity extends Activity {
         name.setText(computerName(computer)); panel.addView(new SettingsField(name), new LinearLayout.LayoutParams(-1, -2));
         TextView feedback = text(tr("最多 80 个字符", "Up to 80 characters"), 12, muted);
         feedback.setTag("renameFeedback"); feedback.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); panel.addView(feedback);
-        LinearLayout actions = new LinearLayout(this); actions.setPadding(0, dp(10), 0, 0);
-        Button cancel = button(tr("取消", "Cancel"), dialog::dismiss, false); cancel.setTag("renameCancel");
-        Button save = button(tr("保存", "Save"), () -> {
+        android.app.Dialog dialog = createComputerDialog(panel, tr("保存", "Save"), tr("取消", "Cancel"));
+        showComputerDialog(dialog);
+        android.app.AlertDialog alert = (android.app.AlertDialog) dialog;
+        Button save = alert.getButton(android.app.AlertDialog.BUTTON_POSITIVE); save.setTag("renameSave");
+        alert.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).setTag("renameCancel");
+        save.setOnClickListener(view -> {
             String value = name.getText().toString().trim();
             if (value.isEmpty()) { feedback.setText(tr("请输入电脑名称", "Enter a computer name")); name.requestFocus(); return; }
             try {
                 store.rename(computer.getString("address"), value); credentials = store.load();
                 dialog.dismiss(); computersScreen(); refreshComputers();
             } catch (Exception error) { feedback.setText(ErrorDetails.withSummary(tr("保存失败，请重试", "Could not save. Try again"), error)); }
-        }, true); save.setTag("renameSave");
-        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(0, -2, 1); cancelParams.setMargins(0, 0, dp(6), 0);
-        LinearLayout.LayoutParams saveParams = new LinearLayout.LayoutParams(0, -2, 1); saveParams.setMargins(dp(6), 0, 0, 0);
-        actions.addView(cancel, cancelParams); actions.addView(save, saveParams); panel.addView(actions);
+        });
         name.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
         name.setOnEditorActionListener((view, action, event) -> {
             if (action != android.view.inputmethod.EditorInfo.IME_ACTION_DONE) return false;
             save.performClick(); return true;
         });
-        showComputerDialog(dialog); name.requestFocus(); name.selectAll();
+        name.requestFocus(); name.selectAll();
     }
 
     private void refreshComputers() {
@@ -730,7 +776,7 @@ public final class MainActivity extends Activity {
                 String checking = tr("正在检查…", "Checking…");
                 computerStates.put(address, checking);
                 TextView label = root.findViewWithTag("computerState:" + address);
-                if (label != null) label.setText(checking);
+                if (label != null) { label.setText(checking); label.setTextColor(computerStateColor(checking)); }
             }
             for (JSONObject computer : computers) {
                 String address = computer.getString("address");
@@ -757,7 +803,7 @@ public final class MainActivity extends Activity {
                         if (unauthorized) { listCache.remove(computer); prefetch.remove(computer, null); }
                         computerStates.put(address, state);
                         TextView label = root.findViewWithTag("computerState:" + address);
-                        if (label != null) label.setText(state);
+                        if (label != null) { label.setText(state); label.setTextColor(computerStateColor(state)); }
                         if (--remaining[0] == 0) {
                             ((RefreshScrollView) scroll).setRefreshing(false);
                             status.setText(tr("电脑状态已更新", "Computer status updated"));
@@ -1185,8 +1231,12 @@ public final class MainActivity extends Activity {
         name.setTag("remoteWorkspaceName"); name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(200)});
         EditText folder = input(panel, tr("电脑文件夹绝对路径", "Absolute computer folder path"), "", android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         folder.setTag("remoteWorkspacePath"); folder.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(1024)});
-        android.app.Dialog dialog = createComputerDialog(panel);
-        Button submit = button(tr("创建", "Create"), () -> {
+        android.app.Dialog dialog = createComputerDialog(panel, tr("创建", "Create"), tr("取消", "Cancel"));
+        showComputerDialog(dialog);
+        android.app.AlertDialog alert = (android.app.AlertDialog) dialog;
+        Button submit = alert.getButton(android.app.AlertDialog.BUTTON_POSITIVE); submit.setTag("remoteWorkspaceCreate");
+        alert.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).setTag("remoteWorkspaceCancel");
+        submit.setOnClickListener(view -> {
             if (name.getText().toString().trim().isEmpty()) { ((SettingsField) name.getParent()).showError(tr("请输入名称", "Enter a name")); return; }
             if (folder.getText().toString().trim().isEmpty()) { ((SettingsField) folder.getParent()).showError(tr("请输入电脑文件夹路径", "Enter a computer folder path")); return; }
             try {
@@ -1194,9 +1244,7 @@ public final class MainActivity extends Activity {
                 JSONObject saved = new JSONObject(credentials.toString()).put("pendingCreate", payload); store.save(saved); credentials = saved;
                 dialog.dismiss(); retryCreate();
             } catch (Exception error) { reportError("无法保存新建请求", "Could not save creation request", error); }
-        }, true);
-        submit.setTag("remoteWorkspaceCreate"); panel.addView(submit);
-        panel.addView(button(tr("取消", "Cancel"), dialog::dismiss, false)); showComputerDialog(dialog);
+        });
     }
 
     private void createConversation(String workspace) {
@@ -1206,13 +1254,15 @@ public final class MainActivity extends Activity {
         if (credentials.has("pendingCreate")) { retryCreate(); return; }
         LinearLayout panel = computerDialogPanel(tr("新建会话", "New conversation"), tr("选择执行引擎，沿用电脑端的连接设置。", "Choose an engine using your desktop connection settings."));
         android.app.Dialog dialog = createComputerDialog(panel);
-        for (String engine : new String[]{"codex", "claude", "kimi", "dsh", "antigravity"}) panel.addView(button(engine.toUpperCase(Locale.ROOT), () -> {
+        SettingsStyle style = new SettingsStyle(this);
+        LinearLayout group = style.group(panel, tr("执行引擎", "Engine"));
+        for (String engine : new String[]{"codex", "claude", "kimi", "dsh", "antigravity"}) style.action(group, engine.toUpperCase(Locale.ROOT), "", "createEngine:" + engine, false, () -> {
             try {
                 JSONObject payload = command("create").put("instanceId", listInstance).put("workspaceId", workspace == null ? JSONObject.NULL : workspace).put("engine", engine);
                 JSONObject saved = new JSONObject(credentials.toString()).put("pendingCreate", payload); store.save(saved); credentials = saved;
                 dialog.dismiss(); retryCreate();
             } catch (Exception error) { reportError("无法保存新建请求", "Could not save creation request", error); }
-        }, false));
+        });
         showComputerDialog(dialog);
     }
 
@@ -1277,11 +1327,12 @@ public final class MainActivity extends Activity {
             status.setText(canMultiImage ? tr("最多添加 9 张图片。", "Add up to 9 images.") : tr("多图发送需要更新并重启电脑端。", "Multiple images require an updated and restarted desktop.")); return;
         }
         imageConversation = conversationId; imageComputer = credentials.optString("address");
-        LinearLayout panel = computerDialogPanel(tr("添加图片", "Add image"), tr("选择图片来源", "Choose an image source"));
+        LinearLayout panel = computerDialogPanel(tr("添加图片", "Add image"), tr("选择图片来源", "Choose an image source"), "image");
         android.app.Dialog dialog = createComputerDialog(panel);
-        panel.addView(button(tr("从相册选择", "Choose from gallery"), () -> { dialog.dismiss(); openGallery(); }, true));
-        panel.addView(button(tr("使用相机拍摄", "Take a photo"), () -> { dialog.dismiss(); openCamera(); }, false));
-        panel.addView(button(tr("取消", "Cancel"), dialog::dismiss, false));
+        SettingsStyle style = new SettingsStyle(this);
+        LinearLayout group = style.group(panel, "");
+        style.row(group, "image", tr("从相册选择", "Choose from gallery"), "", "imageGallery", () -> { dialog.dismiss(); openGallery(); });
+        style.row(group, "camera", tr("使用相机拍摄", "Take a photo"), "", "imageCamera", () -> { dialog.dismiss(); openCamera(); });
         showComputerDialog(dialog);
     }
 

@@ -58,6 +58,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         assertTrue(created.getBoolean("ok"));
         assertEquals(created.getJSONObject("conversation").getString("id"), client.json("/v1/commands", token, create).getJSONObject("conversation").getString("id"));
         verifyConversationActions(client, token, info.getString("instanceId"), workspace, created.getJSONObject("conversation").getString("id"));
+        verifyApiKeyImport(client, token);
         JSONObject snapshot = client.json("/v1/conversations/" + id, token, null);
         assertEquals("Fixture answer", snapshot.getJSONArray("messages").getJSONObject(1).getString("text"));
         String server = snapshot.getString("instanceId");
@@ -140,6 +141,37 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         for (String id : new String[] {first, second.getString("id")}) {
             try { client.json("/v1/conversations/" + id, token, null); fail("Deleted conversation remains accessible"); }
             catch (RemoteApi.Failure expected) { assertEquals(404, expected.status); }
+        }
+    }
+
+    private void verifyApiKeyImport(RemoteApi client, String token) throws Exception {
+        JSONObject bundle = client.json("/v1/api-keys", token, null);
+        assertEquals("camellia-api-routes", bundle.getString("format"));
+        assertEquals(2, bundle.getInt("version"));
+        assertEquals("fixture-secret", bundle.getJSONObject("config").getJSONArray("providers").getJSONObject(0)
+            .getJSONArray("keys").getJSONObject(0).getString("key"));
+        assertEquals(1, LocalChatConfig.routes(LocalChatConfig.parse(bundle.toString())).size());
+        var context = getInstrumentation().getTargetContext();
+        CredentialStore remote = new CredentialStore(context);
+        remote.clear();
+        new ComputerStore(remote).save(new JSONObject().put("address", "http://100.64.0.1:43128").put("token", token));
+        new CredentialStore(context, "local-chat-private").clear();
+        android.app.Activity settings = getInstrumentation().startActivitySync(new android.content.Intent(context, SettingsActivity.class)
+            .putExtra("section", "providers").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            getInstrumentation().runOnMainSync(() -> settings.getWindow().getDecorView().findViewWithTag("providerImportComputer").performClick());
+            long deadline = android.os.SystemClock.elapsedRealtime() + 15_000;
+            while (LocalChatConfig.routes(new LocalChatStore(context).config()).isEmpty() && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(50);
+            java.util.List<LocalChatConfig.Route> imported = LocalChatConfig.routes(new LocalChatStore(context).config());
+            assertEquals(1, imported.size());
+            assertEquals("fixture-secret", imported.get(0).key);
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> assertNotNull(settings.getWindow().getDecorView().findViewWithTag("providerEdit:0")));
+        } finally {
+            getInstrumentation().runOnMainSync(settings::finish);
+            getInstrumentation().waitForIdleSync();
+            new CredentialStore(context, "local-chat-private").clear();
+            remote.clear();
         }
     }
 

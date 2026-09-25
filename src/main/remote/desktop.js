@@ -8,7 +8,7 @@ const { RemoteCommands } = require('./commands');
 const { randomBytes } = require('node:crypto');
 const { EmbeddedNetwork } = require('./embedded-network');
 
-function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager, rendererRoot, loadConfig, getSettingsWindow = () => null, networkFactory }) {
+function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager, rendererRoot, loadConfig, getSettingsWindow = () => null, networkFactory, apiRoutes = null }) {
   let window = null, gateway = null, access = null, busy = false, network = null, enabled = false, closed = false;
   let startupChecked = false, monitor = null;
   const reader = new RemoteReadModel(manager);
@@ -16,7 +16,7 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager
     if (gateway) return;
     access = new RemoteAccess({ file: path.join(app.getPath('userData'), 'remote', 'devices.json'), onRevoke: id => gateway.revoke(id) });
     const commands = new RemoteCommands({ file: path.join(app.getPath('userData'), 'remote', 'commands.json'), reader, access, publish: () => gateway.publish() });
-    gateway = new RemoteGateway({ access, reader, commands });
+    gateway = new RemoteGateway({ access, reader, commands, apiRoutes });
     const options = { app, onFailure: () => { enabled = false; void gateway.stop(); } };
     network = networkFactory ? networkFactory(options) : new EmbeddedNetwork({ ...options,
       safeStorage: require('electron').safeStorage, openExternal: url => require('electron').shell.openExternal(url) });
