@@ -25,8 +25,8 @@ async function body(request, limit = 4096) {
 }
 
 class RemoteGateway {
-  constructor({ access, reader, commands, validateHost = isTailscaleIPv4 }) {
-    Object.assign(this, { access, reader, commands, validateHost });
+  constructor({ access, reader, commands, apiRoutes = null, validateHost = isTailscaleIPv4 }) {
+    Object.assign(this, { access, reader, commands, apiRoutes, validateHost });
     this.streams = new Set();
     this.downloads = new Set();
     this.sequence = 0;
@@ -124,6 +124,16 @@ class RemoteGateway {
       this.json(response, 200, await this.commands.execute(device, command[1], payload, this.instanceId));
       return;
     }
+    // Reading the desktop API route configuration hands the device every raw
+    // provider key, so it stays behind full-device control rather than the
+    // per-workspace scope that is enough to read conversations.
+    if (this.apiRoutes && url.pathname === '/v1/api-keys') {
+      if (request.method !== 'GET') fail(405, 'GET required');
+      if (url.search) fail(400, 'Unsupported query parameter');
+      if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
+      this.json(response, 200, { ...this.apiRoutes(), ...this.stamp() });
+      return;
+    }
     if (request.method !== 'GET') fail(405, 'Remote access is read-only');
     const artifact = /^\/v1\/conversations\/([a-f0-9-]{36})\/artifacts(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
     if (artifact) {
@@ -147,7 +157,11 @@ class RemoteGateway {
     }
   }
   connectionInfo(device) {
-    return { protocol: 1, permission: device.permission, capabilities: this.commands ? ['artifacts', 'send', 'stop', 'approve', 'create', 'image', 'multi-image', 'configure', 'move', 'archive', 'conversation-actions', ...(device.permission === 'control' && device.allWorkspaces === true ? ['create-workspace'] : [])] : ['artifacts'],
+    const fullControl = device.permission === 'control' && device.allWorkspaces === true;
+    const capabilities = this.commands ? ['artifacts', 'send', 'stop', 'approve', 'create', 'image', 'multi-image', 'configure', 'move', 'archive', 'conversation-actions',
+      ...(fullControl ? ['create-workspace'] : [])] : ['artifacts'];
+    if (this.apiRoutes && fullControl) capabilities.push('api-keys');
+    return { protocol: 1, permission: device.permission, capabilities,
       workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
       includeUnassigned: Boolean(device.allWorkspaces || device.includeUnassigned) };
   }

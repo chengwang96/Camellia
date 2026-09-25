@@ -84,6 +84,15 @@ final class LineIcon extends Drawable {
                 path.moveTo(3, 18); path.lineTo(3, 7); path.quadTo(3, 5.2f, 5, 5.2f); path.lineTo(10, 5.2f); path.lineTo(13, 7.8f); path.lineTo(19, 7.8f); path.quadTo(21, 7.8f, 21, 9.5f);
                 path.moveTo(3, 18); path.lineTo(6, 10.3f); path.lineTo(22, 10.3f); path.lineTo(19, 18.8f); path.lineTo(3, 18.8f); canvas.drawPath(path, paint); break;
             case "computer": canvas.drawRoundRect(4, 3, 20, 15, 2, 2, paint); canvas.drawLine(12, 15, 12, 20, paint); canvas.drawLine(7, 20, 17, 20, paint); break;
+            case "image":
+                canvas.drawRoundRect(3, 4, 21, 20, 2.5f, 2.5f, paint);
+                canvas.drawCircle(8.5f, 9, 1.6f, paint);
+                path.moveTo(4.5f, 17.5f); path.lineTo(10, 12); path.lineTo(14, 16); path.lineTo(16.5f, 13.5f); path.lineTo(19.5f, 17.5f);
+                canvas.drawPath(path, paint); break;
+            case "camera":
+                canvas.drawRoundRect(3, 7, 21, 20, 3, 3, paint);
+                path.moveTo(8.5f, 7); path.lineTo(10, 4); path.lineTo(14, 4); path.lineTo(15.5f, 7); canvas.drawPath(path, paint);
+                canvas.drawCircle(12, 13.5f, 4, paint); break;
             case "phone": canvas.drawRoundRect(6, 2, 18, 22, 3, 3, paint); canvas.drawLine(10, 18, 14, 18, paint); break;
             case "more":
                 canvas.drawCircle(5, 12, .8f, paint); canvas.drawCircle(12, 12, .8f, paint); canvas.drawCircle(19, 12, .8f, paint); break;

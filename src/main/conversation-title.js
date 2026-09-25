@@ -14,9 +14,13 @@ const RETRY_DELAY_MS = 500;
 const MAX_MESSAGE_CHARS = 4000;
 const REQUEST_TIMEOUT_MS = 20000;
 
-// Reasoning models spend output on thinking before they emit any text, and a
-// very small budget can be rejected outright, so the title gets real room.
-const MAX_OUTPUT_TOKENS = 256;
+// Reasoning models spend output on thinking before they emit any text, so the
+// cap must cover the thinking plus the title. 256 did not: the common reasoning
+// routes (deepseek-flash, kimi-k3, deepseek-v4-pro) spent the whole budget on
+// thinking, stopped with `finish_reason: length` and an empty answer, and the
+// conversation silently stayed "New session". A larger cap costs nothing for
+// models that answer immediately, since it is a ceiling rather than a target.
+const MAX_OUTPUT_TOKENS = 2048;
 
 const TITLE_INSTRUCTION = 'Write a short, accurate title for the conversation that starts with the user message below. '
   + 'Output only the title: no quotes, no trailing punctuation, no explanation, at most 10 characters. '
@@ -71,10 +75,18 @@ function createConversationTitles({ candidates, request, normalize = value => St
       let minimal = false;
       for (let attempt = 0; attempt < ATTEMPTS_PER_MODEL; attempt++) {
         try {
-          const title = normalize(await request({ model: candidate, message, minimal }));
+          const answer = await request({ model: candidate, message, minimal });
+          // A reasoning model can burn the whole output cap on thinking and
+          // stop before writing the title, so the request succeeds with an
+          // empty answer. That is not a reason to give up on the conversation's
+          // own model; ask it once more without the cap.
+          const truncated = typeof answer !== 'string' && Boolean(answer?.truncated);
+          const title = normalize(typeof answer === 'string' ? answer : answer?.text);
           if (title) return title;
-          // The model answered without usable text; another model is a better
-          // bet than asking the same one again.
+          if (!minimal && truncated) { minimal = true; continue; }
+          // The model answered without usable text and did not run out of room;
+          // another model is a better bet than asking the same one again.
+          log(`conversation title: ${candidate} answered without usable text`);
           break;
         } catch (error) {
           const kind = error?.kind || 'transient';

@@ -30,8 +30,13 @@ async function main() {
   const access = new RemoteAccess({ file: path.join(root, 'devices.json'), onRevoke: id => gateway.revoke(id) });
   const reader = new RemoteReadModel(manager);
   const commands = new RemoteCommands({ file: path.join(root, 'commands.json'), access, reader, publish: () => gateway.publish() });
-  gateway = new RemoteGateway({ access, reader, commands, validateHost: host => host === '127.0.0.1' });
-  const invitation = access.invite(['fixture']);
+  // The phone must hold full-device control to read the desktop API keys, so
+  // the fixture pairs the same way the production panel does.
+  const apiKeys = { format: 'camellia-api-routes', version: 2, exportedAt: new Date().toISOString(),
+    config: { enabled: true, port: 8788, providers: [{ id: 'fixture', type: 'custom', name: 'Fixture provider', baseUrl: 'https://api.example.com/v1',
+      protocol: 'openai', models: [{ id: 'fixture-model', upstream: 'fixture-model' }], keys: [{ id: 'key-1', name: 'Fixture', key: 'fixture-secret', enabled: true }] }] } };
+  gateway = new RemoteGateway({ access, reader, commands, apiRoutes: () => structuredClone(apiKeys), validateHost: host => host === '127.0.0.1' });
+  const invitation = access.invite(['fixture'], { allWorkspaces: true, includeUnassigned: true });
   const requestPairing = access.request.bind(access);
   access.request = payload => {
     assert.equal(payload.code, 'integration-fixture-only');

@@ -1,6 +1,6 @@
 # 手机访问：桌面网关与 Android 控制
 
-当前版本提供桌面网关、本地授权面板和[原生 Android 客户端](../android/README.md)。设备授权后即可查看和操作会话，无需区分只读或控制，支持已有会话中的文本发送、停止当前运行、单次允许/拒绝工具审批。不开放任意文件读取、终端或全局设置修改。
+当前版本提供桌面网关、本地授权面板和[原生 Android 客户端](../android/README.md)。设备授权后即可查看和操作会话，无需区分只读或控制，支持已有会话中的文本发送、停止当前运行、单次允许/拒绝工具审批。不开放任意文件读取、终端或全局设置修改；手机只能在「设置 → 供应商与 Key → 配置迁移」中**读取**一次电脑端的 API Key 配置，导入后仅写入手机本地加密存储，不回写电脑端，也不开放其他全局设置。
 
 Android 会话标题统一使用正文颜色，不再用标题颜色表示运行状态。远程输入框下方提供安全级别和模型选择浮层：左侧盾牌可选择手动批准、默认（常规自动、风险询问）或全自动；右侧可选择电脑端当前连接提供的模型及其思考等级。设置沿用主机端的会话设置保存逻辑，从下一条消息生效，不切换引擎或连接账号。运行中、离线或有未确认操作时不可修改；主机端设置发生变化后需重新选择，避免覆盖较新的设置。旧版电脑未提供设置能力时，入口保持禁用。全自动会取消工具操作确认，仅在信任当前任务时选择。
 
@@ -54,6 +54,7 @@ Android 会话标题统一使用正文颜色，不再用标题颜色表示运行
 | POST | `/v1/pair/request` | `{ "code": "桌面配对码", "name": "My Android" }`；返回 `id`、`claim`、`expiresAt` |
 | POST | `/v1/pair/claim` | `{ "id": "申请ID", "claim": "领取凭据" }`；桌面确认前返回 `state: pending`，确认后返回 `token`、`deviceId`、`permission: control` |
 | GET | `/v1/status` | 返回 `protocol`、`permission`、`instanceId`、`cursor` |
+| GET | `/v1/api-keys` | 返回与桌面「导出 API 路由配置」相同的 `camellia-api-routes` v2 bundle（含明文密钥）；仅当设备持有控制权限且为全部访问授权时可用，`capabilities` 同时公布 `api-keys` |
 | GET | `/v1/conversations?offset=0` | 最多 100 个会话及 `nextOffset`；仅限授权工作区 |
 | GET | `/v1/conversations/{id}` | 当前历史页、运行中文本快照及游标 |
 | GET | `/v1/conversations/{id}?before={seq}` | 向前读取历史，下一页使用 `nextBefore` |
@@ -61,6 +62,8 @@ Android 会话标题统一使用正文颜色，不再用标题颜色表示运行
 | GET | `/v1/conversations/events` | SSE；连接时及授权可见的会话列表变化时返回 `event: snapshot`，包含 `listVersion`、`instanceId`、`cursor` |
 
 除两个配对接口外，每个请求必须带 `Authorization: Bearer <token>`。配对轮询间隔至少五秒。Android 客户端使用 Android Keystore AES-GCM 加密存储令牌，后台关闭网络连接、回前台重新同步。
+
+`GET /v1/api-keys` 不接受查询参数，授权范围不足时返回 403。响应顶层是导出 bundle，另附 `instanceId` 和 `cursor`；列表页、详情页仍不返回任何密钥。Android 在「设置 → 供应商与 Key → 配置迁移」中提供「从电脑导入」，未配对时提示先在主界面连接电脑，配对后显示电脑名称；读取失败沿用统一的本地化错误提示（例如旧版电脑返回 404 时提示更新电脑端），导入成功后替换手机上已有的供应商与密钥配置，聊天记录不受影响。
 
 会话快照包括 `conversation`、`messages`、`live`、`permission`、`nextBefore`、`instanceId`、`cursor`。`conversation.seq` 用于发送前校验。`live` 包含当前 `runId`、`eventSeq`、`userSeq`、正文和待审批数量；控制设备额外获得审批详情、内容指纹、单次审批选项。问答型请求或超过 32,000 字符的详情不允许手机审批。正文按纯文本显示，不提供图片、富文本块或文件预览。消息数量最多 200，页面正文与执行过程预算约 1 Mi 字符，单条正文最多保留末尾 256 Ki 字符并标记 `textTruncated`。
 

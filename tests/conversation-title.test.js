@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createConversationTitles, titleCandidates, titleErrorKind, TitleRequestError, MAX_TITLE_MODELS } = require('../src/main/conversation-title');
+const { createConversationTitles, titleCandidates, titleErrorKind, TitleRequestError, MAX_TITLE_MODELS, MAX_OUTPUT_TOKENS } = require('../src/main/conversation-title');
 const { shortTitle } = require('../src/engines/shared-conversations');
 
 const router = (providers, enabled = true) => ({ enabled, providers });
@@ -51,6 +51,31 @@ test('an empty answer or exhausted candidates returns no title instead of throwi
   const failing = createConversationTitles({ candidates: () => ['m'], delay: async () => {},
     request: async () => { throw new TitleRequestError('transient', 'HTTP 503'); } });
   await assert.doesNotReject(async () => assert.equal(await failing.generate('message', 'm'), ''));
+});
+
+test('an answer truncated by the output cap is retried without a cap', async () => {
+  const bodies = [];
+  const titles = createConversationTitles({ candidates: () => ['reasoner'], delay: async () => {}, normalize: shortTitle,
+    request: async ({ minimal }) => { bodies.push(minimal);
+      return minimal ? { text: '  推理模型标题  ', truncated: false } : { text: '', truncated: true }; } });
+  assert.equal(await titles.generate('message', 'reasoner'), '推理模型标题');
+  assert.deepEqual(bodies, [false, true]);
+});
+
+test('a truncated answer that stays empty is logged, then another model is tried', async () => {
+  const logs = [], tried = [];
+  const titles = createConversationTitles({ candidates: () => ['reasoner', 'plain'], delay: async () => {}, normalize: shortTitle,
+    log: message => logs.push(message),
+    request: async ({ model }) => { tried.push(model);
+      return model === 'reasoner' ? { text: '', truncated: true } : { text: '普通标题', truncated: false }; } });
+  assert.equal(await titles.generate('message', 'reasoner'), '普通标题');
+  assert.deepEqual(tried, ['reasoner', 'reasoner', 'plain']);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /reasoner/);
+});
+
+test('a reasoning model needs room for thinking plus the title', () => {
+  assert.ok(MAX_OUTPUT_TOKENS >= 1024);
 });
 
 test('status codes map to the retry decision that actually helps', () => {
