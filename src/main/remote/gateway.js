@@ -25,8 +25,8 @@ async function body(request, limit = 4096) {
 }
 
 class RemoteGateway {
-  constructor({ access, reader, commands, apiRoutes = null, validateHost = isTailscaleIPv4 }) {
-    Object.assign(this, { access, reader, commands, apiRoutes, validateHost });
+  constructor({ access, reader, commands, apiRoutes = null, apiImport = null, nativeSettings = null, validateHost = isTailscaleIPv4 }) {
+    Object.assign(this, { access, reader, commands, apiRoutes, apiImport, nativeSettings, validateHost });
     this.streams = new Set();
     this.downloads = new Set();
     this.sequence = 0;
@@ -103,6 +103,32 @@ class RemoteGateway {
     const authorization = request.headers.authorization || '';
     if (!/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization)) fail(401, 'Device authentication required');
     const device = this.access.authenticate(authorization.slice(7));
+    const native = /^\/v1\/native-settings\/(claude|codex|kimi|dsh|antigravity)$/.exec(url.pathname);
+    if (native && this.nativeSettings) {
+      if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
+      if (url.search || !['GET', 'POST'].includes(request.method)) fail(400, 'Invalid native settings request');
+      if (request.method === 'GET') this.json(response, 200, this.nativeSettings.get(native[1]));
+      else {
+        const payload = await body(request, 1024 * 1024);
+        const current = this.access.authenticate(authorization.slice(7));
+        if (current.permission !== 'control' || current.allWorkspaces !== true) fail(403, 'Full-device control permission required');
+        if (payload?.engine !== native[1]) fail(400, 'Native settings engine mismatch');
+        this.json(response, 200, this.nativeSettings.save(payload));
+      }
+      return;
+    }
+    if (url.pathname === '/v1/api-import' && this.apiImport) {
+      if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
+      if (url.search || !['GET', 'POST'].includes(request.method)) fail(400, 'Invalid import request');
+      if (request.method === 'GET') this.json(response, 200, this.apiImport.state());
+      else {
+        const payload = await body(request, 1024 * 1024);
+        const current = this.access.authenticate(authorization.slice(7));
+        if (current.permission !== 'control' || current.allWorkspaces !== true) fail(403, 'Full-device control permission required');
+        this.json(response, 200, this.apiImport.apply(current.id, payload));
+      }
+      return;
+    }
     const read = /^\/v1\/conversations\/([a-f0-9-]{36})\/read$/.exec(url.pathname);
     if (read && request.method === 'POST' && !url.search) {
       this.reader.conversation(device, read[1]);
@@ -114,7 +140,7 @@ class RemoteGateway {
     }
     if (url.pathname === '/v1/commands' && request.method === 'POST' && !url.search && this.commands) {
       if (device.permission !== 'control') fail(403, 'Control permission required');
-      this.json(response, 200, await this.commands.execute(device, null, await body(request), this.instanceId));
+      this.json(response, 200, await this.commands.execute(device, null, await body(request, 32 * 1024), this.instanceId));
       return;
     }
     const command = /^\/v1\/conversations\/([a-f0-9-]{36})\/commands$/.exec(url.pathname);
@@ -145,6 +171,8 @@ class RemoteGateway {
     for (const key of url.searchParams.keys()) if (!['before', 'offset'].includes(key)) fail(400, 'Unsupported query parameter');
     if (url.pathname === '/v1/status') {
       this.json(response, 200, { ...this.connectionInfo(device), ...this.stamp() });
+    } else if (url.pathname === '/v1/archived') {
+      this.json(response, 200, { ...this.reader.archived(device, number(url.searchParams.get('offset'), 0)), ...this.stamp() });
     } else if (url.pathname === '/v1/conversations') {
       this.json(response, 200, { ...this.connectionInfo(device), ...this.reader.list(device, number(url.searchParams.get('offset'), 0)), ...this.stamp() });
     } else if (url.pathname === '/v1/conversations/events') {
@@ -158,10 +186,13 @@ class RemoteGateway {
   }
   connectionInfo(device) {
     const fullControl = device.permission === 'control' && device.allWorkspaces === true;
-    const capabilities = this.commands ? ['artifacts', 'send', 'stop', 'approve', 'create', 'image', 'multi-image', 'configure', 'move', 'archive', 'conversation-actions',
-      ...(fullControl ? ['create-workspace'] : [])] : ['artifacts'];
+    const capabilities = this.commands ? ['artifacts', 'attachments', 'send', 'stop', 'approve', 'create', 'image', 'multi-image', 'configure', 'move', 'archive', 'restore', 'conversation-actions',
+      ...(fullControl ? ['create-workspace', 'delete-workspace', 'rename-workspace'] : [])] : ['artifacts'];
     if (this.apiRoutes && fullControl) capabilities.push('api-keys');
+    if (this.apiImport && fullControl) capabilities.push('api-import');
+    if (this.nativeSettings && fullControl) capabilities.push('native-settings');
     return { protocol: 1, permission: device.permission, capabilities,
+      engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity'].includes(engine)),
       workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
       includeUnassigned: Boolean(device.allWorkspaces || device.includeUnassigned) };
   }

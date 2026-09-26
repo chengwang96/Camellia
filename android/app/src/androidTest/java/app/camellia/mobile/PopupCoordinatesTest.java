@@ -61,7 +61,7 @@ public class PopupCoordinatesTest extends InstrumentationTestCase {
                 assertEquals(direction, anchor.getLayoutDirection());
                 if (kind.equals("conversation")) {
                     ConversationMenu menu = new ConversationMenu(anchor, new ChatStyle(activity), false, false,
-                        () -> {}, () -> {}, () -> {}, () -> {});
+                        () -> {}, () -> {}, () -> {}, () -> {}, () -> {});
                     popup = popup(menu);
                 } else if (kind.equals("local")) {
                     ModelPickerPopup picker = new ModelPickerPopup(activity, false, 0xffffffff, 0xffeeeeee,

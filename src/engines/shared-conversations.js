@@ -742,7 +742,8 @@ class SharedConversations {
     a.artifactCollector.capture(event);
     if (event.type === 'result') {
       const text = a.assistant.length ? a.assistant.join('\n\n') : a.text || String(event.result || '');
-      event = { ...event, artifacts: resolveArtifacts({ paths: [...a.artifactCollector.paths], text, cwd: c.cwd }) };
+      event = { ...event, artifacts: resolveArtifacts({ paths: [...a.artifactCollector.paths], text, cwd: c.cwd,
+        roots: [...a.artifactCollector.roots] }) };
     }
     if (event.type === 'result' && !a.internal && !a.cancelled && contextOverflow(event)) {
       this.reduceContextBudget(c, engine, this.settings(engine, c.id), event.result);

@@ -16,6 +16,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 public final class SettingsActivity extends Activity {
@@ -142,10 +144,11 @@ public final class SettingsActivity extends Activity {
             });
         }
         LinearLayout transfer = settingsStyle.group(content, tr("配置迁移", "Configuration transfer"));
-        JSONObject computer = connectedComputer();
-        String computerName = computer == null ? "" : computer.optString("computerName", "").trim();
+        List<JSONObject> computers = pairedComputers();
+        String computerName = computers.size() == 1 ? computers.get(0).optString("computerName", "").trim() : "";
         String importDetail;
-        if (computer == null) importDetail = tr("连接电脑后可读取其 API Key 配置", "Available once a computer is paired; reads its API key configuration");
+        if (computers.isEmpty()) importDetail = tr("连接电脑后可读取其 API Key 配置", "Available once a computer is paired; reads its API key configuration");
+        else if (computers.size() > 1) importDetail = tr("从已配对的电脑中选择要读取的一台", "Choose one of the paired computers");
         else if (computerName.isEmpty()) importDetail = tr("读取已连接电脑端的 API Key 与模型配置", "Reads API keys and models from the paired computer");
         else importDetail = tr("使用「" + computerName + "」的 API Key 与模型配置", "Uses API keys and models from “" + computerName + "”");
         settingsStyle.action(transfer, tr("从电脑导入", "Import from computer"), importDetail, "providerImportComputer", false, this::importFromComputer);
@@ -153,19 +156,56 @@ public final class SettingsActivity extends Activity {
         settingsStyle.action(transfer, tr("复制导出", "Copy export"), tr("包含 API Key，仅粘贴到可信设备", "Includes API keys; paste only on trusted devices"), "providerExport", false, this::exportConfig);
     }
 
-    private JSONObject connectedComputer() {
+    private List<JSONObject> pairedComputers() {
+        List<JSONObject> paired = new ArrayList<>();
         try {
-            JSONObject computer = new ComputerStore(new CredentialStore(this)).load();
-            return computer.has("address") && computer.has("token") ? computer : null;
-        } catch (Exception error) { return null; }
+            for (JSONObject computer : new ComputerStore(new CredentialStore(this)).all())
+                if (!computer.optString("address").isEmpty() && !computer.optString("token").isEmpty()) paired.add(computer);
+        } catch (Exception error) { paired.clear(); }
+        return paired;
     }
 
+    private String computerLabel(JSONObject computer) {
+        String name = computer.optString("computerName", "").trim();
+        if (!name.isEmpty()) return name;
+        String address = computer.optString("address", "");
+        return address.isEmpty() ? tr("我的电脑", "My computer") : address;
+    }
+
+    // Several computers can be paired, so the import must let the user pick the
+    // source instead of silently reading whichever profile is active.
     private void importFromComputer() {
-        JSONObject computer = connectedComputer();
-        if (computer == null) { status.setText(tr("请先在主界面连接并配对此电脑。", "Connect and pair with the computer in the main screen first.")); return; }
+        List<JSONObject> computers = pairedComputers();
+        if (computers.isEmpty()) { status.setText(tr("请先在主界面连接并配对此电脑。", "Connect and pair with the computer in the main screen first.")); return; }
+        if (computers.size() == 1) { confirmImport(computers.get(0)); return; }
+        String[] labels = new String[computers.size()];
+        for (int index = 0; index < computers.size(); index++) labels[index] = computerLabel(computers.get(index));
+        dialog = new SettingsChoiceDialog(this, tr("选择电脑", "Choose a computer"), labels, -1, tr("取消", "Cancel"),
+            choice -> confirmImport(computers.get(choice)));
+        dialog.show();
+    }
+
+    // Reading replaces the phone's API configuration, so confirm the source and
+    // the overwrite first, in the same sheet style as the other settings prompts.
+    private void confirmImport(JSONObject computer) {
+        JSONArray configured = store.config().optJSONArray("providers");
+        int existing = configured == null ? 0 : configured.length();
+        String name = computerLabel(computer);
+        String message = existing == 0
+            ? tr("将读取「" + name + "」的 API Key 与模型配置，写入这台手机。聊天记录保留。",
+                "API keys and models are read from “" + name + "” onto this phone. Chats are kept.")
+            : tr("将用「" + name + "」的 API Key 与模型配置替换这台手机上现有的 " + existing + " 个供应商配置。聊天记录保留。",
+                "API keys and models from “" + name + "” replace the " + existing + " provider configurations stored on this phone. Chats are kept.");
+        dialog = new CamelliaDialog.Builder(this).setTitle(tr("导入 API 配置？", "Import API configuration?"))
+            .setMessage(message).setNegativeButton(tr("取消", "Cancel"), null)
+            .setPositiveButton(tr("导入", "Import"), (prompt, which) -> readConfigFrom(computer)).show();
+    }
+
+    private void readConfigFrom(JSONObject computer) {
         if (computerBusy) return;
         computerBusy = true;
         String address = computer.optString("address"), token = computer.optString("token");
+        String name = computerLabel(computer);
         status.setText(tr("正在读取电脑端 API 配置…", "Reading the API configuration from the computer…"));
         worker.execute(() -> {
             try {
@@ -174,7 +214,7 @@ public final class SettingsActivity extends Activity {
                 runOnUiThread(() -> {
                     computerBusy = false;
                     if (isFinishing() || isDestroyed()) return;
-                    try { store.importConfig(config); providers(); status.setText(tr("已从电脑导入 API 配置，聊天记录保留。", "Imported the API configuration from the computer; chats are kept.")); }
+                    try { store.importConfig(config); providers(); status.setText(tr("已从「" + name + "」导入 API 配置，聊天记录保留。", "Imported the API configuration from “" + name + "”. Chats are kept.")); }
                     catch (Exception error) { failure(error); }
                 });
             } catch (Exception error) {

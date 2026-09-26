@@ -21,6 +21,8 @@ The desktop renders the native panel in an Electron `WebContentsView` inside the
 settings window. This keeps DSH's HttpOnly, SameSite=Strict authentication intact;
 a cross-site iframe would not carry that cookie. No external browser is opened.
 The child view is hidden on page changes and destroyed with the settings window.
+The embedded shell uses DSH's settings-modal layer (`1000`), below native portaled
+menus (`1100`), so dropdown options remain visible and clickable.
 
 `client-performance.cjs` also patches the client module host's startup hot path:
 line counting uses `indexOf`, and unchanged single-plugin combo artifacts reuse

@@ -3,22 +3,23 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'">
 <title data-i18n>Settings — Camellia</title>
-<link rel="stylesheet" href="../shared/ui-theme.css"><link rel="stylesheet" href="./api-settings.css">
+<link rel="stylesheet" href="../shared/ui-theme.css"><link rel="stylesheet" href="./api-settings.css"><link rel="stylesheet" href="../devices/devices.css">
 <link rel="stylesheet" href="./engine-settings.css">
 <link rel="stylesheet" href="../shared/engine-brand.css">
 </head><body>
 <aside class="settings-nav">
   <div class="settings-brand"><img src="../../../assets/icon-256.png" alt="Camellia cat" width="36" height="36"><span>Camellia<small data-i18n>Settings</small></span></div>
   <nav aria-label="Settings categories" data-i18n-attrs="aria-label">
-    <button data-view="providers" data-i18n><span aria-hidden="true">⌘</span>Providers &amp; Keys</button>
-    <button data-view="usage" data-i18n><span aria-hidden="true">▥</span>Usage</button>
+    <button data-view="providers" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="4.5"/><path d="m11.2 11.2 9.3 9.3m-3-3 3-3m-6 0 3-3"/></svg>Providers &amp; Keys</button>
+    <button data-view="usage" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4v16h16M8 15v-4m5 4V6m5 9V9"/></svg>Usage</button>
     <div class="nav-divider"></div>
-    <button data-view="general" class="active" aria-current="page" data-i18n><span aria-hidden="true">⚙</span>General</button>
-    <button data-view="engines" data-i18n><span aria-hidden="true">◇</span>Engine Settings</button>
-    <button data-view="runtimes" data-i18n><span aria-hidden="true">↓</span>Runtime</button>
-    <button data-view="archived" data-i18n><span aria-hidden="true">▤</span>Archived</button>
-    <button data-view="storage" data-i18n><span aria-hidden="true">▱</span>Space cleanup</button>
-    <button data-view="mobile" data-i18n><span aria-hidden="true">▯</span>Mobile access</button>
+    <button data-view="general" class="active" aria-current="page" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.5 3-.6 2.3-2 .9-2.3-.7-2.5 4.3 1.7 1.6v2.2l-1.7 1.6 2.5 4.3 2.3-.7 2 .9.6 2.3h5l.6-2.3 2-.9 2.3.7 2.5-4.3-1.7-1.6v-2.2l1.7-1.6-2.5-4.3-2.3.7-2-.9L14.5 3Z"/><circle cx="12" cy="12.5" r="3"/></svg>General</button>
+    <button data-view="engines" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h6m4 0h6M4 17h10m4 0h2"/><circle cx="12" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></svg>Engine Settings</button>
+    <button data-view="runtimes" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v11m-4-4 4 4 4-4M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>Runtime</button>
+    <button data-view="archived" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4"/></svg>Archived</button>
+    <button data-view="storage" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m14 10 6-7M4 14l5-5 8 7-5 5H5l-2-2Zm3-3 8 7m-9 3 3-4"/></svg>Space cleanup</button>
+    <button data-view="mobile" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10 5h4m-3 13.5h2"/></svg>Mobile access</button>
+    <button data-view="devices" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="m7 8 3 3-3 3m6 0h4M9 21h6m-3-4v4"/></svg>CLI devices</button>
   </nav>
   <div class="nav-foot"><span class="status-dot" id="routerDot"></span><span id="routerLabel" data-i18n>Connecting</span><small data-i18n>Automatic failover within the same model</small></div>
 </aside>
@@ -33,7 +34,7 @@
       <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><div class="toolbar-actions"><button id="exportConfig" data-i18n>Export config</button><button id="importConfig" data-i18n>Import config</button><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div></div>
       <div id="providers" class="provider-grid"></div>
       <div id="editor" hidden></div>
-      <details class="advanced router-options"><summary data-i18n>Router options</summary><div class="row"><label data-i18n><input id="enabled" type="checkbox">Enable shared router</label><label data-i18n>Local port <input id="port" type="number" min="1024" max="65535"></label></div><div id="live" class="hint" data-i18n></div></details>
+      <section class="router-options" aria-labelledby="routerOptionsTitle"><h3 id="routerOptionsTitle" data-i18n>Router options</h3><div class="row"><label data-i18n><input id="enabled" type="checkbox">Enable shared router</label><label data-i18n>Local port <input id="port" type="number" min="1024" max="65535"></label></div><div id="live" class="hint" data-i18n></div></section>
     </section>
     <section id="usagePage" class="page" hidden>
       <h2 class="usage-api-title" data-i18n>Balances &amp; Quotas</h2>
@@ -76,6 +77,10 @@
       <div id="storageSummary"></div>
       <details id="storageDetails" hidden><summary data-i18n>Review candidate paths</summary><p class="hint" data-i18n>Paths are relative to the Camellia data folder. Sizes are logical file sizes; actual recovered disk space may differ.</p><div id="storageFiles"></div></details>
       <button id="cleanStorage" class="danger" disabled data-i18n>Clean reviewed files</button>
+    </section>
+    <section id="devicesPage" class="page" hidden>
+      <p class="hint" data-i18n>The CLI device browser is embedded here. Files, conversations and engines stay on the selected server.</p>
+      <div id="cliDevicesRoot"></div>
     </section>
     <section id="mobilePage" class="page" hidden>
       <section class="mobile-section" aria-labelledby="mobile-connectionTitle">
@@ -194,5 +199,5 @@
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>
-<script src="./settings-charts.js"></script><script src="./engine-settings-ui.js"></script><script src="./context-capacity-ui.js"></script><script src="../remote/remote.js"></script><script src="./api-settings.js"></script>
+<script src="./settings-charts.js"></script><script src="./engine-settings-ui.js"></script><script src="./context-capacity-ui.js"></script><script src="../remote/remote.js"></script><script src="../devices/devices-view.js"></script><script src="../shared/message-markdown.js"></script><script src="../devices/devices.js"></script><script src="./api-settings.js"></script>
 </body></html>

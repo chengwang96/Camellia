@@ -43,7 +43,7 @@ try:
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri(), wait_until='networkidle')
         expect(page.locator('.account-shortcuts button')).to_have_count(3)
         page.locator('[data-view=providers]').click()
-        page.locator('.router-options summary').click()
+        expect(page.locator('#port')).to_be_visible()
         page.locator('#port').fill('14223')
         page.locator('#addProvider').click()
         page.locator('#preset').select_option('kimi-code')

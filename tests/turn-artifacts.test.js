@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { removeTree } = require('./test-fs.cjs');
-const { textPaths, toolPaths, collector } = require('../src/shared/turn-artifacts');
+const { textPaths, toolPaths, toolRoots, collector } = require('../src/shared/turn-artifacts');
 const { resolveArtifacts } = require('../src/main/turn-artifacts');
 const { sortArtifacts, documentFormat, VISIBLE_ARTIFACT_LIMIT } = require('../src/shared/turn-artifacts');
 
@@ -101,4 +101,26 @@ test('built application packages stay deliverables instead of being discarded as
   ]);
   assert.equal(sortArtifacts(result)[0].extension, 'APK');
   assert.equal(result.find(file => file.kind === 'package').path, apk);
+});
+
+test('a turn that worked outside the workspace still yields its deliverables', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-'));
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-root-'));
+  t.after(() => removeTree(cwd));
+  t.after(() => removeTree(project));
+  fs.mkdirSync(path.join(project, 'outputs'));
+  fs.writeFileSync(path.join(project, 'outputs', 'UDP与TCP试讲.pptx'), 'pptx');
+  fs.writeFileSync(path.join(project, 'outputs', 'UDP与TCP试讲.pdf'), 'pdf');
+  const state = collector();
+  state.capture({ type: 'gui:tool', id: 'one', name: 'commandExecution',
+    input: { command: 'node slides/build_deck.js', cwd: project }, status: 'completed' });
+  assert.deepEqual([...state.roots], [project]);
+  assert.deepEqual(toolRoots({ cwd: project, command: 'x' }), [project]);
+  assert.deepEqual(toolRoots('raw command text'), []);
+
+  const text = '- `outputs\\UDP与TCP试讲.pptx` 可编辑\n- `outputs\\UDP与TCP试讲.pdf` 放映用';
+  assert.deepEqual(resolveArtifacts({ cwd, text }), []);
+  const result = resolveArtifacts({ cwd, roots: [...state.roots], text });
+  assert.deepEqual(result.map(file => file.name), ['UDP与TCP试讲.pptx', 'UDP与TCP试讲.pdf']);
+  assert.equal(result[0].path, path.join(project, 'outputs', 'UDP与TCP试讲.pptx'));
 });

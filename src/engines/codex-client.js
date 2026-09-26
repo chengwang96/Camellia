@@ -8,6 +8,23 @@ const { spawn } = require('node:child_process');
 const TOML = require('smol-toml');
 const { configureApiModel } = require('./codex-models');
 
+// The app-server spawns helpers (MCP tool servers, plugin-sync git) that inherit
+// its stdio. Killing only the app-server leaves them running and holding the
+// pipes, which defers `close` forever and strands the conversation that is
+// switching away from this session. Stop the whole tree where supported.
+function killProcessTree(proc) {
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
+  if (process.platform === 'win32') {
+    const taskkill = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
+    try {
+      const killer = spawn(taskkill, ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      killer.once('error', () => { try { proc.kill(); } catch { /* already gone */ } });
+    } catch { try { proc.kill(); } catch { /* already gone */ } }
+    return;
+  }
+  try { proc.kill(); } catch { /* already gone */ }
+}
+
 // Codex owns OAuth and native thread storage. Only its public app-server API
 // crosses this boundary; auth files are never read into the renderer.
 class CodexClient {
@@ -26,7 +43,20 @@ class CodexClient {
     });
     this.proc.stderr.on('data', data => log('Codex: ' + String(data).trim()));
     this.proc.once('error', error => this.close(error));
-    this.proc.once('close', code => this.close(new Error(`Codex process exited (${code})`)));
+    // The app-server spawns helpers (MCP tool servers, git during plugin sync)
+    // that inherit its stdio. When it exits, a surviving helper keeps those
+    // pipe handles open, so `close` can be deferred indefinitely. Treat the
+    // exit itself as authoritative after a short grace period for `close`, so
+    // a dead process is never mistaken for a live one.
+    this.proc.once('exit', code => {
+      clearTimeout(this.exitTimer);
+      this.exitTimer = setTimeout(() => this.close(new Error(`Codex process exited (${code})`)), 1000);
+      this.exitTimer.unref?.();
+    });
+    this.proc.once('close', code => {
+      clearTimeout(this.exitTimer);
+      this.close(new Error(`Codex process exited (${code})`));
+    });
     this.proc.stdin.on('error', error => this.close(error));
     this.ready = this.request('initialize', { clientInfo: { name: 'camellia', title: 'Camellia', version: '0.1.0' },
       capabilities: { experimentalApi: true } }).then(() => this.write({ method: 'initialized' }));
@@ -65,11 +95,21 @@ class CodexClient {
   }
   shutdown() {
     if (this.stopping) return this.stopping;
-    if (this.proc.exitCode !== null || this.proc.signalCode !== null) return Promise.resolve();
+    if (this.proc.exitCode !== null || this.proc.signalCode !== null) {
+      this.close(new Error('Codex process stopped'));
+      return Promise.resolve();
+    }
     this.close(new Error('Codex process stopped'));
     this.stopping = new Promise(resolve => {
-      const timer = setTimeout(() => this.proc.kill(), 5000);
-      this.proc.once('close', () => { clearTimeout(timer); resolve(); });
+      // Helper processes inherit the app-server's stdout/stderr, so its `close`
+      // event can be delayed indefinitely after the process itself is gone.
+      // Settle on exit (and kill as a last resort) instead of waiting for the
+      // pipes, which would strand the conversation that is switching away from
+      // this session.
+      const done = () => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(() => { killProcessTree(this.proc); done(); }, 5000);
+      this.proc.once('exit', done);
+      this.proc.once('close', done);
       this.proc.stdin.end();
     });
     return this.stopping;

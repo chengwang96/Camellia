@@ -57,7 +57,9 @@ public class NavigationTest extends InstrumentationTestCase {
                     boolean ready = true;
                     for (String address : addresses) {
                         TextView label = activity.getWindow().getDecorView().findViewWithTag("computerState:" + address);
-                        ready &= label.getText().toString().matches("Pair again|需要重新配对");
+                        String state = label.getText().toString();
+                        ready &= state.equals(RemoteApi.failureMessage(new RemoteApi.Failure(401), true))
+                            || state.equals(RemoteApi.failureMessage(new RemoteApi.Failure(401), false));
                     }
                     complete.set(ready);
                 });

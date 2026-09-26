@@ -51,7 +51,7 @@ final class ChatComposer {
         tools = new LinearLayout(context); tools.setGravity(Gravity.CENTER_VERTICAL); tools.setTag("composerTools");
         bar.addView(tools, new LinearLayout.LayoutParams(-1, -2));
         model = new TextView(context); model.setTextColor(style.ink); model.setTextSize(14);
-        model.setGravity(Gravity.CENTER_VERTICAL); model.setSingleLine(true); model.setEllipsize(TextUtils.TruncateAt.END);
+        model.setGravity(Gravity.CENTER_VERTICAL | Gravity.END); model.setSingleLine(true); model.setEllipsize(TextUtils.TruncateAt.END);
         LineIcon chevron = new LineIcon("down", style.muted); chevron.setBounds(0, 0, dp(14), dp(14));
         model.setCompoundDrawablesRelative(null, null, chevron, null); model.setCompoundDrawablePadding(dp(4));
         model.setPadding(dp(10), 0, dp(10), 0); model.setFocusable(true);

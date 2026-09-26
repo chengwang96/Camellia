@@ -54,6 +54,20 @@ func TestEncryptedState(t *testing.T) {
 	}
 }
 
+func TestNodeHostname(t *testing.T) {
+	for input, expected := range map[string]string{"": "camellia-desktop", "camellia-server": "camellia-server", "gpu-lab-01": "gpu-lab-01", "a": "a"} {
+		actual, err := nodeHostname(input)
+		if err != nil || actual != expected {
+			t.Fatal(input, actual, err)
+		}
+	}
+	for _, input := range []string{"-server", "server-", "Server", "server.local", "host\nname", strings.Repeat("a", 64)} {
+		if _, err := nodeHostname(input); err == nil {
+			t.Fatal("accepted invalid hostname", input)
+		}
+	}
+}
+
 func TestProxyPreservesHostAndReplacesTransportIdentity(t *testing.T) {
 	token := strings.Repeat("a", 64)
 	backend := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

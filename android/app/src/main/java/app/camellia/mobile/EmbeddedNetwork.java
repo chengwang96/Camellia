@@ -24,6 +24,7 @@ public final class EmbeddedNetwork {
     private static ConnectivityManager connectivity;
     private static ConnectivityManager.NetworkCallback networkCallback;
     private static Runnable networkListener;
+    private static boolean stale;
     private static final java.util.concurrent.ExecutorService networkWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
     private static final Runnable recover = () -> {
         long revision = route.revision();
@@ -39,10 +40,13 @@ public final class EmbeddedNetwork {
     private static volatile long backgroundDeadline;
     private static int transfers;
     private static final Runnable shutdown = () -> new Thread(() -> {
-        synchronized (LOCK) {
-            if (transfers == 0 && backgroundDeadline > 0 && android.os.SystemClock.elapsedRealtime() >= backgroundDeadline) close();
-        }
+        synchronized (LOCK) { if (retentionExpired()) close(); }
     }, "camellia-tailnet-close").start();
+
+    private static boolean retentionExpired() {
+        return node != null && transfers == 0 && backgroundDeadline > 0
+            && android.os.SystemClock.elapsedRealtime() >= backgroundDeadline;
+    }
 
     public static void initialize(Context application) {
         context = application.getApplicationContext();
@@ -73,7 +77,11 @@ public final class EmbeddedNetwork {
         if (!value) new Thread(EmbeddedNetwork::close, "camellia-tailnet-close").start();
     }
     public static void foreground() {
-        backgroundDeadline = 0; handler.removeCallbacks(shutdown);
+        synchronized (LOCK) {
+            if (retentionExpired()) stale = true;
+            backgroundDeadline = 0;
+        }
+        handler.removeCallbacks(shutdown);
         if (connectivity == null) return;
         Network active = connectivity.getActiveNetwork();
         boolean changed = route.available(active);
@@ -82,12 +90,12 @@ public final class EmbeddedNetwork {
         if (changed) routeChanged();
     }
     public static void background() {
-        backgroundDeadline = android.os.SystemClock.elapsedRealtime() + 5 * 60_000;
+        synchronized (LOCK) { backgroundDeadline = android.os.SystemClock.elapsedRealtime() + 5 * 60_000; }
         handler.removeCallbacks(shutdown); handler.postDelayed(shutdown, 5 * 60_000);
     }
 
     static void endBackground() {
-        backgroundDeadline = android.os.SystemClock.elapsedRealtime();
+        synchronized (LOCK) { backgroundDeadline = android.os.SystemClock.elapsedRealtime(); }
         handler.removeCallbacks(shutdown);
         handler.post(shutdown);
     }
@@ -106,7 +114,7 @@ public final class EmbeddedNetwork {
     public static Node node() throws IOException {
         synchronized (LOCK) {
             long revision = route == null ? 0 : route.revision();
-            if (node != null && nodeRevision != revision) close();
+            if (node != null && (stale || nodeRevision != revision)) close();
             if (node != null) return node;
             if (context == null || !enabled()) throw new IOException("Embedded network is disabled");
             try {
@@ -121,7 +129,7 @@ public final class EmbeddedNetwork {
                 java.io.File directory = new java.io.File(context.getNoBackupFilesDir(), "tailnet");
                 if (!directory.exists() && !directory.mkdirs()) throw new IOException("Cannot create private network directory");
                 node = Tailnet.newNode(directory.getAbsolutePath(), encrypted);
-                nodeRevision = revision;
+                nodeRevision = revision; stale = false;
                 return node;
             } catch (Exception error) { throw ConnectionFailure.failure(ConnectionFailure.Code.NETWORK_START_FAILED, error); }
         }
@@ -156,6 +164,7 @@ public final class EmbeddedNetwork {
 
     public static void close() {
         synchronized (LOCK) {
+            stale = false;
             if (node != null) { node.close(); node = null; }
         }
     }

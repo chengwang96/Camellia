@@ -37,6 +37,36 @@ async function main() {
     assert.match(navigation, /Providers & Keys/);
     const view = settings.contentView.children.find(view => view.webContents === native);
     assert.ok(view.getVisible()); assert.ok(view.getBounds().height > 150);
+    const dropdowns = '.workbench-native-content button[aria-haspopup="menu"]';
+    await wait(() => native.executeJavaScript(`document.querySelectorAll('${dropdowns}').length === 3 && [...document.querySelectorAll('${dropdowns}')].every(button => !button.disabled)`));
+    async function clickNative(selector, index = 0) {
+      const point = await native.executeJavaScript(`(() => {
+        const element = document.querySelectorAll(${JSON.stringify(selector)})[${index}];
+        element.scrollIntoView({ block: 'center' });
+        const bounds = element.getBoundingClientRect();
+        const point = { x: Math.round(bounds.x + bounds.width / 2), y: Math.round(bounds.y + bounds.height / 2) };
+        return { ...point, reachable: element.contains(document.elementFromPoint(point.x, point.y)) };
+      })()`);
+      assert.ok(point.reachable, `${selector} (${index}) must not be covered by the settings shell`);
+      await native.executeJavaScript(`document.elementFromPoint(${point.x}, ${point.y}).closest('button, [role=menuitem]').click()`);
+    }
+    const selections = [];
+    for (let index = 0; index < 3; index++) {
+      await clickNative(dropdowns, index);
+      await wait(() => native.executeJavaScript("!!document.querySelector('[role=menu] [role=menuitem]')"));
+      const option = await native.executeJavaScript(`(() => {
+        const current = document.querySelectorAll('${dropdowns}')[${index}].textContent.trim();
+        const items = [...document.querySelectorAll('[role=menu] [role=menuitem]')];
+        const index = items.findIndex(item => item.textContent.trim() !== current && !item.textContent.includes('Full access'));
+        return { index, label: items[index]?.textContent.trim() };
+      })()`);
+      assert.ok(option.index >= 0, 'Each dropdown offers an alternative');
+      await clickNative('[role=menu] [role=menuitem]', option.index);
+      selections.push(option.label);
+      await wait(() => native.executeJavaScript(`document.querySelectorAll('${dropdowns}')[${index}].textContent.trim() === ${JSON.stringify(option.label)} && !document.querySelector('[role=menu]')`));
+    }
+    native.reload();
+    await wait(() => native.executeJavaScript(`JSON.stringify([...document.querySelectorAll('${dropdowns}')].map(button => button.textContent.trim())) === ${JSON.stringify(JSON.stringify(selections))}`));
     // Screenshots are QA artifacts; locked or remote displays cannot capture pages.
     try {
       const shot = await settings.capturePage();
@@ -60,7 +90,7 @@ async function main() {
     settings.close();
     await delay(100);
     assert.equal(native.isDestroyed(), true, 'Closing settings releases its native view');
-    console.log('PASS: real DSH authenticated settings inside the Electron settings window; API redirect, engine navigation, no separate browser, native view disposal, redacted logs');
+    console.log('PASS: real DSH authenticated settings inside the Electron settings window; three dropdowns are reachable and persist selections after reload, API redirect, engine navigation, no separate browser, native view disposal, redacted logs');
     app.quit(); return;
   }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-native-electron-'));

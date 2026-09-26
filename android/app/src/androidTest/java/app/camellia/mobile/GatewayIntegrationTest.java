@@ -160,11 +160,35 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
             .putExtra("section", "providers").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             getInstrumentation().runOnMainSync(() -> settings.getWindow().getDecorView().findViewWithTag("providerImportComputer").performClick());
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    android.app.AlertDialog confirm = settingsDialog(settings);
+                    assertNotNull(confirm);
+                    android.view.View decor = confirm.getWindow().getDecorView();
+                    assertNotNull("The import must confirm in the app sheet style", decor.findViewWithTag("camelliaDialog"));
+                    assertTrue("The confirmation must name the source computer",
+                        ((android.widget.TextView) decor.findViewById(android.R.id.message)).getText().toString().contains("100.64.0.1:43128"));
+                    assertTrue("Nothing may be read before the confirmation",
+                        LocalChatConfig.routes(new LocalChatStore(context).config()).isEmpty());
+                    confirm.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
             long deadline = android.os.SystemClock.elapsedRealtime() + 15_000;
             while (LocalChatConfig.routes(new LocalChatStore(context).config()).isEmpty() && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(50);
             java.util.List<LocalChatConfig.Route> imported = LocalChatConfig.routes(new LocalChatStore(context).config());
             assertEquals(1, imported.size());
             assertEquals("fixture-secret", imported.get(0).key);
+            long statusDeadline = android.os.SystemClock.elapsedRealtime() + 5_000;
+            String[] shown = {""};
+            do {
+                getInstrumentation().runOnMainSync(() -> shown[0] = ((android.widget.TextView) settings.getWindow().getDecorView()
+                    .findViewWithTag("settingsStatus")).getText().toString());
+                if (shown[0].contains("100.64.0.1:43128")) break;
+                Thread.sleep(50);
+            } while (android.os.SystemClock.elapsedRealtime() < statusDeadline);
+            assertTrue("The success status must name the source computer: " + shown[0],
+                shown[0].contains("100.64.0.1:43128") && (shown[0].contains("已从") || shown[0].contains("Imported")));
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> assertNotNull(settings.getWindow().getDecorView().findViewWithTag("providerEdit:0")));
         } finally {
@@ -173,6 +197,11 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
             new CredentialStore(context, "local-chat-private").clear();
             remote.clear();
         }
+    }
+
+    private android.app.AlertDialog settingsDialog(android.app.Activity activity) {
+        try { var field = activity.getClass().getDeclaredField("dialog"); field.setAccessible(true); return (android.app.AlertDialog) field.get(activity); }
+        catch (Exception error) { throw new AssertionError(error); }
     }
 
     private void verifyBackgroundDownload(JSONObject artifact, String conversation, String token) throws Exception {

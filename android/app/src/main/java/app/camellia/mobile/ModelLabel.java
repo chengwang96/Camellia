@@ -10,6 +10,8 @@ final class ModelLabel {
     static String compact(String name) {
         if (name == null) return "";
         String value = name.trim();
+        int tag = value.indexOf(':');
+        if (tag > 0) value = value.substring(0, tag).trim();
         Matcher kimi = Pattern.compile("(?i)^kimi[- ]+(k\\d+(?:\\.\\d+)*)(?:[- ]+(thinking|preview))?$").matcher(value);
         if (kimi.matches()) return kimi.group(1).toUpperCase(Locale.ROOT) + (kimi.group(2) == null ? "" : " " + title(kimi.group(2)));
         Matcher gpt = Pattern.compile("(?i)^gpt-(?:6-astra|5\\.6-(?:sol|terra|luna))$").matcher(value);

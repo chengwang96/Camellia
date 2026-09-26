@@ -51,14 +51,32 @@ final class LocalChatClient {
         for (int index = 0; index < history.length(); index++) {
             JSONObject row = history.getJSONObject(index);
             String role = row.optString("role"), content = row.optString("content");
-            if ((role.equals("user") || role.equals("assistant")) && !content.isEmpty())
-                messages.put(new JSONObject().put("role", role).put("content", content));
+            JSONArray images = row.optJSONArray("images");
+            boolean attached = images != null && images.length() > 0;
+            if (!(role.equals("user") || role.equals("assistant")) || (content.isEmpty() && !attached)) continue;
+            if (!attached) { messages.put(new JSONObject().put("role", role).put("content", content)); continue; }
+            messages.put(new JSONObject().put("role", role).put("content", parts(route, content, images)));
         }
         JSONObject body = new JSONObject().put("model", route.model).put("messages", messages).put("stream", true);
         if (route.protocol.equals("anthropic")) body.put("max_tokens", 4096);
         LocalChatThinking.apply(route, thinking, body);
         if (body.toString().length() > LIMIT) throw new IOException("会话过长，请新建会话 / Conversation too long; start a new one");
         return body;
+    }
+
+    // OpenAI-compatible APIs read image_url with a data URL, Anthropic Messages
+    // read a base64 source block. Both keep the text part first.
+    private static JSONArray parts(LocalChatConfig.Route route, String content, JSONArray images) throws Exception {
+        JSONArray parts = new JSONArray();
+        if (!content.isEmpty()) parts.put(new JSONObject().put("type", "text").put("text", content));
+        for (int index = 0; index < images.length(); index++) {
+            String encoded = images.getString(index);
+            if (route.protocol.equals("anthropic")) parts.put(new JSONObject().put("type", "image")
+                .put("source", new JSONObject().put("type", "base64").put("media_type", ChatImage.MEDIA_TYPE).put("data", encoded)));
+            else parts.put(new JSONObject().put("type", "image_url")
+                .put("image_url", new JSONObject().put("url", ChatImage.dataUrl(encoded))));
+        }
+        return parts;
     }
 
     String chat(LocalChatConfig.Route route, JSONObject body, Listener listener) throws Exception {

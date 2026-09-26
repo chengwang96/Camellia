@@ -5,6 +5,16 @@
   "cli": {
     "version": "1.2.3",
     "platforms": {
+      "linux-x64": {
+        "version": "1.2.11",
+        "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.11-6016716732497920/linux-x64/cli_linux_x64.tar.gz",
+        "sha512": "ca12c262343f29a2b87423d1ff1e4244989e936e37fe1f8e56056b0f91cd02f93f133321229ce35c86c2d84b977e919937a3fd9430cfd769a16d6b03ede25081"
+      },
+      "linux-arm64": {
+        "version": "1.2.11",
+        "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.11-6016716732497920/linux-arm/cli_linux_arm64.tar.gz",
+        "sha512": "4fd4f8e1960e000b7803da2365c64a733677f1ed80fedc1c344331978f129171dd1d128e85255a4f2f0d3882cf097b3897cc2704b4faf4d3669f7e3c69cc3012"
+      },
       "win32-x64": {
         "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.3-5101874907578368/windows-x64/cli_windows_x64.exe",
         "sha512": "b1d25dd76540ca9759d167fbff27f02ebde920c4924670640d47b96ff3a2984196ca3d078ae6c668cad1ee7ba79f633cbeb3c616b8e3cf817dfa83a80d2dc240"
@@ -16,6 +26,20 @@
     }
   },
   "platforms": {
+    "linux-x64": {
+      "archive": "uv-runtime.whl",
+      "sha256": "aee9802f46bae436bd91751bb33ddeb379ef1596b5c19df193219d545d244b60",
+      "uv": "uv-0.12.15.data/scripts/uv",
+      "python": "cpython-3.13.14-linux-x86_64-gnu/bin/python3.13",
+      "url": "https://files.pythonhosted.org/packages/1e/fd/432451d732917c49152a291de3ef171aa6b0f1a22d39780fb2c1f085ca4c/uv-0.12.15-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    },
+    "linux-arm64": {
+      "archive": "uv-runtime.whl",
+      "sha256": "a673bc39e677eaa012f618cab2e6e99fb82919f37ea45043fca530e9ca94c082",
+      "uv": "uv-0.12.15.data/scripts/uv",
+      "python": "cpython-3.13.14-linux-aarch64-gnu/bin/python3.13",
+      "url": "https://files.pythonhosted.org/packages/49/1a/eb1f5f38b09f9aa6d31cfc8d29ca919ee3d8368dd6ba01883a1f9dda7259/uv-0.12.15-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.musllinux_1_1_aarch64.whl"
+    },
     "win32-x64": {
       "archive": "uv-runtime.whl",
       "sha256": "39af7d437b6d1f962f11c0b77f891d302ea675a0ebbcfe9792f633d843740a25",

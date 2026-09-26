@@ -53,6 +53,15 @@ public final class LocalChatActivity extends Activity {
     private EditText composer;
     private ImageButton send, stop;
     private ImageButton toolsButton;
+    private ImageButton attachButton;
+    private final ArrayList<String> selectedImages = new ArrayList<>();
+    private LinearLayout imageTray;
+    private android.widget.HorizontalScrollView imageStrip;
+    private boolean loadingImages;
+    private String imageConversation;
+    private java.io.File cameraImageFile;
+    private android.net.Uri cameraImageUri;
+    private static final int PICK_IMAGE_REQUEST = 61, TAKE_PHOTO_REQUEST = 62;
     private ChatStyle chatStyle;
     private ConversationMenu conversationPopup;
     private boolean selectingConversations;
@@ -183,14 +192,8 @@ public final class LocalChatActivity extends Activity {
     private TextView dialogAction(String label, String tag, boolean primary, Runnable action) {
         TextView view = text(label, 15, primary ? Color.WHITE : ink); view.setTag(tag); view.setGravity(Gravity.CENTER);
         view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); view.setMinHeight(dp(48));
-        view.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), chatStyle.capsule(primary ? accent : surface), chatStyle.capsule(Color.WHITE)));
+        view.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), chatStyle.capsule(primary ? accent : new SettingsStyle(this).card), chatStyle.capsule(Color.WHITE)));
         view.setOnClickListener(clicked -> action.run()); return view;
-    }
-    private TextView dialogMenuRow(String label, String tag, boolean danger, Runnable action) {
-        TextView row = text(label, 17, danger ? Color.parseColor("#D94747") : ink); row.setTag(tag);
-        row.setGravity(Gravity.CENTER_VERTICAL); row.setMinHeight(dp(56)); row.setPadding(dp(16), 0, dp(16), 0);
-        row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), shape(background), shape(Color.WHITE)));
-        row.setOnClickListener(clicked -> action.run()); return row;
     }
     private void showStyledDialog(LinearLayout panel) {
         dialog = new CamelliaDialog.Builder(this).setView(panel).create(); dialog.show();
@@ -232,10 +235,6 @@ public final class LocalChatActivity extends Activity {
         subtitle.setPadding(dp(6), 0, 0, 0); subtitle.setSingleLine(true); subtitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
         device.addView(subtitle); titles.addView(device);
         header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); root.addView(header);
-        if (conversationId != null && store != null && store.conversation(conversationId) != null) {
-            ImageButton menu = chatStyle.lineButton("more", tr("管理会话", "Manage chat"), () -> { persistDraft(); conversationMenu(store.conversation(conversationId)); });
-            menu.setTag("localChatMenu"); header.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        }
         scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -402,20 +401,14 @@ public final class LocalChatActivity extends Activity {
         if (conversation.optString("id").equals(runningId)) { status.setText(tr("请先停止此会话的回复。", "Stop this reply first.")); return; }
         if (conversationPopup != null) conversationPopup.dismiss();
         View anchor = root.findViewWithTag("localConversation:" + conversation.optString("id"));
-        if (anchor == null) {
-            LinearLayout panel = column(); panel.setPadding(dp(20), dp(18), dp(20), dp(14));
-            panel.addView(dialogMenuRow(tr("重命名", "Rename"), "localConversationRename", false, () -> { dialog.dismiss(); renameConversation(conversation); }));
-            panel.addView(dialogMenuRow(tr("删除会话", "Delete chat"), "localConversationDelete", true, () -> { dialog.dismiss(); deleteConversationDialog(conversation); }));
-            panel.addView(dialogMenuRow(tr("归档会话", "Archive chat"), "localConversationArchive", false, () -> { dialog.dismiss(); archiveConversation(conversation); }));
-            showStyledDialog(panel); return;
-        }
+        if (anchor == null) return;
         conversationPopup = new ConversationMenu(anchor, chatStyle, chinese, conversation.optBoolean("pinned"),
             () -> renameConversation(conversation), () -> {
                 selectingConversations = true; selectedConversations.add(conversation.optString("id")); list();
             }, () -> {
                 try { store.pinConversation(conversation.optString("id"), !conversation.optBoolean("pinned")); list(); }
                 catch (Exception error) { failure(error); }
-            }, () -> deleteConversationDialog(conversation));
+            }, () -> archiveConversation(conversation), () -> deleteConversationDialog(conversation));
     }
 
     private void renameConversation(JSONObject conversation) {
@@ -434,8 +427,12 @@ public final class LocalChatActivity extends Activity {
     private void deleteSelectedConversations() {
         java.util.Set<String> targets = new java.util.LinkedHashSet<>(selectedConversations);
         if (targets.contains(runningId)) { status.setText(tr("请先停止所选会话的回复。", "Stop the selected reply first.")); return; }
+        // Same rule as the remote list: no stray "(1)" when a single chat is selected.
+        String message = targets.size() == 1
+            ? tr("将永久删除此会话的聊天记录，无法撤销。", "Permanently deletes this chat. This cannot be undone.")
+            : tr("将永久删除所选的 " + targets.size() + " 个会话，无法撤销。", "Permanently deletes the " + targets.size() + " selected chats. This cannot be undone.");
         dialog = new CamelliaDialog.Builder(this).setTitle(tr("删除所选会话？", "Delete selected chats?"))
-            .setMessage(tr("将永久删除所选聊天记录，无法撤销。", "Permanently deletes the selected chats. This cannot be undone.") + " (" + targets.size() + ")")
+            .setMessage(message)
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("删除", "Delete"), (selected, which) -> {
                 try {
                     if (targets.contains(runningId)) return;
@@ -444,43 +441,24 @@ public final class LocalChatActivity extends Activity {
             }).show();
     }
 
-    // Archiving the open chat continues at its neighboring chat in the same
-    // group; an emptied group falls back to a new chat there, and standalone
-    // chats behave the same way. Other chats keep the current one open.
+    // Archiving lives in the conversation long-press menu, so the chat is never
+    // open here: hide it from the list and stay in the list.
     private void archiveConversation(JSONObject conversation) {
-        String id = conversation.optString("id");
-        String workspace = conversation.optString("workspaceId");
-        boolean wasOpen = id.equals(conversationId);
-        String neighbor = wasOpen ? neighborConversation(conversation) : null;
         try {
-            store.archiveConversation(id, true);
-            if (!wasOpen) { list(); return; }
-            if (neighbor != null && store.conversation(neighbor) != null) { conversationId = neighbor; detail(); return; }
-            if (LocalChatConfig.routes(store.config()).isEmpty()) { conversationId = null; list(); }
-            else createConversation(workspace);
+            store.archiveConversation(conversation.optString("id"), true);
+            list();
         } catch (Exception error) { failure(error); }
     }
 
-    // Neighboring chat inside the same list group: the row below, then the row
-    // above, and null when the group holds no other chat.
-    private String neighborConversation(JSONObject conversation) {
-        List<JSONObject> entries = store.orderedConversations(conversation.optString("workspaceId"));
-        int index = -1;
-        for (int position = 0; position < entries.size(); position++) {
-            if (entries.get(position).optString("id").equals(conversation.optString("id"))) index = position;
-        }
-        if (index < 0) return null;
-        if (index + 1 < entries.size()) return entries.get(index + 1).optString("id");
-        if (index > 0) return entries.get(index - 1).optString("id");
-        return null;
-    }
-
     private void deleteConversationDialog(JSONObject conversation) {
-        LinearLayout panel = column(); panel.setPadding(dp(24), dp(22), dp(24), dp(20)); panel.setBackground(chatStyle.rounded(background));
+        // The sheet already paints the dialog surface; a second background here
+        // would draw a card inside the panel and read as a box in a box.
+        LinearLayout panel = column();
         TextView heading = text(tr("删除本机会话？", "Delete this local chat?"), 21, ink);
-        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); panel.addView(heading);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.setPadding(dp(8), dp(2), dp(8), 0); panel.addView(heading);
         TextView message = text(tr("聊天记录将永久删除，此操作无法撤销。", "The chat history will be permanently deleted. This cannot be undone."), 14, muted);
-        message.setPadding(0, dp(8), 0, dp(18)); panel.addView(message);
+        message.setPadding(dp(8), dp(8), dp(8), dp(18)); panel.addView(message);
         LinearLayout actions = new LinearLayout(this);
         TextView cancel = dialogAction(tr("取消", "Cancel"), "localDeleteCancel", false, () -> dialog.dismiss());
         TextView delete = dialogAction(tr("删除", "Delete"), "localDeleteConfirm", true, () -> {
@@ -505,6 +483,12 @@ public final class LocalChatActivity extends Activity {
         JSONObject conversation = store.conversation(conversationId);
         if (conversation == null) { list(); return; }
         editingMessageIndex = LocalChatDraft.editIndex(conversation);
+        selectedImages.clear();
+        try {
+            JSONArray draftImages = LocalChatDraft.images(conversation);
+            for (int index = 0; index < draftImages.length(); index++) selectedImages.add(draftImages.getString(index));
+        } catch (Exception error) { failure(error); }
+        imageConversation = conversationId;
         shell(title(conversation));
         scroll.setVerticalScrollBarEnabled(false);
         messageViews = column(); content.addView(messageViews); renderMessages();
@@ -517,6 +501,13 @@ public final class LocalChatActivity extends Activity {
         modelButton = chatComposer.model; modelButton.setTag("localModel");
         toolsButton = chatStyle.lineButton("search", tr("联网工具", "Web tools"), this::configureTools);
         toolsButton.setTag("localTools"); chatComposer.addTool(toolsButton);
+        attachButton = chatStyle.lineButton("plus", tr("添加图片", "Add image"), this::pickImage);
+        attachButton.setTag("localAttach"); chatComposer.addTool(attachButton);
+        imageStrip = new android.widget.HorizontalScrollView(this);
+        imageStrip.setHorizontalScrollBarEnabled(false); imageStrip.setTag("localImageStrip");
+        imageTray = column(); imageTray.setOrientation(LinearLayout.HORIZONTAL); imageTray.setTag("localImageTray");
+        imageStrip.addView(imageTray); bar.addView(imageStrip, 0, new LinearLayout.LayoutParams(-1, -2));
+        renderImages();
         send = chatComposer.send; send.setTag("localSend");
         stop = chatComposer.stop; stop.setTag("localStop");
         composer.addTextChangedListener(new TextWatcher() {
@@ -541,19 +532,123 @@ public final class LocalChatActivity extends Activity {
         try {
             LocalChatConfig.Route route = selectedRoute();
             boolean webTools = store.conversation(conversationId).optBoolean("webTools");
-            toolsButton.setEnabled(runningId == null); toolsButton.setAlpha(runningId == null ? 1 : .5f);
+            toolsButton.setEnabled(runningId == null); toolsButton.setAlpha(runningId == null ? 1 : .45f);
             toolsButton.setContentDescription(tr("联网工具：", "Web tools: ") + (webTools ? tr("已开启", "On") : tr("已关闭", "Off")));
-            toolsButton.setImageDrawable(new LineIcon("search", webTools ? accent : muted));
+            toolsButton.setImageDrawable(new LineIcon("search", webTools ? accent : ink));
+            boolean attachable = runningId == null && !loadingImages;
+            attachButton.setEnabled(attachable); attachButton.setAlpha(attachable ? 1f : .45f);
             String thinking = LocalChatThinking.effective(route, store.conversation(conversationId).optString("thinking", "auto"));
             chatComposer.model(route == null ? tr("选择模型", "Select model") : route.displayName(), LocalChatThinking.label(thinking, chinese), runningId == null);
             chatComposer.editing(editingMessageIndex >= 0, runningId == null);
-            send.setEnabled(runningId == null && route != null && !composer.getText().toString().trim().isEmpty());
+            send.setEnabled(runningId == null && route != null && !loadingImages
+                && (!composer.getText().toString().trim().isEmpty() || !selectedImages.isEmpty()));
             stop.setVisibility(conversationId.equals(runningId) ? View.VISIBLE : View.GONE);
             send.setVisibility(conversationId.equals(runningId) ? View.GONE : View.VISIBLE);
             if (runningId != null) status.setText(tr("正在回复 · 离开应用将停止请求", "Replying · Leaving the app stops the request"));
             else if (editingMessageIndex >= 0) status.setText(tr("正在编辑上一条消息 · 发送后将重新生成后续回复", "Editing previous message · sending regenerates later replies"));
             else status.setText(route == null ? tr("请导入配置或重新选择模型。", "Import configuration or select a model.") : route.baseUrl + " · " + route.model);
         } catch (Exception error) { send.setEnabled(false); failure(error); }
+    }
+
+    // Pictures follow the remote composer: same source sheet, same tiles. This
+    // phone caps a message at four images because the direct API request has its
+    // own body limit and the history keeps every attached picture.
+    private void pickImage() {
+        if (conversationId == null) return;
+        // The sheet stays reachable while a reply is running so the capability
+        // rows remain visible; only the picture tiles are disabled.
+        boolean images = runningId == null && !loadingImages && selectedImages.size() < ChatImage.PHONE_MAX_IMAGES;
+        imageConversation = conversationId;
+        AttachSheet sheet = new AttachSheet(this);
+        LinearLayout panel = sheet.panel();
+        sheet.header(panel, "plus", tr("添加内容", "Add"), tr("关闭", "Close"), () -> { if (dialog != null) dialog.dismiss(); });
+        sheet.subtitle(panel, tr("拍照、相册，或开启本机能力", "Take a photo, pick from the gallery, or turn on a capability"));
+        sheet.tiles(panel, java.util.Arrays.asList(
+            new AttachSheet.Tile("camera", tr("拍照", "Camera"), "localImageCamera", images, () -> { dialog.dismiss(); openCamera(); }),
+            new AttachSheet.Tile("image", tr("照片", "Photos"), "localImageGallery", images, () -> { dialog.dismiss(); openGallery(); })));
+        boolean webTools = store.conversation(conversationId).optBoolean("webTools");
+        boolean configurable = runningId == null;
+        LinearLayout group = sheet.group(panel, "");
+        sheet.row(group, "search", tr("联网搜索", "Web search"),
+            tr("使用 Bing 和百度搜索，并读取公开网页", "Search with Bing and Baidu, and read public pages"),
+            webTools ? tr("已开启", "On") : tr("已关闭", "Off"), "localAttachTools", configurable, () -> { dialog.dismiss(); configureTools(); });
+        if (!images) sheet.note(panel, selectedImages.size() >= ChatImage.PHONE_MAX_IMAGES
+            ? tr("最多添加 4 张图片。", "Add up to 4 images.")
+            : tr("回复结束后可继续添加图片。", "Add more images once the reply finishes."));
+        showStyledDialog(panel);
+    }
+
+    private void openGallery() {
+        android.content.Intent picker = new android.content.Intent(android.content.Intent.ACTION_GET_CONTENT);
+        picker.setType("image/*"); picker.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+        picker.putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true);
+        try { startActivityForResult(picker, PICK_IMAGE_REQUEST); } catch (Exception error) { failure(error); }
+    }
+
+    private void openCamera() {
+        try {
+            java.io.File directory = new java.io.File(getCacheDir(), "camera");
+            if (!directory.exists() && !directory.mkdirs()) throw new java.io.IOException();
+            cameraImageFile = java.io.File.createTempFile("photo-", ".jpg", directory);
+            cameraImageUri = CameraFileProvider.uri(this, cameraImageFile);
+            android.content.Intent camera = new android.content.Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+                .putExtra(android.provider.MediaStore.EXTRA_OUTPUT, cameraImageUri)
+                .addFlags(android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION | android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivityForResult(camera, TAKE_PHOTO_REQUEST);
+        } catch (Exception error) { clearCameraImage(); failure(error); }
+    }
+
+    @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != PICK_IMAGE_REQUEST && request != TAKE_PHOTO_REQUEST) return;
+        ArrayList<android.net.Uri> uris = new ArrayList<>();
+        if (result == RESULT_OK) {
+            if (request == TAKE_PHOTO_REQUEST && cameraImageUri != null) uris.add(cameraImageUri);
+            else if (data != null && data.getClipData() != null) {
+                for (int index = 0; index < data.getClipData().getItemCount(); index++) uris.add(data.getClipData().getItemAt(index).getUri());
+            } else if (data != null && data.getData() != null) uris.add(data.getData());
+        }
+        if (uris.isEmpty()) { if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); return; }
+        if (loadingImages || selectedImages.size() + uris.size() > ChatImage.PHONE_MAX_IMAGES) {
+            status.setText(tr("最多添加 4 张图片。", "Add up to 4 images."));
+            if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); return;
+        }
+        String target = imageConversation;
+        ArrayList<String> existingImages = new ArrayList<>(selectedImages);
+        loadingImages = true; updateControls();
+        worker.submit(() -> {
+            try {
+                ArrayList<String> encoded = new ArrayList<>();
+                long total = 0;
+                for (String image : existingImages) total += image.length();
+                for (android.net.Uri uri : uris) {
+                    String value = ChatImage.encode(this, uri, ChatImage.PHONE_MAX_SIDE, ChatImage.PHONE_MAX_BYTES);
+                    if (total + value.length() > ChatImage.PHONE_MAX_CHARS) throw new java.io.IOException("Image budget");
+                    total += value.length(); encoded.add(value);
+                }
+                handler.post(() -> {
+                    if (isFinishing() || isDestroyed() || !java.util.Objects.equals(target, conversationId)) return;
+                    selectedImages.addAll(encoded); imageConversation = target; renderImages(); persistDraft(); updateControls();
+                });
+            } catch (Exception error) {
+                handler.post(() -> { if (!isFinishing() && !isDestroyed()) status.setText(ErrorDetails.withSummary(tr("无法读取图片，请选择较小的图片。", "Cannot read image. Choose a smaller image."), error)); });
+            } finally {
+                handler.post(() -> { loadingImages = false; if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); if (!isFinishing() && !isDestroyed()) updateControls(); });
+            }
+        });
+    }
+
+    private void clearCameraImage() {
+        if (cameraImageFile != null) cameraImageFile.delete();
+        cameraImageFile = null; cameraImageUri = null;
+    }
+
+    private void renderImages() {
+        if (imageTray == null) return;
+        if (!java.util.Objects.equals(imageConversation, conversationId)) selectedImages.clear();
+        imageStrip.setVisibility(selectedImages.isEmpty() ? View.GONE : View.VISIBLE);
+        ChatImageTray.fill(this, imageTray, selectedImages, surface, chinese,
+            index -> { selectedImages.remove(index); renderImages(); persistDraft(); updateControls(); });
     }
 
     private void configureTools() {
@@ -633,11 +728,23 @@ public final class LocalChatActivity extends Activity {
                 if (latest.isEmpty()) liveBody.addView(text(tr("等待输出…", "Waiting for output…"), 15, ink));
                 else liveBody.addView(markdown.render(latest));
             } else if (user) {
-                TextView body = text(message.optString("content"), 15, ink); body.setTextIsSelectable(true); chatStyle.messageTypography(body); block.addView(body);
+                JSONArray images = message.optJSONArray("images");
+                if (images != null && images.length() > 0) {
+                    LinearLayout pictures = column(); pictures.setTag("localMessageImages:" + index);
+                    pictures.setPadding(0, 0, 0, dp(4));
+                    ArrayList<String> attached = new ArrayList<>();
+                    for (int image = 0; image < images.length(); image++) attached.add(images.optString(image));
+                    ChatImageTray.fill(this, pictures, attached, surface, chinese, null);
+                    block.addView(pictures);
+                }
+                if (!message.optString("content").isEmpty()) {
+                    TextView body = text(message.optString("content"), 15, ink); body.setTextIsSelectable(true); chatStyle.messageTypography(body); block.addView(body);
+                }
                 if (index == latestUser) {
                     int messageIndex = index;
                     View.OnClickListener edit = view -> beginEdit(messageIndex);
-                    block.setOnClickListener(edit); body.setOnClickListener(edit);
+                    block.setOnClickListener(edit);
+                    for (int child = 0; child < block.getChildCount(); child++) block.getChildAt(child).setOnClickListener(edit);
                     block.setContentDescription(tr("点击编辑上一条消息", "Tap to edit previous message"));
                 }
             }
@@ -653,6 +760,10 @@ public final class LocalChatActivity extends Activity {
         JSONArray messages = store.conversation(conversationId).optJSONArray("messages");
         JSONObject message = messages == null ? null : messages.optJSONObject(index);
         if (message == null || !message.optString("role").equals("user")) return;
+        selectedImages.clear();
+        JSONArray images = message.optJSONArray("images");
+        if (images != null) for (int image = 0; image < images.length(); image++) selectedImages.add(images.optString(image));
+        imageConversation = conversationId; renderImages();
         editingMessageIndex = index;
         composer.setText(message.optString("content")); composer.setSelection(composer.length()); composer.requestFocus();
         ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(composer, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
@@ -671,20 +782,20 @@ public final class LocalChatActivity extends Activity {
 
     private void persistDraft() {
         if (store == null || conversationId == null || composer == null) return;
-        try { LocalChatDraft.save(store.conversation(conversationId), composer.getText().toString(), editingMessageIndex); store.save(); }
+        try { LocalChatDraft.save(store.conversation(conversationId), composer.getText().toString(), editingMessageIndex, selectedImages); store.save(); }
         catch (Exception error) { failure(error); }
     }
 
     private void cancelEdit() {
         if (runningId != null || composer == null) return;
         locationConsent.cancel();
-        editingMessageIndex = -1; composer.setText(""); persistDraft(); updateControls();
+        editingMessageIndex = -1; composer.setText(""); selectedImages.clear(); renderImages(); persistDraft(); updateControls();
     }
 
     private void sendMessage() {
-        if (runningId != null || composer == null) return;
+        if (runningId != null || composer == null || loadingImages) return;
         String prompt = composer.getText().toString();
-        if (prompt.trim().isEmpty()) return;
+        if (prompt.trim().isEmpty() && selectedImages.isEmpty()) return;
         try {
             LocalChatConfig.Route route = selectedRoute(); if (route == null) { chooseModel(); return; }
             String target = conversationId;
@@ -699,8 +810,9 @@ public final class LocalChatActivity extends Activity {
     }
 
     private void sendMessage(String locationContext) {
-        if (runningId != null) return;
-        String value = composer.getText().toString().trim(); if (value.isEmpty()) return;
+        if (runningId != null || loadingImages) return;
+        String value = composer.getText().toString().trim();
+        if (value.isEmpty() && selectedImages.isEmpty()) return;
         try {
             LocalChatConfig.Route route = selectedRoute(); if (route == null) { chooseModel(); return; }
             JSONObject conversation = store.conversation(conversationId);
@@ -708,6 +820,10 @@ public final class LocalChatActivity extends Activity {
             int replaceFrom = editingMessageIndex >= 0 && editingMessageIndex < messages.length() ? editingMessageIndex : messages.length();
             long sentAt = System.currentTimeMillis();
             JSONObject user = new JSONObject().put("role", "user").put("content", value).put("at", sentAt);
+            ArrayList<String> sending = new ArrayList<>();
+            for (String image : selectedImages) if (!sending.contains(image)) sending.add(image);
+            if (sending.size() > ChatImage.PHONE_MAX_IMAGES) sending.subList(ChatImage.PHONE_MAX_IMAGES, sending.size()).clear();
+            if (!sending.isEmpty()) user.put("images", new JSONArray(sending));
             JSONArray prospective = new JSONArray();
             for (int index = 0; index < replaceFrom; index++) prospective.put(new JSONObject(messages.getJSONObject(index).toString()));
             prospective.put(user);
@@ -720,17 +836,19 @@ public final class LocalChatActivity extends Activity {
             JSONObject reply = new JSONObject().put("role", "assistant").put("content", "").put("state", "running").put("at", sentAt);
             while (messages.length() > replaceFrom) messages.remove(messages.length() - 1);
             messages.put(user).put(reply);
-            LocalChatDraft.save(conversation, "", -1);
+            LocalChatDraft.save(conversation, "", -1, java.util.Collections.emptyList());
             conversation.put("updatedAt", System.currentTimeMillis());
-            if (previousTitle.isEmpty()) conversation.put("title", value.substring(0, Math.min(value.length(), 60)).replace('\n', ' '));
+            if (previousTitle.isEmpty()) conversation.put("title", value.isEmpty() ? tr("图片", "Image")
+                : value.substring(0, Math.min(value.length(), 60)).replace('\n', ' '));
             try { store.save(); }
             catch (Exception error) {
                 while (messages.length() > 0) messages.remove(messages.length() - 1);
                 for (int index = 0; index < previousMessages.length(); index++) messages.put(previousMessages.getJSONObject(index));
                 conversation.put("title", previousTitle);
-                LocalChatDraft.save(conversation, value, editingMessageIndex); throw error;
+                LocalChatDraft.save(conversation, value, editingMessageIndex, selectedImages); throw error;
             }
-            editingMessageIndex = -1; composer.setText(""); runningId = conversationId; runningReply = reply; latest = ""; lastCheckpoint = System.currentTimeMillis();
+            editingMessageIndex = -1; composer.setText(""); selectedImages.clear(); renderImages();
+            runningId = conversationId; runningReply = reply; latest = ""; lastCheckpoint = System.currentTimeMillis();
             LocalChatClient active = new LocalChatClient(); client = active; int ticket = ++generation;
             renderMessages(); updateControls(); scroll.post(() -> scroll.scrollTo(0, content.getBottom()));
             worker.submit(() -> {

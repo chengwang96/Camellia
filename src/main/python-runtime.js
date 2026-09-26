@@ -33,7 +33,7 @@ async function installPythonRuntime({ source, dir, run, report, connection }) {
   }
   const config = JSON.parse(fs.readFileSync(path.join(dir, 'runtime.json'), 'utf8'));
   const platform = config.platforms[process.platform + '-' + process.arch];
-  if (!platform) throw new Error('Antigravity supports Windows x64 and macOS ARM64');
+  if (!platform) throw new Error('Antigravity Python runtime is unavailable for this platform');
   const installer = path.join(dir, 'installer');
   fs.mkdirSync(installer, { recursive: true });
   const uv = path.join(installer, platform.uv);
@@ -45,7 +45,8 @@ async function installPythonRuntime({ source, dir, run, report, connection }) {
     if (createHash('sha256').update(data).digest('hex') !== platform.sha256) throw new Error('Python installer checksum mismatch');
     const archive = path.join(installer, platform.archive);
     fs.writeFileSync(archive, data);
-    await run('tar', ['-xf', archive, '-C', installer]);
+    if (process.platform === 'linux') await require('unzipper').Open.file(archive).then(opened => opened.extract({ path: installer }));
+    else await run('tar', ['-xf', archive, '-C', installer]);
     if (process.platform !== 'win32') fs.chmodSync(uv, 0o755);
   }
   const env = { ...connection.env, UV_NO_CONFIG: '1', UV_PYTHON_INSTALL_DIR: path.join(dir, 'python'), UV_CACHE_DIR: path.join(installer, 'cache') };
@@ -65,7 +66,7 @@ async function installPythonRuntime({ source, dir, run, report, connection }) {
 async function upgradePythonRuntime({ dir, run, connection, report = () => {}, sdk }) {
   const config = JSON.parse(fs.readFileSync(path.join(dir, 'runtime.json'), 'utf8'));
   const platform = config.platforms[process.platform + '-' + process.arch];
-  if (!platform) throw new Error('Antigravity supports Windows x64 and macOS ARM64');
+  if (!platform) throw new Error('Antigravity Python runtime is unavailable for this platform');
   const uv = path.join(dir, 'installer', platform.uv);
   if (!fs.existsSync(uv)) throw new Error('The bundled installer is missing. Reinstall the engine instead.');
   const python = path.join(dir, 'python', platform.python);

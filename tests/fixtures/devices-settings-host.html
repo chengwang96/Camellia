@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'">
+<title>Settings host fixture — Camellia</title>
+<link rel="stylesheet" href="../../src/renderer/shared/ui-theme.css">
+<link rel="stylesheet" href="../../src/renderer/devices/devices.css">
+<link rel="stylesheet" href="../../src/renderer/settings/api-settings.css">
+</head><body>
+<aside class="settings-nav"><nav aria-label="Settings categories"><button data-view="mobile">Mobile access</button><button data-view="devices">CLI devices</button></nav></aside>
+<div class="settings-main"><main class="scroll-content">
+  <button id="outsideButton">Settings button</button>
+  <dialog id="outsideDialog"></dialog>
+  <section id="devicesPage" class="page"><div id="cliDevicesRoot"></div></section>
+</main></div>
+<script src="../../src/renderer/devices/devices-view.js"></script>
+<script src="../../src/renderer/shared/message-markdown.js"></script>
+<script src="../../src/renderer/devices/devices.js"></script>
+</body></html>

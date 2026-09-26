@@ -29,7 +29,7 @@ function EmbeddedSettings({ useSections, renderSlot }) {
   // surface at the document root so sidebar clipping/transforms cannot hide it.
   return createPortal(h('section', { className: 'workbench-native-settings', 'aria-label': "DSH settings" },
     h('style', null, `
-      .workbench-native-settings {position:fixed;inset:0;z-index:9999;display:flex;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#191b1f);font:14px/1.6 system-ui,sans-serif}
+      .workbench-native-settings {position:fixed;inset:0;z-index:1000;display:flex;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#191b1f);font:14px/1.6 system-ui,sans-serif}
       .workbench-native-nav {flex:0 0 158px;padding:16px 12px;border-right:1px solid var(--dsw-alias-border-weak,#eceef1);overflow:auto}
       .workbench-native-nav button {display:block;width:100%;border:0;border-radius:10px;background:transparent;color:inherit;font:inherit;text-align:left;padding:9px 12px;margin-bottom:4px;cursor:pointer}
       .workbench-native-nav button:hover,.workbench-native-nav [aria-current=true] {background:var(--dsw-specific-sidebar-nav-item-active,#eef0f3)}

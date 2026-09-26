@@ -11,10 +11,22 @@ final class LocalChatThinking {
     }
 
     static String label(String value, boolean chinese) {
-        switch (normalize(value)) {
+        return display(normalize(value), chinese);
+    }
+
+    // The desktop reports protocol level names (low/medium/high/xhigh…), the
+    // phone reports auto/medium/high. Both composers and the model menus show
+    // the same wording so one label never means two different things.
+    static String display(String value, boolean chinese) {
+        String level = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+        switch (level) {
+            case "": case "auto": case "default": return chinese ? "默认" : "Default";
+            case "off": case "none": return chinese ? "关闭" : "Off";
+            case "minimal": case "low": return chinese ? "快速" : "Fast";
             case "medium": return chinese ? "标准" : "Standard";
             case "high": return chinese ? "进阶" : "Advanced";
-            default: return chinese ? "默认" : "Default";
+            case "xhigh": case "max": case "ultra": return chinese ? "极限" : "Extreme";
+            default: return value == null ? "" : value.trim();
         }
     }
 

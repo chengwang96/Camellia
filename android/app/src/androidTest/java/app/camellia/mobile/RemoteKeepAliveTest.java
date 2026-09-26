@@ -35,6 +35,12 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
     @Override protected void setUp() throws Exception {
         super.setUp();
         var context = getInstrumentation().getTargetContext();
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            boolean notificationsGranted = context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            if (!notificationsGranted) getInstrumentation().getUiAutomation()
+                .grantRuntimePermission(context.getPackageName(), android.Manifest.permission.POST_NOTIFICATIONS);
+        }
         credentials = new CredentialStore(context); saved = credentials.load(); credentials.save(new JSONObject());
         preference = MobilePreferences.get(context, "remoteKeepAlive");
         MobilePreferences.set(context, "remoteKeepAlive", "disabled");
@@ -117,6 +123,26 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
             assertFalse((boolean) field("backgroundConnection"));
             assertFalse((boolean) field("connected"));
         });
+    }
+
+    public void testReturningAfterFrozenExpiryReconnectsInsteadOfReusing() throws Exception {
+        ui(() -> {
+            prepareRemote();
+            Object client = field("api");
+            invoke("onPause"); invoke("onStop");
+            assertTrue(RemoteKeepAliveService.active());
+            assertTrue((boolean) field("backgroundConnection"));
+            // A frozen process never runs the keep-alive nor the retention timer,
+            // so both deadlines are simply in the past when the user returns.
+            var deadline = RemoteKeepAliveService.class.getDeclaredField("deadline"); deadline.setAccessible(true);
+            deadline.setLong(null, android.os.SystemClock.elapsedRealtime() - 1);
+            assertFalse(RemoteKeepAliveService.active());
+            invoke("onStart");
+            assertFalse((boolean) field("backgroundConnection"));
+            assertFalse(RemoteKeepAliveService.active());
+            assertNotSame("An expired background session must reconnect with a fresh client", client, field("api"));
+        });
+        getInstrumentation().waitForIdleSync();
     }
 
     public void testDisablingStopsSessionImmediately() {

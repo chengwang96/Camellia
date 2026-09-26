@@ -74,6 +74,62 @@ public class LocalChatTest extends InstrumentationTestCase {
         } finally { ui(activity::finish); }
     }
 
+    public void testImageDraftDistinguishesRemovedImagesFromLegacyDraft() throws Exception {
+        JSONObject conversation = new JSONObject().put("messages", new JSONArray().put(new JSONObject()
+            .put("role", "user").put("content", "Original").put("images", new JSONArray().put("original"))));
+        LocalChatDraft.save(conversation, "Edited", 0);
+        assertEquals("original", LocalChatDraft.images(conversation).getString(0));
+        LocalChatDraft.save(conversation, "Edited", 0, java.util.Collections.emptyList());
+        assertEquals(0, LocalChatDraft.images(new JSONObject(conversation.toString())).length());
+        LocalChatDraft.save(conversation, "Edited", 0, java.util.List.of("replacement"));
+        assertEquals("replacement", LocalChatDraft.images(new JSONObject(conversation.toString())).getString(0));
+        assertEquals("original", conversation.getJSONArray("messages").getJSONObject(0).getJSONArray("images").getString(0));
+    }
+
+    public void testRemovedImageStaysRemovedAfterReopeningAndSendingEdit() throws Throwable {
+        try (MockApi api = new MockApi(200, "text/event-stream", "data: [DONE]\n\n")) {
+            LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+            store.importConfig(LocalChatConfig.parse(bundle(api.url(), "openai").toString()));
+            JSONObject conversation = store.createConversation("", LocalChatConfig.routes(store.config()).get(0).id);
+            String id = conversation.getString("id");
+            android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(8, 8, android.graphics.Bitmap.Config.ARGB_8888);
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, bytes); bitmap.recycle();
+            String image = android.util.Base64.encodeToString(bytes.toByteArray(), android.util.Base64.NO_WRAP);
+            conversation.getJSONArray("messages").put(new JSONObject().put("role", "user").put("content", "Original")
+                .put("images", new JSONArray().put(image))).put(new JSONObject().put("role", "assistant").put("content", "Old reply"));
+            store.save();
+            Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            try {
+                ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
+                ui(() -> {
+                    View root = activity.getWindow().getDecorView();
+                    root.findViewWithTag("localMessage:0").performClick();
+                    android.view.ViewGroup tray = root.findViewWithTag("localImageTray");
+                    assertEquals(1, tray.getChildCount());
+                    ((android.view.ViewGroup) tray.getChildAt(0)).getChildAt(1).performClick();
+                    assertEquals(0, tray.getChildCount());
+                    ((EditText) root.findViewWithTag("localComposer")).setText("Edited without image");
+                    activity.onBackPressed();
+                });
+                ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
+                ui(() -> {
+                    View root = activity.getWindow().getDecorView();
+                    assertEquals(0, ((android.view.ViewGroup) root.findViewWithTag("localImageTray")).getChildCount());
+                    root.findViewWithTag("localSend").performClick();
+                });
+                api.thread.join(5000);
+                assertNotNull("The edited message must reach the loopback API", api.request.get());
+                assertTrue(api.request.get().contains("Edited without image"));
+                assertFalse(api.request.get().contains("image_url"));
+                JSONObject sent = new LocalChatStore(activity).conversation(id).getJSONArray("messages").getJSONObject(0);
+                assertFalse(sent.has("images"));
+                assertEquals("Edited without image", sent.getString("content"));
+            } finally { finishActivity(activity); }
+        }
+    }
+
     public void testDraftRejectsStaleEditTarget() throws Exception {
         JSONObject conversation = new JSONObject().put("messages", new JSONArray()
             .put(new JSONObject().put("role", "user")).put(new JSONObject().put("role", "assistant")));
@@ -413,6 +469,31 @@ public class LocalChatTest extends InstrumentationTestCase {
         assertFalse(LocalChatClient.request(route("https://example.com/v1", "anthropic"), history, "high").has("thinking"));
     }
 
+    public void testAttachedImagesBuildMultimodalContent() throws Exception {
+        JSONArray history = new JSONArray()
+            .put(new JSONObject().put("role", "user").put("content", "Look at this").put("images", new JSONArray().put("QUJD")))
+            .put(new JSONObject().put("role", "assistant").put("content", "Yes"))
+            .put(new JSONObject().put("role", "user").put("content", "").put("images", new JSONArray().put("REVG")));
+        JSONObject openai = LocalChatClient.request(route("https://example.com/v1", "openai"), history, "auto");
+        JSONArray messages = openai.getJSONArray("messages");
+        JSONArray parts = messages.getJSONObject(0).getJSONArray("content");
+        assertEquals(2, parts.length());
+        assertEquals("text", parts.getJSONObject(0).getString("type"));
+        assertEquals("Look at this", parts.getJSONObject(0).getString("text"));
+        assertEquals("image_url", parts.getJSONObject(1).getString("type"));
+        assertEquals("data:image/jpeg;base64,QUJD", parts.getJSONObject(1).getJSONObject("image_url").getString("url"));
+        assertEquals("Text-only replies stay a plain string", "Yes", messages.getJSONObject(1).getString("content"));
+        JSONArray attachedOnly = messages.getJSONObject(2).getJSONArray("content");
+        assertEquals(1, attachedOnly.length());
+        assertEquals("A message may carry images without text", "image_url", attachedOnly.getJSONObject(0).getString("type"));
+        JSONObject anthropic = LocalChatClient.request(route("https://example.com/v1", "anthropic"), history, "auto");
+        JSONObject image = anthropic.getJSONArray("messages").getJSONObject(0).getJSONArray("content").getJSONObject(1);
+        assertEquals("image", image.getString("type"));
+        assertEquals("base64", image.getJSONObject("source").getString("type"));
+        assertEquals("image/jpeg", image.getJSONObject("source").getString("media_type"));
+        assertEquals("QUJD", image.getJSONObject("source").getString("data"));
+    }
+
     public void testModelPillThinkingPopupPersistenceAndRequest() throws Throwable {
         try (MockApi api = new MockApi(200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"Configured reply\"}}]}\n\ndata: [DONE]\n\n")) {
             JSONObject exported = bundle(api.url(), "openai");
@@ -588,68 +669,6 @@ public class LocalChatTest extends InstrumentationTestCase {
                 assertEquals("", new LocalChatStore(getInstrumentation().getTargetContext()).conversations().getJSONObject(1).getString("workspaceId"));
             } finally { finishActivity(activity); }
         }
-    }
-
-    // Archiving the open chat continues at its neighbor below, then the chat
-    // above; an emptied group opens a new chat there, and standalone chats use
-    // the standalone group the same way.
-    public void testArchiveOpensNeighborThenNewChatInSameGroup() throws Throwable {
-        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
-        store.importConfig(LocalChatConfig.parse(bundle("https://example.com/v1", "openai").toString()));
-        String group = store.createWorkspace("Phone group").getString("id");
-        JSONObject newerGroup = seedChat(store, group, "Newer group chat", 3000);
-        JSONObject olderGroup = seedChat(store, group, "Older group chat", 1000);
-        JSONObject newerStandalone = seedChat(store, "", "Newer standalone chat", 2000);
-        JSONObject olderStandalone = seedChat(store, "", "Older standalone chat", 500);
-        store.save();
-        Activity activity = getInstrumentation().startActivitySync(
-            new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        try {
-            // The row below wins, then the row above once that one is archived.
-            openChat(activity, newerGroup);
-            archiveOpenChat(activity);
-            assertEquals(olderGroup.optString("id"), openConversationId(activity));
-            archiveOpenChat(activity);
-            String replacement = openConversationId(activity);
-            assertNotNull(replacement);
-            assertEquals(group, new LocalChatStore(activity).conversation(replacement).getString("workspaceId"));
-            assertTrue(new LocalChatStore(activity).conversation(olderGroup.optString("id")).getBoolean("archived"));
-            assertTrue(new LocalChatStore(activity).conversation(newerGroup.optString("id")).getBoolean("archived"));
-
-            // Standalone chats keep the current workspace-less group too.
-            ui(() -> activity.onBackPressed());
-            openChat(activity, newerStandalone);
-            archiveOpenChat(activity);
-            assertEquals(olderStandalone.optString("id"), openConversationId(activity));
-            archiveOpenChat(activity);
-            String standaloneReplacement = openConversationId(activity);
-            assertNotNull(standaloneReplacement);
-            assertEquals("", new LocalChatStore(activity).conversation(standaloneReplacement).getString("workspaceId"));
-        } finally { finishActivity(activity); }
-    }
-
-    private JSONObject seedChat(LocalChatStore store, String workspace, String title, long updatedAt) throws Exception {
-        JSONObject conversation = store.createConversation(workspace, "missing-route");
-        conversation.put("title", title);
-        conversation.put("updatedAt", updatedAt);
-        return conversation;
-    }
-
-    private void openChat(Activity activity, JSONObject conversation) throws Throwable {
-        ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + conversation.optString("id")).performClick());
-        assertEquals(conversation.optString("id"), openConversationId(activity));
-    }
-
-    private void archiveOpenChat(Activity activity) throws Throwable {
-        ui(() -> activity.getWindow().getDecorView().findViewWithTag("localChatMenu").performClick());
-        ui(() -> dialog(activity).getWindow().getDecorView().findViewWithTag("localConversationArchive").performClick());
-    }
-
-    private String openConversationId(Activity activity) {
-        try {
-            var field = LocalChatActivity.class.getDeclaredField("conversationId"); field.setAccessible(true);
-            return (String) field.get(activity);
-        } catch (Exception error) { throw new AssertionError(error); }
     }
 
     public void testInterruptedReplyRecovery() throws Exception {

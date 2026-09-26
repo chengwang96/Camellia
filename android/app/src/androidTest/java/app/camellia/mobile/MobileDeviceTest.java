@@ -50,7 +50,15 @@ public class MobileDeviceTest extends InstrumentationTestCase {
                 assertEquals(0, activity.getWindow().getAttributes().flags & android.view.WindowManager.LayoutParams.FLAG_SECURE);
                 View button = findText(root, "Request pairing", "请求配对");
                 button.performClick();
-                assertTrue(hasText(root, "Check the Tailscale address, device name and 24-character pairing code.", "请检查 Tailscale 地址、设备名称和 24 位配对码。"));
+                TextView status;
+                try {
+                    var field = MainActivity.class.getDeclaredField("status"); field.setAccessible(true);
+                    status = (TextView) field.get(activity);
+                } catch (Exception error) { throw new AssertionError(error); }
+                String message = status.getText().toString();
+                assertTrue(message, message.startsWith("Check the Tailscale address, device name and 24-character pairing code.\n")
+                    || message.startsWith("请检查 Tailscale 地址、设备名称和 24 位配对码。\n"));
+                assertTrue(message, message.contains("IllegalArgumentException"));
             });
             getInstrumentation().runOnMainSync(() -> {
                 getInstrumentation().callActivityOnPause(activity);

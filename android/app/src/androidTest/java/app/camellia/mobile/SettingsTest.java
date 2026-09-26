@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.test.InstrumentationTestCase;
 import android.view.View;
 import android.widget.EditText;
+import android.widget.TextView;
 import org.json.JSONObject;
 
 public class SettingsTest extends InstrumentationTestCase {
@@ -225,9 +226,70 @@ public class SettingsTest extends InstrumentationTestCase {
                 View row = root(paired).findViewWithTag("providerImportComputer");
                 assertTrue(row.getContentDescription().toString().contains("测试电脑"));
                 row.performClick();
-                assertEquals("正在读取电脑端 API 配置…", ((android.widget.TextView) root(paired).findViewWithTag("settingsStatus")).getText().toString());
+            });
+            ui(() -> {
+                assertEquals("", status(paired));
+                AlertDialog confirm = dialog(paired);
+                View decor = confirm.getWindow().getDecorView();
+                assertNull("A single paired computer needs no picker", decor.findViewWithTag("settingsChoicePanel"));
+                assertNotNull(decor.findViewWithTag("camelliaDialog"));
+                assertTrue(message(decor).contains("测试电脑"));
+                confirm.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+                assertFalse(confirm.isShowing());
+                assertEquals("", status(paired));
+            });
+            ui(() -> root(paired).findViewWithTag("providerImportComputer").performClick());
+            ui(() -> {
+                dialog(paired).getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+                assertEquals("正在读取电脑端 API 配置…", status(paired));
             });
         } finally { ui(paired::finish); remote.clear(); }
+    }
+
+    public void testComputerImportChoosesAmongPairedComputers() throws Throwable {
+        Context context = getInstrumentation().getTargetContext();
+        MobilePreferences.set(context, "language", "zh-CN");
+        CredentialStore remote = new CredentialStore(context);
+        remote.clear();
+        ComputerStore computers = new ComputerStore(remote);
+        computers.save(new JSONObject().put("address", "http://100.64.0.1:9").put("token", "a".repeat(43)).put("computerName", "书房台式机"));
+        computers.save(new JSONObject().put("address", "http://100.64.0.2:9").put("token", "b".repeat(43)).put("computerName", "随身笔记本"));
+        JSONObject provider = new JSONObject().put("id", "phone-provider").put("name", "手机上的 API").put("protocol", "openai")
+            .put("baseUrl", "https://example.com/v1")
+            .put("keys", new org.json.JSONArray().put(new JSONObject().put("key", "phone-secret")))
+            .put("models", new org.json.JSONArray().put(new JSONObject().put("id", "phone-model").put("upstream", "phone-model")));
+        new LocalChatStore(context).importConfig(new JSONObject().put("providers", new org.json.JSONArray().put(provider)));
+        Activity activity = launch("providers");
+        try {
+            ui(() -> assertEquals("从已配对的电脑中选择要读取的一台", rowDetail(activity, "providerImportComputer")));
+            ui(() -> root(activity).findViewWithTag("providerImportComputer").performClick());
+            capture(activity, "settings-computer-picker");
+            ui(() -> {
+                View decor = dialog(activity).getWindow().getDecorView();
+                assertNotNull(decor.findViewWithTag("settingsChoicePanel"));
+                assertEquals("书房台式机", rowLabel(decor.findViewWithTag("settingsChoice:0")));
+                assertEquals("随身笔记本", rowLabel(decor.findViewWithTag("settingsChoice:1")));
+                assertNull(decor.findViewWithTag("settingsChoice:2"));
+                decor.findViewWithTag("settingsChoice:1").performClick();
+            });
+            capture(activity, "settings-computer-import-confirm");
+            ui(() -> {
+                AlertDialog confirm = dialog(activity);
+                View decor = confirm.getWindow().getDecorView();
+                assertNotNull(decor.findViewWithTag("camelliaDialog"));
+                assertEquals("导入 API 配置？", ((TextView) decor.findViewWithTag("camelliaDialogTitle")).getText().toString());
+                String prompt = message(decor);
+                assertTrue(prompt.contains("随身笔记本"));
+                assertFalse("The confirmed source must be the chosen computer", prompt.contains("书房台式机"));
+                assertTrue(prompt.contains("1 个供应商配置"));
+                assertTrue(prompt.contains("聊天记录保留"));
+                confirm.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+                assertFalse(confirm.isShowing());
+            });
+            java.util.List<LocalChatConfig.Route> routes = LocalChatConfig.routes(new LocalChatStore(context).config());
+            assertEquals("Cancelling must keep the phone configuration", 1, routes.size());
+            assertEquals("phone-secret", routes.get(0).key);
+        } finally { ui(activity::finish); remote.clear(); }
     }
 
     public void testArchiveHiddenRestoreAndDelete() throws Throwable {
@@ -236,11 +298,9 @@ public class SettingsTest extends InstrumentationTestCase {
         conversation.put("title", "Archived research"); conversation.put("draft", "Keep this draft"); store.save();
         Activity local = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
-            ui(() -> root(local).findViewWithTag("localConversation:" + id).performClick());
-            ui(() -> root(local).findViewWithTag("localChatMenu").performClick());
+            ui(() -> root(local).findViewWithTag("localConversation:" + id).performLongClick());
             ui(() -> {
-                AlertDialog menu = dialog(local);
-                menu.getWindow().getDecorView().findViewWithTag("localConversationArchive").performClick();
+                conversationMenu(local).panel.findViewWithTag("conversationAction:archive").performClick();
                 assertNull(root(local).findViewWithTag("localConversation:" + id));
             });
         } finally { ui(local::finish); }
@@ -395,9 +455,23 @@ public class SettingsTest extends InstrumentationTestCase {
         } finally { screenshot.recycle(); }
     }
     private void field(View form, String tag, String value) { ((EditText) form.findViewWithTag(tag)).setText(value); }
+    private String status(Activity activity) { return ((TextView) root(activity).findViewWithTag("settingsStatus")).getText().toString(); }
+    private String message(View decor) { return ((TextView) decor.findViewById(android.R.id.message)).getText().toString(); }
+    private String rowDetail(Activity activity, String tag) {
+        android.view.ViewGroup copy = (android.view.ViewGroup) ((android.view.ViewGroup) root(activity).findViewWithTag(tag)).getChildAt(0);
+        return ((TextView) copy.getChildAt(1)).getText().toString();
+    }
+    private String rowLabel(View row) { return ((TextView) ((android.view.ViewGroup) row).getChildAt(0)).getText().toString(); }
     private AlertDialog dialog(Activity activity) {
         try { var field = activity.getClass().getDeclaredField("dialog"); field.setAccessible(true); return (AlertDialog) field.get(activity); }
         catch (Exception error) { throw new AssertionError(error); }
+    }
+
+    private ConversationMenu conversationMenu(Activity activity) {
+        try {
+            var field = LocalChatActivity.class.getDeclaredField("conversationPopup"); field.setAccessible(true);
+            return (ConversationMenu) field.get(activity);
+        } catch (Exception error) { throw new AssertionError(error); }
     }
     private void ui(Runnable action) throws Throwable {
         Throwable[] failure = new Throwable[1];

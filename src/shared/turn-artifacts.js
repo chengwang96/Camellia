@@ -42,20 +42,33 @@
     return paths;
   }
 
+  // The directory a command actually ran in. A turn can work outside the
+  // conversation workspace, so relative paths in its reply need these roots.
+  function toolRoots(input) {
+    if (!input || typeof input !== 'object') return [];
+    return ['cwd', 'workdir', 'working_directory'].map(key => input[key])
+      .filter(value => typeof value === 'string' && value.trim());
+  }
+
   function collector() {
-    const tools = new Map(), paths = new Set();
+    const tools = new Map(), paths = new Set(), roots = new Set();
     const finish = (id, failed) => {
       if (!failed) for (const file of tools.get(id) || []) paths.add(file);
       tools.delete(id);
     };
     return {
-      paths,
+      paths, roots,
       capture(event) {
         if (event.type === 'assistant') for (const part of Array.isArray(event.message?.content) ? event.message.content : []) {
-          if (part.type === 'tool_use') tools.set(part.id, toolPaths(part.name, part.input));
+          if (part.type !== 'tool_use') continue;
+          tools.set(part.id, toolPaths(part.name, part.input));
+          for (const root of toolRoots(part.input)) roots.add(root);
         }
         if (event.type === 'gui:tool') {
-          if (event.input !== undefined) tools.set(event.id, toolPaths(event.name, event.input));
+          if (event.input !== undefined) {
+            tools.set(event.id, toolPaths(event.name, event.input));
+            for (const root of toolRoots(event.input)) roots.add(root);
+          }
           if (['completed', 'failed', 'cancelled'].includes(event.status)) finish(event.id, event.is_error || event.status !== 'completed');
         }
         if (event.type === 'user' && Array.isArray(event.message?.content)) for (const part of event.message.content) {
@@ -64,5 +77,5 @@
       },
     };
   }
-  return { textPaths, toolPaths, collector, documentFormat, sortArtifacts, VISIBLE_ARTIFACT_LIMIT };
+  return { textPaths, toolPaths, toolRoots, collector, documentFormat, sortArtifacts, VISIBLE_ARTIFACT_LIMIT };
 });
