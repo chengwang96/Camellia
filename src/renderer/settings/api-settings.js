@@ -8,14 +8,15 @@ const uid = () => crypto.randomUUID();
 const keyName = (key, index = 0) => key.name || key.maskedKey || `Key ${index + 1}`;
 const mark = type => ({ gemini: 'G', ollama: 'O', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC', qclaw: 'Q' }[type] || 'API');
 const titles = {
-  providers: ["Providers & Keys", "Manage API keys and subscription accounts."],
+  subscriptions: ["Subscription accounts", "Manage Kimi, ChatGPT and Google sign-ins and login preferences."],
+  providers: ["API Keys", "Manage API providers, keys, models and routes."],
   usage: ["Usage", "Track requests, balances, and quotas."],
   general: ["General", "Language, appearance, and local preferences."],
   archived: ["Archived", "Restore or permanently delete archived conversations."],
   storage: ["Space cleanup", "Review unused local files before deleting them."],
   mobile: ["Mobile access", "Connect your phone through Tailscale."],
   devices: ["CLI devices", "Add Linux servers through Tailscale and work in their workspaces."],
-  engines: ["Engine Settings", "Manage native settings in one place."],
+  engines: ["Engine Settings", "Configure default reasoning, permissions, instructions and tools."],
   runtimes: ["Runtime", "Download only the engines you need."],
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
@@ -26,6 +27,8 @@ function edited() { dirty = true; $('save').disabled = false; status("You have u
 function current() { return config?.providers.find(p => p.id === selected); }
 function assertClean() { if (dirty) throw new Error("Save your changes before querying or validating keys"); }
 function setView(next, engine, focus) {
+  if (next === 'engines' && focus === 'account') { next = 'subscriptions'; focus = engine; }
+  if (next === 'providers' && ['kimi', 'codex', 'antigravity'].includes(focus)) next = 'subscriptions';
   if (next === 'balances') next = 'usage';
   if (!titles[next]) next = 'general';
   view = next;
@@ -37,6 +40,7 @@ function setView(next, engine, focus) {
   window.mobileAccessUI.setVisible(next === 'mobile');
   window.cliDevicesUI?.setVisible(next === 'devices');
   if (next === 'usage') { fillUsageFilters(); renderUsage(); renderBalances(); }
+  if (next === 'subscriptions') void engineUI.accountsPage(focus || engine);
   if (next === 'engines') void (focus === 'account' ? engineUI.openAccount(engine) : engineUI.select(engine || engineUI.selected()));
   if (next === 'runtimes') void engineUI.runtimePage(focus);
   if (next === 'archived') void renderArchived();
@@ -391,7 +395,7 @@ $('editor').onclick = async e => {
 };
 function openAccountSettings(engine) {
   if ($('addDialog').open) $('addDialog').close();
-  setView('engines', engine, 'account');
+  setView('subscriptions', undefined, engine);
 }
 document.querySelectorAll('[data-account-engine]').forEach(button => {
   button.onclick = () => openAccountSettings(button.dataset.accountEngine);
@@ -578,7 +582,7 @@ async function refresh(initial = false) {
     }
   } catch (e) { status(e.message, true); }
 }
-$('refresh').onclick = () => view === 'mobile' ? window.mobileAccessUI.refresh() : view === 'devices' ? window.cliDevicesUI?.refresh() : refresh();
+$('refresh').onclick = () => view === 'subscriptions' ? engineUI.accountsPage() : view === 'mobile' ? window.mobileAccessUI.refresh() : view === 'devices' ? window.cliDevicesUI?.refresh() : refresh();
 let storagePreview = null, storageBusy = false;
 const storageBytes = bytes => bytes < 1024 ? fmt(bytes) + ' B' : bytes < 1024 ** 2 ? fmt(bytes / 1024) + ' KiB' : bytes < 1024 ** 3 ? fmt(bytes / 1024 ** 2) + ' MiB' : fmt(bytes / 1024 ** 3) + ' GiB';
 function storageControls() {

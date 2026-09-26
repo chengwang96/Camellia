@@ -10,7 +10,8 @@
 <aside class="settings-nav">
   <div class="settings-brand"><img src="../../../assets/icon-256.png" alt="Camellia cat" width="36" height="36"><span>Camellia<small data-i18n>Settings</small></span></div>
   <nav aria-label="Settings categories" data-i18n-attrs="aria-label">
-    <button data-view="providers" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="4.5"/><path d="m11.2 11.2 9.3 9.3m-3-3 3-3m-6 0 3-3"/></svg>Providers &amp; Keys</button>
+    <button data-view="subscriptions" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg>Subscription accounts</button>
+    <button data-view="providers" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="4.5"/><path d="m11.2 11.2 9.3 9.3m-3-3 3-3m-6 0 3-3"/></svg>API Keys</button>
     <button data-view="usage" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4v16h16M8 15v-4m5 4V6m5 9V9"/></svg>Usage</button>
     <div class="nav-divider"></div>
     <button data-view="general" class="active" aria-current="page" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.5 3-.6 2.3-2 .9-2.3-.7-2.5 4.3 1.7 1.6v2.2l-1.7 1.6 2.5 4.3 2.3-.7 2 .9.6 2.3h5l.6-2.3 2-.9 2.3.7 2.5-4.3-1.7-1.6v-2.2l1.7-1.6-2.5-4.3-2.3.7-2-.9L14.5 3Z"/><circle cx="12" cy="12.5" r="3"/></svg>General</button>
@@ -26,11 +27,15 @@
 <div class="settings-main">
   <header class="page-head"><div><h1 id="pageTitle" data-i18n>General</h1><p id="pageSubtitle" data-i18n>Language, appearance, and local preferences.</p></div><button id="refresh" aria-label="Refresh status" data-i18n data-i18n-attrs="aria-label">Refresh</button></header>
   <main class="scroll-content">
-    <section id="providersPage" class="page" hidden>
+    <section id="subscriptionsPage" class="page" hidden>
       <section class="account-connections" aria-labelledby="accountConnectionsTitle">
-        <div><h2 id="accountConnectionsTitle" data-i18n>Account sign-in</h2><p class="hint" data-i18n>Use account models and quota in the matching engine.</p></div>
+        <div><h2 id="accountConnectionsTitle" data-i18n>Subscription accounts</h2><p class="hint" data-i18n>Manage sign-ins independently of API routes and engine settings. Signing in does not change the connection used by new or existing conversations.</p></div>
         <div class="account-shortcuts"><button data-account-engine="kimi" data-i18n>Kimi account</button><button data-account-engine="antigravity" data-i18n>Google account · Antigravity</button><button data-account-engine="codex" data-i18n>ChatGPT account</button></div>
+        <div id="subscriptionAccounts"></div>
       </section>
+    </section>
+    <section id="providersPage" class="page" hidden>
+      <h2 data-i18n>API providers and keys</h2><p class="hint" data-i18n>API usage is billed by the API provider. Subscription sign-ins do not add keys to this pool.</p>
       <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><div class="toolbar-actions"><button id="exportConfig" data-i18n>Export config</button><button id="importConfig" data-i18n>Import config</button><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div></div>
       <div id="providers" class="provider-grid"></div>
       <div id="editor" hidden></div>

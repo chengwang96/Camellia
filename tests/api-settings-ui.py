@@ -47,7 +47,7 @@ try:
         page.expose_function('testRpc',rpc);page.add_init_script(bridge)
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri());page.wait_for_load_state('networkidle')
         nav_icons=page.locator('.settings-nav nav button > svg.nav-icon')
-        expect(nav_icons).to_have_count(8)
+        expect(nav_icons).to_have_count(10)
         for icon in nav_icons.all():
             expect(icon).to_have_attribute('aria-hidden','true')
             expect(icon).to_have_attribute('focusable','false')

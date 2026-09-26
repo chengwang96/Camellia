@@ -18,7 +18,6 @@ const FIELDS = {
   antigravitySubscription: [
     { key: 'agentMode', label: 'Default execution mode', type: 'select', options: [['default', 'CLI defaults'], ['accept-edits', 'Accept edits'], ['plan', 'Planning']] },
     { key: 'toolPermission', label: 'CLI tool policy', type: 'select', options: [['request-review', 'Request review'], ['strict', 'Strict'], ['proceed-in-sandbox', 'Proceed in sandbox'], ['always-proceed', 'Allow all']] },
-    { key: 'useG1Credits', label: 'Use AI credits after the plan quota is exhausted', type: 'checkbox' },
     { key: 'enableTelemetry', label: 'Send anonymous CLI usage statistics', type: 'checkbox' },
   ],
   antigravity: [
@@ -97,7 +96,7 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
       for (const key of ['model', 'model_provider', 'model_providers', 'cli_auth_credentials_store', 'forced_login_method', 'forced_chatgpt_workspace_id', 'openai_base_url', 'chatgpt_base_url']) delete value[key];
     }
     if (doc.key) return value[doc.key] || {};
-    if (subscription(engine) && doc.id === 'settings') { value = { ...value }; delete value.modelProvider; }
+    if (subscription(engine) && doc.id === 'settings') { value = { ...value }; delete value.modelProvider; delete value.useG1Credits; }
     if (engine === 'claude' && doc.id === 'settings') {
       value = structuredClone(value);
       for (const key of ROUTE_ENV) if (value.env) delete value.env[key];
@@ -137,7 +136,11 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
         setAt(value, key, next);
       }
       if (doc.key) value = { ...old, [doc.key]: value };
-      if (subscription(engine) && doc.id === 'settings') delete value.modelProvider;
+      if (subscription(engine) && doc.id === 'settings') {
+        delete value.modelProvider;
+        delete value.useG1Credits;
+        if (Object.hasOwn(old, 'useG1Credits')) value.useG1Credits = old.useG1Credits;
+      }
       if (engine === 'codex') value = editable(engine, doc, value);
       if (engine === 'claude' && doc.id === 'settings') {
         const oldRoute = Object.fromEntries(ROUTE_ENV.filter(key => old.env?.[key] !== undefined).map(key => [key, old.env[key]]));

@@ -37,7 +37,10 @@ test('signed-in state matches each engine account API', () => {
   assert.equal(accounts.accountSignedIn('kimi', { account: { name: 'Kimi Code' } }), true);
   assert.equal(accounts.accountSignedIn('codex', { account: null }), false);
   assert.equal(accounts.accountSignedIn('codex', { account: { email: 'a@b.c' } }), true);
-  assert.equal(accounts.accountSignedIn('antigravity', { verifiedAt: 1, models: [] }), true);
+  assert.equal(accounts.accountSignedIn('antigravity', { verifiedAt: 1, models: [] }), false);
+  assert.equal(accounts.accountSignedIn('antigravity', { verifiedAt: 1, models: [{}], error: 'expired' }), false);
+  assert.equal(accounts.accountSignedIn('antigravity', { verifiedAt: 1, models: [{}], verification: 'stale' }), false);
+  assert.equal(accounts.accountSignedIn('antigravity', { verifiedAt: 1, models: [{}], verification: 'verified' }), true);
   assert.equal(accounts.accountSignedIn('antigravity', {}), false);
 });
 

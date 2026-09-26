@@ -7,6 +7,7 @@ const path = require('node:path');
 const readline = require('node:readline');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { permissionNotice } = require('./permission-notice.cjs');
 
 const config = JSON.parse(process.env.CAMELLIA_ANTIGRAVITY_CLI);
 const env = { ...process.env };
@@ -62,6 +63,11 @@ function startCli() {
   cliError = null;
   previousUsage = {};
   const lines = readline.createInterface({ input: child.stdout });
+  const diagnostics = readline.createInterface({ input: child.stderr });
+  diagnostics.on('line', line => {
+    const notice = permissionNotice(line);
+    if (notice && pending && !canceled) update(notice);
+  });
   lines.on('line', line => {
     try { receive(JSON.parse(line)); }
     catch (error) { cliError = error; void stopCli(); }
@@ -71,6 +77,7 @@ function startCli() {
   child.stdin.on('error', error => finish(error));
   closed = new Promise(resolve => child.once('close', code => {
     lines.close();
+    diagnostics.close();
     if (cli === child) cli = null;
     finish(cliError || new Error(errorText.trim() || `Antigravity CLI exited (${code})`));
     resolve();

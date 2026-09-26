@@ -27,7 +27,7 @@ with sync_playwright() as playwright:
     page.wait_for_load_state("networkidle")
 
     # Every settings script must load: a name collision here used to break the whole panel.
-    assert page.locator(".settings-nav nav button").count() == 9
+    assert page.locator(".settings-nav nav button").count() == 10
     page.locator('.settings-nav nav [data-view="devices"]').click()
     expect(page.locator("#pageTitle")).to_have_text("CLI devices")
     expect(page.locator("#devicesPage")).to_be_visible()

@@ -24,6 +24,41 @@ function fixture(t) {
   return { proc, session };
 }
 
+for (const engine of ['kimi', 'dsh', 'antigravity']) test(`${engine} ACP approval reaches the UI and resolves once`, context => {
+  const { session, proc } = fixture(context), events = [];
+  session.spec.modeEngine = engine;
+  session.sessionId = 'native-session'; session.running = true;
+  session.replayEvents = [];
+  session.onEvent = event => events.push(event);
+  const request = { id: 71, method: 'session/request_permission', params: { sessionId: session.sessionId,
+    toolCall: { title: 'Write', rawInput: { path: 'test.txt' } },
+    options: [{ kind: 'allow_once', optionId: 'yes', name: 'Allow once' }, { kind: 'reject_once', optionId: 'no', name: 'Deny' }] } };
+  session.receive(request);
+  assert.equal(events.at(-1).type, 'gui:permission');
+  assert.deepEqual(events.at(-1).input, { path: 'test.txt' });
+  assert.equal(session.answerPermission('71', true), true);
+  assert.equal(JSON.parse(proc.stdin.read().toString()).result.outcome.optionId, 'yes');
+  assert.equal(session.answerPermission('71', true), false);
+  session.receive({ ...request, id: 72 });
+  assert.equal(session.answerPermission('72', false), true);
+  assert.equal(JSON.parse(proc.stdin.read().toString()).result.outcome.optionId, 'no');
+  session.cancelled = true;
+  const count = events.length;
+  session.receive({ ...request, id: 73 });
+  assert.equal(events.length, count);
+  assert.equal(JSON.parse(proc.stdin.read().toString()).result.outcome.outcome, 'cancelled');
+});
+
+test('Antigravity headless denial is a failed tool and does not create a pending permission', context => {
+  const { session } = fixture(context), events = [];
+  session.onEvent = event => events.push(event);
+  session.update({ sessionUpdate: 'tool_call_update', toolCallId: 'denied-1', status: 'failed', permissionBlocked: true,
+    content: [{ type: 'content', content: { type: 'text', text: 'Native action already denied' } }] });
+  assert.equal(events.at(-1).permissionBlocked, true);
+  assert.equal(events.at(-1).status, 'failed');
+  assert.equal(session.permissions.size, 0);
+});
+
 test('Kimi compaction waits for background completion, not the slash command acknowledgement', async context => {
   const { session } = fixture(context), requests = [];
   session.ready = Promise.resolve(); session.sessionId = 'kimi-native'; session.spec.modeEngine = 'kimi';

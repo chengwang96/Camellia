@@ -58,13 +58,13 @@ test('Unified Google settings preserve native CLI settings and back up before se
   const h = createHarness(); t.after(() => h.cleanup());
   await h.call('antigravity-save-settings', { connection: 'subscription' });
   const settingsFile = path.join(h.home, '.gemini/antigravity-cli/settings.json');
-  const original = { modelProvider: 'gemini', verbosity: 'high', permissions: { deny: ['command(rm *)'] } };
+  const original = { modelProvider: 'gemini', verbosity: 'high', useG1Credits: false, permissions: { deny: ['command(rm *)'] } };
   writeJson(settingsFile, original);
   assert.throws(() => requireGoogleProvider(settingsFile), /API provider/);
   const current = await h.call('engine-settings-get', { engine: 'antigravity' });
   assert.equal(JSON.parse(current.files[0].text).modelProvider, undefined);
   const result = await h.call('engine-settings-save', { engine: 'antigravity', files: current.files,
-    common: { agentMode: 'accept-edits', useG1Credits: false }, desktop: {} });
+    common: { agentMode: 'accept-edits' }, desktop: {} });
   assert.equal(result.ok, true, result.error);
   const native = JSON.parse(fs.readFileSync(settingsFile));
   assert.equal(native.modelProvider, undefined); assert.equal(native.useG1Credits, false);

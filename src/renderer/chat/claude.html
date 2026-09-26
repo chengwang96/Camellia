@@ -130,6 +130,13 @@
 </div>
 
 <!-- Permission modal (P3): answers can_use_tool control requests -->
+<dialog id="permissionBlockedDialog" class="switch-dialog" aria-labelledby="permissionBlockedTitle">
+  <h2 id="permissionBlockedTitle" data-i18n>Tool blocked by native permissions</h2>
+  <p class="switch-hint" data-i18n>Antigravity CLI has already denied this action. Its headless interface cannot wait for an approval reply from Camellia. This is a notice, not an approval request.</p>
+  <pre id="permissionBlockedDetail" class="perm-input"></pre>
+  <p class="switch-hint" data-i18n>Review a narrowly scoped allow rule in the CLI settings, or use Antigravity API mode for interactive approvals. Retry only after reviewing the permissions. Camellia has not changed them.</p>
+  <form method="dialog"><button class="btn-secondary" data-i18n>Close</button></form>
+</dialog>
 <div class="perm-mask" id="permMask">
   <div class="perm-dialog">
     <div class="perm-title" data-i18n>Claude requests the following action</div>

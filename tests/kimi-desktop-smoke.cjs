@@ -94,6 +94,7 @@ async function main() {
   app.disableHardwareAcceleration();
   const errors = [];
   app.on('browser-window-created', (_event, window) => {
+    window.show = () => {};
     window.hide();
     window.webContents.on('preload-error', (_e, _p, error) => errors.push(error.message));
     window.webContents.on('console-message', (_e, level, message) => { if (level >= 3) errors.push(message); });

@@ -1,4 +1,5 @@
 'use strict';
+const { removeTree } = require('./test-fs.cjs');
 // Exercise the pinned CLI with only loopback model responses and an isolated home.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -158,7 +159,7 @@ async function main() {
     fs.writeFileSync(path.join(appRoot, 'dist/codex-smoke.json'), JSON.stringify({ requests, events, logs }, null, 2));
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir())); assert.ok(path.basename(root).startsWith('camellia-codex-smoke-'));
     // Native SQLite handles close asynchronously after the process is stopped.
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    removeTree(root);
   }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

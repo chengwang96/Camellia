@@ -79,8 +79,11 @@ function locatePythonRuntime(dir, shared) {
   if (installed.python === 'shared') {
     // A shared interpreter can be removed or uninstalled between launches; a
     // missing file must invalidate the installation rather than report Ready.
-    if (!shared?.file || !fs.existsSync(shared.file)) return null;
-    return { file: shared.file, dir, version: config.sdk, packages, sharedPython: { ...shared, packages } };
+    const file = installed.sharedPython;
+    if (typeof file !== 'string' || !path.isAbsolute(file) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return null;
+    if (shared?.file && path.resolve(shared.file) !== path.resolve(file)) return null;
+    return { file, dir, version: config.sdk, packages,
+      sharedPython: { ...shared, file, version: installed.sharedPythonVersion || shared?.version, packages } };
   }
   const file = path.join(dir, 'python', platform.python);
   if (!fs.existsSync(file)) return null;
@@ -101,7 +104,8 @@ function pythonEnvironment(dir, env = process.env) {
   // Run against the app's relocatable package directory, not user site packages.
   const { PYTHONHOME, PYTHONPATH, VIRTUAL_ENV, PATH, Path, ...clean } = env;
   const config = JSON.parse(fs.readFileSync(path.join(dir, 'runtime.json'), 'utf8'));
-  const pythonDir = path.dirname(path.join(dir, 'python', config.platforms[process.platform + '-' + process.arch].python));
+  const runtime = locatePythonRuntime(dir);
+  const pythonDir = path.dirname(runtime?.file || path.join(dir, 'python', config.platforms[process.platform + '-' + process.arch].python));
   return { ...clean, PATH: pythonDir + path.delimiter + (PATH || Path || ''),
     PYTHONPATH: path.join(dir, 'packages'), PYTHONNOUSERSITE: '1', PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1' };
 }
@@ -147,12 +151,12 @@ async function installPythonRuntime({ source, dir, run, report, connection, pyth
   }
   report('Installing the official Antigravity SDK…');
   await run(uv, ['pip', 'install', '--python', interpreter, '--target', path.join(dir, 'packages'), '--require-hashes', '--only-binary', ':all:', '-r', path.join(dir, 'requirements.lock')], { env, cwd: dir }, downloadProgress);
-  const verifyEnv = reuse ? globalPythonEnvironment({ ...reuse, packages: path.join(dir, 'packages') }) : pythonEnvironment(dir);
+  const verifyEnv = reuse ? globalPythonEnvironment({ ...reuse, antigravitySdk: false, packages: path.join(dir, 'packages') }, connection.env) : pythonEnvironment(dir, connection.env);
   await run(interpreter, ['-c', 'from google.antigravity import Agent, LocalOpenAIAgentConfig'], { env: verifyEnv, cwd: dir });
   // The manifest records which interpreter was used, so a later launch reuses it
   // and a missing path invalidates the installation instead of silently drifting.
   writeJson(path.join(dir, 'installed.json'), { sdk: config.sdk, python: reuse ? 'shared' : config.python,
-    sharedPython: reuse ? reuse.file : undefined });
+    sharedPython: reuse ? reuse.file : undefined, sharedPythonVersion: reuse?.version });
   return locatePythonRuntime(dir, reuse);
 }
 
@@ -165,7 +169,9 @@ async function upgradePythonRuntime({ dir, run, connection, report = () => {}, s
   // An installation created with a shared interpreter keeps using it, so an
   // upgrade never switches the SDK back to a bundled CPython on its own.
   const installed = (() => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'installed.json'), 'utf8')); } catch { return null; } })();
-  const reuse = installed?.python === 'shared' && sharedPythonSupportsSdk(python) ? python : null;
+  const runtime = locatePythonRuntime(dir, python);
+  if (installed?.python === 'shared' && !runtime) throw new Error('The shared Python changed or is missing. Reinstall the Antigravity SDK.');
+  const reuse = installed?.python === 'shared' ? runtime.sharedPython : null;
   const interpreter = reuse ? reuse.file : path.join(dir, 'python', platform.python);
   const env = { ...connection.env, UV_NO_CONFIG: '1', UV_PYTHON_INSTALL_DIR: path.join(dir, 'python'), UV_CACHE_DIR: path.join(dir, 'installer', 'cache') };
   const requirements = path.join(dir, 'requirements.in'), lock = path.join(dir, 'requirements.lock');
@@ -175,11 +181,11 @@ async function upgradePythonRuntime({ dir, run, connection, report = () => {}, s
   await run(uv, ['pip', 'compile', requirements, '--python-version', '3.13', '--universal', '--generate-hashes', '--output-file', lock], { env, cwd: dir });
   report('Installing the official Antigravity SDK…');
   await run(uv, ['pip', 'install', '--python', interpreter, '--target', path.join(dir, 'packages'), '--require-hashes', '--only-binary', ':all:', '-r', lock], { env, cwd: dir });
-  const verifyEnv = reuse ? globalPythonEnvironment({ ...reuse, packages: path.join(dir, 'packages') }) : pythonEnvironment(dir);
+  const verifyEnv = reuse ? globalPythonEnvironment({ ...reuse, antigravitySdk: false, packages: path.join(dir, 'packages') }, connection.env) : pythonEnvironment(dir, connection.env);
   await run(interpreter, ['-c', 'from google.antigravity import Agent, LocalOpenAIAgentConfig'], { env: verifyEnv, cwd: dir });
   writeJson(path.join(dir, 'runtime.json'), { ...config, sdk });
   writeJson(path.join(dir, 'installed.json'), { sdk, python: reuse ? 'shared' : config.python,
-    sharedPython: reuse ? reuse.file : undefined });
+    sharedPython: reuse ? reuse.file : undefined, sharedPythonVersion: reuse?.version });
   return locatePythonRuntime(dir, reuse);
 }
 

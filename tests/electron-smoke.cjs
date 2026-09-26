@@ -273,9 +273,9 @@ async function main() {
     const generalSettings = await waitWindow("document.querySelector('#generalPage') && !document.querySelector('#generalPage').hidden");
     assert.equal(await generalSettings.webContents.executeJavaScript("document.querySelector('[data-view=general]').getAttribute('aria-current')"), 'page');
     await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').click()");
-    const engineSettings = await waitWindow("document.querySelector('#engineContext')");
+    const engineSettings = await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden && document.querySelector('#kimiConnection').value === 'api'");
     assert.equal(engineSettings, generalSettings);
-    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('[data-engine=kimi]').getAttribute('aria-selected')"), 'true');
+    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('[data-view=subscriptions]').getAttribute('aria-current')"), 'page');
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('#settingsPanel') === null"), true);
     const globalState = await engineSettings.webContents.executeJavaScript("window.dshDesktop.engineSettingsGet({engine:'kimi'})");
     assert.equal(globalState.ok, true);
@@ -334,7 +334,7 @@ async function main() {
     assert.equal(fs.existsSync(secondKimiHome), false);
     assert.equal(await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState().then(state => state.accounts.length)'), 1);
 
-    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiModelDetails').open=true; document.querySelector('#kimiConnectionPanel').scrollIntoView({block:'start'})");
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiModelDetails').open=true; document.querySelector('#kimiAccountPanel').scrollIntoView({block:'start'})");
     assert.equal(await engineSettings.webContents.executeJavaScript('document.documentElement.scrollWidth <= innerWidth'), true);
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiSignOut').click()");
     await waitWindow("document.querySelector('#kimiSignOut')?.hidden && !document.querySelector('#kimiSignIn').disabled");
@@ -346,7 +346,7 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript('currentConnection'), 'api');
     console.log('PASS Kimi subscription: real IPC, save, device code, cancel, account models, logout and API return; mocked OAuth only');
 
-    await engineSettings.webContents.executeJavaScript("document.querySelector('[data-engine=dsh]').click()");
+    await engineSettings.webContents.executeJavaScript("document.querySelector('[data-view=engines]').click(); document.querySelector('[data-engine=dsh]').click()");
     await waitWindow("document.querySelector('#dshNative') && !document.querySelector('#dshNative').hidden");
     let dshSettingsReady = false;
     for (let i = 0; i < 150; i++) {
@@ -381,6 +381,8 @@ async function main() {
     assert.match(await home.webContents.executeJavaScript("document.querySelector('#sessionList').textContent"), /Antigravity project/);
     assert.equal(await home.webContents.executeJavaScript('typeof chatApi.onEvent(() => {})'), 'function');
     await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').click()");
+    await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden");
+    await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'engines',engine:'antigravity'})");
     await waitWindow("document.querySelector('[data-field=instructions]')");
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('[data-engine=antigravity]').getAttribute('aria-selected')"), 'true');
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#engineScopeTitle').textContent"), 'Antigravity in Camellia');
@@ -399,7 +401,9 @@ async function main() {
     assert.equal(codexWs.ok, true); await home.webContents.executeJavaScript('sidebar.load()');
     assert.match(await home.webContents.executeJavaScript("document.querySelector('#sessionList').textContent"), /Codex project/);
     await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').click()");
-    await waitWindow("document.querySelector('#codexConnectionPanel') && !document.querySelector('#codexConnectionPanel').hidden");
+    await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden");
+    await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'engines',engine:'codex'})");
+    await waitWindow("document.querySelector('#engineScopeTitle')?.textContent === 'Codex in Camellia'");
     const codexSettings = await engineSettings.webContents.executeJavaScript("window.dshDesktop.engineSettingsGet({engine:'codex'})");
     assert.equal(codexSettings.scope, 'app'); assert.ok(codexSettings.files.every(file => file.path.startsWith(userData)));
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#engineScopeTitle').textContent"), 'Codex in Camellia');

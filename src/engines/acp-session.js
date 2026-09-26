@@ -246,6 +246,7 @@ class AcpSession extends StreamingSession {
       if (update.rawInput != null) tool.input = update.rawInput;
       if (update.content != null) tool.output = toolContent(update.content);
       if (update.status != null) tool.status = update.status;
+      if (update.permissionBlocked === true) tool.permissionBlocked = true;
       tool.is_error = tool.status === 'failed' || (tool.status === 'completed' && failedToolResult(tool.name, tool.output || ''));
       if (tool.is_error) tool.status = 'failed';
       this.tools.set(tool.id, tool);

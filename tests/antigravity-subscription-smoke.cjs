@@ -104,6 +104,9 @@ async function run() {
     const denied = await send('GOOGLE SMOKE deny');
     assert.equal(denied.subtype, 'success', JSON.stringify(denied) + errors.join('\n'));
     assert.equal(fs.existsSync(path.join(cwd, 'denied.txt')), false, 'Headless mode must not silently approve an explicit CLI review rule');
+    assert.ok(events.some(event => event.type === 'gui:tool' && event.permissionBlocked && event.status === 'failed'
+      && /headless mode cannot prompt for/.test(event.output)), 'The native denial must reach the UI, not only the log');
+    assert.equal(events.filter(event => event.type === 'gui:permission').length, 0, 'A completed denial cannot pretend to be a pending approval');
     const requestStarted = new Promise(resolve => { waiting = resolve; });
     const stopped = send('GOOGLE SMOKE wait');
     await Promise.race([requestStarted, stopped.then(() => { throw new Error('The waiting request ended too early'); })]);

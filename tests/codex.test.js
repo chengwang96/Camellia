@@ -40,6 +40,21 @@ function transport() {
   return { proc, send, messages, requests };
 }
 
+for (const [permissionMode, approvalPolicy, sandbox] of [
+  ['ask', 'untrusted', 'workspace-write'], ['auto', 'on-request', 'workspace-write'],
+  ['full', 'never', 'danger-full-access'], ['default', 'never', 'read-only'],
+]) test(`Codex ${permissionMode} mode does not silently inherit a conflicting native approval policy`, async context => {
+  const root = temporary(context), wire = transport();
+  const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'fixture', connection: 'api', permissionMode },
+    opts: {}, spec: { permissions: { approvalPolicy: 'never', sandbox: 'read-only' } }, spawn: () => wire.proc,
+    log() {}, history: new ClaudeHistory(path.join(root, 'history')), onEvent() {}, onSessionId() {}, onResult() {} });
+  context.after(() => session.shutdown());
+  session.start(); session.sendUserMessage('Test'); await session.ready;
+  const thread = wire.messages.find(message => message.method === 'thread/start');
+  assert.equal(thread.params.approvalPolicy, approvalPolicy);
+  assert.equal(thread.params.sandbox, sandbox);
+});
+
 async function outputFixture(context) {
   const root = temporary(context), wire = transport(), events = [];
   const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'fixture', connection: 'api' }, opts: {}, spec: {},

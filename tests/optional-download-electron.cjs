@@ -28,6 +28,9 @@ async function main() {
     });
     childProcess.spawn = (exe, args, options) => { downloads.push({ exe, args, env: options.env }); throw new Error('Offline download fixture'); };
     const entry = path.join(resources, 'app.asar/src/main/main.js');
+    const runtimeModule = require(path.join(resources, 'app.asar/src/main/runtime-manager.js'));
+    const createRuntimeManager = runtimeModule.createRuntimeManager;
+    runtimeModule.createRuntimeManager = options => createRuntimeManager({ ...options, discoverLocal: false });
     require('node:vm').runInNewContext(fs.readFileSync(entry, 'utf8'), {
       require: require('node:module').createRequire(entry), module: { exports: {} },
       __dirname: path.dirname(entry), __filename: entry, process: runtimeProcess,

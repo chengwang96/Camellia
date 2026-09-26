@@ -83,7 +83,8 @@ function accountExhausted(engine, state) {
 
 function accountSignedIn(engine, state) {
   if (!state) return false;
-  if (engine === 'antigravity') return Boolean(state.models?.length || state.verifiedAt);
+  if (engine === 'antigravity') return !state.error && !state.awaitingVerification
+    && (!state.verification || state.verification === 'verified') && Boolean(state.models?.length && state.verifiedAt);
   return Boolean(state.account);
 }
 

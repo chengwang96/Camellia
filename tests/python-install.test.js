@@ -7,6 +7,8 @@ const path = require('node:path');
 const { removeTree } = require('./test-fs.cjs');
 const os = require('node:os');
 const { createRuntimeManager } = require('../src/main/runtime-manager');
+const { locatePythonRuntime, pythonEnvironment } = require('../src/main/python-runtime');
+const { antigravitySpawnSpec } = require('../src/engines/antigravity');
 
 // A source tree plus a fake uv so installPythonRuntime can run without network.
 function fixture(context, { sharedPython } = {}) {
@@ -66,6 +68,46 @@ test('installing Antigravity reuses the configured Python instead of downloading
   assert.equal(setup.manager.locate('antigravity', 'api').sharedPython.file, shared.file);
 });
 
+test('shared SDK installation is discoverable in a fresh caller without a Python override', async context => {
+  const shared = sharedPythonFile(context);
+  const setup = fixture(context, { sharedPython: { ...shared, antigravitySdk: true } });
+  await setup.manager.ensure('antigravity');
+  const dir = path.join(setup.root, 'runtimes/antigravity');
+  const runtime = locatePythonRuntime(dir);
+  assert.equal(runtime.file, shared.file);
+  assert.equal(runtime.sharedPython.version, shared.version);
+  const environment = pythonEnvironment(dir, { Path: 'system', PYTHONPATH: 'unrelated', PYTHONHOME: 'unrelated' });
+  assert.equal(environment.PATH, path.dirname(shared.file) + path.delimiter + 'system');
+  assert.equal(environment.PYTHONPATH, path.join(dir, 'packages'));
+  assert.equal(environment.PYTHONHOME, undefined);
+  const spec = antigravitySpawnSpec({ runtime, home: setup.root, route: { baseUrl: 'http://localhost' },
+    python: { ...shared, antigravitySdk: true }, env: { PATH: 'system' } });
+  assert.equal(spec.env.PYTHONPATH, path.join(dir, 'packages'));
+  const verification = setup.commands.find(command => command.exe === shared.file);
+  assert.equal(verification.options.env.PYTHONPATH, path.join(dir, 'packages'));
+  const marker = path.join(dir, 'installed.json');
+  const installed = JSON.parse(fs.readFileSync(marker));
+  delete installed.sharedPythonVersion;
+  fs.writeFileSync(marker, JSON.stringify(installed));
+  assert.equal(locatePythonRuntime(dir).file, shared.file, 'old shared manifests remain usable');
+});
+
+test('changing the shared interpreter does not reuse incompatible installed packages', async context => {
+  const shared = sharedPythonFile(context), replacement = sharedPythonFile(context, '3.12.1');
+  const setup = fixture(context, { sharedPython: shared });
+  await setup.manager.ensure('antigravity');
+  const dir = path.join(setup.root, 'runtimes/antigravity');
+  assert.equal(locatePythonRuntime(dir, replacement), null);
+  const { upgradePythonRuntime } = require('../src/main/python-runtime');
+  await assert.rejects(upgradePythonRuntime({ dir, sdk: '0.2.0', python: replacement,
+    connection: { env: {} }, run: async () => assert.fail('Mismatched Python must not install packages') }), /shared Python changed or is missing/);
+  fs.unlinkSync(shared.file);
+  assert.equal(locatePythonRuntime(dir), null);
+  assert.equal(locatePythonRuntime(dir, replacement), null);
+  await assert.rejects(upgradePythonRuntime({ dir, sdk: '0.2.0', connection: { env: {} },
+    run: async () => assert.fail('Missing Python must not install packages') }), /shared Python changed or is missing/);
+});
+
 test('a shared Python too old for the SDK falls back to the bundled interpreter', async context => {
   const shared = sharedPythonFile(context, '3.9.18');
   const setup = fixture(context, { sharedPython: { ...shared, antigravitySdk: false } });
@@ -105,7 +147,7 @@ test('the Antigravity SDK upgrade keeps using the recorded shared interpreter', 
   const dir = path.join(setup.root, 'runtimes/antigravity');
   await upgradePythonRuntime({ dir, run: async (exe, args, options) => { setup.commands.push({ exe, args, options });
       if (args[0] === 'pip') { fs.mkdirSync(path.join(dir, 'packages/google/antigravity'), { recursive: true }); fs.writeFileSync(path.join(dir, 'packages/google/antigravity/__init__.py'), ''); } },
-    connection: { env: {} }, sdk: '0.2.0', python: { ...shared, antigravitySdk: false } });
+    connection: { env: {} }, sdk: '0.2.0' });
   // uv first resolves the lockfile, then installs; only the install targets an interpreter.
   const pip = setup.commands.find(command => command.args[0] === 'pip' && command.args[1] === 'install');
   assert.ok(pip, 'the SDK is installed with uv pip install');

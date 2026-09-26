@@ -18,9 +18,9 @@ Open **Settings → General → Language**, choose **English** or **简体中文
 
 ## Providers and API keys
 
-Open **Settings → Providers & Keys**.
+Open **Settings → API Keys**.
 
-The **Account sign-in** section opens the native account settings for Kimi Code, Antigravity (Google), or Codex CLI (ChatGPT). A shortcut selects account mode in the settings draft and brings the save/sign-in button into view. Save if shown, then click **Sign in** to begin official authorization. Opening a shortcut does not save settings, discard pending API edits, download a runtime, or begin authorization. Kimi and Gemini presets in **Add API provider** also offer account-setting shortcuts.
+**Settings → Subscription accounts** owns all subscription controls: ChatGPT (Codex), Kimi (Kimi Code), and Google (Antigravity) sign-ins, preferred accounts, login region/proxy, the default API/subscription connection for new conversations, and Google's optional AI-credit billing. These preferences use **Save subscription settings**; login and account actions remain explicit. **Settings → API Keys** manages API providers, keys, models, and routes. **Engine Settings** contains execution defaults such as reasoning effort, permissions, instructions, and MCP, with no subscription-management or connection selector. Switching pages preserves drafts; saving engine defaults does not revert the subscription connection. Switching Antigravity between API and subscription changes the native configuration being edited, so an old unsaved engine draft must be reloaded before saving. Signing in alone never changes the default connection. Kimi and Gemini presets in **Add API provider** also offer shortcuts to the subscription page.
 
 1. Choose a preset or enter a custom API endpoint.
 2. Add keys individually or paste a batch. Give keys recognizable labels.
@@ -61,7 +61,7 @@ For Gemini tools, the router retains Google's opaque thought signatures alongsid
 
 ### Several accounts of one provider
 
-Kimi and ChatGPT support **several signed-in accounts at the same time**. In **Settings → Engine Settings → Kimi Code** or **Codex CLI**, each account appears as a row in the engine's account list. **Add another account** fills in a new row and selects it, then **Sign in** connects that account; the other accounts keep their own credentials, models and quota. The radio button on a row makes that account the one new conversations start on, the label field names it (useful for several Kimi accounts), and **×** removes an added account together with its directory. The first account is only signed out, never deleted.
+Kimi and ChatGPT support **several signed-in accounts at the same time**. In **Settings → Subscription accounts**, each account appears in its provider's card. **Add another account** creates and selects an account slot; **Sign in** authorizes that slot. The other accounts keep their credentials, models, and quota. The account selector means **preferred for new conversations**, not the account used by every existing conversation. Labels identify accounts, and **×** removes an added account together with its directory. The first account is only signed out, never deleted.
 
 Quota steers the choice the same way it does for API keys. A Kimi window or Codex rate-limit window that is fully used marks that account as exhausted, and a **new conversation** then starts on another signed-in account that still has quota. A conversation that already ran on an account keeps it, because its native thread lives in that account's home; its quota error stays visible instead of switching mid-thread. The **Balances & Quotas** page lists one card per signed-in Kimi account.
 
@@ -70,9 +70,9 @@ The Google connection through Antigravity is the exception: the official CLI sto
 ### ChatGPT subscription and API routes (Codex)
 
 1. Download **Codex CLI** from Home or **Settings → Runtime**.
-2. Open **Settings → Engine Settings → Codex CLI** and choose **API key / third-party API** or **ChatGPT account**. API mode is the initial default when API models are configured; an explicitly saved connection is retained.
+2. Open **Settings → Subscription accounts → ChatGPT account · Codex** and choose **API key / third-party API** or **ChatGPT account**, then **Save subscription settings**. API mode is the initial default when API models are configured; an explicitly saved connection is retained.
 3. For API mode, use **Configure API providers & keys** to add a supported endpoint, key and model, then save the connection. ChatGPT sign-in is unnecessary. Camellia adapts its supported API routes to Codex's Responses interface.
-4. For account mode, click **Sign in with ChatGPT** and complete the official browser login. Account models and quota load after login; **Refresh account** checks them again. **Cancel sign-in** cancels a pending login, and **Sign out** removes this application's login. **Add another account** starts a second sign-in for the same provider without touching the first one.
+4. In **Subscription accounts → ChatGPT account · Codex**, click **Sign in with ChatGPT** and complete the official browser login. Account models and quota load after login; **Refresh account** checks them again. **Cancel sign-in** cancels a pending login, and **Sign out** removes this application's login. **Add another account** creates another slot; sign in to authorize it. Account management is available even while API remains the default connection.
 5. Start a new Codex session and select a model. API and account models are remembered separately. Joining a shared conversation in API mode uses that conversation's saved API model.
 
 Existing sessions keep their connection. Subscription requests go through the official CLI and use the account's eligible Codex access. They do not enter the shared Key pool or fall back to API billing. The settings page shows account quota windows and reset times when the official account API returns them; these are separate from provider balance charts. Subscription requests are not included in shared provider/key usage statistics.
@@ -83,20 +83,23 @@ Camellia uses the official [app-server interface](https://developers.openai.com/
 
 Common settings include command approval policy, sandbox, reasoning effort, and subscription web search. The advanced TOML editor supports native options such as `[mcp_servers]`, and the instructions editor manages Camellia's Codex `AGENTS.md`. In the composer, **Default permissions** follows the saved approval/sandbox combination; **Auto-accept edits**, **Plan only**, and **Allow all** select explicit presets. New conversations use the saved defaults; existing shared conversations retain their selected permission and reasoning settings for each engine.
 
+The shared composer levels **Ask before acting**, **Routine auto, risk asks**, and **Never ask** select explicit native approval policies. In particular, **Ask before acting** cannot be overridden by a saved `approval_policy = "never"`; only the legacy **Default permissions** mode inherits that configuration. A native hard deny or sandbox restriction is distinct from an approval request and may remain blocked without offering an Allow button.
+
 Shared API mode converts Codex's Responses requests to the router's Chat Completions or Messages endpoints, preserving text, images, streamed reasoning, and function/custom tool calls. OpenAI-hosted web search is disabled for this connection; configure a search MCP server for providers that do not expose that service. Stateful `previous_response_id` and other hosted Responses tools are not supported by the bridge. Tool and image support also depend on the selected model.
 
 ### Google subscription (Antigravity)
 
-1. Open **Settings → Engine Settings → Antigravity**, select **Google subscription**, and save.
-2. If needed, set **Google connection proxy** to your HTTP/HTTPS proxy and save. An empty value inherits the CLI's environment proxy. Engine downloads retain their separate connection prompt.
-3. Click **Sign in with Google**. Camellia downloads the pinned official CLI if missing and opens its interactive sign-in in a terminal. The CLI owns browser authentication and credential storage.
-4. Return to Camellia and click **Refresh account**, then choose an account model in the composer. To change accounts, open the sign-in terminal and use `/logout` first.
+1. Open **Settings → Subscription accounts → Google account · Antigravity**. You can sign in while the engine's default connection remains API.
+2. If needed, set **Google connection proxy** and click **Save subscription settings**. An empty value inherits the CLI's environment/system proxy. Engine downloads retain their separate connection prompt.
+3. Click **Open official CLI sign-in**. Camellia downloads the official CLI if missing and opens a terminal; the CLI owns browser authentication and credential storage.
+4. Return and click **Verify after sign-in**. Verification checks model access, not account identity or quota. States distinguish unverified, waiting for external sign-in, verified model access, expired verification (24 hours), and failure; failed validation clears the old success marker. To change accounts, use `/logout` in the official terminal.
+5. To use the subscription for new conversations, select **Google subscription** on the same account card and click **Save subscription settings**, then choose an account model in the composer. Optional **Use AI credits after the plan quota is exhausted** is configured on this card, not in Engine Settings.
 
 The official Antigravity CLI keeps one Google credential for the current operating-system user, so Camellia lists exactly one Google account and does not offer **Add another account** for it. Kimi and ChatGPT keep several accounts at once.
 
 This uses the account's eligible Antigravity models and quota, including supported Google AI plans. Eligibility is determined by Google; see [Antigravity plans](https://antigravity.google/docs/plans/). OAuth credentials are never added to the shared Key pool. Authentication, quota, or model errors do not trigger fallback to API billing or another model.
 
-Google sessions stream inside Camellia and support native continuation and cancellation. The official [headless interface](https://antigravity.google/docs/cli/headless/) does not support interactive approvals: actions requiring review are declined. **CLI defaults** follows native permissions, **Accept edits** selects the CLI's edit mode, **Planning** uses its planning mode, and **Allow all** explicitly enables the CLI's permission bypass. Planning is not a filesystem sandbox. Session forks and image input are unavailable in this connection.
+Google sessions stream inside Camellia and support native continuation and cancellation. The official [headless interface](https://antigravity.google/docs/cli/headless/) does not support interactive approvals: actions requiring review are declined. Camellia surfaces the CLI's headless denial notice as a failed tool card and a notification dialog, not an actionable approval request: the CLI has already refused the operation. Camellia does not change rules, automatically retry, or enable permission bypass. Review narrowly scoped CLI allow rules before retrying, or choose Antigravity API mode for interactive approvals. **CLI defaults** follows native permissions, **Accept edits** selects the CLI's edit mode, **Planning** uses its planning mode, and **Allow all** explicitly enables the CLI's permission bypass. Planning is not a filesystem sandbox. Session forks and image input are unavailable in this connection.
 
 Unified settings edit `~/.gemini/antigravity-cli/settings.json` and MCP/skills/plugin files under `~/.gemini/config`. They also affect external Antigravity CLI sessions. Connecting Google resets the CLI's API-provider override after retaining a backup; other native preferences are preserved. Camellia does not automatically enable extra AI credits. The **Use AI credits after the plan quota is exhausted** checkbox is an explicit choice.
 
@@ -106,10 +109,10 @@ Per-turn token counts appear in conversation results. These requests bypass the 
 
 Kimi Code supports both **Kimi subscription** account sign-in and **Shared API routes**.
 
-1. Open **Settings → Engine Settings → Kimi Code** and choose **Kimi subscription**.
-2. Select the site where you registered: **China · kimi.com** or **Global · kimi.ai**, then save.
+1. Open **Settings → Subscription accounts → Kimi account · Kimi Code**. Login does not change the default connection.
+2. Select **China · kimi.com** or **Global · kimi.ai**, then **Save subscription settings** if changed.
 3. Click **Sign in with Kimi**. The official CLI opens its device authorization page in your browser. If needed, use **Open sign-in page** and the displayed authorization code. **Cancel sign-in** stops a pending attempt.
-4. Finish authorization. Camellia verifies the account and loads its models automatically. Select an account model in the composer and start a new conversation. Use **Refresh account** to check access again, **Add another account** to sign in a second Kimi account, or **Sign out** to remove this app's native login.
+4. Finish authorization. Camellia verifies the account and loads its models automatically. To use it by default, select **Kimi subscription** on the same card and click **Save subscription settings**. Use **Refresh account** to check access, **Add another account** then **Sign in** for another account, or **Sign out** to remove this app's native login.
 
 No API key is needed for account sign-in. The official Kimi CLI manages tokens and token refresh under `<app-data>/kimi-subscription` for the first account and `<app-data>/subscription-accounts/kimi/<account>` for additional ones; Camellia stores public model metadata and quota observations separately. It does not import credentials from your personal `~/.kimi-code`. Existing native sessions keep their original connection, and API and subscription models are remembered separately, including when switching harnesses in a shared conversation. Account changes require idle Kimi work. Authentication, model, or quota failures do not fall back to API billing.
 
@@ -241,7 +244,8 @@ Omit `--write` to preview the results. The original library revision, data hashe
 
 | Page | Purpose |
 | --- | --- |
-| Providers & Keys | Endpoints, credentials, model catalogs, validation, and route order |
+| Subscription accounts | Sign-ins, preferred accounts, default API/subscription connection, login preferences, and optional Google AI-credit billing |
+| API Keys | API endpoints, keys, model catalogs, validation, and route order |
 | Usage | Request and token filters, trends, detailed records, and CSV export |
 | Balances & Quotas | Account balances, subscription windows, reset times, and observed trends |
 | Engine Settings | DSH's native panel, and common or advanced Claude/Codex/Kimi/Antigravity configuration |

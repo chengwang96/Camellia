@@ -62,6 +62,10 @@ p { margin: 5px 0; }
 .account-connections { border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; padding: 18px; margin-bottom: 24px; }
 .account-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .account-shortcuts button { white-space: normal; text-align: left; }
+.subscription-account { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--dsw-alias-border-l2); scroll-margin-top: 20px; }
+.subscription-account h3 { font-size: 15px; margin: 0 0 8px; }
+.subscription-account .account-actions { flex-wrap: wrap; }
+.subscription-account .hint { line-height: 1.7; }
 .usage-api-title { margin-bottom: 14px; }
 .provider .provider-mark, .balance-card .provider-mark { width: 28px; height: 28px; border-radius: 8px; }
 .balance-card .provider-mark img { width: 23px; height: 23px; }

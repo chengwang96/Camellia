@@ -40,7 +40,7 @@ class CodexSession extends StreamingSession {
       ...(this.opts.goalBridge ? { config: { 'mcp_servers.camellia_goals': this.opts.goalBridge.config } } : {}),
       modelProvider: this.settings.connection === 'api' ? 'camellia' : 'openai',
       ...PERMISSIONS[permissionModeOf(this.settings)],
-      ...(permissionModeOf(this.settings) === 'default' ? this.spec.permissions : {}) };
+      ...((this.settings.permissionMode || 'default') === 'default' ? this.spec.permissions : {}) };
     const result = await this.client.request(sourceId ? this.opts.fork ? 'thread/fork' : 'thread/resume' : 'thread/start',
       { ...params, ...(sourceId ? { threadId: sourceId, ...(this.opts.lastTurnId ? { lastTurnId: this.opts.lastTurnId } : {}) } : { allowProviderModelFallback: false }) });
     if (this.opts.lastTurnId && result.thread.turns?.at(-1)?.id !== this.opts.lastTurnId)

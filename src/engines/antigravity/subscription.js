@@ -85,21 +85,28 @@ function loginScript(file, { platform, exe, proxyUrl = '' }) {
   fs.writeFileSync(file, (platform === 'win32' ? '\uFEFF' : '') + lines.join('\n') + '\n', { mode: 0o700 });
 }
 
-function createGoogleAccount({ home, cliSettingsFile, runtime, environment, settings, openLogin }) {
+function createGoogleAccount({ home, cliSettingsFile, runtime, environment, settings, openLogin, run = runCli, now = Date.now }) {
   const cacheFile = path.join(home, 'google-account.json');
-  const state = () => ({ models: [], verifiedAt: null, error: '', ...readJson(cacheFile, {}), installed: Boolean(runtime().locate('antigravity', 'subscription')) });
+  const state = () => {
+    const cached = { models: [], verifiedAt: null, error: '', ...readJson(cacheFile, {}) };
+    const checkedAt = new Date(cached.verifiedAt).getTime();
+    const verification = cached.error ? 'error' : cached.awaitingVerification ? 'pending'
+      : !cached.models.length || !cached.verifiedAt || !Number.isFinite(checkedAt) ? 'unverified'
+      : now() - checkedAt >= 24 * 60 * 60 * 1000 ? 'stale' : 'verified';
+    return { ...cached, verification, installed: Boolean(runtime().locate('antigravity', 'subscription')) };
+  };
   async function refresh() {
-    const found = runtime().locate('antigravity', 'subscription');
-    if (!found) throw new Error('Download the Antigravity Google subscription runtime first.');
-    requireGoogleProvider(cliSettingsFile);
     fs.mkdirSync(home, { recursive: true });
     try {
-      const output = await runCli(found.file, ['models'], { env: subscriptionEnvironment(environment(), settings().proxyUrl), cwd: home });
+      const found = runtime().locate('antigravity', 'subscription');
+      if (!found) throw new Error('Download the Antigravity Google subscription runtime first.');
+      requireGoogleProvider(cliSettingsFile);
+      const output = await run(found.file, ['models'], { env: subscriptionEnvironment(environment(), settings().proxyUrl), cwd: home });
       const models = parseModels(output);
       if (!models.length) throw new Error('The Google account returned no available models.');
-      writeJson(cacheFile, { models, verifiedAt: Date.now(), error: '' });
+      writeJson(cacheFile, { models, verifiedAt: now(), error: '', awaitingVerification: false });
     } catch (error) {
-      writeJson(cacheFile, { ...state(), models: [], error: error.message });
+      writeJson(cacheFile, { models: [], verifiedAt: null, error: error.message, awaitingVerification: false });
       throw error;
     }
     return state();
@@ -118,6 +125,7 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
     const file = path.join(home, process.platform === 'win32' ? 'google-sign-in.ps1' : 'google-sign-in.command');
     loginScript(file, { platform: process.platform, exe: found.file, proxyUrl: settings().proxyUrl });
     await openLogin(file, subscriptionEnvironment(environment(), settings().proxyUrl));
+    writeJson(cacheFile, { models: [], verifiedAt: null, error: '', awaitingVerification: true });
     return { opened: true };
   }
   return { state, refresh, signIn };
