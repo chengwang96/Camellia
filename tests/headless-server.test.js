@@ -147,7 +147,9 @@ test('headless host starts offline and retains workspaces and independent conver
   assert.equal(fs.existsSync(folder), true);
   assert.ok((await reopened.command('conversations')).result.every(item => item.workspaceId === null));
   const saved = JSON.parse(fs.readFileSync(path.join(dataDir, 'conversations', chat.result.id + '.json'), 'utf8'));
-  assert.equal(saved.cwd, folder);
+  // Workspaces are stored by canonical path, and on macOS the temp directory is
+  // reached through /var, which resolves to /private/var.
+  assert.equal(saved.cwd, fs.realpathSync(folder));
 });
 
 test('headless network pairing requires local approval and revoked clients lose access', async context => {

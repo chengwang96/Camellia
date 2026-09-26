@@ -63,8 +63,9 @@ test('the CLI devices page is ordinary DOM with prefixed ids and scoped styles',
   assert.doesNotMatch(script, /document\.querySelectorAll\('\[data-copy\]'\)/);
   // Classic scripts share one global scope in the settings document, so this file
   // must not declare anything at top level besides its IIFE.
-  assert.match(script, /^'use strict';\n\n\/\/[\s\S]*?\(function \(\) \{\n/);
-  assert.match(script, /\n\}\)\(\);\n$/);
+  // Checkouts may use either line ending, so match both without assuming one.
+  assert.match(script, /^'use strict';\r?\n\r?\n\/\/[\s\S]*?\(function \(\) \{\r?\n/);
+  assert.match(script, /\r?\n\}\)\(\);\r?\n$/);
   assert.equal([...script.matchAll(/^\(function \(\) \{/gm)].length, 1);
 });
 
