@@ -64,8 +64,8 @@ for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity']) {
   const files = fs.readdirSync(path.join(resources, 'runtimes', engine));
   assert.ok(files.every(file => ['package.json', 'package-lock.json', 'runtime.json', 'requirements.lock', 'README.md'].includes(file)), 'Only download manifests belong in the base package: ' + engine);
 }
-assert.ok(createRuntimeManager({ root: resources, installRoot: resources }).state().every(row => row.status === 'missing'), 'No harness runtime is bundled');
-assert.equal(createRuntimeManager({ root: resources, installRoot: resources }).locate('antigravity', 'subscription'), null, 'The Google CLI is an optional download too');
+assert.ok(createRuntimeManager({ root: resources, installRoot: resources, discoverLocal: false }).state().every(row => row.status === 'missing'), 'No harness runtime is bundled');
+assert.equal(createRuntimeManager({ root: resources, installRoot: resources, discoverLocal: false }).locate('antigravity', 'subscription'), null, 'The Google CLI is an optional download too');
 
 if (isMac) {
   const header = fs.readFileSync(path.join(resources, runtimeNode));

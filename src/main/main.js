@@ -183,7 +183,10 @@ function runtimes() {
       downloadOptions: chooseDownloadConnection,
       runtimeMode: engine => engine === 'antigravity' ? antigravity.settings().connection : 'api',
       onChange: state => {
-        for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('dsh:runtime-state', state);
+        for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) {
+          window.webContents.send('dsh:runtime-state', state);
+          window.webContents.send('dsh:runtime-python-state', runtimeManager.pythonState());
+        }
       } });
   }
   return runtimeManager;
@@ -232,6 +235,10 @@ function runtimeEnvironment(node, engine) {
   const root = app.isPackaged ? process.resourcesPath : APP_ROOT;
   const runtime = runtimes().locate(engine);
   const paths = [node && path.dirname(node), path.join(root, 'runtime/npm/bin'), runtime && path.join(runtime.dir, 'node_modules/.bin')].filter(Boolean);
+  // One user-selected Python serves every harness, so its directory leads PATH
+  // for engines that call python or pip from a shell tool.
+  const python = runtimes().pythonState?.();
+  if (python?.file) paths.unshift(path.dirname(python.file));
   return { ...process.env, PATH: paths.concat(process.env.PATH || '').join(path.delimiter) };
 }
 
@@ -807,6 +814,7 @@ const antigravity = createAntigravity({ dataDir: app.getPath('userData'), loadCo
   }),
   getRoute: resolveClaudeRoute, getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
   runtimes, log, environment: () => runtimeEnvironment(detectNode(), 'antigravity'),
+  python: () => runtimes().pythonSelection(),
   isBusy: () => sharedConversations?.isBusy('antigravity'),
   onEvent: event => publishChatEvent('antigravity', event),
   onGoal: goal => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:antigravity-goal', goal); },
@@ -1268,6 +1276,17 @@ if (!gotSingleInstanceLock) {
       if (engine === 'codex') await codex.shutdown();
       if (engine === 'dsh') await dshChat.shutdown();
       return { ok: true, engines };
+    },
+    'runtime-python-state': () => ({ ok: true, python: runtimes().pythonState() }),
+    'runtime-set-python': async ({ file }) => {
+      // Python is shared by every harness, so a running session anywhere may be
+      // using it; stop the engines that depend on it before switching.
+      if (['claude', 'codex', 'dsh', 'kimi', 'antigravity'].some(engineBusy)) {
+        throw new Error('Stop running responses before changing the shared Python path');
+      }
+      const engines = await runtimes().setPython(file);
+      await antigravity.shutdown();
+      return { ok: true, engines, python: runtimes().pythonState() };
     },
     'runtime-ensure': async ({ engine }) => ({ ok: true, runtime: await runtimes().ensure(engine) }),
     'runtime-check-updates': async () => ({ ok: true, engines: await runtimeUpdates().check() }),

@@ -23,7 +23,7 @@ async function main() {
     path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0'), process.env.SystemRoot].join(path.delimiter);
   try {
     const progress = new Map();
-    const manager = createRuntimeManager({ root, installRoot, node, npm, onChange: rows => {
+    const manager = createRuntimeManager({ root, installRoot, node, npm, discoverLocal: false, onChange: rows => {
       for (const row of rows) if (row.status === 'installing' && progress.get(row.id) !== row.message) {
         progress.set(row.id, row.message); console.log(row.name + ': ' + row.message);
       }
