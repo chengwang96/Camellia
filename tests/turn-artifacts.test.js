@@ -118,7 +118,9 @@ test('a turn that worked outside the workspace still yields its deliverables', t
   assert.deepEqual(toolRoots({ cwd: project, command: 'x' }), [project]);
   assert.deepEqual(toolRoots('raw command text'), []);
 
-  const text = '- `outputs\\UDP与TCP试讲.pptx` 可编辑\n- `outputs\\UDP与TCP试讲.pdf` 放映用';
+  // Reply text uses the platform's own separator, as a native command would.
+  const reference = name => path.join('outputs', name);
+  const text = `- \`${reference('UDP与TCP试讲.pptx')}\` 可编辑\n- \`${reference('UDP与TCP试讲.pdf')}\` 放映用`;
   assert.deepEqual(resolveArtifacts({ cwd, text }), []);
   const result = resolveArtifacts({ cwd, roots: [...state.roots], text });
   assert.deepEqual(result.map(file => file.name), ['UDP与TCP试讲.pptx', 'UDP与TCP试讲.pdf']);

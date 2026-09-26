@@ -1035,6 +1035,11 @@ function openSettingsWindow(target = {}) {
     height: 860,
     minWidth: 760,
     minHeight: 620,
+    // Create hidden and centered: showing the window before the renderer has
+    // painted makes it appear at the OS default position for a moment and then
+    // jump to its final place.
+    show: false,
+    center: true,
     icon: path.join(APP_ROOT, 'assets/icon-256.png'),
     title: `Settings — ${APP_NAME}`,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#151517' : '#ffffff',
@@ -1047,6 +1052,11 @@ function openSettingsWindow(target = {}) {
     },
   });
   desktopZoom().attach(settingsWindow.webContents);
+  settingsWindow.once('ready-to-show', () => {
+    if (!settingsWindow || settingsWindow.isDestroyed()) return;
+    settingsWindow.center();
+    settingsWindow.show();
+  });
   settingsWindow.on('closed', () => {
     nativeSettingsView?.webContents.close(); nativeSettingsView = null; nativeSettingsLoad = null;
     cliDevices.detach();

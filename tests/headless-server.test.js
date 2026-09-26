@@ -104,6 +104,25 @@ test('Linux private storage rejects permissive modes, symlinks and hardlinks', {
   fs.chmodSync(root, 0o700);
 });
 
+test('storage under a symlinked ancestor works while a linked storage directory is rejected', context => {
+  const base = directory(context);
+  const real = path.join(base, 'real');
+  fs.mkdirSync(real);
+  const link = path.join(base, 'link');
+  // macOS resolves /tmp and /var under /private, so parent components of a data
+  // directory are routinely symlinks; only the storage directory itself must be real.
+  fs.symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir');
+  const storage = path.join(link, 'camellia-server');
+  assert.equal(privateDirectory(storage), storage);
+  const key = networkKey(storage);
+  assert.equal(networkKey(storage), key);
+  const release = acquireLock(storage);
+  release();
+  const linkedDir = path.join(base, 'self-link');
+  fs.symlinkSync(storage, linkedDir, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => privateDirectory(linkedDir), /symbolic/);
+});
+
 test('headless host starts offline and retains workspaces and independent conversations across restart', async context => {
   const { host, hosts, dataDir, driverFactory, networkFactory } = harness(context);
   assert.equal((await host.command('state')).result.enabled, false);

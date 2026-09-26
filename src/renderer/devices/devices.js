@@ -1,5 +1,8 @@
 'use strict';
 
+// The settings document loads several classic scripts into one global scope, so
+// everything here stays inside this closure; only window.cliDevicesUI is shared.
+(function () {
 const embedded = Boolean(document.getElementById('devicesPage'));
 const root = document.getElementById('cliDevicesRoot');
 const bridge = window.camelliaDevices || window.dshDesktop?.camelliaDevices;
@@ -461,3 +464,4 @@ if (embedded) window.cliDevicesUI = {
   refresh() { if (!busy) void run(async () => { await state(); if (selected) { await refresh(); await watch(); } }); },
 };
 else start();
+})();
