@@ -995,6 +995,29 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   // ---------- messages ----------
+  // One footer builder for both sides of the transcript: a message timestamp
+  // plus a copy button, so an agent reply offers the same affordances as a user
+  // message. The caller supplies the current text because streams keep growing.
+  function messageActions(at, readText) {
+    const actions = document.createElement('div');
+    actions.className = 'message-actions';
+    const time = document.createElement('time');
+    if (at) { time.dateTime = new Date(at).toISOString(); time.textContent = new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+    actions.appendChild(time);
+    const copy = document.createElement('button');
+    copy.type = 'button'; copy.className = 'message-copy'; copy.title = 'Copy message'; copy.setAttribute('aria-label', 'Copy message');
+    copy.dataset.i18nAttrs = 'title aria-label';
+    copy.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="12" height="12" rx="3"/><path d="M15 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></svg>';
+    copy.onclick = async () => {
+      const text = readText();
+      if (!text) return;
+      try { await navigator.clipboard.writeText(text); setStatus('Message copied'); }
+      catch { setStatus('Could not copy the message'); }
+    };
+    actions.appendChild(copy);
+    return actions;
+  }
+
   function addUser(text, atts, meta = {}) {
     const was = !meta.history && nearBottom();
     clearEmpty();
@@ -1019,17 +1042,7 @@ const context = { sessionId: null, workspaceId: null };
       }
       div.appendChild(chips);
     }
-    const actions = document.createElement('div');
-    actions.className = 'message-actions';
-    const time = document.createElement('time');
-    if (meta.at) { time.dateTime = new Date(meta.at).toISOString(); time.textContent = new Date(meta.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
-    actions.appendChild(time);
-    const copy = document.createElement('button');
-    copy.type = 'button'; copy.className = 'message-copy'; copy.title = 'Copy message'; copy.setAttribute('aria-label', 'Copy message');
-    copy.dataset.i18nAttrs = 'title aria-label';
-    copy.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="12" height="12" rx="3"/><path d="M15 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></svg>';
-    copy.onclick = async () => { try { await navigator.clipboard.writeText(div.messageData.text); setStatus('Message copied'); } catch { setStatus('Could not copy the message'); } };
-    actions.appendChild(copy);
+    const actions = messageActions(meta.at, () => div.messageData.text);
     if (sharedChat) {
       const edit = document.createElement('button');
       edit.type = 'button'; edit.className = 'message-edit'; edit.title = 'Edit message'; edit.setAttribute('aria-label', 'Edit message'); edit.hidden = true;
@@ -1180,6 +1193,31 @@ const context = { sessionId: null, workspaceId: null };
       : chatAvatar + '<span>Assistant</span>';
   }
   function applyTurnMeta() { const meta = turnEl?.querySelector('.turn-meta'); if (meta) meta.innerHTML = turnMetaHtml(); }
+  // What a finished reply should put on the clipboard: its own visible text, so
+  // a folded execution process is not copied together with the answer.
+  function turnCopyText(turn) {
+    const body = turn?.querySelector('.turn-body');
+    if (!body) return '';
+    const visible = [...body.children].filter(el => el.classList.contains('md') && !el.closest('.execution-process'));
+    const blocks = visible.length ? visible : [...body.querySelectorAll('.md')];
+    return blocks.map(el => el.artifactText ?? el.textContent).filter(text => text?.trim()).join('\n\n').trim();
+  }
+  function turnFooter(turn, at, readText) {
+    if (!turn) return null;
+    const existing = turn.querySelector('.turn-actions');
+    if (existing) return existing;
+    const footer = messageActions(at, readText);
+    footer.classList.add('turn-actions');
+    turn.appendChild(footer);
+    return footer;
+  }
+  // Keep the footer below the result chip and artifact cards, which are appended
+  // after a turn's text during and at the end of a run.
+  function moveTurnFooter(turn) { const footer = turn?.querySelector('.turn-actions'); if (footer) turn.appendChild(footer); }
+  function turnIsEmpty(turn) {
+    if (turn?.querySelector('.turn-body')?.childElementCount) return false;
+    return !turn.querySelector('.run-result, .turn-artifacts');
+  }
   function ensureTurn() {
     if (turnEl) return turnEl;
     clearEmpty();
@@ -1188,6 +1226,7 @@ const context = { sessionId: null, workspaceId: null };
     div.innerHTML =
       '<div class="turn-meta">' + turnMetaHtml() + '</div>' +
       '<div class="turn-body"></div>';
+    turnFooter(div, Date.now(), () => turnCopyText(div));
     chat.appendChild(div);
     turnEl = div;
     return div;
@@ -1248,6 +1287,7 @@ const context = { sessionId: null, workspaceId: null };
       if (sortedFiles.length > limit) list.appendChild(overflow);
       const resultChip = turn.querySelector('.run-result');
       if (resultChip) resultChip.before(list); else turn.appendChild(list);
+      moveTurnFooter(turn);
       maybeScroll(was);
     } catch (error) { if (turn.isConnected) setStatus(error.message); }
   }
@@ -1862,7 +1902,7 @@ const context = { sessionId: null, workspaceId: null };
       turnEl = null;
       if (previousStatus) {
         ensureTurn().insertBefore(previousStatus, turnBody());
-        if (previousTurn.children.length === 2 && !previousTurn.querySelector('.turn-body').childElementCount) previousTurn.remove();
+        if (turnIsEmpty(previousTurn)) previousTurn.remove();
       }
       return;
     }
@@ -2024,6 +2064,7 @@ const context = { sessionId: null, workspaceId: null };
       const errLabel = ev.subtype && ev.subtype !== 'success' ? ev.subtype : "Error";
       chip.textContent = (stopped ? "■ Stopped" : ok ? "✓ Done" : '✗ ' + (ev.result || errLabel)) + ' · ' + stats.slice(0, 3).join(' · ');
       (turnEl || chat).appendChild(chip);
+      moveTurnFooter(turnEl);
       if (ev.session_id) {
         context.sessionId = ev.session_id;
         context.workspaceId = ev.workspaceId || null;
@@ -2845,9 +2886,15 @@ const context = { sessionId: null, workspaceId: null };
               body.appendChild(process);
             }
             for (const block of m.outputBlocks.filter(block => block.phase === 'final_answer' && block.text)) {
-              const el = document.createElement('div'); el.className = 'md'; el.innerHTML = mdRender(block.text); body.appendChild(el);
+              const el = document.createElement('div'); el.className = 'md'; el.innerHTML = mdRender(block.text);
+              el.artifactText = block.text; body.appendChild(el);
             }
-          } else div.querySelector('.md').innerHTML = mdRender(m.text);
+          } else {
+            const el = div.querySelector('.md');
+            el.innerHTML = mdRender(m.text);
+            el.artifactText = m.text;
+          }
+            turnFooter(div, m.at, () => turnCopyText(div));
             chat.insertBefore(div, before);
             void showTurnArtifacts(div, m.text, m.artifacts);
           }

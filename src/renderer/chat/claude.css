@@ -264,12 +264,16 @@
   }
 
   /* Assistant turn */
-  .turn { margin-bottom: 24px; animation: fadeIn .2s var(--ds-ease-in-out); }
+  /* Reserve the footer strip so a reply's timestamp and copy button sit under
+     the answer, matching the user bubble instead of overlaying its text. */
+  .turn { position: relative; padding-bottom: 30px; margin-bottom: 12px; animation: fadeIn .2s var(--ds-ease-in-out); }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   .turn-meta {
     display: flex; align-items: center; gap: 7px; margin-bottom: 8px;
     font: var(--f-xs-strong-13); color: var(--dsw-alias-label-secondary);
   }
+  .turn-actions { right: auto; left: 0; }
+  .turn:hover .turn-actions, .turn:focus-within .turn-actions { opacity: 1; }
   .turn-avatar {
     width: 20px; height: 20px; border-radius: 50%;
   }
