@@ -27,9 +27,9 @@ const copy = {
     expires: 'Pairing code expires at: ', expired: 'The pairing code expired. Generate another.' },
 };
 const element = id => document.getElementById(embedded ? `mobile-${id}` : id);
-Object.assign(copy.zh, { login: '登录 Tailscale', openLogin: '打开浏览器授权', logout: '退出 Tailscale 登录', confirmLogout: '退出内置网络登录并断开手机访问？下次需要重新授权，已有 Camellia 设备权限保留。',
+Object.assign(copy.zh, { login: '登录 Tailscale', openLogin: '打开浏览器授权', logout: '退出 Tailscale 登录', confirmLogout: '退出共用内置网络的登录？手机访问和 CLI 设备会同时断开，下次需要重新授权；已有 Camellia 设备权限保留。',
   connecting: '正在连接内置网络…', needsLogin: '请登录 Tailscale', needsApproval: '请在 Tailscale 管理后台批准此设备', networkError: '内置网络已断开，请重新开启', networkReady: '内置网络已连接', networkOff: '内置网络已关闭' });
-Object.assign(copy.en, { login: 'Sign in to Tailscale', openLogin: 'Authorize in browser', logout: 'Sign out of Tailscale', confirmLogout: 'Sign out of embedded networking and disconnect mobile access? You will need to authorize again. Camellia device permissions are retained.',
+Object.assign(copy.en, { login: 'Sign in to Tailscale', openLogin: 'Authorize in browser', logout: 'Sign out of Tailscale', confirmLogout: 'Sign out of the shared embedded network? Mobile access and CLI device connections will both disconnect. You will need to authorize again. Camellia device permissions are retained.',
   connecting: 'Connecting to embedded network…', needsLogin: 'Sign in to Tailscale', needsApproval: 'Approve this device in the Tailscale admin console', networkError: 'Embedded network disconnected. Enable it again.', networkReady: 'Embedded network connected', networkOff: 'Embedded network off' });
 Object.assign(copy.zh, { unassigned: '独立会话', allScope: '全部工作区（含今后新增）及独立会话', applyScope: '授权全部访问', confirmScope: '允许此设备查看和操作当前及今后新增的全部工作区和独立会话？' });
 Object.assign(copy.en, { unassigned: 'Independent conversations', allScope: 'All workspaces (including future ones) and independent conversations', applyScope: 'Authorize full access', confirmScope: 'Allow this device to read and control all current and future workspaces and independent conversations?' });

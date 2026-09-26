@@ -46,6 +46,10 @@ const { createConversationTitles, titleCandidates, titleErrorKind, TitleRequestE
   TITLE_INSTRUCTION, MINIMAL_INSTRUCTION, AUXILIARY_HEADER, MAX_MESSAGE_CHARS, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } = require('./conversation-title.js');
 let sharedConversations = null;
 let remoteDesktop = null;
+// Mobile access and CLI devices share one embedded Tailscale node so the user
+// signs in once; each consumer registers its own failure handler.
+const sharedDesktopNetwork = require('./remote/shared-network').createSharedNetwork({ options: {
+  app, safeStorage: require('electron').safeStorage, openExternal: url => shell.openExternal(url) } });
 function publishChatEvent(engine, event) {
   // Persistence is best-effort here: a failed save must not escape into the
   // engine event pipeline, or one locked file would freeze the conversation.
@@ -840,7 +844,15 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
 });
 
 remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme,
-  manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow, apiRoutes: apiRoutesBundle });
+  manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow, apiRoutes: apiRoutesBundle,
+  networkFactory: sharedDesktopNetwork.factory });
+const cliDevices = require('./remote/devices-desktop').createDevicesDesktop({ app, ipcMain,
+  safeStorage: require('electron').safeStorage, shell, dialog, nativeImage: require('electron').nativeImage,
+  getSurfaces: () => [settingsWindow?.webContents, nativeSettingsView?.webContents].filter(Boolean),
+  getSettingsWindow: () => settingsWindow, openSettings: target => openSettingsWindow(target),
+  authorizedSender: webContents => Boolean(mainWindow && !mainWindow.isDestroyed() && webContents === mainWindow.webContents),
+  networkFactory: sharedDesktopNetwork.factory,
+  loadConfig, apiSource: readOllamaProxyConfig });
 
 // Write the credentials key -> env var mapping and the model/provider settings.
 // The harness resolves `llm-pi-ai.providers.<id>.apiKeyEnv` to the env var in
@@ -1037,6 +1049,7 @@ function openSettingsWindow(target = {}) {
   desktopZoom().attach(settingsWindow.webContents);
   settingsWindow.on('closed', () => {
     nativeSettingsView?.webContents.close(); nativeSettingsView = null; nativeSettingsLoad = null;
+    cliDevices.detach();
     settingsWindow = null;
   });
   settingsWindow.loadFile(path.join(RENDERER_ROOT, 'settings/api-settings.html'), { query: { page: target.page || 'general', engine: target.engine || 'dsh' } });
@@ -1674,8 +1687,9 @@ if (!gotSingleInstanceLock) {
 
   ipcMain.handle('dsh:resolve-artifacts', (_event, payload) => {
     try {
-      const cwd = payload?.sessionId ? sharedConversations.get(payload.sessionId).cwd : payload?.cwd || '';
-      return { ok: true, files: resolveArtifacts({ paths: payload?.paths, text: payload?.text, cwd }) };
+      const sessionCwd = payload?.sessionId ? sharedConversations.get(payload.sessionId).cwd : '';
+      const cwd = sessionCwd || payload?.cwd || '';
+      return { ok: true, files: resolveArtifacts({ paths: payload?.paths, text: payload?.text, cwd, roots: payload?.roots }) };
     } catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
 
@@ -1833,6 +1847,7 @@ if (!gotSingleInstanceLock) {
   app.on('before-quit', event => {
     appQuitting = true;
     void remoteDesktop?.close();
+    void cliDevices.close();
     contextCapacity?.cancel();
     clearTimeout(balanceRefreshTimer);
     for (const goal of [goalDriver, kimiGoalDriver, antigravity.goal, codex.goal]) {

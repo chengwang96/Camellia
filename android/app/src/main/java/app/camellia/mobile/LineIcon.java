@@ -109,4 +109,6 @@ final class LineIcon extends Drawable {
     @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); invalidateSelf(); }
     @Override public void setColorFilter(ColorFilter filter) { paint.setColorFilter(filter); invalidateSelf(); }
     @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+
+    int color() { return paint.getColor(); }
 }

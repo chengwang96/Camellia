@@ -195,6 +195,8 @@
   "Mark which engine created a conversation and show Markdown handoff records. Off by default.": "标记创建会话的引擎，并显示 Markdown 交接记录，默认关闭。",
   "Local data": "本地数据",
   "Mobile access": "手机访问",
+  "CLI devices": "CLI 设备",
+  "The CLI device browser is embedded here. Files, conversations and engines stay on the selected server.": "CLI 设备浏览器就嵌在这里。文件、会话和引擎都运行在选中的服务器上。",
   "Connect your phone through Tailscale.": "通过 Tailscale 连接手机。",
   "Connect your phone through Tailscale. Enable access, generate a pairing code, and manage device permissions.": "通过 Tailscale 连接手机。开启访问、生成配对码，并管理设备权限。",
   "Pair and manage devices": "配对与设备管理",

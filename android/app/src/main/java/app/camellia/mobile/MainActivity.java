@@ -46,6 +46,7 @@ public final class MainActivity extends Activity {
     private final ExecutorService commandWorker = Executors.newSingleThreadExecutor();
     private final java.util.concurrent.ThreadPoolExecutor statusWorker = (java.util.concurrent.ThreadPoolExecutor) Executors.newFixedThreadPool(4);
     private final TreeMap<Long, JSONObject> history = new TreeMap<>();
+    private long historyBytes;
     private ComputerStore store;
     private RemoteListCache listCache;
     private final RemotePrefetch prefetch = new RemotePrefetch();
@@ -67,6 +68,7 @@ public final class MainActivity extends Activity {
     private PageTransitions pages;
     private MarkdownView markdown;
     private final LinkedHashMap<String, View> renderedMessages = new LinkedHashMap<>();
+    private final java.util.ArrayList<View> pendingMessageViews = new java.util.ArrayList<>();
     private TextView status;
     private ScrollView scroll;
     private boolean initialMessageScroll;
@@ -609,7 +611,7 @@ public final class MainActivity extends Activity {
 
     private void computersScreen() {
         stopNetwork(); screen = "computers"; networkScreen = false; conversationId = null;
-        history.clear(); conversations.clear();
+        clearHistory(); conversations.clear();
         shell(tr("远程控制", "Remote control"), tr("选择一台电脑，继续工作。", "Choose a computer to continue."));
         TextView label = text(tr("已连接的电脑", "Connected computers"), 14, muted);
         label.setPadding(0, dp(10), 0, dp(2)); content.addView(label);
@@ -927,7 +929,7 @@ public final class MainActivity extends Activity {
     private void listScreen() {
         screen = "list";
         networkScreen = false;
-        stopNetwork(); conversationId = null; history.clear(); conversations.clear(); nextOffset = -1;
+        stopNetwork(); conversationId = null; clearHistory(); conversations.clear(); nextOffset = -1;
         canCreate = false; canCreateWorkspace = false; canMove = false; canArchive = false; canManageConversations = false;
         selectingConversations = false; selectedConversations.clear();
         availableWorkspaces = new JSONArray(); allowIndependent = false;
@@ -1093,7 +1095,7 @@ public final class MainActivity extends Activity {
             () -> renameConversation(conversation), () -> {
                 selectingConversations = true; selectedConversations.add(id); renderConversations();
             }, () -> manageConversations("pin", java.util.Set.of(id), "", !conversation.optBoolean("pinned")),
-            () -> confirmConversationDelete(java.util.Set.of(id)));
+            () -> archiveConversation(conversation), () -> confirmConversationDelete(java.util.Set.of(id)));
     }
 
     private void renameConversation(JSONObject conversation) {
@@ -1109,8 +1111,14 @@ public final class MainActivity extends Activity {
     }
 
     private void confirmConversationDelete(java.util.Set<String> targets) {
-        new CamelliaDialog.Builder(this).setTitle(tr("删除会话？", "Delete conversations?"))
-            .setMessage(tr("将永久删除电脑端所选聊天记录，无法撤销；不会删除工作区文件。", "Permanently deletes the selected chats on your computer, not workspace files. This cannot be undone.") + " (" + targets.size() + ")")
+        // Deleting one chat from the long-press menu does not need a trailing
+        // count; the number only helps confirm a bulk delete.
+        boolean single = targets.size() == 1;
+        String message = single
+            ? tr("将永久删除此会话在电脑端的聊天记录，无法撤销；不会删除工作区文件。", "Permanently deletes this chat on your computer, not workspace files. This cannot be undone.")
+            : tr("将永久删除电脑端所选的 " + targets.size() + " 个会话，无法撤销；不会删除工作区文件。", "Permanently deletes the " + targets.size() + " selected chats on your computer, not workspace files. This cannot be undone.");
+        new CamelliaDialog.Builder(this).setTitle(single ? tr("删除会话？", "Delete chat?") : tr("删除会话？", "Delete chats?"))
+            .setMessage(message)
             .setNegativeButton(tr("取消", "Cancel"), null)
             .setPositiveButton(tr("删除", "Delete"), (dialog, which) -> manageConversations("delete", targets, "", false)).show();
     }
@@ -1134,7 +1142,11 @@ public final class MainActivity extends Activity {
     }
 
     private void archiveConversation(JSONObject conversation) {
-        if (!canArchive || commandBusy || credentials.has("pendingCreate")) return;
+        if (!canArchive) {
+            status.setText(tr("这台电脑未开放归档，请更新电脑端并授予控制权限。", "This computer does not allow archiving. Update the desktop and grant control permission."));
+            return;
+        }
+        if (commandBusy || credentials.has("pendingCreate")) return;
         try {
             JSONObject payload = command("archive")
                 .put("conversationId", conversation.optString("id"))
@@ -1320,19 +1332,42 @@ public final class MainActivity extends Activity {
 
     private void pickImage() {
         if (loadingImages) return;
-        if (!connected || !controlAllowed || !canImage || commandBusy || credentials.has("pendingCommand")) {
-            status.setText(tr("添加图片需要更新并重启电脑端。", "Images require an updated and restarted desktop.")); return;
-        }
-        if (selectedImages.size() >= (canMultiImage ? 9 : 1)) {
-            status.setText(canMultiImage ? tr("最多添加 9 张图片。", "Add up to 9 images.") : tr("多图发送需要更新并重启电脑端。", "Multiple images require an updated and restarted desktop.")); return;
-        }
+        boolean pending = credentials.has("pendingCommand");
+        boolean available = connected && controlAllowed && !commandBusy;
+        boolean sendable = available && !pending && !loadingImages;
+        // The tiles only work when the desktop advertises the image capability
+        // and this chat still has room; the sheet still opens so the capability
+        // rows stay reachable.
+        int limit = canMultiImage ? 9 : 1;
+        boolean images = sendable && canImage && selectedImages.size() < limit;
+        boolean configurable = sendable && remoteSettings != null && remoteSettings.optBoolean("editable");
         imageConversation = conversationId; imageComputer = credentials.optString("address");
-        LinearLayout panel = computerDialogPanel(tr("添加图片", "Add image"), tr("选择图片来源", "Choose an image source"), "image");
+        AttachSheet sheet = new AttachSheet(this);
+        LinearLayout panel = sheet.panel();
         android.app.Dialog dialog = createComputerDialog(panel);
-        SettingsStyle style = new SettingsStyle(this);
-        LinearLayout group = style.group(panel, "");
-        style.row(group, "image", tr("从相册选择", "Choose from gallery"), "", "imageGallery", () -> { dialog.dismiss(); openGallery(); });
-        style.row(group, "camera", tr("使用相机拍摄", "Take a photo"), "", "imageCamera", () -> { dialog.dismiss(); openCamera(); });
+        sheet.header(panel, "plus", tr("添加内容", "Add"), tr("关闭", "Close"), () -> dialog.dismiss());
+        sheet.subtitle(panel, tr("拍照、相册，或调整这次会话的执行方式", "Take a photo, pick from the gallery, or adjust how this chat runs"));
+        sheet.tiles(panel, java.util.Arrays.asList(
+            new AttachSheet.Tile("camera", tr("拍照", "Camera"), "imageCamera", images, () -> { dialog.dismiss(); openCamera(); }),
+            new AttachSheet.Tile("image", tr("照片", "Photos"), "imageGallery", images, () -> { dialog.dismiss(); openGallery(); })));
+        String level = remoteSettings == null ? "ask" : remoteSettings.optString("permissionMode");
+        LinearLayout group = sheet.group(panel, "");
+        sheet.row(group, "shield", tr("安全级别", "Safety level"),
+            tr("控制电脑执行工具操作前的确认方式", "Controls how tool actions are confirmed on your computer"),
+            RemoteSettingsPopup.permissionLabel(level, chinese), "attachPermission", configurable, () -> { dialog.dismiss(); showRemoteSettings(true); });
+        sheet.row(group, "folder", tr("查看产物", "Files"),
+            tr("列出会话中的文件并下载到手机", "List this chat's files and save them to your phone"),
+            "", "attachArtifacts", sendable, () -> {
+                dialog.dismiss();
+                artifactDownloads.show(credentials.optString("address"), credentials.optString("token"), conversationId);
+            });
+        if (!images) {
+            String reason = !canImage ? tr("添加图片需要更新并重启电脑端。", "Images require an updated and restarted desktop.")
+                : selectedImages.size() >= limit ? (canMultiImage ? tr("最多添加 9 张图片。", "Add up to 9 images.")
+                    : tr("多图发送需要更新并重启电脑端。", "Multiple images require an updated and restarted desktop."))
+                : tr("连接电脑后可添加图片。", "Connect to your computer to add images.");
+            sheet.note(panel, reason);
+        }
         showComputerDialog(dialog);
     }
 
@@ -1383,18 +1418,7 @@ public final class MainActivity extends Activity {
             try {
                 ArrayList<String> encodedImages = new ArrayList<>();
                 for (android.net.Uri uri : uris) {
-                    android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options(); options.inJustDecodeBounds = true;
-                    try (var input = getContentResolver().openInputStream(uri)) { android.graphics.BitmapFactory.decodeStream(input, null, options); }
-                    if (options.outWidth <= 0 || options.outHeight <= 0) throw new IOException();
-                    options.inJustDecodeBounds = false; options.inSampleSize = 1;
-                    while (Math.max(options.outWidth, options.outHeight) / options.inSampleSize > 1600) options.inSampleSize *= 2;
-                    android.graphics.Bitmap bitmap;
-                    try (var input = getContentResolver().openInputStream(uri)) { bitmap = android.graphics.BitmapFactory.decodeStream(input, null, options); }
-                    if (bitmap == null) throw new IOException();
-                    java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
-                    try { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, bytes); } finally { bitmap.recycle(); }
-                    if (bytes.size() > 1024 * 1024) throw new IOException();
-                    encodedImages.add(android.util.Base64.encodeToString(bytes.toByteArray(), android.util.Base64.NO_WRAP));
+                    encodedImages.add(ChatImage.encode(this, uri, ChatImage.DESKTOP_MAX_SIDE, ChatImage.DESKTOP_MAX_BYTES));
                 }
                 handler.post(() -> {
                     if (isDestroyed() || !screen.equals("detail") || !java.util.Objects.equals(target, conversationId) || !computer.equals(credentials.optString("address"))) return;
@@ -1412,33 +1436,10 @@ public final class MainActivity extends Activity {
 
     private void renderImage() {
         if (imageTray == null) return;
-        imageTray.removeAllViews();
         if (!java.util.Objects.equals(imageConversation, conversationId) || !java.util.Objects.equals(imageComputer, credentials.optString("address"))) selectedImages.clear();
         imageStrip.setVisibility(selectedImages.isEmpty() ? View.GONE : View.VISIBLE);
-        for (int index = 0; index < selectedImages.size(); index++) {
-            final int position = index;
-            byte[] bytes = android.util.Base64.decode(selectedImages.get(index), android.util.Base64.NO_WRAP);
-            android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options(); options.inJustDecodeBounds = true;
-            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
-            options.inJustDecodeBounds = false; options.inSampleSize = 1;
-            while (Math.max(options.outWidth, options.outHeight) / options.inSampleSize > dp(144)) options.inSampleSize *= 2;
-            ImageView preview = new ImageView(this); preview.setImageBitmap(android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options));
-            preview.setContentDescription(tr("待发送图片 ", "Image to send ") + (index + 1));
-            preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            GradientDrawable shape = new GradientDrawable(); shape.setColor(surface); shape.setCornerRadius(dp(14));
-            preview.setBackground(shape); preview.setClipToOutline(true);
-            android.widget.FrameLayout tile = new android.widget.FrameLayout(this);
-            android.widget.FrameLayout.LayoutParams previewParams = new android.widget.FrameLayout.LayoutParams(dp(72), dp(72));
-            previewParams.setMargins(dp(4), dp(8), 0, 0); tile.addView(preview, previewParams);
-            ImageButton close = new ImageButton(this);
-            close.setImageDrawable(new LineIcon("close", Color.WHITE)); close.setPadding(dp(12), dp(12), dp(12), dp(12));
-            GradientDrawable circle = new GradientDrawable(); circle.setShape(GradientDrawable.OVAL); circle.setColor(0xb3000000);
-            close.setBackground(new android.graphics.drawable.InsetDrawable(circle, dp(8)));
-            close.setContentDescription(tr("移除图片 ", "Remove image ") + (index + 1));
-            close.setOnClickListener(view -> { selectedImages.remove(position); renderImage(); updateControls(); });
-            tile.addView(close, new android.widget.FrameLayout.LayoutParams(dp(40), dp(40), Gravity.TOP | Gravity.RIGHT));
-            imageTray.addView(tile, new LinearLayout.LayoutParams(dp(88), dp(88)));
-        }
+        ChatImageTray.fill(this, imageTray, selectedImages, surface, chinese,
+            index -> { selectedImages.remove(index); renderImage(); updateControls(); });
     }
 
     private void watchList(RemoteApi client, int ticket) {
@@ -1528,7 +1529,7 @@ public final class MainActivity extends Activity {
         renderedMessages.clear();
         processState.clear();
         screen = "detail"; networkScreen = false;
-        stopNetwork(); history.clear(); instance = ""; cursor = -1; nextBefore = null; lastLive = null; historyLimited = false; editingSeq = -1;
+        stopNetwork(); clearHistory(); instance = ""; cursor = -1; nextBefore = null; lastLive = null; historyLimited = false; editingSeq = -1;
         remoteSettings = null;
         displayedConversation = null;
         outgoingMessage = credentials.optJSONObject("pendingCommand");
@@ -1547,10 +1548,11 @@ public final class MainActivity extends Activity {
         LinearLayout composerBar = bottomBar("composerBar");
         chatComposer = new ChatComposer(composerBar, chatStyle, chinese, tr("发消息，继续任务…", "Message your computer…"), 16000,
             () -> showRemoteSettings(false), this::sendMessage, this::stopRun, this::cancelEdit);
-        composer = chatComposer.input;
+        composer = chatComposer.input; composer.setTag("remoteComposer");
         modelButton = chatComposer.model; modelButton.setTag("remoteModelPicker");
         sendButton = chatComposer.send; stopButton = chatComposer.stop;
-        attachButton = lineButton("plus", tr("添加图片", "Add image"), this::pickImage);
+        sendButton.setTag("remoteSend"); stopButton.setTag("remoteStop");
+        attachButton = lineButton("plus", tr("添加图片", "Add image"), this::pickImage); attachButton.setTag("remoteAttach");
         imageStrip = new android.widget.HorizontalScrollView(this); imageStrip.setHorizontalScrollBarEnabled(false);
         imageTray = new LinearLayout(this); imageTray.setOrientation(LinearLayout.HORIZONTAL);
         imageStrip.addView(imageTray); composerBar.addView(imageStrip, 0, new LinearLayout.LayoutParams(-1, -2)); renderImage();
@@ -1613,7 +1615,7 @@ public final class MainActivity extends Activity {
         if (rows == null) return;
         for (int index = 0; index < rows.length(); index++) {
             JSONObject row = rows.optJSONObject(index);
-            if (row != null) history.put(row.optLong("seq"), row);
+            if (row != null) retainHistory(row.optLong("seq"), row);
         }
         connected = false; controlAllowed = false; lastLive = null; remoteSettings = null;
         trimHistory(); renderMessages(null);
@@ -1684,7 +1686,7 @@ public final class MainActivity extends Activity {
             JSONObject page = listCache.get(credentials);
             if (page != null && page.optJSONArray("conversations") != null) prefetch.scheduleIdle(credentials, page.optJSONArray("conversations"), page.optInt("nextOffset", -1));
         }
-        if (!server.equals(instance)) { history.clear(); historyLimited = false; }
+        if (!server.equals(instance)) { clearHistory(); historyLimited = false; }
         boolean following = initialMessageScroll || pendingScrollView == scroll && pendingScrollPosition == Integer.MAX_VALUE
             || scroll.getChildCount() == 0 || scroll.getChildAt(0).getHeight() - scroll.getHeight() - scroll.getScrollY() < dp(120);
         instance = server; cursor = nextCursor;
@@ -1699,8 +1701,8 @@ public final class MainActivity extends Activity {
         JSONArray rows = snapshot.optJSONArray("messages");
         if (rows == null) return;
         long first = rows.length() == 0 ? 0 : rows.optJSONObject(0).optLong("seq");
-        history.tailMap(first).clear();
-        for (int index = 0; index < rows.length(); index++) { JSONObject row = rows.optJSONObject(index); if (row != null) history.put(row.optLong("seq"), row); }
+        forgetHistoryFrom(first);
+        for (int index = 0; index < rows.length(); index++) { JSONObject row = rows.optJSONObject(index); if (row != null) retainHistory(row.optLong("seq"), row); }
         if (history.isEmpty() || history.firstKey() >= first) nextBefore = snapshot.isNull("nextBefore") ? null : snapshot.optLong("nextBefore");
         trimHistory();
         lastLive = snapshot.optJSONObject("live");
@@ -1729,10 +1731,11 @@ public final class MainActivity extends Activity {
     }
 
     private void renderMessages(JSONObject live) {
-        int position = scroll.getScrollY(); messages.removeAllViews();
+        int position = scroll.getScrollY();
         java.util.HashSet<String> retained = new java.util.HashSet<>();
         JSONArray pendingProcess = new JSONArray();
         long turn = 0;
+        pendingMessageViews.clear();
         for (JSONObject row : history.values()) {
             String role = row.optString("role");
             if (role.equals("user")) { pendingProcess = new JSONArray(); turn = row.optLong("seq"); }
@@ -1753,13 +1756,22 @@ public final class MainActivity extends Activity {
             JSONArray process = live.optJSONArray("process");
             if (process == null || process.length() == 0) process = pendingProcess;
             addMessage("live", tr("正在回复", "Reply in progress"), live.optString("text"), false, live.optBoolean("textTruncated"), process, true, "turn:" + live.optLong("userSeq", turn), live.optLong("startedAt"), 0);
-            if (live.optInt("pendingApprovals") > 0 && !controlAllowed) messages.addView(text(tr("有待处理授权，请回到电脑处理。", "Approval is pending. Respond on the computer."), 13, accent));
+            if (live.optInt("pendingApprovals") > 0 && !controlAllowed) pendingMessageViews.add(text(tr("有待处理授权，请回到电脑处理。", "Approval is pending. Respond on the computer."), 13, accent));
         } else if (pendingProcess.length() > 0) {
             retained.add("pendingProcess");
             addMessage("pendingProcess", "", "", false, false, pendingProcess, false, "turn:" + turn, 0, 0);
         }
         renderOutgoing(retained);
         renderedMessages.keySet().retainAll(retained);
+        for (int index = 0; index < pendingMessageViews.size(); index++) {
+            View view = pendingMessageViews.get(index);
+            if (messages.getChildCount() > index && messages.getChildAt(index) == view) continue;
+            if (view.getParent() == messages) messages.removeView(view);
+            if (messages.getChildCount() > index) messages.removeViewAt(index);
+            messages.addView(view, index);
+        }
+        while (messages.getChildCount() > pendingMessageViews.size()) messages.removeViewAt(messages.getChildCount() - 1);
+        pendingMessageViews.clear();
         if (initialMessageScroll && messages.getChildCount() > 0) {
             initialMessageScroll = false;
             positionMessages(Integer.MAX_VALUE);
@@ -1867,7 +1879,7 @@ public final class MainActivity extends Activity {
             retryMessage.setOnClickListener(view -> retryCommand());
             retryMessage.setEnabled(connected && controlAllowed && !commandBusy && credentials.has("pendingCommand"));
         }
-        delivery.addView(deliveryText); messages.addView(delivery);
+        delivery.addView(deliveryText); pendingMessageViews.add(delivery);
     }
 
     private void outgoingState(String state) {
@@ -1888,7 +1900,7 @@ public final class MainActivity extends Activity {
         boolean editable = user && !live && !truncated && seq > 0 && seq == latestUserSeq;
         String signature = label + "\u0000" + user + truncated + live + editable + "\u0000" + at + "\u0000" + value + "\u0000" + String.valueOf(process);
         View existing = renderedMessages.get(key);
-        if (existing != null && signature.equals(existing.getTag())) { messages.addView(existing); return; }
+        if (existing != null && signature.equals(existing.getTag())) { pendingMessageViews.add(existing); return; }
         LinearLayout block = chatStyle.messageBlock(user);
         if (!user && process != null && process.length() > 0) {
             ExecutionProcessView processView = new ExecutionProcessView(this, chatStyle, processState, conversationId + ":" + turn);
@@ -1918,7 +1930,7 @@ public final class MainActivity extends Activity {
             block.setContentDescription(hint);
             if (body != null) body.setContentDescription(hint);
         }
-        wrapper.setTag(signature); renderedMessages.put(key, wrapper); messages.addView(wrapper);
+        wrapper.setTag(signature); renderedMessages.put(key, wrapper); pendingMessageViews.add(wrapper);
     }
 
     private void updateOlderControl() {
@@ -1956,7 +1968,7 @@ public final class MainActivity extends Activity {
                     View retainedAnchor = anchor;
                     int anchorOffset = anchor == null ? 0 : messages.getTop() + anchor.getTop() - scroll.getScrollY();
                     JSONArray rows = snapshot.optJSONArray("messages");
-                    if (rows != null) for (int index = 0; index < rows.length(); index++) { JSONObject row = rows.optJSONObject(index); if (row != null) history.put(row.optLong("seq"), row); }
+                    if (rows != null) for (int index = 0; index < rows.length(); index++) { JSONObject row = rows.optJSONObject(index); if (row != null) retainHistory(row.optLong("seq"), row); }
                     nextBefore = snapshot.isNull("nextBefore") ? null : snapshot.optLong("nextBefore");
                     boolean trimmed = trimHistory();
                     renderMessages(lastLive); updateOlderControl();
@@ -1977,14 +1989,39 @@ public final class MainActivity extends Activity {
     }
 
     private boolean trimHistory() {
-        long size = 0;
-        for (JSONObject row : history.values()) size += row.toString().length();
         boolean trimmed = false;
-        while (history.size() > 600 || size > 4 * 1024 * 1024 && history.size() > 1) {
-            size -= history.pollFirstEntry().getValue().toString().length(); trimmed = true;
+        while (history.size() > 600 || historyBytes > 4 * 1024 * 1024 && history.size() > 1) {
+            historyBytes -= historyRowBytes(history.pollFirstEntry().getValue()); trimmed = true;
         }
+        if (historyBytes < 0) historyBytes = 0;
         if (trimmed) { nextBefore = null; historyLimited = true; }
         return trimmed;
+    }
+
+    private void clearHistory() { history.clear(); historyBytes = 0; }
+
+    private void retainHistory(long seq, JSONObject row) {
+        JSONObject previous = history.put(seq, row);
+        if (previous != null) historyBytes -= historyRowBytes(previous);
+        historyBytes += historyRowBytes(row);
+    }
+
+    private void forgetHistoryFrom(long first) {
+        for (java.util.Iterator<java.util.Map.Entry<Long, JSONObject>> iterator = history.tailMap(first).entrySet().iterator(); iterator.hasNext(); ) {
+            historyBytes -= historyRowBytes(iterator.next().getValue());
+            iterator.remove();
+        }
+        if (historyBytes < 0) historyBytes = 0;
+    }
+
+    private static long historyRowBytes(JSONObject row) {
+        long size = 48 + row.optString("text", "").length();
+        JSONArray process = row.optJSONArray("process");
+        for (int index = 0; process != null && index < process.length(); index++) {
+            JSONObject entry = process.optJSONObject(index);
+            if (entry != null) size += 32 + entry.optString("text", "").length() + entry.optString("input", "").length();
+        }
+        return size;
     }
 
     private void showFailure(Exception error, boolean authenticated) {
@@ -2008,7 +2045,7 @@ public final class MainActivity extends Activity {
                 prefetch.cancel();
                 prefetch.remove(credentials, screen.equals("detail") ? conversationId : null);
                 if (screen.equals("detail") && conversationId != null) {
-                    history.clear(); if (messages != null) messages.removeAllViews();
+                    clearHistory(); if (messages != null) messages.removeAllViews();
                     status.setText(tr("会话不可用，可能已归档或不再授权。", "Conversation unavailable, archived or no longer authorized.")
                         + "\n" + RemoteApi.failureMessage(error, chinese));
                 } else status.setText(tr("电脑端不支持此接口，请更新并重启电脑端。", "This endpoint is unavailable. Update and restart the desktop.")
@@ -2018,7 +2055,7 @@ public final class MainActivity extends Activity {
             if (code == 403) {
                 prefetch.cancel();
                 prefetch.remove(credentials, null);
-                if (screen.equals("detail")) { history.clear(); if (messages != null) messages.removeAllViews(); }
+                if (screen.equals("detail")) { clearHistory(); if (messages != null) messages.removeAllViews(); }
             }
             if (code == 429 || code == 403 || code == 409) { status.setText(RemoteApi.failureMessage(error, chinese)); return; }
         }
@@ -2042,7 +2079,7 @@ public final class MainActivity extends Activity {
         if (modelButton != null) {
             String model = remoteSettings == null ? tr("模型", "Model") : remoteSettings.optString("model", tr("模型", "Model"));
             String thinking = remoteSettings == null ? "" : remoteSettings.optString("thinking");
-            chatComposer.model(model, thinking.isEmpty() ? tr("默认", "Default") : thinking, configurable);
+            chatComposer.model(model, LocalChatThinking.display(thinking, chinese), configurable);
         }
         chatComposer.editing(editingSeq > 0, !commandBusy && !pending && lastLive == null);
         if (permissionButton != null) {
@@ -2052,7 +2089,10 @@ public final class MainActivity extends Activity {
             permissionButton.setImageDrawable(new LineIcon("shield", level.equals("full") ? 0xffc28a35 : ink));
         }
         sendButton.setEnabled(available && lastLive == null && !pending && !loadingImages && !awaitingSentMessage() && (!composer.getText().toString().trim().isEmpty() || !selectedImages.isEmpty()));
-        if (attachButton != null) attachButton.setEnabled(available && !pending && !loadingImages);
+        if (attachButton != null) {
+            attachButton.setEnabled(available && !pending && !loadingImages);
+            attachButton.setAlpha(available && !pending && !loadingImages ? 1f : .45f);
+        }
         stopButton.setEnabled(available && lastLive != null && !pending);
         sendButton.setVisibility(lastLive == null ? View.VISIBLE : View.GONE);
         stopButton.setVisibility(lastLive != null ? View.VISIBLE : View.GONE);

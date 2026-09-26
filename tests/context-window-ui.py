@@ -45,7 +45,7 @@ try:
         errors = []; page.on('pageerror', lambda e: errors.append(str(e)))
         page.expose_function('testRpc', rpc); page.add_init_script(bridge)
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri() + '?page=providers'); page.wait_for_load_state('networkidle')
-        page.locator('.router-options > summary').click()
+        expect(page.locator('#port')).to_be_visible()
         page.locator('#port').fill(str(rpc('freePort')['result']))
         page.locator('#addProvider').click()
         page.locator('#preset').select_option('ollama'); page.locator('#confirmAdd').click()

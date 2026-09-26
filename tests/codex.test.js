@@ -385,3 +385,44 @@ test('Codex API metadata adds native patch support without overriding known mode
   codexSpawnSpec(options); assert.equal(read().model_catalog_json, own); assert.equal(read().model_reasoning_effort, 'high');
   assert.equal(require('../runtimes/codex/package.json').dependencies['@openai/codex'], '0.154.0', 'Review native metadata when upgrading Codex');
 });
+
+test('shutting down a Codex process settles even when a helper keeps its stdio open', async t => {
+  const root = temporary(t);
+  const helperPidFile = path.join(root, 'helper.pid');
+  // Stands in for app-server: it answers initialize, then exits while leaving a
+  // detached helper that inherited stdout/stderr, exactly like the MCP tool
+  // servers and plugin-sync git processes the native binary spawns.
+  const child = path.join(root, 'app-server-fixture.cjs');
+  fs.writeFileSync(child, [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const readline = require('node:readline');",
+    "const helper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 8000)'], { stdio: ['ignore', 'inherit', 'inherit'], detached: true });",
+    'fs.writeFileSync(process.argv[2], String(helper.pid));',
+    'helper.unref();',
+    "readline.createInterface({ input: process.stdin }).on('line', line => {",
+    '  const request = JSON.parse(line);',
+    "  if (request.method === 'initialize') process.stdout.write(JSON.stringify({ id: request.id, result: { userAgent: 'fixture' } }) + '\\n');",
+    '});',
+    "process.stdin.on('end', () => process.exit(0));",
+  ].join('\n'));
+
+  const client = new CodexClient({ exe: process.execPath, args: [child, helperPidFile], env: process.env, cwd: root,
+    log() {}, onNotification() {}, onRequest() {}, onClose() {} });
+  t.after(() => client.shutdown());
+  await client.ready;
+  // The detached helper outlives the fixture and keeps the inherited pipes, so
+  // the test has to reap it explicitly or the runner would never exit.
+  const helperPid = Number(fs.readFileSync(helperPidFile, 'utf8'));
+  t.after(() => { if (Number.isInteger(helperPid) && helperPid > 0) { try { process.kill(helperPid); } catch { /* already gone */ } } });
+  let timer;
+  const stopped = await Promise.race([
+    client.shutdown().then(() => 'stopped'),
+    new Promise(resolve => { timer = setTimeout(() => resolve('hung'), 10000); }),
+  ]);
+  clearTimeout(timer);
+  assert.equal(stopped, 'stopped', 'a live helper must not strand the shutdown');
+  // Release the inherited pipes so the test runner is not held open by them.
+  try { process.kill(helperPid); } catch { /* already gone */ }
+  client.proc.stdout.destroy(); client.proc.stderr.destroy(); client.proc.stdin.destroy();
+});

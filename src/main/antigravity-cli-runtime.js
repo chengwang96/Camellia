@@ -18,7 +18,7 @@ function locateAntigravityCli(dir) {
 async function installAntigravityCli({ source, dir, connection, run, report }) {
   const config = JSON.parse(fs.readFileSync(path.join(source, 'runtime.json'), 'utf8')).cli;
   const platform = config.platforms[process.platform + '-' + process.arch];
-  if (!platform) throw new Error('Antigravity supports Windows x64 and macOS ARM64');
+  if (!platform) throw new Error('Antigravity CLI is unavailable for this platform');
   const cliDir = path.join(dir, 'cli');
   fs.mkdirSync(cliDir, { recursive: true });
   const staging = path.join(cliDir, 'download');
@@ -40,7 +40,7 @@ async function installAntigravityCli({ source, dir, connection, run, report }) {
     fs.chmodSync(file, 0o755);
     fs.unlinkSync(staging);
   }
-  writeJson(path.join(cliDir, 'installed.json'), { version: config.version });
+  writeJson(path.join(cliDir, 'installed.json'), { version: platform.version || config.version });
   return locateAntigravityCli(dir);
 }
 

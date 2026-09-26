@@ -25,13 +25,15 @@ type command struct {
 	Action    string `json:"action"`
 	Directory string `json:"directory"`
 	Key       string `json:"key"`
+	Hostname  string `json:"hostname"`
 	Target    string `json:"target"`
 	Token     string `json:"token"`
 }
 
 type helper struct {
-	node  *tsnet.Server
-	proxy *http.Server
+	node     *tsnet.Server
+	proxy    *http.Server
+	outbound map[string]*outboundConnection
 }
 
 func proxyHandler(target, token string) (http.Handler, error) {
@@ -77,6 +79,10 @@ func (service *helper) execute(request command) (any, error) {
 		if service.node != nil || !filepath.IsAbs(request.Directory) {
 			return nil, errors.New("invalid initialization")
 		}
+		hostname, err := nodeHostname(request.Hostname)
+		if err != nil {
+			return nil, err
+		}
 		key, err := base64.StdEncoding.DecodeString(request.Key)
 		if err != nil {
 			return nil, errors.New("invalid storage key")
@@ -86,7 +92,7 @@ func (service *helper) execute(request command) (any, error) {
 			return nil, err
 		}
 		quiet := func(string, ...any) {}
-		service.node = &tsnet.Server{Dir: request.Directory, Hostname: "camellia-desktop", Store: store, Logf: quiet, UserLogf: quiet}
+		service.node = &tsnet.Server{Dir: request.Directory, Hostname: hostname, Store: store, Logf: quiet, UserLogf: quiet}
 		if err := service.node.Start(); err != nil {
 			return nil, err
 		}
@@ -94,6 +100,16 @@ func (service *helper) execute(request command) (any, error) {
 	}
 	if service.node == nil {
 		return nil, errors.New("network not initialized")
+	}
+	if request.Action == "connect" {
+		return service.connect(request.Target, request.Token)
+	}
+	if request.Action == "disconnect" {
+		if connection := service.outbound[request.Token]; connection != nil {
+			connection.close()
+			delete(service.outbound, request.Token)
+		}
+		return nil, nil
 	}
 	client, err := service.node.LocalClient()
 	if err != nil {
@@ -118,6 +134,7 @@ func (service *helper) execute(request command) (any, error) {
 	case "login":
 		return nil, client.StartLoginInteractive(ctx)
 	case "logout":
+		service.disconnectAll()
 		return nil, client.Logout(ctx)
 	case "listen":
 		if service.proxy != nil {
@@ -147,6 +164,7 @@ func main() {
 	os.Setenv("TS_NO_LOGS_NO_SUPPORT", "true")
 	service := &helper{}
 	defer func() {
+		service.disconnectAll()
 		if service.proxy != nil {
 			service.proxy.Close()
 		}

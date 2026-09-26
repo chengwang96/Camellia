@@ -71,6 +71,46 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
         }
     }
 
+    public void testExpiredRetentionRebuildsNodeOnReturn() throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        EmbeddedNetwork.initialize(context);
+        boolean previousMode = EmbeddedNetwork.enabled();
+        EmbeddedNetwork.setEnabled(true);
+        var routeField = EmbeddedNetwork.class.getDeclaredField("route"); routeField.setAccessible(true);
+        var originalRoute = routeField.get(null);
+        var deadlineField = EmbeddedNetwork.class.getDeclaredField("backgroundDeadline"); deadlineField.setAccessible(true);
+        EmbeddedNetwork.close();
+        try {
+            var manager = (android.net.ConnectivityManager) context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+            var active = manager.getActiveNetwork();
+            if (active == null) return;
+            var links = manager.getLinkProperties(active);
+            getInstrumentation().runOnMainSync(() -> {
+                try { routeField.set(null, new NetworkRoute(active, links == null ? null : links.toString())); }
+                catch (Exception error) { throw new AssertionError(error); }
+            });
+            var first = EmbeddedNetwork.node();
+            EmbeddedNetwork.background();
+            getInstrumentation().runOnMainSync(EmbeddedNetwork::foreground);
+            assertSame("A node inside the retention window must be reused", first, EmbeddedNetwork.node());
+            EmbeddedNetwork.background();
+            deadlineField.setLong(null, android.os.SystemClock.elapsedRealtime() - 1);
+            getInstrumentation().runOnMainSync(EmbeddedNetwork::foreground);
+            var second = EmbeddedNetwork.node();
+            assertNotSame("A frozen node past the retention window must be rebuilt", first, second);
+            try { first.prepare("GET", "http://100.64.0.1:43127/v1/status", "", ""); fail("Expired node remains open"); }
+            catch (Exception expected) { assertTrue(expected.getMessage().contains("closed")); }
+            assertSame(second, EmbeddedNetwork.node());
+        } finally {
+            EmbeddedNetwork.close();
+            deadlineField.setLong(null, 0);
+            getInstrumentation().runOnMainSync(() -> {
+                try { routeField.set(null, originalRoute); } catch (Exception error) { throw new AssertionError(error); }
+            });
+            EmbeddedNetwork.setEnabled(previousMode);
+        }
+    }
+
     public void testNativeNodeStartupStatusAndEncryptedState() throws Exception {
         var context = getInstrumentation().getTargetContext();
         EmbeddedNetwork.registerInterfaces();

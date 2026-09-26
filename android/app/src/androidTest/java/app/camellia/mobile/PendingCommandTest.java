@@ -36,7 +36,9 @@ public class PendingCommandTest extends InstrumentationTestCase {
                 try {
                     var conversation = MainActivity.class.getDeclaredField("conversationId"); conversation.setAccessible(true); conversation.set(activity, id);
                     var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
-                    ((EditText) field(activity, "composer")).setText("Keep this message");
+                    assertEquals("", ((EditText) field(activity, "composer")).getText().toString());
+                    assertEquals("Keep this message", ((JSONObject) field(activity, "outgoingMessage"))
+                        .getJSONObject("payload").getString("prompt"));
                     var finish = MainActivity.class.getDeclaredMethod("finishCommand", JSONObject.class, JSONObject.class); finish.setAccessible(true);
                     finish.invoke(activity, payload, new JSONObject().put("ok", false).put("state", "pending"));
                     assertEquals(payload.toString(), encrypted.load().getJSONObject("pendingCommand").getJSONObject("payload").toString());
@@ -49,6 +51,7 @@ public class PendingCommandTest extends InstrumentationTestCase {
                     finish.invoke(activity, payload, new JSONObject().put("ok", true).put("state", "accepted"));
                     assertFalse(encrypted.load().has("pendingCommand"));
                     assertEquals("", ((EditText) field(activity, "composer")).getText().toString());
+                    assertEquals("accepted", ((JSONObject) field(activity, "outgoingMessage")).getString("delivery"));
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             ExecutorService worker = (ExecutorService) field(activity, "worker");

@@ -13,8 +13,13 @@ const { RemoteCommands } = require('../src/main/remote/commands');
 const { tailscaleAddress, isTailscaleIPv4 } = require('../src/main/remote/tailscale');
 const { SharedConversations, ENGINES } = require('../src/engines/shared-conversations');
 const { removeTree } = require('./test-fs.cjs');
+const restrictedPorts = new Set([1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179,
+  389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636,
+  989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666,
+  6667, 6668, 6669, 6697, 10080]);
 
-function fixture(context, { apiRoutes = null } = {}) {
+function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-remote-'));
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
   let clock = 1000, config = { sharedMeta: { workspaces: [{ id: 'allowed', name: 'Allowed', path: root }, { id: 'private', name: 'Private', path: root }] } }, gateway;
@@ -24,7 +29,16 @@ function fixture(context, { apiRoutes = null } = {}) {
   const access = new RemoteAccess({ file: path.join(root, 'devices.json'), now: () => clock, onRevoke: id => gateway?.revoke(id) });
   const reader = new RemoteReadModel(manager);
   const commands = new RemoteCommands({ file: path.join(root, 'commands.json'), access, reader, publish: () => gateway.publish() });
-  gateway = new RemoteGateway({ access, reader, commands, apiRoutes, validateHost: host => host === '127.0.0.1' });
+  gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, validateHost: host => host === '127.0.0.1' });
+  const start = gateway.start.bind(gateway);
+  gateway.start = async (host, port, transport) => {
+    for (let attempt = 0; attempt < 32; attempt++) {
+      const url = await start(host, port, transport);
+      if (port !== 0 || !restrictedPorts.has(gateway.server.address().port)) return url;
+      await gateway.stop();
+    }
+    throw new Error('Could not allocate a Fetch-compatible loopback port');
+  };
   context.after(async () => { await gateway.stop(); manager.closeGoalTools(); manager.pauseGoals(); removeTree(root); });
   const visible = manager.create('codex', 'allowed', 'Visible');
   const hidden = manager.create('kimi', 'private', 'Secret');
@@ -893,6 +907,122 @@ test('mobile conversation actions rename, pin and delete with scoped deduplicate
   assert.equal((await send({ ...deletion, targets: [{ id: hidden.id, seq: hidden.seq }] })).status, 404);
   device.workspaceIds = [];
   assert.equal((await send(deletion)).status, 403);
+});
+
+test('native settings endpoints require full control, matching engine and explicit service validation', async context => {
+  const calls = [];
+  const { gateway, access, pair } = fixture(context, { nativeSettings: { get: engine => ({ engine, files: [] }), save: payload => { calls.push(payload); return { ok: true }; } } });
+  const credential = pair(); await gateway.start('127.0.0.1', 0);
+  assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token })).status, 403);
+  access.setScope(credential.deviceId, [], { allWorkspaces: true });
+  assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token })).body.engine, 'claude');
+  assert.ok((await request(gateway, '/v1/status', { token: credential.token })).body.capabilities.includes('native-settings'));
+  assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token, method: 'POST', payload: { engine: 'codex' } })).status, 400);
+  assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token, method: 'POST', payload: { engine: 'claude', confirmed: true } })).body.ok, true);
+  access.revoke(credential.deviceId);
+  assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token, method: 'POST', payload: { engine: 'claude' } })).status, 401);
+  assert.equal(calls.length, 1);
+});
+
+test('API import HTTP endpoints require full-device control and do not expose raw keys', async context => {
+  let applied = 0;
+  const { gateway, access, pair } = fixture(context, { apiImport: { state: () => ({ revision: 'a'.repeat(64), policy: 'keep-server' }), apply: () => { applied++; return { ok: true }; } } });
+  const credential = pair();
+  await gateway.start('127.0.0.1', 0);
+  assert.equal((await request(gateway, '/v1/api-import', { token: credential.token })).status, 403);
+  assert.equal((await request(gateway, '/v1/api-import', { token: credential.token, method: 'POST', payload: {} })).status, 403);
+  access.setScope(credential.deviceId, [], { allWorkspaces: true, includeUnassigned: true });
+  assert.equal((await request(gateway, '/v1/api-import', { token: credential.token })).body.policy, 'keep-server');
+  assert.ok((await request(gateway, '/v1/status', { token: credential.token })).body.capabilities.includes('api-import'));
+  assert.equal((await request(gateway, '/v1/api-import', { token: credential.token, method: 'POST', payload: {} })).body.ok, true);
+  assert.equal((await request(gateway, '/v1/api-import?secret=x', { token: credential.token })).status, 400);
+  access.revoke(credential.deviceId);
+  assert.equal((await request(gateway, '/v1/api-import', { token: credential.token, method: 'POST', payload: {} })).status, 401);
+  assert.equal(applied, 1);
+});
+
+test('remote workspace removal requires full control, checks busy state, retains files and deduplicates', async context => {
+  const { gateway, manager, access, visible, pair, root } = fixture(context);
+  const credential = pair();
+  await gateway.start('127.0.0.1', 0);
+  const payload = { action: 'delete-workspace', workspaceId: 'allowed', expectedName: 'Allowed', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
+  const send = value => request(gateway, '/v1/commands', { token: credential.token, method: 'POST', payload: value });
+  assert.equal((await send(payload)).status, 403);
+  access.setScope(credential.deviceId, [], { allWorkspaces: true, includeUnassigned: true });
+  manager.controlStarts.set(visible.id, {});
+  assert.equal((await send({ ...payload, requestId: require('node:crypto').randomUUID() })).body.ok, false);
+  manager.controlStarts.delete(visible.id);
+  assert.equal((await send({ ...payload, expectedName: 'stale', requestId: require('node:crypto').randomUUID() })).body.ok, false);
+  assert.equal((await send(payload)).body.ok, true);
+  assert.equal((await send(payload)).body.ok, true);
+  assert.equal(fs.existsSync(root), true);
+  assert.equal(manager.workspaces.sessionMeta().sessionWorkspace[visible.id], null);
+  assert.equal(visible.cwd, root);
+});
+
+test('workspace rename is scoped, checks old name and deduplicates retries', async context => {
+  const { gateway, access, pair, manager } = fixture(context);
+  const credential = pair(); await gateway.start('127.0.0.1', 0);
+  const payload = { action: 'rename-workspace', workspaceId: 'allowed', expectedName: 'Allowed', name: 'Renamed', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
+  const send = value => request(gateway, '/v1/commands', { token: credential.token, method: 'POST', payload: value });
+  assert.equal((await send(payload)).status, 403);
+  access.setScope(credential.deviceId, [], { allWorkspaces: true, includeUnassigned: true });
+  assert.equal((await send(payload)).body.ok, true);
+  assert.equal((await send(payload)).body.ok, true);
+  assert.equal(manager.workspaces.sessionMeta().workspaces.find(entry => entry.id === 'allowed').name, 'Renamed');
+  assert.equal((await send({ ...payload, requestId: require('node:crypto').randomUUID() })).body.ok, false);
+});
+
+test('batch deletion supports 100 targets through the HTTP command limit', async context => {
+  const { gateway, manager, pair } = fixture(context);
+  const credential = pair(); await gateway.start('127.0.0.1', 0);
+  const targets = Array.from({ length: 100 }, () => { const conversation = manager.create('codex', 'allowed'); return { id: conversation.id, seq: conversation.seq }; });
+  const payload = { action: 'delete', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, targets };
+  assert.ok(JSON.stringify(payload).length > 4096);
+  const reply = await request(gateway, '/v1/commands', { token: credential.token, method: 'POST', payload });
+  assert.equal(reply.status, 200);
+  assert.equal(reply.body.ok, true);
+  assert.ok(targets.every(target => !manager.items.has(target.id)));
+});
+
+test('archived listing and restore obey workspace scopes and reject stale sequences', async context => {
+  const { gateway, manager, visible, hidden, pair } = fixture(context);
+  const credential = pair(); await gateway.start('127.0.0.1', 0);
+  await manager.command('codex', 'archive-session', { id: visible.id, archived: true });
+  await manager.command('kimi', 'archive-session', { id: hidden.id, archived: true });
+  const archived = await request(gateway, '/v1/archived?offset=0', { token: credential.token });
+  assert.deepEqual(archived.body.conversations.map(entry => entry.id), [visible.id]);
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token })).status, 404);
+  const payload = { action: 'restore', conversationId: visible.id, expectedSeq: visible.seq, requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
+  const send = value => request(gateway, '/v1/commands', { token: credential.token, method: 'POST', payload: value });
+  assert.equal((await send({ ...payload, conversationId: hidden.id })).status, 404);
+  assert.equal((await send({ ...payload, requestId: require('node:crypto').randomUUID(), expectedSeq: -1 })).body.ok, false);
+  assert.equal((await send(payload)).body.ok, true);
+  assert.equal((await send(payload)).body.ok, true);
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token })).status, 200);
+  assert.equal((await request(gateway, '/v1/archived', { token: credential.token })).body.conversations.length, 0);
+});
+
+test('desktop attachments are scoped, bounded and deduplicated without accepting client filesystem paths', async context => {
+  const { gateway, manager, visible, pair, root } = fixture(context);
+  const credential = pair(); await gateway.start('127.0.0.1', 0);
+  let sent = 0, files, prompt;
+  manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage(text, attachments) { sent++; files = attachments; prompt = text; return true; }, interrupt() {} });
+  const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'send', expectedSeq: visible.seq, prompt: 'Read notes',
+    attachments: [{ name: 'notes.txt', data: Buffer.from('Only fixture data').toString('base64'), isImage: false }] };
+  const send = value => request(gateway, `/v1/conversations/${visible.id}/commands`, { token: credential.token, method: 'POST', payload: value });
+  assert.equal((await send({ ...payload, requestId: require('node:crypto').randomUUID(), attachments: [{ ...payload.attachments[0], path: '/etc/passwd' }] })).body.ok, false);
+  assert.equal((await send({ ...payload, requestId: require('node:crypto').randomUUID(), image: 'bad' })).body.ok, false);
+  assert.equal((await send(payload)).body.ok, true);
+  assert.equal((await send(payload)).body.ok, true);
+  assert.equal(sent, 1); assert.equal(files[0].name, 'notes.txt');
+  assert.equal(fs.readFileSync(files[0].path, 'utf8'), 'Only fixture data');
+  assert.equal(path.dirname(files[0].path), path.join(root, 'device-attachments'));
+  assert.ok(prompt.includes(files[0].path.replace(/\\/g, '\\\\')));
+  const snapshot = await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token });
+  assert.equal(snapshot.body.messages.at(-1).text, 'Read notes');
+  assert.deepEqual(snapshot.body.messages.at(-1).attachedFiles, [{ name: 'notes.txt', isImage: false }]);
+  assert.equal(JSON.stringify(snapshot.body.messages).includes('device-attachments'), false);
 });
 
 test('mobile images use bounded server-owned paths and retry sends only once', async context => {

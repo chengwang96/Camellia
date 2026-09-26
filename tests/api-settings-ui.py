@@ -46,9 +46,24 @@ try:
         errors=[]; page.on('pageerror',lambda e:errors.append(str(e)))
         page.expose_function('testRpc',rpc);page.add_init_script(bridge)
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri());page.wait_for_load_state('networkidle')
+        nav_icons=page.locator('.settings-nav nav button > svg.nav-icon')
+        expect(nav_icons).to_have_count(8)
+        for icon in nav_icons.all():
+            expect(icon).to_have_attribute('aria-hidden','true')
+            expect(icon).to_have_attribute('focusable','false')
+            expect(icon).to_have_attribute('viewBox','0 0 24 24')
+            assert icon.bounding_box()['width']==18 and icon.bounding_box()['height']==18
+        page.set_viewport_size({'width':560,'height':900})
+        for icon in nav_icons.all():
+            bounds=icon.bounding_box()
+            button_bounds=icon.locator('..').bounding_box()
+            assert abs(bounds['x']+bounds['width']/2-button_bounds['x']-button_bounds['width']/2)<1
+        page.set_viewport_size({'width':1040,'height':900})
         page.locator('[data-view=providers]').click()
         expect(page.locator('#providers')).to_contain_text('Add your first provider')
-        page.locator('.router-options > summary').click()
+        expect(page.locator('.router-options summary')).to_have_count(0)
+        expect(page.locator('#enabled')).to_be_visible()
+        expect(page.locator('#port')).to_be_visible()
         page.locator('#port').fill(str(port))
         page.locator('#addProvider').click()
         page.locator('#preset').select_option('ollama');page.locator('#confirmAdd').click()
@@ -396,7 +411,7 @@ try:
           };
         }""")
         mobile_nav = page.locator('[data-view=storage] + [data-view=mobile]')
-        expect(mobile_nav).to_have_text('▯Mobile access')
+        expect(mobile_nav).to_have_text('Mobile access')
         page.evaluate("window.testMobileFailure = 'Local remote-access window required'")
         mobile_nav.click()
         expect(mobile_nav).to_have_attribute('aria-current', 'page')

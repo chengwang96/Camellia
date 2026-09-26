@@ -23,4 +23,12 @@ public class ModelLabelTest {
         assertEquals("DS Chat", ModelLabel.compact("deepseek-chat"));
         assertEquals("", ModelLabel.compact(null));
     }
+
+    @Test public void registryTagsDoNotHideTheFamily() {
+        assertEquals("K3", ModelLabel.compact("kimi-k3:cloud"));
+        assertEquals("K2.5", ModelLabel.compact("kimi-k2.5:latest"));
+        assertEquals("Sol", ModelLabel.compact("gpt-5.6-sol:free"));
+        assertEquals("R1", ModelLabel.compact("deepseek-r1:7b"));
+        assertEquals("MiMo 2.6 Pro", ModelLabel.compact("mimo-v2.6-pro:cloud"));
+    }
 }

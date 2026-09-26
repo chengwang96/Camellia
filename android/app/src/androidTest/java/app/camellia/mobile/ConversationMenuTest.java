@@ -53,9 +53,10 @@ public class ConversationMenuTest extends InstrumentationTestCase {
         stage("initialize encrypted fixture");
         encrypted = new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private"); encrypted.clear();
         LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
-        JSONObject first = store.createConversation("", "missing-route"), second = store.createConversation("", "missing-route");
-        first.put("title", "First chat"); second.put("title", "Second chat"); store.save();
-        String id = first.getString("id"), other = second.getString("id");
+        JSONObject first = store.createConversation("", "missing-route"), second = store.createConversation("", "missing-route"),
+            third = store.createConversation("", "missing-route");
+        first.put("title", "First chat"); second.put("title", "Second chat"); third.put("title", "Third chat"); store.save();
+        String id = first.getString("id"), other = second.getString("id"), thirdId = third.getString("id");
         stage("launch local conversation list");
         activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         stage("open long-press menu");
@@ -64,7 +65,7 @@ public class ConversationMenuTest extends InstrumentationTestCase {
             assertNull(root().findViewWithTag("localConversationMenu:" + id));
             assertTrue(row.performLongClick()); assertEquals(1f, row.getAlpha()); assertEquals(0f, row.getTranslationY());
             ViewGroup scroll = (ViewGroup) menu().panel.getChildAt(menu().panel.getChildCount() - 1);
-            assertEquals(4, ((ViewGroup) scroll.getChildAt(0)).getChildCount());
+            assertEquals(5, ((ViewGroup) scroll.getChildAt(0)).getChildCount());
             if (PopupSurface.supportsBlur(activity)) assertNotNull(menu().panel.findViewWithTag("glassBackdrop"));
         });
         stage("capture menu screenshot");
@@ -74,7 +75,13 @@ public class ConversationMenuTest extends InstrumentationTestCase {
                 shot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
             } finally { shot.recycle(); }
         }
+        stage("archive conversation");
+        ui(() -> root().findViewWithTag("localConversation:" + thirdId).performLongClick());
+        ui(() -> menu().panel.findViewWithTag("conversationAction:archive").performClick());
+        assertTrue(new LocalChatStore(activity).conversation(thirdId).getBoolean("archived"));
+        ui(() -> assertNull(root().findViewWithTag("localConversation:" + thirdId)));
         stage("pin conversation");
+        ui(() -> root().findViewWithTag("localConversation:" + id).performLongClick());
         ui(() -> menu().panel.findViewWithTag("conversationAction:pin").performClick());
         assertTrue(new LocalChatStore(activity).conversation(id).getBoolean("pinned"));
         assertEquals(id, new LocalChatStore(activity).orderedConversations("").get(0).getString("id"));

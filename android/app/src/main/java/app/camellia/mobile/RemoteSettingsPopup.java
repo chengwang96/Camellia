@@ -62,7 +62,7 @@ final class RemoteSettingsPopup {
             row(name, name.equals(id) ? "" : id, id.equals(settings.optString("model")), "remoteModelOption:" + id, () -> choose("model", id));
         }
         divider();
-        row(tr("思考等级", "Thinking level"), settings.optString("thinking").isEmpty() ? tr("默认", "Default") : settings.optString("thinking"), false, "remoteThinkingSettings", this::thinking);
+        row(tr("思考等级", "Thinking level"), LocalChatThinking.display(settings.optString("thinking"), chinese), false, "remoteThinkingSettings", this::thinking);
         position();
     }
     private void thinking() {
@@ -75,7 +75,8 @@ final class RemoteSettingsPopup {
             JSONArray levels = model.optJSONArray("thinking"); if (levels == null) continue;
             for (int levelIndex = 0; levelIndex < levels.length(); levelIndex++) {
                 String level = levels.optString(levelIndex);
-                row(level, "", level.equals(settings.optString("thinking")), "remoteThinkingOption:" + level, () -> choose("thinking", level));
+                String label = LocalChatThinking.display(level, chinese);
+                row(label, label.equals(level) ? "" : level, level.equals(settings.optString("thinking")), "remoteThinkingOption:" + level, () -> choose("thinking", level));
             }
         }
         position();

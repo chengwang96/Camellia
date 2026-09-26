@@ -14,6 +14,7 @@ const titles = {
   archived: ["Archived", "Restore or permanently delete archived conversations."],
   storage: ["Space cleanup", "Review unused local files before deleting them."],
   mobile: ["Mobile access", "Connect your phone through Tailscale."],
+  devices: ["CLI devices", "Add Linux servers through Tailscale and work in their workspaces."],
   engines: ["Engine Settings", "Manage native settings in one place."],
   runtimes: ["Runtime", "Download only the engines you need."],
 };
@@ -34,6 +35,7 @@ function setView(next, engine, focus) {
   $('save').hidden = next !== 'providers';
   engineUI.setVisible(next === 'engines');
   window.mobileAccessUI.setVisible(next === 'mobile');
+  window.cliDevicesUI?.setVisible(next === 'devices');
   if (next === 'usage') { fillUsageFilters(); renderUsage(); renderBalances(); }
   if (next === 'engines') void (focus === 'account' ? engineUI.openAccount(engine) : engineUI.select(engine || engineUI.selected()));
   if (next === 'runtimes') void engineUI.runtimePage(focus);
@@ -520,7 +522,7 @@ async function refresh(initial = false) {
     }
   } catch (e) { status(e.message, true); }
 }
-$('refresh').onclick = () => view === 'mobile' ? window.mobileAccessUI.refresh() : refresh();
+$('refresh').onclick = () => view === 'mobile' ? window.mobileAccessUI.refresh() : view === 'devices' ? window.cliDevicesUI?.refresh() : refresh();
 let storagePreview = null, storageBusy = false;
 const storageBytes = bytes => bytes < 1024 ? fmt(bytes) + ' B' : bytes < 1024 ** 2 ? fmt(bytes / 1024) + ' KiB' : bytes < 1024 ** 3 ? fmt(bytes / 1024 ** 2) + ' MiB' : fmt(bytes / 1024 ** 3) + ' GiB';
 function storageControls() {

@@ -34,12 +34,14 @@ function run(exe, args, options = {}, onOutput = () => {}) {
     });
   });
 }
-function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {}, runCommand = run, downloadOptions = () => undefined, runtimeMode = () => 'api' }) {
+function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {}, runCommand = run, downloadOptions = () => undefined, runtimeMode = () => 'api', platform = process.platform, arch = process.arch }) {
   const pending = new Map(), progress = new Map();
   const entry = (dir, engine) => {
     if (engine === 'codex') {
-      const target = process.platform === 'win32' ? 'x86_64-pc-windows-msvc' : 'aarch64-apple-darwin';
-      return path.join(dir, 'node_modules', '@openai', `codex-${process.platform}-${process.arch}`, 'vendor', target, 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex');
+      const cpu = { x64: 'x86_64', arm64: 'aarch64' }[arch];
+      const suffix = { win32: 'pc-windows-msvc', darwin: 'apple-darwin', linux: 'unknown-linux-musl' }[platform];
+      if (!cpu || !suffix) throw new Error('Unsupported Codex runtime platform');
+      return path.join(dir, 'node_modules', '@openai', `codex-${platform}-${arch}`, 'vendor', `${cpu}-${suffix}`, 'bin', platform === 'win32' ? 'codex.exe' : 'codex');
     }
     return path.join(dir, 'node_modules', ENGINES[engine].package, ENGINES[engine].entry);
   };

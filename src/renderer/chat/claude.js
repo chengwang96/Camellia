@@ -1194,14 +1194,14 @@ const context = { sessionId: null, workspaceId: null };
   }
   function turnBody() { return ensureTurn().querySelector('.turn-body'); }
 
-  async function showTurnArtifacts(turn, text, files, paths = []) {
+  async function showTurnArtifacts(turn, text, files, paths = [], roots = []) {
     if (!turn || !window.dshDesktop.resolveArtifacts) return;
     const sessionId = context.sessionId;
     const cwd = sidebar.sessions.find(session => session.id === sessionId)?.cwd
       || sidebar.workspaces.find(workspace => workspace.id === context.workspaceId)?.path || '';
     try {
       const result = await window.dshDesktop.resolveArtifacts({ sessionId: sharedChat ? sessionId : null, cwd,
-        paths: files ? files.map(file => file.path) : paths, text });
+        paths: files ? files.map(file => file.path) : paths, text, roots });
       if (!turn.isConnected || !result.ok || !result.files.length) return;
       const was = nearBottom();
       turn.querySelector('.turn-artifacts')?.remove();
@@ -2028,8 +2028,10 @@ const context = { sessionId: null, workspaceId: null };
         context.sessionId = ev.session_id;
         context.workspaceId = ev.workspaceId || null;
       }
+      const artifactTools = Object.values(pendingTools).filter(card => card.finished && !card.failed);
       void showTurnArtifacts(turnEl, Array.from(turnEl?.querySelectorAll('.md') || []).map(element => element.artifactText || '').join('\n'), ev.artifacts,
-        Object.values(pendingTools).filter(card => card.finished && !card.failed).flatMap(card => window.CamelliaArtifacts.toolPaths(card.name, card.inputData)));
+        artifactTools.flatMap(card => window.CamelliaArtifacts.toolPaths(card.name, card.inputData)),
+        artifactTools.flatMap(card => window.CamelliaArtifacts.toolRoots(card.inputData)));
       setStatus((stopped ? "Stopped · " : ok ? '' : "Error · ") + stats.join(' · '));
       turnEl = null;
       pendingTools = {};

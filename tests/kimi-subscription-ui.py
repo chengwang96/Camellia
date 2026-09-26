@@ -37,6 +37,16 @@ try:
             page.goto((repo/'src/renderer/settings/api-settings.html').as_uri()+'?page=engines&engine=kimi', wait_until='networkidle')
             expect(page.locator('#kimiAccountStatus')).to_contain_text('Signed in')
             expect(page.locator('#kimiConnection')).to_have_value('subscription')
+            account_choice = page.locator('#kimiAccountList .account-choice').first
+            expect(account_choice).to_be_visible()
+            expect(account_choice).to_have_attribute('aria-pressed', 'true')
+            for interaction in ['default', 'hover', 'focus']:
+                if interaction == 'hover':
+                    account_choice.hover()
+                elif interaction == 'focus':
+                    account_choice.focus()
+                bounds = account_choice.bounding_box()
+                assert bounds['width'] == bounds['height'] == 14, (theme, interaction, bounds)
             page.locator('#kimiModelDetails summary').click()
             expect(page.locator('#kimiModelList')).to_contain_text('Kimi Coding')
             page.locator('#kimiUsage').click()

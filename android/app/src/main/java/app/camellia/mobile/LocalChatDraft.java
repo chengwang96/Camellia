@@ -21,4 +21,17 @@ final class LocalChatDraft {
         if (editIndex >= 0) conversation.put("draftEditIndex", editIndex);
         else conversation.remove("draftEditIndex");
     }
+
+    static JSONArray images(JSONObject conversation) throws JSONException {
+        JSONArray saved = conversation.optJSONArray("draftImages");
+        if (saved != null) return new JSONArray(saved.toString());
+        int target = editIndex(conversation);
+        JSONArray original = target < 0 ? null : conversation.getJSONArray("messages").getJSONObject(target).optJSONArray("images");
+        return original == null ? new JSONArray() : new JSONArray(original.toString());
+    }
+
+    static void save(JSONObject conversation, String text, int editIndex, java.util.List<String> images) throws JSONException {
+        save(conversation, text, editIndex);
+        conversation.put("draftImages", new JSONArray(images));
+    }
 }

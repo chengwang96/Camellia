@@ -335,7 +335,7 @@ try:
         model.get_by_role('option', name='OpenAI', exact=True).click()
         # A dummy key with the router disabled never reaches an upstream.
         api.get_by_role('textbox', name='API Key 1', exact=True).fill('test-ui-key')
-        api.locator('.router-options > summary').click()
+        expect(api.locator('#enabled')).to_be_visible()
         api.locator('#enabled').uncheck()
         api.locator('#save').click()
         expect(api.locator('#status')).to_contain_text('Saved')

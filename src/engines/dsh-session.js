@@ -22,9 +22,10 @@ const DSH_PRESETS = {
     description: 'Full access without confirmation prompts.' },
 };
 
-function dshAcpSpec({ runtime, home, model, route, permissionMode, env }) {
+function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig = {} }) {
   fs.mkdirSync(home, { recursive: true });
   writeText(path.join(home, 'settings.yaml'), YAML.stringify({
+    ...nativeConfig,
     'agent-default-model': { provider: 'api-pool', model },
     permission: { presets: DSH_PRESETS, defaultPreset: nativeMode('dsh', permissionMode, 'auto') },
     'llm-pi-ai': { providers: { 'api-pool': { displayName: 'Camellia API', apiKeyEnv: 'DSH_API_ROUTER_KEY',
@@ -33,7 +34,7 @@ function dshAcpSpec({ runtime, home, model, route, permissionMode, env }) {
   return { args: [runtime.file, '--profile', 'acp'], env: { ...env, DSH_HOME: home, DSH_API_ROUTER_KEY: 'proxy-managed' },
     noModes: true, modelValue: JSON.stringify(['api-pool', model]), thinkingId: 'reasoning_effort' };
 }
-function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, runtime, node, environment, onEvent, log }) {
+function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, runtime, node, environment, onEvent, log, nativeConfig = () => ({}), nativeRevision = () => '' }) {
   const sessions = new SessionPool();
   let generation = 0;
   const history = new ClaudeHistory(path.join(dataDir, 'dsh-chat-history'));
@@ -46,12 +47,12 @@ function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, r
   }
   function ensure(opts) {
     const current = sessions.get(opts);
-    const selected = { ...settings(), ...opts.settings, cwd: opts.cwd };
+    const selected = { ...settings(), ...opts.settings, cwd: opts.cwd, nativeRevision: nativeRevision() };
     selected.model = modelId(selected.model);
     if (!selected.model || !getModels().includes(selected.model)) throw new Error('Select a configured model first');
     if (current && !current.dead && current.opts.goalBridge === opts.goalBridge && current.sessionId === opts.sessionId && JSON.stringify(current.settings) === JSON.stringify(selected)) return current;
     const spec = dshAcpSpec({ runtime: runtime(), home: path.join(dataDir, 'dsh-chat', ...(opts.conversationId ? ['conversations', opts.conversationId] : [])), model: selected.model,
-      route: getRoute(), permissionMode: selected.permissionMode, env: environment() });
+      route: getRoute(), permissionMode: selected.permissionMode, env: environment(), nativeConfig: nativeConfig() });
     const previous = current?.shutdown();
     const session = new AcpSession({ name: 'DSH', gen: ++generation, opts, settings: selected, spec, exe: node(), spawn, log, history,
       onEvent: event => { if (sessions.get(opts) === session) onEvent({ ...event, conversationId: opts.conversationId }); }, onSessionId: () => {}, onResult: () => {} });

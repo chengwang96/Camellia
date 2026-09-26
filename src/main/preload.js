@@ -22,6 +22,14 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   openLogs: () => ipcRenderer.invoke('dsh:open-logs'),
   openSettingsWindow: (target) => ipcRenderer.invoke('dsh:open-settings-window', target),
   openMobileAccess: () => ipcRenderer.invoke('dsh:open-mobile-access'),
+  openCliDevices: () => ipcRenderer.invoke('camellia:open-devices'),
+  // CLI devices page lives inside the settings document and drives the same
+  // device service as the standalone debugging page.
+  camelliaDevices: {
+    call: (action, payload) => ipcRenderer.invoke('camellia:devices', { action, payload }),
+    onEvent: callback => subscribe('camellia:device-event', callback),
+    onTransfer: callback => subscribe('camellia:device-transfer', callback),
+  },
   remoteControl: (action, payload) => ipcRenderer.invoke('dsh:remote-control', { action, payload }),
   engineSettingsGet: (payload) => ipcRenderer.invoke('dsh:engine-settings-get', payload),
   engineSettingsSave: (payload) => ipcRenderer.invoke('dsh:engine-settings-save', payload),

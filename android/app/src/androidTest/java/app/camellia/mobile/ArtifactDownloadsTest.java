@@ -54,11 +54,12 @@ public class ArtifactDownloadsTest extends InstrumentationTestCase {
                     assertTrue(entryText.equals("产物") || entryText.equals("Files"));
                     View header = (View) root.findViewWithTag("pageTitle").getParent().getParent();
                     assertSame(header, entry.getParent());
-                    var add = MainActivity.class.getDeclaredMethod("addMessage", String.class, String.class, String.class, boolean.class, boolean.class,
-                        org.json.JSONArray.class, boolean.class, String.class, long.class, long.class);
-                    add.setAccessible(true);
-                    add.invoke(activity, "artifact-test", "Camellia", "安装包：`dist/Camellia-Android-0.3.37-debug.apk`", false, false, null, false, "test", 0L, 0L);
-                    View inline = root.findViewWithTag("messageArtifacts:artifact-test");
+                    var history = MainActivity.class.getDeclaredField("history"); history.setAccessible(true);
+                    @SuppressWarnings("unchecked")
+                    java.util.TreeMap<Long, JSONObject> rows = (java.util.TreeMap<Long, JSONObject>) history.get(activity);
+                    rows.put(1L, new JSONObject().put("seq", 1).put("role", "assistant").put("text", "安装包：`dist/Camellia-Android-0.3.37-debug.apk`"));
+                    var render = MainActivity.class.getDeclaredMethod("renderMessages", JSONObject.class); render.setAccessible(true); render.invoke(activity, new Object[]{null});
+                    View inline = root.findViewWithTag("messageArtifacts:message:1");
                     assertTrue(inline instanceof ArtifactMessageView);
                     assertNotNull(inline.findViewWithTag("artifactName:Camellia-Android-0.3.37-debug.apk"));
                     assertTrue(inline.findViewWithTag("artifactAction:Camellia-Android-0.3.37-debug.apk").hasOnClickListeners());

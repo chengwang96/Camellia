@@ -22,7 +22,9 @@ function message(row) {
     if (!process.length) process = cleanProcess(row.outputBlocks.filter(block => block.phase !== 'final_answer')
       .map(block => ({ type: 'text', text: block.text })));
   }
-  return { seq: row.seq, role: row.role, engine: row.engine, at: row.at, ...text(value), ...(process.length ? { process } : {}) };
+  const attachedFiles = (Array.isArray(row.attachments) ? row.attachments : []).filter(file => typeof file?.name === 'string')
+    .slice(0, 9).map(file => ({ name: file.name.replace(/[\\/\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '_').slice(0, 180), isImage: file.isImage === true }));
+  return { seq: row.seq, role: row.role, engine: row.engine, at: row.at, ...text(value), ...(process.length ? { process } : {}), ...(attachedFiles.length ? { attachedFiles } : {}) };
 }
 
 class RemoteReadModel {
@@ -30,9 +32,9 @@ class RemoteReadModel {
   workspaces() {
     return this.manager.workspaces.sessionMeta().workspaces.map(({ id, name }) => ({ id, name }));
   }
-  allowed(device, conversation, meta = this.manager.workspaces.sessionMeta()) {
+  allowed(device, conversation, meta = this.manager.workspaces.sessionMeta(), includeArchived = false) {
     const workspaceId = meta.sessionWorkspace[conversation.id];
-    if (meta.archived[conversation.id]) return false;
+    if (meta.archived[conversation.id] && !includeArchived) return false;
     if (!workspaceId) return device.allWorkspaces === true || device.includeUnassigned === true;
     return Boolean((device.allWorkspaces === true || device.workspaceIds.includes(workspaceId))
       && meta.workspaces.some(workspace => workspace.id === workspaceId));
@@ -41,6 +43,13 @@ class RemoteReadModel {
     const conversation = this.manager.items.get(id);
     if (!conversation || !this.allowed(device, conversation)) fail(404, 'Conversation not found');
     return conversation;
+  }
+  archived(device, offset = 0) {
+    const meta = this.manager.workspaces.sessionMeta();
+    const entries = [...this.manager.items.values()].filter(conversation => meta.archived[conversation.id] && this.allowed(device, conversation, meta, true))
+      .sort((first, second) => meta.archived[second.id] - meta.archived[first.id] || first.id.localeCompare(second.id));
+    return { conversations: entries.slice(offset, offset + 100).map(conversation => ({ ...this.summary(conversation, meta), archivedAt: meta.archived[conversation.id] })),
+      nextOffset: entries.length > offset + 100 ? offset + 100 : null };
   }
   summary(conversation, meta = this.manager.workspaces.sessionMeta()) {
     return { id: conversation.id, title: String(meta.titles[conversation.id] || conversation.title).slice(0, 200),

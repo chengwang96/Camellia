@@ -38,6 +38,10 @@ for (const button of document.querySelectorAll('[data-mode]')) {
   });
 }
 document.getElementById('openConfig').addEventListener('click', () => window.dshDesktop.openSettingsWindow());
+document.getElementById('openCliDevices').addEventListener('click', async () => {
+  try { const result = await window.dshDesktop.openCliDevices(); if (!result.ok) throw new Error(result.error); }
+  catch (error) { status.textContent = error.message; status.className = 'error'; }
+});
 document.getElementById('openBenchmark').addEventListener('click', () => window.dshDesktop.switchMode('benchmark'));
 function renderRuntimes(rows) {
   for (const row of rows) {

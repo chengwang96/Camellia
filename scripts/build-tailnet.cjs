@@ -4,8 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-function buildTailnet({ root = path.resolve(__dirname, '..'), platform = process.platform, arch = process.arch } = {}) {
-  const target = path.join(root, 'build/runtime-assets');
+function buildTailnet({ root = path.resolve(__dirname, '..'), platform = process.platform, arch = process.arch, target = path.join(root, 'build/runtime-assets') } = {}) {
   const goos = { win32: 'windows', darwin: 'darwin', linux: 'linux' }[platform];
   const goarch = { x64: 'amd64', arm64: 'arm64' }[arch];
   if (!goos || !goarch) throw new Error(`Unsupported embedded network platform: ${platform}/${arch}`);
