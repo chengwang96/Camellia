@@ -481,6 +481,62 @@ $('importConfig').onclick = async () => {
   } catch (e) { status(e.message, true); }
 };
 $('openLogs').onclick = () => api.openLogs();
+
+// Application updates: checking is read-only; installing replaces this
+// installation in place and restarts, so both steps stay explicit.
+let appUpdate = null, appUpdateBusy = false;
+function appUpdateControls() {
+  $('checkAppUpdate').disabled = appUpdateBusy;
+  const installable = Boolean(appUpdate?.updateAvailable && appUpdate.supported && appUpdate.name);
+  $('installAppUpdate').hidden = !installable;
+  $('installAppUpdate').disabled = appUpdateBusy;
+}
+function renderAppUpdate() {
+  const meta = $('appUpdateMeta'), details = $('appUpdateDetails');
+  if (!appUpdate) { details.hidden = true; return; }
+  const parts = [appUpdate.updateAvailable ? `v${appUpdate.latest} · ${appUpdate.name || ''}` : `v${appUpdate.current}`,
+    appUpdate.size ? `${(appUpdate.size / 1024 ** 2).toFixed(1)} MiB` : '', appUpdate.publishedAt ? new Date(appUpdate.publishedAt).toLocaleDateString(window.CamelliaI18n.locale) : ''].filter(Boolean);
+  meta.textContent = parts.join(' · ');
+  $('appUpdateNotes').textContent = appUpdate.notes || '';
+  details.hidden = !appUpdate.updateAvailable || !(appUpdate.notes || appUpdate.name);
+}
+$('checkAppUpdate').onclick = async () => {
+  if (appUpdateBusy) return;
+  appUpdateBusy = true; appUpdateControls();
+  $('appUpdateStatus').textContent = window.CamelliaI18n.t('Checking for updates…');
+  $('appUpdateProgress').hidden = true;
+  try {
+    const result = await api.appUpdateCheck();
+    if (!result.ok) throw new Error(result.error);
+    appUpdate = result;
+    $('appUpdateStatus').classList.remove('error');
+    $('appUpdateStatus').textContent = !result.updateAvailable ? window.CamelliaI18n.t('Camellia is up to date.')
+      : result.supported ? window.CamelliaI18n.t('v{0} is available.').replace('{0}', () => result.latest)
+      : window.CamelliaI18n.t('v{0} is available, but this platform has no in-place package.').replace('{0}', () => result.latest);
+  } catch (error) { appUpdate = null; $('appUpdateStatus').textContent = error.message; $('appUpdateStatus').classList.add('error'); }
+  finally { appUpdateBusy = false; appUpdateControls(); renderAppUpdate(); }
+};
+$('installAppUpdate').onclick = async () => {
+  if (appUpdateBusy) return;
+  appUpdateBusy = true; appUpdateControls();
+  $('appUpdateProgress').hidden = false; $('appUpdateProgress').value = 0;
+  $('appUpdateStatus').textContent = window.CamelliaI18n.t('Downloading the update…');
+  try {
+    const result = await api.appUpdateInstall();
+    if (!result.ok) throw new Error(result.error);
+    if (result.kind === 'disk-image') $('appUpdateStatus').textContent = window.CamelliaI18n.t('The installer was downloaded. Open it to finish updating.');
+  } catch (error) { $('appUpdateStatus').textContent = error.message; }
+  finally { appUpdateBusy = false; appUpdateControls(); }
+};
+api.onAppUpdateState(state => {
+  $('appUpdateProgress').hidden = state.status === 'error';
+  if (typeof state.percent === 'number') $('appUpdateProgress').value = state.percent;
+  $('appUpdateStatus').textContent = state.status === 'downloading'
+    ? window.CamelliaI18n.t('Downloading the update…') + (typeof state.percent === 'number' ? ` ${state.percent}%` : '')
+    : state.status === 'applying' ? window.CamelliaI18n.t('Installing the update…')
+    : state.status === 'restarting' ? window.CamelliaI18n.t('Restarting Camellia…')
+    : state.status === 'error' ? state.error : $('appUpdateStatus').textContent;
+});
 // General preferences apply on change, like the engines' own settings pages.
 async function saveGeneral() {
   try {

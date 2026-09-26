@@ -206,6 +206,9 @@ dialog > .primary { margin-top: 20px; }
 #storageSummary { white-space: pre-wrap; overflow-wrap: anywhere; }
 #cleanStorage { margin-top: 20px; }
 .setting-row > div.archived-actions { flex: 0 0 auto; display: flex; gap: 8px; }
+.app-update-actions { flex: 0 0 auto; display: flex; gap: 8px; }
+.app-update progress { width: 100%; height: 7px; margin-top: 10px; accent-color: var(--dsw-alias-state-business-primary); }
+#appUpdateDetails pre { max-height: 260px; overflow: auto; white-space: pre-wrap; font: 12px/1.7 Consolas, 'Cascadia Code', monospace; }
 .archived-actions button { font-size: 12px; min-height: 30px; padding: 4px 12px; }
 @media (max-width: 700px) {
   .settings-nav { flex-basis: 62px; padding: 22px 6px; }

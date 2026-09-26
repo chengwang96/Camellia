@@ -26,6 +26,7 @@ const { createProviderInsights } = require('../api/provider-insights.js');
 const { createContextCapacity } = require('../api/context-capacity.js');
 const { createRuntimeManager, ENGINES, run: runtimeRun } = require('./runtime-manager.js');
 const { createRuntimeUpdates } = require('./runtime-updates.js');
+const { createAppUpdates } = require('./app-updates.js');
 const { downloadSettings } = require('./download-network.js');
 const { createEngineSettings, backup } = require('../engines/engine-settings.js');
 const runtimePaths = require('./runtime-paths.js');
@@ -208,6 +209,22 @@ async function chooseDownloadConnection(engine) {
   return { ...saved, mode: hasProxy && response === 0 ? 'proxy' : 'direct' };
 }
 let runtimeUpdatesService;
+let appUpdatesService;
+function appUpdates() {
+  if (!appUpdatesService) {
+    appUpdatesService = createAppUpdates({ currentVersion: app.getVersion(),
+      appPath: app.isPackaged ? path.dirname(process.execPath).replace(/[\\/]MacOS$/, '') : null,
+      platformSupported: app.isPackaged,
+      relaunch: () => { app.relaunch(); app.exit(0); },
+      quit: () => app.quit(),
+      reveal: file => shell.showItemInFolder(file),
+      log,
+      // The installer needs a visible window; macOS archive updates apply
+      // silently, so downloads still follow the user's saved connection.
+    });
+  }
+  return appUpdatesService;
+}
 function runtimeUpdates() {
   if (!runtimeUpdatesService) {
     const root = app.isPackaged ? process.resourcesPath : APP_ROOT;
@@ -1290,6 +1307,26 @@ if (!gotSingleInstanceLock) {
     },
     'runtime-ensure': async ({ engine }) => ({ ok: true, runtime: await runtimes().ensure(engine) }),
     'runtime-check-updates': async () => ({ ok: true, engines: await runtimeUpdates().check() }),
+    'app-update-check': () => appUpdates().check(),
+    'app-update-install': async () => {
+      const send = state => {
+        for (const window of [settingsWindow, mainWindow]) if (window && !window.isDestroyed()) window.webContents.send('dsh:app-update-state', state);
+      };
+      // Replacing the installation closes the application, so confirm first and
+      // reuse this check instead of querying the release feed twice.
+      const available = await appUpdates().check();
+      if (!available.updateAvailable) throw new Error('Camellia is already up to date');
+      const busy = ['claude', 'codex', 'dsh', 'kimi', 'antigravity'].filter(engineBusy);
+      const { response } = await dialog.showMessageBox(settingsWindow || mainWindow, {
+        type: 'question', title: uiText('Install update'), noLink: true,
+        message: uiText(`Download and install Camellia v${available.latest}?`),
+        detail: uiText(busy.length ? 'Camellia will close and replace the current installation. Running responses will stop; your conversations and settings are kept.'
+          : 'Camellia will close and replace the current installation. Your conversations, settings and downloaded engines are kept.'),
+        buttons: [uiText('Cancel'), uiText('Install and restart')], defaultId: 1, cancelId: 0,
+      });
+      if (response !== 1) return { ok: true, canceled: true };
+      return appUpdates().install(send, available);
+    },
     'runtime-update': async ({ engine }) => {
       if (engineBusy(engine)) throw new Error('Stop conversations using this engine before updating it');
       return runtimeUpdates().update(engine);
