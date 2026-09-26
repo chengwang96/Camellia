@@ -100,7 +100,7 @@ test('managed runtime install resolves linked prefixes, coalesces installs, and 
     for (const file of ['package.json', 'package-lock.json']) f.put(path.join('distribution/runtimes', engine, file), '{}');
   }
   let calls = 0, prompts = 0, fail = true;
-  const manager = createRuntimeManager({ root, installRoot: target, node: process.execPath, npm: 'fixture-npm',
+  const manager = createRuntimeManager({ root, installRoot: target, node: process.execPath, npm: 'fixture-npm', discoverLocal: false,
     downloadOptions: () => { prompts++; return { mode: fail ? 'proxy' : 'direct', url: 'http://proxy.example:8080/' }; },
     runCommand: async (_exe, args, options) => {
     calls++; assert.ok(args.includes('ci')); assert.ok(args.includes('--ignore-scripts'));
@@ -131,7 +131,7 @@ test('source setup and startup checks leave missing engines uninstalled', async 
   for (const options of [{}, { check: true }]) {
     const rows = await prepare({ root, ...options });
     assert.deepEqual(rows.map(row => row.id), ['claude', 'codex', 'dsh', 'kimi', 'antigravity']);
-    assert.ok(rows.every(row => row.status === 'missing'));
+    assert.ok(rows.every(row => row.status === 'missing' || (row.status === 'ready' && row.external)), 'Only pre-existing external runtimes may be ready');
     assert.deepEqual(fs.readdirSync(root), [], 'No engine files are downloaded by default');
   }
 });

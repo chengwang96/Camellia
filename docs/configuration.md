@@ -245,8 +245,12 @@ Omit `--write` to preview the results. The original library revision, data hashe
 | Usage | Request and token filters, trends, detailed records, and CSV export |
 | Balances & Quotas | Account balances, subscription windows, reset times, and observed trends |
 | Engine Settings | DSH's native panel, and common or advanced Claude/Codex/Kimi/Antigravity configuration |
-| Runtime | Optional downloads for each engine, installed versions, paths, progress, and retries |
+| Runtime | Optional downloads for each engine, installed versions, custom local paths, progress, and retries |
 | General | Interface language, theme, automatic balance refresh, application data, and logs |
+
+In desktop **Settings → Runtime**, use **Browse…** or paste an absolute path, then **Save path** to select your own Claude, Codex, DSH, Kimi, or Antigravity installation. DSH and Kimi require their JavaScript entry files; Claude, Codex and Antigravity CLI require native executables. Standard npm wrappers are resolved to their package entry when possible. Saving runs the selected program to validate its version. Stop active responses before changing paths; the next message uses the new runtime. **Use automatic detection** clears the override without deleting or changing the local installation. Custom paths take priority over bundled/downloaded runtimes and are saved in the desktop configuration; update those installations with their original installer.
+
+Antigravity has separate paths for **Python (API)** and **Antigravity CLI (Google subscription)**. The selected Python environment must already provide the `google.antigravity` SDK; saving checks that it imports successfully. Camellia neither installs packages into nor modifies a user-selected Python environment. This path does not change the separate benchmark Python environments. If a saved executable is removed, an error is shown rather than silently downloading or choosing a different installation.
 
 Common engine options have dedicated controls. Other native options are available through advanced configuration editors.
 

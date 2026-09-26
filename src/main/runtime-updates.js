@@ -57,7 +57,8 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     const connection = createDownloadConnection(downloadSettings());
     try {
       return await Promise.all(manager.state().map(async row => {
-        const base = { id: row.id, name: row.name, installed: row.status === 'ready' ? row.version || null : null, latest: null, updateAvailable: false, checkable: true, error: null };
+        const base = { id: row.id, name: row.name, external: Boolean(row.external), installed: row.status === 'ready' ? row.version || null : null, latest: null, updateAvailable: false, checkable: true, error: null };
+        if (row.external) return { ...base, checkable: false };
         if (engines[row.id].type === 'python' && row.mode === 'subscription') return { ...base, checkable: false };
         try {
           const latest = await latestVersion(connection, row.id, row.mode);
@@ -83,6 +84,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
   async function perform(engine) {
     const found = manager.locate(engine);
     if (!found) throw new Error('Download this engine before updating it');
+    if (found.external) throw new Error('This CLI is installed outside Camellia. Update it using its original installer.');
     if (found.mode === 'subscription') throw new Error('This runtime ships with the app and cannot be updated here');
     const connection = createDownloadConnection(downloadSettings());
     try {

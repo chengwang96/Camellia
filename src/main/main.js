@@ -162,12 +162,24 @@ function desktopZoom() {
 }
 
 let runtimeManager;
+function engineBusy(engine) {
+  return sharedConversations.isBusy(engine)
+    || (engine === 'codex' && (codex.session?.running || codex.goal.armed))
+    || (engine === 'claude' && (claudeSessions.legacy?.running || goalDriver.armed))
+    || (engine === 'kimi' && (kimiSessions.legacy?.running || kimiGoalDriver.armed))
+    || (engine === 'antigravity' && (antigravity.session?.running || antigravity.goal.armed));
+}
 function runtimes() {
   if (!runtimeManager) {
     const root = app.isPackaged ? process.resourcesPath : APP_ROOT;
     const node = detectNode();
     const npm = firstExisting(runtimePaths.npmCandidates(node, { resourcesPath: app.isPackaged ? root : undefined, env: process.env }));
     runtimeManager = createRuntimeManager({ root, installRoot: app.getPath('userData'), node, npm,
+      customPaths: () => loadConfig().runtimePaths || {},
+      saveCustomPaths: runtimePaths => saveConfig({ runtimePaths }),
+      beforePathSave: engine => {
+        if (engineBusy(engine)) throw new Error('Stop conversations using this engine before changing its path');
+      },
       downloadOptions: chooseDownloadConnection,
       runtimeMode: engine => engine === 'antigravity' ? antigravity.settings().connection : 'api',
       onChange: state => {
@@ -903,6 +915,8 @@ function firstExisting(paths) {
 }
 
 function dshBinCandidates() {
+  const custom = loadConfig().runtimePaths?.dsh;
+  if (custom?.file) return [runtimes().locate('dsh').file];
   const explicit = loadConfig().dshBin;
   const out = [];
   if (explicit) out.push(explicit);
@@ -1185,11 +1199,6 @@ if (!gotSingleInstanceLock) {
     } catch (error) { return { ok: false, error: error.message }; }
   });
 
-  const engineBusy = engine => sharedConversations.isBusy(engine)
-    || (engine === 'codex' && (codex.session?.running || codex.goal.armed))
-    || (engine === 'claude' && (claudeSessions.legacy?.running || goalDriver.armed))
-    || (engine === 'kimi' && (kimiSessions.legacy?.running || kimiGoalDriver.armed))
-    || (engine === 'antigravity' && (antigravity.session?.running || antigravity.goal.armed));
   for (const [name, handler] of Object.entries({
     'benchmark-state': () => ({ ok: true, ...benchmarks().state() }),
     'benchmark-start': async payload => ({ ok: true, ...await benchmarks().start(payload) }),
@@ -1250,6 +1259,16 @@ if (!gotSingleInstanceLock) {
       return { ok: true, ...result };
     },
     'runtime-state': () => ({ ok: true, engines: runtimes().state() }),
+    'runtime-set-path': async ({ engine, file, mode }) => {
+      if (engineBusy(engine)) throw new Error('Stop conversations using this engine before changing its path');
+      const engines = await runtimes().setPath(engine, file, mode);
+      if (engine === 'claude') await claudeSessions.shutdown();
+      if (engine === 'kimi') await kimiSessions.shutdown();
+      if (engine === 'antigravity') await antigravity.shutdown();
+      if (engine === 'codex') await codex.shutdown();
+      if (engine === 'dsh') await dshChat.shutdown();
+      return { ok: true, engines };
+    },
     'runtime-ensure': async ({ engine }) => ({ ok: true, runtime: await runtimes().ensure(engine) }),
     'runtime-check-updates': async () => ({ ok: true, engines: await runtimeUpdates().check() }),
     'runtime-update': async ({ engine }) => {

@@ -41,6 +41,11 @@
 .runtime-card p { margin: 10px 0 0; overflow-wrap: anywhere; }
 .runtime-card code { display: block; overflow-wrap: anywhere; margin-top: 8px; }
 .runtime-card details { margin-top: 12px; font-size: 12px; }
+.runtime-path { margin: 16px 0 0; padding: 0; border: 0; min-width: 0; }
+.runtime-path label { display: block; margin-bottom: 8px; font-size: 12px; }
+.runtime-path-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.runtime-path-actions input { flex: 1 1 240px; min-width: 0; width: 100%; }
+.runtime-path-actions button { flex-shrink: 0; }
 @media(max-width:850px) { .engine-tabs button { padding: 8px 10px; }.engine-field { gap: 12px; } }
 
 .codex-quotas { display: grid; gap: 10px; margin: 16px 0; }

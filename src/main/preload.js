@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   engineSettingsGet: (payload) => ipcRenderer.invoke('dsh:engine-settings-get', payload),
   engineSettingsSave: (payload) => ipcRenderer.invoke('dsh:engine-settings-save', payload),
   runtimeState: () => ipcRenderer.invoke('dsh:runtime-state'),
+  runtimeSetPath: (payload) => ipcRenderer.invoke('dsh:runtime-set-path', payload),
   runtimeEnsure: (payload) => ipcRenderer.invoke('dsh:runtime-ensure', payload),
   runtimeCheckUpdates: () => ipcRenderer.invoke('dsh:runtime-check-updates'),
   runtimeUpdate: (payload) => ipcRenderer.invoke('dsh:runtime-update', payload),

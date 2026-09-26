@@ -18,7 +18,7 @@ const { accountSummary, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts'
 
 function antigravitySpawnSpec({ runtime, home, route, config = {}, env }) {
   return { args: ['-u', path.join(__dirname, 'antigravity/bridge.py').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', env: {
-    ...pythonEnvironment(runtime.dir, env),
+    ...(runtime.custom ? { ...env, PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1' } : pythonEnvironment(runtime.dir, env)),
     CAMELLIA_ANTIGRAVITY_CONFIG: JSON.stringify({ home, baseUrl: route.baseUrl + '/compat/antigravity/v1', settings: config }),
   } };
 }
