@@ -257,10 +257,21 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     target.scrollIntoView({ block: 'center' }); target.focus({ preventScroll: true });
   }
   let runtimeRows = [], runtimeUpdateInfo = {}, runtimeUpdatesBusy = false;
+  const runtimePathDrafts = new Map();
+  let runtimePathBusy = false;
+  function runtimePathControls(row) {
+    if (!api.runtimeSetPath) return '';
+    return (row.id === 'antigravity' ? ['api', 'subscription'] : ['api']).map(mode => {
+      const key = row.id + ':' + mode;
+      const saved = row.paths?.[mode] || (row.mode === mode ? row.customPath : '') || '';
+      const label = row.id === 'antigravity' ? mode === 'api' ? 'Python executable (Antigravity API)' : 'Antigravity CLI executable (Google subscription)' : ['dsh', 'kimi'].includes(row.id) ? 'Local JavaScript entry file' : 'Local executable';
+      return `<fieldset class="runtime-path" data-runtime="${row.id}" data-mode="${mode}" ${runtimePathBusy || row.status === 'installing' ? 'disabled' : ''}><label for="runtime-path-${row.id}-${mode}" data-i18n>${label}</label><div class="runtime-path-actions"><input id="runtime-path-${row.id}-${mode}" type="text" data-runtime-path="${key}" value="${esc(runtimePathDrafts.get(key) ?? saved)}" placeholder="${esc(t('Automatic detection'))}" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" data-i18n>${row.id === 'antigravity' && mode === 'api' ? 'Choose Python from an environment with the Antigravity SDK installed. Camellia does not modify this environment.' : 'Choose a local executable or paste its full path. Saving runs it to check its version. Clear to use automatic detection.'}</p></fieldset>`;
+    }).join('');
+  }
   function updateInfoLine(id) {
     const info = runtimeUpdateInfo[id];
     if (!info) return '';
-    if (!info.checkable) return `<p class="hint" data-i18n>Updates ship with the app</p>`;
+    if (!info.checkable) return `<p class="hint" data-i18n>${info.external ? 'Update this CLI using its original installer' : 'Updates ship with the app'}</p>`;
     if (info.error) return `<p class="hint"><span data-i18n>Update check failed</span> · ${esc(info.error)}</p>`;
     if (!info.installed) return '';
     if (info.updateAvailable) return `<p class="hint"><span data-i18n>v${esc(info.latest)} is available</span> <button data-update="${id}" data-i18n ${runtimeUpdatesBusy ? 'disabled' : ''}>Update</button></p>`;
@@ -269,7 +280,17 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   function renderRuntimes(rows) {
     runtimeRows = rows;
     $('runtimeCards').innerHTML = rows.map(row => `<article class="runtime-card"><div><h2>${esc(row.name)}${row.id === 'antigravity' ? ` · ${row.mode === 'subscription' ? 'Google subscription' : 'API'}` : ''}</h2><span data-i18n class="badge ${row.status === 'ready' ? 'good' : row.status === 'error' ? 'bad' : ''}">${({ready:"Ready",installing:"Downloading",missing:"Not downloaded",error:"Download failed"})[row.status]}</span><button data-i18n data-install="${row.id}" ${row.status === 'ready' || row.status === 'installing' ? 'disabled' : ''}>${row.status === 'error' ? "Retry download" : row.status === 'ready' ? "Installed" : row.status === 'installing' ? "Downloading…" : "Download"}</button></div><p class="hint" data-i18n>${esc(row.status === 'ready' ? `v${row.version} · ${row.source}` : row.message || (row.id === 'antigravity' ? row.mode === 'subscription' ? 'Downloads the official CLI for Google sign-in. No Python environment is needed.' : 'Downloads the official SDK and its own Python environment. Other engines stay uninstalled.' : 'Download this engine when you need it. Other engines stay uninstalled.'))}</p>${updateInfoLine(row.id)}${row.file ? `<details><summary data-i18n>Installation path</summary><code>${esc(row.file)}</code></details>` : ''}</article>`).join('');
+    renderRuntimePaths();
   }
+  function renderRuntimePaths() {
+    $('runtimeCards').querySelectorAll('.runtime-card').forEach((card, index) => {
+      card.querySelectorAll('.runtime-path').forEach(control => control.remove());
+      card.insertAdjacentHTML('beforeend', runtimePathControls(runtimeRows[index]));
+    });
+  }
+  $('runtimeCards').oninput = event => {
+    if (event.target.dataset.runtimePath) runtimePathDrafts.set(event.target.dataset.runtimePath, event.target.value);
+  };
   async function checkRuntimeUpdates() {
     if (runtimeUpdatesBusy) return;
     runtimeUpdatesBusy = true;
@@ -390,6 +411,34 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     finally { $('engineContent').inert = false; }
   };
   $('runtimeCards').onclick = async e => {
+    const pathButton = e.target.closest('[data-path-action]');
+    if (pathButton) {
+      if (runtimePathBusy) return;
+      const field = pathButton.closest('.runtime-path'), input = field.querySelector('input');
+      const key = input.dataset.runtimePath;
+      const selectedEngine = field.dataset.runtime, mode = field.dataset.mode;
+      try {
+        if (pathButton.dataset.pathAction === 'browse') {
+          const result = await api.pickFile({ kind: 'file' });
+          if (!result.canceled && result.path) {
+            runtimePathDrafts.set(key, result.path);
+            renderRuntimePaths();
+          }
+          return;
+        }
+        runtimePathBusy = true;
+        renderRuntimePaths();
+        status('Validating runtime path…');
+        const result = await api.runtimeSetPath({ engine: selectedEngine, mode, file: pathButton.dataset.pathAction === 'reset' ? '' : input.value });
+        if (!result.ok) throw new Error(result.error);
+        runtimePathDrafts.delete(key);
+        delete runtimeUpdateInfo[selectedEngine];
+        renderRuntimes(result.engines);
+        status('Runtime path saved. Applies to the next message.');
+      } catch (error) { status(error.message, true); }
+      finally { runtimePathBusy = false; renderRuntimePaths(); }
+      return;
+    }
     const updateButton = e.target.closest('[data-update]');
     if (updateButton) {
       updateButton.disabled = true;

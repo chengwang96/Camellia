@@ -21,6 +21,7 @@ const methods = {
   contextCapacity: 'context-capacity', contextCapacityStart: 'context-capacity-start', contextCapacityCancel: 'context-capacity-cancel',
   engineSettingsGet: 'engine-settings-get', engineSettingsSave: 'engine-settings-save', runtimeState: 'runtime-state', runtimeEnsure: 'runtime-ensure',
   downloadSettings: 'download-settings', downloadSaveSettings: 'download-save-settings',
+  runtimeSetPath: 'runtime-set-path',
   antigravityAccountState: 'antigravity-account-state', antigravityAccountRefresh: 'antigravity-account-refresh', antigravitySignIn: 'antigravity-sign-in',
   codexAccountState: 'codex-account-state', codexAccountRefresh: 'codex-account-refresh', codexSignIn: 'codex-sign-in',
   kimiAccountState: 'kimi-account-state',

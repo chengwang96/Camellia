@@ -106,7 +106,7 @@ test('check reports latest versions, update flags, and registry errors per engin
     '@deepseek-ai/dsh': '1.2.3',
     'google-antigravity': '0.2.0',
   });
-  const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere') });
+  const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere'), discoverLocal: false });
   const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: null, npm: null, run: async () => {}, downloadSettings: direct, registries });
   const rows = Object.fromEntries((await updates.check()).map(row => [row.id, row]));
   assert.equal(rows.claude.installed, '2.1.0');
