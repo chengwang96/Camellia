@@ -129,7 +129,7 @@ test('Antigravity bootstrap and both uv download commands use the chosen connect
   } }));
   fs.writeFileSync(path.join(source, 'requirements.lock'), 'fixture');
   const commands = [];
-  const manager = createRuntimeManager({ root, installRoot: target, downloadOptions: () => ({ mode: 'proxy', url: f.proxy }),
+  const manager = createRuntimeManager({ root, installRoot: target, discoverLocal: false, downloadOptions: () => ({ mode: 'proxy', url: f.proxy }),
     runCommand: async (exe, args, options) => {
       commands.push({ exe, args, options });
       const dir = path.join(target, 'runtimes/antigravity');
@@ -148,7 +148,7 @@ test('Antigravity bootstrap and both uv download commands use the chosen connect
 test('canceling download confirmation creates no runtime files or failed status', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-download-test-'));
   t.after(() => { assert.equal(path.dirname(root), path.resolve(os.tmpdir())); removeTree(root); });
-  const manager = createRuntimeManager({ root, installRoot: root,
+  const manager = createRuntimeManager({ root, installRoot: root, discoverLocal: false,
     downloadOptions: () => { throw Object.assign(new Error('Download cancelled'), { code: 'DOWNLOAD_CANCELLED' }); } });
   await assert.rejects(manager.ensure('kimi'), { code: 'DOWNLOAD_CANCELLED' });
   assert.deepEqual(fs.readdirSync(root), []);

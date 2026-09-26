@@ -93,7 +93,10 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
       if (compareVersions(latest, found.version) <= 0) {
         return { ok: true, engine, from: found.version, to: found.version, changed: false, restartRequired: false, restarting: false };
       }
-      if (engines[engine].type === 'python') await upgradePythonRuntime({ dir: found.dir, run, connection, sdk: latest, report: () => {} });
+      if (engines[engine].type === 'python') {
+        await upgradePythonRuntime({ dir: found.dir, run, connection, sdk: latest, report: () => {},
+          python: manager.pythonSelection?.() });
+      }
       else await upgradeNpmRuntime(engine, found.dir, connection, latest);
       const updated = manager.locate(engine);
       if (!updated || compareVersions(updated.version, latest) !== 0) throw new Error(`The update to v${latest} did not complete. Please retry.`);

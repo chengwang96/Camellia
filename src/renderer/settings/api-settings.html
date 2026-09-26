@@ -174,6 +174,11 @@
         <div class="download-save"><p class="hint" data-i18n>Applies only to engine downloads. Saved on this device.</p><button id="saveDownload" type="submit" disabled data-i18n>Save connection</button></div>
       </form>
       <div class="download-save"><p class="hint" data-i18n>Engine updates are installed in place and take effect after a restart.</p><button id="checkRuntimeUpdates" type="button" data-i18n>Check for updates</button></div>
+      <article class="runtime-card runtime-python" id="pythonCard">
+        <div><h2 data-i18n>Python interpreter</h2><span id="pythonBadge" data-i18n class="badge"></span></div>
+        <p class="hint" data-i18n>Shared by every harness and by the benchmark verifier, not by Antigravity alone. Leave empty to use automatic detection.</p>
+        <fieldset class="runtime-path" id="pythonPath" disabled><label for="runtime-path-python" data-i18n>Python executable</label><div class="runtime-path-actions"><input id="runtime-path-python" type="text" data-runtime-path="python" placeholder="Automatic detection" data-i18n-attrs="placeholder" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" id="pythonHint" data-i18n>Choose any Python 3 installation. Camellia does not modify it or install packages into it.</p></fieldset>
+      </article>
       <div id="runtimeCards"></div>
       <p class="hint footnote" data-i18n>DSH and Kimi use pinned open-source runtimes. Claude Code is installed from the official package and remains subject to Anthropic's terms. Antigravity downloads the official CLI for Google subscriptions, or the SDK and managed Python for API mode. Downloads do not change global CLI settings; saving native CLI settings does.</p>
       <p class="hint footnote" data-i18n>If an engine stops working after being installed, security software may be removing its unsigned files. Add Camellia's runtimes folder to your antivirus exclusion list — steps are in docs/troubleshooting-runtimes.md.</p>

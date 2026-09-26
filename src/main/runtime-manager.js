@@ -3,11 +3,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const patchDsh = require('../../integrations/dsh/patch.cjs');
-const { locatePythonRuntime, installPythonRuntime } = require('./python-runtime');
+const { locatePythonRuntime, installPythonRuntime, globalPythonEnvironment, detectSystemPython } = require('./python-runtime');
 const { createDownloadConnection } = require('./download-network');
 const { locateAntigravityCli, installAntigravityCli } = require('./antigravity-cli-runtime');
 const { createLocalRuntimeDiscovery } = require('./local-runtimes');
-const { runtimePathKey, checkRuntimeFile, validateRuntimePath } = require('./custom-runtimes');
+const { checkRuntimeFile, validateRuntimePath, validatePythonPath } = require('./custom-runtimes');
+
+// Python is not an engine runtime: one interpreter is shared by every harness
+// and by the benchmark verifier. It is stored as its own top-level setting.
+const PYTHON_KEY = 'python';
+// Probing PATH is synchronous and runs on every state read, so results are
+// cached for the lifetime of the manager and invalidated only by file changes.
+const pythonCache = new Map();
 
 const ENGINES = {
   // The official wrapper installs the native binary at this path on every OS.
@@ -40,6 +47,16 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
   const pending = new Map(), progress = new Map();
   const changingPaths = new Set();
   const locateLocal = createLocalRuntimeDiscovery({ engines: ENGINES, node, platform, arch, env, home });
+  const managedPackages = () => path.join(installRoot, 'runtimes', 'antigravity', 'packages');
+  // Saving an interpreter is explicit; an unset choice falls back to the first
+  // usable Python 3 on PATH so installs and launches work without configuration.
+  const pythonSelection = () => {
+    const saved = customPaths()[PYTHON_KEY];
+    if (saved?.file) return { ...saved, source: 'Custom local path', configured: true };
+    // Auto-detection is part of local discovery: profiles that opt out of
+    // scanning for local CLIs must not probe the machine for Python either.
+    return discoverLocal ? detectSystemPython({ platform, env, home, cache: pythonCache }) : null;
+  };
   const entry = (dir, engine) => {
     if (engine === 'codex') {
       const cpu = { x64: 'x86_64', arm64: 'aarch64' }[arch];
@@ -49,16 +66,20 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     }
     return path.join(dir, 'node_modules', ENGINES[engine].package, ENGINES[engine].entry);
   };
+  // Antigravity consumes a runtime only in Google subscription mode; API mode
+  // runs on the shared Python interpreter instead.
+  const usesCustomPath = (engine, mode) => engine !== 'antigravity' || mode === 'subscription';
   function locate(engine, mode = runtimeMode(engine)) {
     if (!ENGINES[engine]) throw new Error("Unknown engine");
-    const custom = customPaths()[runtimePathKey(engine, mode)];
+    const custom = usesCustomPath(engine, mode) ? customPaths()[engine] : null;
     if (custom?.file) {
       checkRuntimeFile(custom.file, platform);
       return { ...custom, dir: path.dirname(custom.file), external: true, custom: true, mode, source: 'Custom local path' };
     }
     for (const [base, source] of [[root, "Available locally"], [installRoot, "Installed by Camellia"]]) {
       if (ENGINES[engine].type === 'python') {
-        const found = (mode === 'subscription' ? locateAntigravityCli : locatePythonRuntime)(path.join(base, 'runtimes', engine));
+        const found = (mode === 'subscription' ? locateAntigravityCli
+          : dir => locatePythonRuntime(dir, pythonSelection()))(path.join(base, 'runtimes', engine));
         if (found) return { ...found, source };
         continue;
       }
@@ -69,8 +90,9 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
   }
   function state() {
     return Object.entries(ENGINES).map(([id, engine]) => {
-      const mode = runtimeMode(id), customPath = customPaths()[runtimePathKey(id, mode)]?.file || '';
-      const paths = Object.fromEntries(['api', 'subscription'].map(connection => [connection, customPaths()[runtimePathKey(id, connection)]?.file || '']));
+      const mode = runtimeMode(id), customPath = usesCustomPath(id, mode) ? customPaths()[id]?.file || '' : '';
+      const paths = Object.fromEntries(['api', 'subscription'].map(connection =>
+        [connection, usesCustomPath(id, connection) ? customPaths()[id]?.file || '' : '']));
       try {
         const found = locate(id, mode);
         return { id, name: engine.name, mode, customPath, paths, ...found, status: found ? 'ready' : 'missing', ...progress.get(id + ':' + mode) };
@@ -87,7 +109,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     try {
       if (ENGINES[engine].type === 'python') {
         const installer = mode === 'subscription' ? installAntigravityCli : installPythonRuntime;
-        const found = await installer({ source, dir, run: runCommand, connection,
+        const found = await installer({ source, dir, run: runCommand, connection, python: pythonSelection(),
           report: message => update({ status: 'installing', message }) });
         update({ status: 'ready', message: 'Ready' });
         return found;
@@ -130,6 +152,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
   }
   async function setPath(engine, file, mode = runtimeMode(engine)) {
     if (!Object.hasOwn(ENGINES, engine) || !['api', 'subscription'].includes(mode)) throw new Error('Unknown runtime');
+    if (!usesCustomPath(engine, mode)) throw new Error('Antigravity API mode uses the shared Python interpreter, not an engine path');
     if (!saveCustomPaths) throw new Error('Custom runtime paths are unavailable');
     if (changingPaths.has(engine)) throw new Error('Wait for runtime path validation to finish');
     if (['api', 'subscription'].some(connection => pending.has(engine + ':' + connection))) throw new Error('Wait for the runtime download to finish');
@@ -138,9 +161,9 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     try {
       const selected = file.trim() ? await validateRuntimePath({ engine, mode, file, node, locateLocal, platform, probe, env }) : null;
       beforePathSave(engine);
-      const paths = { ...customPaths() }, key = runtimePathKey(engine, mode);
-      if (selected) paths[key] = selected;
-      else delete paths[key];
+      const paths = { ...customPaths() };
+      if (selected) paths[engine] = selected;
+      else delete paths[engine];
       saveCustomPaths(paths);
       progress.delete(engine + ':' + mode);
       const engines = state();
@@ -148,6 +171,37 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
       return engines;
     } finally { changingPaths.delete(engine); }
   }
-  return { locate, ensure, state, setPath };
+
+  async function setPython(file) {
+    if (!saveCustomPaths) throw new Error('Custom runtime paths are unavailable');
+    if (changingPaths.has(PYTHON_KEY)) throw new Error('Wait for Python validation to finish');
+    if (pending.size) throw new Error('Wait for the runtime download to finish');
+    if (typeof file !== 'string') throw new Error('Choose an executable path');
+    changingPaths.add(PYTHON_KEY);
+    try {
+      // A shared interpreter is in use whenever any engine is running, and the
+      // Antigravity SDK can also come from the managed package directory.
+      beforePathSave(PYTHON_KEY);
+      const selected = file.trim() ? await validatePythonPath({ file, platform, probe, env,
+        managedPackages: managedPackages() }) : null;
+      const paths = { ...customPaths() };
+      if (selected) paths[PYTHON_KEY] = selected;
+      else delete paths[PYTHON_KEY];
+      saveCustomPaths(paths);
+      const snapshot = state();
+      onChange(snapshot);
+      return snapshot;
+    } finally { changingPaths.delete(PYTHON_KEY); }
+  }
+  // Python lives outside the engine list: it is one shared interpreter rather
+  // than a per-engine runtime, and it is reported separately to the settings UI.
+  function pythonState() {
+    const selected = pythonSelection();
+    return { ...selected, file: selected?.file || '', packages: managedPackages(),
+      configured: Boolean(customPaths()[PYTHON_KEY]?.file) };
+  }
+  // pythonSelection is handed to engine launchers so the same interpreter
+  // serves every harness; pythonState carries it to the settings page.
+  return { locate, ensure, state, setPath, setPython, pythonState, pythonSelection };
 }
 module.exports = { ENGINES, createRuntimeManager, run };

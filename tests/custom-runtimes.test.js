@@ -57,26 +57,59 @@ test('invalid paths do not overwrite saved settings; missing overrides never tri
   assert.equal(setup.manager.locate('codex'), null);
 });
 
-test('Python and Antigravity CLI paths are independent and use the correct launch environment', async context => {
-  const setup = fixture(context), python = setup.file('python.exe'), cli = setup.file('agy.exe');
-  await setup.manager.setPath('antigravity', python, 'api');
+test('Python is global: one interpreter serves every harness and the Antigravity CLI stays separate', async context => {
+  const setup = fixture(context, { probe: async (executable, args) => {
+    if (String(args[1]).startsWith('import sys')) return { stdout: '{"python": "3.13.1"}' };
+    if (String(args[1]).startsWith('import google')) return { stdout: '' };
+    return { stdout: 'CLI 1.2.3' };
+  } });
+  const python = setup.file('python.exe'), cli = setup.file('agy.exe');
+  await setup.manager.setPython(python);
   await setup.manager.setPath('antigravity', cli, 'subscription');
-  assert.match(setup.calls[0].args[1], /from google.antigravity import Agent, LocalOpenAIAgentConfig/);
-  assert.match(setup.calls[0].args[1], /version\("google-antigravity"\)/);
-  assert.equal(setup.manager.locate('antigravity', 'api').file, python);
+  // Python is stored once, under its own key, and never as an engine runtime.
+  assert.equal(setup.manager.pythonState().file, python);
+  assert.equal(setup.manager.pythonState().configured, true);
+  assert.equal(setup.manager.locate('antigravity', 'api'), null, 'Python is not an Antigravity runtime entry');
   assert.equal(setup.manager.locate('antigravity', 'subscription').file, cli);
-  const spec = antigravitySpawnSpec({ runtime: setup.manager.locate('antigravity', 'api'), home: setup.root,
-    route: { baseUrl: 'http://localhost' }, env: { PATH: 'system', CUSTOM_ENV: 'kept' } });
+  const spec = antigravitySpawnSpec({ runtime: { dir: setup.root }, python: { ...setup.manager.pythonState(), antigravitySdk: true },
+    home: setup.root, route: { baseUrl: 'http://localhost' }, env: { PATH: 'system', CUSTOM_ENV: 'kept', PYTHONPATH: 'global' } });
   assert.equal(spec.env.CUSTOM_ENV, 'kept');
   assert.equal(spec.env.PYTHONPATH, undefined);
   assert.equal(spec.env.PYTHONUTF8, '1');
-  await setup.manager.setPath('antigravity', '', 'api');
+  assert.ok(spec.env.PATH.startsWith(path.dirname(python)), 'the shared interpreter leads PATH');
+  await setup.manager.setPython('');
+  assert.equal(setup.manager.pythonState().configured, false);
   assert.equal(setup.manager.locate('antigravity', 'subscription').file, cli);
 });
 
-test('failed version and Python import checks leave the configuration untouched', async context => {
+test('a Python without the SDK is still accepted, but reports the missing SDK', async context => {
+  const setup = fixture(context, { probe: async (executable, args) => {
+    if (String(args[1]).startsWith('import sys')) return { stdout: '{"python": "3.12.4"}' };
+    if (String(args[1]).startsWith('import google')) throw new Error('ModuleNotFoundError');
+    return { stdout: 'CLI 1.2.3' };
+  } });
+  const python = setup.file('python.exe');
+  await setup.manager.setPython(python);
+  const state = setup.manager.pythonState();
+  assert.equal(state.version, '3.12.4');
+  assert.equal(state.antigravitySdk, false, 'a missing SDK is reported, not fatal');
+  assert.equal(state.file, python);
+});
+
+test('Python 2 and non-Python executables are rejected without changing the saved path', async context => {
+  const setup = fixture(context, { probe: async (executable, args) => {
+    if (String(args[1]).startsWith('import sys')) return { stdout: '{"python": "2.7.18"}' };
+    return { stdout: 'CLI 1.2.3' };
+  } });
+  await assert.rejects(setup.manager.setPython(setup.file('py2.exe')), /Python 3/);
+  assert.equal(fs.existsSync(setup.config), false);
+  const failing = fixture(context, { probe: async () => { throw new Error('failed'); } });
+  await assert.rejects(failing.manager.setPython(failing.file('python.exe')), /Could not run this Python/);
+  assert.equal(fs.existsSync(failing.config), false);
+});
+
+test('failed engine version checks leave the configuration untouched', async context => {
   const setup = fixture(context, { probe: async () => { throw new Error('failed'); } });
-  await assert.rejects(setup.manager.setPath('antigravity', setup.file('python.exe')), /SDK installed/);
   await assert.rejects(setup.manager.setPath('codex', setup.file('codex.exe')), /Could not run/);
   assert.equal(fs.existsSync(setup.config), false);
 });

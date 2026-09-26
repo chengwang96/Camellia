@@ -258,15 +258,35 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   let runtimeRows = [], runtimeUpdateInfo = {}, runtimeUpdatesBusy = false;
   const runtimePathDrafts = new Map();
+  let pythonState = {};
   let runtimePathBusy = false;
   function runtimePathControls(row) {
     if (!api.runtimeSetPath) return '';
-    return (row.id === 'antigravity' ? ['api', 'subscription'] : ['api']).map(mode => {
+    // Python is a shared interpreter configured once above the engine cards.
+    return (row.id === 'antigravity' ? ['subscription'] : ['api']).map(mode => {
       const key = row.id + ':' + mode;
       const saved = row.paths?.[mode] || (row.mode === mode ? row.customPath : '') || '';
-      const label = row.id === 'antigravity' ? mode === 'api' ? 'Python executable (Antigravity API)' : 'Antigravity CLI executable (Google subscription)' : ['dsh', 'kimi'].includes(row.id) ? 'Local JavaScript entry file' : 'Local executable';
-      return `<fieldset class="runtime-path" data-runtime="${row.id}" data-mode="${mode}" ${runtimePathBusy || row.status === 'installing' ? 'disabled' : ''}><label for="runtime-path-${row.id}-${mode}" data-i18n>${label}</label><div class="runtime-path-actions"><input id="runtime-path-${row.id}-${mode}" type="text" data-runtime-path="${key}" value="${esc(runtimePathDrafts.get(key) ?? saved)}" placeholder="${esc(t('Automatic detection'))}" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" data-i18n>${row.id === 'antigravity' && mode === 'api' ? 'Choose Python from an environment with the Antigravity SDK installed. Camellia does not modify this environment.' : 'Choose a local executable or paste its full path. Saving runs it to check its version. Clear to use automatic detection.'}</p></fieldset>`;
+      const label = row.id === 'antigravity' ? 'Antigravity CLI executable (Google subscription)' : ['dsh', 'kimi'].includes(row.id) ? 'Local JavaScript entry file' : 'Local executable';
+      return `<fieldset class="runtime-path" data-runtime="${row.id}" data-mode="${mode}" ${runtimePathBusy || row.status === 'installing' ? 'disabled' : ''}><label for="runtime-path-${row.id}-${mode}" data-i18n>${label}</label><div class="runtime-path-actions"><input id="runtime-path-${row.id}-${mode}" type="text" data-runtime-path="${key}" value="${esc(runtimePathDrafts.get(key) ?? saved)}" placeholder="${esc(t('Automatic detection'))}" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" data-i18n>Choose a local executable or paste its full path. Saving runs it to check its version. Clear to use automatic detection.</p></fieldset>`;
     }).join('');
+  }
+  function renderPython(python) {
+    if (!api.runtimeSetPython) return;
+    pythonState = python || {};
+    const field = $('pythonPath'), input = $('runtime-path-python');
+    field.disabled = runtimePathBusy;
+    // The field only ever shows an explicitly saved path; an automatically
+    // detected interpreter is reported next to it instead of pretending to be
+    // a saved choice the user never made.
+    if (document.activeElement !== input) input.value = runtimePathDrafts.get('python') ?? (pythonState.configured ? pythonState.file : '') ?? '';
+    const badge = $('pythonBadge');
+    const saved = pythonState.configured && pythonState.file;
+    badge.textContent = saved ? t(pythonState.antigravitySdk ? 'Python saved · Antigravity SDK found' : 'Python saved · Antigravity SDK not found')
+      : pythonState.file ? t('Detected automatically: v{0}').replace('{0}', () => pythonState.version || '') : t('No Python found');
+    badge.className = 'badge' + (saved && !pythonState.antigravitySdk ? ' bad' : pythonState.file ? ' good' : ' bad');
+    $('pythonHint').textContent = saved && !pythonState.antigravitySdk
+      ? t('This interpreter cannot import google.antigravity. Antigravity API mode needs the SDK; other engines and the benchmark verifier work without it.')
+      : t('Choose any Python 3 installation. Camellia does not modify it or install packages into it.');
   }
   function updateInfoLine(id) {
     const info = runtimeUpdateInfo[id];
@@ -288,7 +308,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       card.insertAdjacentHTML('beforeend', runtimePathControls(runtimeRows[index]));
     });
   }
-  $('runtimeCards').oninput = event => {
+  $('runtimesPage').oninput = event => {
     if (event.target.dataset.runtimePath) runtimePathDrafts.set(event.target.dataset.runtimePath, event.target.value);
   };
   async function checkRuntimeUpdates() {
@@ -307,10 +327,12 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   $('checkRuntimeUpdates').onclick = checkRuntimeUpdates;
   async function runtimePage(focus) {
     try {
-      const [result, settings] = await Promise.all([api.runtimeState(), api.downloadSettings()]);
+      const [result, settings, python] = await Promise.all([api.runtimeState(), api.downloadSettings(),
+        api.runtimePythonState ? api.runtimePythonState() : Promise.resolve({ ok: true, python: {} })]);
       if (!result.ok) throw new Error(result.error);
       if (!settings.ok) throw new Error(settings.error);
       renderRuntimes(result.engines);
+      renderPython(python.ok ? python.python : {});
       if (!downloadDirty) {
         $('downloadMode').value = settings.mode;
         $('downloadProxyUrl').value = settings.url;
@@ -410,33 +432,37 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     } catch (e) { status(e.message, true); $('saveEngine').disabled = false; }
     finally { $('engineContent').inert = false; }
   };
-  $('runtimeCards').onclick = async e => {
+  $('runtimesPage').onclick = async e => {
     const pathButton = e.target.closest('[data-path-action]');
     if (pathButton) {
       if (runtimePathBusy) return;
       const field = pathButton.closest('.runtime-path'), input = field.querySelector('input');
       const key = input.dataset.runtimePath;
+      // The shared Python interpreter is stored globally; engine paths stay in
+      // the per-engine map.
+      const isPython = key === 'python';
       const selectedEngine = field.dataset.runtime, mode = field.dataset.mode;
       try {
         if (pathButton.dataset.pathAction === 'browse') {
           const result = await api.pickFile({ kind: 'file' });
           if (!result.canceled && result.path) {
             runtimePathDrafts.set(key, result.path);
-            renderRuntimePaths();
+            if (isPython) renderPython(pythonState); else renderRuntimePaths();
           }
           return;
         }
         runtimePathBusy = true;
-        renderRuntimePaths();
+        if (isPython) renderPython(pythonState); else renderRuntimePaths();
         status('Validating runtime path…');
-        const result = await api.runtimeSetPath({ engine: selectedEngine, mode, file: pathButton.dataset.pathAction === 'reset' ? '' : input.value });
+        const file = pathButton.dataset.pathAction === 'reset' ? '' : input.value;
+        const result = isPython ? await api.runtimeSetPython({ file })
+          : await api.runtimeSetPath({ engine: selectedEngine, mode, file });
         if (!result.ok) throw new Error(result.error);
         runtimePathDrafts.delete(key);
-        delete runtimeUpdateInfo[selectedEngine];
-        renderRuntimes(result.engines);
-        status('Runtime path saved. Applies to the next message.');
+        if (isPython) { renderPython(result.python); status('Python path saved. Applies to the next message.'); }
+        else { delete runtimeUpdateInfo[selectedEngine]; renderRuntimes(result.engines); status('Runtime path saved. Applies to the next message.'); }
       } catch (error) { status(error.message, true); }
-      finally { runtimePathBusy = false; renderRuntimePaths(); }
+      finally { runtimePathBusy = false; if (isPython) renderPython(pythonState); else renderRuntimePaths(); }
       return;
     }
     const updateButton = e.target.closest('[data-update]');
@@ -462,6 +488,8 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     catch (e) { status(e.message, true); } finally { void runtimePage(); }
   };
   api.onRuntimeState(renderRuntimes);
+  // Python is shared, so its state can change without any engine card changing.
+  api.onRuntimePythonState?.(renderPython);
   api.onNativeSettingsReady(() => { nativeReady = true; clearTimeout(nativeReadyTimer); $('nativeLoading').textContent = ''; $('retryNative').hidden = true; });
   let layoutFrame;
   const layout = () => { cancelAnimationFrame(layoutFrame); layoutFrame = requestAnimationFrame(() => { void placeNative(); }); };
