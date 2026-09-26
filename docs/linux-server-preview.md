@@ -364,6 +364,7 @@ node --test tests/headless-server.test.js tests/embedded-network.test.js tests/r
 node --test tests/device-transport.test.js tests/device-client.test.js
 node --test tests/device-files.test.js
 python tests/devices-settings-ui.py
+python tests/settings-page-smoke.py
 node --test tests/devices-desktop.test.js
 node --test tests/api-import.test.js
 node --test tests/settings-console.test.js

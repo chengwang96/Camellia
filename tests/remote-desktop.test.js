@@ -156,6 +156,11 @@ test('desktop control is disabled by default and accepts only remote-access and 
   assert.equal((await command(settingsEvent, { action: 'state' })).ok, true);
   assert.equal(windows.length, 1);
   const window = windows[0], event = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
+  assert.equal(window.options.show, false, 'the mobile window stays hidden until its first paint');
+  assert.equal(window.options.center, true);
+  assert.equal(window.shown, undefined);
+  window.emit('ready-to-show');
+  assert.equal(window.shown, true);
   assert.equal(window.options.webPreferences.sandbox, true);
   assert.equal(window.options.webPreferences.nodeIntegration, false);
   assert.equal(window.options.webPreferences.contextIsolation, true);

@@ -31,10 +31,15 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager
     startTrustedDevices: () => service.startTrustedDevices(),
     open() {
       if (window && !window.isDestroyed()) { window.show(); window.focus(); return; }
-      window = new BrowserWindow({ width: 640, height: 760, minWidth: 480, minHeight: 520,
+      const created = new BrowserWindow({ width: 640, height: 760, minWidth: 480, minHeight: 520,
+        // Hidden until the first paint, otherwise the window briefly appears at
+        // the OS default position before moving to its final place.
+        show: false, center: true,
         title: 'Mobile access — Camellia', autoHideMenuBar: true,
         backgroundColor: nativeTheme.shouldUseDarkColors ? '#151517' : '#ffffff',
         webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+      window = created;
+      created.once('ready-to-show', () => { if (!created.isDestroyed()) created.show(); });
       window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       window.webContents.on('will-navigate', event => event.preventDefault());
       window.on('closed', () => { window = null; });

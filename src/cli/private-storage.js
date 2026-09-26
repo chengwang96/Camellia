@@ -21,10 +21,12 @@ function validatePrivate(stat, directory = false) {
 function privateDirectory(directory) {
   if (!path.isAbsolute(directory)) throw new Error('Storage directory must be absolute');
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const resolved = path.resolve(directory);
-  const real = fs.realpathSync(directory);
-  if ((process.platform === 'win32' ? real.toLowerCase() !== resolved.toLowerCase() : real !== resolved)) throw new Error('Storage directory cannot contain symbolic links');
-  validatePrivate(fs.lstatSync(directory), true);
+  // Only the storage directory itself must be a real directory. Ancestors may
+  // legitimately be symlinks — macOS resolves /tmp and /var under /private — so
+  // comparing realpath with the requested path would reject valid storage.
+  const stat = fs.lstatSync(directory);
+  if (stat.isSymbolicLink()) throw new Error('Storage directory cannot be a symbolic link');
+  validatePrivate(stat, true);
   return directory;
 }
 

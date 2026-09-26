@@ -61,6 +61,11 @@ test('the CLI devices page is ordinary DOM with prefixed ids and scoped styles',
   assert.match(script, /const bridge = window\.camelliaDevices \|\| window\.dshDesktop\?\.camelliaDevices/);
   assert.match(script, /if \(embedded\) window\.cliDevicesUI = \{/);
   assert.doesNotMatch(script, /document\.querySelectorAll\('\[data-copy\]'\)/);
+  // Classic scripts share one global scope in the settings document, so this file
+  // must not declare anything at top level besides its IIFE.
+  assert.match(script, /^'use strict';\n\n\/\/[\s\S]*?\(function \(\) \{\n/);
+  assert.match(script, /\n\}\)\(\);\n$/);
+  assert.equal([...script.matchAll(/^\(function \(\) \{/gm)].length, 1);
 });
 
 test('CLI devices panel shares the mobile-access Tailscale identity and offers no duplicate disconnect', () => {
