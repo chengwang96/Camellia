@@ -30,12 +30,12 @@ async function main() {
     } });
     assert.ok(manager.state().every(row => row.status === 'missing'));
     const selected = new Set();
-    const check = (exe, args) => {
+    const check = (exe, args, includeStderr = false) => {
       const result = spawnSync(exe, args, { windowsHide: true, encoding: 'utf8', timeout: 120000,
         env: { ...process.env, PATH: path.dirname(node) + path.delimiter + process.env.PATH } });
       if (result.error) throw result.error;
       assert.equal(result.status, 0, result.stderr || result.stdout);
-      return result.stdout;
+      return result.stdout + (includeStderr ? result.stderr : '');
     };
     for (const engine of engines) {
       console.log('Downloading selected engine: ' + engine);
@@ -55,7 +55,10 @@ async function main() {
         assert.equal(installed.version, expected);
         if (engine === 'kimi') assert.match(check(node, [path.join(__dirname, 'kimi-cli-smoke.cjs'), installed.file]), /PASS:/);
         else if (engine === 'codex') assert.match(check(node, [path.join(__dirname, 'codex-smoke.cjs'), installed.file]), /PASS:/);
-        else assert.ok((engine === 'claude' ? check(installed.file, ['--version']) : check(node, [installed.file, '--version'])).includes(expected));
+        else {
+          const version = engine === 'claude' ? check(installed.file, ['--version'], true) : check(node, [installed.file, '--version'], true);
+          assert.ok(version.includes(expected), `${engine}: expected ${expected}, received ${JSON.stringify(version)}`);
+        }
         if (engine === 'dsh') {
           for (const [pkg, marker] of [['dsh-client-ui-settings-general', 'WorkbenchSettingsRoot'], ['dsh-client-modules', 'workbenchComboCache']]) {
             const file = pkg === 'dsh-client-modules' ? 'index.js' : 'client.js';

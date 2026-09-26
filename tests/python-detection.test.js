@@ -51,9 +51,11 @@ test('auto-detection skips Python 2, unreadable entries and missing directories'
   fs.mkdirSync(second, { recursive: true });
   const py2 = path.join(second, process.platform === 'win32' ? 'python.exe' : 'python');
   fs.writeFileSync(py2, '', { mode: 0o755 });
-  const probe = (exe, args) => String(args[args.length - 1]).startsWith('import sys')
-    ? (exe === py2 ? '{"python": "2.7.18"}\n' : '{"python": "3.11.9"}\n')
-    : '';
+  const probe = (exe, args) => {
+    if (![first.file, py2].includes(exe)) throw new Error('Not a fixture interpreter');
+    return String(args[args.length - 1]).startsWith('import sys')
+      ? (exe === py2 ? '{"python": "2.7.18"}\n' : '{"python": "3.11.9"}\n') : '';
+  };
   // The Python 3 entry comes first, so the rejected Python 2 never wins.
   const found = detectSystemPython({ platform: process.platform,
     env: { PATH: [second, 'relative-dir', first.root].join(path.delimiter) }, home: first.root, probe });

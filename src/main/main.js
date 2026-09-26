@@ -1272,8 +1272,49 @@ if (!gotSingleInstanceLock) {
       return { ...saved, providers: imported.providers.length };
     },
     'engine-settings-get': ({ engine }) => ({ ok: true, ...engineSettings().get(engine) }),
+    'subscription-preferences-get': ({ engine }) => {
+      if (!['codex', 'kimi', 'antigravity'].includes(engine)) throw new Error('Unknown subscription engine');
+      const settings = engine === 'codex' ? codex.settings() : engine === 'kimi' ? kimiSettings() : antigravity.settings();
+      return { ok: true, preferences: { connection: settings.connection,
+        ...(engine === 'kimi' ? { region: settings.region || 'mainland-cn' } : { proxyUrl: settings.proxyUrl || '' }),
+        ...(engine === 'antigravity' ? { useG1Credits: readJson(path.join(os.homedir(), '.gemini/antigravity-cli/settings.json'), {}).useG1Credits === true } : {}) } };
+    },
+    'subscription-preferences-save': async ({ engine, preferences = {} }) => {
+      if (!['codex', 'kimi', 'antigravity'].includes(engine)) throw new Error('Unknown subscription engine');
+      if (engineBusy(engine)) throw new Error('Stop the current response or goal before changing global settings');
+      if (preferences.connection !== undefined && !['api', 'subscription'].includes(preferences.connection)) throw new Error('Invalid subscription connection');
+      const connection = preferences.connection === undefined ? {} : { connection: preferences.connection };
+      if (engine === 'kimi') {
+        if (kimiAccount.active) throw new Error('Complete the account operation before changing login preferences');
+        saveKimiSettings({ region: preferences.region, ...connection });
+        return { ok: true, preferences: { region: kimiSettings().region, connection: kimiSettings().connection } };
+      }
+      const savedProxy = engine === 'codex' ? codex.settings().proxyUrl : antigravity.settings().proxyUrl;
+      const requestedProxy = preferences.proxyUrl ?? savedProxy ?? '';
+      const proxyUrl = downloadSettings({ mode: requestedProxy ? 'proxy' : 'direct', url: requestedProxy }).url;
+      if (engine === 'codex') {
+        if (codex.accountState().accounts.some(account => account.loginPending)) throw new Error('Complete the account operation before changing login preferences');
+        await codex.shutdown();
+        codex.saveSettings({ proxyUrl, ...connection });
+      } else {
+        const file = path.join(os.homedir(), '.gemini/antigravity-cli/settings.json');
+        const native = readJson(file, {});
+        if (preferences.useG1Credits !== undefined) {
+          if (typeof preferences.useG1Credits !== 'boolean') throw new Error('Invalid AI credits preference');
+          backup(file);
+          writeJson(file, { ...native, useG1Credits: preferences.useG1Credits });
+        }
+        await antigravity.shutdown();
+        antigravity.saveSettings({ proxyUrl, ...connection });
+        return { ok: true, preferences: { proxyUrl, connection: antigravity.settings().connection,
+          useG1Credits: preferences.useG1Credits ?? (native.useG1Credits === true) } };
+      }
+      return { ok: true, preferences: { proxyUrl, connection: codex.settings().connection } };
+    },
     'engine-settings-save': async ({ engine, ...payload }) => {
       if (engineBusy(engine)) throw new Error("Stop the current response or goal before changing global settings");
+      if (engine === 'antigravity' && payload.expectedConnection && payload.expectedConnection !== antigravity.settings().connection)
+        throw new Error('The subscription connection changed. Reload engine settings before saving.');
       const result = engineSettings().save(engine, payload);
       if (engine === 'claude') await claudeSessions.shutdown();
       if (engine === 'kimi') await kimiSessions.shutdown();

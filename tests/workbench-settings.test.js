@@ -33,6 +33,18 @@ test('settings navigation defaults to General and preserves explicit destination
   ]);
 });
 
+test('subscription accounts and API keys have separate navigation and page containers', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
+  const subscriptions = html.slice(html.indexOf('<section id="subscriptionsPage"'), html.indexOf('<section id="providersPage"'));
+  const providers = html.slice(html.indexOf('<section id="providersPage"'), html.indexOf('<section id="usagePage"'));
+  assert.match(html, /data-view="subscriptions"/);
+  assert.match(html, /data-view="providers"/);
+  assert.match(subscriptions, /id="subscriptionAccounts"/);
+  assert.doesNotMatch(subscriptions, /id="addProvider"|id="bulkKeys"/);
+  assert.match(providers, /id="addProvider"/);
+  assert.doesNotMatch(providers, /id="subscriptionAccounts"/);
+});
+
 test('close-to-tray preference defaults off, persists, and survives partial saves', () => {
   const first = createHarness();
   try {

@@ -18,7 +18,7 @@ const { accountSummary, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts'
 
 function antigravitySpawnSpec({ runtime, home, route, config = {}, env, python }) {
   return { args: ['-u', path.join(__dirname, 'antigravity/bridge.py').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', env: {
-    ...(python ? globalPythonEnvironment(python, env)
+    ...(runtime.packages ? pythonEnvironment(runtime.dir, env) : python ? globalPythonEnvironment(python, env)
       : runtime.custom ? { ...env, PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1' } : pythonEnvironment(runtime.dir, env)),
     CAMELLIA_ANTIGRAVITY_CONFIG: JSON.stringify({ home, baseUrl: route.baseUrl + '/compat/antigravity/v1', settings: config }),
   } };
@@ -124,7 +124,8 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     },
     'account-refresh': async () => {
       const state = await account.refresh();
-      if (!settings().subscriptionModel && settings().connection === 'subscription') saveSettings({ model: state.models[0].id });
+      if (!settings().subscriptionModel) saveConfig({ antigravity: { ...loadConfig().antigravity, subscriptionModel: state.models[0].id,
+        ...(settings().connection === 'subscription' ? { model: state.models[0].id } : {}) } });
       return { ok: true, ...state };
     },
     'sign-in': async () => {

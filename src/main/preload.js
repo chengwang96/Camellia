@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   },
   remoteControl: (action, payload) => ipcRenderer.invoke('dsh:remote-control', { action, payload }),
   engineSettingsGet: (payload) => ipcRenderer.invoke('dsh:engine-settings-get', payload),
+  subscriptionPreferencesGet: payload => ipcRenderer.invoke('dsh:subscription-preferences-get', payload),
+  subscriptionPreferencesSave: payload => ipcRenderer.invoke('dsh:subscription-preferences-save', payload),
   engineSettingsSave: (payload) => ipcRenderer.invoke('dsh:engine-settings-save', payload),
   runtimeState: () => ipcRenderer.invoke('dsh:runtime-state'),
   runtimeSetPath: (payload) => ipcRenderer.invoke('dsh:runtime-set-path', payload),

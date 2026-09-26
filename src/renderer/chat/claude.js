@@ -50,6 +50,7 @@ const context = { sessionId: null, workspaceId: null };
   const failedMessageEdits = new Map();
   let permRequestId = null;   // pending can_use_tool control request id
   const permissionQueue = [];
+  const seenPermissionBlocks = new Set();
   let pendingQuestion = null, permissionSubmission = null;
   const questionDrafts = new Map();
 
@@ -2022,6 +2023,12 @@ const context = { sessionId: null, workspaceId: null };
       const card = pendingTools[ev.id] || makeToolCard(ev.name || "Tool", ev.input, ev.id);
       if (ev.input !== undefined) card.setInput(ev.input);
       if (ev.status === 'completed' || ev.status === 'failed') card.setOutput(ev.output || '', ev.is_error || ev.status === 'failed');
+      if (ev.permissionBlocked && !seenPermissionBlocks.has(ev.runId + ':' + ev.id)) {
+        seenPermissionBlocks.add(ev.runId + ':' + ev.id);
+        const dialog = $('permissionBlockedDialog');
+        $('permissionBlockedDetail').textContent = ev.output || '';
+        if (!dialog.open) dialog.showModal();
+      }
       if (running) setRunStatus(ev.status === 'in_progress' ? "Running " + (ev.name || card.name) + '…' : "Working…");
       maybeScroll(was);
       return;
@@ -2679,6 +2686,8 @@ const context = { sessionId: null, workspaceId: null };
     acceptSessionEvents = false; currentRunId = null; conversationActivity = null;
     restoringRun = false; eventsDuringRestore.length = 0;
     permRequestId = null; permissionQueue.length = 0; $('permMask').classList.remove('visible');
+    seenPermissionBlocks.clear();
+    if ($('permissionBlockedDialog').open) $('permissionBlockedDialog').close();
     clearRunStatus(); setRunning(false);
     $('handoffStop').hidden = true;
     messageQueue = []; renderMessageQueue();
@@ -2960,7 +2969,7 @@ const context = { sessionId: null, workspaceId: null };
 
   // ---------- settings panel ----------
   $('settingsBtn').addEventListener('click', () => { closePops(); void window.dshDesktop.openSettingsWindow(); });
-  $('connectionInfo').onclick = () => void window.dshDesktop.openSettingsWindow({ page: 'engines', engine: harnessId });
+  $('connectionInfo').onclick = () => void window.dshDesktop.openSettingsWindow({ page: 'subscriptions', focus: harnessId });
   function applyRouterModels(state) {
     if (Array.isArray(state?.providers)) modelCtxCaps.clear();
     for (const p of state?.providers || []) {
@@ -3009,7 +3018,7 @@ const context = { sessionId: null, workspaceId: null };
       $('connectionInfo').hidden = false;
       $('connectionInfo').textContent = googleSubscription() ? 'Google subscription · Manage account' : 'Shared API routes · Connection settings';
       $('selPermission').querySelector('[value="ask"]').textContent = googleSubscription() ? 'CLI defaults' : 'Ask before acting';
-      $('selPermission').title = googleSubscription() ? 'CLI permission rules apply. Tools requiring interactive review are declined in headless mode.' : '';
+      $('selPermission').title = googleSubscription() ? 'CLI permission rules apply. Tools requiring interactive review are declined in headless mode; Camellia shows a blocked-action notice, not an approval prompt.' : '';
     }
     currentPermission = permissionLevel(harnessId, s.permissionMode || chatProfile.permission);
     $('selPermission').value = currentPermission;

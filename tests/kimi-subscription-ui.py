@@ -17,7 +17,8 @@ def rpc(method, payload=None):
         raise RuntimeError(response['error'])
     return response['result']
 
-bridge = """window.dshDesktop = new Proxy({}, {get: (_, method) => {
+bridge = """window.camelliaDevices = { onEvent: () => () => {}, onTransfer: () => () => {}, call: async () => ({ok:true,result:{}}) };
+window.dshDesktop = new Proxy({}, {get: (_, method) => {
   if (method === 'onKimiAccount') return fn => {window.deliverKimiAccount = fn; return () => {};};
   if (method === 'onProviderInsights') return fn => {window.deliverInsights = fn; return () => {};};
   if (method.startsWith('on')) return () => () => {};
@@ -35,6 +36,7 @@ try:
             page.expose_function('testRpc', rpc)
             page.add_init_script(bridge)
             page.goto((repo/'src/renderer/settings/api-settings.html').as_uri()+'?page=engines&engine=kimi', wait_until='networkidle')
+            page.locator('[data-view=subscriptions]').click()
             expect(page.locator('#kimiAccountStatus')).to_contain_text('Signed in')
             expect(page.locator('#kimiConnection')).to_have_value('subscription')
             account_choice = page.locator('#kimiAccountList .account-choice').first
@@ -80,8 +82,8 @@ try:
             expect(page.locator('#balanceCards')).to_contain_text('72% remaining')
             page.evaluate('state => deliverInsights(state)', dict(info, subscriptions=[]))
             expect(page.locator('#balanceCards [data-balance="kimi:default"]')).to_have_count(0)
-            page.locator('[data-view=engines]').click()
-            page.locator('#kimiConnectionPanel').evaluate("el => el.scrollIntoView({block: 'start'})")
+            page.locator('[data-view=subscriptions]').click()
+            page.locator('#kimiAccountPanel').evaluate("el => el.scrollIntoView({block: 'start'})")
             page.screenshot(path=str(preview/f'kimi-subscription-{theme}.png'), animations='disabled')
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             state = rpc('kimiAccountState')
