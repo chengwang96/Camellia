@@ -24,6 +24,7 @@ test('outbound targets and endpoints exclude public hosts, redirects and arbitra
   assert.equal(endpointPath('/v1/api-import', 'GET'), '/v1/api-import');
   assert.equal(endpointPath('/v1/native-settings/codex', 'GET'), '/v1/native-settings/codex');
   assert.equal(endpointPath('/v1/native-settings/dsh', 'POST'), '/v1/native-settings/dsh');
+  assert.equal(endpointPath('/v1/native-settings/pi', 'GET'), '/v1/native-settings/pi');
   assert.throws(() => endpointPath('/v1/native-settings/auth', 'GET'));
   assert.throws(() => endpointPath('/v1/native-settings/codex?offset=1', 'GET'));
   assert.equal(endpointPath('/v1/archived?offset=0', 'GET'), '/v1/archived?offset=0');

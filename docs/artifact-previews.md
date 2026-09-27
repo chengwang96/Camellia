@@ -59,3 +59,8 @@ distinguishes it from Codex CLI, which has no visual file preview.
 
 No LibreOffice installation is required. Mermaid and optional PDF conversion
 remain separate future phases.
+
+Legacy `.doc`, `.ppt` and `.xls` files are OLE compound binaries rather than ZIP
+archives, so they cannot be parsed the way `.docx`/`.pptx`/`.xlsx` are. They are
+still listed as deliverables when a reply produces or links them, and open
+through the system app instead of an inline preview.

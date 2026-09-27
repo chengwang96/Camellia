@@ -142,11 +142,16 @@ test('native settings client restricts engines and posts to the selected device 
   const device = await pair();
   await client.nativeSettings(device.id, 'codex');
   assert.equal(calls.at(-1).endpoint, '/v1/native-settings/codex');
+  await client.nativeSettings(device.id, 'pi');
+  assert.equal(calls.at(-1).endpoint, '/v1/native-settings/pi');
   const payload = { engine: 'dsh', id: 'settings', confirmed: true, text: 'setting: true', revision: 'a'.repeat(64) };
   await client.saveNativeSettings(device.id, payload);
   assert.equal(calls.at(-1).endpoint, '/v1/native-settings/dsh');
   assert.deepEqual(calls.at(-1).options.body, payload);
+  await client.saveNativeSettings(device.id, { ...payload, engine: 'pi' });
+  assert.equal(calls.at(-1).endpoint, '/v1/native-settings/pi');
   assert.throws(() => client.nativeSettings(device.id, '../auth'), /Invalid/);
+
 });
 
 test('pairing rejects plaintext storage, corrupted stores and duplicate targets', async context => {

@@ -15,6 +15,8 @@ files = [{'path': 'C:/outputs/' + name, 'name': name, 'extension': name.split('.
                             ('figure.svg', 'image'), ('slides.pptx', 'presentation'), ('results.xlsx', 'spreadsheet'), ('test.js', 'text')]]
 packages = [{'path': 'C:/outputs/Camellia-Android-debug.apk', 'name': 'Camellia-Android-debug.apk',
              'extension': 'APK', 'kind': 'package', 'size': 46689292}]
+documents = [{'path': 'C:/outputs/试讲测评表.doc', 'name': '试讲测评表.doc', 'extension': 'DOC', 'kind': 'document', 'size': 43008},
+             {'path': 'C:/outputs/自查表.docx', 'name': '自查表.docx', 'extension': 'DOCX', 'kind': 'word', 'size': 15995}]
 fixture['messages'][-1]['artifacts'] = files
 bridge = ast.literal_eval(bridge_node.value.func.value).replace('FIXTURE', json.dumps(fixture))
 bridge = bridge.replace('onConversationEvent:()=>{}', 'onConversationEvent:fn=>{window.deliverEvent=fn;}')
@@ -22,6 +24,8 @@ bridge += r"""(() => {
   const files = FILES;
   const packages = PACKAGES;
   const all = [...packages, ...files];
+  const documents = DOCUMENTS;
+  all.push(...documents);
   window.resolveRequests = [];
   window.openedExternally = [];
   window.revealed = [];
@@ -45,7 +49,7 @@ bridge += r"""(() => {
   };
   window.dshDesktop.openFileExternally = async path => { openedExternally.push(path); return {ok:true}; };
   window.dshDesktop.revealFile = async path => { revealed.push(path); return {ok:true}; };
-})();""".replace('FILES', json.dumps(files)).replace('PACKAGES', json.dumps(packages))
+})();""".replace('FILES', json.dumps(files)).replace('PACKAGES', json.dumps(packages)).replace('DOCUMENTS', json.dumps(documents))
 preview = repo / 'dist/ui-preview'
 preview.mkdir(parents=True, exist_ok=True)
 
@@ -187,6 +191,19 @@ with sync_playwright() as playwright:
         rows.first.locator('.artifact-file').click()
         expect(page.locator('.file-preview-empty')).to_contain_text('Camellia 暂不支持预览此文件类型。')
         page.screenshot(path=str(preview / f'turn-artifacts-package-{theme}.png'), animations='disabled')
+        page.locator('#fileViewerClose').click()
+        page.evaluate("""deliverables => {
+          emit({type:'conversation:started',runId:905,prompt:'Fill the forms',userSeq:7});
+          emit({type:'assistant',runId:905,message:{content:[{type:'text',text:'Filled the forms.'}]}});
+          emit({type:'result',runId:905,subtype:'success',artifacts:deliverables});
+        }""", documents)
+        rows = page.locator('.turn').last.locator('.artifact-row')
+        expect(rows).to_have_count(2)
+        assert rows.locator('.artifact-info strong').all_text_contents() == ['试讲测评表.doc', '自查表.docx']
+        expect(rows.first.locator('.artifact-info > span')).to_contain_text('文档')
+        expect(rows.first.locator('.artifact-icon')).to_have_text('DOC')
+        rows.first.locator('.artifact-file').click()
+        expect(page.locator('.file-preview-empty')).to_contain_text('Camellia 暂不支持预览此文件类型。')
         page.locator('#fileViewerClose').click()
         readme = (repo / 'README.md').read_text(encoding='utf-8')
         page.evaluate("""text => {

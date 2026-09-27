@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const patchDsh = require('../../integrations/dsh/patch.cjs');
 const { locatePythonRuntime, installPythonRuntime, globalPythonEnvironment, detectSystemPython } = require('./python-runtime');
 const { createDownloadConnection } = require('./download-network');
@@ -20,7 +21,11 @@ const ENGINES = {
   // The official wrapper installs the native binary at this path on every OS.
   claude: { name: 'Claude Code', package: '@anthropic-ai/claude-code', entry: 'bin/claude.exe' },
   codex: { name: 'Codex CLI', package: '@openai/codex' },
-  dsh: { name: 'DeepSeek Harness', package: '@deepseek-ai/dsh', entry: 'lib/bin.js' },
+  // DSH is a microkernel plus ~240 sibling plugin packages, so its entry file
+  // can survive while a wiped install leaves most companions as empty
+  // directories. Require one companion to tell a real install from a shell.
+  dsh: { name: 'DeepSeek Harness', package: '@deepseek-ai/dsh', entry: 'lib/bin.js',
+    requires: ['node_modules/@deepseek-ai/dsh-app-boot/package.json'] },
   kimi: { name: 'Kimi Code', package: '@moonshot-ai/kimi-code', entry: 'dist/main.mjs' },
   pi: { name: 'Pi', package: '@mariozechner/pi-coding-agent', entry: 'dist/cli.js' },
   antigravity: { name: 'Antigravity', type: 'python' },
@@ -85,7 +90,8 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
         continue;
       }
       const dir = path.join(base, 'runtimes', engine), file = entry(dir, engine);
-      if (fs.existsSync(file)) return { file, dir, source, version: JSON.parse(fs.readFileSync(path.join(dir, 'node_modules', ENGINES[engine].package, 'package.json'))).version };
+      const complete = (ENGINES[engine].requires || []).every(relative => fs.existsSync(path.join(dir, relative)));
+      if (fs.existsSync(file) && complete) return { file, dir, source, version: JSON.parse(fs.readFileSync(path.join(dir, 'node_modules', ENGINES[engine].package, 'package.json'))).version };
     }
     return discoverLocal ? locateLocal(engine, mode) : null;
   }
@@ -116,16 +122,38 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
         return found;
       }
       if (!node || !npm) throw new Error("Node.js/npm not found. Install Node.js 22.19+ and retry.");
-      fs.mkdirSync(dir, { recursive: true });
-      for (const name of ['package.json', 'package-lock.json']) {
-        if (path.resolve(source, name) !== path.resolve(dir, name)) fs.copyFileSync(path.join(source, name), path.join(dir, name));
+      // Build in a sibling staging directory instead of in place. `npm ci`
+      // deletes node_modules before it installs, so an interrupted run
+      // (antivirus, a cancelled download, or quitting mid-install) would
+      // otherwise leave the engine as an empty directory shell that still
+      // looks installed. The finished tree replaces the old one only after
+      // the install completes.
+      const staging = path.join(installRoot, 'runtimes', `.${engine}.staging-${randomUUID()}`);
+      try {
+        fs.rmSync(staging, { recursive: true, force: true });
+        fs.mkdirSync(staging, { recursive: true });
+        for (const name of ['package.json', 'package-lock.json']) fs.copyFileSync(path.join(source, name), path.join(staging, name));
+        // npm 11 can reject a valid lockfile when the prefix contains a symlink
+        // (including macOS /var -> /private/var). Install from the physical path.
+        const installDir = fs.realpathSync.native(staging);
+        const args = [npm, 'ci', '--prefix', installDir, '--no-audit', '--no-fund'];
+        if (engine === 'kimi') args.push('--omit=optional', '--ignore-scripts');
+        await runCommand(node, args, { cwd: installDir, env: { ...connection.env, PATH: path.dirname(node) + path.delimiter + process.env.PATH } });
+        // Keep the previous tree until the swap succeeds, then drop it.
+        const backup = path.join(installRoot, 'runtimes', `.${engine}.old-${randomUUID()}`);
+        let moved = false;
+        try {
+          if (fs.existsSync(dir)) { fs.renameSync(dir, backup); moved = true; }
+          fs.renameSync(staging, dir);
+        } catch (error) {
+          if (moved && !fs.existsSync(dir)) { try { fs.renameSync(backup, dir); } catch { /* leave the backup for inspection */ } }
+          throw error;
+        } finally {
+          if (moved) fs.rmSync(backup, { recursive: true, force: true });
+        }
+      } finally {
+        fs.rmSync(staging, { recursive: true, force: true });
       }
-      // npm 11 can reject a valid lockfile when the prefix contains a symlink
-      // (including macOS /var -> /private/var). Install from the physical path.
-      const installDir = fs.realpathSync.native(dir);
-      const args = [npm, 'ci', '--prefix', installDir, '--no-audit', '--no-fund'];
-      if (engine === 'kimi') args.push('--omit=optional', '--ignore-scripts');
-      await runCommand(node, args, { cwd: installDir, env: { ...connection.env, PATH: path.dirname(node) + path.delimiter + process.env.PATH } });
       if (engine === 'dsh') patchDsh(dir);
       const found = locate(engine);
       if (!found) throw new Error("Installation did not produce an executable. Please retry.");

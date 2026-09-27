@@ -116,7 +116,7 @@ class RemoteGateway {
       } else fail(405, 'Unsupported management method');
       return;
     }
-    const native = /^\/v1\/native-settings\/(claude|codex|kimi|dsh|antigravity)$/.exec(url.pathname);
+    const native = /^\/v1\/native-settings\/(claude|codex|kimi|dsh|antigravity|pi)$/.exec(url.pathname);
     if (native && this.nativeSettings) {
       if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
       if (url.search || !['GET', 'POST'].includes(request.method)) fail(400, 'Invalid native settings request');

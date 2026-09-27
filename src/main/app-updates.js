@@ -26,6 +26,32 @@ function digestSha256(asset) {
   return match ? match[1].toLowerCase() : null;
 }
 
+// Architecture is matched by name token so a machine is never handed a build
+// for a different CPU. A name that mentions no architecture at all is treated
+// as universal, which keeps older naming schemes working. macOS is the
+// exception: see the darwin branch, which is Apple Silicon only.
+const ARCH_TOKENS = {
+  x64: /(?:^|[^a-z0-9])(?:x64|amd64|x86[_-]?64)(?![a-z0-9])/i,
+  arm64: /(?:^|[^a-z0-9])(?:arm64|aarch64)(?![a-z0-9])/i,
+  // The trailing lookahead stops "x86_64"/"x86-64" from also being read as 32-bit.
+  ia32: /(?:^|[^a-z0-9])(?:ia32|i386|x86)(?![a-z0-9])(?![_-]?64)/i,
+};
+
+function normalizeArch(arch) {
+  const value = String(arch ?? '').toLowerCase();
+  if (value === 'x64' || value === 'amd64' || value === 'x86_64') return 'x64';
+  if (value === 'arm64' || value === 'aarch64') return 'arm64';
+  if (value === 'ia32' || value === 'x86' || value === 'i386') return 'ia32';
+  return null;
+}
+
+function matchesArch(name, arch) {
+  const declared = Object.keys(ARCH_TOKENS).filter(key => ARCH_TOKENS[key].test(name));
+  if (!declared.length) return true;
+  const wanted = normalizeArch(arch);
+  return wanted ? declared.includes(wanted) : false;
+}
+
 // Only artifacts Camellia can apply in place are offered. Windows NSIS
 // installers overwrite the existing installation; macOS ZIP archives replace
 // the .app bundle. DMG and Linux packages are downloaded for the user instead.
@@ -34,21 +60,27 @@ function selectAsset(assets, platform, arch) {
   // keep only the basename to prevent it from escaping the temp directory.
   const usable = (assets || []).filter(asset => asset && asset.name && asset.browser_download_url)
     .map(asset => ({ ...asset, name: path.basename(asset.name) }));
-  const pick = patterns => {
+  const pick = (patterns, accept = () => true) => {
     for (const pattern of patterns) {
-      const found = usable.find(asset => pattern.test(asset.name));
+      const found = usable.find(asset => pattern.test(asset.name) && accept(asset.name) && matchesArch(asset.name, arch));
       if (found) return found;
     }
     return null;
   };
   if (platform === 'win32') {
-    const asset = pick([/setup.*win.*(?:x64|amd64).*\.exe$/i, /win.*(?:x64|amd64).*\.exe$/i, /\.exe$/i]);
+    // The portable build is a self-extracting archive: launching it opens the
+    // app instead of installing over it, so it must never be used to update.
+    const asset = pick([/setup.*\.exe$/i, /win.*\.exe$/i, /\.exe$/i], name => !/portable/i.test(name));
     return asset ? { asset, kind: 'installer' } : null;
   }
   if (platform === 'darwin') {
-    const archive = pick([/macos.*arm64.*\.zip$/i, /arm64.*\.zip$/i, /darwin.*\.zip$/i]);
+    // Camellia publishes Apple Silicon builds only, so an Intel Mac is not
+    // offered an update at all (and an Intel-named artifact is never chosen,
+    // even if a release still carries one).
+    if (normalizeArch(arch) !== 'arm64') return null;
+    const archive = pick([/macos.*\.zip$/i, /darwin.*\.zip$/i]);
     if (archive) return { asset: archive, kind: 'archive' };
-    const image = pick([/macos.*arm64.*\.dmg$/i, /\.dmg$/i]);
+    const image = pick([/macos.*\.dmg$/i, /darwin.*\.dmg$/i, /\.dmg$/i]);
     return image ? { asset: image, kind: 'disk-image' } : null;
   }
   return null;

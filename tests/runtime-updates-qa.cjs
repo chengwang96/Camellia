@@ -30,7 +30,10 @@ async function main() {
       for (const window of BrowserWindow.getAllWindows()) if (!window.webContents.isLoading() && await window.webContents.executeJavaScript("!!document.querySelector('#checkRuntimeUpdates')")) return window;
     }, 'settings runtimes page');
     const cards = await wait(() => settings.webContents.executeJavaScript("document.querySelectorAll('#runtimeCards article').length"), 'runtime cards');
-    assert.equal(cards, 5, 'All five engine cards render');
+    // Compare against the runtime manager's own list rather than a literal, so
+    // adding an engine cannot silently stale this check.
+    const expected = await settings.webContents.executeJavaScript("window.dshDesktop.runtimeState().then(state => state.engines.length)");
+    assert.equal(cards, expected, `All ${expected} engine cards render`);
     await settings.webContents.executeJavaScript("document.querySelector('#checkRuntimeUpdates').click()");
     await wait(() => settings.webContents.executeJavaScript(
       "document.querySelectorAll('#runtimeCards article p.hint').length && Array.from(document.querySelectorAll('#runtimeCards article')).every(a => /Up to date|available|failed|ships with the app|已是最新|可更新|失败|随应用更新/.test(a.textContent))"

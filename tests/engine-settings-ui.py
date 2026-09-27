@@ -44,7 +44,12 @@ try:
         for scheme in ['light','dark']:
             page.emulate_media(color_scheme=scheme)
             page.screenshot(path=str(repo/f'dist/engine-settings-qa/kimi-{scheme}.png'),full_page=True)
-        page.locator('[data-view=runtimes]').click(); expect(page.locator('.runtime-card')).to_have_count(5)
+        page.locator('[data-view=runtimes]').click()
+        # One shared Python card plus one card per engine, derived from the real
+        # runtime state so adding an engine cannot silently stale this assertion.
+        # The engine cards arrive after runtimeState resolves, so allow for the
+        # driver being busy with the native settings work above.
+        expect(page.locator('.runtime-card')).to_have_count(1 + len(rpc('runtimeState')['engines']), timeout=30000)
         expect(page.locator('#runtimeCards')).to_contain_text('Ready')
         page.locator('[data-view=engines]').click()
         page.locator('[data-engine=dsh]').click()

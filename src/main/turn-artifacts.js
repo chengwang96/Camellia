@@ -33,15 +33,35 @@ function targetsFor(candidate, bases) {
   return bases.map(base => path.resolve(base, relative));
 }
 
+// A reply usually names its output folder once and then lists bare file names
+// from it, so an absolute directory mentioned in the same turn becomes a base
+// for the references that follow. Only absolute references qualify, which keeps
+// a relative word such as `docs/` from widening the search.
+function mentionedDirectories(candidates) {
+  const directories = [];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate.trim()) continue;
+    let targets = [];
+    try { targets = targetsFor(candidate, []); } catch {}
+    for (const target of targets) {
+      try {
+        if (!directories.includes(target) && fs.statSync(target).isDirectory()) directories.push(target);
+      } catch {}
+    }
+  }
+  return directories;
+}
+
 // A turn can produce files outside the conversation workspace (for example when
 // its commands ran in another project directory), so relative references are
 // resolved against the workspace and every directory the turn's tools used.
 function resolveArtifacts({ paths = [], text = '', cwd = '', roots = [] } = {}) {
   const files = new Map();
-  const bases = [cwd, ...roots].filter(base => typeof base === 'string' && base.trim());
   const references = textPaths(text).filter(candidate => !/(?:#L\d+(?:C\d+)?|:\d+(?::\d+)?)$/.test(candidate));
   const candidates = [...paths.slice(0, 100).map(candidate => ({ candidate, explicit: false })),
     ...references.map(candidate => ({ candidate, explicit: true }))];
+  const bases = [cwd, ...roots, ...mentionedDirectories(candidates.map(entry => entry.candidate))]
+    .filter(base => typeof base === 'string' && base.trim());
   for (const { candidate, explicit } of candidates) {
     if (typeof candidate !== 'string' || !candidate.trim()) continue;
     let targets = [];

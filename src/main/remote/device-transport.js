@@ -16,7 +16,7 @@ function endpointPath(value, method) {
   const conversation = /^\/v1\/conversations\/[a-f0-9-]{36}(?:\/(events|commands|read|artifacts)(\/[a-f0-9]{64})?)?$/.exec(url.pathname);
   if (conversation?.[2] && conversation[1] !== 'artifacts') throw new Error('Unsupported device endpoint');
   const pairing = ['/v1/pair/request', '/v1/pair/claim'].includes(url.pathname);
-  const native = /^\/v1\/native-settings\/(claude|codex|kimi|dsh|antigravity)$/.test(url.pathname);
+  const native = /^\/v1\/native-settings\/(claude|codex|kimi|dsh|antigravity|pi)$/.test(url.pathname);
   const management = method === 'POST' ? url.pathname === '/v1/server-management' : /^\/v1\/server-management\/[a-f0-9-]{36}$/.test(url.pathname);
   if (management && ['GET', 'POST'].includes(method)) { if (value.includes('?')) throw new Error('Invalid management query'); return value; }
   if (method === 'POST') {

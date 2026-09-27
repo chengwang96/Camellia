@@ -461,6 +461,36 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
         });
     }
 
+    public void testDeletedConversationReleasesTheUnconfirmedRequest() throws Exception {
+        client.failure = new java.net.SocketTimeoutException("fixture timeout");
+        send(); awaitResult();
+        ui(() -> {
+            // Deleting the conversation on the computer makes every later
+            // acknowledgement impossible, so the phone must drop the stored
+            // request instead of blocking the composer forever.
+            var failure = MainActivity.class.getDeclaredMethod("showFailure", Exception.class, boolean.class);
+            failure.setAccessible(true); failure.invoke(activity, new RemoteApi.Failure(404, "Conversation not found"), true);
+            assertFalse(((JSONObject) field("credentials")).has("pendingCommand"));
+            assertNull(field("outgoingMessage"));
+            assertEquals("instant message", ((EditText) field("composer")).getText().toString());
+            String status = ((TextView) activity.getWindow().getDecorView().findViewWithTag("connectionStatus")).getText().toString();
+            assertTrue(status.contains("会话不可用") || status.contains("Conversation unavailable"));
+        });
+    }
+
+    public void testUnavailableOtherConversationKeepsTheQueuedRequest() throws Exception {
+        client.failure = new java.net.SocketTimeoutException("fixture timeout");
+        send(); awaitResult();
+        ui(() -> {
+            // A 404 for a different conversation must not discard another
+            // conversation's unconfirmed request.
+            field("conversationId", "87654321-4321-4321-4321-cba987654321");
+            var failure = MainActivity.class.getDeclaredMethod("showFailure", Exception.class, boolean.class);
+            failure.setAccessible(true); failure.invoke(activity, new RemoteApi.Failure(404, "Conversation not found"), true);
+            assertTrue(((JSONObject) field("credentials")).has("pendingCommand"));
+        });
+    }
+
     public void testPreparingAutomaticallyChecksSameRequest() throws Exception {
         client.pendingFirst = true;
         client.result = new JSONObject().put("ok", true).put("userSeq", 11);

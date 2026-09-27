@@ -11,6 +11,10 @@ const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac
 // Installable application artifacts. They cannot be previewed inline, but they
 // are the deliverable of a build turn, so they must not be discarded as noise.
 const PACKAGE_EXTENSIONS = new Set(['.apk', '.aab', '.ipa', '.exe', '.msi', '.dmg', '.pkg', '.deb', '.rpm', '.appimage']);
+// The pre-2007 Office binaries are OLE compound files instead of ZIP
+// archives, so they cannot be parsed like .docx/.xlsx/.pptx. They are still
+// real deliverables and must stay in the artifact list, just not previewed.
+const LEGACY_DOCUMENT_EXTENSIONS = new Set(['.doc', '.xls', '.ppt']);
 const TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.json', '.jsonl', '.js', '.cjs', '.mjs', '.ts', '.tsx', '.jsx', '.css', '.scss',
   '.html', '.htm', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.log', '.csv', '.tsv', '.sql',
@@ -29,6 +33,7 @@ function previewKind(filePath) {
   if (VIDEO_EXTENSIONS.has(extension)) return 'video';
   if (AUDIO_EXTENSIONS.has(extension)) return 'audio';
   if (PACKAGE_EXTENSIONS.has(extension)) return 'package';
+  if (LEGACY_DOCUMENT_EXTENSIONS.has(extension)) return 'document';
   if (TEXT_EXTENSIONS.has(extension) || ['dockerfile', 'makefile', 'license', 'readme'].includes(name)) return 'text';
   return 'unsupported';
 }
@@ -60,4 +65,4 @@ function describePreview(filePath) {
   return preview;
 }
 
-module.exports = { MAX_TEXT_BYTES, describePreview, previewKind };
+module.exports = { MAX_TEXT_BYTES, describePreview, previewKind, LEGACY_DOCUMENT_EXTENSIONS };

@@ -2126,8 +2126,10 @@ public final class MainActivity extends Activity {
                 prefetch.cancel();
                 prefetch.remove(credentials, screen.equals("detail") ? conversationId : null);
                 if (screen.equals("detail") && conversationId != null) {
+                    boolean released = releasePendingCommandForUnavailableConversation();
                     clearHistory(); if (messages != null) messages.removeAllViews();
                     status.setText(tr("会话不可用，可能已归档或不再授权。", "Conversation unavailable, archived or no longer authorized.")
+                        + (released ? tr(" 未确认的消息已恢复到输入框且未发送。", " The unconfirmed message was returned to the box and was not sent.") : "")
                         + "\n" + RemoteApi.failureMessage(error, chinese));
                 } else status.setText(tr("电脑端不支持此接口，请更新并重启电脑端。", "This endpoint is unavailable. Update and restart the desktop.")
                     + "\n" + RemoteApi.failureMessage(error, chinese));
@@ -2141,6 +2143,44 @@ public final class MainActivity extends Activity {
             if (code == 429 || code == 403 || code == 409) { status.setText(RemoteApi.failureMessage(error, chinese)); return; }
         }
         status.setText(RemoteApi.failureMessage(error, chinese) + tr(" 当前内容可能是缓存。", " Displayed content may be cached."));
+    }
+
+    // A command queued for a conversation the desktop deleted or archived can
+    // never be acknowledged, yet it keeps blocking every later send on this
+    // computer. Drop the stored request, restore its draft as a failed send, and
+    // let the user resubmit in an authorized conversation instead.
+    private boolean releasePendingCommandForUnavailableConversation() {
+        JSONObject pending = credentials.optJSONObject("pendingCommand");
+        if (pending == null || !conversationId.equals(pending.optString("conversationId"))) return false;
+        JSONObject payload = pending.optJSONObject("payload");
+        String action = payload == null ? "" : payload.optString("action");
+        boolean submitted = action.equals("send") || action.equals("resend");
+        try {
+            JSONObject saved = new JSONObject(credentials.toString()); saved.remove("pendingCommand");
+            store.save(saved); credentials = saved;
+        } catch (Exception error) {
+            reportError("无法保存操作结果，请重试同一请求。", "Could not save result. Retry the same request.", error);
+            return false;
+        }
+        if (submitted && composer != null) {
+            try {
+                // A refused edit stays an edit: keep its target so the restored
+                // draft does not silently become a brand new message.
+                if (payload.has("editSeq")) editingSeq = payload.optLong("editSeq");
+                composer.setText(pending.optString("draft", payload.optString("prompt")));
+                selectedImages.clear();
+                JSONArray images = payload.optJSONArray("images");
+                if (images != null) for (int index = 0; index < images.length(); index++) selectedImages.add(images.getString(index));
+                else if (payload.has("image")) selectedImages.add(payload.getString("image"));
+                imageConversation = conversationId; imageComputer = credentials.optString("address"); renderImage();
+                persistDraft();
+            } catch (Exception error) {
+                reportError("无法恢复未发送内容，请重新输入。", "Could not restore the unsent content; type it again.", error);
+            }
+        }
+        outgoingMessage = null;
+        updateControls();
+        return true;
     }
 
     private void bindStatusDetails() {

@@ -52,8 +52,10 @@ try:
         page.goto(url)
         page.wait_for_load_state('networkidle')
         # One shared Python field plus one path per engine (Antigravity keeps
-        # only its subscription CLI): 1 + 5 = 6 controls.
-        expect(page.locator('.runtime-path')).to_have_count(6)
+        # only its subscription CLI). Derive the engine count from the real
+        # runtime state so adding an engine cannot silently stale this line.
+        engine_count = len(rpc('runtimeState')['engines'])
+        expect(page.locator('.runtime-path')).to_have_count(1 + engine_count)
         expect(page.locator('#runtime-path-python')).to_be_visible()
         expect(page.locator('#runtime-path-antigravity-api')).to_have_count(0)
         expect(page.locator('#runtime-path-antigravity-subscription')).to_be_visible()
