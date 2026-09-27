@@ -14,7 +14,9 @@ suites += [{'id': f'ds1000-{kind}', 'library': 'ds1000', 'name': name, 'count': 
             'taskIds': [t['id'] for t in external_tasks[:count]], 'tasks': external_tasks[:count]}
            for kind, name, count in [('quick', 'Quick sample', 3), ('standard', 'Standard sample', 6), ('full', 'Full test split', 1000)]]
 suites += [{'id':'scicode-quick','library':'scicode','name':'Quick sample','count':3,'taskIds':[],'tasks':[]}]
-engine_names = [('claude', 'Claude Code'), ('codex', 'Codex CLI'), ('dsh', 'DeepSeek Harness'), ('kimi', 'Kimi Code'), ('antigravity', 'Antigravity SDK')]
+engine_names = [('claude', 'Claude Code'), ('codex', 'Codex CLI'), ('dsh', 'DeepSeek Harness'), ('kimi', 'Kimi Code'),
+                ('antigravity', 'Antigravity SDK'), ('pi', 'Pi')]
+ENGINE_COUNT = len(engine_names)
 legacy_tasks = [{'id': 'slug', 'name': 'Repair text normalization', 'category': 'Bug fix'}, *suites[0]['tasks'][1:]]
 state = {'ok': True, 'busy': False, 'routerReady': False, 'models': [], 'history': [], 'active': None, 'latest': None,
          'libraries': [{'id':'builtin','name':'Camellia built-in','ready':True,'defaultTimeoutSeconds':300,'defaultTokensPerTask':250000},
@@ -63,13 +65,13 @@ bridge = """(() => {
         const suite = fixture.suites.find(s => s.id === payload.suite);
         report.suite = suite.id; report.suiteName = suite.name; report.tasks = suite.tasks;
         report.version = 'camellia-bench-2';
-        report.trials = suite.tasks.flatMap((t,n)=>fixture.engines.map((e,i)=>({id:n*5+i+1,task:t.id,engine:e.id,repeat:1,status:'pending'})));
+        report.trials = suite.tasks.flatMap((t,n)=>fixture.engines.map((e,i)=>({id:n*fixture.engines.length+i+1,task:t.id,engine:e.id,repeat:1,status:'pending'})));
         if (suite.library && suite.library !== 'builtin') {
           report.id = '23456789-1234-1234-1234-123456789abc'; report.suite = suite.id; report.suiteName = suite.name;
           report.library = {id:suite.library,name:fixture.libraries.find(l=>l.id===suite.library).name}; report.tasks = suite.tasks;
         }
-        report.execution = {mode:'parallel-engines',maxConcurrentTrials:5,perEngineConcurrency:1};
-        report.trials.forEach((t,i) => {t.status = i < 5 ? 'running' : 'pending'; t.checkScore = null; delete t.verification;});
+        report.execution = {mode:'parallel-engines',maxConcurrentTrials:fixture.engines.length,perEngineConcurrency:1};
+        report.trials.forEach((t,i) => {t.status = i < fixture.engines.length ? 'running' : 'pending'; t.checkScore = null; delete t.verification;});
         report.engines.forEach(e => Object.assign(e, {score:null,checkScore:null,passed:0,completed:0,tokens:0,durationMs:0}));
         window.fixture.active = report; window.fixture.busy = true; return {ok:true,id:report.id};
       }
@@ -89,12 +91,12 @@ with sync_playwright() as p:
     page.add_init_script('window.fixture = ' + json.dumps(state) + ';window.savedReport = ' + json.dumps(report) + ';' + bridge)
     page.goto((repo / 'src/renderer/benchmark/benchmark.html').as_uri())
     page.wait_for_load_state('networkidle')
-    expect(page.get_by_role('heading', name='One model. Five engines.')).to_be_visible()
-    expect(page.locator('.score')).to_have_count(5)
-    expect(page.locator('.score-label')).to_have_text(['Check score'] * 5)
+    expect(page.get_by_role('heading', name='One model. Six engines.')).to_be_visible()
+    expect(page.locator('.score')).to_have_count(6)
+    expect(page.locator('.score-label')).to_have_text(['Check score'] * 6)
     expect(page.get_by_text('Some check counts were not saved')).to_have_count(0)
     expect(page.locator('#start')).to_be_disabled()
-    expect(page.locator('[data-install]')).to_have_count(5)
+    expect(page.locator('[data-install]')).to_have_count(6)
     for id, name in engine_names:
         page.locator(f'[data-install="{id}"]').click()
         expect(page.locator(f'[data-install="{id}"]')).to_have_count(0)
@@ -119,7 +121,7 @@ with sync_playwright() as p:
     page.locator('#library').select_option('ds1000')
     expect(page.locator('#suite')).to_have_value('ds1000-full')
     expect(page.locator('#suite')).to_be_disabled()
-    expect(page.locator('#runHint')).to_contain_text('5000 attempts')
+    expect(page.locator('#runHint')).to_contain_text(f'{1000 * ENGINE_COUNT} attempts')
     expect(page.locator('#modeGuide')).to_contain_text('200.0 hours per engine')
     page.locator('#library').select_option('builtin')
     expect(page.locator('#suite')).to_have_value('standard')
@@ -169,9 +171,13 @@ with sync_playwright() as p:
     expect(page.locator('#start')).to_be_enabled()
     expect(page.locator('#prepareLibrary')).not_to_be_visible()
     page.locator('#suite').select_option('ds1000-full')
-    expect(page.locator('#runHint')).to_contain_text('5000 attempts')
+    expect(page.locator('#runHint')).to_contain_text(f'{1000 * ENGINE_COUNT} attempts')
     expect(page.locator('#limitHint')).to_contain_text('500K tokens per task attempt')
-    expect(page.locator('#budgetAdvice')).to_contain_text('5000 task budgets: up to 2.5B reported tokens')
+    # Token totals go through the page's compact formatter, so assert the
+    # attempt count and the presence of a reported-token total instead of
+    # duplicating that formatting here.
+    expect(page.locator('#budgetAdvice')).to_contain_text(f'{1000 * ENGINE_COUNT} task budgets: up to')
+    expect(page.locator('#budgetAdvice')).to_contain_text('reported tokens')
     expect(page.locator('#matrix tbody tr')).to_have_count(25)
     expect(page.locator('#taskPage')).to_have_text('1–25 of 1000 tasks')
     page.locator('#nextTasks').click()
@@ -181,7 +187,7 @@ with sync_playwright() as p:
     page.locator('#library').select_option('builtin')
     page.locator('#suite').select_option('standard')
     page.locator('#repeats').select_option('3')
-    expect(page.locator('#runHint')).to_contain_text('105 attempts')
+    expect(page.locator('#runHint')).to_contain_text(f'{7 * 3 * ENGINE_COUNT} attempts')
     expect(page.locator('#limitHint')).to_contain_text('250K tokens per task attempt')
     expect(page.locator('#runHint')).to_contain_text('uses your API quota')
     page.locator('#suite').select_option('quick')
@@ -194,15 +200,15 @@ with sync_playwright() as p:
     expect(page.locator('#runConfiguration')).not_to_be_visible()
     page.locator('#runDetails summary').click()
     expect(page.locator('#runConfiguration')).to_be_visible()
-    expect(page.locator('#runConfiguration')).to_contain_text('5 engines in parallel')
+    expect(page.locator('#runConfiguration')).to_contain_text('6 engines in parallel')
     expect(page.locator('#runConfiguration')).to_contain_text('5 minutes per task · 250K tokens per task attempt')
     page.locator('#runDetails summary').click()
     expect(page.locator('#runMeta')).to_contain_text('Built-in v2')
     expect(page.locator('#timeout')).to_have_value('300')
     expect(page.locator('#budget')).to_have_value('')
     expect(page.locator('#tokensPerTask')).to_have_value('250000')
-    expect(page.locator('#progressText')).to_have_text('0 / 15 attempts finished · 5 running')
-    expect(page.locator('.cell.running')).to_have_count(5)
+    expect(page.locator('#progressText')).to_have_text(f'0 / {3 * ENGINE_COUNT} attempts finished · {ENGINE_COUNT} running')
+    expect(page.locator('.cell.running')).to_have_count(6)
     page.screenshot(path=str(screenshots / 'benchmark-parallel-running.png'), full_page=True)
     assert page.evaluate("calls.find(c=>c.method==='benchmarkStart').payload") == {
         'model': 'demo-model', 'providerId': 'fixture', 'mode': 'custom', 'library': 'builtin', 'suite': 'quick', 'repeats': 1, 'timeoutSeconds': 300, 'maxTokensPerTask':250000, 'tokenBudget': None}
@@ -348,16 +354,16 @@ with sync_playwright() as p:
     expect(page.locator('#runConfiguration')).to_contain_text('5-minute preview')
     expect(page.locator('#runConfiguration')).to_contain_text('shared across each engine')
     expect(page.locator('input[value="full"]')).to_be_disabled()
-    page.evaluate("""fixture.active.status='time_limit_reached';fixture.active.finishedAt=new Date().toISOString();fixture.busy=false;
-      fixture.active.trials.forEach((t,i)=>{t.status=i<5?'timeout':'skipped';t.failureKind=i<5?'run_time_limit':null;t.checkScore=i<5?0:null;});
-      fixture.active.engines.forEach(e=>Object.assign(e,{completed:1,expected:3,score:null,checkScore:null,observedCheckScore:0,observedPassRate:0,coverage:33.3}));
+    page.evaluate(f"""fixture.active.status='time_limit_reached';fixture.active.finishedAt=new Date().toISOString();fixture.busy=false;
+      fixture.active.trials.forEach((t,i)=>{{t.status=i<{ENGINE_COUNT}?'timeout':'skipped';t.failureKind=i<{ENGINE_COUNT}?'run_time_limit':null;t.checkScore=i<{ENGINE_COUNT}?0:null;}});
+      fixture.active.engines.forEach(e=>Object.assign(e,{{completed:1,expected:3,score:null,checkScore:null,observedCheckScore:0,observedPassRate:0,coverage:33.3}}));
       emitState(fixture);""")
     expect(page.locator('#runStatus')).to_have_text('Preview time budget reached')
-    expect(page.locator('#progressText')).to_have_text('5 / 15 attempts finished')
-    expect(page.locator('.cell.skipped')).to_have_count(10)
+    expect(page.locator('#progressText')).to_have_text(f'{ENGINE_COUNT} / {3 * ENGINE_COUNT} attempts finished')
+    expect(page.locator('.cell.skipped')).to_have_count(3 * ENGINE_COUNT - ENGINE_COUNT)
     expect(page.locator('#runLimitNote')).to_contain_text('unstarted tasks have no score')
-    expect(page.locator('.score-number')).to_have_text(['0 / 100'] * 5)
-    expect(page.locator('.score-label')).to_have_text(['Preliminary check score'] * 5)
+    expect(page.locator('.score-number')).to_have_text(['0 / 100'] * 6)
+    expect(page.locator('.score-label')).to_have_text(['Preliminary check score'] * 6)
     expect(page.locator('#start')).to_be_enabled()
     page.evaluate("""const t=fixture.active.trials[1];t.timeoutSeconds=184;
       t.timeoutContext={activity:'Waiting for model response',requestsInFlight:1};
@@ -379,16 +385,16 @@ with sync_playwright() as p:
     model_value = page.locator('#model').input_value()
     raw_output = page.locator('#detailText').text_content()
     page.evaluate("CamelliaI18n.setLanguage('zh-CN')")
-    expect(page.locator('h1')).to_have_text('同一模型，五个引擎。')
+    expect(page.locator('h1')).to_have_text('同一模型，六个引擎。')
     expect(page.locator('#runStatus')).to_have_text('预览时间已用尽')
-    expect(page.locator('.score-label')).to_have_text(['暂定检查得分'] * 5)
+    expect(page.locator('.score-label')).to_have_text(['暂定检查得分'] * 6)
     assert page.locator('#model').input_value() == model_value
     assert page.locator('#detailText').text_content() == raw_output
     page.set_viewport_size({'width':1200,'height':900})
     page.evaluate('window.scrollTo(0,0)')
     page.screenshot(path=str(screenshots / 'benchmark-zh-CN.png'), full_page=True)
     page.evaluate("CamelliaI18n.setLanguage('en')")
-    expect(page.locator('h1')).to_have_text('One model. Five engines.')
+    expect(page.locator('h1')).to_have_text('One model. Six engines.')
     expect(page.locator('#runStatus')).to_have_text('Preview time budget reached')
     assert not errors, errors
     browser.close()

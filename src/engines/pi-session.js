@@ -118,6 +118,17 @@ class PiSession extends StreamingSession {
     void this.run(prompt, attachments);
     return true;
   }
+  // The benchmark spawns a session per trial and never sends more than one
+  // message, so startup is lazy. These two hooks keep Pi on the same contract
+  // as the other transports, which the benchmark drives directly.
+  start() {
+    this.ready = this.open().catch(error => { this.close(error); throw error; });
+    this.ready.catch(() => {});
+  }
+  kill() {
+    this.cancelled = true;
+    this.close(new Error('Pi process stopped'));
+  }
   async run(prompt, attachments) {
     try {
       await (this.ready ||= this.open());

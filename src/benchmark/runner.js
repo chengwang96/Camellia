@@ -233,7 +233,7 @@ class BenchmarkRunner {
       ...(mode === 'preview' ? { timeAllocation: { ...PREVIEW_TIME_ALLOCATION } } : {}),
       execution: { mode: 'parallel-engines', maxConcurrentTrials: ENGINES.length, perEngineConcurrency: 1 },
       versions: Object.fromEntries(state.engines.map(e => [e.id, e.version])), platform: process.platform + '-' + process.arch,
-      configuration: { claude: 'stream-json; native defaults', codex: `app-server; shared Responses adapter; ${CODEX_API_TOOL_PROFILE}`, dsh: `shipped headless profile; ${DSH_MAX_OUTPUT_TOKENS} output tokens per response`, kimi: 'ACP; native defaults', antigravity: `SDK over ACP; native defaults; ${ANTIGRAVITY_API_TOOL_PROFILE}`,
+      configuration: { claude: 'stream-json; native defaults', codex: `app-server; shared Responses adapter; ${CODEX_API_TOOL_PROFILE}`, dsh: `shipped headless profile; ${DSH_MAX_OUTPUT_TOKENS} output tokens per response`, kimi: 'ACP; native defaults', antigravity: `SDK over ACP; native defaults; ${ANTIGRAVITY_API_TOOL_PROFILE}`, pi: 'RPC mode; native tools; full permission',
         environment: 'fresh local workspace and profile for every trial; native tools; no personal settings or external MCP servers', thinking: 'native defaults; not normalized across engines',
         ...(external ? { pythonSelfTest: PYTHON_SCRATCH_FLAGS.join(' '), scientificThreads: 1,
           referenceLookup: 'local and remote benchmark datasets/tests/solutions outside the task workspace prohibited by prompt; not an OS sandbox' } : {}) },
