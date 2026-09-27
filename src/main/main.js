@@ -1252,7 +1252,7 @@ if (!gotSingleInstanceLock) {
     'benchmark-report': ({ id }) => ({ ok: true, report: benchmarks().report(id) }),
     'benchmark-delete': ({ id }) => benchmarks().deleteReport(id),
     'benchmark-install': async ({ engine }) => {
-      if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity'].includes(engine)) throw new Error('Unknown benchmark engine');
+      if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine)) throw new Error('Unknown benchmark engine');
       if (benchmarkRunner?.pending) throw new Error('Stop the benchmark before downloading an engine');
       await runtimes().ensure(engine, 'api');
       return { ok: true, ...benchmarks().state() };

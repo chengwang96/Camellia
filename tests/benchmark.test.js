@@ -195,7 +195,7 @@ test('preview enforces the same small sample and limits regardless of stale setu
     timeoutSeconds: 3600, maxTokensPerTask: 5000000, tokenBudget: 10000 });
   const report = runner.report(id);
   for (const [key, value] of Object.entries(PREVIEW)) assert.equal(report[key], value, key);
-  assert.equal(report.library.id, 'builtin'); assert.equal(report.trials.length, 15);
+  assert.equal(report.library.id, 'builtin'); assert.equal(report.trials.length, 3 * ENGINES.length);
   assert.equal(report.version, VERSION);
   assert.deepEqual(report.tasks.map(task => task.id), ['slug-basic', 'reconcile', 'invoice']);
   await runner.pending;
@@ -293,8 +293,8 @@ test('timed-out work saves request duration, activity and changed files without 
   await runner.pending;
   const report = runner.report(id);
   assert.equal(report.status, 'time_limit_reached');
-  assert.equal(report.trials.filter(t => t.status === 'timeout').length, 5);
-  assert.equal(report.trials.filter(t => t.status === 'skipped').length, 10);
+  assert.equal(report.trials.filter(t => t.status === 'timeout').length, ENGINES.length);
+  assert.equal(report.trials.filter(t => t.status === 'skipped').length, 2 * ENGINES.length);
   assert.ok(report.trials.filter(t => t.status === 'skipped').every(t => t.checkScore === null));
 });
 
@@ -309,10 +309,10 @@ test('preview deadline closes all routes, keeps partial evidence and excludes un
   t.mock.timers.setTime(1000000 + 299000);
   t.mock.timers.tick(1000); await runner.pending;
   const report = runner.report(id);
-  assert.equal(report.status, 'time_limit_reached'); assert.equal(calls.length, 10);
-  assert.equal(report.trials.filter(t => t.status === 'passed').length, 5);
-  assert.equal(report.trials.filter(t => t.status === 'timeout').length, 5);
-  assert.equal(report.trials.filter(t => t.status === 'skipped').length, 5);
+  assert.equal(report.status, 'time_limit_reached'); assert.equal(calls.length, 2 * ENGINES.length);
+  assert.equal(report.trials.filter(t => t.status === 'passed').length, ENGINES.length);
+  assert.equal(report.trials.filter(t => t.status === 'timeout').length, ENGINES.length);
+  assert.equal(report.trials.filter(t => t.status === 'skipped').length, ENGINES.length);
   assert.ok(report.engines.every(e => e.checkScore === null && e.observedCheckScore === 50 && e.coverage === 66.7));
   assert.equal(scopes.scopes.size, 0); assert.equal(runner.state().busy, false);
   assert.ok(calls.every(c => !fs.existsSync(c.cwd)));
@@ -353,8 +353,10 @@ test('all engines run concurrently and advance independently with one active tri
   for (let wave = 0; wave < 3; wave++) { calls.find(c => !c.done).finish(); await tick(); }
   await runner.pending;
   const report = runner.report(id);
-  assert.equal(report.status, 'completed'); assert.equal(calls.length, 15);
-  assert.deepEqual(report.engines.map(e => e.tokens), [0, 33, 63, 93, 123]);
+  assert.equal(report.status, 'completed'); assert.equal(calls.length, 3 * ENGINES.length);
+  // The loop above skips claude, so only the later engines record tokens:
+  // three finished trials of (engineIndex * 10 input + 1 output).
+  assert.deepEqual(report.engines.map(e => e.tokens), ENGINES.map((_, index) => index === 0 ? 0 : index * 30 + 3));
   assert.equal(new Set(calls.map(c => c.cwd)).size, calls.length);
   assert.equal(new Set(calls.map(c => c.home)).size, calls.length);
   assert.equal(new Set(calls.map(c => c.route.path)).size, calls.length);
@@ -378,11 +380,11 @@ test('runner isolates every attempt, counts every repeat, saves evidence and kee
   await assert.rejects(runner.start({ model: 'm', providerId: 'p' }), /already running/);
   await runner.pending;
   const report = runner.report(id);
-  assert.equal(report.status, 'completed'); assert.equal(report.trials.length, 45); assert.equal(folders.size, 45);
-  assert.deepEqual(report.engines.map(e => e.score), [100, 100, 100, 0, 100]);
+  assert.equal(report.status, 'completed'); assert.equal(report.trials.length, 9 * ENGINES.length); assert.equal(folders.size, 9 * ENGINES.length);
+  assert.deepEqual(report.engines.map(e => e.score), ENGINES.map(engine => engine === 'kimi' ? 0 : 100));
   assert.ok(report.engines.every(e => e.tokens === 153));
   assert.ok([...folders].every(cwd => !fs.existsSync(cwd)));
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, id + '.json'))).trials.length, 45);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, id + '.json'))).trials.length, 9 * ENGINES.length);
   assert.throws(() => runner.report('../routes'), /Invalid/);
 });
 
@@ -479,7 +481,7 @@ test('cancel closes every active scope immediately and waits for all accounting 
   for (const call of calls) call.finish();
   await runner.pending;
   const report = runner.report(id);
-  assert.equal(report.status, 'cancelled'); assert.equal(report.trials.filter(t => t.status === 'pending').length, 10);
+  assert.equal(report.status, 'cancelled'); assert.equal(report.trials.filter(t => t.status === 'pending').length, 2 * ENGINES.length);
   assert.equal(report.trials.filter(t => t.status === 'cancelled').length, ENGINES.length);
   assert.equal(report.engines.reduce((sum, e) => sum + e.tokens, 0), 11000);
   assert.equal(scopes.scopes.size, 0); assert.equal(runner.state().busy, false);
@@ -494,8 +496,8 @@ test('the shared token budget aborts all concurrent engines and prevents queued 
   await runner.pending;
   const report = runner.report(id);
   assert.equal(report.status, 'budget_exceeded'); assert.equal(calls.length, ENGINES.length);
-  assert.equal(report.trials.filter(t => t.status === 'pending').length, 10);
-  assert.equal(report.engines.reduce((sum, e) => sum + e.tokens, 0), 20000);
+  assert.equal(report.trials.filter(t => t.status === 'pending').length, 2 * ENGINES.length);
+  assert.equal(report.engines.reduce((sum, e) => sum + e.tokens, 0), 4000 * ENGINES.length);
   assert.ok(report.engines.every(e => e.score === null)); assert.equal(scopes.scopes.size, 0);
 });
 test('reported token budget stops remaining billable work and restart does not resume it', async t => {
@@ -530,11 +532,11 @@ test('a single trial limit does not abort other engines or stop the remaining ta
   for (let wave = 0; wave < 3; wave++) { for (const call of calls.filter(c => !c.done)) call.finish(); await tick(); }
   await runner.pending;
   const report = runner.report(id);
-  assert.equal(report.status, 'completed'); assert.equal(calls.length, 15);
+  assert.equal(report.status, 'completed'); assert.equal(calls.length, 3 * ENGINES.length);
   assert.equal(report.tokenBudget, null);
   assert.equal(report.maxTokensPerTask, 10000);
   assert.equal(report.trials.filter(t => t.status === 'limit').length, 1);
-  assert.equal(report.trials.filter(t => t.status === 'passed').length, 14);
+  assert.equal(report.trials.filter(t => t.status === 'passed').length, 3 * ENGINES.length - 1);
 });
 
 test('failure to save stops all workers and waits for cleanup without rejecting the run promise', async t => {

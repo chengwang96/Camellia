@@ -234,10 +234,10 @@ async function main() {
     assert.ok(await home.webContents.executeJavaScript("document.querySelector('#enterDsh') !== null"));
 
     await home.webContents.executeJavaScript("document.querySelector('#openBenchmark').click()");
-    const benchmark = await waitWindow("document.querySelector('#scoreboard')?.children.length === 5");
+    const benchmark = await waitWindow("document.querySelector('#scoreboard')?.children.length === 6");
     const benchState = await benchmark.webContents.executeJavaScript('window.dshDesktop.benchmarkState()');
     assert.equal(benchState.ok, true); assert.equal(benchState.models.length, 0);
-    assert.deepEqual(benchState.engines.map(engine => engine.id), ['claude', 'codex', 'dsh', 'kimi', 'antigravity']); assert.equal(benchState.suites.length, 10);
+    assert.deepEqual(benchState.engines.map(engine => engine.id), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']); assert.equal(benchState.suites.length, 10);
     assert.deepEqual(benchState.libraries.map(library => library.id), ['builtin', 'ds1000', 'scicode']);
     assert.equal(await benchmark.webContents.executeJavaScript("document.querySelector('#library').options.length"), 3);
     await benchmark.webContents.executeJavaScript("document.querySelector('input[name=runMode][value=custom]').click();document.querySelector('#library').value='scicode';document.querySelector('#library').dispatchEvent(new Event('change'))");

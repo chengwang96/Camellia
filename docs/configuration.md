@@ -159,7 +159,7 @@ The [benchmark selection assessment](design/benchmark-modes.md) describes the se
 
 ### Libraries and scoring
 
-Open **Home → Benchmark** (also available in the Engine menu). Configure and validate a tool-capable API model in Providers & Keys, then select the model and provider on the benchmark page. All five API runtimes must be installed; missing runtimes have individual Download buttons. Antigravity uses its SDK here even if your chat connection uses a Google subscription.
+Open **Home → Benchmark** (also available in the Engine menu). Configure and validate a tool-capable API model in Providers & Keys, then select the model and provider on the benchmark page. All six API runtimes must be installed; missing runtimes have individual Download buttons. Antigravity uses its SDK here even if your chat connection uses a Google subscription.
 
 Select a **Question library** before choosing the task set:
 
@@ -186,7 +186,7 @@ Sample order is deterministic; smaller samples are prefixes of larger ones. DS-1
 | Grader error | Test-environment failures invalidate the attempt and the engine's final scores; they are not counted as incorrect solutions |
 | Stop / interruption | Unevaluated tasks remain pending; an incomplete engine has no final score |
 
-A Quick check with one attempt executes 15 trials. Standard with three attempts executes 90. All five engines run in parallel, each processing its own task and repeat queue sequentially. A faster engine advances without waiting for slower engines. Every trial has a fresh temporary workspace and profile. They use Claude's stream-json interface, Codex app-server, DSH's shipped headless profile, Kimi ACP, and Antigravity SDK over ACP. Personal settings and external MCP servers are excluded. Native tool sets and reasoning defaults remain different, so this evaluates the shipped integrations with those defaults. Fresh directories are not an operating-system security sandbox.
+A Quick check with one attempt executes 18 trials. Standard with three attempts executes 126. All six engines run in parallel, each processing its own task and repeat queue sequentially. A faster engine advances without waiting for slower engines. Every trial has a fresh temporary workspace and profile. They use Claude's stream-json interface, Codex app-server, DSH's shipped headless profile, Kimi ACP, Antigravity SDK over ACP, and Pi's RPC mode. Personal settings and external MCP servers are excluded. Native tool sets and reasoning defaults remain different, so this evaluates the shipped integrations with those defaults. Fresh directories are not an operating-system security sandbox.
 
 The per-task token allowance and a model's **single-response output limit** are different. DSH uses its pinned native default of **32,768 output tokens per response**, including reasoning. The earlier Camellia adapter incorrectly imposed 8,192. A response can reach its output cap while the task still has time and tokens remaining. New reports record API stop reasons and distinguish **Output limit** from network errors and task timeouts. Auxiliary title generation is kept separate from the agent response when diagnosing the exit. Historical scores are retained; reports without stop metadata cannot be conclusively reclassified.
 
@@ -220,7 +220,7 @@ External reports also store `library` provenance (source URL, revision, split, d
 
 Click a task result to see its check score, independent check count, failed case number, arguments, expected value, and actual value. Non-ASCII characters are escaped, so differences such as `"a\u1ab0b"` remain visible. Function errors, changed input files, malformed JSON, and checks that could not execute have separate diagnostics. Counts such as **11/12 checks passed** earn partial check credit; the attempt counts as fully passed only when every check passes. The engine's own completion message is shown separately under **Engine reply and log**.
 
-For code failures, reproduce the failed case from the saved files and improve the implementation or harness self-checking. For API errors, check model access, key permissions, quota, and connectivity. For a timeout, compare all five engines with the same revised limit in a new run. Keep the original report, and use the same tasks and configuration for subsequent comparisons; do not choose only successful retries as the score. Diagnostic results are not sent back to the agent during scored attempts.
+For code failures, reproduce the failed case from the saved files and improve the implementation or harness self-checking. For API errors, check model access, key permissions, quota, and connectivity. For a timeout, compare all six engines with the same revised limit in a new run. Keep the original report, and use the same tasks and configuration for subsequent comparisons; do not choose only successful retries as the score. Diagnostic results are not sent back to the agent during scored attempts.
 
 Reports identify shared failed cases across at least three distinct engines and display known task limitations. Scientific failures distinguish assertion mismatches, exceptions, timeout and unevaluated cases, with bounded output and source locations. These notices do not award points or change historical scores. Every scientific attempt retains its complete `solution.py` (within the grader's 1 MiB limit), ahead of scratch files, for offline inspection and regrading. New snapshots also record a SHA-256 hash.
 
@@ -334,13 +334,13 @@ Charts retain locally observed values for 30 days, starting when observations ar
 
 Page zoom is shared across the application and saved between launches. Use Ctrl/Cmd + `+` or `−`, Ctrl/Cmd + mouse wheel, or the View menu to adjust it; Ctrl/Cmd + `0` resets it. Home, conversations, settings and native DSH use the same saved scale; the embedded DSH settings panel renders one zoom step finer so its density matches the surrounding settings. The first upgrade adopts the last selected page's existing zoom when available.
 
-All five engines share a sidebar with pinned sessions, folder workspaces, and standalone conversations. Adding a workspace registers a local folder. Its `+` action creates a conversation in that folder; the top-level action starts a standalone conversation. Shared conversations retain their execution directory across engine switches.
+All six engines share a sidebar with pinned sessions, folder workspaces, and standalone conversations. Adding a workspace registers a local folder. Its `+` action creates a conversation in that folder; the top-level action starts a standalone conversation. Shared conversations retain their execution directory across engine switches.
 
 Archiving the open conversation continues at its neighbor in the same workspace, preferring the row below and then the row above. Once a workspace has no conversation left, its new-session page opens in that workspace; standalone conversations follow the same rule and fall back to a standalone draft. Archiving another conversation keeps the current one open. Restore or permanently delete archived conversations from Settings → Archived, which also hosts the manual space cleanup scan.
 
 | Operation | Shared conversations |
 | --- | --- |
-| Workspace and standalone sessions | Supported across five engines |
+| Workspace and standalone sessions | Supported across six engines |
 | Concurrent conversations and goals | Supported, including multiple conversations on the same harness |
 | Change harness while working | Stop the response or pause the goal first; other conversations keep working |
 | Pin, rename, archive, fork, and resume | Supported; shared forks copy context into a new logical conversation |

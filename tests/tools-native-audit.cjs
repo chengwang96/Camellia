@@ -30,19 +30,21 @@ function nativeCall(ctx, operation, options = {}) {
   const annotation = { toolSummary: 'Isolated tool audit', toolAction: 'Checking tool integration' };
   let name, args;
   if (operation === 'read') {
-    name = { claude: 'Read', codex: 'exec_command', dsh: 'read', kimi: 'Read', antigravity: 'view_file' }[engine];
+    name = { claude: 'Read', codex: 'exec_command', dsh: 'read', kimi: 'Read', antigravity: 'view_file', pi: 'read' }[engine];
     args = engine === 'codex' ? { cmd: "rg -N --no-filename -- '' " + quotePs(target), login: false }
       : engine === 'antigravity' ? { AbsolutePath: target, ...annotation }
-      : { [engine === 'kimi' ? 'path' : 'file_path']: target };
+      : { [engine === 'kimi' || engine === 'pi' ? 'path' : 'file_path']: target };
   } else if (operation === 'glob' || operation === 'grep') {
     name = engine === 'codex' ? 'exec_command' : engine === 'antigravity' ? (operation === 'glob' ? 'find_by_name' : 'grep_search')
-      : engine === 'dsh' ? operation : operation === 'glob' ? 'Glob' : 'Grep';
+      : engine === 'dsh' ? operation : engine === 'pi' ? (operation === 'glob' ? 'find' : 'grep')
+        : operation === 'glob' ? 'Glob' : 'Grep';
     args = engine === 'codex' ? { cmd: (operation === 'glob' ? 'rg --files ' : "rg -n 'READ_BETA' ") + quotePs(ctx.cwd), login: false }
       : engine === 'antigravity' ? operation === 'glob' ? { SearchDirectory: ctx.cwd, Pattern: '*.txt', ...annotation }
         : { SearchPath: ctx.cwd, Query: 'READ_BETA', MatchPerLine: true, ...annotation }
+      : engine === 'pi' ? { pattern: operation === 'glob' ? '*.txt' : 'READ_BETA', path: ctx.cwd }
       : { path: ctx.cwd, pattern: operation === 'glob' ? '*.txt' : 'READ_BETA', ...(operation === 'grep' && engine !== 'dsh' ? { output_mode: 'content' } : {}) };
   } else if (operation === 'shell') {
-    name = { claude: 'Bash', codex: 'exec_command', dsh: 'pwsh', kimi: 'Bash', antigravity: 'run_command' }[engine];
+    name = { claude: 'Bash', codex: 'exec_command', dsh: 'pwsh', kimi: 'Bash', antigravity: 'run_command', pi: 'bash' }[engine];
     // echo/exit work in both native Bash (Claude/Kimi) and pwsh.
     const command = engine === 'claude' && process.argv.includes('--complex-shell')
       ? 'echo "=== fixture references ==="; grep -rn "ARDS/tex\\|ARDS\\\\tex\\|build_compile_test\\|/tex/fig\\|tex/ards" "' + ctx.cwd.replace(/\\/g, '/') + '" 2>/dev/null | head -20; echo "(empty = no script depends on it)"; echo; find "' + ctx.cwd.replace(/\\/g, '/') + '" -maxdepth 2 -name ".git" 2>/dev/null; echo EXPECTED_SHELL_ERROR_7; exit 7'
@@ -57,28 +59,30 @@ function nativeCall(ctx, operation, options = {}) {
       ? '*** Begin Patch\n*** Add File: ' + file + '\n' + normalize(CONTENT).trimEnd().split('\n').map(line => '+' + line).join('\n') + '\n*** End Patch'
       : '*** Begin Patch\n*** Update File: ' + file + '\n@@\n-' + (options.invalid ? 'DOES_NOT_EXIST_742' : 'ORIGINAL_词🙂') + '\n+EDITED_词🙂\n*** End Patch' };
   } else if (operation === 'write') {
-    name = engine === 'antigravity' ? 'write_to_file' : engine === 'dsh' ? 'write' : 'Write';
+    name = engine === 'antigravity' ? 'write_to_file' : engine === 'dsh' || engine === 'pi' ? 'write' : 'Write';
     args = engine === 'antigravity' ? { TargetFile: target, CodeContent: CONTENT, Overwrite: false, Description: 'Create an isolated fixture', ...annotation }
-      : { [engine === 'kimi' ? 'path' : 'file_path']: target, content: CONTENT };
+      : { [engine === 'kimi' || engine === 'pi' ? 'path' : 'file_path']: target, content: CONTENT };
   } else {
-    name = engine === 'antigravity' ? 'replace_file_content' : engine === 'dsh' ? 'edit' : 'Edit';
+    name = engine === 'antigravity' ? 'replace_file_content' : engine === 'dsh' || engine === 'pi' ? 'edit' : 'Edit';
     const old = options.invalid ? 'DOES_NOT_EXIST_742' : 'ORIGINAL_词🙂';
     args = engine === 'antigravity' ? { TargetFile: target, TargetContent: old, ReplacementContent: 'EDITED_词🙂',
       AllowMultiple: false, StartLine: 1, EndLine: 2, Instruction: 'Replace the fixture marker', Description: 'Check native editing', ...annotation }
+      : engine === 'pi' ? { path: target, edits: [{ oldText: old, newText: 'EDITED_词🙂' }] }
       : { [engine === 'kimi' ? 'path' : 'file_path']: target, old_string: old, new_string: 'EDITED_词🙂' };
   }
   let declaration = ctx.tools.find(t => t.function.name === name)
     || ctx.tools.find(t => t.function.name.toLowerCase() === String(name).toLowerCase())
     || (operation === 'shell' ? ctx.tools.find(t => /^(ba|z)?sh$|^shell$/i.test(t.function.name)) : null);
-  if (!declaration && engine === 'claude' && (operation === 'glob' || operation === 'grep')) {
+  if (!declaration && (operation === 'glob' || operation === 'grep') && (engine === 'claude' || engine === 'pi')) {
     // Some Claude builds skip Glob/Grep (e.g. when the bundled ripgrep is
-    // unavailable). Audit the same file discovery through the Bash tool.
-    const bash = ctx.tools.find(t => t.function.name === 'Bash');
-    if (bash) {
-      name = 'Bash';
+    // unavailable), and Pi enables only read/bash/edit/write by default.
+    // Audit the same file discovery through the shell tool.
+    const shell = ctx.tools.find(t => t.function.name.toLowerCase() === 'bash');
+    if (shell) {
+      name = shell.function.name;
       args = { command: operation === 'glob' ? 'find ' + quotePs(ctx.cwd) + ' -name "*.txt"' : "grep -rn 'READ_BETA' " + quotePs(ctx.cwd), description: 'Audit fallback for missing Glob/Grep' };
-      declaration = bash;
-      console.log('note: claude declared no Glob/Grep; auditing discovery through Bash');
+      declaration = shell;
+      console.log(`note: ${engine} declared no Glob/Grep; auditing discovery through ${shell.function.name}`);
     }
   }
   if (options.escalate) Object.assign(args, { sandbox_permissions: 'danger-full-access', justification: 'Check denial of an isolated fixture write' });

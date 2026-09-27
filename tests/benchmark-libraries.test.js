@@ -9,6 +9,7 @@ const { createHash } = require('node:crypto');
 const { makeTasks, selectTasks, publicTask, download, createLibraryManager, EXTERNAL_SUITES } = require('../src/benchmark/libraries');
 const { checksFor } = require('../src/benchmark/python-verifier');
 const { BenchmarkRunner } = require('../src/benchmark/runner');
+const { ENGINES } = require('../src/benchmark/engines');
 const { RequestScopes } = require('../src/api/request-scopes');
 
 function temp(t) {
@@ -97,10 +98,10 @@ test('external runs use the selected tasks for every engine, preserve provenance
   assert.equal(report.tokenBudget, null);
   assert.equal(report.maxTokensPerTask, 500000);
   assert.equal(runner.state().libraries.find(library => library.id === 'ds1000').defaultTimeoutSeconds, 600);
-  assert.equal(calls.length,15);assert.ok(calls.every(c=>c.python==='fixture-python'&&!c.prompt.includes('SECRET')));
+  assert.equal(calls.length,ENGINES.length * 3);assert.ok(calls.every(c=>c.python==='fixture-python'&&!c.prompt.includes('SECRET')));
   assert.ok(calls.every(c => c.prompt.includes('-E -s -X utf8') && !c.prompt.includes('with -I')));
   assert.equal(report.configuration.pythonSelfTest, '-E -s -X utf8');
-  assert.equal(report.trials.length,15);assert.ok(report.trials.every(t=>t.task==='ds1000:42'));
+  assert.equal(report.trials.length,ENGINES.length * 3);assert.ok(report.trials.every(t=>t.task==='ds1000:42'));
   assert.ok(report.engines.every(e=>e.checkScore===66.7&&e.score===0));
   assert.equal(report.library.revision,'fixture-revision');assert.equal(report.suiteHash,'fixture-data-hash');
   assert.doesNotMatch(JSON.stringify(report),/SECRET/);
@@ -121,7 +122,7 @@ test('external runs use the selected tasks for every engine, preserve provenance
   assert.equal(runner.report(invalid.id).timeoutSeconds, 3600);
   assert.equal(runner.report(invalid.id).tokenBudget, 1000000000);
   assert.equal(runner.report(invalid.id).maxTokensPerTask, 2000000);
-  assert.ok(calls.length <= 5, 'A grader failure must stop subsequent attempts in every engine queue');
+  assert.ok(calls.length <= ENGINES.length, 'A grader failure must stop subsequent attempts in every engine queue');
   assert.equal(runner.report(invalid.id).status, 'error');
   assert.ok(runner.report(invalid.id).trials.some(t => t.status === 'grader_error'));
   runner.active=null;manager.resolve=()=>null;

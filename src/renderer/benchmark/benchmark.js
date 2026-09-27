@@ -3,8 +3,8 @@
 const api = window.dshDesktop;
 const t = text => window.CamelliaI18n.t(text);
 const $ = id => document.getElementById(id);
-const engines = ['claude', 'codex', 'dsh', 'kimi', 'antigravity'];
-const names = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity SDK' };
+const engines = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
+const names = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity SDK', pi: 'Pi' };
 // Presentation copy stays outside the versioned data/environment specifications.
 const libraryDescriptions = {
   builtin: 'File editing, data processing and multi-file fixes.',

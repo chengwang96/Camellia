@@ -31,7 +31,7 @@ Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravi
 - **Same-model failover.** Choose **Low**, **Default**, or **High** for **API priority** in each provider's settings; routes are tried in the order High → Default → Low. Retry eligible failures through another key or provider serving the same configured model. Camellia never substitutes a different model automatically. Higher-priority routes are retried after cooldown; equal priorities retain the current route, then follow provider and key order. **Next route** switches only within the highest available priority. Previously saved numeric priorities map to Default (0) or High (positive values).
 - **Usage and account visibility.** Filter local requests and token statistics by provider, key, model, and date. View balances, subscription limits, and observed trends for supported account APIs.
 - **Optional engine downloads.** Install only the engines you use, with pinned versions, download status, and retries in settings.
-- **Compare five harnesses.** Run the same model and provider through the five benchmark engines in **Home → Benchmark**, with automatic task grading, time and token usage, saved reports, and JSON export.
+- **Compare six harnesses.** Run the same model and provider through the six benchmark engines in **Home → Benchmark**, with automatic task grading, time and token usage, saved reports, and JSON export.
 - **Drive a headless Linux server.** Run `./camellia` for one-terminal startup, Tailscale sign-in and explicit pairing approval, then pair the desktop under **Settings → CLI devices**. Each paired server opens its own workbench with server settings for runtimes, engines, usage, archived conversations and space cleanup.
 - **Control your desktop from a phone.** Turn on **Mobile access** to pair an Android phone over the shared embedded Tailscale network. Pair by QR code or a one-time code; authorize every device explicitly, rename this computer, and revoke access at any time.
 
@@ -84,15 +84,15 @@ Use `Ctrl+,` to open settings and `Ctrl+Shift+H` to return home. On macOS, use `
 
 Open **Home → Benchmark** after configuring and validating your API model. The **Question library** selector explains what each benchmark evaluates:
 
-**5-minute preview** is the default: five engines run the same three small coding tasks, with one attempt and a five-minute whole-run deadline. Each engine's three tasks share 4.5 minutes, so a slower task can use more of the available time. The last 30 seconds are reserved for verification and cleanup. It gives early evidence about coding, tool use, latency and token usage. Engine downloads must finish first; process cleanup can take a few extra seconds. A slow or unavailable API may yield little evidence. This sample does not measure vision, long-term memory or advanced research.
+**5-minute preview** is the default: six engines run the same three small coding tasks, with one attempt and a five-minute whole-run deadline. Each engine's three tasks share 4.5 minutes, so a slower task can use more of the available time. The last 30 seconds are reserved for verification and cleanup. It gives early evidence about coding, tool use, latency and token usage. Engine downloads must finish first; process cleanup can take a few extra seconds. A slow or unavailable API may yield little evidence. This sample does not measure vision, long-term memory or advanced research.
 
 Built-in **v2** starts with a basic ASCII text-formatting repair and a supplied `node check.cjs` self-test containing all six acceptance cases, followed by file processing and a multi-file repair. The broader Unicode normalization question remains in **Standard**, which now has seven tasks. The entry task checks whether a model and harness can complete a small edit and run checks; compare time, tokens and harder tasks for more evidence. Results show the task-set version, and saved v1 reports keep their original questions and scores.
 
 <table><tr><td>
-<img src="docs/images/benchmark.png" alt="Camellia benchmark results for five harnesses, with check scores, token usage, and per-task results">
+<img src="docs/images/benchmark.png" alt="Camellia benchmark results with check scores, token usage, and per-task results">
 </td></tr></table>
 
-*Example: a five-minute preview using DeepSeek V4.1 Flash on Ollama Cloud.*
+*Example: the five-minute preview setup, with all six engines ready.*
 
 Choose **Full library** to run every question in the selected library unattended, or **Custom sample** to choose task count and limits. Full-library mode shows the combined task/check time allowances and saves every attempt. Keep the application open and the computer awake; closing it stops the run.
 
@@ -104,7 +104,7 @@ Choose **Full library** to run every question in the selected library unattended
 
 1. Choose a model/provider and question library, and download any missing engines.
 2. For an external library, click **Prepare library** once to download verified data and a dedicated Python environment. Downloads use the saved connection and are cached locally. SciCode includes a 1.05 GB numerical-target file.
-3. Choose the task set, one or three attempts per task, and run limits. Click **Run benchmark**: all five harnesses run in parallel, each completing one task at a time. Every attempt starts with fresh files and uses the engine's native tools; an independent checker grades the files produced.
+3. Choose the task set, one or three attempts per task, and run limits. Click **Run benchmark**: all six harnesses run in parallel, each completing one task at a time. Every attempt starts with fresh files and uses the engine's native tools; an independent checker grades the files produced.
 4. Click a result for passed checks, failure details, and file changes. **Export JSON** saves the report with question IDs, source versions, scores, usage, and limits.
 
 Expand **Limits & scoring** for budgets and grading rules, or **Run details** for a saved run's full configuration. The main view keeps the capability summary, progress and results visible.

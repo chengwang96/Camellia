@@ -137,7 +137,7 @@ async function main() {
     if (failure) throw failure.reason;
     assert.equal(arrived.size, ENGINES.length);
     assert.equal(router.getState().activeRequests, 0);
-    console.log('PASS: all five native engines overlapped on one provider with isolated usage and cancellation');
+    console.log(`PASS: all ${ENGINES.length} native engines overlapped on one provider with isolated usage and cancellation`);
   } finally {
     await router?.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
     const artifact = path.join(appRoot, 'dist', 'benchmark-native-smoke.json');
