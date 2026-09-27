@@ -54,7 +54,17 @@ async function main() {
     const { app, BrowserWindow, Menu } = testElectron;
     const root = process.env.DSH_ELECTRON_SMOKE_ROOT;
     assert.ok(root && path.basename(root).startsWith('dsh-electron-smoke-'));
+    // Chromium buffers stdout when it is a pipe, so a SIGKILLed child loses
+    // every console.log and reaches CI as an empty step. Mirror the output to
+    // a file with synchronous writes: those survive the kill, which is what
+    // makes a hang diagnosable.
+    const diagFile = path.join(root, 'electron-diag.log');
+    const diag = message => {
+      try { fs.appendFileSync(diagFile, message + '\n'); } catch { /* diagnostics must never fail the run */ }
+      console.log(message);
+    };
     const firstRun = !JSON.parse(fs.readFileSync(path.join(root, 'app', 'desktop-config.json'))).firstRunComplete;
+    diag('DIAG child boot: firstRun=' + firstRun + ' pid=' + process.pid);
     const userData = path.join(root, firstRun ? 'app' : 'dsh-desktop');
     if (firstRun) {
       app.setPath('userData', userData);
@@ -94,9 +104,11 @@ async function main() {
       window.webContents.on('console-message', (event) => { if (event.level === 'error') errors.push(event.message); });
     });
     require('../src/main/main.js');
+    diag('DIAG main.js loaded');
     await app.whenReady();
+    diag('DIAG app ready');
     // Trace the shutdown path so a hang shows which stage was reached.
-    for (const event of ['before-quit', 'will-quit', 'quit']) app.on(event, () => console.log('DIAG app event: ' + event));
+    for (const event of ['before-quit', 'will-quit', 'quit']) app.on(event, () => diag('DIAG app event: ' + event));
     assert.equal(app.getName(), 'Camellia');
     assert.equal(app.getPath('userData'), userData, 'Renaming preserves old data and explicit profiles');
     if (!firstRun) assert.equal(app.getPath('sessionData'), userData, 'Browser cookies and caches stay with existing data');
@@ -104,6 +116,7 @@ async function main() {
     const closeWindow = window => new Promise(resolve => {
       closingWindows.add(window.id);
       window.once('closed', resolve);
+      diag('DIAG closing window: ' + window.getTitle());
       window.close();
     });
     const waitWindow = async match => {
@@ -129,9 +142,11 @@ async function main() {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       const states = BrowserWindow.getAllWindows().map(w => `${w.getTitle()} loading=${w.webContents.isLoading()} url=${w.webContents.getURL()}`).join('; ');
+      diag('DIAG waitWindow timed out: ' + match + ' | windows: ' + (states || '(none)'));
       throw new Error('Electron window did not finish loading: ' + match + ' | windows: ' + (states || '(none)'));
     };
     const home = await waitWindow("document.querySelector('#enterDsh')");
+    diag('DIAG home window ready');
     assert.equal(await home.webContents.executeJavaScript('document.documentElement.lang'), 'en');
     assert.equal(home.getTitle(), 'Camellia');
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('.home-brand').textContent"), 'Camellia');
@@ -160,7 +175,7 @@ async function main() {
     const unsupportedRemote = await mobile.webContents.executeJavaScript("window.camelliaRemote.control('send', { prompt: 'Never execute' })");
     assert.equal(unsupportedRemote.ok, false);
     await Promise.all([mobile, pairingSettings].map(closeWindow));
-    console.log('PASS mobile access: real sandboxed preload, local IPC, disabled startup and read-only controls');
+    diag('PASS mobile access: real sandboxed preload, local IPC, disabled startup and read-only controls');
     const marker = path.join(root, 'backend-starts.txt');
     assert.equal(fs.existsSync(marker), false, 'The home panel must not start DSH');
     await home.webContents.executeJavaScript("document.querySelector('#openConfig').click()");
@@ -346,7 +361,7 @@ async function main() {
     await waitWindow("document.querySelector('#kimiSaveConnection')?.hidden && document.querySelector('#kimiConnection')?.value === 'api'");
     await home.webContents.executeJavaScript('loadSettings()');
     assert.equal(await home.webContents.executeJavaScript('currentConnection'), 'api');
-    console.log('PASS Kimi subscription: real IPC, save, device code, cancel, account models, logout and API return; mocked OAuth only');
+    diag('PASS Kimi subscription: real IPC, save, device code, cancel, account models, logout and API return; mocked OAuth only');
 
     await engineSettings.webContents.executeJavaScript("document.querySelector('[data-view=engines]').click(); document.querySelector('[data-engine=dsh]').click()");
     await waitWindow("document.querySelector('#dshNative') && !document.querySelector('#dshNative').hidden");
@@ -429,7 +444,7 @@ async function main() {
     await waitWindow("document.querySelector('#switchDialog')?.open");
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('#switchMethod').value"), 'markdown');
     await home.webContents.executeJavaScript("document.querySelector('#switchCancel').click()");
-    console.log('PASS composer alignment: five engines, start pages and active conversations');
+    diag('PASS composer alignment: five engines, start pages and active conversations');
     await home.webContents.executeJavaScript('window.dshDesktop.codexSaveSettings({connection:"api"})');
     await home.webContents.executeJavaScript('openHistorySession("switch-fixture-a")');
     await home.webContents.executeJavaScript(`input.value='Keep this unsent draft'; input.dispatchEvent(new Event('input')); addAttachments([${JSON.stringify(path.join(root, 'notes.md'))}]);`);
@@ -459,7 +474,7 @@ async function main() {
     await waitWindow("document.body.dataset.harness === 'kimi' && typeof uiReady !== 'undefined' && uiReady");
     assert.equal(await home.webContents.executeJavaScript('context.workspaceId'), codexWs.workspace.id);
     assert.equal(await home.webContents.executeJavaScript('input.value'), 'A workspace draft');
-    console.log('PASS shared state: native Engine menu, home return, model per conversation, draft/attachments, workspace and reload');
+    diag('PASS shared state: native Engine menu, home return, model per conversation, draft/attachments, workspace and reload');
     const zoomMenu = Menu.getApplicationMenu().items.find(item => item.label === 'View').submenu;
     const initialZoom = home.webContents.getZoomLevel();
     home.webContents.sendInputEvent({ type: 'keyDown', keyCode: '+', modifiers: ['control', 'shift'] });
@@ -476,16 +491,16 @@ async function main() {
     assert.ok(Math.abs(home.webContents.getZoomLevel() - initialZoom) < 0.00001);
     zoomMenu.items.find(item => item.label === 'Actual size').click();
     assert.equal(home.webContents.getZoomLevel(), 0);
-    console.log('PASS saved zoom: Ctrl +, menus, settings window, home, shared DSH and reset');
+    diag('PASS saved zoom: Ctrl +, menus, settings window, home, shared DSH and reset');
     assert.ok(BrowserWindow.getAllWindows().every(window => !window.isVisible()), 'Smoke tests must not display or focus windows');
     assert.deepEqual(errors, []);
-    console.log('PASS: real Electron home, configuration, DSH startup/navigation, Claude/Codex/Kimi/Antigravity shared UI, isolated workspaces and API settings; firstRun=' + firstRun);
+    diag('PASS: real Electron home, configuration, DSH startup/navigation, Claude/Codex/Kimi/Antigravity shared UI, isolated workspaces and API settings; firstRun=' + firstRun);
     // If a late quit handler keeps the process alive, say why instead of
     // letting the parent's watchdog kill an Electron that produced no output.
     const quitWatchdog = setTimeout(() => {
       const windows = BrowserWindow.getAllWindows().map(window => `${window.getTitle()} destroyed=${window.isDestroyed()}`);
-      console.log('DIAG quit watchdog: app.quit() did not exit within 20s; windows=' + (windows.join('; ') || '(none)'));
-      console.log('DIAG quit watchdog: calling app.exit(1)');
+      diag('DIAG quit watchdog: app.quit() did not exit within 20s; windows=' + (windows.join('; ') || '(none)'));
+      diag('DIAG quit watchdog: calling app.exit(1)');
       app.exit(1);
     }, 20000);
     quitWatchdog.unref();
@@ -520,6 +535,7 @@ async function main() {
     delete env.ELECTRON_RUN_AS_NODE;
     for (const [mode, firstRunComplete] of [['claude', true], ['dsh', false]]) {
       for (const file of ['backend-starts.txt', 'backend-ready', 'browser-opened']) fs.rmSync(path.join(root, file), { force: true });
+      fs.rmSync(path.join(root, 'electron-diag.log'), { force: true });
       fs.writeFileSync(path.join(root, 'app', 'desktop-config.json'), JSON.stringify({ mode, firstRunComplete, dshHome: path.join(root, 'dsh'), port: 0, nodeExe: process.execPath, dshBin: backendBin }));
       env.DSH_SMOKE_HELP_UNAVAILABLE = firstRunComplete ? '0' : '1';
       const proc = spawn(require('electron'), [__filename], { env, windowsHide: true, stdio: 'pipe' });
@@ -529,18 +545,26 @@ async function main() {
       proc.stdout.on('data', chunk => { stdout += chunk; process.stdout.write(chunk); });
       proc.stderr.on('data', chunk => { stderr += chunk; process.stderr.write(chunk); });
       let timedOut = false;
-      // SIGTERM can be ignored by a wedged Electron; escalate so the run ends
-      // with a report instead of the job's 45-minute ceiling.
+      // A wedged Electron ignores SIGTERM, and on Windows a plain kill leaves
+      // its helper processes behind; stop the whole tree either way so the run
+      // reports a cause instead of hitting the job's 45-minute ceiling.
       const timeout = setTimeout(() => {
         timedOut = true;
-        console.log(`DIAG parent watchdog: Electron did not exit after 120s (mode=${mode}); sending SIGKILL`);
-        proc.kill('SIGKILL');
+        console.log(`DIAG parent watchdog: Electron did not exit after 120s (mode=${mode}); killing it`);
+        if (process.platform === 'win32') spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        else proc.kill('SIGKILL');
       }, 120000);
       const code = await new Promise((resolve, reject) => { proc.once('close', resolve); proc.once('error', reject); });
       clearTimeout(timeout);
-      assert.equal(timedOut, false, `Electron smoke timed out after 120s (mode=${mode}, firstRunComplete=${firstRunComplete})\n${stderr}\n${stdout}`);
-      assert.equal(code, 0, stderr + '\n' + stdout);
-      assert.match(stdout, /PASS: real Electron/);
+      if (timedOut || code !== 0 || !/PASS: real Electron/.test(stdout)) {
+        // A killed child cannot flush its pipe, so the file it wrote
+        // synchronously is the only record of how far it got.
+        let trace;
+        try { trace = fs.readFileSync(path.join(root, 'electron-diag.log'), 'utf8'); }
+        catch (error) { trace = '(no diagnostic file: ' + error.message + ')'; }
+        assert.fail(`Electron smoke failed (mode=${mode}, firstRunComplete=${firstRunComplete}, timedOut=${timedOut}, code=${code})\n`
+          + `--- child diagnostics ---\n${trace}\n--- child stderr ---\n${stderr}\n--- child stdout ---\n${stdout}`);
+      }
       console.log(stdout.trim());
     }
   } finally {
