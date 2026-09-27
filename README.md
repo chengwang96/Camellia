@@ -92,7 +92,7 @@ Built-in **v2** starts with a basic ASCII text-formatting repair and a supplied 
 <img src="docs/images/benchmark.png" alt="Camellia benchmark results for five harnesses, with check scores, token usage, and per-task results">
 </td></tr></table>
 
-*Example: a five-minute preview using Kimi K3 on Ollama Cloud.*
+*Example: a five-minute preview using DeepSeek V4.1 Flash on Ollama Cloud.*
 
 Choose **Full library** to run every question in the selected library unattended, or **Custom sample** to choose task count and limits. Full-library mode shows the combined task/check time allowances and saves every attempt. Keep the application open and the computer awake; closing it stops the run.
 

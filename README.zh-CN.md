@@ -94,7 +94,7 @@ npm start
 <img src="docs/images/benchmark.png" alt="Camellia 五个 harness 的跑分结果，包含检查得分、token 用量和逐题结果">
 </td></tr></table>
 
-*示例：使用 Ollama Cloud 上的 Kimi K3 进行五分钟预览。*
+*示例：使用 Ollama Cloud 上的 DeepSeek V4.1 Flash 进行五分钟预览。*
 
 选择 **Full library（全集挂机）** 可运行所选题库的全部题目；**Custom sample（自选样本）** 保留题量和时限设置。全集模式显示任务与检查的累计时间额度，每次尝试后保存结果。挂机时保持应用打开、电脑唤醒；关闭应用会停止测试。
 

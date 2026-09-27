@@ -69,7 +69,8 @@ try:
                 if fresh and method == 'runtimeState':
                     return {'result': {'ok': True, 'engines': [
                         {'id': engine, 'name': name, 'status': 'missing'} for engine, name in
-                        [('claude', 'Claude Code'), ('codex', 'Codex CLI'), ('dsh', 'DeepSeek Harness'), ('kimi', 'Kimi Code'), ('antigravity', 'Antigravity')]
+                        [('claude', 'Claude Code'), ('codex', 'Codex CLI'), ('dsh', 'DeepSeek Harness'), ('kimi', 'Kimi Code'),
+                         ('antigravity', 'Antigravity'), ('pi', 'Pi')]
                     ]}}
                 return rpc(method, payload)
             page.expose_function('testRpc', page_rpc)
@@ -84,6 +85,10 @@ try:
             expect(landing.get_by_role('button', name='Download & open Codex', exact=True)).to_be_visible()
             expect(landing.get_by_role('button', name='Download & open Kimi', exact=True)).to_be_visible()
             expect(landing.get_by_role('button', name='Download & open Antigravity', exact=True)).to_be_visible()
+            # Every engine must be present and offer a download on a fresh
+            # install; a missing fixture entry silently rendered Pi with the
+            # static "Open Pi" fallback in the README screenshot.
+            expect(landing.get_by_role('button', name='Download & open Pi', exact=True)).to_be_visible()
             expect(landing.get_by_role('button', name='Settings', exact=True)).to_be_visible()
             landing.screenshot(animations='disabled', path=str(screenshots / f'home-{scheme}.png'))
             landing.keyboard.press('Tab')
@@ -96,8 +101,8 @@ try:
 
             downloads = new_page(1040, scheme=scheme, fresh=True)
             downloads.goto((repo / 'src/renderer/settings/api-settings.html').as_uri() + '?page=runtimes')
-            expect(downloads.locator('#runtimeCards [data-install]:not(:disabled)')).to_have_count(5)
-            expect(downloads.get_by_role('button', name='Download', exact=True)).to_have_count(5)
+            expect(downloads.locator('#runtimeCards [data-install]:not(:disabled)')).to_have_count(6)
+            expect(downloads.get_by_role('button', name='Download', exact=True)).to_have_count(6)
             downloads.goto((repo / 'src/renderer/settings/api-settings.html').as_uri() + '?page=general&focus=downloadProxyUrl')
             expect(downloads.locator('#generalPage')).to_be_visible()
             expect(downloads.locator('#downloadMode')).to_have_value('direct')
