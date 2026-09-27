@@ -21,6 +21,11 @@ async function main() {
       await network.start();
       const status = await network.status();
       assert.ok(['NeedsLogin', 'Starting', 'NoState', 'Stopped'].includes(status.state), status.state);
+      const connection = await network.connect('http://100.80.1.2:43127');
+      assert.equal(network.connections.size, 1);
+      await connection.close();
+      assert.equal(network.connections.size, 0);
+      console.log('PASS: native helper supports CLI server connect/disconnect without sending a remote request');
       if (process.env.TAILNET_TEST_LOGIN === '1') {
         await network.login();
         const deadline = Date.now() + 45000;

@@ -23,7 +23,7 @@ bridge=r"""(() => {
     for(const e of r.events||[]){if(e.channel==='dsh:api-router-state')onRouter(e.data);if(e.channel==='dsh:claude-event')onEvent(e.data);if(e.channel==='dsh:claude-goal')onGoal(e.data);if(e.channel==='dsh:provider-insights')onInsights(e.data);}
     return r.result;
   };
-  window.dshDesktop=new Proxy({},{get:(_,m)=>m.startsWith('on')&&!['onApiRouterState','onClaudeEvent','onClaudeGoal','onProviderInsights'].includes(m)?()=>()=>{}:m==='onApiRouterState'?f=>onRouter=f:m==='onClaudeEvent'?f=>onEvent=f:m==='onClaudeGoal'?f=>onGoal=f:m==='onProviderInsights'?f=>onInsights=f:p=>window.testCall(m,p)});
+  window.dshDesktop=new Proxy({},{get:(_,m)=>m.startsWith('on')&&!['onApiRouterState','onClaudeEvent','onClaudeGoal','onProviderInsights'].includes(m)?()=>()=>{}:m==='onApiRouterState'?f=>onRouter=f:m==='onClaudeEvent'?f=>onEvent=f:m==='onClaudeGoal'?f=>onGoal=f:m==='onProviderInsights'?f=>onInsights=f:m==='remoteControl'?(action,payload)=>window.testCall(m,{action,payload}):p=>window.testCall(m,p)});
 })();"""
 def assert_back_button_spacing(page):
     button=page.locator('#backProviders')
@@ -47,7 +47,7 @@ try:
         page.expose_function('testRpc',rpc);page.add_init_script(bridge)
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri());page.wait_for_load_state('networkidle')
         nav_icons=page.locator('.settings-nav nav button > svg.nav-icon')
-        expect(nav_icons).to_have_count(10)
+        expect(nav_icons).to_have_count(9)
         for icon in nav_icons.all():
             expect(icon).to_have_attribute('aria-hidden','true')
             expect(icon).to_have_attribute('focusable','false')
@@ -391,16 +391,18 @@ try:
         expect(page.locator('#openMobileAccess')).to_have_count(0)
         page.evaluate("""() => {
           const original = window.testCall;
-          const state = {running:false, address:null, language:'en', theme:'dark', closeToTray:false,
+          const state = {running:false, address:null, language:'en', theme:'dark', closeToTray:false, computerName:'Test desktop',
             workspaces:[{id:'workspace',name:'Test workspace'}], pending:[], devices:[]};
           window.testMobileCalls = [];
-          window.testCall = (method, action) => {
+          window.testCall = (method, request) => {
             if (method === 'openMobileAccess') {window.testMobileOpened = true; return Promise.resolve({ok:true});}
-            if (method !== 'remoteControl') return original(method, action);
+            if (method !== 'remoteControl') return original(method, request);
+            const action = request.action, payload = request.payload || {};
             window.testMobileCalls.push(action);
             if (window.testMobileFailure) return Promise.resolve({ok:false,error:window.testMobileFailure});
             if (action === 'start') {state.running = true; state.address = 'http://100.80.1.2:43127';}
             if (action === 'stop') {state.running = false; state.address = null;}
+            if (action === 'set-name') state.computerName = payload.name;
             if (action === 'invite') {
               state.pending = [{id:'phone',name:'Test phone',workspaceIds:['workspace']}];
               return Promise.resolve({ok:true,result:{code:'test-pairing-code',expiresAt:Date.now()+300000}});
@@ -410,7 +412,7 @@ try:
             return Promise.resolve({ok:true,result:structuredClone(state)});
           };
         }""")
-        mobile_nav = page.locator('[data-view=storage] + [data-view=mobile]')
+        mobile_nav = page.locator('[data-view=archived] + [data-view=mobile]')
         expect(mobile_nav).to_have_text('Mobile access')
         page.evaluate("window.testMobileFailure = 'Local remote-access window required'")
         mobile_nav.click()
@@ -418,7 +420,7 @@ try:
         expect(page.locator('#pageTitle')).to_have_text('Mobile access')
         expect(page.locator('#mobilePage')).to_be_visible()
         expect(page.locator('#generalPage')).to_be_hidden()
-        expect(page.locator('#storagePage')).to_be_hidden()
+        expect(page.locator('#storageSection')).to_be_hidden()
         expect(page.locator('#save')).to_be_hidden()
         expect(page.locator('#mobile-error')).to_contain_text('fully quit Camellia')
         expect(page.locator('#mobile-status')).to_have_text('Status unavailable')
@@ -440,6 +442,11 @@ try:
         expect(page.locator('#mobile-address')).to_have_text('http://100.80.1.2:43127')
         page.locator('#mobile-invite').click()
         expect(page.locator('#mobile-code')).to_have_text('test-pairing-code')
+        expect(page.locator('#mobile-qr img')).to_have_count(1)
+        expect(page.locator('#mobile-deviceName')).to_have_value('Test desktop')
+        page.fill('#mobile-deviceName','Renamed desktop')
+        page.locator('#mobile-saveDeviceName').click()
+        expect(page.locator('#mobile-deviceName')).to_have_value('Renamed desktop')
         page.get_by_role('button', name='Authorize device', exact=True).click()
         expect(page.locator('#mobile-devices .device')).to_have_count(1)
         page.get_by_role('button', name='Revoke', exact=True).click()

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'">
   <title>Mobile access — Camellia</title>
   <link rel="stylesheet" href="../shared/ui-theme.css">
   <link rel="stylesheet" href="remote.css">
@@ -28,14 +28,18 @@
     <section aria-labelledby="pairTitle">
       <h2 id="pairTitle" data-copy="pair">配对设备</h2>
       <p data-copy="scope">可查看和操作全部现有及未来会话，仅授权可信设备。</p>
+      <label for="deviceName" data-copy="deviceName">本机名称</label>
+      <div class="name-row"><input id="deviceName" maxlength="80" autocomplete="off"><button id="saveDeviceName" data-copy="deviceNameSave">保存名称</button></div>
+      <p class="hint" data-copy="deviceNameHint"></p><p id="deviceNameStatus" class="hint" role="status"></p>
       <button id="invite" disabled data-copy="generate">生成配对码</button>
-      <div id="invitation" hidden><code id="code"></code><p id="expires" class="hint"></p><p class="hint" data-copy="pairHint">在手机输入地址和一次性配对码，再在此确认授权。</p></div>
+      <div id="invitation" hidden><div id="qr" class="qr"></div><code id="code"></code><p id="expires" class="hint"></p><p class="hint" data-copy="scanHint">用手机扫描二维码即可自动填入地址和配对码。</p><p class="hint" data-copy="scanFallback">也可手动输入地址和一次性配对码。</p></div>
       <div id="pending"></div>
     </section>
     <section aria-labelledby="devicesTitle"><h2 id="devicesTitle" data-copy="devices">已授权设备</h2><div id="devices"></div></section>
     <p id="error" role="alert"></p>
     <button id="retry" hidden data-copy="retry">重试</button>
   </main>
+  <script src="../../shared/qr.js"></script>
   <script src="remote.js"></script>
 </body>
 </html>

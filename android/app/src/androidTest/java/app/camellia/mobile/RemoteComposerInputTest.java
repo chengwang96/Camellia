@@ -71,12 +71,16 @@ public class RemoteComposerInputTest extends InstrumentationTestCase {
                         }
                     }
                     MobilePreferences.set(context, "enterMode", "send");
-                    input.setText("remote draft"); sends[0] = 0;
+                    input.setText("remote draft"); input.setSelection(input.length()); sends[0] = 0;
                     connection.commitText("\n", 1);
+                    assertEquals(0, sends[0]);
+                    assertEquals("remote draft\n", input.getText().toString());
                     connection.performEditorAction(EditorInfo.IME_ACTION_SEND);
-                    assertEquals(2, sends[0]);
+                    assertEquals(1, sends[0]);
+                    input.setText("remote draft"); input.setSelection(input.length()); sends[0] = 0;
                     connection.commitText("pasted\ntext", 1);
-                    assertEquals(2, sends[0]);
+                    assertEquals(0, sends[0]);
+                    assertTrue(input.getText().toString().endsWith("pasted\ntext"));
 
                     View model = activity.getWindow().getDecorView().findViewWithTag("remoteModelPicker");
                     assertSame(send.getParent(), model.getParent());
@@ -93,6 +97,7 @@ public class RemoteComposerInputTest extends InstrumentationTestCase {
 
                     for (String guard : new String[]{"empty", "disconnected", "readonly", "running", "busy", "pending"}) {
                         input.setText(guard.equals("empty") ? "" : "remote draft");
+                        input.setSelection(input.length());
                         field(activity, "connected", !guard.equals("disconnected"));
                         field(activity, "controlAllowed", !guard.equals("readonly"));
                         field(activity, "lastLive", guard.equals("running") ? new JSONObject() : null);
@@ -105,7 +110,10 @@ public class RemoteComposerInputTest extends InstrumentationTestCase {
                         connection.commitText("\n", 1);
                         connection.performEditorAction(EditorInfo.IME_ACTION_SEND);
                         assertEquals(guard, 0, sends[0]);
-                        assertEquals(guard, draft, input.getText().toString());
+                        // Sending stays blocked, but a committed newline is still draft text while
+                        // the composer itself is editable (busy and pending disable it).
+                        boolean editable = !guard.equals("busy") && !guard.equals("pending");
+                        assertEquals(guard, editable ? draft + "\n" : draft, input.getText().toString());
                     }
                 } catch (Exception error) { throw new AssertionError(error); }
             });

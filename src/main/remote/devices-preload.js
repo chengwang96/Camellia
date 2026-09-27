@@ -2,6 +2,7 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('camelliaDevices', {
+  openSettings: () => ipcRenderer.invoke('camellia:open-devices'),
   call: (action, payload) => ipcRenderer.invoke('camellia:devices', { action, payload }),
   onEvent: callback => {
     const listener = (_event, value) => callback(value);

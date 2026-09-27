@@ -29,7 +29,7 @@ const runtimeNode = isMac ? 'runtime/node' : 'runtime/node.exe';
 const runtimeInfo = JSON.parse(fs.readFileSync(path.join(resources, 'runtime/version.json')));
 assert.equal(runtimeInfo.platform, isMac ? 'darwin' : 'win32');
 assert.equal(runtimeInfo.arch, isMac ? 'arm64' : 'x64');
-for (const engine of ['claude', 'codex', 'dsh', 'kimi']) {
+for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'pi']) {
   for (const name of ['package.json', 'package-lock.json']) {
     const file = path.join('runtimes', engine, name);
     assert.ok(fs.readFileSync(path.join(resources, file)).equals(fs.readFileSync(path.join(root, file))), 'Installer manifest differs: ' + file);
@@ -60,7 +60,7 @@ assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/benchmark/py
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/benchmark/python/scicode_targets.py')), 'The SciCode target reader must run outside ASAR');
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/benchmark/python/scicode/compare/cmp.py')), 'Official SciCode comparisons must be importable outside ASAR');
 assert.ok(!asar.listPackage(archive).some(file => /test_data\.h5|ds1000\.jsonl|problems_test\.jsonl/.test(file)), 'Official datasets are downloaded on demand');
-for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity']) {
+for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']) {
   const files = fs.readdirSync(path.join(resources, 'runtimes', engine));
   assert.ok(files.every(file => ['package.json', 'package-lock.json', 'runtime.json', 'requirements.lock', 'README.md'].includes(file)), 'Only download manifests belong in the base package: ' + engine);
 }
@@ -72,4 +72,4 @@ if (isMac) {
   assert.equal(header.readUInt32LE(0), 0xfeedfacf, 'Bundled Node is a Mach-O executable');
   assert.equal(header.readUInt32LE(4), 0x0100000c, 'Bundled Node targets Apple Silicon');
 }
-console.log('PASS: ' + count + ' source files match; five engine download manifests and shared Node/npm bundled; no harness runtimes included.');
+console.log('PASS: ' + count + ' source files match; six engine download manifests and shared Node/npm bundled; no harness runtimes included.');

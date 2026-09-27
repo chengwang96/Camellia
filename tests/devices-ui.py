@@ -10,16 +10,34 @@ with sync_playwright() as playwright:
     page.add_init_script("""
       window.calls = [];
       window.camelliaDevices = {
+        async openSettings() { window.openedSettings = true; return {ok:true}; },
         onEvent(callback) { window.deviceEvent = callback; },
         onTransfer(callback) { window.transferEvent = callback; },
         async call(action, payload) {
           window.calls.push({action, payload});
+          if (action === 'conversations' && window.holdConnection) {
+            await new Promise(resolve => { window.releaseConnection = resolve; });
+            return {ok:false,error:'Device response timed out; verify state before retrying writes'};
+          }
           const conversation = {id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',title:'Server conversation',seq:2,workspaceId:'project',activity:null};
-          const info = {instanceId:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',workspaces:[{id:'project',name:'Paper agent'}],capabilities:['create-workspace','delete-workspace','api-import','attachments','artifacts','restore','native-settings'],engines:['dsh'],nextOffset:null};
+          const info = {instanceId:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',workspaces:[{id:'project',name:'Paper agent'}],capabilities:['create-workspace','delete-workspace','api-import','attachments','artifacts','restore','native-settings','server-management','move'],engines:['dsh','codex','pi'],nextOffset:null};
+          if(action === 'server-manage') {
+            const operation = payload.request.action;
+            const results = {
+              'runtime-state': [{id:'codex',name:'Codex CLI',status:'ready',version:'1.0'},{id:'dsh',name:'DeepSeek Harness',status:'ready',version:'1.0'},{id:'pi',name:'Pi',status:'ready',version:'0.73.1'}],
+              'runtime-check': [{id:'codex',name:'Codex CLI',installed:'1.0',latest:'1.1'}],
+              'settings': {engines:[{id:'codex',model:'model-a'}],api:{models:['model-a']}},
+              'usage': {providers:[{name:'Example',requests:3,failures:0,inputTokens:100,outputTokens:50}]},
+              'storage-scan': {token:'scan-1',candidates:[{path:'conversations/orphan.jsonl',bytes:10}]},
+              'storage-clean': {files:1,bytes:10,skipped:0}
+            };
+            return {ok:true,result:{id:payload.request.requestId,state:'complete',result:results[operation] || {}}};
+          }
           if(action === 'native-settings-get') return {ok:true,result:{engine:payload.engine,editable:true,files:[{id:'settings',label:'Native config',format:'yaml',revision:'a'.repeat(64),text:'custom: true'}]}};
           if(action === 'native-settings-save') return {ok:true,result:{ok:true,revision:'b'.repeat(64)}};
           if(action === 'archived') return {ok:true,result:{...info,conversations:[{...conversation,title:'Archived conversation'}]}};
           if(action === 'attachments-select') return {ok:true,result:{files:[{id:'attachment-1',name:'notes.txt',size:12,isImage:false}]}};
+          if(action === 'attachments-add') return {ok:true,result:{files:payload.files.map((file,index) => ({id:'paste-'+index,name:file.name,size:3,isImage:false}))}};
           if(action === 'artifacts') return {ok:true,result:{artifacts:[{id:'a'.repeat(64),name:'result.txt',size:20}],nextOffset:null}};
           if(action === 'download') return {ok:true,result:{id:'download-1',name:'result.txt',size:20}};
           if(action === 'import-preview') return {ok:true,result:{id:'preview-1',target:'GPU server',providers:2,keys:3,skipped:1}};
@@ -28,32 +46,108 @@ with sync_playwright() as playwright:
           if(action === 'conversations') return {ok:true,result:{...info,conversations:[{...conversation,title:payload.deviceId === 'server-a' ? 'Server conversation' : 'Other server conversation'}]}};
           if(action === 'snapshot' && payload.before !== undefined) return {ok:true,result:{...info,conversation,messages:[{seq:0,role:'user',text:'Earlier server message'}],live:null,nextBefore:null}};
           if(action === 'snapshot') return {ok:true,result:{...info,conversation,messages:[{seq:1,role:'user',text:'<script>unsafe</script>'},{seq:2,role:'assistant',text:'Ready on the server.'}],live:null,nextBefore:1,settings:{editable:true,version:'settings-1',model:'model-a',permissionMode:'ask',models:[{id:'model-a',name:'Model A',thinking:['low','high']}],permissionLevels:['ask','auto','full']}}};
-          if(action === 'command') return {ok:true,result:{ok:true,state:'accepted'}};
+          if(action === 'command') return {ok:true,result:{ok:true,state:'accepted',conversation}};
           if(action === 'pair') return {ok:true,result:{id:'pending',state:'pending'}};
           if(action === 'claim') return {ok:true,result:{state:'approved'}};
           return {ok:true,result:{}};
         }
       };
     """)
-    page.goto((root / "src/renderer/devices/devices.html").as_uri())
+    page.goto((root / "src/renderer/devices/devices.html").as_uri() + '?device=server-a')
     page.wait_for_load_state("networkidle")
-    expect(page.locator("#newWorkspace")).to_be_disabled()
-    page.evaluate("window.networkMockState = 'NeedsLogin'")
-    page.locator("#refresh").click()
-    expect(page.locator("#networkState")).to_contain_text("Sign-in required")
-    page.locator("#add").click()
-    expect(page.locator("#error")).to_contain_text("takes two steps")
-    expect(page.locator("#dialog")).not_to_be_visible()
-    assert page.locator("#networkPanel").evaluate("node => node.open") is True
-    page.evaluate("window.networkMockState = 'Running'")
-    page.locator("#refresh").click()
-    expect(page.locator("#networkState")).to_contain_text("Connected")
-    page.locator("#device").select_option("server-a")
+    expect(page.locator("#device")).not_to_be_visible()
     expect(page.locator("#targetName")).to_have_text("GPU server")
     expect(page.locator("#newWorkspace")).to_be_enabled()
     assert page.locator("#networkStop").count() == 0
     expect(page.locator('[data-copy="networkHint"]')).to_contain_text("sign in once")
     expect(page.locator('[data-copy="networkHint"]')).to_contain_text("Mobile access")
+    page.locator('.workspace-toggle').first.click()
+    expect(page.get_by_role('button', name='Server conversation', exact=True)).not_to_be_visible()
+    page.locator('.workspace-toggle').first.click()
+    expect(page.get_by_role('button', name='Server conversation', exact=True)).to_be_visible()
+    page.evaluate('''() => {
+      const transfer = new DataTransfer();
+      document.querySelector('.conversation').dispatchEvent(new DragEvent('dragstart', {bubbles:true,dataTransfer:transfer}));
+      document.querySelectorAll('.group-head')[1].dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:transfer}));
+    }''')
+    page.wait_for_function("calls.some(call => call.action === 'command' && call.payload.command.action === 'move')")
+    assert page.evaluate("calls.find(call => call.action === 'command' && call.payload.command.action === 'move').payload.command.workspaceId") is None
+    page.locator('#prompt').fill('Draft in new conversation')
+    page.get_by_role('button', name='Server conversation', exact=True).click()
+    page.locator('#prompt').fill('Draft in server conversation')
+    page.locator('#newChat').click()
+    expect(page.locator('#prompt')).to_have_value('')
+    page.locator('#draftWorkspace').select_option('')
+    expect(page.locator('#prompt')).to_have_value('Draft in new conversation')
+    page.get_by_role('button', name='Server conversation', exact=True).click()
+    expect(page.locator('#prompt')).to_have_value('Draft in server conversation')
+    page.evaluate('''() => {
+      const clipboard = new DataTransfer(); clipboard.items.add(new File(['abc'], 'pasted.txt', {type:'text/plain'}));
+      document.getElementById('prompt').dispatchEvent(new ClipboardEvent('paste', {clipboardData:clipboard,bubbles:true,cancelable:true}));
+    }''')
+    expect(page.locator('#attachmentTray')).to_contain_text('pasted.txt')
+    assert page.evaluate("calls.find(call => call.action === 'attachments-add').payload.files[0].data") == 'YWJj'
+    page.locator('#attachmentTray button').click()
+    page.evaluate('''() => {
+      const transfer = new DataTransfer(); transfer.items.add(new File(['def'], 'dropped.txt', {type:'text/plain'}));
+      document.getElementById('composer').dispatchEvent(new DragEvent('drop', {dataTransfer:transfer,bubbles:true,cancelable:true}));
+    }''')
+    expect(page.locator('#attachmentTray')).to_contain_text('dropped.txt')
+    page.locator('#attachmentTray button').click()
+    page.locator('#newChat').click()
+    page.locator('#prompt').fill('Choose model before sending')
+    expect(page.locator('#configure')).to_be_enabled()
+    page.locator('#configure').click()
+    expect(page.locator('#dialog')).to_be_visible()
+    expect(page.locator('#prompt')).to_have_value('Choose model before sending')
+    page.locator('#cancel').click()
+    assert not page.evaluate("calls.some(call => call.action === 'command' && call.payload.command.action === 'send')")
+    page.locator('#newChat').click()
+    expect(page.locator('#brandIcon')).to_have_attribute('src', '../../../assets/brands/deepseek.svg')
+    page.locator('#openServerSettings').click()
+    expect(page.locator('#serverSettings')).to_be_visible()
+    expect(page.locator('#serverSettingsBody')).to_contain_text('Codex CLI')
+    assert page.locator('#serverSettingsNav button').count() == 4
+    page.locator('#serverSettingsBody').get_by_role('button', name='Uninstall', exact=True).first.click()
+    expect(page.locator('#serverConfirm')).to_contain_text('GPU server')
+    page.locator('#serverConfirmAccept').click()
+    page.wait_for_function("calls.some(call => call.action === 'server-manage' && call.payload.request.action === 'runtime-uninstall')")
+    assert page.evaluate("calls.find(call => call.action === 'server-manage' && call.payload.request.action === 'runtime-uninstall').payload.request.payload.confirmed")
+    page.locator('[data-page=engines]').click()
+    expect(page.locator('#serverSettingsBody select').first).to_have_value('model-a')
+    expect(page.locator('#serverSettingsBody')).to_contain_text('Sync providers')
+    page.locator('[data-page=usage]').click()
+    expect(page.locator('#serverSettingsBody')).to_contain_text('Requests 3')
+    page.locator('[data-page=archived]').click()
+    expect(page.locator('#serverSettingsBody')).to_contain_text('Archived conversation')
+    page.locator('[data-page=usage]').click()
+    expect(page.locator('#serverSettingsBody')).to_contain_text('Requests 3')
+    page.locator('[data-page=archived]').click()
+    expect(page.locator('#serverSettingsBody')).to_contain_text('Archived conversation')
+    page.get_by_role('button', name='Scan unused files', exact=True).click()
+    expect(page.locator('#serverSettingsBody')).to_contain_text('orphan.jsonl')
+    page.get_by_role('button', name='Clean listed files', exact=True).click()
+    page.locator('#serverConfirmAccept').click()
+    expect(page.locator('#serverSettingsBody')).to_contain_text('Files removed: 1')
+    page.screenshot(path=str(root / '.tmp-server-settings.png'), full_page=True)
+    page.locator('#serverSettingsClose').click()
+    page.locator('#harness').select_option('pi')
+    expect(page.locator('#brandTitle')).to_have_text('Pi')
+    expect(page.locator('#brandIcon')).to_have_attribute('src', '../../../assets/brands/pi.svg')
+    page.locator('#prompt').fill('Start with Pi')
+    page.locator('#send').click()
+    expect(page.locator('#prompt')).to_have_value('')
+    assert page.evaluate("calls.filter(call => call.action === 'command' && call.payload.command.action === 'create').at(-1).payload.command.engine") == 'pi'
+    page.screenshot(path=str(root / '.tmp-server-workbench-empty.png'), full_page=True)
+    page.locator('#harness').select_option('codex')
+    page.locator('#draftWorkspace').select_option('project')
+    page.locator('#prompt').fill('Start on the server')
+    page.locator('#send').click()
+    expect(page.locator('#prompt')).to_have_value('')
+    created = page.evaluate("calls.filter(call => call.action === 'command' && call.payload.command.action === 'create').at(-1).payload.command")
+    assert created['engine'] == 'codex'
+    assert created['workspaceId'] == 'project'
+    page.locator('.server-tools summary').click()
     page.locator("#nativeSettings").click()
     page.locator("#submit").click()
     expect(page.locator("#nativeDialog")).to_be_visible()
@@ -132,10 +226,12 @@ with sync_playwright() as playwright:
     page.evaluate("deviceEvent({type:'offline'})")
     expect(page.locator("#send")).to_be_disabled()
     expect(page.locator("#newWorkspace")).to_be_disabled()
-    page.locator("#device").select_option("server-b")
+    page.goto((root / "src/renderer/devices/devices.html").as_uri() + '?device=server-b')
+    page.wait_for_load_state('networkidle')
     expect(page.locator("#targetName")).to_have_text("Build server")
     expect(page.locator("#chat")).not_to_be_visible()
     expect(page.locator("#tree")).to_contain_text("Other server conversation")
+    page.locator('.server-tools summary').click()
     page.locator("#selectChats").click()
     page.locator(".conversation-row input").check()
     page.locator("#deleteSelected").click()
@@ -146,7 +242,7 @@ with sync_playwright() as playwright:
     deleted = page.evaluate("calls.filter(call => call.action === 'command').at(-1)")
     assert deleted['payload']['command']['action'] == 'delete'
     assert deleted['payload']['command']['targets'][0]['seq'] == 2
-    page.locator("#archivePanel summary").click()
+    page.locator('#archivePanel').evaluate('node => node.open = true')
     page.locator("#loadArchived").click()
     expect(page.locator("#archived")).to_contain_text("Archived conversation")
     page.locator("#archived button").click()
@@ -154,19 +250,29 @@ with sync_playwright() as playwright:
     page.locator("#submit").click()
     expect(page.locator("#dialog")).not_to_be_visible()
     assert page.evaluate("calls.filter(call => call.action === 'command').at(-1).payload.command.action") == 'restore'
-    page.locator("#add").click()
-    page.locator("#field-deviceName").fill("New server")
-    page.locator("#field-address").fill("http://100.80.1.4:43127")
-    page.locator("#field-code").fill("a" * 24)
-    page.locator("#submit").click()
-    expect(page.locator("#add")).to_have_text("Check approval")
-    page.locator("#cancelPair").click()
-    expect(page.locator("#cancelPair")).not_to_be_visible()
     expect(page.locator("#targetName")).to_have_text("Build server")
     expect(page.locator("#connection")).to_contain_text("Connected")
     page.screenshot(path=str(root / ".tmp-cli-devices.png"), full_page=True)
     page.set_viewport_size({"width": 480, "height": 820})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.evaluate("window.holdConnection = true")
+    page.locator('#refresh').click()
+    expect(page.locator('#connection')).to_contain_text('Connecting to server')
+    expect(page.locator('#refresh')).to_be_disabled()
+    expect(page.locator('#connectionSettings')).to_be_enabled()
+    page.locator('#connectionSettings').click()
+    assert page.evaluate('openedSettings')
+    page.evaluate('window.releaseConnection()')
+    expect(page.locator('#error')).to_contain_text('20 seconds')
+    expect(page.locator('#refresh')).to_be_enabled()
+    expect(page.locator('#send')).to_be_disabled()
+    page.evaluate('window.holdConnection = false')
+    page.locator('#refresh').click()
+    expect(page.locator('#connection')).to_contain_text('Connected')
+    page.evaluate("window.networkMockState = 'NeedsLogin'")
+    page.locator('#refresh').click()
+    expect(page.locator('#error')).to_contain_text('needs sign-in')
+    expect(page.locator('#refresh')).to_be_enabled()
     assert not errors, errors
     browser.close()
-print("CLI devices UI: pairing, isolation, writes, offline guard and narrow layout passed")
+print("CLI server workbench: direct launch, harness selection, writes, offline guard and narrow layout passed")

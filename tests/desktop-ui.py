@@ -98,6 +98,8 @@ try:
             downloads.goto((repo / 'src/renderer/settings/api-settings.html').as_uri() + '?page=runtimes')
             expect(downloads.locator('#runtimeCards [data-install]:not(:disabled)')).to_have_count(5)
             expect(downloads.get_by_role('button', name='Download', exact=True)).to_have_count(5)
+            downloads.goto((repo / 'src/renderer/settings/api-settings.html').as_uri() + '?page=general&focus=downloadProxyUrl')
+            expect(downloads.locator('#generalPage')).to_be_visible()
             expect(downloads.locator('#downloadMode')).to_have_value('direct')
             expect(downloads.locator('#downloadProxyUrl')).to_have_value('')
             downloads.locator('#downloadMode').select_option('proxy')

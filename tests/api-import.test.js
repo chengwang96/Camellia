@@ -36,6 +36,18 @@ test('API import exports only explicit API fields and skips local account-backed
   assert.equal(Object.hasOwn(result, 'port'), false);
 });
 
+test('explicit GUI synchronization replaces providers and routing state without journaling keys', context => {
+  const { service, payload, configFile, journalFile } = fixture(context);
+  const request = { ...payload(), policy: 'replace-from-gui', enabled: true };
+  const receipt = service.apply('gui', request);
+  assert.equal(receipt.policy, 'replace-from-gui');
+  const saved = config.loadConfig(configFile);
+  assert.equal(saved.enabled, true); assert.equal(saved.port, 9000);
+  assert.equal(saved.providers.length, 1); assert.equal(saved.providers[0].id, request.providers[0].id);
+  assert.deepEqual(service.apply('gui', request), receipt);
+  assert.equal(fs.readFileSync(journalFile, 'utf8').includes('private-api-key-value'), false);
+});
+
 test('API import is additive, preserves server routing state and never journals raw keys', context => {
   const { service, payload, configFile, journalFile } = fixture(context);
   const request = payload(); request.providers.push({ ...provider('existing'), name: 'Do not overwrite', keys: [{ id: 'replacement', key: 'replacement-secret' }] });
@@ -110,4 +122,22 @@ test('desktop import preview never exposes keys and binds confirmation to target
   assert.deepEqual(posts[0], posts[1]);
   const expired = await imports.prepare('server'); time += 300001;
   await assert.rejects(imports.apply('server', expired.id), /expired/);
+});
+
+test('GUI replacement preview requires explicit server capability and carries no keys to renderer', async () => {
+  let upgraded = false, sent;
+  const imports = createApiImportClient({ source: () => ({ enabled: true, providers: [provider()] }), client: {
+    list: () => [{ id: 'server', name: 'Server' }],
+    async json(_device, _endpoint, options) {
+      if (!options) return { revision: 'a'.repeat(64), policy: 'keep-server', policies: upgraded ? ['replace-from-gui'] : [] };
+      sent = options.body; return { ok: true, state: 'accepted', added: 1, keys: 1, enabled: true };
+    },
+  } });
+  await assert.rejects(imports.prepare('server', 'replace-from-gui'), /Update the CLI/);
+  upgraded = true;
+  const preview = await imports.prepare('server', 'replace-from-gui');
+  assert.equal(preview.policy, 'replace-from-gui');
+  assert.equal(JSON.stringify(preview).includes('private-api-key-value'), false);
+  await imports.apply('server', preview.id);
+  assert.equal(sent.policy, 'replace-from-gui'); assert.equal(sent.enabled, true);
 });

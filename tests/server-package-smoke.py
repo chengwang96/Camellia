@@ -27,6 +27,9 @@ with tempfile.TemporaryDirectory(prefix="camellia-dist-test-") as temporary:
     result = subprocess.run([str(executable), "--help"], capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
     assert "Camellia" in result.stdout
+    assert "one terminal" in result.stdout
+    for relative in ["src/cli/launch.js", "src/main/remote/server-management.js", "src/cli/managed-runtime.js"]:
+        assert (root / relative).is_file(), relative
     helper = subprocess.run([str(root / "build/runtime-assets/camellia-tailnet")], input='{"id":1,"action":"status"}\n', capture_output=True, text=True, timeout=20)
     assert helper.returncode == 0
     assert "network not initialized" in helper.stdout
@@ -48,7 +51,9 @@ with tempfile.TemporaryDirectory(prefix="camellia-dist-test-") as temporary:
             return json.loads(result.stdout)
         settings = command("settings")["result"]
         assert settings["network"]["state"] == "Stopped"
-        assert set(engine["id"] for engine in settings["engines"]) == {"claude", "codex", "kimi", "dsh", "antigravity"}
+        assert set(engine["id"] for engine in settings["engines"]) == {"claude", "codex", "kimi", "dsh", "antigravity", "pi"}
+        assert command("runtime-state")["ok"]
+        assert command("usage")["result"]["scope"] == "server-api"
         assert command("create-conversation", {"engine": "codex"})["ok"]
         assert len(command("conversations")["result"]) == 1
     finally:
@@ -60,4 +65,21 @@ with tempfile.TemporaryDirectory(prefix="camellia-dist-test-") as temporary:
             service.wait(timeout=5)
     assert service.returncode == 0
     assert not (data / "server.lock").exists()
+    service = subprocess.Popen([str(executable), "serve", "--data-dir", str(data)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        output = b""
+        while b"Local control ready" not in output:
+            assert select.select([service.stdout], [], [], 20)[0], "Restart did not become ready"
+            chunk = service.stdout.read1(8192)
+            assert chunk, service.stderr.read().decode()
+            output += chunk
+        assert len(command("conversations")["result"]) == 1
+    finally:
+        service.terminate()
+        try:
+            service.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            service.kill()
+            service.wait(timeout=5)
+    assert service.returncode == 0
 print("Linux archive: checksum, no Electron, bundled Node/helper, control and shutdown passed")

@@ -53,6 +53,7 @@ const context = { sessionId: null, workspaceId: null };
   const seenPermissionBlocks = new Set();
   let pendingQuestion = null, permissionSubmission = null;
   const questionDrafts = new Map();
+  const selfDeletedIds = new Set();
 
   // Offline defaults; a configured pool supplies its explicit model groups.
   const MODELS = [];
@@ -234,7 +235,14 @@ const context = { sessionId: null, workspaceId: null };
   window.addEventListener('camellia:language', () => {
     document.querySelectorAll('.md-code-copy').forEach(refreshCodeCopy);
   });
-  function mdRender(src, documentMode = false) {
+  function renderCodeBlock(language, code, highlight = false) {
+    const content = code.replace(/\n+$/, '');
+    return '<div class="md-code-block' + (codeWrap ? ' is-wrapped' : '') + '"><div class="md-code-header"><span>' + esc(language) +
+      '</span><div class="md-code-actions"><button type="button" class="md-code-wrap" aria-pressed="' + codeWrap + '" aria-label="' + esc(codeWrapLabel()) + '" title="' + esc(codeWrapLabel()) + '">' + codeWrapIcon() +
+      '</button>' + codeCopyButton() + '</div></div><pre class="md-code"><code>' + (highlight ? window.CamelliaMarkdownPreview.highlight(language, content) : esc(content)) + '</code></pre></div>';
+  }
+  function mdRender(src, documentMode = false, baseUrl = '') {
+    if (documentMode) return window.CamelliaMarkdownPreview.render(src, { baseUrl, codeBlock: (language, code) => renderCodeBlock(language, code, true) });
     const tokens = [];
     let text = String(src);
     text = text.replace(/```(\w*)[ \t]*\n?([\s\S]*?)(?:```|$)/g, (_m, lang, code) => {
@@ -280,9 +288,7 @@ const context = { sessionId: null, workspaceId: null };
       const tk = tokens[+idx];
       if (!tk) return _m;
       if (tk.t === 'code') {
-        return '<div class="md-code-block' + (codeWrap ? ' is-wrapped' : '') + '"><div class="md-code-header"><span>' + esc(tk.lang) +
-          '</span><div class="md-code-actions"><button type="button" class="md-code-wrap" aria-pressed="' + codeWrap + '" aria-label="' + esc(codeWrapLabel()) + '" title="' + esc(codeWrapLabel()) + '">' + codeWrapIcon() +
-          '</button>' + codeCopyButton() + '</div></div><pre class="md-code"><code>' + esc(tk.code.replace(/\n+$/, '')) + '</code></pre></div>';
+        return renderCodeBlock(tk.lang, tk.code);
       }
       if (tk.t === 'inline') return '<code class="md-inline">' + esc(tk.code) + '</code>';
       const renderCell = value => esc(value).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(sentRe, renderToken);
@@ -668,16 +674,32 @@ const context = { sessionId: null, workspaceId: null };
     if (file.kind === 'text') {
       const format = window.CamelliaArtifacts.documentFormat(file);
       if (format === 'html') {
-        const frame = document.createElement('iframe'); frame.title = file.name;
-        frame.className = 'file-preview-html'; frame.setAttribute('sandbox', '');
-        frame.referrerPolicy = 'no-referrer';
-        frame.srcdoc = '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data: file: https:; media-src data: file: https:; style-src \'unsafe-inline\' file: https:; font-src data: file: https:; script-src \'none\'; frame-src \'none\'; connect-src \'none\'; form-action \'none\'; base-uri file:">' +
-          '<base href="' + esc(file.url || '') + '">' + (file.text || '');
-        body.appendChild(frame);
+        body.appendChild(window.CamelliaHtmlPreview.render(file));
       } else if (format === 'markdown') {
         const article = document.createElement('article'); article.className = 'file-preview-markdown md';
-        article.setAttribute('translate', 'no'); article.innerHTML = mdRender(file.text || '', true);
+        article.setAttribute('translate', 'no'); article.innerHTML = mdRender(file.text || '', true, file.url);
+        article.addEventListener('click', event => {
+          const link = event.target.closest('a');
+          if (!link) return;
+          event.preventDefault();
+          if (link.dataset.previewBlocked) return;
+          const href = link.getAttribute('href');
+          if (href.startsWith('#')) {
+            let anchor;
+            try { anchor = decodeURIComponent(href.slice(1)); } catch { return; }
+            [...article.querySelectorAll('[data-preview-anchor], [id]')].find(target => target.dataset.previewAnchor === anchor || target.id === anchor)?.scrollIntoView({ block: 'start' });
+          } else if (/^https?:/.test(href)) window.open(href, '_blank', 'noopener,noreferrer');
+          else if (href.startsWith('file:')) {
+            try {
+              const url = new URL(href);
+              const path = decodeURIComponent(url.pathname).replace(/^\/([a-z]:\/)/i, '$1');
+              void openFilePreview(path);
+            } catch {}
+          }
+        });
         body.appendChild(article);
+      } else if (window.CamelliaDataPreview.supports(file)) {
+        body.appendChild(window.CamelliaDataPreview.render(file));
       } else {
         const text = document.createElement('pre'); text.className = 'file-preview-text'; text.textContent = file.text;
         body.appendChild(text);
@@ -707,9 +729,28 @@ const context = { sessionId: null, workspaceId: null };
     } else if (file.office) {
       const stage = document.createElement('div'); stage.className = 'file-preview-office';
       const notice = document.createElement('p'); notice.className = 'office-preview-notice';
-      notice.dataset.i18n = ''; notice.textContent = 'Content preview · Open with the system app for the original layout.';
+      notice.dataset.i18n = ''; notice.textContent = 'Document preview · Complex layouts may differ from the original.';
       stage.appendChild(notice);
-      for (const section of file.office.sections) {
+      if (file.office.wordHtml) {
+        const frame = document.createElement('iframe'); frame.title = file.name;
+        frame.className = 'file-preview-office-document'; frame.setAttribute('sandbox', 'allow-scripts');
+        frame.referrerPolicy = 'no-referrer'; frame.srcdoc = file.office.wordHtml;
+        stage.appendChild(frame);
+      } else if (file.office.html) {
+        const frame = document.createElement('iframe'); frame.title = file.name;
+        frame.className = 'file-preview-office-document'; frame.setAttribute('sandbox', '');
+        frame.referrerPolicy = 'no-referrer';
+        frame.srcdoc = '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'; script-src \'none\'; frame-src \'none\'; connect-src \'none\'; form-action \'none\'; base-uri \'none\'">' + file.office.html;
+        if (file.office.sheets?.length) {
+          const select = document.createElement('select');
+          select.setAttribute('aria-label', 'Worksheet / 工作表'); select.className = 'office-sheet-select';
+          file.office.sheets.forEach((sheet, index) => select.append(new Option(sheet.title, String(index))));
+          const prefix = frame.srcdoc.slice(0, frame.srcdoc.indexOf('<body>') + 6);
+          const showSheet = () => { frame.srcdoc = prefix + file.office.sheets[Number(select.value)].html + '</body></html>'; };
+          select.onchange = showSheet; showSheet(); stage.appendChild(select);
+        }
+        stage.appendChild(frame);
+      } else for (const section of file.office.sections) {
         const page = document.createElement('section'); page.className = 'office-preview-section';
         if (section.title) { const heading = document.createElement('h3'); heading.textContent = section.title; page.appendChild(heading); }
         if (section.rows) {
@@ -2694,7 +2735,12 @@ const context = { sessionId: null, workspaceId: null };
   }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
     canReadReply: () => !loadingSession && !restoringRun,
-    newSession, openHistorySession, forkSession, canFork: s => sharedChat || harnessId !== 'antigravity' || !s.id.startsWith('agy-'), openActionMenu, closePops });
+    newSession, openHistorySession, forkSession, canFork: s => sharedChat || harnessId !== 'antigravity' || !s.id.startsWith('agy-'), openActionMenu, closePops,
+    noteLocalDelete: (id) => {
+      for (const key of Object.keys(localStorage)) if (key.startsWith('camellia-chat-') && key.endsWith(':' + id)) localStorage.removeItem(key);
+      selfDeletedIds.add(id);
+      setTimeout(() => selfDeletedIds.delete(id), 5000);
+    } });
   const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && canChangeContext() && (!sharedChat || !running), openHistorySession, setStatus,
     acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); queueMicrotask(drainMessageQueue); }, openActionMenu, closePops });
 
@@ -3067,6 +3113,8 @@ const context = { sessionId: null, workspaceId: null };
 
   window.dshDesktop.onEngineSettingsChanged(({ engine }) => { if (engine === harnessId) void loadSettings(); });
   window.dshDesktop.onArchivedChanged?.(({ id, action }) => {
+    // Our own delete already reloaded and moved to the neighbor; ignore its echo.
+    if (selfDeletedIds.has(id)) { selfDeletedIds.delete(id); return; }
     if (action === 'delete' && context.sessionId === id) void newSession(null);
     else void sidebar.load();
   });

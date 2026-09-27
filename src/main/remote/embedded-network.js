@@ -117,7 +117,12 @@ class EmbeddedNetwork {
     if (!this.child) throw new Error('Start and sign into embedded networking before connecting a device');
     const child = this.child;
     const token = randomBytes(32).toString('hex');
-    const result = await this.request('connect', { target: address, token });
+    let result;
+    try { result = await this.request('connect', { target: address, token }); }
+    catch (error) {
+      if (error.message === 'unsupported network action') throw new Error('Embedded network helper is outdated and cannot connect to CLI servers. Update Camellia and restart it; source builds must run npm run build:tailnet, then fully restart Camellia.');
+      throw error;
+    }
     if (this.child !== child) throw new Error('Network changed while connecting');
     let connection;
     try {

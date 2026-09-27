@@ -58,9 +58,11 @@ function createApiImport({ configFile, journalFile, isBusy, reload = () => {}, p
   const load = () => routerConfig.loadConfig(configFile);
   const revision = config => hash([config.enabled, config.port, config.providers]);
   return {
-    state() { const config = load(); return { revision: revision(config), providers: config.providers.length, keys: config.providers.reduce((total, provider) => total + provider.keys.length, 0), policy: 'keep-server' }; },
+    state() { const config = load(); return { revision: revision(config), providers: config.providers.length, keys: config.providers.reduce((total, provider) => total + provider.keys.length, 0), policy: 'keep-server', policies: ['keep-server', 'replace-from-gui'] }; },
     apply(deviceId, payload) {
-      shape(payload, ['requestId', 'expectedRevision', 'providers']);
+      shape(payload, ['requestId', 'expectedRevision', 'providers', 'policy', 'enabled']);
+      const replacing = payload.policy === 'replace-from-gui';
+      if (payload.policy !== undefined && !['keep-server', 'replace-from-gui'].includes(payload.policy) || payload.enabled !== undefined && (!replacing || typeof payload.enabled !== 'boolean')) fail(400, 'Invalid import policy');
       if (typeof payload.requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(payload.requestId) || !/^[a-f0-9]{64}$/.test(payload.expectedRevision)) fail(400, 'Invalid import identity');
       const providers = validateProviders(payload.providers);
       const journal = readJson(journalFile, []);
@@ -74,20 +76,21 @@ function createApiImport({ configFile, journalFile, isBusy, reload = () => {}, p
       const previous = load();
       if (revision(previous) !== payload.expectedRevision) fail(409, 'Server API settings changed; prepare the import again');
       if (journal.length >= 1000) fail(409, 'API import journal is full');
-      const combined = [...previous.providers];
+      const combined = replacing ? [] : [...previous.providers];
       const ids = new Set(combined.flatMap(provider => [provider.id, ...provider.keys.map(key => key.id)]));
       let added = 0, keys = 0, skipped = 0;
       for (const provider of providers) {
-        if (combined.some(existing => existing.id === provider.id || existing.baseUrl === provider.baseUrl)
+        if (combined.some(existing => existing.id === provider.id || !replacing && existing.baseUrl === provider.baseUrl)
           || ids.has(provider.id) || provider.keys.some(key => ids.has(key.id))) { skipped++; continue; }
         combined.push(provider); ids.add(provider.id); provider.keys.forEach(key => ids.add(key.id)); added++; keys += provider.keys.length;
       }
-      const next = routerConfig.normalizeConfig({ ...previous, providers: combined }, previous);
+      if (replacing && skipped) fail(400, 'Duplicate provider or key identities prevent an exact synchronization');
+      const next = routerConfig.normalizeConfig({ ...previous, providers: combined, ...(replacing ? { enabled: payload.enabled ?? previous.enabled } : {}) }, previous);
       const entry = { deviceId, requestId: payload.requestId, fingerprint, at: Date.now() };
       journal.push(entry);
       writeJson(journalFile, journal);
       try {
-        if (added) { writeJson(configFile, next); reload(); }
+        if (added || replacing) { writeJson(configFile, next); reload(); }
       } catch {
         try { writeJson(configFile, previous); reload(); }
         catch { fail(500, 'API import rollback failed; inspect server configuration before further operations'); }
@@ -95,7 +98,7 @@ function createApiImport({ configFile, journalFile, isBusy, reload = () => {}, p
         writeJson(journalFile, journal);
         return entry.result;
       }
-      entry.result = { ok: true, state: 'accepted', added, keys, skipped, policy: 'keep-server', revision: revision(next), enabled: next.enabled };
+      entry.result = { ok: true, state: 'accepted', added, keys, skipped, policy: replacing ? 'replace-from-gui' : 'keep-server', revision: revision(next), enabled: next.enabled };
       writeJson(journalFile, journal);
       publish();
       return entry.result;

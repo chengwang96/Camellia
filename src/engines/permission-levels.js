@@ -9,6 +9,7 @@
 // mode at the session boundary.
 const LEVELS = ['ask', 'auto', 'full'];
 const TO_NATIVE = {
+  pi: { ask: 'ask', auto: 'auto', full: 'full' },
   claude: { ask: 'default', auto: 'acceptEdits', full: 'bypassPermissions' },
   codex: { ask: 'default', auto: 'acceptEdits', full: 'bypassPermissions' },
   kimi: { ask: 'default', auto: 'auto', full: 'yolo' },

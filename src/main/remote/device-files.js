@@ -7,6 +7,29 @@ const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { MAX_TOTAL, attachmentName } = require('./attachments');
 
+function bufferAttachments(files, nativeImage) {
+  if (!Array.isArray(files) || !files.length || files.length > 9) throw new Error('Select 1 to 9 attachments');
+  let total = 0;
+  return files.map(file => {
+    if (!file || Object.keys(file).some(key => !['name', 'data'].includes(key))) throw new Error('Invalid attachment');
+    let name = attachmentName(file.name);
+    if (typeof file.data !== 'string' || file.data.length > Math.ceil(MAX_TOTAL / 3) * 4 || file.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(file.data)) throw new Error('Invalid attachment encoding');
+    let bytes = Buffer.from(file.data, 'base64'), isImage = false;
+    if (bytes.toString('base64') !== file.data) throw new Error('Invalid attachment encoding');
+    total += bytes.length;
+    if (total > MAX_TOTAL) throw new Error('Attachments exceed 8 MiB total');
+    if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(name)) {
+      const image = nativeImage.createFromBuffer(bytes);
+      if (image.isEmpty()) throw new Error('The selected image cannot be decoded');
+      const dimensions = image.getSize(), scale = Math.min(1, 2048 / Math.max(dimensions.width, dimensions.height));
+      const resized = scale < 1 ? image.resize({ width: Math.max(1, Math.round(dimensions.width * scale)), height: Math.max(1, Math.round(dimensions.height * scale)), quality: 'best' }) : image;
+      bytes = resized.toJPEG(85); name = name.replace(/\.[^.]+$/, '.jpg'); isImage = true;
+    }
+    if (bytes.length > MAX_TOTAL) throw new Error('Converted attachment is too large');
+    return { name, data: bytes.toString('base64'), isImage, size: bytes.length };
+  });
+}
+
 async function readAttachment(file, nativeImage) {
   const handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
   try {
@@ -94,4 +117,4 @@ async function saveDownload({ response, file, expectedSize, signal, onProgress =
   }
 }
 
-module.exports = { readAttachment, createAttachmentTray, downloadName, saveDownload };
+module.exports = { readAttachment, bufferAttachments, createAttachmentTray, downloadName, saveDownload };

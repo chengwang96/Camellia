@@ -2663,6 +2663,38 @@ test('summary failure surfaces a terminal error without replaying the original t
   assert.equal(f.manager.busy(run.sessionId), false);
 });
 
+test('a summary failure that already carries the advice is not repeated in the recovery error', async context => {
+  const harness = fixture(context, { summarize: { available: () => true,
+    run: async () => { throw new Error('HTTP 401: the credential was rejected.'); } } });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  manager.append(conversation, { role: 'user', text: 'Task' });
+  const run = await manager.send('kimi', { sessionId: conversation.id, prompt: 'Continue' });
+  harness.finish('kimi', 'error', 'context_length_exceeded');
+  await harness.flush();
+  const result = await run.done;
+  assert.match(result.result, /Context recovery failed.*credential was rejected/);
+  assert.equal(result.result.split('The original history is retained').length - 1, 1,
+    'the recovery advice appears exactly once');
+});
+
+test('a router summary that returns no text once still compacts on the widened retry', async context => {
+  const attempts = [];
+  const harness = fixture(context, { summarize: { available: () => true, run: async options => {
+    attempts.push(options.maxTokens);
+    // The first answer is a reasoning model that stopped on the cap with no
+    // text; the widened retry has room for the summary itself.
+    return attempts.length === 1 ? { text: '', truncated: true } : { text: 'RECOVERED-CONTEXT' };
+  } } });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  manager.append(conversation, { role: 'user', text: 'Task' });
+  const result = await manager.compact(conversation.id);
+  assert.equal(attempts.length, 2);
+  assert.equal(attempts[1], 8192, 'the retry is asked for the full output ceiling');
+  assert.ok(attempts[0] < attempts[1]);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /RECOVERED-CONTEXT/);
+  assert.equal(conversation.lastCompaction.outcome, 'completed');
+});
+
 test('goal overflow compacts and continues without advancing goal rounds or losing ownership', async t => {
   const f = fixture(t);
   const { sessionId } = await f.manager.command('claude', 'goal-start', { objective: 'Finish the experiment' });

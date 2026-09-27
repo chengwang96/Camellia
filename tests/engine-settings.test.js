@@ -130,7 +130,7 @@ test('source setup and startup checks leave missing engines uninstalled', async 
   const prepare = require('../scripts/prepare-runtimes.cjs');
   for (const options of [{}, { check: true }]) {
     const rows = await prepare({ root, ...options });
-    assert.deepEqual(rows.map(row => row.id), ['claude', 'codex', 'dsh', 'kimi', 'antigravity']);
+    assert.deepEqual(rows.map(row => row.id), ['claude', 'codex', 'dsh', 'kimi', 'pi', 'antigravity']);
     assert.ok(rows.every(row => row.status === 'missing' || (row.status === 'ready' && row.external)), 'Only pre-existing external runtimes may be ready');
     assert.deepEqual(fs.readdirSync(root), [], 'No engine files are downloaded by default');
   }

@@ -4,6 +4,8 @@ const path = require('node:path');
 const fs = require('node:fs');
 const unzipper = require('unzipper');
 const { DOMParser } = require('@xmldom/xmldom');
+const { renderOfficeDocument } = require('./office-render');
+const { wordPreview } = require('./word-preview');
 
 const MAX_PART_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
@@ -12,12 +14,18 @@ const descendants = (node, name) => Array.from(node.getElementsByTagName('*')).f
 const runs = node => descendants(node, 't').map(part => part.textContent).join('');
 
 async function readOfficePreview(filePath, kind) {
+  if (!['word', 'presentation', 'spreadsheet'].includes(kind)) throw new Error('Unsupported Office preview format.');
   if (fs.statSync(filePath).size > 100 * 1024 * 1024) throw new Error('This Office file is too large to preview.');
   const archive = await unzipper.Open.file(filePath);
   if (archive.files.length > 10000) throw new Error('This Office file is too large to preview.');
   const entries = new Map(archive.files.map(entry => [entry.path, entry]));
+  const documents = new Map();
+  const buffers = new Map();
+  const images = new Map();
   let bytesRead = 0;
-  async function xml(name, optional = false) {
+  let imageBytes = 0;
+  async function bytes(name, optional = false) {
+    if (buffers.has(name)) return buffers.get(name);
     const entry = entries.get(name);
     if (!entry) {
       if (optional) return null;
@@ -31,12 +39,39 @@ async function readOfficePreview(filePath, kind) {
       if (size > MAX_PART_BYTES || bytesRead > MAX_TOTAL_BYTES) throw new Error('This Office file is too large to preview.');
       chunks.push(chunk);
     }
-    const source = Buffer.concat(chunks).toString('utf8');
-    if (/<!DOCTYPE|<!ENTITY/i.test(source)) throw new Error('Unsupported Office XML declaration.');
-    return new DOMParser({ onError(level, message) { if (level !== 'warning') throw new Error(message); } }).parseFromString(source, 'text/xml');
+    const data = Buffer.concat(chunks);
+    buffers.set(name, data);
+    return data;
   }
-  async function relationships(base) {
-    const document = await xml(path.posix.join(path.posix.dirname(base), '_rels', path.posix.basename(base) + '.rels'));
+  async function xml(name, optional = false) {
+    if (documents.has(name)) return documents.get(name);
+    const data = await bytes(name, optional);
+    if (!data) return null;
+    const source = data.toString('utf8');
+    if (/<!DOCTYPE|<!ENTITY/i.test(source)) throw new Error('Unsupported Office XML declaration.');
+    const document = new DOMParser({ onError(level, message) { if (level !== 'warning') throw new Error(message); } }).parseFromString(source, 'text/xml');
+    documents.set(name, document);
+    return document;
+  }
+  async function image(name) {
+    if (images.has(name)) {
+      const source = images.get(name);
+      imageBytes += source.length;
+      if (imageBytes > MAX_TOTAL_BYTES) throw new Error('This Office file is too large to preview.');
+      return source;
+    }
+    const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }[path.posix.extname(name).toLowerCase()];
+    if (!mime) return '';
+    const data = await bytes(name, true);
+    const source = data ? `data:${mime};base64,${data.toString('base64')}` : '';
+    imageBytes += source.length;
+    if (imageBytes > MAX_TOTAL_BYTES) throw new Error('This Office file is too large to preview.');
+    images.set(name, source);
+    return source;
+  }
+  async function relationships(base, optional = false) {
+    const document = await xml(path.posix.join(path.posix.dirname(base), '_rels', path.posix.basename(base) + '.rels'), optional);
+    if (!document) return new Map();
     return new Map(descendants(document, 'Relationship').filter(node => node.getAttribute('TargetMode') !== 'External')
       .map(node => {
         const target = node.getAttribute('Target');
@@ -48,7 +83,7 @@ async function readOfficePreview(filePath, kind) {
   if (kind === 'word') {
     const document = await xml('word/document.xml');
     const paragraphs = descendants(document, 'p');
-    truncated = paragraphs.length > 2000;
+    truncated = false;
     sections.push({ title: '', paragraphs: paragraphs.slice(0, 2000).map(runs) });
   } else if (kind === 'presentation') {
     const document = await xml('ppt/presentation.xml');
@@ -75,8 +110,12 @@ async function readOfficePreview(filePath, kind) {
       if (!target) continue;
       const content = await xml(target);
       const sourceRows = descendants(content, 'row');
-      truncated ||= sourceRows.length > 300;
-      const rows = sourceRows.slice(0, 300).map(row => {
+      truncated ||= sourceRows.length > 300 || sourceRows.some(row => Number(row.getAttribute('r')) > 300);
+      truncated ||= descendants(content, 'mergeCell').some(merge => {
+        const end = /:([A-Z]+)(\d+)$/.exec(merge.getAttribute('ref'));
+        return end && (Number(end[2]) > 300 || [...end[1]].reduce((total, letter) => total * 26 + letter.charCodeAt(0) - 64, 0) > 50);
+      });
+      const rows = sourceRows.filter(row => Number(row.getAttribute('r')) >= 1 && Number(row.getAttribute('r')) <= 300).slice(0, 300).map(row => {
         const values = [];
         for (const cell of children(row, 'c')) {
           const reference = /^([A-Z]+)\d+$/.exec(cell.getAttribute('r'));
@@ -93,7 +132,10 @@ async function readOfficePreview(filePath, kind) {
       sections.push({ title: sheet.getAttribute('name'), rows });
     }
   }
-  return { sections, truncated };
+  const sheets = [];
+  const html = await renderOfficeDocument(kind, { xml, relationships, image, sheets }, sections);
+  const wordHtml = kind === 'word' ? await wordPreview(entries, bytes, xml) : undefined;
+  return { sections, truncated, html, wordHtml, sheets };
 }
 
 module.exports = { readOfficePreview };

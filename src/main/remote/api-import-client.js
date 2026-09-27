@@ -7,17 +7,21 @@ function createApiImportClient({ client, source, now = Date.now }) {
   const pending = new Map();
   function prune() { for (const [id, entry] of pending) if (entry.expiresAt <= now()) pending.delete(id); }
   return {
-    async prepare(deviceId) {
+    async prepare(deviceId, policy = 'keep-server') {
       prune();
       if (pending.size >= 8) throw new Error('Cancel an API import before preparing another');
       const device = client.list().find(entry => entry.id === deviceId);
       if (!device) throw new Error('CLI device not found');
-      const { providers, skipped } = exportProviders(source());
+      if (!['keep-server', 'replace-from-gui'].includes(policy)) throw new Error('Invalid synchronization policy');
+      const sourceConfig = source();
+      const { providers, skipped } = exportProviders(sourceConfig);
       const state = await client.json(deviceId, '/v1/api-import');
       if (!/^[a-f0-9]{64}$/.test(state.revision) || state.policy !== 'keep-server') throw new Error('Server does not support safe API import');
+      if (policy === 'replace-from-gui' && !state.policies?.includes(policy)) throw new Error('Update the CLI server to support provider synchronization');
       const id = randomUUID();
-      const summary = { id, target: device.name, providers: providers.length, keys: providers.reduce((total, provider) => total + provider.keys.length, 0), skipped, policy: 'keep-server' };
-      pending.set(id, { deviceId, summary, expiresAt: now() + 5 * 60_000, payload: { requestId: randomUUID(), expectedRevision: state.revision, providers } });
+      const summary = { id, target: device.name, providers: providers.length, keys: providers.reduce((total, provider) => total + provider.keys.length, 0), skipped, policy };
+      pending.set(id, { deviceId, summary, expiresAt: now() + 5 * 60_000, payload: { requestId: randomUUID(), expectedRevision: state.revision, providers,
+        ...(policy === 'replace-from-gui' ? { policy, enabled: Boolean(sourceConfig.enabled) } : {}) } });
       return summary;
     },
     async apply(deviceId, id) {

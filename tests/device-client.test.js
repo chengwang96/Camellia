@@ -94,6 +94,20 @@ test('device contexts isolate identical conversation IDs and commands preserve r
   for await (const event of client.events(first.id)) assert.equal(event.data.instanceId, instanceId);
 });
 
+test('default harness is persisted per server without exposing credentials', async context => {
+  const { client, clients, pair, file, storage, network } = fixture(context);
+  const first = await pair(), second = await pair('http://100.80.1.3:43127');
+  assert.equal(client.preferences(first.id, { defaultHarness: 'codex' }).defaultHarness, 'codex');
+  assert.equal(client.list().find(device => device.id === second.id).defaultHarness, undefined);
+  assert.throws(() => client.preferences(first.id, { defaultHarness: 'unknown' }), /Invalid/);
+  assert.throws(() => client.preferences('missing', { defaultHarness: 'codex' }), /not found/);
+    const restored = new DeviceClient({ file, safeStorage: storage, network }); clients.push(restored);
+    assert.equal(restored.list()[0].defaultHarness, 'codex');
+    assert.equal(restored.preferences(first.id, { defaultHarness: 'pi' }).defaultHarness, 'pi');
+  assert.equal('token' in restored.list()[0], false);
+  assert.equal(client.preferences(first.id, { defaultHarness: '' }).defaultHarness, undefined);
+});
+
 test('forget only deletes desktop credentials; server revocation remains separate', async context => {
   const { client, pair, access, connections } = fixture(context);
   const first = await pair();

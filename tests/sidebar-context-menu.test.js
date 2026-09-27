@@ -128,7 +128,7 @@ test('saved session actions retain their existing operations and directory restr
     assert.deepEqual(Array.from(menus[0].actions, action => action.label), [
       'Rename', 'Pin session',
       ...(!fixedCwd ? ['Move to workspace…', 'Move out of workspace'] : []),
-      'Fork session', 'Archive session',
+      'Fork session', 'Archive session', 'Delete conversation',
     ]);
   }
 });

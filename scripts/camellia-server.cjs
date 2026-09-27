@@ -26,24 +26,28 @@ function options(args) {
 }
 
 async function main(args = process.argv.slice(2)) {
+  if ((!args.length && process.stdin.isTTY && process.stdout.isTTY) || (args[0]?.startsWith('--') && args[0] !== '--help')) args = ['launch', ...args];
   if (!args.length || ['help', '--help', '-h'].includes(args[0])) {
     console.log('Camellia / Linux server development preview\n'
+      + './camellia (or launch): one terminal for server startup, Tailscale sign-in and explicit GUI pairing approval.\n'
+      + 'node scripts/camellia-server.cjs launch [--data-dir /absolute/path] [--helper /path/camellia-tailnet] [--lang zh-CN|en]\n'
       + 'node scripts/camellia-server.cjs serve [--data-dir /absolute/path] [--helper /path/camellia-tailnet] [--key-file /path/key] [--hostname camellia-server]\n'
       + 'node scripts/camellia-server.cjs ACTION [--data-dir /absolute/path] [--payload JSON]\n'
       + 'node scripts/camellia-server.cjs menu [--data-dir /absolute/path] [--lang zh-CN|en] [--ascii]\n'
       + 'node scripts/camellia-server.cjs native-edit --payload {"engine":"codex","id":"settings"} [--editor /usr/bin/vi]\n'
       + 'node scripts/camellia-server.cjs service-unit [--data-dir /absolute/path] [--helper /path/camellia-tailnet] [--key-file /path/key] [--hostname NAME] [--restore-network]\n'
       + 'service-unit only prints a systemd user unit; it never installs, starts or enables a service.\n'
-      + 'Actions: state, settings, start, login, stop, logout, invite, approve, reject, revoke, workspaces, conversations, create-workspace, delete-workspace, create-conversation, set-model, set-language, set-api-enabled\n'
+      + 'Actions: state, settings, start, login, stop, logout, invite, approve, reject, revoke, workspaces, conversations, create-workspace, delete-workspace, create-conversation, delete-conversation, set-model, set-language, set-api-enabled\n'
       + 'serve stays in foreground; --restore-network optionally restores already-paired networking without login prompts.\n'
       + 'start enables Tailscale; stop disables networking, not the server.\n'
       + 'Engine commands: runtime-state, runtime-install, account, engine-settings; native-login --payload {"engine":"claude"} (or codex) requires a terminal.\n'
-      + 'DSH, Claude, Codex and Kimi plus Antigravity are wired. Native subscription sign-in happens on this server only.');
+      + 'DSH, Claude, Codex and Kimi plus Antigravity and Pi are wired. Pi uses shared API routes. Native subscription sign-in happens on this server only.');
     return;
   }
   if (process.platform !== 'linux') throw new Error('The server entry point requires Linux; use preview:cli for the settings design');
   process.umask(0o077);
   const selected = options(args);
+  if (selected.action === 'launch') { await require('../src/cli/launch').runLaunch(selected); return; }
   if (selected.action === 'native-edit') { await require('../src/cli/native-editor').editNative(selected); return; }
   if (selected.action === 'native-login') {
     if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Native account login requires a server terminal');

@@ -209,3 +209,20 @@ test('an over-long partial summary is asked for again against a smaller target',
   await assert.rejects(runSummaryPipeline({ units: [[{ role: 'user', text: 'x'.repeat(600) }]], budget: 6000,
     maxRequests: 8, request: async options => ({ text: 'y'.repeat(options.maxChars + 1) }) }), /too large after one shortening attempt/);
 });
+
+test('a reasoning model that spends the whole cap on thinking is retried at the ceiling', async () => {
+  const budgets = [];
+  const result = await runSummaryPipeline({ units: [[{ role: 'user', text: 'x'.repeat(600) }]], budget: 6000,
+    request: async options => {
+      budgets.push(options.maxTokens);
+      // The first answer stops on the cap with no text; the widened retry has
+      // room to finish thinking and write the summary.
+      return budgets.length === 1 ? { text: '', truncated: true } : { text: 'ok' };
+    } });
+  assert.deepEqual(budgets, [2048, 8192]);
+  assert.equal(result.summary, 'ok');
+  assert.equal(result.requests, 2);
+  // A model that answers with nothing even at the ceiling still fails loudly.
+  await assert.rejects(runSummaryPipeline({ units: [[{ role: 'user', text: 'x'.repeat(600) }]], budget: 6000,
+    request: async () => ({ text: '', truncated: true }) }), /returned no text/);
+});

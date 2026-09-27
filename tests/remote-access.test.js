@@ -19,7 +19,7 @@ const restrictedPorts = new Set([1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25
   989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666,
   6667, 6668, 6669, 6697, 10080]);
 
-function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings = null } = {}) {
+function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings = null, management = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-remote-'));
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
   let clock = 1000, config = { sharedMeta: { workspaces: [{ id: 'allowed', name: 'Allowed', path: root }, { id: 'private', name: 'Private', path: root }] } }, gateway;
@@ -29,7 +29,7 @@ function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings =
   const access = new RemoteAccess({ file: path.join(root, 'devices.json'), now: () => clock, onRevoke: id => gateway?.revoke(id) });
   const reader = new RemoteReadModel(manager);
   const commands = new RemoteCommands({ file: path.join(root, 'commands.json'), access, reader, publish: () => gateway.publish() });
-  gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, validateHost: host => host === '127.0.0.1' });
+  gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, validateHost: host => host === '127.0.0.1' });
   const start = gateway.start.bind(gateway);
   gateway.start = async (host, port, transport) => {
     for (let attempt = 0; attempt < 32; attempt++) {
@@ -72,6 +72,48 @@ test('conversation pages include scoped connection metadata in one round trip', 
   assert.deepEqual(page.workspaces.map(workspace => workspace.id), ['allowed']);
   assert.ok(page.conversations.some(conversation => conversation.id === visible.id));
   assert.ok(!page.conversations.some(conversation => conversation.id === hidden.id));
+});
+
+test('remote fork preserves workspace scope and rejects stale or out-of-scope sources', async context => {
+  const { gateway, pair, visible, hidden, manager } = fixture(context);
+  const { token } = pair();
+  await gateway.start('127.0.0.1', 0);
+  const payload = { action: 'fork', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, expectedSeq: visible.seq };
+  const endpoint = `/v1/conversations/${visible.id}/commands`;
+  const result = await request(gateway, endpoint, { token, method: 'POST', payload });
+  assert.equal(result.body.ok, true);
+  assert.notEqual(result.body.conversation.id, visible.id);
+  assert.equal(result.body.conversation.workspaceId, 'allowed');
+  assert.equal(manager.messages(manager.get(result.body.conversation.id)).length, manager.messages(visible).length);
+  assert.deepEqual((await request(gateway, endpoint, { token, method: 'POST', payload })).body, result.body);
+  assert.equal((await request(gateway, `/v1/conversations/${hidden.id}/commands`, { token, method: 'POST', payload: { ...payload, requestId: require('node:crypto').randomUUID() } })).status, 404);
+  const stale = await request(gateway, endpoint, { token, method: 'POST', payload: { ...payload, requestId: require('node:crypto').randomUUID(), expectedSeq: -1 } });
+  assert.equal(stale.body.ok, false);
+});
+
+test('remote automation controls are scoped, explicit and cannot create tasks through control payloads', async context => {
+  const { gateway, pair, visible, hidden, manager } = fixture(context);
+  const { token } = pair(); await gateway.start('127.0.0.1', 0);
+  const goal = manager.goalFor(visible.id);
+  goal.goal = { objective: 'Test only; never run', phase: 'paused', runToken: 'must-not-leak' };
+  const snapshot = (await request(gateway, `/v1/conversations/${visible.id}`, { token })).body;
+  assert.equal(snapshot.automation.goal.phase, 'paused');
+  assert.equal(JSON.stringify(snapshot).includes('must-not-leak'), false);
+  const payload = { action: 'goal-control', operation: 'clear', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
+  assert.equal((await request(gateway, `/v1/conversations/${hidden.id}/commands`, { token, method: 'POST', payload })).status, 404);
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload })).body.ok, true);
+  assert.equal(goal.view(), null);
+  const invalid = await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: { ...payload, action: 'task-control', taskId: 'anything', operation: 'create', requestId: require('node:crypto').randomUUID() } });
+  assert.equal(invalid.body.ok, false);
+});
+
+test('workspace-scoped control cannot install runtimes or read management results', async context => {
+  const management = { submit: () => assert.fail('Scoped device cannot manage server'), get: () => assert.fail('Scoped device cannot read operations') };
+  const { gateway, pair } = fixture(context, { management });
+  const { token } = pair(); await gateway.start('127.0.0.1', 0);
+  const requestId = require('node:crypto').randomUUID();
+  assert.equal((await request(gateway, '/v1/server-management', { token, method: 'POST', payload: { requestId, action: 'runtime-install', payload: { engine: 'codex', confirmed: true } } })).status, 403);
+  assert.equal((await request(gateway, '/v1/server-management/' + requestId, { token })).status, 403);
 });
 
 test('remote summaries expose reply markers and invalidate list versions when activity or replies change', context => {
@@ -495,6 +537,27 @@ test('explicit dynamic scope persists, includes new workspaces and independent c
   assert.equal(access.pending.get(forged.id).includeUnassigned, false);
 });
 
+test('the desktop name travels with the invitation and authorized devices can be renamed', async context => {
+  const { access } = fixture(context);
+  const invitation = access.invite(['allowed'], { computerName: '  Work PC  ' });
+  assert.equal(invitation.computerName, 'Work PC');
+  const request = access.request({ code: invitation.code, name: 'Phone' });
+  assert.equal(request.computerName, 'Work PC');
+  assert.equal(access.view().pending[0].computerName, 'Work PC');
+  access.approve(request.id);
+  const claimed = access.claim(request.id, request.claim);
+  assert.equal(claimed.state, 'approved');
+  access.rename(claimed.deviceId, '  Living room PC  ');
+  assert.equal(access.view().devices[0].name, 'Living room PC');
+  // The one-time code stays bound to the request; renaming must not touch it.
+  assert.throws(() => access.rename('00000000-0000-0000-0000-000000000000', 'Other'), /Invalid device/);
+  assert.throws(() => access.rename(claimed.deviceId, '   '), /1–80 characters/);
+  assert.throws(() => access.rename(claimed.deviceId, 'x'.repeat(81)), /1–80 printable characters/);
+  // An absent name is allowed and simply omits the field instead of failing.
+  const unnamed = access.invite(['allowed']);
+  assert.equal(unnamed.computerName, null);
+});
+
 test('HTTP pairing, authentication, endpoint allowlist and browser-origin rejection', async context => {
   const { access, gateway, visible, hidden } = fixture(context);
   assert.equal(gateway.server, null);
@@ -708,6 +771,11 @@ test('mobile creation is scoped, deduplicated and does not start engines', async
   const status = (await request(gateway, '/v1/status', { token })).body;
   assert.deepEqual(status.workspaces, [{ id: 'allowed', name: 'Allowed' }]);
   assert.ok(status.capabilities.includes('image'));
+  assert.ok(status.engines.includes('pi'));
+  const pi = await create({ ...payload, requestId: require('node:crypto').randomUUID(), engine: 'pi' });
+  assert.equal(pi.body.ok, true);
+  assert.equal(pi.body.conversation.engine, 'pi');
+  assert.equal(manager.get(pi.body.conversation.id).currentEngine, 'pi');
   access.setScope(credential.deviceId, ['allowed'], { includeUnassigned: true });
   const independent = await create({ ...payload, requestId: require('node:crypto').randomUUID(), workspaceId: null });
   assert.equal(independent.body.ok, true); assert.equal(independent.body.conversation.workspaceId, null);

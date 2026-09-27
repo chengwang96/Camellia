@@ -25,8 +25,8 @@ async function body(request, limit = 4096) {
 }
 
 class RemoteGateway {
-  constructor({ access, reader, commands, apiRoutes = null, apiImport = null, nativeSettings = null, validateHost = isTailscaleIPv4 }) {
-    Object.assign(this, { access, reader, commands, apiRoutes, apiImport, nativeSettings, validateHost });
+  constructor({ access, reader, commands, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, validateHost = isTailscaleIPv4 }) {
+    Object.assign(this, { access, reader, commands, apiRoutes, apiImport, nativeSettings, management, validateHost });
     this.streams = new Set();
     this.downloads = new Set();
     this.sequence = 0;
@@ -103,6 +103,19 @@ class RemoteGateway {
     const authorization = request.headers.authorization || '';
     if (!/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization)) fail(401, 'Device authentication required');
     const device = this.access.authenticate(authorization.slice(7));
+    const operation = /^\/v1\/server-management(?:\/([a-f0-9-]{36}))?$/.exec(url.pathname);
+    if (operation && this.management) {
+      if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
+      if (url.search) fail(400, 'Unsupported management query');
+      if (operation[1] && request.method === 'GET') this.json(response, 200, this.management.get(device.id, operation[1]));
+      else if (!operation[1] && request.method === 'POST') {
+        const payload = await body(request, 32 * 1024);
+        const current = this.access.authenticate(authorization.slice(7));
+        if (current.permission !== 'control' || current.allWorkspaces !== true) fail(403, 'Full-device control permission required');
+        this.json(response, 200, this.management.submit(current.id, payload));
+      } else fail(405, 'Unsupported management method');
+      return;
+    }
     const native = /^\/v1\/native-settings\/(claude|codex|kimi|dsh|antigravity)$/.exec(url.pathname);
     if (native && this.nativeSettings) {
       if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
@@ -191,8 +204,10 @@ class RemoteGateway {
     if (this.apiRoutes && fullControl) capabilities.push('api-keys');
     if (this.apiImport && fullControl) capabilities.push('api-import');
     if (this.nativeSettings && fullControl) capabilities.push('native-settings');
+    if (this.management && fullControl) capabilities.push('server-management');
+    if (this.commands) capabilities.push('fork', 'switch-engine', 'compact', 'resend', 'automation-control');
     return { protocol: 1, permission: device.permission, capabilities,
-      engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity'].includes(engine)),
+      engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine)),
       workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
       includeUnassigned: Boolean(device.allWorkspaces || device.includeUnassigned) };
   }

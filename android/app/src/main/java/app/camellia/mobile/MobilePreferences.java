@@ -18,6 +18,13 @@ final class MobilePreferences {
         return value.equals("newline") || value.equals("button") ? value : "send";
     }
 
+    static String deviceName(Context context) {
+        String value = context.getSharedPreferences("mobile-preferences", Context.MODE_PRIVATE).getString("deviceName", null);
+        if (value != null && !value.trim().isEmpty()) return value.trim();
+        String model = android.os.Build.MODEL;
+        return model == null || model.trim().isEmpty() ? "Android" : model.trim();
+    }
+
     static String signature(Context context) { return get(context, "language") + ":" + get(context, "theme"); }
 
     static Context wrap(Context context) {

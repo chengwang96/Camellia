@@ -20,6 +20,7 @@ const { ClaudeHistory } = require('../src/engines/claude-history');
 const { createCodex } = require('../src/engines/codex');
 const { createAntigravity } = require('../src/engines/antigravity');
 const { createDshChat } = require('../src/engines/dsh-session');
+const { createPiChat } = require('../src/engines/pi-session');
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-shared-native-'));
@@ -32,7 +33,7 @@ async function main() {
     try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); requests.push(body);
-      const marker = JSON.stringify(body.messages || []).match(/CONCURRENT_(?:A|B)_(?:claude|codex|dsh|kimi|antigravity)/)?.[0];
+      const marker = JSON.stringify(body.messages || []).match(/CONCURRENT_(?:A|B)_(?:claude|codex|dsh|kimi|antigravity|pi)/)?.[0];
       if (marker && holdConcurrent) await new Promise(resolve => held.set(marker, { resolve, body }));
       const asksQuestion = JSON.stringify(body.messages || []).includes('ASK_QUESTION_FIXTURE') && body.tools?.some(tool => tool.function?.name === 'AskUserQuestion');
       const hasAnswer = body.messages?.some(message => message.role === 'tool' && message.tool_call_id === 'question-fixture');
@@ -62,9 +63,9 @@ async function main() {
     const common = { dataDir: root, loadConfig, saveConfig, getRoute: () => route, getModels: () => ['fixture-model', 'fixture-picked'], runtimes: () => runtimes,
       environment: () => isolatedEnvironment(root, process.execPath), log, onGoal: () => {}, onAccount: () => {} };
     const drivers = {};
-    for (const engine of ['codex', 'antigravity', 'dsh']) {
-      const options = { ...common, onEvent: event => manager.capture(engine, event), node: () => process.execPath, runtime: () => runtimes.locate('dsh') };
-      const instance = engine === 'codex' ? createCodex(options) : engine === 'antigravity' ? createAntigravity(options) : createDshChat(options);
+    for (const engine of ['codex', 'antigravity', 'dsh', 'pi']) {
+      const options = { ...common, onEvent: event => manager.capture(engine, event), node: () => process.execPath, runtime: () => runtimes.locate(engine) };
+      const instance = engine === 'codex' ? createCodex(options) : engine === 'antigravity' ? createAntigravity(options) : engine === 'pi' ? createPiChat(options) : createDshChat(options);
       drivers[engine] = { settings: instance.settings, saveSettings: instance.saveSettings, ensure: instance.ensure || instance.ensureSession };
       instances.push(instance);
     }
@@ -109,7 +110,7 @@ async function main() {
     await manager.switchEngine(first.id, 'dsh', 'markdown');
     assert.notEqual(first.segments.dsh.nativeId, oldDsh);
     assert.equal(first.handoffs.at(-1).status, 'complete');
-    assert.equal(manager.load('kimi', first.id).messages.filter(m => m.role === 'user').length, 6);
+    assert.equal(manager.load('kimi', first.id).messages.filter(m => m.role === 'user').length, ENGINES.length + 1);
     console.log('PASS automatic Markdown handoff and fresh native DSH session; 0 external API calls');
     const questionConversation = manager.create('claude', null, 'Question fixture', fs.mkdtempSync(path.join(root, 'question-work-')));
     manager.saveSettings('claude', { sessionId: questionConversation.id, permissionMode: 'bypassPermissions' });
@@ -133,14 +134,14 @@ async function main() {
       return { engine, letter, marker, c, ...await manager.send(engine, { sessionId: c.id, prompt: 'Acknowledge ' + marker + ' only.' }) };
     })));
     const until = Date.now() + 45000;
-    while (held.size < 10 && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 100));
-    assert.equal(held.size, 10, 'all ten native sessions reach the model concurrently');
+    while (held.size < runs.length && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(held.size, runs.length, 'all native sessions reach the model concurrently');
     for (const run of runs) {
       assert.equal(held.get(run.marker).body.model, run.letter === 'A' ? 'fixture-upstream' : 'fixture-picked-upstream', run.marker + ' model isolation');
       assert.equal(manager.live(run.engine, run.sessionId).live.prompt, 'Acknowledge ' + run.marker + ' only.');
       await assert.rejects(manager.switchEngine(run.sessionId, run.engine === 'kimi' ? 'codex' : 'kimi'), /Wait/);
     }
-    assert.equal(manager.active.size, 10);
+    assert.equal(manager.active.size, runs.length);
     // Stop just one real Codex process while its sibling keeps its pending request.
     const stopped = runs.find(r => r.engine === 'codex' && r.letter === 'A');
     await manager.cancel({ sessionId: stopped.sessionId, runId: stopped.runId });
@@ -156,7 +157,7 @@ async function main() {
       assert.ok(!transcript.includes(`CONCURRENT_${run.letter === 'A' ? 'B' : 'A'}_${run.engine}`), 'no sibling content');
     }));
     assert.equal(manager.active.size, 0);
-    console.log('PASS: 10 overlapping conversations across 5 real native harnesses, independent models, live snapshots, harness locks, isolated cancellation and transcripts; 0 external API calls');
+    console.log(`PASS: ${runs.length} overlapping conversations across ${ENGINES.length} real native harnesses, independent models, live snapshots, harness locks, isolated cancellation and transcripts; 0 external API calls`);
     for (const engine of ENGINES) {
       const prior = runs.find(r => r.engine === engine && r.letter === 'B');
       const nativeId = prior.c.segments[engine].nativeId, before = requests.length;

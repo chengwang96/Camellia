@@ -40,6 +40,8 @@ p { margin: 5px 0; }
 #mobilePage p, #mobilePage .name { overflow-wrap: anywhere; }
 #mobilePage .hint { margin: 12px 0; }
 #mobilePage .mobile-address, #mobile-code { font: var(--f-code); overflow-wrap: anywhere; }
+#mobilePage #mobile-invitation code { display: block; margin-top: 10px; }
+#mobilePage .name-row input { border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 8px 12px; }
 #mobilePage .mobile-help { margin-top: 16px; }
 #mobilePage .mobile-help summary { width: fit-content; cursor: pointer; color: var(--dsw-alias-label-secondary); font: var(--f-xxs-12); }
 #mobilePage .mobile-help summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 4px; }
@@ -202,6 +204,7 @@ dialog > .primary { margin-top: 20px; }
   .grid { grid-template-columns: 1fr; }
   .usage-summary { grid-template-columns: repeat(2, 1fr); }
 }
+#storageSection h2 { margin: 0 0 12px; }
 .archived-row h2 { overflow-wrap: anywhere; }
 .storage-file code { overflow-wrap: anywhere; min-width: 0; }
 .storage-file span { flex-shrink: 0; }

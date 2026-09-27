@@ -27,6 +27,11 @@ test('outbound targets and endpoints exclude public hosts, redirects and arbitra
   assert.throws(() => endpointPath('/v1/native-settings/auth', 'GET'));
   assert.throws(() => endpointPath('/v1/native-settings/codex?offset=1', 'GET'));
   assert.equal(endpointPath('/v1/archived?offset=0', 'GET'), '/v1/archived?offset=0');
+  assert.equal(endpointPath('/v1/server-management', 'POST'), '/v1/server-management');
+  assert.equal(endpointPath('/v1/server-management/' + 'a'.repeat(36), 'GET'), '/v1/server-management/' + 'a'.repeat(36));
+  assert.throws(() => endpointPath('/v1/server-management?token=secret', 'POST'));
+  assert.throws(() => endpointPath('/v1/server-management', 'GET'));
+  assert.throws(() => endpointPath('/v1/server-management/' + 'a'.repeat(36), 'POST'));
   assert.throws(() => endpointPath('/v1/archived', 'POST'));
   assert.equal(endpointPath('/v1/api-import', 'POST'), '/v1/api-import');
   assert.throws(() => endpointPath('/v1/api-import?token=secret', 'POST'));
@@ -87,4 +92,30 @@ test('closing a transport cancels requests, never retries writes, and disconnect
   await arrived; await transport.close(); await transport.close(); await result;
   assert.equal(count, 1); assert.equal(disconnected, 1);
   await assert.rejects(transport.json('/v1/status'), /closed/);
+});
+
+test('JSON deadline includes a trickling response body and permits a later explicit retry', async context => {
+  let mode = 'slow', count = 0;
+  const transport = await fixture(context, (_request, response) => {
+    count++;
+    response.writeHead(200, { 'content-type': 'application/json' });
+    if (mode === 'ready') { response.end('{"ok":true}'); return; }
+    response.write('{');
+    const interval = setInterval(() => response.write(' '), 10);
+    response.once('close', () => clearInterval(interval));
+  });
+  transport.responseTimeoutMs = 100;
+  await assert.rejects(transport.json('/v1/conversations'), /Device response timed out/);
+  assert.equal(count, 1);
+  mode = 'ready';
+  assert.deepEqual(await transport.json('/v1/conversations'), { ok: true });
+  assert.equal(count, 2);
+});
+
+test('JSON deadline reports header stalls without automatically retrying writes', async context => {
+  let count = 0;
+  const transport = await fixture(context, () => { count++; });
+  transport.responseTimeoutMs = 100;
+  await assert.rejects(transport.json('/v1/commands', { method: 'POST', body: { action: 'send' } }), /Device response timed out.*verify state/);
+  assert.equal(count, 1);
 });

@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { storeAttachments, decodeAttachments, MAX_TOTAL } = require('../src/main/remote/attachments');
-const { readAttachment, createAttachmentTray, downloadName, saveDownload } = require('../src/main/remote/device-files');
+const { readAttachment, bufferAttachments, createAttachmentTray, downloadName, saveDownload } = require('../src/main/remote/device-files');
 const { removeTree } = require('./test-fs.cjs');
 
 function directory(context) {
@@ -20,6 +20,21 @@ function response(data, length = Buffer.byteLength(data)) {
   const stream = Readable.from([Buffer.from(data)]);
   stream.statusCode = 200; stream.headers = { 'content-length': String(length) }; return stream;
 }
+
+test('pasted and dropped bytes cannot select filesystem paths or fake image types', () => {
+  const files = bufferAttachments([{ name: 'notes.txt', data: Buffer.from('notes').toString('base64') }]);
+  assert.equal(files[0].isImage, false); assert.equal(files[0].size, 5);
+  assert.throws(() => bufferAttachments([{ path: '/secret', name: 'notes.txt', data: '' }]), /Invalid attachment/);
+  assert.throws(() => bufferAttachments([{ name: '../secret', data: '' }]), /name/);
+  assert.throws(() => bufferAttachments([{ name: 'notes.txt', data: 'Zg=A' }]), /encoding/);
+  assert.throws(() => bufferAttachments(Array(10).fill({ name: 'a', data: '' })), /1 to 9/);
+  assert.throws(() => bufferAttachments([{ name: 'a.png', data: 'eA==' }], { createFromBuffer: () => ({ isEmpty: () => true }) }), /decoded/);
+  const jpeg = Buffer.from([255, 216, 255, 217]);
+  const image = { isEmpty: () => false, getSize: () => ({ width: 4000, height: 2000 }), resize: options => { assert.equal(options.width, 2048); return { toJPEG: () => jpeg }; } };
+  const converted = bufferAttachments([{ name: 'paste.png', data: 'eA==' }], { createFromBuffer: () => image });
+  assert.equal(converted[0].name, 'paste.jpg'); assert.equal(converted[0].isImage, true);
+  assert.deepEqual(decodeAttachments(converted.map(({ size, ...file }) => file))[0].bytes, jpeg);
+});
 
 test('server attachment store validates all files first and writes only generated paths', context => {
   const root = directory(context), target = path.join(root, 'uploads');

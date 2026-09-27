@@ -28,7 +28,7 @@
 .native-save-note { margin-bottom: 12px; }
 .runtime-unavailable #dshSettingsSurface { display: none; }
 .runtime-intro { color: var(--dsw-alias-label-secondary); margin: 0 0 22px; line-height: 1.8; }
-.download-preferences { padding: 18px 20px; margin-bottom: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-soft); }
+.download-preferences { padding: 18px 20px; margin-top: 24px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-soft); }
 .download-preferences h2 { margin: 0 0 8px; }
 .download-preferences small { display: block; margin-top: 4px; }
 .download-preferences input[type=url] { width: min(360px, 55%); }

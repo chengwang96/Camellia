@@ -1,0 +1,23 @@
+.data-preview { padding: 18px; color: var(--dsw-alias-label-primary); font: var(--f-base-16); }
+.data-preview-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+.data-preview-controls input[type=search] { flex: 1; min-width: 120px; width: 100%; }
+.data-preview button, .data-preview input[type=search] { font: inherit; color: inherit; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-base); padding: 6px 10px; border-radius: 6px; }
+.data-preview button { cursor: pointer; }
+.data-preview button:disabled { opacity: .45; cursor: default; }
+.data-preview button:focus-visible, .data-preview input:focus-visible, .data-preview summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 2px; }
+.data-preview-controls label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.data-preview-status { color: var(--dsw-alias-label-secondary); font-size: 12px; margin: 10px 0; }
+.data-preview-content { overflow: auto; }
+.data-preview table { border-collapse: collapse; font-size: 13px; }
+.data-preview td, .data-preview th { padding: 7px 10px; border: 1px solid var(--dsw-alias-border-l2); min-width: 60px; max-width: 420px; white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; }
+.data-preview thead th { background: var(--dsw-alias-bg-muted); }
+.json-node, .json-value { font: var(--f-code); line-height: 1.7; overflow-wrap: anywhere; }
+.json-node summary { cursor: pointer; padding: 3px 0; }
+.json-children { margin-left: 16px; padding-left: 10px; border-left: 1px solid var(--dsw-alias-border-l2); }
+.json-value { white-space: pre-wrap; }
+.file-preview-markdown .katex-display { overflow-x: auto; overflow-y: hidden; padding: 8px 0; }
+.file-preview-markdown .footnotes { font-size: .9em; }
+.file-preview-markdown .hljs-keyword, .file-preview-markdown .hljs-selector-tag { color: #b34591; }
+.file-preview-markdown .hljs-string, .file-preview-markdown .hljs-attr { color: #26805d; }
+.file-preview-markdown .hljs-number, .file-preview-markdown .hljs-literal, .file-preview-markdown .hljs-title { color: #447bc3; }
+.file-preview-markdown .hljs-comment { color: var(--dsw-alias-label-secondary); font-style: italic; }

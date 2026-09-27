@@ -32,7 +32,8 @@ test('settings navigation offers CLI devices directly below mobile access', () =
   assert.match(html, /<section id="devicesPage" class="page" hidden>[\s\S]*?<div id="cliDevicesRoot"><\/div>/);
   assert.match(html, /<link rel="stylesheet" href="\.\.\/devices\/devices\.css">/);
   assert.match(html, /<script src="\.\.\/devices\/devices-view\.js"><\/script>/);
-  assert.match(html, /<script src="\.\.\/devices\/devices\.js"><\/script>/);
+  assert.match(html, /<script src="\.\.\/devices\/connections\.js"><\/script>/);
+  assert.doesNotMatch(html, /<script src="\.\.\/devices\/devices\.js"><\/script>/);
   const script = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.js'), 'utf8');
   assert.match(script, /devices: \["CLI devices"/);
   assert.match(script, /window\.cliDevicesUI\?\.setVisible\(next === 'devices'\)/);
@@ -45,7 +46,10 @@ test('settings navigation offers CLI devices directly below mobile access', () =
 test('the CLI devices page is ordinary DOM with prefixed ids and scoped styles', () => {
   const view = fs.readFileSync(path.join(__dirname, '../src/renderer/devices/devices-view.js'), 'utf8');
   assert.match(view, /const TEMPLATE = prefix =>/);
-  assert.match(view, /host\.innerHTML = TEMPLATE\(embedded \? 'cli-' : ''\)/);
+  assert.match(view, /host\.innerHTML = embedded \? CONNECTIONS : TEMPLATE\(''\)/);
+  const connections = view.split('const CONNECTIONS = `')[1].split('`;')[0];
+  assert.doesNotMatch(connections, /id="cli-(tree|prompt|chat|messages)"/);
+  assert.match(connections, /默认 Harness/);
   assert.match(view, /id="\$\{prefix\}device"/);
   assert.match(view, /for="\$\{prefix\}prompt"/);
   const css = fs.readFileSync(path.join(__dirname, '../src/renderer/devices/devices.css'), 'utf8');

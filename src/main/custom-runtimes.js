@@ -22,7 +22,7 @@ async function validateRuntimePath({ engine, mode, file, node, locateLocal, plat
   }
   checkRuntimeFile(file, platform);
   const script = /\.(?:m?js|cjs)$/i.test(file);
-  if (script !== ['dsh', 'kimi'].includes(engine)) throw new Error(['dsh', 'kimi'].includes(engine)
+  if (script !== ['dsh', 'kimi', 'pi'].includes(engine)) throw new Error(['dsh', 'kimi', 'pi'].includes(engine)
     ? 'Choose the JavaScript entry file of this CLI' : 'Choose a native executable, not a script');
   const args = ['--version'];
   const executable = script ? (typeof node === 'function' ? node() : node) : file;

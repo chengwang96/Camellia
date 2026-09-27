@@ -2,21 +2,22 @@
 
 // One renderer and one set of workspace menus, with engine-specific abilities.
 const requestedHarness = new URLSearchParams(location.search).get('harness');
-const harnessId = ['claude', 'codex', 'dsh', 'kimi', 'antigravity'].includes(requestedHarness) ? requestedHarness : 'claude';
+const harnessId = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(requestedHarness) ? requestedHarness : 'claude';
 const sharedChat = window.dshDesktop.sharedConversations === true;
 const chatProfile = {
+  pi: { name: 'Pi', shortName: 'Pi', fixedCwd: true, permission: 'ask' },
   codex: { name: 'Codex CLI', shortName: 'Codex', fixedCwd: false, permission: 'ask' },
   kimi: { name: 'Kimi Code', shortName: 'Kimi', fixedCwd: true, permission: 'ask' },
   claude: { name: 'Claude Code', shortName: 'Claude', fixedCwd: false, permission: 'auto' },
   dsh: { name: 'DeepSeek Harness', shortName: 'DSH', fixedCwd: true, permission: 'auto' },
   antigravity: { name: 'Antigravity', shortName: 'Antigravity', fixedCwd: true, permission: 'ask', supportsImages: false },
 }[harnessId];
-const ENGINE_SHORT_NAMES = { claude: 'Claude', codex: 'Codex', dsh: 'DSH', kimi: 'Kimi', antigravity: 'Antigravity' };
+const ENGINE_SHORT_NAMES = { claude: 'Claude', codex: 'Codex', dsh: 'DSH', kimi: 'Kimi', antigravity: 'Antigravity', pi: 'Pi' };
 const engineAvatar = engine => '<div class="turn-avatar engine-mark" data-engine="' + engine + '" aria-hidden="true"><img src="../../../assets/brands/' + (engine === 'dsh' ? 'deepseek' : engine) + (engine === 'codex' ? '.png' : '.svg') + '" alt=""></div>';
 const chatLogoUrl = '../../../assets/brands/' + (harnessId === 'dsh' ? 'deepseek' : harnessId) + (harnessId === 'codex' ? '.png' : '.svg');
 const chatAvatar = engineAvatar(harnessId);
 const chatApi = Object.fromEntries(['Send', 'Steer', 'Cancel', 'GetSettings', 'SaveSettings', 'ControlRespond',
-  'ListSessions', 'LoadSession', 'ForkSession', 'RenameSession', 'ArchiveSession', 'MetaOp',
+  'ListSessions', 'LoadSession', 'ForkSession', 'RenameSession', 'ArchiveSession', 'DeleteSession', 'MetaOp',
   'GoalGet', 'GoalStart', 'GoalPause', 'GoalResume', 'GoalComplete', 'GoalClear'].map(action => [
   action[0].toLowerCase() + action.slice(1), payload => sharedChat
     ? window.dshDesktop.conversationCommand({ engine: harnessId, action: action.replace(/[A-Z]/g, (c, i) => (i ? '-' : '') + c.toLowerCase()), payload })

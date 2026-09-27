@@ -10,6 +10,13 @@ function matches(value, digest) {
   return timingSafeEqual(Buffer.from(hash(value), 'hex'), Buffer.from(digest, 'hex'));
 }
 function fail(status, message) { throw Object.assign(new Error(message), { status }); }
+function cleanName(value, { required = true } = {}) {
+  if (typeof value !== 'string') { if (required) fail(400, 'Device name must contain 1–80 characters'); return null; }
+  const trimmed = value.trim();
+  if (!trimmed) { if (required) fail(400, 'Device name must contain 1–80 characters'); return null; }
+  if (trimmed.length > 80 || /[\x00-\x1f\x7f-\x9f]/.test(trimmed)) fail(400, 'Device name must contain 1–80 printable characters');
+  return trimmed;
+}
 
 class RemoteAccess {
   constructor({ file, now = Date.now, onRevoke = () => {} }) {
@@ -35,21 +42,22 @@ class RemoteAccess {
   }
   invite(workspaceIds, options) {
     const scope = this.scope(workspaceIds, options);
+    const computerName = cleanName(options?.computerName, { required: false });
     this.pending.clear();
     const code = randomBytes(12).toString('hex');
-    this.invitation = { digest: hash(code), ...scope, expiresAt: this.now() + 5 * 60_000 };
-    return { code, expiresAt: this.invitation.expiresAt };
+    this.invitation = { digest: hash(code), ...scope, computerName, expiresAt: this.now() + 5 * 60_000 };
+    return { code, computerName, expiresAt: this.invitation.expiresAt };
   }
   request({ code, name } = {}) {
     this.prune();
     if (!this.invitation || !matches(code, this.invitation.digest)) fail(401, 'Invalid or expired pairing code');
-    if (typeof name !== 'string' || !name.trim() || name.length > 80) fail(400, 'Device name must contain 1–80 characters');
+    const deviceName = cleanName(name);
     const id = randomUUID(), claim = secret();
-    this.pending.set(id, { id, name: name.trim(), claimDigest: hash(claim), workspaceIds: this.invitation.workspaceIds,
+    this.pending.set(id, { id, name: deviceName, computerName: this.invitation.computerName, claimDigest: hash(claim), workspaceIds: this.invitation.workspaceIds,
       allWorkspaces: this.invitation.allWorkspaces, includeUnassigned: this.invitation.includeUnassigned,
       expiresAt: this.invitation.expiresAt, state: 'pending' });
     this.invitation = null;
-    return { id, claim, expiresAt: this.pending.get(id).expiresAt };
+    return { id, claim, computerName: this.pending.get(id).computerName, expiresAt: this.pending.get(id).expiresAt };
   }
   approve(id) {
     this.prune();
@@ -90,11 +98,17 @@ class RemoteAccess {
     this.save(this.devices.map(device => device.id === id ? { ...device, ...scope } : device));
     this.onRevoke(id);
   }
+  rename(id, name) {
+    const value = cleanName(name);
+    if (!this.devices.some(device => device.id === id)) fail(400, 'Invalid device');
+    this.save(this.devices.map(device => device.id === id ? { ...device, name: value } : device));
+    return { id, name: value };
+  }
   view() {
     this.prune();
     return { devices: this.devices.map(({ id, name, workspaceIds, allWorkspaces, includeUnassigned, createdAt, permission }) => ({ id, name, workspaceIds, allWorkspaces, includeUnassigned, createdAt, permission })),
       pending: [...this.pending.values()].filter(request => request.state === 'pending')
-        .map(({ id, name, workspaceIds, allWorkspaces, includeUnassigned, expiresAt }) => ({ id, name, workspaceIds, allWorkspaces, includeUnassigned, expiresAt })) };
+        .map(({ id, name, computerName, workspaceIds, allWorkspaces, includeUnassigned, expiresAt }) => ({ id, name, computerName, workspaceIds, allWorkspaces, includeUnassigned, expiresAt })) };
   }
   clearPairing() { this.invitation = null; this.pending.clear(); }
 }

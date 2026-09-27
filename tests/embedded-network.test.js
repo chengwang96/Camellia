@@ -95,3 +95,15 @@ test('headless hostname is validated before any helper process starts', () => {
   }
   assert.equal(new EmbeddedNetwork({ hostname: 'gpu-lab-01' }).hostname, 'gpu-lab-01');
 });
+
+test('outdated helper connect errors explain the local rebuild and restart without stopping networking', async () => {
+  const network = new EmbeddedNetwork({});
+  const child = {};
+  network.child = child;
+  network.request = async () => { throw new Error('unsupported network action'); };
+  await assert.rejects(network.connect('http://100.80.1.2:43127'), /helper is outdated.*build:tailnet.*restart Camellia/);
+  assert.equal(network.child, child);
+  assert.equal(network.connections.size, 0);
+  network.request = async () => { throw new Error('Connection refused'); };
+  await assert.rejects(network.connect('http://100.80.1.2:43127'), /^Error: Connection refused$/);
+});

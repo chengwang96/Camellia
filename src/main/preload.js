@@ -23,8 +23,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   openSettingsWindow: (target) => ipcRenderer.invoke('dsh:open-settings-window', target),
   openMobileAccess: () => ipcRenderer.invoke('dsh:open-mobile-access'),
   openCliDevices: () => ipcRenderer.invoke('camellia:open-devices'),
-  // CLI devices page lives inside the settings document and drives the same
-  // device service as the standalone debugging page.
+  listCliServers: () => ipcRenderer.invoke('camellia:list-servers'),
+  openCliServer: deviceId => ipcRenderer.invoke('camellia:open-server', { deviceId }),
   camelliaDevices: {
     call: (action, payload) => ipcRenderer.invoke('camellia:devices', { action, payload }),
     onEvent: callback => subscribe('camellia:device-event', callback),
@@ -106,6 +106,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   claudeLoadSession: (id) => ipcRenderer.invoke('dsh:claude-load-session', id),
   claudeRenameSession: (payload) => ipcRenderer.invoke('dsh:claude-rename-session', payload),
   claudeArchiveSession: (payload) => ipcRenderer.invoke('dsh:claude-archive-session', payload),
+  claudeDeleteSession: (payload) => ipcRenderer.invoke('dsh:claude-delete-session', payload),
   claudeGoalGet: () => ipcRenderer.invoke('dsh:claude-goal-get'),
   claudeGoalStart: (payload) => ipcRenderer.invoke('dsh:claude-goal-start', payload),
   claudeGoalPause: () => ipcRenderer.invoke('dsh:claude-goal-pause'),
@@ -134,7 +135,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   onClaudeGoal: (callback) => subscribe('dsh:claude-goal', callback),
   // Shared ACP conversation API; no arbitrary IPC forwarding.
   ...Object.fromEntries(['codex', 'kimi', 'antigravity'].flatMap(engine => ['Send', 'Cancel', 'GetLive', 'GetSettings', 'SaveSettings', 'ControlRespond',
-    'ListSessions', 'LoadSession', 'RenameSession', 'ArchiveSession', 'MetaOp',
+    'ListSessions', 'LoadSession', 'RenameSession', 'ArchiveSession', 'DeleteSession', 'MetaOp',
     'GoalGet', 'GoalStart', 'GoalPause', 'GoalResume', 'GoalComplete', 'GoalClear'].map(action => [
     engine + action, payload => ipcRenderer.invoke('dsh:' + engine + '-' + action.replace(/[A-Z]/g, (c, i) => (i ? '-' : '') + c.toLowerCase()), payload),
   ]))),

@@ -1,12 +1,13 @@
 {
   "name": "camellia-desktop",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Camellia: a shared workbench for Claude Code, Codex CLI, DSH, Kimi Code and Antigravity",
   "main": "src/main/main.js",
   "author": "Camellia contributors",
   "license": "MIT",
   "private": true,
   "scripts": {
+    "setup:pi": "node scripts/prepare-runtimes.cjs pi",
     "setup:kimi": "node scripts/prepare-runtimes.cjs kimi",
     "setup:dsh": "node scripts/prepare-runtimes.cjs dsh",
     "setup:claude": "node scripts/prepare-runtimes.cjs claude",
@@ -61,6 +62,11 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "runtimes/pi",
+        "to": "runtimes/pi",
+        "filter": ["package.json", "package-lock.json"]
+      },
       {
         "from": "runtimes/kimi",
         "to": "runtimes/kimi",
@@ -163,12 +169,25 @@
       "src/engines/task-tools.js",
       "src/engines/conversation-tools.js",
       "src/engines/antigravity/**",
+      "src/engines/pi-extension.mjs",
+      "src/engines/goal-tools.js",
+      "src/engines/task-tools.js",
+      "src/engines/conversation-tools.js",
       "src/benchmark/python/**"
     ]
   },
   "dependencies": {
     "@xmldom/xmldom": "^0.9.12",
+    "@highlightjs/cdn-assets": "^11.12.0",
+    "docx-preview": "^0.4.1",
+    "jszip": "^3.10.1",
+    "katex": "^0.17.0",
+    "markdown-it": "^14.1.1",
+    "markdown-it-footnote": "^4.0.0",
+    "markdown-it-texmath": "^1.0.0",
+    "papaparse": "^5.5.3",
     "smol-toml": "^1.8.0",
+    "ssf": "^0.11.2",
     "undici": "^8.10.2",
     "unzipper": "^0.12.5",
     "yaml": "^2.9.1"
