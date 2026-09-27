@@ -95,6 +95,8 @@ async function main() {
     });
     require('../src/main/main.js');
     await app.whenReady();
+    // Trace the shutdown path so a hang shows which stage was reached.
+    for (const event of ['before-quit', 'will-quit', 'quit']) app.on(event, () => console.log('DIAG app event: ' + event));
     assert.equal(app.getName(), 'Camellia');
     assert.equal(app.getPath('userData'), userData, 'Renaming preserves old data and explicit profiles');
     if (!firstRun) assert.equal(app.getPath('sessionData'), userData, 'Browser cookies and caches stay with existing data');
@@ -478,6 +480,15 @@ async function main() {
     assert.ok(BrowserWindow.getAllWindows().every(window => !window.isVisible()), 'Smoke tests must not display or focus windows');
     assert.deepEqual(errors, []);
     console.log('PASS: real Electron home, configuration, DSH startup/navigation, Claude/Codex/Kimi/Antigravity shared UI, isolated workspaces and API settings; firstRun=' + firstRun);
+    // If a late quit handler keeps the process alive, say why instead of
+    // letting the parent's watchdog kill an Electron that produced no output.
+    const quitWatchdog = setTimeout(() => {
+      const windows = BrowserWindow.getAllWindows().map(window => `${window.getTitle()} destroyed=${window.isDestroyed()}`);
+      console.log('DIAG quit watchdog: app.quit() did not exit within 20s; windows=' + (windows.join('; ') || '(none)'));
+      console.log('DIAG quit watchdog: calling app.exit(1)');
+      app.exit(1);
+    }, 20000);
+    quitWatchdog.unref();
     app.quit();
     return;
   }
@@ -513,10 +524,18 @@ async function main() {
       env.DSH_SMOKE_HELP_UNAVAILABLE = firstRunComplete ? '0' : '1';
       const proc = spawn(require('electron'), [__filename], { env, windowsHide: true, stdio: 'pipe' });
       let stdout = '', stderr = '';
-      proc.stdout.on('data', chunk => { stdout += chunk; });
-      proc.stderr.on('data', chunk => { stderr += chunk; });
+      // Stream the child through as it runs. Electron buffers nothing until it
+      // exits, so a hang used to reach CI as an empty step with no clue.
+      proc.stdout.on('data', chunk => { stdout += chunk; process.stdout.write(chunk); });
+      proc.stderr.on('data', chunk => { stderr += chunk; process.stderr.write(chunk); });
       let timedOut = false;
-      const timeout = setTimeout(() => { timedOut = true; proc.kill(); }, 120000);
+      // SIGTERM can be ignored by a wedged Electron; escalate so the run ends
+      // with a report instead of the job's 45-minute ceiling.
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        console.log(`DIAG parent watchdog: Electron did not exit after 120s (mode=${mode}); sending SIGKILL`);
+        proc.kill('SIGKILL');
+      }, 120000);
       const code = await new Promise((resolve, reject) => { proc.once('close', resolve); proc.once('error', reject); });
       clearTimeout(timeout);
       assert.equal(timedOut, false, `Electron smoke timed out after 120s (mode=${mode}, firstRunComplete=${firstRunComplete})\n${stderr}\n${stdout}`);
