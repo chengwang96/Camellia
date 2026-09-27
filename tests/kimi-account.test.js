@@ -202,6 +202,29 @@ test('active Kimi work blocks account changes before any child process starts', 
   assert.equal(f.processes.length + f.clients.length, 0);
 });
 
+test('a background quota check does not count as an account change', async t => {
+  let finish, calls = 0;
+  const f = fixture(t, { queryQuota: () => {
+    calls++;
+    const windows = [{ id: 'weekly', label: 'Weekly', usedPercent: 25 }];
+    return calls === 1 ? Promise.resolve({ balances: [], windows, modelUsage: [] }) : new Promise(resolve => { finish = resolve; });
+  } });
+  f.put(); await f.account.refresh();
+  const pending = f.account.refreshUsage();
+  await until(() => finish);
+  // The quota query still owns a client, so `active` stays true for shutdown
+  // and engine-busy purposes...
+  assert.equal(f.account.active, true);
+  // ...but saving desktop login preferences must not be refused: it rewrites
+  // config, not account state, and a background refresh would otherwise make
+  // the settings button fail at random.
+  assert.equal(f.account.changingAccount, false);
+  finish({ balances: [], windows: [{ id: 'weekly', label: 'Weekly', usedPercent: 70 }], modelUsage: [] });
+  await pending;
+  assert.equal(f.account.active, false);
+  assert.equal(f.account.changingAccount, false);
+});
+
 test('sign out cannot race with another login or account refresh', async t => {
   let finish;
   const f = fixture(t, { createClient: () => ({ start() {}, async shutdown() {}, async request(method) {
