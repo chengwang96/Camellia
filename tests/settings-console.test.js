@@ -13,9 +13,10 @@ function fixture(answers, overrides = {}) {
   const request = async (action, payload) => {
     calls.push({ action, payload });
     if (action === 'settings') return { ok: true, result: state };
+    if (action === 'runtime-state') return { ok: true, result: [] };
     if (action === 'set-language') state.language = payload.language;
     if (action === 'workspaces') return { ok: true, result: [{ id: 'workspace-id', name: 'Project', path: '/srv/project' }] };
-    if (action === 'conversations') return { ok: true, result: [{ title: 'Server conversation', engine: 'dsh', workspaceName: 'Project' }] };
+    if (action === 'conversations') return { ok: true, result: [{ id: 'conversation-id', title: 'Server conversation', engine: 'dsh', workspaceName: 'Project' }] };
     if (action === 'invite') return { ok: true, result: { address: state.address, code: 'a'.repeat(24), expiresAt: 1800000000000 } };
     if (action === 'start') state.network = { state: 'NeedsLogin', loginUrl: 'https://login.tailscale.com/a/test' };
     return { ok: true };
@@ -31,6 +32,15 @@ test('live console exits without stopping service or enabling networking', async
   assert.match(harness.output.join(''), /Live data/);
   assert.match(harness.output.join(''), /server keeps running/);
   assert.doesNotMatch(harness.output.join(''), /DESIGN PREVIEW|demo data/i);
+});
+
+test('Pi console offers API configuration without subscription actions', async () => {
+  const harness = fixture(['6', '1', '2', 'model-a', 'YES', 'q'], { engines: [{ id: 'pi', model: '', permissionMode: 'ask' }] });
+  await harness.run();
+  const saved = harness.calls.find(call => call.action === 'engine-settings');
+  assert.deepEqual(saved?.payload, { engine: 'pi', connection: 'api', model: 'model-a' });
+  assert.equal(harness.prompts.some(prompt => prompt.includes('api/subscription')), false);
+  assert.doesNotMatch(harness.output.join(''), /Start account login/);
 });
 
 test('pairing approval requires an explicit confirmation and is bound to the displayed request', async () => {
@@ -67,6 +77,23 @@ test('workspace removal describes file preservation and only sends selected work
   assert.deepEqual(harness.calls.find(call => call.action === 'delete-workspace').payload, { id: 'workspace-id' });
   assert.match(harness.output.join(''), /Keep project files/);
   assert.match(harness.output.join(''), /\/srv\/project/);
+});
+
+test('conversation deletion warns about permanent loss and only sends the selected conversation ID', async () => {
+  const harness = fixture(['3', '4', '1', 'YES', 'q']); await harness.run();
+  assert.deepEqual(harness.calls.find(call => call.action === 'delete-conversation').payload, { id: 'conversation-id' });
+  assert.match(harness.output.join(''), /Permanently deletes this conversation/);
+  assert.match(harness.output.join(''), /Server conversation/);
+  assert.match(harness.output.join(''), /Workspace files are not deleted/);
+  for (const call of harness.calls) assert.notEqual(call.action, 'delete-workspace');
+});
+
+test('conversation deletion is skipped when the confirmation is declined or cancelled', async () => {
+  const declined = fixture(['3', '4', '1', 'no', 'q']); await declined.run();
+  assert.ok(!declined.calls.some(call => call.action === 'delete-conversation'));
+  const cancelled = fixture(['3', '4', '', 'q']); await cancelled.run();
+  assert.ok(!cancelled.calls.some(call => call.action === 'delete-conversation'));
+  assert.match(declined.output.join(''), /Cancelled\. No changes sent\./);
 });
 
 test('EOF during confirmation never submits a destructive command', async () => {

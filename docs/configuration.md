@@ -280,7 +280,7 @@ The base installation contains the workbench and shared Node.js/npm installer to
 
 Opening settings does not download an engine. DSH's native panel shows a download link until DSH is installed; the other engines' settings can be edited before installation. Engine downloads go to `<app-data>/runtimes` and are reused across launches. Antigravity downloads its CLI for Google mode, or dedicated Python and SDK for API mode. Initial downloads require a network connection; later launches reuse local files.
 
-**Download connection.** Settings → Runtime stores the preferred connection and an optional HTTP/HTTPS proxy address for this device. There is no preset proxy address. Before every installation or retry, Camellia asks whether to download directly, use the saved proxy, or open proxy settings. Canceling leaves the engine uninstalled. The selected connection covers npm packages and Antigravity's Python installer, Python distribution, and SDK wheels. It does not change model API routing, system proxy settings, or global npm configuration. Direct downloads bypass proxy environment variables inherited by the app. Command-line setup continues to use the calling shell's `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` configuration.
+**Download connection.** Settings → General stores the preferred connection and an optional HTTP/HTTPS proxy address for this device. There is no preset proxy address. Before every installation or retry, Camellia asks whether to download directly, use the saved proxy, or open proxy settings. Canceling leaves the engine uninstalled. The selected connection covers npm packages and Antigravity's Python installer, Python distribution, and SDK wheels. It does not change model API routing, system proxy settings, or global npm configuration. Direct downloads bypass proxy environment variables inherited by the app. Command-line setup continues to use the calling shell's `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` configuration.
 
 ### Antigravity SDK settings
 
@@ -336,7 +336,7 @@ Page zoom is shared across the application and saved between launches. Use Ctrl/
 
 All five engines share a sidebar with pinned sessions, folder workspaces, and standalone conversations. Adding a workspace registers a local folder. Its `+` action creates a conversation in that folder; the top-level action starts a standalone conversation. Shared conversations retain their execution directory across engine switches.
 
-Archiving the open conversation continues at its neighbor in the same workspace, preferring the row below and then the row above. Once a workspace has no conversation left, its new-session page opens in that workspace; standalone conversations follow the same rule and fall back to a standalone draft. Archiving another conversation keeps the current one open. Restore or permanently delete archived conversations from Settings → Archived.
+Archiving the open conversation continues at its neighbor in the same workspace, preferring the row below and then the row above. Once a workspace has no conversation left, its new-session page opens in that workspace; standalone conversations follow the same rule and fall back to a standalone draft. Archiving another conversation keeps the current one open. Restore or permanently delete archived conversations from Settings → Archived, which also hosts the manual space cleanup scan.
 
 | Operation | Shared conversations |
 | --- | --- |

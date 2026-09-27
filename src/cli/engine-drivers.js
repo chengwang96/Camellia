@@ -136,7 +136,10 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     cliSettingsFile: path.join(dataDir, 'google-native/.gemini/antigravity-cli/settings.json'), node: () => process.execPath,
     openLogin: async () => { throw new Error('Use native-login in the server terminal for Google sign-in'); },
     isBusy: () => isBusy('antigravity'), onEvent: event => onEvent('antigravity', event), onGoal: noLog, log: noLog });
-  const drivers = { dsh, codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession,
+  const pi = require('../engines/pi-session').createPiChat({ dataDir, loadConfig, saveConfig, getRoute, getModels: models,
+    runtime: () => locate('pi'), node: () => process.execPath, environment, onEvent: event => onEvent('pi', event), log: noLog,
+    instructions: () => native.config('pi', 'instructions'), nativeRevision: () => native.fingerprint('pi') });
+  const drivers = { dsh, pi, codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession,
     nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
   drivers.antigravity = { history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
     ensure: antigravity.ensureSession, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
@@ -152,7 +155,15 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
       return ensure(opts);
     };
   }
-  return { drivers, runtimes,
+  const updates = require('../main/runtime-updates').createRuntimeUpdates({ manager: runtimes,
+    engines: require('../main/runtime-manager').ENGINES, node: process.execPath,
+    npm: npmCandidates(process.execPath, { resourcesPath: root }).find(file => fs.existsSync(file)),
+    run: require('../main/runtime-manager').run, downloadSettings: () => loadConfig().downloadProxy });
+  return { drivers, runtimes, updates,
+    async releaseRuntime(engine) {
+      if (engine === 'kimi') await kimiPool.shutdown();
+      else await drivers[engine].shutdown?.();
+    },
     accountBusy(engine) { return engine === 'kimi' ? kimiAccount.active : engine === 'codex' ? codex.accountState().loginPending : false; },
     prepare(engine, settings) {
       locate(engine, engine === 'antigravity' ? settings.connection : undefined); if (!drivers[engine]) throw new Error('Engine is unavailable on this server');

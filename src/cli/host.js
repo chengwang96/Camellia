@@ -60,6 +60,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
     manager = new SharedConversations({ dir: path.join(dataDir, 'conversations'), loadConfig, saveConfig, drivers,
       prepare: async (engine, settings) => {
         if (closing) throw new Error('Camellia is closing');
+        if (commandBusy) throw new Error('Wait for server settings maintenance to finish');
         if (!supported.includes(engine)) throw new Error(`${engine} is not yet enabled in the server preview`);
         if (nativeLogins.has(engine)) throw new Error('Finish the native account login before starting this engine');
         if (installs.get(engine)?.state === 'installing') throw new Error('Wait for runtime installation to finish');
@@ -88,7 +89,11 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
     const apiImport = require('../main/remote/api-import').createApiImport({ configFile: routeFile,
       journalFile: path.join(dataDir, 'remote', 'api-imports.json'), isBusy: () => closing || commandBusy || manager.isBusy() || Boolean(router?.getState().activeRequests),
       reload: () => router?.reload(), publish: () => remote?.publish() });
-    remote = createRemoteService({ dataDir, manager, apiImport, nativeSettings: {
+    const cleanup = new (require('../main/storage-cleanup').StorageCleanup)({ dataDir, conversations: manager,
+      references: async () => ({ active: manager.isBusy(), config: loadConfig() }), isActive: () => manager.isBusy() });
+    const management = require('../main/remote/server-management').createServerManagement({ file: path.join(dataDir, 'remote', 'management.json'),
+      command: (action, payload) => host.command(action, payload), publish: () => remote?.publish() });
+    remote = createRemoteService({ dataDir, manager, apiImport, management, nativeSettings: {
       get: engine => nativeSettings.get(engine),
       save: payload => { if (commandBusy) throw Object.assign(new Error('Local server operation in progress'), { status: 409 }); return nativeSettings.save(payload); },
     },
@@ -99,7 +104,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
         openExternal: async () => { throw new Error('Open the login URL shown by network.state in a trusted browser'); } })),
     });
     const reader = new RemoteReadModel(manager);
-    return {
+    const host = {
       async startTrustedDevices() {
         if (closing || commandBusy) throw new Error('Camellia is busy or closing');
         commandBusy = true;
@@ -112,9 +117,32 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
         commandBusy = true;
         try {
           if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Expected an object payload');
+          if (action === 'runtime-check') return { ok: true, result: engines ? await engines.updates.check() : [] };
+          if (['runtime-update', 'runtime-uninstall'].includes(action)) {
+            if (!engines || !supported.includes(payload.engine)) throw new Error('Unsupported engine');
+            if (payload.confirmed !== true) throw new Error('Confirm the runtime change');
+            if (manager.isBusy(payload.engine) || nativeLogins.has(payload.engine) || engines.accountBusy?.(payload.engine) || installs.get(payload.engine)?.state === 'installing') throw new Error('Stop this engine and wait for installation or login to finish');
+            await engines.releaseRuntime(payload.engine);
+            if (action === 'runtime-update') return { ok: true, result: await engines.updates.update(payload.engine) };
+            const result = require('./managed-runtime').removeManagedRuntime(dataDir, payload.engine, engines.runtimes.locate(payload.engine));
+            installs.delete(payload.engine);
+            return { ok: true, result };
+          }
+          if (action === 'usage') {
+            const counters = require('../api/api-usage').counters;
+            const cfg = routes();
+            return { ok: true, result: { scope: 'server-api', providers: cfg.providers.map(provider => ({ name: provider.name,
+              ...provider.keys.reduce((total, key) => { for (const [field, value] of Object.entries(counters(cfg.usage?.[key.id]))) total[field] += value; return total; }, counters()) })) } };
+          }
+          if (action === 'storage-scan') return { ok: true, result: await cleanup.scan() };
+          if (action === 'storage-clean') {
+            if (payload.confirmed !== true || manager.isBusy()) throw new Error('Stop server conversations and confirm cleanup');
+            return { ok: true, result: await cleanup.clean(payload.token) };
+          }
           if (action === 'native-settings-get') return { ok: true, result: nativeSettings.get(payload.engine) };
           if (action === 'native-settings-save') return { ok: true, result: nativeSettings.save(payload) };
           if (action === 'runtime-state') return { ok: true, result: engines ? engines.runtimes.state().filter(entry => supported.includes(entry.id)).map(entry => ({ ...entry,
+            status: engines.runtimes.locate(entry.id) ? 'ready' : 'missing',
             ...(installs.has(entry.id) ? { operation: installs.get(entry.id).state, error: installs.get(entry.id).error || null } : {}) })) : [] };
           if (action === 'runtime-install') {
             if (!engines || !supported.includes(payload.engine)) throw new Error('Unsupported engine');
@@ -123,7 +151,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
             if (installs.get(payload.engine)?.state === 'installing') return { ok: true, result: { state: 'installing' } };
             const entry = { state: 'installing' };
             installs.set(payload.engine, entry);
-            entry.promise = engines.runtimes.ensure(payload.engine, payload.connection || 'api').then(() => { entry.state = 'ready'; }, () => { entry.state = 'failed'; entry.error = 'Runtime installation failed; check network and retry'; });
+            entry.promise = engines.runtimes.ensure(payload.engine, payload.connection || 'api').then(() => { entry.state = 'ready'; remote.publish(); }, () => { entry.state = 'failed'; entry.error = 'Runtime installation failed; check network and retry'; remote.publish(); });
             return { ok: true, result: { state: 'installing' } };
           }
           if (action === 'account') {
@@ -146,10 +174,15 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
           if (action === 'engine-settings') {
             if (!supported.includes(payload.engine)) throw new Error('Unsupported engine');
             if (manager.isBusy(payload.engine) || nativeLogins.has(payload.engine)) throw new Error('Stop this engine and finish account login before changing defaults');
-            if (!['api', 'subscription'].includes(payload.connection) || payload.engine === 'dsh' && payload.connection !== 'api') throw new Error('Unsupported connection');
+            if (!['api', 'subscription'].includes(payload.connection) || ['dsh', 'pi'].includes(payload.engine) && payload.connection !== 'api') throw new Error('Unsupported connection');
             if (typeof payload.model !== 'string' || !payload.model.trim() || payload.model.length > 200) throw new Error('Model is required');
             if (payload.connection === 'api' && !config.publicState(routes()).models.includes(payload.model)) throw new Error('Select a configured API model');
-            return { ok: true, result: manager.saveSettings(payload.engine, { connection: payload.connection, model: payload.model, permissionMode: 'ask' }) };
+            const permissionMode = payload.permissionMode || 'ask';
+            if (!['ask', 'auto', 'full'].includes(permissionMode)) throw new Error('Invalid permission level');
+            const available = manager.conversationModels(payload.engine, { ...manager.settings(payload.engine), connection: payload.connection, model: payload.model });
+            const thinkingBudget = payload.thinkingBudget || '';
+            if (thinkingBudget && !available.find(model => model.id === payload.model)?.thinking?.includes(thinkingBudget)) throw new Error('Unsupported thinking level');
+            return { ok: true, result: manager.saveSettings(payload.engine, { connection: payload.connection, model: payload.model, permissionMode, thinkingBudget }) };
           }
           if (action === 'settings') {
             const cfg = routes();
@@ -158,7 +191,8 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
             return { ok: true, result: { ...state.result, language: loadConfig().language || 'zh-CN', dataDir,
               api: { enabled: cfg.enabled, providers: cfg.providers.length, keys: cfg.providers.reduce((total, provider) => total + provider.keys.length, 0),
                 models: config.publicState(cfg).models },
-              engines: supported.map(id => ({ id, model: manager.settings(id).model || '', connection: manager.settings(id).connection || 'api', permissionMode: manager.settings(id).permissionMode || 'ask' })),
+              engines: supported.map(id => ({ id, model: manager.settings(id).model || '', connection: manager.settings(id).connection || 'api', permissionMode: manager.settings(id).permissionMode || 'ask', thinkingBudget: manager.settings(id).thinkingBudget || '',
+                models: manager.conversationModels(id, { ...manager.settings(id), connection: 'api' }).map(model => ({ id: model.id, name: model.name || model.id, thinking: model.thinking || [] })) })),
               conversationCount: manager.items.size, busy: manager.isBusy(),
               nativeLogins: [...nativeLogins.keys()],
             } };
@@ -184,6 +218,15 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
           if (['state', 'start', 'login', 'stop', 'logout', 'invite', 'approve', 'reject', 'revoke'].includes(action)) return await remote.command(action, payload);
           if (action === 'workspaces') return { ok: true, result: manager.workspaces.sessionMeta().workspaces };
           if (action === 'conversations') return { ok: true, result: [...manager.items.values()].map(item => reader.summary(item)) };
+          if (action === 'delete-conversation') {
+            const id = typeof payload.id === 'string' ? payload.id : '';
+            if (!manager.items.has(id)) throw new Error('Conversation not found; refresh the list');
+            if (manager.busy(id)) throw new Error('Stop this conversation before deleting it; this includes active goals and running engines');
+            const result = await manager.command(manager.get(id).currentEngine, 'delete-session', { id });
+            if (!result?.ok) throw new Error(result?.error || 'Conversation deletion failed');
+            remote.publish();
+            return { ok: true, result };
+          }
           if (action === 'create-workspace' || action === 'delete-workspace') {
             if (action === 'create-workspace' && (typeof payload.path !== 'string' || !path.isAbsolute(payload.path))) throw new Error('Workspace path must be an absolute server path');
             const result = await manager.command(supported[0], 'meta-op', { ...payload, op: action });
@@ -210,6 +253,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
         return closePromise;
       },
     };
+    return host;
   } catch (error) {
     manager?.pauseGoals(); manager?.closeGoalTools(); release(); throw error;
   }

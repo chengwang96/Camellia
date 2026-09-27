@@ -8,6 +8,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { spawnSync, spawn } = require('node:child_process');
 const { createHeadlessHost } = require('../src/cli/host');
+const { settingsSession } = require('../src/cli/settings-console');
 const { dataDirectory, privateDirectory, readPrivate, networkKey, acquireLock } = require('../src/cli/private-storage');
 const { listenControl, requestControl, socketPath } = require('../src/cli/local-control');
 const { removeTree } = require('./test-fs.cjs');
@@ -152,6 +153,41 @@ test('headless host starts offline and retains workspaces and independent conver
   assert.equal(saved.cwd, fs.realpathSync(folder));
 });
 
+test('headless host deletes one conversation permanently and rejects unknown ones', async context => {
+  const { host, hosts, dataDir, driverFactory, networkFactory } = harness(context);
+  const first = await host.command('create-conversation');
+  const second = await host.command('create-conversation');
+  assert.equal((await host.command('conversations')).result.length, 2);
+  assert.equal(first.result.workspaceId, null);
+
+  const deleted = await host.command('delete-conversation', { id: first.result.id });
+  assert.equal(deleted.ok, true, deleted.error);
+  const listed = (await host.command('conversations')).result;
+  assert.deepEqual(listed.map(item => item.id), [second.result.id]);
+  assert.equal(fs.existsSync(path.join(dataDir, 'conversations', first.result.id + '.json')), false);
+  assert.equal(fs.existsSync(path.join(dataDir, 'conversations', first.result.id + '.jsonl')), false);
+
+  assert.equal((await host.command('delete-conversation', { id: 'missing-id' })).ok, false);
+  assert.equal((await host.command('delete-conversation', { id: '__proto__' })).ok, false);
+  await host.close();
+  const reopened = createHeadlessHost({ dataDir, driverFactory, networkFactory });
+  hosts.push(reopened);
+  assert.deepEqual((await reopened.command('conversations')).result.map(item => item.id), [second.result.id]);
+});
+
+test('the live menu deletes a conversation through the real host command', async context => {
+  const { host, dataDir, driverFactory, networkFactory } = harness(context);
+  const chat = await host.command('create-conversation');
+  const answers = ['3', '4', '1', 'YES', 'q'];
+  const output = [];
+  await settingsSession({ request: (action, payload) => host.command(action, payload),
+    ask: async () => (answers.length ? answers.shift() : null), write: text => output.push(text), ascii: true, language: 'en' });
+  assert.equal(output.join('').includes('Delete a conversation'), true);
+  assert.match(output.join(''), /Permanently deletes this conversation/);
+  assert.deepEqual((await host.command('conversations')).result, []);
+  assert.equal(fs.existsSync(path.join(dataDir, 'conversations', chat.result.id + '.json')), false);
+});
+
 test('headless network pairing requires local approval and revoked clients lose access', async context => {
   const { host, online, request } = harness(context);
   assert.equal((await host.command('invite')).ok, false);
@@ -169,6 +205,17 @@ test('headless network pairing requires local approval and revoked clients lose 
   assert.equal(status.body.includeUnassigned, true);
   assert.ok(status.body.capabilities.includes('api-import'));
   assert.ok(status.body.capabilities.includes('native-settings'));
+  assert.ok(status.body.capabilities.includes('server-management'));
+  const managementRequest = { requestId: require('node:crypto').randomUUID(), action: 'settings', payload: {} };
+  assert.equal((await request('/v1/server-management', managementRequest)).status, 401);
+  const submitted = await request('/v1/server-management', managementRequest, claim.token);
+  assert.equal(submitted.status, 200);
+  await new Promise(resolve => setImmediate(resolve));
+  const operation = await request('/v1/server-management/' + managementRequest.requestId, null, claim.token);
+  assert.equal(operation.body.state, 'complete');
+  assert.equal(operation.body.result.hostname, 'camellia-server');
+  assert.equal((await request('/v1/server-management', { ...managementRequest, action: 'native-login' }, claim.token)).status, 400);
+  assert.equal((await request('/v1/server-management/' + managementRequest.requestId + '?offset=1', null, claim.token)).status, 400);
   const native = (await request('/v1/native-settings/codex', null, claim.token)).body;
   const nativeSave = { engine: 'codex', id: 'settings', revision: native.files[0].revision, text: 'web_search="cached"', confirmed: true };
   assert.equal((await request('/v1/native-settings/codex', nativeSave, claim.token)).body.ok, true);
@@ -183,6 +230,7 @@ test('headless network pairing requires local approval and revoked clients lose 
   assert.deepEqual((await request('/v1/api-import', importRequest, claim.token)).body, imported.body);
   assert.equal((await host.command('set-model', { engine: 'dsh', model: 'test-model' })).ok, true);
   assert.equal((await host.command('state')).result.devices[0].name, 'Desktop GUI');
+  assert.equal(JSON.stringify((await host.command('usage')).result).includes('synthetic-not-a-real-key'), false);
   await host.command('revoke', { id: claim.deviceId });
   assert.equal((await request('/v1/status', null, claim.token)).status, 401);
 });
@@ -270,6 +318,24 @@ test('live server settings expose counts not API keys and persist explicit local
   const saved = routerConfig.loadConfig(routeFile);
   assert.equal(saved.enabled, true);
   assert.equal(saved.providers[0].keys[0].key, 'secret-not-for-settings-view');
+});
+
+test('Pi server advertises and persists API defaults without subscription access', async context => {
+  const dataDir = directory(context);
+  const host = createHeadlessHost({ dataDir, networkFactory: () => ({ snapshot: { state: 'Stopped' }, async stop() {} }) });
+  context.after(() => host.close());
+  const routerConfig = require('../src/api/api-router-config');
+  routerConfig.writeConfig(path.join(dataDir, 'api-routes.json'), routerConfig.normalizeConfig({ enabled: false, providers: [
+    { id: 'api', type: 'custom', baseUrl: 'https://api.example/v1', models: [{ id: 'test-model', upstream: 'test-model' }], keys: [{ id: 'key', key: 'test' }] },
+  ] }));
+  assert.ok((await host.command('settings')).result.engines.some(engine => engine.id === 'pi'));
+  const payload = { engine: 'pi', connection: 'api', model: 'test-model' };
+  assert.equal((await host.command('engine-settings', payload)).ok, true);
+  assert.equal((await host.command('engine-settings', { ...payload, connection: 'subscription' })).ok, false);
+  assert.equal((await host.command('settings')).result.engines.find(engine => engine.id === 'pi').model, 'test-model');
+  assert.equal((await host.command('create-conversation', { engine: 'pi' })).result.engine, 'pi');
+  assert.equal((await host.command('native-settings-get', { engine: 'pi' })).result.files[0].id, 'instructions');
+  await host.close();
 });
 
 test('server CLI help runs without Electron or a network connection', () => {

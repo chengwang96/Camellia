@@ -87,7 +87,7 @@ public final class SettingsActivity extends Activity {
         preference(group, "enterMode", tr("键盘回车", "Enter key"),
             new String[]{tr("回车发送，长按换行", "Enter sends; hold for newline"), tr("回车换行，长按发送", "Enter inserts newline; hold to send"), tr("仅点击发送按钮", "Send button only")},
             new String[]{"send", "newline", "button"});
-        settingsStyle.note(content, tr("仅点击发送按钮模式下，回车始终换行。长按需要键盘提供按键事件；部分软键盘不支持，可切换为回车换行并点击发送按钮。", "In button-only mode, Enter always inserts a newline. Holding Enter requires key events from your keyboard; some software keyboards do not support this. Use newline mode and the send button instead."));
+        settingsStyle.note(content, tr("回车发送模式会向键盘声明发送键，搜狗等输入法可长按发送键换行；部分软键盘（如 Gboard）没有长按换行，可切换为回车换行并点击发送按钮。仅点击发送按钮模式下，回车始终换行。", "Enter-sends mode declares a send key, so keyboards such as Sogou insert a newline while the send key is held. Some keyboards (for example Gboard) have no hold gesture; switch to newline mode and use the send button. In button-only mode, Enter always inserts a newline."));
         settingsStyle.note(content, tr("应用于这台手机上的所有页面，不影响电脑设置。", "Applies throughout this phone. Desktop preferences are unchanged."));
         LinearLayout remote = settingsStyle.group(content, tr("远程控制", "Remote control"));
         settingsStyle.toggle(remote, tr("短暂离开时保持连接", "Keep connection while away"),

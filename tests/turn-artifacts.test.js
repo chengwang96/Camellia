@@ -12,6 +12,8 @@ const { resolveArtifacts } = require('../src/main/turn-artifacts');
 const { sortArtifacts, documentFormat, VISIBLE_ARTIFACT_LIMIT } = require('../src/shared/turn-artifacts');
 
 test('readable artifacts sort first, stably, without changing the collected order', () => {
+  assert.equal(documentFormat({ extension: '.MD' }), 'markdown');
+  assert.equal(documentFormat({ extension: '.HTML' }), 'html');
   const files = [
     { name: 'main.js', kind: 'text' }, { name: 'report.pdf', kind: 'pdf' },
     { name: 'README.MD', kind: 'text' }, { name: 'figure.png', kind: 'image' },

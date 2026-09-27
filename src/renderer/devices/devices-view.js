@@ -1,39 +1,69 @@
 'use strict';
 
-// One markup source for both hosts: the standalone devices.html debugging page
-// and the in-settings CLI devices page. The settings host prefixes every id so
-// the page can coexist with the other settings sections in one document.
 (function (root) {
+  const CONNECTIONS = `
+<main class="connection-settings">
+  <p class="hint" data-copy="intro">在这里管理连接。回到首页，点击服务器即可打开独立工作台。</p>
+  <section class="connection-group">
+    <h2 data-copy="network">本机 Tailscale 连接</h2><p id="cli-networkState" role="status"></p>
+    <p class="hint" data-copy="networkHint">与「手机访问」共用同一个内置 Tailscale 身份，登录一次两边生效；断开或退出登录请到「手机访问」操作。</p>
+    <div class="actions"><button id="cli-networkStart" data-copy="login">启动 / 登录</button><button id="cli-openLogin" data-copy="browser" hidden>打开登录链接</button><button id="cli-refresh" data-copy="refresh">刷新</button></div>
+  </section>
+  <section class="connection-group">
+    <div class="page-head"><h2 data-copy="servers">已配对服务器</h2><button id="cli-add" data-copy="add">＋ 添加 CLI 服务器</button></div>
+    <p class="hint" data-copy="defaultHint">每台服务器在首页只显示一个入口。默认 Harness 用于新会话，不改变已有会话。</p>
+    <div id="cli-servers"></div>
+  </section>
+  <p id="cli-error" class="cli-error" role="alert"></p><p id="cli-notice" role="status"></p>
+  <dialog id="cli-pairDialog"><form id="cli-pairForm"><h2 data-copy="add">添加 CLI 服务器</h2>
+    <label for="cli-deviceName" data-copy="deviceName">服务器名称</label><input id="cli-deviceName" name="deviceName" required maxlength="80">
+    <label for="cli-address" data-copy="address">Tailscale IP</label><input id="cli-address" name="address" placeholder="100.x.y.z" inputmode="decimal" required>
+    <label for="cli-port" data-copy="port">端口</label><input id="cli-port" name="port" type="number" inputmode="numeric" min="1" max="65535" step="1" value="43127" required>
+    <label for="cli-clientName" data-copy="clientName">本机名称</label><input id="cli-clientName" name="clientName" value="Camellia desktop" required maxlength="80">
+    <label for="cli-code" data-copy="code">一次性配对码</label><input id="cli-code" name="code" type="password" required autocomplete="off">
+    <p id="cli-pairStatus" role="status"></p><div class="actions"><button id="cli-cancel" type="button" data-copy="cancel">取消</button><button id="cli-pairSubmit" type="submit" data-copy="pair">配对</button></div>
+  </form></dialog>
+  <dialog id="cli-forgetDialog"><form id="cli-forgetForm"><h2 data-copy="forget">忘记服务器</h2><p id="cli-forgetHint"></p><div class="actions"><button id="cli-forgetCancel" type="button" data-copy="cancel">取消</button><button type="submit" class="danger" data-copy="forget">忘记服务器</button></div></form></dialog>
+</main>`;
   const TEMPLATE = prefix => `
 <aside>
-  <header class="brand"><img src="../../../assets/icon-256.png" width="38" height="38" alt="Camellia cat"><div>Camellia<small data-copy="devices">CLI 设备</small></div></header>
+  <header class="brand"><span id="${prefix}brandMark" class="engine-mark"><img id="${prefix}brandIcon" src="../../../assets/brands/codex.png" alt=""></span><div><span id="${prefix}brandTitle">Harness</span><small id="${prefix}serverName">CLI</small><small id="${prefix}harnessName" hidden>HARNESS · CLI SERVER</small></div></header>
+  <div class="connection-controls" hidden>
   <label for="${prefix}device" data-copy="target">目标设备</label><select id="${prefix}device"><option value="" data-copy="choose">选择 CLI 设备</option></select>
   <button id="${prefix}add" data-copy="add">＋ 添加 CLI 设备</button>
   <button id="${prefix}cancelPair" hidden data-copy="cancel">取消</button>
   <details id="${prefix}networkPanel"><summary data-copy="network">本机 Tailscale 连接</summary><p id="${prefix}networkState"></p><p class="hint" data-copy="networkHint">与「手机访问」共用同一个内置 Tailscale 身份，登录一次两边生效；仅启动网络不会开启本机远程访问。断开或退出登录请到“手机访问”页面操作。</p>
     <div class="actions"><button id="${prefix}networkStart" data-copy="login">启动 / 登录</button><button id="${prefix}openLogin" data-copy="browser">打开登录链接</button><button id="${prefix}networkRefresh" data-copy="refresh">刷新</button></div>
   </details>
-  <div class="actions"><button id="${prefix}newWorkspace" data-write data-copy="newWorkspace">新建工作区</button><button id="${prefix}newChat" data-write data-copy="newChat">新建会话</button></div>
+  </div>
+  <label for="${prefix}harness" class="hint" data-copy="engine">Harness</label><select id="${prefix}harness"></select>
+  <button id="${prefix}newChat" data-write data-copy="newChat">新建会话</button>
+  <div class="workspace-heading"><span data-copy="workspace">工作区</span><button id="${prefix}newWorkspace" data-write data-copy="newWorkspace">新建工作区</button></div>
+  <nav id="${prefix}tree" class="tree" aria-label="Remote workspaces"></nav>
+  <button id="${prefix}more" hidden data-copy="more">加载更多会话</button>
+  <details class="server-tools"><summary data-copy="serverTools">服务器工具</summary>
   <button id="${prefix}importApi" data-write data-copy="importApi">导入本机 API 设置</button>
   <button id="${prefix}nativeSettings" data-write data-copy="nativeSettings">服务器原生设置</button>
   <div class="actions"><button id="${prefix}selectChats" data-copy="selectChats">多选</button><button id="${prefix}deleteSelected" data-write data-copy="deleteSelected" hidden>删除选中</button></div>
-  <nav id="${prefix}tree" class="tree" aria-label="Remote workspaces"></nav>
-  <button id="${prefix}more" hidden data-copy="more">加载更多会话</button>
+  </details>
   <details id="${prefix}archivePanel"><summary data-copy="archived">已归档</summary><button id="${prefix}loadArchived" data-copy="refresh">刷新</button><div id="${prefix}archived"></div><button id="${prefix}moreArchived" data-copy="more" hidden>更多</button></details>
-  <footer><button id="${prefix}forget" data-copy="forget">忘记设备</button><p class="hint" data-copy="localHint">本机会话保留在原工作台，不会合并到这里。</p></footer>
+  <footer><button id="${prefix}openServerSettings" data-copy="serverSettings">设置</button><button id="${prefix}connectionSettings" data-copy="connectionSettings">连接设置</button><button id="${prefix}forget" data-copy="forget" hidden>忘记设备</button><p class="hint" data-copy="localHint">文件与会话均保存在此服务器。</p></footer>
 </aside>
 <main>
-  <header class="page-head"><div><p class="eyebrow" data-copy="remote">远程工作台 · 开发预览</p><h1 id="${prefix}targetName" data-copy="choose">选择 CLI 设备</h1><p id="${prefix}connection" class="connection" role="status" data-copy="offline">未连接 · 禁止写操作</p></div><button id="${prefix}refresh" data-copy="reconnect">连接 / 刷新</button></header>
+  <header class="page-head"><div><h1 id="${prefix}targetName" data-copy="choose">CLI 服务器</h1><p id="${prefix}connection" class="connection" role="status" data-copy="offline">未连接 · 禁止写操作</p></div><button id="${prefix}refresh" data-copy="reconnect">连接 / 刷新</button></header>
   <p id="${prefix}error" class="cli-error" role="alert"></p><p id="${prefix}notice" role="status"></p>
   <section id="${prefix}transfers" class="transfers" aria-live="polite"></section>
-  <section id="${prefix}empty" class="empty"><img src="../../../assets/icon-256.png" width="80" height="80" alt=""><h2 data-copy="emptyTitle">把服务器的工作带到这里</h2><p data-copy="emptyBody">登录本机 Tailscale，添加 CLI 设备，再在服务器批准配对。</p><p class="hint" data-copy="boundary">文件、会话与引擎均在服务器运行。订阅登录仍需在服务器完成。</p></section>
+  <section id="${prefix}empty" class="empty"><img src="../../../assets/icon-256.png" width="80" height="80" alt=""><h2 data-copy="emptyTitle">把服务器的工作带到这里</h2><p data-copy="emptyBody">登录本机 Tailscale，添加 CLI 设备，再在服务器批准配对。</p><label for="${prefix}draftWorkspace" data-copy="workspace">工作区</label><select id="${prefix}draftWorkspace"></select><p class="hint" data-copy="boundary">文件、会话与引擎均在服务器运行。订阅登录仍需在服务器完成。</p></section>
   <section id="${prefix}chat" hidden>
-    <div class="chat-head"><h2 id="${prefix}chatTitle"></h2><div class="actions"><button id="${prefix}pin" data-write data-copy="pin">置顶</button><button id="${prefix}rename" data-write data-copy="rename">重命名</button><button id="${prefix}archive" data-write data-copy="archive">归档</button><button id="${prefix}deleteChat" data-write class="danger" data-copy="delete">删除会话</button></div></div>
+    <div class="chat-head"><h2 id="${prefix}chatTitle"></h2><div class="actions"><button id="${prefix}moveChat" data-write data-copy="moveChat">移动</button><button id="${prefix}pin" data-write data-copy="pin">置顶</button><button id="${prefix}rename" data-write data-copy="rename">重命名</button><button id="${prefix}archive" data-write data-copy="archive">归档</button><button id="${prefix}deleteChat" data-write class="danger" data-copy="delete">删除会话</button></div></div>
     <button id="${prefix}older" data-copy="older" hidden>加载更早消息</button><div id="${prefix}messages" class="messages" aria-live="polite"></div><p id="${prefix}historyHint" class="hint"></p><div id="${prefix}approvals"></div>
+    <details id="${prefix}automationPanel"><summary data-copy="automation">目标与定时任务</summary><div id="${prefix}automation"></div></details>
     <details id="${prefix}artifactPanel" class="artifact-panel"><summary data-copy="artifacts">产物文件</summary><button id="${prefix}loadArtifacts" data-copy="refreshFiles">刷新文件</button><div id="${prefix}artifacts" class="artifacts"></div><button id="${prefix}moreArtifacts" data-copy="moreFiles" hidden>更多文件</button></details>
-    <form id="${prefix}composer" class="composer"><label for="${prefix}prompt" data-copy="message">发送到当前服务器</label><div id="${prefix}attachmentTray" class="attachment-tray"></div><textarea id="${prefix}prompt" maxlength="16000" rows="3" required></textarea><div class="actions"><button id="${prefix}attach" type="button" data-write data-copy="attach">附件</button><button id="${prefix}configure" type="button" data-write data-copy="configure">模型与权限</button><button id="${prefix}stop" type="button" data-write data-copy="stop">停止响应</button><button id="${prefix}send" type="submit" data-write class="primary" data-copy="send">发送</button></div></form>
   </section>
+    <form id="${prefix}composer" class="composer"><label for="${prefix}prompt" data-copy="message">发送到当前服务器</label><div id="${prefix}attachmentTray" class="attachment-tray"></div><textarea id="${prefix}prompt" maxlength="16000" rows="3" required></textarea><div class="actions"><button id="${prefix}attach" type="button" data-write data-copy="attach">附件</button><button id="${prefix}configure" type="button" data-write data-copy="configure">模型与权限</button><button id="${prefix}stop" type="button" data-write data-copy="stop">停止响应</button><button id="${prefix}send" type="submit" data-write class="primary" data-copy="send">发送</button></div></form>
 </main>
+<dialog id="${prefix}serverSettings" class="server-settings-dialog"><header class="page-head"><h2 id="${prefix}serverSettingsTitle"></h2><button id="${prefix}serverSettingsClose" type="button" aria-label="Close">×</button></header><div class="server-settings-layout"><nav id="${prefix}serverSettingsNav"></nav><div><p id="${prefix}serverSettingsStatus" role="status"></p><section id="${prefix}serverSettingsBody"></section></div></div></dialog>
+<dialog id="${prefix}serverConfirm"><p id="${prefix}serverConfirmText"></p><div class="actions"><button id="${prefix}serverConfirmCancel" data-copy="cancel">取消</button><button id="${prefix}serverConfirmAccept" data-copy="confirm">确认</button></div></dialog>
 <dialog id="${prefix}dialog" class="dialog"><form id="${prefix}dialogForm"><h2 id="${prefix}dialogTitle"></h2><p id="${prefix}dialogHint" class="hint"></p><div id="${prefix}fields" class="fields"></div><p id="${prefix}dialogError" class="cli-error" role="alert"></p><div class="actions"><button id="${prefix}cancel" type="button" data-copy="cancel">取消</button><button id="${prefix}submit" type="submit" class="primary" data-copy="confirm">确认</button></div></form></dialog>
 <dialog id="${prefix}nativeDialog" class="native-dialog"><form id="${prefix}nativeForm"><h2 id="${prefix}nativeTitle"></h2><p id="${prefix}nativeWarning" class="native-warning"></p><label for="${prefix}nativeDocument" data-copy="document">配置文档</label><select id="${prefix}nativeDocument"></select><label for="${prefix}nativeText" id="${prefix}nativeFormat"></label><textarea id="${prefix}nativeText" class="native-text" spellcheck="false" rows="18"></textarea><label class="native-confirm"><input id="${prefix}nativeConfirm" type="checkbox" required><span data-copy="nativeConfirm">我确认修改这台服务器的配置，命令、MCP、hooks 可能执行代码。</span></label><p id="${prefix}nativeError" class="cli-error" role="alert"></p><div class="actions"><button id="${prefix}nativeCancel" type="button" data-copy="cancel">取消</button><button id="${prefix}nativeSave" type="submit" class="primary" data-copy="save">保存</button></div></form></dialog>`;
 
@@ -43,7 +73,7 @@
     const embedded = Boolean(document.getElementById('devicesPage'));
     host.classList.add('cli-devices', embedded ? 'embedded' : 'standalone');
     if (!embedded) document.body.classList.add('cli-devices-standalone');
-    host.innerHTML = TEMPLATE(embedded ? 'cli-' : '');
+    host.innerHTML = embedded ? CONNECTIONS : TEMPLATE('');
     host.dataset.embedded = String(embedded);
   }
   const api = { template: TEMPLATE, mount, prefix: () => document.getElementById('devicesPage') ? 'cli-' : '' };

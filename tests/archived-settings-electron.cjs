@@ -132,8 +132,9 @@ async function main() {
     if (file !== recentAttachment) fs.utimesSync(file, old, old);
   }
   await run(`localStorage.setItem('camellia-chat-draft:new:standalone', JSON.stringify({ attachments: [{path: ${JSON.stringify(draftAttachment)}}] }))`);
-  await run("document.querySelector('[data-view=storage]').click()");
-  assert.equal(await run("document.querySelector('#storagePage').hidden"), false);
+  await run("document.querySelector('[data-view=archived]').click()");
+  assert.equal(await run("document.querySelector('#archivedPage').hidden"), false);
+  assert.equal(await run("document.querySelector('#storageSection').hidden"), false);
   assert.equal(await run("document.querySelector('#storageStatus').textContent"), 'No scan yet.');
   assert.equal(await run("document.querySelector('#cleanStorage').disabled"), true);
   await run("document.querySelector('#scanStorage').click()");
@@ -191,9 +192,9 @@ async function main() {
   assert.equal(await run("document.querySelector('#mobile-status').textContent"), '已关闭');
   assert.equal(await run("document.querySelector('#mobile-error').textContent"), '');
   assert.equal(await run("document.querySelector('#mobile-toggle').textContent"), '开启手机访问');
-  assert.equal(await run("document.querySelector('#mobile-allowAll').disabled"), false);
   assert.equal(await run("document.querySelector('#mobile-invite').disabled"), true);
-  assert.equal(await run("document.querySelectorAll('#mobile-workspaces input').length"), mobileState.result.workspaces.length);
+  assert.match(await run("document.querySelector('#mobilePage [data-copy=scope]').textContent"), /全部现有及未来会话/);
+  assert.equal(await run("document.querySelectorAll('#mobilePage input[type=checkbox]').length"), 0);
   assert.equal(await run("document.querySelector('#mobile-openPanel').hidden"), true);
   assert.equal(BrowserWindow.getAllWindows().some(window => window.webContents.getURL().endsWith('/remote/remote.html')), false);
 

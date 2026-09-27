@@ -19,7 +19,7 @@ async function prepare({ engines = [], check = false, googleSubscription = false
     await manager.ensure(engine);
     console.log(`${engine}: ready`);
   }
-  if (!check && !engines.length) console.log('Choose engines to download: npm run setup:runtimes -- dsh kimi\nAvailable: claude, codex, dsh, kimi, antigravity. Use --all to install every engine.');
+  if (!check && !engines.length) console.log('Choose engines to download: npm run setup:runtimes -- dsh kimi\nAvailable: claude, codex, dsh, kimi, antigravity, pi. Use --all to install every engine.');
   return manager.state();
 }
 if (require.main === module) {

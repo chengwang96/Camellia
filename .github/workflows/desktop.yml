@@ -55,7 +55,7 @@ jobs:
       - name: Embedded network native smoke test
         run: node tests/embedded-network-electron.cjs
       - name: Prepare engines used by integration tests
-        run: npm run setup:runtimes -- claude codex dsh kimi antigravity
+        run: npm run setup:runtimes -- claude codex dsh kimi antigravity pi
       - name: Prepare the Antigravity subscription CLI
         run: npm run setup:antigravity:subscription
       - name: Unit tests

@@ -28,7 +28,7 @@ function packServer({ root = path.resolve(__dirname, '..'), output = path.resolv
     for (const entry of ['scripts/camellia-server.cjs', 'scripts/cli-settings-preview.cjs', 'docs/linux-server-preview.md', 'package-lock.json']) {
       fs.mkdirSync(path.dirname(path.join(directory, entry)), { recursive: true }); fs.copyFileSync(path.join(root, entry), path.join(directory, entry));
     }
-    for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity']) {
+    for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']) {
       fs.mkdirSync(path.join(directory, 'runtimes', engine), { recursive: true });
       for (const name of ['package.json', 'package-lock.json', 'runtime.json', 'requirements.lock']) {
         const source = path.join(root, 'runtimes', engine, name);

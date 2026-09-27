@@ -474,6 +474,24 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
         });
     }
 
+    public void testAutomaticCheckDoesNotExtendConfirmationDeadline() throws Exception {
+        client.pendingFirst = true;
+        client.result = new JSONObject().put("state", "pending");
+        send(); awaitResult();
+        long[] armed = new long[1];
+        ui(() -> armed[0] = (long) field("commandCheckDeadline"));
+        assertTrue(armed[0] > android.os.SystemClock.elapsedRealtime());
+        // The automatic follow-up check must reuse the window opened by the user
+        // action; extending it on every poll kept the wait spinning forever.
+        assertTrue(client.retried.await(5, TimeUnit.SECONDS));
+        ((ExecutorService) field("commandWorker")).submit(() -> {}).get(3, TimeUnit.SECONDS);
+        getInstrumentation().waitForIdleSync();
+        ui(() -> {
+            assertEquals(armed[0], (long) field("commandCheckDeadline"));
+            assertEquals("preparing", ((JSONObject) field("outgoingMessage")).getString("delivery"));
+        });
+    }
+
     public void testLateAcknowledgementDoesNotChangeAnotherScreen() throws Exception {
         client.result = new JSONObject().put("ok", true).put("userSeq", 11);
         send();

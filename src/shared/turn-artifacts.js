@@ -7,7 +7,7 @@
   const VISIBLE_ARTIFACT_LIMIT = 4;
 
   function documentFormat(file) {
-    const extension = String(file.extension || (file.name || file.path || '').split('.').pop()).toLowerCase();
+    const extension = String(file.extension || (file.name || file.path || '').split('.').pop()).replace(/^\./, '').toLowerCase();
     if (['md', 'markdown'].includes(extension)) return 'markdown';
     if (['html', 'htm'].includes(extension)) return 'html';
     return '';

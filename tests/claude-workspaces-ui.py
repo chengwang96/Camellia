@@ -242,6 +242,27 @@ try:
         expect(page.locator(f'[data-sid="{archived_session_id}"]')).to_have_count(0)
         expect(page.locator(f'section[data-workspace-id="{archived_workspace_id}"]')).to_have_count(0)
 
+        # Deleting from the sidebar asks for confirmation, removes the transcript
+        # and sidebar row, and never touches the workspace folder.
+        delete_id = grouped_id
+        expect(page.locator(f'[data-sid="{delete_id}"]')).to_be_visible()
+        page.locator(f'[data-sid="{delete_id}"]').get_by_role('button', name='Session actions').click()
+        page.get_by_role('menuitem', name='Delete conversation', exact=True).click()
+        expect(page.locator('#deleteMask')).to_be_visible()
+        expect(page.locator('#deleteTitle')).not_to_be_empty()
+        page.locator('#deleteCancel').click()
+        expect(page.locator('#deleteMask')).not_to_be_visible()
+        expect(page.locator(f'[data-sid="{delete_id}"]')).to_be_visible()
+        page.locator(f'[data-sid="{delete_id}"]').get_by_role('button', name='Session actions').click()
+        page.get_by_role('menuitem', name='Delete conversation', exact=True).click()
+        page.locator('#deleteConfirm').click()
+        expect(page.locator('#deleteMask')).not_to_be_visible()
+        expect(page.locator(f'[data-sid="{delete_id}"]')).to_have_count(0)
+        assert Path(fixtures['alpha']).exists()
+        rpc('restart')
+        page.reload(wait_until='networkidle')
+        expect(page.locator(f'[data-sid="{delete_id}"]')).to_have_count(0)
+
         # Validation errors remain in the modal, with keyboard dismissal.
         page.locator('#wsCreateBtn').click()
         page.locator('#wsName').fill('Invalid folder')

@@ -17,6 +17,8 @@ function endpointPath(value, method) {
   if (conversation?.[2] && conversation[1] !== 'artifacts') throw new Error('Unsupported device endpoint');
   const pairing = ['/v1/pair/request', '/v1/pair/claim'].includes(url.pathname);
   const native = /^\/v1\/native-settings\/(claude|codex|kimi|dsh|antigravity)$/.test(url.pathname);
+  const management = method === 'POST' ? url.pathname === '/v1/server-management' : /^\/v1\/server-management\/[a-f0-9-]{36}$/.test(url.pathname);
+  if (management && ['GET', 'POST'].includes(method)) { if (value.includes('?')) throw new Error('Invalid management query'); return value; }
   if (method === 'POST') {
     if (value.includes('?') || !(pairing || native || url.pathname === '/v1/api-import' || url.pathname === '/v1/commands' || conversation && ['commands', 'read'].includes(conversation[1]))) throw new Error('Unsupported device endpoint');
   } else if (method !== 'GET' || !(['/v1/status', '/v1/archived', '/v1/conversations', '/v1/conversations/events', '/v1/api-keys', '/v1/api-import'].includes(url.pathname)
@@ -30,11 +32,11 @@ function endpointPath(value, method) {
 }
 
 class DeviceTransport {
-  constructor({ url, token, disconnect }) {
+  constructor({ url, token, disconnect, responseTimeoutMs = 20_000 }) {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || !parsed.port || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.username || parsed.password
       || !/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid local device transport');
-    Object.assign(this, { url: parsed.origin, token, disconnect });
+    Object.assign(this, { url: parsed.origin, token, disconnect, responseTimeoutMs });
     this.requests = new Set();
     this.closed = false;
   }
@@ -51,32 +53,42 @@ class DeviceTransport {
         ...(bytes ? { 'content-type': 'application/json', 'content-length': bytes.length } : {}),
       } });
       this.requests.add(request);
-      const timer = setTimeout(() => request.destroy(new Error('Device response timed out')), 20_000);
+      const timer = setTimeout(() => request.destroy(new Error('Device response timed out')), this.responseTimeoutMs);
       request.setTimeout(30_000, () => request.destroy(new Error('Device connection idle timeout')));
       request.once('close', () => { clearTimeout(timer); this.requests.delete(request); });
-      request.on('error', () => reject(new Error(signal?.aborted ? 'Device request cancelled' : 'Device request failed; verify state before retrying writes')));
+      request.on('error', error => reject(new Error(signal?.aborted ? 'Device request cancelled'
+        : error.message === 'Device response timed out' ? 'Device response timed out; verify state before retrying writes'
+          : 'Device request failed; verify state before retrying writes')));
       request.once('response', response => { clearTimeout(timer); resolve(response); });
       request.end(bytes);
     });
   }
   async json(endpoint, options = {}) {
-    const response = await this.open(endpoint, options);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      response.destroy();
-      throw Object.assign(new Error(`Device returned HTTP ${response.statusCode}; verify state before retrying writes`), { status: response.statusCode });
-    }
-    if (!/^application\/json(?:;|$)/i.test(response.headers['content-type'] || '')) {
-      response.destroy(); throw new Error('Device did not return JSON');
-    }
-    const chunks = [];
-    let size = 0;
-    for await (const chunk of response) {
-      size += chunk.length;
-      if (size > 8 * 1024 * 1024) { response.destroy(); throw new Error('Device response is too large'); }
-      chunks.push(chunk);
-    }
-    try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
-    catch { throw new Error('Invalid device JSON response'); }
+    const deadline = AbortSignal.timeout(this.responseTimeoutMs);
+    const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+    let response;
+    try {
+      response = await this.open(endpoint, { ...options, signal });
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        response.destroy();
+        throw Object.assign(new Error(`Device returned HTTP ${response.statusCode}; verify state before retrying writes`), { status: response.statusCode });
+      }
+      if (!/^application\/json(?:;|$)/i.test(response.headers['content-type'] || '')) {
+        response.destroy(); throw new Error('Device did not return JSON');
+      }
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of response) {
+        size += chunk.length;
+        if (size > 8 * 1024 * 1024) { response.destroy(); throw new Error('Device response is too large'); }
+        chunks.push(chunk);
+      }
+      try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+      catch { throw new Error('Invalid device JSON response'); }
+    } catch (error) {
+      if (deadline.aborted && !options.signal?.aborted) throw new Error('Device response timed out; verify state before retrying writes');
+      throw error;
+    } finally { response?.destroy(); }
   }
   async *events(endpoint, options = {}) {
     if (!/^\/v1\/conversations(?:\/[a-f0-9-]{36})?\/events$/.test(endpoint)) throw new Error('Invalid device event endpoint');

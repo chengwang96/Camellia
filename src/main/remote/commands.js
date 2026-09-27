@@ -66,12 +66,14 @@ class RemoteCommands {
     const managing = ['rename', 'pin', 'delete'].includes(action);
     const validTarget = managing ? id === null : ['archive', 'restore'].includes(action) ? id === null && typeof payload.conversationId === 'string'
       : ['create', 'create-workspace', 'delete-workspace', 'rename-workspace'].includes(action) ? id === null : id !== null;
-    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'resend', 'stop', 'approve', 'create', 'create-workspace', 'delete-workspace', 'rename-workspace', 'configure', 'move', 'archive', 'restore', 'rename', 'pin', 'delete'].includes(action) || !validTarget) fail(400, 'Invalid command');
+    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'resend', 'stop', 'approve', 'create', 'create-workspace', 'delete-workspace', 'rename-workspace', 'configure', 'move', 'archive', 'restore', 'rename', 'pin', 'delete', 'fork', 'switch-engine', 'compact', 'goal-control', 'task-control'].includes(action) || !validTarget) fail(400, 'Invalid command');
     const fields = ['requestId', 'action', 'instanceId', ...(action === 'move' ? ['workspaceId', 'targetSessionId', 'placement'] : action === 'archive' ? ['conversationId', 'expectedSeq'] : action === 'create-workspace' ? ['name', 'path'] : action === 'configure' ? ['settings', 'expectedSettings'] : action === 'create' ? ['workspaceId', 'engine'] : action === 'send' || action === 'resend' ? ['prompt', 'expectedSeq', ...(payload.editSeq === undefined ? [] : ['editSeq']), ...(payload.image === undefined ? [] : ['image']), ...(payload.images === undefined ? [] : ['images'])] : action === 'stop' ? ['runId'] : ['runId', 'approvalId', 'fingerprint', 'allow'])];
     if (managing) fields.splice(3, fields.length - 3, 'targets', ...(action === 'rename' ? ['title'] : action === 'pin' ? ['pinned'] : []));
     if (action === 'delete-workspace') fields.splice(3, fields.length - 3, 'workspaceId', 'expectedName');
     if (action === 'rename-workspace') fields.splice(3, fields.length - 3, 'workspaceId', 'expectedName', 'name');
     if (action === 'restore') fields.splice(3, fields.length - 3, 'conversationId', 'expectedSeq');
+    if (['fork', 'compact', 'switch-engine'].includes(action)) fields.splice(3, fields.length - 3, 'expectedSeq', ...(action === 'switch-engine' ? ['engine'] : []));
+    if (['goal-control', 'task-control'].includes(action)) fields.splice(3, fields.length - 3, 'operation', ...(action === 'task-control' ? ['taskId'] : []));
     if (['send', 'resend'].includes(action) && payload.attachments !== undefined) fields.push('attachments');
     if (Object.keys(payload).some(key => !fields.includes(key))) fail(400, 'Unsupported command field');
     if (managing) {
@@ -159,12 +161,32 @@ class RemoteCommands {
     }
     if (payload.action === 'create') {
       this.authorizeCreate(deviceId, payload.workspaceId);
-      if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity'].includes(payload.engine)) fail(400, 'Invalid engine');
+      if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(payload.engine)) fail(400, 'Invalid engine');
       const created = this.reader.manager.create(payload.engine, payload.workspaceId || undefined);
       return { ok: true, state: 'accepted', conversation: this.reader.summary(created) };
     }
     const conversationId = ['archive', 'restore'].includes(payload.action) ? payload.conversationId : id;
     const conversation = payload.action === 'restore' ? this.authorizeArchive(deviceId, conversationId) : this.authorize(deviceId, conversationId), manager = this.reader.manager;
+    if (['goal-control', 'task-control'].includes(payload.action)) {
+      const task = payload.action === 'task-control';
+      if (!(task ? ['pause', 'resume', 'cancel'] : ['pause', 'resume', 'clear']).includes(payload.operation)) fail(400, 'Unsupported control operation');
+      if (task && typeof payload.taskId !== 'string') fail(400, 'Task ID required');
+      const result = await manager.command(conversation.currentEngine, `${task ? 'task' : 'goal'}-${payload.operation}`, { sessionId: id, ...(task ? { id: payload.taskId } : {}) });
+      if (!result.ok) fail(409, result.error || 'Control operation failed');
+      return { ok: true, state: 'accepted' };
+    }
+    if (['fork', 'switch-engine', 'compact'].includes(payload.action)) {
+      if (conversation.seq !== payload.expectedSeq || manager.busy(id)) fail(409, 'Conversation changed or busy');
+      if (payload.action === 'fork') {
+        this.authorizeCreate(deviceId, this.reader.summary(conversation).workspaceId);
+        return { ok: true, state: 'accepted', conversation: this.reader.summary(manager.fork(conversation.currentEngine, { sessionId: id })) };
+      }
+      if (payload.action === 'switch-engine') {
+        if (!(manager.remoteEngines || ['dsh', 'codex', 'kimi', 'claude', 'antigravity', 'pi']).includes(payload.engine)) fail(400, 'Unsupported engine');
+        await manager.switchEngine(id, payload.engine);
+      } else await manager.compact(id);
+      return { ok: true, state: 'accepted' };
+    }
     if (['archive', 'restore'].includes(payload.action)) {
       if (!Number.isSafeInteger(payload.expectedSeq) || payload.expectedSeq !== conversation.seq) fail(409, 'Conversation changed; refresh before archiving');
       const result = await manager.command(conversation.currentEngine, 'archive-session', { id: conversationId, archived: payload.action === 'archive' });

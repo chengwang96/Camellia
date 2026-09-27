@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { liveWebContents } = require('./live-web-contents');
 const { startApiRouter } = require('../api/api-router.js');
 const routerConfig = require('../api/api-router-config.js');
 const { createCompactionSummarizer } = require('../api/compaction-summarizer.js');
@@ -34,6 +35,7 @@ const { BenchmarkRunner } = require('../benchmark/runner');
 const { createLibraryManager } = require('../benchmark/libraries');
 const { SharedConversations, preferences: conversationPreferences, shortTitle } = require('../engines/shared-conversations');
 const { createDshChat } = require('../engines/dsh-session');
+const { createPiChat } = require('../engines/pi-session');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
 const { saveClipboardImage, savePastedText } = require('./clipboard-attachments');
 const { StorageCleanup } = require('./storage-cleanup');
@@ -121,6 +123,7 @@ function defaultConfig() {
     mode: 'dsh',            // Last selected agent; startup always opens the home panel.
     claude: {},             // Claude Code GUI settings
     language: 'en',         // Workbench UI language, independent of the engines' prompts.
+    computerName: '',       // Display name of this computer, shared with paired phones.
     downloadProxy: { mode: 'direct', url: '' },
   };
 }
@@ -143,6 +146,15 @@ function saveConfig(patch) {
   writeJson(configPath(), next);
   return next;
 }
+// The name shown to paired phones. An empty or unusable value falls back to the
+// operating system host name so a fresh install still has something to display.
+function normalizeComputerName(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim().slice(0, 80);
+}
+function computerName() {
+  return normalizeComputerName(loadConfig().computerName) || normalizeComputerName(os.hostname()) || 'Camellia desktop';
+}
 function uiText(text) { return translate(text, normalizeLanguage(loadConfig().language)); }
 
 app.commandLine.appendSwitch('lang', normalizeLanguage(loadConfig().language) === 'en' ? 'en-US' : 'zh-CN');
@@ -153,7 +165,7 @@ function desktopZoom() {
     const mode = loadConfig().mode;
     const chatUrl = pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html'));
     chatUrl.searchParams.set('harness', mode);
-    const urls = ['claude', 'codex', 'dsh', 'kimi', 'antigravity'].includes(mode) ? [chatUrl.href] : [];
+    const urls = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(mode) ? [chatUrl.href] : [];
     if (mode === 'dsh') urls.push('127.0.0.1');
     urls.push(pathToFileURL(path.join(RENDERER_ROOT, 'home/home.html')).href);
     zoomController = createZoomController({ loadConfig, saveConfig, log,
@@ -199,12 +211,12 @@ async function chooseDownloadConnection(engine) {
     : ['Download directly', 'Set up proxy', 'Cancel'];
   const { response } = await dialog.showMessageBox(BrowserWindow.getFocusedWindow() || mainWindow, {
     type: 'question', title: uiText(`Download ${ENGINES[engine].name}`), message: uiText(`How would you like to download ${ENGINES[engine].name}?`),
-    detail: uiText(hasProxy ? `Saved proxy: ${new URL(saved.url).origin}\nManage the download connection in Settings → Runtime.`
-      : 'No download proxy is configured. You can add your own proxy in Settings → Runtime.'),
+    detail: uiText(hasProxy ? `Saved proxy: ${new URL(saved.url).origin}\nManage the download connection in Settings → General.`
+      : 'No download proxy is configured. You can add your own proxy in Settings → General.'),
     buttons: buttons.map(uiText), defaultId: hasProxy && saved.mode === 'direct' ? 1 : 0, cancelId: buttons.length - 1,
     noLink: true,
   });
-  if (response === buttons.length - 2) openSettingsWindow({ page: 'runtimes', focus: 'downloadProxyUrl' });
+  if (response === buttons.length - 2) openSettingsWindow({ page: 'general', focus: 'downloadProxyUrl' });
   if (response >= buttons.length - 2) throw Object.assign(new Error('Download cancelled'), { code: 'DOWNLOAD_CANCELLED' });
   return { ...saved, mode: hasProxy && response === 0 ? 'proxy' : 'direct' };
 }
@@ -435,7 +447,7 @@ async function saveApiRouter(payload) {
   const state = apiRouterState();
   if (restartClient) await claudeSessions.shutdown();
   if (restartClient) await kimiSessions.shutdown();
-  if (restartClient) { await antigravity.shutdown(); await codex.shutdown(); await dshChat.shutdown(); }
+  if (restartClient) { await antigravity.shutdown(); await codex.shutdown(); await dshChat.shutdown(); await piChat.shutdown(); }
   broadcastApiRouter(state);
   if (loadConfig().autoRefreshBalances !== false) void insights().refresh({ force: false }).catch(e => log(`account refresh: ${e.message}`));
   let warning;
@@ -841,6 +853,10 @@ const dshChat = createDshChat({ dataDir: app.getPath('userData'), loadConfig, sa
   getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
   runtime: () => ({ file: detectDshBin() }), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'dsh'),
   onEvent: event => publishChatEvent('dsh', event), log });
+const piChat = createPiChat({ dataDir: app.getPath('userData'), loadConfig, saveConfig, getRoute: resolveClaudeRoute,
+  getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
+  runtime: () => runtimes().locate('pi'), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'pi'),
+  onEvent: event => publishChatEvent('pi', event), log });
 sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
   summarize: compactionSummarizer,
   contextRoute: (engine, settings) => {
@@ -863,6 +879,7 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
     codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
     antigravity: { history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, nativeAutoCompaction: true },
     dsh: dshChat,
+    pi: piChat,
   },
   prepare: async (engine, settings) => {
     if (engine !== 'dsh' || !loadConfig().dshBin) await runtimes().ensure(engine, settings?.connection);
@@ -882,10 +899,10 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
 
 remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme,
   manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow, apiRoutes: apiRoutesBundle,
-  networkFactory: sharedDesktopNetwork.factory });
-const cliDevices = require('./remote/devices-desktop').createDevicesDesktop({ app, ipcMain,
+  networkFactory: sharedDesktopNetwork.factory, computerName, saveComputerName: name => normalizeComputerName(saveConfig({ computerName: normalizeComputerName(name) }).computerName) });
+const cliDevices = require('./remote/devices-desktop').createDevicesDesktop({ app, ipcMain, BrowserWindow,
   safeStorage: require('electron').safeStorage, shell, dialog, nativeImage: require('electron').nativeImage,
-  getSurfaces: () => [settingsWindow?.webContents, nativeSettingsView?.webContents].filter(Boolean),
+  getSurfaces: () => [settingsWindow, nativeSettingsView].map(liveWebContents).filter(Boolean),
   getSettingsWindow: () => settingsWindow, openSettings: target => openSettingsWindow(target),
   authorizedSender: webContents => Boolean(mainWindow && !mainWindow.isDestroyed() && webContents === mainWindow.webContents),
   networkFactory: sharedDesktopNetwork.factory,
@@ -1034,6 +1051,7 @@ function engineStatusText() {
     ['dsh', 'DSH', dshChat.sessions],
     ['kimi', 'Kimi Code', kimiSessions],
     ['antigravity', 'Antigravity', antigravity.sessions],
+    ['pi', 'Pi', piChat.sessions],
   ];
   const state = pool => (pool.running ? 'responding' : pool.active ? 'session idle' : 'not started');
   const current = pools.find(([id]) => id === currentMode);
@@ -1090,18 +1108,21 @@ function openSettingsWindow(target = {}) {
       nodeIntegration: false,
     },
   });
-  desktopZoom().attach(settingsWindow.webContents);
+  const settingsContents = settingsWindow.webContents;
+  desktopZoom().attach(settingsContents);
   settingsWindow.once('ready-to-show', () => {
     if (!settingsWindow || settingsWindow.isDestroyed()) return;
     settingsWindow.center();
     settingsWindow.show();
   });
   settingsWindow.on('closed', () => {
-    nativeSettingsView?.webContents.close(); nativeSettingsView = null; nativeSettingsLoad = null;
-    cliDevices.detach();
+    const nativeContents = liveWebContents(nativeSettingsView);
     settingsWindow = null;
+    nativeSettingsView = null; nativeSettingsLoad = null;
+    cliDevices.detach([settingsContents, nativeContents]);
+    if (nativeContents && !nativeContents.isDestroyed()) nativeContents.close();
   });
-  settingsWindow.loadFile(path.join(RENDERER_ROOT, 'settings/api-settings.html'), { query: { page: target.page || 'general', engine: target.engine || 'dsh' } });
+  settingsWindow.loadFile(path.join(RENDERER_ROOT, 'settings/api-settings.html'), { query: { page: target.page || 'general', engine: target.engine || 'dsh', ...(target.focus ? { focus: target.focus } : {}) } });
 }
 
 function createMainWindow() {
@@ -1333,13 +1354,14 @@ if (!gotSingleInstanceLock) {
       if (engine === 'antigravity') await antigravity.shutdown();
       if (engine === 'codex') await codex.shutdown();
       if (engine === 'dsh') await dshChat.shutdown();
+      if (engine === 'pi') await piChat.shutdown();
       return { ok: true, engines };
     },
     'runtime-python-state': () => ({ ok: true, python: runtimes().pythonState() }),
     'runtime-set-python': async ({ file }) => {
       // Python is shared by every harness, so a running session anywhere may be
       // using it; stop the engines that depend on it before switching.
-      if (['claude', 'codex', 'dsh', 'kimi', 'antigravity'].some(engineBusy)) {
+      if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].some(engineBusy)) {
         throw new Error('Stop running responses before changing the shared Python path');
       }
       const engines = await runtimes().setPython(file);
@@ -1357,7 +1379,7 @@ if (!gotSingleInstanceLock) {
       // reuse this check instead of querying the release feed twice.
       const available = await appUpdates().check();
       if (!available.updateAvailable) throw new Error('Camellia is already up to date');
-      const busy = ['claude', 'codex', 'dsh', 'kimi', 'antigravity'].filter(engineBusy);
+      const busy = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].filter(engineBusy);
       const { response } = await dialog.showMessageBox(settingsWindow || mainWindow, {
         type: 'question', title: uiText('Install update'), noLink: true,
         message: uiText(`Download and install Camellia v${available.latest}?`),
@@ -1438,7 +1460,7 @@ if (!gotSingleInstanceLock) {
   ipcMain.handle('dsh:workbench-settings', () => ({ ok: true, language: normalizeLanguage(loadConfig().language), theme: loadConfig().theme || 'system',
     conversations: conversationPreferences(loadConfig()), autoRefreshBalances: accountRefreshEnabled(), accountRefreshMinutes: accountRefreshMinutes(),
     closeToTray: loadConfig().closeToTray === true,
-    dataPath: app.getPath('userData'), version: app.getVersion() }));
+    computerName: computerName(), dataPath: app.getPath('userData'), version: app.getVersion() }));
   ipcMain.handle('dsh:workbench-save-settings', (_event, payload) => {
     try {
       // The router's quota probe follows only its own switch and cadence:
@@ -1453,6 +1475,7 @@ if (!gotSingleInstanceLock) {
         patch.accountRefreshMinutes = ACCOUNT_REFRESH_MINUTES.includes(minutes) ? minutes : accountRefreshMinutes();
       }
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'closeToTray')) patch.closeToTray = payload.closeToTray === true;
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'computerName')) patch.computerName = normalizeComputerName(payload.computerName);
       saveConfig(patch);
       if (payload?.conversations) saveConfig({ conversations: conversationPreferences({ conversations: payload.conversations }) });
       nativeTheme.themeSource = theme;
@@ -1534,6 +1557,11 @@ if (!gotSingleInstanceLock) {
     'save-settings': patch => ({ ok: true, settings: saveClaudeSettings(patch) }),
     'rename-session': payload => renameClaudeSession(payload.id, payload.title),
     'archive-session': payload => archiveClaudeSession(payload.id, payload.archived !== false),
+    'delete-session': async payload => {
+      await removeEngineSession('claude', payload.id);
+      notifyArchivedChanged('claude', payload.id, 'delete');
+      return { ok: true };
+    },
     'meta-op': claudeMetaOp,
     'goal-get': () => ({ ok: true, goal: goalDriver.view() }),
     'goal-start': payload => goalDriver.start(payload),
@@ -1556,6 +1584,11 @@ if (!gotSingleInstanceLock) {
     'load-session': async id => ({ ok: true, ...await kimiWorkspaces.transcript(id), settings: kimiSettings(id) }),
     'rename-session': payload => kimiWorkspaces.renameSession(payload.id, payload.title),
     'archive-session': payload => kimiWorkspaces.archiveSession(payload.id, payload.archived !== false),
+    'delete-session': async payload => {
+      await removeEngineSession('kimi', payload.id);
+      notifyArchivedChanged('kimi', payload.id, 'delete');
+      return { ok: true };
+    },
     'meta-op': payload => kimiWorkspaces.metaOp(payload),
     'send': async payload => {
       if (kimiSessions.legacy?.running) return { ok: false, error: "Wait for the response to finish or stop it before sending another message" };
@@ -1608,6 +1641,14 @@ if (!gotSingleInstanceLock) {
     } catch (error) { return error.code === 'DOWNLOAD_CANCELLED' ? { ok: true, canceled: true } : { ok: false, error: error.message }; }
   });
 
+  for (const engine of ['codex', 'antigravity']) ipcMain.handle('dsh:' + engine + '-delete-session', async (_event, payload) => {
+    try {
+      await removeEngineSession(engine, payload?.id);
+      notifyArchivedChanged(engine, payload?.id, 'delete');
+      return { ok: true };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+
   ipcMain.handle('dsh:switch-mode', (_event, mode) => navigateMode(mode));
   ipcMain.handle('dsh:conversation-command', async (_event, { engine, action, payload }) => {
     try { return await sharedConversations.command(engine, action, payload); }
@@ -1633,12 +1674,12 @@ if (!gotSingleInstanceLock) {
 
   // ---- Archived conversations (Settings → Archived) ------------------------
   const cleanupActivity = () => sharedConversations.isBusy() || goalDriver.armed || kimiGoalDriver.armed || codex.goal.armed || antigravity.goal.armed
-    || [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions].some(pool => pool.running);
+    || [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, piChat.sessions].some(pool => pool.running);
   const storageCleanup = new StorageCleanup({
     dataDir: app.getPath('userData'), conversations: sharedConversations,
     isActive: cleanupActivity,
-    histories: [claudeHistory, kimiHistory, codex.history, antigravity.history, dshChat.history],
-    liveOwners: () => [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions]
+    histories: [claudeHistory, kimiHistory, codex.history, antigravity.history, dshChat.history, piChat.history],
+    liveOwners: () => [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, piChat.sessions]
       .flatMap(pool => [...pool.sessions.entries()].filter(([, session]) => !session.dead).map(([id]) => id)),
     references: async () => {
       let active = Boolean(cleanupActivity());
@@ -1691,6 +1732,26 @@ if (!gotSingleInstanceLock) {
     claude: claudeWorkspaces, kimi: kimiWorkspaces, codex: codex.workspaces,
     antigravity: antigravity.workspaces, shared: sharedConversations.workspaces,
   });
+  const notifyArchivedChanged = (source, id, action) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:archived-changed', { source, id, action });
+  };
+  // Permanent delete of one conversation from the sidebar: stop and clear any
+  // goal that owns it (a running goal must be paused first), drop its native
+  // connection binding, then remove the transcript and every metadata entry.
+  async function removeEngineSession(source, id) {
+    const goal = { claude: goalDriver, kimi: kimiGoalDriver, codex: codex.goal, antigravity: antigravity.goal, shared: null }[source];
+    if (goal?.goal?.sessionId === id) {
+      if (goal.armed) throw new Error('Pause the goal before deleting its conversation');
+      goal.clear();
+    }
+    await archivedSources()[source].removeSession(id);
+    const connectionKey = { kimi: 'kimiSessionConnections', codex: 'codexSessionConnections' }[source];
+    if (connectionKey && loadConfig()[connectionKey]?.[id]) {
+      const connections = { ...loadConfig()[connectionKey] };
+      delete connections[id];
+      saveConfig({ [connectionKey]: connections });
+    }
+  }
   ipcMain.handle('dsh:archived-sessions-list', async () => {
     try {
       const sessions = [];
@@ -1727,23 +1788,8 @@ if (!gotSingleInstanceLock) {
     } catch (error) { return { ok: false, error: error.message }; }
   });
   ipcMain.handle('dsh:archived-session-action', async (_event, payload) => {
-    const notify = (source, id, action) => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:archived-changed', { source, id, action });
-    };
-    const removeArchived = async (source, id) => {
-      const goal = { claude: goalDriver, kimi: kimiGoalDriver, codex: codex.goal, antigravity: antigravity.goal }[source];
-      if (goal?.goal?.sessionId === id) {
-        if (goal.armed) throw new Error('Pause the goal before deleting its conversation');
-        goal.clear();
-      }
-      await archivedSources()[source].removeSession(id);
-      const connectionKey = { kimi: 'kimiSessionConnections', codex: 'codexSessionConnections' }[source];
-      if (connectionKey && loadConfig()[connectionKey]?.[id]) {
-        const connections = { ...loadConfig()[connectionKey] };
-        delete connections[id];
-        saveConfig({ [connectionKey]: connections });
-      }
-    };
+    const notify = notifyArchivedChanged;
+    const removeArchived = removeEngineSession;
     try {
       const { source, id, action } = payload || {};
       if (!['restore', 'delete', 'delete-all'].includes(action)) throw new Error('Unknown action');
@@ -1829,7 +1875,10 @@ if (!gotSingleInstanceLock) {
 
   ipcMain.handle('dsh:reveal-file', async (_event, filePath) => {
     try {
-      await revealInFileManager(filePath, { openPath: folder => shell.openPath(folder) });
+      await revealInFileManager(filePath, {
+        openPath: folder => shell.openPath(folder),
+        showItemInFolder: file => shell.showItemInFolder(file),
+      });
       return { ok: true };
     } catch (error) { return { ok: false, error: error?.message || String(error) }; }
   });
@@ -1901,7 +1950,7 @@ if (!gotSingleInstanceLock) {
       return;
     }
     createMainWindow();
-    const mode = ['home', 'benchmark', 'claude', 'codex', 'dsh', 'kimi', 'antigravity'].includes(currentMode) ? currentMode : 'home';
+    const mode = ['home', 'benchmark', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(currentMode) ? currentMode : 'home';
     currentMode = mode;
     void loadMode(mode);
   }
@@ -1982,10 +2031,10 @@ if (!gotSingleInstanceLock) {
     }
     sharedConversations.pauseGoals();
     sharedConversations.closeGoalTools();
-    if ((claudeSessions.active || codex.active || kimiAccount.active || dshChat.sessions.active || kimiSessions.active || antigravity.sessions.active || benchmarkRunner?.pending) && !kimiClosing) {
+    if ((claudeSessions.active || codex.active || kimiAccount.active || piChat.sessions.active || dshChat.sessions.active || kimiSessions.active || antigravity.sessions.active || benchmarkRunner?.pending) && !kimiClosing) {
       event.preventDefault();
       kimiClosing = true;
-      void Promise.allSettled([claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown(), benchmarkRunner?.shutdown()]).finally(() => app.quit());
+      void Promise.allSettled([claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), piChat.shutdown(), dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown(), benchmarkRunner?.shutdown()]).finally(() => app.quit());
       return;
     }
     stopBackend();
@@ -1999,7 +2048,7 @@ if (!gotSingleInstanceLock) {
 
   let modeRequest = 0;
   function navigateMode(mode) {
-    const chatModes = ['claude', 'codex', 'dsh', 'kimi', 'antigravity'];
+    const chatModes = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
     if (chatModes.includes(currentMode) && chatModes.includes(mode) && mainWindow && !mainWindow.isDestroyed()) {
       // The renderer owns the current logical session and unsent draft. All
       // engine menu switches must use the same handoff flow as its selector.
@@ -2009,7 +2058,7 @@ if (!gotSingleInstanceLock) {
     return switchMode(mode);
   }
   async function switchMode(mode, conversationId) {
-    if (!['home', 'benchmark', 'claude', 'codex', 'dsh', 'kimi', 'antigravity'].includes(mode)) {
+    if (!['home', 'benchmark', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(mode)) {
       return { ok: false, error: 'Unknown engine or page' };
     }
     const request = ++modeRequest;

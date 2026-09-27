@@ -19,6 +19,7 @@ var deviceTokenPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var conversationPath = regexp.MustCompile(`^/v1/conversations/[a-f0-9-]{36}(/events|/commands|/read|/artifacts(/[a-f0-9]{64})?)?$`)
 var cursorPattern = regexp.MustCompile(`^[0-9]{1,12}$`)
 var nativeSettingsPath = regexp.MustCompile(`^/v1/native-settings/(claude|codex|kimi|dsh|antigravity)$`)
+var managementJobPath = regexp.MustCompile(`^/v1/server-management/[a-f0-9-]{36}$`)
 
 func outboundTarget(value string) (*url.URL, error) {
 	parsed, err := url.Parse(value)
@@ -37,6 +38,9 @@ func allowedDeviceRequest(request *http.Request) bool {
 		return false
 	}
 	endpoint := request.URL.Path
+	if endpoint == "/v1/server-management" || managementJobPath.MatchString(endpoint) {
+		return request.URL.RawQuery == "" && !request.URL.ForceQuery && (endpoint == "/v1/server-management" && request.Method == http.MethodPost || managementJobPath.MatchString(endpoint) && request.Method == http.MethodGet)
+	}
 	pairing := endpoint == "/v1/pair/request" || endpoint == "/v1/pair/claim"
 	conversation := conversationPath.MatchString(endpoint)
 	native := nativeSettingsPath.MatchString(endpoint)

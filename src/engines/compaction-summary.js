@@ -38,6 +38,11 @@ const shortenNote = maxChars => '\n\nThe previous answer was too long. Rewrite i
 // oversized output caps, so the cap is generous about the requested length
 // while still bounding a model that ignores the instruction.
 const outputTokens = maxChars => Math.min(8192, Math.max(1024, Math.round(maxChars * 1.5) + 512));
+// A reasoning model can spend the whole output allowance on thinking and stop
+// with no text at all (finish_reason "length" and empty content). The summary
+// request is cheap next to failing the whole compaction, so an empty answer is
+// asked once more at the ceiling instead of being treated as a hard failure.
+const OUTPUT_TOKEN_CEILING = 8192;
 const shortTarget = maxChars => Math.max(512, Math.floor(maxChars / 2));
 
 const byKey = (first, second) => {
@@ -70,24 +75,30 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
 
   const limit = () => summaryLimit(current);
 
-  const once = async ({ kind, system, user, maxChars, key, shorten }) => {
+  const once = async ({ kind, system, user, maxChars, key, shorten, widened = false }) => {
     if (stopped()) throw new Error('Compaction canceled');
     if (++requests > maxRequests) throw new Error('Compaction summary request limit reached');
     // The sequence is captured here: concurrent requests must not report each
     // other's number when they finish out of order.
     const sequence = requests;
     const startedAt = Date.now();
-    const metric = { kind, key, maxChars, inputChars: system.length + user.length, shorten: Boolean(shorten) };
+    const maxTokens = widened ? OUTPUT_TOKEN_CEILING : outputTokens(maxChars);
+    const metric = { kind, key, maxChars, inputChars: system.length + user.length, shorten: Boolean(shorten), widened };
     onProgress({ ...metric, stage: 'running', request: sequence });
     await acquire();
     let answer;
-    try { answer = await request({ kind, system, user, maxChars, maxTokens: outputTokens(maxChars) }); }
+    try { answer = await request({ kind, system, user, maxChars, maxTokens }); }
     finally { release(); }
     const text = String(answer?.text || '').trim();
     const truncated = Boolean(answer?.truncated) || text.length > maxChars;
     onProgress({ ...metric, stage: 'done', request: sequence, outputChars: text.length, truncated,
       elapsedMs: Date.now() - startedAt, usage: answer?.usage });
-    if (!text) throw new Error('Compaction failed or canceled; the original conversation is retained. The engine returned an empty summary.');
+    // Retried at the ceiling before the truncation branch below, because a
+    // smaller target would only shrink the allowance the model needs to think.
+    if (!text) {
+      if (!widened) return once({ kind, system, user, maxChars, key, shorten, widened: true });
+      throw new Error('Compaction failed: the summary request returned no text. The original conversation is retained.');
+    }
     if (truncated && !shorten) {
       const target = shortTarget(maxChars);
       return once({ kind, system: system.replace(/under \d+ characters\.$/, 'under ' + target + ' characters.'),

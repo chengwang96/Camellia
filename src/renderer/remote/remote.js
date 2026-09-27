@@ -33,6 +33,8 @@ Object.assign(copy.en, { login: 'Sign in to Tailscale', openLogin: 'Authorize in
   connecting: 'Connecting to embedded network…', needsLogin: 'Sign in to Tailscale', needsApproval: 'Approve this device in the Tailscale admin console', networkError: 'Embedded network disconnected. Enable it again.', networkReady: 'Embedded network connected', networkOff: 'Embedded network off' });
 Object.assign(copy.zh, { unassigned: '独立会话', allScope: '全部工作区（含今后新增）及独立会话', applyScope: '授权全部访问', confirmScope: '允许此设备查看和操作当前及今后新增的全部工作区和独立会话？' });
 Object.assign(copy.en, { unassigned: 'Independent conversations', allScope: 'All workspaces (including future ones) and independent conversations', applyScope: 'Authorize full access', confirmScope: 'Allow this device to read and control all current and future workspaces and independent conversations?' });
+Object.assign(copy.zh, { deviceName: '本机名称', deviceNameHint: '手机配对后会显示这个名字，最多 80 个字符。', deviceNameSave: '保存名称', deviceNameSaved: '已保存本机名称：', scanHint: '用手机扫描二维码即可自动填入地址和配对码，无需手动输入 IP。', scanFallback: '也可手动输入地址和一次性配对码。', qrLabel: '配对二维码', rename: '重命名', renameTitle: '重命名已授权设备', renameHint: '只更改本机设备列表中的显示名称，不改变权限。', renameSave: '保存', renameCancel: '取消', nameInvalid: '请输入 1–80 个字符的名称。' });
+Object.assign(copy.en, { deviceName: 'This computer name', deviceNameHint: 'Paired phones show this name. Up to 80 characters.', deviceNameSave: 'Save name', deviceNameSaved: 'Computer name saved: ', scanHint: 'Scan this QR code with your phone to fill in the address and pairing code automatically.', scanFallback: 'You can also enter the address and one-time code manually.', qrLabel: 'Pairing QR code', rename: 'Rename', renameTitle: 'Rename authorized device', renameHint: 'Only changes the display name in this device list; permissions are unchanged.', renameSave: 'Save', renameCancel: 'Cancel', nameInvalid: 'Enter a name of 1–80 characters.' });
 Object.assign(copy.zh, { unavailable: '状态加载失败', loading: '正在加载…', retry: '重试', openPanel: '打开独立手机访问面板',
   restart: '手机访问页面已更新，但桌面主进程仍是旧版。请保存工作后完全退出 Camellia（包括托盘）并重新启动；刷新页面不会更新主进程。也可先打开独立面板管理连接。',
   loadFailed: '无法加载手机访问状态，请重试。', loadDevices: '暂时无法加载已授权设备，请重试。' });
@@ -42,6 +44,25 @@ Object.assign(copy.en, { unavailable: 'Status unavailable', loading: 'Loading…
 let state = null, language = 'zh', working = false, invitationExpiry = 0;
 const translate = key => copy[language][key];
 const scope = () => ({ workspaceIds: [], allWorkspaces: true, includeUnassigned: true });
+// The pairing payload is deliberately tiny: the phone only needs the address and
+// the one-time code, then it registers its own name with /v1/pair/request. The
+// computer name is not embedded, so a long localized name cannot oversize the QR.
+const pairingPayload = invitation => JSON.stringify({ v: 1, type: 'camellia-pair', address: invitation.address, code: invitation.code });
+
+function renderQr(container, text) {
+  if (!container) return;
+  container.replaceChildren();
+  if (!text || !window.CamelliaQr) return;
+  try {
+    const image = document.createElement('img');
+    image.className = 'pairing-qr';
+    image.alt = translate('qrLabel');
+    image.width = 220;
+    image.height = 220;
+    image.src = `data:image/svg+xml;utf8,${encodeURIComponent(window.CamelliaQr.qrSvg(text, { margin: 4, label: translate('qrLabel') }))}`;
+    container.append(image);
+  } catch { container.replaceChildren(); }
+}
 
 async function call(action, payload) {
   const response = embedded ? await window.dshDesktop.remoteControl(action, payload) : await window.camelliaRemote.control(action, payload);
@@ -69,6 +90,8 @@ function renderUnavailable(error) {
   element('pending').replaceChildren();
   element('invitation').hidden = true;
   element('code').textContent = '';
+  renderQr(element('qr'), '');
+  if (element('deviceName')) element('deviceName').value = '';
   invitationExpiry = 0;
   for (const control of root.querySelectorAll('button, input[type="checkbox"]')) control.disabled = true;
   element('retry').disabled = false;
@@ -84,7 +107,8 @@ function renderDevices(target, entries, pending) {
     name.textContent = entry.name;
     const names = entry.workspaceIds.map(id => state.workspaces.find(workspace => workspace.id === id)?.name || id);
     if (entry.includeUnassigned) names.push(translate('unassigned'));
-    label.textContent = entry.allWorkspaces ? translate('allScope') : names.join(', ');
+    const scopeLabel = entry.allWorkspaces ? translate('allScope') : names.join(', ');
+    label.textContent = pending && entry.computerName ? `${entry.computerName} · ${scopeLabel}` : scopeLabel;
     name.append(label);
     if (!pending) {
       if (!entry.allWorkspaces) {
@@ -95,6 +119,10 @@ function renderDevices(target, entries, pending) {
         });
         actions.append(apply);
       }
+      const rename = document.createElement('button');
+      rename.textContent = translate('rename'); rename.disabled = working;
+      rename.addEventListener('click', () => renameDevice(entry));
+      actions.append(rename);
     }
     for (const action of pending ? ['approve', 'reject'] : ['revoke']) {
       const button = document.createElement('button');
@@ -106,6 +134,35 @@ function renderDevices(target, entries, pending) {
   }
   if (!entries.length && !pending) target.textContent = translate('noDevices');
 }
+let renameDialog = null;
+function renameDevice(entry) {
+  if (working) return;
+  const dialog = document.createElement('dialog'); renameDialog = dialog; dialog.className = 'device-rename';
+  const form = document.createElement('form'); form.method = 'dialog';
+  const heading = document.createElement('h2'); heading.textContent = translate('renameTitle');
+  const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = translate('renameHint');
+  const label = document.createElement('label'); label.textContent = translate('deviceName');
+  const input = document.createElement('input'); input.maxLength = 80; input.required = true; input.value = entry.name;
+  label.append(input);
+  const error = document.createElement('p'); error.className = 'hint rename-error'; error.setAttribute('role', 'alert');
+  const actions = document.createElement('div'); actions.className = 'actions';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = translate('renameCancel');
+  const save = document.createElement('button'); save.type = 'submit'; save.className = 'primary'; save.textContent = translate('renameSave');
+  cancel.addEventListener('click', () => dialog.close());
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    const value = input.value.trim();
+    if (!value || value.length > 80) { error.textContent = translate('nameInvalid'); input.focus(); return; }
+    void run(async () => { await call('rename', { id: entry.id, name: value }); dialog.close(); });
+  });
+  actions.append(cancel, save);
+  form.append(heading, hint, label, error, actions);
+  dialog.append(form);
+  dialog.addEventListener('close', () => { dialog.remove(); if (renameDialog === dialog) renameDialog = null; });
+  root.append(dialog);
+  dialog.showModal();
+  input.focus(); input.select();
+}
 function render() {
   language = state.language === 'en' ? 'en' : 'zh';
   if (!embedded) {
@@ -115,6 +172,10 @@ function render() {
   renderCopy();
   element('retry').hidden = true;
   if (embedded) element('openPanel').hidden = true;
+  if (element('deviceName') && document.activeElement !== element('deviceName')) element('deviceName').value = state.computerName || '';
+  // run() disables every button up front, so each control must restore its own
+  // enabled state here; otherwise this one stays disabled after the first load.
+  if (element('saveDeviceName')) element('saveDeviceName').disabled = working;
   element('status').textContent = translate(state.running ? 'online' : state.enabled ? 'connecting' : 'offline');
   element('status').classList.toggle('online', state.running);
   element('address').textContent = state.address || translate(state.enabled ? 'connecting' : 'noAddress');
@@ -134,8 +195,8 @@ function render() {
   }
   element('lifetime').textContent = translate(state.closeToTray ? 'tray' : 'noTray');
   element('invite').disabled = working || !state.running;
-  if (!state.running) { element('invitation').hidden = true; element('code').textContent = ''; invitationExpiry = 0; }
-  if (invitationExpiry && invitationExpiry <= Date.now()) { element('code').textContent = translate('expired'); element('expires').textContent = ''; }
+  if (!state.running) { element('invitation').hidden = true; element('code').textContent = ''; renderQr(element('qr'), ''); invitationExpiry = 0; }
+  if (invitationExpiry && invitationExpiry <= Date.now()) { element('code').textContent = translate('expired'); renderQr(element('qr'), ''); element('expires').textContent = ''; }
   renderDevices(element('pending'), state.pending, true);
   renderDevices(element('devices'), state.devices, false);
 }
@@ -169,7 +230,16 @@ element('invite').addEventListener('click', () => run(async () => {
   invitationExpiry = invitation.expiresAt;
   element('invitation').hidden = false;
   element('code').textContent = invitation.code;
+  renderQr(element('qr'), pairingPayload(invitation));
   element('expires').textContent = translate('expires') + new Date(invitation.expiresAt).toLocaleTimeString();
+}));
+element('saveDeviceName')?.addEventListener('click', () => run(async () => {
+  const input = element('deviceName');
+  const value = input.value.trim();
+  if (!value || value.length > 80) { element('deviceNameStatus').textContent = translate('nameInvalid'); input.focus(); return; }
+  const result = await call('set-name', { name: value });
+  element('deviceName').value = result.computerName;
+  element('deviceNameStatus').textContent = translate('deviceNameSaved') + result.computerName;
 }));
 renderCopy();
 element('toggle').textContent = translate('loading');

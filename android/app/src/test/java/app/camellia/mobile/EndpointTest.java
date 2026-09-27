@@ -4,6 +4,20 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class EndpointTest {
+    @Test public void combinesSeparateIpAndPort() {
+        Endpoint endpoint = new Endpoint(" 100.80.1.2 ", " 43128 ");
+        assertEquals("http://100.80.1.2:43128", endpoint.origin());
+        assertEquals("100.80.1.2", endpoint.host());
+        assertEquals("43128", endpoint.port());
+        Endpoint saved = new Endpoint("http://100.64.0.1:12345/");
+        assertEquals(saved.origin(), new Endpoint(saved.host(), saved.port()).origin());
+        for (String port : new String[]{"", "0", "65536", "1.5", "abc", "-1"}) {
+            assertThrows(IllegalArgumentException.class, () -> new Endpoint("100.80.1.2", port));
+        }
+        for (String ip : new String[]{"", "192.168.1.1", "100.80.1.256", "100.80.1.2:43127", "http://100.80.1.2"}) {
+            assertThrows(IllegalArgumentException.class, () -> new Endpoint(ip, "43127"));
+        }
+    }
     @Test public void acceptsOnlyOpaqueArtifactPaths() {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
         String base = "/v1/conversations/12345678-1234-1234-1234-123456789abc/artifacts";

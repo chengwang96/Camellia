@@ -120,6 +120,75 @@ test('unknown sources and actions are rejected', async (t) => {
   assert.equal((await h.call('archived-session-action', { source: 'claude', id: '__proto__', action: 'delete' })).ok, false);
 });
 
+test('a sidebar delete removes an active engine conversation and its metadata without archiving it', async (t) => {
+  const h = setup(t);
+  const file = h.seedSession('live-chat', h.folder('proj'), 'Live parser work');
+  h.call('claude-rename-session', { id: 'live-chat', title: 'Live parser' });
+  h.call('claude-meta-op', { op: 'toggle-pin', sessionId: 'live-chat' });
+  assert.equal((await h.call('claude-list-sessions')).sessions.length, 1);
+
+  const deleted = await h.call('claude-delete-session', { id: 'live-chat' });
+  assert.equal(deleted.ok, true, deleted.error);
+  assert.equal(fs.existsSync(file), false);
+  assert.equal((await h.call('claude-list-sessions')).sessions.length, 0);
+  const meta = h.api.claudeSessionMeta();
+  for (const key of ['titles', 'archived', 'pinned', 'sessionWorkspace', 'sessionCwd']) assert.equal(meta[key]['live-chat'], undefined);
+  assert.equal((await archivedList(h)).length, 0);
+  assert.equal(h.events.some(e => e.channel === 'dsh:archived-changed' && e.data.action === 'delete' && e.data.id === 'live-chat'), true);
+});
+
+test('the sidebar delete path is also wired through the shared conversation command', async (t) => {
+  const h = setup(t);
+  const shared = h.api.sharedConversations;
+  const c = shared.create('claude', null, 'Shared delete-me');
+  shared.append(c, { role: 'user', engine: 'claude', text: 'hello' });
+  shared.save(c);
+  const jsonFile = path.join(shared.dir, c.id + '.json');
+  const logFile = path.join(shared.dir, c.id + '.jsonl');
+  assert.equal(fs.existsSync(jsonFile), true);
+
+  const deleted = await h.call('conversation-command', { engine: 'claude', action: 'delete-session', payload: { id: c.id } });
+  assert.equal(deleted.ok, true, deleted.error);
+  assert.equal(fs.existsSync(jsonFile), false);
+  assert.equal(fs.existsSync(logFile), false);
+  assert.equal(shared.items.has(c.id), false);
+  assert.equal((await archivedList(h)).length, 0);
+});
+
+test('a busy shared conversation cannot be deleted from the sidebar', async (t) => {
+  const h = setup(t);
+  const shared = h.api.sharedConversations;
+  const c = shared.create('claude', null, 'Busy delete-me');
+  shared.active.set(c.id, { facade: { gen: 1 }, permissions: new Map() });
+  const res = await h.call('conversation-command', { engine: 'claude', action: 'delete-session', payload: { id: c.id } });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /Stop this conversation/);
+  shared.active.delete(c.id);
+});
+
+test('codex, antigravity and kimi sidebar deletes remove their own engine histories', async (t) => {
+  const h = setup(t);
+  const seed = (engine, id) => {
+    const dir = path.join(h.userData, engine + '-history', 'proj');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, id + '.jsonl');
+    fs.writeFileSync(file, JSON.stringify({ type: 'user', cwd: dir, message: { role: 'user', content: engine } }) + '\n');
+    return file;
+  };
+  for (const engine of ['codex', 'antigravity', 'kimi']) {
+    const id = engine + '-session';
+    const file = seed(engine, id);
+    h.call(engine + '-meta-op', { op: 'toggle-pin', sessionId: id });
+    assert.equal((await h.call(engine + '-list-sessions')).sessions.some(s => s.id === id), true);
+    const res = await h.call(engine + '-delete-session', { id });
+    assert.equal(res.ok, true, res.error);
+    assert.equal(fs.existsSync(file), false);
+    assert.equal((await h.call(engine + '-list-sessions')).sessions.some(s => s.id === id), false);
+    assert.equal(h.events.some(e => e.channel === 'dsh:archived-changed' && e.data.id === id && e.data.action === 'delete'), true);
+  }
+  assert.equal((await h.call('codex-delete-session', { id: '__proto__' })).ok, false);
+});
+
 test('delete-all removes every archived session across sources', async (t) => {
   const h = setup(t);
   const fileA = h.seedSession('old-one', h.folder('proj'), 'First');

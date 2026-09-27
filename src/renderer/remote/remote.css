@@ -19,6 +19,18 @@ button.primary:hover:not(:disabled) { background: var(--dsw-static-deepseek-400)
 .hint { font: var(--f-xxs-12); color: var(--dsw-alias-label-tertiary); }
 .hint { margin: 12px 0 0; }
 #invitation { background: var(--dsw-alias-bg-soft); border-radius: 10px; padding: 16px; margin-top: 16px; }
+#invitation code { display: block; margin-top: 10px; }
+.qr { display: flex; justify-content: center; }
+.qr img, .pairing-qr { width: 200px; height: 200px; padding: 8px; border-radius: 10px; background: #fff; }
+.name-row { display: flex; gap: 8px; align-items: stretch; }
+.name-row input { flex: 1; min-width: 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px; background: var(--dsw-alias-bg-layer-1); color: inherit; padding: 8px 12px; font: inherit; }
+.name-row input:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 1px; }
+.name-row button { flex: 0 0 auto; }
+dialog.device-rename { border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-base); color: inherit; padding: 20px; max-width: 360px; }
+dialog.device-rename form { display: flex; flex-direction: column; gap: 10px; }
+dialog.device-rename label { display: flex; flex-direction: column; gap: 6px; font: var(--f-xxs-strong-12); color: var(--dsw-alias-label-secondary); }
+dialog.device-rename input { border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px; background: var(--dsw-alias-bg-layer-1); color: inherit; padding: 8px 12px; font: inherit; }
+.rename-error { color: var(--dsw-alias-state-error-primary); }
 .device { margin-top: 12px; padding: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
 .device .name { min-width: 0; flex: 1; overflow-wrap: anywhere; }
 .device small { display: block; color: var(--dsw-alias-label-tertiary); }

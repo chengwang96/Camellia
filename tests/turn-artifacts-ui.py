@@ -33,10 +33,14 @@ bridge += r"""(() => {
   window.dshDesktop.previewFile = async path => {
     const file = all.find(item => item.path === path);
     const preview = {...file, url:'file:///' + path,
-      text:path.endsWith('.MD') ? '# Report\n\n**Readable**\n\n| Name | Value |\n| --- | --- |\n| Result | 42 |\n\n```js\nconst value = 1;\n```\n<script>window.previewEscaped=true</script>'
-        : '<h1>HTML report</h1><style>h1 { color: rgb(12, 34, 56); }</style><script>parent.previewEscaped=true</script><img src="missing.png" onerror="parent.previewEscaped=true"><a href="https://example.com" target="_top">Escape</a>'};
+      text:path.endsWith('.MD') ? '# Report\n\n**Readable**\n\nSee [scheduled experiment checks](docs/scheduled-tasks.md).\n\n- [Configuration guide](docs/configuration.md)\n  - Nested item\n- [Upstream](https://example.com)\n\n1. First\n2. Second\n\n> A quotation\n\n*Emphasis* and ~~removed~~\n\n- [x] Done\n\n[Jump](#report)\n\n[Other report](report.html)\n\n| Name | Value |\n| --- | --- |\n| Result | 42 |\n\n```js\nconst value = 1;\n```\n<script>window.previewEscaped=true</script>'
+        : '<h1>HTML report</h1><style>h1 { color: rgb(12, 34, 56); }</style><script>try{parent.previewEscaped=true}catch{}</script><img src="missing.png" onerror="try{parent.previewEscaped=true}catch{}"><a href="https://example.com" target="_top">Escape</a>'};
     if (['word', 'presentation', 'spreadsheet'].includes(file.kind))
-      preview.office = {sections:[{title:'Report',paragraphs:['Preview content']}],truncated:false};
+      preview.office = {html:'<h1>Rendered document</h1><table><tr><td>Preview content</td></tr></table><script>parent.previewEscaped=true</script>',sections:[],truncated:false};
+    if (file.kind === 'spreadsheet') {
+      preview.office.html = '<html><head><style>td{color:black}</style></head><body>' + preview.office.html + '</body></html>';
+      preview.office.sheets = [{title:'First sheet',html:'<h1>Rendered document</h1><table><tr><td>Preview content</td></tr></table>'},{title:'Second sheet',html:'<h1>Another worksheet</h1>'}];
+    }
     return {ok:true,file:preview};
   };
   window.dshDesktop.openFileExternally = async path => { openedExternally.push(path); return {ok:true}; };
@@ -66,6 +70,19 @@ with sync_playwright() as playwright:
         expect(page.locator('.file-preview-markdown strong')).to_have_text('Readable')
         expect(page.locator('.file-preview-markdown td').last).to_have_text('42')
         expect(page.locator('.file-preview-markdown pre code')).to_have_text('const value = 1;')
+        expect(page.locator('.file-preview-markdown ul ul li')).to_have_text('Nested item')
+        expect(page.locator('.file-preview-markdown ol li')).to_have_count(2)
+        expect(page.locator('.file-preview-markdown blockquote')).to_have_text('A quotation')
+        expect(page.locator('.file-preview-markdown em')).to_have_text('Emphasis')
+        expect(page.locator('.file-preview-markdown input[type=checkbox]')).to_be_checked()
+        expect(page.get_by_role('link', name='Configuration guide')).to_have_attribute('href', 'file:///C:/outputs/docs/configuration.md')
+        expect(page.get_by_role('link', name='Upstream')).to_have_attribute('target', '_blank')
+        assert page.locator('.file-preview-markdown').evaluate('(article) => getComputedStyle(article).whiteSpace') == 'normal'
+        page.get_by_role('link', name='Jump', exact=True).click()
+        expect(page.locator('.file-preview-markdown h1')).to_be_visible()
+        page.get_by_role('link', name='Other report', exact=True).click()
+        expect(page.frame_locator('.file-preview-html').locator('h1')).to_have_text('HTML report')
+        cards.locator('.artifact-file').first.click()
         assert page.evaluate('window.previewEscaped') is None
         page.screenshot(path=str(preview / f'markdown-preview-{theme}.png'), animations='disabled')
         page.locator('#fileViewerClose').click()
@@ -73,7 +90,7 @@ with sync_playwright() as playwright:
         frame = page.frame_locator('.file-preview-html')
         expect(frame.locator('h1')).to_have_text('HTML report')
         expect(frame.locator('h1')).to_have_css('color', 'rgb(12, 34, 56)')
-        expect(page.locator('.file-preview-html')).to_have_attribute('sandbox', '')
+        expect(page.locator('.file-preview-html')).to_have_attribute('sandbox', 'allow-scripts')
         assert page.evaluate('window.previewEscaped') is None
         original_url = page.url
         frame.locator('a').click()
@@ -83,9 +100,18 @@ with sync_playwright() as playwright:
         cards.locator('summary').focus()
         page.keyboard.press('Enter')
         expect(cards.locator('.artifact-row:visible')).to_have_count(8)
-        cards.locator('.artifact-file').nth(4).click()
-        expect(page.locator('.office-preview-section')).to_contain_text('Preview content')
-        page.locator('#fileViewerClose').click()
+        for index in [3, 4, 5]:
+            cards.locator('.artifact-file').nth(index).click()
+            document = page.frame_locator('.file-preview-office-document')
+            expect(document.locator('h1')).to_have_text('Rendered document')
+            expect(document.locator('td')).to_have_text('Preview content')
+            expect(page.locator('.file-preview-office-document')).to_have_attribute('sandbox', '')
+            expect(page.locator('.file-preview-text')).to_have_count(0)
+            assert page.evaluate('window.previewEscaped') is None
+            if index == 5:
+                page.locator('.office-sheet-select').select_option('1')
+                expect(document.locator('h1')).to_have_text('Another worksheet')
+            page.locator('#fileViewerClose').click()
         cards.locator('.artifact-file').nth(6).click()
         expect(page.locator('.file-preview-text')).to_contain_text('<h1>HTML report</h1>')
         expect(page.locator('#fileViewerBody iframe')).to_have_count(0)
@@ -162,6 +188,18 @@ with sync_playwright() as playwright:
         expect(page.locator('.file-preview-empty')).to_contain_text('Camellia 暂不支持预览此文件类型。')
         page.screenshot(path=str(preview / f'turn-artifacts-package-{theme}.png'), animations='disabled')
         page.locator('#fileViewerClose').click()
+        readme = (repo / 'README.md').read_text(encoding='utf-8')
+        page.evaluate("""text => {
+          window.dshDesktop.previewFile = async () => ({ok:true,file:{name:'README.md',path:'C:/project/README.md',url:'file:///C:/project/README.md',kind:'text',extension:'MD',text}});
+        }""", readme)
+        rows.last.locator('.artifact-file').click()
+        article = page.locator('.file-preview-markdown')
+        expect(article.get_by_role('link', name='scheduled experiment checks')).to_have_attribute('href', 'file:///C:/project/docs/scheduled-tasks.md')
+        expect(article.get_by_role('link', name='Configuration guide', exact=True)).to_have_attribute('href', 'file:///C:/project/docs/configuration.md')
+        expect(article.locator('li').filter(has=page.get_by_role('link', name='Configuration guide', exact=True))).to_have_count(1)
+        assert '[Configuration guide](docs/configuration.md)' not in article.inner_text()
+        article.get_by_role('heading', name='Documentation and upstream projects').scroll_into_view_if_needed()
+        page.screenshot(path=str(preview / f'markdown-readme-{theme}.png'), animations='disabled')
         page.close()
     browser.close()
     assert not errors, errors

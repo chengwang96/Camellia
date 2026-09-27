@@ -32,8 +32,20 @@ test('server drivers keep isolated native homes and enable only implemented engi
   const system = createEngineDrivers({ root, dataDir: root, loadConfig: () => saved, saveConfig: patch => { saved = { ...saved, ...patch }; },
     onEvent: () => {}, getRoute: () => ({ baseUrl: 'http://127.0.0.1:8788', authToken: 'managed' }), router: () => ({ enabled: false, providers: [], usage: {}, active: {} }),
     isBusy: () => false, runtimeManager: { locate: () => ({ file: '/test/native' }), state: () => [], ensure: async () => ({ file: '/test/native' }) } });
-  assert.deepEqual(Object.keys(system.drivers).sort(), ['antigravity', 'claude', 'codex', 'dsh', 'kimi']);
-  for (const driver of Object.values(system.drivers)) assert.equal(driver.settings().permissionMode, 'ask');
+  context.after(() => Promise.all(Object.values(system.drivers).map(driver => driver.shutdown())));
+  assert.deepEqual(Object.keys(system.drivers).sort(), ['antigravity', 'claude', 'codex', 'dsh', 'kimi', 'pi']);
+  for (const driver of Object.values(system.drivers)) {
+    assert.equal(driver.settings().permissionMode, 'ask');
+    for (const method of ['settings', 'saveSettings', 'ensure', 'shutdown']) assert.equal(typeof driver[method], 'function');
+  }
+  assert.equal(system.drivers.pi.history.root, path.join(root, 'pi-history'));
+  assert.equal(system.drivers.pi.settings().connection, 'api');
+  assert.throws(() => system.drivers.pi.saveSettings({ connection: 'subscription' }), /API connections only/);
+  system.drivers.pi.saveSettings({ model: 'pi-test-model', thinkingBudget: 'high' });
+  assert.equal(system.drivers.pi.settings().model, 'pi-test-model');
+  assert.equal(system.drivers.pi.settings().thinkingBudget, 'high');
+  assert.equal(system.drivers.pi.settings().connection, 'api');
+  assert.throws(() => system.nativeLogin('pi'), /account command/);
   assert.equal(system.nativeLogin('claude').home, path.join(root, 'claude-native'));
   const codex = system.nativeLogin('codex');
   assert.deepEqual(codex.args, ['login', '--device-auth']);
@@ -46,7 +58,6 @@ test('server drivers keep isolated native homes and enable only implemented engi
   system.drivers.claude.saveSettings({ connection: 'subscription', model: 'my-account-model' });
   assert.equal(system.drivers.claude.settings().model, 'my-account-model');
   assert.equal(system.drivers.claude.settings().connection, 'subscription');
-  await Promise.all(Object.values(system.drivers).map(driver => driver.shutdown()));
 });
 
 test('Claude API and subscription spawn specs never inherit external API credentials', context => {

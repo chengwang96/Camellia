@@ -50,7 +50,13 @@ class DeviceClient {
     this.records = records;
   }
   list() {
-    return this.load().map(({ id, name, address, createdAt }) => ({ id, name, address, createdAt }));
+    return this.load().map(({ id, name, address, createdAt, defaultHarness }) => ({ id, name, address, createdAt, ...(defaultHarness ? { defaultHarness } : {}) }));
+  }
+  preferences(id, { defaultHarness }) {
+    if (!['', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(defaultHarness)) throw new Error('Invalid default harness');
+    this.record(id);
+    this.save(this.load().map(record => record.id === id ? { ...record, defaultHarness } : record));
+    return this.list().find(record => record.id === id);
   }
   record(id) {
     const record = this.load().find(entry => entry.id === id);
@@ -141,10 +147,16 @@ class DeviceClient {
   async json(id, endpoint, options = {}) {
     const record = this.record(id);
     const connection = await this.connection(record.address);
-    if (this.record(id) !== record) throw new Error('CLI device changed during connection');
+    const current = this.record(id);
+    if (current.token !== record.token || current.address !== record.address) throw new Error('CLI device changed during connection');
     return connection.json(endpoint, { ...options, bearer: record.token });
   }
   status(id) { return this.json(id, '/v1/status'); }
+  manage(id, request) { return this.json(id, '/v1/server-management', { method: 'POST', body: request }); }
+  managementJob(id, jobId) {
+    if (!UUID.test(jobId)) throw new Error('Invalid operation ID');
+    return this.json(id, `/v1/server-management/${jobId}`);
+  }
   nativeSettings(id, engine) {
     if (!['claude', 'codex', 'kimi', 'dsh', 'antigravity'].includes(engine)) throw new Error('Invalid engine');
     return this.json(id, `/v1/native-settings/${engine}`);

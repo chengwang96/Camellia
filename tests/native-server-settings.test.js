@@ -19,9 +19,28 @@ function fixture(context, options = {}) {
   return { root, settings, save };
 }
 
-test('five native settings collections expose only predefined documents and no filesystem paths', context => {
+test('Pi server instructions reach the runtime and invalidate cached sessions', context => {
+  const { root, settings, save } = fixture(context);
+  const { createPiChat } = require('../src/engines/pi-session');
+  const driver = createPiChat({ dataDir: root, loadConfig: () => ({}), saveConfig() {}, getModels: () => ['test-model'],
+    getRoute: () => ({ baseUrl: 'http://127.0.0.1:1234' }), runtime: () => ({ file: '/pi/cli.js' }), node: () => process.execPath,
+    environment: () => ({}), onEvent() {}, instructions: () => settings.config('pi', 'instructions'), nativeRevision: () => settings.fingerprint('pi') });
+  context.after(() => driver.shutdown());
+  const opts = { cwd: root, settings: { model: 'test-model' } };
+  const first = driver.ensure(opts);
+  const resumed = { ...opts, sessionId: first.sessionId };
+  assert.equal(driver.ensure(resumed), first);
+  save('pi', 'instructions', 'Use the server workspace.');
+  const next = driver.ensure(resumed);
+  assert.notEqual(next, first);
+  assert.equal(next.spec.args[next.spec.args.indexOf('--append-system-prompt') + 1], 'Use the server workspace.');
+  assert.throws(() => driver.saveSettings({ connection: 'subscription' }), /API connections only/);
+  assert.throws(() => settings.save({ engine: 'pi', id: 'auth', confirmed: true }), /Unknown/);
+});
+
+test('six native settings collections expose only predefined documents and no filesystem paths', context => {
   const { settings } = fixture(context);
-  for (const engine of ['claude', 'codex', 'kimi', 'dsh', 'antigravity']) {
+  for (const engine of ['claude', 'codex', 'kimi', 'dsh', 'antigravity', 'pi']) {
     const view = settings.get(engine);
     assert.equal(view.engine, engine); assert.equal(view.editable, true);
     for (const file of view.files) { assert.equal(file.path, undefined); assert.equal(file.file, undefined); assert.match(file.revision, /^[a-f0-9]{64}$/); }

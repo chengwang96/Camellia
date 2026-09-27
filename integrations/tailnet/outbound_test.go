@@ -27,6 +27,14 @@ func TestOutboundTargets(t *testing.T) {
 
 func TestOutboundEndpoints(t *testing.T) {
 	id := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	if !allowedDeviceRequest(httptest.NewRequest("POST", "/v1/server-management", nil)) || !allowedDeviceRequest(httptest.NewRequest("GET", "/v1/server-management/"+id, nil)) {
+		t.Fatal("server management endpoints rejected")
+	}
+	for _, endpoint := range []string{"/v1/server-management", "/v1/server-management/" + id + "?offset=1"} {
+		if allowedDeviceRequest(httptest.NewRequest("GET", endpoint, nil)) {
+			t.Fatal("invalid server management endpoint accepted")
+		}
+	}
 	for _, endpoint := range []string{"/v1/status", "/v1/native-settings/codex", "/v1/archived?offset=0", "/v1/api-import", "/v1/conversations?offset=100", "/v1/conversations/events", "/v1/conversations/" + id + "?before=10", "/v1/conversations/" + id + "/artifacts?offset=1"} {
 		if !allowedDeviceRequest(httptest.NewRequest("GET", endpoint, nil)) {
 			t.Fatal("rejected", endpoint)

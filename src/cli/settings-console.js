@@ -25,10 +25,11 @@ const COPY = {
     routingHint: 'Changes routing for this server only. No request is sent. Active work must be stopped first.',
     modelHint: 'Applies to new conversations only; existing conversations keep their settings. Permission defaults to Ask.',
     createWorkspace: 'Add an existing server folder', removeWorkspace: 'Remove a workspace record', createChat: 'Create a conversation',
+    deleteChat: 'Delete a conversation', deleteChatHint: 'Permanently deletes this conversation and its files on the server. Workspace files are not deleted. Running conversations and active goals must be stopped first.',
     name: 'Workspace name', path: 'Absolute existing server folder', independent: 'Independent conversation',
     removeHint: 'Remove only the workspace record. Keep project files and conversation working directories. Conversations become independent.',
     language: 'Language', directory: 'Data directory', engines: 'Available engines', conversations: 'Conversations', busy: 'Active work',
-    limitations: 'Five API engines and server-local subscription entry points are wired. Real provider and tailnet acceptance is still required.',
+    limitations: 'Six API engines including Pi and server-local subscription entry points are wired. Real provider and tailnet acceptance is still required.',
     sensitive: 'Network keys use private local files; copying the entire data directory can expose the identity.',
     noService: 'Cannot read server settings. Start serve first in another terminal, using the same --data-dir.',
   },
@@ -50,10 +51,11 @@ const COPY = {
     routingHint: '只更改本服务器路由状态，不发送模型请求。必须先停止正在进行的工作。',
     modelHint: '仅影响新会话；已有会话保留设置，默认权限为询问。',
     createWorkspace: '添加服务器已有目录', removeWorkspace: '移除工作区记录', createChat: '新建会话',
+    deleteChat: '删除会话', deleteChatHint: '永久删除该会话及其在服务器上的文件，不删除工作区文件。正在运行或存在进行中 Goal 的会话需先停止。',
     name: '工作区名称', path: '服务器已有目录的绝对路径', independent: '独立会话',
     removeHint: '只移除记录，保留项目文件和原会话工作目录；会话变为独立会话。',
     language: '语言', directory: '数据目录', engines: '可用引擎', conversations: '会话数量', busy: '正在进行的工作',
-    limitations: '五种 API 引擎与服务器本地订阅登录入口已接入，仍需真实供应商和 tailnet 验收。',
+    limitations: '包括 Pi 在内的六种 API 引擎与服务器本地订阅登录入口已接入，仍需真实供应商和 tailnet 验收。',
     sensitive: '网络密钥使用受权限保护的本地文件；复制整个数据目录可能暴露网络身份。',
     noService: '无法读取服务器设置。请在另一终端启动 serve，并使用同一个 --data-dir。',
   },
@@ -154,7 +156,7 @@ async function settingsSession({ request, ask, write, columns = 80, color = fals
     const conversations = await call('conversations');
     out(`${text('conversations')}: ${conversations.length}`);
     for (const entry of conversations) out(`  ${entry.title} | ${entry.workspaceName || text('independent')} | ${entry.engine}`);
-    const action = await choose(['createWorkspace', 'removeWorkspace', 'createChat'].map(id => ({ id, name: text(id) })));
+    const action = await choose(['createWorkspace', 'removeWorkspace', 'createChat', 'deleteChat'].map(id => ({ id, name: text(id) })));
     if (!action) return;
     if (action.id === 'createWorkspace') {
       const name = await question(text('name')); if (!name) return;
@@ -165,6 +167,10 @@ async function settingsSession({ request, ask, write, columns = 80, color = fals
       const entry = await choose(entries);
       if (!entry || !await confirm(`${entry.name} [${entry.id}] ${entry.path}\n${text('removeHint')}`)) { out(text('cancelled')); return; }
       await call('delete-workspace', { id: entry.id });
+    } else if (action.id === 'deleteChat') {
+      const entry = await choose(conversations.map(conversation => ({ ...conversation, name: conversation.title })));
+      if (!entry || !await confirm(`${entry.title} [${entry.id}]\n${text('deleteChatHint')}`)) { out(text('cancelled')); return; }
+      await call('delete-conversation', { id: entry.id });
     } else {
       const entry = await choose([{ id: null, name: text('independent') }, ...entries]);
       if (!entry) return;
@@ -177,9 +183,10 @@ async function settingsSession({ request, ask, write, columns = 80, color = fals
   const accounts = async () => {
     const runtimes = await call('runtime-state');
     for (const runtime of runtimes) out(`${runtime.id}: ${runtime.operation || runtime.status} ${runtime.version || ''} ${runtime.error || ''}`);
-    const engine = await choose(state.engines.map(entry => ({ id: entry.id, name: entry.id })));
+    const engine = await choose(state.engines.map(entry => ({ id: entry.id, name: entry.id === 'pi' ? 'Pi' : entry.id })));
     if (!engine) return;
-    const actions = ['install', 'accountState', 'accountRefresh', 'accountLogin', 'accountCancel', 'accountLogout', 'connection', 'nativeSettings'];
+    const actions = engine.id === 'pi' ? ['install', 'connection', 'nativeSettings']
+      : ['install', 'accountState', 'accountRefresh', 'accountLogin', 'accountCancel', 'accountLogout', 'connection', 'nativeSettings'];
     const action = await choose(actions.map(id => ({ id, name: text(id) })));
     if (!action) return;
     if (action.id === 'nativeSettings') {
@@ -195,7 +202,7 @@ async function settingsSession({ request, ask, write, columns = 80, color = fals
       await call('runtime-install', { engine: engine.id, connection }); out(text('installing')); return;
     }
     if (action.id === 'connection') {
-      const connection = await question(text('connectionPrompt'));
+      const connection = engine.id === 'pi' ? 'api' : await question(text('connectionPrompt'));
       if (!['api', 'subscription'].includes(connection)) return;
       const model = await question(text('modelPrompt')); if (!model) return;
       if (!await confirm(`${engine.id} / ${connection} / ${model}. ${text('modelHint')}`)) return;

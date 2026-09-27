@@ -46,7 +46,7 @@ async function main() {
         && await window.webContents.executeJavaScript(`Boolean(document.querySelector(${JSON.stringify(selector)}))`)) return window;
     });
     const home = await windowFor('#enterDsh');
-    await wait(() => home.webContents.executeJavaScript("document.querySelectorAll('[data-runtime-state=missing]').length === 5"));
+    await wait(() => home.webContents.executeJavaScript("document.querySelectorAll('[data-runtime-state=missing]').length === 6"));
     assert.equal(downloads.length, 0, 'Home must not download any engine');
     assert.equal(prompts.length, 0, 'Startup must not prompt for a download');
     assert.match(await home.webContents.executeJavaScript("document.querySelector('#enterKimi').getAttribute('aria-label')"), /Download & open/);
@@ -61,11 +61,11 @@ async function main() {
     await wait(() => settings.webContents.executeJavaScript("!document.querySelector('#retryNative').hidden && document.querySelector('#retryNative').textContent === 'Manage downloads'"));
     assert.equal(downloads.length, 0, 'Browsing DSH settings must not download DSH');
     await settings.webContents.executeJavaScript("document.querySelector('#retryNative').click()");
-    await wait(() => settings.webContents.executeJavaScript("document.querySelectorAll('[data-install]:not(:disabled)').length === 5"));
+    await wait(() => settings.webContents.executeJavaScript("document.querySelectorAll('[data-install]:not(:disabled)').length === 6"));
     assert.equal(downloads.length, 0, 'Listing available downloads is read-only');
     replies.push(1); // Set up a proxy from the download prompt.
     await home.webContents.executeJavaScript("document.querySelector('#enterKimi').click()");
-    await wait(() => settings.webContents.executeJavaScript("document.activeElement.id === 'downloadProxyUrl'"));
+    await wait(() => settings.webContents.executeJavaScript("!document.querySelector('#generalPage').hidden && document.activeElement.id === 'downloadProxyUrl'"));
     await settings.webContents.executeJavaScript(`
       document.querySelector('#downloadMode').value = 'proxy';
       document.querySelector('#downloadProxyUrl').value = 'http://127.0.0.1:18899';

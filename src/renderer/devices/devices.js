@@ -18,11 +18,38 @@ Object.assign(english, { selectChats: 'Select conversations', deleteSelected: 'D
 Object.assign(chinese, { unpin: '取消置顶', restore: '恢复', download: '下载', attachments: '附件', downloading: '下载中', complete: '已完成', cancelled: '已取消', failed: '失败', attachmentLimit: '最多 9 个附件，总计不超过 8 MiB', chooseChat: '选择服务器会话', chooseChatBody: '从左侧选择会话，或在工作区中新建会话，也可新建独立会话。', thinking: '思考级别', default: '默认' });
 Object.assign(english, { importApi: 'Import local API settings', importHint: 'Source: this desktop. Target: {target}. Transfer {providers} providers and {keys} API keys. Skip {skipped} local-only providers. Existing server providers are kept unchanged, including conflicts. Subscription credentials, usage and ports are never transferred. Server routing enable/disable state is preserved.', importDone: 'API settings imported. Added providers: {added}; added keys: {keys}; conflicting providers kept: {skipped}.', importFailed: 'Import failed and the previous configuration was restored.', importUnknown: 'Import outcome is uncertain. Inspect server settings before starting another import.', importDisabled: 'Server API routing is disabled; enable it on the server before sending.' });
 Object.assign(chinese, { importHint: '来源：这台 GUI 电脑。目标：{target}。传输 {providers} 个服务商、{keys} 个 API 密钥；跳过 {skipped} 个本地专用服务商。已有服务商及冲突项保留服务器设置。订阅凭据、用量和端口不会迁移，服务器路由启用状态保持不变。', importDone: 'API 设置导入完成：新增 {added} 个服务商、{keys} 个密钥；保留 {skipped} 个冲突服务商。', importFailed: '导入失败，已恢复服务器原配置。', importUnknown: '导入结果待核实，请检查服务器配置后再发起新的导入。', importDisabled: '服务器 API 路由未启用，发送前需在服务器启用。' });
-let language = 'zh-CN', devices = [], selected = '', chats = [], info = null, snapshot = null, conversationId = null;
+const boundDevice = new URLSearchParams(location.search).get('device') || '';
+const harnessNames = { codex: 'Codex CLI', claude: 'Claude Code', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' };
+const harnessIcons = { codex: 'codex.png', claude: 'claude.svg', dsh: 'deepseek.svg', kimi: 'kimi.svg', antigravity: 'antigravity.svg', pi: 'pi.svg' };
+Object.assign(english, { fork: 'Fork', switchEngine: 'Switch harness', compact: 'Compact context', editResend: 'Edit & resend', prompt: 'Message' });
+Object.assign(english, { automation: 'Goals & scheduled tasks', pause: 'Pause', resume: 'Resume', clear: 'Clear', noAutomation: 'No goals or scheduled tasks. Ask the harness in this conversation to create one.' });
+Object.assign(chinese, { pause: '暂停', resume: '恢复', clear: '清除', noAutomation: '暂无目标或定时任务。可在当前会话中直接提出创建请求。' });
+Object.assign(chinese, { fork: '分叉会话', switchEngine: '切换引擎', compact: '压缩上下文', editResend: '编辑并重发', prompt: '消息' });
+for (const [id, key, action] of [['forkChat', 'fork', 'fork'], ['switchChat', 'switchEngine', 'switch-engine'], ['compactChat', 'compact', 'compact']]) {
+  const button = document.createElement('button'); button.id = id; button.dataset.copy = key; button.dataset.write = ''; button.dataset.capability = action; button.textContent = key;
+  elements.chat.querySelector('.actions').append(button); elements[id] = button;
+  button.onclick = () => showDialog(`${copy(key)} · ${currentDevice().name}`, snapshot.conversation.title,
+    action === 'switch-engine' ? [{ key: 'engine', value: activeHarness, options: info.engines.map(id => ({ id, name: harnessNames[id] })) }] : [],
+    async values => { await command(conversationId, { action, expectedSeq: snapshot.conversation.seq, ...(values.engine ? { engine: values.engine } : {}) }); if (values.engine) { activeHarness = values.engine; renderHarness(); renderTree(); renderConnection(); } });
+}
+Object.assign(english, { serverSettings: 'Settings', moveChat: 'Move', copyMessage: 'Copy message', copiedMessage: 'Copied', importApi: 'Sync GUI providers & keys' });
+Object.assign(chinese, { copyMessage: '复制消息', copiedMessage: '已复制', importApi: '同步 GUI 供应商和 Key' });
+let activeHarness = '', activeWorkspace = '';
+Object.assign(english, { connectionSettings: 'Connection settings', serverTools: 'Server tools', localHint: 'Files and conversations stay on this server.', emptyTitle: 'Connect to your server', emptyBody: 'Click Connect / Refresh to retry. Manage pairing in connection settings.' });
+Object.assign(chinese, { emptyTitle: '连接到服务器', emptyBody: '点击「连接 / 刷新」重试，或在连接设置中管理配对。' });
+let language = 'zh-CN', devices = [], selected = boundDevice, chats = [], info = null, snapshot = null, conversationId = null;
 let online = false, busy = false, version = 0, watchId = '', pendingPair = null, dialogAction = null, nextOffset = null, refreshTimer = null, refreshedAt = '';
 let olderMessages = [], olderCursor;
 let attachments = [], selecting = false, selectedChats = new Set(), artifactOffset = null;
 let archivedOffset = null;
+let draggedConversation = null;
+const collapsedWorkspaces = new Set();
+const drafts = new Map();
+let currentDraftKey = '';
+function draftKey() { return `${selected}:${conversationId || `new:${activeHarness}:${activeWorkspace}`}`; }
+function saveDraft() { if (currentDraftKey) drafts.set(currentDraftKey, elements.prompt.value); }
+function restoreDraft() { currentDraftKey = draftKey(); elements.prompt.value = drafts.get(currentDraftKey) || ''; }
+elements.prompt.addEventListener('input', saveDraft);
 const transfers = new Map();
 let nativeView = null, nativeTarget = null, nativeRevision = 0;
 let nativeDocumentId = null;
@@ -37,11 +64,22 @@ const embeddedNetworkError = error => /embedded networking|embedded network/i.te
 const copy = key => (language === 'en' ? english : chinese)[key] || english[key] || key;
 Object.assign(english, { networkHint: 'Shares the same embedded Tailscale identity as Mobile access: sign in once and both features work. Starting the network here does not open remote access to this computer; disconnect or sign out from the Mobile access page.' });
 const currentDevice = () => devices.find(device => device.id === selected);
+let connecting = false, connectingAt = 0, connectionTimer = null;
+Object.assign(english, { connecting: 'Connecting to server', waiting: 'Waiting for server response', networkStopped: 'Local Tailscale is not running. Open Connection settings and choose Start / Sign in, then return here and refresh.', networkLogin: 'Local Tailscale needs sign-in. Complete sign-in in Connection settings, then refresh.', connectionTimeout: 'The server did not finish responding within 20 seconds. Check that the CLI server and its remote access are running, and both devices are connected to Tailscale. Then click Connect / Refresh. Do not repeat a send or delete until you verify its outcome.', connectionFailed: 'Could not reach the CLI server. Check its remote access and Tailscale connection, then refresh. Do not repeat write operations before checking their outcome.' });
+Object.assign(chinese, { connecting: '正在连接服务器', waiting: '等待服务器响应', networkStopped: '本机 Tailscale 尚未启动。请打开「连接设置」，点击「启动 / 登录」，再返回此处刷新。', networkLogin: '本机 Tailscale 需要登录。请在「连接设置」完成登录后刷新。', connectionTimeout: '服务器未在 20 秒内完成响应。请确认 CLI 服务及远程访问已启动，且两端 Tailscale 均已连接，再点击「连接 / 刷新」。发送、删除等操作请先核实结果，不要直接重试。', connectionFailed: '暂时无法连接 CLI 服务器。请检查服务器远程访问和 Tailscale 连接后刷新；写操作请先核实结果，不要直接重复执行。' });
+function connectionError(error) {
+  if (error.message.includes('Device response timed out')) return copy('connectionTimeout');
+  if (/Device returned HTTP 502|Device request failed/.test(error.message)) return copy('connectionFailed');
+  if (error.message.includes('Start and sign into embedded networking')) return copy('networkStopped');
+  return error.message;
+}
 async function call(action, payload) { const reply = await bridge.call(action, payload); if (!reply.ok) throw new Error(reply.error); return reply.result; }
 function buttons() {
-  for (const button of root.querySelectorAll('button')) button.disabled = busy;
+  for (const button of root.querySelectorAll('button')) if (!button.closest('#serverSettings, #serverConfirm')) button.disabled = busy;
   for (const button of root.querySelectorAll('[data-write]')) button.disabled = busy || !online;
   elements.device.disabled = busy;
+  elements.harness.disabled = busy || !online;
+  elements.draftWorkspace.disabled = busy || !online;
   elements.newWorkspace.disabled ||= !info?.capabilities?.includes('create-workspace');
   elements.newChat.disabled ||= !info?.engines?.length;
   elements.importApi.disabled ||= !info?.capabilities?.includes('api-import');
@@ -50,11 +88,11 @@ function buttons() {
   elements.nativeDocument.disabled = busy;
   elements.nativeText.disabled = busy || !nativeView?.editable;
   elements.forget.disabled = busy || !selected;
-  elements.send.disabled ||= !snapshot || Boolean(snapshot.conversation.activity);
+  elements.send.disabled ||= snapshot ? Boolean(snapshot.conversation.activity) : !activeHarness;
   elements.stop.disabled ||= !snapshot?.live;
-  elements.configure.disabled ||= !snapshot?.settings?.editable;
+  elements.configure.disabled = busy || !online || (snapshot ? !snapshot.settings?.editable : !activeHarness);
   elements.older.disabled = busy || !online;
-  elements.attach.disabled = busy || !online || !snapshot || !info?.capabilities?.includes('attachments') || attachments.length >= 9;
+  elements.attach.disabled = busy || !online || !activeHarness || !info?.capabilities?.includes('attachments') || attachments.length >= 9;
   elements.deleteSelected.disabled = busy || !online || !selectedChats.size;
   elements.loadArtifacts.disabled = busy || !online || !snapshot;
   elements.moreArtifacts.disabled = busy || !online;
@@ -63,18 +101,36 @@ function buttons() {
   for (const box of root.querySelectorAll('.conversation-row input')) box.disabled = busy;
   for (const button of root.querySelectorAll('[data-online]')) button.disabled = busy || !online;
   for (const button of root.querySelectorAll('[data-cancel-transfer]')) button.disabled = false;
+  elements.connectionSettings.disabled = false;
+  elements.openServerSettings.disabled = busy || !online;
+  elements.moveChat.disabled = busy || !online || !snapshot || !info?.capabilities?.includes('move');
+  for (const button of root.querySelectorAll('[data-capability]')) button.disabled = busy || !online || !snapshot || !info?.capabilities?.includes(button.dataset.capability);
 }
 async function run(operation) {
   if (busy) return;
   busy = true; elements.error.textContent = ''; buttons();
   try { await operation(); }
-  catch (error) { elements.error.textContent = error.message; }
+  catch (error) { elements.error.textContent = connectionError(error); }
   finally { busy = false; buttons(); }
 }
 function offline() { version++; online = false; elements.connection.textContent = copy('offline'); buttons(); }
 function renderConnection() {
   elements.targetName.textContent = currentDevice()?.name || copy('choose');
+  elements.serverName.textContent = currentDevice()?.name || 'CLI';
+  elements.harnessName.textContent = `${harnessNames[activeHarness] || 'Harness'} · CLI SERVER`;
+  elements.brandTitle.textContent = harnessNames[activeHarness] || 'Harness';
+  elements.brandMark.dataset.engine = activeHarness;
+  elements.brandIcon.src = `../../../assets/brands/${harnessIcons[activeHarness] || 'codex.png'}`;
+  const emptyIcon = elements.empty.querySelector('img');
+  emptyIcon.src = elements.brandIcon.src;
+  document.title = `${currentDevice()?.name || 'CLI'} — Camellia`;
   elements.connection.textContent = online ? `${copy('online')} · ${currentDevice()?.address} · ${copy('connectedAt')} ${refreshedAt}` : copy('offline');
+  if (connecting) elements.connection.textContent = `${copy('connecting')} · ${currentDevice()?.address || ''} · ${Math.floor((Date.now() - connectingAt) / 1000)}s`;
+  elements.refresh.textContent = copy(connecting ? 'connecting' : 'reconnect');
+  if (!snapshot && connecting) {
+    root.querySelector('[data-copy="emptyTitle"]').textContent = copy('connecting');
+    root.querySelector('[data-copy="emptyBody"]').textContent = copy('waiting');
+  }
 }
 function translate() {
   if (!embedded) document.documentElement.lang = language;
@@ -82,6 +138,8 @@ function translate() {
 }
 async function state() {
   const result = await call('state'); devices = result.devices; language = result.language; translate();
+  if (boundDevice && !currentDevice()) throw new Error(copy('choose'));
+  if (!activeHarness) activeHarness = currentDevice()?.defaultHarness || '';
   if (!embedded) document.documentElement.dataset.theme = result.theme;
   networkState = result.network.state;
   elements.networkState.textContent = (NETWORK_LABELS[networkState]?.[language === 'en' ? 'en' : 'zh'] || networkState) + ' · ' + networkState;
@@ -92,13 +150,38 @@ async function state() {
   elements.device.value = selected;
   renderConnection();
 }
+function renderHarness() {
+  const engines = info?.engines || [];
+  if (!engines.includes(activeHarness)) activeHarness = engines[0] || '';
+  elements.harness.replaceChildren(...engines.map(engine => new Option(harnessNames[engine] || engine, engine)));
+  elements.harness.value = activeHarness;
+  elements.draftWorkspace.replaceChildren(new Option(copy('independent'), ''), ...(info?.workspaces || []).map(workspace => new Option(workspace.name, workspace.id)));
+  if (!info?.workspaces?.some(workspace => workspace.id === activeWorkspace)) activeWorkspace = '';
+  elements.draftWorkspace.value = activeWorkspace;
+  if (!currentDraftKey) restoreDraft();
+}
+function dropConversation(event, workspaceId, target) {
+  if (!draggedConversation || draggedConversation.deviceId !== selected || busy || !online || !info?.capabilities?.includes('move')) return;
+  event.preventDefault(); event.stopPropagation();
+  const source = draggedConversation; draggedConversation = null;
+  if (source.id === target?.id || !chats.some(chat => chat.id === source.id)) return;
+  const placement = target && event.clientY > event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2 ? 'after' : 'before';
+  void run(() => command(source.id, { action: 'move', workspaceId, ...(target ? { targetSessionId: target.id, placement } : {}) }));
+}
 function renderTree() {
   elements.tree.replaceChildren();
   const groups = [...(info?.workspaces || []), { id: null, name: copy('independent') }];
   for (const group of groups) {
     const section = document.createElement('section'); section.className = 'group';
     const heading = document.createElement('div'); heading.className = 'group-head';
-    const title = document.createElement('span'); title.textContent = group.name; heading.append(title);
+    const title = document.createElement('button'); title.className = 'workspace-toggle'; title.textContent = `${collapsedWorkspaces.has(group.id) ? '▸' : '▾'} ${group.name}`;
+    title.setAttribute('aria-expanded', String(!collapsedWorkspaces.has(group.id)));
+    title.onclick = () => { if (collapsedWorkspaces.has(group.id)) collapsedWorkspaces.delete(group.id); else collapsedWorkspaces.add(group.id); renderTree(); };
+    heading.append(title);
+    heading.ondragover = event => { if (draggedConversation && online && !busy) event.preventDefault(); };
+    heading.ondrop = event => dropConversation(event, group.id);
+    const add = document.createElement('button'); add.textContent = '+'; add.title = copy('newChat'); add.setAttribute('aria-label', `${copy('newChat')} · ${group.name}`); add.dataset.write = '';
+    add.onclick = () => { saveDraft(); activeWorkspace = group.id || ''; elements.newChat.click(); }; heading.append(add);
     if (group.id && info.capabilities.includes('rename-workspace')) {
       const rename = document.createElement('button'); rename.textContent = '…'; rename.title = copy('rename'); rename.dataset.write = '';
       rename.onclick = () => showDialog(`${copy('rename')} · ${currentDevice().name}`, group.name, [{ key: 'name', value: group.name }], values => command(null, { action: 'rename-workspace', workspaceId: group.id, expectedName: group.name, name: values.name }));
@@ -110,12 +193,23 @@ function renderTree() {
       heading.append(remove);
     }
     section.append(heading);
-    for (const conversation of chats.filter(chat => chat.workspaceId === group.id)) {
+    for (const conversation of chats.filter(chat => chat.workspaceId === group.id && (!activeHarness || !chat.engine || chat.engine === activeHarness))) {
       const button = document.createElement('button'); button.className = 'conversation'; button.textContent = `${conversation.activity ? '● ' : ''}${conversation.title}`;
+      button.hidden = collapsedWorkspaces.has(group.id);
+      button.draggable = Boolean(info.capabilities.includes('move') && !conversation.activity);
+      button.ondragstart = event => {
+        if (busy || !online || !button.draggable) { event.preventDefault(); return; }
+        draggedConversation = { deviceId: selected, id: conversation.id };
+        event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', conversation.id);
+      };
+      button.ondragend = () => { draggedConversation = null; };
+      button.ondragover = event => { if (draggedConversation && online && !busy) event.preventDefault(); };
+      button.ondrop = event => dropConversation(event, group.id, conversation);
       button.setAttribute('aria-current', String(conversation.id === conversationId));
-      button.onclick = () => run(async () => { await clearAttachments(); conversationId = conversation.id; clearArtifacts(); olderMessages = []; olderCursor = undefined; elements.prompt.value = ''; snapshot = null; await refresh(); await watch(); });
+      button.onclick = () => run(async () => { saveDraft(); await clearAttachments(); activeWorkspace = group.id || ''; conversationId = conversation.id; restoreDraft(); clearArtifacts(); olderMessages = []; olderCursor = undefined; snapshot = null; await refresh(); await watch(); });
       if (selecting) {
         const row = document.createElement('div'); row.className = 'conversation-row';
+        row.hidden = collapsedWorkspaces.has(group.id);
         const box = document.createElement('input'); box.type = 'checkbox'; box.checked = selectedChats.has(conversation.id); box.setAttribute('aria-label', `Select ${conversation.title}`);
         box.onchange = () => { if (box.checked && selectedChats.size >= 100) { box.checked = false; return; } if (box.checked) selectedChats.add(conversation.id); else selectedChats.delete(conversation.id); buttons(); };
         row.append(box, button); section.append(row);
@@ -190,10 +284,28 @@ function updateTransfer(event) {
 }
 function renderChat() {
   elements.chat.hidden = !snapshot; elements.empty.hidden = Boolean(snapshot);
-  root.querySelector('[data-copy="emptyTitle"]').textContent = copy(online ? 'chooseChat' : 'emptyTitle');
+  if (!snapshot) { elements.configure.textContent = copy('configure'); elements.configure.title = copy('configure'); }
+  root.classList.toggle('new-conversation', !snapshot);
+  root.querySelector('[data-copy="emptyTitle"]').textContent = online ? harnessNames[activeHarness] || activeHarness : copy('emptyTitle');
   root.querySelector('[data-copy="emptyBody"]').textContent = copy(online ? 'chooseChatBody' : 'emptyBody');
   if (!snapshot) { messageCache.clear(); return; }
   elements.chatTitle.textContent = snapshot.conversation.title;
+  elements.configure.textContent = snapshot.settings?.model || copy('configure');
+  elements.configure.title = `${copy('configure')} · ${copy(snapshot.settings?.permissionMode || 'ask')}`;
+  elements.automationPanel.hidden = !info?.capabilities?.includes('automation-control');
+  elements.automation.replaceChildren();
+  const automation = snapshot.automation;
+  const entries = [...(automation?.goal ? [{ ...automation.goal, kind: 'goal', label: automation.goal.objective, status: automation.goal.phase }] : []), ...(automation?.tasks || []).map(task => ({ ...task, kind: 'task', label: task.instruction }))];
+  if (!entries.length) elements.automation.textContent = copy('noAutomation');
+  for (const entry of entries) {
+    const panel = document.createElement('div'); panel.className = 'approval';
+    const title = document.createElement('p'); title.textContent = `${entry.label || ''} · ${entry.status || entry.state || ''}`; panel.append(title);
+    for (const operation of ['pause', 'resume', entry.kind === 'goal' ? 'clear' : 'cancel']) {
+      const button = document.createElement('button'); button.textContent = copy(operation); button.dataset.write = '';
+      button.onclick = () => showDialog(`${copy(operation)} · ${currentDevice().name}`, entry.label || '', [], () => command(conversationId, { action: `${entry.kind}-control`, operation, ...(entry.kind === 'task' ? { taskId: entry.id } : {}) })); panel.append(button);
+    }
+    elements.automation.append(panel);
+  }
   elements.pin.textContent = copy(snapshot.conversation.pinned ? 'unpin' : 'pin');
   const fragment = document.createDocumentFragment(), used = new Set();
   const rows = [...olderMessages.filter(row => !snapshot.messages.some(message => message.seq === row.seq)), ...snapshot.messages];
@@ -205,9 +317,20 @@ function renderChat() {
     const cached = messageCache.get(key);
     if (cached?.signature === signature) { fragment.append(cached.article); continue; }
     const article = document.createElement('article'); article.className = 'message'; article.classList.toggle('user', row.role === 'user');
-    const role = document.createElement('strong'); role.textContent = row.role;
+    const role = document.createElement('strong'); role.className = 'message-role';
+    if (row.role.startsWith('assistant')) {
+      const mark = document.createElement('span'); mark.className = 'engine-mark'; mark.dataset.engine = row.engine || activeHarness;
+      const icon = document.createElement('img'); icon.src = `../../../assets/brands/${harnessIcons[row.engine || activeHarness] || 'codex.png'}`; icon.alt = ''; mark.append(icon); role.append(mark, harnessNames[row.engine || activeHarness] || 'Assistant');
+    } else role.textContent = row.role === 'user' ? '' : row.role;
     const text = document.createElement('div'); text.className = 'message-body';
     text.append(window.CamelliaMarkdown.render(document, row.text, { copyLabel: copy('copyCode'), wrapLabel: copy('wrapCode'), copiedLabel: copy('copied'), failedLabel: copy('copyFailed') }));
+    const copyButton = document.createElement('button'); copyButton.className = 'copy-message'; copyButton.textContent = copy('copyMessage');
+    copyButton.onclick = async () => { try { await navigator.clipboard.writeText(row.text || ''); copyButton.textContent = copy('copiedMessage'); } catch { elements.error.textContent = copy('copyFailed'); } };
+    text.append(copyButton);
+    if (row.role === 'user' && row.seq === snapshot.messages.filter(message => message.role === 'user').at(-1)?.seq && info.capabilities.includes('resend')) {
+      const edit = document.createElement('button'); edit.textContent = copy('editResend'); edit.dataset.write = ''; edit.className = 'copy-message';
+      edit.onclick = () => showDialog(copy('editResend'), snapshot.conversation.title, [{ key: 'prompt', value: row.text }], values => command(conversationId, { action: 'resend', prompt: values.prompt, editSeq: row.seq, expectedSeq: snapshot.conversation.seq })); text.append(edit);
+    }
     article.append(role, text);
     if (row.attachedFiles?.length) {
       const files = document.createElement('p'); files.className = 'hint'; files.textContent = copy('attachments') + ': ' + row.attachedFiles.map(file => file.name).join(', '); article.append(files);
@@ -241,7 +364,11 @@ function renderChat() {
 async function refresh(append = false) {
   if (!selected) return;
   const deviceId = selected, revision = version;
+  connecting = true; connectingAt = Date.now(); renderConnection();
+  connectionTimer = setInterval(renderConnection, 1000);
   try {
+    if (networkState === 'NeedsLogin') throw new Error(copy('networkLogin'));
+    if (['Stopped', 'Error'].includes(networkState)) throw new Error(copy('networkStopped'));
     const result = await call('conversations', { deviceId, offset: append ? nextOffset : 0 });
     if (revision !== version) return;
     if (info && info.instanceId !== result.instanceId) { snapshot = null; olderMessages = []; olderCursor = undefined; }
@@ -253,9 +380,10 @@ async function refresh(append = false) {
       if (result.instanceId !== info.instanceId) throw new Error(copy('uncertain'));
       snapshot = result;
     }
-    online = true; refreshedAt = new Date().toLocaleTimeString(); renderConnection();
+    online = true; refreshedAt = new Date().toLocaleTimeString(); renderHarness(); renderConnection();
     renderTree(); renderChat();
   } catch (error) { offline(); throw error; }
+  finally { connecting = false; clearInterval(connectionTimer); connectionTimer = null; renderConnection(); if (!online) renderChat(); }
 }
 async function watch() { watchId = crypto.randomUUID(); await call('watch', { deviceId: selected, conversationId, watchId }); }
 async function command(target, fields, attachmentIds = []) {
@@ -270,13 +398,22 @@ async function command(target, fields, attachmentIds = []) {
     if (result.state === 'pending' || result.state === 'unknown') { offline(); throw new Error(copy('uncertain')); }
     throw new Error(result.error || copy('uncertain'));
   }
-  if (fields.action === 'create') { conversationId = result.conversation.id; olderMessages = []; olderCursor = undefined; }
+  if (['create', 'fork'].includes(fields.action)) {
+    saveDraft();
+    const previousKey = currentDraftKey;
+    conversationId = result.conversation.id; olderMessages = []; olderCursor = undefined;
+    if (fields.action === 'create') { currentDraftKey = draftKey(); drafts.set(currentDraftKey, elements.prompt.value); drafts.delete(previousKey); }
+    else restoreDraft();
+  }
+  if (fields.action === 'switch-engine') activeHarness = fields.engine;
   if (['archive', 'delete', 'create'].includes(fields.action)) { await clearAttachments(); clearArtifacts(); }
   if (['archive', 'restore', 'delete'].includes(fields.action)) clearArchived();
-  if (['archive', 'delete'].includes(fields.action)) { conversationId = null; snapshot = null; olderMessages = []; olderCursor = undefined; selectedChats.clear(); }
+  if (['archive', 'delete'].includes(fields.action)) { saveDraft(); conversationId = null; snapshot = null; olderMessages = []; olderCursor = undefined; selectedChats.clear(); restoreDraft(); }
   await refresh(); await watch();
   return result;
 }
+Object.assign(english, { ip: 'Tailscale IP', port: 'Port' });
+Object.assign(chinese, { ip: 'Tailscale IP', port: '端口' });
 function showDialog(title, hint, fields, action, prepared = false) {
   if (busy && !prepared) return;
   elements.dialogTitle.textContent = title; elements.dialogHint.textContent = hint; elements.dialogError.textContent = ''; elements.fields.replaceChildren();
@@ -285,7 +422,9 @@ function showDialog(title, hint, fields, action, prepared = false) {
     const label = document.createElement('label'); label.textContent = copy(field.key); label.htmlFor = `field-${field.key}`;
     const input = document.createElement(field.options ? 'select' : 'input'); input.id = label.htmlFor; input.name = field.key; input.required = !field.optional;
     if (field.options) input.append(...field.options.map(option => new Option(option.name, option.id ?? '')));
-    else { input.type = field.secret ? 'password' : 'text'; input.maxLength = field.key === 'path' ? 1024 : 200; input.autocomplete = 'off'; }
+    else { input.type = field.secret ? 'password' : 'text'; input.maxLength = field.key === 'prompt' ? 16000 : field.key === 'path' ? 1024 : 200; input.autocomplete = 'off'; }
+    if (field.key === 'port') { input.type = 'number'; input.inputMode = 'numeric'; input.min = '1'; input.max = '65535'; input.step = '1'; }
+    if (field.key === 'ip') { input.inputMode = 'decimal'; input.placeholder = '100.x.y.z'; }
     if (field.value !== undefined) input.value = field.value;
     elements.fields.append(label, input);
   }
@@ -304,6 +443,23 @@ elements.device.onchange = () => run(async () => {
   if (selected) { await refresh(); await watch(); }
 });
 elements.refresh.onclick = () => run(async () => { await state(); if (selected) { await refresh(); await watch(); } });
+elements.connectionSettings.onclick = async () => {
+  try { const result = await bridge.openSettings(); if (!result.ok) throw new Error(result.error); }
+  catch (error) { elements.error.textContent = error.message; }
+};
+const serverSettings = window.createServerSettings({ root, call, device: currentDevice, language: () => language,
+  nativeSettings: () => elements.nativeSettings.click(), syncApi: () => elements.importApi.click(),
+  archived: () => { elements.archivePanel.open = true; elements.loadArchived.click(); return elements.archivePanel; } });
+elements.openServerSettings.onclick = () => serverSettings.open(info?.capabilities || []);
+elements.moveChat.onclick = () => showDialog(`${copy('moveChat')} · ${currentDevice().name}`, snapshot.conversation.title,
+  [{ key: 'workspace', optional: true, options: [{ id: '', name: copy('independent') }, ...info.workspaces], value: snapshot.conversation.workspaceId || '' }],
+  values => command(conversationId, { action: 'move', workspaceId: values.workspace || null }));
+elements.harness.onchange = () => run(async () => {
+  saveDraft();
+  await clearAttachments(); activeHarness = elements.harness.value; conversationId = null; snapshot = null; olderMessages = []; olderCursor = undefined;
+  restoreDraft(); clearArtifacts(); clearArchived(); selectedChats.clear(); renderConnection(); renderTree(); renderChat(); await watch();
+});
+elements.draftWorkspace.onchange = () => { saveDraft(); activeWorkspace = elements.draftWorkspace.value; restoreDraft(); };
 elements.networkRefresh.onclick = () => run(state);
 elements.networkStart.onclick = () => run(async () => {
   await call('network-start'); await state();
@@ -321,7 +477,9 @@ elements.add.onclick = () => {
     elements.error.textContent = copy('networkFirst');
     return;
   }
-  showDialog(copy('add'), copy('boundary'), [{ key: 'deviceName' }, { key: 'address', value: 'http://100.' }, { key: 'clientName', value: 'Camellia desktop' }, { key: 'code', secret: true }], async values => {
+  showDialog(copy('add'), copy('boundary'), [{ key: 'deviceName' }, { key: 'ip' }, { key: 'port', value: '43127' }, { key: 'clientName', value: 'Camellia desktop' }, { key: 'code', secret: true }], async values => {
+    values.address = `http://${values.ip.trim()}:${values.port.trim()}`;
+    delete values.ip; delete values.port;
     let result;
     try { result = await call('pair', values); } catch (error) { throw new Error(embeddedNetworkError(error)); }
     pendingPair = result.id; elements.notice.textContent = copy('pending'); elements.cancelPair.hidden = false; elements.add.textContent = copy('check');
@@ -368,12 +526,14 @@ elements.messages.addEventListener('click', event => {
 });
 elements.importApi.onclick = () => run(async () => {
   const deviceId = selected, revision = version;
-  const preview = await call('import-preview', { deviceId });
+  const preview = await call('import-preview', { deviceId, policy: 'replace-from-gui' });
   if (revision !== version) { await call('import-cancel', { id: preview.id }); return; }
   const format = (key, data) => copy(key).replace(/\{(\w+)\}/g, (_match, name) => String(data[name] ?? ''));
   const cancel = () => { void call('import-cancel', { id: preview.id }).catch(() => {}); };
   elements.dialog.addEventListener('close', cancel, { once: true });
-  showDialog(`${copy('importApi')} · ${currentDevice().name}`, format('importHint', preview), [], async () => {
+  const warning = language === 'en' ? `Replace providers and keys on ${preview.target} with this GUI's ${preview.providers} providers and ${preview.keys} API keys. ${preview.skipped} local-only providers are excluded. API routing enable state is copied; unchanged keys keep server usage, removed or replaced keys lose their counters. Subscription accounts are untouched.`
+    : `将 ${preview.target} 的供应商与 Key 替换为本机 GUI 的 ${preview.providers} 个供应商、${preview.keys} 个密钥；排除 ${preview.skipped} 个本机专用供应商。同步 API 路由开关；未变化密钥保留服务器用量，删除或替换的密钥不再保留计数。订阅账号不受影响。`;
+  showDialog(`${copy('importApi')} · ${currentDevice().name}`, warning, [], async () => {
     let result;
     try { result = await call('import-apply', { deviceId, id: preview.id }); }
     catch (error) { throw new Error(`${error.message} · ${copy('importUnknown')}`); }
@@ -382,12 +542,55 @@ elements.importApi.onclick = () => run(async () => {
     await refresh();
   }, true);
 });
-elements.newChat.onclick = () => {
-  if (!info?.engines?.length) { elements.error.textContent = copy('noEngine'); return; }
-  showDialog(`${copy('newChat')} · ${currentDevice().name}`, copy('boundary'), [{ key: 'workspace', optional: true, options: [{ id: '', name: copy('independent') }, ...info.workspaces] }, { key: 'engine', options: info.engines.map(engine => ({ id: engine, name: engine })) }], values => command(null, { action: 'create', workspaceId: values.workspace || null, engine: values.engine }));
-};
-elements.composer.onsubmit = event => { event.preventDefault(); void run(async () => { const text = elements.prompt.value; await command(conversationId, { action: 'send', prompt: text, expectedSeq: snapshot.conversation.seq }, attachments.map(file => file.id)); attachments = []; renderAttachments(); elements.prompt.value = ''; }); };
+elements.newChat.onclick = () => run(async () => {
+  if (!info?.engines?.length) throw new Error(copy('noEngine'));
+  saveDraft();
+  await clearAttachments(); conversationId = null; snapshot = null; olderMessages = []; olderCursor = undefined;
+  restoreDraft(); elements.draftWorkspace.value = activeWorkspace; clearArtifacts(); renderTree(); renderChat(); await watch(); elements.prompt.focus();
+});
+elements.composer.onsubmit = event => { event.preventDefault(); void run(async () => {
+  const text = elements.prompt.value;
+  const sentDraftKey = currentDraftKey;
+  if (!text.trim()) return;
+  if (!await serverSettings.ensureRuntime(info.capabilities, snapshot?.conversation.engine || activeHarness)) return;
+  if (!snapshot) await command(null, { action: 'create', workspaceId: activeWorkspace || null, engine: activeHarness });
+  await command(conversationId, { action: 'send', prompt: text, expectedSeq: snapshot.conversation.seq }, attachments.map(file => file.id));
+  attachments = []; renderAttachments(); drafts.delete(sentDraftKey); currentDraftKey = draftKey(); drafts.delete(currentDraftKey); elements.prompt.value = '';
+}); };
+async function addBrowserFiles(files) {
+  if (!files.length || files.length > 9 || files.reduce((total, file) => total + file.size, 0) > 8 * 1024 * 1024) throw new Error(copy('attachmentLimit'));
+  if (!snapshot) await command(null, { action: 'create', workspaceId: activeWorkspace || null, engine: activeHarness });
+  const revision = version, id = conversationId;
+  const encoded = await Promise.all(files.map(file => new Promise((resolve, reject) => {
+    const reader = new FileReader(); reader.onerror = () => reject(new Error('Cannot read attachment'));
+    reader.onload = () => resolve({ name: file.name, data: String(reader.result).split(',')[1] || '' }); reader.readAsDataURL(file);
+  })));
+  const result = await call('attachments-add', { deviceId: selected, conversationId: id, files: encoded });
+  if (revision !== version || id !== conversationId || !online) { await call('attachments-remove', { ids: result.files.map(file => file.id) }); return; }
+  const combined = [...attachments, ...result.files];
+  if (combined.length > 9 || combined.reduce((total, file) => total + file.size, 0) > 8 * 1024 * 1024) {
+    await call('attachments-remove', { ids: result.files.map(file => file.id) }); throw new Error(copy('attachmentLimit'));
+  }
+  attachments = combined; renderAttachments();
+}
+elements.prompt.addEventListener('paste', event => {
+  const files = [...(event.clipboardData?.files || [])];
+  if (!files.length) return;
+  event.preventDefault();
+  if (!busy && online) void run(() => addBrowserFiles(files));
+});
+elements.composer.addEventListener('dragover', event => { if ([...(event.dataTransfer?.types || [])].includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = busy || !online ? 'none' : 'copy'; } });
+elements.composer.addEventListener('drop', event => {
+  const files = [...(event.dataTransfer?.files || [])]; if (!files.length) return;
+  event.preventDefault(); if (!busy && online) void run(() => addBrowserFiles(files));
+});
+window.addEventListener('dragover', event => { if ([...(event.dataTransfer?.types || [])].includes('Files')) event.preventDefault(); });
+window.addEventListener('drop', event => { if (event.dataTransfer?.files?.length) event.preventDefault(); });
+elements.prompt.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!elements.send.disabled) elements.composer.requestSubmit(); }
+});
 elements.attach.onclick = () => run(async () => {
+  if (!snapshot) await command(null, { action: 'create', workspaceId: activeWorkspace || null, engine: activeHarness });
   const revision = version, id = conversationId;
   const result = await call('attachments-select', { deviceId: selected, conversationId });
   if (revision !== version || id !== conversationId || !online) { await call('attachments-remove', { ids: result.files.map(file => file.id) }); return; }
@@ -412,7 +615,7 @@ elements.rename.onclick = () => showDialog(`${copy('rename')} · ${currentDevice
 elements.pin.onclick = () => run(() => command(null, { action: 'pin', targets: [{ id: conversationId, seq: snapshot.conversation.seq }], pinned: !snapshot.conversation.pinned }));
 elements.archive.onclick = () => showDialog(`${copy('archive')} · ${currentDevice().name}`, snapshot.conversation.title, [], () => command(null, { action: 'archive', conversationId, expectedSeq: snapshot.conversation.seq }));
 elements.deleteChat.onclick = () => showDialog(`${copy('delete')} · ${currentDevice().name} · ${snapshot.conversation.title}`, copy('deleteHint'), [], () => command(null, { action: 'delete', targets: [{ id: conversationId, seq: snapshot.conversation.seq }] }));
-elements.configure.onclick = () => {
+function configureConversation(prepared = false) {
   const settings = snapshot.settings;
   if (!settings.models.length) { elements.error.textContent = copy('noModels'); return; }
   const expectedSettings = settings.version;
@@ -420,12 +623,16 @@ elements.configure.onclick = () => {
   const fields = [{ key: 'model', options: settings.models, value: settings.model }, { key: 'permission', options: settings.permissionLevels.map(id => ({ id, name: copy(id) })), value: settings.permissionMode }];
   fields.push({ key: 'thinking', optional: true, options: [{ id: '', name: copy('default') }, ...(selectedModel?.thinking || []).map(id => ({ id, name: id }))], value: settings.thinking || '' });
   showDialog(`${copy('configure')} · ${currentDevice().name}`, snapshot.conversation.title, fields, values => command(conversationId, { action: 'configure', expectedSettings,
-    settings: { model: values.model, permissionMode: values.permission, thinking: values.thinking } }));
+    settings: { model: values.model, permissionMode: values.permission, thinking: values.thinking } }), prepared);
   elements.fields.querySelector('[name="model"]').onchange = event => {
     const model = settings.models.find(model => model.id === event.target.value);
     const input = elements.fields.querySelector('[name="thinking"]');
     input.replaceChildren(new Option(copy('default'), ''), ...(model?.thinking || []).map(id => new Option(id, id)));
   };
+};
+elements.configure.onclick = () => {
+  if (snapshot) configureConversation();
+  else void run(async () => { await command(null, { action: 'create', workspaceId: activeWorkspace || null, engine: activeHarness }); configureConversation(true); });
 };
 elements.more.onclick = () => run(() => refresh(true));
 elements.older.onclick = () => run(async () => {
@@ -442,7 +649,7 @@ function queueRefresh() {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => {
     if (!selected || !online) return;
-    if (busy || elements.dialog.open || elements.nativeDialog.open) { queueRefresh(); return; }
+    if (busy || elements.dialog.open || elements.nativeDialog.open || elements.serverSettings.open) { queueRefresh(); return; }
     void run(() => refresh());
   }, 350);
 }
@@ -452,12 +659,12 @@ bridge.onEvent(event => {
   queueRefresh();
 });
 bridge.onTransfer(updateTransfer);
-window.addEventListener('beforeunload', () => { clearTimeout(refreshTimer); });
+window.addEventListener('beforeunload', () => { clearTimeout(refreshTimer); clearInterval(connectionTimer); });
 let started = false;
 function start() {
   if (started) { if (!busy && !elements.dialog.open && !elements.nativeDialog.open) void run(async () => { await state(); if (selected) { await refresh(); await watch(); } }); return; }
   started = true;
-  void run(state);
+  void run(async () => { await state(); if (selected) { await refresh(); await watch(); } });
 }
 if (embedded) window.cliDevicesUI = {
   setVisible(value) { if (value) start(); },

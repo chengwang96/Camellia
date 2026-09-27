@@ -22,6 +22,7 @@ const ENGINES = {
   codex: { name: 'Codex CLI', package: '@openai/codex' },
   dsh: { name: 'DeepSeek Harness', package: '@deepseek-ai/dsh', entry: 'lib/bin.js' },
   kimi: { name: 'Kimi Code', package: '@moonshot-ai/kimi-code', entry: 'dist/main.mjs' },
+  pi: { name: 'Pi', package: '@mariozechner/pi-coding-agent', entry: 'dist/cli.js' },
   antigravity: { name: 'Antigravity', type: 'python' },
 };
 function run(exe, args, options = {}, onOutput = () => {}) {

@@ -7,6 +7,8 @@
 <link rel="stylesheet" href="../shared/ui-theme.css">
 <link rel="stylesheet" href="../shared/engine-brand.css">
 <link rel="stylesheet" href="./claude.css">
+<link rel="stylesheet" href="../../../node_modules/katex/dist/katex.min.css">
+<link rel="stylesheet" href="./data-preview.css">
 </head>
 <body>
 <div class="app">
@@ -47,7 +49,7 @@
   <main class="main">
     <div class="main-header">
       <span class="header-title" id="headerTitle">New session</span>
-      <select class="header-pill" id="engineSwitch" aria-label="Conversation engine" data-i18n-attrs="aria-label title"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="dsh">DeepSeek Harness</option><option value="kimi">Kimi Code</option><option value="antigravity">Antigravity</option></select>
+      <select class="header-pill" id="engineSwitch" aria-label="Conversation engine" data-i18n-attrs="aria-label title"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="dsh">DeepSeek Harness</option><option value="kimi">Kimi Code</option><option value="antigravity">Antigravity</option><option value="pi">Pi</option></select>
       <button class="header-pill" id="handoffBtn" title="Choose how to continue in another engine" data-i18n data-i18n-attrs="title">Switch options</button>
       <button class="header-pill" id="handoffStop" hidden data-i18n>Stop handoff</button>
       <span style="flex:1"></span>
@@ -176,6 +178,20 @@
     </div>
   </div>
 </div>
+
+<!-- Permanent conversation delete confirmation -->
+<div class="ws-mask" id="deleteMask">
+  <div class="ws-dialog" role="dialog" aria-modal="true" aria-labelledby="deleteDialogTitle">
+    <div class="perm-title" id="deleteDialogTitle" data-i18n>Delete conversation</div>
+    <p id="deleteTitle"></p>
+    <p class="ws-hint" data-i18n>Deleting removes this conversation and its files permanently. This cannot be undone.</p>
+    <div class="ws-error" id="deleteError" role="alert" hidden></div>
+    <div class="perm-actions">
+      <button type="button" class="perm-deny" id="deleteCancel" data-i18n>Cancel</button>
+      <button type="button" class="perm-allow danger" id="deleteConfirm" data-i18n>Delete permanently</button>
+    </div>
+  </div>
+</div>
 <div class="ws-mask" id="wsMask">
   <form class="ws-dialog" id="wsForm" role="dialog" aria-modal="true" aria-labelledby="wsDialogTitle">
     <div class="perm-title" id="wsDialogTitle" data-i18n>Add workspace</div>
@@ -202,7 +218,7 @@
 <dialog id="switchDialog" class="switch-dialog">
   <h2 data-i18n>Continue with another engine</h2>
   <p data-i18n>Switching can use extra tokens and take longer. Native caches, tool state and internal reasoning do not transfer. Markdown summaries may omit details.</p>
-  <label data-i18n>Engine <select id="switchTarget"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="dsh">DeepSeek Harness</option><option value="kimi">Kimi Code</option><option value="antigravity">Antigravity</option></select></label>
+  <label data-i18n>Engine <select id="switchTarget"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="dsh">DeepSeek Harness</option><option value="kimi">Kimi Code</option><option value="antigravity">Antigravity</option><option value="pi">Pi</option></select></label>
   <label data-i18n>Continue using <select id="switchMethod"><option value="direct" data-i18n>Shared conversation history</option><option value="markdown" data-i18n>Markdown handoff · new native session</option></select></label>
   <p class="switch-hint" data-i18n>Markdown asks the previous engine to summarize, saves a .md file, and opens a new session in the target engine automatically. The conversation stays in this shared list.</p>
   <div class="perm-actions"><button id="switchCancel" class="btn-secondary" data-i18n>Cancel</button><button id="switchConfirm" class="btn-primary" data-i18n>Continue</button></div>
@@ -235,6 +251,15 @@
 <script src="./claude-sidebar.js"></script>
 <script src="./claude-goal-ui.js"></script>
 <script src="./scheduled-tasks-ui.js"></script>
+<script src="../../../node_modules/markdown-it/dist/markdown-it.min.js"></script>
+<script src="../../../node_modules/markdown-it-footnote/dist/markdown-it-footnote.min.js"></script>
+<script src="../../../node_modules/katex/dist/katex.min.js"></script>
+<script src="../../../node_modules/markdown-it-texmath/texmath.js"></script>
+<script src="../../../node_modules/@highlightjs/cdn-assets/highlight.min.js"></script>
+<script src="../../../node_modules/papaparse/papaparse.min.js"></script>
+<script src="./markdown-preview.js"></script>
+<script src="./data-preview.js"></script>
+<script src="./html-preview.js"></script>
 <script src="./claude.js"></script>
 </body>
 </html>

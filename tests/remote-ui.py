@@ -53,6 +53,7 @@ with sync_playwright() as playwright:
             page.get_by_role('button', name='开启手机访问', exact=True).click()
             expect(page.locator('#address')).to_have_text('http://100.80.1.2:43127')
             page.get_by_role('button', name='生成配对码').click()
+            expect(page.locator('#qr img')).to_have_count(1)
             expect(page.locator('#code')).to_have_text('preview-pairing-code')
             assert page.evaluate('window.lastInviteScope') == []
             assert page.evaluate('window.lastInviteOptions.allWorkspaces') is True
@@ -60,12 +61,14 @@ with sync_playwright() as playwright:
             page.evaluate("remoteTest.workspaces.push({id:'future', name:'Future workspace'})")
             page.get_by_role('button', name='生成配对码').click()
             expect(page.get_by_role('checkbox')).to_have_count(0)
+            expect(page.locator('#qr img')).to_have_count(1)
             expect(page.locator('#code')).to_have_text('preview-pairing-code')
             expect(page.locator('#invite')).to_be_enabled()
             assert page.evaluate('window.lastInviteScope') == []
             assert page.evaluate('window.lastInviteOptions.allWorkspaces') is True
             expect(page.locator('#pending .name')).to_contain_text('<img src=x onerror=alert(1)>')
-            assert page.locator('img').count() == 0
+            # The pairing QR is the only image; a hostile device name must stay text.
+            assert page.locator('#pending img, #devices img').count() == 0
             page.get_by_role('button', name='授权设备', exact=True).click()
             expect(page.locator('#pending .device')).to_have_count(0)
             expect(page.locator('#devices .device')).to_have_count(1)
@@ -77,8 +80,9 @@ with sync_playwright() as playwright:
             expect(page.get_by_role('button', name='授权全部访问', exact=True)).to_have_count(0)
             page.get_by_role('button', name='开启手机访问', exact=True).click()
             expect(page.locator('#devices .name')).to_contain_text('全部工作区（含今后新增）及独立会话')
-            expect(page.locator('#devices button')).to_have_count(1)
-            expect(page.locator('#devices button')).to_have_text('撤销')
+            expect(page.locator('#devices button')).to_have_count(2)
+            expect(page.locator('#devices button').first).to_have_text('重命名')
+            expect(page.locator('#devices button').last).to_have_text('撤销')
             expect(page.get_by_text('仅查看', exact=True)).to_have_count(0)
             page.screenshot(path=str(screenshots / f'remote-{scheme}.png'), full_page=True)
             page.get_by_role('button', name='撤销', exact=True).click()
@@ -97,6 +101,7 @@ with sync_playwright() as playwright:
             page.get_by_role('button', name='Enable mobile access', exact=True).click()
             expect(page.locator('#invite')).to_be_enabled()
             page.get_by_role('button', name='Generate pairing code', exact=True).click()
+            expect(page.locator('#qr img')).to_have_count(1)
             assert page.evaluate('window.lastInviteOptions') == {'workspaceIds': [], 'allWorkspaces': True, 'includeUnassigned': True}
             assert not errors, errors
             page.close()

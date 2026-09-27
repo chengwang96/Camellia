@@ -106,7 +106,7 @@ class AcpSession extends StreamingSession {
 
   async open() {
     await this.starting;
-    const initResult = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '0.1.0' } });
+    const initResult = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '0.3.0' } });
     this.promptCapabilities = initResult?.agentCapabilities?.promptCapabilities || {};
     const sourceId = this.opts.sessionId;
     const method = sourceId ? this.opts.fork ? 'session/fork' : 'session/resume' : 'session/new';

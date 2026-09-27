@@ -21,6 +21,13 @@ public final class Endpoint {
 
     public String origin() { return origin; }
 
+    public Endpoint(String ip, String port) {
+        this("http://" + ip.trim() + ":" + port.trim());
+    }
+
+    public String host() { return URI.create(origin).getHost(); }
+    public String port() { return Integer.toString(URI.create(origin).getPort()); }
+
     public URI uri(String path) {
         if (!path.matches("/v1/(?:(?:status|commands|pair/(request|claim)|conversations(?:/events|/[a-f0-9-]{36}(?:/(?:events|commands|artifacts(?:/[a-f0-9]{64})?))?)?)(?:\\?(?:offset|before)=\\d{1,12})?|api-keys)")) {
             throw new IllegalArgumentException("Unsupported remote endpoint");

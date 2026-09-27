@@ -17,6 +17,7 @@ const RESERVED = {
 };
 function definitions(dataDir) {
   return {
+    pi: [{ id: 'instructions', label: 'Pi instructions', format: 'text', file: path.join(dataDir, 'pi-native/AGENTS.md') }],
     claude: [
       { id: 'settings', label: 'Claude settings', format: 'json', file: path.join(dataDir, 'claude-native/settings.json'), policy: 'claude' },
       { id: 'instructions', label: 'CLAUDE.md', format: 'text', file: path.join(dataDir, 'claude-native/CLAUDE.md') },

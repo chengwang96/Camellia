@@ -17,6 +17,18 @@ function fixture(context, overrides = {}) {
     isDestroyed() { return this.destroyed; }
     close() { this.destroyed = true; }
     send(...args) { calls.push(['event', ...args]); }
+    setWindowOpenHandler(handler) { this.windowOpenHandler = handler; }
+  }
+  const windows = [];
+  class Window extends EventEmitter {
+    static fromWebContents(contents) { return windows.find(window => window.webContents === contents); }
+    constructor(options) { super(); this.options = options; this.webContents = new Contents(); windows.push(this); }
+    async loadFile(file, options) { this.file = file; this.query = options.query; }
+    isDestroyed() { return this.webContents.isDestroyed(); }
+    isMinimized() { return false; }
+    show() { this.shown = true; }
+    focus() { this.focused = true; }
+    close() { this.emit('closed'); this.webContents.close(); }
   }
   const main = { webContents: new Contents(), isDestroyed: () => false };
   const settings = { webContents: new Contents(), isDestroyed: () => false };
@@ -32,14 +44,49 @@ function fixture(context, overrides = {}) {
       calls.push(['aborted', target]);
     },
   };
-  const controller = createDevicesDesktop({ app: { getPath: () => 'test-data' }, ipcMain: { handle: (name, callback) => handlers.set(name, callback) },
+  const controller = createDevicesDesktop({ app: { getPath: () => 'test-data' }, BrowserWindow: Window, ipcMain: { handle: (name, callback) => handlers.set(name, callback) },
     getSettingsWindow: () => settings, getSurfaces: () => [settings.webContents], openSettings: target => opened.push(target),
     authorizedSender: webContents => webContents === main.webContents, loadConfig: () => ({}),
     networkFactory: options => { calls.push(['networkFactory', options]); return network; }, clientFactory: () => client, ...overrides });
   context.after(() => controller.close());
   const event = surface => ({ sender: surface.webContents, senderFrame: surface.webContents.mainFrame });
-  return { controller, handlers, calls, opened, main, settings, event, client };
+  return { controller, handlers, calls, opened, main, settings, event, client, windows };
 }
+
+test('home lists server metadata and opens one sandboxed window per server', async context => {
+  const { handlers, main, event, windows } = fixture(context);
+  const list = handlers.get('camellia:list-servers'), open = handlers.get('camellia:open-server');
+  assert.equal(list({}).ok, false);
+  assert.equal(list(event(main)).devices[0].name, 'Server');
+  assert.equal((await open({ ...event(main), senderFrame: {} }, { deviceId: 'server' })).ok, false);
+  assert.equal((await open(event(main), { deviceId: 'missing' })).ok, false);
+  assert.equal((await open(event(main), { deviceId: 'server' })).ok, true);
+  assert.equal(windows.length, 1);
+  assert.deepEqual(windows[0].query, { device: 'server' });
+  assert.equal(windows[0].options.webPreferences.sandbox, true);
+  assert.deepEqual(windows[0].webContents.windowOpenHandler(), { action: 'deny' });
+  assert.equal((await open(event(main), { deviceId: 'server' })).ok, true);
+  assert.equal(windows.length, 1); assert.equal(windows[0].focused, true);
+  const invoke = (action, payload) => handlers.get('camellia:devices')(event(windows[0]), { action, payload });
+  assert.equal((await invoke('conversations', { deviceId: 'server' })).ok, true);
+  assert.equal((await invoke('conversations', { deviceId: 'other' })).ok, false);
+  assert.equal((await invoke('forget', { id: 'server' })).ok, false);
+});
+
+test('closing settings or another server does not cancel remaining server watches', async context => {
+  const { handlers, main, event, windows, client, calls, controller, settings } = fixture(context);
+  client.list = () => [{ id: 'server', name: 'First' }, { id: 'second', name: 'Second' }];
+  for (const deviceId of ['server', 'second']) await handlers.get('camellia:open-server')(event(main), { deviceId });
+  const watch = (surface, deviceId) => handlers.get('camellia:devices')(event(surface), { action: 'watch', payload: { deviceId, conversationId: 'chat', watchId: deviceId } });
+  await watch(windows[0], 'server'); await watch(windows[1], 'second'); await watch(settings, 'settings');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(call => call[0] === 'aborted').length, 0);
+  controller.detach(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(call => call[0] === 'aborted').length, 2);
+  windows[0].close(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(call => call[0] === 'aborted').length, 4);
+  assert.equal(windows[1].isDestroyed(), false);
+});
 
 test('the workbench shortcut opens the settings panel and never a separate window', async context => {
   const { handlers, main, event, opened } = fixture(context);
@@ -48,6 +95,53 @@ test('the workbench shortcut opens the settings panel and never a separate windo
   assert.equal(open({ ...event(main), senderFrame: {} }).ok, false);
   assert.equal(open(event(main)).ok, true);
   assert.deepEqual(opened, [{ page: 'devices' }]);
+});
+
+test('destroyed settings detach uses captured contents without enumerating destroyed windows', async context => {
+  const { handlers, event, settings, controller, calls } = fixture(context);
+  const contents = settings.webContents;
+  await handlers.get('camellia:devices')(event(settings), { action: 'watch', payload: { deviceId: 'server', conversationId: 'chat', watchId: 'settings' } });
+  await new Promise(resolve => setImmediate(resolve));
+  contents.close();
+  Object.defineProperty(settings, 'webContents', { configurable: true, get() { throw new Error('Object has been destroyed'); } });
+  try {
+    assert.doesNotThrow(() => controller.detach([contents, undefined]));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls.filter(call => call[0] === 'aborted').length, 2);
+  } finally { Object.defineProperty(settings, 'webContents', { value: contents }); }
+});
+
+test('a server window stays usable when an unrelated settings surface cannot be read', async context => {
+  let stale = false;
+  const { handlers, main, event, windows, controller } = fixture(context, {
+    getSurfaces: () => { if (stale) throw new TypeError('Object has been destroyed'); return []; },
+  });
+  await handlers.get('camellia:open-server')(event(main), { deviceId: 'server' });
+  stale = true;
+  try {
+    const invoke = (action, payload) => handlers.get('camellia:devices')(event(windows[0]), { action, payload });
+    assert.equal((await invoke('state')).ok, true);
+    assert.equal((await invoke('conversations', { deviceId: 'server' })).ok, true);
+    assert.equal((await invoke('conversations', { deviceId: 'other' })).ok, false);
+    assert.equal((await handlers.get('camellia:devices')(event(main), { action: 'state' })).ok, false);
+    assert.doesNotThrow(() => controller.detach());
+  } finally { stale = false; }
+});
+
+test('server authorization does not read another destroyed BrowserWindow webContents getter', async context => {
+  const { handlers, main, event, windows, client } = fixture(context);
+  client.list = () => [{ id: 'server', name: 'First' }, { id: 'second', name: 'Second' }];
+  for (const deviceId of ['server', 'second']) await handlers.get('camellia:open-server')(event(main), { deviceId });
+  const first = windows[0], contents = first.webContents;
+  contents.close();
+  first.isDestroyed = () => true;
+  Object.defineProperty(first, 'webContents', { configurable: true, get() { throw new TypeError('Object has been destroyed'); } });
+  try {
+    const result = await handlers.get('camellia:devices')(event(windows[1]), { action: 'state' });
+    assert.equal(result.ok, true);
+    const rejected = await handlers.get('camellia:devices')({ sender: contents, senderFrame: contents.mainFrame }, { action: 'state' });
+    assert.equal(rejected.ok, false);
+  } finally { Object.defineProperty(first, 'webContents', { value: contents }); }
 });
 
 test('device operations are accepted from the settings surfaces only and broadcast their events there', async context => {
@@ -64,6 +158,30 @@ test('device operations are accepted from the settings surfaces only and broadca
   assert.equal(calls.find(call => call[0] === 'command')[1], 'server');
 });
 
+test('disposed IPC frames are rejected without accessing settings or starting networking', async context => {
+  let enumerations = 0;
+  const { handlers, settings, calls, event } = fixture(context, { getSurfaces: () => { enumerations++; return []; } });
+  const disposed = { ...event(settings), get senderFrame() { throw new Error('Render frame was disposed'); } };
+  for (const channel of ['camellia:devices', 'camellia:list-servers', 'camellia:open-server', 'camellia:open-devices']) {
+    const result = await handlers.get(channel)(disposed, { action: 'state', deviceId: 'server' });
+    assert.equal(result.ok, false, channel);
+  }
+  assert.equal(enumerations, 0);
+  assert.equal(calls.length, 0);
+});
+
+test('destroyed server contents are unregistered before another window sends IPC', async context => {
+  const { handlers, main, event, windows } = fixture(context);
+  const open = handlers.get('camellia:open-server');
+  await open(event(main), { deviceId: 'server' });
+  const contents = windows[0].webContents;
+  contents.close(); contents.emit('destroyed');
+  assert.equal((await open(event(main), { deviceId: 'server' })).ok, true);
+  assert.equal(windows.length, 2);
+  assert.equal((await handlers.get('camellia:devices')(event(windows[1]), { action: 'state' })).ok, true);
+  assert.equal((await handlers.get('camellia:devices')({ sender: contents, senderFrame: contents.mainFrame }, { action: 'state' })).ok, false);
+});
+
 test('device watches only emit invalidations and cancel when the panel detaches', async context => {
   const { controller, handlers, settings, event, calls } = fixture(context);
   assert.equal((await handlers.get('camellia:devices')(event(settings), { action: 'watch', payload: { deviceId: 'server', conversationId: 'chat', watchId: 'view-1' } })).ok, true);
@@ -74,6 +192,20 @@ test('device watches only emit invalidations and cancel when the panel detaches'
   controller.detach();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.filter(call => call[0] === 'aborted').length, 2);
+});
+
+test('pasted attachments are server-scoped opaque IDs and reject renderer filesystem paths', async context => {
+  const { handlers, settings, event, client, calls } = fixture(context);
+  client.snapshot = async () => ({});
+  const invoke = (action, payload) => handlers.get('camellia:devices')(event(settings), { action, payload });
+  const payload = { deviceId: 'server', conversationId: 'chat', files: [{ name: 'paste.txt', data: Buffer.from('hello').toString('base64') }] };
+  const added = await invoke('attachments-add', payload);
+  assert.equal(added.ok, true); assert.equal('data' in added.result.files[0], false);
+  const ids = added.result.files.map(file => file.id);
+  assert.equal((await invoke('command', { deviceId: 'other', conversationId: 'chat', attachmentIds: ids, command: { action: 'send' } })).ok, false);
+  assert.equal((await invoke('command', { deviceId: 'server', conversationId: 'chat', attachmentIds: ids, command: { action: 'send' } })).ok, true);
+  assert.equal(calls.find(call => call[0] === 'command')[3].attachments[0].name, 'paste.txt');
+  assert.equal((await invoke('attachments-add', { ...payload, files: [{ ...payload.files[0], path: 'C:/private' }] })).ok, false);
 });
 
 test('native settings IPC forwards only from the settings window and links require native confirmation', async context => {

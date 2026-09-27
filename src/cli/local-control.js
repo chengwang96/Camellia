@@ -69,7 +69,7 @@ function requestControl(dataDir, action, payload = {}) {
       if (error) reject(error); else resolve(result);
     };
     socket.setTimeout(30_000, () => finish(new Error('Local server request timed out')));
-    socket.on('error', () => finish(new Error('Cannot connect to Camellia server; start serve first')));
+    socket.on('error', error => finish(Object.assign(new Error('Cannot connect to Camellia server; run ./camellia or start serve first'), { code: error.code })));
     socket.on('connect', () => socket.write(encoded));
     socket.on('data', chunk => {
       if (buffer.length + chunk.length > 8 * 1024 * 1024) { finish(new Error('Local response is too large')); return; }

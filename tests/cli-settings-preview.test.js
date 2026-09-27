@@ -8,7 +8,7 @@ const { PAGES, CAT, initialState, transition, render, width, fit } = require('..
 const { parseOptions } = require('../scripts/cli-settings-preview.cjs');
 
 test('CLI design contains desktop settings and server-specific categories', () => {
-  assert.deepEqual(PAGES.map(page => page.id), ['providers', 'usage', 'general', 'engines', 'runtimes', 'workspaces', 'archived', 'storage', 'network', 'service', 'diagnostics']);
+  assert.deepEqual(PAGES.map(page => page.id), ['providers', 'usage', 'general', 'engines', 'runtimes', 'workspaces', 'archived', 'network', 'service', 'diagnostics']);
   assert.equal(CAT.length, 5);
   for (const page of PAGES) {
     for (const language of ['zh', 'en']) {

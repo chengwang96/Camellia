@@ -4,7 +4,6 @@ import android.content.Context;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.text.InputFilter;
-import android.text.InputType;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -43,7 +42,7 @@ final class ChatComposer {
         input.setHint(hint); input.setHintTextColor(style.muted);
         input.setContentDescription(chinese ? "消息输入框" : "Message input");
         input.setGravity(Gravity.TOP | Gravity.START);
-        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        input.useMultiLineInput();
         input.setFilters(new InputFilter[] { new InputFilter.LengthFilter(limit) });
         input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         input.setBackgroundColor(Color.TRANSPARENT); input.setPadding(dp(12), dp(12), dp(8), dp(12));

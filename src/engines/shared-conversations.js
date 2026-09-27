@@ -17,10 +17,10 @@ const { callConversationTool } = require('./conversation-control');
 const { planCompaction, takeFragment, summaryLimit: compactionSummaryLimit } = require('./compaction-plan');
 const { runSummaryPipeline } = require('./compaction-summary');
 
-const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity'];
+const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
 // Last-resort caps when neither the conversation nor the router catalog knows
 // the model's window; mirrors the composer's defaults.
-const ENGINE_CTX_DEFAULTS = { claude: 200000, codex: 272000, dsh: 131072, kimi: 131072, antigravity: 1048576 };
+const ENGINE_CTX_DEFAULTS = { claude: 200000, codex: 272000, dsh: 131072, kimi: 131072, antigravity: 1048576, pi: 65536 };
 // Codex's app-server rejects a turn whose total input text exceeds
 // MAX_USER_INPUT_TEXT_CHARS (1 << 20 in codex-protocol) no matter how large the
 // selected model's window is, so a replayed history has to stay under it.
@@ -43,6 +43,9 @@ const contextOverflow = event => event.is_error && /context[_ ]?(length|window)[
 const staleNativeSession = /no rollout found|rollout file missing|rollout not found/i;
 const revisionNotice = { role: 'notice', text: 'This user message restarts the last turn. Its previous reply and tool history have been discarded. Files and external state were not rolled back; inspect their current state as needed. Follow the request below.' };
 const recoveryAdvice = 'The original history is retained. Try manual compaction, switch to a larger-context model, or continue in a new conversation. Split oversized messages or attachments. Files and external actions have not been rolled back.';
+// Compaction failures already carry the advice, so appending it again at the
+// recovery boundary printed the same paragraph twice in the transcript.
+const withRecoveryAdvice = message => String(message).includes(recoveryAdvice) ? String(message) : String(message) + '\n' + recoveryAdvice;
 const inputCharLimit = engine => ENGINE_INPUT_CHAR_LIMITS[engine] || 0;
 const overInputChars = (engine, prompt) => {
   const limit = inputCharLimit(engine);
@@ -901,7 +904,7 @@ class SharedConversations {
         this.active.set(c.id, a); a.session = null;
         if (!a.cancelled && this.goals.get(c.id)?.armed) this.goals.get(c.id).block('context-recovery-failed', error.message);
         this.capture(engine, { type: 'result', subtype: a.cancelled ? 'stopped' : 'error', is_error: !a.cancelled,
-          conversationId: c.id, result: 'Context recovery failed: ' + error.message + '\n' + recoveryAdvice });
+          conversationId: c.id, result: 'Context recovery failed: ' + withRecoveryAdvice(error.message) });
       }
     } finally {
       this.recovering.delete(c.id);
@@ -1343,6 +1346,10 @@ class SharedConversations {
         if (this.busy(payload.id)) throw new Error('Stop this conversation before archiving it');
         this.tasks.pauseSession(payload.id);
         return this.workspaces.archiveSession(payload.id, payload.archived !== false);
+      case 'delete-session':
+        if (this.goals.get(payload.id)?.armed) throw new Error('Pause the goal before deleting its conversation');
+        if (this.busy(payload.id)) throw new Error('Stop this conversation before deleting it');
+        return this.workspaces.removeSession(payload.id);
       case 'meta-op':
         if (payload.op === 'move-session') {
           const conversation = this.get(payload.sessionId);

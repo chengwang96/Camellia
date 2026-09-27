@@ -1,6 +1,6 @@
 'use strict';
 
-function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canReadReply = () => true, setStatus, newSession, openHistorySession, forkSession, canFork = () => true, openActionMenu, closePops }) {
+function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canReadReply = () => true, setStatus, newSession, openHistorySession, forkSession, canFork = () => true, openActionMenu, closePops, noteLocalDelete = () => {} }) {
   const input = $('input');
   let sessionHistory = [], workspaces = [];
   let historyLoadSeq = 0;
@@ -448,6 +448,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       ...(canFork(s) ? [{ label: "Fork session", disabled: contextBusy(), run: () => void forkSession(s) }] : []),
       ...(s.imported ? [{ label: "Sync from Codex desktop", run: () => openSyncDialog(s) }] : []),
       { label: "Archive session", disabled: contextBusy(), run: () => void archiveSession(s) },
+      { label: "Delete conversation", disabled: contextBusy(), run: () => confirmDeleteSession(s) },
     ], position);
   }
   function openWorkspacePicker(anchor, s, position) {
@@ -503,6 +504,10 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     else $('input').focus();
   }
   $('wsCancel').addEventListener('click', closeWorkspaceDialog);
+  $('deleteCancel').addEventListener('click', closeDeleteDialog);
+  $('deleteMask').addEventListener('click', (e) => { if (e.target === $('deleteMask')) closeDeleteDialog(); });
+  $('deleteMask').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closeDeleteDialog(); } });
+  $('deleteConfirm').addEventListener('click', () => void deleteSessionConfirmed());
   $('wsMask').addEventListener('click', (e) => { if (e.target === $('wsMask')) closeWorkspaceDialog(); });
   $('wsMask').addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.preventDefault(); closeWorkspaceDialog(); }
@@ -617,6 +622,51 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       }
       setStatus("Session archived");
     } catch (err) { setStatus(err.message); }
+  }
+
+  // Permanent delete of one conversation: transcript, metadata and native
+  // binding all go away. Deleting the open one continues with the neighbor
+  // (or a fresh draft), matching the archive flow.
+  let deleteTarget = null, deleteReturnFocus = null;
+  function closeDeleteDialog() {
+    $('deleteMask').classList.remove('visible');
+    deleteTarget = null;
+    if (deleteReturnFocus && deleteReturnFocus.isConnected) deleteReturnFocus.focus();
+    else input.focus();
+  }
+  function confirmDeleteSession(s) {
+    if (!canChangeContext()) return;
+    deleteTarget = s;
+    deleteReturnFocus = document.activeElement;
+    $('deleteTitle').textContent = s.title || '(Empty session)';
+    $('deleteError').textContent = ''; $('deleteError').hidden = true;
+    $('deleteConfirm').disabled = false;
+    $('deleteMask').classList.add('visible');
+    $('deleteCancel').focus();
+  }
+  async function deleteSessionConfirmed() {
+    const s = deleteTarget;
+    if (!s) return;
+    const wasOpen = context.sessionId === s.id;
+    const neighbor = wasOpen ? await adjacentSession(s) : null;
+    $('deleteConfirm').disabled = true;
+    $('deleteError').textContent = ''; $('deleteError').hidden = true;
+    try {
+      const res = await chatApi.deleteSession({ id: s.id });
+      if (!res.ok) throw new Error(res.error);
+      noteLocalDelete(s.id);
+      closeDeleteDialog();
+      await loadSessionHistory();
+      if (wasOpen) {
+        const openable = neighbor && sessionHistory.some((entry) => entry.id === neighbor.id);
+        if (openable) await openHistorySession(neighbor.id);
+        if (context.sessionId !== neighbor?.id) await newSession(s.workspaceId || null);
+      }
+      setStatus("Conversation deleted");
+    } catch (err) {
+      $('deleteConfirm').disabled = false;
+      $('deleteError').textContent = err.message; $('deleteError').hidden = false;
+    }
   }
 
   // ---------- local Codex desktop session import ----------

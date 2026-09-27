@@ -14,8 +14,8 @@ const archiveSource = source.slice(
 // Runs the real sidebar archive handler against a scripted history list.
 // `pages` are the session lists reported by successive loadSessionHistory calls.
 function fixture({ sessions, sessionId = 'open', archiveOk = true, canChange = true, openResult = true,
-  pagination = {}, pages = [], listFails = false }) {
-  const state = { sessions, archived: [], opened: [], created: [], status: [], limits: [] };
+  pagination = {}, pages = [], listFails = false, deleteOk = true }) {
+  const state = { sessions, archived: [], deleted: [], local: [], opened: [], created: [], status: [], limits: [] };
   const context = {
     sessionHistory: sessions,
     workspaces: [],
@@ -24,15 +24,22 @@ function fixture({ sessions, sessionId = 'open', archiveOk = true, canChange = t
     limits: {},
     canChangeContext: () => canChange,
     setStatus: text => state.status.push(text),
+    noteLocalDelete: id => state.local.push(id),
+    $: id => ({ textContent: '', hidden: true, disabled: false, classList: { add() {}, remove() {} }, focus() {} }),
+    input: { focus() {} },
+    document: { activeElement: null },
     chatApi: { archiveSession: async ({ id, archived }) => {
       state.archived.push({ id, archived });
       return archiveOk ? { ok: true } : { ok: false, error: 'Archive failed' };
+    }, deleteSession: async ({ id }) => {
+      state.deleted.push(id);
+      return deleteOk ? { ok: true } : { ok: false, error: 'Delete failed' };
     } },
     loadSessionHistory: async () => {
       if (listFails) return false;
       state.limits.push({ ...context.limits });
       if (pages.length) state.sessions = pages.shift();
-      else state.sessions = state.sessions.filter(entry => !state.archived.some(row => row.id === entry.id));
+      else state.sessions = state.sessions.filter(entry => !state.archived.some(row => row.id === entry.id) && !state.deleted.includes(entry.id));
       context.sessionHistory = state.sessions;
       return true;
     },
@@ -162,4 +169,51 @@ test('a failed or blocked archive changes nothing', async () => {
   await blocked.context.archiveSession(sessions[0]);
   assert.deepEqual(blocked.state.archived, []);
   assert.deepEqual(blocked.state.status, []);
+});
+
+test('deleting the open conversation opens its neighbor and records the local cleanup', async () => {
+  const sessions = [workspace('first'), workspace('second'), workspace('third')];
+  const { context, state } = fixture({ sessions, sessionId: 's-second' });
+  context.confirmDeleteSession(sessions[1]);
+  await context.deleteSessionConfirmed();
+  assert.deepEqual(state.deleted, ['s-second']);
+  assert.deepEqual(state.local, ['s-second']);
+  assert.deepEqual(state.opened, ['s-third']);
+  assert.deepEqual(state.created, []);
+  assert.deepEqual(state.status, ['Conversation deleted']);
+});
+
+test('deleting the only conversation of a workspace falls back to its draft page', async () => {
+  const sessions = [{ id: 'only', title: 'Only', workspaceId: 'ws' }];
+  const { context, state } = fixture({ sessions, sessionId: 'only' });
+  context.confirmDeleteSession(sessions[0]);
+  await context.deleteSessionConfirmed();
+  assert.deepEqual(state.deleted, ['only']);
+  assert.deepEqual(state.opened, []);
+  assert.deepEqual(state.created, ['ws']);
+});
+
+test('deleting another conversation keeps the current one and cannot start while busy', async () => {
+  const sessions = [workspace('open-row'), workspace('other')];
+  const { context, state } = fixture({ sessions, sessionId: 's-open-row' });
+  context.confirmDeleteSession(sessions[1]);
+  await context.deleteSessionConfirmed();
+  assert.deepEqual(state.deleted, ['s-other']);
+  assert.deepEqual(state.opened, []);
+  assert.deepEqual(state.created, []);
+
+  const busy = fixture({ sessions, sessionId: 's-open-row', canChange: false });
+  busy.context.confirmDeleteSession(sessions[1]);
+  assert.deepEqual(busy.state.deleted, []);
+});
+
+test('a failed delete reports the error and keeps the confirmation open', async () => {
+  const sessions = [workspace('first')];
+  const { context, state } = fixture({ sessions, sessionId: 's-first', deleteOk: false });
+  context.confirmDeleteSession(sessions[0]);
+  await context.deleteSessionConfirmed();
+  assert.deepEqual(state.deleted, ['s-first']);
+  assert.deepEqual(state.local, []);
+  assert.deepEqual(state.opened, []);
+  assert.deepEqual(state.status, []);
 });

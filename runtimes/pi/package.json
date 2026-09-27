@@ -1,0 +1,8 @@
+{
+  "name": "workbench-pi-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "0.73.1"
+  }
+}

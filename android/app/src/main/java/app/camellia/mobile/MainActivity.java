@@ -35,6 +35,9 @@ import java.util.concurrent.Future;
 public final class MainActivity extends Activity {
     private static final int PICK_IMAGE_REQUEST = 42;
     private static final int TAKE_PHOTO_REQUEST = 43;
+    private static final int SCAN_QR_REQUEST = 44;
+    private static final long COMMAND_CONFIRM_TIMEOUT_MS = 30_000;
+    private static final long COMMAND_POLL_INTERVAL_MS = 1_500;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final LocationConsent locationConsent = new LocationConsent(this);
 
@@ -76,7 +79,7 @@ public final class MainActivity extends Activity {
     private android.view.ViewTreeObserver.OnPreDrawListener pendingMessageScroll;
     private int pendingScrollPosition;
     private long messageScrollRevision;
-    private EditText addressInput, nameInput, codeInput;
+    private EditText addressInput, portInput, nameInput, codeInput;
     private String conversationId;
     private String conversationTitle = "";
     private Long nextBefore;
@@ -105,6 +108,7 @@ public final class MainActivity extends Activity {
     private java.io.File cameraImageFile;
     private EditText searchInput;
     private JSONArray availableWorkspaces = new JSONArray();
+    private java.util.List<String> availableEngines = RemoteEngines.available(null);
     private boolean canCreate, canCreateWorkspace, canImage, canMultiImage, allowIndependent, canMove, canArchive;
     private ConversationMenu conversationPopup;
     private boolean canManageConversations, selectingConversations;
@@ -606,7 +610,37 @@ public final class MainActivity extends Activity {
             });
         }
         settingsStyle.row(data, "phone", tr("手机访问", "Mobile access"), "", "settings:network", this::showNetwork);
+        settingsStyle.row(data, "settings", tr("本机名称", "This phone name"), MobilePreferences.deviceName(this), "settings:deviceName", this::editDeviceName);
         status.setVisibility(View.GONE);
+    }
+
+    private void editDeviceName() {
+        SettingsStyle style = new SettingsStyle(this);
+        LinearLayout panel = computerDialogPanel(tr("本机名称", "This phone name"),
+            tr("配对时默认提交这个名称，电脑端可以在授权时确认。最多 80 个字符。", "This name is submitted by default when pairing; the computer confirms it when authorizing. Up to 80 characters."), "phone");
+        TextView label = text(tr("设备名称", "Device name"), 12, muted); panel.addView(label);
+        EditText name = new EditText(this); name.setId(View.generateViewId()); label.setLabelFor(name.getId());
+        name.setSingleLine(true); name.setTextSize(16); name.setTextColor(ink); name.setHintTextColor(muted);
+        name.setText(MobilePreferences.deviceName(this)); name.setContentDescription(tr("设备名称", "Device name"));
+        name.setTag("deviceNameInput"); name.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(80)});
+        name.setPadding(dp(16), dp(14), dp(16), dp(14)); name.setMinHeight(dp(54));
+        panel.addView(new SettingsField(name), new LinearLayout.LayoutParams(-1, -2));
+        android.app.AlertDialog dialog = (android.app.AlertDialog) createComputerDialog(panel, tr("保存", "Save"), tr("取消", "Cancel"));
+        Button save = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE); save.setTag("deviceNameSave");
+        save.setOnClickListener(view -> {
+            String value = name.getText().toString().trim();
+            if (value.isEmpty() || value.length() > 80) { status.setText(tr("请输入 1–80 个字符的名称。", "Enter a name of 1–80 characters.")); name.requestFocus(); return; }
+            MobilePreferences.set(this, "deviceName", value);
+            dialog.dismiss(); settingsScreen();
+        });
+        name.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+        name.setOnEditorActionListener((view, action, event) -> {
+            if (action != android.view.inputmethod.EditorInfo.IME_ACTION_DONE) return false;
+            save.performClick(); return true;
+        });
+        showComputerDialog(dialog);
+        name.requestFocus(); name.selectAll();
     }
 
     private void computersScreen() {
@@ -846,9 +880,15 @@ public final class MainActivity extends Activity {
         conversationId = null;
         shell(tr("连接你的电脑", "Connect your computer"), "TAILSCALE · " + tr("安全配对", "DEVICE PAIRING"));
         content.addView(button(tr("内置网络 / Tailscale 登录", "Embedded network / Tailscale login"), this::showNetwork, false));
-        content.addView(text(tr("手机可使用内置 Tailscale，无需另装 App。先登录电脑所在的网络，再在电脑「手机访问」中生成配对码。", "Use built-in Tailscale without another app. Sign into the computer's tailnet, then generate a pairing code in desktop Mobile access."), 15, ink));
-        addressInput = input(tr("电脑地址", "Computer address"), credentials.optString("address", "http://100."), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        nameInput = input(tr("设备名称", "Device name"), credentials.optString("name", android.os.Build.MODEL), InputType.TYPE_CLASS_TEXT);
+        content.addView(text(tr("手机可使用内置 Tailscale，无需另装 App。先登录电脑所在的网络，再在电脑「手机访问」中生成配对二维码。", "Use built-in Tailscale without another app. Sign into the computer's tailnet, then generate a pairing QR code in desktop Mobile access."), 15, ink));
+        content.addView(button(tr("扫描二维码自动填写", "Scan QR to fill in"), this::scanPairingCode, true));
+        content.addView(text(tr("扫描电脑端二维码后会自动填入地址和配对码，无需手动输入 IP。也可以继续在下方手动填写。", "Scanning the desktop QR fills in the address and pairing code automatically; no IP typing needed. You can still fill in the fields below manually."), 12, muted));
+        Endpoint savedEndpoint = credentials.has("address") ? new Endpoint(credentials.optString("address")) : null;
+        addressInput = input(tr("电脑 IP（Tailscale）", "Computer IP (Tailscale)"), savedEndpoint == null ? "" : savedEndpoint.host(), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        addressInput.setHint("100.x.y.z");
+        portInput = input(tr("端口", "Port"), savedEndpoint == null ? "43127" : savedEndpoint.port(), InputType.TYPE_CLASS_NUMBER);
+        portInput.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(5)});
+        nameInput = input(tr("设备名称", "Device name"), credentials.optString("name", MobilePreferences.deviceName(this)), InputType.TYPE_CLASS_TEXT);
         codeInput = input(tr("一次性配对码", "One-time pairing code"), "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
         codeInput.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(24)});
         content.addView(button(tr("请求配对", "Request pairing"), this::requestPairing, true));
@@ -856,13 +896,28 @@ public final class MainActivity extends Activity {
         content.addView(text(tr("电脑端确认授权后，即可查看会话、发送、停止和审批，无需另设权限。", "Once authorized on the computer, you can read, send, stop and approve without separate permission settings."), 12, muted));
     }
 
+    private void scanPairingCode() {
+        if (!foreground) return;
+        try { startActivityForResult(new android.content.Intent(this, QrScanActivity.class), SCAN_QR_REQUEST); }
+        catch (Exception error) { reportError("无法打开二维码扫描", "Cannot open the QR scanner", error); }
+    }
+
+    private void applyScannedPairing(String address, String code) {
+        if (addressInput != null) addressInput.setText(address);
+        if (portInput != null) portInput.setText(new Endpoint(address).port());
+        if (codeInput != null) codeInput.setText(code);
+        status.setText(tr("已填入二维码中的地址和配对码。", "Address and pairing code filled in from the QR code."));
+        requestPairing();
+    }
+
     private void requestPairing() {
         if (!foreground) return;
         try {
-            String address = new Endpoint(addressInput.getText().toString()).origin();
+            String address = new Endpoint(addressInput.getText().toString(), portInput.getText().toString()).origin();
             String name = nameInput.getText().toString().trim();
             String code = codeInput.getText().toString().trim();
             if (name.isEmpty() || name.length() > 80 || !code.matches("[a-fA-F0-9]{24}")) throw new IllegalArgumentException();
+            MobilePreferences.set(this, "deviceName", name);
             String displayName = credentials.optString("computerName");
             credentials = new JSONObject().put("address", address).put("name", name);
             if (!displayName.isEmpty()) credentials.put("computerName", displayName);
@@ -876,12 +931,17 @@ public final class MainActivity extends Activity {
                     deliver(ticket, () -> {
                         try {
                             credentials.put("id", result.getString("id")).put("claim", result.getString("claim")).put("expiresAt", result.getLong("expiresAt"));
+                            // The desktop reports its own display name with the request;
+                            // keep it as this computer's initial label unless the user
+                            // already renamed it on this phone.
+                            String computer = result.optString("computerName", "");
+                            if (!computer.isEmpty() && credentials.optString("computerName").isEmpty()) credentials.put("computerName", computer);
                             store.save(credentials); codeInput.setText(""); waitForApproval();
                         } catch (Exception error) { reportError("无法保存配对，请重新生成配对码。", "Could not save pairing. Generate a new code.", error); }
                     });
                 } catch (Exception error) { deliver(ticket, () -> showFailure(error, false)); }
             });
-        } catch (Exception error) { reportError("请检查 Tailscale 地址、设备名称和 24 位配对码。", "Check the Tailscale address, device name and 24-character pairing code.", error); }
+        } catch (Exception error) { reportError("请检查 Tailscale IP、端口（1–65535）、设备名称和 24 位配对码。", "Check the Tailscale IP, port (1–65535), device name and 24-character pairing code.", error); }
     }
 
     private void waitForApproval() {
@@ -1207,6 +1267,10 @@ public final class MainActivity extends Activity {
     }
 
     private void updateCapabilities(JSONObject info) {
+        JSONArray engines = info.optJSONArray("engines");
+        java.util.List<String> advertised = engines == null ? null : new ArrayList<>();
+        if (engines != null) for (int index = 0; index < engines.length(); index++) advertised.add(engines.optString(index));
+        availableEngines = RemoteEngines.available(advertised);
         String capabilities = String.valueOf(info.optJSONArray("capabilities"));
         canCreate = info.optString("permission").equals("control") && capabilities.contains("\"create\"");
         canCreateWorkspace = info.optString("permission").equals("control") && capabilities.contains("\"create-workspace\"");
@@ -1268,7 +1332,7 @@ public final class MainActivity extends Activity {
         android.app.Dialog dialog = createComputerDialog(panel);
         SettingsStyle style = new SettingsStyle(this);
         LinearLayout group = style.group(panel, tr("执行引擎", "Engine"));
-        for (String engine : new String[]{"codex", "claude", "kimi", "dsh", "antigravity"}) style.action(group, engine.toUpperCase(Locale.ROOT), "", "createEngine:" + engine, false, () -> {
+        for (String engine : availableEngines) style.action(group, RemoteEngines.label(engine), "", "createEngine:" + engine, false, () -> {
             try {
                 JSONObject payload = command("create").put("instanceId", listInstance).put("workspaceId", workspace == null ? JSONObject.NULL : workspace).put("engine", engine);
                 JSONObject saved = new JSONObject(credentials.toString()).put("pendingCreate", payload); store.save(saved); credentials = saved;
@@ -1398,6 +1462,13 @@ public final class MainActivity extends Activity {
         super.onActivityResult(request, result, data);
         if (request == ArtifactDownloads.SAVE_REQUEST) {
             artifactDownloads.result(result, data, credentials.optString("address"), credentials.optString("token")); return;
+        }
+        if (request == SCAN_QR_REQUEST) {
+            if (result != RESULT_OK || data == null) return;
+            String address = data.getStringExtra(QrScanActivity.EXTRA_ADDRESS), code = data.getStringExtra(QrScanActivity.EXTRA_CODE);
+            if (address == null || code == null) { status.setText(tr("二维码内容不完整，请在电脑端重新生成。", "The QR code is incomplete. Generate a new one on the computer.")); return; }
+            applyScannedPairing(address, code);
+            return;
         }
         if (request != PICK_IMAGE_REQUEST && request != TAKE_PHOTO_REQUEST) return;
         ArrayList<android.net.Uri> uris = new ArrayList<>();
@@ -1701,6 +1772,16 @@ public final class MainActivity extends Activity {
         JSONArray rows = snapshot.optJSONArray("messages");
         if (rows == null) return;
         long first = rows.length() == 0 ? 0 : rows.optJSONObject(0).optLong("seq");
+        // An edited turn returns with a higher seq and takes its superseded rows
+        // with it, so cached rows below a snapshot that begins the conversation
+        // were replaced on the computer and leave this transcript too. A desktop
+        // that does not report paging is treated as still holding earlier pages.
+        boolean olderAvailable = !snapshot.has("nextBefore") || !snapshot.isNull("nextBefore");
+        for (long seq : RemoteTranscript.superseded(history.keySet(), first, olderAvailable, historyLimited)) {
+            JSONObject removed = history.remove(seq);
+            if (removed != null) historyBytes -= historyRowBytes(removed);
+        }
+        if (historyBytes < 0) historyBytes = 0;
         forgetHistoryFrom(first);
         for (int index = 0; index < rows.length(); index++) { JSONObject row = rows.optJSONObject(index); if (row != null) retainHistory(row.optLong("seq"), row); }
         if (history.isEmpty() || history.firstKey() >= first) nextBefore = snapshot.isNull("nextBefore") ? null : snapshot.optLong("nextBefore");
@@ -2211,12 +2292,13 @@ public final class MainActivity extends Activity {
             outgoingState("sending");
             scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
         }
-        commandCheckDeadline = 0;
         updateControls();
         retryCommand();
     }
 
-    private void retryCommand() {
+    private void retryCommand() { retryCommand(true); }
+
+    private void retryCommand(boolean userInitiated) {
         JSONObject pending = credentials.optJSONObject("pendingCommand");
         if (!foreground || !connected || !controlAllowed || commandBusy || pending == null || api == null) return;
         String target = pending.optString("conversationId"); JSONObject payload = pending.optJSONObject("payload");
@@ -2225,11 +2307,18 @@ public final class MainActivity extends Activity {
                 .setPositiveButton(tr("打开", "Open"), (dialog, which) -> { conversationId = target; conversationTitle = tr("待确认操作", "Unconfirmed operation"); detailScreen(); connectEvents(); })
                 .setNegativeButton(tr("取消", "Cancel"), null).show(); return;
         }
-        commandBusy = true; updateControls();
-        if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) outgoingState("sending");
-        if (android.os.SystemClock.elapsedRealtime() >= commandCheckDeadline) commandCheckDeadline = android.os.SystemClock.elapsedRealtime() + 30_000;
+        commandBusy = true;
+        boolean sending = payload.optString("action").equals("send") || payload.optString("action").equals("resend");
+        // Only the user-facing entry point opens a confirmation window; the
+        // automatic checks reuse it. Re-arming on every poll would push the
+        // deadline out forever and the wait would never report a timeout.
+        if (userInitiated) {
+            commandCheckDeadline = android.os.SystemClock.elapsedRealtime() + COMMAND_CONFIRM_TIMEOUT_MS;
+            if (sending) outgoingState("sending");
+            status.setText(tr("正在提交操作…", "Submitting operation…"));
+        }
+        updateControls();
         RemoteApi client = api; int ticket = generation; String token = credentials.optString("token");
-        status.setText(tr("正在提交操作…", "Submitting operation…"));
         commandWorker.submit(() -> {
             try {
                 JSONObject result = client.json("/v1/conversations/" + target + "/commands", token, payload);
@@ -2270,9 +2359,9 @@ public final class MainActivity extends Activity {
                 if (foreground && ticket == generation && pending != null && pending.optJSONObject("payload") != null
                         && payload.optString("requestId").equals(pending.optJSONObject("payload").optString("requestId"))) {
                     if (android.os.SystemClock.elapsedRealtime() >= commandCheckDeadline) finishCommand(payload, result);
-                    else retryCommand();
+                    else retryCommand(false);
                 }
-            }, 1500);
+            }, COMMAND_POLL_INTERVAL_MS);
             updateControls();
             return;
         }

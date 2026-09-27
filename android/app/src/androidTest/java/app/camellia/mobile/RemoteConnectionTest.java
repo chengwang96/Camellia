@@ -9,6 +9,27 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class RemoteConnectionTest extends InstrumentationTestCase {
+    public void testPairingUsesSeparateIpAndPortAndRestoresSavedAddress() throws Exception {
+        ui(() -> {
+            invoke("stopNetwork");
+            field("credentials", new JSONObject());
+            invoke("pairScreen");
+            var addressField = MainActivity.class.getDeclaredField("addressInput"); addressField.setAccessible(true);
+            var portField = MainActivity.class.getDeclaredField("portInput"); portField.setAccessible(true);
+            var address = (android.widget.EditText) addressField.get(activity);
+            var port = (android.widget.EditText) portField.get(activity);
+            assertEquals("", address.getText().toString());
+            assertEquals("43127", port.getText().toString());
+            assertEquals(android.text.InputType.TYPE_CLASS_NUMBER, port.getInputType() & android.text.InputType.TYPE_MASK_CLASS);
+            assertTrue(address.isShown());
+            assertTrue(port.isShown());
+            field("credentials", new JSONObject().put("address", "http://100.80.1.2:43128"));
+            invoke("pairScreen");
+            assertEquals("100.80.1.2", ((android.widget.EditText) addressField.get(activity)).getText().toString());
+            assertEquals("43128", ((android.widget.EditText) portField.get(activity)).getText().toString());
+        });
+    }
+
     public void testPreloadedMessagesRenderWithoutGrantingControlOrMarkingRead() throws Exception {
         ui(() -> {
             String id = "00000000-0000-0000-0000-000000000001";

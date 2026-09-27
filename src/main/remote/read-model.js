@@ -102,7 +102,10 @@ class RemoteReadModel {
       startedAt: active.startedAt, userSeq: active.userSeq, ...text(output ? output.text : active.text || active.assistant.join('\n\n')),
       ...(output?.process.length ? { process: output.process } : {}),
       pendingApprovals: active.permissions.size, approvals: device.permission === 'control' ? [...active.permissions.values()].map(approval) : [] } : null;
+    const goal = this.manager.goalFor?.(id)?.view();
     return { conversation: this.summary(conversation), messages, live, permission: device.permission,
+      automation: { goal: goal ? { objective: String(goal.objective || '').slice(0, 2000), phase: goal.phase, roundsStarted: goal.roundsStarted, armed: goal.armed } : null,
+        tasks: (this.manager.tasks?.list(id) || []).map(task => ({ id: task.id, instruction: String(task.instruction || '').slice(0, 500), status: task.status, state: task.state, intervalMinutes: task.intervalMinutes, lastResult: String(task.lastResult || '').slice(0, 600) })) },
       ...(device.permission === 'control' ? { settings: settingsView(this.manager, conversation) } : {}),
       nextBefore: rows.length > messages.length ? messages[0]?.seq ?? null : null };
   }

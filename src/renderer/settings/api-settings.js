@@ -13,9 +13,8 @@ const titles = {
   usage: ["Usage", "Track requests, balances, and quotas."],
   general: ["General", "Language, appearance, and local preferences."],
   archived: ["Archived", "Restore or permanently delete archived conversations."],
-  storage: ["Space cleanup", "Review unused local files before deleting them."],
   mobile: ["Mobile access", "Connect your phone through Tailscale."],
-  devices: ["CLI devices", "Add Linux servers through Tailscale and work in their workspaces."],
+  devices: ["CLI devices", "Manage server connections and default harnesses. Open a server from Home to work."],
   engines: ["Engine Settings", "Configure default reasoning, permissions, instructions and tools."],
   runtimes: ["Runtime", "Download only the engines you need."],
 };
@@ -30,6 +29,11 @@ function setView(next, engine, focus) {
   if (next === 'engines' && focus === 'account') { next = 'subscriptions'; focus = engine; }
   if (next === 'providers' && ['kimi', 'codex', 'antigravity'].includes(focus)) next = 'subscriptions';
   if (next === 'balances') next = 'usage';
+  // Space cleanup now lives on the Archived page; older links still open it.
+  if (next === 'storage') next = 'archived';
+  // The download connection lives in General; the download prompt and older
+  // links still open Runtime, so redirect them to the section that owns it.
+  if (next === 'runtimes' && focus === 'downloadProxyUrl') { next = 'general'; focus = 'downloadProxyUrl'; }
   if (!titles[next]) next = 'general';
   view = next;
   for (const id of Object.keys(titles)) $(id + 'Page').hidden = id !== next;
@@ -40,6 +44,7 @@ function setView(next, engine, focus) {
   window.mobileAccessUI.setVisible(next === 'mobile');
   window.cliDevicesUI?.setVisible(next === 'devices');
   if (next === 'usage') { fillUsageFilters(); renderUsage(); renderBalances(); }
+  if (next === 'general') void loadDownloadSettings(focus);
   if (next === 'subscriptions') void engineUI.accountsPage(focus || engine);
   if (next === 'engines') void (focus === 'account' ? engineUI.openAccount(engine) : engineUI.select(engine || engineUI.selected()));
   if (next === 'runtimes') void engineUI.runtimePage(focus);
@@ -554,6 +559,44 @@ async function saveGeneral() {
 for (const id of ['language', 'theme', 'autoRefreshBalances', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting']) {
   $(id).addEventListener('change', saveGeneral);
 }
+// The download connection is a General preference: it applies to engine and
+// benchmark-library downloads and is saved on this device.
+let downloadDirty = false;
+async function loadDownloadSettings(focus) {
+  const mode = $('downloadMode'), url = $('downloadProxyUrl');
+  if (!mode || !url) return;
+  try {
+    const settings = await api.downloadSettings();
+    if (!settings.ok) throw new Error(settings.error);
+    if (!downloadDirty) {
+      mode.value = settings.mode === 'proxy' ? 'proxy' : 'direct';
+      url.value = settings.url || '';
+      url.required = settings.mode === 'proxy';
+    }
+    if (focus === 'downloadProxyUrl') url.focus();
+  } catch (error) { status(error.message, true); }
+}
+const downloadForm = $('downloadPreferences');
+if (downloadForm) {
+  downloadForm.oninput = () => {
+    downloadDirty = true;
+    $('downloadProxyUrl').required = $('downloadMode').value === 'proxy';
+    $('saveDownload').disabled = false;
+  };
+  downloadForm.onsubmit = async e => {
+    e.preventDefault();
+    downloadForm.inert = true;
+    try {
+      const settings = await api.downloadSaveSettings({ mode: $('downloadMode').value, url: $('downloadProxyUrl').value });
+      if (!settings.ok) throw new Error(settings.error);
+      $('downloadProxyUrl').value = settings.url;
+      downloadDirty = false;
+      $('saveDownload').disabled = true;
+      status('Download connection saved');
+    } catch (error) { status(error.message, true); }
+    finally { downloadForm.inert = false; }
+  };
+}
 async function refresh(initial = false) {
   try {
     const [state, details] = await Promise.all([api.apiRouterGetState(), api.providerInsights()]);
@@ -654,6 +697,7 @@ $('confirmCleanStorage').onclick = async () => {
     $('storageStatus').textContent = window.CamelliaI18n.t('Removed {0} files ({1}). Skipped {2} candidates; {3} errors. Scan again to review remaining files.')
       .replace('{0}', () => fmt(result.files)).replace('{1}', () => storageBytes(result.bytes)).replace('{2}', () => fmt(result.skipped)).replace('{3}', () => fmt(result.errors.length));
     $('storageSummary').textContent = result.errors.map(entry => entry.path + ': ' + entry.error).join('\n');
+    await renderArchived();
   } catch (error) { $('storageStatus').textContent = error.message; $('storageSummary').replaceChildren(); }
   finally { $('storageDetails').hidden = true; $('storageFiles').replaceChildren(); storageBusy = false; storageControls(); }
 };

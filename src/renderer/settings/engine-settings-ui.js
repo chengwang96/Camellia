@@ -3,7 +3,6 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const drafts = new Map();
-  let downloadDirty = false;
   let engine = 'claude', documentId = 'settings', nativePending = false, activePage = false, nativeStarted = false, nativeNeedsRuntime = false;
   let nativeReady = false, nativeReadyTimer;
   const current = () => drafts.get(engine);
@@ -413,38 +412,13 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   $('checkRuntimeUpdates').onclick = checkRuntimeUpdates;
   async function runtimePage(focus) {
     try {
-      const [result, settings, python] = await Promise.all([api.runtimeState(), api.downloadSettings(),
+      const [result, python] = await Promise.all([api.runtimeState(),
         api.runtimePythonState ? api.runtimePythonState() : Promise.resolve({ ok: true, python: {} })]);
       if (!result.ok) throw new Error(result.error);
-      if (!settings.ok) throw new Error(settings.error);
       renderRuntimes(result.engines);
       renderPython(python.ok ? python.python : {});
-      if (!downloadDirty) {
-        $('downloadMode').value = settings.mode;
-        $('downloadProxyUrl').value = settings.url;
-        $('downloadProxyUrl').required = settings.mode === 'proxy';
-      }
-      if (focus === 'downloadProxyUrl') $('downloadProxyUrl').focus();
     } catch (e) { status(e.message, true); }
   }
-  $('downloadPreferences').oninput = () => {
-    downloadDirty = true;
-    $('downloadProxyUrl').required = $('downloadMode').value === 'proxy';
-    $('saveDownload').disabled = false;
-  };
-  $('downloadPreferences').onsubmit = async e => {
-    e.preventDefault();
-    $('downloadPreferences').inert = true;
-    try {
-      const settings = await api.downloadSaveSettings({ mode: $('downloadMode').value, url: $('downloadProxyUrl').value });
-      if (!settings.ok) throw new Error(settings.error);
-      $('downloadProxyUrl').value = settings.url;
-      downloadDirty = false;
-      $('saveDownload').disabled = true;
-      status('Download connection saved');
-    } catch (error) { status(error.message, true); }
-    finally { $('downloadPreferences').inert = false; }
-  };
   $('engineCommon').oninput = e => {
     const input = e.target, value = input.type === 'checkbox' ? input.checked : input.type === 'number' && input.value !== '' ? Number(input.value) : input.value;
     if (input.dataset.field) current().common[input.dataset.field] = value;

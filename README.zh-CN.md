@@ -8,7 +8,7 @@
 
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
 
-Camellia 将 **Claude Code、Codex CLI、DeepSeek Harness、Kimi Code 和 Antigravity** 集成到同一个桌面应用，集中管理供应商凭据、模型路由、调用用量和引擎设置，同时保留各引擎的执行机制与会话历史。
+Camellia 将 **Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigravity 和 Pi** 集成到同一个桌面应用，集中管理供应商凭据、模型路由、调用用量和引擎设置，同时保留各引擎的执行机制与会话历史。同一个工作台还可以通过 Tailscale 驱动无界面的 Linux 服务器，或已配对的 Android 手机。
 
 <table><tr><td>
 <img src="docs/images/home.png" alt="Camellia 首页：引擎选择与统一设置">
@@ -17,20 +17,23 @@ Camellia 将 **Claude Code、Codex CLI、DeepSeek Harness、Kimi Code 和 Antigr
 ## 核心功能
 
 - **运行中默认排队。** 当前轮次运行时，Enter 或点击发送会将消息加入队列，轮次结束后依次发送；每条队列消息的“立即补充指令”按钮可将该条消息补充到当前轮次（需要引擎接入方式支持）。补充失败时保留队列消息和附件，不影响输入框草稿。
-- **多个引擎，共用应用。** 在 Claude Code、Codex CLI、DSH、Kimi Code 和 Antigravity 之间切换，使用统一的导航与设置。
-- **五个引擎共享会话。** 保留同一份聊天记录和工作目录，支持直接切换或自动 Markdown 交接；各引擎首页和会话中的输入框位置统一。支持置顶、重命名、分叉和归档。
+- **多个引擎，共用应用。** 在 Claude Code、Codex CLI、DSH、Kimi Code、Antigravity 和 Pi 之间切换，使用统一的导航与设置。Pi 通过 RPC 模式使用共享 API 线路，无需单独登录账号。
+- **六个引擎共享会话。** 保留同一份聊天记录和工作目录，支持直接切换或自动 Markdown 交接；各引擎首页和会话中的输入框位置统一。支持置顶、重命名、分叉和归档。
 - **归档自动切换会话。** 归档当前会话时自动打开同一工作区的相邻会话（优先下一行）；工作区已无会话时直接进入该工作区的新建会话页面，独立会话同理。归档其他会话不影响当前打开的会话。
+- **右键菜单可删除会话。** 会话菜单新增「删除对话」，确认后永久移除该会话的记录、侧边栏元数据和引擎绑定。删除当前会话时与归档相同，自动切换到相邻会话。正在运行或拥有已启动目标的会话必须先停止或暂停；不会改动工作区文件。
 - **长按拖动会话。** 按住侧边栏会话约 350 毫秒后拖动，在同一工作区内调整顺序，或拖到其他工作区（包括折叠的工作区）改变归属。顺序在重启后保留；移动只改变侧边栏归属，不移动文件或改变已有会话的执行目录。拖动到列表边缘会自动滚动，按 Esc 取消。
 - **桌面拖动动画。** 长按后会话轻微放大浮起并带阴影跟随鼠标，原位置淡出，落点两侧平滑让位，松手或取消时预览缓动收回。遵循系统“减少动画”偏好。
-- **手动空间清理。** 设置 → 空间清理 → 扫描，查看分类、大小及相对路径后确认永久删除。仅清理无归属的 Camellia 会话残留、交接/压缩摘要、粘贴附件及专属引擎目录；保护现存/归档/分叉会话、草稿、排队附件和 24 小时内修改的文件。清理前重新核对引用与文件状态，不做后台定期扫描。工作区、外部文件、导入原件与共享/全局引擎历史不在删除范围；已删除会话的专属引擎目录可包含其私有原生状态。会话工作期间也能清理经核实无归属的旧残留和引擎目录，但粘贴附件、交接文档与压缩摘要暂时受保护，空闲后重新扫描可纳入清理。引用数据损坏、无法读取或在核验期间变化时停止操作，不安全或过大的候选项会被跳过。残留记录中的引用也受保护，因此删除记录后可能需要再次手动扫描才能清理其附件。显示的大小为逻辑文件大小，实际释放空间可能不同。
+- **手动空间清理。** 设置 → 已归档 → 空间清理 → 扫描，查看分类、大小及相对路径后确认永久删除。仅清理无归属的 Camellia 会话残留、交接/压缩摘要、粘贴附件及专属引擎目录；保护现存/归档/分叉会话、草稿、排队附件和 24 小时内修改的文件。清理前重新核对引用与文件状态，不做后台定期扫描。工作区、外部文件、导入原件与共享/全局引擎历史不在删除范围；已删除会话的专属引擎目录可包含其私有原生状态。会话工作期间也能清理经核实无归属的旧残留和引擎目录，但粘贴附件、交接文档与压缩摘要暂时受保护，空闲后重新扫描可纳入清理。引用数据损坏、无法读取或在核验期间变化时停止操作，不安全或过大的候选项会被跳过。残留记录中的引用也受保护，因此删除记录后可能需要再次手动扫描才能清理其附件。显示的大小为逻辑文件大小，实际释放空间可能不同。
 - **长文本自动转附件。** 粘贴超长文本时自动保存为 `pasted-text-*.txt` 附件，避免把巨型提示词塞进消息；短文本仍直接插入输入框。
-- **回答末尾展示产物。** 从本轮成功的文件写入操作和回答中的本地文件链接／行内代码路径收集产物，去重并检查文件存在后展示卡片；安装包（APK、AAB、IPA、EXE、MSI、DMG、PKG、DEB、RPM、AppImage）排在最前，其后是图片、视频、演示文稿、Markdown 和 HTML，超过 4 个文件时折叠其余文件，可展开或收起。“打开方式”提供在 Camellia 内打开、使用系统默认软件打开，或在系统文件管理器（访达／文件资源管理器／Linux 文件管理器）中定位该文件。支持图片、音视频、PDF、文本以及 DOCX／PPTX／XLSX 内容预览；安装包没有内置预览，请改用系统默认软件打开。右侧栏可渲染 Markdown 标题、粗体、表格和代码，以及禁用脚本的沙箱 HTML 页面。Office 预览不还原原始排版、图片、图表或动画，也不重新计算公式，旧版 DOC／PPT／XLS 不支持内置预览。通过脚本生成的文件需在回答中附上路径或链接。共享会话保留各轮产物记录，不扫描整个工作区。
+- **回答末尾展示产物。** 从本轮成功的文件写入操作和回答中的本地文件链接／行内代码路径收集产物，去重并检查文件存在后展示卡片；安装包排在最前，其后是图片、视频、演示文稿、Markdown 和 HTML，超过 4 个文件时折叠其余文件。“打开方式”提供在 Camellia 内打开、使用系统默认软件打开，或在系统文件管理器中定位该文件。支持图片、音视频、PDF、文本、CSV／TSV 表格、JSON 树以及 DOCX／PPTX／XLSX 文档预览；安装包没有内置预览。右侧栏可渲染 Markdown 的标题、表格、脚注、KaTeX 公式与语法高亮，并展示禁用脚本的沙箱 HTML 页面。Office 在本机解析并在禁用脚本和联网的沙箱中展示：Word 标题、文字格式、表格和内嵌图片；PPTX 幻灯片、定位形状、文字和图片；Excel 工作表、单元格样式和常见数字格式。复杂排版、主题、组合形状、图表和动画可能无法还原，不重新计算公式；旧版 DOC／PPT／XLS 仍需使用系统软件打开。通过脚本生成的文件需在回答中附上路径或链接。共享会话保留各轮产物记录，不扫描整个工作区。详见[桌面产物预览](docs/artifact-previews.md)（英文）。
 - **跨目录产物照常展示。** 回答里的相对路径按会话工作区和本轮命令实际所在的目录解析，因此在其他项目目录里跑命令产出的文件也会出现在卡片里。
 - **集中管理 API。** 在同一页面配置供应商、导入并命名 Key、读取模型目录和验证连接。
 - **同模型线路切换。** 在供应商设置中选择 **API 优先级**：**低、默认、高**，按高 → 默认 → 低的顺序尝试。遇到可重试故障时，尝试提供同一模型的其他 Key 或供应商，不会自动替换为另一模型。高优先级线路冷却结束后会优先重试；同优先级沿用当前线路，再按供应商和 Key 顺序尝试。“下一条线路”仅在当前可用的最高优先级内切换。之前保存的数字优先级自动映射为默认（0）或高（正数）。
 - **用量与账户信息。** 按供应商、Key、模型和日期筛选本机请求与 Token 统计；通过已适配的账户接口查看余额、订阅额度及历史曲线。
 - **按需下载引擎。** 只安装需要的引擎，使用锁定版本，在设置中查看下载状态并重试失败的安装。
-- **五个 harness 对比跑分。** 在 **Home → Benchmark** 中用同一模型、同一供应商运行五个引擎，自动评判任务结果，记录耗时与 Token，保存历史并导出 JSON。
+- **五个 harness 对比跑分。** 在 **Home → Benchmark** 中用同一模型、同一供应商运行五个跑分引擎，自动评判任务结果，记录耗时与 Token，保存历史并导出 JSON。
+- **驱动无界面的 Linux 服务器。** 在服务器上运行 `./camellia`，由同一条命令完成启动、Tailscale 登录与人工确认配对；随后在 **设置 → CLI 设备** 中配对。每台服务器打开独立工作台，并提供运行时、引擎设置、用量、已归档和空间清理等服务器内设置。
+- **用手机控制电脑端。** 开启 **手机访问**，让 Android 手机通过共用的内置 Tailscale 网络连接。可扫描电脑端二维码或使用一次性配对码，逐台人工授权设备，并可修改本机名称、随时撤销授权。
 
 ## 快速开始
 
@@ -50,11 +53,11 @@ npm ci
 npm start
 ```
 
-`npm ci` 只安装工作台依赖，五个 harness 的运行时均为可选下载。可在首页点击 **Download & open**（下载并打开），也可在 **Settings → Runtime**（设置 → 运行环境）中单独下载。Antigravity 的 Google 订阅模式下载官方 CLI，API 模式下载 SDK 和独立 Python，无需全局安装 CLI 或 Python。
+`npm ci` 只安装工作台依赖，六个 harness 的运行时均为可选下载。可在首页点击 **Download & open**（下载并打开），也可在 **Settings → Runtime**（设置 → 运行环境）中单独下载。Antigravity 的 Google 订阅模式下载官方 CLI，API 模式下载 SDK 和独立 Python；Pi 只是一个 npm 包，使用共享 API 线路。无需全局安装 CLI 或 Python。
 
-下载前可选择直连或使用已保存的代理。在 **设置 → Runtime → Download connection** 中填写自己的 HTTP/HTTPS 代理地址。默认直连，不预设代理地址；该设置用于引擎和 benchmark 题库下载。
+下载前可选择直连或使用已保存的代理。在 **设置 → 通用 → Download connection（下载连接）** 中填写自己的 HTTP/HTTPS 代理地址。默认直连，不预设代理地址；该设置用于引擎和 benchmark 题库下载。
 
-开发时可执行 `npm run setup:runtimes -- dsh kimi`，只将指定引擎下载到 `runtimes/`。需要全部五个引擎时才使用 `--all`。启动工作台或浏览设置不会下载缺失的引擎。
+开发时可执行 `npm run setup:runtimes -- dsh kimi`，只将指定引擎下载到 `runtimes/`；Pi 使用 `npm run setup:pi` 安装。需要全部六个引擎时才使用 `--all`。启动工作台或浏览设置不会下载缺失的引擎。
 
 应用默认语言为英文。在 **Settings → General → Language（设置 → 通用 → 语言）** 中选择 **English** 或 **简体中文**，保存后即可切换。
 
@@ -63,7 +66,7 @@ npm start
 1. 打开 **Settings → Providers & Keys**（设置 → 供应商与 Key）。
 2. 添加供应商，填入 API Key，选择或手动填写可用模型。
 3. 保存配置，并用准备使用的模型验证 Key。
-4. 返回首页，选择引擎与模型，开始会话。Claude、Codex、Kimi 和 Antigravity 均支持工作区会话与独立会话。
+4. 返回首页，选择引擎与模型，开始会话。各引擎均支持工作区会话与独立会话。
 
 使用账号授权时，可直接打开 **Settings → Providers & Keys → Account sign-in**，选择 **Kimi account**、**Google account · Antigravity** 或 **ChatGPT account**。快捷入口会打开对应引擎的账号设置，并选中账号模式；如提示保存，先点 **Save settings**，再点 **Sign in**。添加 API 供应商的弹窗中也提供 Kimi 和 Google 的账号入口；**Kimi Code (API key)** 则用于填写订阅 API Key。
 
@@ -126,9 +129,10 @@ SciCode 在调用模型前检查测试依赖和数值数据。**Grader error** �
 | --- | --- | --- |
 | Claude Code | 通过 stream-json 驱动官方 CLI，使用 Camellia 管理的桌面界面 | 按需从官方 npm 包下载 |
 | Codex CLI | 通过标准输入输出连接官方 app-server，支持 ChatGPT 订阅和共享 API 线路 | 按需从官方 npm 包下载 |
-| DeepSeek Harness | 通过 ACP 接入公共会话界面，同时保留原生 Web 入口 | 按需下载，安装时应用源码补丁 |
+| DeepSeek Harness | 通过 ACP 接入公共会话界面，使用官方内置的 headless profile | 按需下载，安装时应用源码补丁 |
 | Kimi Code | 通过 ACP 连接官方运行时，支持 Kimi 订阅登录和共享 API 线路，使用公共会话界面 | 按需下载 |
 | Antigravity | 官方 CLI 接入 Google 订阅，Python SDK 接入共享 API 线路，均使用 Camellia 会话界面 | 按需下载 CLI 或 SDK/Python |
+| Pi | 官方编码代理以 RPC 模式运行，并加载 Camellia 扩展以接入权限确认与 Goal 工具；仅使用共享 API 线路 | 按需从官方 npm 包下载 |
 
 安装版和便携版均不捆绑 harness 运行时，只提供共用的 Node.js/npm 下载工具，所选引擎安装到应用数据目录。DSH 的 pnpm 与 Antigravity 的 Python 随对应引擎下载，安装后会在后续启动时复用。Shell 工具在 macOS 上使用系统 Shell，在 Windows 上需要 Git Bash。
 
@@ -152,9 +156,9 @@ Codex CLI 支持 API key 和第三方 API。在 **Settings → Engine Settings �
 
 ### Goal 模式
 
-点击 **Goal mode**（Ctrl/Cmd+G）设定目标，五个引擎都会持续推进，不再设置固定轮数上限。目标通过独立核验、用户暂停或移除目标，或遇到无法继续的阻塞时停止。可恢复的执行错误和模型报告的阻塞会连续尝试最多三次，再显示原因并停止；工作区或引擎无法启动时立即停止。模型报告完成后会启动独立核验会话，而不是直接标记完成。
+点击 **Goal mode**（Ctrl/Cmd+G）设定目标，六个引擎都会持续推进，不再设置固定轮数上限。目标通过独立核验、用户暂停或移除目标，或遇到无法继续的阻塞时停止。可恢复的执行错误和模型报告的阻塞会连续尝试最多三次，再显示原因并停止；工作区或引擎无法启动时立即停止。模型报告完成后会启动独立核验会话，而不是直接标记完成。
 
-也可以在消息首行直接说 **“设定目标：完成这个功能并通过测试”** 或 **“Set a goal: finish this feature and run its tests”**。模型可通过 Camellia 的会话级工具开启同一个 Goal 状态条，将当前回复纳入目标执行，不会额外启动一轮。仅讨论 Goal 模式不会触发；意图识别采用保守规则，请使用首行直接指令，不要使用问句、引用或示例。对话开启支持 Claude、Codex、DSH、Kimi 和 Antigravity **Shared API routes**；Antigravity **Google subscription** 的 CLI 暂无会话级 MCP 配置，仍需使用 Goal 按钮。原有权限设置不变，若出现 Goal 工具授权提示，需要用户批准。
+也可以在消息首行直接说 **“设定目标：完成这个功能并通过测试”** 或 **“Set a goal: finish this feature and run its tests”**。模型可通过 Camellia 的会话级工具开启同一个 Goal 状态条，将当前回复纳入目标执行，不会额外启动一轮。仅讨论 Goal 模式不会触发；意图识别采用保守规则，请使用首行直接指令，不要使用问句、引用或示例。对话开启支持 Claude、Codex、DSH、Kimi、Pi 和 Antigravity **Shared API routes**；Antigravity **Google subscription** 的 CLI 暂无会话级 MCP 配置，仍需使用 Goal 按钮。原有权限设置不变，若出现 Goal 工具授权提示，需要用户批准。
 
 紧凑的目标状态条显示目标、状态和累计运行时间。暂停会同时停止当前回复；展开可查看完整目标、阻塞原因，或手动 **Mark complete**。恢复时保留已有进展和累计时间。各会话的目标独立运行，打开其他会话不会暂停目标。关闭 Camellia 会暂停目标，需要点击 **Resume goal** 继续；切换该会话的引擎前应先暂停目标。执行沿用当前模型与权限设置。
 
@@ -173,6 +177,7 @@ flowchart LR
     UI --> DSH[DeepSeek Harness]
     UI --> Kimi[Kimi Code]
     UI --> Antigravity[Antigravity]
+    UI --> Pi[Pi]
     DSH --> Router[本机 API 路由]
     Claude --> Router
     Codex -->|API| Router
@@ -181,6 +186,7 @@ flowchart LR
     Kimi -->|Kimi 账号| KimiAccount[Kimi 订阅]
     Antigravity -->|API| Router
     Antigravity -->|Google account| Google[Google subscription]
+    Pi --> Router
     Router --> A[供应商 A / Key 池]
     Router --> B[供应商 B / Key 池]
     Router --> Usage[调用记录]
@@ -193,6 +199,14 @@ Gemini 预设使用 Google 的 OpenAI 兼容 API。Camellia 保留 Gemini 工具
 同一线路组必须指向**相同模型及版本**，可以映射供应商使用的不同上游名称。额度耗尽（包括余额不足）、限流、认证失败和可重试的临时故障会触发组内切换；没有可用线路时，请求返回错误。已经开始输出内容的回复不会自动重放。
 
 本机用量统计记录经过 Camellia 的请求；账户余额与订阅额度来自供应商接口，可能包含其他客户端的消费。部分适配使用未文档化接口或官方客户端中的接口。支持范围与验证边界见[配置指南](docs/configuration.md#balances-and-subscription-quotas)（英文）。
+
+## 服务器与手机访问
+
+Camellia 不限于本机使用。两个功能都复用内置的 Tailscale helper，两端都不需要另装 Tailscale 客户端。
+
+**无界面 Linux 服务器。** 在 Linux 主机上运行 `./camellia`，引导流程会复用或启动后台服务、登录 Tailscale、显示浏览器登录链接，最后给出地址和一次性配对码；在同一条终端输入 `YES` 逐台人工确认配对。之后在 **设置 → CLI 设备** 中填写服务器名称和默认 Harness 并配对，从首页打开。每台服务器使用独立窗口，并提供运行时、引擎默认值、用量、已归档和空间清理等服务器内设置。文件和会话始终留在服务器，桌面窗口各自保留订阅、附件与下载。详见 [Linux 服务器预览](docs/linux-server-preview.md)。
+
+**手机访问。** 在设置中开启 **手机访问**，把内置 Tailscale 网络共享给 Android 手机。先设置本机名称，生成一次性配对码，用手机扫描其二维码，再在电脑端授权该设备。授权覆盖当前及今后新增的全部工作区与独立会话，归档会话不可访问。已授权设备可按会话现有权限发送消息、停止当前运行并处理工具审批；电脑端可随时重命名或撤销设备。详见[手机访问](docs/remote-access.md)与 [Android 客户端](android/README.md)。
 
 ## 配置与数据
 
@@ -251,4 +265,6 @@ docs/           使用指南、技术说明与历史记录
 - [开发指南](docs/development.md)（英文）：架构、运行时、测试与打包。
 - [文档索引](docs/README.md)：实现说明与归档设计记录，包含现有中文技术文档。
 
-Camellia 集成 [Claude Code](https://github.com/anthropics/claude-code)、[Codex CLI](https://github.com/openai/codex)、[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)、[Kimi Code](https://github.com/MoonshotAI/kimi-code) 和 [Antigravity Python SDK](https://github.com/google-antigravity/antigravity-sdk-python)。DSH 与 Kimi Code 保留 MIT 许可证，Codex CLI 和 Antigravity Python SDK 源码采用 Apache-2.0 许可证。Claude Code 核心为专有软件；Camellia 接入其官方 CLI，不修改或再分发其核心。包括 SDK 原生运行时在内的各上游组件保留各自的许可证与使用条款。
+引擎与远程功能另有专门说明：[会话控制工具](docs/conversation-tools.md)、[定时任务](docs/scheduled-tasks.md)、[桌面产物预览](docs/artifact-previews.md)、[手机访问](docs/remote-access.md)、[Linux 服务器预览](docs/linux-server-preview.md)与 [Android 客户端](android/README.md)。
+
+Camellia 集成 [Claude Code](https://github.com/anthropics/claude-code)、[Codex CLI](https://github.com/openai/codex)、[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)、[Kimi Code](https://github.com/MoonshotAI/kimi-code)、[Antigravity Python SDK](https://github.com/google-antigravity/antigravity-sdk-python) 和 [Pi 编码代理](https://www.npmjs.com/package/@mariozechner/pi-coding-agent)。DSH、Kimi Code 与 Pi 保留 MIT 许可证，Codex CLI 和 Antigravity Python SDK 源码采用 Apache-2.0 许可证。Claude Code 核心为专有软件；Camellia 接入其官方 CLI，不修改或再分发其核心。包括 SDK 原生运行时在内的各上游组件保留各自的许可证与使用条款。

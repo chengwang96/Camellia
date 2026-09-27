@@ -124,6 +124,8 @@ public class ConversationMenuTest extends InstrumentationTestCase {
             assertNull(row.findViewWithTag("remoteConversationMenu:" + conversation.getString("id")));
         });
         ui(() -> root().findViewWithTag("conversation:" + conversation.getString("id")).performLongClick());
+        // Both screens share one long-press menu, so the remote list must show the same glass.
+        if (PopupSurface.supportsBlur(activity)) assertNotNull(menu().panel.findViewWithTag("glassBackdrop"));
         ui(() -> menu().panel.findViewWithTag("conversationAction:select").performClick());
         assertTrue((Boolean) field("selectingConversations"));
         assertEquals(1, ((java.util.Set<?>) field("selectedConversations")).size());
@@ -132,4 +134,5 @@ public class ConversationMenuTest extends InstrumentationTestCase {
         ui(() -> activity.onBackPressed());
         assertFalse((Boolean) field("selectingConversations"));
     }
+
 }

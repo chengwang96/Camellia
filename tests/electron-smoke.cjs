@@ -133,7 +133,7 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript('document.documentElement.lang'), 'en');
     assert.equal(home.getTitle(), 'Camellia');
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('.home-brand').textContent"), 'Camellia');
-    assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('[data-mode]')].map(el => el.dataset.mode)"), ['claude', 'codex', 'dsh', 'kimi', 'antigravity']);
+    assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('[data-mode]')].map(el => el.dataset.mode)"), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']);
     const mobileMenu = electron.Menu.getApplicationMenu().items[0].submenu.items.find(item => item.label === 'Mobile access…');
     assert.ok(mobileMenu);
     assert.equal((await home.webContents.executeJavaScript('window.dshDesktop.openMobileAccess()')).ok, false);
@@ -388,7 +388,7 @@ async function main() {
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#engineScopeTitle').textContent"), 'Antigravity in Camellia');
     const sdkSettings = await engineSettings.webContents.executeJavaScript("window.dshDesktop.engineSettingsGet({engine:'antigravity'})");
     assert.ok(sdkSettings.files.every(file => file.path.startsWith(userData)));
-    assert.equal((await engineSettings.webContents.executeJavaScript('window.dshDesktop.runtimeState()')).engines.length, 5);
+    assert.equal((await engineSettings.webContents.executeJavaScript('window.dshDesktop.runtimeState()')).engines.length, 6);
 
     await home.webContents.executeJavaScript("window.dshDesktop.switchMode('codex')");
     await waitWindow("document.body.dataset.harness === 'codex'");
