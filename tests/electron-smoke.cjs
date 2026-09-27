@@ -64,6 +64,32 @@ async function main() {
       try { fs.appendFileSync(diagFile, message + '\n'); } catch { /* diagnostics must never fail the run */ }
       console.log(message);
     };
+    // `DeviceClient.load()` gates on safeStorage, and on macOS those calls go
+    // to the Keychain. Wrap them so a synchronous block there is visible
+    // instead of looking like an idle main loop.
+    const safeStorage = testElectron.safeStorage;
+    for (const method of ['isEncryptionAvailable', 'getSelectedStorageBackend', 'encryptString', 'decryptString']) {
+      if (typeof safeStorage?.[method] !== 'function') continue;
+      const original = safeStorage[method].bind(safeStorage);
+      safeStorage[method] = (...args) => {
+        diag('DIAG safeStorage enter: ' + method);
+        const result = original(...args);
+        diag('DIAG safeStorage exit: ' + method);
+        return result;
+      };
+    }
+    // `camellia:list-servers` is the call that stops responding, so time its
+    // own steps: initialize() and the DeviceClient reads it performs.
+    const { DeviceClient } = require('../src/main/remote/device-client');
+    for (const method of ['load', 'list']) {
+      const original = DeviceClient.prototype[method];
+      DeviceClient.prototype[method] = function (...args) {
+        diag('DIAG DeviceClient enter: ' + method);
+        const result = original.apply(this, args);
+        diag('DIAG DeviceClient exit: ' + method);
+        return result;
+      };
+    }
     const firstRun = !JSON.parse(fs.readFileSync(path.join(root, 'app', 'desktop-config.json'))).firstRunComplete;
     diag('DIAG child boot: firstRun=' + firstRun + ' pid=' + process.pid);
     // A blocked main loop stops this heartbeat too, which distinguishes a JS
