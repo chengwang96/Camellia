@@ -128,3 +128,24 @@ test('a turn that worked outside the workspace still yields its deliverables', t
   assert.deepEqual(result.map(file => file.name), ['UDP与TCP试讲.pptx', 'UDP与TCP试讲.pdf']);
   assert.equal(result[0].path, path.join(project, 'outputs', 'UDP与TCP试讲.pptx'));
 });
+
+test('a reply that names its output folder resolves the bare file names that follow', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-'));
+  const output = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-out-'));
+  t.after(() => removeTree(cwd));
+  t.after(() => removeTree(output));
+  const folder = path.join(output, '面试材料');
+  fs.mkdirSync(folder);
+  fs.writeFileSync(path.join(folder, '试讲测评表.doc'), 'doc');
+  fs.writeFileSync(path.join(folder, '学术评价表.doc'), 'doc');
+  fs.writeFileSync(path.join(folder, '自查表.docx'), 'docx');
+  // The reply names the folder once, exactly as a platform would render it.
+  const text = `**生成的文件**（\`${folder}${path.sep}\`）\n- \`试讲测评表.doc\`\n- \`学术评价表.doc\`\n- \`自查表.docx\``;
+  assert.deepEqual(resolveArtifacts({ cwd, text: text.replace(folder, 'missing-folder') }), []);
+  const result = resolveArtifacts({ cwd, text });
+  assert.deepEqual(sortArtifacts(result).map(file => [file.name, file.kind]), [
+    ['试讲测评表.doc', 'document'], ['学术评价表.doc', 'document'], ['自查表.docx', 'word'],
+  ]);
+  // A folder that only exists relative to some other base must not become one.
+  assert.deepEqual(resolveArtifacts({ cwd, text: '`outputs`\n- `试讲测评表.doc`' }), []);
+});

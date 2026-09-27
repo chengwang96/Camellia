@@ -34,7 +34,12 @@ test('Office formats are previewable without treating legacy binaries as text', 
   assert.equal(previewKind('report.DOCX'), 'word');
   assert.equal(previewKind('slides.pptx'), 'presentation');
   assert.equal(previewKind('data.xlsx'), 'spreadsheet');
-  assert.equal(previewKind('report.doc'), 'unsupported');
+  // Legacy OLE binaries cannot be parsed like their ZIP-based successors, but
+  // they are still real deliverables and must not be discarded as noise.
+  assert.equal(previewKind('report.doc'), 'document');
+  assert.equal(previewKind('ledger.XLS'), 'document');
+  assert.equal(previewKind('deck.ppt'), 'document');
+  assert.equal(previewKind('archive.zip'), 'unsupported');
 });
 
 test('Word content is extracted as inert text', async t => {

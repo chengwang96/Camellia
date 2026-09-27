@@ -223,24 +223,40 @@ test('artifact downloads accept Windows workspace aliases with different path ca
   finally { await opened.handle.close(); }
 });
 
-test('artifact scopes reject outside files and directory symlinks and paginate without duplicates', async context => {
+test('artifact listing resolves the same roots as the desktop and paginates without duplicates', async context => {
   const { root, manager, reader, access, visible, pair } = fixture(context);
   const { listArtifacts, openArtifact } = require('../src/main/remote/artifacts');
   const workspace = path.join(root, 'workspace'); fs.mkdirSync(workspace);
   visible.cwd = workspace;
   fs.writeFileSync(path.join(root, 'outside.pdf'), 'private');
-  fs.symlinkSync(root, path.join(workspace, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
-  manager.append(visible, { role: 'assistant', text: '`../outside.pdf` `linked/outside.pdf`' });
+  const project = path.join(root, 'project'); fs.mkdirSync(path.join(project, 'out'), { recursive: true });
+  fs.writeFileSync(path.join(project, 'out', 'deck.pptx'), 'deck');
+  // A turn that ran in another directory, and a reply that names its folder.
+  manager.append(visible, { role: 'user', text: 'Build the deck' });
+  manager.append(visible, { role: 'tool', text: JSON.stringify({ type: 'gui:tool', id: 'one', name: 'commandExecution',
+    input: { command: 'node build.js', cwd: project }, status: 'completed' }) });
+  manager.append(visible, { role: 'tool', text: JSON.stringify({ type: 'gui:tool', id: 'one', status: 'completed' }) });
+  manager.append(visible, { role: 'assistant', text: `- \`out${path.sep}deck.pptx\`` });
+  fs.writeFileSync(path.join(workspace, '表格.doc'), 'doc');
+  manager.append(visible, { role: 'user', text: 'Fill the forms' });
+  manager.append(visible, { role: 'assistant', text: `**生成的文件**（\`${workspace}${path.sep}\`）\n- \`表格.doc\`` });
   const credential = pair(), device = access.authenticate(credential.token);
-  assert.deepEqual(listArtifacts(reader, device, visible.id).artifacts, []);
+  const resolved = listArtifacts(reader, device, visible.id).artifacts;
+  assert.deepEqual(resolved.map(file => file.name), ['表格.doc', 'deck.pptx']);
+  assert.equal(resolved.find(file => file.name === '表格.doc').kind, 'document');
+  // Files outside the conversation workspace are readable too, matching the
+  // desktop's cross-directory deliverables; nothing is browsable but the paths
+  // the conversation itself referenced.
+  assert.equal(resolved.find(file => file.name === 'deck.pptx').seq, 6);
+  assert.ok(!JSON.stringify(resolved).includes(root));
   for (let index = 0; index < 102; index++) {
     const name = `report-${index}.pdf`; fs.writeFileSync(path.join(workspace, name), String(index));
     manager.append(visible, { role: 'assistant', text: '`' + name + '`', artifacts: [{ path: name }] });
   }
   const first = listArtifacts(reader, device, visible.id);
   const second = listArtifacts(reader, device, visible.id, first.nextOffset);
-  assert.equal(first.artifacts.length, 100); assert.equal(second.artifacts.length, 2); assert.equal(second.nextOffset, null);
-  assert.equal(new Set([...first.artifacts, ...second.artifacts].map(file => file.id)).size, 102);
+  assert.equal(first.artifacts.length, 100); assert.equal(second.artifacts.length, 4); assert.equal(second.nextOffset, null);
+  assert.equal(new Set([...first.artifacts, ...second.artifacts].map(file => file.id)).size, 104);
   const file = first.artifacts[0];
   manager.workspaces.recordContext(visible.id, 'private', workspace);
   await assert.rejects(openArtifact(reader, device, visible.id, file.id), /not found/);
@@ -987,6 +1003,11 @@ test('native settings endpoints require full control, matching engine and explic
   assert.ok((await request(gateway, '/v1/status', { token: credential.token })).body.capabilities.includes('native-settings'));
   assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token, method: 'POST', payload: { engine: 'codex' } })).status, 400);
   assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token, method: 'POST', payload: { engine: 'claude', confirmed: true } })).body.ok, true);
+  // Every engine the status endpoint advertises must also be routable here;
+  // Pi was listed in /v1/status but rejected by this allow-list.
+  for (const engine of (await request(gateway, '/v1/status', { token: credential.token })).body.engines) {
+    assert.equal((await request(gateway, `/v1/native-settings/${engine}`, { token: credential.token })).body.engine, engine, engine);
+  }
   access.revoke(credential.deviceId);
   assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token, method: 'POST', payload: { engine: 'claude' } })).status, 401);
   assert.equal(calls.length, 1);

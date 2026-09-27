@@ -1298,7 +1298,7 @@ const context = { sessionId: null, workspaceId: null };
       const less = document.createElement('span'); less.className = 'artifact-show-less'; less.dataset.i18n = ''; less.textContent = 'Show fewer files';
       summary.append(more, less); overflow.appendChild(summary);
       const labels = { image: 'Image', video: 'Video', audio: 'Audio', text: 'Text', pdf: 'Document', word: 'Document',
-        spreadsheet: 'Spreadsheet', presentation: 'Presentation', package: 'Package' };
+        document: 'Document', spreadsheet: 'Spreadsheet', presentation: 'Presentation', package: 'Package' };
       for (const [index, file] of sortedFiles.entries()) {
         const row = document.createElement('div'); row.className = 'artifact-row';
         const open = document.createElement('button'); open.type = 'button'; open.className = 'artifact-file'; open.title = file.path;

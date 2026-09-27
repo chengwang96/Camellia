@@ -104,12 +104,15 @@ test('managed runtime install resolves linked prefixes, coalesces installs, and 
     downloadOptions: () => { prompts++; return { mode: fail ? 'proxy' : 'direct', url: 'http://proxy.example:8080/' }; },
     runCommand: async (_exe, args, options) => {
     calls++; assert.ok(args.includes('ci')); assert.ok(args.includes('--ignore-scripts'));
-    const installedDir = fs.realpathSync.native(path.join(physical, 'runtimes/kimi'));
-    assert.equal(args[args.indexOf('--prefix') + 1], installedDir);
-    assert.equal(options.cwd, installedDir);
+    // The install builds into a staging directory beside the final one, and the
+    // prefix must still be the physical path (npm 11 rejects a symlinked prefix).
+    const prefix = args[args.indexOf('--prefix') + 1];
+    assert.equal(path.dirname(prefix), fs.realpathSync.native(path.join(physical, 'runtimes')));
+    assert.match(path.basename(prefix), /^\.kimi\.staging-/);
+    assert.equal(options.cwd, prefix);
     assert.equal(options.env.HTTPS_PROXY, fail ? 'http://proxy.example:8080/' : '');
     if (fail) throw new Error('temporary network failure');
-    const info = ENGINES.kimi, dir = path.join(target, 'runtimes/kimi/node_modules', info.package);
+    const info = ENGINES.kimi, dir = path.join(prefix, 'node_modules', info.package);
     fs.mkdirSync(path.dirname(path.join(dir, info.entry)), { recursive: true });
     fs.writeFileSync(path.join(dir, info.entry), ''); fs.writeFileSync(path.join(dir, 'package.json'), '{"version":"0.43.0"}');
   } });
@@ -122,6 +125,22 @@ test('managed runtime install resolves linked prefixes, coalesces installs, and 
   await manager.ensure('kimi'); assert.equal(calls, 2); assert.equal(prompts, 2, 'Retry can choose a new connection; installed engines do not prompt');
   assert.ok(manager.state().filter(row => row.id !== 'kimi').every(row => row.status === 'missing'));
   assert.deepEqual(fs.readdirSync(path.join(target, 'runtimes')), ['kimi'], 'Only the selected engine is installed');
+});
+
+test('a wiped companion plugin reports missing and an interrupted install keeps the previous files', async t => {
+  const f = fixture(t), root = path.join(f.home, 'distribution'), target = path.join(f.home, 'installed');
+  for (const file of ['package.json', 'package-lock.json']) f.put(path.join('distribution/runtimes/dsh', file), '{}');
+  // A partially damaged install: the entry file survives while a companion
+  // plugin is gone, which is exactly what a wiped `npm ci` leaves behind.
+  f.put(path.join('installed/runtimes/dsh/node_modules/@deepseek-ai/dsh', 'package.json'), '{"version":"0.1.5-rc.2"}');
+  const entry = f.put(path.join('installed/runtimes/dsh/node_modules/@deepseek-ai/dsh', 'lib/bin.js'), '// keep me');
+  const manager = createRuntimeManager({ root, installRoot: target, node: process.execPath, npm: 'fixture-npm', discoverLocal: false,
+    downloadOptions: () => ({ mode: 'direct', url: '' }),
+    runCommand: async () => { throw new Error('killed mid-install'); } });
+  assert.equal(manager.state().find(row => row.id === 'dsh').status, 'missing', 'A missing companion plugin must not look installed');
+  await assert.rejects(manager.ensure('dsh'), /killed mid-install/);
+  assert.equal(fs.readFileSync(entry, 'utf8'), '// keep me', 'An interrupted install must not empty the previous files');
+  assert.deepEqual(fs.readdirSync(path.join(target, 'runtimes')), ['dsh'], 'No staging or backup directories are left behind');
 });
 
 test('source setup and startup checks leave missing engines uninstalled', async t => {

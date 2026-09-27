@@ -166,11 +166,11 @@ class DeviceClient {
     return this.json(id, `/v1/server-management/${jobId}`);
   }
   nativeSettings(id, engine) {
-    if (!['claude', 'codex', 'kimi', 'dsh', 'antigravity'].includes(engine)) throw new Error('Invalid engine');
+    if (!['claude', 'codex', 'kimi', 'dsh', 'antigravity', 'pi'].includes(engine)) throw new Error('Invalid engine');
     return this.json(id, `/v1/native-settings/${engine}`);
   }
   saveNativeSettings(id, payload) {
-    if (!['claude', 'codex', 'kimi', 'dsh', 'antigravity'].includes(payload?.engine)) throw new Error('Invalid engine');
+    if (!['claude', 'codex', 'kimi', 'dsh', 'antigravity', 'pi'].includes(payload?.engine)) throw new Error('Invalid engine');
     return this.json(id, `/v1/native-settings/${payload.engine}`, { method: 'POST', body: payload });
   }
   conversations(id, offset = 0) {

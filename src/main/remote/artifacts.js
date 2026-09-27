@@ -1,9 +1,9 @@
 'use strict';
 
 const fs = require('node:fs');
-const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { resolveArtifacts } = require('../turn-artifacts');
+const { collector } = require('../../shared/turn-artifacts');
 const { fail } = require('./access');
 
 function identity(conversation, canonical, stat) {
@@ -12,19 +12,28 @@ function identity(conversation, canonical, stat) {
 
 function files(reader, device, conversationId) {
   const conversation = reader.conversation(device, conversationId);
-  let root;
-  try { root = fs.realpathSync.native(conversation.cwd); } catch { return []; }
   const rows = reader.manager.rows ? reader.manager.rows(conversation) : reader.manager.messages(conversation);
   const result = new Map();
-  for (const row of [...rows].reverse()) {
+  const turns = [];
+  // A turn's tool events live in their own rows, so replay them to recover the
+  // directories its commands ran in; the desktop resolves the same way. A turn
+  // starts at its user row and its roots belong to every reply it produced.
+  let turn = null;
+  for (const row of rows) {
+    if (row.role === 'user') { turn = collector(); continue; }
+    if (row.role === 'tool') {
+      if (turn && !row.internal) { try { turn.capture(JSON.parse(row.text)); } catch {} }
+      continue;
+    }
     if (row.internal || row.role !== 'assistant') continue;
+    turns.push({ row, roots: turn ? [...turn.roots] : [] });
+  }
+  for (const { row, roots } of turns.reverse()) {
     const paths = Array.isArray(row.artifacts) ? row.artifacts.map(file => file?.path).filter(file => typeof file === 'string') : [];
     const text = Array.isArray(row.outputBlocks) ? row.outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text || '').join('\n') : row.text;
-    for (const file of resolveArtifacts({ paths, text, cwd: conversation.cwd })) {
+    for (const file of resolveArtifacts({ paths, text, cwd: conversation.cwd, roots })) {
       try {
         const canonical = fs.realpathSync.native(file.path);
-        const relative = path.relative(root, canonical);
-        if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
         const key = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
         if (result.has(key)) continue;
         const stat = fs.statSync(canonical);

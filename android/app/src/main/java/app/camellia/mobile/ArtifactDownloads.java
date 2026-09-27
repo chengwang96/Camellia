@@ -84,7 +84,7 @@ final class ArtifactDownloads {
                         download.setContentDescription(file.optString("name") + " · " + download.getText());
                         row.addView(download);
                     }
-                    status.setText(rows.getChildCount() == 0 ? tr("未找到可下载文件。只显示此会话已引用、仍存在且位于工作目录内的产物；若刚生成，请关闭后重新打开，或更新并重启电脑端。", "No downloadable files found. Files must be referenced by this conversation, still exist and be inside its workspace. Reopen this panel after generation, or update and restart the desktop.")
+                    status.setText(rows.getChildCount() == 0 ? tr("未找到可下载文件。只显示此会话引用且仍存在的产物（含在其他目录中生成的文件）；若刚生成，请关闭后重新打开，或更新并重启电脑端。", "No downloadable files found. Only files this conversation referenced and that still exist are shown, including ones produced in another directory. Reopen this panel after generation, or update and restart the desktop.")
                         : tr("选择保存位置后可切换应用或锁屏，下载会继续。", "Choose a save location, then switch apps or lock your phone. Downloads continue."));
                     long next = result.optLong("nextOffset", -1);
                     more.setText(tr("加载更多", "Load more"));

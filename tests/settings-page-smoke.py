@@ -27,13 +27,20 @@ with sync_playwright() as playwright:
     page.wait_for_load_state("networkidle")
 
     # Every settings script must load: a name collision here used to break the whole panel.
-    assert page.locator(".settings-nav nav button").count() == 10
+    # Compare the rendered categories rather than a bare count so a renamed or
+    # dropped page fails with a useful diff instead of an off-by-one.
+    views = page.locator(".settings-nav nav [data-view]").evaluate_all(
+        "els => els.map(el => el.dataset.view)")
+    assert views == ["subscriptions", "providers", "usage", "general", "engines",
+                     "runtimes", "archived", "mobile", "devices"], views
     page.locator('.settings-nav nav [data-view="devices"]').click()
     expect(page.locator("#pageTitle")).to_have_text("CLI devices")
     expect(page.locator("#devicesPage")).to_be_visible()
     page.wait_for_function("deviceCalls.includes('state')")
-    expect(page.locator("#cli-device option")).to_have_count(2)
-    assert page.evaluate("document.getElementById('cli-devicesPanel') || true")
+    # The embedded page renders the connection view (not the standalone
+    # workbench); its paired servers come from the settings bridge above.
+    expect(page.locator("#cli-servers")).to_contain_text("GPU server")
+    assert page.locator("#cli-tree, #cli-chat, #cli-prompt").count() == 0
 
     # Settings pages keep working after visiting the device page.
     page.locator('.settings-nav nav [data-view="mobile"]').click()

@@ -50,6 +50,46 @@ test('artifact names cannot escape the temporary directory', () => {
   assert.equal(selected.asset.name, 'evil.exe');
 });
 
+test('artifacts are matched to the running architecture', () => {
+  const assets = [
+    { name: 'Camellia-Setup-1.4.0-win-x64.exe', browser_download_url: 'https://example.test/win-x64.exe' },
+    { name: 'Camellia-Setup-1.4.0-win-arm64.exe', browser_download_url: 'https://example.test/win-arm64.exe' },
+    { name: 'Camellia-1.4.0-macOS-arm64.zip', browser_download_url: 'https://example.test/mac-arm64.zip' },
+  ];
+  assert.equal(selectAsset(assets, 'win32', 'x64').asset.name, 'Camellia-Setup-1.4.0-win-x64.exe');
+  assert.equal(selectAsset(assets, 'win32', 'arm64').asset.name, 'Camellia-Setup-1.4.0-win-arm64.exe');
+  assert.equal(selectAsset(assets, 'darwin', 'arm64').asset.name, 'Camellia-1.4.0-macOS-arm64.zip');
+  // An architecture with no matching artifact must not borrow another build.
+  assert.equal(selectAsset([{ name: 'Camellia-1.4.0-macOS-arm64.zip', browser_download_url: 'https://example.test/mac.zip' }], 'darwin', 'x64'), null);
+  assert.equal(selectAsset([{ name: 'Camellia-Setup-1.4.0-win-arm64.exe', browser_download_url: 'https://example.test/win.exe' }], 'win32', 'x64'), null);
+});
+
+test('macOS updates are Apple Silicon only, so Intel Macs get nothing', () => {
+  const assets = [
+    { name: 'Camellia-1.4.0-macOS-x64.zip', browser_download_url: 'https://example.test/mac-x64.zip' },
+    { name: 'Camellia-1.4.0-macOS-arm64.zip', browser_download_url: 'https://example.test/mac-arm64.zip' },
+  ];
+  assert.equal(selectAsset(assets, 'darwin', 'x64'), null);
+  assert.equal(selectAsset(assets, 'darwin', 'ia32'), null);
+  assert.equal(selectAsset(assets, 'darwin', 'arm64').asset.name, 'Camellia-1.4.0-macOS-arm64.zip');
+  // Even an unlabeled macOS artifact is not offered to an Intel Mac.
+  assert.equal(selectAsset([{ name: 'Camellia-1.4.0-macOS.zip', browser_download_url: 'https://example.test/mac.zip' }], 'darwin', 'x64'), null);
+});
+
+test('the portable Windows build is never treated as an installer', () => {
+  const assets = [
+    { name: 'Camellia-1.4.0-win-x64-portable.exe', browser_download_url: 'https://example.test/portable.exe' },
+    { name: 'Camellia-Setup-1.4.0-win-x64.exe', browser_download_url: 'https://example.test/setup.exe' },
+  ];
+  assert.equal(selectAsset(assets, 'win32', 'x64').asset.name, 'Camellia-Setup-1.4.0-win-x64.exe');
+  assert.equal(selectAsset(assets.slice(0, 1), 'win32', 'x64'), null);
+});
+
+test('artifacts that name no architecture are treated as universal', () => {
+  const selected = selectAsset([{ name: 'Camellia-1.4.0-macOS.zip', browser_download_url: 'https://example.test/mac.zip' }], 'darwin', 'arm64');
+  assert.equal(selected.kind, 'archive');
+});
+
 test('a downloaded disk image is kept for the user to open', async context => {
   const root = scratch(context);
   const payload = release({ assets: [{ name: 'Camellia-1.4.0-macOS-arm64.dmg', size: 10, digest: null, browser_download_url: 'https://example.test/mac.dmg' }] });
