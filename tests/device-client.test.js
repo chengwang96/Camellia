@@ -151,12 +151,17 @@ test('native settings client restricts engines and posts to the selected device 
 
 test('pairing rejects plaintext storage, corrupted stores and duplicate targets', async context => {
   const { client, clients, pair, storage, file, network, access } = fixture(context);
+  // Reading an empty store must not touch the keychain: on macOS that call can
+  // block forever without a login keychain, and the home screen lists servers
+  // on every render. Refusing to write is still enforced.
   storage.getSelectedStorageBackend = () => 'basic_text';
-  assert.throws(() => client.list(), /secure system storage/);
+  assert.deepEqual(client.list(), []);
+  const invitation = access.invite([], { allWorkspaces: true });
+  await assert.rejects(client.pair({ address: 'http://100.80.1.2:43127', code: invitation.code, clientName: 'GUI', deviceName: 'Unsafe' }), /secure system storage/);
   storage.getSelectedStorageBackend = () => 'test-encrypted';
   await pair();
-  const invitation = access.invite([], { allWorkspaces: true });
-  await assert.rejects(client.pair({ address: 'http://100.80.1.2:43127', code: invitation.code, clientName: 'GUI', deviceName: 'Duplicate' }), /already saved/);
+  const duplicate = access.invite([], { allWorkspaces: true });
+  await assert.rejects(client.pair({ address: 'http://100.80.1.2:43127', code: duplicate.code, clientName: 'GUI', deviceName: 'Duplicate' }), /already saved/);
   fs.writeFileSync(file, '{"version":1,"encrypted":"broken"}');
   const restored = new DeviceClient({ file, safeStorage: storage, network }); clients.push(restored);
   assert.throws(() => restored.list(), /Cannot unlock/);
