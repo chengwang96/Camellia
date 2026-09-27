@@ -51,7 +51,8 @@ async function main() {
       if (id === '../engines/kimi-account.js') return kimiAccountTest;
       return loadModule.call(this, id, ...args);
     };
-    const { app, BrowserWindow, Menu } = testElectron;
+    const { app, BrowserWindow, Menu, ipcMain } = testElectron;
+    const startedAt = Date.now();
     const root = process.env.DSH_ELECTRON_SMOKE_ROOT;
     assert.ok(root && path.basename(root).startsWith('dsh-electron-smoke-'));
     // Chromium buffers stdout when it is a pipe, so a SIGKILLed child loses
@@ -65,6 +66,22 @@ async function main() {
     };
     const firstRun = !JSON.parse(fs.readFileSync(path.join(root, 'app', 'desktop-config.json'))).firstRunComplete;
     diag('DIAG child boot: firstRun=' + firstRun + ' pid=' + process.pid);
+    // A blocked main loop stops this heartbeat too, which distinguishes a JS
+    // deadlock from a window that simply never appears.
+    const heartbeat = setInterval(() => diag('DIAG heartbeat t=' + (Date.now() - startedAt) + 'ms'), 2000);
+    heartbeat.unref?.();
+    // The macOS startup wedges before the first window exists. Log the entry
+    // and exit of each native startup call so one run names the culprit
+    // instead of leaving a silent gap. Test-only wrappers; production code is
+    // untouched.
+    // Wrap the startup IPC surfaces the renderer waits on, so a silent gap
+    // between "app ready" and the first window names the call that stalled.
+    const realHandle = ipcMain.handle.bind(ipcMain);
+    ipcMain.handle = (channel, listener) => realHandle(channel, async (...args) => {
+      diag('DIAG ipc: ' + channel);
+      try { const result = await listener(...args); diag('DIAG ipc done: ' + channel); return result; }
+      catch (error) { diag('DIAG ipc error: ' + channel + ' :: ' + error.message); throw error; }
+    });
     const userData = path.join(root, firstRun ? 'app' : 'dsh-desktop');
     if (firstRun) {
       app.setPath('userData', userData);
@@ -99,6 +116,7 @@ async function main() {
     }
     const errors = [];
     app.on('browser-window-created', (_event, window) => {
+      diag('DIAG window created: ' + window.getTitle() + ' id=' + window.id);
       window.hide();
       window.webContents.on('preload-error', (_event, _path, error) => errors.push(error.message));
       window.webContents.on('console-message', (event) => { if (event.level === 'error') errors.push(event.message); });
