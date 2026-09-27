@@ -28,10 +28,15 @@ class DeviceClient {
   }
   load() {
     if (this.closed) throw new Error('Device client is closed');
-    secureStorage(this.safeStorage);
     if (this.records) return this.records;
+    // Read the file before touching the keychain. With nothing saved there is
+    // nothing to decrypt, and on macOS `isEncryptionAvailable()` can block
+    // indefinitely when the process has no login keychain (a CI runner, for
+    // example). Listing servers must stay safe to call on that path: it runs
+    // on every home render, and a blocked call freezes the whole main loop.
     const saved = readJson(this.file, null);
     if (!saved) { this.records = []; return this.records; }
+    secureStorage(this.safeStorage);
     try {
       if (saved.version !== 1 || typeof saved.encrypted !== 'string') throw new Error();
       const records = JSON.parse(this.safeStorage.decryptString(Buffer.from(saved.encrypted, 'base64')));
@@ -97,6 +102,9 @@ class DeviceClient {
   async pair({ address, code, clientName, deviceName }) {
     deviceAddress(address); name(clientName); name(deviceName);
     if (!/^[a-f0-9]{24}$/.test(code)) throw new Error('Invalid one-time pairing code');
+    // Pairing ends in a credential write, so it still requires usable secure
+    // storage even though reading an empty list no longer checks.
+    secureStorage(this.safeStorage);
     const records = this.load();
     if (records.some(record => record.address === address)) throw new Error('This CLI device is already saved');
     if (records.length >= 32) throw new Error('Remove a saved CLI device before pairing another');
