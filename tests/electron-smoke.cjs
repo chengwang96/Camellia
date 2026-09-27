@@ -402,7 +402,19 @@ async function main() {
     assert.equal((await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState()')).account, null);
     assert.deepEqual(kimiRpcCalls.slice(-2), ['initialize', 'logout']);
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiConnection').value='api'; document.querySelector('#kimiConnection').dispatchEvent(new Event('change')); document.querySelector('#kimiSaveConnection').click()");
-    await waitWindow("document.querySelector('#kimiSaveConnection')?.hidden && document.querySelector('#kimiConnection')?.value === 'api'");
+    // Confirm the persisted preference rather than the button's visibility. A
+    // rejected save keeps the button visible and reports the reason only as
+    // text, so waiting on the button alone hides why a save was refused.
+    const saveDeadline = Date.now() + 30000;
+    for (;;) {
+      const persisted = await engineSettings.webContents.executeJavaScript("window.dshDesktop.subscriptionPreferencesGet({engine:'kimi'})");
+      if (persisted.ok && persisted.preferences.connection === 'api') break;
+      if (Date.now() >= saveDeadline) {
+        const reported = await engineSettings.webContents.executeJavaScript("document.querySelector('#status').textContent");
+        assert.fail('Kimi connection preference did not persist as api: ' + JSON.stringify(persisted) + ' | status: ' + reported);
+      }
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
     await home.webContents.executeJavaScript('loadSettings()');
     assert.equal(await home.webContents.executeJavaScript('currentConnection'), 'api');
     diag('PASS Kimi subscription: real IPC, save, device code, cancel, account models, logout and API return; mocked OAuth only');

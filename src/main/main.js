@@ -1306,7 +1306,7 @@ if (!gotSingleInstanceLock) {
       if (preferences.connection !== undefined && !['api', 'subscription'].includes(preferences.connection)) throw new Error('Invalid subscription connection');
       const connection = preferences.connection === undefined ? {} : { connection: preferences.connection };
       if (engine === 'kimi') {
-        if (kimiAccount.active) throw new Error('Complete the account operation before changing login preferences');
+        if (kimiAccount.changingAccount) throw new Error('Complete the account operation before changing login preferences');
         saveKimiSettings({ region: preferences.region, ...connection });
         return { ok: true, preferences: { region: kimiSettings().region, connection: kimiSettings().connection } };
       }

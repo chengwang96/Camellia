@@ -214,6 +214,11 @@ function createKimiAccount({ home, runtime, ensureRuntime, node, environment = (
   }
   return { state, refresh, refreshUsage, signIn, cancelLogin, signOut,
     get active() { return Boolean(login || refreshing || signingOut || quotaPending || clients.size); },
+    // Login preferences live in the desktop config, not in the account. A
+    // background quota check still holds a client, but it neither reads nor
+    // writes those preferences, so it must not block saving them. Only the
+    // phases that rewrite account state are exclusive.
+    get changingAccount() { return Boolean(login || refreshing || signingOut); },
     async openLogin() { const url = login?.details?.verificationUrl; if (!url) throw new Error('Start Kimi sign-in first'); await openExternal(url); return state(); },
     async shutdown() { closed = true; quotaController?.abort(); await cancelLogin(); await Promise.allSettled([...clients].map(client => client.shutdown())); await Promise.allSettled([refreshing, signingOut, quotaPending]); },
   };
