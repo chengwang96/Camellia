@@ -5,7 +5,6 @@
   if (typeof module === 'object' && module.exports) module.exports = messages;
   else root.CamelliaMessages = messages;
 })(typeof window === 'object' ? window : globalThis, {
-  "Save subscription settings": "保存订阅设置",
   "Configure default reasoning, permissions, instructions and tools.": "设置默认推理强度、权限、指令和工具。",
   "Subscription settings saved. Existing conversations keep their connection and account.": "订阅设置已保存。已有会话保留原有连接和账号。",
   "The subscription connection changed. Reload engine settings before saving.": "订阅连接已变更，请重新加载引擎设置后再保存。",
@@ -19,8 +18,6 @@
   "Manage sign-ins independently of API routes and engine settings. Signing in does not change the connection used by new or existing conversations.": "独立管理订阅登录，与 API 路由和引擎配置分开。登录不会改变新会话的默认连接或已有会话的连接。",
   "ChatGPT account · Codex": "ChatGPT 账号 · 用于 Codex",
   "Kimi account · Kimi Code": "Kimi 账号 · 用于 Kimi Code",
-  "Save login preferences": "保存登录偏好",
-  "Save login preferences before signing in.": "请先保存登录偏好，再登录账号。",
   "Login preferences saved. Engine configuration and default connection were not changed.": "登录偏好已保存，未修改引擎配置或默认连接。",
   "Complete the account operation before changing login preferences": "请完成当前账号操作后再修改登录偏好",
   "Official CLI sign-in is external. Model availability is verified here; account identity and quota are not reported.": "登录在官方 CLI 中完成。这里仅验证模型访问，不提供账号身份及额度查询。",
@@ -785,7 +782,6 @@
   "Proxy address": "代理地址",
   "HTTP or HTTPS proxy, including mixed proxy ports.": "HTTP 或 HTTPS 代理，也支持混合代理端口。",
   "Applies only to engine downloads. Saved on this device.": "仅用于引擎下载，设置保存在本机。",
-  "Save connection": "保存连接设置",
   "DSH and Kimi use pinned open-source runtimes. Claude Code is installed from the official package and remains subject to Anthropic's terms. Antigravity downloads the official CLI for Google subscriptions, or the SDK and managed Python for API mode. Downloads do not change global CLI settings; saving native CLI settings does.": "DSH 和 Kimi 使用固定版本的开源运行时。Claude Code 从官方包安装，遵循 Anthropic 条款。Antigravity 的 Google 订阅模式下载官方 CLI，API 模式下载 SDK 及托管 Python。下载不会更改 CLI 全局设置；保存原生设置时会更改。",
   "Workbench sessions": "工作台会话",
   "Default directory for standalone sessions": "独立会话的默认目录",
@@ -1059,7 +1055,6 @@
   "Downloads the official SDK and its own Python environment. Other engines stay uninstalled.": "下载官方 SDK 及独立 Python 环境，其他引擎不会一起安装。",
   "Sign in with your Kimi account to use its eligible models and subscription quota. No API key is needed.": "登录 Kimi 账号以使用可用模型和订阅配额，无需 API Key。",
   "Use the providers, API keys and models configured in Providers & Keys.": "使用「供应商与 Key」中配置的供应商、API Key 和模型。",
-  "Save settings before connecting the account.": "连接账号前请先保存设置。",
   "Signing out of Kimi…": "正在退出 Kimi…",
   "Checking Kimi account…": "正在检查 Kimi 账号…",
   "Complete Kimi sign-in in your browser. This page updates automatically.": "请在浏览器中完成 Kimi 登录，此页面会自动更新。",

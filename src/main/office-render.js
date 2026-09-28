@@ -1,6 +1,7 @@
 'use strict';
 
 const { renderSheets } = require('./spreadsheet-render');
+const { renderSlides } = require('./slide-render');
 
 const children = (node, name) => Array.from(node?.childNodes || []).filter(child => child.nodeType === 1 && (!name || child.localName === name));
 const descendants = (node, name) => Array.from(node?.getElementsByTagName('*') || []).filter(child => child.localName === name);
@@ -79,50 +80,6 @@ async function wordBlocks(node, context, depth = 0) {
   return result.join('');
 }
 
-function position(node, width, height) {
-  const transform = first(children(node, 'spPr')[0], 'xfrm');
-  const offset = first(transform, 'off'), extent = first(transform, 'ext');
-  if (!offset || !extent) return '';
-  const rotation = number(attr(transform, 'rot')) / 60000;
-  return `position:absolute;left:${number(attr(offset, 'x')) / width * 100}%;top:${number(attr(offset, 'y')) / height * 100}%;width:${number(attr(extent, 'cx')) / width * 100}%;height:${number(attr(extent, 'cy')) / height * 100}%;transform:rotate(${rotation}deg);`;
-}
-
-async function slideContent(node, context, width, height) {
-  const output = [];
-  for (const shape of children(node).slice(0, 500)) {
-    if (shape.localName === 'pic') {
-      output.push(`<div class="picture" style="${position(shape, width, height)}">${await images(shape, context)}</div>`);
-    } else if (shape.localName === 'sp') {
-      const placeholder = first(shape, 'ph');
-      const inherited = placeholder && descendants(context.layout, 'sp').find(candidate => {
-        const other = first(candidate, 'ph');
-        return other && attr(other, 'idx') === attr(placeholder, 'idx') && (attr(other, 'type') || 'body') === (attr(placeholder, 'type') || 'body');
-      });
-      const properties = children(shape, 'spPr')[0];
-      const fill = color(attr(first(children(properties, 'solidFill')[0], 'srgbClr'), 'val'));
-      const stroke = color(attr(first(children(properties, 'ln')[0], 'srgbClr'), 'val'));
-      const ellipse = attr(first(properties, 'prstGeom'), 'prst') === 'ellipse';
-      const paragraphs = descendants(children(shape, 'txBody')[0], 'p').slice(0, 500);
-      output.push(`<div class="shape" style="${position(shape, width, height) || position(inherited, width, height)}${fill ? 'background:' + fill + ';' : ''}${stroke ? 'border:1px solid ' + stroke + ';' : ''}${ellipse ? 'border-radius:50%;' : ''}">${(await Promise.all(paragraphs.map(item => paragraph(item, context, true)))).join('')}</div>`);
-    } else if (shape.localName === 'graphicFrame') {
-      const table = first(shape, 'tbl');
-      if (table) {
-        const rows = [];
-        for (const row of children(table, 'tr').slice(0, 300)) {
-          const cells = [];
-          for (const cell of children(row, 'tc').slice(0, 50)) cells.push('<td>' + (await Promise.all(descendants(cell, 'p').map(item => paragraph(item, context, true)))).join('') + '</td>');
-          rows.push('<tr>' + cells.join('') + '</tr>');
-        }
-        const transform = children(shape, 'xfrm')[0];
-        const offset = first(transform, 'off'), extent = first(transform, 'ext');
-        const placement = offset && extent ? `position:absolute;left:${number(attr(offset, 'x')) / width * 100}%;top:${number(attr(offset, 'y')) / height * 100}%;width:${number(attr(extent, 'cx')) / width * 100}%;height:${number(attr(extent, 'cy')) / height * 100}%;` : '';
-        output.push(`<table style="${placement}">` + rows.join('') + '</table>');
-      }
-    }
-  }
-  return output.join('');
-}
-
 async function renderOfficeDocument(kind, reader, sections) {
   const { xml, relationships, image } = reader;
   let body = '';
@@ -131,20 +88,9 @@ async function renderOfficeDocument(kind, reader, sections) {
     const relations = await relationships('word/document.xml', true);
     body = '<article class="paper">' + await wordBlocks(first(document, 'body'), { relations, image }) + '</article>';
   } else if (kind === 'presentation') {
-    const document = await xml('ppt/presentation.xml');
-    const relations = await relationships('ppt/presentation.xml');
-    const size = first(document, 'sldSz');
-    const width = Math.max(1, number(attr(size, 'cx'), 9144000)), height = Math.max(1, number(attr(size, 'cy'), 5143500));
-    for (const [index, slide] of descendants(document, 'sldId').slice(0, 100).entries()) {
-      const target = relations.get(attr(slide, 'r:id'));
-      if (!target) continue;
-      const content = await xml(target);
-      const background = color(attr(first(first(content, 'bg'), 'srgbClr'), 'val')) || '#ffffff';
-      const slideRelations = await relationships(target, true);
-      const layoutTarget = [...slideRelations.values()].find(value => /\/slideLayouts\/[^/]+\.xml$/.test(value));
-      const layout = layoutTarget ? await xml(layoutTarget, true) : null;
-      body += `<section class="slide-page"><h2>${index + 1}</h2><div class="slide" style="aspect-ratio:${width}/${height};background:${background}">${await slideContent(first(content, 'spTree'), { relations: slideRelations, image, layout, slideWidth: width / 12700 }, width, height)}</div></section>`;
-    }
+    const rendered = await renderSlides(reader, sections);
+    body = rendered.html;
+    reader.truncated ||= rendered.truncated;
   } else {
     const renderedSheets = await renderSheets(reader, sections);
     reader.sheets?.push(...renderedSheets);
@@ -157,7 +103,9 @@ async function renderOfficeDocument(kind, reader, sections) {
     table{border-collapse:collapse;background:white}td,th{border:1px solid #cdd2d8;padding:6px 10px;vertical-align:top}td p:last-child{margin:0}
     .sheet{margin-bottom:24px;overflow:auto;max-height:calc(100vh - 40px)}.sheet td{white-space:pre-wrap;overflow:hidden}.sheet th{background:#f2f4f6;font-weight:400}.sheet thead{position:sticky;top:0;z-index:4;height:32px}.sheet h2{font-size:16px}.sheet table{border-collapse:separate;border-spacing:0}
     .slide-page{margin:0 auto 24px;max-width:1100px}.slide-page h2{font:13px Arial;color:#525962}.slide{position:relative;overflow:hidden;box-shadow:0 2px 12px #0002;container-type:inline-size}
-    .shape{padding:4px;overflow:hidden}.shape p{line-height:1.2;margin:0}.picture img{width:100%;height:100%;object-fit:contain}
+    .shape,.group,.picture,.connector,.chart{position:absolute}.shape p{line-height:1.25;margin:0}.group>.shape,.group>.picture,.group>.connector,.group>.chart,.group>.group{position:absolute}
+    .picture{overflow:hidden}.picture img{display:block;width:100%;height:100%;object-fit:contain}.picture.missing{display:flex;align-items:center;justify-content:center;background:#f2f4f6;border:1px dashed #c3c9d0;color:#525962;font:11px Arial;overflow:hidden}
+    .chart{overflow:hidden;background:#ffffff;border:1px solid #e1e4e8;padding:.5cqw;font:11px Arial}.chart strong{display:block;font-size:1.2cqw}.chart table{border-collapse:collapse;width:100%}.chart th,.chart td{border:1px solid #e1e4e8;padding:1px 3px;text-align:right;font-weight:400}.chart th:first-child{text-align:left}
     @media(max-width:600px){body{padding:12px}.paper{padding:24px}}
   </style></head><body>${body}</body></html>`;
 }

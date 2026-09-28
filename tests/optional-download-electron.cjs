@@ -85,8 +85,7 @@ async function main() {
     await settings.webContents.executeJavaScript(`
       document.querySelector('#downloadMode').value = 'proxy';
       document.querySelector('#downloadProxyUrl').value = 'http://127.0.0.1:18899';
-      document.querySelector('#downloadProxyUrl').dispatchEvent(new Event('input', {bubbles: true}));
-      document.querySelector('#saveDownload').click();
+      document.querySelector('#downloadProxyUrl').dispatchEvent(new Event('change', {bubbles: true}));
     `);
     await wait(() => settings.webContents.executeJavaScript("document.querySelector('#status').textContent === 'Download connection saved'"));
     const saved = JSON.parse(fs.readFileSync(path.join(profile, 'desktop-config.json')));

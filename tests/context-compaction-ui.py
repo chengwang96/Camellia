@@ -4,6 +4,23 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 repo = Path(__file__).resolve().parents[1]
+
+# The marker must sit between the user message and the turn it interrupted, so
+# later messages continue below it instead of the marker staying pinned last.
+MARKER_BEFORE_LAST_TURN = """(selector) => {
+  const chat = document.querySelector('#chat');
+  const marker = chat.querySelector(selector);
+  const turns = chat.querySelectorAll('.turn');
+  const turn = turns[turns.length - 1];
+  const children = [...chat.children];
+  return Boolean(marker && turn) && children.indexOf(marker) === children.indexOf(turn) - 1
+    && chat.lastElementChild !== marker;
+}"""
+
+
+def marker_before_last_turn(page, selector):
+    return page.evaluate(MARKER_BEFORE_LAST_TURN, selector)
+
 fixture_source = ast.parse((repo / 'tests/shared-chat-ui.py').read_text(encoding='utf-8'))
 scope = {'__file__': str(repo / 'tests/shared-chat-ui.py')}
 for statement in fixture_source.body:
@@ -68,10 +85,16 @@ with sync_playwright() as playwright:
           deliverEvent({type:'gui:compaction',session_id:'shared-fixture',engine:'codex',runId:91,state:'running'});
         }""")
         expect(page.locator('.context-compaction[data-state="running"]')).to_have_count(1)
+        # The live marker interrupts the streaming turn in place instead of
+        # riding at the bottom of the transcript while the turn keeps growing.
+        assert marker_before_last_turn(page, '.context-compaction[data-state="running"]'), \
+            'running marker is not anchored above the streaming turn'
         page.evaluate("deliverEvent({type:'gui:compaction',session_id:'shared-fixture',engine:'codex',runId:91,state:'completed',compactionSeq:9})")
         expect(page.locator('.context-compaction[data-state="running"]')).to_have_count(0)
         expect(page.locator('.context-compaction[data-seq="9"]')).to_have_text('上下文已压缩')
         page.evaluate("deliverEvent({type:'result',session_id:'shared-fixture',engine:'codex',runId:91,subtype:'success',result:'Continued'})")
+        assert marker_before_last_turn(page, '.context-compaction[data-seq="9"]'), \
+            'completed marker drifted below the finished turn'
         assert not errors, errors
         page.close()
     browser.close()

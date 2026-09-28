@@ -149,3 +149,25 @@ test('a reply that names its output folder resolves the bare file names that fol
   // A folder that only exists relative to some other base must not become one.
   assert.deepEqual(resolveArtifacts({ cwd, text: '`outputs`\n- `试讲测评表.doc`' }), []);
 });
+
+test('a reply that names a relative folder resolves the bare file names that follow', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-'));
+  t.after(() => removeTree(cwd));
+  fs.mkdirSync(path.join(cwd, '.build'));
+  fs.writeFileSync(path.join(cwd, '.build', 'review_flat_gallery_ring.png'), 'png');
+  fs.writeFileSync(path.join(cwd, '.build', 'review_flat_gallery_loop.png'), 'png');
+  fs.mkdirSync(path.join(cwd, 'output'));
+  fs.writeFileSync(path.join(cwd, 'output', 'Fig1_01_editorial_ring_flat_tasks_preview.png'), 'png');
+  // The folder is named relatively, once, then its bare file names are listed.
+  const text = '`.build/` 里还留着 `review_flat_gallery_ring.png` / `review_flat_gallery_loop.png`';
+  const result = resolveArtifacts({ cwd, text });
+  assert.deepEqual(result.map(file => file.name), ['review_flat_gallery_ring.png', 'review_flat_gallery_loop.png']);
+  assert.equal(result[0].path, path.join(cwd, '.build', 'review_flat_gallery_ring.png'));
+
+  // A relative word that is not an existing directory in any base must not
+  // widen the search: the file lives only inside `.build/`, so without a real
+  // base for it the bare name stays unresolved.
+  assert.deepEqual(resolveArtifacts({ cwd, text: '`nodir/`\n- `review_flat_gallery_ring.png`' }), []);
+  assert.deepEqual(resolveArtifacts({ cwd, text: '`.build/`\n- `review_flat_gallery_ring.png`' }).map(file => file.name),
+    ['review_flat_gallery_ring.png']);
+});

@@ -627,10 +627,11 @@ public final class MainActivity extends Activity {
         name.setPadding(dp(16), dp(14), dp(16), dp(14)); name.setMinHeight(dp(54));
         panel.addView(new SettingsField(name), new LinearLayout.LayoutParams(-1, -2));
         android.app.AlertDialog dialog = (android.app.AlertDialog) createComputerDialog(panel, tr("保存", "Save"), tr("取消", "Cancel"));
+        showComputerDialog(dialog);
         Button save = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE); save.setTag("deviceNameSave");
         save.setOnClickListener(view -> {
             String value = name.getText().toString().trim();
-            if (value.isEmpty() || value.length() > 80) { status.setText(tr("请输入 1–80 个字符的名称。", "Enter a name of 1–80 characters.")); name.requestFocus(); return; }
+            if (value.isEmpty() || value.length() > 80) { ((SettingsField) name.getParent()).showError(tr("请输入 1–80 个字符的名称。", "Enter a name of 1–80 characters.")); return; }
             MobilePreferences.set(this, "deviceName", value);
             dialog.dismiss(); settingsScreen();
         });
@@ -639,7 +640,6 @@ public final class MainActivity extends Activity {
             if (action != android.view.inputmethod.EditorInfo.IME_ACTION_DONE) return false;
             save.performClick(); return true;
         });
-        showComputerDialog(dialog);
         name.requestFocus(); name.selectAll();
     }
 

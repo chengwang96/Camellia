@@ -38,6 +38,22 @@ worksheets and the first 300 row positions / 50 columns are previewed, with a
 notice when data lies beyond the limits. Charts, conditional formatting, pivot
 tables and precise print layout remain unsupported.
 
+## Presentation previews
+
+PPTX slides are rendered as positioned HTML without scripts or network access.
+The previewer resolves the theme colour scheme and master colour map, then applies
+the layout and master decoration that a slide inherits, skipping the empty
+placeholder prompts that PowerPoint stores for editing. Group shapes, connectors,
+tables, charts (rendered as their cached data) and pictures are drawn with their
+own relationship set, so a master or layout picture can never borrow a slide's
+image. Placeholder geometry, text styles and bullet levels cascade from master to
+layout to shape, font autofit scaling is honored, and theme fills, gradients,
+colour transforms, rotation, flips and picture crops are approximated. PNG, JPEG,
+GIF, WebP, BMP, SVG and TIFF media are inlined; EMF/WMF media cannot be decoded and
+appear as a labelled placeholder instead of a broken image. Up to 100 slides are
+previewed; animations, transitions, SmartArt, OLE objects, media playback, speaker
+notes and precise text metrics remain unsupported.
+
 ## HTML previews
 
 HTML/HTM opens as an interactive preview with a selector for static preview or

@@ -54,20 +54,19 @@ async function readOfficePreview(filePath, kind) {
     return document;
   }
   async function image(name) {
-    if (images.has(name)) {
-      const source = images.get(name);
-      imageBytes += source.length;
-      if (imageBytes > MAX_TOTAL_BYTES) throw new Error('This Office file is too large to preview.');
-      return source;
-    }
-    const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }[path.posix.extname(name).toLowerCase()];
-    if (!mime) return '';
+    if (images.has(name)) return images.get(name);
+    // PowerPoint and Visio embed SVG, TIFF and EMF/WMF; the browser can render
+    // the first two inline, while EMF/WMF stay listed as an unsupported image.
+    const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.tif': 'image/tiff', '.tiff': 'image/tiff' }[path.posix.extname(name).toLowerCase()];
+    if (!mime) { images.set(name, ''); return ''; }
     const data = await bytes(name, true);
     const source = data ? `data:${mime};base64,${data.toString('base64')}` : '';
+    // The image budget bounds how much media one preview embeds; exceeding it
+    // drops later pictures instead of failing the whole document.
     imageBytes += source.length;
-    if (imageBytes > MAX_TOTAL_BYTES) throw new Error('This Office file is too large to preview.');
-    images.set(name, source);
-    return source;
+    const kept = imageBytes <= MAX_TOTAL_BYTES ? source : '';
+    images.set(name, kept);
+    return kept;
   }
   async function relationships(base, optional = false) {
     const document = await xml(path.posix.join(path.posix.dirname(base), '_rels', path.posix.basename(base) + '.rels'), optional);
@@ -133,9 +132,10 @@ async function readOfficePreview(filePath, kind) {
     }
   }
   const sheets = [];
-  const html = await renderOfficeDocument(kind, { xml, relationships, image, sheets }, sections);
+  const reader = { xml, relationships, image, sheets, truncated: false };
+  const html = await renderOfficeDocument(kind, reader, sections);
   const wordHtml = kind === 'word' ? await wordPreview(entries, bytes, xml) : undefined;
-  return { sections, truncated, html, wordHtml, sheets };
+  return { sections, truncated: truncated || reader.truncated, html, wordHtml, sheets };
 }
 
 module.exports = { readOfficePreview };

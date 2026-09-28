@@ -25,33 +25,33 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     const connection = $(id + 'Connection');
     panel.insertBefore(connection.closest('.engine-field'), preferences);
     panel.insertBefore($(id + 'ConnectionHint'), preferences);
-    const save = $(prefix + 'SaveConnection');
-    save.textContent = 'Save subscription settings'; save.hidden = true; panel.append(save);
-    save.onclick = () => void saveLoginPreferences(id);
-    const control = id === 'kimi' ? $('kimiLoginRegion') : $(prefix + 'ProxyUrl');
-    control.oninput = control.onchange = () => {
-      loginDrafts.set(id, { ...accountPreferences(id), ...(id === 'kimi' ? { region: control.value } : { proxyUrl: control.value }) });
-      save.hidden = false;
-      renderConnection();
-    };
-    connection.onchange = () => {
-      loginDrafts.set(id, { ...accountPreferences(id), connection: connection.value });
-      renderConnection();
-    };
     const hint = document.createElement('p'); hint.className = 'hint'; hint.dataset.i18n = '';
     hint.textContent = id === 'antigravity' ? 'Official CLI sign-in is external. Model availability is verified here; account identity and quota are not reported.'
       : 'Account actions apply immediately. The selected account is preferred for new conversations; existing conversations keep their bound account.';
     panel.insertBefore(hint, heading.nextSibling);
+    const control = id === 'kimi' ? $('kimiLoginRegion') : $(prefix + 'ProxyUrl');
+    // Keep the draft while typing so unrelated renders cannot reset the field;
+    // only a committed change triggers the save.
+    const draftPreference = () => {
+      loginDrafts.set(id, { ...accountPreferences(id), ...(id === 'kimi' ? { region: control.value } : { proxyUrl: control.value }) });
+    };
+    control.oninput = draftPreference;
+    control.onchange = () => { draftPreference(); void queueLoginPreferences(id); renderConnection(); };
+    connection.onchange = () => {
+      loginDrafts.set(id, { ...accountPreferences(id), connection: connection.value });
+      void queueLoginPreferences(id);
+      renderConnection();
+    };
     if (id === 'antigravity') {
       $('googleSignIn').textContent = 'Open official CLI sign-in';
       $('googleRefresh').textContent = 'Verify after sign-in';
       $('googleAccountList').removeAttribute('role');
       const credits = document.createElement('div'); credits.className = 'engine-field';
       credits.innerHTML = '<label for="googleUseCredits" data-i18n>Use AI credits after the plan quota is exhausted</label><input id="googleUseCredits" type="checkbox">';
-      panel.insertBefore(credits, save);
+      panel.append(credits);
       $('googleUseCredits').onchange = event => {
         loginDrafts.set(id, { ...accountPreferences(id), useG1Credits: event.target.checked });
-        renderConnection();
+        void queueLoginPreferences(id);
       };
     }
     if (id !== 'antigravity') $(prefix + 'AccountList').setAttribute('aria-label', 'Preferred account for new conversations');
@@ -61,23 +61,38 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     connectionPanel.remove();
   }
   function accountPreferences(id) { return loginDrafts.get(id) || loginPreferences.get(id) || {}; }
+  // Login preferences save on change, like the other settings pages. Saves are
+  // chained per engine so two quick edits cannot interleave their API work.
+  const loginSaveQueue = new Map();
+  function queueLoginPreferences(id) {
+    const previous = loginSaveQueue.get(id) || Promise.resolve();
+    const next = previous.then(() => saveLoginPreferences(id), () => saveLoginPreferences(id));
+    loginSaveQueue.set(id, next);
+    return next;
+  }
+  // A sign-in reads the saved preference, so it must not overtake an edit that
+  // is still being written. A rejected save keeps its draft; retry it once and
+  // stop the account action if it still cannot be stored.
+  async function flushLoginPreferences(id) {
+    if (loginDrafts.has(id)) await queueLoginPreferences(id);
+    else await (loginSaveQueue.get(id) || Promise.resolve());
+    if (loginDrafts.has(id)) throw new Error('Fix the login preference before continuing: ' + $('status').textContent);
+  }
   async function saveLoginPreferences(id) {
-    const prefix = id === 'antigravity' ? 'google' : id, button = $(prefix + 'SaveConnection');
-    button.disabled = true;
     const submitted = accountPreferences(id);
     try {
       const result = await api.subscriptionPreferencesSave({ engine: id, preferences: submitted });
       if (!result.ok) throw new Error(result.error);
       loginPreferences.set(id, result.preferences);
+      // A newer edit may have replaced this draft while the save was in flight;
+      // keep that draft so its own queued save still persists it.
       if (loginDrafts.get(id) === submitted) loginDrafts.delete(id);
-      button.hidden = !loginDrafts.has(id);
       const draft = drafts.get(id);
       if (draft && id !== 'antigravity') Object.assign(draft.desktop, result.preferences);
       if (draft && id === 'antigravity' && !draft.dirty) drafts.delete(id);
       status('Subscription settings saved. Existing conversations keep their connection and account.');
       renderConnection();
     } catch (error) { status(error.message, true); }
-    finally { button.disabled = false; }
   }
   async function accountsPage(focus) {
     if (!accountsLoaded) {
@@ -96,7 +111,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       const panel = $((focus === 'antigravity' ? 'google' : focus) + 'AccountPanel');
       panel.scrollIntoView({ block: 'start' });
       const prefix = focus === 'antigravity' ? 'google' : focus;
-      const target = $(prefix + (loginDrafts.has(focus) ? 'SaveConnection' : 'SignIn'));
+      const target = $(prefix + 'SignIn');
       if (!target.disabled) target.focus({ preventScroll: true });
     }
   }
@@ -143,14 +158,12 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function renderKimiAccount() {
     const preferences = accountPreferences('kimi'), pending = Boolean(kimiAccount?.loginPending), busy = kimiBusy || kimiAccount?.refreshing || kimiAccount?.signingOut;
-    const preferencesDirty = loginDrafts.has('kimi');
     $('kimiConnection').value = preferences.connection || 'api';
     $('kimiLoginRegion').value = accountPreferences('kimi').region || 'mainland-cn';
     $('kimiConnectionHint').textContent = preferences.connection === 'subscription'
       ? 'Sign in with your Kimi account to use its eligible models and subscription quota. No API key is needed.'
       : 'Use the providers, API keys and models configured in Providers & Keys.';
-    $('kimiSaveConnection').hidden = !preferencesDirty;
-    $('kimiSignIn').disabled = Boolean(busy || pending || preferencesDirty);
+    $('kimiSignIn').disabled = Boolean(busy || pending);
     $('kimiAddAccount').disabled = Boolean(busy || pending);
     $('kimiRefresh').disabled = Boolean(busy || pending || !kimiAccount?.installed);
     $('kimiSignOut').disabled = Boolean(busy || pending);
@@ -159,7 +172,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('kimiCancelLogin').hidden = !pending;
     $('kimiCancelLogin').disabled = kimiBusy === 'kimiCancelLogin';
     $('kimiLoginRegion').disabled = Boolean(busy || pending);
-    $('kimiAccountStatus').textContent = preferencesDirty ? 'Save login preferences before signing in.' : kimiAccount?.signingOut ? 'Signing out of Kimi…' : busy ? 'Checking Kimi account…'
+    $('kimiAccountStatus').textContent = kimiAccount?.signingOut ? 'Signing out of Kimi…' : busy ? 'Checking Kimi account…'
       : pending ? 'Complete Kimi sign-in in your browser. This page updates automatically.'
       : kimiAccount?.error || (kimiAccount?.account ? `Signed in · ${kimiAccount.models.length} account models available` : 'Sign in with Kimi to load your account models.');
     $('kimiDeviceLogin').hidden = !pending || !kimiAccount?.login?.userCode;
@@ -180,21 +193,18 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function renderCodexAccount() {
     const preferences = accountPreferences('codex');
-    const preferencesDirty = loginDrafts.has('codex');
     $('codexConnection').value = preferences.connection || 'api';
     $('codexProxyUrl').value = accountPreferences('codex').proxyUrl || '';
     $('codexConnectionHint').textContent = preferences.connection !== 'subscription'
       ? 'Use models from Providers & Keys, including supported third-party APIs. No ChatGPT sign-in is required. The API provider bills this usage.'
       : 'Use the models and quota included with your ChatGPT account. You can choose API key / third-party API above without signing in.';
-    $('codexSaveConnection').hidden = !preferencesDirty;
     for (const id of ['codexSignIn', 'codexAddAccount', 'codexRefresh', 'codexSignOut']) $(id).disabled = codexBusy || Boolean(codexAccount?.loginPending);
-    $('codexSignIn').disabled ||= preferencesDirty;
-    $('codexRefresh').disabled ||= preferencesDirty || !codexAccount?.installed;
+    $('codexRefresh').disabled ||= !codexAccount?.installed;
     $('codexCancelLogin').disabled = codexBusy;
     $('codexCancelLogin').hidden = !codexAccount?.loginPending;
     $('codexSignOut').hidden = !codexAccount?.account;
     const account = codexAccount?.account;
-    $('codexAccountStatus').textContent = preferencesDirty ? 'Save login preferences before signing in.' : codexBusy ? 'Connecting to Codex…'
+    $('codexAccountStatus').textContent = codexBusy ? 'Connecting to Codex…'
       : codexAccount?.loginPending ? 'Complete ChatGPT sign-in in your browser.' : codexAccount?.error || (account ? (account.email || 'Signed in') + ' · ' + (account.planType || 'ChatGPT') : 'Sign in with ChatGPT to load your models and quota.');
     $('codexModelDetails').hidden = !codexAccount?.models?.length;
     $('codexModelList').innerHTML = (codexAccount?.models || []).map(model => '<li>' + esc(model.name) + '</li>').join('');
@@ -224,18 +234,15 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     renderCodexAccount();
     renderKimiAccount();
     const preferences = accountPreferences('antigravity'), subscription = preferences.connection === 'subscription';
-    const preferencesDirty = loginDrafts.has('antigravity');
     $('antigravityConnection').value = preferences.connection || 'api';
     $('googleUseCredits').checked = preferences.useG1Credits === true;
     $('googleProxyUrl').value = accountPreferences('antigravity').proxyUrl || '';
     $('antigravityConnectionHint').textContent = subscription
       ? 'Use the models and quota included with your Google account. Google credentials stay in the official CLI. Existing API sessions keep using their original connection.'
       : 'Use providers and API keys configured in Providers & Keys. Existing Google sessions keep using the Google account.';
-    $('googleSignIn').disabled = preferencesDirty || accountBusy;
-    $('googleSaveConnection').hidden = !preferencesDirty;
-    $('googleRefresh').disabled = preferencesDirty || accountBusy || !googleAccount?.installed;
-    $('googleAccountStatus').textContent = preferencesDirty ? 'Save login preferences before signing in.'
-      : accountBusy ? 'Connecting to Google…' : googleAccount?.error || (googleAccount?.verification === 'pending' ? 'Waiting for external sign-in. Return here to verify.'
+    $('googleSignIn').disabled = accountBusy;
+    $('googleRefresh').disabled = accountBusy || !googleAccount?.installed;
+    $('googleAccountStatus').textContent = accountBusy ? 'Connecting to Google…' : googleAccount?.error || (googleAccount?.verification === 'pending' ? 'Waiting for external sign-in. Return here to verify.'
       : googleAccount?.verification === 'stale' ? 'Previous verification expired. Verify again.' : googleAccount?.models?.length
         ? `${googleAccount.models.length} models available · Last checked ${new Date(googleAccount.verifiedAt).toLocaleString()}`
         : 'Sign in or refresh an existing CLI sign-in. The required runtime is downloaded on demand.');
@@ -430,6 +437,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     ['codexSignOut', 'codexSignOut'], ['codexCancelLogin', 'codexCancelLogin']]) $(id).onclick = async () => {
     codexBusy = true; renderCodexAccount();
     try {
+      if (['codexSignIn', 'codexAccountAdd', 'codexAccountRefresh'].includes(action)) await flushLoginPreferences('codex');
       const result = await api[action](); if (!result.ok) throw new Error(result.error);
       if (!result.canceled) codexAccount = result;
       if (id === 'codexAddAccount') status('Account added. Sign in to finish connecting it.');
@@ -441,6 +449,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     ['kimiSignOut', 'kimiSignOut'], ['kimiCancelLogin', 'kimiCancelLogin'], ['kimiOpenLogin', 'kimiOpenLogin']]) $(id).onclick = async () => {
     kimiBusy = action; renderKimiAccount();
     try {
+      if (['kimiSignIn', 'kimiAccountAdd', 'kimiAccountRefresh'].includes(action)) await flushLoginPreferences('kimi');
       const result = await api[action](); if (!result.ok) throw new Error(result.error);
       if (!result.canceled) kimiAccount = result;
       if (id === 'kimiAddAccount') status('Account added. Sign in to finish connecting it.');
@@ -451,6 +460,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   async function googleAction(action) {
     accountBusy = true; renderConnection();
     try {
+      await flushLoginPreferences('antigravity');
       const result = await api[action === 'signIn' ? 'antigravitySignIn' : 'antigravityAccountRefresh']();
       if (!result.ok) throw new Error(result.error);
       if (!result.canceled) {
