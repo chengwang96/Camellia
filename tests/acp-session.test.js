@@ -108,6 +108,34 @@ test('Antigravity compaction hook updates are progress, not tools or replies', c
   assert.equal(events[0].state, 'completed');
 });
 
+test('a native denial that arrives after the turn still reaches the UI', context => {
+  const { session } = fixture(context), events = [];
+  session.sessionId = 'native-session'; session.running = true;
+  session.onEvent = event => events.push(event);
+  const notice = { sessionUpdate: 'tool_call_update', toolCallId: 'permission-1', title: 'Antigravity CLI permission blocked',
+    status: 'failed', permissionBlocked: true, content: [{ type: 'content', content: { type: 'text', text: 'headless mode cannot prompt for' } }] };
+  // The notice rides stderr, so on some platforms it lands after the result that
+  // clears `running`. Dropping it would hide a real refusal from the user.
+  session.running = false;
+  session.receive({ method: 'session/update', params: { sessionId: session.sessionId, update: notice } });
+  assert.equal(events.length, 1, 'a late denial must not be swallowed');
+  assert.equal(events[0].permissionBlocked, true);
+  assert.equal(events[0].status, 'failed');
+});
+
+test('only denials are admitted after a turn, and never for a cancelled one', context => {
+  const { session } = fixture(context), events = [];
+  session.sessionId = 'native-session'; session.running = false;
+  session.onEvent = event => events.push(event);
+  const update = { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'stray text' } };
+  session.receive({ method: 'session/update', params: { sessionId: session.sessionId, update } });
+  assert.deepEqual(events, [], 'an ordinary late update stays out');
+  session.cancelled = true;
+  session.receive({ method: 'session/update', params: { sessionId: session.sessionId,
+    update: { ...update, sessionUpdate: 'tool_call_update', permissionBlocked: true, status: 'failed' } } });
+  assert.deepEqual(events, [], 'a cancelled turn does not report a denial');
+});
+
 test('ACP consumes a final reply after process exit before closing the transport', async t => {
   const { proc, session } = fixture(t);
   const reply = session.request('session/prompt', {}).then(value => ({ value }), error => ({ error }));

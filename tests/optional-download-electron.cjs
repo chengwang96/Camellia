@@ -41,6 +41,22 @@ async function main() {
       for (let i = 0; i < 200; i++) { const result = await check(); if (result) return result; await new Promise(resolve => setTimeout(resolve, 25)); }
       throw new Error('Optional-download UI did not become ready');
     }
+    // Runtime installs build in a staging directory beside the finished one, so
+    // the bundled installer must hand npm the physical staging prefix (npm 11
+    // rejects a symlinked prefix) and nothing appears under runtimes/ until a
+    // download completes.
+    const stagedPrefix = (entry, engine) => {
+      const index = entry.args.indexOf('--prefix');
+      assert.notEqual(index, -1, 'the bundled installer must receive an npm prefix');
+      const prefix = entry.args[index + 1];
+      assert.equal(path.dirname(prefix), fs.realpathSync.native(path.join(profile, 'runtimes')));
+      assert.match(path.basename(prefix), new RegExp('^\\.' + engine + '\\.staging-[0-9a-f-]{36}$'));
+      return prefix;
+    };
+    const installedEngines = () => {
+      const directory = path.join(profile, 'runtimes');
+      return fs.existsSync(directory) ? fs.readdirSync(directory) : [];
+    };
     const windowFor = selector => wait(async () => {
       for (const window of BrowserWindow.getAllWindows()) if (!window.webContents.isLoading()
         && await window.webContents.executeJavaScript(`Boolean(document.querySelector(${JSON.stringify(selector)}))`)) return window;
@@ -84,8 +100,8 @@ async function main() {
     assert.equal(downloads[0].env.HTTPS_PROXY, saved.downloadProxy.url);
     assert.equal(downloads[0].env.npm_config_https_proxy, saved.downloadProxy.url);
     assert.equal(downloads[0].exe, path.join(resources, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node'));
-    assert.ok(downloads[0].args.includes(fs.realpathSync.native(path.join(profile, 'runtimes/kimi'))));
-    assert.deepEqual(fs.readdirSync(path.join(profile, 'runtimes')), ['kimi']);
+    stagedPrefix(downloads[0], 'kimi');
+    assert.deepEqual(installedEngines(), [], 'a failed download installs nothing and leaves no staging or backup directory');
     const rows = await settings.webContents.executeJavaScript('window.dshDesktop.runtimeState()');
     assert.ok(rows.engines.filter(row => row.id !== 'kimi').every(row => row.status === 'missing'));
     replies.push(1); // Retry directly, without changing the saved preference.
@@ -101,9 +117,9 @@ async function main() {
     replies.push(0);
     await home.webContents.executeJavaScript("document.querySelector('#enterCodex').click()");
     await wait(async () => downloads.length === 3 && await home.webContents.executeJavaScript("!document.querySelector('#enterCodex').disabled"));
-    assert.ok(downloads[2].args.includes(fs.realpathSync.native(path.join(profile, 'runtimes/codex'))));
+    stagedPrefix(downloads[2], 'codex');
     assert.equal(downloads[2].env.HTTPS_PROXY, saved.downloadProxy.url);
-    assert.deepEqual(fs.readdirSync(path.join(profile, 'runtimes')), ['codex', 'kimi']);
+    assert.deepEqual(installedEngines(), [], 'a failed download installs nothing and leaves no staging or backup directory');
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(profile, 'desktop-config.json'))).downloadProxy, saved.downloadProxy);
     assert.deepEqual(replies, []);
     assert.deepEqual(errors, []);

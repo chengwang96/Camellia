@@ -23,6 +23,7 @@ async function run() {
   fs.writeFileSync(settingsFile, JSON.stringify({ modelProvider: 'gemini', enableTelemetry: false }));
   let session, complete, waiting;
   const events = [], errors = [], requests = [];
+  seen.events = events; seen.errors = errors;
   const server = http.createServer(async (req, res) => {
     try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -104,8 +105,23 @@ async function run() {
     const denied = await send('GOOGLE SMOKE deny');
     assert.equal(denied.subtype, 'success', JSON.stringify(denied) + errors.join('\n'));
     assert.equal(fs.existsSync(path.join(cwd, 'denied.txt')), false, 'Headless mode must not silently approve an explicit CLI review rule');
+    // Let the CLI's stderr pipe drain: the notice is written there, and reading it
+    // after the turn's result is what decides whether this is a CLI difference or
+    // an adapter that drops a late notice.
+    await new Promise(resolve => setTimeout(resolve, 500));
+    // The denial travels on the CLI's stderr, which is a separate pipe from the
+    // stdout result that closes the turn. When this fails we need to know whether
+    // the notice never arrived, arrived after the turn closed, or arrived but was
+    // not marked, so report the raw evidence instead of only a false/true diff.
+    const tools = events.filter(event => event.type === 'gui:tool');
+    const noticeLines = errors.filter(message => /headless mode cannot prompt for|auto-denied/i.test(message));
     assert.ok(events.some(event => event.type === 'gui:tool' && event.permissionBlocked && event.status === 'failed'
-      && /headless mode cannot prompt for/.test(event.output)), 'The native denial must reach the UI, not only the log');
+      && /headless mode cannot prompt for/.test(event.output)),
+      'The native denial must reach the UI, not only the log'
+      + '\n  adapter stderr lines carrying the notice: ' + noticeLines.length
+      + (noticeLines.length ? '\n    ' + noticeLines.join('\n    ') : '')
+      + '\n  gui:tool events (' + tools.length + '): ' + JSON.stringify(tools, null, 2)
+      + '\n  all adapter stderr: ' + JSON.stringify(errors, null, 2));
     assert.equal(events.filter(event => event.type === 'gui:permission').length, 0, 'A completed denial cannot pretend to be a pending approval');
     const requestStarted = new Promise(resolve => { waiting = resolve; });
     const stopped = send('GOOGLE SMOKE wait');
@@ -141,4 +157,20 @@ async function run() {
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }
-run().catch(error => { console.error(error); process.exitCode = 1; });
+// The CI log needs repository admin rights to read, but a failed job's artifacts
+// are downloadable, so record what the adapter saw and publish it on failure.
+// This is what makes a platform-only failure diagnosable from outside.
+const seen = { events: [], errors: [] };
+run().catch(error => {
+  console.error(error);
+  try {
+    fs.mkdirSync(path.resolve(__dirname, '../dist'), { recursive: true });
+    fs.writeFileSync(path.resolve(__dirname, '../dist/antigravity-subscription-diagnostics.json'),
+      JSON.stringify({ error: error.message, stack: error.stack, platform: process.platform, arch: process.arch, node: process.version,
+        denialLinesInAdapterStderr: seen.errors.filter(message => /headless mode cannot prompt for|auto-denied/i.test(message)),
+        guiToolEvents: seen.events.filter(event => event.type === 'gui:tool'),
+        permissionEvents: seen.events.filter(event => event.type === 'gui:permission'),
+        adapterStderr: seen.errors }, null, 2));
+  } catch (writeError) { console.error('Could not write diagnostics: ' + writeError.message); }
+  process.exitCode = 1;
+});
