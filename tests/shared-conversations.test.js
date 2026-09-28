@@ -1851,6 +1851,101 @@ for (const cancel of [false, true]) test('legacy Codex edit boundary lookup ' + 
   assert.equal(manager.busy(conversation.id), false);
 });
 
+test('the model can search for a file by content and the hits become turn artifacts', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  const conversation = manager.create('codex', undefined, 'Locate the deck');
+  const cwd = manager.get(conversation.id).cwd;
+  fs.mkdirSync(path.join(cwd, 'outputs'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'outputs', '未命名草稿.md'), '# 供应商谈判要点\n\n三条谈判原则。\n');
+  fs.writeFileSync(path.join(cwd, 'outputs', 'unrelated.md'), '# 别的主题\n\n无关内容。\n');
+  const run = await manager.send('codex', { sessionId: conversation.id, prompt: '帮我把讲供应商谈判的那份材料找出来' });
+  const bridge = harness.sent.at(-1).opts.goalBridge;
+  const token = manager.active.get(conversation.id).goalRunToken;
+
+  const nameMiss = await bridge.call('camellia_find_files', { run_token: token, query: '讲稿' });
+  assert.equal(nameMiss.ok, true);
+  assert.equal(nameMiss.count, 0);
+  const byContent = await bridge.call('camellia_find_files', { run_token: token, query: '供应商谈判', inside: true });
+  assert.equal(byContent.ok, true);
+  assert.deepEqual(byContent.files.map(file => file.name), ['未命名草稿.md']);
+  assert.match(byContent.files[0].snippet, /供应商谈判/);
+  assert.equal(byContent.files[0].deliverable, undefined);
+  assert.equal(byContent.mode, 'content');
+  // A stale run token or an unsupported argument is refused, as with any tool.
+  assert.equal((await bridge.call('camellia_find_files', { run_token: 'stale', query: 'x' })).ok, false);
+  assert.equal((await bridge.call('camellia_find_files', { run_token: token, query: 'x', root: '/' })).ok, false);
+
+  // Ending the turn publishes the located file as a deliverable even though the
+  // model only mentioned its name in prose.
+  harness.finish('codex', 'success', 'I found `outputs/未命名草稿.md`.');
+  await run.done;
+  const rows = manager.rows(manager.get(conversation.id));
+  const reply = rows.filter(row => row.role === 'assistant').at(-1);
+  assert.deepEqual(reply.artifacts.map(file => file.name), ['未命名草稿.md']);
+  assert.deepEqual(byContent.searched, [fs.realpathSync.native(cwd)]);
+});
+
+test('/find recalls a file an earlier conversation wrote, by name and by description, without reading it', async context => {
+  const harness = fixture(context);
+  const manager = harness.manager;
+  // An older conversation produced the file; the user has forgotten its name.
+  const earlier = manager.create('codex', undefined, '试讲材料准备');
+  const root = manager.get(earlier.id).cwd;
+  fs.mkdirSync(path.join(root, 'outputs'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'outputs', 'UDP与TCP试讲.pptx'), 'deck');
+  manager.append(earlier, { role: 'user', text: '帮我做一份关于 TCP 三次握手的试讲 PPT' });
+  manager.append(earlier, { role: 'tool', text: JSON.stringify({ type: 'gui:tool', id: 'w1', name: 'Write',
+    status: 'completed', input: { file_path: path.join('outputs', 'UDP与TCP试讲.pptx') } }) });
+  manager.append(earlier, { role: 'assistant', text: '试讲 PPT 已生成。' });
+  // Something unrelated in the same folder must not be dragged in by the title.
+  fs.writeFileSync(path.join(root, '无关笔记.txt'), 'notes');
+
+  const target = manager.create('codex', undefined, '继续改讲稿');
+  const byName = await manager.find(target.id, '试讲');
+  assert.ok(byName.files.some(file => file.name === 'UDP与TCP试讲.pptx'), JSON.stringify(byName.files.map(file => file.name)));
+  assert.equal(byName.files.some(file => file.name === '无关笔记.txt'), false);
+  // The reply says which conversation the recalled file came from.
+  const row = manager.rows(manager.get(target.id)).filter(entry => entry.role === 'assistant').at(-1);
+  assert.match(row.text, /试讲材料准备/);
+
+  // A description-only query still finds it, because the turn's own words were
+  // indexed; no file content was read to do it.
+  const byWords = await manager.find(target.id, '三次握手');
+  assert.ok(byWords.files.some(file => file.name === 'UDP与TCP试讲.pptx'));
+});
+
+test('a bare /find lists the files recent conversations produced, newest first', async context => {
+  const harness = fixture(context);
+  const manager = harness.manager;
+  const first = manager.create('codex', undefined, '第一份材料');
+  const root = manager.get(first.id).cwd;
+  const write = (conversation, name) => {
+    fs.writeFileSync(path.join(root, name), 'x');
+    manager.append(conversation, { role: 'tool', text: JSON.stringify({ type: 'gui:tool', id: 'w-' + name, name: 'Write',
+      status: 'completed', input: { file_path: name } }) });
+  };
+  write(first, '早一点的.txt');
+  manager.append(first, { role: 'assistant', text: '已生成早一点的.txt' });
+  const second = manager.create('codex', undefined, '第二份材料');
+  write(second, '晚一点的.txt');
+  manager.append(second, { role: 'assistant', text: '已生成晚一点的.txt' });
+
+  const target = manager.create('codex', undefined, '手机取件');
+  harness.setConfig({ language: 'zh-CN' });
+  const recent = await manager.find(target.id, '');
+  assert.equal(recent.query, '');
+  // Both are offered, and the one from the more recent conversation leads.
+  assert.deepEqual(recent.files.map(file => file.name).sort(), ['早一点的.txt', '晚一点的.txt']);
+  assert.equal(recent.files[0].name, '晚一点的.txt');
+  const row = manager.rows(manager.get(target.id)).filter(entry => entry.role === 'assistant').at(-1);
+  assert.match(row.text, /最近编辑或生成的文件/);
+  assert.match(row.text, /晚一点的\.txt/);
+  // No engine ran and no file content was read.
+  assert.equal(harness.sent.length, 0);
+});
+
 test('an edit whose Codex native session is gone is revised from the stored history', async context => {
   const harness = fixture(context), manager = harness.manager;
   const first = await manager.send('codex', { prompt: 'EARLIER_TASK' });

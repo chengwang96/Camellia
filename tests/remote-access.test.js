@@ -95,16 +95,108 @@ test('remote automation controls are scoped, explicit and cannot create tasks th
   const { gateway, pair, visible, hidden, manager } = fixture(context);
   const { token } = pair(); await gateway.start('127.0.0.1', 0);
   const goal = manager.goalFor(visible.id);
-  goal.goal = { objective: 'Test only; never run', phase: 'paused', runToken: 'must-not-leak' };
+  goal.goal = { objective: 'Test only; never run', phase: 'active', armed: true, roundsStarted: 3, runToken: 'must-not-leak' };
+  goal.armed = true;
   const snapshot = (await request(gateway, `/v1/conversations/${visible.id}`, { token })).body;
-  assert.equal(snapshot.automation.goal.phase, 'paused');
+  // The phone renders this payload as its automation bar, so the fields it needs
+  // must survive the projection while the run token never leaves the computer.
+  assert.equal(snapshot.automation.goal.phase, 'active');
+  assert.equal(snapshot.automation.goal.objective, 'Test only; never run');
+  assert.equal(snapshot.automation.goal.armed, true);
+  assert.equal(snapshot.automation.goal.roundsStarted, 3);
   assert.equal(JSON.stringify(snapshot).includes('must-not-leak'), false);
+  // Pausing and resuming from the phone is the same command the UI issues.
+  const pause = { action: 'goal-control', operation: 'pause', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: pause })).body.ok, true);
+  assert.equal((await request(gateway, `/v1/conversations/${visible.id}`, { token })).body.automation.goal.phase, 'paused');
   const payload = { action: 'goal-control', operation: 'clear', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
   assert.equal((await request(gateway, `/v1/conversations/${hidden.id}/commands`, { token, method: 'POST', payload })).status, 404);
   assert.equal((await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload })).body.ok, true);
   assert.equal(goal.view(), null);
   const invalid = await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: { ...payload, action: 'task-control', taskId: 'anything', operation: 'create', requestId: require('node:crypto').randomUUID() } });
   assert.equal(invalid.body.ok, false);
+});
+
+test('resuming a goal from the phone starts the turn the same way the desktop does', async context => {
+  const { gateway, pair, visible, manager } = fixture(context);
+  const { token } = pair(); await gateway.start('127.0.0.1', 0);
+  // Resume dispatches a real goal turn, so the engine has to accept it.
+  let starts = 0;
+  manager.drivers.codex.ensure = () => ({ gen: 88, sendUserMessage() { starts++; return true; }, interrupt() {} });
+  const goal = manager.goalFor(visible.id);
+  // A real goal always knows its conversation; without it the resume path
+  // cannot look the conversation up.
+  goal.goal = { objective: 'Finish the report', phase: 'paused', roundsStarted: 1, sessionId: visible.id };
+  goal.armed = false;
+  const resume = { action: 'goal-control', operation: 'resume', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
+  // The phone path is what matters: the same command the automation bar sends.
+  const resumed = await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: resume });
+  assert.equal(resumed.body.ok, true, resumed.body.error);
+  // Resuming arms the goal and schedules the next round rather than sending
+  // inline, so the turn starts once that timer fires.
+  assert.equal(goal.armed, true);
+  assert.equal(goal.goal.phase, 'active');
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(starts, 1, 'the resumed goal must dispatch exactly one turn');
+});
+
+test('a phone send carries the goal and task tools, and its own words authorize them', async context => {
+  const { gateway, pair, visible, manager, access, commands } = fixture(context);
+  const credential = pair(); await gateway.start('127.0.0.1', 0);
+  // Goal/task tools only exist when a bridge is configured, exactly as on the
+  // desktop; without it a send cannot offer them at all.
+  manager.createGoalBridge = async options => ({ call: options.call, close() {} });
+  // The phone sends an ordinary message; the model is expected to notice the
+  // goal request inside it. Capture the bridge the send was given.
+  const enginePrompts = [];
+  manager.drivers.codex.ensure = () => ({ gen: 71, sendUserMessage(prompt) { enginePrompts.push(prompt); return true; }, interrupt() {} });
+  const device = access.authenticate(credential.token);
+  const sent = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'send',
+    prompt: '帮我把这份报告写完，设定一个目标直到完成', expectedSeq: manager.get(visible.id).seq };
+  const accepted = await commands.execute(device, visible.id, sent, gateway.instanceId);
+  assert.equal(accepted.ok, true);
+  const active = manager.active.get(visible.id);
+  // The tools are offered on a remote send, and the run token is bound to it.
+  assert.ok(active.goalRunToken, 'remote send must expose the goal tools');
+  assert.equal(active.goalContinuation, false);
+  // The user_request quote is checked against what the phone actually said,
+  // so a natural-language goal request from the phone is authorized.
+  const created = await manager.callGoalTool(visible.id, 'camellia_create_goal',
+    { run_token: active.goalRunToken, objective: '完成报告', user_request: '设定一个目标直到完成' });
+  assert.equal(created.ok, true, created.error);
+  // A quote the user never sent is still refused.
+  const forged = await manager.callGoalTool(visible.id, 'camellia_create_goal',
+    { run_token: active.goalRunToken, objective: '别的目标', user_request: '这句话我没说过' });
+  assert.equal(forged.ok, false);
+
+  // A scheduled task is offered and authorized the same way, checked on a
+  // second conversation so the goal above cannot hold the turn.
+  const other = manager.create('codex', 'allowed', '定时任务');
+  const taskRun = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'send',
+    prompt: '训练已经启动了。\n能每十分钟帮我看一下日志吗？', expectedSeq: manager.get(other.id).seq };
+  assert.equal((await commands.execute(device, other.id, taskRun, gateway.instanceId)).ok, true);
+  const taskActive = manager.active.get(other.id);
+  const task = await manager.callGoalTool(other.id, 'camellia_task_create',
+    { run_token: taskActive.goalRunToken, user_request: '能每十分钟帮我看一下日志吗？', instruction: 'Inspect logs', intervalMinutes: 10 });
+  assert.equal(task.ok, true, task.error);
+  // Recovery still needs explicit authorization, on the phone as on the desktop.
+  const sneaky = await manager.callGoalTool(other.id, 'camellia_task_create',
+    { run_token: taskActive.goalRunToken, user_request: '能每十分钟帮我看一下日志吗？', instruction: 'Inspect logs', intervalMinutes: 10, maxRepairs: 2 });
+  assert.equal(sneaky.ok, false);
+
+  // A phone has no slash menu, so "/goal" reaches the computer as ordinary
+  // text. The engine still receives the tool instructions and a run token, so
+  // the model can read the request and act on it; the desktop, by contrast,
+  // never sends "/goal" as a message at all.
+  const third = manager.create('codex', 'allowed', '斜杠目标');
+  const slash = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'send',
+    prompt: '/goal 把季度报告写完', expectedSeq: manager.get(third.id).seq };
+  const slashResult = await commands.execute(device, third.id, slash, gateway.instanceId);
+  assert.equal(slashResult.ok, true, slashResult.error || JSON.stringify(slashResult));
+  const promptText = enginePrompts.at(-1);
+  assert.match(promptText, /camellia_create_goal/);
+  assert.match(promptText, /\/goal 把季度报告写完/);
+  assert.match(promptText, /Camellia goal run token/);
 });
 
 test('workspace-scoped control cannot install runtimes or read management results', async context => {
@@ -277,6 +369,47 @@ test('revocation interrupts in-flight artifact downloads and releases their hand
   for (let attempt = 0; attempt < 100 && gateway.downloads.size; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(gateway.downloads.size, 0);
   fs.unlinkSync(filename);
+});
+
+test('every artifact the phone is offered can actually be downloaded', async context => {
+  const { root, manager, gateway, access, visible, pair } = fixture(context);
+  const workspace = path.join(root, 'workspace'); fs.mkdirSync(workspace);
+  visible.cwd = workspace;
+  // One file per artifact kind the panel renders, including the presentation
+  // format a reply about PPT conversion produces, plus names that stress the
+  // download headers: spaces, non-ASCII and characters needing percent-encoding.
+  const names = ['面试 材料.pdf', '表单.docx', '课程试讲_v4.pptx', '成绩.xlsx', 'figure.png', 'demo.mp4',
+    'audio.mp3', 'Camellia-debug.apk', '旧版表格.doc', 'notes.md', 'data.csv', "带(括号)'引号.pptx"];
+  const bodies = new Map();
+  for (const name of names) {
+    const body = Buffer.concat([Buffer.from(name), Buffer.alloc(1024, 5)]);
+    bodies.set(name, body);
+    fs.writeFileSync(path.join(workspace, name), body);
+  }
+  manager.append(visible, { role: 'user', text: 'Make the deliverables' });
+  manager.append(visible, { role: 'assistant', text: names.map(name => '`' + name + '`').join('\n') });
+
+  const { token } = pair();
+  await gateway.start('127.0.0.1', 0);
+  const route = `/v1/conversations/${visible.id}/artifacts`;
+  const listing = await request(gateway, route, { token });
+  assert.equal(listing.status, 200);
+  assert.deepEqual(listing.body.artifacts.map(file => file.name).sort(), [...names].sort());
+  // Listing and downloading must agree: anything the panel shows the phone, the
+  // same id must serve byte for byte. A format the list cannot hand over must
+  // never be listed in the first place.
+  for (const file of listing.body.artifacts) {
+    assert.ok(['document', 'word', 'presentation', 'spreadsheet', 'image', 'video', 'audio', 'package', 'pdf', 'text'].includes(file.kind), file.kind);
+    const response = await fetch(`${gateway.url}${route}/${file.id}`, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(response.status, 200, file.name);
+    assert.equal(response.headers.get('content-type'), 'application/octet-stream');
+    // The header is RFC 5987 encoded, so `'`, `(` and `)` are escaped too.
+    const encoded = encodeURIComponent(file.name).replace(/['()*]/g, value => '%' + value.charCodeAt(0).toString(16));
+    assert.ok(response.headers.get('content-disposition').includes(encoded), file.name);
+    const body = Buffer.from(await response.arrayBuffer());
+    assert.equal(body.length, file.size, file.name);
+    assert.deepEqual(body, bodies.get(file.name), file.name);
+  }
 });
 
 async function stream(gateway, conversationId, token) {
@@ -1230,4 +1363,88 @@ test('unknown journal outcomes never repeat and changed approval content cannot 
   const deny = { ...approve, requestId: require('node:crypto').randomUUID(), fingerprint: require('../src/main/remote/commands').approval(event).fingerprint, allow: false };
   assert.equal((await commands.execute(device, visible.id, deny, gateway.instanceId)).ok, true);
   assert.equal(approvals, 1);
+});
+
+test('a phone can search the computer for files and download the result', async context => {
+  const { manager, gateway, access, commands, visible, pair, root } = fixture(context);
+  const credential = pair();
+  await gateway.start('127.0.0.1', 0);
+  const { randomUUID } = require('node:crypto');
+  fs.writeFileSync(path.join(root, '面试试讲材料.pptx'), 'deck');
+  fs.writeFileSync(path.join(root, '面试试讲材料.pdf'), 'pdf');
+  fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'node_modules', '面试试讲材料.js'), 'noise');
+  const device = access.authenticate(credential.token);
+  assert.ok((await request(gateway, '/v1/status', { token: credential.token })).body.capabilities.includes('find'));
+
+  // An older client that only knows "send" still gets the search answered,
+  // because the desktop recognizes the typed command before an engine runs.
+  const typed = { requestId: randomUUID(), instanceId: gateway.instanceId, action: 'send', prompt: '/find 面试试讲', expectedSeq: visible.seq };
+  const sent = await commands.execute(device, visible.id, typed, gateway.instanceId);
+  assert.equal(sent.ok, true);
+  assert.equal(sent.count, 2);
+  assert.ok(sent.userSeq > 0);
+  assert.equal(manager.active.size, 0);
+  assert.equal(manager.busy(visible.id), false);
+  const rows = manager.rows(manager.get(visible.id));
+  assert.equal(rows.at(-2).role, 'user');
+  assert.equal(rows.at(-2).text, '/find 面试试讲');
+  assert.equal(rows.at(-1).role, 'assistant');
+  assert.deepEqual(rows.at(-1).artifacts.map(file => file.name).sort(), ['面试试讲材料.pdf', '面试试讲材料.pptx']);
+
+  // Both files are listed as ordinary conversation artifacts and download.
+  const listing = (await request(gateway, `/v1/conversations/${visible.id}/artifacts`, { token: credential.token })).body;
+  assert.deepEqual(listing.artifacts.filter(file => file.name.startsWith('面试试讲')).map(file => file.name).sort(),
+    ['面试试讲材料.pdf', '面试试讲材料.pptx']);
+  const deck = listing.artifacts.find(file => file.name === '面试试讲材料.pptx');
+  const download = await fetch(`${gateway.url}/v1/conversations/${visible.id}/artifacts/${deck.id}`, { headers: { Authorization: `Bearer ${credential.token}` } });
+  assert.equal(download.status, 200);
+  assert.equal(Buffer.from(await download.arrayBuffer()).toString(), 'deck');
+
+  // The dedicated action does the same and rejects an empty or oversized query.
+  const searched = { requestId: randomUUID(), instanceId: gateway.instanceId, action: 'find', query: '.pdf', expectedSeq: manager.get(visible.id).seq };
+  const found = await commands.execute(device, visible.id, searched, gateway.instanceId);
+  assert.equal(found.state, 'accepted');
+  assert.deepEqual(found.files.map(file => file.name), ['面试试讲材料.pdf']);
+  assert.equal(found.roots, undefined);
+  assert.ok(!found.files.some(file => 'path' in file));
+  const currentSeq = manager.get(visible.id).seq;
+  // An empty query is a real request now: it lists recent work, which is what a
+  // phone user wants when they cannot name the file. Only an oversized one is
+  // refused.
+  const recent = await commands.execute(device, visible.id, { ...searched, requestId: randomUUID(), expectedSeq: currentSeq, query: '  ' }, gateway.instanceId);
+  assert.equal(recent.ok, true);
+  assert.equal(recent.query, '');
+  const oversized = await commands.execute(device, visible.id, { ...searched, requestId: randomUUID(), expectedSeq: manager.get(visible.id).seq, query: 'x'.repeat(501) }, gateway.instanceId);
+  assert.equal(oversized.ok, false);
+  assert.match(oversized.error, /Describe the file|too long/);
+  await assert.rejects(commands.execute(device, visible.id, { ...searched, requestId: randomUUID(), expectedSeq: currentSeq, action: 'find', extra: 1 }, gateway.instanceId), /Unsupported command field/);
+
+  // The phone can also search inside documents for a file it cannot name.
+  fs.writeFileSync(path.join(root, '会议纪要-a1.md'), '# 供应商谈判\n\n三条谈判原则。\n');
+  const inside = { requestId: randomUUID(), instanceId: gateway.instanceId, action: 'send',
+    prompt: '/find inside: 供应商谈判', expectedSeq: manager.get(visible.id).seq };
+  const contents = await commands.execute(device, visible.id, inside, gateway.instanceId);
+  assert.equal(contents.ok, true);
+  assert.deepEqual(contents.files.map(file => file.name), ['会议纪要-a1.md']);
+  // The snippet belongs to the conversation text, which the phone renders; the
+  // command reply carries the downloadable artifacts.
+  const reply = manager.rows(manager.get(visible.id)).filter(row => row.role === 'assistant' && !row.internal).at(-1);
+  assert.match(reply.text, /供应商谈判/);
+  assert.match(reply.text, /Found files containing|找到了包含/);
+
+  // A bare "/find" from the phone lists the newest file a conversation actually
+  // produced. A file that merely exists on disk is not recent work, so the
+  // search above is first recorded as a normal turn that wrote the file.
+  manager.append(manager.get(visible.id), { role: 'tool', text: JSON.stringify({ type: 'gui:tool', id: 'recent-write',
+    name: 'Write', status: 'completed', input: { file_path: '会议纪要-a1.md' } }) });
+  manager.append(manager.get(visible.id), { role: 'assistant', text: '会议纪要已生成。' });
+  const bare = { requestId: randomUUID(), instanceId: gateway.instanceId, action: 'send',
+    prompt: '/find', expectedSeq: manager.get(visible.id).seq };
+  const listedRecent = await commands.execute(device, visible.id, bare, gateway.instanceId);
+  assert.equal(listedRecent.ok, true);
+  assert.equal(listedRecent.query, '');
+  assert.deepEqual(listedRecent.files.map(file => file.name), ['会议纪要-a1.md']);
+  const recentRow = manager.rows(manager.get(visible.id)).filter(row => row.role === 'assistant' && !row.internal).at(-1);
+  assert.match(recentRow.text, /most recently|最近编辑/);
 });

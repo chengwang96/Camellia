@@ -26,7 +26,7 @@ Camellia 将 **Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigrav
 - **手动空间清理。** 设置 → 已归档 → 空间清理 → 扫描，查看分类、大小及相对路径后确认永久删除。仅清理无归属的 Camellia 会话残留、交接/压缩摘要、粘贴附件及专属引擎目录；保护现存/归档/分叉会话、草稿、排队附件和 24 小时内修改的文件。清理前重新核对引用与文件状态，不做后台定期扫描。工作区、外部文件、导入原件与共享/全局引擎历史不在删除范围；已删除会话的专属引擎目录可包含其私有原生状态。会话工作期间也能清理经核实无归属的旧残留和引擎目录，但粘贴附件、交接文档与压缩摘要暂时受保护，空闲后重新扫描可纳入清理。引用数据损坏、无法读取或在核验期间变化时停止操作，不安全或过大的候选项会被跳过。残留记录中的引用也受保护，因此删除记录后可能需要再次手动扫描才能清理其附件。显示的大小为逻辑文件大小，实际释放空间可能不同。
 - **长文本自动转附件。** 粘贴超长文本时自动保存为 `pasted-text-*.txt` 附件，避免把巨型提示词塞进消息；短文本仍直接插入输入框。
 - **回答末尾展示产物。** 从本轮成功的文件写入操作和回答中的本地文件链接／行内代码路径收集产物，去重并检查文件存在后展示卡片；安装包排在最前，其后是图片、视频、演示文稿、Markdown 和 HTML，超过 4 个文件时折叠其余文件。“打开方式”提供在 Camellia 内打开、使用系统默认软件打开，或在系统文件管理器中定位该文件。支持图片、音视频、PDF、文本、CSV／TSV 表格、JSON 树以及 DOCX／PPTX／XLSX 文档预览；安装包没有内置预览。右侧栏可渲染 Markdown 的标题、表格、脚注、KaTeX 公式与语法高亮，并展示禁用脚本的沙箱 HTML 页面。Office 在本机解析并在禁用脚本和联网的沙箱中展示：Word 标题、文字格式、表格和内嵌图片；PPTX 幻灯片，包含主题配色、母版与版式装饰、组合形状、连接线、表格、缓存图表数据、定位文字和图片；Excel 工作表、单元格样式和常见数字格式。动画、切换、SmartArt、OLE 对象和 EMF/WMF 媒体可能无法还原，不重新计算公式；旧版 DOC／PPT／XLS 作为产物仍会列出，因其二进制格式无内置预览，打开时走系统软件。通过脚本生成的文件需在回答中附上路径或链接。共享会话保留各轮产物记录，不扫描整个工作区。详见[桌面产物预览](docs/artifact-previews.md)（英文）。
-- **跨目录产物照常展示。** 回答里的相对路径按会话工作区、本轮命令实际所在的目录，以及回答本身点名的绝对路径文件夹解析，因此在其他项目目录里跑命令产出的文件、或在引用的输出文件夹下以纯文件名列出的文件，也会出现在卡片里。
+- **跨目录产物照常展示。** 回答里的相对路径按会话工作区、本轮命令实际所在的目录、回答本身点名的绝对路径文件夹，以及本轮命令里出现过的绝对路径所在文件夹解析，因此在其他项目目录里跑命令产出的文件、或在回答只用文字点名的文件夹（例如命令扫描过的桌面文件夹）下以纯文件名列出的文件，也会出现在卡片里。回答点名的文件夹优先于仅由命令参数推断出的文件夹，同名旧模板不会盖过成品文件。
 - **集中管理 API。** 在同一页面配置供应商、导入并命名 Key、读取模型目录和验证连接。
 - **同模型线路切换。** 在供应商设置中选择 **API 优先级**：**低、默认、高**，按高 → 默认 → 低的顺序尝试。遇到可重试故障时，尝试提供同一模型的其他 Key 或供应商，不会自动替换为另一模型。高优先级线路冷却结束后会优先重试；同优先级沿用当前线路，再按供应商和 Key 顺序尝试。“下一条线路”仅在当前可用的最高优先级内切换。之前保存的数字优先级自动映射为默认（0）或高（正数）。
 - **用量与账户信息。** 按供应商、Key、模型和日期筛选本机请求与 Token 统计；通过已适配的账户接口查看余额、订阅额度及历史曲线。
@@ -206,7 +206,7 @@ Camellia 不限于本机使用。两个功能都复用内置的 Tailscale helper
 
 **无界面 Linux 服务器。** 在 Linux 主机上运行 `./camellia`，引导流程会复用或启动后台服务、登录 Tailscale、显示浏览器登录链接，最后给出地址和一次性配对码；在同一条终端输入 `YES` 逐台人工确认配对。之后在 **设置 → CLI 设备** 中填写服务器名称和默认 Harness 并配对，从首页打开。每台服务器使用独立窗口，并提供运行时、引擎默认值、用量、已归档和空间清理等服务器内设置。文件和会话始终留在服务器，桌面窗口各自保留订阅、附件与下载。详见 [Linux 服务器预览](docs/linux-server-preview.md)。
 
-**手机访问。** 在设置中开启 **手机访问**，把内置 Tailscale 网络共享给 Android 手机。先设置本机名称，生成一次性配对码，用手机扫描其二维码，再在电脑端授权该设备。授权覆盖当前及今后新增的全部工作区与独立会话，归档会话不可访问。已授权设备可按会话现有权限发送消息、停止当前运行并处理工具审批；电脑端可随时重命名或撤销设备。详见[手机访问](docs/remote-access.md)与 [Android 客户端](android/README.md)。
+**手机访问。** 在设置中开启 **手机访问**，把内置 Tailscale 网络共享给 Android 手机。先设置本机名称，生成一次性配对码，用手机扫描其二维码，再在电脑端授权该设备。授权覆盖当前及今后新增的全部工作区与独立会话，归档会话不可访问。已授权设备可按会话现有权限发送消息、停止当前运行并处理工具审批；电脑端可随时重命名或撤销设备。在户外想取回电脑上的文件时，输入 `/find` 加一句描述（手机端输入框旁有 **查找文件** 按钮），电脑会在会话自己的目录中查找并把结果作为产物返回，再用 **储存到手机** 下载。只记得内容、不记得文件名时用 `/find inside: 关键词`，或直接用自然语言描述（例如「把讲供应商谈判的那份材料找出来」），模型会通过 `camellia_find_files` 按内容检索。详见[手机访问](docs/remote-access.md)、[查找文件](docs/file-find.md)与 [Android 客户端](android/README.md)。
 
 ## 配置与数据
 
@@ -265,6 +265,6 @@ docs/           使用指南、技术说明与历史记录
 - [开发指南](docs/development.md)（英文）：架构、运行时、测试与打包。
 - [文档索引](docs/README.md)：实现说明与归档设计记录，包含现有中文技术文档。
 
-引擎与远程功能另有专门说明：[会话控制工具](docs/conversation-tools.md)、[定时任务](docs/scheduled-tasks.md)、[桌面产物预览](docs/artifact-previews.md)、[手机访问](docs/remote-access.md)、[Linux 服务器预览](docs/linux-server-preview.md)与 [Android 客户端](android/README.md)。
+引擎与远程功能另有专门说明：[会话控制工具](docs/conversation-tools.md)、[定时任务](docs/scheduled-tasks.md)、[桌面产物预览](docs/artifact-previews.md)、[查找文件](docs/file-find.md)、[手机访问](docs/remote-access.md)、[Linux 服务器预览](docs/linux-server-preview.md)与 [Android 客户端](android/README.md)。
 
 Camellia 集成 [Claude Code](https://github.com/anthropics/claude-code)、[Codex CLI](https://github.com/openai/codex)、[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)、[Kimi Code](https://github.com/MoonshotAI/kimi-code)、[Antigravity Python SDK](https://github.com/google-antigravity/antigravity-sdk-python) 和 [Pi 编码代理](https://www.npmjs.com/package/@mariozechner/pi-coding-agent)。DSH、Kimi Code 与 Pi 保留 MIT 许可证，Codex CLI 和 Antigravity Python SDK 源码采用 Apache-2.0 许可证。Claude Code 核心为专有软件；Camellia 接入其官方 CLI，不修改或再分发其核心。包括 SDK 原生运行时在内的各上游组件保留各自的许可证与使用条款。

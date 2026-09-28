@@ -16,8 +16,39 @@ const { ScheduledTasks, taskPrompt } = require('./scheduled-tasks');
 const { callConversationTool } = require('./conversation-control');
 const { planCompaction, takeFragment, summaryLimit: compactionSummaryLimit } = require('./compaction-plan');
 const { runSummaryPipeline } = require('./compaction-summary');
+const { searchFiles, searchContents } = require('../main/file-search');
+const { buildHistoryIndex, searchHistory: matchHistory } = require('../main/conversation-index');
+const { previewKind } = require('../main/file-preview');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
+
+// History hits are prepended to the filesystem reply, each labelled with the
+// conversation that produced it, so the user recognizes where the file came
+// from instead of only seeing a path.
+function historyLine(history, fallback, language) {
+  const zh = String(language || '').startsWith('zh');
+  // A bare /find has no words to echo, so it reports the most recent files
+  // instead of an empty "nothing matched".
+  if (!fallback && history.length) {
+    const lines = [zh ? '最近编辑或生成的文件（最新的在前）：' : 'Files edited or produced most recently (newest first):', ''];
+    for (const entry of history) lines.push('- `' + entry.path + '`' + (entry.titles?.length ? ' — ' + entry.titles[0] : '') + (entry.exists === false ? (zh ? '（已不存在）' : ' (missing)') : ''));
+    return lines.join('\n');
+  }
+  if (!fallback && !history.length) {
+    return zh ? '还没有记录到任何由会话生成的文件。可以直接描述你要找的文件。'
+      : 'No files from earlier conversations are recorded yet. Describe the file you are looking for.';
+  }
+  if (!history.length) return fallback;
+  const header = zh
+    ? '这些文件由已有会话编辑或生成（按相关度排序）：'
+    : 'These files were edited or produced by earlier conversations (most relevant first):';
+  const lines = [header, ''];
+  for (const entry of history) {
+    lines.push('- `' + entry.path + '`' + (entry.titles?.length ? ' — ' + entry.titles[0] : ''));
+  }
+  lines.push('', zh ? '以下为文件系统中的其他匹配：' : 'Other matches found on disk:', '', fallback);
+  return lines.join('\n');
+}
 // Last-resort caps when neither the conversation nor the router catalog knows
 // the model's window; mirrors the composer's defaults.
 const ENGINE_CTX_DEFAULTS = { claude: 200000, codex: 272000, dsh: 131072, kimi: 131072, antigravity: 1048576, pi: 65536 };
@@ -186,6 +217,9 @@ class SharedConversations {
     this.goalBridges.clear();
   }
 
+  // Stays synchronous for every existing tool; the file search is the one
+  // branch that returns a promise, and the tool bridge already awaits the
+  // result before replying to the engine.
   callGoalTool(id, name, args) {
     try {
       validateTool(name, args);
@@ -193,6 +227,9 @@ class SharedConversations {
       if (this.goalToolsClosed || !active || active.internal || active.goalToolsDisabled || active.cancelled || active.finished || active.steering || active.compactRequested || active.goalRunToken !== args.run_token)
         throw new Error('This goal tool request does not belong to the current user turn');
       if (name.startsWith('camellia_conversation_')) return callConversationTool(this, id, name, args, active);
+      // File search is read-only and bounded, so children and scheduled checks
+      // may use it to locate their own inputs.
+      if (name === 'camellia_find_files') return this.callFindTool(id, args, active);
       if (active.c.controlParentId && !['camellia_get_goal', 'camellia_task_list'].includes(name)) throw new Error('Tool-created children cannot create or modify goals or scheduled tasks');
       if (name.startsWith('camellia_task_')) return this.callTaskTool(id, name, args, active);
       if (active.scheduledTaskId && name !== 'camellia_get_goal') throw new Error('Scheduled checks cannot start or change goals');
@@ -223,6 +260,35 @@ class SharedConversations {
   assertTaskEngine(engine, id) {
     if (!this.createGoalBridge || engine === 'antigravity' && this.settings(engine, id).connection === 'subscription')
       throw new Error('Scheduled tasks require an engine with Camellia tool support');
+  }
+
+  // The model's file search. It resolves the same folders /find uses, matches
+  // by name or by document text, and records every hit as a turn artifact so
+  // the answer is downloadable on the desktop and on the phone.
+  async callFindTool(id, args, active) {
+    const c = this.get(id);
+    const meta = this.workspaces.sessionMeta();
+    const workspaceId = meta.sessionWorkspace[id] || null;
+    const workspace = meta.workspaces.find(item => item.id === workspaceId);
+    const scope = { cwd: c.cwd, workspacePath: workspace?.path || '', workspaceId, workspaces: meta.workspaces,
+      language: this.loadConfig().language };
+    // History first: the files earlier conversations wrote are what the user
+    // usually means, and recalling them reads no file content at all.
+    const history = args.inside === true ? [] : this.searchHistory(args.query, { cwd: c.cwd, limit: 20 });
+    const found = args.inside === true
+      ? await searchContents({ ...scope, query: args.query, limit: 20 })
+      : searchFiles({ ...scope, query: args.query });
+    const hits = [
+      ...history.map(entry => ({ path: entry.path, name: path.basename(entry.path), from: entry.titles?.[0] || '', kind: previewKind(entry.path) })),
+      ...found.results.map(({ deliverable, modifiedAt, ...file }) => file),
+    ];
+    // Remember the hits so the turn itself carries them as artifacts, without
+    // writing a synthetic assistant reply the model did not author.
+    active.findResults ||= new Map();
+    for (const file of hits) active.findResults.set(
+      process.platform === 'win32' ? file.path.toLowerCase() : file.path, file.path);
+    return { ok: true, query: found.query, mode: args.inside === true ? 'content' : 'history-and-name',
+      count: hits.length, searched: found.roots, files: hits };
   }
 
   callTaskTool(id, name, args, active) {
@@ -364,6 +430,69 @@ class SharedConversations {
       rows.splice(index, rows.length - index, { ...row, role: 'user' });
     }
     return rows;
+  }
+  // The files this conversation, or any earlier one, actually wrote. Camellia
+  // already recorded both the paths and the words used around each turn, so the
+  // user's real case — a file some conversation edited, whose name they have
+  // forgotten — is answered from history without reading any file content.
+  searchHistory(query, { cwd = '', limit = 20 } = {}) {
+    const meta = this.workspaces.sessionMeta();
+    const sessions = [...this.items.values()]
+      .sort((first, second) => second.updatedAt - first.updatedAt || first.id.localeCompare(second.id))
+      .map(conversation => ({ id: conversation.id, cwd: conversation.cwd || '',
+        title: meta.titles[conversation.id] || conversation.title || '' }));
+    return matchHistory({ query, entries: buildHistoryIndex(this, { sessions }), cwd, limit });
+  }
+
+  // /find answers a plain-language file request from the folders this
+  // conversation actually belongs to. The reply is recorded as a normal
+  // assistant turn, so the same files then flow through the desktop artifact
+  // panel, the remote artifact list and the phone's download sheet without any
+  // engine call or protocol change.
+  async find(id, query, { userText, origin = 'desktop' } = {}) {
+    const c = this.get(id);
+    if (this.workspaces.sessionMeta().archived[id]) throw new Error('This conversation is archived. Restore it before searching.');
+    if (this.busy(id)) throw new Error('Wait for this conversation to finish or stop it first.');
+    const meta = this.workspaces.sessionMeta();
+    const workspaceId = meta.sessionWorkspace[id] || null;
+    const workspace = meta.workspaces.find(item => item.id === workspaceId);
+    const language = this.loadConfig().language;
+    // A bare /find means "show me what I was working on": the files recent
+    // conversations wrote, newest first. Nothing is read and no engine runs.
+    if (!String(query || '').trim()) {
+      const recent = this.searchHistory('', { cwd: c.cwd, limit: 20 });
+      return this.recordFind(c, { query: '', history: recent, fallback: '', language, userText, origin });
+    }
+    const scope = { cwd: c.cwd, workspacePath: workspace?.path || '', workspaceId, workspaces: meta.workspaces, language };
+    const found = /^inside:\s*/i.test(String(query || ''))
+      ? await searchContents({ ...scope, query: String(query).replace(/^inside:\s*/i, '') })
+      : searchFiles({ ...scope, query });
+    // Files written by any conversation come first: they are what the user is
+    // usually after, and they need no file-content reading to be recalled.
+    const history = /^inside:\s*/i.test(String(query || '')) ? []
+      : this.searchHistory(String(query || '').replace(/^find\s*/i, ''), { cwd: c.cwd, limit: 20 });
+    const files = resolveArtifacts({ text: found.text, cwd: c.cwd, roots: found.roots,
+      explicitPaths: history.map(entry => entry.path) });
+    return this.recordFind(c, { query: found.query, history, fallback: found.text, language, userText, origin, roots: found.roots });
+  }
+
+  // Persists a /find answer as an ordinary assistant turn so both clients pick
+  // the files up through their existing artifact and download flows.
+  recordFind(c, { query, history, fallback, language, userText, origin, roots = [] }) {
+    const id = c.id;
+    const files = resolveArtifacts({ text: fallback, cwd: c.cwd, roots, explicitPaths: history.map(entry => entry.path) });
+    const text = historyLine(history, fallback, language);
+    const userSeq = userText ? this.append(c, { role: 'user', engine: c.currentEngine, text: userText, displayText: userText }).seq : undefined;
+    const row = this.append(c, { role: 'assistant', engine: c.currentEngine, text, find: { query, count: files.length }, artifacts: files });
+    c.updatedAt = this.stamp();
+    this.save(c);
+    this.workspaces.promoteSession(id, [...this.items.values()].sort((first, second) => second.updatedAt - first.updatedAt || first.id.localeCompare(second.id)).map(conversation => conversation.id));
+    this.publishActivity(id);
+    // /find produces no engine stream, so the desktop reloads this transcript
+    // to show a search started from the phone; the remote gateway publishes the
+    // same change to the device over its event stream.
+    this.onEvent({ type: 'conversation:transcript', session_id: id, engine: c.currentEngine, origin, ...(userSeq === undefined ? {} : { userSeq }), seq: row.seq });
+    return { ok: true, sessionId: id, ...(userSeq === undefined ? {} : { userSeq }), seq: row.seq, query, count: files.length, roots, files };
   }
   messages(c) { return this.rows(c).filter(r => ['user', 'assistant', 'notice'].includes(r.role) && !r.internal); }
   append(c, row) {
@@ -745,8 +874,11 @@ class SharedConversations {
     a.artifactCollector.capture(event);
     if (event.type === 'result') {
       const text = a.assistant.length ? a.assistant.join('\n\n') : a.text || String(event.result || '');
-      event = { ...event, artifacts: resolveArtifacts({ paths: [...a.artifactCollector.paths], text, cwd: c.cwd,
-        roots: [...a.artifactCollector.roots] }) };
+      // Files the model located with camellia_find_files join the turn's own
+      // artifacts, so a search result is downloadable on both clients even
+      // though the model may only paste some of the paths into its reply.
+      event = { ...event, artifacts: resolveArtifacts({ paths: [...a.artifactCollector.paths],
+        explicitPaths: [...(a.findResults?.values() || [])], text, cwd: c.cwd, roots: [...a.artifactCollector.roots] }) };
     }
     if (event.type === 'result' && !a.internal && !a.cancelled && contextOverflow(event)) {
       this.reduceContextBudget(c, engine, this.settings(engine, c.id), event.result);
@@ -1370,6 +1502,11 @@ class SharedConversations {
         const id = payload?.sessionId;
         if (!id) throw new Error('Choose a conversation to compact first');
         return this.compact(id);
+      }
+      case 'find': {
+        const id = payload?.sessionId || this.create(engine, payload?.workspaceId,
+          String(payload?.query || '').trim().slice(0, 60) || 'Find files').id;
+        return await this.find(id, payload?.query);
       }
       case 'control-respond': {
         const a = this.active.get(payload.sessionId);

@@ -16,6 +16,13 @@ function approval(event) {
     details: details.slice(0, 32_000), actionable: !event.questions?.length && details.length <= 32_000 && (!event.options?.length || options.some(option => option.kind === 'allow_once')),
     options: options.map(({ optionId, kind, name }) => ({ optionId, kind, name })) };
 }
+// A phone learns about the found files from the conversation's own artifact
+// list, so the command reply carries no server filesystem paths: only the
+// names, kinds and sizes the client can show or count.
+function findResult(result) {
+  const { files = [], roots, ...rest } = result;
+  return { ...rest, files: files.map(({ path, canonical, ...file }) => file) };
+}
 
 class RemoteCommands {
   constructor({ file, reader, access, publish = () => {} }) {
@@ -66,13 +73,13 @@ class RemoteCommands {
     const managing = ['rename', 'pin', 'delete'].includes(action);
     const validTarget = managing ? id === null : ['archive', 'restore'].includes(action) ? id === null && typeof payload.conversationId === 'string'
       : ['create', 'create-workspace', 'delete-workspace', 'rename-workspace'].includes(action) ? id === null : id !== null;
-    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'resend', 'stop', 'approve', 'create', 'create-workspace', 'delete-workspace', 'rename-workspace', 'configure', 'move', 'archive', 'restore', 'rename', 'pin', 'delete', 'fork', 'switch-engine', 'compact', 'goal-control', 'task-control'].includes(action) || !validTarget) fail(400, 'Invalid command');
+    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'resend', 'stop', 'approve', 'create', 'create-workspace', 'delete-workspace', 'rename-workspace', 'configure', 'move', 'archive', 'restore', 'rename', 'pin', 'delete', 'fork', 'switch-engine', 'compact', 'find', 'goal-control', 'task-control'].includes(action) || !validTarget) fail(400, 'Invalid command');
     const fields = ['requestId', 'action', 'instanceId', ...(action === 'move' ? ['workspaceId', 'targetSessionId', 'placement'] : action === 'archive' ? ['conversationId', 'expectedSeq'] : action === 'create-workspace' ? ['name', 'path'] : action === 'configure' ? ['settings', 'expectedSettings'] : action === 'create' ? ['workspaceId', 'engine'] : action === 'send' || action === 'resend' ? ['prompt', 'expectedSeq', ...(payload.editSeq === undefined ? [] : ['editSeq']), ...(payload.image === undefined ? [] : ['image']), ...(payload.images === undefined ? [] : ['images'])] : action === 'stop' ? ['runId'] : ['runId', 'approvalId', 'fingerprint', 'allow'])];
     if (managing) fields.splice(3, fields.length - 3, 'targets', ...(action === 'rename' ? ['title'] : action === 'pin' ? ['pinned'] : []));
     if (action === 'delete-workspace') fields.splice(3, fields.length - 3, 'workspaceId', 'expectedName');
     if (action === 'rename-workspace') fields.splice(3, fields.length - 3, 'workspaceId', 'expectedName', 'name');
     if (action === 'restore') fields.splice(3, fields.length - 3, 'conversationId', 'expectedSeq');
-    if (['fork', 'compact', 'switch-engine'].includes(action)) fields.splice(3, fields.length - 3, 'expectedSeq', ...(action === 'switch-engine' ? ['engine'] : []));
+    if (['fork', 'compact', 'switch-engine', 'find'].includes(action)) fields.splice(3, fields.length - 3, 'expectedSeq', ...(action === 'switch-engine' ? ['engine'] : []), ...(action === 'find' ? ['query'] : []));
     if (['goal-control', 'task-control'].includes(action)) fields.splice(3, fields.length - 3, 'operation', ...(action === 'task-control' ? ['taskId'] : []));
     if (['send', 'resend'].includes(action) && payload.attachments !== undefined) fields.push('attachments');
     if (Object.keys(payload).some(key => !fields.includes(key))) fail(400, 'Unsupported command field');
@@ -175,8 +182,14 @@ class RemoteCommands {
       if (!result.ok) fail(409, result.error || 'Control operation failed');
       return { ok: true, state: 'accepted' };
     }
-    if (['fork', 'switch-engine', 'compact'].includes(payload.action)) {
+    if (['fork', 'switch-engine', 'compact', 'find'].includes(payload.action)) {
       if (conversation.seq !== payload.expectedSeq || manager.busy(id)) fail(409, 'Conversation changed or busy');
+      if (payload.action === 'find') {
+        // An empty query is meaningful: it lists the files recent conversations
+        // wrote, which is what a phone user wants when they cannot name a file.
+        if (typeof payload.query !== 'string' || payload.query.length > 500) fail(400, 'Describe the file you are looking for');
+        return { ...findResult(await manager.find(id, payload.query.trim(), { userText: '/find ' + payload.query.trim(), origin: 'remote' })), state: 'accepted' };
+      }
       if (payload.action === 'fork') {
         this.authorizeCreate(deviceId, this.reader.summary(conversation).workspaceId);
         return { ok: true, state: 'accepted', conversation: this.reader.summary(manager.fork(conversation.currentEngine, { sessionId: id })) };
@@ -217,6 +230,14 @@ class RemoteCommands {
         if (latestUser?.seq !== payload.editSeq) fail(409, 'Only the latest message can be edited. Refresh before sending');
       }
       if (manager.busy(id)) fail(409, 'Conversation is busy');
+      // A phone running an older client can type "/find …" in the normal
+      // composer; the search answers locally, so it never reaches an engine.
+      const typed = payload.prompt.trim();
+      if (payload.action === 'send' && /^\/find(?:\s|$)/i.test(typed)) {
+        const query = typed.replace(/^\/find\s*/i, '').trim();
+        const result = await manager.find(id, query, { userText: typed, origin: 'remote' });
+        return { ...findResult(result), state: 'accepted' };
+      }
       const attachments = [];
       if (payload.attachments !== undefined) {
         if (payload.images !== undefined || payload.image !== undefined) fail(400, 'Do not mix attachment formats');
