@@ -940,7 +940,7 @@ const context = { sessionId: null, workspaceId: null };
     const text = input.value.trim();
     const queuedAttachments = attachments.slice();
     if (!text && !queuedAttachments.length) return false;
-    if (goalUI.isDraft()) { setStatus('Finish setting the goal before queueing messages.'); return false; }
+    if (goalUI.isDraft() || typeof findUI !== 'undefined' && findUI.isDraft()) { setStatus('Finish this command before queueing messages.'); return false; }
     messageQueue.push({ text, attachments: queuedAttachments });
     saveMessageQueue();
     input.value = ''; attachments = [];
@@ -1039,6 +1039,7 @@ const context = { sessionId: null, workspaceId: null };
     if (!data || Array.from(data.types || []).includes('Files')) return;
     // The goal starter accepts text only; keep its draft inline.
     if (goalUI.isDraft()) return;
+    if (typeof findUI !== 'undefined' && findUI.isDraft()) return;
     const text = data.getData('text/plain');
     if (!window.CamelliaLongPaste.shouldAttach(text)) return;
     event.preventDefault();
@@ -1948,6 +1949,17 @@ const context = { sessionId: null, workspaceId: null };
       }
       return;
     }
+    // A /find answered on this computer (or by the paired phone) appends rows
+    // without an engine stream, so the open transcript reloads in place.
+    if (sharedChat && ev.type === 'conversation:transcript') {
+      void sidebar.load();
+      if (restoringRun) { eventsDuringRestore.push(ev); return; }
+      // The window that issued the search already reloaded; only a search
+      // started elsewhere (for example on the phone) needs this reload.
+      if (ev.origin === 'desktop') return;
+      if (ev.session_id === context.sessionId && !loadingSession && !sending && !running) void openHistorySession(ev.session_id);
+      return;
+    }
     if (restoringRun) { eventsDuringRestore.push(ev); return; }
     if (sharedChat && ev.session_id !== context.sessionId) return;
     if (sharedChat && ev.type === 'conversation:approval-resolved') {
@@ -2152,7 +2164,8 @@ const context = { sessionId: null, workspaceId: null };
       const artifactTools = Object.values(pendingTools).filter(card => card.finished && !card.failed);
       void showTurnArtifacts(turnEl, Array.from(turnEl?.querySelectorAll('.md') || []).map(element => element.artifactText || '').join('\n'), ev.artifacts,
         artifactTools.flatMap(card => window.CamelliaArtifacts.toolPaths(card.name, card.inputData)),
-        artifactTools.flatMap(card => window.CamelliaArtifacts.toolRoots(card.inputData)));
+        artifactTools.flatMap(card => window.CamelliaArtifacts.toolRoots(card.inputData)
+          .concat(window.CamelliaArtifacts.toolDirectories(card.inputData))));
       setStatus((stopped ? "Stopped · " : ok ? '' : "Error · ") + stats.join(' · '));
       turnEl = null;
       pendingTools = {};
@@ -2174,7 +2187,10 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function updateSendEnabled() {
-    const hasMessage = Boolean(input.value.trim() || attachments.length);
+    // In /find mode an empty composer is a real request, so the button stays
+    // live instead of collapsing into the stop action.
+    const findReady = typeof findUI !== 'undefined' && findUI.isDraft();
+    const hasMessage = Boolean(input.value.trim() || attachments.length || findReady);
     const active = running || Boolean(conversationActivity) || Boolean(pendingConversationSend());
     sendBtn.classList.toggle('stop', active && !hasMessage);
     sendBtn.classList.toggle('queue', active && hasMessage);
@@ -2193,7 +2209,7 @@ const context = { sessionId: null, workspaceId: null };
     if (!messageQueue.includes(message) || !running || !currentRunId || drainingQueue || sending || loadingSession || switchingEngine || editingMessage || pendingConversationSend()) return;
     const text = message.text, atts = message.attachments.slice();
     if (!sharedChat) { setStatus('This engine connection does not support immediate instructions. Your message has been retained.'); return; }
-    if (goalUI.isDraft()) { setStatus('Finish setting the goal before sending instructions.'); return; }
+    if (goalUI.isDraft() || typeof findUI !== 'undefined' && findUI.isDraft()) { setStatus('Finish this command before sending instructions.'); return; }
     const sessionId = context.sessionId, runId = currentRunId, openSeq = sessionOpenSeq;
     sending = true; updateSendEnabled();
     setStatus('Sending instruction…');
@@ -2244,6 +2260,15 @@ const context = { sessionId: null, workspaceId: null };
       if (settings.conversations?.warnOnSwitch) { await switchOptions(harnessId); return; }
     }
     const text = queuedMessage ? queuedMessage.text : input.value.trim();
+    if (!queuedMessage && typeof findUI !== 'undefined' && findUI.isDraft()) {
+      // An empty composer is a valid search here: it lists the files recent
+      // conversations produced, for a user who cannot name what they want.
+      input.value = '';
+      autoResize();
+      updateSendEnabled();
+      await findUI.run(text);
+      return;
+    }
     if (!queuedMessage && goalUI.isDraft()) {
       // Goal draft mode turns the composer into the goal starter; attachments
       // stay put for the following message.
@@ -2366,6 +2391,9 @@ const context = { sessionId: null, workspaceId: null };
     { id: 'goal', label: '/goal', desc: 'Set a goal; the engine keeps working until done or blocked',
       icon: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
       run: () => goalUI.reveal() },
+    { id: 'find', label: '/find', desc: 'Find files on this computer and download them',
+      icon: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4.2-4.2"/>',
+      run: () => findUI.reveal() },
     ...(sharedChat ? [{ id: 'tasks', label: '/tasks', desc: 'Schedule periodic experiment checks',
       icon: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', run: () => void tasksUI.reveal() }] : []),
     { id: 'usage', label: '/usage', desc: 'Show request and token usage through the local router',
@@ -2455,6 +2483,7 @@ const context = { sessionId: null, workspaceId: null };
       if ((e.key === 'Enter' || e.key === 'Tab') && !e.isComposing) { e.preventDefault(); runSlashActive(); return; }
       if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
     }
+    if (e.key === 'Escape' && findUI.isDraft()) { e.preventDefault(); findUI.setDraft(false); return; }
     if (e.key === 'Enter' && e.altKey && !e.isComposing && (running || conversationActivity)) { e.preventDefault(); if (!sending) queueComposerMessage(); return; }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
@@ -2775,6 +2804,70 @@ const context = { sessionId: null, workspaceId: null };
     } });
   const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && canChangeContext() && (!sharedChat || !running), openHistorySession, setStatus,
     acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); queueMicrotask(drainMessageQueue); }, openActionMenu, closePops });
+
+  // /find turns the composer into a file search box: type what you want, and
+  // the matching files come back on this computer as a normal reply, ready for
+  // the artifact panel here and the download sheet on the phone.
+  function createFindUI() {
+    let draft = false, savedPlaceholder = null;
+    const row = $('findRow');
+    function render() {
+      row.replaceChildren();
+      row.hidden = !draft;
+      if (!draft) return;
+      const chip = document.createElement('span');
+      chip.className = 'goal-chip draft';
+      chip.title = 'File search';
+      chip.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.2-4.2"/></svg><span class="goal-chip-text"></span><button class="attchip-x" title="Remove">✕</button>';
+      const text = chip.querySelector('.goal-chip-text');
+      text.dataset.i18n = '';
+      text.textContent = 'Find files';
+      chip.querySelector('.attchip-x').addEventListener('click', event => { event.stopPropagation(); setDraft(false); });
+      row.appendChild(chip);
+      const scope = document.createElement('span');
+      scope.className = 'goal-chip draft';
+      scope.title = 'Searched folders';
+      const scopeText = document.createElement('span');
+      scopeText.className = 'goal-chip-text'; scopeText.dataset.i18n = '';
+      scopeText.textContent = findScopeLabel();
+      scope.appendChild(scopeText);
+      row.appendChild(scope);
+    }
+    function findScopeLabel() {
+      const session = sidebar.sessions.find(entry => entry.id === context.sessionId);
+      const workspace = sidebar.workspaces.find(item => item.id === (session?.workspaceId || context.workspaceId));
+      return workspace ? 'Folder: ' + workspace.name : 'This conversation folder';
+    }
+    function setDraft(value, focus = true) {
+      draft = value;
+      if (draft) {
+        if (!savedPlaceholder) savedPlaceholder = input.placeholder;
+        input.placeholder = "Describe the file (press Enter with nothing to list recent files)";
+        if (focus) input.focus();
+      } else if (savedPlaceholder) {
+        input.placeholder = savedPlaceholder;
+        savedPlaceholder = null;
+      }
+      render();
+      updateSendEnabled();
+    }
+    async function run(query) {
+      if (context.sessionId && conversationBusy()) { setStatus('Available when this conversation stops working'); return false; }
+      setStatus(query ? 'Looking for files…' : 'Listing recent files…');
+      try {
+        const result = await chatApi.find({ sessionId: context.sessionId || null, workspaceId: context.workspaceId || null, query });
+        if (!result?.ok) { setStatus(result?.error || 'Search failed'); return false; }
+        setDraft(false);
+        if (result.sessionId !== context.sessionId) await openHistorySession(result.sessionId);
+        else await openHistorySession(context.sessionId);
+        setStatus(result.count ? result.count + ' file' + (result.count === 1 ? '' : 's') + ' found'
+          : query ? 'No matching files' : 'No files from earlier conversations yet');
+        return true;
+      } catch (error) { setStatus(error.message); return false; }
+    }
+    return { isDraft: () => draft, reveal: () => setDraft(true), setDraft, run };
+  }
+  const findUI = createFindUI();
 
   let pendingForkId = null;
   const tasksUI = createScheduledTasksUI({ $, context, setStatus });

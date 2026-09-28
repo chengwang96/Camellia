@@ -96,9 +96,10 @@ public final class MainActivity extends Activity {
     private boolean snapshotPosted;
     private EditText composer;
     private ChatComposer chatComposer;
-    private ImageButton sendButton, stopButton;
+    private ImageButton sendButton, stopButton, findButton;
     private TextView retryMessage;
     private LinearLayout approvals;
+    private LinearLayout automationBar;
     private boolean controlAllowed, connected, commandBusy;
     private long conversationSeq;
     private String approvalSignature = "";
@@ -1616,6 +1617,10 @@ public final class MainActivity extends Activity {
         older.setBackgroundColor(Color.TRANSPARENT); older.setTextSize(12); content.addView(older);
         messages = column(); content.addView(messages);
         approvals = column(); content.addView(approvals); approvalSignature = "";
+        // Goal and scheduled-task state sits directly above the composer, where
+        // it is visible while typing but never covers the transcript.
+        automationBar = column(); automationBar.setTag("remoteAutomation");
+        automationBar.setVisibility(View.GONE); content.addView(automationBar);
         LinearLayout composerBar = bottomBar("composerBar");
         chatComposer = new ChatComposer(composerBar, chatStyle, chinese, tr("发消息，继续任务…", "Message your computer…"), 16000,
             () -> showRemoteSettings(false), this::sendMessage, this::stopRun, this::cancelEdit);
@@ -1630,6 +1635,23 @@ public final class MainActivity extends Activity {
         chatComposer.addTool(attachButton);
         permissionButton = lineButton("shield", tr("安全级别", "Safety level"), () -> showRemoteSettings(true)); permissionButton.setTag("remotePermissionPicker");
         chatComposer.addTool(permissionButton);
+        // The computer answers "/find" locally without an engine call. An empty
+        // composer sends it right away, which lists the most recently produced
+        // files for someone who cannot name what they are after; with text
+        // present the button just opens the search so the words can be added.
+        findButton = lineButton("search", tr("查找文件", "Find files"), () -> {
+            if (composer.getText().toString().trim().isEmpty()) {
+                composer.setText("/find ");
+                sendMessage();
+                return;
+            }
+            composer.setSelection(composer.length());
+            composer.requestFocus();
+            ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
+                .showSoftInput(composer, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+        });
+        findButton.setTag("remoteFind");
+        chatComposer.addTool(findButton);
         composer.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence text, int start, int before, int count) {
@@ -1789,6 +1811,7 @@ public final class MainActivity extends Activity {
         lastLive = snapshot.optJSONObject("live");
         displayedConversation = conversation;
         renderMessages(lastLive);
+        renderAutomation(snapshot);
         if (foreground) replies().markRead(credentials, conversation);
         syncReplyRead(conversation);
         renderApprovals(); updateControls();
@@ -2209,7 +2232,12 @@ public final class MainActivity extends Activity {
             permissionButton.setContentDescription(tr("安全级别：", "Safety level: ") + RemoteSettingsPopup.permissionLabel(level, chinese));
             permissionButton.setImageDrawable(new LineIcon("shield", level.equals("full") ? 0xffc28a35 : ink));
         }
-        sendButton.setEnabled(available && lastLive == null && !pending && !loadingImages && !awaitingSentMessage() && (!composer.getText().toString().trim().isEmpty() || !selectedImages.isEmpty()));
+        String composed = composer == null ? "" : composer.getText().toString().trim();
+        // A bare "/find" is a valid request: it lists the files produced most
+        // recently. Any other bare slash command is still not worth sending.
+        boolean bareSlash = composed.matches("(?i)^/[a-z]+$") && !composed.equalsIgnoreCase("/find");
+        sendButton.setEnabled(available && lastLive == null && !pending && !loadingImages && !awaitingSentMessage()
+            && ((!composed.isEmpty() && !bareSlash) || !selectedImages.isEmpty()));
         if (attachButton != null) {
             attachButton.setEnabled(available && !pending && !loadingImages);
             attachButton.setAlpha(available && !pending && !loadingImages ? 1f : .45f);
@@ -2273,6 +2301,119 @@ public final class MainActivity extends Activity {
                 try { submitCommand(command("stop").put("instanceId", server).put("runId", runId)); }
                 catch (Exception error) { reportError("无法保存操作。", "Could not save operation.", error); }
             }).show();
+    }
+
+    // Goal and scheduled-task state for this conversation. The snapshot already
+    // carries it, so showing it here needs no protocol change; pausing and
+    // resuming reuse the existing goal-control and task-control commands.
+    private LinearLayout automationCard() {
+        LinearLayout card = column();
+        card.setBackground(rounded(surface));
+        card.setClipToOutline(true);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.setMargins(dp(8), dp(4), dp(8), dp(4));
+        card.setLayoutParams(params);
+        return card;
+    }
+
+    private void renderAutomation(JSONObject snapshot) {
+        if (automationBar == null) return;
+        automationBar.removeAllViews();
+        JSONObject automation = snapshot.optJSONObject("automation");
+        JSONObject goal = automation == null ? null : automation.optJSONObject("goal");
+        JSONArray tasks = automation == null ? null : automation.optJSONArray("tasks");
+        boolean hasGoal = goal != null && !goal.isNull("phase");
+        int taskCount = tasks == null ? 0 : tasks.length();
+        automationBar.setVisibility(hasGoal || taskCount > 0 ? View.VISIBLE : View.GONE);
+        if (!hasGoal && taskCount == 0) return;
+        automationBar.setPadding(0, dp(4), 0, dp(4));
+        if (hasGoal) automationBar.addView(automationCard(goal));
+        if (taskCount > 0) {
+            TextView heading = text(String.format(tr("定时任务 · %d", "Scheduled · %d"), taskCount), 12, muted);
+            heading.setPadding(dp(12), dp(2), dp(12), 0); automationBar.addView(heading);
+            for (int index = 0; index < taskCount; index++) {
+                JSONObject task = tasks.optJSONObject(index);
+                if (task != null) automationBar.addView(automationTask(task));
+            }
+        }
+    }
+
+    private View automationCard(JSONObject goal) {
+        String phase = goal.optString("phase", "");
+        boolean armed = goal.optBoolean("armed");
+        boolean running = phase.equals("active") && armed;
+        String label = phase.equals("complete") ? tr("目标已完成", "Goal complete")
+            : phase.equals("blocked") ? tr("目标受阻", "Goal blocked")
+            : running ? tr("目标进行中", "Goal running") : tr("目标已暂停", "Goal paused");
+        LinearLayout card = automationCard(); card.setTag("remoteGoal");
+        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(dp(12), dp(10), dp(12), dp(10));
+        TextView status = text(label, 13, running ? accent : muted);
+        status.setTag("remoteGoalState"); status.setSingleLine(true);
+        row.addView(status, new LinearLayout.LayoutParams(-2, -2));
+        TextView objective = text(goal.optString("objective", ""), 14, ink);
+        objective.setPadding(dp(10), 0, dp(10), 0); objective.setSingleLine(true);
+        objective.setEllipsize(android.text.TextUtils.TruncateAt.END); objective.setTag("remoteGoalObjective");
+        row.addView(objective, new LinearLayout.LayoutParams(0, -2, 1));
+        int rounds = goal.optInt("roundsStarted", 0);
+        if (rounds > 0) {
+            TextView count = text(String.valueOf(rounds), 12, muted); count.setPadding(dp(6), 0, dp(6), 0);
+            row.addView(count, new LinearLayout.LayoutParams(-2, -2));
+        }
+        // Only the live states are actionable; a completed goal's menu is the
+        // desktop's job and a blocked one resumes from the same place.
+        if (phase.equals("active") || phase.equals("blocked")) {
+            TextView toggle = text(running ? tr("暂停", "Pause") : tr("恢复", "Resume"), 13, ink);
+            toggle.setTag("remoteGoalToggle"); toggle.setMinHeight(dp(40));
+            toggle.setGravity(Gravity.CENTER); toggle.setPadding(dp(10), dp(6), dp(10), dp(6));
+            toggle.setBackground(interactive(surface)); toggle.setFocusable(true);
+            toggle.setContentDescription((running ? tr("暂停目标：", "Pause goal: ") : tr("恢复目标：", "Resume goal: ")) + goal.optString("objective", ""));
+            toggle.setOnClickListener(view -> submitAutomation("goal-control", running ? "pause" : "resume", null));
+            row.addView(toggle, new LinearLayout.LayoutParams(-2, -2));
+        }
+        card.addView(row); return card;
+    }
+
+    private View automationTask(JSONObject task) {
+        LinearLayout card = automationCard(); card.setTag("remoteTask");
+        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(dp(12), dp(8), dp(12), dp(8));
+        String status = task.optString("status", "");
+        String label = status.equals("running") ? tr("检查中", "Checking") : status.equals("paused") ? tr("已暂停", "Paused")
+            : status.equals("complete") ? tr("已完成", "Complete") : tr("等待", "Waiting");
+        TextView state = text(label, 12, muted); state.setTag("remoteTaskState"); row.addView(state, new LinearLayout.LayoutParams(-2, -2));
+        TextView instruction = text(task.optString("instruction", ""), 13, ink);
+        instruction.setPadding(dp(10), 0, dp(10), 0); instruction.setSingleLine(true);
+        instruction.setEllipsize(android.text.TextUtils.TruncateAt.END); instruction.setTag("remoteTaskInstruction");
+        row.addView(instruction, new LinearLayout.LayoutParams(0, -2, 1));
+        int minutes = task.optInt("intervalMinutes", 0);
+        if (minutes > 0) {
+            TextView interval = text(tr("每 ", "every ") + minutes + tr(" 分钟", " min"), 12, muted);
+            interval.setPadding(dp(6), 0, dp(6), 0); row.addView(interval, new LinearLayout.LayoutParams(-2, -2));
+        }
+        if (status.equals("running") || status.equals("paused")) {
+            boolean pause = status.equals("running");
+            TextView toggle = text(pause ? tr("暂停", "Pause") : tr("恢复", "Resume"), 13, ink);
+            toggle.setTag("remoteTaskToggle"); toggle.setMinHeight(dp(40));
+            toggle.setGravity(Gravity.CENTER); toggle.setPadding(dp(10), dp(6), dp(10), dp(6));
+            toggle.setBackground(interactive(surface)); toggle.setFocusable(true);
+            toggle.setContentDescription((pause ? tr("暂停任务：", "Pause task: ") : tr("恢复任务：", "Resume task: ")) + task.optString("instruction", ""));
+            String id = task.optString("id");
+            toggle.setOnClickListener(view -> submitAutomation("task-control", pause ? "pause" : "resume", id));
+            row.addView(toggle, new LinearLayout.LayoutParams(-2, -2));
+        }
+        card.addView(row); return card;
+    }
+
+    // Automation controls are existing commands, so the request/retry rules and
+    // the per-command idempotency journal apply unchanged.
+    private void submitAutomation(String action, String operation, String taskId) {
+        if (!connected || !controlAllowed || commandBusy || credentials.has("pendingCommand")) return;
+        try {
+            JSONObject payload = command(action).put("instanceId", instance).put("operation", operation);
+            if (taskId != null) payload.put("taskId", taskId);
+            submitCommand(payload);
+        } catch (Exception error) { reportError("无法保存操作。", "Could not save operation.", error); }
     }
 
     private void renderApprovals() {

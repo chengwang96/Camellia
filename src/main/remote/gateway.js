@@ -205,7 +205,7 @@ class RemoteGateway {
     if (this.apiImport && fullControl) capabilities.push('api-import');
     if (this.nativeSettings && fullControl) capabilities.push('native-settings');
     if (this.management && fullControl) capabilities.push('server-management');
-    if (this.commands) capabilities.push('fork', 'switch-engine', 'compact', 'resend', 'automation-control');
+    if (this.commands) capabilities.push('fork', 'switch-engine', 'compact', 'find', 'resend', 'automation-control');
     return { protocol: 1, permission: device.permission, capabilities,
       engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine)),
       workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
