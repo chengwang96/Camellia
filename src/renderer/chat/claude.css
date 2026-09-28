@@ -274,6 +274,9 @@
     font: var(--f-xxs-12); color: var(--dsw-alias-label-secondary);
     max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .attchip-inline-icon { display: inline-flex; flex: none; color: var(--dsw-alias-label-tertiary); }
+  .attchip-inline-icon svg { width: 13px; height: 13px; }
+  .attchip-inline-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* Assistant turn */
   /* Reserve the footer strip so a reply's timestamp and copy button sit under
@@ -573,8 +576,14 @@
   .attchip .attchip-fileicon {
     width: 26px; height: 26px; border-radius: 7px;
     background: var(--dsw-alias-bg-muted);
-    display: grid; place-items: center; font-size: 13px;
+    display: grid; place-items: center;
   }
+  .attchip-fileicon svg { width: 15px; height: 15px; }
+  .attchip-file-pdf { color: #ed5362; }
+  .attchip-file-sheet { color: #29875c; }
+  .attchip-file-slides { color: #c86b31; }
+  .attchip-file-image { color: var(--dsw-static-deepseek-500); }
+  .attchip-file-archive { color: #b08800; }
   .attchip .attchip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attchip .attchip-name[role="button"], .attchip-inline[role="button"] { cursor: pointer; }
   .attchip .attchip-name[role="button"]:hover, .attchip-inline[role="button"]:hover { color: var(--dsw-static-deepseek-500); text-decoration: underline; text-underline-offset: 2px; }

@@ -31,6 +31,12 @@ with tempfile.TemporaryDirectory(prefix='camellia-office-render-') as directory:
     title.text_frame.paragraphs[0].text = 'Rendered slide'
     title.text_frame.paragraphs[0].runs[0].font.size = Pt(28)
     slide.shapes.add_picture(str(root / 'assets/icon-256.png'), Inches(1), Inches(2), Inches(2))
+    # A grouped pair of boxes verifies that group transforms and theme colours
+    # survive the local renderer, which previously dropped every group shape.
+    group = slide.shapes.add_group_shape()
+    for offset, label in [(0, 'Grouped left'), (1, 'Grouped right')]:
+        box = group.shapes.add_textbox(Inches(7 + offset * 2), Inches(1), Inches(1.8), Inches(0.6))
+        box.text_frame.paragraphs[0].text = label
     presentation.save(folder / 'slides.pptx')
 
     workbook = Workbook()
@@ -73,6 +79,12 @@ with tempfile.TemporaryDirectory(prefix='camellia-office-render-') as directory:
             elif kind == 'presentation':
                 expect(frame.locator('.slide')).to_be_visible()
                 expect(frame.get_by_text('Rendered slide')).to_be_visible()
+                expect(frame.locator('.group')).to_have_count(1)
+                expect(frame.get_by_text('Grouped left')).to_be_visible()
+                expect(frame.get_by_text('Grouped right')).to_be_visible()
+                # A grouped child must sit inside the group, not at the slide origin.
+                assert frame.locator('.group .shape').first.evaluate(
+                    '(el) => { const group = el.closest(".group").getBoundingClientRect(); const child = el.getBoundingClientRect(); return child.width <= group.width + 1 && child.height <= group.height + 1; }')
                 expect(frame.locator('img')).to_be_visible()
                 assert frame.locator('img').evaluate('(image) => image.complete && image.naturalWidth > 0')
             else:

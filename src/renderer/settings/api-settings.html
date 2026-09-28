@@ -75,7 +75,7 @@
         <p class="hint" data-i18n>Choose your preferred connection. Before each download, you can use the saved proxy or connect directly.</p>
         <div class="engine-field"><label for="downloadMode" data-i18n>Preferred connection</label><select id="downloadMode"><option value="direct" data-i18n>Direct connection</option><option value="proxy" data-i18n>Use proxy</option></select></div>
         <div class="engine-field"><label for="downloadProxyUrl" data-i18n>Proxy address<small class="hint" data-i18n>HTTP or HTTPS proxy, including mixed proxy ports.</small></label><input id="downloadProxyUrl" type="url" placeholder="http://proxy.example:8080" spellcheck="false" autocomplete="off"></div>
-        <div class="download-save"><p class="hint" data-i18n>Applies only to engine downloads. Saved on this device.</p><button id="saveDownload" type="submit" disabled data-i18n>Save connection</button></div>
+        <p class="hint" data-i18n>Applies only to engine downloads. Saved on this device.</p>
       </form>
       <p class="hint" data-i18n>Changes save automatically.</p>
     </section>
@@ -133,7 +133,7 @@
           <div class="engine-field"><label for="codexConnection" data-i18n>Connection for new Codex sessions</label><select id="codexConnection"><option value="api" data-i18n>API key / third-party API</option><option value="subscription" data-i18n>ChatGPT account</option></select></div>
           <p class="hint" id="codexConnectionHint" data-i18n></p>
           <p class="hint" data-i18n>Existing Codex sessions keep their original connection. API and account models are remembered separately.</p>
-          <div class="account-actions"><button id="codexSaveConnection" class="primary" hidden data-i18n>Save settings</button><button id="codexProviders" data-i18n>Configure API providers &amp; keys</button></div>
+          <div class="account-actions"><button id="codexProviders" data-i18n>Configure API providers &amp; keys</button></div>
           <div class="engine-field"><label for="codexProxyUrl" data-i18n>Codex connection proxy<small class="hint" data-i18n>Optional. Leave blank to inherit your environment proxy.</small></label><input id="codexProxyUrl" type="url" placeholder="http://proxy.example:8080" autocomplete="off" spellcheck="false"></div>
           <div id="codexAccountPanel" hidden>
             <div id="codexAccountList" class="account-list" role="radiogroup" aria-label="ChatGPT accounts" data-i18n-attrs="aria-label"></div>
@@ -149,7 +149,7 @@
           <div class="engine-field"><label for="kimiConnection" data-i18n>Connection for new Kimi sessions</label><select id="kimiConnection"><option value="api" data-i18n>Shared API routes</option><option value="subscription" data-i18n>Kimi subscription</option></select></div>
           <p class="hint" id="kimiConnectionHint" data-i18n></p>
           <p class="hint" data-i18n>Existing sessions keep their original connection. API and account models are remembered separately.</p>
-          <div class="account-actions"><button id="kimiSaveConnection" class="primary" hidden data-i18n>Save settings</button><button id="kimiProviders" data-i18n>Configure API providers &amp; keys</button></div>
+          <div class="account-actions"><button id="kimiProviders" data-i18n>Configure API providers &amp; keys</button></div>
           <div id="kimiAccountPanel" hidden>
             <div class="engine-field"><label for="kimiLoginRegion" data-i18n>Login region<small class="hint" data-i18n>Choose the site where you registered your Kimi account.</small></label><select id="kimiLoginRegion"><option value="mainland-cn" data-i18n>China · kimi.com</option><option value="global" data-i18n>Global · kimi.ai</option></select></div>
             <div id="kimiAccountList" class="account-list" role="radiogroup" aria-label="Kimi accounts" data-i18n-attrs="aria-label"></div>
@@ -167,7 +167,7 @@
           <p class="hint" id="antigravityConnectionHint" data-i18n></p>
           <div id="googleAccountPanel" hidden>
             <div class="engine-field"><label for="googleProxyUrl" data-i18n>Google connection proxy<small class="hint" data-i18n>Optional. Leave blank to use the system proxy.</small></label><input id="googleProxyUrl" type="url" placeholder="http://proxy.example:8080" autocomplete="off" spellcheck="false"></div>
-            <div class="account-actions"><button id="googleSaveConnection" class="primary" hidden data-i18n>Save settings</button><button id="googleSignIn" class="primary" data-i18n>Sign in with Google</button><button id="googleRefresh" data-i18n>Refresh account</button></div>
+            <div class="account-actions"><button id="googleSignIn" class="primary" data-i18n>Sign in with Google</button><button id="googleRefresh" data-i18n>Refresh account</button></div>
             <p id="googleAccountStatus" class="hint" role="status" data-i18n></p>
             <div id="googleAccountList" class="account-list" role="radiogroup" aria-label="Google accounts" data-i18n-attrs="aria-label"></div>
             <details id="googleModelDetails" hidden><summary id="googleModelSummary" data-i18n></summary><ul id="googleModelList"></ul></details>

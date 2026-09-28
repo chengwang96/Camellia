@@ -343,8 +343,6 @@ async function main() {
     assert.ok(globalState.files.every(file => file.path.startsWith(process.env.USERPROFILE)));
 
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiConnection').value='subscription'; document.querySelector('#kimiConnection').dispatchEvent(new Event('change'))");
-    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiSignIn').disabled"), true);
-    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiSaveConnection').click()");
     await waitWindow("document.querySelector('#kimiAccountPanel') && !document.querySelector('#kimiSignIn').disabled");
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiSignIn').click()");
     await waitWindow("document.querySelector('#kimiUserCode')?.textContent === 'TEST-123'");
@@ -401,10 +399,9 @@ async function main() {
     await waitWindow("document.querySelector('#kimiSignOut')?.hidden && !document.querySelector('#kimiSignIn').disabled");
     assert.equal((await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState()')).account, null);
     assert.deepEqual(kimiRpcCalls.slice(-2), ['initialize', 'logout']);
-    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiConnection').value='api'; document.querySelector('#kimiConnection').dispatchEvent(new Event('change')); document.querySelector('#kimiSaveConnection').click()");
-    // Confirm the persisted preference rather than the button's visibility. A
-    // rejected save keeps the button visible and reports the reason only as
-    // text, so waiting on the button alone hides why a save was refused.
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiConnection').value='api'; document.querySelector('#kimiConnection').dispatchEvent(new Event('change'))");
+    // Connection changes save on their own now; confirm the persisted
+    // preference, because the status line reports a rejected save as text only.
     const saveDeadline = Date.now() + 30000;
     for (;;) {
       const persisted = await engineSettings.webContents.executeJavaScript("window.dshDesktop.subscriptionPreferencesGet({engine:'kimi'})");

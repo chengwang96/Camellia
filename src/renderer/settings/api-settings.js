@@ -560,15 +560,45 @@ for (const id of ['language', 'theme', 'autoRefreshBalances', 'accountRefreshMin
   $(id).addEventListener('change', saveGeneral);
 }
 // The download connection is a General preference: it applies to engine and
-// benchmark-library downloads and is saved on this device.
-let downloadDirty = false;
+// benchmark-library downloads and is saved on this device. Like the other
+// General preferences it applies without a separate save step, so a small
+// chain keeps rapid edits in order and lets the last one win.
+let downloadDirty = false, downloadSaveQueue = Promise.resolve();
+async function saveDownloadSettings() {
+  const mode = $('downloadMode'), url = $('downloadProxyUrl');
+  const submitted = { mode: mode.value, url: url.value };
+  try {
+    const settings = await api.downloadSaveSettings(submitted);
+    if (!settings.ok) throw new Error(settings.error);
+    // Show the normalized address only while the form still holds what was
+    // submitted; a newer edit keeps its own text and its own queued save.
+    if (mode.value === submitted.mode && url.value === submitted.url) { url.value = settings.url; downloadDirty = false; }
+    status('Download connection saved');
+  } catch (error) { status(error.message, true); }
+}
+function queueDownloadSave() {
+  // Chain so an in-flight save cannot resolve after a newer edit and report a
+  // stale result.
+  downloadSaveQueue = downloadSaveQueue.then(saveDownloadSettings, saveDownloadSettings);
+  return downloadSaveQueue;
+}
+function downloadFormChanged() {
+  const mode = $('downloadMode'), url = $('downloadProxyUrl');
+  url.required = mode.value === 'proxy';
+  downloadDirty = true;
+  // Choosing the proxy before typing an address would make an automatic save
+  // fail; wait for the address instead of flashing an error.
+  if (mode.value === 'proxy' && !url.value.trim()) return;
+  void queueDownloadSave();
+}
 async function loadDownloadSettings(focus) {
   const mode = $('downloadMode'), url = $('downloadProxyUrl');
   if (!mode || !url) return;
   try {
     const settings = await api.downloadSettings();
     if (!settings.ok) throw new Error(settings.error);
-    if (!downloadDirty) {
+    // Never overwrite a value the user is editing or has not saved yet.
+    if (!downloadDirty && document.activeElement !== url) {
       mode.value = settings.mode === 'proxy' ? 'proxy' : 'direct';
       url.value = settings.url || '';
       url.required = settings.mode === 'proxy';
@@ -578,24 +608,9 @@ async function loadDownloadSettings(focus) {
 }
 const downloadForm = $('downloadPreferences');
 if (downloadForm) {
-  downloadForm.oninput = () => {
-    downloadDirty = true;
-    $('downloadProxyUrl').required = $('downloadMode').value === 'proxy';
-    $('saveDownload').disabled = false;
-  };
-  downloadForm.onsubmit = async e => {
-    e.preventDefault();
-    downloadForm.inert = true;
-    try {
-      const settings = await api.downloadSaveSettings({ mode: $('downloadMode').value, url: $('downloadProxyUrl').value });
-      if (!settings.ok) throw new Error(settings.error);
-      $('downloadProxyUrl').value = settings.url;
-      downloadDirty = false;
-      $('saveDownload').disabled = true;
-      status('Download connection saved');
-    } catch (error) { status(error.message, true); }
-    finally { downloadForm.inert = false; }
-  };
+  downloadForm.oninput = () => { $('downloadProxyUrl').required = $('downloadMode').value === 'proxy'; };
+  downloadForm.onchange = downloadFormChanged;
+  downloadForm.onsubmit = e => { e.preventDefault(); downloadFormChanged(); };
 }
 async function refresh(initial = false) {
   try {

@@ -154,6 +154,37 @@ public class NavigationTest extends InstrumentationTestCase {
         return (android.app.Dialog) field.get(activity);
     }
 
+    public void testDeviceNameDialogOpensAndSaves() throws Exception {
+        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            getInstrumentation().waitForIdleSync();
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    invoke(activity, "settingsScreen"); invoke(activity, "stopNetwork");
+                    invoke(activity, "editDeviceName");
+                    android.app.Dialog dialog = currentDialog(activity);
+                    assertTrue(dialog instanceof CamelliaDialog);
+                    assertTrue("Opening the name dialog must not crash", dialog.isShowing());
+                    View root = dialog.getWindow().getDecorView();
+                    android.widget.EditText input = root.findViewWithTag("deviceNameInput");
+                    assertNotNull(input);
+                    View save = root.findViewWithTag("deviceNameSave"); assertNotNull(save);
+                    input.setText("   "); save.performClick();
+                    assertTrue(dialog.isShowing());
+                    assertNotNull(findText(root, "Enter a name of 1–80 characters.", "请输入 1–80 个字符的名称。"));
+                    input.setText("  Studio phone  "); save.performClick();
+                    assertFalse(dialog.isShowing());
+                    assertEquals("Studio phone", MobilePreferences.deviceName(activity));
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+        } finally {
+            getInstrumentation().runOnMainSync(() -> {
+                try { MobilePreferences.set(activity, "deviceName", ""); } catch (Exception ignored) {}
+            });
+            getInstrumentation().runOnMainSync(activity::finish);
+        }
+    }
+
     public void testMigrationRenameSwitchPendingAndRemovalIsolation() throws Exception {
         JSONObject first = computer("http://100.80.1.2:43127", "a"); encrypted.save(first);
         ComputerStore computers = new ComputerStore(encrypted); assertEquals(1, computers.all().size());

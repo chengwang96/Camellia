@@ -1,6 +1,7 @@
 """Visual and keyboard checks for desktop menus and settings. No external API calls."""
 import json
 import re
+import time
 from pathlib import Path
 import subprocess
 import tempfile
@@ -23,6 +24,14 @@ def rpc(method, payload=None):
     if 'error' in response:
         raise RuntimeError(response['error'])
     return response
+
+
+def wait_for(check, message='Timed out waiting for the automatic save'):
+    for _ in range(200):
+        if check():
+            return
+        time.sleep(0.05)
+    raise AssertionError(message)
 
 
 bridge = """(() => {
@@ -109,11 +118,12 @@ try:
             expect(downloads.locator('#downloadProxyUrl')).to_have_value('')
             downloads.locator('#downloadMode').select_option('proxy')
             downloads.locator('#downloadProxyUrl').fill('socks5://proxy.example:1080')
-            downloads.locator('#saveDownload').click()
+            downloads.locator('#downloadProxyUrl').press('Tab')
             expect(downloads.locator('#status')).to_contain_text('HTTP or HTTPS')
             assert rpc('downloadSettings')['result']['url'] == ''
             downloads.locator('#downloadProxyUrl').fill('http://proxy.example:8080')
-            downloads.locator('#saveDownload').click()
+            downloads.locator('#downloadProxyUrl').press('Tab')
+            wait_for(lambda: rpc('downloadSettings')['result']['url'] == 'http://proxy.example:8080/')
             expect(downloads.locator('#status')).to_have_text('Download connection saved')
             downloads.reload()
             expect(downloads.locator('#downloadMode')).to_have_value('proxy')
@@ -124,7 +134,8 @@ try:
             no_overflow(downloads)
             downloads.locator('#downloadMode').select_option('direct')
             downloads.locator('#downloadProxyUrl').fill('')
-            downloads.locator('#saveDownload').click()
+            downloads.locator('#downloadProxyUrl').press('Tab')
+            wait_for(lambda: rpc('downloadSettings')['result']['mode'] == 'direct' and rpc('downloadSettings')['result']['url'] == '')
             expect(downloads.locator('#status')).to_have_text('Download connection saved')
             downloads.close()
 
@@ -146,12 +157,10 @@ try:
         codex_settings.locator('[data-view=subscriptions]').click()
         expect(codex_settings.locator('#codexConnection')).to_have_value('api')
         codex_settings.locator('#codexConnection').select_option('subscription')
-        codex_settings.locator('#codexSaveConnection').click()
-        expect(codex_settings.locator('#status')).to_contain_text('Subscription settings saved')
+        wait_for(lambda: rpc('codexGetSettings')['result']['connection'] == 'subscription')
         expect(codex_settings.locator('#codexSignIn')).to_be_enabled()
         codex_settings.locator('#codexConnection').select_option('api')
-        codex_settings.locator('#codexSaveConnection').click()
-        expect(codex_settings.locator('#status')).to_contain_text('Subscription settings saved')
+        wait_for(lambda: rpc('codexGetSettings')['result']['connection'] == 'api')
         codex_settings.reload()
         codex_settings.locator('[data-view=subscriptions]').click()
         expect(codex_settings.locator('#codexConnection')).to_have_value('api')
@@ -187,7 +196,7 @@ try:
         expect(agy_settings.locator('[data-field=instructions]')).to_have_value('Use the project conventions.')
         agy_settings.locator('[data-view=subscriptions]').click()
         agy_settings.locator('#antigravityConnection').select_option('subscription')
-        agy_settings.locator('#googleSaveConnection').click()
+        wait_for(lambda: rpc('antigravityGetSettings')['result']['connection'] == 'subscription')
         expect(agy_settings.locator('#googleSignIn')).to_be_enabled()
         agy_settings.locator('[data-view=engines]').click()
         expect(agy_settings.locator('[data-field=agentMode]')).to_be_visible()
@@ -195,9 +204,9 @@ try:
         assert rpc('antigravityGetSettings')['result']['model'] == ''
         agy_settings.locator('[data-view=subscriptions]').click()
         agy_settings.locator('#googleProxyUrl').fill('http://proxy.example:8080')
-        agy_settings.locator('#googleSaveConnection').click()
+        agy_settings.locator('#googleProxyUrl').press('Tab')
         expect(agy_settings.locator('#googleSignIn')).to_be_enabled()
-        assert rpc('antigravityGetSettings')['result']['proxyUrl'] == 'http://proxy.example:8080/'
+        wait_for(lambda: rpc('antigravityGetSettings')['result']['proxyUrl'] == 'http://proxy.example:8080/')
         rpc('seedGoogleAccount')
         agy_settings.reload()
         agy_settings.locator('[data-view=subscriptions]').click()

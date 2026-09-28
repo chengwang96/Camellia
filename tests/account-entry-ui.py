@@ -1,6 +1,7 @@
 """Real preferences IPC; authorization is simulated and never opens a login."""
 import json
 import subprocess
+import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
@@ -16,6 +17,14 @@ def rpc(method, payload=None):
     if 'error' in response:
         raise RuntimeError(response['error'])
     return response['result']
+
+
+def wait_for(check, message='Timed out waiting for the automatic save'):
+    for _ in range(200):
+        if check():
+            return
+        time.sleep(0.05)
+    raise AssertionError(message)
 
 
 bridge = """window.calls=[];
@@ -64,33 +73,29 @@ try:
         page.locator('.account-shortcuts [data-account-engine=kimi]').click()
         expect(page.locator('#kimiAccountPanel')).to_be_in_viewport()
         page.locator('#kimiLoginRegion').select_option('global')
-        expect(page.locator('#kimiSignIn')).to_be_disabled()
-        page.locator('#kimiSaveConnection').click()
+        # Login preferences apply on change; wait for the automatic save instead
+        # of a removed Save button.
+        wait_for(lambda: rpc('kimiGetSettings')['region'] == 'global')
         expect(page.locator('#kimiSignIn')).to_be_enabled()
-        assert rpc('kimiGetSettings')['region'] == 'global'
         page.locator('#kimiSignIn').click()
         expect(page.locator('#kimiUserCode')).to_have_text('TEST-123')
         page.locator('#codexProxyUrl').fill('http://localhost:12345')
-        page.locator('#codexSaveConnection').click()
-        expect(page.locator('#codexSignIn')).to_be_enabled()
+        page.locator('#codexProxyUrl').press('Tab')
+        wait_for(lambda: rpc('subscriptionPreferencesGet', {'engine': 'codex'})['preferences']['proxyUrl'] == 'http://localhost:12345/')
         page.locator('#codexSignIn').click()
         expect(page.locator('#codexCancelLogin')).to_be_visible()
         expect(page.locator('#codexAddAccount')).to_be_disabled()
         page.locator('#googleProxyUrl').fill('http://localhost:12346')
-        page.locator('#googleSaveConnection').click()
-        expect(page.locator('#googleSignIn')).to_be_enabled()
+        page.locator('#googleProxyUrl').press('Tab')
+        wait_for(lambda: rpc('subscriptionPreferencesGet', {'engine': 'antigravity'})['preferences']['proxyUrl'] == 'http://localhost:12346/')
         page.locator('#googleSignIn').click()
         expect(page.locator('#status')).to_contain_text('Complete Google sign-in in the terminal')
         for engine in ['kimi', 'codex', 'antigravity']:
             assert rpc(engine + 'GetSettings')['connection'] == 'api'
         page.locator('#codexConnection').select_option('subscription')
-        page.locator('#codexSaveConnection').click()
-        expect(page.locator('#status')).to_contain_text('Subscription settings saved')
-        assert rpc('codexGetSettings')['connection'] == 'subscription'
+        wait_for(lambda: rpc('codexGetSettings')['connection'] == 'subscription')
         page.locator('#googleUseCredits').check()
-        page.locator('#googleSaveConnection').click()
-        expect(page.locator('#googleSaveConnection')).to_be_hidden()
-        assert rpc('subscriptionPreferencesGet', {'engine': 'antigravity'})['preferences']['useG1Credits'] is True
+        wait_for(lambda: rpc('subscriptionPreferencesGet', {'engine': 'antigravity'})['preferences']['useG1Credits'] is True)
         assert not page.evaluate("calls.some(call => ['engineSettingsSave','apiRouterSaveConfig'].includes(call.method))")
         page.locator('[data-view=providers]').click()
         expect(page.locator('#port')).to_have_value('14223')

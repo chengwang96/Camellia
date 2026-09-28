@@ -515,6 +515,34 @@ const context = { sessionId: null, workspaceId: null };
 
   // ---------- attachments ----------
   function isImagePath(p) { return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(p); }
+
+  // Attachment chips draw a themed glyph instead of an OS emoji, so a pasted
+  // file reads as part of the workbench rather than a stray default icon.
+  const ATTACHMENT_GLYPHS = {
+    text: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13.5h6M9 17h4"/>',
+    sheet: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8.5 13h7M8.5 17h7M12 13v4"/>',
+    slides: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 12v6m0 0-2.5-2.5M12 18l2.5-2.5"/>',
+    pdf: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 17v-5h1.6a1.7 1.7 0 0 1 0 3.4H9"/>',
+    archive: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M11 12.5h2M11 15.5h2M11 18.5h2"/>',
+    image: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="8.5" cy="9.5" r="1.4"/><path d="m20 16-4.5-4.5L6 21"/>',
+    file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  };
+  function attachmentGlyphKind(name, isImage) {
+    if (isImage) return 'image';
+    const extension = String(name || '').split('.').pop().toLowerCase();
+    if (extension === 'pdf') return 'pdf';
+    if (['xls', 'xlsx', 'xlsm', 'ods', 'numbers', 'csv', 'tsv'].includes(extension)) return 'sheet';
+    if (['ppt', 'pptx', 'odp', 'key'].includes(extension)) return 'slides';
+    if (['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2'].includes(extension)) return 'archive';
+    if (['txt', 'text', 'md', 'markdown', 'rst', 'log', 'tex', 'json', 'yaml', 'yml', 'toml', 'ini', 'conf', 'env', 'xml'].includes(extension)) return 'text';
+    return 'file';
+  }
+  function attachmentGlyph(name, isImage, className) {
+    const kind = attachmentGlyphKind(name, isImage);
+    return '<span class="' + className + ' attchip-file-' + kind + '">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+      ATTACHMENT_GLYPHS[kind] + '</svg></span>';
+  }
   function fileUrl(p) {
     const normalized = String(p).replace(/\\/g, '/');
     const encoded = encodeURI(normalized).replace(/#/g, '%23').replace(/\?/g, '%3F');
@@ -839,7 +867,7 @@ const context = { sessionId: null, workspaceId: null };
       chip.title = a.path;
       const visual = a.isImage
         ? '<img src="' + esc(fileUrl(a.path)) + '" alt="">'
-        : '<span class="attchip-fileicon">📎</span>';
+        : attachmentGlyph(a.name, false, 'attchip-fileicon');
       chip.innerHTML = visual + "<span class=\"attchip-name\"></span><button class=\"attchip-x\" title=\"Remove\">✕</button>";
       const name = chip.querySelector('.attchip-name');
       name.textContent = a.name; name.tabIndex = 0; name.role = 'button'; name.title = window.CamelliaI18n.t('Preview');
@@ -1076,7 +1104,8 @@ const context = { sessionId: null, workspaceId: null };
       for (const a of atts) {
         const c = document.createElement('span');
         c.className = 'attchip-inline';
-        c.textContent = (a.isImage ? '🖼 ' : '📎 ') + a.name;
+        c.innerHTML = attachmentGlyph(a.name, a.isImage, 'attchip-inline-icon') + '<span class="attchip-inline-name"></span>';
+        c.querySelector('.attchip-inline-name').textContent = a.name;
         c.tabIndex = 0; c.role = 'button'; c.title = window.CamelliaI18n.t('Preview');
         c.addEventListener('click', () => void openFilePreview(a.path));
         c.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void openFilePreview(a.path); } });
@@ -1771,7 +1800,10 @@ const context = { sessionId: null, workspaceId: null };
       row.setAttribute('role', 'status');
       row.setAttribute('aria-live', 'polite');
       row.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h2m8-18h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-2M9 8h6m-6 4h6m-6 4h3"/></svg><span data-i18n></span>';
-      chat.insertBefore(row, historyBefore || null);
+      // History paints the notice at its stored sequence. A live marker belongs
+      // at the same point in the transcript, so a turn that is still streaming
+      // keeps growing below it instead of leaving the marker pinned at the end.
+      chat.insertBefore(row, (historyBefore === undefined ? turnEl : historyBefore) || null);
     }
     row.dataset.state = compaction.state;
     if (compaction.seq) row.dataset.seq = compaction.seq;

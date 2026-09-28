@@ -34,15 +34,17 @@ function targetsFor(candidate, bases) {
 }
 
 // A reply usually names its output folder once and then lists bare file names
-// from it, so an absolute directory mentioned in the same turn becomes a base
-// for the references that follow. Only absolute references qualify, which keeps
-// a relative word such as `docs/` from widening the search.
-function mentionedDirectories(candidates) {
+// from it, so a directory mentioned in the same turn becomes a base for the
+// references that follow. The mention is resolved against the workspace and the
+// turn's own command directories first, so a relative folder such as `output/`
+// or `.build/` works the same as an absolute one, while a word that is not an
+// existing directory never widens the search.
+function mentionedDirectories(candidates, bases) {
   const directories = [];
   for (const candidate of candidates) {
     if (typeof candidate !== 'string' || !candidate.trim()) continue;
     let targets = [];
-    try { targets = targetsFor(candidate, []); } catch {}
+    try { targets = targetsFor(candidate, bases); } catch {}
     for (const target of targets) {
       try {
         if (!directories.includes(target) && fs.statSync(target).isDirectory()) directories.push(target);
@@ -60,8 +62,8 @@ function resolveArtifacts({ paths = [], text = '', cwd = '', roots = [] } = {}) 
   const references = textPaths(text).filter(candidate => !/(?:#L\d+(?:C\d+)?|:\d+(?::\d+)?)$/.test(candidate));
   const candidates = [...paths.slice(0, 100).map(candidate => ({ candidate, explicit: false })),
     ...references.map(candidate => ({ candidate, explicit: true }))];
-  const bases = [cwd, ...roots, ...mentionedDirectories(candidates.map(entry => entry.candidate))]
-    .filter(base => typeof base === 'string' && base.trim());
+  const rootsAndCwd = [cwd, ...roots].filter(base => typeof base === 'string' && base.trim());
+  const bases = [...rootsAndCwd, ...mentionedDirectories(candidates.map(entry => entry.candidate), rootsAndCwd)];
   for (const { candidate, explicit } of candidates) {
     if (typeof candidate !== 'string' || !candidate.trim()) continue;
     let targets = [];
