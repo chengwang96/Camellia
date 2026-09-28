@@ -2074,6 +2074,8 @@ test('/find recalls a file an earlier conversation wrote, by name and by descrip
 });
 
 test('a bare /find lists the files recent conversations produced, newest first', async context => {
+  const timestamp = Date.now();
+  context.mock.method(Date, 'now', () => timestamp);
   const harness = fixture(context);
   const manager = harness.manager;
   const first = manager.create('codex', undefined, '第一份材料');
