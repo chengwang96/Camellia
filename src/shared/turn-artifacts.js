@@ -50,6 +50,44 @@
       .filter(value => typeof value === 'string' && value.trim());
   }
 
+  // A command often reads or inspects a folder outside the workspace (a Desktop
+  // scan, an import from another project), and the reply then names that folder
+  // and lists its files relatively. The absolute paths in the turn's own tool
+  // inputs are the only record of those folders, so they become resolution bases
+  // too. A recorded command quotes its paths in whatever dialect its shell
+  // needed, so the runs of path characters after a drive letter are read
+  // directly rather than by unquoting, and escaping that doubled the separators
+  // collapses back to one. Each run is offered both whole and as its parent,
+  // because a run that names a file still points at the folder the reply lists
+  // files from, while one that names a folder is already the base. Only a plain
+  // drive path qualifies; a UNC or device path is skipped because resolving one
+  // can block on a network lookup, and the caller drops candidates that are not
+  // real directories before they cost a reference a failed lookup.
+  function toolDirectories(input) {
+    const values = typeof input === 'string' ? [input]
+      : input && typeof input === 'object' ? ['command', 'input', 'script'].map(key => input[key]).filter(value => typeof value === 'string')
+        : [];
+    const directories = [];
+    const add = value => { if (value && directories.length < 100 && !directories.includes(value)) directories.push(value); };
+    for (const value of values) {
+      // A quoted span is taken whole, so a folder whose name contains a space
+      // survives; the bare runs cover paths a shell left unquoted.
+      const literals = [];
+      for (const match of value.matchAll(/"([^"\r\n]{1,400})"|'([^'\r\n]{1,400})'|`([^`\r\n]{1,400})`/g)) literals.push(match[1] ?? match[2] ?? match[3]);
+      for (const match of value.matchAll(/[a-z]:[\\/][^\\/\s"'`;|<>*?:$]*(?:[\\/][^\\/\s"'`;|<>*?:$]*)*/gi)) literals.push(match[0]);
+      for (const raw of literals) {
+        const literal = raw.replace(/[\\/]+/g, match => match[0]).replace(/[\\/]+$/, '').trim();
+        // A drive-relative path such as `C:file`, and a bare `C:` or `C:\`, name
+        // no folder; a parent is only usable if it keeps the same shape.
+        if (!/^[a-z]:[\\/][^\\/]/i.test(literal)) continue;
+        add(literal);
+        const parent = literal.slice(0, Math.max(literal.lastIndexOf('\\'), literal.lastIndexOf('/')));
+        if (/^[a-z]:[\\/][^\\/]/i.test(parent)) add(parent);
+      }
+    }
+    return directories;
+  }
+
   function collector() {
     const tools = new Map(), paths = new Set(), roots = new Set();
     const finish = (id, failed) => {
@@ -63,11 +101,13 @@
           if (part.type !== 'tool_use') continue;
           tools.set(part.id, toolPaths(part.name, part.input));
           for (const root of toolRoots(part.input)) roots.add(root);
+          for (const directory of toolDirectories(part.input)) roots.add(directory);
         }
         if (event.type === 'gui:tool') {
           if (event.input !== undefined) {
             tools.set(event.id, toolPaths(event.name, event.input));
             for (const root of toolRoots(event.input)) roots.add(root);
+            for (const directory of toolDirectories(event.input)) roots.add(directory);
           }
           if (['completed', 'failed', 'cancelled'].includes(event.status)) finish(event.id, event.is_error || event.status !== 'completed');
         }
@@ -77,5 +117,5 @@
       },
     };
   }
-  return { textPaths, toolPaths, toolRoots, collector, documentFormat, sortArtifacts, VISIBLE_ARTIFACT_LIMIT };
+  return { textPaths, toolPaths, toolRoots, toolDirectories, collector, documentFormat, sortArtifacts, VISIBLE_ARTIFACT_LIMIT };
 });
