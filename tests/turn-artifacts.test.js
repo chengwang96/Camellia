@@ -129,6 +129,37 @@ test('a turn that worked outside the workspace still yields its deliverables', t
   assert.equal(result[0].path, path.join(project, 'outputs', 'UDP与TCP试讲.pptx'));
 });
 
+test('Windows short and long paths identify one deliverable', { skip: process.platform !== 'win32' }, t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-short-path-'));
+  t.after(() => removeTree(cwd));
+  const longRoot = fs.realpathSync.native(cwd);
+  const shortRoot = require('node:child_process').execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); (New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:CAMELLIA_ARTIFACT_ROOT).ShortPath'],
+  { encoding: 'utf8', windowsHide: true, env: { ...process.env, CAMELLIA_ARTIFACT_ROOT: longRoot } }).trim();
+  if (shortRoot.toLowerCase() === longRoot.toLowerCase()) return t.skip('The test volume does not create short path aliases');
+  const file = path.join(longRoot, 'report.md');
+  fs.writeFileSync(file, 'One deliverable');
+  assert.equal(fs.readFileSync(path.join(shortRoot, 'report.md'), 'utf8'), 'One deliverable');
+  const result = resolveArtifacts({ cwd: shortRoot, explicitPaths: [file], text: '`report.md`' });
+  assert.deepEqual(result.map(entry => entry.path), [file]);
+});
+
+test('command directories support POSIX paths, spaces, nested quotes and cmd arguments', () => {
+  for (const input of [
+    { command: 'ls -la "/Users/researcher/实验 outputs/"' },
+    { command: `python -c "open('/Users/researcher/实验 outputs/report.pdf')"` },
+    { cmd: 'cat /Users/researcher/outputs/report.pdf' },
+    { script: 'node build.js --output=/Users/researcher/outputs/report.pdf' },
+  ]) {
+    const folder = JSON.stringify(input).includes('实验 outputs') ? '/Users/researcher/实验 outputs' : '/Users/researcher/outputs';
+    assert.ok(toolDirectories(input).includes(folder), JSON.stringify(input));
+  }
+  assert.deepEqual(toolDirectories('curl https://example.com/outputs/report.pdf'), []);
+  assert.deepEqual(toolDirectories('cat //server/share/report.pdf'), []);
+  assert.deepEqual(toolDirectories(String.raw`cat \\?\C:\outputs\report.pdf`), []);
+  assert.deepEqual(toolDirectories({ cmd: 'node slides/build.js' }), []);
+});
+
 test('a reply that names its output folder resolves the bare file names that follow', t => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-'));
   const output = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-out-'));

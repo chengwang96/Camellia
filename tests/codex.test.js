@@ -286,6 +286,25 @@ test('cancel during Codex initialization stops before sending a turn and closes 
   assert.equal(events.at(-1).subtype, 'stopped'); await session.shutdown();
 });
 
+test('a new Codex session starts from the connection the last session used', async t => {
+  const root = temporary(t), home = path.join(root, 'codex'); fs.mkdirSync(home);
+  let desktop = { codex: { connection: 'api', apiModel: 'api-model' }, codexSessionConnections: {} };
+  const wire = transport();
+  const engine = createCodex({ dataDir: root, loadConfig: () => desktop, saveConfig: patch => { desktop = { ...desktop, ...patch }; },
+    runtimes: () => ({ locate: () => ({ file: path.join(root, 'native/bin/codex') }) }),
+    getModels: () => [], spawn: () => wire.proc });
+  assert.equal(engine.settings().connection, 'api');
+  // A session that actually used the subscription pins its own connection and
+  // becomes the starting point for the next brand-new session.
+  engine.saveSettings({ connection: 'subscription', model: 'account-model' });
+  const session = engine.ensureSession({ sessionId: 'native-thread' });
+  assert.equal(session.settings.connection, 'subscription');
+  await session.ready;
+  assert.equal(desktop.codexSessionConnections['native-thread'] ?? desktop.codex.connection, 'subscription');
+  assert.equal(engine.settings().connection, 'subscription');
+  await engine.shutdown();
+});
+
 test('Codex keeps configuration, auth storage and remembered connections inside Camellia', async t => {
   const root = temporary(t), home = path.join(root, 'codex'); fs.mkdirSync(home);
   fs.writeFileSync(path.join(home, 'config.toml'), TOML.stringify({ model_provider: 'personal', cli_auth_credentials_store: 'keyring',

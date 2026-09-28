@@ -17,7 +17,9 @@ function describeArtifact(resolved, explicit) {
     && !['txt', 'csv', 'tsv', 'rst', 'tex'].includes(extension)) return null;
   const stat = fs.statSync(resolved);
   if (!stat.isFile()) return null;
-  return { canonical: fs.realpathSync(resolved), kind,
+  // Native resolution also expands Windows 8.3 aliases (for example RUNNER~1
+  // in CI's TEMP), which the JavaScript realpath implementation leaves intact.
+  return { canonical: fs.realpathSync.native(resolved), kind,
     file: { path: resolved, name: path.basename(resolved), kind,
       extension: path.extname(resolved).slice(1).toUpperCase(), size: stat.size } };
 }

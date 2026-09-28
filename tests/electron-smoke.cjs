@@ -334,7 +334,7 @@ async function main() {
     const generalSettings = await waitWindow("document.querySelector('#generalPage') && !document.querySelector('#generalPage').hidden");
     assert.equal(await generalSettings.webContents.executeJavaScript("document.querySelector('[data-view=general]').getAttribute('aria-current')"), 'page');
     await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').click()");
-    const engineSettings = await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden && document.querySelector('#kimiConnection').value === 'api'");
+    const engineSettings = await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden && document.querySelector('#kimiAccountPanel') && !document.querySelector('#kimiSignIn').disabled");
     assert.equal(engineSettings, generalSettings);
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('[data-view=subscriptions]').getAttribute('aria-current')"), 'page');
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('#settingsPanel') === null"), true);
@@ -342,7 +342,7 @@ async function main() {
     assert.equal(globalState.ok, true);
     assert.ok(globalState.files.every(file => file.path.startsWith(process.env.USERPROFILE)));
 
-    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiConnection').value='subscription'; document.querySelector('#kimiConnection').dispatchEvent(new Event('change'))");
+    await engineSettings.webContents.executeJavaScript("window.dshDesktop.subscriptionPreferencesSave({engine:'kimi', preferences:{connection:'subscription'}})");
     await waitWindow("document.querySelector('#kimiAccountPanel') && !document.querySelector('#kimiSignIn').disabled");
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiSignIn').click()");
     await waitWindow("document.querySelector('#kimiUserCode')?.textContent === 'TEST-123'");
@@ -399,7 +399,7 @@ async function main() {
     await waitWindow("document.querySelector('#kimiSignOut')?.hidden && !document.querySelector('#kimiSignIn').disabled");
     assert.equal((await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState()')).account, null);
     assert.deepEqual(kimiRpcCalls.slice(-2), ['initialize', 'logout']);
-    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiConnection').value='api'; document.querySelector('#kimiConnection').dispatchEvent(new Event('change'))");
+    await engineSettings.webContents.executeJavaScript("window.dshDesktop.subscriptionPreferencesSave({engine:'kimi', preferences:{connection:'api'}})");
     // Connection changes save on their own now; confirm the persisted
     // preference, because the status line reports a rejected save as text only.
     const saveDeadline = Date.now() + 30000;

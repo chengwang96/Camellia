@@ -99,7 +99,12 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     const previousClosed = current?.shutdown();
     const next = new AcpSession({ name: 'Antigravity', gen: ++generation, settings: selected, opts, exe: subscription ? node() : runtime.file, spec, spawn, log, history,
       onEvent: event => { if (sessions.get(opts) === next) onEvent({ ...event, conversationId: opts.conversationId }); },
-      onSessionId: id => { workspaces.recordContext(id, opts.workspaceId, selected.cwd); if (!opts.conversationId) goal.rememberSession(next); },
+      onSessionId: id => {
+        // A new session starts from the connection the last one actually used,
+        // so the settings page does not need a global selector.
+        if (loadConfig().antigravity?.connection !== selected.connection) saveConfig({ antigravity: { ...loadConfig().antigravity, connection: selected.connection } });
+        workspaces.recordContext(id, opts.workspaceId, selected.cwd); if (!opts.conversationId) goal.rememberSession(next);
+      },
       onResult: event => { if (!opts.conversationId && sessions.legacy === next) goal.handleResult(event); },
     });
     sessions.set(opts, next);

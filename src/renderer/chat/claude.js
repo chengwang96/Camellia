@@ -77,7 +77,8 @@ const context = { sessionId: null, workspaceId: null };
   }
   let currentPermission = chatProfile.permission;
   let currentConnection = 'api';
-  const accountSubscription = () => ['codex', 'kimi', 'antigravity'].includes(harnessId) && currentConnection === 'subscription';
+  const supportsAccounts = () => ['codex', 'kimi', 'antigravity'].includes(harnessId);
+  const accountSubscription = () => supportsAccounts() && currentConnection === 'subscription';
   const accountName = { codex: 'ChatGPT', kimi: 'Kimi', antigravity: 'Google' }[harnessId];
   let accountModels = [];
   let routeModels = [];
@@ -384,8 +385,8 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function modelLabel(id) {
-    const m = MODELS.find((x) => x.id === id);
-    return id ? (m ? m.label : id) : window.CamelliaI18n.t(m?.label || "Default model");
+    const m = MODELS.find((x) => x.id === id) || accountModels.find((x) => x.id === id);
+    return id ? (m?.label || m?.name || m?.displayName || id) : window.CamelliaI18n.t(m?.label || "Default model");
   }
   function levelLabel(id) {
     const l = LEVELS.find((x) => x.id === id);
@@ -419,12 +420,15 @@ const context = { sessionId: null, workspaceId: null };
     }
   }
   function persistModel(model) {
-    // Picking across groups in a subscription composer selects the other
-    // connection for this conversation (or globally on a fresh start page).
+    // The composer lists account and API models together, so picking a model
+    // that only the other connection offers also selects that connection.
+    // A model both connections offer keeps the current one.
     let connection;
-    if (accountSubscription() && model && (sharedChat || !context.sessionId)) {
-      if (routeModels.includes(model)) connection = 'api';
-      else if (accountModels.some(m => m.id === model)) connection = 'subscription';
+    const canSwitch = supportsAccounts() && model && model !== currentModel && (sharedChat || !context.sessionId);
+    if (canSwitch) {
+      const inCurrent = accountSubscription() ? accountModels.some(m => m.id === model) : routeModels.includes(model);
+      const inOther = accountSubscription() ? routeModels.includes(model) : accountModels.some(m => m.id === model);
+      if (!inCurrent && inOther) connection = accountSubscription() ? 'api' : 'subscription';
     }
     return persistSettings({ model, ...(connection ? { connection } : {}), ...(harnessId !== 'claude' ? { thinkingBudget: '' } : {}) },
       "Model changed: " + modelLabel(model) + " (applies to the next message)")
@@ -477,13 +481,19 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function modelSections() {
-    // A signed-in account lists its models first; shared API routes stay
-    // selectable as a second group when switching applies cleanly (shared
-    // conversations or a fresh start page).
-    if (!accountSubscription()) return [{ title: 'Model · Same-model failover', options: MODELS }];
-    const sections = [{ title: 'Model · ' + accountName + ' account', options: MODELS }];
-    if (routeModels.length && (sharedChat || !context.sessionId)) sections.push({ title: 'Model · Shared API routes', options: routeModels.map(id => ({ id, label: id })) });
-    return sections;
+    // Engines with subscriptions list account and API models together, so the
+    // composer itself chooses the connection; a session cannot switch engines.
+    if (!supportsAccounts() || (!sharedChat && context.sessionId)) return [{ title: 'Model · Same-model failover', options: MODELS }];
+    // With no account signed in there is only one list, so keep the plain group.
+    if (!accountModels.length) return [{ title: 'Model · Same-model failover', options: MODELS }];
+    const account = { title: 'Model · ' + accountName + ' account', options: accountModels.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
+    const api = { title: 'Model · Shared API routes', options: routeModels.map(id => ({ id, label: id })) };
+    const sections = accountSubscription() ? [account, api] : [api, account];
+    // An ID offered by both connections belongs to the active one, matching
+    // persistModel and the remote picker. Never label an API choice as account usage.
+    const activeIds = new Set(sections[0].options.map(model => model.id));
+    sections[1].options = sections[1].options.filter(model => !activeIds.has(model.id));
+    return sections.filter(section => section.options.length);
   }
 
   function openModelMenu() {
@@ -3179,15 +3189,15 @@ const context = { sessionId: null, workspaceId: null };
     currentConnection = s.connection || 'api';
     if (harnessId === 'codex') {
       $('connectionInfo').hidden = false;
-      $('connectionInfo').textContent = accountSubscription() ? 'ChatGPT account · Switch to API in settings' : 'API key / third-party API · Connection settings';
+      $('connectionInfo').textContent = accountSubscription() ? 'ChatGPT account · Pick an API model to switch' : 'API key / third-party API · Pick an account model to switch';
     }
     if (harnessId === 'kimi') {
       $('connectionInfo').hidden = false;
-      $('connectionInfo').textContent = accountSubscription() ? 'Kimi subscription · Manage account' : 'Shared API routes · Connection settings';
+      $('connectionInfo').textContent = accountSubscription() ? 'Kimi subscription · Manage account' : 'Shared API routes · Pick an account model to switch';
     }
     if (harnessId === 'antigravity') {
       $('connectionInfo').hidden = false;
-      $('connectionInfo').textContent = googleSubscription() ? 'Google subscription · Manage account' : 'Shared API routes · Connection settings';
+      $('connectionInfo').textContent = googleSubscription() ? 'Google subscription · Manage account' : 'Shared API routes · Pick a Google model to switch';
       $('selPermission').querySelector('[value="ask"]').textContent = googleSubscription() ? 'CLI defaults' : 'Ask before acting';
       $('selPermission').title = googleSubscription() ? 'CLI permission rules apply. Tools requiring interactive review are declined in headless mode; Camellia shows a blocked-action notice, not an approval prompt.' : '';
     }
@@ -3212,26 +3222,29 @@ const context = { sessionId: null, workspaceId: null };
     try {
       const selected = await chatApi.getSettings({ sessionId });
       if (selected.ok === false) throw new Error(selected.error);
-      const subscription = ['codex', 'kimi', 'antigravity'].includes(harnessId) && selected.connection === 'subscription';
-      // Subscription composers also offer the shared API routes as a group.
-      const [state, routerState] = await Promise.all([
-        subscription ? window.dshDesktop[harnessId + 'AccountState']() : window.dshDesktop.apiRouterGetState(),
-        subscription ? window.dshDesktop.apiRouterGetState() : Promise.resolve(null),
+      const subscription = supportsAccounts() && selected.connection === 'subscription';
+      // Engines with subscriptions load both lists so the composer can offer
+      // account and API models together and pick the connection itself.
+      const [routerState, accountState] = await Promise.all([
+        window.dshDesktop.apiRouterGetState(),
+        supportsAccounts() ? Promise.resolve().then(() => window.dshDesktop[harnessId + 'AccountState']())
+          .catch(error => ({ ok: false, error: error.message })) : Promise.resolve(null),
       ]);
       if (seq !== settingsLoadSeq || sessionId !== context.sessionId) return;
-      if (subscription) routeModels = routerState?.enabled && Array.isArray(routerState.models) ? routerState.models : [];
+      accountModels = accountState?.ok && Array.isArray(accountState.models) ? accountState.models : [];
       applySessionSettings(selected);
+      // Fills the API route list and context caps; it leaves MODELS alone while
+      // a subscription supplies them.
+      applyRouterModels(routerState);
       if (subscription) {
-        const account = state;
-        accountModels = account.models || [];
+        const account = accountState || {};
         if (!account.ok) throw new Error(account.error);
-        MODELS.splice(0, MODELS.length, ...(account.models.length ? [] : [{ id: '', label: 'Connect ' + accountName + ' in settings' }]),
-          ...account.models.map(model => ({ id: model.id, label: model.name })));
-        if (currentModel && !account.models.some(model => model.id === currentModel)) MODELS.push({ id: currentModel, label: currentModel + ' (refresh account)' });
+        MODELS.splice(0, MODELS.length, ...(accountModels.length ? [] : [{ id: '', label: 'Connect ' + accountName + ' in settings' }]),
+          ...accountModels.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })));
+        if (currentModel && !accountModels.some(model => model.id === currentModel)) MODELS.push({ id: currentModel, label: currentModel + ' (refresh account)' });
         $('modelPill').title = 'Models available to your ' + accountName + ' account';
-        renderModelPill();
-      } else applyRouterModels(state);
-      updateCtxRing();
+        renderModelPill(); updateCtxRing();
+      }
       if (harnessId !== 'claude') applyApiLevels();
     } catch (error) { if (seq === settingsLoadSeq && sessionId === context.sessionId) setStatus("Could not load settings: " + error.message); }
   }

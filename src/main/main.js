@@ -104,6 +104,52 @@ function log(message) {
   }
 }
 
+// A crash currently ends the log mid-sentence with nothing to explain it, which
+// makes a real failure indistinguishable from a deliberate quit. Record the
+// reason and end the process explicitly so the next start sees what happened.
+// These handlers must never throw and never touch the window or app state.
+function describe(value) {
+  try {
+    if (value instanceof Error) return String(value.stack || value.message || value).trimEnd();
+    return typeof value === 'string' ? value : JSON.stringify(value) ?? String(value);
+  } catch {
+    try { return String(value); } catch { return '[Unprintable error]'; }
+  }
+}
+function logFatal(message) {
+  // app.exit does not wait for the ordinary log stream to flush.
+  const line = `[${new Date().toISOString()}] ${message}\n`;
+  try {
+    fs.mkdirSync(logDir(), { recursive: true });
+    fs.appendFileSync(logPath(), line);
+  } catch {
+    try { process.stderr?.write(line); } catch { /* Reporting cannot replace the original failure. */ }
+  }
+}
+function installCrashHandlers() {
+  process.on('uncaughtException', error => {
+    logFatal('FATAL uncaughtException: ' + describe(error));
+    process.exitCode = 1;
+    // Never throw from the crash path: the test harness loads this file with a
+    // mocked Electron that has no app.exit, and throwing here would replace the
+    // original failure with a confusing one.
+    if (typeof app.exit === 'function') app.exit(1);
+  });
+  process.on('unhandledRejection', reason => {
+    logFatal('FATAL unhandledRejection: ' + describe(reason));
+  });
+  // A renderer or utility process dying leaves a blank window or a stuck action
+  // with no trace in the main log, so record which process went and why.
+  app.on('render-process-gone', (_event, contents, details) => {
+    const url = (() => { try { return contents?.getURL?.() || ''; } catch { return ''; } })();
+    log(`render process gone: reason=${details?.reason} exitCode=${details?.exitCode} url=${url}`);
+  });
+  app.on('child-process-gone', (_event, details) => {
+    log(`child process gone: type=${details?.type} reason=${details?.reason} exitCode=${details?.exitCode}`);
+  });
+}
+installCrashHandlers();
+
 // ---------------------------------------------------------------------------
 // Config (stored in the app's own userData, NOT in ~/.dsh which dsh itself owns)
 // ---------------------------------------------------------------------------
@@ -764,6 +810,9 @@ function ensureKimiSession(settings, opts) {
     },
     onSessionId: id => {
       saveConfig({ kimiSessionConnections: { ...loadConfig().kimiSessionConnections, [id]: settings.connection || 'api' },
+        // A new session starts from the connection the last one actually used,
+        // so the settings page does not need a global selector.
+        kimi: { ...loadConfig().kimi, connection: settings.connection || 'api' },
         ...(subscription && settings.subscriptionId ? { kimiSessionAccounts: { ...loadConfig().kimiSessionAccounts, [id]: settings.subscriptionId } } : {}) });
       kimiWorkspaces.recordContext(id, opts.workspaceId, settings.cwd);
       if (!opts.conversationId) kimiGoalDriver.rememberSession(session);

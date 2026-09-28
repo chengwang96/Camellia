@@ -152,7 +152,7 @@ Multiple conversations can work at the same time, including several using the sa
 
 ### Conversation control
 
-Models can also create/fork owned child conversations, choose configured models and thinking levels, send work, read results and cancel responses through [conversation-control tools](docs/conversation-tools.md). Children share files and existing permissions; they run independently and cannot recursively delegate or start Goals/tasks.
+Models can also create/fork owned child conversations, choose configured models and thinking levels, send work, read results and cancel responses through [conversation-control tools](docs/conversation-tools.md). The same bridge exposes read-only `sessions`, `history` and `search` tools that list every conversation stored on the device, read any stored transcript and search transcripts for words, without starting an engine or changing anything. Children share files and existing permissions; they run independently and cannot recursively delegate or start Goals/tasks.
 
 ### Goal mode
 

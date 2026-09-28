@@ -38,7 +38,7 @@ try:
             page.goto((repo/'src/renderer/settings/api-settings.html').as_uri()+'?page=engines&engine=kimi', wait_until='networkidle')
             page.locator('[data-view=subscriptions]').click()
             expect(page.locator('#kimiAccountStatus')).to_contain_text('Signed in')
-            expect(page.locator('#kimiConnection')).to_have_value('subscription')
+            expect(page.locator('#kimiConnection')).to_have_count(0)
             account_choice = page.locator('#kimiAccountList .account-choice').first
             expect(account_choice).to_be_visible()
             expect(account_choice).to_have_attribute('aria-pressed', 'true')

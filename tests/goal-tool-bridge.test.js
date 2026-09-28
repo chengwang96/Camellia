@@ -80,6 +80,13 @@ test('stdio MCP lists tools and forwards authenticated calls to the application'
   assert.equal(noQuery.result.isError, true);
   assert.deepEqual(listed.filter(tool => tool.name.startsWith('camellia_conversation_')).map(tool => tool.name).sort(),
     require('../src/engines/conversation-tools').tools.map(tool => tool.name).sort());
+  // Device-wide reads share the conversation prefix but take no conversation_id.
+  const listedNames = listed.filter(tool => tool.name.startsWith('camellia_conversation_')).map(tool => tool.name);
+  for (const name of ['camellia_conversation_sessions', 'camellia_conversation_history', 'camellia_conversation_search']) assert.ok(listedNames.includes(name), name);
+  const badLimit = await request('tools/call', { name: 'camellia_conversation_search', arguments: { run_token: 'current', query: 'x', limit: 0 } });
+  assert.equal(badLimit.result.isError, true);
+  const badArchived = await request('tools/call', { name: 'camellia_conversation_sessions', arguments: { run_token: 'current', archived: 'yes' } });
+  assert.equal(badArchived.result.isError, true);
   const child = await request('tools/call', { name: 'camellia_conversation_create', arguments: { run_token: 'current', request_id: 'child', title: 'Research' } });
   assert.equal(child.result.isError, false);
   assert.equal(calls.at(-1).name, 'camellia_conversation_create');

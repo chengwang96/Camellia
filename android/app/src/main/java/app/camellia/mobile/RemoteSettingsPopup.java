@@ -56,14 +56,36 @@ final class RemoteSettingsPopup {
         body.removeAllViews();
         JSONArray models = settings.optJSONArray("models");
         if (models == null || models.length() == 0) row(tr("暂无可用模型", "No models available"), tr("请在电脑端配置模型或登录账号", "Configure models or sign in on your computer"), false, "remoteModelsEmpty", () -> {});
-        else for (int index = 0; index < models.length(); index++) {
-            JSONObject model = models.optJSONObject(index); if (model == null) continue;
-            String id = model.optString("id"), name = model.optString("name", id);
-            row(name, name.equals(id) ? "" : id, id.equals(settings.optString("model")), "remoteModelOption:" + id, () -> choose("model", id));
+        else {
+            boolean grouped = hasConnection(models, "api") && hasConnection(models, "subscription");
+            boolean accountHeading = false, apiHeading = false;
+            for (int index = 0; index < models.length(); index++) {
+                JSONObject model = models.optJSONObject(index); if (model == null) continue;
+                if (grouped) {
+                    boolean account = model.optString("connection", "api").equals("subscription");
+                    if (account && !accountHeading) { heading(tr("账号模型", "Account models")); accountHeading = true; }
+                    if (!account && !apiHeading) { heading(tr("共享 API 路由", "Shared API routes")); apiHeading = true; }
+                }
+                String id = model.optString("id"), name = model.optString("name", id);
+                row(name, name.equals(id) ? "" : id, id.equals(settings.optString("model")), "remoteModelOption:" + id, () -> choose("model", id));
+            }
         }
         divider();
         row(tr("思考等级", "Thinking level"), LocalChatThinking.display(settings.optString("thinking"), chinese), false, "remoteThinkingSettings", this::thinking);
         position();
+    }
+    private boolean hasConnection(JSONArray models, String connection) {
+        for (int index = 0; index < models.length(); index++) {
+            JSONObject model = models.optJSONObject(index);
+            if (model != null && model.optString("connection", "api").equals(connection)) return true;
+        }
+        return false;
+    }
+    private void heading(String title) {
+        android.widget.TextView caption = new android.widget.TextView(context);
+        caption.setText(title); caption.setTextSize(11); caption.setTextColor(muted);
+        caption.setPadding(dp(16), dp(10), dp(16), dp(4));
+        body.addView(caption);
     }
     private void thinking() {
         body.removeAllViews();

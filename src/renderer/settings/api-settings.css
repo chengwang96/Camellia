@@ -61,13 +61,18 @@ p { margin: 5px 0; }
 .toolbar-actions { display: flex; gap: 8px; }
 .provider-grid, .balance-grid, .chart-grid-layout { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 12px; }
 .provider-grid > .provider, .balance-grid > .balance-card, .chart-grid-layout > .chart-tile { width: 100%; max-width: 420px; }
-.account-connections { border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; padding: 18px; margin-bottom: 24px; }
-.account-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.account-shortcuts button { white-space: normal; text-align: left; }
-.subscription-account { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--dsw-alias-border-l2); scroll-margin-top: 20px; }
-.subscription-account h3 { font-size: 15px; margin: 0 0 8px; }
+#subscriptionsPage { max-width: 860px; }
+.account-connections { border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; padding: 16px 18px; margin-bottom: 24px; }
+.account-connections > .hint { margin: 0 0 4px; }
+.account-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+.account-shortcuts button { padding: 5px 12px; min-height: 30px; white-space: nowrap; }
+.subscription-account { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l2); scroll-margin-top: 16px; }
+.subscription-account h3 { font-size: 14px; margin: 0 0 4px; }
 .subscription-account .account-actions { flex-wrap: wrap; }
-.subscription-account .hint { line-height: 1.7; }
+.subscription-account .engine-field { padding: 11px 0; }
+.subscription-account .hint { line-height: 1.6; margin: 4px 0; }
+.subscription-account .account-list { margin-top: 10px; }
+.subscription-account details { margin: 8px 0 4px; }
 .usage-api-title { margin-bottom: 14px; }
 .provider .provider-mark, .balance-card .provider-mark { width: 28px; height: 28px; border-radius: 8px; }
 .balance-card .provider-mark img { width: 23px; height: 23px; }

@@ -172,6 +172,9 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       onEvent: event => { if (sessions.get(opts) === next) onEvent({ ...event, conversationId: opts.conversationId }); },
       onSessionId: id => {
         saveConfig({ codexSessionConnections: { ...connections(), [id]: selected.connection },
+          // A new session starts from the connection the last one actually
+          // used, so the settings page does not need a global selector.
+          codex: { ...loadConfig().codex, connection: selected.connection },
           ...(selected.connection === 'subscription' && selected.subscriptionId ? { codexSessionAccounts: { ...accountBindings(), [id]: selected.subscriptionId } } : {}) });
         workspaces.recordContext(id, opts.workspaceId, selected.cwd); if (!opts.conversationId) goal.rememberSession(next);
       },

@@ -16,19 +16,10 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   for (const [id, prefix, title] of [['codex', 'codex', 'ChatGPT account · Codex'], ['kimi', 'kimi', 'Kimi account · Kimi Code'], ['antigravity', 'google', 'Google account · Antigravity']]) {
     const panel = $(prefix + 'AccountPanel');
     const heading = document.createElement('h3'); heading.textContent = title; heading.dataset.i18n = '';
-    document.querySelector(`[data-account-engine="${id}"]`).textContent = title;
     panel.prepend(heading); panel.classList.add('subscription-account'); panel.hidden = false;
     $('subscriptionAccounts').append(panel);
     const preferences = id === 'kimi' ? $('kimiLoginRegion').closest('.engine-field') : $(prefix + 'ProxyUrl').closest('.engine-field');
     panel.insertBefore(preferences, heading.nextSibling);
-    const connectionPanel = $(id + 'ConnectionPanel');
-    const connection = $(id + 'Connection');
-    panel.insertBefore(connection.closest('.engine-field'), preferences);
-    panel.insertBefore($(id + 'ConnectionHint'), preferences);
-    const hint = document.createElement('p'); hint.className = 'hint'; hint.dataset.i18n = '';
-    hint.textContent = id === 'antigravity' ? 'Official CLI sign-in is external. Model availability is verified here; account identity and quota are not reported.'
-      : 'Account actions apply immediately. The selected account is preferred for new conversations; existing conversations keep their bound account.';
-    panel.insertBefore(hint, heading.nextSibling);
     const control = id === 'kimi' ? $('kimiLoginRegion') : $(prefix + 'ProxyUrl');
     // Keep the draft while typing so unrelated renders cannot reset the field;
     // only a committed change triggers the save.
@@ -37,11 +28,6 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     };
     control.oninput = draftPreference;
     control.onchange = () => { draftPreference(); void queueLoginPreferences(id); renderConnection(); };
-    connection.onchange = () => {
-      loginDrafts.set(id, { ...accountPreferences(id), connection: connection.value });
-      void queueLoginPreferences(id);
-      renderConnection();
-    };
     if (id === 'antigravity') {
       $('googleSignIn').textContent = 'Open official CLI sign-in';
       $('googleRefresh').textContent = 'Verify after sign-in';
@@ -55,10 +41,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       };
     }
     if (id !== 'antigravity') $(prefix + 'AccountList').setAttribute('aria-label', 'Preferred account for new conversations');
-    const defaultHint = document.createElement('p'); defaultHint.className = 'hint'; defaultHint.dataset.i18n = '';
-    defaultHint.textContent = 'Default connection for new conversations only. Account sign-in and the account used by an existing conversation are separate.';
-    connection.closest('.engine-field').after(defaultHint);
-    connectionPanel.remove();
+    $(id + 'ConnectionPanel').remove();
   }
   function accountPreferences(id) { return loginDrafts.get(id) || loginPreferences.get(id) || {}; }
   // Login preferences save on change, like the other settings pages. Saves are
@@ -158,11 +141,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function renderKimiAccount() {
     const preferences = accountPreferences('kimi'), pending = Boolean(kimiAccount?.loginPending), busy = kimiBusy || kimiAccount?.refreshing || kimiAccount?.signingOut;
-    $('kimiConnection').value = preferences.connection || 'api';
     $('kimiLoginRegion').value = accountPreferences('kimi').region || 'mainland-cn';
-    $('kimiConnectionHint').textContent = preferences.connection === 'subscription'
-      ? 'Sign in with your Kimi account to use its eligible models and subscription quota. No API key is needed.'
-      : 'Use the providers, API keys and models configured in Providers & Keys.';
     $('kimiSignIn').disabled = Boolean(busy || pending);
     $('kimiAddAccount').disabled = Boolean(busy || pending);
     $('kimiRefresh').disabled = Boolean(busy || pending || !kimiAccount?.installed);
@@ -193,11 +172,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function renderCodexAccount() {
     const preferences = accountPreferences('codex');
-    $('codexConnection').value = preferences.connection || 'api';
     $('codexProxyUrl').value = accountPreferences('codex').proxyUrl || '';
-    $('codexConnectionHint').textContent = preferences.connection !== 'subscription'
-      ? 'Use models from Providers & Keys, including supported third-party APIs. No ChatGPT sign-in is required. The API provider bills this usage.'
-      : 'Use the models and quota included with your ChatGPT account. You can choose API key / third-party API above without signing in.';
     for (const id of ['codexSignIn', 'codexAddAccount', 'codexRefresh', 'codexSignOut']) $(id).disabled = codexBusy || Boolean(codexAccount?.loginPending);
     $('codexRefresh').disabled ||= !codexAccount?.installed;
     $('codexCancelLogin').disabled = codexBusy;
@@ -233,13 +208,9 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   function renderConnection() {
     renderCodexAccount();
     renderKimiAccount();
-    const preferences = accountPreferences('antigravity'), subscription = preferences.connection === 'subscription';
-    $('antigravityConnection').value = preferences.connection || 'api';
+    const preferences = accountPreferences('antigravity');
     $('googleUseCredits').checked = preferences.useG1Credits === true;
     $('googleProxyUrl').value = accountPreferences('antigravity').proxyUrl || '';
-    $('antigravityConnectionHint').textContent = subscription
-      ? 'Use the models and quota included with your Google account. Google credentials stay in the official CLI. Existing API sessions keep using their original connection.'
-      : 'Use providers and API keys configured in Providers & Keys. Existing Google sessions keep using the Google account.';
     $('googleSignIn').disabled = accountBusy;
     $('googleRefresh').disabled = accountBusy || !googleAccount?.installed;
     $('googleAccountStatus').textContent = accountBusy ? 'Connecting to Google…' : googleAccount?.error || (googleAccount?.verification === 'pending' ? 'Waiting for external sign-in. Return here to verify.'
@@ -276,7 +247,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       ? (engine === 'codex' ? 'Codex configuration, credentials and history are stored inside Camellia. Saving here does not change your personal ~/.codex directory.' : 'These settings apply to the Antigravity engine in Camellia. Choose models and manage API keys in Providers & Keys.')
       : "Saving overwrites the CLI's global settings and affects other CLI sessions. Before the first overwrite, an original .workbench.bak backup is kept.";
     $('engineRouteHint').textContent = engine === 'antigravity'
-      ? appScope ? 'API mode uses the shared key pool. Switch the connection to Google subscription to use your Google plan.'
+      ? appScope ? 'API mode uses the shared key pool; choose a Google account model in the composer to use your Google plan.'
         : 'Subscription mode uses the official Google account provider. Headless tools that require interactive approval are declined by the CLI; configure its permission rules here. AI credits are used only if you enable them.'
       : "Camellia manages API routes centrally. CLI sessions using its router require the app to remain running. Project settings follow each engine's precedence rules.";
     $('engineAdvancedHint').textContent = engine === 'codex' ? 'Edit native TOML, including [mcp_servers] and skills. Connection settings and credentials are managed by Camellia.' : appScope
@@ -335,7 +306,9 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     document.querySelectorAll('[data-engine]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.engine === engine)));
     $('engineContent').hidden = true; $('engineLoading').hidden = false; $('engineLoading').textContent = "Loading settings…";
     try {
-      if (!drafts.has(next) || reload) {
+      // A saved draft is re-read so the page reflects a connection the composer
+      // changed; unsaved edits are kept.
+      if (!drafts.has(next) || drafts.get(next).dirty !== true || reload) {
         const result = await api.engineSettingsGet({ engine: next }); if (!result.ok) throw new Error(result.error);
         drafts.set(next, { ...result, common: {}, dirty: false });
       }

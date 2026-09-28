@@ -27,9 +27,10 @@
   <header class="page-head"><div><h1 id="pageTitle" data-i18n>General</h1><p id="pageSubtitle" data-i18n>Language, appearance, and local preferences.</p></div><button id="refresh" aria-label="Refresh status" data-i18n data-i18n-attrs="aria-label">Refresh</button></header>
   <main class="scroll-content">
     <section id="subscriptionsPage" class="page" hidden>
-      <section class="account-connections" aria-labelledby="accountConnectionsTitle">
-        <div><h2 id="accountConnectionsTitle" data-i18n>Subscription accounts</h2><p class="hint" data-i18n>Manage sign-ins independently of API routes and engine settings. Signing in does not change the connection used by new or existing conversations.</p></div>
-        <div class="account-shortcuts"><button data-account-engine="kimi" data-i18n>Kimi account</button><button data-account-engine="antigravity" data-i18n>Google account · Antigravity</button><button data-account-engine="codex" data-i18n>ChatGPT account</button></div>
+      <section class="account-connections" aria-label="Subscription accounts" data-i18n-attrs="aria-label">
+        <p class="hint" data-i18n>Manage sign-ins independently of API routes and engine settings. New sessions start from the connection you last used; pick any model in the composer to switch.</p>
+        <p class="hint" data-i18n>Account actions apply immediately. The selected account is preferred for new conversations; existing conversations keep their bound account.</p>
+        <div id="accountShortcuts" role="group" aria-label="Subscription accounts" data-i18n-attrs="aria-label" class="account-shortcuts"><button data-account-engine="kimi" data-i18n>Kimi account</button><button data-account-engine="antigravity" data-i18n>Google account</button><button data-account-engine="codex" data-i18n>ChatGPT account</button></div>
         <div id="subscriptionAccounts"></div>
       </section>
     </section>
@@ -130,10 +131,6 @@
       <div id="engineLoading" class="hint" role="status" data-i18n>Loading settings…</div>
       <div id="engineContent" hidden>
         <div id="codexConnectionPanel" class="engine-connection" hidden>
-          <div class="engine-field"><label for="codexConnection" data-i18n>Connection for new Codex sessions</label><select id="codexConnection"><option value="api" data-i18n>API key / third-party API</option><option value="subscription" data-i18n>ChatGPT account</option></select></div>
-          <p class="hint" id="codexConnectionHint" data-i18n></p>
-          <p class="hint" data-i18n>Existing Codex sessions keep their original connection. API and account models are remembered separately.</p>
-          <div class="account-actions"><button id="codexProviders" data-i18n>Configure API providers &amp; keys</button></div>
           <div class="engine-field"><label for="codexProxyUrl" data-i18n>Codex connection proxy<small class="hint" data-i18n>Optional. Leave blank to inherit your environment proxy.</small></label><input id="codexProxyUrl" type="url" placeholder="http://proxy.example:8080" autocomplete="off" spellcheck="false"></div>
           <div id="codexAccountPanel" hidden>
             <div id="codexAccountList" class="account-list" role="radiogroup" aria-label="ChatGPT accounts" data-i18n-attrs="aria-label"></div>
@@ -141,15 +138,11 @@
             <p id="codexAccountStatus" class="hint" role="status" data-i18n></p>
             <div id="codexQuotas" class="codex-quotas"></div>
             <details id="codexModelDetails" hidden><summary data-i18n>Available account models</summary><ul id="codexModelList"></ul></details>
-            <p class="hint" data-i18n>Sign-in opens the official ChatGPT authorization page. Return here after completing it. Your personal Codex CLI settings and account remain separate.</p>
-            <p class="hint" data-i18n>Several ChatGPT accounts can stay signed in. New conversations use the selected account, or automatically switch to one that still has quota; a conversation that already started keeps its account.</p>
+            <p class="hint" data-i18n>Sign-in opens the official ChatGPT authorization page; your personal Codex CLI settings stay separate.</p>
+            <p class="hint" data-i18n>Several accounts can stay signed in. New conversations switch to one with quota; a started conversation keeps its account.</p>
           </div>
         </div>
         <div id="kimiConnectionPanel" class="engine-connection" hidden>
-          <div class="engine-field"><label for="kimiConnection" data-i18n>Connection for new Kimi sessions</label><select id="kimiConnection"><option value="api" data-i18n>Shared API routes</option><option value="subscription" data-i18n>Kimi subscription</option></select></div>
-          <p class="hint" id="kimiConnectionHint" data-i18n></p>
-          <p class="hint" data-i18n>Existing sessions keep their original connection. API and account models are remembered separately.</p>
-          <div class="account-actions"><button id="kimiProviders" data-i18n>Configure API providers &amp; keys</button></div>
           <div id="kimiAccountPanel" hidden>
             <div class="engine-field"><label for="kimiLoginRegion" data-i18n>Login region<small class="hint" data-i18n>Choose the site where you registered your Kimi account.</small></label><select id="kimiLoginRegion"><option value="mainland-cn" data-i18n>China · kimi.com</option><option value="global" data-i18n>Global · kimi.ai</option></select></div>
             <div id="kimiAccountList" class="account-list" role="radiogroup" aria-label="Kimi accounts" data-i18n-attrs="aria-label"></div>
@@ -158,21 +151,19 @@
             <button id="kimiUsage" hidden data-i18n>View usage and quotas</button>
             <div id="kimiDeviceLogin" hidden><p data-i18n>Authorization code: <code id="kimiUserCode"></code></p><button id="kimiOpenLogin" data-i18n>Open sign-in page</button><p id="kimiLoginExpiry" class="hint" data-i18n></p></div>
             <details id="kimiModelDetails" hidden><summary data-i18n>Available account models</summary><ul id="kimiModelList"></ul></details>
-            <p class="hint" data-i18n>Complete the official Kimi authorization in your browser. Camellia stores this login separately from your personal Kimi CLI. Subscription requests use your Kimi plan and do not fall back to API billing.</p>
-            <p class="hint" data-i18n>Several Kimi accounts can stay signed in, each with its own region choice at sign-in. New conversations use the selected account, or automatically switch to one that still has quota; a conversation that already started keeps its account.</p>
+            <p class="hint" data-i18n>Complete the official Kimi authorization in your browser. This login stays separate from your personal Kimi CLI, and never falls back to API billing.</p>
+            <p class="hint" data-i18n>Several accounts can stay signed in. New conversations switch to one with quota; a started conversation keeps its account.</p>
           </div>
         </div>
         <div id="antigravityConnectionPanel" class="engine-connection" hidden>
-          <div class="engine-field"><label for="antigravityConnection" data-i18n>Connection</label><select id="antigravityConnection"><option value="subscription" data-i18n>Google subscription</option><option value="api" data-i18n>Shared API routes</option></select></div>
-          <p class="hint" id="antigravityConnectionHint" data-i18n></p>
           <div id="googleAccountPanel" hidden>
             <div class="engine-field"><label for="googleProxyUrl" data-i18n>Google connection proxy<small class="hint" data-i18n>Optional. Leave blank to use the system proxy.</small></label><input id="googleProxyUrl" type="url" placeholder="http://proxy.example:8080" autocomplete="off" spellcheck="false"></div>
             <div class="account-actions"><button id="googleSignIn" class="primary" data-i18n>Sign in with Google</button><button id="googleRefresh" data-i18n>Refresh account</button></div>
             <p id="googleAccountStatus" class="hint" role="status" data-i18n></p>
             <div id="googleAccountList" class="account-list" role="radiogroup" aria-label="Google accounts" data-i18n-attrs="aria-label"></div>
             <details id="googleModelDetails" hidden><summary id="googleModelSummary" data-i18n></summary><ul id="googleModelList"></ul></details>
-            <p class="hint" data-i18n>Sign-in opens the official CLI in a terminal and your browser. After signing in, return here and refresh the account. To switch accounts, use <code>/logout</code> in that terminal.</p>
-            <p class="hint" data-i18n>The official Antigravity CLI keeps one Google sign-in for this Windows user, so Camellia shows a single Google account. Kimi and ChatGPT support several accounts at once.</p>
+            <p class="hint" data-i18n>Sign-in opens the official CLI and your browser; return here and refresh. To switch accounts, use <code>/logout</code> in that terminal.</p>
+            <p class="hint" data-i18n>The official CLI keeps one Google sign-in per Windows user and reports no account identity or quota, so Camellia lists one account and only verifies model access.</p>
           </div>
         </div>
         <div id="dshNative" hidden><p class="hint native-save-note" data-i18n>DSH's native settings panel saves immediately. Models and keys are managed in the shared pool.</p><div id="nativeLoading" class="hint" role="status" data-i18n></div><div id="dshSettingsSurface" aria-label="DSH native settings" data-i18n-attrs="aria-label"></div><button id="retryNative" hidden data-i18n>Reload panel</button></div>
