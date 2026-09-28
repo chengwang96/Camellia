@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { removeTree } = require('./test-fs.cjs');
-const { textPaths, toolPaths, toolRoots, collector } = require('../src/shared/turn-artifacts');
+const { textPaths, toolPaths, toolRoots, toolDirectories, collector } = require('../src/shared/turn-artifacts');
 const { resolveArtifacts } = require('../src/main/turn-artifacts');
 const { sortArtifacts, documentFormat, VISIBLE_ARTIFACT_LIMIT } = require('../src/shared/turn-artifacts');
 
@@ -170,4 +170,56 @@ test('a reply that names a relative folder resolves the bare file names that fol
   assert.deepEqual(resolveArtifacts({ cwd, text: '`nodir/`\n- `review_flat_gallery_ring.png`' }), []);
   assert.deepEqual(resolveArtifacts({ cwd, text: '`.build/`\n- `review_flat_gallery_ring.png`' }).map(file => file.name),
     ['review_flat_gallery_ring.png']);
+});
+
+test('an absolute path a command used becomes a base for the reply that names its folder', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-'));
+  const desktop = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-desktop-'));
+  t.after(() => removeTree(cwd));
+  t.after(() => removeTree(desktop));
+  const folder = path.join(desktop, '东南大学面试材料');
+  fs.mkdirSync(folder);
+  fs.writeFileSync(path.join(folder, '王诚-东南面试-v3.pptx'), 'pptx');
+  fs.writeFileSync(path.join(folder, '课程试讲_v4.pptx'), 'pptx');
+  // A model that never changed directory only leaves the folder in its commands,
+  // and its shell escapes the separators it records.
+  const quoted = (folder + path.sep).replace(/\\/g, '\\\\');
+  const input = { command: `Get-ChildItem -LiteralPath '${quoted}' | Select-Object Name`, cwd };
+  // The folder itself is a base, and the run that named it also offers its
+  // parent, which keeps a path that actually names a file usable.
+  assert.ok(toolDirectories(input).includes(folder));
+  // The parent of a file the command read is a base too, and a relative word or
+  // a bare option value is never mistaken for an absolute path.
+  const file = path.join(folder, '王诚-东南面试-v3.pptx');
+  assert.ok(toolDirectories({ command: `python -X utf8 -c "open(r'${file.replace(/\\/g, '\\\\')}')"` }).includes(folder));
+  assert.deepEqual(toolDirectories({ command: 'node slides/build_deck.js', cwd }), []);
+  assert.deepEqual(toolDirectories('raw command text'), []);
+
+  const state = collector();
+  state.capture({ type: 'gui:tool', id: 'one', name: 'commandExecution', input, status: 'completed' });
+  assert.ok([...state.roots].includes(folder));
+
+  // The reply names the folder without a path, then lists the bare file names.
+  const text = '桌面上的文件夹是 `东南大学面试材料`，里面有 `王诚-东南面试-v3.pptx` 和 `课程试讲_v4.pptx`。';
+  assert.deepEqual(resolveArtifacts({ cwd, text }), []);
+  const result = resolveArtifacts({ cwd, roots: [...state.roots], text });
+  assert.deepEqual(result.map(entry => entry.path), [path.join(folder, '王诚-东南面试-v3.pptx'), path.join(folder, '课程试讲_v4.pptx')]);
+});
+
+test('a folder the reply names outranks one only inferred from a command', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-'));
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-source-'));
+  const desktop = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-desktop-'));
+  t.after(() => removeTree(cwd));
+  t.after(() => removeTree(source));
+  t.after(() => removeTree(desktop));
+  const filled = path.join(desktop, '面试材料');
+  fs.mkdirSync(filled);
+  fs.writeFileSync(path.join(filled, '自查表.docx'), 'filled');
+  // The same file name also exists where the command read its template from, so
+  // the reply's own folder has to win instead of the first base that matches.
+  fs.writeFileSync(path.join(source, '自查表.docx'), 'template');
+  const text = `**生成的文件**（\`${filled}${path.sep}\`）\n- \`自查表.docx\``;
+  const result = resolveArtifacts({ cwd, roots: [source], text });
+  assert.deepEqual(result.map(entry => entry.path), [path.join(filled, '自查表.docx')]);
 });

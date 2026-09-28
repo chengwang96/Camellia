@@ -68,6 +68,16 @@ test('stdio MCP lists tools and forwards authenticated calls to the application'
   assert.equal(invalid.result.isError, true);
   assert.equal(calls.length, 1);
   assert.ok(listed.some(tool => tool.name === 'camellia_task_create'));
+  // File search is exposed to the model so a described-but-unnamed file can be
+  // located by content, and its arguments are validated like every other tool.
+  assert.ok(listed.some(tool => tool.name === 'camellia_find_files'));
+  const search = await request('tools/call', { name: 'camellia_find_files', arguments: { run_token: 'current', query: 'quarterly revenue', inside: true } });
+  assert.equal(search.result.isError, false);
+  assert.equal(calls.at(-1).name, 'camellia_find_files');
+  const badInside = await request('tools/call', { name: 'camellia_find_files', arguments: { run_token: 'current', query: 'x', inside: 'yes' } });
+  assert.equal(badInside.result.isError, true);
+  const noQuery = await request('tools/call', { name: 'camellia_find_files', arguments: { run_token: 'current' } });
+  assert.equal(noQuery.result.isError, true);
   assert.deepEqual(listed.filter(tool => tool.name.startsWith('camellia_conversation_')).map(tool => tool.name).sort(),
     require('../src/engines/conversation-tools').tools.map(tool => tool.name).sort());
   const child = await request('tools/call', { name: 'camellia_conversation_create', arguments: { run_token: 'current', request_id: 'child', title: 'Research' } });
