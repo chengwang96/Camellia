@@ -66,6 +66,16 @@ with sync_playwright() as playwright:
         menu = model_menu()
         expect(menu.locator('.pop-opt')).to_have_count(2)
         expect(menu).not_to_contain_text('Account model')
+
+        # An older saved model can belong only to the other connection. Picking
+        # it must repair the connection even though its ID has not changed.
+        page.locator('#modelPill').click()
+        expect(page.locator('.dsh-pop')).to_have_count(0)
+        page.evaluate("accountUnavailable = false; settings.model = 'account-only'; refreshSettings({engine: '" + engine + "'})")
+        expect(page.locator('#modelPillName')).to_contain_text('account-only')
+        menu = model_menu()
+        menu.locator('.pop-opt', has_text='Account model').click()
+        page.wait_for_function("settings.connection === 'subscription'", timeout=5000)
         assert errors == [], errors
         page.close()
     browser.close()

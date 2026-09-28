@@ -424,7 +424,7 @@ const context = { sessionId: null, workspaceId: null };
     // that only the other connection offers also selects that connection.
     // A model both connections offer keeps the current one.
     let connection;
-    const canSwitch = supportsAccounts() && model && model !== currentModel && (sharedChat || !context.sessionId);
+    const canSwitch = supportsAccounts() && model && (sharedChat || !context.sessionId);
     if (canSwitch) {
       const inCurrent = accountSubscription() ? accountModels.some(m => m.id === model) : routeModels.includes(model);
       const inOther = accountSubscription() ? routeModels.includes(model) : accountModels.some(m => m.id === model);
