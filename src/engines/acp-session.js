@@ -80,7 +80,13 @@ class AcpSession extends StreamingSession {
           && (!this.sessionId || message.params.sessionId === this.sessionId)) {
         this.availableCommands = message.params.update.availableCommands; return;
       }
-      if (message.method === 'session/update' && message.params.sessionId === this.sessionId && this.running) this.update(message.params.update);
+      // A native-denial notice travels on the CLI's stderr, so it can reach us
+      // just after the turn ended. It still describes the turn the user watched
+      // — dropping it would hide a real refusal — so let that one update through
+      // after `running` clears. Nothing else is admitted late.
+      const lateDenial = this.running === false && !this.dead && !this.cancelled && !this.compaction
+        && message.method === 'session/update' && message.params.update?.permissionBlocked === true;
+      if (message.method === 'session/update' && message.params.sessionId === this.sessionId && (this.running || lateDenial)) this.update(message.params.update);
       else if (message.id !== undefined) {
         if (message.method === 'session/request_permission' && message.params.sessionId === this.sessionId && this.running && !this.cancelled && !this.compaction) {
           const requestId = String(message.id);

@@ -15,6 +15,11 @@ function scratch(context) {
   return root;
 }
 
+// The fixture is a Windows x64 installer, so every test that simulates a
+// Windows install passes arch: 'x64' explicitly. createAppUpdates() otherwise
+// defaults arch to process.arch, and an ARM64 runner would correctly reject
+// this asset. These tests must not depend on the architecture of the machine
+// running them.
 function release(overrides = {}) {
   return { tag_name: 'v1.4.0', name: 'Camellia 1.4.0', body: 'Fixed things.', html_url: 'https://example.test/release', published_at: '2026-09-01T00:00:00Z',
     assets: [{ name: 'Camellia-Setup-1.4.0-win-x64.exe', size: 104857600, digest: `sha256:${'a'.repeat(64)}`, browser_download_url: 'https://example.test/setup.exe' }], ...overrides };
@@ -111,7 +116,7 @@ test('install reuses an already-fetched release instead of checking the feed twi
   fs.writeFileSync(file, 'package');
   payload.assets[0].digest = `sha256:${sha256File(file)}`;
   let checks = 0, quit = 0;
-  const updates = createAppUpdates({ currentVersion: '1.0.0', platform: 'win32', platformSupported: true, appPath: root,
+  const updates = createAppUpdates({ currentVersion: '1.0.0', platform: 'win32', arch: 'x64', platformSupported: true, appPath: root,
     connection: () => { checks++; return installConnection(payload, fs.readFileSync(file)); },
     launch: () => {}, quit: () => { quit++; } });
   const known = await updates.check();
@@ -135,9 +140,9 @@ test('check reports the newer version, package and notes without touching the di
 });
 
 test('the same version and an older release are not offered as updates', async () => {
-  const current = createAppUpdates({ currentVersion: '1.4.0', platform: 'win32', platformSupported: true, connection: () => connectionFor(release()) });
+  const current = createAppUpdates({ currentVersion: '1.4.0', platform: 'win32', arch: 'x64', platformSupported: true, connection: () => connectionFor(release()) });
   assert.equal((await current.check()).updateAvailable, false);
-  const older = createAppUpdates({ currentVersion: '2.0.0', platform: 'win32', platformSupported: true, connection: () => connectionFor(release()) });
+  const older = createAppUpdates({ currentVersion: '2.0.0', platform: 'win32', arch: 'x64', platformSupported: true, connection: () => connectionFor(release()) });
   assert.equal((await older.check()).updateAvailable, false);
 });
 
@@ -161,7 +166,7 @@ test('a mismatched checksum stops the update before anything is applied', async 
   let quit = 0;
   const leftovers = () => fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('camellia-update-')).length;
   const before = leftovers();
-  const updates = createAppUpdates({ currentVersion: '1.0.0', platform: 'win32', platformSupported: true, appPath: root,
+  const updates = createAppUpdates({ currentVersion: '1.0.0', platform: 'win32', arch: 'x64', platformSupported: true, appPath: root,
     connection: () => installConnection(payload, Buffer.from('package')), quit: () => { quit++; } });
   await assert.rejects(updates.install(), /failed its checksum/);
   assert.equal(quit, 0);
@@ -176,7 +181,7 @@ test('a verified installer is launched and the app exits without a competing rel
   payload.assets[0].digest = `sha256:${sha256File(file)}`;
   let quit = 0, relaunch = 0;
   const launched = [];
-  const updates = createAppUpdates({ currentVersion: '1.0.0', platform: 'win32', platformSupported: true, appPath: root,
+  const updates = createAppUpdates({ currentVersion: '1.0.0', platform: 'win32', arch: 'x64', platformSupported: true, appPath: root,
     connection: () => installConnection(payload, fs.readFileSync(file)),
     launch: (exe, args) => launched.push([exe, ...args]),
     quit: () => { quit++; }, relaunch: () => { relaunch++; } });
@@ -228,7 +233,7 @@ test('an archive without a bundle is rejected instead of touching the installati
 
 test('an unreachable update server surfaces the failure and stays reusable', async () => {
   let attempts = 0;
-  const updates = createAppUpdates({ currentVersion: '1.0.0', platform: 'win32', platformSupported: true,
+  const updates = createAppUpdates({ currentVersion: '1.0.0', platform: 'win32', arch: 'x64', platformSupported: true,
     connection: () => ({ fetch: async () => { attempts++; throw new Error('offline'); }, close: () => {} }) });
   await assert.rejects(updates.check(), /offline/);
   await assert.rejects(updates.check(), /offline/);

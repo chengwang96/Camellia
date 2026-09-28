@@ -13,6 +13,10 @@ const config = JSON.parse(process.env.CAMELLIA_ANTIGRAVITY_CLI);
 const env = { ...process.env };
 delete env.CAMELLIA_ANTIGRAVITY_CLI;
 let session, sessionFile, model, mode = 'default', cli, pending, streamed = '', previousUsage = {};
+// stdout and stderr are independent pipes, so the CLI's native-denial notice can
+// arrive after the stdout result that closes the turn. Keep such a notice for the
+// turn it belongs to instead of dropping it for being a few milliseconds late.
+let notices = [];
 let canceled = false, closed, cliError;
 const write = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const update = value => write({ method: 'session/update', params: { sessionId: session.id, update: value } });
@@ -28,6 +32,9 @@ function finish(error, value) {
   if (canceled) current.resolve({ stopReason: 'cancelled' });
   else if (error) current.reject(error);
   else current.resolve(value);
+}
+function flushNotices() {
+  for (const notice of notices.splice(0)) if (!canceled) update(notice);
 }
 function receive(event) {
   if (event.event === 'init') {
@@ -66,7 +73,11 @@ function startCli() {
   const diagnostics = readline.createInterface({ input: child.stderr });
   diagnostics.on('line', line => {
     const notice = permissionNotice(line);
-    if (notice && pending && !canceled) update(notice);
+    if (!notice || canceled) return;
+    // The notice can land just before or just after the turn's result, since it
+    // travels on stderr. Forward it either way; a notice buffered after the turn
+    // closed is released by the next flush.
+    if (pending) update(notice); else { notices.push(notice); flushNotices(); }
   });
   lines.on('line', line => {
     try { receive(JSON.parse(line)); }
