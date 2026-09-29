@@ -130,6 +130,7 @@ test('saved session actions retain their existing operations and directory restr
       ...(!fixedCwd ? ['Move to workspace…', 'Move out of workspace'] : []),
       'Fork session', 'Archive session', 'Delete conversation',
     ]);
+    assert.equal(menus[0].actions.find(action => action.label === 'Delete conversation').danger, true);
   }
 });
 

@@ -17,7 +17,7 @@ try:
     rpc('configureTestApi')
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={'width':1160,'height':900})
+        page = browser.new_page(viewport={'width':1160,'height':900},reduced_motion='reduce')
         errors = []; page.on('pageerror', lambda error: errors.append(str(error)))
         page.expose_function('testRpc', rpc); page.add_init_script(bridge)
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri()+'?page=engines&engine=claude'); page.wait_for_load_state('networkidle')
@@ -44,6 +44,42 @@ try:
         for scheme in ['light','dark']:
             page.emulate_media(color_scheme=scheme)
             page.screenshot(path=str(repo/f'dist/engine-settings-qa/kimi-{scheme}.png'),full_page=True)
+        # Pi must work through the real desktop settings bridge, including direct
+        # navigation, persisted defaults and the instruction document.
+        assert set(page.locator('.engine-tabs [data-engine]').evaluate_all('els => els.map(el => el.dataset.engine)')) == {row['id'] for row in rpc('runtimeState')['engines']}
+        page.goto((repo/'src/renderer/settings/api-settings.html').as_uri()+'?page=engines&engine=pi',wait_until='networkidle')
+        expect(page.locator('[data-engine=pi]')).to_have_attribute('aria-selected','true')
+        expect(page.locator('#engineScopeTitle')).to_have_text('Pi in Camellia')
+        page.locator('[data-field=permissionMode]').select_option('auto')
+        page.locator('[data-field=thinkingBudget]').select_option('high')
+        page.locator('[data-field=contextWindow]').fill('131072')
+        page.locator('#nativeDocuments summary').click()
+        page.locator('#engineSource').fill('Follow project conventions.\n保留中文说明。')
+        page.locator('#saveEngine').click(); expect(page.locator('#status')).to_contain_text('Pi settings saved')
+        saved=rpc('engineSettingsGet',{'engine':'pi'})
+        assert saved['desktop']['permissionMode']=='auto'
+        assert saved['desktop']['thinkingBudget']=='high'
+        assert int(saved['desktop']['contextWindow'])==131072
+        assert saved['files'][0]['text']=='Follow project conventions.\n保留中文说明。'
+        page.reload(wait_until='networkidle')
+        expect(page.locator('[data-field=thinkingBudget]')).to_have_value('high')
+        expect(page.locator('[data-field=contextWindow]')).to_have_value('131072')
+        page.locator('[data-field=thinkingBudget]').select_option('')
+        page.locator('#saveEngine').click(); expect(page.locator('#saveEngine')).to_be_disabled()
+        assert rpc('engineSettingsGet',{'engine':'pi'})['desktop']['thinkingBudget']==''
+        for language in ['en','zh-CN']:
+            page.evaluate('language => CamelliaI18n.setLanguage(language)',language)
+            for width in [1160,850,700,390,320]:
+                page.set_viewport_size({'width':width,'height':900})
+                assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'),(language,width,'Pi overflow')
+                save=page.locator('#saveEngine').bounding_box(); rail=page.locator('.engine-save').bounding_box()
+                assert abs(save['x']+save['width']-rail['x']-rail['width'])<2,(language,width,'Pi save alignment')
+                expect(page.locator('[data-engine=pi]')).to_be_visible()
+        page.set_viewport_size({'width':1160,'height':900})
+        for scheme in ['light','dark']:
+            page.emulate_media(color_scheme=scheme)
+            page.screenshot(path=str(repo/f'dist/engine-settings-qa/pi-{scheme}.png'),full_page=True)
+        page.evaluate("CamelliaI18n.setLanguage('en')")
         page.locator('[data-view=runtimes]').click()
         # One shared Python card plus one card per engine, derived from the real
         # runtime state so adding an engine cannot silently stale this assertion.
@@ -87,7 +123,7 @@ try:
         native.close()
         assert errors==[],errors
         browser.close()
-    print('PASS: Claude/Kimi settings, MCP, validation, runtime status, DSH native settings and unified API navigation')
+    print('PASS: Claude/Kimi/Pi settings, Pi persistence and instructions, responsive action alignment, MCP, validation, runtime status, DSH native settings and unified API navigation')
 finally:
     try: rpc('cleanup')
     finally: driver.terminate(); driver.wait(timeout=10)

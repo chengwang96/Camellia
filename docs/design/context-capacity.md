@@ -59,3 +59,40 @@ usage when returned, but is not a billing ledger; consult the supplier for charg
 `python tests/context-capacity-ui.py`
 
 All verification uses mocked/local providers and no paid credentials.
+
+## Conversation migration
+
+Native compaction remains the first choice for an unchanged, synchronized native
+session. Segments persist the model, connection and configured context window
+used to open them. A changed profile is not assumed to be safe merely because
+the harness supports native compaction. Claude can reject `/compact` with
+`Not enough messages to compact.` after a fresh session receives a large replay:
+many logical history rows still form only one native user message. This temporary
+failure falls back to portable summarization without permanently disabling native
+compaction. Unrelated native errors and cancellation do not trigger this fallback.
+
+Before sending oversized history to a different model or harness, portable
+compaction separates the summarizer's input capacity from the destination's
+summary budget. A previously used larger model on the same connection can write
+the summary; if it fails, the selected model receives bounded history fragments
+instead. This fallback never changes credentials or the user's selected model.
+Destination budgets reserve room for the pending message, Camellia instructions,
+request framing and output. Dense non-ASCII text uses a more cautious estimate
+than ASCII. These are conservative heuristics, not provider-tokenizer guarantees;
+hidden CLI prompts, tools and multimodal inputs can still cause provider overflow.
+
+New or stale harness segments consume the latest available portable checkpoint
+and subsequent history, not the entire pre-checkpoint transcript. Original rows
+remain on disk. A missing checkpoint falls back to earlier available history.
+Portable compaction replaces the destination binding only after generating and
+checking the summary; cancellation or summarization failure leaves it intact.
+Markdown handoffs also use the destination budget and shorten oversized drafts
+before asking the target harness to accept them.
+
+The router pipeline repacks overflowing merge batches under the learned budget
+and splits individual oversized summaries. Retries, nesting and requests remain
+bounded. Summaries are lossy: successful capacity checks do not certify complete
+retention of every fact. The persisted original transcript remains the source for
+recovering details.
+
+Migration regressions: `node --test tests/compaction-plan.test.js tests/shared-conversations.test.js`.

@@ -175,7 +175,7 @@ async function main() {
           let timer;
           try {
             const matched = await Promise.race([
-              contents.executeJavaScript(`Boolean(${match})`),
+              contents.executeJavaScript(`(async () => Boolean(await (${match})))()`),
               new Promise(resolve => { timer = setTimeout(() => resolve(false), 1000); }),
             ]);
             if (matched && !window.isDestroyed() && !closingWindows.has(window.id)) return window;
@@ -369,28 +369,30 @@ async function main() {
     // one creates its own home, and removing it cleans that directory up.
     const firstKimiHome = kimiAccountHome;
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiAddAccount').click()");
-    await waitWindow("document.querySelectorAll('#kimiAccountList .subscription-card').length === 2");
+    await waitWindow("document.querySelector('#kimiUserCode')?.textContent === 'TEST-123'");
+    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelectorAll('#kimiAccountList .subscription-card').length"), 1);
+    assert.equal(await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState().then(state => state.activeId)'), 'default');
     const secondKimiHome = kimiAccountHome;
     assert.notEqual(secondKimiHome, firstKimiHome);
-    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiAccountList [data-card-id=account-1]').classList.contains('active')"), true);
-    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiSignIn').click()");
-    await waitWindow("document.querySelector('#kimiUserCode')?.textContent === 'TEST-123'");
     fs.writeFileSync(path.join(secondKimiHome, 'config.toml'), require('smol-toml').stringify({ default_model: 'kimi-code/subscription-fixture',
       providers: { 'managed:kimi-code': { type: 'kimi', base_url: 'https://api.kimi.com/coding', api_key: '', oauth: { storage: 'file', key: 'oauth/kimi-code' } } },
       models: { 'kimi-code/subscription-fixture': { provider: 'managed:kimi-code', model: 'subscription-fixture', display_name: 'Kimi account fixture', max_context_size: 262144 } },
     }));
     kimiLoginProcesses.at(-1).emit('close', 0);
-    await waitWindow("document.querySelector('#kimiAccountStatus')?.textContent.includes('Signed in')");
+    await waitWindow("document.querySelectorAll('#kimiAccountList .subscription-card').length === 2 && document.querySelector('#kimiAccountStatus')?.textContent.includes('Signed in')");
     const twoAccounts = await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState()');
     assert.equal(twoAccounts.accounts.length, 2);
     assert.equal(twoAccounts.accounts.filter(account => account.signedIn).length, 2);
+    assert.notEqual(twoAccounts.activeId, 'default');
+    assert.equal(await engineSettings.webContents.executeJavaScript(`document.querySelector('#kimiAccountList [data-card-id="${twoAccounts.activeId}"]').classList.contains('active')`), true);
     // Selecting the first account keeps both signs-in and only moves the choice.
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiAccountList [data-card-id=default] [data-card-action=switch]').click()");
     await waitWindow("document.querySelector('#kimiAccountList [data-card-id=default]').classList.contains('active')");
     assert.equal(await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState().then(state => state.activeId)'), 'default');
-    await engineSettings.webContents.executeJavaScript("window.confirm = message => { window.accountRemovalConfirmation = message; return true; }; document.querySelector('#kimiAccountList [data-card-id=account-1] [data-card-action=remove]').click()");
+    await engineSettings.webContents.executeJavaScript(`window.confirm = message => { window.accountRemovalConfirmation = message; return true; }; document.querySelector('#kimiAccountList [data-card-id="${twoAccounts.activeId}"] [data-card-action=remove]').click()`);
     assert.match(await engineSettings.webContents.executeJavaScript('window.accountRemovalConfirmation'), /Remove this account/);
     await waitWindow("document.querySelectorAll('#kimiAccountList .subscription-card').length === 1");
+    await waitWindow("window.dshDesktop.kimiAccountState().then(state => state.accounts.length === 1)");
     assert.equal(fs.existsSync(secondKimiHome), false);
     assert.equal(await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState().then(state => state.accounts.length)'), 1);
 
@@ -478,10 +480,10 @@ async function main() {
     const codexSettings = await engineSettings.webContents.executeJavaScript("window.dshDesktop.engineSettingsGet({engine:'codex'})");
     assert.equal(codexSettings.scope, 'app'); assert.ok(codexSettings.files.every(file => file.path.startsWith(userData)));
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#engineScopeTitle').textContent"), 'Codex in Camellia');
-    assert.deepEqual(await engineSettings.webContents.executeJavaScript("[...document.querySelectorAll('.engine-tabs [data-engine]')].map(el => el.dataset.engine)"), ['claude', 'codex', 'dsh', 'kimi', 'antigravity']);
+    assert.deepEqual(await engineSettings.webContents.executeJavaScript("[...document.querySelectorAll('.engine-tabs [data-engine]')].map(el => el.dataset.engine)"), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']);
 
     const layouts = [];
-    for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity']) {
+    for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']) {
       await home.webContents.executeJavaScript(`window.dshDesktop.switchMode('${engine}')`);
       await waitWindow(`document.body.dataset.harness === '${engine}'`);
       assert.equal(await home.webContents.executeJavaScript("document.querySelector('#backToDsh')"), null);

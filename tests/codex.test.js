@@ -415,16 +415,41 @@ test('Codex gives every ChatGPT account its own home and switches to the one wit
   // composer lists the right models and the thread is resumed in its home.
   assert.equal(engine.settings('nativeThread').subscriptionId, 'account-1');
   assert.equal(engine.settings().subscriptionId, undefined);
-  const added = engine.handlers['account-add']({ label: 'Team' });
-  assert.equal(added.activeId, 'account-2');
-  assert.equal(desktop.subscriptionActive.codex, 'account-2');
-  assert.deepEqual(desktop.subscriptionAccounts.codex.map(account => account.id), ['default', 'account-1', 'account-2']);
   const selected = engine.handlers['account-select']({ id: 'default' });
   assert.equal(selected.activeId, 'default');
   engine.handlers['account-label']({ id: 'default', label: 'Personal' });
   assert.equal(desktop.subscriptionAccounts.codex[0].label, 'Personal');
   const renamed = engine.accountState().accounts.find(account => account.id === 'default');
   assert.equal(renamed.label, 'Personal');
+});
+
+test('per-conversation Codex homes share one plugin cache instead of copying it', t => {
+  const root = temporary(t), home = path.join(root, 'profile');
+  const runtime = { file: path.join(root, 'native/bin/codex') };
+  const shared = path.join(root, 'shared/.tmp');
+  const first = path.join(home, 'api/conversations/one');
+  codexSpawnSpec({ runtime, home: first, configHome: home, connection: 'api', model: 'gpt-5.5', route: { baseUrl: 'http://127.0.0.1:8788' }, sharedPluginCache: shared });
+  assert.equal(fs.lstatSync(path.join(first, '.tmp')).isSymbolicLink(), true, 'the first home links the shared cache');
+  // A real snapshot left by an earlier native run becomes the shared copy, and a
+  // later home is linked to it rather than cloning its own copy again.
+  fs.mkdirSync(path.join(shared, 'plugins'), { recursive: true });
+  fs.writeFileSync(path.join(shared, 'plugins', 'plugins.sha'), 'snapshot');
+  const second = path.join(home, 'api/conversations/two');
+  codexSpawnSpec({ runtime, home: second, configHome: home, connection: 'api', model: 'gpt-5.5', route: { baseUrl: 'http://127.0.0.1:8788' }, sharedPluginCache: shared });
+  assert.equal(fs.readFileSync(path.join(second, '.tmp', 'plugins', 'plugins.sha'), 'utf8'), 'snapshot');
+  // Reusing the same home must not disturb the link or the shared snapshot.
+  codexSpawnSpec({ runtime, home: second, configHome: home, connection: 'api', model: 'gpt-5.5', route: { baseUrl: 'http://127.0.0.1:8788' }, sharedPluginCache: shared });
+  assert.equal(fs.lstatSync(path.join(second, '.tmp')).isSymbolicLink(), true);
+  assert.equal(fs.readFileSync(path.join(shared, 'plugins', 'plugins.sha'), 'utf8'), 'snapshot');
+  // Without a shared cache each home keeps its own plain directory.
+  const third = path.join(home, 'api/conversations/three');
+  codexSpawnSpec({ runtime, home: third, configHome: home, connection: 'api', model: 'gpt-5.5', route: { baseUrl: 'http://127.0.0.1:8788' } });
+  assert.equal(fs.existsSync(path.join(third, '.tmp')), false);
+  fs.mkdirSync(path.join(third, '.tmp'), { recursive: true });
+  fs.writeFileSync(path.join(third, '.tmp', 'custom.txt'), 'keep');
+  codexSpawnSpec({ runtime, home: third, configHome: home, connection: 'api', route: { baseUrl: 'http://127.0.0.1:8788' }, sharedPluginCache: shared });
+  assert.equal(fs.readFileSync(path.join(third, '.tmp', 'custom.txt'), 'utf8'), 'keep');
+  assert.equal(fs.lstatSync(path.join(third, '.tmp')).isSymbolicLink(), false);
 });
 
 test('Codex API metadata adds native patch support without overriding known models, reasoning, or user catalogs', t => {
@@ -508,4 +533,42 @@ test('shutting down a Codex process settles even when a helper keeps its stdio o
   // Release the inherited pipes so the test runner is not held open by them.
   try { process.kill(helperPid); } catch { /* already gone */ }
   client.proc.stdout.destroy(); client.proc.stderr.destroy(); client.proc.stdin.destroy();
+});
+
+
+test('adding an account starts one login and commits only after authenticated completion', async t => {
+  const root = temporary(t); let config = {}, callbacks, starts = 0, stops = 0;
+  const engine = createCodex({ dataDir: root, loadConfig: () => config, saveConfig: patch => Object.assign(config, patch),
+    runtimes: () => ({ ensure: async () => {}, locate: () => ({ file: path.join(root, 'fixture.exe') }) }), openExternal: async () => {},
+    createAccountClient: options => {
+      callbacks = options;
+      return { ready: Promise.resolve(), shutdown: async () => { stops++; }, request: async method => {
+        if (method === 'account/login/start') { starts++; return { loginId: 'login-1', authUrl: 'https://example.test/login' }; }
+        if (method === 'account/read') return { account: { type: 'chatgpt', email: 'new@example.test' } };
+        if (method === 'model/list') return { data: [], nextCursor: null };
+        return {};
+      } };
+    } });
+  t.after(() => engine.shutdown());
+  await Promise.all([engine.handlers['account-add']({}), engine.handlers['account-add']({})]);
+  assert.equal(starts, 1);
+  assert.equal(engine.accountState().accounts.length, 1);
+  assert.equal(engine.accountState().activeId, 'default');
+  assert.equal(engine.accountState().loginPending, true);
+  callbacks.onNotification('account/login/completed', { success: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(engine.accountState().accounts.length, 2);
+  const added = engine.accountState().activeId;
+  assert.notEqual(added, 'default');
+  assert.equal(engine.accountState().account.email, 'new@example.test');
+  await engine.handlers['account-remove']({ id: added });
+  assert.equal(stops, 1);
+  assert.equal(fs.existsSync(path.join(root, 'subscription-accounts', 'codex', added)), false);
+  assert.equal(engine.accountState().accounts.length, 1);
+  await engine.handlers['account-add']({});
+  await engine.handlers['cancel-login']();
+  callbacks.onNotification('account/login/completed', { success: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(engine.accountState().accounts.length, 1);
+  assert.equal(engine.accountState().loginPending, false);
 });

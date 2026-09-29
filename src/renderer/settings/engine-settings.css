@@ -1,5 +1,5 @@
 .nav-divider { border-top: 1px solid var(--dsw-alias-border-l2); margin: 12px; }
-.engine-tabs { display: flex; gap: 5px; padding: 4px; border-radius: 12px; background: var(--dsw-specific-sidebar-fill); margin-bottom: 20px; width: fit-content; }
+.engine-tabs { display: flex; flex-wrap: wrap; gap: 5px; padding: 4px; border-radius: 12px; background: var(--dsw-specific-sidebar-fill); margin-bottom: 20px; width: fit-content; max-width: 100%; }
 .engine-tabs button { border: 0; border-radius: 9px; padding: 8px 16px; }
 .engine-tabs [aria-selected=true] { background: var(--dsw-alias-bg-base); box-shadow: 0 1px 4px #0000000c; font-weight: 600; }
 .global-notice { padding: 15px 18px; border: 1px solid var(--dsw-alias-border-l2); border-left: 3px solid var(--dsw-static-deepseek-400); border-radius: 10px; margin-bottom: 22px; font-size: 12px; line-height: 1.7; }
@@ -16,14 +16,15 @@
 .engine-common-title { margin: 26px 0 2px; font-size: 14px; }
 .engine-connection { border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; padding: 4px 20px 14px; margin-bottom: 20px; }
 .engine-connection small { display: block; margin-top: 4px; }
-.account-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.account-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
 #googleModelDetails { font-size: 12px; margin: 12px 0; }
 #googleModelList { columns: 2; padding-left: 18px; color: var(--dsw-alias-label-secondary); line-height: 1.9; }
 .native-documents { margin-top: 24px; }
 .document-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 12px 0; }
 #engineSource { min-height: 320px; font: 12px/1.8 Consolas, 'Cascadia Code', monospace; tab-size: 2; white-space: pre; }
-.engine-save { display: flex; gap: 10px; align-items: center; padding: 22px 0 4px; flex-wrap: wrap; }
-.engine-save .hint { margin-left: auto; }
+.engine-save { display: flex; justify-content: flex-end; gap: 10px; align-items: center; padding: 22px 0 4px; flex-wrap: wrap; }
+.engine-save .hint { margin-right: auto; }
+#retryNative { display: block; margin-left: auto; }
 #dshSettingsSurface { display: block; width: 100%; height: 610px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-base); }
 .native-save-note { margin-bottom: 12px; }
 .runtime-unavailable #dshSettingsSurface { display: none; }
@@ -32,8 +33,8 @@
 .download-preferences h2 { margin: 0 0 8px; }
 .download-preferences small { display: block; margin-top: 4px; }
 .download-preferences input[type=url] { width: min(360px, 55%); }
-.download-save { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 14px; }
-.download-save p { margin: 0; }
+.download-save { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 16px; padding-top: 14px; }
+.download-save p { flex: 1 1 240px; margin: 0; }
 .download-save button { flex-shrink: 0; }
 .runtime-card { padding: 21px 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
 .runtime-card > div:first-child { display: flex; align-items: center; gap: 12px; }
@@ -43,7 +44,7 @@
 .runtime-card details { margin-top: 12px; font-size: 12px; }
 .runtime-path { margin: 16px 0 0; padding: 0; border: 0; min-width: 0; }
 .runtime-path label { display: block; margin-bottom: 8px; font-size: 12px; }
-.runtime-path-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.runtime-path-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .runtime-path-actions input { flex: 1 1 240px; min-width: 0; width: 100%; }
 .runtime-path-actions button { flex-shrink: 0; }
 @media(max-width:850px) { .engine-tabs button { padding: 8px 10px; }.engine-field { gap: 12px; } }
@@ -63,3 +64,8 @@
 .account-body small, .account-body strong { color: var(--dsw-alias-label-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .account-row > button:last-child:not(.account-choice) { border: 0; background: transparent; color: var(--dsw-alias-label-secondary); padding: 4px 8px; }
 .account-row > button:last-child:not(.account-choice):hover { color: var(--dsw-alias-state-error-primary); }
+
+.subscription-rotation { display: flex; align-items: center; gap: 8px; margin: 16px 0; }
+.subscription-rotation[hidden] { display: none; }
+.subscription-quota-history { margin-top: 16px; }
+.subscription-quota-history summary { cursor: pointer; margin-bottom: 12px; }

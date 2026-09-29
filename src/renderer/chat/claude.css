@@ -552,10 +552,11 @@
   .queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .queue-remove { flex: none; border: 0; padding: 2px 5px; background: transparent; color: inherit; cursor: pointer; border-radius: 5px; }
   .queue-remove:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
-  .queue-steer, .queue-edit { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; padding: 6px; border-radius: 5px; background: transparent; color: var(--dsw-static-deepseek-500); font: inherit; cursor: pointer; }
-  .queue-steer:hover:not(:disabled), .queue-edit:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
-  .queue-steer:focus-visible, .queue-edit:focus-visible, .queue-remove:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 1px; }
-  .queue-steer:disabled, .queue-edit:disabled, .queue-remove:disabled { opacity: .45; cursor: not-allowed; }
+  .queue-steer, .queue-edit, .queue-resume { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; padding: 6px; border-radius: 5px; background: transparent; color: var(--dsw-static-deepseek-500); font: inherit; cursor: pointer; }
+  .queue-resume { align-self: flex-end; width: auto; padding: 4px 8px; white-space: nowrap; font-size: 12px; }
+  .queue-steer:hover:not(:disabled), .queue-edit:hover:not(:disabled), .queue-resume:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+  .queue-steer:focus-visible, .queue-edit:focus-visible, .queue-remove:focus-visible, .queue-resume:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 1px; }
+  .queue-steer:disabled, .queue-edit:disabled, .queue-remove:disabled, .queue-resume:disabled { opacity: .45; cursor: not-allowed; }
 
   /* Attachment chips inside the input card */
   .attach-row { display: none; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
@@ -914,6 +915,8 @@
     cursor: pointer; user-select: none;
   }
   .pop-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
+  .pop-row.danger { color: var(--dsw-alias-state-danger-primary, #cf3535); }
+  .pop-row.danger:hover { background: var(--dsw-alias-state-error-tertiary, #fdecec); }
   .pop-row .pop-row-value {
     margin-left: auto; font: var(--f-s-14); color: var(--dsw-alias-label-caption);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px;
@@ -1052,3 +1055,7 @@
 /* Background work remains visible without competing with conversation titles. */
 .session-item[data-activity="running"] .session-item-time { color: var(--accent, #4275ed); }
 .session-item[data-activity="permission"] .session-item-time, .session-item[data-activity="question"] .session-item-time { color: #ae6900; }
+
+.md .chat-inline-image { display: block; max-width: 100%; width: auto; height: auto; max-height: 560px; object-fit: contain; object-position: left center; margin: 12px 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; cursor: zoom-in; }
+.md .chat-inline-image:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 3px; }
+.md .chat-image-fallback { display: inline-block; margin: 8px 0; overflow-wrap: anywhere; }

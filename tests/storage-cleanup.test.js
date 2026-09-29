@@ -16,6 +16,7 @@ function setup(context) {
   const conversations = { items: new Map() };
   const histories = [{ root: path.join(root, 'native-history') }];
   const cleaner = new StorageCleanup({ dataDir, histories, conversations, references: async () => references, liveOwners: () => liveOwners, now: () => now });
+  const maxVisited = cleaner.maxVisited;
   context.after(() => {
     const resolved = path.resolve(root);
     assert.equal(path.dirname(resolved), path.resolve(os.tmpdir()));
@@ -35,7 +36,8 @@ function setup(context) {
     write(`conversations/${id}.jsonl`, rows.map(row => JSON.stringify(row)).join('\n'));
   }
   return { root, dataDir, cleaner, histories, conversations, write, attachment, conversation,
-    refs: value => { references = value; }, owners: value => { liveOwners = value; }, advance: value => { now += value; } };
+    refs: value => { references = value; }, owners: value => { liveOwners = value; }, advance: value => { now += value; },
+    budget: value => { cleaner.maxVisited = value; }, restoreBudget: () => { cleaner.maxVisited = maxVisited; } };
 }
 
 test('manual preview is read-only; confirmation removes only approved old managed files', async context => {
@@ -270,6 +272,44 @@ test('junctions and linked files cannot redirect cleanup outside managed storage
   assert.throws(() => harness.cleaner.safeStat(external), /Unsafe/);
 });
 
+test('a linked shared plugin cache is not counted or removed as conversation state', async context => {
+  const harness = setup(context);
+  const shared = path.join(harness.dataDir, 'codex/api/.tmp');
+  fs.mkdirSync(path.join(shared, 'plugins', 'demo'), { recursive: true });
+  fs.writeFileSync(path.join(shared, 'plugins', 'demo', 'plugin.json'), '{}');
+  for (const id of ['one', 'two']) {
+    const home = path.join(harness.dataDir, `codex/api/conversations/${id}`);
+    fs.mkdirSync(home, { recursive: true });
+    fs.symlinkSync(shared, path.join(home, '.tmp'), process.platform === 'win32' ? 'junction' : 'dir');
+    harness.write(`codex/api/conversations/${id}/sessions/rollout.jsonl`, '{}');
+  }
+  harness.advance(PROTECTION_MS * 2);
+  const preview = await harness.cleaner.scan();
+  assert.equal(preview.candidates.length, 2);
+  assert.equal((await harness.cleaner.clean(preview.token)).files, 2);
+  for (const id of ['one', 'two']) assert.equal(fs.existsSync(path.join(harness.dataDir, `codex/api/conversations/${id}`)), false);
+  assert.equal(fs.existsSync(path.join(shared, 'plugins', 'demo', 'plugin.json')), true);
+  assert.equal((await harness.cleaner.scan()).candidates.length, 0);
+});
+
+test('a real per-conversation plugin cache is skipped instead of exhausting the scan budget', async context => {
+  const harness = setup(context);
+  for (const id of ['unused', 'live']) {
+    for (let index = 0; index < 40; index++) harness.write(`codex/api/conversations/${id}/.tmp/plugins/copy-${index}.txt`, 'cache');
+    harness.write(`codex/api/conversations/${id}/sessions/rollout.jsonl`, '{}');
+  }
+  harness.owners(['live']);
+  harness.advance(PROTECTION_MS * 2);
+  const cleaner = harness.cleaner;
+  harness.budget(50);
+  const preview = await cleaner.scan();
+  harness.restoreBudget();
+  assert.equal(preview.candidates.length, 0);
+  await cleaner.clean(preview.token);
+  assert.equal(fs.existsSync(path.join(harness.dataDir, 'codex/api/conversations/unused/sessions/rollout.jsonl')), true);
+  assert.ok(fs.existsSync(path.join(harness.dataDir, 'codex/api/conversations/live/.tmp/plugins/copy-0.txt')));
+});
+
 test('a directory replaced by a junction after scanning cannot be deleted', async context => {
   const harness = setup(context);
   const original = path.join(harness.dataDir, 'codex/api/conversations/deleted');
@@ -289,6 +329,65 @@ test('hard-linked attachments are retained', async context => {
   const file = harness.attachment();
   fs.linkSync(file, path.join(harness.root, 'external-copy'));
   assert.equal((await harness.cleaner.scan()).candidates.length, 0);
+});
+
+test('recent files inside an old plugin cache protect the entire conversation directory', async context => {
+  const harness = setup(context);
+  const file = harness.write('codex/api/conversations/unused/.tmp/plugins/recent.txt');
+  harness.advance(PROTECTION_MS * 2);
+  fs.utimesSync(file, new Date(Date.now() + PROTECTION_MS * 2), new Date(Date.now() + PROTECTION_MS * 2));
+  assert.equal((await harness.cleaner.scan()).candidates.length, 0);
+  assert.ok(fs.existsSync(file));
+});
+
+test('unknown links fail closed while DSH dependency junctions are not traversed', async context => {
+  const harness = setup(context);
+  const attachment = harness.attachment();
+  const external = path.join(harness.root, 'dependency');
+  fs.mkdirSync(external);
+  fs.writeFileSync(path.join(external, 'reference.txt'), attachment);
+  const modules = path.join(harness.dataDir, 'dsh-chat/conversations/live/profiles/node_modules');
+  fs.mkdirSync(modules, { recursive: true });
+  fs.symlinkSync(external, path.join(modules, 'package'), process.platform === 'win32' ? 'junction' : 'dir');
+  harness.owners(['live']);
+  assert.equal((await harness.cleaner.scan()).candidates.length, 1);
+  fs.symlinkSync(external, path.join(harness.dataDir, 'dsh-chat/conversations/live/history-link'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal((await harness.cleaner.scan()).candidates.length, 0);
+  assert.ok(fs.existsSync(attachment));
+});
+
+test('scan yields to the event loop and supports cancellation without retaining a preview', async context => {
+  const harness = setup(context), controller = new AbortController();
+  harness.cleaner.signal = controller.signal;
+  harness.write('codex/api/conversations/live/history.txt', 'history');
+  setImmediate(() => controller.abort(new Error('fixture cancel')));
+  await assert.rejects(harness.cleaner.scan(), /fixture cancel/);
+  assert.equal(harness.cleaner.running, false);
+  assert.equal(harness.cleaner.preview, null);
+});
+
+test('confirmation rejects new reference files created while collecting the final draft snapshot', async context => {
+  const harness = setup(context);
+  const attachment = harness.attachment();
+  harness.conversation('live');
+  const preview = await harness.cleaner.scan();
+  let calls = 0;
+  harness.cleaner.references = async () => {
+    if (++calls === 2) harness.conversation('created', {}, [{ path: attachment }]);
+    return [];
+  };
+  await assert.rejects(harness.cleaner.clean(preview.token), /Reference files changed/);
+  assert.ok(fs.existsSync(attachment));
+});
+
+test('expired previews release their retained inventory without requiring another click', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const harness = setup(context);
+  harness.attachment();
+  await harness.cleaner.scan();
+  assert.ok(harness.cleaner.preview);
+  context.mock.timers.tick(30 * 60 * 1000);
+  assert.equal(harness.cleaner.preview, null);
 });
 
 test('invalid, expired and concurrently executing requests do not delete files', async context => {

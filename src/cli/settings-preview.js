@@ -58,7 +58,7 @@ const PAGES = [
   {
     id: 'engines', title: pair('引擎设置', 'Engine Settings'),
     subtitle: pair('连接、模型、思考级别和权限沿用桌面概念。', 'Keep desktop concepts: connection, model, thinking and permission.'),
-    rows: [row(pair('引擎', 'Engine'), 'Claude / Codex / DSH / Kimi / Antigravity'),
+    rows: [row(pair('引擎', 'Engine'), 'Claude / Codex / DSH / Kimi / Antigravity / Pi'),
       row(pair('连接来源', 'Connection'), pair('API / 此服务器的订阅账号', 'API / subscription on this server')),
       row(pair('模型与思考', 'Model & thinking'), pair('由已配置引擎提供，不预填不存在的选项', 'From the configured engine, not hard-coded options')),
       row(pair('权限', 'Permissions'), pair('询问 / 自动 / 完全访问', 'Ask / Auto / Full access')),

@@ -22,6 +22,7 @@ const methods = {
   contextCapacity: 'context-capacity', contextCapacityStart: 'context-capacity-start', contextCapacityCancel: 'context-capacity-cancel',
   engineSettingsGet: 'engine-settings-get', engineSettingsSave: 'engine-settings-save', runtimeState: 'runtime-state', runtimeEnsure: 'runtime-ensure',
   runtimePythonState: 'runtime-python-state',
+  networkSettings: 'network-settings', networkSaveSettings: 'network-save-settings',
   downloadSettings: 'download-settings', downloadSaveSettings: 'download-save-settings',
   runtimeSetPath: 'runtime-set-path',
   subscriptionPreferencesGet: 'subscription-preferences-get', subscriptionPreferencesSave: 'subscription-preferences-save',

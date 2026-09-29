@@ -33,7 +33,7 @@ function setView(next, engine, focus) {
   if (next === 'storage') next = 'archived';
   // The download connection lives in General; the download prompt and older
   // links still open Runtime, so redirect them to the section that owns it.
-  if (next === 'runtimes' && focus === 'downloadProxyUrl') { next = 'general'; focus = 'downloadProxyUrl'; }
+  if (focus === 'downloadProxyUrl') { next = 'general'; focus = 'networkMode'; }
   if (!titles[next]) next = 'general';
   view = next;
   for (const id of Object.keys(titles)) $(id + 'Page').hidden = id !== next;
@@ -335,10 +335,15 @@ function renderBalances() {
   if (!accounts.some(a => a.id === balanceKey)) balanceKey = accounts[0]?.id || null;
   $('balanceCards').innerHTML = accounts.map(a => accountCard(a, a.id === balanceKey)).join('') || (all.length ? "<div class=\"empty\" data-i18n>No matching accounts.</div>" : "<div class=\"empty\"><h2 data-i18n>Connect an account to view its balance</h2><p class=\"hint\" data-i18n>Add a connection in Providers & Keys.</p></div>");
   renderChartGrid($('balanceChart'), balanceChartSeries());
-  const subscriptions = accountsList().filter(account => account.subscriptionId && account.engine === 'kimi');
-  $('subscriptionQuotaCards').innerHTML = subscriptions.map(account => accountCard(account)).join('');
-  $('subscriptionQuotaChart').hidden = !subscriptions.length;
-  renderChartGrid($('subscriptionQuotaChart'), subscriptions.flatMap(account => balanceChartSeries(account.id)));
+  for (const engine of ['kimi', 'codex', 'antigravity']) {
+    const subscriptions = accountsList().filter(account => account.subscriptionId && account.engine === engine);
+    if (engine === 'kimi') $('subscriptionQuotaCards').innerHTML = '';
+    const chart = $(engine === 'kimi' ? 'subscriptionQuotaChart' : engine + 'QuotaChart');
+    const series = subscriptions.flatMap(account => balanceChartSeries(account.id));
+    chart.hidden = false;
+    if (series.length) renderChartGrid(chart, series);
+    else chart.innerHTML = '<p class="hint">' + esc(window.CamelliaI18n.t('No quota observations yet. Refresh quota to collect available provider data.')) + '</p>';
+  }
 }
 function balanceChartSeries(id = balanceKey) {
   const t = window.CamelliaI18n.t;
@@ -589,59 +594,47 @@ async function saveGeneral() {
 for (const id of ['language', 'theme', 'autoRefreshBalances', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting']) {
   $(id).addEventListener('change', saveGeneral);
 }
-// The download connection is a General preference: it applies to engine and
-// benchmark-library downloads and is saved on this device. Like the other
-// General preferences it applies without a separate save step, so a small
-// chain keeps rapid edits in order and lets the last one win.
-let downloadDirty = false, downloadSaveQueue = Promise.resolve();
-async function saveDownloadSettings() {
-  const mode = $('downloadMode'), url = $('downloadProxyUrl');
-  const submitted = { mode: mode.value, url: url.value };
+// General connection preference: serialized saves preserve the latest choice.
+let networkSaveQueue = Promise.resolve(), networkSaving = false;
+function renderNetworkSettings(value) {
+  const t = window.CamelliaI18n.t;
+  $('networkMode').value = value.mode || 'direct';
+  $('systemProxyStatus').textContent = value.error ? t(value.error)
+    : value.detectedUrl ? t('Detected system proxy') + ': ' + value.detectedUrl
+    : t(value.unsupported ? 'The detected proxy protocol is not supported. Enable an HTTP or mixed proxy port.' : 'No system proxy detected. Enable the system proxy and detect again.');
+}
+async function loadDownloadSettings() {
+  if (networkSaving) return;
   try {
-    const settings = await api.downloadSaveSettings(submitted);
-    if (!settings.ok) throw new Error(settings.error);
-    // Show the normalized address only while the form still holds what was
-    // submitted; a newer edit keeps its own text and its own queued save.
-    if (mode.value === submitted.mode && url.value === submitted.url) { url.value = settings.url; downloadDirty = false; }
-    status('Download connection saved');
+    const value = await api.networkSettings();
+    if (!value.ok) throw new Error(value.error);
+    if (!networkSaving) renderNetworkSettings(value);
   } catch (error) { status(error.message, true); }
 }
-function queueDownloadSave() {
-  // Chain so an in-flight save cannot resolve after a newer edit and report a
-  // stale result.
-  downloadSaveQueue = downloadSaveQueue.then(saveDownloadSettings, saveDownloadSettings);
-  return downloadSaveQueue;
-}
-function downloadFormChanged() {
-  const mode = $('downloadMode'), url = $('downloadProxyUrl');
-  url.required = mode.value === 'proxy';
-  downloadDirty = true;
-  // Choosing the proxy before typing an address would make an automatic save
-  // fail; wait for the address instead of flashing an error.
-  if (mode.value === 'proxy' && !url.value.trim()) return;
-  void queueDownloadSave();
-}
-async function loadDownloadSettings(focus) {
-  const mode = $('downloadMode'), url = $('downloadProxyUrl');
-  if (!mode || !url) return;
+$('networkMode').onchange = () => {
+  const t = window.CamelliaI18n.t;
+  const mode = $('networkMode').value;
+  networkSaving = true;
+  $('networkMode').disabled = true;
+  networkSaveQueue = networkSaveQueue.then(async () => {
+    try {
+      const value = await api.networkSaveSettings({ mode });
+      if (!value.ok) throw new Error(value.error);
+      renderNetworkSettings(value); status(t('Network connection saved'));
+    } catch (error) { status(t(error.message), true); }
+    finally { networkSaving = false; $('networkMode').disabled = false; await loadDownloadSettings(); }
+  });
+};
+$('detectSystemProxy').onclick = async () => {
+  $('detectSystemProxy').disabled = true;
   try {
-    const settings = await api.downloadSettings();
-    if (!settings.ok) throw new Error(settings.error);
-    // Never overwrite a value the user is editing or has not saved yet.
-    if (!downloadDirty && document.activeElement !== url) {
-      mode.value = settings.mode === 'proxy' ? 'proxy' : 'direct';
-      url.value = settings.url || '';
-      url.required = settings.mode === 'proxy';
+    await loadDownloadSettings();
+    if ($('networkMode').value !== 'direct') {
+      $('networkMode').onchange();
+      await networkSaveQueue;
     }
-    if (focus === 'downloadProxyUrl') url.focus();
-  } catch (error) { status(error.message, true); }
-}
-const downloadForm = $('downloadPreferences');
-if (downloadForm) {
-  downloadForm.oninput = () => { $('downloadProxyUrl').required = $('downloadMode').value === 'proxy'; };
-  downloadForm.onchange = downloadFormChanged;
-  downloadForm.onsubmit = e => { e.preventDefault(); downloadFormChanged(); };
-}
+  } finally { $('detectSystemProxy').disabled = false; }
+};
 async function refresh(initial = false) {
   try {
     const [state, details] = await Promise.all([api.apiRouterGetState(), api.providerInsights()]);
@@ -747,7 +740,7 @@ $('confirmCleanStorage').onclick = async () => {
   finally { $('storageDetails').hidden = true; $('storageFiles').replaceChildren(); storageBusy = false; storageControls(); }
 };
 // ---------- Archived conversations ----------
-const engineNames = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity' };
+const engineNames = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' };
 let archivedPendingDelete = null, archivedCount = 0;
 async function renderArchived() {
   try {

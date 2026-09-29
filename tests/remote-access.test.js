@@ -19,6 +19,18 @@ const restrictedPorts = new Set([1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25
   989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666,
   6667, 6668, 6669, 6697, 10080]);
 
+async function flushQueue() { for (let i = 0; i < 6; i++) await new Promise(setImmediate); }
+function queuedRuns(manager, id) {
+  const sent = [];
+  let gen = 0;
+  manager.drivers.codex.ensure = () => ({ gen: ++gen, sendUserMessage(prompt, attachments) { sent.push({ prompt, attachments }); return true; }, interrupt() {} });
+  return { sent, finish(extra = {}) {
+    const active = manager.active.get(id);
+    assert.ok(active, 'Expected an active turn');
+    manager.capture('codex', { type: 'result', conversationId: id, runId: active.session?.gen, result: 'Done', subtype: 'success', is_error: false, ...extra });
+  } };
+}
+
 function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings = null, management = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-remote-'));
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
@@ -59,6 +71,165 @@ async function request(gateway, endpoint, { token, method = 'GET', payload, head
     ...(payload ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: payload ? JSON.stringify(payload) : undefined });
   return { status: response.status, body: await response.json() };
 }
+
+test('mobile queue accepts running turns, deduplicates and drains text and attachments in order without a phone connection', async context => {
+  const { manager, commands, gateway, reader, access, pair, visible, hidden } = fixture(context);
+  const credential = pair(), device = access.authenticate(credential.token);
+  await gateway.start('127.0.0.1', 0);
+  const runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Original task' });
+  const payload = { action: 'send', queue: true, requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    expectedSeq: visible.seq, prompt: 'First queued request', attachments: [{ name: 'notes.txt', data: Buffer.from('Keep this file').toString('base64'), isImage: false }] };
+  // Tool events can advance the history between a phone snapshot and its send.
+  manager.append(visible, { role: 'tool', text: 'Progress' });
+  const send = value => request(gateway, `/v1/conversations/${visible.id}/commands`, { token: credential.token, method: 'POST', payload: value });
+  const first = (await send(payload)).body;
+  assert.equal(first.state, 'queued'); assert.equal(first.ok, true);
+  assert.equal((await send(payload)).body.queueId, first.queueId);
+  const second = (await send({ ...payload, requestId: require('node:crypto').randomUUID(), prompt: 'Second queued request', attachments: undefined })).body;
+  assert.equal(second.ok, true, second.error);
+  assert.equal((await send({ ...payload, prompt: 'Changed request' })).status, 409);
+  assert.equal((await send({ ...payload, requestId: require('node:crypto').randomUUID(), queue: false, expectedSeq: visible.seq })).body.ok, false);
+  await assert.rejects(commands.execute(device, hidden.id, { ...payload, requestId: require('node:crypto').randomUUID() }, gateway.instanceId), /not found/);
+  await flushQueue(); assert.equal(runs.sent.length, 1);
+  const snapshot = reader.snapshot(device, visible.id);
+  assert.deepEqual(snapshot.queue.map(entry => entry.text), ['First queued request', 'Second queued request']);
+  assert.deepEqual(snapshot.queue[0].attachments, [{ name: 'notes.txt', isImage: false }]);
+  assert.equal(JSON.stringify(snapshot.queue).includes('device-attachments'), false);
+  assert.equal(JSON.stringify(commands.entries).includes('First queued request'), false, 'Command receipts must not duplicate message bodies');
+  const connection = await stream(gateway, visible.id, credential.token);
+  assert.equal((await connection.next()).queue.length, 2); connection.close();
+  runs.finish(); await flushQueue();
+  assert.equal(runs.sent.length, 2); assert.match(runs.sent[1].prompt, /First queued request/);
+  assert.equal(fs.readFileSync(runs.sent[1].attachments[0].path, 'utf8'), 'Keep this file');
+  assert.deepEqual(reader.snapshot(device, visible.id).queue.map(entry => entry.id), [second.queueId]);
+  runs.finish(); await flushQueue();
+  assert.equal(runs.sent.length, 3); assert.match(runs.sent[2].prompt, /Second queued request/);
+  assert.equal((await send(payload)).body.queueId, first.queueId);
+  runs.finish(); await flushQueue();
+  assert.equal(runs.sent.length, 3);
+  assert.deepEqual(commands.queue.view(visible.id), []);
+  assert.equal(manager.rawRows(visible).filter(row => row.queueId === first.queueId).length, 1);
+});
+
+test('mobile queue supports remove, stop/pause and explicit resume with desktop visibility', async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action, ...(action === 'send' ? { queue: true, prompt: 'Queued', expectedSeq: visible.seq } : {}), ...extra }, gateway.instanceId);
+  const active = await manager.send('codex', { sessionId: visible.id, prompt: 'Original task' });
+  const removed = await execute('send'), kept = await execute('send');
+  assert.equal(manager.load('codex', visible.id).remoteQueue.queue.length, 2);
+  assert.equal((await execute('queue-remove', { queueId: removed.queueId })).ok, true);
+  assert.equal((await execute('queue-remove', { queueId: removed.queueId })).ok, false);
+  assert.equal((await execute('stop', { runId: active.runId })).ok, true);
+  runs.finish(); await flushQueue();
+  assert.equal(runs.sent.length, 1);
+  assert.equal(commands.queue.view(visible.id)[0].state, 'paused');
+  const resumed = await manager.command('codex', 'remote-queue-resume', { sessionId: visible.id });
+  assert.equal(resumed.ok, true); await flushQueue();
+  assert.equal(runs.sent.length, 2);
+  assert.equal(manager.rawRows(visible).filter(row => row.queueId === kept.queueId).length, 1);
+  runs.finish(); await flushQueue();
+});
+
+test('queue waits through an armed goal and startup reservation, then advances once', async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  const goal = manager.goalFor(visible.id); goal.armed = true;
+  const queued = await commands.execute(device, visible.id, { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', queue: true, prompt: 'After goal', expectedSeq: visible.seq }, gateway.instanceId);
+  assert.equal(queued.ok, true); await flushQueue(); assert.equal(runs.sent.length, 0);
+  goal.armed = false; manager.controlStarts.set(visible.id, {}); manager.publishActivity(visible.id);
+  await flushQueue(); assert.equal(runs.sent.length, 0);
+  manager.controlStarts.delete(visible.id);
+  for (let i = 0; i < 10; i++) manager.publishActivity(visible.id);
+  await flushQueue(); assert.equal(runs.sent.length, 1);
+  runs.finish(); await flushQueue();
+});
+
+test('revoked devices cannot execute queued messages or resume them from the desktop', async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const credential = pair(), device = access.authenticate(credential.token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Original' });
+  const result = await commands.execute(device, visible.id, { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', queue: true, prompt: 'Must not run', expectedSeq: visible.seq }, gateway.instanceId);
+  access.revoke(credential.deviceId);
+  runs.finish(); await flushQueue(); assert.equal(runs.sent.length, 1);
+  assert.equal(commands.queue.view(visible.id)[0].state, 'paused');
+  assert.throws(() => commands.queue.resume(visible.id), /Control permission/);
+  assert.equal((await manager.command('codex', 'remote-queue-remove', { sessionId: visible.id, queueId: result.queueId })).ok, true);
+  assert.equal(commands.queue.view(visible.id).length, 0);
+});
+
+test('failed queue startup never replays a committed user message and pauses following messages', async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Original' });
+  const enqueue = prompt => commands.execute(device, visible.id, { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', queue: true, prompt, expectedSeq: visible.seq }, gateway.instanceId);
+  const first = await enqueue('Fails during startup'); await enqueue('Wait for review');
+  manager.prepare = async () => { throw new Error('Fixture startup failure'); };
+  runs.finish(); await flushQueue();
+  assert.equal(commands.queue.view(visible.id).length, 1);
+  assert.equal(commands.queue.view(visible.id)[0].state, 'paused');
+  assert.equal(manager.rawRows(visible).filter(row => row.queueId === first.queueId).length, 1);
+  assert.equal(runs.sent.length, 1);
+  for (let i = 0; i < 5; i++) manager.publishActivity(visible.id);
+  await flushQueue(); assert.equal(runs.sent.length, 1);
+});
+
+test('a receipt persistence failure after dispatch cannot remove the following queued message', async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Original' });
+  const enqueue = prompt => commands.execute(device, visible.id, { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', queue: true, prompt, expectedSeq: visible.seq }, gateway.instanceId);
+  const first = await enqueue('First'), second = await enqueue('Must be retained');
+  const save = commands.queue.save.bind(commands.queue); let writes = 0;
+  context.mock.method(commands.queue, 'save', () => { if (++writes === 2) throw new Error('Fixture disk write failed'); save(); });
+  runs.finish(); await flushQueue();
+  assert.equal(runs.sent.length, 2);
+  assert.equal(manager.rawRows(visible).filter(row => row.queueId === first.queueId).length, 1);
+  assert.deepEqual(commands.queue.view(visible.id).map(entry => [entry.id, entry.state]), [[second.queueId, 'paused']]);
+  runs.finish(); await flushQueue(); assert.equal(runs.sent.length, 2);
+});
+
+test('computer restart preserves pending queue and attachments, but requires explicit resume', async context => {
+  const { manager, commands, gateway, access, pair, visible, root } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Original' });
+  const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'send', queue: true,
+    prompt: 'After restart', expectedSeq: visible.seq, attachments: [{ name: 'notes.txt', data: Buffer.from('Persistent file').toString('base64'), isImage: false }] };
+  const result = await commands.execute(device, visible.id, payload, gateway.instanceId);
+  await gateway.stop(); manager.closeGoalTools();
+  const restored = new SharedConversations({ dir: manager.dir, loadConfig: manager.loadConfig, saveConfig: manager.saveConfig, drivers: manager.drivers });
+  try {
+    const resumed = queuedRuns(restored, visible.id);
+    const replacement = new RemoteCommands({ file: path.join(root, 'commands.json'), access, reader: new RemoteReadModel(restored) });
+    assert.equal(replacement.queue.view(visible.id)[0].state, 'paused');
+    assert.equal((await replacement.execute(device, visible.id, payload, 'new-instance')).queueId, result.queueId);
+    await flushQueue(); assert.equal(resumed.sent.length, 0); assert.equal(runs.sent.length, 1);
+    replacement.queue.resume(visible.id); await flushQueue();
+    assert.equal(resumed.sent.length, 1);
+    assert.equal(fs.readFileSync(resumed.sent[0].attachments[0].path, 'utf8'), 'Persistent file');
+    resumed.finish(); await flushQueue();
+  } finally { restored.closeGoalTools(); }
+});
+
+test('restart drops a committed queue entry even if the visible transcript was subsequently edited', async context => {
+  const { manager, commands, gateway, access, pair, visible, reader, root } = fixture(context);
+  const device = access.authenticate(pair().token);
+  manager.controlStarts.set(visible.id, {});
+  const result = await commands.execute(device, visible.id, { action: 'send', queue: true, prompt: 'Once only', expectedSeq: visible.seq,
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId }, gateway.instanceId);
+  const row = manager.append(visible, { role: 'user', text: 'Once only', queueId: result.queueId });
+  manager.append(visible, { role: 'revision', replacesSeq: row.seq, text: 'Edited after sending' });
+  commands.queue.entries[0].state = 'starting'; commands.queue.save(); commands.queue.close();
+  const replacement = new RemoteCommands({ file: path.join(root, 'commands.json'), access, reader });
+  assert.deepEqual(replacement.queue.view(visible.id), []);
+  manager.controlStarts.delete(visible.id); await flushQueue(); replacement.queue.close();
+});
 
 test('conversation pages include scoped connection metadata in one round trip', async context => {
   const { gateway, pair, visible, hidden } = fixture(context);

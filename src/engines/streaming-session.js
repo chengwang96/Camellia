@@ -32,6 +32,7 @@ class StreamingSession {
     this.permissions.clear();
     this.running = false;
     const event = { type: 'result', session_id: this.sessionId, result: this.text, duration_ms: Date.now() - this.startedAt, ...result };
+    this.replayEvents = [];
     void this.usageMeter?.end(event);
     this.emit(event);
     try { this.onResult(event); }

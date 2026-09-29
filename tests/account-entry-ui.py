@@ -27,9 +27,9 @@ def wait_for(check, message='Timed out waiting for the automatic save'):
     raise AssertionError(message)
 
 
-bridge = """window.calls=[];
+bridge = """window.calls=[]; window.accountListeners = {};
 window.camelliaDevices = { onEvent: () => () => {}, onTransfer: () => () => {}, call: async () => ({ok:true,result:{}}) };
-window.dshDesktop = new Proxy({}, {get: (_, method) => method.startsWith('on') ? () => () => {} : async payload => {
+window.dshDesktop = new Proxy({}, {get: (_, method) => method.startsWith('on') ? fn => { accountListeners[method] = fn; return () => {}; } : async payload => {
   calls.push({method, payload});
   if (method === 'kimiSignIn') return {ok:true,installed:true,models:[],account:null,loginPending:true,
     login:{userCode:'TEST-123',verificationUrl:'https://auth.kimi.com/device',expiresAt:1790000000000}};
@@ -79,15 +79,40 @@ try:
         expect(page.locator('#kimiSignIn')).to_be_enabled()
         page.locator('#kimiSignIn').click()
         expect(page.locator('#kimiUserCode')).to_have_text('TEST-123')
-        page.locator('#codexProxyUrl').fill('http://localhost:12345')
-        page.locator('#codexProxyUrl').press('Tab')
-        wait_for(lambda: rpc('subscriptionPreferencesGet', {'engine': 'codex'})['preferences']['proxyUrl'] == 'http://localhost:12345/')
+        expect(page.locator('#codexProxyUrl')).to_have_count(0)
         page.locator('#codexSignIn').click()
         expect(page.locator('#codexCancelLogin')).to_be_visible()
         expect(page.locator('#codexAddAccount')).to_be_disabled()
-        page.locator('#googleProxyUrl').fill('http://localhost:12346')
-        page.locator('#googleProxyUrl').press('Tab')
-        wait_for(lambda: rpc('subscriptionPreferencesGet', {'engine': 'antigravity'})['preferences']['proxyUrl'] == 'http://localhost:12346/')
+        page.evaluate("""() => {
+          const account = {id:'default',signedIn:true,active:true,email:'signed@example.test'};
+          window.signedAccount = {installed:true,models:[],account:{email:account.email},accounts:[account,{id:'account-1',signedIn:false}],loginPending:false};
+          accountListeners.onCodexAccount(signedAccount);
+        }""")
+        expect(page.locator('.subscription-quota-history')).to_have_count(3)
+        assert page.locator('.subscription-quota-history[open]').count() == 0
+        page.evaluate("""() => {
+          const windows = [{id:'weekly',label:'7d',usedPercent:20}];
+          const latest = {at:new Date().toISOString(),windows};
+          accountListeners.onProviderInsights({providers:{},keys:{},subscriptions:[{id:'codex:default',engine:'codex',name:'ChatGPT',label:'Test account',info:{latest,history:[latest]},capability:{supported:true}}]});
+        }""")
+        page.locator('#codexQuotaChart').locator('..').locator('summary').click()
+        expect(page.locator('#codexQuotaChart svg')).to_have_count(1)
+        page.locator('#codexQuotaChart').locator('..').locator('summary').click()
+
+        expect(page.locator('#codexAutoSwitchQuota')).not_to_be_visible()
+        page.evaluate("accountListeners.onCodexAccount({...signedAccount,accounts:[signedAccount.accounts[0],{id:'backup',signedIn:true,email:'backup@example.test'}]})")
+        expect(page.locator('#codexAutoSwitchQuota')).to_be_visible()
+        page.locator('#codexAutoSwitchQuota').uncheck()
+        wait_for(lambda: rpc('subscriptionPreferencesGet', {'engine':'codex'})['preferences']['autoSwitchQuota'] is False)
+        page.evaluate("accountListeners.onCodexAccount(signedAccount)")
+        expect(page.locator('#codexSignIn')).not_to_be_visible()
+        expect(page.locator('#codexAddAccount')).to_be_visible()
+        expect(page.locator('#codexAccountList .subscription-card')).to_have_count(1)
+        page.evaluate("accountListeners.onCodexAccount({...signedAccount,loginPending:true})")
+        expect(page.locator('#codexAddAccount')).to_be_disabled()
+        expect(page.locator('#codexAccountList .subscription-card')).to_have_count(1)
+
+        expect(page.locator('#googleProxyUrl')).to_have_count(0)
         page.locator('#googleSignIn').click()
         expect(page.locator('#status')).to_contain_text('Complete Google sign-in in the terminal')
         for engine in ['kimi', 'codex', 'antigravity']:

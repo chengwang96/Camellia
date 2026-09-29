@@ -53,7 +53,7 @@ p { margin: 5px 0; }
 #mobilePage .device { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 12px; padding: 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; }
 #mobilePage .name { flex: 1 1 180px; min-width: 0; }
 #mobilePage .device small { display: block; margin-top: 4px; color: var(--dsw-alias-label-tertiary); }
-#mobilePage .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#mobilePage .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 #mobilePage button { white-space: normal; }
 #mobile-error { color: var(--dsw-alias-state-error-primary); }
 .page-head { padding: 30px 32px 22px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
@@ -62,7 +62,7 @@ p { margin: 5px 0; }
 .scroll-content { flex: 1; min-height: 0; overflow-y: auto; padding: 0 32px 30px; }
 .toolbar, .section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
 .toolbar > :first-child, .section-head > h2 { flex: 1; margin: 0; }
-.toolbar-actions { display: flex; gap: 8px; }
+.toolbar-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .provider-grid, .balance-grid, .chart-grid-layout { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 12px; }
 .provider-grid > .provider, .balance-grid > .balance-card, .chart-grid-layout > .chart-tile { width: 100%; max-width: 420px; }
 #subscriptionsPage { max-width: 1240px; }
@@ -107,7 +107,7 @@ p { margin: 5px 0; }
 .key-row { display: flex; gap: 8px; align-items: center; }
 .key-row .key-name { width: 118px; flex: 0 0 118px; }
 .key-row input[type=password] { flex: 1; font-family: var(--ds-font-family-code); font-size: 12px; }
-.key-actions { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.key-actions { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 .key-actions .badge { margin-right: auto; }
 .key-actions button { border: 0; padding: 3px 8px; font-size: 12px; min-height: 28px; }
 .key-note { font-size: 12px; color: var(--dsw-alias-label-tertiary); margin-top: 8px; overflow-wrap: anywhere; }
@@ -203,7 +203,7 @@ dialog::backdrop { background: #15203438; }
 .dialog-head button { border: 0; padding: 0 8px; font-size: 20px; }
 dialog > label { margin-top: 20px; font-size: 12px; }
 dialog > select { width: 100%; }
-dialog > .primary { margin-top: 20px; }
+dialog > button { display: block; margin: 20px 0 0 auto; }
 #catalogList { margin-top: 12px; max-height: 45vh; overflow-y: auto; }
 .catalog-option { display: flex; align-items: center; gap: 10px; padding: 10px 4px; margin: 0; border-bottom: 1px solid var(--dsw-alias-border-l2); font-size: 13px; overflow-wrap: anywhere; }
 @media (max-width: 950px) {
@@ -224,9 +224,11 @@ dialog > .primary { margin-top: 20px; }
 #storageDetails { margin: 20px 0; }
 #storageFiles { max-height: 360px; overflow: auto; }
 #storageSummary { white-space: pre-wrap; overflow-wrap: anywhere; }
-#cleanStorage { margin-top: 20px; }
+#cleanStorage { display: block; margin: 20px 0 0 auto; }
 .setting-row > div.archived-actions { flex: 0 0 auto; display: flex; gap: 8px; }
-.app-update-actions { flex: 0 0 auto; display: flex; gap: 8px; }
+.app-update { flex-wrap: wrap; }
+.app-update > div:first-child { flex: 1 1 240px; }
+.setting-row > div.app-update-actions { flex: 0 1 auto; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-left: auto; max-width: 100%; }
 .app-update progress { width: 100%; height: 7px; margin-top: 10px; accent-color: var(--dsw-alias-state-business-primary); }
 #appUpdateDetails pre { max-height: 260px; overflow: auto; white-space: pre-wrap; font: 12px/1.7 Consolas, 'Cascadia Code', monospace; }
 .archived-actions button { font-size: 12px; min-height: 30px; padding: 4px 12px; }
@@ -279,3 +281,7 @@ dialog > .primary { margin-top: 20px; }
 .subscription-actions svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 #subscriptionsPage #codexQuotas { display: none; }
 @media (max-width: 480px) { .subscription-actions button { width: 38px; height: 38px; } }
+
+.network-detection { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.network-detection .hint { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; margin: 0; }
+.network-detection button { flex: 0 0 auto; }

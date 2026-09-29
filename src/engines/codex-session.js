@@ -186,6 +186,11 @@ class CodexSession extends StreamingSession {
       result = { ...result, outputBlocks };
     }
     super.finish(result);
+    if (!this.running) {
+      this.outputItems?.clear();
+      this.outputBlocks = [];
+      this.lastOutputItem = null;
+    }
   }
   notify(method, params) {
     if (!this.running || params.threadId !== this.sessionId) return;

@@ -128,6 +128,7 @@ class RemoteReadModel {
       pendingApprovals: active.permissions.size, approvals: device.permission === 'control' ? [...active.permissions.values()].map(approval) : [] } : null;
     const goal = this.manager.goalFor?.(id)?.view();
     return { conversation: this.summary(conversation), messages, live, permission: device.permission,
+      ...(this.manager.remoteQueue ? this.manager.remoteQueue.snapshot(id) : {}),
       automation: { goal: mobileGoal(goal, transcript),
         tasks: (this.manager.tasks?.list(id) || []).map(task => ({ id: task.id, instruction: String(task.instruction || '').slice(0, 500), status: task.status, state: task.state, intervalMinutes: task.intervalMinutes, lastResult: String(task.lastResult || '').slice(0, 600) })) },
       ...(device.permission === 'control' ? { settings: settingsView(this.manager, conversation) } : {}),

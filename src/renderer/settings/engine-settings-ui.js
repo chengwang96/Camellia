@@ -18,16 +18,33 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     const heading = document.createElement('h3'); heading.textContent = title; heading.dataset.i18n = '';
     panel.prepend(heading); panel.classList.add('subscription-account'); panel.hidden = false;
     $('subscriptionAccounts').append(panel);
-    const preferences = id === 'kimi' ? $('kimiLoginRegion').closest('.engine-field') : $(prefix + 'ProxyUrl').closest('.engine-field');
-    panel.insertBefore(preferences, heading.nextSibling);
-    const control = id === 'kimi' ? $('kimiLoginRegion') : $(prefix + 'ProxyUrl');
-    // Keep the draft while typing so unrelated renders cannot reset the field;
-    // only a committed change triggers the save.
-    const draftPreference = () => {
-      loginDrafts.set(id, { ...accountPreferences(id), ...(id === 'kimi' ? { region: control.value } : { proxyUrl: control.value }) });
+    const rotation = document.createElement('label'); rotation.className = 'subscription-rotation'; rotation.hidden = true;
+    rotation.innerHTML = '<input type="checkbox" id="' + id + 'AutoSwitchQuota"><span data-i18n>Automatically switch accounts when quota is exhausted</span>';
+    panel.append(rotation);
+    const toggle = rotation.querySelector('input');
+    toggle.onchange = async () => {
+      const checked = toggle.checked; toggle.disabled = true;
+      try {
+        const result = await api.subscriptionPreferencesSave({ engine: id, preferences: { autoSwitchQuota: checked } });
+        if (!result.ok) throw new Error(result.error);
+        loginPreferences.set(id, { ...accountPreferences(id), autoSwitchQuota: checked });
+      } catch (error) { toggle.checked = !checked; status(error.message, true); }
+      finally { toggle.disabled = false; }
     };
-    control.oninput = draftPreference;
-    control.onchange = () => { draftPreference(); void queueLoginPreferences(id); renderConnection(); };
+    const curve = document.createElement('details'); curve.className = 'subscription-quota-history';
+    curve.innerHTML = '<summary data-i18n>Quota history</summary>';
+    const chart = id === 'kimi' ? $('subscriptionQuotaChart') : document.createElement('div');
+    chart.id = id === 'kimi' ? 'subscriptionQuotaChart' : id + 'QuotaChart'; chart.className = 'chart-grid-layout';
+    if (id === 'kimi') curve.append($('subscriptionQuotaCards'));
+    curve.append(chart); panel.append(curve);
+
+    if (id === 'kimi') {
+      const control = $('kimiLoginRegion');
+      panel.insertBefore(control.closest('.engine-field'), heading.nextSibling);
+      const draftPreference = () => loginDrafts.set(id, { ...accountPreferences(id), region: control.value });
+      control.oninput = draftPreference;
+      control.onchange = () => { draftPreference(); void queueLoginPreferences(id); renderConnection(); };
+    }
     if (id === 'antigravity') {
       $('googleSignIn').textContent = 'Open official CLI sign-in';
       $('googleRefresh').textContent = 'Verify after sign-in';
@@ -112,13 +129,18 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     finally { codexBusy = false; kimiBusy = false; renderConnection(); }
   }
   function renderKimiAccount() {
+    renderRotation('kimi', kimiAccount);
     const preferences = accountPreferences('kimi'), pending = Boolean(kimiAccount?.loginPending), busy = kimiBusy || kimiAccount?.refreshing || kimiAccount?.signingOut;
+    const hasAccounts = kimiAccount?.accounts?.some(account => account.signedIn);
+    $('kimiSignIn').hidden = Boolean(hasAccounts);
+    $('kimiAddAccount').hidden = !hasAccounts;
+    $('kimiRefresh').hidden = Boolean(hasAccounts);
     $('kimiLoginRegion').value = accountPreferences('kimi').region || 'mainland-cn';
     $('kimiSignIn').disabled = Boolean(busy || pending);
     $('kimiAddAccount').disabled = Boolean(busy || pending);
     $('kimiRefresh').disabled = Boolean(busy || pending || !kimiAccount?.installed);
     $('kimiSignOut').disabled = Boolean(busy || pending);
-    $('kimiSignOut').hidden = !kimiAccount?.account;
+    $('kimiSignOut').hidden = true;
     $('kimiUsage').hidden = !kimiAccount?.account;
     $('kimiCancelLogin').hidden = !pending;
     $('kimiCancelLogin').disabled = kimiBusy === 'kimiCancelLogin';
@@ -132,7 +154,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('kimiOpenLogin').disabled = !kimiAccount?.login?.verificationUrl;
     $('kimiModelDetails').hidden = !kimiAccount?.models?.length;
     $('kimiModelList').innerHTML = (kimiAccount?.models || []).map(model => `<li title="${esc(model.id)}">${esc(model.name)}</li>`).join('');
-    renderAccountList({ containerId: 'kimiAccountList', state: kimiAccount,
+    renderAccountList({ containerId: 'kimiAccountList', state: kimiAccount && { ...kimiAccount, accounts: kimiAccount.accounts?.filter(account => account.signedIn) },
       busy: Boolean(busy),
       onRefresh: id => accountAction(() => api.kimiAccountRefresh(id), result => { kimiAccount = result; }),
       onSignIn: id => accountAction(async () => { const selected = await api.kimiAccountSelect(id); if (!selected.ok) throw new Error(selected.error); await flushLoginPreferences('kimi'); return api.kimiSignIn(); }, result => { kimiAccount = result; }),
@@ -144,14 +166,23 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     const result = await api.kimiAccountState(); if (!result.ok) throw new Error(result.error);
     kimiAccount = result; renderKimiAccount();
   }
+  function renderRotation(id, account) {
+    const toggle = $(id + 'AutoSwitchQuota');
+    toggle.parentElement.hidden = (account?.accounts || []).filter(item => item.signedIn).length < 2;
+    if (!toggle.disabled) toggle.checked = accountPreferences(id).autoSwitchQuota !== false;
+  }
   function renderCodexAccount() {
+    renderRotation('codex', codexAccount);
     const preferences = accountPreferences('codex');
-    $('codexProxyUrl').value = accountPreferences('codex').proxyUrl || '';
+    const hasAccounts = codexAccount?.accounts?.some(account => account.signedIn);
+    $('codexSignIn').hidden = Boolean(hasAccounts);
+    $('codexAddAccount').hidden = !hasAccounts;
+    $('codexRefresh').hidden = Boolean(hasAccounts);
     for (const id of ['codexSignIn', 'codexAddAccount', 'codexRefresh', 'codexSignOut']) $(id).disabled = codexBusy || Boolean(codexAccount?.loginPending);
     $('codexRefresh').disabled ||= !codexAccount?.installed;
     $('codexCancelLogin').disabled = codexBusy;
     $('codexCancelLogin').hidden = !codexAccount?.loginPending;
-    $('codexSignOut').hidden = !codexAccount?.account;
+    $('codexSignOut').hidden = true;
     const account = codexAccount?.account;
     $('codexAccountStatus').textContent = codexBusy ? 'Connecting to Codex…'
       : codexAccount?.loginPending ? 'Complete ChatGPT sign-in in your browser.' : codexAccount?.error || (account ? (account.email || 'Signed in') + ' · ' + (account.planType || 'ChatGPT') : 'Sign in with ChatGPT to load your models and quota.');
@@ -169,7 +200,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       row.append(label, progress); $('codexQuotas').append(row);
     }
     if (account && !Object.keys(buckets).length) { const hint = document.createElement('p'); hint.className = 'hint'; hint.dataset.i18n = ''; hint.textContent = codexAccount.quotaError || 'Quota information is currently unavailable.'; $('codexQuotas').append(hint); }
-    renderAccountList({ containerId: 'codexAccountList', state: codexAccount,
+    renderAccountList({ containerId: 'codexAccountList', state: codexAccount && { ...codexAccount, accounts: codexAccount.accounts?.filter(account => account.signedIn) },
       busy: codexBusy,
       onRefresh: id => accountAction(() => api.codexAccountRefresh(id), result => { codexAccount = result; }),
       onWake: id => accountAction(() => api.codexAccountWake(id), result => { codexAccount = result; status(t(result.warning || 'Greeting sent. Quota refreshed; reset time follows the provider.')); }),
@@ -187,7 +218,6 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     renderKimiAccount();
     const preferences = accountPreferences('antigravity');
     $('googleUseCredits').checked = preferences.useG1Credits === true;
-    $('googleProxyUrl').value = accountPreferences('antigravity').proxyUrl || '';
     $('googleSignIn').disabled = accountBusy;
     $('googleRefresh').disabled = accountBusy || !googleAccount?.installed;
     $('googleAccountStatus').textContent = accountBusy ? 'Connecting to Google…' : googleAccount?.error || (googleAccount?.verification === 'pending' ? 'Waiting for external sign-in. Return here to verify.'
@@ -219,18 +249,19 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('dshNative').hidden = engine !== 'dsh';
     const appScope = state.scope === 'app';
     renderConnection();
-    $('engineScopeTitle').textContent = appScope ? (engine === 'codex' ? 'Codex in Camellia' : 'Antigravity in Camellia') : 'These settings also apply to the CLI';
-    $('engineScopeDescription').textContent = appScope
+    $('engineScopeTitle').textContent = appScope ? ({ codex: 'Codex in Camellia', antigravity: 'Antigravity in Camellia', pi: 'Pi in Camellia' })[engine] : 'These settings also apply to the CLI';
+    $('engineScopeDescription').textContent = engine === 'pi'
+      ? 'Pi settings and instructions are stored in Camellia. Choose models and manage API keys in API Key.' : appScope
       ? (engine === 'codex' ? 'Codex configuration, credentials and history are stored inside Camellia. Saving here does not change your personal ~/.codex directory.' : 'These settings apply to the Antigravity engine in Camellia. Choose models and manage API keys in Providers & Keys.')
       : "Saving overwrites the CLI's global settings and affects other CLI sessions. Before the first overwrite, an original .workbench.bak backup is kept.";
-    $('engineRouteHint').textContent = engine === 'antigravity'
+    $('engineRouteHint').textContent = engine === 'pi' ? 'Pi uses the shared API routes. Select a model in the conversation.' : engine === 'antigravity'
       ? appScope ? 'API mode uses the shared key pool; choose a Google account model in the composer to use your Google plan.'
         : 'Subscription mode uses the official Google account provider. Headless tools that require interactive approval are declined by the CLI; configure its permission rules here. AI credits are used only if you enable them.'
       : "Camellia manages API routes centrally. CLI sessions using its router require the app to remain running. Project settings follow each engine's precedence rules.";
-    $('engineAdvancedHint').textContent = engine === 'codex' ? 'Edit native TOML, including [mcp_servers] and skills. Connection settings and credentials are managed by Camellia.' : appScope
+    $('engineAdvancedHint').textContent = engine === 'pi' ? 'These instructions are added to every Pi session in Camellia.' : engine === 'codex' ? 'Edit native TOML, including [mcp_servers] and skills. Connection settings and credentials are managed by Camellia.' : appScope
       ? 'Add MCP servers under mcpServers and local skill directories under skillsPaths. Common options above are applied when you save.'
       : 'Edit full native configuration, including tools, hooks, plugins, and permission rules. Camellia manages API connections. Common options above are applied when you save.';
-    $('nativeDocuments').querySelector('summary').textContent = engine === 'dsh' ? "Advanced configuration · Full YAML" : "Advanced configuration · MCP · " + (engine === 'kimi' ? "Terminal" : engine === 'antigravity' ? "Skills" : "Global instructions");
+    $('nativeDocuments').querySelector('summary').textContent = engine === 'pi' ? 'Global instructions' : engine === 'dsh' ? "Advanced configuration · Full YAML" : "Advanced configuration · MCP · " + (engine === 'kimi' ? "Terminal" : engine === 'antigravity' ? "Skills" : "Global instructions");
     $('engineCommon').innerHTML = state.fields.map((field, i) => {
       const value = field.key in state.common ? state.common[field.key] : field.value;
       const id = 'nativeField' + i;
@@ -238,12 +269,12 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
         : field.type === 'textarea' ? `<textarea id="${id}" data-field="${field.key}" rows="4" placeholder="${esc(field.placeholder || '')}" data-i18n-attrs="placeholder">${esc(value)}</textarea>`
         : `<input id="${id}" data-field="${field.key}" type="${field.type}" ${field.type === 'checkbox' ? value ? 'checked' : '' : `value="${esc(value)}" placeholder="${esc(field.placeholder || '')}"`} ${field.type === 'number' ? `min="${field.min}" max="${field.max}"` : ''} data-i18n-attrs="placeholder">`;
       return `<div class="engine-field"><label for="${id}" data-i18n>${esc(field.label)}</label>${input}</div>`;
-    }).join('') + (engine === 'dsh' ? '' : `<h2 class="engine-common-title" data-i18n>Workbench sessions</h2><div class="engine-field"><label for="engineCwd" data-i18n>Default directory for standalone sessions<small class="hint" style="display:block" data-i18n>Leave blank to use the application directory. Workspace sessions use their own folders.</small></label><input id="engineCwd" data-desktop="cwd" value="${esc(state.desktop.cwd || '')}" placeholder="Application session directory" data-i18n-attrs="placeholder"></div>`)
+    }).join('') + (['dsh', 'pi'].includes(engine) ? '' : `<h2 class="engine-common-title" data-i18n>Workbench sessions</h2><div class="engine-field"><label for="engineCwd" data-i18n>Default directory for standalone sessions<small class="hint" style="display:block" data-i18n>Leave blank to use the application directory. Workspace sessions use their own folders.</small></label><input id="engineCwd" data-desktop="cwd" value="${esc(state.desktop.cwd || '')}" placeholder="Application session directory" data-i18n-attrs="placeholder"></div>`)
       + (engine === 'kimi' ? `<div class="engine-field"><label for="engineContext" data-i18n>API model context window (tokens)<small class="hint" data-i18n>Subscription models use the context limit reported by Kimi.</small></label><input id="engineContext" data-desktop="contextWindow" type="number" min="4096" max="2000000" value="${state.desktop.contextWindow || 131072}"></div>` : '');
     $('engineDocument').innerHTML = state.files.map(file => `<option data-i18n value="${file.id}">${esc(file.label)}</option>`).join('');
     renderDocument(); $('saveEngine').disabled = !state.dirty;
     $('reloadEngine').textContent = state.dirty ? "Discard and reload" : "Reload";
-    $('engineSaveHint').textContent = state.dirty ? "You have unsaved changes" : "Applies to the next message";
+    $('engineSaveHint').textContent = state.dirty ? "You have unsaved changes" : engine === 'pi' ? 'Defaults apply to new conversations; instructions apply to the next message.' : "Applies to the next message";
   }
   async function nativePanel(force = false) {
     if (api.nativeSettingsView !== true) { $('nativeLoading').textContent = "The native panel is available in the desktop application."; return; }
@@ -277,10 +308,10 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function setVisible(visible) { activePage = visible; void placeNative(); }
   async function select(next, reload = false) {
-    if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity'].includes(next)) next = 'claude';
+    if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(next)) next = 'claude';
     engine = next;
     void placeNative();
-    document.querySelectorAll('[data-engine]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.engine === engine)));
+    document.querySelectorAll('.engine-tabs [data-engine]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.engine === engine)));
     $('engineContent').hidden = true; $('engineLoading').hidden = false; $('engineLoading').textContent = "Loading settings…";
     try {
       // A saved draft is re-read so the page reflects a connection the composer
@@ -390,7 +421,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       if (['codexSignIn', 'codexAccountAdd', 'codexAccountRefresh'].includes(action)) await flushLoginPreferences('codex');
       const result = await api[action](); if (!result.ok) throw new Error(result.error);
       if (!result.canceled) codexAccount = result;
-      if (id === 'codexAddAccount') status('Account added. Sign in to finish connecting it.');
+      if (id === 'codexAddAccount') status(t('Complete ChatGPT sign-in in your browser.'));
     } catch (error) { status(error.message, true); }
     finally { codexBusy = false; renderCodexAccount(); }
   };
@@ -402,7 +433,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       if (['kimiSignIn', 'kimiAccountAdd', 'kimiAccountRefresh'].includes(action)) await flushLoginPreferences('kimi');
       const result = await api[action](); if (!result.ok) throw new Error(result.error);
       if (!result.canceled) kimiAccount = result;
-      if (id === 'kimiAddAccount') status('Account added. Sign in to finish connecting it.');
+      if (id === 'kimiAddAccount') status(t('Complete Kimi sign-in in your browser. This page updates automatically.'));
     } catch (error) { status(error.message, true); }
     finally { kimiBusy = false; renderKimiAccount(); }
   };
@@ -426,7 +457,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   $('engineDocument').onchange = e => { documentId = e.target.value; renderDocument(); };
   $('reloadEngine').onclick = () => select(engine, true);
   $('retryNative').onclick = () => nativeNeedsRuntime ? navigate({ page: 'runtimes' }) : nativePanel(true);
-  document.querySelectorAll('[data-engine]').forEach(button => { button.onclick = () => select(button.dataset.engine); });
+  document.querySelectorAll('.engine-tabs [data-engine]').forEach(button => { button.onclick = () => select(button.dataset.engine); });
   $('saveEngine').onclick = async () => {
     const savingEngine = engine, state = current();
     $('saveEngine').disabled = true; $('engineContent').inert = true;
@@ -437,7 +468,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       if (!result.ok) throw new Error(result.error);
       drafts.set(savingEngine, { ...result, common: {}, dirty: false });
       if (engine === savingEngine) render();
-      status(savingEngine === 'codex' ? 'Codex settings saved in Camellia. Applies to the next message.' : savingEngine === 'antigravity' ? "Antigravity settings saved. Applies to the next message." : "Global settings saved. Original files were backed up on first overwrite.");
+      status(savingEngine === 'pi' ? 'Pi settings saved. Defaults apply to new conversations; instructions apply to the next message.' : savingEngine === 'codex' ? 'Codex settings saved in Camellia. Applies to the next message.' : savingEngine === 'antigravity' ? "Antigravity settings saved. Applies to the next message." : "Global settings saved. Original files were backed up on first overwrite.");
       if (savingEngine === 'dsh') void nativePanel(true);
     } catch (e) { status(e.message, true); $('saveEngine').disabled = false; }
     finally { $('engineContent').inert = false; }

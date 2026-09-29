@@ -8,6 +8,15 @@ const { createHarness } = require('./claude-harness.cjs');
 const { writeJson } = require('../src/shared/json-store');
 const { createGoogleAccount } = require('../src/engines/antigravity/subscription');
 
+test('quota switching persists independently for each subscription', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  assert.equal((await h.call('subscription-preferences-get', { engine: 'codex' })).preferences.autoSwitchQuota, true);
+  assert.equal((await h.call('subscription-preferences-save', { engine: 'codex', preferences: { autoSwitchQuota: false } })).ok, true);
+  assert.equal((await h.call('subscription-preferences-get', { engine: 'codex' })).preferences.autoSwitchQuota, false);
+  assert.equal((await h.call('subscription-preferences-get', { engine: 'kimi' })).preferences.autoSwitchQuota, true);
+  assert.equal((await h.call('subscription-preferences-save', { engine: 'kimi', preferences: { autoSwitchQuota: 'yes' } })).ok, false);
+});
+
 for (const engine of ['kimi', 'codex', 'antigravity']) test(`${engine} login preferences never save native configuration or change connection`, async context => {
   const harness = createHarness(); context.after(() => harness.cleanup());
   await harness.call(engine + '-save-settings', { connection: 'api' });

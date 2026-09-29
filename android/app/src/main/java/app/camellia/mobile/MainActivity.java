@@ -104,6 +104,11 @@ public final class MainActivity extends Activity {
     private TextView retryMessage;
     private LinearLayout approvals;
     private LinearLayout automationBar;
+    private LinearLayout queueBar;
+    private JSONArray remoteQueue = new JSONArray();
+    private boolean canQueue;
+    private long queueVersion = -1;
+    private String queueSignature = "";
     private final RemoteGoalVisibility goalVisibility = new RemoteGoalVisibility();
     private boolean controlAllowed, connected, commandBusy;
     private long conversationSeq;
@@ -1823,6 +1828,7 @@ public final class MainActivity extends Activity {
         screen = "detail"; networkScreen = false;
         stopNetwork(); clearHistory(); instance = ""; cursor = -1; nextBefore = null; lastLive = null; historyLimited = false; editingSeq = -1;
         remoteSettings = null;
+        remoteQueue = new JSONArray(); canQueue = false; queueVersion = -1; queueSignature = "";
         displayedConversation = null;
         outgoingMessage = credentials.optJSONObject("pendingCommand");
         if (outgoingMessage != null && !conversationId.equals(outgoingMessage.optString("conversationId"))) outgoingMessage = null;
@@ -1845,6 +1851,8 @@ public final class MainActivity extends Activity {
         // it is visible while typing but never covers the transcript.
         automationBar = column(); automationBar.setTag("remoteAutomation");
         automationBar.setVisibility(View.GONE); content.addView(automationBar);
+        queueBar = column(); queueBar.setTag("remoteMessageQueue");
+        queueBar.setVisibility(View.GONE); content.addView(queueBar);
         LinearLayout composerBar = bottomBar("composerBar");
         chatComposer = new ChatComposer(composerBar, chatStyle, chinese, tr("发消息，继续任务…", "Message your computer…"), 16000,
             () -> showRemoteSettings(false), this::sendMessage, this::stopRun, this::cancelEdit);
@@ -1999,7 +2007,7 @@ public final class MainActivity extends Activity {
             JSONObject page = listCache.get(credentials);
             if (page != null && page.optJSONArray("conversations") != null) prefetch.scheduleIdle(credentials, page.optJSONArray("conversations"), page.optInt("nextOffset", -1));
         }
-        if (!server.equals(instance)) { clearHistory(); historyLimited = false; }
+        if (!server.equals(instance)) { clearHistory(); historyLimited = false; queueVersion = -1; }
         boolean following = initialMessageScroll || pendingScrollView == scroll && pendingScrollPosition == Integer.MAX_VALUE
             || scroll.getChildCount() == 0 || scroll.getChildAt(0).getHeight() - scroll.getHeight() - scroll.getScrollY() < dp(120);
         instance = server; cursor = nextCursor;
@@ -2030,6 +2038,9 @@ public final class MainActivity extends Activity {
         trimHistory();
         lastLive = snapshot.optJSONObject("live");
         displayedConversation = conversation;
+        canQueue = snapshot.has("queue");
+        if (!canQueue) remoteQueue = new JSONArray();
+        applyQueue(snapshot);
         renderMessages(lastLive);
         renderAutomation(snapshot);
         if (foreground) replies().markRead(credentials, conversation);
@@ -2456,15 +2467,22 @@ public final class MainActivity extends Activity {
         // A bare "/find" is a valid request: it lists the files produced most
         // recently. Any other bare slash command is still not worth sending.
         boolean bareSlash = composed.matches("(?i)^/[a-z]+$") && !composed.equalsIgnoreCase("/find");
-        sendButton.setEnabled(available && lastLive == null && !pending && !loadingImages && !awaitingSentMessage()
-            && ((!composed.isEmpty() && !bareSlash) || !selectedImages.isEmpty() || !selectedDocuments.isEmpty()));
+        boolean hasMessage = ((!composed.isEmpty() && !bareSlash) || !selectedImages.isEmpty() || !selectedDocuments.isEmpty());
+        boolean busy = remoteBusy();
+        boolean queueing = canQueue && editingSeq <= 0 && (busy || remoteQueue.length() > 0);
+        boolean findWhileBusy = busy && composed.matches("(?is)^/find(?:\\s.*)?$");
+        sendButton.setEnabled(available && (!busy || queueing) && !pending && !loadingImages && !awaitingSentMessage()
+            && hasMessage && !findWhileBusy && !(editingSeq > 0 && remoteQueue.length() > 0));
+        String sendLabel = queueing ? tr("加入队列", "Queue message") : tr("发送", "Send");
+        sendButton.setContentDescription(sendLabel); sendButton.setTooltipText(sendLabel);
         if (attachButton != null) {
             attachButton.setEnabled(available && !pending && !loadingImages);
             attachButton.setAlpha(available && !pending && !loadingImages ? 1f : .45f);
         }
         stopButton.setEnabled(available && lastLive != null && !pending);
-        sendButton.setVisibility(lastLive == null ? View.VISIBLE : View.GONE);
-        stopButton.setVisibility(lastLive != null ? View.VISIBLE : View.GONE);
+        boolean showQueueSend = queueing && hasMessage;
+        sendButton.setVisibility(lastLive == null || showQueueSend ? View.VISIBLE : View.GONE);
+        stopButton.setVisibility(lastLive != null && !showQueueSend ? View.VISIBLE : View.GONE);
         composer.setEnabled(!commandBusy && !pending);
         if (retryMessage != null) retryMessage.setEnabled(available && pending);
         status.setOnClickListener(pending && retryMessage == null ? view -> retryCommand() : null);
@@ -2477,6 +2495,75 @@ public final class MainActivity extends Activity {
             View child = approvals.getChildAt(index);
             if (child instanceof Button) child.setEnabled(available && !pending);
         }
+        renderQueue();
+    }
+
+    private boolean remoteBusy() {
+        return lastLive != null || displayedConversation != null && !displayedConversation.isNull("activity")
+            && !displayedConversation.optString("activity").isEmpty();
+    }
+
+    private void applyQueue(JSONObject value) {
+        JSONArray queue = value.optJSONArray("queue");
+        long version = value.optLong("queueVersion", 0);
+        if (queue != null && version >= queueVersion) { remoteQueue = queue; queueVersion = version; }
+    }
+
+    private void renderQueue() {
+        if (queueBar == null) return;
+        boolean enabled = connected && controlAllowed && !commandBusy && !credentials.has("pendingCommand");
+        String signature = remoteQueue.toString() + ":" + enabled;
+        if (signature.equals(queueSignature)) return;
+        queueSignature = signature;
+        queueBar.removeAllViews(); queueBar.setVisibility(remoteQueue.length() == 0 ? View.GONE : View.VISIBLE);
+        if (remoteQueue.length() == 0) return;
+        LinearLayout card = automationCard(); queueBar.addView(card);
+        LinearLayout heading = new LinearLayout(this); heading.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = text(tr("待发送 · ", "Queued · ") + remoteQueue.length(), 13, muted);
+        title.setPadding(dp(12), dp(8), dp(12), dp(8)); heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        boolean paused = false;
+        for (int i = 0; i < remoteQueue.length(); i++) {
+            JSONObject entry = remoteQueue.optJSONObject(i);
+            if (entry != null && (entry.optString("state").equals("paused") || entry.optString("state").equals("failed"))) paused = true;
+        }
+        if (paused) {
+            Button resume = button(tr("继续队列", "Resume queue"), () -> queueCommand("queue-resume", null), false);
+            resume.setTag("remoteQueueResume"); resume.setEnabled(enabled); heading.addView(resume);
+        }
+        card.addView(heading);
+        android.widget.ScrollView queued = new android.widget.ScrollView(this);
+        LinearLayout rows = column(); queued.addView(rows);
+        card.addView(queued, new LinearLayout.LayoutParams(-1, remoteQueue.length() > 3 ? dp(200) : -2));
+        for (int i = 0; i < remoteQueue.length(); i++) {
+            JSONObject entry = remoteQueue.optJSONObject(i); if (entry == null) continue;
+            String id = entry.optString("id"), state = entry.optString("state");
+            LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setTag("remoteQueue:" + id);
+            LinearLayout body = column(); body.setPadding(dp(12), dp(6), 0, dp(6));
+            TextView prompt = text((i + 1) + ". " + entry.optString("text"), 14, ink);
+            prompt.setMaxLines(2); prompt.setEllipsize(android.text.TextUtils.TruncateAt.END); body.addView(prompt);
+            String label = state.equals("starting") ? tr("正在发送", "Sending") : state.equals("failed") ? tr("发送失败 · 请检查后继续", "Failed · review before resuming")
+                : state.equals("paused") ? tr("已暂停", "Paused") : tr("等待当前任务结束", "Waiting for the current task");
+            JSONArray files = entry.optJSONArray("attachments");
+            if (files != null && files.length() > 0) label += tr(" · 附件 ", " · Attachments: ") + files.length();
+            TextView detail = text(label, 12, muted); body.addView(detail);
+            if (!entry.optString("error").isEmpty()) {
+                body.setOnClickListener(view -> new CamelliaDialog.Builder(this).setTitle(tr("队列已暂停", "Queue paused"))
+                    .setMessage(entry.optString("error")).setPositiveButton(tr("知道了", "OK"), null).show());
+            }
+            row.addView(body, new LinearLayout.LayoutParams(0, -2, 1));
+            ImageButton remove = lineButton("close", tr("移出队列", "Remove from queue"), () -> queueCommand("queue-remove", id));
+            remove.setTag("remoteQueueRemove:" + id); remove.setEnabled(enabled && !state.equals("starting"));
+            row.addView(remove, new LinearLayout.LayoutParams(dp(48), dp(48))); rows.addView(row);
+        }
+    }
+
+    private void queueCommand(String action, String id) {
+        if (!connected || !controlAllowed || commandBusy || credentials.has("pendingCommand")) return;
+        try {
+            JSONObject payload = command(action);
+            if (id != null) payload.put("queueId", id);
+            submitCommand(payload);
+        } catch (Exception error) { reportError("无法保存队列操作，请重试。", "Could not save the queue operation. Retry.", error); }
     }
 
     private JSONObject command(String action) throws Exception {
@@ -2484,7 +2571,7 @@ public final class MainActivity extends Activity {
     }
 
     private void sendMessage() {
-        if (composer == null || !connected || !controlAllowed || lastLive != null || commandBusy || credentials.has("pendingCommand") || awaitingSentMessage()) return;
+        if (composer == null || !connected || !controlAllowed || remoteBusy() && (!canQueue || editingSeq > 0) || commandBusy || credentials.has("pendingCommand") || awaitingSentMessage()) return;
         String prompt = composer.getText().toString(), target = conversationId, address = credentials.optString("address"), server = instance;
         ArrayList<String> images = new ArrayList<>(selectedImages);
         ArrayList<JSONObject> documents = new ArrayList<>(selectedDocuments);
@@ -2497,7 +2584,7 @@ public final class MainActivity extends Activity {
     }
 
     private void sendMessage(String locationContext) {
-        if (!connected || !controlAllowed || lastLive != null || commandBusy || credentials.has("pendingCommand") || awaitingSentMessage()) return;
+        if (!connected || !controlAllowed || remoteBusy() && (!canQueue || editingSeq > 0) || commandBusy || credentials.has("pendingCommand") || awaitingSentMessage()) return;
         String prompt = composer.getText().toString();
         if (loadingImages || (prompt.trim().isEmpty() && selectedImages.isEmpty() && selectedDocuments.isEmpty())) return;
         try {
@@ -2505,6 +2592,7 @@ public final class MainActivity extends Activity {
             boolean editing = editingSeq > 0;
             JSONObject payload = command(editing ? "resend" : "send").put("prompt", (prompt.trim().isEmpty() ? tr("请查看这些附件。", "Please review these attachments.") : prompt) + locationContext).put("expectedSeq", conversationSeq);
             if (editing) payload.put("editSeq", editingSeq);
+            else if (canQueue) payload.put("queue", true);
             if ((canAttachments || canFileAttachments) && (!selectedImages.isEmpty() || !selectedDocuments.isEmpty())) payload.put("attachments", ChatAttachments.remote(selectedImages, selectedDocuments));
             else if (selectedImages.size() == 1) payload.put("image", selectedImages.get(0));
             else if (!selectedImages.isEmpty()) payload.put("images", new JSONArray(selectedImages));
@@ -2518,7 +2606,7 @@ public final class MainActivity extends Activity {
         long runId = lastLive.optLong("runId");
         String server = instance;
         new CamelliaDialog.Builder(this).setTitle(tr("停止当前任务？", "Stop the current run?"))
-            .setMessage(tr("仅停止当前这轮任务，不撤销已经执行的文件操作；关联的自动任务可能暂停。", "Stops this run without undoing completed file operations. Related automatic tasks may be paused."))
+            .setMessage(tr("停止当前任务并暂停待发送队列，不撤销已经执行的文件操作；关联的自动任务可能暂停。", "Stops this run and pauses queued messages without undoing completed file operations. Related automatic tasks may be paused."))
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("停止", "Stop"), (dialog, which) -> {
                 try { submitCommand(command("stop").put("instanceId", server).put("runId", runId)); }
                 catch (Exception error) { reportError("无法保存操作。", "Could not save operation.", error); }
@@ -2801,11 +2889,14 @@ public final class MainActivity extends Activity {
             }
             store.save(saved); credentials = saved;
             if (result.optBoolean("ok")) {
-                if (submitted && outgoingMessage != null) {
+                applyQueue(result);
+                if (submitted && result.optString("state").equals("queued")) {
+                    outgoingMessage = null; renderMessages(lastLive);
+                } else if (submitted && outgoingMessage != null) {
                     if (result.has("userSeq")) outgoingMessage.put("userSeq", result.getLong("userSeq"));
                     outgoingState("accepted");
                 }
-                status.setText(tr("电脑已接收操作", "Computer accepted the operation"));
+                status.setText(result.optString("state").equals("queued") ? tr("已加入电脑队列", "Queued on the computer") : tr("电脑已接收操作", "Computer accepted the operation"));
             } else {
                 if (submitted && outgoingMessage != null) {
                     // A refused edit stays an edit: keep its target so the restored

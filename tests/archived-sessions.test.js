@@ -141,6 +141,8 @@ test('the sidebar delete path is also wired through the shared conversation comm
   const h = setup(t);
   const shared = h.api.sharedConversations;
   const c = shared.create('claude', null, 'Shared delete-me');
+  let released = 0;
+  h.api.codex.sessions.set({ conversationId: c.id }, { shutdown: async () => { released++; } });
   shared.append(c, { role: 'user', engine: 'claude', text: 'hello' });
   shared.save(c);
   const jsonFile = path.join(shared.dir, c.id + '.json');
@@ -149,6 +151,9 @@ test('the sidebar delete path is also wired through the shared conversation comm
 
   const deleted = await h.call('conversation-command', { engine: 'claude', action: 'delete-session', payload: { id: c.id } });
   assert.equal(deleted.ok, true, deleted.error);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(released, 1);
+  assert.equal(h.api.codex.sessions.get({ conversationId: c.id }), null);
   assert.equal(fs.existsSync(jsonFile), false);
   assert.equal(fs.existsSync(logFile), false);
   assert.equal(shared.items.has(c.id), false);
@@ -175,14 +180,24 @@ test('codex, antigravity and kimi sidebar deletes remove their own engine histor
     fs.writeFileSync(file, JSON.stringify({ type: 'user', cwd: dir, message: { role: 'user', content: engine } }) + '\n');
     return file;
   };
+  const configFile = path.join(h.userData, 'desktop-config.json');
+  const readConfig = () => { try { return JSON.parse(fs.readFileSync(configFile, 'utf8')); } catch { return {}; } };
+  const bound = ['codex', 'kimi'];
   for (const engine of ['codex', 'antigravity', 'kimi']) {
     const id = engine + '-session';
     const file = seed(engine, id);
     h.call(engine + '-meta-op', { op: 'toggle-pin', sessionId: id });
     assert.equal((await h.call(engine + '-list-sessions')).sessions.some(s => s.id === id), true);
+    if (bound.includes(engine)) fs.writeFileSync(configFile, JSON.stringify({ ...readConfig(),
+      [engine + 'SessionConnections']: { [id]: 'subscription' }, [engine + 'SessionAccounts']: { [id]: 'account-1' } }));
     const res = await h.call(engine + '-delete-session', { id });
     assert.equal(res.ok, true, res.error);
     assert.equal(fs.existsSync(file), false);
+    if (bound.includes(engine)) {
+      const after = readConfig();
+      assert.equal(after[engine + 'SessionConnections']?.[id], undefined, engine + ' connection binding outlived the conversation');
+      assert.equal(after[engine + 'SessionAccounts']?.[id], undefined, engine + ' account binding outlived the conversation');
+    }
     assert.equal((await h.call(engine + '-list-sessions')).sessions.some(s => s.id === id), false);
     assert.equal(h.events.some(e => e.channel === 'dsh:archived-changed' && e.data.id === id && e.data.action === 'delete'), true);
   }
