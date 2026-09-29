@@ -100,16 +100,26 @@ class CodexClient {
       return Promise.resolve();
     }
     this.close(new Error('Codex process stopped'));
-    this.stopping = new Promise(resolve => {
+    this.stopping = new Promise((resolve, reject) => {
       // Helper processes inherit the app-server's stdout/stderr, so its `close`
       // event can be delayed indefinitely after the process itself is gone.
       // Settle on exit (and kill as a last resort) instead of waiting for the
       // pipes, which would strand the conversation that is switching away from
       // this session.
-      const done = () => { clearTimeout(timer); resolve(); };
-      const timer = setTimeout(() => { killProcessTree(this.proc); done(); }, 5000);
-      this.proc.once('exit', done);
-      this.proc.once('close', done);
+      let killTimer;
+      const done = error => {
+        clearTimeout(timer); clearTimeout(killTimer);
+        this.proc.removeListener('exit', onExit);
+        this.proc.removeListener('close', onExit);
+        if (error) reject(error); else resolve();
+      };
+      const onExit = () => done();
+      const timer = setTimeout(() => {
+        killProcessTree(this.proc);
+        killTimer = setTimeout(() => done(new Error('Codex process has not exited; retry after it stops')), 5000);
+      }, 5000);
+      this.proc.once('exit', onExit);
+      this.proc.once('close', onExit);
       this.proc.stdin.end();
     });
     return this.stopping;
@@ -120,12 +130,29 @@ function codexEnvironment(home, inherited = process.env, proxyUrl = '') {
   const env = { ...inherited, CODEX_HOME: home };
   if (process.platform === 'win32') { env.PATH = inherited.PATH || inherited.Path; delete env.Path; }
   for (const name of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'OPENAI_ORGANIZATION', 'OPENAI_PROJECT_ID', 'CODEX_API_KEY', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE']) delete env[name];
-  if (proxyUrl) for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) env[name] = proxyUrl;
+  if (!env.CAMELLIA_NETWORK_MODE && proxyUrl) for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) env[name] = proxyUrl;
   return env;
 }
 
-function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscription', model, route, contextWindow, env = process.env, proxyUrl = '', cwd = home }) {
+function sharePluginCache(home, shared) {
+  const link = path.join(home, '.tmp');
+  const target = path.resolve(shared);
+  if (!shared || path.resolve(link) === target) return;
+  const relative = path.relative(path.resolve(home), target);
+  if (!relative || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative))) throw new Error('Shared plugin cache must be outside the conversation home');
+  try { fs.lstatSync(link); return; }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  try {
+    fs.mkdirSync(target, { recursive: true });
+    fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    if (!['EEXIST', 'EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) throw error;
+  }
+}
+
+function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscription', model, route, contextWindow, env = process.env, proxyUrl = '', cwd = home, sharedPluginCache = '' }) {
   fs.mkdirSync(home, { recursive: true });
+  if (sharedPluginCache) sharePluginCache(home, sharedPluginCache);
   const file = path.join(configHome, 'config.toml');
   const config = fs.existsSync(file) ? TOML.parse(fs.readFileSync(file, 'utf8')) : {};
   // Connection and credential storage belong to Camellia, not native defaults.

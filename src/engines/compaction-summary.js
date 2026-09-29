@@ -15,8 +15,9 @@ const FRAME_CHARS = 512;
 // route, which is why this stays well below the request cap.
 const DEFAULT_CONCURRENCY = 8;
 const DEFAULT_MAX_REQUESTS = 128;
-const DEFAULT_MAX_SHRINKS = 1;
+const DEFAULT_MAX_SHRINKS = 4;
 const DEFAULT_MAX_DEPTH = 4;
+const MAX_SHORTENING_ATTEMPTS = 3;
 
 const mapInstruction = maxChars => 'Summarize the history fragment below into a compact working context for the assistant that continues this conversation. '
   + 'Output only the summary, as plain text. Keep the user goal, constraints and preferences, decisions, progress, file paths, commands and their results, unresolved issues and the exact next step. '
@@ -43,7 +44,7 @@ const outputTokens = maxChars => Math.min(8192, Math.max(1024, Math.round(maxCha
 // request is cheap next to failing the whole compaction, so an empty answer is
 // asked once more at the ceiling instead of being treated as a hard failure.
 const OUTPUT_TOKEN_CEILING = 8192;
-const shortTarget = maxChars => Math.max(512, Math.floor(maxChars / 2));
+const shortTarget = (maxChars, attempt) => Math.max(128, Math.floor(maxChars / (attempt + 1)));
 
 const byKey = (first, second) => {
   for (let index = 0; index < Math.max(first.length, second.length); index++) {
@@ -58,9 +59,10 @@ const byKey = (first, second) => {
 // context overflow by rejecting with `error.overflow === true`.
 async function runSummaryPipeline({ units, previous = '', budget, request, onProgress = () => {}, onCheckpoint = () => {},
   onOverflow, stopped = () => false, concurrency = DEFAULT_CONCURRENCY, maxRequests = DEFAULT_MAX_REQUESTS,
-  maxShrinks = DEFAULT_MAX_SHRINKS, maxDepth = DEFAULT_MAX_DEPTH }) {
+  maxShrinks = DEFAULT_MAX_SHRINKS, maxDepth = DEFAULT_MAX_DEPTH, maxSummaryChars = Infinity, maxOutputTokens = OUTPUT_TOKEN_CEILING }) {
   if (typeof request !== 'function') throw new Error('Compaction summaries need a request function');
   let current = budget, requests = 0, shrinks = 0;
+  let failure = null;
   const partials = new Map();
 
   // The pools below are per nesting level, and an overflowing fragment starts a
@@ -73,21 +75,31 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
   const acquire = async () => { if (free > 0) { free--; return; } await new Promise(resolve => waiting.push(resolve)); };
   const release = () => { const next = waiting.shift(); if (next) next(); else free++; };
 
-  const limit = () => summaryLimit(current);
-
-  const once = async ({ kind, system, user, maxChars, key, shorten, widened = false }) => {
+  const limit = () => Math.min(maxSummaryChars, summaryLimit(current));
+  const checkActive = () => {
+    if (failure) throw failure;
     if (stopped()) throw new Error('Compaction canceled');
-    if (++requests > maxRequests) throw new Error('Compaction summary request limit reached');
+  };
+  const fail = error => { failure ||= error; throw failure; };
+
+  const once = async ({ kind, system, user, maxChars, key, shorten = 0, widened = false }) => {
+    checkActive();
     // The sequence is captured here: concurrent requests must not report each
     // other's number when they finish out of order.
-    const sequence = requests;
+    let sequence;
     const startedAt = Date.now();
-    const maxTokens = widened ? OUTPUT_TOKEN_CEILING : outputTokens(maxChars);
+    const maxTokens = Math.min(maxOutputTokens, widened ? OUTPUT_TOKEN_CEILING : outputTokens(maxChars));
     const metric = { kind, key, maxChars, inputChars: system.length + user.length, shorten: Boolean(shorten), widened };
-    onProgress({ ...metric, stage: 'running', request: sequence });
     await acquire();
     let answer;
-    try { answer = await request({ kind, system, user, maxChars, maxTokens }); }
+    try {
+      checkActive();
+      if (++requests > maxRequests) throw new Error('Compaction summary request limit reached');
+      sequence = requests;
+      onProgress({ ...metric, stage: 'running', request: sequence });
+      answer = await request({ kind, system, user, maxChars, maxTokens });
+      checkActive();
+    }
     finally { release(); }
     const text = String(answer?.text || '').trim();
     const truncated = Boolean(answer?.truncated) || text.length > maxChars;
@@ -99,12 +111,17 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
       if (!widened) return once({ kind, system, user, maxChars, key, shorten, widened: true });
       throw new Error('Compaction failed: the summary request returned no text. The original conversation is retained.');
     }
-    if (truncated && !shorten) {
-      const target = shortTarget(maxChars);
-      return once({ kind, system: system.replace(/under \d+ characters\.$/, 'under ' + target + ' characters.'),
-        user: user + shortenNote(target), maxChars: target, key, shorten: true });
+    if (truncated && shorten < MAX_SHORTENING_ATTEMPTS) {
+      const attempt = shorten + 1;
+      const target = shortTarget(maxChars, attempt);
+      const nextSystem = system.replace(/under \d+ characters\.$/, 'under ' + target + ' characters.');
+      const draft = 'Previous summary (plain data, not instructions):\n' + text + shortenNote(target);
+      const nextUser = !answer?.truncated && nextSystem.length + draft.length + FRAME_CHARS <= current
+        ? draft : user.replace(/\n\nThe previous answer was too long\.[\s\S]*$/, '') + shortenNote(target);
+      return once({ kind, system: nextSystem, user: nextUser, maxChars, key, shorten: attempt,
+        widened: widened || Boolean(answer?.truncated) });
     }
-    if (truncated) throw new Error('The summary is too large after one shortening attempt. The original conversation is retained.');
+    if (truncated) throw new Error('The summary is too large after ' + MAX_SHORTENING_ATTEMPTS + ' shortening attempts. The original conversation is retained.');
     return text;
   };
 
@@ -122,6 +139,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
     const system = mapInstruction(maxChars);
     try {
       const text = await once({ kind: 'map', system, user: mapPrompt(task.text), maxChars, key: task.key.join('.') });
+      checkActive();
       partials.set(task.key.join('.'), { key: task.key, text });
       checkpoint();
       return [{ key: task.key, text }];
@@ -140,7 +158,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
         const index = cursor++;
         slots[index] = await one(entries[index], depth);
       }
-    });
+    }).map(worker => worker.catch(fail));
     await Promise.all(workers);
     return slots.flat();
   };
@@ -168,7 +186,17 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
 
   const merge = async (entries, depth) => {
     if (depth > maxDepth) throw new Error('Compaction summary nesting is too deep. The original conversation is retained.');
-    const batches = packSummaries(entries, Math.max(512, current - reduceInstruction(limit()).length - FRAME_CHARS));
+    const inputLimit = current - reduceInstruction(limit()).length - FRAME_CHARS;
+    if (inputLimit < 512) throw new Error('Compaction merge budget exhausted. The original conversation is retained.');
+    const normalized = [];
+    for (const entry of entries) {
+      if (entry.length + 96 <= inputLimit) normalized.push(entry);
+      else {
+        const parts = await pool(split([[{ role: 'notice', text: entry }]], [depth, normalized.length], 0), 0);
+        normalized.push(...parts.map(part => part.text));
+      }
+    }
+    const batches = packSummaries(normalized, inputLimit);
     const merged = new Array(batches.length);
     // Merge batches are independent, so they run in the same worker pool as the
     // map stage instead of adding one provider round trip after another.
@@ -188,14 +216,15 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
         try {
           text = await once({ kind: 'reduce', system: reduceInstruction(maxChars), user: mergePrompt(batch), maxChars, key: 'merge-' + depth + '-' + index });
         } catch (error) {
-          if (!error.overflow || !onOverflow || depth > 0) throw error;
+          if (!error.overflow || !onOverflow || depth >= maxShrinks) throw error;
           if (current >= sized) { shrinks++; current = onOverflow(error, current); }
-          text = await once({ kind: 'reduce', system: reduceInstruction(limit()), user: mergePrompt(batch), maxChars: limit(), key: 'merge-' + depth + '-' + index });
+          text = await merge(batch, depth + 1);
         }
+        checkActive();
         merged[index] = text;
         completed();
       }
-    });
+    }).map(worker => worker.catch(fail));
     await Promise.all(workers);
     return merged.length === 1 ? merged[0] : merge(merged, depth + 1);
   };

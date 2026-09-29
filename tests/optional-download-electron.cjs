@@ -8,7 +8,10 @@ const childProcess = require('node:child_process');
 
 async function main() {
   if (process.versions.electron) {
-    const { app, BrowserWindow, dialog } = require('electron');
+    const { app, BrowserWindow, dialog, session } = require('electron');
+    const fromPartition = session.fromPartition.bind(session);
+    session.fromPartition = (name, ...args) => name === 'camellia-system-proxy-detector'
+      ? { setProxy: async () => {}, resolveProxy: async () => 'PROXY 127.0.0.1:18899' } : fromPartition(name, ...args);
     const resources = process.env.CAMELLIA_OPTIONAL_RESOURCES;
     const profile = process.env.CAMELLIA_OPTIONAL_PROFILE;
     app.setPath('userData', profile); app.setPath('sessionData', profile);
@@ -66,12 +69,6 @@ async function main() {
     assert.equal(downloads.length, 0, 'Home must not download any engine');
     assert.equal(prompts.length, 0, 'Startup must not prompt for a download');
     assert.match(await home.webContents.executeJavaScript("document.querySelector('#enterKimi').getAttribute('aria-label')"), /Download & open/);
-    replies.push(2); // Cancel without configuring a proxy.
-    await home.webContents.executeJavaScript("document.querySelector('#enterKimi').click()");
-    await wait(() => home.webContents.executeJavaScript("!document.querySelector('#enterKimi').disabled && document.querySelector('#homeStatus').textContent === ''"));
-    assert.equal(downloads.length, 0);
-    assert.equal(prompts[0].defaultId, 0);
-    assert.equal(prompts[0].buttons[0], 'Download directly');
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'engines',engine:'dsh'})");
     const settings = await windowFor('#retryNative');
     await wait(() => settings.webContents.executeJavaScript("!document.querySelector('#retryNative').hidden && document.querySelector('#retryNative').textContent === 'Manage downloads'"));
@@ -79,23 +76,20 @@ async function main() {
     await settings.webContents.executeJavaScript("document.querySelector('#retryNative').click()");
     await wait(() => settings.webContents.executeJavaScript("document.querySelectorAll('[data-install]:not(:disabled)').length === 6"));
     assert.equal(downloads.length, 0, 'Listing available downloads is read-only');
-    replies.push(1); // Set up a proxy from the download prompt.
-    await home.webContents.executeJavaScript("document.querySelector('#enterKimi').click()");
-    await wait(() => settings.webContents.executeJavaScript("!document.querySelector('#generalPage').hidden && document.activeElement.id === 'downloadProxyUrl'"));
+    await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'general',focus:'networkMode'})");
+    await wait(() => settings.webContents.executeJavaScript("!document.querySelector('#generalPage').hidden"));
     await settings.webContents.executeJavaScript(`
-      document.querySelector('#downloadMode').value = 'proxy';
-      document.querySelector('#downloadProxyUrl').value = 'http://127.0.0.1:18899';
-      document.querySelector('#downloadProxyUrl').dispatchEvent(new Event('change', {bubbles: true}));
+      document.querySelector('#networkMode').value = 'system';
+      document.querySelector('#networkMode').dispatchEvent(new Event('change', {bubbles: true}));
     `);
-    await wait(() => settings.webContents.executeJavaScript("document.querySelector('#status').textContent === 'Download connection saved'"));
+    await wait(() => settings.webContents.executeJavaScript("document.querySelector('#status').textContent === 'Network connection saved'"));
     const saved = JSON.parse(fs.readFileSync(path.join(profile, 'desktop-config.json')));
     assert.deepEqual(saved.downloadProxy, { mode: 'proxy', url: 'http://127.0.0.1:18899/' });
-    replies.push(0); // Use the saved proxy.
+    // Downloads follow the general preference without a second connection prompt.
     await home.webContents.executeJavaScript("document.querySelector('#enterKimi').click()");
     await wait(() => settings.webContents.executeJavaScript("document.querySelector('[data-install=kimi]')?.textContent === 'Retry download'"));
     assert.equal(downloads.length, 1);
-    assert.equal(prompts.at(-1).defaultId, 0);
-    assert.equal(prompts.at(-1).buttons[0], 'Download with proxy');
+    assert.equal(prompts.length, 0);
     assert.equal(downloads[0].env.HTTPS_PROXY, saved.downloadProxy.url);
     assert.equal(downloads[0].env.npm_config_https_proxy, saved.downloadProxy.url);
     assert.equal(downloads[0].exe, path.join(resources, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node'));
@@ -103,17 +97,13 @@ async function main() {
     assert.deepEqual(installedEngines(), [], 'a failed download installs nothing and leaves no staging or backup directory');
     const rows = await settings.webContents.executeJavaScript('window.dshDesktop.runtimeState()');
     assert.ok(rows.engines.filter(row => row.id !== 'kimi').every(row => row.status === 'missing'));
-    replies.push(1); // Retry directly, without changing the saved preference.
+    await settings.webContents.executeJavaScript("window.dshDesktop.networkSaveSettings({mode:'direct'})");
     await settings.webContents.executeJavaScript("document.querySelector('[data-install=kimi]').click()");
     await wait(async () => downloads.length === 2 && await settings.webContents.executeJavaScript("!document.querySelector('[data-install=kimi]').disabled"));
     assert.equal(downloads[1].env.HTTPS_PROXY, '');
     assert.equal(downloads[1].env.NO_PROXY, '*');
     assert.equal(downloads[1].env.npm_config_noproxy, '*');
-    replies.push(3);
-    await settings.webContents.executeJavaScript("document.querySelector('[data-install=kimi]').click()");
-    await wait(() => settings.webContents.executeJavaScript("!document.querySelector('[data-install=kimi]').disabled && document.querySelector('#status').textContent === ''"));
-    assert.equal(downloads.length, 2, 'Canceling a retry must not start another download');
-    replies.push(0);
+    await settings.webContents.executeJavaScript("window.dshDesktop.networkSaveSettings({mode:'system'})");
     await home.webContents.executeJavaScript("document.querySelector('#enterCodex').click()");
     await wait(async () => downloads.length === 3 && await home.webContents.executeJavaScript("!document.querySelector('#enterCodex').disabled"));
     stagedPrefix(downloads[2], 'codex');
@@ -122,7 +112,7 @@ async function main() {
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(profile, 'desktop-config.json'))).downloadProxy, saved.downloadProxy);
     assert.deepEqual(replies, []);
     assert.deepEqual(errors, []);
-    console.log('PASS: packaged downloads prompt for direct/proxy/cancel, save device preferences, pass the chosen connection to bundled installers, and retry without downloading other engines');
+    console.log('PASS: packaged downloads use the general network preference, pass it to bundled installers, and retry without downloading other engines');
     app.quit(); return;
   }
   const resources = path.resolve(process.argv[2] || (process.platform === 'darwin' ? 'dist/mac-arm64/Camellia.app/Contents/Resources' : 'dist/win-unpacked/resources'));

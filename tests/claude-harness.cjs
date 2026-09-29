@@ -26,6 +26,10 @@ function createHarness(existingRoot) {
     message: async () => ({ response: 0 }),
   };
   const electron = {
+    session: {
+      fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY 127.0.0.1:18899' }),
+      defaultSession: { setProxy: async () => {} },
+    },
     app: { getPath: () => userData, getName: () => 'camellia-desktop', setName() {}, commandLine: { appendSwitch() {} }, getVersion: () => '0.3.0', requestSingleInstanceLock: () => true, on() {}, whenReady: () => ({ then() {} }) },
     nativeTheme: { themeSource: 'system' },
     Menu: { buildFromTemplate: template => template, setApplicationMenu(menu) { this.current = menu; } },
@@ -34,6 +38,8 @@ function createHarness(existingRoot) {
       showMessageBox: async (...args) => dialogBehavior.message(...args) },
   };
   const mockProcess = Object.create(process);
+  const processEvents = new EventEmitter();
+  mockProcess.on = processEvents.on.bind(processEvents);
   mockProcess.env = { ...process.env, DSH_HOME: path.join(home, '.dsh'), APPDATA: home, LOCALAPPDATA: home, CLAUDE_CONFIG_DIR: '' };
   const mockFs = Object.create(fs);
   mockFs.createWriteStream = () => Object.assign(new EventEmitter(), { write() {}, end() {} });
@@ -103,6 +109,7 @@ function createHarness(existingRoot) {
     api.sharedConversations.pauseGoals();
     for (const session of api.claudeSessions.sessions.values()) session.kill();
     timers.clear();
+    processEvents.removeAllListeners();
     // The only recursive deletion is the explicitly verified, per-test sandbox.
     const resolved = path.resolve(root);
     if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith('dsh-workspaces-')) throw new Error('Unsafe test cleanup path');

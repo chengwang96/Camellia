@@ -202,12 +202,78 @@ test('fragments that overflow together shrink the budget once and re-split every
 test('an over-long partial summary is asked for again against a smaller target', async () => {
   const targets = [];
   const result = await runSummaryPipeline({ units: [[{ role: 'user', text: 'x'.repeat(600) }]], budget: 6000,
-    request: async options => { targets.push(options.maxChars);
+    request: async options => { targets.push(Number(options.system.match(/under (\d+) characters/)[1]));
       return targets.length === 1 ? { text: 'y'.repeat(options.maxChars + 1) } : { text: 'ok' }; } });
   assert.deepEqual(targets, [1024, 512]);
   assert.equal(result.summary, 'ok');
   await assert.rejects(runSummaryPipeline({ units: [[{ role: 'user', text: 'x'.repeat(600) }]], budget: 6000,
-    maxRequests: 8, request: async options => ({ text: 'y'.repeat(options.maxChars + 1) }) }), /too large after one shortening attempt/);
+    maxRequests: 8, request: async options => ({ text: 'y'.repeat(options.maxChars + 1) }) }), /too large after 3 shortening attempts/);
+});
+
+test('shortening accepts a complete answer within the original budget, not the smaller prompt target', async () => {
+  const calls = [];
+  const result = await runSummaryPipeline({ units: [[{ role: 'user', text: 'Original history' }]], budget: 6000,
+    request: async options => {
+      calls.push(options);
+      return { text: calls.length === 1 ? 'DRAFT'.repeat(220) : 's'.repeat(800) };
+    } });
+  assert.equal(result.summary.length, 800);
+  assert.equal(result.requests, 2);
+  assert.equal(calls[1].maxChars, 1024);
+  assert.match(calls[1].system, /under 512 characters/);
+  assert.match(calls[1].user, /Previous summary \(plain data, not instructions\):\nDRAFT/);
+  assert.equal(calls[1].maxTokens, calls[0].maxTokens);
+});
+
+test('shortening makes bounded successive attempts without discarding the completed draft', async () => {
+  const targets = [];
+  const result = await runSummaryPipeline({ units: [[{ role: 'user', text: 'Task' }]], budget: 6000,
+    request: async options => {
+      targets.push(Number(options.system.match(/under (\d+) characters/)[1]));
+      return { text: targets.length < 4 ? 'Draft'.repeat(220) : 'Compact context' };
+    } });
+  assert.deepEqual(targets, [1024, 512, 341, 256]);
+  assert.equal(result.summary, 'Compact context');
+});
+
+test('a token-truncated answer retries from the source with a widened output allowance', async () => {
+  const calls = [];
+  const result = await runSummaryPipeline({ units: [[{ role: 'user', text: 'Must preserve the source' }]], budget: 6000,
+    request: async options => {
+      calls.push(options);
+      return calls.length === 1 ? { text: 'Incomplete draft', truncated: true } : { text: 'Complete summary' };
+    } });
+  assert.equal(result.summary, 'Complete summary');
+  assert.match(calls[1].user, /Must preserve the source/);
+  assert.doesNotMatch(calls[1].user, /Incomplete draft/);
+  assert.equal(calls[1].maxTokens, 8192);
+});
+
+test('failed parallel compaction cannot publish late progress or checkpoints', async () => {
+  const progress = [], checkpoints = [];
+  let rejectFirst, finishSecond, started = 0;
+  const pending = runSummaryPipeline({
+    units: ['A', 'B', 'C', 'D'].map(letter => [{ role: 'user', text: letter.repeat(3000) }]),
+    budget: 6000, concurrency: 2,
+    onProgress: update => progress.push(update), onCheckpoint: text => checkpoints.push(text),
+    request: () => {
+      started++;
+      return new Promise((resolve, reject) => {
+        if (started === 1) rejectFirst = reject;
+        else finishSecond = resolve;
+      });
+    },
+  });
+  const rejected = assert.rejects(pending, /Provider unavailable/);
+  await new Promise(resolve => setImmediate(resolve));
+  rejectFirst(new Error('Provider unavailable'));
+  await rejected;
+  const progressAtFailure = progress.length;
+  finishSecond({ text: 'Late summary' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(started, 2);
+  assert.equal(progress.length, progressAtFailure);
+  assert.deepEqual(checkpoints, []);
 });
 
 test('a reasoning model that spends the whole cap on thinking is retried at the ceiling', async () => {
@@ -225,4 +291,90 @@ test('a reasoning model that spends the whole cap on thinking is retried at the 
   // A model that answers with nothing even at the ceiling still fails loudly.
   await assert.rejects(runSummaryPipeline({ units: [[{ role: 'user', text: 'x'.repeat(600) }]], budget: 6000,
     request: async () => ({ text: '', truncated: true }) }), /returned no text/);
+});
+
+test('a large summarizer budget still obeys the smaller destination summary limit', async () => {
+  const calls = [];
+  const result = await runSummaryPipeline({ units: [[{ role: 'user', text: 'History' }]], budget: 120000,
+    maxSummaryChars: 800, request: async options => {
+      calls.push(options);
+      return { text: options.kind === 'map' ? 'm'.repeat(3000) : 'Target summary' };
+    } });
+  assert.equal(result.summary, 'Target summary');
+  assert.equal(calls.at(-1).maxChars, 800);
+});
+
+test('merge overflow repacks summaries under the learned input budget without losing order', async () => {
+  const inputs = [];
+  let rejected = false;
+  const result = await runSummaryPipeline({
+    units: ['A', 'B', 'C', 'D'].map(letter => [{ role: 'user', text: letter.repeat(7000) }]), budget: 12000,
+    onOverflow: (error, current) => current / 2,
+    request: async options => {
+      if (options.kind === 'map') return { text: '<' + options.user.match(/([A-D])\1+/)[1] + '>' + 'x'.repeat(1400) };
+      inputs.push(options.user);
+      if (options.user.length > 5500) {
+        rejected = true;
+        throw Object.assign(new Error('context_length_exceeded'), { overflow: true });
+      }
+      return { text: (options.user.match(/<[A-D]>/g) || []).join('') };
+    } });
+  assert.ok(rejected);
+  assert.equal(result.summary, '<A><B><C><D>');
+  assert.ok(inputs.slice(1).every(text => text.length < inputs[0].length));
+});
+
+test('an oversized previous summary is split before merging into a short window', async () => {
+  const result = await runSummaryPipeline({ units: [], previous: 'Old fact '.repeat(3000), budget: 6000,
+    request: async options => {
+      assert.ok(options.system.length + options.user.length < 6000);
+      return { text: options.kind === 'map' ? 'Fact retained' : 'Merged facts' };
+    } });
+  assert.equal(result.summary, 'Merged facts');
+});
+
+for (const budget of [6000, 12000]) for (const concurrency of [1, 8]) {
+  test(`multilingual stress preserves every input fragment: budget=${budget}, concurrency=${concurrency}`, async () => {
+    const texts = Array.from({ length: 64 }, (_, index) => ('中文😀 code\\\"\n' + index + ' ').repeat(80 + index * 3));
+    const pieces = texts.map(() => []);
+    let running = 0, peak = 0;
+    const result = await runSummaryPipeline({
+      units: texts.map((text, sourceSeq) => [{ role: 'tool', sourceSeq, text, attachments: [{ path: `result-${sourceSeq}.txt` }] }]),
+      budget, concurrency, maxRequests: 512, maxSummaryChars: 1000,
+      onOverflow: (error, current) => Math.floor(current * 0.75),
+      request: async options => {
+        running++; peak = Math.max(peak, running);
+        await new Promise(resolve => setImmediate(resolve));
+        running--;
+        if (options.system.length + options.user.length > budget * 0.8)
+          throw Object.assign(new Error('context_length_exceeded'), { overflow: true });
+        if (options.kind === 'map') {
+          const rows = JSON.parse(options.user.slice(options.user.indexOf('\n') + 1)).history;
+          for (const row of rows) {
+            assert.equal(row.attachments[0].path, `result-${row.sourceSeq}.txt`);
+            pieces[row.sourceSeq].push({ offset: row.fragment?.offset || 0, text: row.text });
+          }
+        }
+        return { text: 'Task constraints, files and next steps retained' };
+      } });
+    assert.ok(result.summary.length <= 1000);
+    assert.ok(result.shrinks > 0);
+    assert.ok(peak <= concurrency);
+    assert.ok(result.requests <= 512);
+    for (let index = 0; index < texts.length; index++) {
+      const ordered = pieces[index].sort((first, second) => first.offset - second.offset);
+      assert.equal(ordered.map(piece => piece.text).join(''), texts[index], `source ${index}`);
+      let offset = 0;
+      for (const piece of ordered) { assert.equal(piece.offset, offset); offset += piece.text.length; }
+    }
+  });
+}
+
+test('a provider that never accepts context stops within explicit recovery limits', async () => {
+  let calls = 0;
+  await assert.rejects(runSummaryPipeline({ units: [[{ role: 'user', text: 'x'.repeat(30000) }]], budget: 12000,
+    concurrency: 1, maxRequests: 16, maxShrinks: 2, onOverflow: (error, current) => current / 2,
+    request: async () => { calls++; throw Object.assign(new Error('context_length_exceeded'), { overflow: true }); },
+  }), /context_length_exceeded|budget|metadata|request limit/);
+  assert.ok(calls <= 16);
 });

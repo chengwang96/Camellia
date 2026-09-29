@@ -9,6 +9,11 @@ const { writeText } = require('../shared/json-store');
 const ROUTE_ENV = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL'];
 const FIELDS = {
+  pi: [
+    { key: 'permissionMode', label: 'Default permissions', type: 'select', options: [['ask', 'Ask by default'], ['auto', 'Ask as needed'], ['full', 'Allow all']] },
+    { key: 'thinkingBudget', label: 'Default reasoning level', type: 'select', options: [['', 'Model default'], ['off', 'Off'], ['minimal', 'Minimal'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high']] },
+    { key: 'contextWindow', label: 'API model context window (tokens)', type: 'number', min: 4096, max: 2000000 },
+  ],
   codex: [
     { key: 'approval_policy', label: 'Command approvals', type: 'select', options: [['', 'Workbench default'], ['untrusted', 'Ask for untrusted commands'], ['on-request', 'Ask when needed'], ['never', 'Never ask']] },
     { key: 'sandbox_mode', label: 'Sandbox', type: 'select', options: [['', 'Workspace write'], ['read-only', 'Read only'], ['workspace-write', 'Workspace write'], ['danger-full-access', 'Full access']] },
@@ -63,11 +68,12 @@ function routeKimi(config, { route, model, contextWindow = 131072 }) {
     providers: { ...config.providers, workbench: { type: 'openai', base_url: route.baseUrl + '/v1', api_key: route.authToken } },
     models: { ...config.models, [model]: { provider: 'workbench', model, max_context_size: contextWindow } } };
 }
-function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravityHome, codexHome, getDesktop, saveDesktop, getRoute }) {
+function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravityHome, codexHome, piHome, getDesktop, saveDesktop, getRoute }) {
   const claudeDir = claudeHome || path.join(home, '.claude');
   const subscription = engine => engine === 'antigravity' && getDesktop(engine).connection === 'subscription';
   const fields = engine => FIELDS[subscription(engine) ? 'antigravitySubscription' : engine] || [];
   function definitions(engine) {
+    if (engine === 'pi') return [{ id: 'instructions', label: 'Global instructions', format: 'text', path: path.join(piHome, 'AGENTS.md') }];
     if (engine === 'codex') return [
       { id: 'settings', label: 'Configuration and MCP servers', format: 'toml', path: path.join(codexHome, 'config.toml') },
       { id: 'instructions', label: 'Instructions', format: 'text', path: path.join(codexHome, 'AGENTS.md') },
@@ -113,12 +119,19 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
       const value = doc.format === 'text' ? text : editable(engine, doc, parse(text, doc.format));
       return { ...doc, revision: revision(text), text: doc.format === 'text' ? value : stringify(value, doc.format), backup: fs.existsSync(doc.path + '.workbench.bak') };
     });
-    const native = parse(files[0].text, files[0].format);
-    return { engine, files, desktop: getDesktop(engine), scope: engine === 'codex' || engine === 'antigravity' && !subscription(engine) ? 'app' : 'cli',
+    const desktop = getDesktop(engine);
+    const native = engine === 'pi' ? { contextWindow: 65536, ...desktop } : parse(files[0].text, files[0].format);
+    return { engine, files, desktop, scope: ['codex', 'pi'].includes(engine) || engine === 'antigravity' && !subscription(engine) ? 'app' : 'cli',
       fields: fields(engine).map(field => ({ ...field, value: getAt(native, field.key) ?? (field.type === 'checkbox' ? false : '') })) };
   }
   function save(engine, payload) {
     const definitionsById = new Map(definitions(engine).map(doc => [doc.id, doc]));
+    for (const [key, next] of Object.entries(payload.common || {})) {
+      const field = fields(engine).find(item => item.key === key);
+      if (!field) throw new Error("Unknown setting");
+      if (field.type === 'number' && next !== '' && (!Number.isInteger(next) || next < field.min || next > field.max)) throw new Error(`${field.label} must be an integer between ${field.min} and ${field.max}`);
+      if (field.type === 'select' && next !== '' && !field.options.some(([id]) => id === next)) throw new Error(`Invalid ${field.label.toLowerCase()}`);
+    }
     const route = ['claude', 'kimi'].includes(engine) ? getRoute() : null;
     const writes = payload.files.map(input => {
       const doc = definitionsById.get(input.id);
@@ -129,10 +142,6 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
       const old = parse(original, doc.format);
       let value = parse(input.text, doc.format);
       if (doc.id === 'settings') for (const [key, next] of Object.entries(payload.common || {})) {
-        const field = fields(engine).find(item => item.key === key);
-        if (!field) throw new Error("Unknown setting");
-        if (field.type === 'number' && next !== '' && (!Number.isInteger(next) || next < field.min || next > field.max)) throw new Error(`${field.label} must be an integer between ${field.min} and ${field.max}`);
-        if (field.type === 'select' && next !== '' && !field.options.some(([id]) => id === next)) throw new Error(`Invalid ${field.label.toLowerCase()}`);
         setAt(value, key, next);
       }
       if (doc.key) value = { ...old, [doc.key]: value };
@@ -163,7 +172,7 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
     });
     // Validate every document before replacing any file, and back up the originals once.
     for (const item of writes) backup(item.file);
-    const desktop = { ...payload.desktop };
+    const desktop = engine === 'pi' ? { ...payload.common } : { ...payload.desktop };
     if (engine === 'codex') {
       const native = parse(writes.find(item => item.file === definitionsById.get('settings').path).text, 'toml');
       // The composer's default uses the native approval and sandbox combination.
@@ -205,6 +214,7 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
       backup(doc.path); writeText(doc.path, stringify(value, doc.format));
     }
   }
-  return { get, save, kimiConfig, syncManagedRoutes, backupDsh: () => backup(path.join(dshHome(), 'settings.yaml')) };
+  return { get, save, kimiConfig, syncManagedRoutes, piInstructions: () => read(definitions('pi')[0].path),
+    backupDsh: () => backup(path.join(dshHome(), 'settings.yaml')) };
 }
 module.exports = { createEngineSettings, parse, stringify, backup, routeKimi };

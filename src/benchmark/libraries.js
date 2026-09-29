@@ -205,6 +205,8 @@ function createLibraryManager({ directory, downloadOptions = () => undefined, on
         await runCommand(envPython(dir), ['-I', '-c', SPECS[id].imports.map(name => `import ${name}`).join('; ')], { env, cwd: dir });
         writeJson(path.join(dir, 'installed.json'), { fingerprint: fingerprint(id), platform: platform + '-' + arch, pythonVersion: PYTHON_VERSION });
         cache.delete(id); suiteCache.clear(); tasks(id);
+        try { await runCommand(uv, ['cache', 'prune', '--ci'], { env, cwd: dir }); }
+        catch (error) { report('Packages installed; cache pruning deferred: ' + error.message); }
         progress.set(id, { status: 'ready', message: 'Ready' }); onChange();
         return locate(id);
       } catch (error) { progress.set(id, { status: 'error', message: error.message }); onChange(); throw error; }

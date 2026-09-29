@@ -223,6 +223,7 @@ function desktopZoom() {
 let runtimeManager;
 function engineBusy(engine) {
   return sharedConversations.isBusy(engine)
+    || (engine === 'pi' && piChat.sessions.running)
     || (engine === 'codex' && (codex.session?.running || codex.goal.armed))
     || (engine === 'claude' && (claudeSessions.legacy?.running || goalDriver.armed))
     || (engine === 'kimi' && (kimiSessions.legacy?.running || kimiGoalDriver.armed))
@@ -251,21 +252,9 @@ function runtimes() {
   return runtimeManager;
 }
 async function chooseDownloadConnection(engine) {
-  const saved = downloadSettings(loadConfig().downloadProxy);
-  const hasProxy = Boolean(saved.url);
-  const buttons = hasProxy ? ['Download with proxy', 'Download directly', 'Proxy settings', 'Cancel']
-    : ['Download directly', 'Set up proxy', 'Cancel'];
-  const { response } = await dialog.showMessageBox(BrowserWindow.getFocusedWindow() || mainWindow, {
-    type: 'question', title: uiText(`Download ${ENGINES[engine].name}`), message: uiText(`How would you like to download ${ENGINES[engine].name}?`),
-    detail: uiText(hasProxy ? `Saved proxy: ${new URL(saved.url).origin}\nManage the download connection in Settings → General.`
-      : 'No download proxy is configured. You can add your own proxy in Settings → General.'),
-    buttons: buttons.map(uiText), defaultId: hasProxy && saved.mode === 'direct' ? 1 : 0, cancelId: buttons.length - 1,
-    noLink: true,
-  });
-  if (response === buttons.length - 2) openSettingsWindow({ page: 'general', focus: 'downloadProxyUrl' });
-  if (response >= buttons.length - 2) throw Object.assign(new Error('Download cancelled'), { code: 'DOWNLOAD_CANCELLED' });
-  return { ...saved, mode: hasProxy && response === 0 ? 'proxy' : 'direct' };
+  return downloadSettings(loadConfig().downloadProxy);
 }
+
 let runtimeUpdatesService;
 let appUpdatesService;
 function appUpdates() {
@@ -339,9 +328,9 @@ function engineSettings() {
     claudeHome: process.env.CLAUDE_CONFIG_DIR,
     dshHome: () => loadConfig().dshHome || DSH_HOME,
     kimiHome: process.env.KIMI_CODE_HOME || path.join(os.homedir(), '.kimi-code'),
-    antigravityHome: antigravity.home, codexHome: codex.home,
-    getDesktop: engine => engine === 'codex' ? codex.settings() : engine === 'antigravity' ? antigravity.settings() : engine === 'kimi' ? kimiSettings() : engine === 'claude' ? claudeSettings() : {},
-    saveDesktop: (engine, value) => engine === 'codex' ? codex.saveSettings(value) : engine === 'antigravity' ? antigravity.saveSettings(value) : engine === 'kimi' ? saveKimiSettings(value) : engine === 'claude' ? saveClaudeSettings(value) : undefined,
+    antigravityHome: antigravity.home, codexHome: codex.home, piHome: path.join(app.getPath('userData'), 'pi-native'),
+    getDesktop: engine => engine === 'codex' ? codex.settings() : engine === 'antigravity' ? antigravity.settings() : engine === 'kimi' ? kimiSettings() : engine === 'claude' ? claudeSettings() : engine === 'pi' ? piChat.settings() : {},
+    saveDesktop: (engine, value) => engine === 'codex' ? codex.saveSettings(value) : engine === 'antigravity' ? antigravity.saveSettings(value) : engine === 'kimi' ? saveKimiSettings(value) : engine === 'claude' ? saveClaudeSettings(value) : engine === 'pi' ? piChat.saveSettings(value) : undefined,
     getRoute: () => routerConfig.hasRoutes(readOllamaProxyConfig()) ? resolveClaudeRoute() : null,
   });
   return nativeSettings;
@@ -377,6 +366,22 @@ function subscriptionUsage() {
     file: path.join(app.getPath('userData'), 'subscription-usage.json'),
     onChange: () => broadcastApiRouter(apiRouterState()),
   });
+}
+let networkSettingsService, networkDispatcher;
+function networkSettings() {
+  if (!networkSettingsService) networkSettingsService = require('./network-settings').createNetworkSettings({ loadConfig, saveConfig,
+    sessions: () => require('electron').session,
+    applyEnvironment: env => {
+      const { PROXY_KEYS } = require('./network-settings');
+      for (const key of Object.keys(process.env)) if (PROXY_KEYS.test(key)) delete process.env[key];
+      Object.assign(process.env, env);
+      const { setGlobalDispatcher, EnvHttpProxyAgent } = require('undici');
+      const previous = networkDispatcher;
+      networkDispatcher = new EnvHttpProxyAgent({ httpProxy: env.HTTP_PROXY, httpsProxy: env.HTTPS_PROXY, noProxy: env.NO_PROXY });
+      setGlobalDispatcher(networkDispatcher);
+      previous?.close().catch(() => {});
+    } });
+  return networkSettingsService;
 }
 function subscriptionUsageState() {
   return subscriptionUsage().state(require('../api/subscription-usage').subscriptionProfiles(loadConfig()));
@@ -436,6 +441,12 @@ function accountInsights(state = insights().state()) {
       info: { ...kimi.usage, refreshing: Boolean(kimi.usage?.refreshing || kimi.refreshing) },
       capability: { supported: true, label: 'Kimi Code subscription quota', source: 'client' } });
   }
+  for (const profile of codex.accountState().accounts.filter(account => account.signedIn)) {
+    const account = codex.accountState(profile.id);
+    const history = account.quotaHistory || [];
+    subscriptions.push({ id: 'codex:' + profile.id, engine: 'codex', name: 'ChatGPT / Codex', label: profile.label || profile.email,
+      info: { latest: history.at(-1), history }, capability: { supported: true, label: 'ChatGPT quota', source: 'client' } });
+  }
   return { ...state, subscriptions };
 }
 function broadcastAccountInsights(state) {
@@ -445,9 +456,12 @@ async function refreshInsights(payload = {}) {
   const wanted = String(payload.subscriptionId || '');
   const kimiIds = !payload.apiOnly && !payload.providerId && !payload.keyId
     ? kimiAccount.list().map(profile => profile.id).filter(id => !wanted || wanted === 'kimi:' + id) : [];
+  const codexIds = !payload.apiOnly && !payload.providerId && !payload.keyId
+    ? codex.accountState().accounts.filter(account => account.signedIn && (!wanted || wanted === 'codex:' + account.id)).map(account => account.id) : [];
   await Promise.all([
     payload.subscriptionId ? null : insights().refresh(payload),
     ...kimiIds.map(id => kimiAccount.refreshUsage({ force: payload.force !== false }, id)),
+    ...codexIds.map(id => codex.handlers['account-refresh']({ id })),
   ]);
   return accountInsights();
 }
@@ -884,6 +898,7 @@ const codex = createCodex({ dataDir: app.getPath('userData'), loadConfig, saveCo
   onEvent: event => publishChatEvent('codex', event),
   onGoal: goal => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:codex-goal', goal); },
   onAccount: account => {
+    broadcastAccountInsights();
     for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) {
       window.webContents.send('dsh:codex-account', account);
       window.webContents.send('dsh:engine-settings-changed', { engine: 'codex' });
@@ -925,6 +940,7 @@ const dshChat = createDshChat({ dataDir: app.getPath('userData'), loadConfig, sa
 const piChat = createPiChat({ dataDir: app.getPath('userData'), loadConfig, saveConfig, getRoute: resolveClaudeRoute,
   getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
   runtime: () => runtimes().locate('pi'), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'pi'),
+  instructions: () => engineSettings().piInstructions(),
   onEvent: event => publishChatEvent('pi', event), log });
 sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
   summarize: compactionSummarizer,
@@ -954,6 +970,11 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
     if (engine !== 'dsh' || !loadConfig().dshBin) await runtimes().ensure(engine, settings?.connection);
   },
   onEvent: event => {
+    if (event.type === 'conversation:deleted') {
+      for (const pool of [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, piChat.sessions]) {
+        void pool.release({ conversationId: event.session_id }).catch(error => log('Conversation release failed: ' + error.message));
+      }
+    }
     if (event.type === 'conversation:settings') {
       for (const window of BrowserWindow.getAllWindows()) {
         if (!window.isDestroyed()) window.webContents.send('dsh:engine-settings-changed', { engine: event.engine });
@@ -1365,12 +1386,17 @@ if (!gotSingleInstanceLock) {
     'subscription-preferences-get': ({ engine }) => {
       if (!['codex', 'kimi', 'antigravity'].includes(engine)) throw new Error('Unknown subscription engine');
       const settings = engine === 'codex' ? codex.settings() : engine === 'kimi' ? kimiSettings() : antigravity.settings();
-      return { ok: true, preferences: { connection: settings.connection,
+      return { ok: true, preferences: { autoSwitchQuota: loadConfig().subscriptionAutoSwitch?.[engine] !== false, connection: settings.connection,
         ...(engine === 'kimi' ? { region: settings.region || 'mainland-cn' } : { proxyUrl: settings.proxyUrl || '' }),
         ...(engine === 'antigravity' ? { useG1Credits: readJson(path.join(os.homedir(), '.gemini/antigravity-cli/settings.json'), {}).useG1Credits === true } : {}) } };
     },
     'subscription-preferences-save': async ({ engine, preferences = {} }) => {
       if (!['codex', 'kimi', 'antigravity'].includes(engine)) throw new Error('Unknown subscription engine');
+      if (preferences.autoSwitchQuota !== undefined) {
+        if (typeof preferences.autoSwitchQuota !== 'boolean') throw new Error('Invalid automatic account switching preference');
+        saveConfig({ subscriptionAutoSwitch: { ...loadConfig().subscriptionAutoSwitch, [engine]: preferences.autoSwitchQuota } });
+        if (Object.keys(preferences).length === 1) return { ok: true, preferences: { autoSwitchQuota: preferences.autoSwitchQuota } };
+      }
       if (engineBusy(engine)) throw new Error('Stop the current response or goal before changing global settings');
       if (preferences.connection !== undefined && !['api', 'subscription'].includes(preferences.connection)) throw new Error('Invalid subscription connection');
       const connection = preferences.connection === undefined ? {} : { connection: preferences.connection };
@@ -1411,6 +1437,7 @@ if (!gotSingleInstanceLock) {
       if (engine === 'antigravity') await antigravity.shutdown();
       if (engine === 'codex') await codex.shutdown();
       if (engine === 'dsh') { await dshChat.shutdown(); syncOllamaBaseUrl(Boolean(ollamaProxyHandle?.getState().running)); }
+      if (engine === 'pi') await piChat.shutdown();
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:engine-settings-changed', { engine });
       return { ok: true, ...result };
     },
@@ -1463,6 +1490,8 @@ if (!gotSingleInstanceLock) {
       if (engineBusy(engine)) throw new Error('Stop conversations using this engine before updating it');
       return runtimeUpdates().update(engine);
     },
+    'network-settings': async () => ({ ok: true, ...await networkSettings().detect() }),
+    'network-save-settings': async payload => ({ ok: true, ...await networkSettings().save(payload) }),
     'download-settings': () => ({ ok: true, ...downloadSettings(loadConfig().downloadProxy) }),
     'download-save-settings': payload => {
       const settings = downloadSettings(payload);
@@ -1687,7 +1716,7 @@ if (!gotSingleInstanceLock) {
       return { ok: true, ...kimiAccount.state() };
     },
     'account-select': payload => ({ ok: true, ...kimiAccount.select(payload?.id) }),
-    'account-add': payload => { kimiAccount.add(payload?.label); return { ok: true, ...kimiAccount.state() }; },
+    'account-add': async payload => ({ ok: true, ...await kimiAccount.beginAdd(payload?.label) }),
     'account-remove': async payload => ({ ok: true, ...await kimiAccount.remove(payload?.id) }),
     'account-label': payload => ({ ok: true, ...kimiAccount.rename(payload?.id, payload?.label) }),
     'sign-in': async () => {
@@ -1819,11 +1848,15 @@ if (!gotSingleInstanceLock) {
       goal.clear();
     }
     await archivedSources()[source].removeSession(id);
-    const connectionKey = { kimi: 'kimiSessionConnections', codex: 'codexSessionConnections' }[source];
-    if (connectionKey && loadConfig()[connectionKey]?.[id]) {
-      const connections = { ...loadConfig()[connectionKey] };
-      delete connections[id];
-      saveConfig({ [connectionKey]: connections });
+    const bindingKeys = [
+      { kimi: 'kimiSessionConnections', codex: 'codexSessionConnections' }[source],
+      { kimi: 'kimiSessionAccounts', codex: 'codexSessionAccounts' }[source],
+    ].filter(Boolean);
+    for (const key of bindingKeys) {
+      if (!loadConfig()[key]?.[id]) continue;
+      const bindings = { ...loadConfig()[key] };
+      delete bindings[id];
+      saveConfig({ [key]: bindings });
     }
   }
   ipcMain.handle('dsh:archived-sessions-list', async () => {
@@ -2050,6 +2083,8 @@ if (!gotSingleInstanceLock) {
   app.on('activate', () => showMainWindow());
 
   app.whenReady().then(async () => {
+    try { await networkSettings().initialize(); }
+    catch (error) { log('Network settings: ' + error.message); }
     if (process.platform === 'darwin' && app.dock) {
       app.dock.setIcon(path.join(APP_ROOT, 'assets/icon-1024.png'));
     }
@@ -2074,7 +2109,7 @@ if (!gotSingleInstanceLock) {
           if (!['claude.html', 'claude.css', 'claude.js', 'chat-runtime.js'].includes(String(filename))) return;
           clearTimeout(reloadTimer);
           reloadTimer = setTimeout(() => {
-            if (['claude', 'codex', 'kimi', 'antigravity'].includes(currentMode) && mainWindow && !mainWindow.isDestroyed()) {
+            if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(currentMode) && mainWindow && !mainWindow.isDestroyed()) {
               log('Claude view changed → hot reload');
               mainWindow.webContents.reloadIgnoringCache();
             }
@@ -2116,6 +2151,7 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on('will-quit', () => {
+    networkSettingsService?.close();
     stopBackend();
     stopOllamaProxyHandle();
   });
@@ -2151,7 +2187,8 @@ if (!gotSingleInstanceLock) {
     log(`switch mode → ${next}`);
     // Update window title and menu according to mode
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.setTitle(next === 'codex' ? `Codex CLI — ${APP_NAME}` : next === 'antigravity' ? `Antigravity — ${APP_NAME}` : next === 'kimi' ? `Kimi Code — ${APP_NAME}` : next === 'claude' ? `${APP_NAME_CLAUDE} — ${APP_NAME}` : APP_NAME);
+      const engineName = next === 'claude' ? APP_NAME_CLAUDE : ENGINES[next]?.name;
+      mainWindow.setTitle(engineName ? `${engineName} — ${APP_NAME}` : APP_NAME);
     }
     setMenu();
     void loadMode(next, conversationId);
@@ -2167,7 +2204,7 @@ if (!gotSingleInstanceLock) {
       }
     } catch (err) {
       log(`switch mode failed: ${err && err.stack || err}`);
-      if (['claude', 'codex', 'kimi', 'antigravity'].includes(next)) openSettingsWindow({ page: 'runtimes', engine: next });
+      if (['claude', 'codex', 'kimi', 'antigravity', 'pi'].includes(next)) openSettingsWindow({ page: 'runtimes', engine: next });
       if (next === 'dsh' && currentMode === 'dsh' && mainWindow && !mainWindow.isDestroyed()) {
         await mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(errorHtml(err, backendUrl)));
       }

@@ -96,3 +96,19 @@ test('Markdown previews expose source lines for finding a linked section', () =>
   assert.match(html, /<h2[^>]*data-preview-line="5"[^>]*data-preview-end-line="5"[^>]*>Accounts<\/h2>/);
   assert.match(html, /<p[^>]*data-preview-line="7"[^>]*>Details<\/p>/);
 });
+
+test('chat renders local Markdown images with resolved paths and preview controls', () => {
+  for (const target of ['D:/Code/DSH/artifacts/preview.png', 'artifacts/preview.png', 'file:///D:/Code/DSH/artifacts/preview.png']) {
+    const html = chatRenderer()('![预览](' + target + ')');
+    assert.match(html, /<img class="chat-inline-image"/);
+    assert.match(html, /src="file:\/\/\/D:\/Code\/DSH\/artifacts\/preview.png"/);
+    assert.match(html, /data-chat-file="D:\/Code\/DSH\/artifacts\/preview.png"/);
+    assert.match(html, /alt="预览"/);
+    assert.match(html, /loading="lazy"/);
+    assert.match(html, /tabindex="0" role="button"/);
+  }
+  assert.match(chatRenderer()('![Preview](<D:/My images/图 1.png>)'), /My%20images/);
+  assert.doesNotMatch(chatRenderer()('![Preview](D:/Code/DSH/index.html)'), /<img /);
+  assert.doesNotMatch(chatRenderer()('`![Preview](D:/Code/DSH/image.png)`'), /<img /);
+  assert.doesNotMatch(chatRenderer()('![Preview](D:/Code/DSH/image.png'), /<img /);
+});

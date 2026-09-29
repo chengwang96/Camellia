@@ -108,9 +108,9 @@ function usableAccountId({ engine, accounts, states, activeId, preferId }) {
 // A conversation that already ran on an account keeps it: native threads live
 // inside that account's home, so only a new conversation may fail over to an
 // account that still has quota.
-function boundAccountId({ engine, accounts, states, activeId, preferId }) {
+function boundAccountId({ engine, accounts, states, activeId, preferId, autoSwitch = true }) {
   if (preferId && accounts.some(account => account.id === preferId)) return preferId;
-  return usableAccountId({ engine, accounts, states, activeId });
+  return autoSwitch ? usableAccountId({ engine, accounts, states, activeId }) : activeId;
 }
 
 function accountSummary(engine, account, state = {}) {
@@ -133,6 +133,7 @@ function accountSummaries({ engine, accounts, states, activeId }) {
 // callers that used a single account keep working unchanged.
 function createAccountPool({ engine, userData, root, bindingsKey, loadConfig, saveConfig, createService, onState = () => {} }) {
   const services = new Map();
+  let pending = null;
   const list = () => accountsFor(loadConfig(), engine);
   const activeId = () => activeAccountId(loadConfig(), engine);
   const bindings = () => bindingsKey ? loadConfig()[bindingsKey] || {} : {};
@@ -145,7 +146,7 @@ function createAccountPool({ engine, userData, root, bindingsKey, loadConfig, sa
     const current = String(id);
     let value = services.get(current);
     if (!value) {
-      const profile = list().find(account => account.id === current) || { id: current, label: '' };
+      const profile = list().find(account => account.id === current) || (pending?.id === current ? pending : { id: current, label: '' });
       value = createService({ ...profile, home: accountHome({ userData, engine, id: current, root }) }, () => onState(state()));
       services.set(current, value);
     }
@@ -159,8 +160,15 @@ function createAccountPool({ engine, userData, root, bindingsKey, loadConfig, sa
   }
   function states() { return Object.fromEntries(list().map(account => [account.id, safeState(account.id)])); }
   function state(id = activeId()) {
+    const draft = pending && safeState(pending.id);
+    if (pending && draft.error && !draft.loginPending) pending = null;
+    if (pending && accountSignedIn(engine, draft)) {
+      const completed = pending; pending = null;
+      persist({ accounts: [...list(), completed], activeId: completed.id });
+      id = completed.id;
+    }
     const current = activeId();
-    return { ...safeState(id), activeId: current,
+    return { ...safeState(id), ...(pending ? { ...draft, loginPending: true } : {}), activeId: current,
       accounts: accountSummaries({ engine, accounts: list(), states: states(), activeId: current }) };
   }
   function select(id) {
@@ -181,6 +189,15 @@ function createAccountPool({ engine, userData, root, bindingsKey, loadConfig, sa
     persist({ accounts: accounts.map(account => account.id === id ? { ...account, label: normalizeLabel(label) } : account) });
     onState(state()); return state();
   }
+  async function beginAdd(label = '') {
+    if (pending) return state();
+    if (list().length >= MAX_ACCOUNTS) throw new Error('Too many accounts for this provider');
+    pending = { id: 'account-' + require('node:crypto').randomUUID().slice(0, 20), label: normalizeLabel(label) };
+    const id = pending.id;
+    onState(state());
+    try { await service(id).signIn(); return state(); }
+    catch (error) { if (pending?.id === id) pending = null; await service(id).shutdown?.(); onState(state()); throw error; }
+  }
   // The default account keeps its home directory so the legacy sign-in slot
   // survives; every other account owns a directory Camellia may delete.
   async function remove(id) {
@@ -189,11 +206,12 @@ function createAccountPool({ engine, userData, root, bindingsKey, loadConfig, sa
     const target = service(current);
     await target.signOut?.();
     if (current !== DEFAULT_ACCOUNT_ID) {
-      services.delete(current);
+      await target.shutdown?.();
       const dir = accountHome({ userData, engine, id: current, root });
       if (path.resolve(dir).startsWith(path.resolve(path.join(userData, 'subscription-accounts')) + path.sep)) {
-        fs.rmSync(dir, { recursive: true, force: true });
+        await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       }
+      services.delete(current);
       persist({ accounts: list().filter(account => account.id !== current), activeId: activeId() === current ? DEFAULT_ACCOUNT_ID : activeId() });
     }
     onState(state());
@@ -203,23 +221,28 @@ function createAccountPool({ engine, userData, root, bindingsKey, loadConfig, sa
   // picks whichever signed-in account still has quota.
   function bind(sessionId) {
     const result = boundAccountId({ engine, accounts: list(), states: states(), activeId: activeId(),
-      preferId: sessionId ? bindings()[sessionId] || null : null });
+      preferId: sessionId ? bindings()[sessionId] || null : null, autoSwitch: loadConfig().subscriptionAutoSwitch?.[engine] !== false });
     if (sessionId && result && bindings()[sessionId] !== result) saveConfig({ [bindingsKey]: { ...bindings(), [sessionId]: result } });
     return result;
   }
-  return { engine, list, activeId, states, state, select, add, rename, remove, bind, service,
+  return { engine, list, activeId, states, state, select, add, beginAdd, rename, remove, bind, service,
     home: (id) => accountHome({ userData, engine, id: id || activeId(), root }),
     refresh: (id) => service(id).refresh(),
     refreshUsage: (options = {}, id) => service(id).refreshUsage(options),
     signIn: (id) => service(id).signIn(),
     signOut: (id) => service(id).signOut(),
-    cancelLogin: (id) => service(id).cancelLogin(),
-    openLogin: (id) => service(id).openLogin(),
+    cancelLogin: async (id) => {
+      const draft = pending; pending = null;
+      await service(id || draft?.id).cancelLogin();
+      if (draft) await service(draft.id).shutdown?.();
+      onState(state()); return state();
+    },
+    openLogin: (id) => service(id || pending?.id).openLogin(),
     get active() { return [...services.values()].some(value => value.active); },
     async shutdown() { await Promise.allSettled([...services.values()].map(value => value.shutdown?.())); },
   };
 }
 
-module.exports = { DEFAULT_ACCOUNT_ID, MAX_ACCOUNTS, normalizeAccounts, accountsFor, activeAccountId, nextAccountId,
+module.exports = { DEFAULT_ACCOUNT_ID, MAX_ACCOUNTS, normalizeLabel, normalizeAccounts, accountsFor, activeAccountId, nextAccountId,
   accountHome, accountExhausted, accountSignedIn, rateLimitWindows, orderAccountIds, usableAccountId, boundAccountId,
   accountSummaries, accountSummary, createAccountPool };

@@ -448,7 +448,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       ...(canFork(s) ? [{ label: "Fork session", disabled: contextBusy(), run: () => void forkSession(s) }] : []),
       ...(s.imported ? [{ label: "Sync from Codex desktop", run: () => openSyncDialog(s) }] : []),
       { label: "Archive session", disabled: contextBusy(), run: () => void archiveSession(s) },
-      { label: "Delete conversation", disabled: contextBusy(), run: () => confirmDeleteSession(s) },
+      { label: "Delete conversation", danger: true, disabled: contextBusy(), run: () => confirmDeleteSession(s) },
     ], position);
   }
   function openWorkspacePicker(anchor, s, position) {

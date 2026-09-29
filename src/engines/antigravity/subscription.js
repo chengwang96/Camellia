@@ -31,7 +31,7 @@ const API_ENV = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GEMINI_BASE_URL',
 function subscriptionEnvironment(env, proxyUrl = '') {
   const next = { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' };
   for (const key of Object.keys(next)) if (API_ENV.includes(key.toUpperCase())) delete next[key];
-  const proxy = proxyUrl || systemProxy();
+  const proxy = env.CAMELLIA_NETWORK_MODE ? env.CAMELLIA_NETWORK_PROXY || '' : proxyUrl || systemProxy();
   if (proxy) {
     for (const key of Object.keys(next)) if (/^(https?_proxy|all_proxy|no_proxy)$/i.test(key)) delete next[key];
     Object.assign(next, { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, NO_PROXY: 'localhost,127.0.0.1,::1' });
@@ -71,10 +71,11 @@ function requireGoogleProvider(settingsFile) {
   }
 }
 
-function loginScript(file, { platform, exe, proxyUrl = '' }) {
+function loginScript(file, { platform, exe, proxyUrl = '', networkMode }) {
   const quote = value => platform === 'win32' ? "'" + value.replace(/'/g, "''") + "'" : "'" + value.replace(/'/g, "'\\''") + "'";
-  const effective = proxyUrl || systemProxy();
-  const proxy = effective ? { HTTP_PROXY: effective, HTTPS_PROXY: effective, NO_PROXY: 'localhost,127.0.0.1,::1' } : {};
+  const effective = networkMode ? proxyUrl : proxyUrl || systemProxy();
+  const proxy = effective ? { HTTP_PROXY: effective, HTTPS_PROXY: effective, ALL_PROXY: '', NO_PROXY: 'localhost,127.0.0.1,::1' }
+    : networkMode ? { HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', NO_PROXY: '*' } : {};
   const lines = platform === 'win32'
     ? ["$Host.UI.RawUI.WindowTitle = 'Camellia — Google sign-in'", ...API_ENV.map(key => `Remove-Item Env:${key} -ErrorAction SilentlyContinue`),
       "$env:AGY_CLI_DISABLE_AUTO_UPDATE = 'true'", ...Object.entries(proxy).map(([key, value]) => `$env:${key} = ${quote(value)}`),
@@ -123,7 +124,8 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
     }
     fs.mkdirSync(home, { recursive: true });
     const file = path.join(home, process.platform === 'win32' ? 'google-sign-in.ps1' : 'google-sign-in.command');
-    loginScript(file, { platform: process.platform, exe: found.file, proxyUrl: settings().proxyUrl });
+    const env = environment();
+    loginScript(file, { platform: process.platform, exe: found.file, proxyUrl: env.CAMELLIA_NETWORK_MODE ? env.CAMELLIA_NETWORK_PROXY : settings().proxyUrl, networkMode: env.CAMELLIA_NETWORK_MODE });
     await openLogin(file, subscriptionEnvironment(environment(), settings().proxyUrl));
     writeJson(cacheFile, { models: [], verifiedAt: null, error: '', awaitingVerification: true });
     return { opened: true };

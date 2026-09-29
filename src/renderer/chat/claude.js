@@ -31,6 +31,7 @@ const context = { sessionId: null, workspaceId: null };
   let contextUsage = null;
   let attachments = [];       // [{ path, name, isImage }]
   let messageQueue = [];
+  let remoteMessageQueue = [], remoteQueueVersion = -1;
   const conversationQueues = new Map();
   let drainingQueue = false;
   let openPops = [];          // currently open popover elements
@@ -307,11 +308,27 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   chat.addEventListener('click', event => {
-    const link = event.target.closest('.md a[data-chat-file]');
+    const link = event.target.closest('.md [data-chat-file]');
     if (!link) return;
     event.preventDefault();
     void openFilePreview(link.dataset.chatFile, { line: Number(link.dataset.chatLine) || 0, anchor: link.dataset.chatAnchor || '' });
   });
+  chat.addEventListener('keydown', event => {
+    if (!event.target.matches('.chat-inline-image') || !['Enter', ' '].includes(event.key)) return;
+    event.preventDefault();
+    void openFilePreview(event.target.dataset.chatFile);
+  });
+  // Resource errors do not bubble. Keep a useful preview link when an image
+  // was moved, removed, or is unsupported, rather than a broken image icon.
+  chat.addEventListener('error', event => {
+    const img = event.target;
+    if (!img.matches?.('img.chat-inline-image')) return;
+    const link = document.createElement('a');
+    link.href = img.src; link.dataset.chatFile = img.dataset.chatFile;
+    link.className = 'chat-image-fallback'; link.textContent = img.alt || img.dataset.chatFile;
+    link.title = img.dataset.chatFile;
+    img.replaceWith(link);
+  }, true);
 
   function fmtTokens(n) {
     n = Number(n) || 0;
@@ -930,7 +947,7 @@ const context = { sessionId: null, workspaceId: null };
 
   function renderMessageQueue() {
     const list = $('messageQueue');
-    list.hidden = messageQueue.length === 0;
+    list.hidden = messageQueue.length === 0 && remoteMessageQueue.length === 0;
     list.replaceChildren(...messageQueue.map((message, index) => {
       const row = document.createElement('div');
       row.className = 'queue-item';
@@ -962,6 +979,46 @@ const context = { sessionId: null, workspaceId: null };
       row.append(label, text, edit, steer, remove);
       return row;
     }));
+    renderRemoteQueue(list);
+  }
+
+  function applyRemoteQueue(value) {
+    if (!value || !Array.isArray(value.queue) || value.queueVersion < remoteQueueVersion) return;
+    remoteMessageQueue = value.queue; remoteQueueVersion = value.queueVersion;
+    renderMessageQueue();
+  }
+
+  async function remoteQueueAction(action, queueId) {
+    const sessionId = context.sessionId;
+    try {
+      const result = await window.dshDesktop.conversationCommand({ engine: harnessId, action, payload: { sessionId, queueId } });
+      if (!result.ok) throw new Error(result.error);
+      if (context.sessionId === sessionId) applyRemoteQueue(result);
+    } catch (error) { if (context.sessionId === sessionId) setStatus(error.message); }
+  }
+
+  function renderRemoteQueue(list) {
+    const t = window.CamelliaI18n.t;
+    for (const [index, message] of remoteMessageQueue.entries()) {
+      const row = document.createElement('div'); row.className = 'queue-item';
+      const label = document.createElement('span'); label.className = 'queue-index';
+      label.textContent = t('Mobile queued') + ' ' + (index + 1);
+      const text = document.createElement('span'); text.className = 'queue-text';
+      text.textContent = message.text;
+      text.title = message.error || (message.attachments || []).map(file => file.name).join(', ');
+      const state = document.createElement('span'); state.className = 'queue-index';
+      state.textContent = t(message.state === 'starting' ? 'Sending…' : message.state === 'queued' ? 'Queued' : 'Paused');
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'queue-remove';
+      remove.title = t('Remove from queue'); remove.setAttribute('aria-label', remove.title); remove.textContent = '✕';
+      remove.disabled = message.state === 'starting';
+      remove.onclick = () => void remoteQueueAction('remote-queue-remove', message.id);
+      row.append(label, text, state, remove); list.appendChild(row);
+    }
+    if (remoteMessageQueue.some(message => ['paused', 'failed'].includes(message.state))) {
+      const resume = document.createElement('button'); resume.type = 'button'; resume.className = 'queue-resume';
+      resume.textContent = t('Resume mobile queue');
+      resume.onclick = () => void remoteQueueAction('remote-queue-resume'); list.appendChild(resume);
+    }
   }
 
   function editQueuedMessage(message) {
@@ -1555,7 +1612,7 @@ const context = { sessionId: null, workspaceId: null };
     const body = turnEl?.querySelector('.turn-body');
     const entries = body?.processBlocks;
     if (!entries?.length) return;
-    const texts = entries.filter(el => el.classList.contains('md') && el.textContent.trim());
+    const texts = entries.filter(el => el.classList.contains('md') && (el.textContent.trim() || el.querySelector('.chat-inline-image')));
     const settled = texts.filter(el => el.dataset.phase !== 'commentary');
     let visible = (finished ? settled : texts).slice(-1);
     if (finished) {
@@ -2007,6 +2064,7 @@ const context = { sessionId: null, workspaceId: null };
     }
     if (restoringRun) { eventsDuringRestore.push(ev); return; }
     if (sharedChat && ev.session_id !== context.sessionId) return;
+    if (sharedChat && ev.type === 'conversation:remote-queue') { applyRemoteQueue(ev); return; }
     if (sharedChat && ev.type === 'conversation:approval-resolved') {
       const index = permissionQueue.findIndex(request => request.requestId === ev.requestId && request.runId === ev.runId);
       if (index >= 0) {
@@ -2774,7 +2832,7 @@ const context = { sessionId: null, workspaceId: null };
     actions.forEach((action) => {
       const row = document.createElement('button');
       row.type = 'button';
-      row.className = 'pop-row' + (action.current ? ' current' : '');
+      row.className = 'pop-row' + (action.current ? ' current' : '') + (action.danger ? ' danger' : '');
       row.setAttribute('role', 'menuitem');
       row.disabled = Boolean(action.disabled);
       row.innerHTML = '<span></span>';
@@ -2837,7 +2895,7 @@ const context = { sessionId: null, workspaceId: null };
     if ($('permissionBlockedDialog').open) $('permissionBlockedDialog').close();
     clearRunStatus(); setRunning(false);
     $('handoffStop').hidden = true;
-    messageQueue = []; renderMessageQueue();
+    messageQueue = []; remoteMessageQueue = []; remoteQueueVersion = -1; renderMessageQueue();
   }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
     canReadReply: () => !loadingSession && !restoringRun,
@@ -2987,6 +3045,7 @@ const context = { sessionId: null, workspaceId: null };
         return false;
       }
       context.sessionId = id;
+      if (res.remoteQueue) applyRemoteQueue(res.remoteQueue);
       void tasksUI.refresh();
       context.workspaceId = res.workspaceId || null;
       conversationPrefs = res.preferences || conversationPrefs;

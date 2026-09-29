@@ -20,6 +20,13 @@ class SessionPool {
   set legacy(session) { this.set({}, session); }
   get active() { return [...this.sessions.values()].some(session => !session.dead); }
   get running() { return [...this.sessions.values()].some(session => session.running); }
+  async release(opts) {
+    const key = this.key(opts), session = this.sessions.get(key);
+    if (!session) return;
+    if (session.running) throw new Error('Stop the response before releasing this conversation');
+    if (session.shutdown) await session.shutdown(); else await session.kill();
+    if (this.sessions.get(key) === session) this.sessions.delete(key);
+  }
   async shutdown() {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();

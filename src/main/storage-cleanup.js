@@ -5,18 +5,20 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { StringDecoder } = require('node:string_decoder');
 const { validSessionId } = require('../engines/claude-history');
+const { referenceMatcher } = require('./reference-matcher');
 
 const PROTECTION_MS = 24 * 60 * 60 * 1000;
 const READ_CHUNK_BYTES = 64 * 1024;
 const MAX_RECORD_BYTES = 32 * 1024 * 1024;
+const MAX_VISITED_ENTRIES = 100000;
 const normalize = value => {
   const text = String(value).replace(/\\+/g, '/');
   return process.platform === 'win32' ? text.toLowerCase() : text;
 };
 
 class StorageCleanup {
-  constructor({ dataDir, histories = [], conversations, references, liveOwners = () => [], isActive = () => false, now = Date.now }) {
-    Object.assign(this, { dataDir: path.resolve(dataDir), histories, conversations, references, liveOwners, isActive, now });
+  constructor({ dataDir, histories = [], conversations, references, liveOwners = () => [], isActive = () => false, now = Date.now, maxVisited = MAX_VISITED_ENTRIES, signal }) {
+    Object.assign(this, { dataDir: path.resolve(dataDir), histories, conversations, references, liveOwners, isActive, now, maxVisited, signal });
     this.preview = null;
     this.running = false;
   }
@@ -35,10 +37,19 @@ class StorageCleanup {
     return stat;
   }
 
-  inventory(extraReferences) {
+  isLink(file) {
+    try { return fs.lstatSync(file).isSymbolicLink(); } catch { return false; }
+  }
+
+  async inventory(extraReferences) {
+    const yieldScan = async () => {
+      await new Promise(resolve => setImmediate(resolve));
+      this.signal?.throwIfAborted();
+    };
     let visited = 0, skipped = 0;
     const active = this.isActive() || Boolean(extraReferences?.active);
     const sources = [];
+    const listedDirectories = new Map();
     const owners = new Set([...this.conversations.items.keys(), ...this.liveOwners()]);
     const candidates = [];
     const read = (file, root = this.dataDir, json = false, lines = false) => {
@@ -57,8 +68,9 @@ class StorageCleanup {
       if (!stat) return [];
       if (!stat.isDirectory()) throw new Error('Unexpected storage layout; cleanup was stopped');
       const names = fs.readdirSync(directory);
+      listedDirectories.set(directory, { file: directory, root, stat });
       visited += names.length;
-      if (visited > 100000) throw new Error('Too many files to verify safely; cleanup was stopped');
+      if (visited > this.maxVisited) throw new Error('Too many files to verify safely; cleanup was stopped');
       return names;
     };
     const sharedDir = path.join(this.dataDir, 'conversations');
@@ -94,15 +106,21 @@ class StorageCleanup {
     const goals = entries(goalDir);
     for (const name of goals) if (name.endsWith('.json')) read(path.join(goalDir, name), this.dataDir, true);
     const engineRoots = ['codex/api/conversations', 'kimi-code/conversations', 'dsh-chat/conversations'];
-    const readEngine = directory => {
+    const cachePath = file => /^codex\/api\/conversations\/[a-zA-Z0-9_-]+\/\.tmp$/.test(path.relative(this.dataDir, file).split(path.sep).join('/'));
+    const dependencyPath = file => /^dsh-chat\/conversations\/[a-zA-Z0-9_-]+\/profiles\/node_modules(?:\/[^/]+(?:\/[^/]+)?)?$/.test(path.relative(this.dataDir, file).split(path.sep).join('/'));
+    const managedLink = file => this.isLink(file) && (cachePath(file) || dependencyPath(file));
+    const readEngine = async directory => {
+      await yieldScan();
       for (const name of entries(directory)) {
-        const file = path.join(directory, name), stat = this.safeStat(file);
-        if (stat?.isDirectory()) readEngine(file);
+        const file = path.join(directory, name);
+        if (cachePath(file) || managedLink(file)) continue;
+        const stat = this.safeStat(file);
+        if (stat?.isDirectory()) await readEngine(file);
         else read(file);
       }
     };
     for (const relative of engineRoots) {
-      try { readEngine(path.join(this.dataDir, relative)); }
+      try { await readEngine(path.join(this.dataDir, relative)); }
       catch (error) {
         if (error.message === 'Linked paths are excluded from space cleanup') return { candidates: [], skipped: 1 };
         throw error;
@@ -118,10 +136,23 @@ class StorageCleanup {
         return;
       }
       try {
-        const files = [], directories = [];
+        const files = [], directories = [], links = [];
         const references = [normalize(identity)];
+        // The candidate root itself is never a link: a linked path must not be
+        // followed, so it stays protected instead of becoming removable.
+        if (this.isLink(file)) throw new Error('Linked paths are excluded from space cleanup');
         const walk = target => {
-          const stat = this.safeStat(target);
+          if (cachePath(target) && !this.isLink(target)) throw new Error('Legacy cache requires offline maintenance');
+          let stat;
+          try { stat = this.safeStat(target); }
+          catch (error) {
+            if (!managedLink(target)) throw error;
+            const link = fs.lstatSync(target);
+            if (link.mtimeMs > this.now() - PROTECTION_MS) throw new Error('Recent file');
+            references.push(normalize(target), normalize(path.relative(this.dataDir, target)));
+            links.push({ path: target, target: fs.readlinkSync(target), mtimeMs: link.mtimeMs, ctimeMs: link.ctimeMs, ino: link.ino });
+            return;
+          }
           if (!stat) return;
           if (stat.mtimeMs > this.now() - PROTECTION_MS) throw new Error('Recent file');
           references.push(normalize(target), normalize(path.relative(this.dataDir, target)));
@@ -134,8 +165,8 @@ class StorageCleanup {
           } else throw new Error('Unsupported file');
         };
         walk(file);
-        if (!files.length && !directories.length) return;
-        const candidate = { path: path.relative(this.dataDir, file), category, bytes: files.reduce((sum, entry) => sum + entry.bytes, 0), count: files.length, files, directories };
+        if (!files.length && !directories.length && !links.length) return;
+        const candidate = { path: path.relative(this.dataDir, file), category, bytes: files.reduce((sum, entry) => sum + entry.bytes, 0), count: files.length, files, directories, links };
         candidates.push(candidate);
         guards.set(candidate, references.filter(Boolean));
       } catch { skipped += 1; }
@@ -158,21 +189,19 @@ class StorageCleanup {
       for (const id of entries(directory)) if (validSessionId(id) && !owners.has(id)) add(path.join(directory, id), 'Unused engine directories', true, id);
     }
     const pending = new Set([...guards.values()].flat());
-    const found = new Set();
+    const matcher = referenceMatcher(pending), found = matcher.found;
     let overlap = 0;
     for (const term of pending) overlap = Math.max(overlap, term.length - 1);
     const inspect = text => {
       const source = normalize(text);
-      for (const term of pending) if (source.includes(term)) {
-        found.add(term);
-        pending.delete(term);
-      }
+      matcher.inspect(source);
     };
     inspect(JSON.stringify(extraReferences));
     for (const record of this.conversations.items.values()) inspect(JSON.stringify(record));
     const buffer = Buffer.alloc(READ_CHUNK_BYTES);
     const verifiedSources = [];
     for (const { file, root, json, lines } of sources) {
+      await yieldScan();
       const stat = this.safeStat(file, root);
       if (!stat?.isFile()) throw new Error('A reference file is missing or unreadable; cleanup was stopped');
       if (json) {
@@ -207,35 +236,49 @@ class StorageCleanup {
           }
         };
         let remaining = stat.size;
+        let processed = 0;
         while (remaining > 0) {
           const bytes = fs.readSync(descriptor, buffer, 0, Math.min(buffer.length, remaining), null);
           if (!bytes) throw new Error('Reference files changed; scan again');
           consume(decoder.write(buffer.subarray(0, bytes)));
           remaining -= bytes;
+          processed += bytes;
+          if (processed >= 4 * 1024 * 1024) {
+            processed = 0;
+            await yieldScan();
+          }
         }
         consume(decoder.end());
         if (lines) inspectRecord(record);
         verifiedSources.push({ file, root, stat });
       } finally { fs.closeSync(descriptor); }
     }
-    for (const { file, root, stat } of verifiedSources) {
+    const verification = [...verifiedSources, ...listedDirectories.values()];
+    this.verify(verification);
+    return { candidates: candidates.filter(candidate => !guards.get(candidate).some(term => found.has(term))), skipped, active, verification };
+  }
+
+  verify(records) {
+    for (const { file, root, stat } of records) {
       const current = this.safeStat(file, root);
-      if (!current?.isFile() || current.size !== stat.size || current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs || current.ino !== stat.ino)
+      if (!current || current.isFile() !== stat.isFile() || current.size !== stat.size || current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs || current.ino !== stat.ino)
         throw new Error('Reference files changed; scan again');
     }
-    return { candidates: candidates.filter(candidate => !guards.get(candidate).some(term => found.has(term))), skipped, active };
   }
 
   async scan() {
     if (this.running) throw new Error('Space cleanup is already running');
     this.running = true;
     this.preview = null;
+    clearTimeout(this.previewTimer);
     try {
       const references = await this.references();
-      const inventory = this.inventory(references);
+      const { verification, ...inventory } = await this.inventory(references);
       const token = randomUUID();
       this.preview = { ...inventory, token, createdAt: this.now() };
-      return { token, skipped: inventory.skipped, active: inventory.active, candidates: inventory.candidates.map(({ files, directories, ...entry }) => entry) };
+      this.previewTimer = setTimeout(() => { this.preview = null; }, 30 * 60 * 1000);
+      this.previewTimer.unref?.();
+      return { token, skipped: inventory.skipped, active: inventory.active, candidates: inventory.candidates.map(({ files, directories, links, caches, ...entry }) => entry) };
     } finally { this.running = false; }
   }
 
@@ -243,15 +286,20 @@ class StorageCleanup {
     if (this.running) throw new Error('Space cleanup is already running');
     const preview = this.preview;
     this.preview = null;
+    clearTimeout(this.previewTimer);
     if (!preview || token !== preview.token || this.now() - preview.createdAt > 30 * 60 * 1000) throw new Error('Scan again before cleaning space');
     this.running = true;
     try {
       const references = await this.references();
-      const current = this.inventory(references);
+      const current = await this.inventory(references);
+      if (JSON.stringify(await this.references()) !== JSON.stringify(references)) throw new Error('Reference files changed; scan again');
+      this.verify(current.verification || []);
       const approved = new Map(preview.candidates.map(entry => [entry.path, entry]));
       let bytes = 0, files = 0, skipped = preview.candidates.length;
       const errors = [];
       for (const entry of current.candidates) {
+        if (entry.category === 'Unused engine directories' && (this.conversations.items.has(path.basename(entry.path)) || this.liveOwners().includes(path.basename(entry.path)))) continue;
+        if (this.isActive() && ['Handoffs and summaries', 'Unused pasted attachments'].includes(entry.category)) continue;
         const previous = approved.get(entry.path);
         if (!previous || JSON.stringify(previous) !== JSON.stringify(entry)) continue;
         skipped -= 1;
@@ -260,6 +308,14 @@ class StorageCleanup {
             const stat = this.safeStat(file.path);
             if (!stat?.isFile() || stat.nlink !== 1 || stat.size !== file.bytes || stat.mtimeMs !== file.mtimeMs || stat.ctimeMs !== file.ctimeMs || stat.ino !== file.ino) throw new Error('File changed; scan again');
             fs.unlinkSync(file.path); bytes += file.bytes; files += 1;
+          }
+          // Unlink cached plugin mounts before their parent directory is removed.
+          // Unlinking a link never touches the shared cache it points at.
+          for (const link of entry.links || []) {
+            this.safeStat(path.dirname(link.path));
+            const stat = fs.lstatSync(link.path);
+            if (!stat.isSymbolicLink() || stat.mtimeMs !== link.mtimeMs || stat.ctimeMs !== link.ctimeMs || stat.ino !== link.ino || fs.readlinkSync(link.path) !== link.target) throw new Error('Directory changed; scan again');
+            fs.unlinkSync(link.path);
           }
           for (const directory of entry.directories) {
             if (!this.safeStat(directory)?.isDirectory()) throw new Error('Directory changed; scan again');

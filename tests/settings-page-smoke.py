@@ -4,7 +4,7 @@ from playwright.sync_api import sync_playwright, expect
 root = Path(__file__).resolve().parents[1]
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
-    page = browser.new_page(viewport={"width": 1180, "height": 820})
+    page = browser.new_page(viewport={"width": 1180, "height": 820}, reduced_motion="reduce")
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.add_init_script("""
@@ -12,6 +12,7 @@ with sync_playwright() as playwright:
       const empty = { ok: true, result: {}, engines: [], providers: [], models: [], config: { providers: [], usage: {}, active: {} }, state: {} };
       window.dshDesktop = new Proxy({}, { get: (_target, name) => {
         if (String(name).startsWith('on')) return () => () => {};
+        if (name === 'workbenchSettings') return async () => ({ ...empty, version: '0.3.0', dataPath: '/test-profile/camellia', language: 'en', theme: 'system' });
         if (name === 'camelliaDevices') return {
           onEvent() {}, onTransfer() {},
           async call(action) {
@@ -49,6 +50,29 @@ with sync_playwright() as playwright:
     expect(page.locator("#devicesPage")).to_be_hidden()
     page.locator('.settings-nav nav [data-view="general"]').click()
     expect(page.locator("#pageTitle")).to_have_text("General")
+    for language in ["en", "zh-CN"]:
+        page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
+        for width in [1180, 850, 700, 390, 320]:
+            page.set_viewport_size({"width": width, "height": 820})
+            # An available update reveals a second action; both states must keep
+            # the action group at the right edge without horizontal overflow.
+            for install_visible in [False, True]:
+                page.locator("#installAppUpdate").evaluate("(el, visible) => el.hidden = !visible", install_visible)
+                page.locator("#checkAppUpdate").scroll_into_view_if_needed()
+                row = page.locator(".app-update").bounding_box()
+                actions = page.locator(".app-update-actions").bounding_box()
+                assert abs(actions["x"] + actions["width"] - row["x"] - row["width"]) < 2, (language, width)
+                for button in page.locator(".app-update-actions button:visible").all():
+                    box = button.bounding_box()
+                    assert box["x"] >= row["x"] and box["x"] + box["width"] <= row["x"] + row["width"] + 1
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (language, width)
+    page.set_viewport_size({"width": 1180, "height": 820})
+    page.locator("#installAppUpdate").evaluate("el => el.hidden = true")
+    output = root / "dist/engine-settings-qa"
+    output.mkdir(parents=True, exist_ok=True)
+    page.locator(".app-update").scroll_into_view_if_needed()
+    page.screenshot(path=str(output / "general-actions.png"))
+    page.evaluate("CamelliaI18n.setLanguage('en')")
     page.locator('.settings-nav nav [data-view="devices"]').click()
     expect(page.locator("#devicesPage")).to_be_visible()
 

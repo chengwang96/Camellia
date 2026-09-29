@@ -20,6 +20,7 @@ async function main() {
   const runtime = createRuntimeManager({ root: path.resolve(__dirname, '..'), node: () => process.execPath }).locate('claude');
   assert.ok(runtime, 'Install the Claude runtime before running this smoke test');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-compact-native-'));
+  const tooFewMessages = process.argv.includes('--too-few-messages');
   const sessions = [], requests = [], events = [], logs = [];
   let manager, router, generation = 0;
   const marker = path.join(root, 'marker.txt');
@@ -33,6 +34,11 @@ async function main() {
       const summary = lastUser.includes('compact working context');
       const continuation = !summary && lastUser.includes('Continue the unfinished user task');
       requests.push({ summary, continuation });
+      if (tooFewMessages && !summary && !continuation) {
+        response.writeHead(400, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: { type: 'invalid_request_error', message: 'Prompt is too long' } }));
+        return;
+      }
       const hasTool = body.messages.some(message => message.role === 'tool');
       const useTool = !summary && !continuation && !hasTool;
       const delta = useTool ? { tool_calls: [{ index: 0, id: 'read-marker', type: 'function', function: {
@@ -63,7 +69,9 @@ async function main() {
       CLAUDE_CONFIG_DIR: path.join(root, 'claude'), ANTHROPIC_BASE_URL: router.url,
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' };
     const settings = { model: 'kimi-k3', connection: 'api', contextWindow: 20000 };
-    const driver = { settings: () => settings, ensure(opts) {
+    const driver = { nativeCompaction: tooFewMessages, nativeAutoCompaction: tooFewMessages, settings: () => settings, ensure(opts) {
+      const existing = opts.sessionId && sessions.find(session => !session.dead && session.sessionId === opts.sessionId);
+      if (existing) return existing;
       const session = new ClaudeSession({ gen: ++generation, settings: { ...settings, cwd: root }, opts,
         exe: runtime.file, spec: { cwd: root, env, args: ['--bare', '-p', '--output-format', 'stream-json', '--input-format', 'stream-json',
           '--include-partial-messages', '--verbose', '--model', 'kimi-k3', '--tools', 'Read', '--allowedTools', 'Read'] },
@@ -87,9 +95,17 @@ async function main() {
     assert.equal(events.filter(event => event.type === 'result').length, 1);
     assert.equal(manager.messages(manager.get(run.sessionId)).filter(row => row.role === 'user').length, 1);
     assert.equal(events.filter(event => event.type === 'assistant').flatMap(event => event.message?.content || [])
-      .filter(block => block.type === 'tool_use' && block.name === 'Read').length, 1);
+      .filter(block => block.type === 'tool_use' && block.name === 'Read').length, tooFewMessages ? 0 : 1);
+    if (tooFewMessages) {
+      const conversation = manager.get(run.sessionId);
+      assert.equal(conversation.lastCompaction.reason, 'native-too-few-messages');
+      assert.equal(conversation.lastCompaction.route, 'portable');
+      assert.equal(conversation.segments.claude.nativeCompactionUnsupported, undefined);
+    }
     assert.equal(manager.busy(run.sessionId), false);
-    console.log('PASS: installed Claude CLI tool boundary -> interrupt -> chunked summary -> fresh native continuation; one user turn, one Read, one final result; loopback only');
+    console.log(tooFewMessages
+      ? 'PASS: installed Claude CLI overflow -> /compact too few messages -> portable summary -> fresh continuation; one user turn, one final result; loopback only'
+      : 'PASS: installed Claude CLI tool boundary -> interrupt -> chunked summary -> fresh native continuation; one user turn, one Read, one final result; loopback only');
   } finally {
     const closed = sessions.filter(session => session.proc?.exitCode == null).map(session => once(session.proc, 'close'));
     for (const session of sessions) session.kill();

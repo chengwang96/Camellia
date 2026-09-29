@@ -47,6 +47,17 @@ for (const mode of ['no-boundary', 'cancel', 'exit']) test('Claude compact rejec
   assert.equal(harness.session.running, false);
 });
 
+for (const isError of [false, true]) test(`Claude compact preserves too-few-messages result (is_error=${isError})`, async context => {
+  const harness = fixture(context);
+  const rejected = assert.rejects(harness.session.compact(), /^Error: Not enough messages to compact\.$/);
+  harness.session.emitLine(JSON.stringify({ type: 'result', subtype: isError ? 'error' : 'success',
+    is_error: isError, result: 'Not enough messages to compact.' }));
+  await rejected;
+  assert.equal(harness.session.running, false);
+  assert.equal(harness.results.length, 0);
+  assert.equal(harness.events.length, 0);
+});
+
 test('Claude automatic compact boundary publishes a context event', context => {
   const harness = fixture(context);
   harness.session.sendUserMessage('Continue');

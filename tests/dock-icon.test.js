@@ -16,34 +16,67 @@ const startupEnd = source.indexOf('    nativeTheme.themeSource', readyStart);
 assert.notEqual(startupEnd, -1);
 const dockStartup = source.slice(readyStart + readyMarker.length, startupEnd);
 
+function runDockStartup(context) {
+  return vm.runInNewContext('(async () => {' + dockStartup + '\n})()', {
+    networkSettings: () => ({ initialize: async () => {} }),
+    log: message => assert.fail('Unexpected startup error: ' + message),
+    path,
+    APP_ROOT: root,
+    ...context,
+  });
+}
+
 for (const isPackaged of [false, true]) {
-  test(`macOS startup sets the Camellia Dock icon (packaged=${isPackaged})`, () => {
+  test(`macOS startup sets the Camellia Dock icon (packaged=${isPackaged})`, async () => {
     const icons = [];
-    vm.runInNewContext(dockStartup, {
+    await runDockStartup({
       process: { platform: 'darwin' },
       app: { isPackaged, dock: { setIcon(icon) { icons.push(icon); } } },
-      path,
-      APP_ROOT: root,
     });
     assert.deepEqual(icons, [path.join(root, 'assets/icon-1024.png')]);
   });
 }
 
 for (const platform of ['win32', 'linux']) {
-  test(`${platform} startup does not access the macOS Dock API`, () => {
-    vm.runInNewContext(dockStartup, {
+  test(`${platform} startup does not access the macOS Dock API`, async () => {
+    await runDockStartup({
       process: { platform },
       app: { get dock() { assert.fail('Dock is macOS-only'); } },
-      path,
-      APP_ROOT: root,
     });
   });
 }
 
-test('startup tolerates an unavailable Dock API', () => {
-  vm.runInNewContext(dockStartup, {
-    process: { platform: 'darwin' }, app: {}, path, APP_ROOT: root,
+test('startup tolerates an unavailable Dock API', async () => {
+  await runDockStartup({
+    process: { platform: 'darwin' }, app: {},
   });
+});
+
+test('Dock setup waits for asynchronous network initialization', async () => {
+  const icons = [];
+  let finishInitialization;
+  const initialized = new Promise(resolve => { finishInitialization = resolve; });
+  const pending = runDockStartup({
+    process: { platform: 'darwin' },
+    app: { dock: { setIcon(icon) { icons.push(icon); } } },
+    networkSettings: () => ({ initialize: () => initialized }),
+  });
+  assert.deepEqual(icons, []);
+  finishInitialization();
+  await pending;
+  assert.deepEqual(icons, [path.join(root, 'assets/icon-1024.png')]);
+});
+
+test('network initialization failure is logged without preventing Dock setup', async () => {
+  const icons = [], logs = [];
+  await runDockStartup({
+    process: { platform: 'darwin' },
+    app: { dock: { setIcon(icon) { icons.push(icon); } } },
+    networkSettings: () => ({ initialize: async () => { throw new Error('Network unavailable'); } }),
+    log: message => logs.push(message),
+  });
+  assert.deepEqual(logs, ['Network settings: Network unavailable']);
+  assert.deepEqual(icons, [path.join(root, 'assets/icon-1024.png')]);
 });
 
 test('the high-resolution Dock icon is packaged and matches the macOS bundle icon', () => {

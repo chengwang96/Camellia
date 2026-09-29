@@ -15,7 +15,7 @@ const { downloadSettings } = require('../main/download-network');
 const accountOptions = require('./subscription-accounts');
 
 function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = () => [], getContextWindow = () => undefined, runtimes, environment = () => process.env,
-  openExternal, onEvent, onGoal, onAccount = () => {}, createUsageMeter = () => null, isBusy = () => false, log = () => {} }) {
+  openExternal, onEvent, onGoal, onAccount = () => {}, createUsageMeter = () => null, isBusy = () => false, log = () => {}, createAccountClient = options => new CodexClient(options) }) {
   const home = path.join(dataDir, 'codex');
   const history = new ClaudeHistory(path.join(dataDir, 'codex-history'));
   const sessions = new SessionPool();
@@ -23,12 +23,19 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   // One entry per signed-in ChatGPT account. Every account owns a CODEX_HOME so
   // several sign-ins can stay active at once; native threads live there too.
   const accountEntries = new Map();
+  let pendingAccount = null;
   const wakingAccounts = new Set();
   const wakeClients = new Set();
   const connections = () => loadConfig().codexSessionConnections || {};
   const accountBindings = () => loadConfig().codexSessionAccounts || {};
   const accountList = () => accountOptions.accountsFor(loadConfig(), 'codex');
-  const activeId = () => accountOptions.activeAccountId(loadConfig(), 'codex');
+  const activeId = () => {
+    const selected = accountOptions.activeAccountId(loadConfig(), 'codex');
+    // Older Add clicks selected empty slots. Keep the usable login selected
+    // when those legacy slots are hidden from the account cards.
+    if (accountEntry(selected).state.account) return selected;
+    return accountList().find(account => accountEntry(account.id).state.account)?.id || selected;
+  };
   const accountHome = id => accountOptions.accountHome({ userData: dataDir, engine: 'codex', id, root: path.join(home, 'subscription') });
   function accountEntry(id = activeId()) {
     let value = accountEntries.get(id);
@@ -55,7 +62,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   }
   function selectAccountId(sessionId) {
     return accountOptions.boundAccountId({ engine: 'codex', accounts: accountList(), states: accountStates(), activeId: activeId(),
-      preferId: sessionId ? accountBindings()[sessionId] || null : null });
+      preferId: sessionId ? accountBindings()[sessionId] || null : null, autoSwitch: loadConfig().subscriptionAutoSwitch?.codex !== false });
   }
   function saveAccountConfig({ accounts, activeId: next }) {
     const config = loadConfig();
@@ -89,29 +96,54 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     const target = connection === 'api' ? path.join(home, 'api', ...(conversationId ? ['conversations', conversationId] : []))
       : accountHome(accountId || activeId());
     return codexSpawnSpec({ runtime, home: target, configHome: home, cwd,
-      connection, model, route: connection === 'api' ? getRoute() : null, contextWindow: connection === 'api' ? getContextWindow(model) : undefined, env: environment(), proxyUrl: settings().proxyUrl });
+      connection, model, route: connection === 'api' ? getRoute() : null, contextWindow: connection === 'api' ? getContextWindow(model) : undefined, env: environment(), proxyUrl: settings().proxyUrl,
+      sharedPluginCache: connection === 'api' ? path.join(home, '.tmp') : '' });
   }
   function accountState(id = activeId()) {
     const value = accountEntry(id);
-    return { ...value.state, installed: Boolean(runtimes().locate('codex')), loginPending: Boolean(value.loginId), home: value.home,
+    return { ...value.state, installed: Boolean(runtimes().locate('codex')), loginPending: Boolean(pendingAccount || value.loginId), home: value.home,
       activeId: activeId(), accounts: accountOptions.accountSummaries({ engine: 'codex', accounts: accountList(), states: accountStates(), activeId: activeId() }) };
   }
   function publishAccount(id, patch) {
     const value = accountEntry(id);
+    if (value.removing) return;
     value.state = { ...value.state, ...patch };
+    if (patch.rateLimits) value.state.quotaHistory = require('./quota-history').recordQuota(value.state.quotaHistory, patch.rateLimits);
+
+    if (pendingAccount?.id === id && value.state.account) {
+      saveAccountConfig({ accounts: [...accountList(), pendingAccount], activeId: id });
+      pendingAccount = null;
+    }
     writeJson(value.stateFile, value.state); onAccount(accountState(id));
+  }
+  async function discardDraft(id) {
+    if (accountList().some(account => account.id === id)) return;
+    const value = accountEntry(id);
+    value.removing = true;
+    if (pendingAccount?.id === id) pendingAccount = null;
+    await value.client?.shutdown();
+    const dir = accountHome(id);
+    if (path.resolve(dir).startsWith(path.resolve(path.join(dataDir, 'subscription-accounts')) + path.sep)) {
+      await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    }
   }
   async function getAccountClient(id = activeId()) {
     const value = accountEntry(id);
+    if (value.removing) throw new Error('Account is being removed');
     if (!value.client || value.client.dead) {
       const runtime = runtimes().locate('codex');
       if (!runtime) throw new Error('Download Codex CLI in Settings → Runtime first');
-      value.client = new CodexClient({ ...spec('subscription', runtime, home, undefined, undefined, id), log,
+      value.client = createAccountClient({ ...spec('subscription', runtime, home, undefined, undefined, id), log,
         onNotification: (method, params) => {
+          if (value.removing) return;
           if (method === 'account/login/completed') {
             value.loginId = null;
-            if (params.success) void refreshAccount(id).catch(error => publishAccount(id, { error: error.message }));
-            else publishAccount(id, { error: params.error || 'ChatGPT sign-in was canceled' });
+            if (params.success) void refreshAccount(id).catch(error => { if (pendingAccount?.id === id) pendingAccount = null; publishAccount(id, { error: error.message }); });
+            else {
+              const error = params.error || 'ChatGPT sign-in was canceled';
+              if (pendingAccount?.id === id) void discardDraft(id).catch(error => log(error.message)).finally(() => onAccount({ ...accountState(), error }));
+              else publishAccount(id, { error });
+            }
           } else if (method === 'account/rateLimits/updated') publishAccount(id, { rateLimits: params.rateLimits });
         },
       });
@@ -122,9 +154,11 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     const client = await getAccountClient(id);
     const value = await client.request('account/read', { refreshToken: true });
     if (value.account?.type !== 'chatgpt') {
+      if (pendingAccount?.id === id) pendingAccount = null;
       publishAccount(id, { account: null, models: [], rateLimits: null, error: null, verifiedAt: new Date().toISOString() });
       return accountState(id);
     }
+    if (pendingAccount?.id === id) publishAccount(id, { account: value.account, error: null });
     const models = []; let cursor = null;
     do {
       const page = await client.request('model/list', { cursor, limit: 100 });
@@ -234,14 +268,27 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       saveAccountConfig({ activeId: id }); onAccount(accountState());
       return { ok: true, ...accountState() };
     },
-    'account-add': payload => {
+    'account-add': async payload => {
+      if (pendingAccount) return { ok: true, ...accountState() };
       const accounts = accountList();
-      if (accounts.length >= accountOptions.MAX_ACCOUNTS) throw new Error('Too many Codex accounts');
+      if (accounts.length >= accountOptions.MAX_ACCOUNTS) throw new Error('Too many accounts for this provider');
       if (sessions.running || isBusy()) throw new Error('Stop the Codex response before adding an account');
-      const id = accountOptions.nextAccountId(accounts);
-      saveAccountConfig({ accounts: [...accounts, { id, label: String(payload?.label || '') }], activeId: id });
-      accountEntry(id); onAccount(accountState());
-      return { ok: true, ...accountState() };
+      const id = 'account-' + require('node:crypto').randomUUID().slice(0, 20);
+      pendingAccount = { id, label: accountOptions.normalizeLabel(payload?.label) };
+      onAccount(accountState());
+      try {
+        await runtimes().ensure('codex');
+        const value = accountEntry(id), client = await getAccountClient(id);
+        const result = await client.request('account/login/start', { type: 'chatgpt' });
+        value.loginId = result.loginId;
+        await openExternal(result.authUrl);
+        onAccount(accountState());
+        return { ok: true, ...accountState() };
+      } catch (error) {
+        await discardDraft(id).catch(cleanup => log(cleanup.message));
+        onAccount(accountState());
+        throw error;
+      }
     },
     'account-remove': async payload => {
       const id = String(payload?.id || '');
@@ -250,16 +297,23 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       if (!accounts.some(account => account.id === id)) throw new Error('Unknown Codex account');
       if (sessions.running || goal.armed || isBusy()) throw new Error('Stop the Codex response or goal before removing an account');
       const value = accountEntry(id);
+      value.removing = true;
+      await sessions.shutdown();
       if (value.loginId) { try { await value.client?.request('account/login/cancel', { loginId: value.loginId }); } catch { /* already gone */ } }
       value.loginId = null;
       if (value.client) { try { await value.client.request('account/logout', {}); } catch { /* no live session */ } await value.client.shutdown(); value.client = null; }
       if (id === accountOptions.DEFAULT_ACCOUNT_ID) {
         // The default account keeps its home so the legacy sign-in slot survives.
+        value.removing = false;
         publishAccount(id, { account: null, models: [], rateLimits: null, error: null });
       } else {
         const dir = accountHome(id);
+        try {
+          if (path.resolve(dir).startsWith(path.resolve(path.join(dataDir, 'subscription-accounts')) + path.sep)) {
+            await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+          }
+        } catch (error) { value.removing = false; throw error; }
         accountEntries.delete(id);
-        if (path.resolve(dir).startsWith(path.resolve(path.join(dataDir, 'subscription-accounts')) + path.sep)) fs.rmSync(dir, { recursive: true, force: true });
         saveAccountConfig({ accounts: accounts.filter(account => account.id !== id), activeId: activeId() === id ? accountOptions.DEFAULT_ACCOUNT_ID : activeId() });
       }
       onAccount(accountState());
@@ -286,9 +340,11 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       return { ok: true, ...accountState() };
     },
     'cancel-login': async () => {
-      const value = accountEntry();
+      const value = accountEntry(pendingAccount?.id || activeId());
       if (value.loginId) await (await getAccountClient(value.id)).request('account/login/cancel', { loginId: value.loginId });
-      value.loginId = null; onAccount(accountState()); return { ok: true, ...accountState() };
+      value.loginId = null;
+      if (pendingAccount?.id === value.id) await discardDraft(value.id);
+      onAccount(accountState()); return { ok: true, ...accountState() };
     },
     'sign-out': async () => {
       if (wakingAccounts.size) throw new Error('Wait for the account wake request to finish');

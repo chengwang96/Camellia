@@ -76,8 +76,17 @@
     while (open >= 0 && tokens[open].type !== 'link_open') open--;
     return destination(tokens[open]?.attrGet('href'), environment.cwd) ? '</a>' : '</span>';
   };
-  // Messages do not fetch arbitrary images while they stream.
-  parser.renderer.rules.image = (tokens, index) => escape('![' + tokens[index].content + '](' + tokens[index].attrGet('src') + ')');
+  // Local preview images are safe to load as image resources. Never fetch
+  // arbitrary remote URLs automatically just because they occur in a reply.
+  parser.renderer.rules.image = (tokens, index, options, environment) => {
+    const token = tokens[index], target = destination(token.attrGet('src'), environment.cwd);
+    const label = token.content || target?.path?.split('/').pop() || 'Image';
+    if (!target?.path || !/\.(?:png|jpe?g|gif|webp|bmp|avif|svg|ico)$/i.test(target.path))
+      return escape('![' + token.content + '](' + token.attrGet('src') + ')');
+    return '<img class="chat-inline-image" src="' + escape(target.href) + '" alt="' + escape(label)
+      + '" title="' + escape(target.path) + '" data-chat-file="' + escape(target.path)
+      + '" loading="lazy" decoding="async" tabindex="0" role="button">';
+  };
 
   return { destination, renderInline: (source, cwd = '') => parser.renderInline(source, { cwd }) };
 });

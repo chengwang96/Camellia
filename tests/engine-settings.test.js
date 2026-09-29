@@ -15,10 +15,89 @@ function fixture(t) {
   const desktop = { claude: { model: 'model-exact' }, kimi: { model: 'model-exact', contextWindow: 131072 } };
   const route = { baseUrl: 'http://127.0.0.1:17890', authToken: 'proxy-managed' };
   const service = createEngineSettings({ home, dshHome: () => path.join(home, '.dsh'), kimiHome: path.join(home, '.kimi-code'),
+    piHome: path.join(home, 'app/pi-native'),
     getDesktop: engine => desktop[engine] || {}, saveDesktop: (engine, value) => { desktop[engine] = { ...desktop[engine], ...value }; }, getRoute: () => route });
   const put = (file, text) => { file = path.join(home, file); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); return file; };
   return { home, service, desktop, route, put };
 }
+
+test('Pi defaults and global instructions reach the runtime without changing personal CLI settings', async t => {
+  const f = fixture(t);
+  const personal = f.put('.pi/agent/settings.json', '{"theme":"personal"}');
+  const instructions = f.put('app/pi-native/AGENTS.md', 'Original instructions');
+  f.desktop.pi = { model: 'model-exact', permissionMode: 'ask', connection: 'api' };
+  const value = f.service.get('pi');
+  assert.equal(value.scope, 'app');
+  assert.equal(value.fields.find(field => field.key === 'contextWindow').value, 65536);
+  value.files[0].text = 'Follow the project style.\n保留中文说明。';
+  f.service.save('pi', { ...value, common: { permissionMode: 'auto', thinkingBudget: 'high', contextWindow: 131072 } });
+  assert.equal(f.desktop.pi.model, 'model-exact');
+  assert.equal(fs.readFileSync(personal, 'utf8'), '{"theme":"personal"}');
+  assert.equal(fs.readFileSync(instructions + '.workbench.bak', 'utf8'), 'Original instructions');
+
+  const { createPiChat } = require('../src/engines/pi-session');
+  const driver = createPiChat({ dataDir: path.join(f.home, 'runtime'), loadConfig: () => ({ pi: f.desktop.pi }), saveConfig() {},
+    getModels: () => ['model-exact'], getRoute: () => f.route, runtime: () => ({ file: '/pi/cli.js' }),
+    node: () => process.execPath, environment: () => ({}), onEvent() {}, instructions: f.service.piInstructions });
+  t.after(() => driver.shutdown());
+  const session = driver.ensure({ cwd: f.home });
+  assert.equal(session.spec.env.CAMELLIA_PI_PERMISSION, 'auto');
+  assert.equal(session.spec.args[session.spec.args.indexOf('--thinking') + 1], 'high');
+  assert.equal(session.spec.args[session.spec.args.indexOf('--append-system-prompt') + 1], value.files[0].text);
+  const model = JSON.parse(fs.readFileSync(path.join(f.home, 'runtime/pi', session.sessionId, 'models.json'))).providers.camellia.models[0];
+  assert.equal(model.contextWindow, 131072);
+  const updated = f.service.get('pi'); updated.files[0].text = 'Updated instructions';
+  f.service.save('pi', { ...updated, desktop: { model: 'stale-model', contextWindow: 1 }, common: { thinkingBudget: '' } });
+  assert.equal(f.desktop.pi.contextWindow, 131072, 'Only edited common fields update Pi defaults');
+  assert.equal(f.desktop.pi.model, 'model-exact', 'Model selection remains owned by the conversation');
+  const next = driver.ensure({ cwd: f.home, sessionId: session.sessionId });
+  assert.notEqual(next, session);
+  assert.equal(next.spec.args.includes('--thinking'), false);
+  assert.equal(next.spec.args[next.spec.args.indexOf('--append-system-prompt') + 1], 'Updated instructions');
+});
+
+test('invalid or stale Pi settings do not partially overwrite defaults or instructions', t => {
+  const f = fixture(t);
+  const file = f.put('app/pi-native/AGENTS.md', 'Keep me');
+  f.desktop.pi = { permissionMode: 'ask' };
+  for (const common of [{ permissionMode: 'unsupported' }, { thinkingBudget: 'unknown' }, { contextWindow: 1 }, { contextWindow: 4096.5 }, { model: 'not-a-common-field' }]) {
+    const value = f.service.get('pi'); value.files[0].text = 'Do not write';
+    assert.throws(() => f.service.save('pi', { ...value, common }));
+    assert.equal(fs.readFileSync(file, 'utf8'), 'Keep me');
+    assert.deepEqual(f.desktop.pi, { permissionMode: 'ask' });
+    assert.equal(fs.existsSync(file + '.workbench.bak'), false);
+  }
+  const stale = f.service.get('pi'); fs.writeFileSync(file, 'An external edit');
+  assert.throws(() => f.service.save('pi', { ...stale, common: { permissionMode: 'full' } }), /modified by another application/);
+  assert.equal(f.desktop.pi.permissionMode, 'ask');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'An external edit');
+});
+
+test('desktop IPC exposes Pi settings, blocks running sessions and retires idle sessions after saving', async t => {
+  const { createHarness } = require('./claude-harness.cjs');
+  const h = createHarness(); t.after(() => h.cleanup());
+  const driver = h.api.sharedConversations.drivers.pi;
+  let retired = false;
+  const session = { running: true, shutdown: async () => { retired = true; } };
+  driver.sessions.set({}, session);
+  const value = await h.call('engine-settings-get', { engine: 'pi' });
+  assert.equal(value.ok, true, value.error);
+  value.files[0].text = 'Use the desktop project conventions.';
+  const payload = { ...value, common: { permissionMode: 'full', thinkingBudget: 'minimal', contextWindow: 98304 } };
+  const blocked = await h.call('engine-settings-save', payload);
+  assert.equal(blocked.ok, false); assert.match(blocked.error, /Stop/);
+  assert.equal(retired, false);
+  session.running = false;
+  const saved = await h.call('engine-settings-save', payload);
+  assert.equal(saved.ok, true, saved.error);
+  assert.equal(retired, true);
+  assert.equal(driver.sessions.active, false);
+  assert.equal(driver.settings().permissionMode, 'full');
+  assert.equal(driver.settings().thinkingBudget, 'minimal');
+  assert.equal(Number(driver.settings().contextWindow), 98304);
+  assert.equal(fs.readFileSync(path.join(h.userData, 'pi-native/AGENTS.md'), 'utf8'), value.files[0].text);
+  assert.ok(h.events.some(event => event.channel === 'dsh:engine-settings-changed' && event.data.engine === 'pi'));
+});
 test('Claude native settings, MCP and instructions save together without overwriting account state; one original backup', t => {
   const f = fixture(t);
   const settings = f.put('.claude/settings.json', JSON.stringify({ language: 'Japanese', hooks: { Stop: [] }, env: { ANTHROPIC_API_KEY: 'private-old-key', CUSTOM_VAR: 'keep' } }));
