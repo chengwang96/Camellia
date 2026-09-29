@@ -115,7 +115,9 @@ function buildHistoryIndex(manager, { sessions = [], limit = 400 } = {}) {
     const conversation = manager.get(session.id);
     if (!conversation) continue;
     if (files.size > limit) break;
-    for (const entry of entriesOf(manager.rows(conversation), { cwd: conversation.cwd || '', sessionId: session.id, title: session.title || '' })) {
+    // Sessions arrive newest first; visit their turns in the same order so a
+    // timestamp tie retains conversation/turn recency instead of filename order.
+    for (const entry of entriesOf(manager.rows(conversation), { cwd: conversation.cwd || '', sessionId: session.id, title: session.title || '' }).reverse()) {
       const key = process.platform === 'win32' ? entry.path.toLowerCase() : entry.path;
       if (!files.has(key)) files.set(key, { path: entry.path, descriptions: [], titles: new Set(), sessions: new Set(), at: 0 });
       const record = files.get(key);
@@ -166,7 +168,7 @@ function recentFiles({ entries = [], cwd = '', limit = MAX_HISTORY_FILES } = {})
     (exists ? live : missing).push({ ...entry, titles: [...(entry.titles || [])].slice(0, 3),
       sessions: [...(entry.sessions || [])], exists });
   }
-  const rank = (first, second) => second.at - first.at || first.path.localeCompare(second.path);
+  const rank = (first, second) => (second.at || 0) - (first.at || 0);
   live.sort(rank); missing.sort(rank);
   return [...live, ...missing].slice(0, limit);
 }

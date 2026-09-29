@@ -48,6 +48,7 @@ final class AttachSheet {
 
     void header(LinearLayout panel, String iconKind, String title, String closeLabel, Runnable close) {
         LinearLayout header = new LinearLayout(context); header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(0, 0, 0, dp(16));
         ImageView icon = new ImageView(context); icon.setImageDrawable(new LineIcon(iconKind, style.accent));
         icon.setPadding(dp(8), dp(8), dp(8), dp(8)); icon.setBackground(tileBackground());
         icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);

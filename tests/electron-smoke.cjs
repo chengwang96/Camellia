@@ -334,7 +334,7 @@ async function main() {
     const generalSettings = await waitWindow("document.querySelector('#generalPage') && !document.querySelector('#generalPage').hidden");
     assert.equal(await generalSettings.webContents.executeJavaScript("document.querySelector('[data-view=general]').getAttribute('aria-current')"), 'page');
     await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').click()");
-    const engineSettings = await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden && document.querySelector('#kimiConnection').value === 'api'");
+    const engineSettings = await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden && document.querySelector('#kimiAccountPanel') && !document.querySelector('#kimiSignIn').disabled");
     assert.equal(engineSettings, generalSettings);
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('[data-view=subscriptions]').getAttribute('aria-current')"), 'page');
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('#settingsPanel') === null"), true);
@@ -342,7 +342,7 @@ async function main() {
     assert.equal(globalState.ok, true);
     assert.ok(globalState.files.every(file => file.path.startsWith(process.env.USERPROFILE)));
 
-    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiConnection').value='subscription'; document.querySelector('#kimiConnection').dispatchEvent(new Event('change'))");
+    await engineSettings.webContents.executeJavaScript("window.dshDesktop.subscriptionPreferencesSave({engine:'kimi', preferences:{connection:'subscription'}})");
     await waitWindow("document.querySelector('#kimiAccountPanel') && !document.querySelector('#kimiSignIn').disabled");
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiSignIn').click()");
     await waitWindow("document.querySelector('#kimiUserCode')?.textContent === 'TEST-123'");
@@ -369,10 +369,10 @@ async function main() {
     // one creates its own home, and removing it cleans that directory up.
     const firstKimiHome = kimiAccountHome;
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiAddAccount').click()");
-    await waitWindow("document.querySelectorAll('#kimiAccountList .account-row').length === 2");
+    await waitWindow("document.querySelectorAll('#kimiAccountList .subscription-card').length === 2");
     const secondKimiHome = kimiAccountHome;
     assert.notEqual(secondKimiHome, firstKimiHome);
-    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelectorAll('#kimiAccountList .account-row')[1].classList.contains('active')"), true);
+    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiAccountList [data-card-id=account-1]').classList.contains('active')"), true);
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiSignIn').click()");
     await waitWindow("document.querySelector('#kimiUserCode')?.textContent === 'TEST-123'");
     fs.writeFileSync(path.join(secondKimiHome, 'config.toml'), require('smol-toml').stringify({ default_model: 'kimi-code/subscription-fixture',
@@ -385,11 +385,12 @@ async function main() {
     assert.equal(twoAccounts.accounts.length, 2);
     assert.equal(twoAccounts.accounts.filter(account => account.signedIn).length, 2);
     // Selecting the first account keeps both signs-in and only moves the choice.
-    await engineSettings.webContents.executeJavaScript("document.querySelectorAll('#kimiAccountList [data-account-select]')[0].click()");
-    await waitWindow("document.querySelectorAll('#kimiAccountList .account-row')[0].classList.contains('active')");
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiAccountList [data-card-id=default] [data-card-action=switch]').click()");
+    await waitWindow("document.querySelector('#kimiAccountList [data-card-id=default]').classList.contains('active')");
     assert.equal(await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState().then(state => state.activeId)'), 'default');
-    await engineSettings.webContents.executeJavaScript("document.querySelectorAll('#kimiAccountList [data-account-remove]')[0].click()");
-    await waitWindow("document.querySelectorAll('#kimiAccountList .account-row').length === 1");
+    await engineSettings.webContents.executeJavaScript("window.confirm = message => { window.accountRemovalConfirmation = message; return true; }; document.querySelector('#kimiAccountList [data-card-id=account-1] [data-card-action=remove]').click()");
+    assert.match(await engineSettings.webContents.executeJavaScript('window.accountRemovalConfirmation'), /Remove this account/);
+    await waitWindow("document.querySelectorAll('#kimiAccountList .subscription-card').length === 1");
     assert.equal(fs.existsSync(secondKimiHome), false);
     assert.equal(await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState().then(state => state.accounts.length)'), 1);
 
@@ -399,7 +400,7 @@ async function main() {
     await waitWindow("document.querySelector('#kimiSignOut')?.hidden && !document.querySelector('#kimiSignIn').disabled");
     assert.equal((await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState()')).account, null);
     assert.deepEqual(kimiRpcCalls.slice(-2), ['initialize', 'logout']);
-    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiConnection').value='api'; document.querySelector('#kimiConnection').dispatchEvent(new Event('change'))");
+    await engineSettings.webContents.executeJavaScript("window.dshDesktop.subscriptionPreferencesSave({engine:'kimi', preferences:{connection:'api'}})");
     // Connection changes save on their own now; confirm the persisted
     // preference, because the status line reports a rejected save as text only.
     const saveDeadline = Date.now() + 30000;

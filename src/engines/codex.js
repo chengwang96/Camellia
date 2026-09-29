@@ -15,7 +15,7 @@ const { downloadSettings } = require('../main/download-network');
 const accountOptions = require('./subscription-accounts');
 
 function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = () => [], getContextWindow = () => undefined, runtimes, environment = () => process.env,
-  openExternal, onEvent, onGoal, onAccount = () => {}, isBusy = () => false, log = () => {} }) {
+  openExternal, onEvent, onGoal, onAccount = () => {}, createUsageMeter = () => null, isBusy = () => false, log = () => {} }) {
   const home = path.join(dataDir, 'codex');
   const history = new ClaudeHistory(path.join(dataDir, 'codex-history'));
   const sessions = new SessionPool();
@@ -23,6 +23,8 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   // One entry per signed-in ChatGPT account. Every account owns a CODEX_HOME so
   // several sign-ins can stay active at once; native threads live there too.
   const accountEntries = new Map();
+  const wakingAccounts = new Set();
+  const wakeClients = new Set();
   const connections = () => loadConfig().codexSessionConnections || {};
   const accountBindings = () => loadConfig().codexSessionAccounts || {};
   const accountList = () => accountOptions.accountsFor(loadConfig(), 'codex');
@@ -158,7 +160,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     } else {
       // A conversation keeps the account that owns its native thread; a new
       // conversation picks an account that still has quota.
-      const accountId = selectAccountId(opts.sessionId);
+      const accountId = opts.conversationId && opts.settings?.subscriptionId || selectAccountId(opts.sessionId);
       if (accountId) selected.subscriptionId = accountId;
       else delete selected.subscriptionId;
     }
@@ -169,9 +171,13 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     const launch = spec(selected.connection, runtime, selected.cwd, selected.model, opts.conversationId, selected.subscriptionId);
     const previousClosed = current?.shutdown();
     const next = new CodexSession({ gen: ++generation, settings: selected, opts, spec: launch, spawn, log, history,
+      usageMeter: createUsageMeter('codex', { settings: selected }),
       onEvent: event => { if (sessions.get(opts) === next) onEvent({ ...event, conversationId: opts.conversationId }); },
       onSessionId: id => {
         saveConfig({ codexSessionConnections: { ...connections(), [id]: selected.connection },
+          // A new session starts from the connection the last one actually
+          // used, so the settings page does not need a global selector.
+          codex: { ...loadConfig().codex, connection: selected.connection },
           ...(selected.connection === 'subscription' && selected.subscriptionId ? { codexSessionAccounts: { ...accountBindings(), [id]: selected.subscriptionId } } : {}) });
         workspaces.recordContext(id, opts.workspaceId, selected.cwd); if (!opts.conversationId) goal.rememberSession(next);
       },
@@ -192,7 +198,36 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     'archive-session': payload => workspaces.archiveSession(payload.id, payload.archived !== false),
     'meta-op': payload => workspaces.metaOp(payload),
     'account-state': () => ({ ok: true, ...accountState() }),
-    'account-refresh': async () => ({ ok: true, ...await refreshAccount() }),
+    'account-refresh': async payload => {
+      const id = payload?.id || activeId();
+      if (!accountList().some(account => account.id === id)) throw new Error('Unknown Codex account');
+      await refreshAccount(id); return { ok: true, ...accountState() };
+    },
+    'account-wake': async payload => {
+      const id = String(payload?.id || '');
+      if (!accountList().some(account => account.id === id)) throw new Error('Unknown Codex account');
+      if (wakingAccounts.has(id)) throw new Error('This account is already waking');
+      const entry = accountEntry(id);
+      if (!entry.state.account || entry.loginId) throw new Error('Sign in to this account first');
+      const runtime = runtimes().locate('codex');
+      if (!runtime) throw new Error('Download Codex CLI in Settings → Runtime first');
+      const model = (entry.state.models || []).find(model => model.isDefault)?.id || entry.state.models?.[0]?.id;
+      if (!model) throw new Error('Refresh the account to load its models first');
+      wakingAccounts.add(id);
+      let wakeClient;
+      try {
+        const cwd = path.join(home, 'wake'); fs.mkdirSync(cwd, { recursive: true });
+        await require('./codex-wake').wakeAccount({ cwd, model,
+          usageMeter: createUsageMeter('codex', { settings: { connection: 'subscription', subscriptionId: id, model } }),
+          createClient: callbacks => {
+            wakeClient = new CodexClient({ ...spec('subscription', runtime, cwd, model, undefined, id), ...callbacks, log });
+            wakeClients.add(wakeClient); return wakeClient;
+          } });
+        let warning;
+        try { await refreshAccount(id); } catch { warning = 'Greeting sent. Quota refresh failed; refresh it again later.'; }
+        return { ok: true, ...accountState(), wakeSent: true, warning };
+      } finally { wakingAccounts.delete(id); wakeClients.delete(wakeClient); }
+    },
     'account-select': payload => {
       const id = String(payload?.id || '');
       if (!accountList().some(account => account.id === id)) throw new Error('Unknown Codex account');
@@ -210,6 +245,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     },
     'account-remove': async payload => {
       const id = String(payload?.id || '');
+      if (wakingAccounts.has(id)) throw new Error('Wait for the account wake request to finish');
       const accounts = accountList();
       if (!accounts.some(account => account.id === id)) throw new Error('Unknown Codex account');
       if (sessions.running || goal.armed || isBusy()) throw new Error('Stop the Codex response or goal before removing an account');
@@ -238,6 +274,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       return { ok: true, ...accountState() };
     },
     'sign-in': async () => {
+      if (wakingAccounts.size) throw new Error('Wait for the account wake request to finish');
       if (sessions.running || isBusy()) throw new Error('Stop the Codex response before changing accounts');
       await runtimes().ensure('codex');
       const value = accountEntry();
@@ -254,6 +291,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       value.loginId = null; onAccount(accountState()); return { ok: true, ...accountState() };
     },
     'sign-out': async () => {
+      if (wakingAccounts.size) throw new Error('Wait for the account wake request to finish');
       if (sessions.running || goal.armed || isBusy()) throw new Error('Stop the Codex response or goal before signing out');
       const value = accountEntry();
       await sessions.shutdown();
@@ -276,6 +314,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     get active() { return Boolean(sessions.active || [...accountEntries.values()].some(entry => entry.client && !entry.client.dead)); },
     home, goal, settings, saveSettings, handlers, ensureSession, history, sessions, workspaces, accountState,
     async shutdown() {
+      await Promise.allSettled([...wakeClients].map(client => client.shutdown()));
       await sessions.shutdown();
       await Promise.allSettled([...accountEntries.values()].map(entry => entry.client?.shutdown()));
       for (const entry of accountEntries.values()) { entry.client = null; entry.loginId = null; }

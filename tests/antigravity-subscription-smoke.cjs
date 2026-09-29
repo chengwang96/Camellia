@@ -23,6 +23,7 @@ async function run() {
   fs.writeFileSync(settingsFile, JSON.stringify({ modelProvider: 'gemini', enableTelemetry: false }));
   let session, complete, waiting;
   const events = [], errors = [], requests = [];
+  const usageRecords = [];
   seen.events = events; seen.errors = errors;
   const server = http.createServer(async (req, res) => {
     try {
@@ -60,6 +61,7 @@ async function run() {
     assert.equal(spec.env.GEMINI_API_KEY, undefined);
     Object.assign(spec.env, fixtureEnv);
     session = new AcpSession({ name: 'Antigravity CLI', gen: ++generation, settings: { cwd, model: selected.id, permissionMode }, opts,
+      usageMeter: require('../src/engines/subscription-meter').createSubscriptionMeter({ engine: 'antigravity', model: selected.id, record: row => usageRecords.push(row) }),
       exe: process.execPath, spec, spawn, history, log: message => errors.push(message), onEvent: event => events.push(event),
       onSessionId() {}, onResult: result => complete?.(result) });
     session.start();
@@ -91,6 +93,11 @@ async function run() {
     assert.equal(second.subtype, 'success', JSON.stringify(second) + errors.join('\n'));
     assert.equal(second.session_id, first.session_id);
     assert.equal(second.usage.input_tokens, first.usage.input_tokens, 'Token counts describe the current turn, not the whole process');
+    await session.usageMeter.flush();
+    assert.equal(usageRecords.length, 2);
+    assert.equal(usageRecords.flatMap(row => row.samples).reduce((sum, sample) => sum + sample.input, 0),
+      [first, second].reduce((sum, result) => sum + result.usage.input_tokens + (result.usage.cache_read_tokens || 0), 0));
+    assert.equal(usageRecords.flatMap(row => row.samples).reduce((sum, sample) => sum + sample.output, 0), first.usage.output_tokens + second.usage.output_tokens);
     assert.ok(requests.at(-1).contents.some(message => message.role === 'model'), 'The CLI retains native context across turns');
     await closeSession();
     start({ sessionId: first.session_id }, 'acceptEdits');

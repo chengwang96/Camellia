@@ -41,7 +41,7 @@ function claudeSpec({ settings, opts, home, route, environment, history, mcpFile
   return { args, env: { ...env, ...overlay }, cwd: settings.cwd };
 }
 
-function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, getRoute, router, isBusy, runtimeManager, nativeSettings }) {
+function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, getRoute, router, isBusy, runtimeManager, nativeSettings, createUsageMeter = () => null }) {
   const native = nativeSettings || require('./native-settings').createNativeSettings({ dataDir, isBusy });
   const environment = () => ({ ...process.env, PATH: path.dirname(process.execPath) + path.delimiter + (process.env.PATH || '') });
   const runtimes = runtimeManager || createRuntimeManager({ root, installRoot: dataDir, node: process.execPath,
@@ -61,6 +61,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
   const dsh = createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels: models, runtime: () => locate('dsh'), node: () => process.execPath,
     environment, onEvent: event => onEvent('dsh', event), log: noLog, nativeConfig: () => native.config('dsh'), nativeRevision: () => native.fingerprint('dsh') });
   const codex = createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels: models, getContextWindow: context,
+    createUsageMeter,
     runtimes: () => runtimes, environment, openExternal: openExternal('codex'), isBusy: () => isBusy('codex'), log: noLog,
     onEvent: event => onEvent('codex', event), onGoal: noLog });
   const kimiHome = path.join(dataDir, 'kimi-subscription');
@@ -92,6 +93,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
         route: subscription ? undefined : getRoute(), env: environment(), sharedSubscription: subscription });
       const previous = kimiPool.get(opts)?.shutdown();
       const session = new KimiSession({ name: 'Kimi', gen: ++generation, settings, opts, spec, exe: process.execPath, spawn, history: kimiHistory, log: noLog,
+        usageMeter: createUsageMeter('kimi', { settings, home: kimiHome, version: locate('kimi').version }),
         onEvent: event => { if (kimiPool.get(opts) === session) onEvent('kimi', { ...event, conversationId: opts.conversationId }); },
         onSessionId: id => saveConfig({ kimiSessionConnections: { ...loadConfig().kimiSessionConnections, [id]: settings.connection } }), onResult: noLog });
       kimiPool.set(opts, session); session.start(previous); return session;
@@ -133,6 +135,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
   const googleHome = path.join(dataDir, 'google-native');
   const googleEnvironment = () => ({ ...environment(), HOME: googleHome, XDG_CONFIG_HOME: path.join(googleHome, '.config'), XDG_DATA_HOME: path.join(googleHome, '.local/share'), XDG_CACHE_HOME: path.join(googleHome, '.cache') });
   const antigravity = createAntigravity({ dataDir, loadConfig, saveConfig, getRoute, getModels: models, runtimes: () => runtimes, environment: googleEnvironment,
+    createUsageMeter,
     cliSettingsFile: path.join(dataDir, 'google-native/.gemini/antigravity-cli/settings.json'), node: () => process.execPath,
     openLogin: async () => { throw new Error('Use native-login in the server terminal for Google sign-in'); },
     isBusy: () => isBusy('antigravity'), onEvent: event => onEvent('antigravity', event), onGoal: noLog, log: noLog });
@@ -140,7 +143,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     runtime: () => locate('pi'), node: () => process.execPath, environment, onEvent: event => onEvent('pi', event), log: noLog,
     instructions: () => native.config('pi', 'instructions'), nativeRevision: () => native.fingerprint('pi') });
   const drivers = { dsh, pi, codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession,
-    nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
+    subscriptionAccounts: () => codex.accountState(), nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
   drivers.antigravity = { history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
     ensure: antigravity.ensureSession, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
   for (const [engine, service] of [['codex', codex], ['antigravity', antigravity]]) {

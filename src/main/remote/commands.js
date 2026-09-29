@@ -6,7 +6,7 @@ const { fail } = require('./access');
 const fs = require('node:fs');
 const path = require('node:path');
 const { configure } = require('./settings');
-const { storeAttachments } = require('./attachments');
+const { storeAttachments, MAX_COUNT, MAX_IMAGE, MAX_TOTAL } = require('./attachments');
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function approval(event) {
@@ -243,14 +243,15 @@ class RemoteCommands {
         if (payload.images !== undefined || payload.image !== undefined) fail(400, 'Do not mix attachment formats');
         attachments.push(...storeAttachments({ directory: path.join(path.dirname(this.file), 'device-attachments'), deviceId, requestId: payload.requestId, entries: payload.attachments }));
       }
-      if (payload.images !== undefined && (!Array.isArray(payload.images) || !payload.images.length || payload.images.length > 9 || payload.image !== undefined)) fail(400, 'Provide 1 to 9 images');
+      if (payload.images !== undefined && (!Array.isArray(payload.images) || !payload.images.length || payload.images.length > MAX_COUNT || payload.image !== undefined)) fail(400, `Provide 1 to ${MAX_COUNT} images`);
       const imageBytes = (payload.images ?? (payload.image === undefined ? [] : [payload.image])).map(image => {
-        if (typeof image !== 'string' || image.length > 1_400_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image)) fail(400, 'Invalid image');
+        if (typeof image !== 'string' || image.length > Math.ceil(MAX_IMAGE / 3) * 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image)) fail(400, 'Invalid image');
         const bytes = Buffer.from(image, 'base64');
-        if (bytes.length > 1024 * 1024 || bytes.length < 4 || bytes.toString('base64') !== image || bytes[0] !== 255 || bytes[1] !== 216 || bytes[2] !== 255 || bytes.at(-2) !== 255 || bytes.at(-1) !== 217) fail(400, 'JPEG image required');
+        if (bytes.length > MAX_IMAGE || bytes.length < 4 || bytes.toString('base64') !== image || bytes[0] !== 255 || bytes[1] !== 216 || bytes[2] !== 255 || bytes.at(-2) !== 255 || bytes.at(-1) !== 217) fail(400, 'JPEG image required');
         return bytes;
       });
       if (imageBytes.length) {
+        if (imageBytes.reduce((total, bytes) => total + bytes.length, 0) > MAX_TOTAL) fail(413, 'Images exceed the 32 MiB total limit');
         const folder = path.join(path.dirname(this.file), 'mobile-images');
         fs.mkdirSync(folder, { recursive: true });
         const used = fs.readdirSync(folder).reduce((total, name) => total + fs.statSync(path.join(folder, name)).size, 0);

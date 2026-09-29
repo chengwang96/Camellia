@@ -43,9 +43,9 @@ public class MobileDeviceTest extends InstrumentationTestCase {
                 View root = activity.getWindow().getDecorView();
                 assertTrue(hasText(root, "Settings", "设置"));
                 root.findViewWithTag("remoteControlEntry").performClick();
-                findText(root, "Add computer", "添加电脑").performClick();
+                root.findViewWithTag("addComputer").performClick();
                 root = activity.getWindow().getDecorView();
-                assertTrue(hasText(root, "Connect your computer", "连接你的电脑"));
+                assertTrue(hasText(root, "Pair computer", "配对电脑"));
                 assertTrue(hasText(root, "Request pairing", "请求配对"));
                 assertEquals(0, activity.getWindow().getAttributes().flags & android.view.WindowManager.LayoutParams.FLAG_SECURE);
                 View button = findText(root, "Request pairing", "请求配对");
@@ -56,9 +56,9 @@ public class MobileDeviceTest extends InstrumentationTestCase {
                     status = (TextView) field.get(activity);
                 } catch (Exception error) { throw new AssertionError(error); }
                 String message = status.getText().toString();
-                assertTrue(message, message.startsWith("Check the Tailscale address, device name and 24-character pairing code.\n")
-                    || message.startsWith("请检查 Tailscale 地址、设备名称和 24 位配对码。\n"));
-                assertTrue(message, message.contains("IllegalArgumentException"));
+                assertTrue(message, message.contains("Tailscale IP"));
+                assertTrue(root.findViewWithTag("pairAddress").createAccessibilityNodeInfo().isContentInvalid());
+                assertFalse(message.contains("IllegalArgumentException"));
             });
             getInstrumentation().runOnMainSync(() -> {
                 getInstrumentation().callActivityOnPause(activity);

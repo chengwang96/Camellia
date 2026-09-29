@@ -2,7 +2,7 @@
 <resources>
     <string name="qr_scan_title">扫描配对二维码</string>
     <string name="qr_scan_hint">将电脑「手机访问」中生成的二维码放入取景框。</string>
-    <string name="qr_scan_cancel">取消</string>
+    <string name="qr_scan_cancel">返回配对</string>
     <string name="qr_scan_denied">需要相机权限才能扫描二维码。可在系统设置中授予后重试，或手动输入地址和配对码。</string>
     <string name="qr_scan_failed">无法打开相机。请在配对页下方手动填写地址和配对码。</string>
     <string name="qr_scan_unrecognized">这不是 Camellia 的配对二维码，请扫描电脑端新生成的二维码。</string>

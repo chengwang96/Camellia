@@ -19,6 +19,7 @@ const { runSummaryPipeline } = require('./compaction-summary');
 const { searchFiles, searchContents } = require('../main/file-search');
 const { buildHistoryIndex, searchHistory: matchHistory } = require('../main/conversation-index');
 const { previewKind } = require('../main/file-preview');
+const { subscriptionFailure, availableAccount } = require('./subscription-recovery');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
 
@@ -675,6 +676,10 @@ class SharedConversations {
     }
     assertAvailable();
     const settings = this.settings(engine, c.id);
+    if (settings.connection === 'subscription' && this.drivers[engine].subscriptionAccounts) {
+      const state = this.drivers[engine].subscriptionAccounts();
+      settings.subscriptionId = continuation?.subscriptionOverride || availableAccount(state) || state.activeId;
+    }
     if (!internal && !continuation && String(payload.prompt || '').length > 200000) throw new Error('The message is too large to send. Split it up or attach it as a file instead. Nothing was sent.');
     if (!internal && !continuation && !edit && c.seq && !this.usesNativeCompaction(c, engine, settings)) {
       const context = this.contextPressure(c, engine, settings);
@@ -688,6 +693,13 @@ class SharedConversations {
       }
     }
     let oldSegment = c.segments[engine];
+    const previousAccount = oldSegment && this.drivers[engine].settings(oldSegment.nativeId).subscriptionId;
+    if (oldSegment && settings.connection === 'subscription' && settings.subscriptionId && previousAccount
+        && previousAccount !== settings.subscriptionId) {
+      this.forgetNativeSession(c, engine);
+      oldSegment = null;
+      this.onStatus({ sessionId: c.id, text: translate('Subscription account switched. Continuing with the saved conversation history.', this.loadConfig().language) });
+    }
     const segmentConnection = oldSegment ? this.drivers[engine].settings(oldSegment.nativeId).connection : undefined;
     if (!edit && oldSegment && segmentConnection && settings.connection && segmentConnection !== settings.connection) {
       // The connection changed (subscription ↔ API routes). Each connection
@@ -824,6 +836,7 @@ class SharedConversations {
         return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
       }
       controlStart?.validate?.();
+      a.subscriptionSettings = settings;
       a.session = this.drivers[engine].ensure({ conversationId: c.id, sessionId: fresh ? null : c.segments[engine]?.nativeId, ...nativeEdit, workspaceId: null, cwd: c.cwd, settings, goalBridge });
       a.contextSettings = { model: settings.model, connection: settings.connection, contextWindow: settings.contextWindow };
       if (!a.session.sendUserMessage(prompt, payload.attachments || [])) throw new Error('Engine did not accept the message');
@@ -851,6 +864,35 @@ class SharedConversations {
     if (a.steering && event.type === 'result') { a.steerResult = event; return true; }
     if (event.type === 'result' && a.cancelled) event = { ...event, subtype: 'stopped', is_error: false };
     const c = a.c;
+    const accountSettings = a.subscriptionSettings || a.session?.settings;
+    const failure = event.type === 'result' && accountSettings?.connection === 'subscription'
+      ? subscriptionFailure(event) : null;
+    if (failure === 'auth') event = { ...event, result: event.result + '\n' + translate('Subscription login has expired or is invalid. Sign in again in Settings → Subscription accounts.', this.loadConfig().language) };
+    if (failure && !a.internal && !a.cancelled && this.drivers[engine].subscriptionAccounts) {
+      a.subscriptionAttempts ||= [];
+      const failedId = accountSettings.subscriptionId;
+      if (failedId && !a.subscriptionAttempts.includes(failedId)) a.subscriptionAttempts.push(failedId);
+      const next = failedId && availableAccount(this.drivers[engine].subscriptionAccounts(), a.subscriptionAttempts);
+      // An unfinished tool may have external effects. Do not replay it automatically.
+      if (next && !a.tools.size && !a.permissions.size && a.subscriptionAttempts.length < 12) {
+        a.subscriptionOverride = next;
+        const text = a.assistant.length ? a.assistant.join('\n\n') : a.text;
+        if (text) this.append(c, { role: 'assistant', engine, text });
+        this.forgetNativeSession(c, engine);
+        a.nativeFallbackPrompt = () => this.context(c, engine)
+          + 'Continue the unfinished user request after a subscription account switch. Do not repeat completed actions. Files and external effects have not been rolled back; inspect current state before retrying uncertain actions.';
+        this.onStatus({ sessionId: c.id, text: translate(failure === 'auth'
+          ? 'Subscription login expired. Sign in again in Settings → Subscription accounts. Switching to another signed-in account and retrying…'
+          : 'Subscription quota reached. Switching to another signed-in account and retrying…', this.loadConfig().language) });
+        this.active.delete(c.id);
+        a.session = null; a.priorCursor = 0; a.text = ''; a.assistant = []; a.lastCallUsage = null;
+        a.nativeSessionProgress = false; a.nativeEditEligible = false;
+        a.goalReport = undefined;
+        this.recovering.set(c.id, a); this.publishActivity(c.id);
+        void this.recoverNativeSession(a);
+        return true;
+      }
+    }
     const compactionMetric = a.internal && this.switching.get(c.id)?.metric;
     if (compactionMetric && compactionMetric.firstDeltaMs === undefined && event.type === 'stream_event' && event.event?.delta)
       compactionMetric.firstDeltaMs = Date.now() - compactionMetric.startedAt;
@@ -1046,6 +1088,10 @@ class SharedConversations {
   async recoverNativeSession(a) {
     const { c, engine } = a;
     try {
+      if (a.subscriptionOverride) {
+        const event = { type: 'conversation:continued', session_id: c.id, engine, runId: a.facade.gen, eventSeq: ++a.eventSeq };
+        a.events.push(event); this.onEvent(event);
+      }
       const prompt = typeof a.nativeFallbackPrompt === 'function' ? a.nativeFallbackPrompt()
         : this.context(c, engine) + String(a.promptSuffix ?? a.prompt ?? '');
       await this.send(engine, { sessionId: c.id, prompt: a.prompt, attachments: a.attachments },

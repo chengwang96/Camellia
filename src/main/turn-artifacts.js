@@ -17,7 +17,9 @@ function describeArtifact(resolved, explicit) {
     && !['txt', 'csv', 'tsv', 'rst', 'tex'].includes(extension)) return null;
   const stat = fs.statSync(resolved);
   if (!stat.isFile()) return null;
-  return { canonical: fs.realpathSync(resolved), kind,
+  // Native resolution also expands Windows 8.3 aliases (for example RUNNER~1
+  // in CI's TEMP), which the JavaScript realpath implementation leaves intact.
+  return { canonical: fs.realpathSync.native(resolved), kind,
     file: { path: resolved, name: path.basename(resolved), kind,
       extension: path.extname(resolved).slice(1).toUpperCase(), size: stat.size } };
 }
@@ -27,6 +29,10 @@ function targetsFor(candidate, bases) {
   if (/^file:/i.test(value)) return [fileURLToPath(value)];
   let relative = value.replace(/^sandbox:/i, '');
   try { relative = decodeURIComponent(relative); } catch {}
+  // Markdown file links can use /D:/folder/file.apk. Windows treats that
+  // URL-style drive prefix as an invalid filesystem path until the slash is
+  // removed; normalize after decoding so encoded links resolve the same way.
+  if (process.platform === 'win32') relative = relative.replace(/^\/([a-z]:[\\/])/i, '$1');
   relative = relative.replace(/#L\d+(?:C\d+)?$|:\d+(?::\d+)?$/, '');
   if (/^[a-z][a-z\d+.-]*:/i.test(relative) && !/^[a-z]:[\\/]/i.test(relative)) return [];
   if (path.isAbsolute(relative)) return [relative];

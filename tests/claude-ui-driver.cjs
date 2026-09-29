@@ -78,6 +78,17 @@ rl.on('line', async (line) => {
       writeJson(configFile, config);
       result = ws.id;
     }
+    else if (method === 'seedSubscriptionUsage') {
+      const file = path.join(h.userData, 'desktop-config.json');
+      writeJson(file, { ...readJson(file, {}), subscriptionAccounts: { codex: [{ id: 'default', label: 'Personal' }, { id: 'account-1', label: 'Work' }] } });
+      for (const [index, row] of [
+        { engine: 'codex', model: 'gpt-5.4', input: 10000, cacheRead: 8000, output: 1000 },
+        { engine: 'codex', accountId: 'account-1', model: 'future-model', input: 2000, output: 50 },
+        { engine: 'kimi', model: 'kimi-code/k3', input: 23000, cacheRead: 19000, output: 300 },
+        { engine: 'codex', model: 'gpt-5.3-codex', input: 100, output: 20, at: new Date(Date.now() - 40 * 86400000) },
+      ].entries()) h.api.subscriptionUsage().record({ ...row, id: 'ui-usage-' + index, samples: [row] });
+      result = { ok: true };
+    }
     else if (method === 'lastProcess') {
       const proc = h.processes.at(-1);
       result = proc ? { cwd: proc.cwd, args: proc.args, id: proc.sid } : null;

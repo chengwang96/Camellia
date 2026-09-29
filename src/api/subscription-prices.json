@@ -1,0 +1,616 @@
+{
+  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+  "checkedAt": "2026-09-28",
+  "models": {
+    "claude-haiku-4-5-20251001": {
+      "input": 1,
+      "output": 5,
+      "cacheRead": 0.1,
+      "cacheWrite": 1.25
+    },
+    "claude-haiku-4-5": {
+      "input": 1,
+      "output": 5,
+      "cacheRead": 0.1,
+      "cacheWrite": 1.25
+    },
+    "claude-sonnet-4-5": {
+      "input": 3,
+      "output": 15,
+      "cacheRead": 0.3,
+      "cacheWrite": 3.75,
+      "threshold": 200000,
+      "long": {
+        "input": 6,
+        "output": 22.5,
+        "cacheRead": 0.6,
+        "cacheWrite": 7.5
+      }
+    },
+    "claude-sonnet-4-5-20250929": {
+      "input": 3,
+      "output": 15,
+      "cacheRead": 0.3,
+      "cacheWrite": 3.75,
+      "threshold": 200000,
+      "long": {
+        "input": 6,
+        "output": 22.5,
+        "cacheRead": 0.6,
+        "cacheWrite": 7.5
+      }
+    },
+    "claude-sonnet-4-6": {
+      "input": 3,
+      "output": 15,
+      "cacheRead": 0.3,
+      "cacheWrite": 3.75
+    },
+    "claude-opus-4-5-20251101": {
+      "input": 5,
+      "output": 25,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25
+    },
+    "claude-opus-4-5": {
+      "input": 5,
+      "output": 25,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25
+    },
+    "claude-opus-4-6": {
+      "input": 5,
+      "output": 25,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25
+    },
+    "claude-opus-4-6-20260205": {
+      "input": 5,
+      "output": 25,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25
+    },
+    "claude-opus-4-7": {
+      "input": 5,
+      "output": 25,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25
+    },
+    "claude-opus-4-7-20260416": {
+      "input": 5,
+      "output": 25,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25
+    },
+    "claude-opus-4-8": {
+      "input": 5,
+      "output": 25,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25
+    },
+    "gemini-3.1-flash-lite-preview": {
+      "input": 0.25,
+      "output": 1.5,
+      "cacheRead": 0.025,
+      "cacheWrite": null
+    },
+    "gemini-2.5-flash": {
+      "input": 0.3,
+      "output": 2.5,
+      "cacheRead": 0.03,
+      "cacheWrite": null
+    },
+    "gemini-2.5-flash-lite": {
+      "input": 0.1,
+      "output": 0.4,
+      "cacheRead": 0.01,
+      "cacheWrite": null
+    },
+    "gemini-2.5-pro": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": 0.125,
+      "cacheWrite": null,
+      "threshold": 200000,
+      "long": {
+        "input": 2.5,
+        "output": 15,
+        "cacheRead": 0.25,
+        "cacheWrite": null
+      }
+    },
+    "gemini-2.5-computer-use-preview-10-2025": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": null,
+      "cacheWrite": null,
+      "threshold": 200000,
+      "long": {
+        "input": 2.5,
+        "output": 15,
+        "cacheRead": null,
+        "cacheWrite": null
+      }
+    },
+    "gemini-3.1-flash-lite": {
+      "input": 0.25,
+      "output": 1.5,
+      "cacheRead": 0.025,
+      "cacheWrite": null
+    },
+    "gemini-3.5-flash-lite": {
+      "input": 0.3,
+      "output": 2.5,
+      "cacheRead": 0.03,
+      "cacheWrite": null
+    },
+    "gemini-3-flash-preview": {
+      "input": 0.5,
+      "output": 3,
+      "cacheRead": 0.05,
+      "cacheWrite": null
+    },
+    "gemini-3.5-flash": {
+      "input": 1.5,
+      "output": 9,
+      "cacheRead": 0.15,
+      "cacheWrite": null
+    },
+    "gemini-3.6-flash": {
+      "input": 0.75,
+      "output": 3.75,
+      "cacheRead": 0.075,
+      "cacheWrite": null
+    },
+    "gemini-3.7-flash": {
+      "input": 0.75,
+      "output": 3.75,
+      "cacheRead": 0.075,
+      "cacheWrite": null
+    },
+    "gemini-3.8-flash": {
+      "input": 0.75,
+      "output": 3.75,
+      "cacheRead": 0.075,
+      "cacheWrite": null
+    },
+    "gemini-3.1-pro-preview": {
+      "input": 2,
+      "output": 12,
+      "cacheRead": 0.2,
+      "cacheWrite": null,
+      "threshold": 200000,
+      "long": {
+        "input": 4,
+        "output": 18,
+        "cacheRead": 0.4,
+        "cacheWrite": null
+      }
+    },
+    "gemini-3.1-pro-preview-customtools": {
+      "input": 2,
+      "output": 12,
+      "cacheRead": 0.2,
+      "cacheWrite": null,
+      "threshold": 200000,
+      "long": {
+        "input": 4,
+        "output": 18,
+        "cacheRead": 0.4,
+        "cacheWrite": null
+      }
+    },
+    "gpt-5": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": 0.125,
+      "cacheWrite": null
+    },
+    "gpt-5-codex": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": 0.125,
+      "cacheWrite": null
+    },
+    "gpt-5.1": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": 0.125,
+      "cacheWrite": null
+    },
+    "gpt-5.1-codex-mini": {
+      "input": 0.25,
+      "output": 2,
+      "cacheRead": 0.025,
+      "cacheWrite": null
+    },
+    "gpt-5.1-codex-max": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": 0.125,
+      "cacheWrite": null
+    },
+    "gpt-5.1-codex": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": 0.125,
+      "cacheWrite": null
+    },
+    "gpt-5.1-chat-latest": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": 0.125,
+      "cacheWrite": null
+    },
+    "gpt-5.1-2025-11-13": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": 0.125,
+      "cacheWrite": null
+    },
+    "gpt-5.2": {
+      "input": 1.75,
+      "output": 14,
+      "cacheRead": 0.175,
+      "cacheWrite": null
+    },
+    "gpt-5.2-codex": {
+      "input": 1.75,
+      "output": 14,
+      "cacheRead": 0.175,
+      "cacheWrite": null
+    },
+    "gpt-5.2-chat-latest": {
+      "input": 1.75,
+      "output": 14,
+      "cacheRead": 0.175,
+      "cacheWrite": null
+    },
+    "gpt-5.2-2025-12-11": {
+      "input": 1.75,
+      "output": 14,
+      "cacheRead": 0.175,
+      "cacheWrite": null
+    },
+    "gpt-5.2-pro": {
+      "input": 21,
+      "output": 168,
+      "cacheRead": null,
+      "cacheWrite": null
+    },
+    "gpt-5.2-pro-2025-12-11": {
+      "input": 21,
+      "output": 168,
+      "cacheRead": null,
+      "cacheWrite": null
+    },
+    "gpt-6-astra": {
+      "input": 10,
+      "output": 50,
+      "cacheRead": 1,
+      "cacheWrite": 12.5,
+      "threshold": 272000,
+      "long": {
+        "input": 20,
+        "output": 75,
+        "cacheRead": 2,
+        "cacheWrite": 25
+      }
+    },
+    "gpt-6-sol": {
+      "input": 2,
+      "output": 10,
+      "cacheRead": 0.2,
+      "cacheWrite": 2.5,
+      "threshold": 272000,
+      "long": {
+        "input": 4,
+        "output": 15,
+        "cacheRead": 0.4,
+        "cacheWrite": 5
+      }
+    },
+    "gpt-6-luna": {
+      "input": 0.1,
+      "output": 0.5,
+      "cacheRead": 0.01,
+      "cacheWrite": 0.125,
+      "threshold": 272000,
+      "long": {
+        "input": 0.2,
+        "output": 0.75,
+        "cacheRead": 0.02,
+        "cacheWrite": 0.25
+      }
+    },
+    "gpt-5.6": {
+      "input": 4,
+      "output": 20,
+      "cacheRead": 0.4,
+      "cacheWrite": 5,
+      "threshold": 272000,
+      "long": {
+        "input": 8,
+        "output": 30,
+        "cacheRead": 0.8,
+        "cacheWrite": 10
+      }
+    },
+    "gpt-5.6-sol": {
+      "input": 4,
+      "output": 20,
+      "cacheRead": 0.4,
+      "cacheWrite": 5,
+      "threshold": 272000,
+      "long": {
+        "input": 8,
+        "output": 30,
+        "cacheRead": 0.8,
+        "cacheWrite": 10
+      }
+    },
+    "gpt-5.6-terra": {
+      "input": 2,
+      "output": 12,
+      "cacheRead": 0.2,
+      "cacheWrite": 2.5,
+      "threshold": 272000,
+      "long": {
+        "input": 4,
+        "output": 18,
+        "cacheRead": 0.4,
+        "cacheWrite": 5
+      }
+    },
+    "gpt-5.6-luna": {
+      "input": 0.2,
+      "output": 1.2,
+      "cacheRead": 0.02,
+      "cacheWrite": 0.25,
+      "threshold": 272000,
+      "long": {
+        "input": 0.4,
+        "output": 1.8,
+        "cacheRead": 0.04,
+        "cacheWrite": 0.5
+      }
+    },
+    "gpt-5.6-cyber": {
+      "input": 12.5,
+      "output": 75,
+      "cacheRead": 1.25,
+      "cacheWrite": 15.625,
+      "threshold": 272000,
+      "long": {
+        "input": 25,
+        "output": 112.5,
+        "cacheRead": 2.5,
+        "cacheWrite": 31.25
+      }
+    },
+    "gpt-5.5": {
+      "input": 5,
+      "output": 30,
+      "cacheRead": 0.5,
+      "cacheWrite": null,
+      "threshold": 272000,
+      "long": {
+        "input": 10,
+        "output": 45,
+        "cacheRead": 1,
+        "cacheWrite": null
+      }
+    },
+    "gpt-5.5-2026-04-23": {
+      "input": 5,
+      "output": 30,
+      "cacheRead": 0.5,
+      "cacheWrite": null,
+      "threshold": 272000,
+      "long": {
+        "input": 10,
+        "output": 45,
+        "cacheRead": 1,
+        "cacheWrite": null
+      }
+    },
+    "gpt-5.5-pro": {
+      "input": 30,
+      "output": 180,
+      "cacheRead": null,
+      "cacheWrite": null,
+      "threshold": 272000,
+      "long": {
+        "input": 60,
+        "output": 270,
+        "cacheRead": null,
+        "cacheWrite": null
+      }
+    },
+    "gpt-5.5-pro-2026-04-23": {
+      "input": 30,
+      "output": 180,
+      "cacheRead": null,
+      "cacheWrite": null,
+      "threshold": 272000,
+      "long": {
+        "input": 60,
+        "output": 270,
+        "cacheRead": null,
+        "cacheWrite": null
+      }
+    },
+    "gpt-5.4": {
+      "input": 2.5,
+      "output": 15,
+      "cacheRead": 0.25,
+      "cacheWrite": null,
+      "threshold": 272000,
+      "long": {
+        "input": 5,
+        "output": 22.5,
+        "cacheRead": 0.5,
+        "cacheWrite": null
+      }
+    },
+    "gpt-5.4-2026-03-05": {
+      "input": 2.5,
+      "output": 15,
+      "cacheRead": 0.25,
+      "cacheWrite": null,
+      "threshold": 272000,
+      "long": {
+        "input": 5,
+        "output": 22.5,
+        "cacheRead": 0.5,
+        "cacheWrite": null
+      }
+    },
+    "gpt-5.4-pro": {
+      "input": 30,
+      "output": 180,
+      "cacheRead": null,
+      "cacheWrite": null,
+      "threshold": 272000,
+      "long": {
+        "input": 60,
+        "output": 270,
+        "cacheRead": null,
+        "cacheWrite": null
+      }
+    },
+    "gpt-5.4-pro-2026-03-05": {
+      "input": 30,
+      "output": 180,
+      "cacheRead": null,
+      "cacheWrite": null,
+      "threshold": 272000,
+      "long": {
+        "input": 60,
+        "output": 270,
+        "cacheRead": null,
+        "cacheWrite": null
+      }
+    },
+    "gpt-5.4-mini": {
+      "input": 0.75,
+      "output": 4.5,
+      "cacheRead": 0.075,
+      "cacheWrite": null
+    },
+    "gpt-5.4-mini-2026-03-17": {
+      "input": 0.75,
+      "output": 4.5,
+      "cacheRead": 0.075,
+      "cacheWrite": null
+    },
+    "gpt-5.4-nano": {
+      "input": 0.2,
+      "output": 1.25,
+      "cacheRead": 0.02,
+      "cacheWrite": null
+    },
+    "gpt-5.4-nano-2026-03-17": {
+      "input": 0.2,
+      "output": 1.25,
+      "cacheRead": 0.02,
+      "cacheWrite": null
+    },
+    "gpt-5-pro": {
+      "input": 15,
+      "output": 120,
+      "cacheRead": null,
+      "cacheWrite": null
+    },
+    "gpt-5-pro-2025-10-06": {
+      "input": 15,
+      "output": 120,
+      "cacheRead": null,
+      "cacheWrite": null
+    },
+    "gpt-5-2025-08-07": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": 0.125,
+      "cacheWrite": null
+    },
+    "gpt-5-chat": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": 0.125,
+      "cacheWrite": null
+    },
+    "gpt-5-chat-latest": {
+      "input": 1.25,
+      "output": 10,
+      "cacheRead": 0.125,
+      "cacheWrite": null
+    },
+    "gpt-5.3-codex": {
+      "input": 1.75,
+      "output": 14,
+      "cacheRead": 0.175,
+      "cacheWrite": null
+    },
+    "gpt-5.3-chat-latest": {
+      "input": 1.75,
+      "output": 14,
+      "cacheRead": 0.175,
+      "cacheWrite": null
+    },
+    "gpt-5-mini": {
+      "input": 0.25,
+      "output": 2,
+      "cacheRead": 0.025,
+      "cacheWrite": null
+    },
+    "gpt-5-mini-2025-08-07": {
+      "input": 0.25,
+      "output": 2,
+      "cacheRead": 0.025,
+      "cacheWrite": null
+    },
+    "gpt-5-nano": {
+      "input": 0.05,
+      "output": 0.4,
+      "cacheRead": 0.005,
+      "cacheWrite": null
+    },
+    "gpt-5-nano-2025-08-07": {
+      "input": 0.05,
+      "output": 0.4,
+      "cacheRead": 0.005,
+      "cacheWrite": null
+    },
+    "kimi-k2.7-code": {
+      "input": 0.95,
+      "output": 4,
+      "cacheRead": 0.19,
+      "cacheWrite": null
+    },
+    "kimi-k2.5": {
+      "input": 0.6,
+      "output": 3,
+      "cacheRead": 0.1,
+      "cacheWrite": null
+    },
+    "kimi-k2.6": {
+      "input": 0.95,
+      "output": 4,
+      "cacheRead": 0.16,
+      "cacheWrite": null
+    },
+    "kimi-k3": {
+      "input": 3,
+      "output": 15,
+      "cacheRead": 0.3,
+      "cacheWrite": null
+    },
+    "gpt-5.5-cyber": {
+      "input": 12.5,
+      "output": 75,
+      "cacheRead": 1.25,
+      "cacheWrite": null
+    }
+  }
+}

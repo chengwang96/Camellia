@@ -269,6 +269,7 @@ try:
                     {'at':now.isoformat(),'balances':cash,'windows':quota}]}
         page.evaluate('s=>window.testEmitInsights(s)',snapshot)
         page.locator('[data-view=usage]').click()
+        page.locator('[data-view=providers]').click()
         page.locator('#balanceSearch').fill('Backup account')
         expect(page.locator('.balance-card')).to_have_count(1)
         page.locator('#balanceSearch').fill('')
@@ -287,14 +288,17 @@ try:
         page.locator('[data-balance="'+key+'"]').click()
         expect(page.locator('#balanceDetail')).to_have_count(0)
         expect(page.locator('.balance-card.selected')).to_contain_text('125.5 Credits')
-        expect(page.locator('#usageChart [data-chart-kind=quota] .chart-dot')).to_have_count(2)
-        expect(page.locator('#usageKey')).to_have_value(key)
+        expect(page.locator('#balanceChart [data-chart-kind=quota] .chart-dot')).to_have_count(2)
+        page.locator('[data-view=usage]').click()
+        page.locator('#usageProvider').select_option(command['id'])
+        page.locator('#usageKey').select_option(key)
+        expect(page.locator('#usagePage [data-chart-kind=quota]')).to_have_count(0)
         expect(page.locator('#usageChart [data-chart-kind=usage]')).to_have_count(2)
         page.locator('#usageMetric').select_option('requests')
         expect(page.locator('#usageChart [data-chart-kind=usage]').first).to_contain_text('Successful requests')
         page.locator('#usageModel').select_option('model-test')
         expect(page.locator('#usageChart [data-chart-kind=usage]')).to_have_count(1)
-        expect(page.locator('#usageChart [data-chart-kind=quota]')).to_have_count(1)
+        expect(page.locator('#balanceChart [data-chart-kind=quota]')).to_have_count(1)
         page.locator('#usageModel').select_option('')
         page.set_viewport_size({'width':1280,'height':1200})
         page.mouse.move(0,0)
@@ -312,10 +316,14 @@ try:
             const stats = {requests: 3, inputTokens: 120, outputTokens: 30};
             live.usage[key] = {...stats, byModel: {'model-test': stats}, daily: {[today]: {'model-test': stats}}};
         }''', ollama_key)
+        page.locator('[data-view=providers]').click()
         page.locator('[data-balance="'+ollama_key+'"]').click()
         expect(page.locator('.balance-card.selected')).to_contain_text('72% remaining')
-        expect(page.locator('#usageChart [data-chart-kind=quota] svg')).to_have_count(3)
-        expect(page.locator('#usageChart [data-chart-kind=quota] .chart-dot')).to_have_count(6)
+        expect(page.locator('#balanceChart [data-chart-kind=quota] svg')).to_have_count(3)
+        expect(page.locator('#balanceChart [data-chart-kind=quota] .chart-dot')).to_have_count(6)
+        page.locator('[data-view=usage]').click()
+        page.locator('#usageProvider').select_option(ollama['id'])
+        page.locator('#usageKey').select_option(ollama_key)
         expect(page.locator('#usageChart [data-chart-kind=usage]')).to_have_count(1)
         expect(page.locator('#usageChart [data-chart-kind=usage]')).to_contain_text('Ollama Cloud')
         page.locator('#usageProvider').select_option('')
@@ -323,14 +331,17 @@ try:
         page.locator('#usageModel').select_option('model-test')
         expect(page.locator('#usageChart [data-chart-kind=usage]')).to_have_count(2)
         page.locator('#usageKey').select_option(key)
-        expect(page.locator('.balance-card.selected')).to_have_attribute('data-balance', key)
-        expect(page.locator('#usageChart [data-chart-kind=quota]')).to_have_count(1)
+        expect(page.locator('.balance-card.selected')).to_have_attribute('data-balance', ollama_key)
+        expect(page.locator('#balanceChart [data-chart-kind=quota]')).to_have_count(3)
+        page.locator('[data-view=providers]').click()
         page.locator('[data-balance="'+ollama_key+'"]').click()
+        page.locator('[data-view=usage]').click()
         page.locator('#usageMetric').select_option('tokens')
+        page.locator('[data-view=providers]').click()
         for width in [760, 960, 1160, 1840, 1440]:
             page.set_viewport_size({'width':width,'height':1200})
             page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
-            for selector in ['#usageChart']:
+            for selector in ['#balanceChart']:
                 expect(page.locator(selector+' [data-chart-kind=quota] svg')).to_have_count(3)
                 page.wait_for_function('''selector => {
                     const grid = document.querySelector(selector);
@@ -347,8 +358,8 @@ try:
                         labelSize: parseFloat(getComputedStyle(chart.querySelector('text')).fontSize) * chart.getScreenCTM().a})''')
                     assert abs(dimensions['height'] - 248) < 1, dimensions
                     assert 12 <= dimensions['labelSize'] <= 14, dimensions
-        page.locator('#usageChart').scroll_into_view_if_needed()
-        quota_chart=page.locator('#usageChart [data-chart-kind=quota]').first
+        page.locator('#balanceChart').scroll_into_view_if_needed()
+        quota_chart=page.locator('#balanceChart [data-chart-kind=quota]').first
         quota_svg=quota_chart.locator('svg')
         quota_svg.hover(position={'x':80,'y':100})
         expect(quota_chart.locator('.chart-tooltip')).to_be_visible()
@@ -358,6 +369,9 @@ try:
         expect(quota_chart.locator('.chart-tooltip strong')).to_have_text('72%')
         page.keyboard.press('Escape')
         expect(quota_chart.locator('.chart-tooltip')).to_be_hidden()
+        page.locator('[data-view=usage]').click()
+        page.locator('#usageProvider').select_option(ollama['id'])
+        page.locator('#usageKey').select_option(ollama_key)
         usage_chart=page.locator('#usageChart [data-chart-kind=usage]').first
         usage_chart.locator('svg').hover(position={'x':100,'y':100})
         expect(usage_chart.locator('.chart-tooltip strong')).to_have_text('150 Token')
@@ -380,11 +394,11 @@ try:
         page.locator('#usageChart').scroll_into_view_if_needed()
         page.screenshot(path=str(repo/'dist/ui-preview/settings-combined-charts-zh.png'))
         page.locator('[data-view=general]').click();page.locator('#language').select_option('en')
-        page.locator('[data-view=usage]').click()
         page.emulate_media(color_scheme='dark');page.set_viewport_size({'width':760,'height':620})
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-        page.locator('#usageChart').scroll_into_view_if_needed()
-        page.locator('#usageChart [data-chart-kind=quota] svg').first.hover(position={'x':80,'y':100})
+        page.locator('[data-view=providers]').click()
+        page.locator('#balanceChart').scroll_into_view_if_needed()
+        page.locator('#balanceChart [data-chart-kind=quota] svg').first.hover(position={'x':80,'y':100})
         expect(page.locator('.chart-tooltip:visible')).to_have_count(1)
         page.screenshot(path=str(repo/'dist/ui-preview/settings-balances-dark-compact.png'))
         page.locator('[data-view=general]').click();page.locator('#theme').select_option('dark')

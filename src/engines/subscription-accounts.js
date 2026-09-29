@@ -76,7 +76,7 @@ function rateLimitWindows(rateLimits) {
 // fully used leaves rotation until the window resets.
 function accountExhausted(engine, state) {
   if (!state) return false;
-  if (engine === 'kimi') return windowsExhausted(state.usage?.windows);
+  if (engine === 'kimi') return windowsExhausted(state.usage?.latest?.windows || state.usage?.windows);
   if (engine === 'codex') return windowsExhausted(rateLimitWindows(state.rateLimits));
   return false;
 }
@@ -117,6 +117,10 @@ function accountSummary(engine, account, state = {}) {
   const detail = engine === 'codex' ? { email: state.account?.email || '', plan: state.account?.planType || '' }
     : engine === 'kimi' ? { email: state.account?.name || '', region: state.account?.region || '' } : {};
   return { id: account.id, label: account.label, active: false, signedIn: accountSignedIn(engine, state),
+    quotaWindows: engine === 'codex' ? rateLimitWindows(state.rateLimits).map(window => ({ usedPercent: window.usedPercent,
+      label: !Number.isFinite(window.windowDurationMins) ? 'Usage' : window.windowDurationMins >= 1440 ? `${Math.round(window.windowDurationMins / 1440)}d` : `${window.windowDurationMins / 60}h`,
+      resetsAt: window.resetsAt ? new Date(window.resetsAt * 1000).toISOString() : null })) : (state.usage?.latest?.windows || state.usage?.windows || []).map(window => ({ label: window.label, usedPercent: window.usedPercent, resetsAt: window.resetsAt })),
+    verifiedAt: state.usage?.checkedAt || state.verifiedAt || null,
     exhausted: accountExhausted(engine, state), installed: state.installed !== false,
     loginPending: Boolean(state.loginPending), error: state.error || '', models: (state.models || []).length, ...detail };
 }

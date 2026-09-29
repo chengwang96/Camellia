@@ -117,6 +117,55 @@ test('remote automation controls are scoped, explicit and cannot create tasks th
   assert.equal(invalid.body.ok, false);
 });
 
+test('completed goal notices end with the next user turn without clearing the saved goal', context => {
+  const { manager, visible, pair, access, reader } = fixture(context);
+  const device = access.authenticate(pair().token);
+  let now = Date.now() + 1000;
+  context.mock.method(Date, 'now', () => now);
+  const goal = manager.goalFor(visible.id);
+  goal.goal = { id: 'goal-1', objective: 'Finish the report', phase: 'complete', roundsStarted: 2,
+    verified: { at: now, evidence: 'private verification evidence' }, updatedAt: now, runToken: 'private-run-token' };
+  const saved = JSON.stringify(goal.view());
+  let projected = reader.snapshot(device, visible.id).automation.goal;
+  assert.equal(projected.id, 'goal-1');
+  assert.equal(projected.completedAt, now);
+  assert.equal(JSON.stringify(projected).includes('private'), false);
+  now += 100;
+  manager.append(visible, { role: 'assistant', text: 'Completion details' });
+  manager.append(visible, { role: 'user', text: 'Internal check', internal: true });
+  assert.equal(reader.snapshot(device, visible.id).automation.goal.phase, 'complete');
+  const nextUser = manager.append(visible, { role: 'user', text: '', attachments: [{ name: 'next-task.txt' }] });
+  assert.equal(reader.snapshot(device, visible.id).automation.goal, null);
+  // Pagination and opening the same conversation through a new reader cannot
+  // resurrect the notice, even when the new user turn is outside the page.
+  assert.equal(reader.snapshot(device, visible.id, nextUser.seq).automation.goal, null);
+  for (let index = 0; index < 201; index++) manager.append(visible, { role: 'assistant', text: 'Progress' });
+  assert.equal(new RemoteReadModel(manager).snapshot(device, visible.id).automation.goal, null);
+  assert.equal(JSON.stringify(goal.view()), saved);
+  for (const phase of ['active', 'paused', 'blocked']) {
+    goal.goal.phase = phase;
+    assert.equal(reader.snapshot(device, visible.id).automation.goal.phase, phase);
+  }
+  goal.goal = { ...goal.goal, id: 'goal-2', phase: 'complete', verified: { at: now + 100 }, updatedAt: now + 100 };
+  assert.equal(reader.snapshot(device, visible.id).automation.goal.id, 'goal-2');
+});
+
+test('unverified legacy completions use their saved update time but verified completions keep their original boundary', context => {
+  const { manager, visible, pair, access, reader } = fixture(context);
+  const device = access.authenticate(pair().token);
+  let now = Date.now() + 1000;
+  context.mock.method(Date, 'now', () => now);
+  const goal = manager.goalFor(visible.id);
+  goal.goal = { objective: 'Legacy completion', phase: 'complete', updatedAt: now };
+  assert.equal(reader.snapshot(device, visible.id).automation.goal.completedAt, now);
+  now += 100;
+  manager.append(visible, { role: 'user', text: 'The next task' });
+  assert.equal(reader.snapshot(device, visible.id).automation.goal, null);
+  goal.goal.verified = { at: now - 100 };
+  goal.goal.updatedAt = now + 100; // A later workspace update is not a new completion.
+  assert.equal(reader.snapshot(device, visible.id).automation.goal, null);
+});
+
 test('resuming a goal from the phone starts the turn the same way the desktop does', async context => {
   const { gateway, pair, visible, manager } = fixture(context);
   const { token } = pair(); await gateway.start('127.0.0.1', 0);
@@ -313,6 +362,38 @@ test('artifact downloads accept Windows workspace aliases with different path ca
   const opened = await openArtifact(reader, device, visible.id, aliased.id);
   try { assert.equal(await opened.handle.readFile('utf8'), contents); }
   finally { await opened.handle.close(); }
+});
+
+test('APK links with leading Windows slashes appear in the phone list and download', { skip: process.platform !== 'win32' }, async context => {
+  const { root, manager, gateway, visible, pair } = fixture(context);
+  const folder = path.join(root, 'dist', '安装 包');
+  fs.mkdirSync(folder, { recursive: true });
+  const filename = 'Camellia-Android-0.3.63-debug.apk';
+  const contents = Buffer.concat([Buffer.from('PK\x03\x04'), Buffer.alloc(1024, 63)]);
+  const apk = path.join(folder, filename);
+  fs.writeFileSync(apk, contents);
+  fs.writeFileSync(path.join(folder, 'unmentioned.apk'), 'not referenced by this conversation');
+  fs.writeFileSync(path.join(root, 'README.md'), 'Updated version');
+  const text = `[下载 Android 安装包](${encodeURI('/' + apk.replace(/\\/g, '/'))})`;
+  manager.append(visible, { role: 'user', text: '升级一个小版本' });
+  // An older collector persisted only the edited README. The listing must
+  // recover the APK from the saved reply without requiring a new build/turn.
+  manager.append(visible, { role: 'assistant', text, artifacts: [{ path: 'README.md' }],
+    outputBlocks: [{ phase: 'final_answer', text }] });
+  const { token } = pair();
+  await gateway.start('127.0.0.1', 0);
+  const route = `/v1/conversations/${visible.id}/artifacts`;
+  const listing = await request(gateway, route, { token });
+  assert.equal(listing.status, 200);
+  assert.deepEqual(listing.body.artifacts.map(file => file.name).sort(), [filename, 'README.md'].sort());
+  assert.ok(!JSON.stringify(listing.body).includes(root));
+  const file = listing.body.artifacts.find(entry => entry.name === filename);
+  assert.equal(file.kind, 'package');
+  assert.equal(file.extension, 'APK');
+  assert.equal(file.size, contents.length);
+  const response = await fetch(`${gateway.url}${route}/${file.id}`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), contents);
 });
 
 test('artifact listing resolves the same roots as the desktop and paginates without duplicates', async context => {
@@ -573,7 +654,7 @@ test('read model isolates workspace scope and strips paths, credentials and nati
   const snapshot = reader.snapshot(device, visible.id);
   assert.equal(snapshot.messages.length, 2);
   for (const field of ['apiKey', 'attachments', 'artifacts', 'segments', 'cwd']) assert.ok(!JSON.stringify(snapshot).includes(`"${field}"`));
-  assert.deepEqual(Object.keys(snapshot.settings).sort(), ['editable', 'engine', 'model', 'models', 'permissionLevels', 'permissionMode', 'thinking', 'version']);
+  assert.deepEqual(Object.keys(snapshot.settings).sort(), ['connection', 'editable', 'engine', 'model', 'models', 'permissionLevels', 'permissionMode', 'thinking', 'version']);
   manager.workspaces.archiveSession(visible.id, true);
   assert.throws(() => reader.snapshot(device, visible.id), /not found/);
   manager.workspaces.archiveSession(visible.id, false);
@@ -1247,6 +1328,31 @@ test('desktop attachments are scoped, bounded and deduplicated without accepting
   assert.equal(JSON.stringify(snapshot.body.messages).includes('device-attachments'), false);
 });
 
+test('remote PDF and mainstream office attachments reach the computer unchanged', async context => {
+  const { gateway, manager, visible, pair } = fixture(context);
+  const credential = pair(); await gateway.start('127.0.0.1', 0);
+  let sent = 0, files;
+  manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage(prompt, attachments) { sent++; files = attachments; return true; }, interrupt() {} });
+  const names = ['paper.pdf', 'notes.doc', 'notes.docx', 'data.xls', 'data.xlsx', 'slides.ppt', 'slides.pptx',
+    'notes.rtf', 'notes.odt', 'data.ods', 'slides.odp', 'notes.txt', 'notes.md', 'data.csv'];
+  const originals = new Map(names.map(name => [name, Buffer.from(name.endsWith('.pdf') ? '%PDF-1.7\n%%EOF\n' : `Original bytes: ${name}`)]));
+  const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'send', expectedSeq: visible.seq, prompt: 'Read these documents',
+    attachments: names.map(name => ({ name, data: originals.get(name).toString('base64'), isImage: false })) };
+  const endpoint = `/v1/conversations/${visible.id}/commands`;
+  const first = await request(gateway, endpoint, { token: credential.token, method: 'POST', payload });
+  assert.equal(first.body.ok, true, first.body.error);
+  assert.equal((await request(gateway, endpoint, { token: credential.token, method: 'POST', payload })).body.ok, true);
+  assert.equal(sent, 1);
+  assert.deepEqual(files.map(file => file.name), names);
+  for (const file of files) {
+    assert.equal(file.isImage, false);
+    assert.equal(path.extname(file.path), path.extname(file.name));
+    assert.deepEqual(fs.readFileSync(file.path), originals.get(file.name));
+  }
+  const snapshot = await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token });
+  assert.deepEqual(snapshot.body.messages.at(-1).attachedFiles, names.map(name => ({ name, isImage: false })));
+});
+
 test('mobile images use bounded server-owned paths and retry sends only once', async context => {
   const { gateway, manager, access, visible, pair, root } = fixture(context);
   const credential = pair();
@@ -1271,17 +1377,17 @@ test('mobile multi-image batches validate every item before writing and retry on
   const image = Buffer.from([255, 216, 255, 224, 0, 2, 255, 217]).toString('base64');
   const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'send', expectedSeq: visible.seq, prompt: 'Describe images', images: [image, image] };
   const send = value => request(gateway, `/v1/conversations/${visible.id}/commands`, { token: credential.token, method: 'POST', payload: value });
-  for (const invalid of [{ images: [image, '../private.png'] }, { images: [] }, { images: null }, { images: image }, { images: Array(10).fill(image) }, { image }]) {
+  for (const invalid of [{ images: [image, '../private.png'] }, { images: [] }, { images: null }, { images: image }, { images: Array(21).fill(image) }, { image }]) {
     assert.equal((await send({ ...payload, ...invalid, requestId: require('node:crypto').randomUUID() })).body.ok, false);
     assert.equal(fs.existsSync(path.join(root, 'mobile-images')), false);
   }
   const largeImage = Buffer.alloc(1024 * 1024, 0);
   largeImage.set([255, 216, 255]); largeImage.set([255, 217], largeImage.length - 2);
-  payload.images = Array(9).fill(largeImage.toString('base64'));
+  payload.images = Array(20).fill(largeImage.toString('base64'));
   assert.equal((await send(payload)).body.ok, true);
   assert.equal((await send(payload)).body.ok, true);
-  assert.equal(sent, 1); assert.equal(attachments.length, 9);
-  assert.equal(new Set(attachments.map(attachment => attachment.path)).size, 9);
+  assert.equal(sent, 1); assert.equal(attachments.length, 20);
+  assert.equal(new Set(attachments.map(attachment => attachment.path)).size, 20);
   for (const attachment of attachments) {
     assert.equal(attachment.isImage, true);
     assert.equal(path.dirname(attachment.path), path.join(root, 'mobile-images'));

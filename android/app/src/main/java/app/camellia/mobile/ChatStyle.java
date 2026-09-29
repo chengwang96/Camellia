@@ -64,9 +64,9 @@ final class ChatStyle {
 
     GradientDrawable floatingBar(android.view.View view) {
         GradientDrawable shape = capsule(background); shape.setStroke(dp(1), floatingBarEdge());
-        view.setBackground(shape); view.setElevation(dp(7)); view.setTranslationZ(dp(1));
+        view.setBackground(shape); view.setElevation(dp(4)); view.setTranslationZ(dp(1));
         if (android.os.Build.VERSION.SDK_INT >= 28) {
-            view.setOutlineAmbientShadowColor(0x18000000); view.setOutlineSpotShadowColor(0x3d000000);
+            view.setOutlineAmbientShadowColor(0x12000000); view.setOutlineSpotShadowColor(0x28000000);
         }
         return shape;
     }

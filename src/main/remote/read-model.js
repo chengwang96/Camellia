@@ -5,6 +5,8 @@ const { createHash } = require('node:crypto');
 const { approval } = require('./commands');
 const { projectOutput, cleanProcess } = require('../../shared/mobile-output');
 const { settingsView } = require('./settings');
+const { latestFilePreview } = require('./conversation-preview');
+const { MAX_COUNT: MAX_ATTACHMENTS } = require('./attachments');
 
 const TEXT_LIMIT = 256 * 1024;
 function text(value) {
@@ -23,12 +25,24 @@ function message(row) {
       .map(block => ({ type: 'text', text: block.text })));
   }
   const attachedFiles = (Array.isArray(row.attachments) ? row.attachments : []).filter(file => typeof file?.name === 'string')
-    .slice(0, 9).map(file => ({ name: file.name.replace(/[\\/\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '_').slice(0, 180), isImage: file.isImage === true }));
+    .slice(0, MAX_ATTACHMENTS).map(file => ({ name: file.name.replace(/[\\/\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '_').slice(0, 180), isImage: file.isImage === true }));
   return { seq: row.seq, role: row.role, engine: row.engine, at: row.at, ...text(value), ...(process.length ? { process } : {}), ...(attachedFiles.length ? { attachedFiles } : {}) };
 }
 
+function mobileGoal(goal, rows) {
+  if (!goal) return null;
+  const completedAt = goal.phase === 'complete' ? Number(goal.verified?.at || goal.updatedAt || 0) : 0;
+  // The saved goal remains available on the computer. Its completion belongs
+  // to the finished work, not every later turn (including after reconnecting).
+  const datedCompletion = Number.isFinite(completedAt) && completedAt > 0;
+  if (datedCompletion && rows.some(row => row.role === 'user' && row.at > completedAt)) return null;
+  return { ...(goal.id ? { id: String(goal.id).slice(0, 100) } : {}),
+    objective: String(goal.objective || '').slice(0, 2000), phase: goal.phase, roundsStarted: goal.roundsStarted, armed: goal.armed,
+    ...(datedCompletion ? { completedAt } : {}) };
+}
+
 class RemoteReadModel {
-  constructor(manager) { this.manager = manager; }
+  constructor(manager) { this.manager = manager; this.previewCache = new WeakMap(); }
   workspaces() {
     return this.manager.workspaces.sessionMeta().workspaces.map(({ id, name }) => ({ id, name }));
   }
@@ -48,15 +62,24 @@ class RemoteReadModel {
     const meta = this.manager.workspaces.sessionMeta();
     const entries = [...this.manager.items.values()].filter(conversation => meta.archived[conversation.id] && this.allowed(device, conversation, meta, true))
       .sort((first, second) => meta.archived[second.id] - meta.archived[first.id] || first.id.localeCompare(second.id));
-    return { conversations: entries.slice(offset, offset + 100).map(conversation => ({ ...this.summary(conversation, meta), archivedAt: meta.archived[conversation.id] })),
+    return { conversations: entries.slice(offset, offset + 100).map(conversation => ({ ...this.summary(conversation, meta, true), archivedAt: meta.archived[conversation.id] })),
       nextOffset: entries.length > offset + 100 ? offset + 100 : null };
   }
-  summary(conversation, meta = this.manager.workspaces.sessionMeta()) {
+  filePreview(conversation) {
+    const previous = this.previewCache.get(conversation);
+    if (previous && previous.seq === conversation.seq && previous.updatedAt === conversation.updatedAt) return previous.value;
+    const rows = this.manager.rows ? this.manager.rows(conversation) : this.manager.messages(conversation);
+    const value = latestFilePreview(rows);
+    this.previewCache.set(conversation, { seq: conversation.seq, updatedAt: conversation.updatedAt, value });
+    return value;
+  }
+  summary(conversation, meta = this.manager.workspaces.sessionMeta(), includePreview = false) {
+    const filePreview = includePreview ? this.filePreview(conversation) : null;
     return { id: conversation.id, title: String(meta.titles[conversation.id] || conversation.title).slice(0, 200),
       engine: conversation.currentEngine, pinned: Boolean(meta.pinned[conversation.id]), workspaceId: meta.sessionWorkspace[conversation.id] || null,
       workspaceName: meta.workspaces.find(workspace => workspace.id === meta.sessionWorkspace[conversation.id])?.name || null,
       updatedAt: conversation.updatedAt, seq: conversation.seq, lastReplyAt: conversation.lastReplyAt || 0, replyReadAt: conversation.replyReadAt || 0,
-      activity: this.manager.activity(conversation.id) };
+      activity: this.manager.activity(conversation.id), ...(filePreview ? { filePreview } : {}) };
   }
   list(device, offset = 0) {
     const meta = this.manager.workspaces.sessionMeta();
@@ -69,7 +92,7 @@ class RemoteReadModel {
       slots.forEach((slot, index) => { conversations[slot] = sorted[index]; });
     }
     conversations.sort((left, right) => Number(Boolean(meta.pinned[right.id])) - Number(Boolean(meta.pinned[left.id])));
-    return { conversations: conversations.slice(offset, offset + 100).map(conversation => this.summary(conversation, meta)),
+    return { conversations: conversations.slice(offset, offset + 100).map(conversation => this.summary(conversation, meta, true)),
       nextOffset: conversations.length > offset + 100 ? offset + 100 : null };
   }
   listSnapshot(device) {
@@ -86,8 +109,9 @@ class RemoteReadModel {
   }
   snapshot(device, id, before) {
     const conversation = this.conversation(device, id);
-    const rows = (this.manager.rows ? this.manager.rows(conversation).filter(row => !row.internal && ['user', 'assistant', 'notice', 'tool'].includes(row.role))
-      : this.manager.messages(conversation)).filter(row => before === undefined || row.seq < before);
+    const transcript = (this.manager.rows ? this.manager.rows(conversation) : this.manager.messages(conversation))
+      .filter(row => !row.internal && ['user', 'assistant', 'notice', 'tool'].includes(row.role));
+    const rows = transcript.filter(row => before === undefined || row.seq < before);
     const messages = [];
     let size = 0;
     for (const row of rows.slice(-200).reverse()) {
@@ -104,7 +128,7 @@ class RemoteReadModel {
       pendingApprovals: active.permissions.size, approvals: device.permission === 'control' ? [...active.permissions.values()].map(approval) : [] } : null;
     const goal = this.manager.goalFor?.(id)?.view();
     return { conversation: this.summary(conversation), messages, live, permission: device.permission,
-      automation: { goal: goal ? { objective: String(goal.objective || '').slice(0, 2000), phase: goal.phase, roundsStarted: goal.roundsStarted, armed: goal.armed } : null,
+      automation: { goal: mobileGoal(goal, transcript),
         tasks: (this.manager.tasks?.list(id) || []).map(task => ({ id: task.id, instruction: String(task.instruction || '').slice(0, 500), status: task.status, state: task.state, intervalMinutes: task.intervalMinutes, lastResult: String(task.lastResult || '').slice(0, 600) })) },
       ...(device.permission === 'control' ? { settings: settingsView(this.manager, conversation) } : {}),
       nextBefore: rows.length > messages.length ? messages[0]?.seq ?? null : null };

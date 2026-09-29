@@ -35,6 +35,11 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
     privateDirectory(path.join(dataDir, 'conversations'));
     const config = require('../api/api-router-config');
     const routes = () => config.loadConfig(routeFile);
+    const { createSubscriptionUsage, subscriptionProfiles } = require('../api/subscription-usage');
+    const subscriptionUsage = createSubscriptionUsage({ file: path.join(dataDir, 'subscription-usage.json'), onChange: () => remote?.publish() });
+    const createUsageMeter = (engine, { settings, home, version }) => settings.connection !== 'subscription' ? null
+      : require('../engines/subscription-meter').createSubscriptionMeter({ engine, home, version, model: settings.model,
+        accountId: settings.subscriptionId || 'default', record: value => subscriptionUsage.record(value) });
     const nativeSettings = require('./native-settings').createNativeSettings({ dataDir,
       isBusy: engine => closing || Boolean(manager?.isBusy(engine)) || nativeLogins.has(engine) || installs.get(engine)?.state === 'installing' || engines?.accountBusy?.(engine) === true,
       publish: () => remote?.publish() });
@@ -44,6 +49,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
       supported = Object.keys(drivers);
     } else {
       engines = require('./engine-drivers').createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, router: routes, nativeSettings,
+        createUsageMeter,
         isBusy: engine => Boolean(manager?.isBusy(engine)),
         getRoute: () => {
           if (!router?.getState().running) throw new Error('Configure API routes on this server before sending');
@@ -131,7 +137,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
           if (action === 'usage') {
             const counters = require('../api/api-usage').counters;
             const cfg = routes();
-            return { ok: true, result: { scope: 'server-api', providers: cfg.providers.map(provider => ({ name: provider.name,
+            return { ok: true, result: { scope: 'server', subscriptionUsage: subscriptionUsage.state(subscriptionProfiles(loadConfig())), providers: cfg.providers.map(provider => ({ name: provider.name,
               ...provider.keys.reduce((total, key) => { for (const [field, value] of Object.entries(counters(cfg.usage?.[key.id]))) total[field] += value; return total; }, counters()) })) } };
           }
           if (action === 'storage-scan') return { ok: true, result: await cleanup.scan() };

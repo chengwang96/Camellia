@@ -45,7 +45,13 @@ with sync_playwright() as playwright:
           if(action === 'state') return {ok:true,result:{language:'en',theme:'light',devices:[{id:'server-a',name:'GPU server',address:'http://100.80.1.2:43127'},{id:'server-b',name:'Build server',address:'http://100.80.1.3:43127'}],network:{state: window.networkMockState || 'Running'}}};
           if(action === 'conversations') return {ok:true,result:{...info,conversations:[{...conversation,title:payload.deviceId === 'server-a' ? 'Server conversation' : 'Other server conversation'}]}};
           if(action === 'snapshot' && payload.before !== undefined) return {ok:true,result:{...info,conversation,messages:[{seq:0,role:'user',text:'Earlier server message'}],live:null,nextBefore:null}};
-          if(action === 'snapshot') return {ok:true,result:{...info,conversation,messages:[{seq:1,role:'user',text:'<script>unsafe</script>'},{seq:2,role:'assistant',text:'Ready on the server.'}],live:null,nextBefore:1,settings:{editable:true,version:'settings-1',model:'model-a',permissionMode:'ask',models:[{id:'model-a',name:'Model A',thinking:['low','high']}],permissionLevels:['ask','auto','full']}}};
+          if(action === 'snapshot') {
+            const account = {id:'model-a',name:'Model A',connection:'subscription',thinking:['low','high']};
+            const route = {id:'route-a',name:'route-a',connection:'api',thinking:['low']};
+            const connection = window.snapshotConnection || 'subscription';
+            const models = connection === 'subscription' ? [account, route] : [route, account];
+            return {ok:true,result:{...info,conversation,messages:[{seq:1,role:'user',text:'<script>unsafe</script>'},{seq:2,role:'assistant',text:'Ready on the server.'}],live:null,nextBefore:1,settings:{editable:true,version:'settings-1',connection,model:models[0].id,permissionMode:'ask',models,permissionLevels:['ask','auto','full']}}};
+          }
           if(action === 'command') return {ok:true,result:{ok:true,state:'accepted',conversation}};
           if(action === 'pair') return {ok:true,result:{id:'pending',state:'pending'}};
           if(action === 'claim') return {ok:true,result:{state:'approved'}};
@@ -194,10 +200,28 @@ with sync_playwright() as playwright:
     expect(page.locator("#messages")).to_contain_text("Earlier server message")
     expect(page.locator("#older")).not_to_be_visible()
     page.locator("#configure").click()
+    expect(page.locator("#field-model optgroup[label='Account models']")).to_have_count(1)
+    expect(page.locator("#field-model optgroup[label='Shared API routes']")).to_have_count(1)
+    assert page.evaluate("[...document.querySelectorAll('#field-model option')].map(option => option.value)") == ['model-a', 'route-a']
     page.locator("#field-thinking").select_option("high")
     page.locator("#submit").click()
     expect(page.locator("#dialog")).not_to_be_visible()
     assert page.evaluate("calls.filter(call => call.action === 'command').at(-1).payload.command.settings.thinking") == 'high'
+    page.locator("#configure").click()
+    page.locator("#field-model").select_option("route-a")
+    assert page.evaluate("document.querySelectorAll('#field-thinking option').length") == 2
+    page.locator("#cancel").click()
+    # The same grouping must hold when the conversation runs on shared API routes.
+    page.evaluate("window.snapshotConnection = 'api'")
+    page.locator("#refresh").click()
+    page.wait_for_function("document.querySelector('#configure').textContent === 'route-a'")
+    page.locator("#configure").click()
+    expect(page.locator("#field-model optgroup[label='Account models']")).to_have_count(1)
+    expect(page.locator("#field-model optgroup[label='Shared API routes']")).to_have_count(1)
+    assert page.evaluate("[...document.querySelectorAll('#field-model option')].map(option => option.value)") == ['route-a', 'model-a']
+    page.locator("#field-model").select_option("model-a")
+    assert page.evaluate("document.querySelectorAll('#field-thinking option').length") == 3
+    page.locator("#cancel").click()
     page.locator("#prompt").fill("Run the check")
     page.locator("#send").click()
     expect(page.locator("#prompt")).to_have_value("")

@@ -2,6 +2,7 @@
 
 const http = require('node:http');
 const { isTailscaleIPv4 } = require('./tailscale');
+const { MAX_REQUEST } = require('./attachments');
 
 function deviceAddress(value) {
   if (typeof value !== 'string') throw new Error('Invalid device address');
@@ -46,7 +47,7 @@ class DeviceTransport {
     if (bearer !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(bearer)) throw new Error('Invalid device credential');
     if (body !== undefined && method !== 'POST') throw new Error('GET requests cannot contain a body');
     const bytes = body === undefined ? null : Buffer.from(JSON.stringify(body));
-    if (bytes?.length > 13_000_000) throw new Error('Device request is too large');
+    if (bytes?.length > MAX_REQUEST) throw new Error('Device request is too large');
     return new Promise((resolve, reject) => {
       const request = http.request(this.url + endpoint, { method, signal, agent: false, headers: {
         'x-camellia-outbound': this.token, ...(bearer ? { authorization: 'Bearer ' + bearer } : {}),

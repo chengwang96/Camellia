@@ -5,14 +5,18 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { fail } = require('./access');
 
-const MAX_FILE = 8 * 1024 * 1024;
-const MAX_TOTAL = 8 * 1024 * 1024;
+const MAX_COUNT = 20;
+const MAX_IMAGE = 4 * 1024 * 1024;
+const MAX_FILE = 10 * 1024 * 1024;
+const MAX_TOTAL = 32 * 1024 * 1024;
+// Base64 plus JSON metadata for a full 32 MiB mobile selection.
+const MAX_REQUEST = 48 * 1024 * 1024;
 function attachmentName(value) {
   if (typeof value !== 'string' || !value.trim() || value.length > 180 || /[\\/\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(value) || value === '.' || value === '..') fail(400, 'Invalid attachment name');
   return value;
 }
 function decodeAttachments(entries) {
-  if (!Array.isArray(entries) || !entries.length || entries.length > 9) fail(400, 'Provide 1 to 9 attachments');
+  if (!Array.isArray(entries) || !entries.length || entries.length > MAX_COUNT) fail(400, `Provide 1 to ${MAX_COUNT} attachments`);
   let total = 0;
   return entries.map(entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry) || Object.keys(entry).some(key => !['name', 'data', 'isImage'].includes(key))) fail(400, 'Invalid attachment');
@@ -20,8 +24,11 @@ function decodeAttachments(entries) {
     if (typeof entry.data !== 'string' || entry.data.length > Math.ceil(MAX_FILE / 3) * 4 || entry.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(entry.data)) fail(400, 'Invalid attachment encoding');
     const bytes = Buffer.from(entry.data, 'base64');
     total += bytes.length;
-    if (bytes.length > MAX_FILE || total > MAX_TOTAL || bytes.toString('base64') !== entry.data) fail(413, 'Attachments exceed the 8 MiB limit');
+    if (bytes.length > MAX_FILE) fail(413, 'Document exceeds the 10 MiB limit');
+    if (total > MAX_TOTAL) fail(413, 'Attachments exceed the 32 MiB total limit');
+    if (bytes.toString('base64') !== entry.data) fail(400, 'Invalid attachment encoding');
     if (typeof entry.isImage !== 'boolean') fail(400, 'Invalid image flag');
+    if (entry.isImage && bytes.length > MAX_IMAGE) fail(413, 'Image exceeds the 4 MiB limit');
     if (entry.isImage && !(bytes.length >= 4 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 && bytes.at(-2) === 255 && bytes.at(-1) === 217)) fail(400, 'Image attachments must be JPEG');
     return { name, bytes, isImage: entry.isImage };
   });
@@ -50,4 +57,4 @@ function storeAttachments({ directory, deviceId, requestId, entries }) {
   } catch (error) { for (const entry of written) fs.unlinkSync(entry.path); throw error; }
 }
 
-module.exports = { MAX_FILE, MAX_TOTAL, attachmentName, decodeAttachments, storeAttachments };
+module.exports = { MAX_COUNT, MAX_IMAGE, MAX_FILE, MAX_TOTAL, MAX_REQUEST, attachmentName, decodeAttachments, storeAttachments };

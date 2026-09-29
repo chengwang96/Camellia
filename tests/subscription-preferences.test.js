@@ -24,7 +24,9 @@ for (const engine of ['kimi', 'codex', 'antigravity']) test(`${engine} login pre
   assert.equal(invalid.ok, false);
 });
 
-for (const engine of ['kimi', 'codex', 'antigravity']) test(`${engine} subscription page owns the default connection without overwriting engine settings`, async context => {
+// A session pins its own connection when it starts; the starting connection for
+// the next new session follows the composer's model pick, not a page selector.
+for (const engine of ['kimi', 'codex', 'antigravity']) test(`${engine} starting connection changes without overwriting engine settings`, async context => {
   const harness = createHarness(); context.after(() => harness.cleanup());
   await harness.call(engine + '-save-settings', { connection: 'api', model: 'api-model' });
   const before = await harness.call('engine-settings-get', { engine });

@@ -276,6 +276,55 @@ test('Codex publishes live context usage with cache accounting and the native co
   await session.shutdown();
 });
 
+test('Codex subscription metering follows the native lifecycle while context display keeps the last request', async t => {
+  const root = temporary(t), wire = transport(), records = [];
+  const meter = require('../src/engines/subscription-meter').createSubscriptionMeter({ engine: 'codex', accountId: 'account-2', model: 'gpt-5.4', record: row => records.push(row) });
+  const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'gpt-5.4', connection: 'subscription' }, opts: {}, spec: {},
+    usageMeter: meter, spawn: () => wire.proc, log() {}, history: new ClaudeHistory(path.join(root, 'history')), onEvent() {}, onSessionId() {}, onResult() {} });
+  session.start(); session.sendUserMessage('Meter this turn'); await session.ready;
+  await new Promise(resolve => setImmediate(resolve));
+  const last = { inputTokens: 100, cachedInputTokens: 80, outputTokens: 20 };
+  wire.send({ method: 'thread/tokenUsage/updated', params: { threadId: session.sessionId, tokenUsage: { last, total: last } } });
+  wire.send({ method: 'thread/tokenUsage/updated', params: { threadId: session.sessionId, tokenUsage: { last, total: { inputTokens: 200, cachedInputTokens: 160, outputTokens: 40 } } } });
+  wire.send({ method: 'turn/completed', params: { threadId: session.sessionId, turn: { status: 'completed' } } });
+  await meter.flush();
+  assert.equal(records.length, 1);
+  assert.equal(records[0].accountId, 'account-2');
+  assert.equal(records[0].samples.reduce((sum, sample) => sum + sample.input, 0), 200);
+  assert.equal(session.usage.input_tokens, 20);
+  await session.shutdown();
+});
+
+test('Codex resume and fork snapshots never charge usage from the previous turn', async t => {
+  const root = temporary(t), wire = transport(), records = [], events = [];
+  const meter = require('../src/engines/subscription-meter').createSubscriptionMeter({ engine: 'codex', model: 'gpt-5.4', record: row => records.push(row) });
+  const last = { inputTokens: 50, cachedInputTokens: 0, outputTokens: 10 };
+  const stale = { last, total: { inputTokens: 200, cachedInputTokens: 0, outputTokens: 40 } };
+  const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'gpt-5.4', connection: 'subscription' }, opts: {}, spec: {},
+    usageMeter: meter, spawn: () => wire.proc, log() {}, history: new ClaudeHistory(path.join(root, 'history')),
+    onEvent: event => events.push(event), onSessionId() {}, onResult() {} });
+  const begin = meter.begin;
+  meter.begin = async (...args) => {
+    const active = await begin(...args);
+    wire.send({ method: 'thread/tokenUsage/updated', params: { threadId: session.sessionId, turnId: 'previous-turn', tokenUsage: stale } });
+    return active;
+  };
+  session.start(); session.sendUserMessage('Continue this thread'); await session.ready;
+  await new Promise(resolve => setImmediate(resolve));
+  wire.send({ method: 'thread/tokenUsage/updated', params: { threadId: session.sessionId, turnId: 'previous-turn', tokenUsage: stale } });
+  assert.equal(events.some(event => event.type === 'gui:usage'), false, 'Historical snapshots must not become current usage');
+  const current = { threadId: session.sessionId, turnId: session.turnId,
+    tokenUsage: { last, total: { inputTokens: 250, cachedInputTokens: 0, outputTokens: 50 } } };
+  wire.send({ method: 'thread/tokenUsage/updated', params: current });
+  wire.send({ method: 'thread/tokenUsage/updated', params: current });
+  wire.send({ method: 'turn/completed', params: { threadId: session.sessionId, turn: { status: 'completed' } } });
+  await meter.flush();
+  assert.equal(records.length, 1);
+  assert.equal(records[0].samples.reduce((sum, sample) => sum + sample.input, 0), 50);
+  assert.equal(records[0].samples.reduce((sum, sample) => sum + sample.output, 0), 10);
+  await session.shutdown();
+});
+
 test('cancel during Codex initialization stops before sending a turn and closes the process', async t => {
   const root = temporary(t), wire = transport(), events = [];
   const session = new CodexSession({ gen: 2, settings: { cwd: root, model: 'fixture', connection: 'api' }, opts: {}, spec: {},
@@ -284,6 +333,25 @@ test('cancel during Codex initialization stops before sending a turn and closes 
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(wire.messages.some(m => m.method === 'turn/start'), false);
   assert.equal(events.at(-1).subtype, 'stopped'); await session.shutdown();
+});
+
+test('a new Codex session starts from the connection the last session used', async t => {
+  const root = temporary(t), home = path.join(root, 'codex'); fs.mkdirSync(home);
+  let desktop = { codex: { connection: 'api', apiModel: 'api-model' }, codexSessionConnections: {} };
+  const wire = transport();
+  const engine = createCodex({ dataDir: root, loadConfig: () => desktop, saveConfig: patch => { desktop = { ...desktop, ...patch }; },
+    runtimes: () => ({ locate: () => ({ file: path.join(root, 'native/bin/codex') }) }),
+    getModels: () => [], spawn: () => wire.proc });
+  assert.equal(engine.settings().connection, 'api');
+  // A session that actually used the subscription pins its own connection and
+  // becomes the starting point for the next brand-new session.
+  engine.saveSettings({ connection: 'subscription', model: 'account-model' });
+  const session = engine.ensureSession({ sessionId: 'native-thread' });
+  assert.equal(session.settings.connection, 'subscription');
+  await session.ready;
+  assert.equal(desktop.codexSessionConnections['native-thread'] ?? desktop.codex.connection, 'subscription');
+  assert.equal(engine.settings().connection, 'subscription');
+  await engine.shutdown();
 });
 
 test('Codex keeps configuration, auth storage and remembered connections inside Camellia', async t => {
@@ -340,8 +408,8 @@ test('Codex gives every ChatGPT account its own home and switches to the one wit
   assert.equal(engine.accountState('account-1').home, second);
   assert.equal(engine.accountState('account-1').account.email, 'backup@example.com');
   assert.deepEqual(engine.accountState().accounts, [
-    { id: 'default', label: '', active: true, signedIn: true, exhausted: true, installed: false, loginPending: false, error: '', models: 1, email: 'primary@example.com', plan: '' },
-    { id: 'account-1', label: 'Backup', active: false, signedIn: true, exhausted: false, installed: false, loginPending: false, error: '', models: 1, email: 'backup@example.com', plan: '' },
+    { id: 'default', label: '', active: true, signedIn: true, exhausted: true, installed: false, loginPending: false, error: '', models: 1, email: 'primary@example.com', plan: '', verifiedAt: null, quotaWindows: [{ label: 'Usage', usedPercent: 100, resetsAt: null }] },
+    { id: 'account-1', label: 'Backup', active: false, signedIn: true, exhausted: false, installed: false, loginPending: false, error: '', models: 1, email: 'backup@example.com', plan: '', verifiedAt: null, quotaWindows: [{ label: 'Usage', usedPercent: 20, resetsAt: null }] },
   ]);
   // A conversation that already ran on an account reports that account, so the
   // composer lists the right models and the thread is resumed in its home.

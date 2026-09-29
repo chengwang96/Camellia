@@ -43,11 +43,15 @@ public class RemoteApi {
     public interface SnapshotListener { void onSnapshot(JSONObject snapshot) throws IOException; }
     public interface DownloadProgress { void update(long received, long total); }
     private final Endpoint endpoint;
+    private final android.content.Context context;
     private final Set<HttpURLConnection> connections = ConcurrentHashMap.newKeySet();
     private volatile boolean cancelled;
     private final Set<tailnet.Response> embeddedResponses = ConcurrentHashMap.newKeySet();
 
-    public RemoteApi(String address) { endpoint = new Endpoint(address); }
+    public RemoteApi(String address) { this(null, address); }
+    public RemoteApi(android.content.Context context, String address) {
+        endpoint = new Endpoint(address); this.context = context == null ? null : context.getApplicationContext();
+    }
 
     private HttpURLConnection open(String path, String token) throws IOException {
         if (cancelled) throw new IOException("Cancelled");
@@ -108,12 +112,12 @@ public class RemoteApi {
         HttpURLConnection connection = open(path, token);
         try {
             if (payload != null) {
-                byte[] bytes = payload.toString().getBytes(StandardCharsets.UTF_8);
                 connection.setRequestMethod("POST");
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-                connection.setFixedLengthStreamingMode(bytes.length);
-                try (var output = connection.getOutputStream()) { output.write(bytes); }
+                connection.setFixedLengthStreamingMode(AttachmentJson.length(context, payload));
+                if (cancelled) throw new IOException("Cancelled");
+                try (var output = new java.io.BufferedOutputStream(connection.getOutputStream())) { AttachmentJson.write(context, payload, output); }
             }
             int status = connection.getResponseCode();
             if (status != 200) throw new Failure(status, readFailure(connection));
@@ -169,7 +173,7 @@ public class RemoteApi {
         if (cancelled) throw new IOException("Cancelled");
         if (token != null && !token.matches("[A-Za-z0-9_-]{43}")) throw new IOException("Invalid credential");
         try {
-            tailnet.Response response = EmbeddedNetwork.node().prepare(payload == null ? "GET" : "POST", endpoint.uri(path).toString(), token == null ? "" : token, payload == null ? "" : payload.toString());
+            tailnet.Response response = EmbeddedNetwork.node().prepare(payload == null ? "GET" : "POST", endpoint.uri(path).toString(), token == null ? "" : token, payload == null ? "" : AttachmentJson.string(context, payload));
             embeddedResponses.add(response);
             if (cancelled) { release(response); throw new IOException("Cancelled"); }
             try { response.execute(); }

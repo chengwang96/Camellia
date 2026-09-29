@@ -52,7 +52,25 @@ test('device JSON transport forwards credentials and bounded POST bodies without
   });
   assert.deepEqual(await transport.json('/v1/pair/request', { method: 'POST', body: { code: 'one-time' }, bearer: 'b'.repeat(43) }), { state: 'pending' });
   await assert.rejects(transport.json('/v1/status', { bearer: 'secret\r\nheader' }), /Invalid device credential/);
-  await assert.rejects(transport.json('/v1/commands', { method: 'POST', body: 'a'.repeat(13_000_001) }), /too large/);
+  await assert.rejects(transport.json('/v1/commands', { method: 'POST', body: 'a'.repeat(48 * 1024 * 1024) }), /too large/);
+});
+
+test('device transport carries expanded mobile attachments beyond the previous request limit', async context => {
+  const data = 'a'.repeat(14 * 1024 * 1024);
+  const transport = await fixture(context, (request, response) => {
+    assert.equal(request.headers.authorization, 'Bearer ' + 'b'.repeat(43));
+    let body = '';
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      assert.equal(JSON.parse(body).attachments[0].data, data);
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"ok":true}');
+    });
+  });
+  assert.deepEqual(await transport.json('/v1/conversations/' + 'a'.repeat(36) + '/commands', {
+    method: 'POST', bearer: 'b'.repeat(43),
+    body: { attachments: [{ name: 'notes.txt', data, isImage: false }] },
+  }), { ok: true });
 });
 
 test('device event streams yield UTF-8 frames before completion and cancel upstream on break', async context => {

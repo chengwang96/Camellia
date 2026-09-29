@@ -88,6 +88,9 @@ class CodexSession extends StreamingSession {
         await (this.ready ||= this.open());
         if (this.compaction !== operation) return;
         if (this.cancelled) { this.finish({ subtype: 'stopped' }); return; }
+        await this.usageMeter?.begin(this.sessionId, () => this.compaction === operation && !this.dead && !this.cancelled);
+        if (this.compaction !== operation) return;
+        if (this.cancelled) { this.finish({ subtype: 'stopped' }); return; }
         await this.client.request('thread/compact/start', { threadId: this.sessionId });
       } catch (error) {
         if (this.compaction !== operation) return;
@@ -101,6 +104,8 @@ class CodexSession extends StreamingSession {
   async run(prompt, attachments) {
     try {
       await (this.ready ||= this.open());
+      if (this.usageMeter) await this.usageMeter.begin(this.sessionId, () => this.running && !this.dead && !this.cancelled);
+      if (!this.running) return;
       this.emit({ type: 'system', subtype: 'init', session_id: this.sessionId, editBaseTurnId: this.lastTurnId });
       if (this.cancelled) return this.finish({ subtype: 'stopped' });
       this.appendHistory('user', prompt); this.emitStream({ type: 'message_start' });
@@ -156,6 +161,7 @@ class CodexSession extends StreamingSession {
     if (!this.running) return;
     if (this.compaction) {
       const operation = this.compaction;
+      void this.usageMeter?.end(result);
       this.compaction = null; this.running = false;
       clearTimeout(operation.timer); clearTimeout(this.cancelTimer);
       if (result.subtype === 'success' && !result.is_error && !this.cancelled) operation.resolve({ ok: true });
@@ -183,6 +189,12 @@ class CodexSession extends StreamingSession {
   }
   notify(method, params) {
     if (!this.running || params.threadId !== this.sessionId) return;
+    // Resume/fork can replay the previous turn's usage while a new turn opens.
+    // It is historical context, not consumption caused by this prompt.
+    if (method === 'thread/tokenUsage/updated' && params.turnId && params.turnId !== this.turnId) return;
+    if (method === 'thread/tokenUsage/updated') this.usageMeter?.codex(params.tokenUsage);
+    if (method === 'model/rerouted') this.usageMeter?.reroute(params.toModel);
+    if (method === 'item/started' && /collab/i.test(params.item?.type || '')) this.usageMeter?.incomplete();
     if (this.compaction) {
       if (method === 'turn/started') { this.turnId = params.turn.id; if (this.cancelled) this.interrupt(); }
       else if (['item/started', 'item/completed'].includes(method) && params.item?.type === 'contextCompaction') {
@@ -289,7 +301,7 @@ class CodexSession extends StreamingSession {
     this.finish({ subtype: this.cancelled ? 'stopped' : 'error', is_error: !this.cancelled, result: 'Codex process stopped' });
     return this.client?.shutdown();
   }
-  async shutdown() { if (this.running) this.cancelled = true; await this.kill(); }
+  async shutdown() { if (this.running) this.cancelled = true; await this.kill(); await this.usageMeter?.flush(); }
 }
 
 module.exports = { CodexSession, PERMISSIONS };

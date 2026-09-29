@@ -403,7 +403,7 @@ public class NavigationTest extends InstrumentationTestCase {
                 assertTrue(fade.getBackground() instanceof android.graphics.drawable.GradientDrawable);
                 assertTrue(((View) fade.getParent()).getLayoutParams() instanceof android.widget.FrameLayout.LayoutParams);
                 assertEquals(android.view.Gravity.BOTTOM, ((android.widget.FrameLayout.LayoutParams) ((View) fade.getParent()).getLayoutParams()).gravity);
-                View search = bar.getChildAt(0); assertEquals(Math.round(7 * density), search.getElevation(), 0f);
+                View search = bar.getChildAt(0); assertEquals(Math.round(4 * density), search.getElevation(), 0f);
                 assertEquals(Math.round(1 * density), search.getTranslationZ(), 0f);
                 assertTrue("Status must leave room below the search shadow", status.getTop() - bar.getBottom() >= Math.round(8 * density));
                 assertFalse("Search shadow must not be clipped", bar.getClipChildren());
@@ -458,7 +458,7 @@ public class NavigationTest extends InstrumentationTestCase {
                     assertSame(title.getParent(), root.findViewWithTag("pageBack").getParent());
                     for (String page : new String[]{"computersScreen", "listScreen", "detailScreen", "pairScreen", "settingsScreen", "showNetwork"}) {
                         invoke(activity, page); invoke(activity, "stopNetwork");
-                        View back = root.findViewWithTag(page.equals("settingsScreen") || page.equals("showNetwork") ? "settingsBack" : "pageBack");
+                        View back = root.findViewWithTag(page.equals("settingsScreen") || page.equals("showNetwork") || page.equals("pairScreen") ? "settingsBack" : "pageBack");
                         assertTrue(back instanceof android.widget.ImageButton);
                         assertEquals(Math.round(4 * activity.getResources().getDisplayMetrics().density), back.getElevation(), 0f);
                         assertNotNull(back.getStateListAnimator()); assertNotNull(back.getContentDescription());

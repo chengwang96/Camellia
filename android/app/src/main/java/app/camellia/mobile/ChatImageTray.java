@@ -22,7 +22,9 @@ final class ChatImageTray {
         tray.removeAllViews();
         for (int index = 0; index < images.size(); index++) {
             final int position = index;
-            byte[] bytes = android.util.Base64.decode(images.get(index), android.util.Base64.NO_WRAP);
+            byte[] bytes;
+            try { bytes = AttachmentStore.preview(context, images.get(index)); }
+            catch (java.io.IOException error) { bytes = new byte[0]; }
             android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options(); options.inJustDecodeBounds = true;
             android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
             options.inJustDecodeBounds = false; options.inSampleSize = 1;

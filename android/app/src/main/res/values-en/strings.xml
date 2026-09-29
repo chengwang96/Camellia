@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="qr_scan_title">Scan pairing QR</string>
+    <string name="qr_scan_hint">Place the QR code from desktop Mobile access inside the frame.</string>
+    <string name="qr_scan_cancel">Back to pairing</string>
+    <string name="qr_scan_denied">Camera permission is needed to scan. Allow it in system settings, or go back and enter the address and code manually.</string>
+    <string name="qr_scan_failed">Unable to open the camera. Go back and enter the address and pairing code manually.</string>
+    <string name="qr_scan_unrecognized">This is not a Camellia pairing QR code. Scan a new code generated on your computer.</string>
+</resources>

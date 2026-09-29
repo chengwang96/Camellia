@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
-const { storeAttachments, decodeAttachments, MAX_TOTAL } = require('../src/main/remote/attachments');
+const { storeAttachments, decodeAttachments, MAX_COUNT, MAX_IMAGE, MAX_FILE, MAX_TOTAL } = require('../src/main/remote/attachments');
 const { readAttachment, bufferAttachments, createAttachmentTray, downloadName, saveDownload } = require('../src/main/remote/device-files');
 const { removeTree } = require('./test-fs.cjs');
 
@@ -54,9 +54,19 @@ test('attachment schema rejects raw paths, invalid base64, fake images and aggre
   for (const entry of [{ ...attachment(), path: '/private' }, { ...attachment(), data: 'YQ=' }, { ...attachment(), isImage: true }, attachment('bad\x1bname'), attachment('bad\\name')]) {
     assert.throws(() => decodeAttachments([entry]));
   }
-  const data = Buffer.alloc(MAX_TOTAL / 2 + 1).toString('base64');
-  assert.throws(() => decodeAttachments([{ ...attachment(), data }, { ...attachment(), data }]), /limit/);
-  assert.throws(() => decodeAttachments(Array(10).fill(attachment())), /1 to 9/);
+  const data = Buffer.alloc(MAX_TOTAL / 4 + 1).toString('base64');
+  assert.throws(() => decodeAttachments(Array(4).fill({ ...attachment(), data })), /32 MiB total limit/);
+  assert.throws(() => decodeAttachments(Array(MAX_COUNT + 1).fill(attachment())), /1 to 20/);
+});
+
+test('mobile attachments accept 20 mixed files with 4 MiB images and 10 MiB documents', () => {
+  const image = Buffer.alloc(MAX_IMAGE); image.set([255, 216, 255]); image.set([255, 217], image.length - 2);
+  const files = [{ name: 'photo.jpg', data: image.toString('base64'), isImage: true },
+    { name: 'paper.pdf', data: Buffer.alloc(MAX_FILE).toString('base64'), isImage: false }, ...Array(18).fill(attachment())];
+  const decoded = decodeAttachments(files);
+  assert.equal(decoded.length, 20); assert.equal(decoded[0].bytes.length, MAX_IMAGE); assert.equal(decoded[1].bytes.length, MAX_FILE);
+  assert.throws(() => decodeAttachments([{ ...files[0], data: Buffer.concat([image, Buffer.from([0])]).toString('base64') }]), /4 MiB/);
+  assert.throws(() => decodeAttachments([{ ...files[1], data: Buffer.alloc(MAX_FILE + 1).toString('base64') }]));
 });
 
 test('desktop attachment picker reads bounded files and converts images in main process', async context => {

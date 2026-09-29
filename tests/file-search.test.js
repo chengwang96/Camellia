@@ -14,16 +14,16 @@ const rendererSource = fs.readFileSync(path.join(__dirname, '../src/renderer/cha
 const rendererMarkup = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.html'), 'utf8');
 const runtimeSource = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat-runtime.js'), 'utf8');
 
-test('/find is wired into the desktop composer and the phone command surface', () => {
+test('/find is wired into the desktop composer and remains available to typed phone commands', () => {
   assert.match(rendererMarkup, /id="findRow"/);
   assert.match(rendererSource, /id: 'find', label: '\/find'/);
   assert.match(rendererSource, /findUI\.run\(text\)/);
   assert.match(rendererSource, /chatApi\.find\(\{ sessionId: context\.sessionId \|\| null/);
   assert.match(runtimeSource, /'ControlRespond', 'Find'/);
-  // The phone can discover the command and the desktop still answers a typed
-  // one, so an older client keeps working.
+  // The phone has no dedicated find button; typed commands and older clients
+  // still reach the desktop handler.
   const android = fs.readFileSync(path.join(__dirname, '../android/app/src/main/java/app/camellia/mobile/MainActivity.java'), 'utf8');
-  assert.match(android, /composer\.setText\("\/find "\)/);
+  assert.match(android, /!composed\.equalsIgnoreCase\("\/find"\)/);
   const commands = fs.readFileSync(path.join(__dirname, '../src/main/remote/commands.js'), 'utf8');
   assert.match(commands, /\^\\\/find\(\?:\\s\|\$\)/i);
 });

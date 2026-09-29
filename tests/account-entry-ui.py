@@ -68,8 +68,8 @@ try:
         expect(page.locator('#codexSignIn')).to_be_enabled()
         expect(page.locator('#kimiSignIn')).to_be_enabled()
         expect(page.locator('#googleSignIn')).to_be_enabled()
-        expect(page.locator('#codexConnection')).to_be_visible()
-        expect(page.locator('#codexConnection')).to_have_value('api')
+        expect(page.locator('#codexConnection')).to_have_count(0)
+        expect(page.locator('#enginesPage [id$="Connection"]')).to_have_count(0)
         page.locator('.account-shortcuts [data-account-engine=kimi]').click()
         expect(page.locator('#kimiAccountPanel')).to_be_in_viewport()
         page.locator('#kimiLoginRegion').select_option('global')
@@ -92,7 +92,9 @@ try:
         expect(page.locator('#status')).to_contain_text('Complete Google sign-in in the terminal')
         for engine in ['kimi', 'codex', 'antigravity']:
             assert rpc(engine + 'GetSettings')['connection'] == 'api'
-        page.locator('#codexConnection').select_option('subscription')
+        # The connection follows the session that last ran; the composer now
+        # picks it from the model list, so no settings selector remains.
+        rpc('codexSaveSettings', {'connection': 'subscription'})
         wait_for(lambda: rpc('codexGetSettings')['connection'] == 'subscription')
         page.locator('#googleUseCredits').check()
         wait_for(lambda: rpc('subscriptionPreferencesGet', {'engine': 'antigravity'})['preferences']['useG1Credits'] is True)

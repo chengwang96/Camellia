@@ -44,7 +44,14 @@ public class ConversationMenuTest extends InstrumentationTestCase {
     private ConversationMenu menu() throws Exception { return (ConversationMenu) field("conversationPopup"); }
 
     @Override protected void tearDown() throws Exception {
-        if (activity != null) ui(() -> activity.finish());
+        if (activity != null) {
+            ui(() -> activity.finish());
+            long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+            while (!activity.isDestroyed() && android.os.SystemClock.uptimeMillis() < deadline) {
+                getInstrumentation().waitForIdleSync(); Thread.sleep(25);
+            }
+            assertTrue("Activity must release storage and network listeners before the next test", activity.isDestroyed());
+        }
         if (encrypted != null) encrypted.clear();
         super.tearDown();
     }
@@ -66,7 +73,8 @@ public class ConversationMenuTest extends InstrumentationTestCase {
             assertTrue(row.performLongClick()); assertEquals(1f, row.getAlpha()); assertEquals(0f, row.getTranslationY());
             ViewGroup scroll = (ViewGroup) menu().panel.getChildAt(menu().panel.getChildCount() - 1);
             assertEquals(5, ((ViewGroup) scroll.getChildAt(0)).getChildCount());
-            if (PopupSurface.supportsBlur(activity)) assertNotNull(menu().panel.findViewWithTag("glassBackdrop"));
+            assertNotNull(menu().panel.findViewWithTag("glassBackdrop"));
+            assertTrue(menu().panel.getChildAt(0).getTag().equals("glassBackdrop"));
         });
         stage("capture menu screenshot");
         android.graphics.Bitmap shot = getInstrumentation().getUiAutomation().takeScreenshot();
@@ -125,7 +133,7 @@ public class ConversationMenuTest extends InstrumentationTestCase {
         });
         ui(() -> root().findViewWithTag("conversation:" + conversation.getString("id")).performLongClick());
         // Both screens share one long-press menu, so the remote list must show the same glass.
-        if (PopupSurface.supportsBlur(activity)) assertNotNull(menu().panel.findViewWithTag("glassBackdrop"));
+        assertNotNull(menu().panel.findViewWithTag("glassBackdrop"));
         ui(() -> menu().panel.findViewWithTag("conversationAction:select").performClick());
         assertTrue((Boolean) field("selectingConversations"));
         assertEquals(1, ((java.util.Set<?>) field("selectedConversations")).size());

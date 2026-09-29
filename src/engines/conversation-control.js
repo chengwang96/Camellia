@@ -14,6 +14,67 @@ function view(manager, conversation) {
     activity: manager.activity(conversation.id), parent_id: conversation.controlParentId || null };
 }
 
+// A conversation anywhere on this device is described without touching its
+// engine settings: the read tools must never change a model, connection or
+// native session just because a transcript was inspected. Stored values are
+// reported as they are, and `title` already reflects any rename.
+function deviceView(manager, meta, conversation, archived = false) {
+  const selected = conversation.engineSettings?.[conversation.currentEngine] || {};
+  const connection = selected.connection || 'api';
+  const model = connection === 'subscription' ? selected.subscriptionModel ?? selected.model ?? ''
+    : conversation.apiModel ?? selected.model ?? '';
+  const workspace = meta.workspaces.find(entry => entry.id === (meta.sessionWorkspace[conversation.id] || conversation.workspaceId));
+  return { id: conversation.id, title: meta.titles[conversation.id] || conversation.title || '(New session)',
+    engine: conversation.currentEngine, model,
+    connection, workspace: workspace ? workspace.name : '',
+    cwd: conversation.cwd || '', updated_at: conversation.updatedAt || 0,
+    activity: manager.activity(conversation.id), archived, parent_id: conversation.controlParentId || null };
+}
+
+function deviceConversations(manager, { archived = false } = {}) {
+  const meta = manager.workspaces.sessionMeta();
+  return [...manager.items.values()]
+    .filter(conversation => archived || !meta.archived[conversation.id])
+    .map(conversation => deviceView(manager, meta, conversation, Boolean(meta.archived[conversation.id])))
+    .sort((first, second) => second.updated_at - first.updated_at || first.id.localeCompare(second.id));
+}
+
+function searchTerms(query) {
+  return [...new Set(String(query || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean))];
+}
+
+// Every term must occur in the same message, so a match is a real turn rather
+// than two unrelated words somewhere in one long conversation. The newest
+// matches come first and each row is quoted with the words around the hit.
+// Search all stored visible messages; the result count is bounded, not the
+// history being searched. An early turn must remain discoverable in a long chat.
+
+function searchTranscripts(manager, query, limit) {
+  const terms = searchTerms(query);
+  if (!terms.length) throw new Error('Enter at least one search word');
+  const meta = manager.workspaces.sessionMeta();
+  const results = [];
+  const candidates = [...manager.items.values()]
+    .filter(conversation => !meta.archived[conversation.id])
+    .sort((first, second) => second.updatedAt - first.updatedAt || first.id.localeCompare(second.id));
+  for (const conversation of candidates) {
+    const all = manager.messages(conversation);
+    let hit = null;
+    for (let index = all.length - 1; index >= 0; index--) {
+      const row = all[index];
+      const text = String(row.text || '');
+      const lowered = text.toLowerCase();
+      if (!terms.every(term => lowered.includes(term))) continue;
+      const at = Math.max(...terms.map(term => lowered.indexOf(term)));
+      hit = { seq: row.seq, role: row.role, at: Number(row.at) || 0, text: text.slice(Math.max(0, at - 160), at + 240) };
+      break;
+    }
+    if (hit) results.push({ conversation: deviceView(manager, meta, conversation), messages: all.length, match: hit });
+  }
+  results.sort((first, second) => second.match.at - first.match.at || second.conversation.updated_at - first.conversation.updated_at);
+  return results.slice(0, limit);
+}
+
 function configured(manager, conversation, args) {
   const selected = { ...manager.settings(conversation.currentEngine, conversation.id) };
   if (args.model === undefined && args.thinking === undefined) return selected;
@@ -47,6 +108,28 @@ function callConversationTool(manager, parentId, name, args, active) {
   if (operation === 'list') return { ok: true, conversations: [...manager.items.values()]
     .filter(conversation => (conversation.id === parentId || conversation.controlParentId === parentId) && !manager.workspaces.sessionMeta().archived[conversation.id])
     .map(conversation => view(manager, conversation)) };
+  // Device-wide reads. They are bounded and side-effect free, so unlike the
+  // child-control operations below they stay available to children and
+  // scheduled checks, which may need to recall earlier work.
+  if (operation === 'sessions') return { ok: true, conversations: deviceConversations(manager, { archived: args.archived === true }) };
+  if (operation === 'search') return { ok: true, query: String(args.query).trim(),
+    results: searchTranscripts(manager, args.query, Number.isSafeInteger(args.limit) ? args.limit : 20) };
+  // Reading a stored transcript is side-effect free, so any conversation on
+  // the device may be inspected, not only an owned child. This branch does not
+  // use the child view, which would consult and lazily write engine settings.
+  if (operation === 'history') {
+    const conversation = manager.get(args.conversation_id);
+    const meta = manager.workspaces.sessionMeta(), messages = manager.messages(conversation);
+    const older = Number.isSafeInteger(args.older_than) && args.older_than > 0 ? args.older_than : Infinity;
+    const limit = Number.isSafeInteger(args.limit) && args.limit > 0 ? Math.min(args.limit, 50) : 20;
+    const eligible = messages.filter(row => row.seq < older);
+    const page = eligible.slice(-limit);
+    const oldest = page[0];
+    return { ok: true, conversation: deviceView(manager, meta, conversation, Boolean(meta.archived[conversation.id])),
+      count: messages.length, truncated: page.length < eligible.length,
+      oldest_seq: oldest ? oldest.seq : null, archived: Boolean(meta.archived[conversation.id]),
+      messages: page.map(row => ({ seq: row.seq, role: row.role, text: String(row.text || '').slice(0, 4000) })) };
+  }
   if (operation === 'models') {
     const target = accessible(manager, parentId, args.conversation_id);
     return { ok: true, models: manager.conversationModels(target.currentEngine, manager.settings(target.currentEngine, target.id)) };

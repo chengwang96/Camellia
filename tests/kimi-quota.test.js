@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { readKimiQuota, normalizeKimiQuota } = require('../src/engines/kimi-quota');
 const { createHarness } = require('./claude-harness.cjs');
-const { writeJson } = require('../src/shared/json-store');
+const { readJson, writeJson } = require('../src/shared/json-store');
 const path = require('node:path');
 
 const usage = { kind: 'ok', summary: { used: 20, limit: 100, reset_at: '2026-09-24T00:00:00Z' },
@@ -61,4 +61,36 @@ test('signed-in subscriptions appear in insights without adding an API provider 
   assert.deepEqual(state.keys, {});
   assert.deepEqual((await h.call('api-router-get-state')).providers, []);
   assert.doesNotMatch(JSON.stringify(state), /oauth|access_token|refresh_token/);
+});
+
+
+test('API-only balance refresh leaves signed-in subscription quota untouched', async t => {
+  const first = createHarness();
+  writeJson(path.join(first.userData, 'kimi-subscription/account-state.json'), {
+    account: { name: 'Kimi Code', region: 'global' }, models: [],
+    usage: { latest: { ...normalizeKimiQuota(usage), at: '2026-09-17T01:00:00Z' }, history: [], status: 'ok' },
+  });
+  const h = createHarness(first.root); t.after(() => h.cleanup());
+  const before = await h.call('provider-insights');
+  const after = await h.call('provider-refresh', { apiOnly: true });
+  assert.deepEqual(after.subscriptions, before.subscriptions);
+});
+
+test('Kimi account cards and account rotation use the saved native quota snapshot', async t => {
+  const first = createHarness();
+  const configFile = path.join(first.userData, 'desktop-config.json');
+  writeJson(configFile, { ...readJson(configFile, {}), subscriptionAccounts: { kimi: [{ id: 'default' }, { id: 'account-1' }] } });
+  for (const [id, used] of [['default', 100], ['account-1', 20]]) {
+    const home = id === 'default' ? path.join(first.userData, 'kimi-subscription') : path.join(first.userData, 'subscription-accounts/kimi', id);
+    writeJson(path.join(home, 'account-state.json'), { account: { name: id, region: 'global' }, models: [],
+      usage: { latest: normalizeKimiQuota({ ...usage, summary: { ...usage.summary, used } }),
+        checkedAt: '2026-09-29T00:00:00Z', history: [], status: 'ok' } });
+  }
+  const h = createHarness(first.root); t.after(() => h.cleanup());
+  const state = await h.call('kimi-account-state');
+  const primary = state.accounts.find(account => account.id === 'default');
+  assert.equal(primary.exhausted, true);
+  assert.deepEqual(primary.quotaWindows.map(window => [window.label, window.usedPercent]), [['Weekly', 100], ['5 hours', 0]]);
+  assert.equal(primary.verifiedAt, '2026-09-29T00:00:00Z');
+  assert.equal(require('../src/engines/subscription-recovery').availableAccount(state), 'account-1');
 });

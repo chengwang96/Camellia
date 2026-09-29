@@ -19,7 +19,7 @@ public final class CredentialStore {
     public CredentialStore(Context context) { preferences = context.getSharedPreferences("remote-private", Context.MODE_PRIVATE); }
     public CredentialStore(Context context, String name) { preferences = context.getSharedPreferences(name, Context.MODE_PRIVATE); }
 
-    private SecretKey key() throws Exception {
+    static synchronized SecretKey key() throws Exception {
         KeyStore store = KeyStore.getInstance("AndroidKeyStore");
         store.load(null);
         if (!store.containsAlias(ALIAS)) {
