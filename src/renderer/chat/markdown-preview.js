@@ -66,6 +66,14 @@
   parser.renderer.rules.code_block = (tokens, index, options, environment) => environment.codeBlock('', tokens[index].content);
   parser.renderer.rules.table_open = () => '<div class="md-table-wrap"><table class="md-table">';
   parser.renderer.rules.table_close = () => '</table></div>';
+  parser.core.ruler.after('block', 'preview_source_lines', state => {
+    if (!state.env.sourceLines) return;
+    for (const token of state.tokens) {
+      if (!token.map || token.nesting !== 1) continue;
+      token.attrSet('data-preview-line', String(token.map[0] + 1));
+      token.attrSet('data-preview-end-line', String(token.map[1]));
+    }
+  });
   parser.core.ruler.after('inline', 'preview_task_lists', state => {
     for (let index = 2; index < state.tokens.length; index++) {
       const token = state.tokens[index];
@@ -81,9 +89,9 @@
     }
   });
 
-  function render(source, { baseUrl = '', codeBlock } = {}) {
+  function render(source, { baseUrl = '', codeBlock, sourceLines = false } = {}) {
     return parser.render(String(source), {
-      baseUrl, anchors: new Set(),
+      baseUrl, sourceLines, anchors: new Set(),
       codeBlock: codeBlock || ((language, code) => '<pre><code>' + highlight(language, code) + '</code></pre>'),
     });
   }

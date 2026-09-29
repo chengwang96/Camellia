@@ -77,7 +77,8 @@ const context = { sessionId: null, workspaceId: null };
   }
   let currentPermission = chatProfile.permission;
   let currentConnection = 'api';
-  const accountSubscription = () => ['codex', 'kimi', 'antigravity'].includes(harnessId) && currentConnection === 'subscription';
+  const supportsAccounts = () => ['codex', 'kimi', 'antigravity'].includes(harnessId);
+  const accountSubscription = () => supportsAccounts() && currentConnection === 'subscription';
   const accountName = { codex: 'ChatGPT', kimi: 'Kimi', antigravity: 'Google' }[harnessId];
   let accountModels = [];
   let routeModels = [];
@@ -170,7 +171,7 @@ const context = { sessionId: null, workspaceId: null };
     return cells.map(cell => cell.startsWith(':') && cell.endsWith(':') ? 'center' : cell.endsWith(':') ? 'right' : cell.startsWith(':') ? 'left' : '');
   }
 
-  // Minimal markdown: fenced code, inline code, GFM tables, bold, headings.
+  // Chat block layout with Markdown inline formatting and file links.
   let codeWrap = readUi('code-wrap') === true;
   function codeWrapLabel() { return window.CamelliaI18n.t('Word wrap'); }
   function codeWrapIcon() {
@@ -242,7 +243,10 @@ const context = { sessionId: null, workspaceId: null };
       '</button>' + codeCopyButton() + '</div></div><pre class="md-code"><code>' + (highlight ? window.CamelliaMarkdownPreview.highlight(language, content) : esc(content)) + '</code></pre></div>';
   }
   function mdRender(src, documentMode = false, baseUrl = '') {
-    if (documentMode) return window.CamelliaMarkdownPreview.render(src, { baseUrl, codeBlock: (language, code) => renderCodeBlock(language, code, true) });
+    if (documentMode) return window.CamelliaMarkdownPreview.render(src, { baseUrl, sourceLines: true, codeBlock: (language, code) => renderCodeBlock(language, code, true) });
+    const cwd = sidebar.sessions.find(session => session.id === context.sessionId)?.cwd
+      || sidebar.workspaces.find(workspace => workspace.id === context.workspaceId)?.path || '';
+    const inline = value => window.CamelliaMarkdownLinks.renderInline(value, cwd);
     const tokens = [];
     let text = String(src);
     text = text.replace(/```(\w*)[ \t]*\n?([\s\S]*?)(?:```|$)/g, (_m, lang, code) => {
@@ -278,8 +282,7 @@ const context = { sessionId: null, workspaceId: null };
       rendered.push(SENT + (tokens.length - 1) + SENT);
     }
     text = rendered.join('\n');
-    text = esc(text);
-    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    text = inline(text);
     text = documentMode
       ? text.replace(/^(#{1,6})\s+(.+)$/gm, (_match, hashes, heading) => '<h' + hashes.length + '>' + heading + '</h' + hashes.length + '>')
       : text.replace(/^(#{1,4})\s*(.+)$/gm, '<strong>$2</strong>');
@@ -291,7 +294,7 @@ const context = { sessionId: null, workspaceId: null };
         return renderCodeBlock(tk.lang, tk.code);
       }
       if (tk.t === 'inline') return '<code class="md-inline">' + esc(tk.code) + '</code>';
-      const renderCell = value => esc(value).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(sentRe, renderToken);
+      const renderCell = value => inline(value).replace(sentRe, renderToken);
       const cells = (tag, values) => values.map((value, index) => {
         const alignAttr = tk.align[index] ? ' style="text-align:' + tk.align[index] + '"' : '';
         return '<' + tag + alignAttr + '>' + renderCell(value) + '</' + tag + '>';
@@ -302,6 +305,13 @@ const context = { sessionId: null, workspaceId: null };
     text = text.replace(sentRe, renderToken);
     return text;
   }
+
+  chat.addEventListener('click', event => {
+    const link = event.target.closest('.md a[data-chat-file]');
+    if (!link) return;
+    event.preventDefault();
+    void openFilePreview(link.dataset.chatFile, { line: Number(link.dataset.chatLine) || 0, anchor: link.dataset.chatAnchor || '' });
+  });
 
   function fmtTokens(n) {
     n = Number(n) || 0;
@@ -384,8 +394,8 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function modelLabel(id) {
-    const m = MODELS.find((x) => x.id === id);
-    return id ? (m ? m.label : id) : window.CamelliaI18n.t(m?.label || "Default model");
+    const m = MODELS.find((x) => x.id === id) || accountModels.find((x) => x.id === id);
+    return id ? (m?.label || m?.name || m?.displayName || id) : window.CamelliaI18n.t(m?.label || "Default model");
   }
   function levelLabel(id) {
     const l = LEVELS.find((x) => x.id === id);
@@ -419,12 +429,15 @@ const context = { sessionId: null, workspaceId: null };
     }
   }
   function persistModel(model) {
-    // Picking across groups in a subscription composer selects the other
-    // connection for this conversation (or globally on a fresh start page).
+    // The composer lists account and API models together, so picking a model
+    // that only the other connection offers also selects that connection.
+    // A model both connections offer keeps the current one.
     let connection;
-    if (accountSubscription() && model && (sharedChat || !context.sessionId)) {
-      if (routeModels.includes(model)) connection = 'api';
-      else if (accountModels.some(m => m.id === model)) connection = 'subscription';
+    const canSwitch = supportsAccounts() && model && (sharedChat || !context.sessionId);
+    if (canSwitch) {
+      const inCurrent = accountSubscription() ? accountModels.some(m => m.id === model) : routeModels.includes(model);
+      const inOther = accountSubscription() ? routeModels.includes(model) : accountModels.some(m => m.id === model);
+      if (!inCurrent && inOther) connection = accountSubscription() ? 'api' : 'subscription';
     }
     return persistSettings({ model, ...(connection ? { connection } : {}), ...(harnessId !== 'claude' ? { thinkingBudget: '' } : {}) },
       "Model changed: " + modelLabel(model) + " (applies to the next message)")
@@ -477,13 +490,19 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function modelSections() {
-    // A signed-in account lists its models first; shared API routes stay
-    // selectable as a second group when switching applies cleanly (shared
-    // conversations or a fresh start page).
-    if (!accountSubscription()) return [{ title: 'Model · Same-model failover', options: MODELS }];
-    const sections = [{ title: 'Model · ' + accountName + ' account', options: MODELS }];
-    if (routeModels.length && (sharedChat || !context.sessionId)) sections.push({ title: 'Model · Shared API routes', options: routeModels.map(id => ({ id, label: id })) });
-    return sections;
+    // Engines with subscriptions list account and API models together, so the
+    // composer itself chooses the connection; a session cannot switch engines.
+    if (!supportsAccounts() || (!sharedChat && context.sessionId)) return [{ title: 'Model · Same-model failover', options: MODELS }];
+    // With no account signed in there is only one list, so keep the plain group.
+    if (!accountModels.length) return [{ title: 'Model · Same-model failover', options: MODELS }];
+    const account = { title: 'Model · ' + accountName + ' account', options: accountModels.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
+    const api = { title: 'Model · Shared API routes', options: routeModels.map(id => ({ id, label: id })) };
+    const sections = accountSubscription() ? [account, api] : [api, account];
+    // An ID offered by both connections belongs to the active one, matching
+    // persistModel and the remote picker. Never label an API choice as account usage.
+    const activeIds = new Set(sections[0].options.map(model => model.id));
+    sections[1].options = sections[1].options.filter(model => !activeIds.has(model.id));
+    return sections.filter(section => section.options.length);
   }
 
   function openModelMenu() {
@@ -802,7 +821,32 @@ const context = { sessionId: null, workspaceId: null };
     } else renderUnsupportedPreview();
     fileViewer.hidden = false;
   }
-  async function openFilePreview(filePath) {
+  function focusPreviewLocation({ line = 0, anchor = '' } = {}) {
+    const body = $('fileViewerBody');
+    if (line) {
+      const candidates = [...body.querySelectorAll('[data-preview-line]')]
+        .filter(node => Number(node.dataset.previewLine) <= line && Number(node.dataset.previewEndLine) >= line)
+        .sort((a, b) => Number(b.dataset.previewLine) - Number(a.dataset.previewLine));
+      if (candidates.length) candidates[0].scrollIntoView({ block: 'center' });
+      else {
+        const text = body.querySelector('.file-preview-text')?.firstChild;
+        if (text) {
+          let offset = 0;
+          for (let current = 1; current < line; current++) {
+            const end = text.textContent.indexOf('\n', offset);
+            if (end < 0) break;
+            offset = end + 1;
+          }
+          const range = document.createRange();
+          range.setStart(text, offset); range.setEnd(text, Math.min(offset + 1, text.length));
+          body.scrollTop += range.getBoundingClientRect().top - body.getBoundingClientRect().top - body.clientHeight / 2;
+        }
+      }
+      $('fileViewerMeta').textContent += ':' + line;
+    } else if (anchor) [...body.querySelectorAll('[data-preview-anchor], [id]')]
+      .find(node => node.dataset.previewAnchor === anchor || node.id === anchor)?.scrollIntoView({ block: 'start' });
+  }
+  async function openFilePreview(filePath, location = {}) {
     if (!filePath) return;
     const request = ++previewRequest;
     let result;
@@ -819,6 +863,7 @@ const context = { sessionId: null, workspaceId: null };
       return;
     }
     renderFilePreview(result.file);
+    focusPreviewLocation(location);
   }
   async function openPreviewExternally() {
     if (!previewedFile?.path) return;
@@ -3179,15 +3224,15 @@ const context = { sessionId: null, workspaceId: null };
     currentConnection = s.connection || 'api';
     if (harnessId === 'codex') {
       $('connectionInfo').hidden = false;
-      $('connectionInfo').textContent = accountSubscription() ? 'ChatGPT account · Switch to API in settings' : 'API key / third-party API · Connection settings';
+      $('connectionInfo').textContent = accountSubscription() ? 'ChatGPT account · Pick an API model to switch' : 'API key / third-party API · Pick an account model to switch';
     }
     if (harnessId === 'kimi') {
       $('connectionInfo').hidden = false;
-      $('connectionInfo').textContent = accountSubscription() ? 'Kimi subscription · Manage account' : 'Shared API routes · Connection settings';
+      $('connectionInfo').textContent = accountSubscription() ? 'Kimi subscription · Manage account' : 'Shared API routes · Pick an account model to switch';
     }
     if (harnessId === 'antigravity') {
       $('connectionInfo').hidden = false;
-      $('connectionInfo').textContent = googleSubscription() ? 'Google subscription · Manage account' : 'Shared API routes · Connection settings';
+      $('connectionInfo').textContent = googleSubscription() ? 'Google subscription · Manage account' : 'Shared API routes · Pick a Google model to switch';
       $('selPermission').querySelector('[value="ask"]').textContent = googleSubscription() ? 'CLI defaults' : 'Ask before acting';
       $('selPermission').title = googleSubscription() ? 'CLI permission rules apply. Tools requiring interactive review are declined in headless mode; Camellia shows a blocked-action notice, not an approval prompt.' : '';
     }
@@ -3212,26 +3257,29 @@ const context = { sessionId: null, workspaceId: null };
     try {
       const selected = await chatApi.getSettings({ sessionId });
       if (selected.ok === false) throw new Error(selected.error);
-      const subscription = ['codex', 'kimi', 'antigravity'].includes(harnessId) && selected.connection === 'subscription';
-      // Subscription composers also offer the shared API routes as a group.
-      const [state, routerState] = await Promise.all([
-        subscription ? window.dshDesktop[harnessId + 'AccountState']() : window.dshDesktop.apiRouterGetState(),
-        subscription ? window.dshDesktop.apiRouterGetState() : Promise.resolve(null),
+      const subscription = supportsAccounts() && selected.connection === 'subscription';
+      // Engines with subscriptions load both lists so the composer can offer
+      // account and API models together and pick the connection itself.
+      const [routerState, accountState] = await Promise.all([
+        window.dshDesktop.apiRouterGetState(),
+        supportsAccounts() ? Promise.resolve().then(() => window.dshDesktop[harnessId + 'AccountState']())
+          .catch(error => ({ ok: false, error: error.message })) : Promise.resolve(null),
       ]);
       if (seq !== settingsLoadSeq || sessionId !== context.sessionId) return;
-      if (subscription) routeModels = routerState?.enabled && Array.isArray(routerState.models) ? routerState.models : [];
+      accountModels = accountState?.ok && Array.isArray(accountState.models) ? accountState.models : [];
       applySessionSettings(selected);
+      // Fills the API route list and context caps; it leaves MODELS alone while
+      // a subscription supplies them.
+      applyRouterModels(routerState);
       if (subscription) {
-        const account = state;
-        accountModels = account.models || [];
+        const account = accountState || {};
         if (!account.ok) throw new Error(account.error);
-        MODELS.splice(0, MODELS.length, ...(account.models.length ? [] : [{ id: '', label: 'Connect ' + accountName + ' in settings' }]),
-          ...account.models.map(model => ({ id: model.id, label: model.name })));
-        if (currentModel && !account.models.some(model => model.id === currentModel)) MODELS.push({ id: currentModel, label: currentModel + ' (refresh account)' });
+        MODELS.splice(0, MODELS.length, ...(accountModels.length ? [] : [{ id: '', label: 'Connect ' + accountName + ' in settings' }]),
+          ...accountModels.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })));
+        if (currentModel && !accountModels.some(model => model.id === currentModel)) MODELS.push({ id: currentModel, label: currentModel + ' (refresh account)' });
         $('modelPill').title = 'Models available to your ' + accountName + ' account';
-        renderModelPill();
-      } else applyRouterModels(state);
-      updateCtxRing();
+        renderModelPill(); updateCtxRing();
+      }
       if (harnessId !== 'claude') applyApiLevels();
     } catch (error) { if (seq === settingsLoadSeq && sessionId === context.sessionId) setStatus("Could not load settings: " + error.message); }
   }

@@ -55,17 +55,17 @@
   // and lists its files relatively. The absolute paths in the turn's own tool
   // inputs are the only record of those folders, so they become resolution bases
   // too. A recorded command quotes its paths in whatever dialect its shell
-  // needed, so the runs of path characters after a drive letter are read
-  // directly rather than by unquoting, and escaping that doubled the separators
-  // collapses back to one. Each run is offered both whole and as its parent,
+  // needed, so quoted literals and bare absolute paths are read directly.
+  // Escaping that doubled Windows separators collapses back to one. Each run
+  // is offered both whole and as its parent,
   // because a run that names a file still points at the folder the reply lists
-  // files from, while one that names a folder is already the base. Only a plain
-  // drive path qualifies; a UNC or device path is skipped because resolving one
+  // files from, while one that names a folder is already the base. Plain drive
+  // and POSIX paths qualify; a UNC or device path is skipped because resolving one
   // can block on a network lookup, and the caller drops candidates that are not
   // real directories before they cost a reference a failed lookup.
   function toolDirectories(input) {
     const values = typeof input === 'string' ? [input]
-      : input && typeof input === 'object' ? ['command', 'input', 'script'].map(key => input[key]).filter(value => typeof value === 'string')
+      : input && typeof input === 'object' ? ['command', 'cmd', 'input', 'script'].map(key => input[key]).filter(value => typeof value === 'string')
         : [];
     const directories = [];
     const add = value => { if (value && directories.length < 100 && !directories.includes(value)) directories.push(value); };
@@ -73,16 +73,22 @@
       // A quoted span is taken whole, so a folder whose name contains a space
       // survives; the bare runs cover paths a shell left unquoted.
       const literals = [];
-      for (const match of value.matchAll(/"([^"\r\n]{1,400})"|'([^'\r\n]{1,400})'|`([^`\r\n]{1,400})`/g)) literals.push(match[1] ?? match[2] ?? match[3]);
-      for (const match of value.matchAll(/[a-z]:[\\/][^\\/\s"'`;|<>*?:$]*(?:[\\/][^\\/\s"'`;|<>*?:$]*)*/gi)) literals.push(match[0]);
+      // Inspect each quote style independently: a Python literal can be nested
+      // inside the shell's double-quoted -c argument.
+      for (const pattern of [/"([^"\r\n]{1,400})"/g, /'([^'\r\n]{1,400})'/g, /`([^`\r\n]{1,400})`/g])
+        for (const match of value.matchAll(pattern)) literals.push(match[1]);
+      for (const match of value.matchAll(/(?<![\w\\/])[a-z]:[\\/][^\\/\s"'`;|<>*?:$]*(?:[\\/][^\\/\s"'`;|<>*?:$]*)*/gi)) literals.push(match[0]);
+      for (const match of value.matchAll(/(?:^|[\s("'`=,])(\/(?!\/)[^\s"'`;|<>*?:$(){}\\,]+)/g)) literals.push(match[1]);
       for (const raw of literals) {
-        const literal = raw.replace(/[\\/]+/g, match => match[0]).replace(/[\\/]+$/, '').trim();
+        const windows = /^[a-z]:[\\/]/i.test(raw);
+        const literal = (windows ? raw.replace(/[\\/]+/g, match => match[0]) : raw).replace(windows ? /[\\/]+$/ : /\/+$/, '').trim();
         // A drive-relative path such as `C:file`, and a bare `C:` or `C:\`, name
         // no folder; a parent is only usable if it keeps the same shape.
-        if (!/^[a-z]:[\\/][^\\/]/i.test(literal)) continue;
+        const absolute = windows ? /^[a-z]:[\\/][^\\/]/i : /^\/(?!\/)[^/]/;
+        if (!absolute.test(literal)) continue;
         add(literal);
-        const parent = literal.slice(0, Math.max(literal.lastIndexOf('\\'), literal.lastIndexOf('/')));
-        if (/^[a-z]:[\\/][^\\/]/i.test(parent)) add(parent);
+        const parent = literal.slice(0, windows ? Math.max(literal.lastIndexOf('\\'), literal.lastIndexOf('/')) : literal.lastIndexOf('/'));
+        if (absolute.test(parent)) add(parent);
       }
     }
     return directories;

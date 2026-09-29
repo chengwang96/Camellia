@@ -55,13 +55,14 @@ public final class LocalChatActivity extends Activity {
     private ImageButton toolsButton;
     private ImageButton attachButton;
     private final ArrayList<String> selectedImages = new ArrayList<>();
+    private final ArrayList<JSONObject> selectedDocuments = new ArrayList<>();
     private LinearLayout imageTray;
     private android.widget.HorizontalScrollView imageStrip;
     private boolean loadingImages;
     private String imageConversation;
     private java.io.File cameraImageFile;
     private android.net.Uri cameraImageUri;
-    private static final int PICK_IMAGE_REQUEST = 61, TAKE_PHOTO_REQUEST = 62;
+    private static final int PICK_IMAGE_REQUEST = 61, TAKE_PHOTO_REQUEST = 62, PICK_DOCUMENT_REQUEST = 63;
     private ChatStyle chatStyle;
     private ConversationMenu conversationPopup;
     private boolean selectingConversations;
@@ -239,8 +240,17 @@ public final class LocalChatActivity extends Activity {
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         status = text("", 11, muted); status.setTag("localStatus"); status.setGravity(Gravity.CENTER);
-        status.setMaxLines(1); status.setMinLines(1); status.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        status.setSingleLine(true); status.setMinLines(1); status.setEllipsize(android.text.TextUtils.TruncateAt.END);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); root.addView(status, new LinearLayout.LayoutParams(-1, -2));
+        status.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
+            public void onTextChanged(CharSequence value, int start, int before, int count) {}
+            public void afterTextChanged(Editable value) {
+                boolean quiet = value.length() == 0 || value.toString().equals(tr("本机模式 · 聊天记录仅保存在此设备", "Local mode · Chat history stays on this device"));
+                status.setVisibility(quiet ? View.GONE : View.VISIBLE);
+            }
+        });
+        status.setVisibility(View.GONE);
         ErrorDetails.bindStatus(this, status, chinese);
     }
 
@@ -316,11 +326,22 @@ public final class LocalChatActivity extends Activity {
         }
         groups.addView(chatStyle.workspaceHeader(tr("工作区", "Workspaces"), tr("新建工作区", "New workspace"), "localNewWorkspace", () -> nameDialog(null)));
         JSONArray workspaces = store.workspaces();
+        if (query.isEmpty() && workspaces.length() == 0 && store.orderedConversations("").isEmpty()) {
+            groups.addView(new ChatEmptyState(this, chatStyle, "new", tr("开始第一段对话", "Start your first conversation"),
+                tr("你的问题、想法和图片，都可以从这里开始。", "Bring a question, an idea, or an image."),
+                tr("新建会话", "New conversation"), () -> createConversation("")));
+            return;
+        }
         for (int index = 0; index < workspaces.length(); index++) {
             JSONObject workspace = workspaces.optJSONObject(index);
             if (workspace != null) group(groups, workspace.optString("id"), workspace.optString("name"), workspace);
         }
         group(groups, "", tr("独立会话", "Standalone chats"), null);
+        if (!query.isEmpty() && groups.getChildCount() == (selectingConversations ? 2 : 1)) {
+            groups.addView(new ChatEmptyState(this, chatStyle, "search", tr("没有找到会话", "No conversations found"),
+                tr("试试更短的关键词，或清除搜索查看全部会话。", "Try a shorter keyword, or clear the search to see all conversations."),
+                tr("清除搜索", "Clear search"), () -> ((EditText) root.findViewWithTag("localSearch")).setText("")));
+        }
     }
 
     private void group(LinearLayout parent, String id, String name, JSONObject workspace) {
@@ -365,6 +386,7 @@ public final class LocalChatActivity extends Activity {
                         renderGroups(parent);
                     } else { conversationId = selectedId; detail(); }
                 }, () -> conversationMenu(conversation));
+            row.preview(ConversationPreview.local(conversation, chinese));
             row.selection(selectingConversations, selectedConversations.contains(selectedId)); group.addView(row);
         }
         if (entries.isEmpty()) {
@@ -484,9 +506,12 @@ public final class LocalChatActivity extends Activity {
         if (conversation == null) { list(); return; }
         editingMessageIndex = LocalChatDraft.editIndex(conversation);
         selectedImages.clear();
+        selectedDocuments.clear();
         try {
             JSONArray draftImages = LocalChatDraft.images(conversation);
             for (int index = 0; index < draftImages.length(); index++) selectedImages.add(draftImages.getString(index));
+            JSONArray documents = LocalChatDraft.documents(conversation);
+            for (int index = 0; index < documents.length(); index++) selectedDocuments.add(documents.getJSONObject(index));
         } catch (Exception error) { failure(error); }
         imageConversation = conversationId;
         shell(title(conversation));
@@ -501,7 +526,7 @@ public final class LocalChatActivity extends Activity {
         modelButton = chatComposer.model; modelButton.setTag("localModel");
         toolsButton = chatStyle.lineButton("search", tr("联网工具", "Web tools"), this::configureTools);
         toolsButton.setTag("localTools"); chatComposer.addTool(toolsButton);
-        attachButton = chatStyle.lineButton("plus", tr("添加图片", "Add image"), this::pickImage);
+        attachButton = chatStyle.lineButton("plus", tr("添加附件", "Add attachments"), this::pickImage);
         attachButton.setTag("localAttach"); chatComposer.addTool(attachButton);
         imageStrip = new android.widget.HorizontalScrollView(this);
         imageStrip.setHorizontalScrollBarEnabled(false); imageStrip.setTag("localImageStrip");
@@ -541,39 +566,38 @@ public final class LocalChatActivity extends Activity {
             chatComposer.model(route == null ? tr("选择模型", "Select model") : route.displayName(), LocalChatThinking.label(thinking, chinese), runningId == null);
             chatComposer.editing(editingMessageIndex >= 0, runningId == null);
             send.setEnabled(runningId == null && route != null && !loadingImages
-                && (!composer.getText().toString().trim().isEmpty() || !selectedImages.isEmpty()));
+                && (!composer.getText().toString().trim().isEmpty() || !selectedImages.isEmpty() || !selectedDocuments.isEmpty()));
             stop.setVisibility(conversationId.equals(runningId) ? View.VISIBLE : View.GONE);
             send.setVisibility(conversationId.equals(runningId) ? View.GONE : View.VISIBLE);
             if (runningId != null) status.setText(tr("正在回复 · 离开应用将停止请求", "Replying · Leaving the app stops the request"));
             else if (editingMessageIndex >= 0) status.setText(tr("正在编辑上一条消息 · 发送后将重新生成后续回复", "Editing previous message · sending regenerates later replies"));
-            else status.setText(route == null ? tr("请导入配置或重新选择模型。", "Import configuration or select a model.") : route.baseUrl + " · " + route.model);
+            else status.setText(route == null ? tr("请导入配置或重新选择模型。", "Import configuration or select a model.") : "");
         } catch (Exception error) { send.setEnabled(false); failure(error); }
     }
 
-    // Pictures follow the remote composer: same source sheet, same tiles. This
-    // phone caps a message at four images because the direct API request has its
-    // own body limit and the history keeps every attached picture.
+    // Both phone chat modes share the same file, count and image policy.
     private void pickImage() {
         if (conversationId == null) return;
         // The sheet stays reachable while a reply is running so the capability
         // rows remain visible; only the picture tiles are disabled.
-        boolean images = runningId == null && !loadingImages && selectedImages.size() < ChatImage.PHONE_MAX_IMAGES;
+        boolean images = runningId == null && !loadingImages && selectedImages.size() + selectedDocuments.size() < ChatAttachments.MAX_COUNT;
         imageConversation = conversationId;
         AttachSheet sheet = new AttachSheet(this);
         LinearLayout panel = sheet.panel();
         sheet.header(panel, "plus", tr("添加内容", "Add"), tr("关闭", "Close"), () -> { if (dialog != null) dialog.dismiss(); });
-        sheet.subtitle(panel, tr("拍照、相册，或开启本机能力", "Take a photo, pick from the gallery, or turn on a capability"));
+        sheet.note(panel, ChatAttachments.limits(chinese, false));
         sheet.tiles(panel, java.util.Arrays.asList(
             new AttachSheet.Tile("camera", tr("拍照", "Camera"), "localImageCamera", images, () -> { dialog.dismiss(); openCamera(); }),
-            new AttachSheet.Tile("image", tr("照片", "Photos"), "localImageGallery", images, () -> { dialog.dismiss(); openGallery(); })));
+            new AttachSheet.Tile("image", tr("照片", "Photos"), "localImageGallery", images, () -> { dialog.dismiss(); openGallery(); }),
+            new AttachSheet.Tile("file", tr("文件", "Files"), "localDocumentPicker", images, () -> { dialog.dismiss(); openDocuments(); })));
         boolean webTools = store.conversation(conversationId).optBoolean("webTools");
         boolean configurable = runningId == null;
         LinearLayout group = sheet.group(panel, "");
         sheet.row(group, "search", tr("联网搜索", "Web search"),
             tr("使用 Bing 和百度搜索，并读取公开网页", "Search with Bing and Baidu, and read public pages"),
             webTools ? tr("已开启", "On") : tr("已关闭", "Off"), "localAttachTools", configurable, () -> { dialog.dismiss(); configureTools(); });
-        if (!images) sheet.note(panel, selectedImages.size() >= ChatImage.PHONE_MAX_IMAGES
-            ? tr("最多添加 4 张图片。", "Add up to 4 images.")
+        if (!images) sheet.note(panel, selectedImages.size() + selectedDocuments.size() >= ChatAttachments.MAX_COUNT
+            ? tr("最多添加 20 个附件。", "Add up to 20 attachments.")
             : tr("回复结束后可继续添加图片。", "Add more images once the reply finishes."));
         showStyledDialog(panel);
     }
@@ -583,6 +607,13 @@ public final class LocalChatActivity extends Activity {
         picker.setType("image/*"); picker.addCategory(android.content.Intent.CATEGORY_OPENABLE);
         picker.putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true);
         try { startActivityForResult(picker, PICK_IMAGE_REQUEST); } catch (Exception error) { failure(error); }
+    }
+
+    private void openDocuments() {
+        android.content.Intent picker = new android.content.Intent(android.content.Intent.ACTION_GET_CONTENT);
+        picker.setType("*/*"); picker.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+        picker.putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true);
+        try { startActivityForResult(picker, PICK_DOCUMENT_REQUEST); } catch (Exception error) { failure(error); }
     }
 
     private void openCamera() {
@@ -600,7 +631,7 @@ public final class LocalChatActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
-        if (request != PICK_IMAGE_REQUEST && request != TAKE_PHOTO_REQUEST) return;
+        if (request != PICK_IMAGE_REQUEST && request != TAKE_PHOTO_REQUEST && request != PICK_DOCUMENT_REQUEST) return;
         ArrayList<android.net.Uri> uris = new ArrayList<>();
         if (result == RESULT_OK) {
             if (request == TAKE_PHOTO_REQUEST && cameraImageUri != null) uris.add(cameraImageUri);
@@ -609,31 +640,37 @@ public final class LocalChatActivity extends Activity {
             } else if (data != null && data.getData() != null) uris.add(data.getData());
         }
         if (uris.isEmpty()) { if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); return; }
-        if (loadingImages || selectedImages.size() + uris.size() > ChatImage.PHONE_MAX_IMAGES) {
-            status.setText(tr("最多添加 4 张图片。", "Add up to 4 images."));
+        if (loadingImages || selectedImages.size() + selectedDocuments.size() + uris.size() > ChatAttachments.MAX_COUNT) {
+            status.setText(tr("最多添加 20 个附件。", "Add up to 20 attachments."));
             if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); return;
         }
         String target = imageConversation;
         ArrayList<String> existingImages = new ArrayList<>(selectedImages);
+        ArrayList<JSONObject> existingDocuments = new ArrayList<>(selectedDocuments);
         loadingImages = true; updateControls();
         worker.submit(() -> {
+            ArrayList<String> encoded = new ArrayList<>();
+            ArrayList<JSONObject> documents = new ArrayList<>();
+            String problem = null;
             try {
-                ArrayList<String> encoded = new ArrayList<>();
-                long total = 0;
-                for (String image : existingImages) total += image.length();
                 for (android.net.Uri uri : uris) {
-                    String value = ChatImage.encode(this, uri, ChatImage.PHONE_MAX_SIDE, ChatImage.PHONE_MAX_BYTES);
-                    if (total + value.length() > ChatImage.PHONE_MAX_CHARS) throw new java.io.IOException("Image budget");
-                    total += value.length(); encoded.add(value);
+                    if (request == PICK_DOCUMENT_REQUEST && !String.valueOf(getContentResolver().getType(uri)).startsWith("image/")) documents.add(ChatDocument.read(this, uri, true));
+                    else encoded.add(ChatImage.encode(this, uri, ChatImage.PHONE_MAX_SIDE, ChatImage.PHONE_MAX_BYTES));
                 }
+                existingImages.addAll(encoded); existingDocuments.addAll(documents);
+                ChatAttachments.validate(this, existingImages, existingDocuments, false);
                 handler.post(() -> {
-                    if (isFinishing() || isDestroyed() || !java.util.Objects.equals(target, conversationId)) return;
-                    selectedImages.addAll(encoded); imageConversation = target; renderImages(); persistDraft(); updateControls();
+                    if (isFinishing() || isDestroyed() || !java.util.Objects.equals(target, conversationId)) { ChatAttachments.discard(this, encoded, documents); return; }
+                    selectedImages.addAll(encoded); selectedDocuments.addAll(documents); imageConversation = target; renderImages(); persistDraft(); updateControls();
                 });
             } catch (Exception error) {
-                handler.post(() -> { if (!isFinishing() && !isDestroyed()) status.setText(ErrorDetails.withSummary(tr("无法读取图片，请选择较小的图片。", "Cannot read image. Choose a smaller image."), error)); });
+                ChatAttachments.discard(this, encoded, documents);
+                problem = ErrorDetails.withSummary(tr("无法添加附件。", "Cannot add attachment."), error);
             } finally {
-                handler.post(() -> { loadingImages = false; if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); if (!isFinishing() && !isDestroyed()) updateControls(); });
+                String failure = problem;
+                handler.post(() -> { loadingImages = false; if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); if (!isFinishing() && !isDestroyed()) {
+                    updateControls(); if (failure != null && java.util.Objects.equals(target, conversationId)) status.setText(failure);
+                } });
             }
         });
     }
@@ -645,10 +682,12 @@ public final class LocalChatActivity extends Activity {
 
     private void renderImages() {
         if (imageTray == null) return;
-        if (!java.util.Objects.equals(imageConversation, conversationId)) selectedImages.clear();
-        imageStrip.setVisibility(selectedImages.isEmpty() ? View.GONE : View.VISIBLE);
+        if (!java.util.Objects.equals(imageConversation, conversationId)) { selectedImages.clear(); selectedDocuments.clear(); }
+        imageStrip.setVisibility(selectedImages.isEmpty() && selectedDocuments.isEmpty() ? View.GONE : View.VISIBLE);
         ChatImageTray.fill(this, imageTray, selectedImages, surface, chinese,
             index -> { selectedImages.remove(index); renderImages(); persistDraft(); updateControls(); });
+        ChatDocumentTray.append(this, imageTray, selectedDocuments, chinese,
+            index -> { selectedDocuments.remove(index); renderImages(); persistDraft(); updateControls(); });
     }
 
     private void configureTools() {
@@ -707,6 +746,17 @@ public final class LocalChatActivity extends Activity {
     private void renderMessages() {
         messageViews.removeAllViews(); liveBody = null; liveProcess = null;
         JSONArray messages = store.conversation(conversationId).optJSONArray("messages");
+        content.setGravity(messages.length() == 0 ? Gravity.CENTER_VERTICAL : Gravity.TOP);
+        if (messages.length() == 0) {
+            messageViews.addView(new ChatEmptyState(this, chatStyle, "brand", tr("今天想做些什么？", "What would you like to do?"),
+                tr("写下问题或添加内容，开始这次对话。", "Write a question or add something to start this conversation."),
+                tr("输入消息", "Write a message"), () -> {
+                    if (composer == null) return;
+                    composer.requestFocus();
+                    ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
+                        .showSoftInput(composer, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+                }));
+        }
         MarkdownView markdown = new MarkdownView(this, ink, muted, surface, accent);
         int latestUser = -1;
         for (int index = messages.length() - 1; index >= 0; index--) {
@@ -737,6 +787,13 @@ public final class LocalChatActivity extends Activity {
                     ChatImageTray.fill(this, pictures, attached, surface, chinese, null);
                     block.addView(pictures);
                 }
+                JSONArray documents = message.optJSONArray("documents");
+                if (documents != null && documents.length() > 0) {
+                    LinearLayout files = column(); files.setTag("localMessageDocuments:" + index);
+                    ArrayList<JSONObject> attached = new ArrayList<>();
+                    for (int file = 0; file < documents.length(); file++) attached.add(documents.optJSONObject(file));
+                    ChatDocumentTray.append(this, files, attached, chinese, null); block.addView(files);
+                }
                 if (!message.optString("content").isEmpty()) {
                     TextView body = text(message.optString("content"), 15, ink); body.setTextIsSelectable(true); chatStyle.messageTypography(body); block.addView(body);
                 }
@@ -763,6 +820,9 @@ public final class LocalChatActivity extends Activity {
         selectedImages.clear();
         JSONArray images = message.optJSONArray("images");
         if (images != null) for (int image = 0; image < images.length(); image++) selectedImages.add(images.optString(image));
+        selectedDocuments.clear();
+        JSONArray documents = message.optJSONArray("documents");
+        if (documents != null) for (int file = 0; file < documents.length(); file++) selectedDocuments.add(documents.optJSONObject(file));
         imageConversation = conversationId; renderImages();
         editingMessageIndex = index;
         composer.setText(message.optString("content")); composer.setSelection(composer.length()); composer.requestFocus();
@@ -782,20 +842,20 @@ public final class LocalChatActivity extends Activity {
 
     private void persistDraft() {
         if (store == null || conversationId == null || composer == null) return;
-        try { LocalChatDraft.save(store.conversation(conversationId), composer.getText().toString(), editingMessageIndex, selectedImages); store.save(); }
+        try { LocalChatDraft.save(store.conversation(conversationId), composer.getText().toString(), editingMessageIndex, selectedImages, selectedDocuments); store.save(); }
         catch (Exception error) { failure(error); }
     }
 
     private void cancelEdit() {
         if (runningId != null || composer == null) return;
         locationConsent.cancel();
-        editingMessageIndex = -1; composer.setText(""); selectedImages.clear(); renderImages(); persistDraft(); updateControls();
+        editingMessageIndex = -1; composer.setText(""); selectedImages.clear(); selectedDocuments.clear(); renderImages(); persistDraft(); updateControls();
     }
 
     private void sendMessage() {
         if (runningId != null || composer == null || loadingImages) return;
         String prompt = composer.getText().toString();
-        if (prompt.trim().isEmpty() && selectedImages.isEmpty()) return;
+        if (prompt.trim().isEmpty() && selectedImages.isEmpty() && selectedDocuments.isEmpty()) return;
         try {
             LocalChatConfig.Route route = selectedRoute(); if (route == null) { chooseModel(); return; }
             String target = conversationId;
@@ -812,18 +872,18 @@ public final class LocalChatActivity extends Activity {
     private void sendMessage(String locationContext) {
         if (runningId != null || loadingImages) return;
         String value = composer.getText().toString().trim();
-        if (value.isEmpty() && selectedImages.isEmpty()) return;
+        if (value.isEmpty() && selectedImages.isEmpty() && selectedDocuments.isEmpty()) return;
         try {
+            ChatAttachments.validate(this, selectedImages, selectedDocuments, false);
             LocalChatConfig.Route route = selectedRoute(); if (route == null) { chooseModel(); return; }
             JSONObject conversation = store.conversation(conversationId);
             JSONArray messages = conversation.getJSONArray("messages");
             int replaceFrom = editingMessageIndex >= 0 && editingMessageIndex < messages.length() ? editingMessageIndex : messages.length();
             long sentAt = System.currentTimeMillis();
             JSONObject user = new JSONObject().put("role", "user").put("content", value).put("at", sentAt);
-            ArrayList<String> sending = new ArrayList<>();
-            for (String image : selectedImages) if (!sending.contains(image)) sending.add(image);
-            if (sending.size() > ChatImage.PHONE_MAX_IMAGES) sending.subList(ChatImage.PHONE_MAX_IMAGES, sending.size()).clear();
+            ArrayList<String> sending = new ArrayList<>(selectedImages);
             if (!sending.isEmpty()) user.put("images", new JSONArray(sending));
+            if (!selectedDocuments.isEmpty()) user.put("documents", new JSONArray(selectedDocuments));
             JSONArray prospective = new JSONArray();
             for (int index = 0; index < replaceFrom; index++) prospective.put(new JSONObject(messages.getJSONObject(index).toString()));
             prospective.put(user);
@@ -836,20 +896,20 @@ public final class LocalChatActivity extends Activity {
             JSONObject reply = new JSONObject().put("role", "assistant").put("content", "").put("state", "running").put("at", sentAt);
             while (messages.length() > replaceFrom) messages.remove(messages.length() - 1);
             messages.put(user).put(reply);
-            LocalChatDraft.save(conversation, "", -1, java.util.Collections.emptyList());
+            LocalChatDraft.save(conversation, "", -1, java.util.Collections.emptyList(), java.util.Collections.emptyList());
             conversation.put("updatedAt", System.currentTimeMillis());
-            if (previousTitle.isEmpty()) conversation.put("title", value.isEmpty() ? tr("图片", "Image")
+            if (previousTitle.isEmpty()) conversation.put("title", value.isEmpty() ? tr("附件", "Attachments")
                 : value.substring(0, Math.min(value.length(), 60)).replace('\n', ' '));
             try { store.save(); }
             catch (Exception error) {
                 while (messages.length() > 0) messages.remove(messages.length() - 1);
                 for (int index = 0; index < previousMessages.length(); index++) messages.put(previousMessages.getJSONObject(index));
                 conversation.put("title", previousTitle);
-                LocalChatDraft.save(conversation, value, editingMessageIndex, selectedImages); throw error;
+                LocalChatDraft.save(conversation, value, editingMessageIndex, selectedImages, selectedDocuments); throw error;
             }
-            editingMessageIndex = -1; composer.setText(""); selectedImages.clear(); renderImages();
+            editingMessageIndex = -1; composer.setText(""); selectedImages.clear(); selectedDocuments.clear(); renderImages();
             runningId = conversationId; runningReply = reply; latest = ""; lastCheckpoint = System.currentTimeMillis();
-            LocalChatClient active = new LocalChatClient(); client = active; int ticket = ++generation;
+            LocalChatClient active = new LocalChatClient(this); client = active; int ticket = ++generation;
             renderMessages(); updateControls(); scroll.post(() -> scroll.scrollTo(0, content.getBottom()));
             worker.submit(() -> {
                 String problem = null;

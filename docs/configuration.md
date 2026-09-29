@@ -20,7 +20,7 @@ Open **Settings → General → Language**, choose **English** or **简体中文
 
 Open **Settings → API Keys**.
 
-**Settings → Subscription accounts** owns all subscription controls: ChatGPT (Codex), Kimi (Kimi Code), and Google (Antigravity) sign-ins, preferred accounts, login region/proxy, the default API/subscription connection for new conversations, and Google's optional AI-credit billing. These preferences save as soon as you change them; login and account actions remain explicit. **Settings → API Keys** manages API providers, keys, models, and routes. **Engine Settings** contains execution defaults such as reasoning effort, permissions, instructions, and MCP, with no subscription-management or connection selector. Switching pages preserves drafts; saving engine defaults does not revert the subscription connection. Switching Antigravity between API and subscription changes the native configuration being edited, so an old unsaved engine draft must be reloaded before saving. Signing in alone never changes the default connection. Kimi and Gemini presets in **Add API provider** also offer shortcuts to the subscription page.
+**Settings → Subscription accounts** owns all subscription controls: ChatGPT (Codex), Kimi (Kimi Code), and Google (Antigravity) sign-ins, preferred accounts, login region/proxy, and Google's optional AI-credit billing. These preferences save as soon as you change them; login and account actions remain explicit. There is no global connection selector: the composer lists account and API models together, picking one selects the connection it belongs to, and a new session starts from the connection the last one used. **Settings → API Keys** manages API providers, keys, models, and routes. **Engine Settings** contains execution defaults such as reasoning effort, permissions, instructions, and MCP, with no subscription-management or connection selector. Switching pages preserves drafts; saving engine defaults does not revert the subscription connection. Switching Antigravity between API and subscription changes the native configuration being edited, so an old unsaved engine draft must be reloaded before saving. Signing in alone never changes the default connection. Kimi and Gemini presets in **Add API provider** also offer shortcuts to the subscription page.
 
 1. Choose a preset or enter a custom API endpoint.
 2. Add keys individually or paste a batch. Give keys recognizable labels.
@@ -61,17 +61,19 @@ For Gemini tools, the router retains Google's opaque thought signatures alongsid
 
 ### Several accounts of one provider
 
-Kimi and ChatGPT support **several signed-in accounts at the same time**. In **Settings → Subscription accounts**, each account appears in its provider's card. **Add another account** creates and selects an account slot; **Sign in** authorizes that slot. The other accounts keep their credentials, models, and quota. The account selector means **preferred for new conversations**, not the account used by every existing conversation. Labels identify accounts, and **×** removes an added account together with its directory. The first account is only signed out, never deleted.
+Kimi and ChatGPT support **several signed-in accounts at the same time**. In **Settings → Subscription accounts**, each account appears in its provider's card. **Add another account** creates and selects an account slot; **Sign in** authorizes that slot. The other accounts keep their credentials, models, and quota. The account selector means **preferred for the next message**, including existing conversations. Running responses finish on their current account; the next message starts a native session for the selected account with the saved conversation history. Labels identify accounts, and **×** removes an added account together with its directory. The first account is only signed out, never deleted.
 
-Quota steers the choice the same way it does for API keys. A Kimi window or Codex rate-limit window that is fully used marks that account as exhausted, and a **new conversation** then starts on another signed-in account that still has quota. A conversation that already ran on an account keeps it, because its native thread lives in that account's home; its quota error stays visible instead of switching mid-thread. The **Balances & Quotas** page lists one card per signed-in Kimi account.
+Quota steers the choice the same way it does for API keys. A Kimi window or Codex rate-limit window that is fully used marks that account as exhausted, and a **new conversation** then starts on another signed-in account that still has quota. In shared conversations, a terminal quota or authentication error automatically retries on another signed-in account with quota. Each account is tried at most once per turn. Saved history and completed tool results carry forward; unfinished tools or pending approvals stop automatic retry. Other errors remain visible. Invalid login errors direct the user to sign in again in Subscription accounts. Account switching keeps the selected model; the receiving account must support it. The **Balances & Quotas** page lists one card per signed-in Kimi account.
 
 The Google connection through Antigravity is the exception: the official CLI stores a single Google credential per operating-system user, so it appears as one account and has no **Add another account** action.
+
+Account cards show each account's reported quota windows and reset times. The bottom actions switch the preferred account, edit its note, refresh that account's quota, and remove the account (the default slot signs out instead). ChatGPT cards also offer **Wake account**: one explicit “你好” request on that account, followed by a quota refresh. This uses subscription allowance, never rotates to another account, and does not reset an already-active quota window. The next reset time is displayed only as reported by the provider. Wake requests use a temporary native thread and do not appear as shared conversations.
 
 ### ChatGPT subscription and API routes (Codex)
 
 1. Download **Codex CLI** from Home or **Settings → Runtime**.
-2. Open **Settings → Subscription accounts → ChatGPT account · Codex** and choose **API key / third-party API** or **ChatGPT account**. The choice is saved as soon as you make it. API mode is the initial default when API models are configured; an explicitly saved connection is retained.
-3. For API mode, use **Configure API providers & keys** to add a supported endpoint, key and model, then save the connection. ChatGPT sign-in is unnecessary. Camellia adapts its supported API routes to Codex's Responses interface.
+2. Open **Settings → Subscription accounts → ChatGPT account · Codex** and sign in with ChatGPT. The connection is chosen in the composer: account and API models are listed together, and a new session starts from the connection the last one used. API mode is the initial default when API models are configured.
+3. For API mode, add a supported endpoint, key and model in **Settings → API Keys**. ChatGPT sign-in is unnecessary. Camellia adapts its supported API routes to Codex's Responses interface.
 4. In **Subscription accounts → ChatGPT account · Codex**, click **Sign in with ChatGPT** and complete the official browser login. Account models and quota load after login; **Refresh account** checks them again. **Cancel sign-in** cancels a pending login, and **Sign out** removes this application's login. **Add another account** creates another slot; sign in to authorize it. Account management is available even while API remains the default connection.
 5. Start a new Codex session and select a model. API and account models are remembered separately. Joining a shared conversation in API mode uses that conversation's saved API model.
 
@@ -93,7 +95,7 @@ Shared API mode converts Codex's Responses requests to the router's Chat Complet
 2. If needed, set **Google connection proxy**. It saves when you leave the field. An empty value inherits the CLI's environment/system proxy. Engine downloads retain their separate connection prompt.
 3. Click **Open official CLI sign-in**. Camellia downloads the official CLI if missing and opens a terminal; the CLI owns browser authentication and credential storage.
 4. Return and click **Verify after sign-in**. Verification checks model access, not account identity or quota. States distinguish unverified, waiting for external sign-in, verified model access, expired verification (24 hours), and failure; failed validation clears the old success marker. To change accounts, use `/logout` in the official terminal.
-5. To use the subscription for new conversations, select **Google subscription** on the same account card, then choose an account model in the composer. Optional **Use AI credits after the plan quota is exhausted** is configured on this card, not in Engine Settings.
+5. Choose an account model in the composer to use the subscription; account and API models are listed together, and a new session starts from the connection the last one used. Optional **Use AI credits after the plan quota is exhausted** is configured on this card, not in Engine Settings.
 
 The official Antigravity CLI keeps one Google credential for the current operating-system user, so Camellia lists exactly one Google account and does not offer **Add another account** for it. Kimi and ChatGPT keep several accounts at once.
 
@@ -103,16 +105,16 @@ Google sessions stream inside Camellia and support native continuation and cance
 
 Unified settings edit `~/.gemini/antigravity-cli/settings.json` and MCP/skills/plugin files under `~/.gemini/config`. They also affect external Antigravity CLI sessions. Connecting Google resets the CLI's API-provider override after retaining a backup; other native preferences are preserved. Camellia does not automatically enable extra AI credits. The **Use AI credits after the plan quota is exhausted** checkbox is an explicit choice.
 
-Per-turn token counts appear in conversation results. These requests bypass the shared API router, so they do not appear in its provider/key usage charts. The official CLI's `/usage` shows account quota information. Existing API and Google sessions retain their original authentication source when the default connection changes.
+Per-turn token counts appear in conversation results. **Settings → Usage → Subscription accounts** also records these tokens by account, model and day, with a standard API cost estimate where pricing is available. These requests bypass the shared API router and remain separate from API-key counters. The official CLI's `/usage` shows account quota information. Existing API and Google sessions retain their original authentication source when the default connection changes.
 
 ### Kimi Code subscription
 
-Kimi Code supports both **Kimi subscription** account sign-in and **Shared API routes**.
+Kimi Code supports both **Kimi subscription** account sign-in and **Shared API routes**. The composer lists both, so no global connection selector is needed.
 
-1. Open **Settings → Subscription accounts → Kimi account · Kimi Code**. Login does not change the default connection.
+1. Open **Settings → Subscription accounts → Kimi account · Kimi Code**. Login does not change the current connection.
 2. Select **China · kimi.com** or **Global · kimi.ai**. The choice is saved as soon as you make it.
 3. Click **Sign in with Kimi**. The official CLI opens its device authorization page in your browser. If needed, use **Open sign-in page** and the displayed authorization code. **Cancel sign-in** stops a pending attempt.
-4. Finish authorization. Camellia verifies the account and loads its models automatically. To use it by default, select **Kimi subscription** on the same card. Use **Refresh account** to check access, **Add another account** then **Sign in** for another account, or **Sign out** to remove this app's native login.
+4. Finish authorization. Camellia verifies the account and loads its models automatically. Choose an account model in the composer to use them; use **Refresh account** to check access, **Add another account** then **Sign in** for another account, or **Sign out** to remove this app's native login.
 
 No API key is needed for account sign-in. The official Kimi CLI manages tokens and token refresh under `<app-data>/kimi-subscription` for the first account and `<app-data>/subscription-accounts/kimi/<account>` for additional ones; Camellia stores public model metadata and quota observations separately. It does not import credentials from your personal `~/.kimi-code`. Existing native sessions keep their original connection, and API and subscription models are remembered separately, including when switching harnesses in a shared conversation. Account changes require idle Kimi work. Authentication, model, or quota failures do not fall back to API billing.
 
@@ -299,15 +301,19 @@ Engine configurations receive a loopback router URL and placeholder credentials.
 
 ## Usage statistics
 
-Subscription quota (such as Kimi's account-wide windows) appears in **Balances & Quotas** and on the Providers & Keys account cards. It may include activity outside Camellia and is not added to local API totals or attributed to individual models. **API request history** covers business requests passing through the local router, with provider, key, model, and date filters.
+**Settings → Usage** shows local API and subscription consumption, with source, provider, account/key, model and date filters. Codex, Kimi Code and Google/Antigravity subscriptions have their own ledger, separate from API-key counters. Usage belongs to the account slot that actually handled the request, including after an account switch. Subscription recording starts with this feature; earlier native histories and other clients' activity are not imported.
+
+**Subscription estimate (USD)** values the reported tokens using a dated snapshot of standard text API prices from [LiteLLM's catalog](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json). This is an API equivalent estimate, not the subscription fee, an extra charge or the provider's quota calculation. Cached input uses its separate rate and reasoning is included in output. Unknown prices, missing cache prices and context tiers that cannot be resolved from per-request usage remain unpriced. Tool charges and speed premiums are excluded. Known costs remain visible with a partial-data notice when some usage is unavailable. The price snapshot is bundled with the application, does not refresh during chat, and can be updated from source with `node scripts/update-subscription-prices.cjs`; existing recorded estimates retain their original prices.
 
 - Daily records cover the most recent 90 days; cumulative model totals are retained. CSV export uses the selected filters.
+- API success counts represent requests; subscription success counts represent completed turns. A turn's tool-driven model calls contribute all reported tokens without multiplying the turn count. Explicit Codex account wake requests and native manual compaction also contribute reported usage.
 - Successes, failures, and cancellations are recorded separately. Tokens reported by failed attempts remain attributed to the key that incurred them.
 - Input tokens include cache reads/writes. Cache-read counts are a subset, not an additional total.
 - Missing token counts remain unavailable rather than becoming zero.
+- Kimi collects new native journal entries after the turn ends, including reported internal agent usage. Codex uses thread token events; native Codex collaboration tool activity is marked incomplete because internal child-thread consumption is not independently reconciled. Antigravity uses step usage when available and the native result otherwise. Camellia child conversations have their own meters.
 - Legacy aggregates are retained without inventing historical model attribution.
 
-Account queries, connection validation, and token-counting requests are not business usage.
+Account queries, connection validation, and token-counting requests are not business usage. Subscription quota (such as Kimi's account-wide windows) remains in **Subscription accounts**; API balances remain in **API Keys**. Provider-reported quota may include other clients and is not added to local token totals. A remote CLI server keeps its own ledger in its data directory and exposes subscription estimates in its server usage view.
 
 ## Balances and subscription quotas
 
@@ -360,6 +366,7 @@ The application data directory is `%APPDATA%/dsh-desktop` on Windows and `~/Libr
 | Default path | Contents |
 | --- | --- |
 | `<app-data>` | Application preferences, workspace metadata, observation cache, and logs |
+| `<app-data>/subscription-usage.json` | Subscription token totals and API equivalent estimates by account slot/model/day; no credentials or message contents |
 | `<app-data>/conversations` | Shared metadata, full public conversation records, `goals/<id>.json` and `handoffs/*.md`; preserve native engine state too when migrating |
 | `<app-data>/dsh-chat` | DSH ACP configuration and native shared-chat sessions; `dsh-chat-history` contains the display cache |
 | `~/.dsh` | DSH configuration and history; `ollama-proxy.json` contains the shared route pool, keys, and usage records |

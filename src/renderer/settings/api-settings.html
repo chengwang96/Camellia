@@ -27,9 +27,10 @@
   <header class="page-head"><div><h1 id="pageTitle" data-i18n>General</h1><p id="pageSubtitle" data-i18n>Language, appearance, and local preferences.</p></div><button id="refresh" aria-label="Refresh status" data-i18n data-i18n-attrs="aria-label">Refresh</button></header>
   <main class="scroll-content">
     <section id="subscriptionsPage" class="page" hidden>
-      <section class="account-connections" aria-labelledby="accountConnectionsTitle">
-        <div><h2 id="accountConnectionsTitle" data-i18n>Subscription accounts</h2><p class="hint" data-i18n>Manage sign-ins independently of API routes and engine settings. Signing in does not change the connection used by new or existing conversations.</p></div>
-        <div class="account-shortcuts"><button data-account-engine="kimi" data-i18n>Kimi account</button><button data-account-engine="antigravity" data-i18n>Google account · Antigravity</button><button data-account-engine="codex" data-i18n>ChatGPT account</button></div>
+      <section class="account-connections" aria-label="Subscription accounts" data-i18n-attrs="aria-label">
+        <p class="hint" data-i18n>Manage sign-ins independently of API routes and engine settings. New sessions start from the connection you last used; pick any model in the composer to switch.</p>
+        <p class="hint" data-i18n>The selected account applies on the next message, including existing conversations. Quota or login errors can switch to another signed-in account automatically.</p>
+        <div id="accountShortcuts" role="group" aria-label="Subscription accounts" data-i18n-attrs="aria-label" class="account-shortcuts"><button data-account-engine="kimi" data-i18n>Kimi account</button><button data-account-engine="antigravity" data-i18n>Google account</button><button data-account-engine="codex" data-i18n>ChatGPT account</button></div>
         <div id="subscriptionAccounts"></div>
       </section>
     </section>
@@ -38,23 +39,26 @@
       <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><div class="toolbar-actions"><button id="exportConfig" data-i18n>Export config</button><button id="importConfig" data-i18n>Import config</button><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div></div>
       <div id="providers" class="provider-grid"></div>
       <div id="editor" hidden></div>
-      <section class="router-options" aria-labelledby="routerOptionsTitle"><h3 id="routerOptionsTitle" data-i18n>Router options</h3><div class="row"><label data-i18n><input id="enabled" type="checkbox">Enable shared router</label><label data-i18n>Local port <input id="port" type="number" min="1024" max="65535"></label></div><div id="live" class="hint" data-i18n></div></section>
-    </section>
-    <section id="usagePage" class="page" hidden>
       <h2 class="usage-api-title" data-i18n>Balances &amp; Quotas</h2>
-      <div class="toolbar"><p class="hint" data-i18n>Balances and subscription quotas as reported by each provider.</p><button id="refreshBalances" class="primary" data-i18n>Refresh all</button></div>
+      <div class="toolbar"><p class="hint" data-i18n>API balances and quotas as reported by each provider.</p><button id="refreshBalances" class="primary" data-i18n>Refresh all</button></div>
       <div class="balance-filter"><select id="balanceProvider" aria-label="Balance provider" data-i18n-attrs="aria-label"></select><input id="balanceSearch" aria-label="Filter accounts" placeholder="Filter by account label or masked key" data-i18n-attrs="aria-label placeholder"></div>
       <div id="balanceCards" class="balance-grid"></div>
       <p class="hint footnote" data-i18n>Keys may share an account balance, so card amounts are not added together. Charts show local observations, including top-ups and resets; earlier history is not reconstructed.</p>
-      <h2 class="usage-api-title" data-i18n>API request history</h2>
-      <div class="filter-row"><label data-i18n>Date<select id="usageRange"><option value="7" data-i18n>Last 7 days</option><option value="30" data-i18n>Last 30 days</option><option value="90" data-i18n>Last 90 days</option><option value="all" data-i18n>Total</option></select></label><label data-i18n>Provider<select id="usageProvider"></select></label><label data-i18n>Key<select id="usageKey"></select></label><label data-i18n>Model<select id="usageModel"></select></label></div>
+      <div id="balanceChart" class="chart-grid-layout"></div>
+      <section class="router-options" aria-labelledby="routerOptionsTitle"><h3 id="routerOptionsTitle" data-i18n>Router options</h3><div class="row"><label data-i18n><input id="enabled" type="checkbox">Enable shared router</label><label data-i18n>Local port <input id="port" type="number" min="1024" max="65535"></label></div><div id="live" class="hint" data-i18n></div></section>
+    </section>
+    <section id="usagePage" class="page" hidden>
+      <h2 class="usage-api-title" data-i18n>Usage history</h2>
+      <div class="filter-row"><label data-i18n>Source<select id="usageSource"><option value="" data-i18n>All activity</option><option value="subscription" data-i18n>Subscription accounts</option><option value="api" data-i18n>API Keys</option></select></label><label data-i18n>Date<select id="usageRange"><option value="7" data-i18n>Last 7 days</option><option value="30" data-i18n>Last 30 days</option><option value="90" data-i18n>Last 90 days</option><option value="all" data-i18n>Total</option></select></label><label data-i18n>Provider<select id="usageProvider"></select></label><label data-i18n>Account / Key<select id="usageKey"></select></label><label data-i18n>Model<select id="usageModel"></select></label></div>
       <div id="usageSummary" class="usage-summary"></div>
-      <div class="section-head"><h2 data-i18n>Quota and key/model trends</h2><select id="usageMetric" aria-label="Usage chart metric" data-i18n-attrs="aria-label"><option value="tokens" data-i18n>Token usage</option><option value="requests" data-i18n>Successful requests</option><option value="inputTokens" data-i18n>Input tokens</option><option value="outputTokens" data-i18n>Output tokens</option><option value="failures" data-i18n>Failed / Canceled</option></select></div>
+      <div id="subscriptionCostCard" class="subscription-cost"><div><small data-i18n>Subscription estimate (USD)</small><strong id="subscriptionCost"></strong></div><div><p id="subscriptionCostNote" class="hint"></p><p id="subscriptionUsageSince" class="hint"></p></div></div>
+      <div class="section-head"><h2 data-i18n>Account/model usage trends</h2><select id="usageMetric" aria-label="Usage chart metric" data-i18n-attrs="aria-label"><option value="tokens" data-i18n>Token usage</option><option value="requests" data-i18n>Successful requests</option><option value="inputTokens" data-i18n>Input tokens</option><option value="outputTokens" data-i18n>Output tokens</option><option value="failures" data-i18n>Failed / Canceled</option><option value="estimatedCostUsd" data-i18n>Subscription estimate (USD)</option></select></div>
       <div id="usageChart" class="chart-grid-layout"></div>
       <div id="usageChartNotes"></div>
-      <div class="section-head table-head"><h2 data-i18n>Model and key details</h2><button id="exportUsage" data-i18n>Export CSV</button></div>
-      <div class="table-scroll"><table class="usage-table"><thead><tr><th data-i18n>Model / Provider</th><th data-i18n>Key</th><th data-i18n>Success</th><th data-i18n>Input</th><th data-i18n>Output</th><th data-i18n>Cache read</th><th data-i18n>Failed</th></tr></thead><tbody id="usageRows"></tbody></table></div>
-      <p class="hint footnote" data-i18n>Business requests through this router, excluding validation. Tokens come from provider responses. Model and date breakdowns accumulate from this version; legacy aggregates appear under Total. Cache reads are included in input tokens.</p>
+      <div class="section-head table-head"><h2 data-i18n>Model and account details</h2><button id="exportUsage" data-i18n>Export CSV</button></div>
+      <div class="table-scroll"><table class="usage-table"><thead><tr><th data-i18n>Model / Provider</th><th data-i18n>Account / Key</th><th data-i18n>Success</th><th data-i18n>Input</th><th data-i18n>Output</th><th data-i18n>Cache read</th><th data-i18n>Cache write</th><th data-i18n>Failed / Canceled</th><th data-i18n>Subscription estimate (USD)</th></tr></thead><tbody id="usageRows"></tbody></table></div>
+      <p class="hint footnote" data-i18n>Usage recorded by Camellia. API counts are requests; subscription counts are turns. Input includes cache; output includes reasoning. Missing usage is not zero. Existing native histories and other clients are not imported.</p>
+      <p class="hint footnote" data-i18n>Subscription estimates use a dated standard text API price reference. Tool charges and speed premiums are excluded. Unknown model prices and unavailable context tiers remain unpriced; known amounts are partial when usage is missing.</p>
     </section>
     <section id="generalPage" class="page">
       <div class="setting-row"><div><h2 data-i18n>Language</h2><p class="hint" data-i18n>Choose the display language for Camellia.</p></div><select id="language" aria-label="Language" data-i18n-attrs="aria-label"><option value="en" lang="en">English</option><option value="zh-CN" lang="zh-CN">简体中文</option></select></div>
@@ -99,8 +103,7 @@
     <section id="mobilePage" class="page" hidden>
       <section class="mobile-section" aria-labelledby="mobile-connectionTitle">
         <div class="mobile-heading"><h2 id="mobile-connectionTitle" data-copy="connection">连接</h2><span id="mobile-status" role="status"></span></div>
-        <p id="mobile-address" class="mobile-address"></p>
-        <button id="mobile-toggle" class="primary" disabled>…</button>
+        <div class="mobile-connection-row"><p id="mobile-address" class="mobile-address"></p><button id="mobile-toggle" class="primary" disabled>…</button></div>
         <div id="mobile-networkControls" hidden><p id="mobile-networkState" class="hint" role="status"></p><button id="mobile-login" hidden data-copy="login">登录 Tailscale</button></div>
         <details class="mobile-help">
           <summary data-copy="connectionHelp">连接与权限说明</summary>
@@ -110,12 +113,11 @@
         </details>
       </section>
       <section class="mobile-section" aria-labelledby="mobile-pairTitle">
-        <h2 id="mobile-pairTitle" data-copy="pair">配对设备</h2>
+        <div class="mobile-heading"><h2 id="mobile-pairTitle" data-copy="pair">配对设备</h2><button id="mobile-invite" disabled data-copy="generate">生成配对码</button></div>
         <p class="hint" data-copy="scope"></p>
         <label for="mobile-deviceName" data-copy="deviceName">本机名称</label>
         <div class="name-row"><input id="mobile-deviceName" maxlength="80" autocomplete="off"><button id="mobile-saveDeviceName" data-copy="deviceNameSave">保存名称</button></div>
         <p class="hint" data-copy="deviceNameHint"></p><p id="mobile-deviceNameStatus" class="hint" role="status"></p>
-        <button id="mobile-invite" disabled data-copy="generate">生成配对码</button>
         <div id="mobile-invitation" hidden><div id="mobile-qr" class="qr"></div><code id="mobile-code"></code><p id="mobile-expires" class="hint"></p><p class="hint" data-copy="scanHint"></p><p class="hint" data-copy="scanFallback"></p></div>
         <div id="mobile-pending"></div>
       </section>
@@ -130,10 +132,6 @@
       <div id="engineLoading" class="hint" role="status" data-i18n>Loading settings…</div>
       <div id="engineContent" hidden>
         <div id="codexConnectionPanel" class="engine-connection" hidden>
-          <div class="engine-field"><label for="codexConnection" data-i18n>Connection for new Codex sessions</label><select id="codexConnection"><option value="api" data-i18n>API key / third-party API</option><option value="subscription" data-i18n>ChatGPT account</option></select></div>
-          <p class="hint" id="codexConnectionHint" data-i18n></p>
-          <p class="hint" data-i18n>Existing Codex sessions keep their original connection. API and account models are remembered separately.</p>
-          <div class="account-actions"><button id="codexProviders" data-i18n>Configure API providers &amp; keys</button></div>
           <div class="engine-field"><label for="codexProxyUrl" data-i18n>Codex connection proxy<small class="hint" data-i18n>Optional. Leave blank to inherit your environment proxy.</small></label><input id="codexProxyUrl" type="url" placeholder="http://proxy.example:8080" autocomplete="off" spellcheck="false"></div>
           <div id="codexAccountPanel" hidden>
             <div id="codexAccountList" class="account-list" role="radiogroup" aria-label="ChatGPT accounts" data-i18n-attrs="aria-label"></div>
@@ -141,38 +139,34 @@
             <p id="codexAccountStatus" class="hint" role="status" data-i18n></p>
             <div id="codexQuotas" class="codex-quotas"></div>
             <details id="codexModelDetails" hidden><summary data-i18n>Available account models</summary><ul id="codexModelList"></ul></details>
-            <p class="hint" data-i18n>Sign-in opens the official ChatGPT authorization page. Return here after completing it. Your personal Codex CLI settings and account remain separate.</p>
-            <p class="hint" data-i18n>Several ChatGPT accounts can stay signed in. New conversations use the selected account, or automatically switch to one that still has quota; a conversation that already started keeps its account.</p>
+            <p class="hint" data-i18n>Sign-in opens the official ChatGPT authorization page; your personal Codex CLI settings stay separate.</p>
+            <p class="hint" data-i18n>Several accounts can stay signed in. Existing conversations follow the selected account on the next message. Quota errors can switch accounts and retry automatically.</p>
           </div>
         </div>
         <div id="kimiConnectionPanel" class="engine-connection" hidden>
-          <div class="engine-field"><label for="kimiConnection" data-i18n>Connection for new Kimi sessions</label><select id="kimiConnection"><option value="api" data-i18n>Shared API routes</option><option value="subscription" data-i18n>Kimi subscription</option></select></div>
-          <p class="hint" id="kimiConnectionHint" data-i18n></p>
-          <p class="hint" data-i18n>Existing sessions keep their original connection. API and account models are remembered separately.</p>
-          <div class="account-actions"><button id="kimiProviders" data-i18n>Configure API providers &amp; keys</button></div>
           <div id="kimiAccountPanel" hidden>
             <div class="engine-field"><label for="kimiLoginRegion" data-i18n>Login region<small class="hint" data-i18n>Choose the site where you registered your Kimi account.</small></label><select id="kimiLoginRegion"><option value="mainland-cn" data-i18n>China · kimi.com</option><option value="global" data-i18n>Global · kimi.ai</option></select></div>
             <div id="kimiAccountList" class="account-list" role="radiogroup" aria-label="Kimi accounts" data-i18n-attrs="aria-label"></div>
             <div class="account-actions"><button id="kimiSignIn" class="primary" data-i18n>Sign in with Kimi</button><button id="kimiAddAccount" data-i18n>Add another account</button><button id="kimiRefresh" data-i18n>Refresh account</button><button id="kimiCancelLogin" hidden data-i18n>Cancel sign-in</button><button id="kimiSignOut" hidden data-i18n>Sign out</button></div>
             <p id="kimiAccountStatus" class="hint" role="status" data-i18n></p>
-            <button id="kimiUsage" hidden data-i18n>View usage and quotas</button>
+            <button id="kimiUsage" hidden data-i18n>Refresh quota</button>
+            <div id="subscriptionQuotaCards" class="balance-grid"></div>
+            <div id="subscriptionQuotaChart" class="chart-grid-layout"></div>
             <div id="kimiDeviceLogin" hidden><p data-i18n>Authorization code: <code id="kimiUserCode"></code></p><button id="kimiOpenLogin" data-i18n>Open sign-in page</button><p id="kimiLoginExpiry" class="hint" data-i18n></p></div>
             <details id="kimiModelDetails" hidden><summary data-i18n>Available account models</summary><ul id="kimiModelList"></ul></details>
-            <p class="hint" data-i18n>Complete the official Kimi authorization in your browser. Camellia stores this login separately from your personal Kimi CLI. Subscription requests use your Kimi plan and do not fall back to API billing.</p>
-            <p class="hint" data-i18n>Several Kimi accounts can stay signed in, each with its own region choice at sign-in. New conversations use the selected account, or automatically switch to one that still has quota; a conversation that already started keeps its account.</p>
+            <p class="hint" data-i18n>Complete the official Kimi authorization in your browser. This login stays separate from your personal Kimi CLI, and never falls back to API billing.</p>
+            <p class="hint" data-i18n>Several accounts can stay signed in. Existing conversations follow the selected account on the next message. Quota errors can switch accounts and retry automatically.</p>
           </div>
         </div>
         <div id="antigravityConnectionPanel" class="engine-connection" hidden>
-          <div class="engine-field"><label for="antigravityConnection" data-i18n>Connection</label><select id="antigravityConnection"><option value="subscription" data-i18n>Google subscription</option><option value="api" data-i18n>Shared API routes</option></select></div>
-          <p class="hint" id="antigravityConnectionHint" data-i18n></p>
           <div id="googleAccountPanel" hidden>
             <div class="engine-field"><label for="googleProxyUrl" data-i18n>Google connection proxy<small class="hint" data-i18n>Optional. Leave blank to use the system proxy.</small></label><input id="googleProxyUrl" type="url" placeholder="http://proxy.example:8080" autocomplete="off" spellcheck="false"></div>
             <div class="account-actions"><button id="googleSignIn" class="primary" data-i18n>Sign in with Google</button><button id="googleRefresh" data-i18n>Refresh account</button></div>
             <p id="googleAccountStatus" class="hint" role="status" data-i18n></p>
             <div id="googleAccountList" class="account-list" role="radiogroup" aria-label="Google accounts" data-i18n-attrs="aria-label"></div>
             <details id="googleModelDetails" hidden><summary id="googleModelSummary" data-i18n></summary><ul id="googleModelList"></ul></details>
-            <p class="hint" data-i18n>Sign-in opens the official CLI in a terminal and your browser. After signing in, return here and refresh the account. To switch accounts, use <code>/logout</code> in that terminal.</p>
-            <p class="hint" data-i18n>The official Antigravity CLI keeps one Google sign-in for this Windows user, so Camellia shows a single Google account. Kimi and ChatGPT support several accounts at once.</p>
+            <p class="hint" data-i18n>Sign-in opens the official CLI and your browser; return here and refresh. To switch accounts, use <code>/logout</code> in that terminal.</p>
+            <p class="hint" data-i18n>The official CLI keeps one Google sign-in per Windows user and reports no account identity or quota, so Camellia lists one account and only verifies model access.</p>
           </div>
         </div>
         <div id="dshNative" hidden><p class="hint native-save-note" data-i18n>DSH's native settings panel saves immediately. Models and keys are managed in the shared pool.</p><div id="nativeLoading" class="hint" role="status" data-i18n></div><div id="dshSettingsSurface" aria-label="DSH native settings" data-i18n-attrs="aria-label"></div><button id="retryNative" hidden data-i18n>Reload panel</button></div>
@@ -215,5 +209,5 @@
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>
-<script src="./settings-charts.js"></script><script src="./engine-settings-ui.js"></script><script src="./context-capacity-ui.js"></script><script src="../remote/remote.js"></script><script src="../devices/devices-view.js"></script><script src="../devices/connections.js"></script><script src="./api-settings.js"></script>
+<script src="./settings-charts.js"></script><script src="./subscription-cards.js"></script><script src="./engine-settings-ui.js"></script><script src="./context-capacity-ui.js"></script><script src="../remote/remote.js"></script><script src="../devices/devices-view.js"></script><script src="../devices/connections.js"></script><script src="./api-settings.js"></script>
 </body></html>

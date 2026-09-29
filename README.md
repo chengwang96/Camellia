@@ -70,7 +70,7 @@ The application defaults to English. Switch between English and Simplified Chine
 
 For browser account sign-in, open **Settings → Providers & Keys → Account sign-in** and choose **Kimi account**, **Google account · Antigravity**, or **ChatGPT account**. The shortcut opens the matching engine's account settings and applies account mode, then click its **Sign in** button. The API-provider dialog also links to Kimi and Google account settings; **Kimi Code (API key)** is the separate key-based connection.
 
-To use your ChatGPT plan, open **Settings → Engine Settings → Codex CLI**, select **ChatGPT account**, and choose **Sign in with ChatGPT**. Camellia opens the official login in your browser and loads your account models and quota. **Add another account** signs in a second ChatGPT account at the same time; new conversations use the selected account or automatically switch to one that still has quota, while a conversation that already started keeps its account. Codex settings, credentials, and history stay in Camellia’s own data directory; your personal `~/.codex` is untouched. Select **API key / third-party API** to use the central Key pool instead.
+To use your ChatGPT plan, open **Settings → Engine Settings → Codex CLI**, select **ChatGPT account**, and choose **Sign in with ChatGPT**. Camellia opens the official login in your browser and loads your account models and quota. **Add another account** signs in a second ChatGPT account at the same time; the next message uses the selected account, including in existing conversations. Quota or login errors can automatically retry on another signed-in account with saved context. Codex settings, credentials, and history stay in Camellia’s own data directory; your personal `~/.codex` is untouched. Select **API key / third-party API** to use the central Key pool instead.
 
 To use a Google subscription, select **Settings → Engine Settings → Antigravity → Google subscription**, save, and choose **Sign in with Google**. Complete the official CLI sign-in, then **Refresh account** to load the models available to your account. This connection needs no API key; the official CLI keeps one Google sign-in per operating-system user, so Camellia lists a single Google account.
 
@@ -152,7 +152,7 @@ Multiple conversations can work at the same time, including several using the sa
 
 ### Conversation control
 
-Models can also create/fork owned child conversations, choose configured models and thinking levels, send work, read results and cancel responses through [conversation-control tools](docs/conversation-tools.md). Children share files and existing permissions; they run independently and cannot recursively delegate or start Goals/tasks.
+Models can also create/fork owned child conversations, choose configured models and thinking levels, send work, read results and cancel responses through [conversation-control tools](docs/conversation-tools.md). The same bridge exposes read-only `sessions`, `history` and `search` tools that list every conversation stored on the device, read any stored transcript and search transcripts for words, without starting an engine or changing anything. Children share files and existing permissions; they run independently and cannot recursively delegate or start Goals/tasks.
 
 ### Goal mode
 

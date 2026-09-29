@@ -62,7 +62,7 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
                 assertFalse(((ViewGroup) bar.getParent()).getClipChildren());
                 assertFalse(((ViewGroup) bar.getParent()).getClipToPadding());
                 assertFalse(((ViewGroup) bar).getClipChildren());
-                assertTrue(bar.getBottom() <= status.getTop());
+                assertEquals("The header already identifies local mode", View.GONE, status.getVisibility());
                 boolean chinese = activity.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
                 String localStatus = chinese ? "本机模式 · 聊天记录仅保存在此设备" : "Local mode · Chat history stays on this device";
                 assertEquals(localStatus, ((TextView) status).getText().toString());
@@ -98,7 +98,7 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
                 View bar = root.findViewWithTag("localComposerBar"), status = root.findViewWithTag("localStatus");
                 assertDockInsets(bar, status);
                 assertFalse(((ViewGroup) bar.getParent()).getClipToPadding());
-                assertTrue(bar.getBottom() <= status.getTop());
+                assertEquals("An idle chat does not need a blank status footer", View.GONE, status.getVisibility());
                 ViewGroup user = root.findViewWithTag("localMessage:0"), assistant = root.findViewWithTag("localMessage:1");
                 assertNotNull(user.getBackground()); assertNull(assistant.getBackground());
                 assertEquals(dp(14), user.getPaddingLeft());
@@ -164,13 +164,13 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
         assertTrue(parent.getLayoutParams() instanceof android.widget.FrameLayout.LayoutParams);
         assertEquals(android.view.Gravity.BOTTOM, ((android.widget.FrameLayout.LayoutParams) parent.getLayoutParams()).gravity);
         if (!String.valueOf(bar.getTag()).contains("SearchBar")) {
-            assertEquals(dp(7), bar.getElevation(), 0f); assertEquals(dp(1), bar.getTranslationZ(), 0f);
+            assertEquals(dp(4), bar.getElevation(), 0f); assertEquals(dp(1), bar.getTranslationZ(), 0f);
         } else {
             assertNull("The search row must not draw a second frame behind the search pill", bar.getBackground());
             assertEquals(0f, bar.getElevation(), 0f); assertEquals(0f, bar.getTranslationZ(), 0f);
             View pill = ((ViewGroup) bar).getChildAt(0);
             assertNotNull(pill.getBackground());
-            assertEquals(dp(7), pill.getElevation(), 0f); assertEquals(dp(1), pill.getTranslationZ(), 0f);
+            assertEquals(dp(4), pill.getElevation(), 0f); assertEquals(dp(1), pill.getTranslationZ(), 0f);
         }
         View page = (View) parent.getParent().getParent();
         android.view.WindowInsets original = page.getRootWindowInsets();

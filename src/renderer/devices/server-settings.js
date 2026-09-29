@@ -100,11 +100,21 @@
         }
       } else if (page === 'usage') {
         const usage = await job('usage');
-        body.append(element('p', text('仅统计此服务器的 API 请求；不包含订阅账号用量。', 'API requests on this server only; excludes subscription usage.'), 'hint'));
-        if (!usage.providers.length) body.append(element('p', text('暂无用量', 'No usage yet')));
+        body.append(element('p', text('统计此服务器的 API 请求及订阅轮次。订阅金额按标准 API 单价折算，不代表实际账单。', 'API requests and subscription turns on this server. Subscription amounts are standard API equivalents, not your bill.'), 'hint'));
+        const accounts = (usage.subscriptionUsage?.accounts || []).filter(account => account.usage);
+        if (!usage.providers.length && !accounts.length) body.append(element('p', text('暂无用量', 'No usage yet')));
         for (const provider of usage.providers) {
           const row = element('article', '', 'server-setting');
           row.append(element('strong', provider.name), element('span', `${text('请求', 'Requests')} ${provider.requests} · ${text('失败', 'Failures')} ${provider.failures}`), element('span', `Tokens ${provider.inputTokens} / ${provider.outputTokens}`)); body.append(row);
+        }
+        for (const account of accounts) {
+          const row = element('article', '', 'server-setting');
+          row.append(element('strong', account.label || account.id));
+          for (const [model, value] of Object.entries(account.usage.byModel || {})) {
+            const amount = value.pricedTokens > 0 ? `USD ${value.estimatedCostUsd.toFixed(4)}` : text('未定价', 'Unpriced');
+            row.append(element('span', `${model} · Tokens ${value.inputTokens} / ${value.outputTokens} · ${amount}${value.unpricedTokens || value.unreported ? text('（部分用量未定价或缺失）', ' (unpriced or missing usage)') : ''}`));
+          }
+          body.append(row);
         }
       } else if (page === 'archived') {
         archiveNode = archived(); archiveNode.hidden = false; body.append(archiveNode);

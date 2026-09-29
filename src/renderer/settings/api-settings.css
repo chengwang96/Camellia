@@ -33,7 +33,7 @@ p { margin: 5px 0; }
 .settings-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #mobilePage .mobile-section { padding: 24px 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
 #mobilePage .mobile-section:first-child { padding-top: 0; }
-#mobilePage .mobile-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+#mobilePage .mobile-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
 #mobilePage .mobile-heading h2 { margin-bottom: 0; }
 #mobile-status { color: var(--dsw-alias-label-tertiary); }
 #mobile-status.online { color: var(--dsw-alias-state-success-primary); }
@@ -41,7 +41,11 @@ p { margin: 5px 0; }
 #mobilePage .hint { margin: 12px 0; }
 #mobilePage .mobile-address, #mobile-code { font: var(--f-code); overflow-wrap: anywhere; }
 #mobilePage #mobile-invitation code { display: block; margin-top: 10px; }
-#mobilePage .name-row input { border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 8px 12px; }
+#mobilePage .mobile-connection-row, #mobilePage .name-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+#mobilePage .mobile-connection-row { margin-top: 12px; }
+#mobilePage .mobile-address { flex: 1 1 220px; min-width: 0; margin: 0; }
+#mobilePage .name-row input { flex: 1 1 160px; width: auto; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 8px 12px; }
+#mobilePage .mobile-heading > button, #mobilePage .mobile-connection-row > button, #mobilePage .name-row > button { flex: 0 0 auto; white-space: nowrap; }
 #mobilePage .mobile-help { margin-top: 16px; }
 #mobilePage .mobile-help summary { width: fit-content; cursor: pointer; color: var(--dsw-alias-label-secondary); font: var(--f-xxs-12); }
 #mobilePage .mobile-help summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 4px; }
@@ -61,13 +65,18 @@ p { margin: 5px 0; }
 .toolbar-actions { display: flex; gap: 8px; }
 .provider-grid, .balance-grid, .chart-grid-layout { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 12px; }
 .provider-grid > .provider, .balance-grid > .balance-card, .chart-grid-layout > .chart-tile { width: 100%; max-width: 420px; }
-.account-connections { border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; padding: 18px; margin-bottom: 24px; }
-.account-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.account-shortcuts button { white-space: normal; text-align: left; }
-.subscription-account { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--dsw-alias-border-l2); scroll-margin-top: 20px; }
-.subscription-account h3 { font-size: 15px; margin: 0 0 8px; }
+#subscriptionsPage { max-width: 1240px; }
+.account-connections { border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; padding: 16px 18px; margin-bottom: 24px; }
+.account-connections > .hint { margin: 0 0 4px; }
+.account-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+.account-shortcuts button { padding: 5px 12px; min-height: 30px; white-space: nowrap; }
+.subscription-account { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l2); scroll-margin-top: 16px; }
+.subscription-account h3 { font-size: 14px; margin: 0 0 4px; }
 .subscription-account .account-actions { flex-wrap: wrap; }
-.subscription-account .hint { line-height: 1.7; }
+.subscription-account .engine-field { padding: 11px 0; }
+.subscription-account .hint { line-height: 1.6; margin: 4px 0; }
+.subscription-account .account-list { margin-top: 10px; }
+.subscription-account details { margin: 8px 0 4px; }
 .usage-api-title { margin-bottom: 14px; }
 .provider .provider-mark, .balance-card .provider-mark { width: 28px; height: 28px; border-radius: 8px; }
 .balance-card .provider-mark img { width: 23px; height: 23px; }
@@ -135,6 +144,10 @@ td { border-top: 1px solid var(--dsw-alias-border-l2); padding: 10px 8px; overfl
 .filter-row select { display: flex; width: 100%; min-width: 0; margin-top: 6px; font-size: 12px; }
 .usage-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding-bottom: 24px; }
 .usage-summary small { display: block; }
+.subscription-cost { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 28px; padding: 16px 0 24px; margin-bottom: 12px; border-bottom: 1px solid var(--ds-color-border, #dcdcdc); }
+.subscription-cost[hidden] { display: none; }
+.subscription-cost strong { display: block; font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; margin-top: 7px; }
+.subscription-cost .hint { margin: 4px 0; }
 .usage-summary strong { display: block; font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; margin: 7px 0 2px; }
 .chart-panel { border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; padding: 20px 18px 12px; }
 .chart-tile { min-width: 0; padding: 14px 12px 10px; }
@@ -226,3 +239,42 @@ dialog > .primary { margin-top: 20px; }
   .scroll-content { padding: 0 16px 24px; }
   footer { padding: 12px 16px; }
 }
+
+#subscriptionQuotaCards { margin: 12px 0; }
+#subscriptionQuotaCards .balance-card { cursor: default; }
+.balance-card > small { display: block; margin-top: 4px; }
+
+/* Subscription cards: quota first, a consistent action rail at the bottom. */
+#subscriptionsPage .account-connections { border: 0; padding: 0; }
+#subscriptionsPage .subscription-account { padding-top: 22px; margin-top: 22px; }
+#subscriptionsPage .account-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; margin: 16px 0; }
+.subscription-card { min-width: 0; display: flex; flex-direction: column; padding: 18px 16px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 3px 10px #00000008; }
+.subscription-card.active { border-color: var(--dsw-static-deepseek-500); box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-static-deepseek-500) 12%, transparent); }
+.subscription-card header { display: flex; align-items: center; gap: 8px; }
+.subscription-card header > strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.subscription-current, .subscription-plan { flex-shrink: 0; padding: 3px 7px; border-radius: 7px; font-size: 10px; line-height: 1.3; }
+.subscription-current { color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent); }
+.subscription-plan { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-soft); text-transform: uppercase; }
+.subscription-card .subscription-note-text { margin: 12px 0 6px; color: var(--dsw-alias-label-secondary); font-size: 12px; min-height: 18px; overflow-wrap: anywhere; }
+.subscription-note { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.subscription-note input { flex: 1 1 120px; width: auto; }
+.subscription-note button { padding: 4px 9px; }
+.subscription-state { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.subscription-state i { width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: currentColor; }
+.subscription-meters { flex: 1; min-height: 110px; padding: 16px 0 10px; }
+.subscription-meter + .subscription-meter { margin-top: 14px; }
+.subscription-meter > div { display: flex; align-items: center; justify-content: space-between; font-size: 11px; gap: 8px; }
+.subscription-meter strong { color: var(--dsw-alias-state-success-primary); font-variant-numeric: tabular-nums; }
+.subscription-meter progress { display: block; width: 100%; height: 5px; margin: 6px 0; border: 0; border-radius: 5px; overflow: hidden; appearance: none; }
+.subscription-meter progress::-webkit-progress-bar { background: var(--dsw-alias-bg-soft); }
+.subscription-meter progress::-webkit-progress-value { background: var(--dsw-alias-state-success-primary); border-radius: 5px; }
+.subscription-meter progress.low::-webkit-progress-value { background: var(--dsw-alias-state-error-primary); }
+.subscription-meter small, .subscription-checked { color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+.subscription-card .subscription-checked { margin: 10px 0; }
+.subscription-card .subscription-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; padding: 12px 0 0; min-height: 0; border-top: 1px solid var(--dsw-alias-border-l2); margin-top: auto; }
+.subscription-actions button { display: grid; place-items: center; width: 34px; height: 34px; min-height: 34px; padding: 8px; border: 0; border-radius: 9px; background: var(--dsw-alias-bg-soft); color: var(--dsw-alias-label-secondary); }
+.subscription-actions button:hover:not(:disabled) { color: var(--dsw-static-deepseek-500); background: var(--dsw-alias-interactive-bg-hover); }
+.subscription-actions button[data-card-action=remove]:hover { color: var(--dsw-alias-state-error-primary); }
+.subscription-actions svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#subscriptionsPage #codexQuotas { display: none; }
+@media (max-width: 480px) { .subscription-actions button { width: 38px; height: 38px; } }

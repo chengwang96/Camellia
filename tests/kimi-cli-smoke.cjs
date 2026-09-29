@@ -83,6 +83,8 @@ async function run() {
   const router = startApiRouter({ configPath });
   await router.ready;
   const history = new ClaudeHistory(path.join(root, 'display-history'));
+  const metering = require('../src/api/subscription-usage').createSubscriptionUsage({ file: path.join(root, 'subscription-usage.json') });
+  const meteredTurns = [];
   let session, gen = 0, done, permissionCount = 0, allow = true;
   async function create(opts = {}) {
     await session?.shutdown();
@@ -91,6 +93,9 @@ async function run() {
       route: { baseUrl: router.url, authToken: 'proxy-managed' },
       env: { ...process.env, HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', NO_PROXY: '127.0.0.1,localhost' } });
     session = new KimiSession({ gen: ++gen, settings, opts, exe: process.execPath, spec, spawn, history,
+      // Exercise native-journal metering against the loopback fixture, with no subscription calls.
+      usageMeter: require('../src/engines/subscription-meter').createSubscriptionMeter({ engine: 'kimi', home: spec.env.KIMI_CODE_HOME,
+        version: runtimeVersion, model: settings.model, record: row => { meteredTurns.push(row); return metering.record(row); }, log: msg => logs.push(msg) }),
       log: msg => logs.push(msg), onSessionId() {}, onResult: event => done?.(event),
       onEvent: event => {
         events.push(event);
@@ -157,6 +162,16 @@ async function run() {
     const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
     assert.ok(!config.includes('local-working') && !config.includes('exhausted'));
     assert.match(config, /proxy-managed/);
+    await session.usageMeter.flush();
+    const usage = metering.state().accounts[0]?.usage;
+    const routerUsage = router.getState().usage;
+    if (usage.inputTokens !== Object.values(routerUsage).reduce((sum, value) => sum + value.inputTokens, 0)) {
+      console.error(JSON.stringify(fs.readdirSync(home, { recursive: true }).filter(file => file.endsWith('wire.jsonl')).map(file => ({ file,
+        tail: fs.readFileSync(path.join(home, file), 'utf8').trim().split('\n').slice(-14).map(line => { const row = JSON.parse(line); return { type: row.type, agentId: row.agentId, turnId: row.turnId }; }) }))));
+    }
+    assert.ok(usage?.inputTokens > 0, 'The actual CLI journals must contain usage');
+    assert.equal(usage.inputTokens, Object.values(routerUsage).reduce((sum, value) => sum + value.inputTokens, 0), 'Journal usage must equal the provider counts across resume/fork/cancel: ' + JSON.stringify({ turns: meteredTurns.map(row => ({ sessionId: row.sessionId, samples: row.samples, incomplete: row.incomplete })), logs }));
+    assert.equal(usage.outputTokens, Object.values(routerUsage).reduce((sum, value) => sum + value.outputTokens, 0));
     console.log(`PASS: real Kimi Code ${runtimeVersion} ACP, same-model quota failover, streamed thought/text, Read/Write/Bash, approve/deny, cancel, native resume/fork, isolated history and config. Local endpoints only.`);
   } finally {
     await session?.shutdown();

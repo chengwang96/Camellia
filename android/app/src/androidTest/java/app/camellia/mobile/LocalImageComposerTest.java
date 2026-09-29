@@ -63,7 +63,8 @@ public class LocalImageComposerTest extends InstrumentationTestCase {
                 // top and the capability rows underneath, sharing one header.
                 ViewGroup tiles = (ViewGroup) decor.findViewWithTag("attachTiles");
                 assertNotNull("The tiles row must sit above the capability rows", tiles);
-                assertEquals(2, tiles.getChildCount());
+                assertEquals(3, tiles.getChildCount());
+                assertNotNull(decor.findViewWithTag("localDocumentPicker"));
                 for (int index = 0; index < tiles.getChildCount(); index++) {
                     View tile = tiles.getChildAt(index);
                     assertTrue("Tiles must be equal-width cards", tile.getLayoutParams().width == 0);
@@ -119,7 +120,14 @@ public class LocalImageComposerTest extends InstrumentationTestCase {
                 assertEquals("A sent picture has no remove button", 1, tile.getChildCount());
             });
             screenshot(activity, "local-image-message");
-        } finally { getInstrumentation().runOnMainSync(activity::finish); idle(); }
+        } finally {
+            getInstrumentation().runOnMainSync(activity::finish);
+            long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+            while (!activity.isDestroyed() && android.os.SystemClock.uptimeMillis() < deadline) {
+                getInstrumentation().waitForIdleSync(); Thread.sleep(25);
+            }
+            assertTrue("Activity must stop saving before test storage is cleared", activity.isDestroyed());
+        }
     }
 
     private java.io.File photo(Activity activity) throws Exception {

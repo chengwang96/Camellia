@@ -300,6 +300,8 @@
     margin: 2px 0 10px;
   }
   .md strong { font-weight: 600; }
+  .md a { color: var(--dsw-static-deepseek-500); text-decoration: underline; text-underline-offset: 3px; }
+  .md a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
   .md .md-inline {
     font: var(--f-code); background: var(--dsw-alias-bg-muted);
     padding: 1px 5px; border-radius: 5px;
@@ -531,8 +533,6 @@
   .file-preview-markdown ul, .file-preview-markdown ol { padding-left: 26px; margin: 0 0 14px; }
   .file-preview-markdown li > ul, .file-preview-markdown li > ol { margin-bottom: 0; }
   .file-preview-markdown li + li { margin-top: 4px; }
-  .file-preview-markdown a { color: var(--dsw-static-deepseek-500); text-decoration: underline; text-underline-offset: 3px; }
-  .file-preview-markdown a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
   .file-preview-markdown blockquote { margin: 0 0 14px; padding: 2px 16px; border-left: 3px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); }
   .file-preview-markdown blockquote > :last-child { margin-bottom: 0; }
   .file-preview-markdown img { max-width: 100%; height: auto; }

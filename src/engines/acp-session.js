@@ -11,9 +11,9 @@ const { nativeMode } = require('./permission-levels');
 // ACP stays at the process boundary. The renderer receives the same stream and
 // session events as the other harness, never upstream keys or CLI internals.
 class AcpSession extends StreamingSession {
-  constructor({ gen, settings, opts, exe, spec, spawn, log, history, onEvent, onSessionId, onResult, name = 'Kimi' }) {
+  constructor({ gen, settings, opts, exe, spec, spawn, log, history, onEvent, onSessionId, onResult, usageMeter, name = 'Kimi' }) {
     super();
-    Object.assign(this, { gen, settings, opts, exe, spec, spawn, log, history, onEvent, onSessionId, onResult, name });
+    Object.assign(this, { gen, settings, opts, exe, spec, spawn, log, history, onEvent, onSessionId, onResult, usageMeter, name });
     this.sessionId = null;
     this.running = false;
     this.dead = false;
@@ -153,6 +153,9 @@ class AcpSession extends StreamingSession {
   async run(prompt, attachments) {
     try {
       await (this.ready ||= this.open());
+      if (this.usageMeter) await this.usageMeter.begin(this.sessionId, () => this.running && !this.dead && !this.cancelled);
+      if (!this.running) return;
+      if (this.dead) throw new Error(`${this.name} process stopped`);
       this.emit({ type: 'system', subtype: 'init', session_id: this.sessionId });
       if (this.cancelled) { this.finish({ subtype: 'stopped' }); return; }
       this.appendHistory('user', prompt);
@@ -195,6 +198,9 @@ class AcpSession extends StreamingSession {
         if (this.cancelled) throw new Error('Compaction canceled');
         if (this.spec.modeEngine !== 'kimi' || !this.availableCommands?.some(command => command.name === 'compact'))
           throw Object.assign(new Error('Native manual compaction is not advertised by this harness'), { code: -32601 });
+        await this.usageMeter?.begin(this.sessionId, () => this.compaction === operation && !this.dead && !this.cancelled);
+        if (this.compaction !== operation) return;
+        if (this.cancelled || this.dead) throw new Error('Compaction canceled');
         const response = await this.request('session/prompt', { sessionId: this.sessionId, prompt: [{ type: 'text', text: '/compact' }] }, 0);
         if (this.compaction !== operation) return;
         if (response.stopReason !== 'end_turn') throw new Error('Native compaction was not accepted: ' + response.stopReason);
@@ -214,6 +220,7 @@ class AcpSession extends StreamingSession {
     const operation = this.compaction;
     if (!operation) return;
     this.compaction = null; this.running = false;
+    void this.usageMeter?.end({ subtype: this.cancelled ? 'stopped' : error ? 'error' : 'success', is_error: Boolean(error) });
     clearTimeout(operation.timer); clearTimeout(this.cancelTimer);
     if (error || this.cancelled) operation.reject(error || new Error('Compaction canceled'));
     else operation.resolve({ ok: true });
@@ -221,6 +228,7 @@ class AcpSession extends StreamingSession {
 
   update(update) {
     const kind = update.sessionUpdate;
+    if (kind === 'camellia_usage') { this.usageMeter?.antigravityStep(update.stepId, update.usage); return; }
     if (kind === 'available_commands_update') { this.availableCommands = update.availableCommands; return; }
     if (this.compaction) {
       if (kind === 'agent_message_chunk' && update.content?.type === 'text') {
@@ -305,6 +313,8 @@ class AcpSession extends StreamingSession {
       catch (error) { this.log(this.name + ': close failed: ' + error.message); }
     }
     this.kill();
+    await Promise.resolve();
+    await this.usageMeter?.flush();
   }
 }
 

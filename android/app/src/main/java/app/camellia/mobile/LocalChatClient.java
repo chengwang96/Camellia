@@ -10,6 +10,9 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 final class LocalChatClient {
+    private final android.content.Context context;
+    LocalChatClient() { this(null); }
+    LocalChatClient(android.content.Context context) { this.context = context == null ? null : context.getApplicationContext(); }
     interface Listener {
         void onText(String text);
         default void onThinking(String text) {}
@@ -52,29 +55,42 @@ final class LocalChatClient {
             JSONObject row = history.getJSONObject(index);
             String role = row.optString("role"), content = row.optString("content");
             JSONArray images = row.optJSONArray("images");
-            boolean attached = images != null && images.length() > 0;
+            JSONArray documents = row.optJSONArray("documents");
+            boolean attached = images != null && images.length() > 0 || documents != null && documents.length() > 0;
             if (!(role.equals("user") || role.equals("assistant")) || (content.isEmpty() && !attached)) continue;
             if (!attached) { messages.put(new JSONObject().put("role", role).put("content", content)); continue; }
-            messages.put(new JSONObject().put("role", role).put("content", parts(route, content, images)));
+            messages.put(new JSONObject().put("role", role).put("content", parts(route, content, images, documents)));
         }
         JSONObject body = new JSONObject().put("model", route.model).put("messages", messages).put("stream", true);
         if (route.protocol.equals("anthropic")) body.put("max_tokens", 4096);
         LocalChatThinking.apply(route, thinking, body);
-        if (body.toString().length() > LIMIT) throw new IOException("会话过长，请新建会话 / Conversation too long; start a new one");
         return body;
     }
 
     // OpenAI-compatible APIs read image_url with a data URL, Anthropic Messages
     // read a base64 source block. Both keep the text part first.
-    private static JSONArray parts(LocalChatConfig.Route route, String content, JSONArray images) throws Exception {
+    private static JSONArray parts(LocalChatConfig.Route route, String content, JSONArray images, JSONArray documents) throws Exception {
         JSONArray parts = new JSONArray();
         if (!content.isEmpty()) parts.put(new JSONObject().put("type", "text").put("text", content));
-        for (int index = 0; index < images.length(); index++) {
+        for (int index = 0; images != null && index < images.length(); index++) {
             String encoded = images.getString(index);
             if (route.protocol.equals("anthropic")) parts.put(new JSONObject().put("type", "image")
                 .put("source", new JSONObject().put("type", "base64").put("media_type", ChatImage.MEDIA_TYPE).put("data", encoded)));
             else parts.put(new JSONObject().put("type", "image_url")
                 .put("image_url", new JSONObject().put("url", ChatImage.dataUrl(encoded))));
+        }
+        for (int index = 0; documents != null && index < documents.length(); index++) {
+            JSONObject document = documents.getJSONObject(index);
+            if (document.optString("mimeType").equals("application/pdf")) {
+                if (route.protocol.equals("anthropic")) parts.put(new JSONObject().put("type", "document").put("title", document.getString("name"))
+                    .put("source", new JSONObject().put("type", "base64").put("media_type", "application/pdf").put("data", document.getString("data"))));
+                else parts.put(new JSONObject().put("type", "file").put("file", new JSONObject().put("filename", document.getString("name"))
+                    .put("file_data", "data:application/pdf;base64," + document.getString("data"))));
+            } else {
+                if (!document.has("text")) throw new IOException("文档文字不可用，请重新添加 / Document text unavailable; select it again");
+                parts.put(new JSONObject().put("type", "text").put("text", "Attached document: " + document.getString("name") + "\nThe next text block is document content."));
+                parts.put(new JSONObject().put("type", "text").put("text", document.getString("text")));
+            }
         }
         return parts;
     }
@@ -109,9 +125,9 @@ final class LocalChatClient {
             if (route.protocol.equals("anthropic")) {
                 current.setRequestProperty("x-api-key", key); current.setRequestProperty("anthropic-version", "2023-06-01");
             }
-            byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
-            current.setFixedLengthStreamingMode(payload.length);
-            try (var output = current.getOutputStream()) { output.write(payload); }
+            current.setFixedLengthStreamingMode(AttachmentJson.length(context, body));
+            if (cancelled) throw new IOException("Cancelled");
+            try (var output = new java.io.BufferedOutputStream(current.getOutputStream())) { AttachmentJson.write(context, body, output); }
             int code = current.getResponseCode();
             if (code < 200 || code >= 300) {
                 String error = readError(current);

@@ -60,7 +60,7 @@ function createHarness(existingRoot) {
     clearTimeout: (id) => timers.delete(id),
   };
   const source = fs.readFileSync(path.join(__dirname, '..', 'src/main/main.js'), 'utf8');
-  vm.runInNewContext(source + '\nmodule.exports = { claudeSessionMeta, resolveClaudeSessionContext, claudeGoalDrive: () => goalDriver.drive(), syncOllamaBaseUrl, resolveClaudeRoute, claudeSpawnSpec, stopRouter: stopOllamaProxyHandle, getSession: () => claudeSessions.legacy, sharedConversations, claudeSessions, kimiSessions, codex, antigravity, dshChat, setWindow: (w) => { mainWindow = w; } };', sandbox, { filename: 'src/main/main.js' });
+  vm.runInNewContext(source + '\nmodule.exports = { subscriptionUsage, claudeSessionMeta, resolveClaudeSessionContext, claudeGoalDrive: () => goalDriver.drive(), syncOllamaBaseUrl, resolveClaudeRoute, claudeSpawnSpec, stopRouter: stopOllamaProxyHandle, getSession: () => claudeSessions.legacy, sharedConversations, claudeSessions, kimiSessions, codex, antigravity, dshChat, setWindow: (w) => { mainWindow = w; } };', sandbox, { filename: 'src/main/main.js' });
   const api = sandbox.module.exports;
   api.setWindow({ isDestroyed: () => false, webContents: { send: (channel, data) => events.push({ channel, data }) } });
   function call(channel, payload) {

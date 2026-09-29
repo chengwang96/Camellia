@@ -34,4 +34,17 @@ final class LocalChatDraft {
         save(conversation, text, editIndex);
         conversation.put("draftImages", new JSONArray(images));
     }
+
+    static JSONArray documents(JSONObject conversation) throws JSONException {
+        JSONArray saved = conversation.optJSONArray("draftDocuments");
+        if (saved != null) return new JSONArray(saved.toString());
+        int target = editIndex(conversation);
+        JSONArray original = target < 0 ? null : conversation.getJSONArray("messages").getJSONObject(target).optJSONArray("documents");
+        return original == null ? new JSONArray() : new JSONArray(original.toString());
+    }
+
+    static void save(JSONObject conversation, String text, int editIndex, java.util.List<String> images, java.util.List<JSONObject> documents) throws JSONException {
+        save(conversation, text, editIndex, images);
+        conversation.put("draftDocuments", new JSONArray(documents));
+    }
 }

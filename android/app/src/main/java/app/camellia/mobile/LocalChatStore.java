@@ -8,14 +8,18 @@ import java.util.UUID;
 final class LocalChatStore {
     private final CredentialStore encrypted;
     private JSONObject state;
+    private final Context context;
+    private java.util.Set<String> savedAttachments;
 
     LocalChatStore(Context context) throws Exception {
+        this.context = context.getApplicationContext();
         encrypted = new CredentialStore(context, "local-chat-private");
         state = encrypted.load();
         if (!state.has("workspaces")) state.put("workspaces", new JSONArray());
         if (!state.has("conversations")) state.put("conversations", new JSONArray());
         if (!state.has("config")) state.put("config", new JSONObject());
         state.getJSONArray("workspaces"); state.getJSONArray("conversations"); state.getJSONObject("config");
+        savedAttachments = AttachmentStore.references(state);
     }
 
     JSONObject config() { return state.optJSONObject("config"); }
@@ -39,6 +43,9 @@ final class LocalChatStore {
     void save() throws Exception {
         if (state.toString().length() > 8 * 1024 * 1024) throw new IllegalStateException("本机聊天存储已满，请删除旧会话 / Local storage limit reached; delete old conversations");
         encrypted.save(state);
+        java.util.Set<String> retained = AttachmentStore.references(state);
+        for (String reference : savedAttachments) if (!retained.contains(reference)) AttachmentStore.remove(context, reference);
+        savedAttachments = retained;
     }
 
     void importConfig(JSONObject config) throws Exception {

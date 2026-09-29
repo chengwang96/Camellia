@@ -31,7 +31,7 @@ function subscriptionSpawnSpec({ runtime, home, env, proxyUrl }) {
 }
 const sessionConnection = id => id.startsWith('agy-') ? 'subscription' : 'api';
 
-function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConfig, saveConfig, getRoute, getModels, runtimes, environment = () => process.env, python = () => null, onEvent, onGoal, isBusy = () => false, log }) {
+function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConfig, saveConfig, getRoute, getModels, runtimes, environment = () => process.env, python = () => null, onEvent, onGoal, createUsageMeter = () => null, isBusy = () => false, log }) {
   const sessions = new SessionPool();
   let generation = 0;
   const home = path.join(dataDir, 'antigravity');
@@ -98,8 +98,14 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
         python: sharedPython?.file ? sharedPython : null, config: readJson(path.join(home, 'settings.json'), {}) });
     const previousClosed = current?.shutdown();
     const next = new AcpSession({ name: 'Antigravity', gen: ++generation, settings: selected, opts, exe: subscription ? node() : runtime.file, spec, spawn, log, history,
+      usageMeter: createUsageMeter('antigravity', { settings: selected }),
       onEvent: event => { if (sessions.get(opts) === next) onEvent({ ...event, conversationId: opts.conversationId }); },
-      onSessionId: id => { workspaces.recordContext(id, opts.workspaceId, selected.cwd); if (!opts.conversationId) goal.rememberSession(next); },
+      onSessionId: id => {
+        // A new session starts from the connection the last one actually used,
+        // so the settings page does not need a global selector.
+        if (loadConfig().antigravity?.connection !== selected.connection) saveConfig({ antigravity: { ...loadConfig().antigravity, connection: selected.connection } });
+        workspaces.recordContext(id, opts.workspaceId, selected.cwd); if (!opts.conversationId) goal.rememberSession(next);
+      },
       onResult: event => { if (!opts.conversationId && sessions.legacy === next) goal.handleResult(event); },
     });
     sessions.set(opts, next);

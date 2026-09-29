@@ -35,6 +35,7 @@ import java.util.concurrent.Future;
 public final class MainActivity extends Activity {
     private static final int PICK_IMAGE_REQUEST = 42;
     private static final int TAKE_PHOTO_REQUEST = 43;
+    private static final int PICK_DOCUMENT_REQUEST = 45;
     private static final int SCAN_QR_REQUEST = 44;
     private static final long COMMAND_CONFIRM_TIMEOUT_MS = 30_000;
     private static final long COMMAND_POLL_INTERVAL_MS = 1_500;
@@ -72,7 +73,7 @@ public final class MainActivity extends Activity {
     private MarkdownView markdown;
     private final LinkedHashMap<String, View> renderedMessages = new LinkedHashMap<>();
     private final java.util.ArrayList<View> pendingMessageViews = new java.util.ArrayList<>();
-    private TextView status;
+    private TextView status, headerConnection;
     private ScrollView scroll;
     private boolean initialMessageScroll;
     private ScrollView pendingScrollView;
@@ -80,6 +81,9 @@ public final class MainActivity extends Activity {
     private int pendingScrollPosition;
     private long messageScrollRevision;
     private EditText addressInput, portInput, nameInput, codeInput;
+    private Button pairButton, scanButton;
+    private boolean pendingScannedPairing, pairingBusy;
+    private Bundle pairingDraft;
     private String conversationId;
     private String conversationTitle = "";
     private Long nextBefore;
@@ -96,10 +100,11 @@ public final class MainActivity extends Activity {
     private boolean snapshotPosted;
     private EditText composer;
     private ChatComposer chatComposer;
-    private ImageButton sendButton, stopButton, findButton;
+    private ImageButton sendButton, stopButton;
     private TextView retryMessage;
     private LinearLayout approvals;
     private LinearLayout automationBar;
+    private final RemoteGoalVisibility goalVisibility = new RemoteGoalVisibility();
     private boolean controlAllowed, connected, commandBusy;
     private long conversationSeq;
     private String approvalSignature = "";
@@ -111,12 +116,16 @@ public final class MainActivity extends Activity {
     private JSONArray availableWorkspaces = new JSONArray();
     private java.util.List<String> availableEngines = RemoteEngines.available(null);
     private boolean canCreate, canCreateWorkspace, canImage, canMultiImage, allowIndependent, canMove, canArchive;
+    private boolean canAttachments, canFileAttachments;
     private ConversationMenu conversationPopup;
+    private ComputerPickerPopup computerPicker;
+    private View remoteEmptyState;
     private boolean canManageConversations, selectingConversations;
     private final java.util.Set<String> selectedConversations = new java.util.LinkedHashSet<>();
     private String listInstance = "", imageConversation, imageComputer;
     private long listCursor = -1;
     private final ArrayList<String> selectedImages = new ArrayList<>();
+    private final ArrayList<JSONObject> selectedDocuments = new ArrayList<>();
     private boolean loadingImages;
     private boolean listEventsUnavailable;
     private LinearLayout imageTray;
@@ -155,6 +164,16 @@ public final class MainActivity extends Activity {
         if (!MobilePreferences.signature(this).equals(preferenceSignature)) recreate();
         if (getIntent().getBooleanExtra("showDownload", false) && artifactDownloads != null) {
             getIntent().removeExtra("showDownload"); artifactDownloads.showProgress();
+        }
+    }
+
+    @Override protected void onPostResume() {
+        super.onPostResume();
+        // Results arrive before onStart/onResume. Wait until the foreground
+        // guard and network lifecycle are ready to receive the pairing reply.
+        if (screen.equals("pair") && pendingScannedPairing) {
+            pendingScannedPairing = false;
+            requestPairing();
         }
     }
 
@@ -199,6 +218,10 @@ public final class MainActivity extends Activity {
             conversationTitle = saved.getString("conversationTitle", "");
         }
         String restored = saved == null ? "home" : saved.getString("screen", "home");
+        if (saved != null) {
+            pairingDraft = saved.getBundle("pairingDraft");
+            pendingScannedPairing = saved.getBoolean("pendingScannedPairing");
+        }
         if (restored.equals("detail") && conversationId != null) detailScreen();
         else if (restored.equals("list") && credentials.has("token")) listScreen();
         else if (restored.equals("pair")) pairScreen();
@@ -229,6 +252,10 @@ public final class MainActivity extends Activity {
         if (screen.equals("computers")) { refreshComputers(); return; }
         if (screen.equals("home")) { refreshHomeNetwork(); return; }
         if (screen.equals("settings")) return;
+        if (screen.equals("pair")) {
+            if (!pendingScannedPairing && credentials.has("claim")) waitForApproval();
+            return;
+        }
         if (credentials.has("token")) {
             if (conversationId != null) connectEvents(); else loadList(false);
         } else if (credentials.has("claim")) waitForApproval();
@@ -308,10 +335,15 @@ public final class MainActivity extends Activity {
         super.onSaveInstanceState(saved);
         artifactDownloads.save(saved);
         saved.putString("screen", screen); saved.putString("networkReturn", networkReturn);
+        if (screen.equals("pair")) rememberPairingDraft();
+        saved.putBundle("pairingDraft", pairingDraft);
+        saved.putBoolean("pendingScannedPairing", pendingScannedPairing);
         if (conversationId != null) { saved.putString("conversationId", conversationId); saved.putString("conversationTitle", conversationTitle); }
     }
 
     private void stopNetwork() {
+        if (computerPicker != null) { computerPicker.dismiss(); computerPicker = null; }
+        setPairingBusy(false);
         if (remoteEntryGate != null) remoteEntryGate.stop();
         prefetch.cancel();
         olderLoading = false;
@@ -334,7 +366,7 @@ public final class MainActivity extends Activity {
     private RemoteApi begin() {
         stopNetwork();
         updateControls();
-        api = new RemoteApi(credentials.optString("address"));
+        api = new RemoteApi(this, credentials.optString("address"));
         return api;
     }
 
@@ -382,10 +414,11 @@ public final class MainActivity extends Activity {
     private void shell(String title, String subtitle) {
         if (conversationPopup != null) conversationPopup.dismiss();
         locationConsent.cancel();
-        boolean settingsPage = screen.equals("settings") || screen.equals("network");
+        headerConnection = null;
+        boolean settingsPage = screen.equals("settings") || screen.equals("network") || screen.equals("pair");
         int bottomPadding = screen.equals("list") || screen.equals("detail") ? chatStyle.dockBottomPadding() : dp(24);
         SettingsStyle settingsStyle = new SettingsStyle(this);
-        int pageBackground = settingsPage ? settingsStyle.background : background;
+        int pageBackground = settingsPage || screen.equals("computers") ? settingsStyle.background : background;
         root = column(); root.setBackgroundColor(background); root.setPadding(dp(22), dp(12), dp(22), bottomPadding);
         root.setBackgroundColor(pageBackground); getWindow().setStatusBarColor(pageBackground); getWindow().setNavigationBarColor(pageBackground);
         root.setClipToPadding(false);
@@ -401,13 +434,9 @@ public final class MainActivity extends Activity {
         if (settingsPage) {
             root.addView(settingsStyle.header(title, tr("返回上一级", "Back"), this::onBackPressed));
         } else if (screen.equals("computers")) {
-            LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL); header.setPadding(0, dp(4), 0, dp(16));
-            header.setClipChildren(false); header.setClipToPadding(false);
-            header.addView(chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed), new LinearLayout.LayoutParams(dp(48), dp(48)));
-            TextView heading = text(title, 20, ink); heading.setTag("remoteControlTitle");
-            heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); heading.setPadding(dp(14), 0, 0, 0);
-            header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1)); root.addView(header);
-            if (!subtitle.isEmpty()) root.addView(text(subtitle, 12, muted));
+            LinearLayout header = settingsStyle.header(title, tr("返回上一级", "Back"), this::onBackPressed);
+            header.findViewWithTag("settingsBack").setTag("pageBack");
+            header.findViewWithTag("settingsTitle").setTag("remoteControlTitle"); root.addView(header);
         } else if (screen.equals("list") || screen.equals("detail")) {
             LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL); header.setPadding(0, 0, 0, dp(18));
             header.setClipChildren(false); header.setClipToPadding(false);
@@ -419,20 +448,16 @@ public final class MainActivity extends Activity {
             LinearLayout computer = new LinearLayout(this); computer.setGravity(Gravity.CENTER_VERTICAL);
             ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon("computer", muted)); computer.addView(icon, new LinearLayout.LayoutParams(dp(14), dp(14)));
             TextView name = text(computerName(credentials), 12, muted); name.setTag("headerComputerName"); name.setPadding(dp(6), 0, 0, 0);
-            name.setMaxLines(1); name.setEllipsize(android.text.TextUtils.TruncateAt.END); computer.addView(name); titles.addView(computer);
+            name.setMaxLines(1); name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            computer.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+            headerConnection = text("", 12, muted); headerConnection.setTag("headerConnectionState");
+            headerConnection.setSingleLine(true); headerConnection.setMaxWidth(dp(112)); headerConnection.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            headerConnection.setPadding(dp(6), 0, dp(6), 0); headerConnection.setVisibility(View.GONE);
+            computer.addView(headerConnection); titles.addView(computer);
             header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); root.addView(header);
-            if (screen.equals("detail")) {
-                TextView artifacts = text(tr("产物", "Files"), 13, ink);
-                LineIcon folder = new LineIcon("folder", ink); folder.setBounds(0, 0, dp(22), dp(22));
-                artifacts.setCompoundDrawables(null, folder, null, null); artifacts.setCompoundDrawablePadding(dp(3));
-                artifacts.setSingleLine(true); artifacts.setLineSpacing(0, 1);
-                artifacts.setMinHeight(dp(52));
-                artifacts.setGravity(Gravity.CENTER); artifacts.setFocusable(true);
-                artifacts.setContentDescription(tr("查看产物 · 下载到手机", "Files · Save to phone"));
-                artifacts.setBackground(chatStyle.rounded(surface));
-                artifacts.setOnClickListener(view -> artifactDownloads.show(credentials.optString("address"), credentials.optString("token"), conversationId));
-                artifacts.setTag("remoteArtifacts"); header.addView(artifacts, new LinearLayout.LayoutParams(dp(56), LinearLayout.LayoutParams.WRAP_CONTENT));
-            }
+            ImageButton switcher = lineButton("switch-computer", tr("切换电脑", "Switch computer"), () -> showComputerPicker());
+            switcher.setTag("remoteComputerPicker");
+            header.addView(switcher, new LinearLayout.LayoutParams(dp(48), dp(48)));
         } else {
         LinearLayout brand = new LinearLayout(this); brand.setGravity(Gravity.CENTER_VERTICAL); brand.setPadding(0, dp(4), 0, dp(12));
         brand.setClipChildren(false); brand.setClipToPadding(false);
@@ -452,6 +477,26 @@ public final class MainActivity extends Activity {
         if (!subtitle.isEmpty()) root.addView(text(subtitle, 12, muted));
         }
         status = text("", 11, muted); status.setTag("connectionStatus"); status.setGravity(Gravity.CENTER); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        status.addTextChangedListener(new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
+            public void onTextChanged(CharSequence value, int start, int before, int count) {}
+            public void afterTextChanged(android.text.Editable value) {
+                if (screen.equals("computers")) {
+                    String label = value.toString();
+                    boolean quiet = label.isEmpty() || label.equals(tr("电脑状态已更新", "Computer status updated"))
+                        || label.equals(tr("尚未添加电脑", "No computers added"));
+                    status.setVisibility(quiet ? View.GONE : View.VISIBLE); return;
+                }
+                if (!screen.equals("list") && !screen.equals("detail")) return;
+                String label = value.toString(), online = tr("已连接", "Connected");
+                boolean normal = label.equals(online) || label.startsWith(online + " · ");
+                status.setVisibility(label.isEmpty() || normal ? View.GONE : View.VISIBLE);
+                if (headerConnection != null) {
+                    headerConnection.setText(normal ? label.replace(online + " · ", "") : connected ? online : "");
+                    headerConnection.setVisibility(headerConnection.length() == 0 ? View.GONE : View.VISIBLE);
+                }
+            }
+        });
         bindStatusDetails();
         scroll = new RefreshScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -466,7 +511,7 @@ public final class MainActivity extends Activity {
 
     private LinearLayout bottomBar(String tag) {
         chatStyle.dockStatus(status);
-        status.setMaxLines(1); status.setMinLines(1); status.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        status.setSingleLine(true); status.setMinLines(1); status.setEllipsize(android.text.TextUtils.TruncateAt.END);
         root.removeView(status);
         int scrollIndex = root.indexOfChild(scroll);
         LinearLayout.LayoutParams stageParams = (LinearLayout.LayoutParams) scroll.getLayoutParams();
@@ -647,63 +692,67 @@ public final class MainActivity extends Activity {
     private void computersScreen() {
         stopNetwork(); screen = "computers"; networkScreen = false; conversationId = null;
         clearHistory(); conversations.clear();
-        shell(tr("远程控制", "Remote control"), tr("选择一台电脑，继续工作。", "Choose a computer to continue."));
-        TextView label = text(tr("已连接的电脑", "Connected computers"), 14, muted);
-        label.setPadding(0, dp(10), 0, dp(2)); content.addView(label);
+        shell(tr("远程控制", "Remote control"), "");
+        SettingsStyle style = new SettingsStyle(this);
+        TextView introduction = text(tr("选择一台电脑，继续工作。", "Choose a computer to continue."), 15, style.secondary);
+        introduction.setPadding(dp(2), dp(4), dp(2), dp(20)); content.addView(introduction);
+        LinearLayout group = style.group(content, tr("我的电脑", "My computers")); group.setTag("computerList");
+        status.setVisibility(View.GONE);
         try {
             var computers = store.all();
             if (computers.isEmpty()) {
-                TextView empty = text(tr("添加电脑后，在这里查看工作区和会话。", "Add a computer to browse its workspaces and conversations here."), 13, muted);
-                empty.setPadding(dp(2), dp(8), dp(8), dp(8)); content.addView(empty);
+                group.addView(new ChatEmptyState(this, chatStyle, "computer", tr("连接你的第一台电脑", "Connect your first computer"),
+                    tr("扫描电脑上的配对二维码，即可在手机继续工作。", "Scan the pairing QR code on your computer to continue working here."),
+                    "", null));
             }
-            for (JSONObject computer : computers) content.addView(computerRow(computer));
+            for (JSONObject computer : computers) {
+                computerDivider(group, style); group.addView(computerRow(computer));
+            }
         } catch (Exception error) { reportError("无法读取电脑列表，请重试。", "Could not load computers. Try again.", error); }
-        content.addView(button(tr("添加电脑", "Add computer"), () -> { stopNetwork(); credentials = new JSONObject(); pairScreen(); }, true));
+        computerDivider(group, style);
+        LinearLayout add = new LinearLayout(this); add.setGravity(Gravity.CENTER_VERTICAL); add.setMinimumHeight(dp(72));
+        add.setPadding(dp(18), dp(14), dp(18), dp(14)); add.setTag("addComputer"); add.setFocusable(true);
+        add.setBackground(new RippleDrawable(ColorStateList.valueOf(0x184176e6), null, new android.graphics.drawable.ColorDrawable(Color.WHITE)));
+        add.setContentDescription(tr("添加电脑", "Add computer")); add.setOnClickListener(view -> addComputer());
+        ImageView plus = new ImageView(this); plus.setImageDrawable(new LineIcon("plus", style.ink));
+        plus.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); add.addView(plus, new LinearLayout.LayoutParams(dp(32), dp(32)));
+        TextView addLabel = text(tr("添加电脑", "Add computer"), 17, style.ink); addLabel.setPadding(dp(12), 0, 0, 0);
+        addLabel.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); add.addView(addLabel, new LinearLayout.LayoutParams(0, -2, 1));
+        group.addView(add, new LinearLayout.LayoutParams(-1, -2));
         if (credentials.has("claim")) content.addView(button(tr("继续配对", "Resume pairing"), () -> { pairScreen(); waitForApproval(); }, false));
         ((RefreshScrollView) scroll).setRefreshAction(this::refreshComputers,
             ready -> status.setText(ready ? tr("松开检查状态", "Release to check status") : tr("下拉检查电脑状态", "Pull to check computers")));
     }
 
-    // A connected computer follows the chat list rows: line icon, name, address,
-    // live status badge and a trailing icon button, not the platform's default
-    // list styling with text buttons.
+    private void computerDivider(LinearLayout group, SettingsStyle style) {
+        if (group.getChildCount() == 0) return;
+        View divider = new View(this); divider.setBackgroundColor(style.divider);
+        divider.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, Math.max(1, dp(1) / 2));
+        params.setMargins(dp(16), 0, dp(16), 0); group.addView(divider, params);
+    }
+
     private View computerRow(JSONObject computer) throws Exception {
         String address = computer.getString("address"), name = computerName(computer);
         String state = computerStates.getOrDefault(address, tr("待检查", "Not checked"));
-        LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(2), dp(8), dp(8), dp(8));
-        row.setTag("computer:" + address); row.setFocusable(true);
-        row.setContentDescription(name + ", " + address + ", " + state);
-        row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), rounded(background), rounded(Color.WHITE)));
-        row.setOnClickListener(view -> openComputer(computer));
-        ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon("computer", ink));
-        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(23), dp(23)); iconParams.setMarginEnd(dp(13));
-        row.addView(icon, iconParams);
-        LinearLayout copy = column();
-        TextView heading = text(name, 16, ink); heading.setPadding(0, 0, 0, dp(2));
-        heading.setMaxLines(1); heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        heading.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); copy.addView(heading);
-        TextView detail = text(address, 13, muted); detail.setPadding(0, 0, 0, 0);
-        detail.setMaxLines(1); detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        detail.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); copy.addView(detail);
-        row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView status = text(state, 12, computerStateColor(state));
-        status.setGravity(Gravity.END); status.setMaxWidth(dp(120)); status.setMaxLines(2);
-        status.setEllipsize(android.text.TextUtils.TruncateAt.END); status.setTag("computerState:" + address);
-        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-2, -2); statusParams.setMarginStart(dp(8));
-        row.addView(status, statusParams);
-        ImageButton manage = chatStyle.lineButton("more", tr("管理电脑", "Manage computer") + " · " + name, () -> manageComputer(computer));
-        manage.setImageDrawable(new LineIcon("more", muted)); manage.setTag("manage:" + address);
-        LinearLayout.LayoutParams manageParams = new LinearLayout.LayoutParams(dp(48), dp(48)); manageParams.setMarginStart(dp(2));
-        row.addView(manage, manageParams); return row;
+        ComputerRow row = new ComputerRow(this, new SettingsStyle(this), chinese, name, address,
+            () -> openComputer(computer), () -> manageComputer(computer));
+        row.state(state, state.equals(tr("已连接", "Connected")), checkingComputer(state)); return row;
     }
 
-    private int computerStateColor(String state) { return state.equals(tr("已连接", "Connected")) ? accent : muted; }
+    private boolean checkingComputer(String state) {
+        return state.equals(tr("待检查", "Not checked")) || state.equals(tr("正在检查…", "Checking…"));
+    }
+
+    private void updateComputerState(String address, String state) {
+        computerStates.put(address, state);
+        View row = root.findViewWithTag("computer:" + address);
+        if (row instanceof ComputerRow) ((ComputerRow) row).state(state, state.equals(tr("已连接", "Connected")), checkingComputer(state));
+    }
 
     private void openComputer(JSONObject computer) {
         try {
+            persistDraft();
             canCreate = false; canCreateWorkspace = false; canImage = false; availableWorkspaces = new JSONArray();
             stopNetwork(); store.save(computer); credentials = store.load();
             if (credentials.has("token")) { listScreen(); loadList(false); }
@@ -713,7 +762,8 @@ public final class MainActivity extends Activity {
 
     private void manageComputer(JSONObject computer) {
         SettingsStyle style = new SettingsStyle(this);
-        LinearLayout panel = computerDialogPanel(computerName(computer), computer.optString("address"));
+        String address = computer.optString("address"), state = computerStates.getOrDefault(address, "");
+        LinearLayout panel = computerDialogPanel(computerName(computer), address + (state.isEmpty() ? "" : "\n" + state));
         android.app.Dialog dialog = createComputerDialog(panel);
         LinearLayout group = style.group(panel, "");
         style.action(group, tr("重命名", "Rename"), tr("更改这台电脑在本机显示的名称", "Change the name shown on this phone"),
@@ -811,9 +861,7 @@ public final class MainActivity extends Activity {
             for (JSONObject computer : computers) {
                 String address = computer.getString("address");
                 String checking = tr("正在检查…", "Checking…");
-                computerStates.put(address, checking);
-                TextView label = root.findViewWithTag("computerState:" + address);
-                if (label != null) { label.setText(checking); label.setTextColor(computerStateColor(checking)); }
+                updateComputerState(address, checking);
             }
             for (JSONObject computer : computers) {
                 String address = computer.getString("address");
@@ -838,9 +886,7 @@ public final class MainActivity extends Activity {
                     boolean unauthorized = revoked;
                     deliver(ticket, () -> {
                         if (unauthorized) { listCache.remove(computer); prefetch.remove(computer, null); }
-                        computerStates.put(address, state);
-                        TextView label = root.findViewWithTag("computerState:" + address);
-                        if (label != null) { label.setText(state); label.setTextColor(computerStateColor(state)); }
+                        updateComputerState(address, state);
                         if (--remaining[0] == 0) {
                             ((RefreshScrollView) scroll).setRefreshing(false);
                             status.setText(tr("电脑状态已更新", "Computer status updated"));
@@ -876,25 +922,135 @@ public final class MainActivity extends Activity {
     }
 
     private void pairScreen() {
+        stopNetwork();
         screen = "pair";
         networkScreen = false;
         conversationId = null;
-        shell(tr("连接你的电脑", "Connect your computer"), "TAILSCALE · " + tr("安全配对", "DEVICE PAIRING"));
-        content.addView(button(tr("内置网络 / Tailscale 登录", "Embedded network / Tailscale login"), this::showNetwork, false));
-        content.addView(text(tr("手机可使用内置 Tailscale，无需另装 App。先登录电脑所在的网络，再在电脑「手机访问」中生成配对二维码。", "Use built-in Tailscale without another app. Sign into the computer's tailnet, then generate a pairing QR code in desktop Mobile access."), 15, ink));
-        content.addView(button(tr("扫描二维码自动填写", "Scan QR to fill in"), this::scanPairingCode, true));
-        content.addView(text(tr("扫描电脑端二维码后会自动填入地址和配对码，无需手动输入 IP。也可以继续在下方手动填写。", "Scanning the desktop QR fills in the address and pairing code automatically; no IP typing needed. You can still fill in the fields below manually."), 12, muted));
+        shell(tr("配对电脑", "Pair computer"), "");
+        root.setFocusableInTouchMode(true); root.requestFocus();
+        SettingsStyle style = new SettingsStyle(this);
+        LinearLayout network = style.group(content, "");
+        style.row(network, "shield", tr("Tailscale 网络", "Tailscale network"),
+            tr("登录 / 设置", "Sign in / Settings"), "pairNetwork", this::showNetwork);
+        style.note(content, tr("手机与电脑需登录同一个 Tailscale 网络。", "Sign into the same Tailscale network on both devices."));
+
+        LinearLayout scanner = style.group(content, "");
+        scanner.setPadding(dp(18), dp(16), dp(18), dp(12));
+        LinearLayout scanHeading = new LinearLayout(this); scanHeading.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView scanIcon = new ImageView(this); scanIcon.setImageDrawable(new LineIcon("camera", style.accent));
+        scanIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        scanHeading.addView(scanIcon, new LinearLayout.LayoutParams(dp(26), dp(26)));
+        TextView scanTitle = text(tr("扫描电脑二维码", "Scan your computer's QR"), 17, style.ink);
+        scanTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); scanTitle.setPadding(dp(12), 0, 0, 0);
+        scanHeading.addView(scanTitle, new LinearLayout.LayoutParams(0, -2, 1)); scanner.addView(scanHeading);
+        TextView scanHint = text(tr("打开电脑「手机访问」生成二维码。\n扫描后自动发起配对。", "Generate a QR code in desktop Mobile access.\nScanning starts pairing automatically."), 14, style.secondary);
+        scanHint.setPadding(0, dp(12), 0, dp(8)); scanner.addView(scanHint);
+        scanButton = button(tr("扫描二维码", "Scan QR code"), this::scanPairingCode, false);
+        scanButton.setBackgroundTintList(enabledColors(style.divider, style.card));
+        scanButton.setTag("pairScan"); scanner.addView(scanButton);
+
+        LinearLayout fields = style.group(content, tr("配对信息 · 也可手动填写", "Pairing details · or enter manually"));
+        fields.setPadding(dp(18), dp(8), dp(18), dp(18));
         Endpoint savedEndpoint = credentials.has("address") ? new Endpoint(credentials.optString("address")) : null;
-        addressInput = input(tr("电脑 IP（Tailscale）", "Computer IP (Tailscale)"), savedEndpoint == null ? "" : savedEndpoint.host(), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        LinearLayout endpointRow = new LinearLayout(this); endpointRow.setGravity(Gravity.TOP);
+        LinearLayout host = column(), port = column();
+        LinearLayout.LayoutParams hostParams = new LinearLayout.LayoutParams(0, -2, 1); hostParams.setMarginEnd(dp(12));
+        endpointRow.addView(host, hostParams); endpointRow.addView(port, new LinearLayout.LayoutParams(dp(96), -2)); fields.addView(endpointRow);
+        addressInput = input(host, tr("电脑 IP（Tailscale）", "Computer IP (Tailscale)"), savedEndpoint == null ? "" : savedEndpoint.host(), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        addressInput.setTag("pairAddress");
         addressInput.setHint("100.x.y.z");
-        portInput = input(tr("端口", "Port"), savedEndpoint == null ? "43127" : savedEndpoint.port(), InputType.TYPE_CLASS_NUMBER);
+        portInput = input(port, tr("端口", "Port"), savedEndpoint == null ? "43127" : savedEndpoint.port(), InputType.TYPE_CLASS_NUMBER);
+        portInput.setTag("pairPort");
         portInput.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(5)});
-        nameInput = input(tr("设备名称", "Device name"), credentials.optString("name", MobilePreferences.deviceName(this)), InputType.TYPE_CLASS_TEXT);
-        codeInput = input(tr("一次性配对码", "One-time pairing code"), "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        codeInput = input(fields, tr("一次性配对码", "One-time pairing code"), "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        codeInput.setTag("pairCode"); codeInput.setHint(tr("24 位配对码", "24-character code"));
         codeInput.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(24)});
-        content.addView(button(tr("请求配对", "Request pairing"), this::requestPairing, true));
-        if (credentials.has("claim")) content.addView(button(tr("继续等待电脑确认", "Resume pairing request"), this::waitForApproval, false));
-        content.addView(text(tr("电脑端确认授权后，即可查看会话、发送、停止和审批，无需另设权限。", "Once authorized on the computer, you can read, send, stop and approve without separate permission settings."), 12, muted));
+        nameInput = input(fields, tr("本机名称", "This phone's name"), credentials.optString("name", MobilePreferences.deviceName(this)), InputType.TYPE_CLASS_TEXT);
+        nameInput.setTag("pairName"); nameInput.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(80)});
+        if (pairingDraft != null) {
+            addressInput.setText(pairingDraft.getString("address", "")); portInput.setText(pairingDraft.getString("port", "43127"));
+            codeInput.setText(pairingDraft.getString("code", "")); nameInput.setText(pairingDraft.getString("name", MobilePreferences.deviceName(this)));
+        }
+        style.note(content, tr("请求发出后，在电脑端确认授权即可连接。", "After sending the request, approve it on your computer to connect."));
+        status.setTextSize(13); status.setTextColor(style.secondary); status.setPadding(dp(8), dp(8), dp(8), dp(4));
+        pairButton = button(tr("请求配对", "Request pairing"), () -> {
+            if (credentials.has("claim") && codeInput.getText().toString().trim().isEmpty()) waitForApproval(); else requestPairing();
+        }, true);
+        pairButton.setTag("pairRequest"); root.addView(pairButton);
+        codeInput.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence value, int start, int before, int count) { setPairingBusy(pairingBusy); }
+            @Override public void afterTextChanged(android.text.Editable value) {}
+        });
+        setPairingBusy(false);
+    }
+
+    private void addComputer() {
+        persistDraft(); stopNetwork(); credentials = new JSONObject(); pairScreen();
+    }
+
+    private void showComputerPicker() {
+        if (computerPicker != null) computerPicker.dismiss();
+        try {
+            var computers = store.all();
+            String current = credentials.optString("address");
+            computers.sort(java.util.Comparator.comparing((JSONObject computer) -> !computer.optString("address").equals(current))
+                .thenComparing(this::computerName, String.CASE_INSENSITIVE_ORDER));
+            var entries = new ArrayList<ComputerPickerPopup.Entry>();
+            for (JSONObject computer : computers) {
+                String address = computer.optString("address"); boolean selected = address.equals(current);
+                entries.add(new ComputerPickerPopup.Entry(address, computerName(computer), tr("正在检查…", "Checking…"), selected,
+                    () -> { if (!selected) openComputer(computer); }));
+            }
+            computerPicker = new ComputerPickerPopup(root.findViewWithTag("remoteComputerPicker"), chatStyle, chinese, entries,
+                this::addComputer, () -> { persistDraft(); computersScreen(); refreshComputers(); });
+            ComputerPickerPopup picker = computerPicker;
+            int ticket = generation;
+            for (JSONObject computer : computers) statusWorker.submit(() -> {
+                if (ticket != generation || !picker.isShowing()) return;
+                String address = computer.optString("address"), state; boolean online = false;
+                RemoteApi client = null;
+                try {
+                    if (!computer.has("token")) throw new RemoteApi.Failure(401);
+                    client = new RemoteApi(address); statusClients.add(client);
+                    if (ticket != generation || !picker.isShowing()) return;
+                    JSONObject info = client.json("/v1/status", computer.optString("token"), null);
+                    if (info.optInt("protocol") != 1) throw new IOException("Unsupported protocol");
+                    state = tr("已连接", "Connected"); online = true;
+                } catch (Exception error) { state = RemoteApi.failureMessage(error, chinese); }
+                finally { if (client != null) { statusClients.remove(client); client.cancel(); } }
+                String value = state; boolean available = online;
+                deliver(ticket, () -> {
+                    if (computerPicker == picker && picker.isShowing()) {
+                        computerStates.put(address, value); picker.state(address, value, available);
+                    }
+                });
+            });
+        } catch (Exception error) { reportError("无法读取电脑列表。", "Could not load computers.", error); }
+    }
+
+    private void rememberPairingDraft() {
+        if (addressInput == null) return;
+        pairingDraft = new Bundle();
+        pairingDraft.putString("address", addressInput.getText().toString()); pairingDraft.putString("port", portInput.getText().toString());
+        pairingDraft.putString("name", nameInput.getText().toString()); pairingDraft.putString("code", codeInput.getText().toString());
+    }
+
+    private void setPairingBusy(boolean busy) {
+        pairingBusy = busy;
+        if (pairButton == null) return;
+        boolean waiting = credentials.has("claim") && (busy || codeInput == null || codeInput.getText().toString().trim().isEmpty());
+        pairButton.setEnabled(!busy);
+        pairButton.setText(busy ? waiting ? tr("等待电脑确认…", "Waiting for approval…") : tr("正在请求配对…", "Requesting pairing…")
+            : waiting ? tr("继续等待电脑确认", "Resume pairing request") : tr("请求配对", "Request pairing"));
+        if (scanButton != null) scanButton.setEnabled(!busy);
+        for (EditText field : new EditText[]{addressInput, portInput, nameInput, codeInput}) if (field != null) field.setEnabled(!busy);
+    }
+
+    private void pairingFieldError(EditText field, String message) {
+        ((SettingsField) field.getParent()).showError(message);
+        status.setText(message);
+        scroll.post(() -> { if (screen.equals("pair")) field.requestRectangleOnScreen(new android.graphics.Rect(0, 0, field.getWidth(), field.getHeight()), false); });
     }
 
     private void scanPairingCode() {
@@ -904,26 +1060,44 @@ public final class MainActivity extends Activity {
     }
 
     private void applyScannedPairing(String address, String code) {
-        if (addressInput != null) addressInput.setText(address);
-        if (portInput != null) portInput.setText(new Endpoint(address).port());
-        if (codeInput != null) codeInput.setText(code);
+        Endpoint endpoint = new Endpoint(address);
+        if (code == null || !code.matches("[a-fA-F0-9]{24}")) throw new IllegalArgumentException("Invalid pairing code");
+        if (!screen.equals("pair")) pairScreen();
+        // The QR carries an origin, while the form and Endpoint(ip, port) need
+        // only the host here. Otherwise submission builds http://http://…:port:port.
+        addressInput.setText(endpoint.host()); portInput.setText(endpoint.port());
+        codeInput.setText(code.toLowerCase(Locale.ROOT));
+        rememberPairingDraft();
         status.setText(tr("已填入二维码中的地址和配对码。", "Address and pairing code filled in from the QR code."));
-        requestPairing();
+        pendingScannedPairing = true;
     }
 
     private void requestPairing() {
-        if (!foreground) return;
+        if (!foreground || pairingBusy || !screen.equals("pair")) return;
+        pendingScannedPairing = false;
+        final String address;
+        try { address = new Endpoint(addressInput.getText().toString(), portInput.getText().toString()).origin(); }
+        catch (IllegalArgumentException error) {
+            try { new Endpoint(addressInput.getText().toString(), "43127"); }
+            catch (IllegalArgumentException invalidHost) {
+                pairingFieldError(addressInput, tr("请填写电脑的 Tailscale IP，例如 100.80.1.2。", "Enter the computer's Tailscale IP, such as 100.80.1.2.")); return;
+            }
+            pairingFieldError(portInput, tr("端口应为 1–65535。", "Use a port between 1 and 65535.")); return;
+        }
+        String name = nameInput.getText().toString().trim(), code = codeInput.getText().toString().trim();
+        if (name.isEmpty() || name.length() > 80) { pairingFieldError(nameInput, tr("请输入本机名称，最多 80 个字符。", "Enter a phone name, up to 80 characters.")); return; }
+        if (!code.matches("[a-fA-F0-9]{24}")) { pairingFieldError(codeInput, tr("请填写电脑生成的 24 位配对码，或重新扫码。", "Enter the 24-character code from your computer, or scan again.")); return; }
         try {
-            String address = new Endpoint(addressInput.getText().toString(), portInput.getText().toString()).origin();
-            String name = nameInput.getText().toString().trim();
-            String code = codeInput.getText().toString().trim();
-            if (name.isEmpty() || name.length() > 80 || !code.matches("[a-fA-F0-9]{24}")) throw new IllegalArgumentException();
+            rememberPairingDraft();
+            View focus = getCurrentFocus();
+            if (focus != null) ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(focus.getWindowToken(), 0);
             MobilePreferences.set(this, "deviceName", name);
-            String displayName = credentials.optString("computerName");
+            String displayName = address.equals(credentials.optString("address")) ? credentials.optString("computerName") : "";
             credentials = new JSONObject().put("address", address).put("name", name);
             if (!displayName.isEmpty()) credentials.put("computerName", displayName);
             store.save(credentials);
             RemoteApi client = begin(); int ticket = generation;
+            setPairingBusy(true);
             status.setText(tr("正在请求配对…", "Requesting pairing…"));
             JSONObject payload = new JSONObject().put("code", code.toLowerCase(Locale.ROOT)).put("name", name);
             job = worker.submit(() -> {
@@ -937,18 +1111,19 @@ public final class MainActivity extends Activity {
                             // already renamed it on this phone.
                             String computer = result.optString("computerName", "");
                             if (!computer.isEmpty() && credentials.optString("computerName").isEmpty()) credentials.put("computerName", computer);
-                            store.save(credentials); codeInput.setText(""); waitForApproval();
-                        } catch (Exception error) { reportError("无法保存配对，请重新生成配对码。", "Could not save pairing. Generate a new code.", error); }
+                            store.save(credentials); codeInput.setText(""); rememberPairingDraft(); waitForApproval();
+                        } catch (Exception error) { setPairingBusy(false); reportError("无法保存配对，请重新生成配对码。", "Could not save pairing. Generate a new code.", error); }
                     });
-                } catch (Exception error) { deliver(ticket, () -> showFailure(error, false)); }
+                } catch (Exception error) { deliver(ticket, () -> { setPairingBusy(false); status.setText(RemoteApi.failureMessage(error, chinese)); }); }
             });
-        } catch (Exception error) { reportError("请检查 Tailscale IP、端口（1–65535）、设备名称和 24 位配对码。", "Check the Tailscale IP, port (1–65535), device name and 24-character pairing code.", error); }
+        } catch (Exception error) { setPairingBusy(false); reportError("无法发起配对，请重试。", "Could not start pairing. Try again.", error); }
     }
 
     private void waitForApproval() {
         if (!foreground || !credentials.has("claim")) return;
         RemoteApi client = begin(); int ticket = generation;
-        status.setText(tr("请在电脑端点击「允许查看」。", "Select Allow reading on your computer."));
+        setPairingBusy(true);
+        status.setText(tr("请求已发送，请在电脑端确认授权。", "Request sent. Approve it on your computer."));
         pollPair(client, ticket);
     }
 
@@ -957,11 +1132,12 @@ public final class MainActivity extends Activity {
         if (credentials.optLong("expiresAt") <= System.currentTimeMillis()) {
             credentials.remove("claim"); credentials.remove("id");
             try { store.save(credentials); } catch (Exception ignored) { }
+            setPairingBusy(false);
             status.setText(tr("配对已过期，请在电脑重新生成配对码。", "Pairing expired. Generate another code on the computer.")); return;
         }
         final JSONObject payload = new JSONObject();
         try { payload.put("id", credentials.getString("id")).put("claim", credentials.getString("claim")); }
-        catch (Exception error) { reportError("配对信息不完整，请重新生成配对码。", "Pairing information is incomplete. Generate a new code.", error); return; }
+        catch (Exception error) { setPairingBusy(false); reportError("配对信息不完整，请重新生成配对码。", "Pairing information is incomplete. Generate a new code.", error); return; }
         job = worker.submit(() -> {
             try {
                 JSONObject result = client.json("/v1/pair/claim", null, payload);
@@ -975,13 +1151,17 @@ public final class MainActivity extends Activity {
                         JSONObject next = new JSONObject().put("address", credentials.getString("address")).put("name", credentials.getString("name"))
                             .put("token", token).put("deviceId", result.getString("deviceId"));
                         if (credentials.has("computerName")) next.put("computerName", credentials.getString("computerName"));
-                        store.save(next); credentials = next; listScreen(); loadList(false);
-                    } catch (Exception error) { reportError("无法安全保存凭据，请重试领取。", "Could not securely save credentials. Resume pairing to retry.", error); }
+                        store.save(next); credentials = next; pairingDraft = null; listScreen(); loadList(false);
+                    } catch (Exception error) { setPairingBusy(false); reportError("无法安全保存凭据，请重试领取。", "Could not securely save credentials. Resume pairing to retry.", error); }
                 });
             } catch (Exception error) {
                 deliver(ticket, () -> {
-                    showFailure(error, false);
-                    if (!(error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 401)) handler.postDelayed(() -> pollPair(client, ticket), 10_000);
+                    if (error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 401) {
+                        credentials.remove("claim"); credentials.remove("id");
+                        try { store.save(credentials); } catch (Exception ignored) { }
+                    }
+                    setPairingBusy(false);
+                    status.setText(RemoteApi.failureMessage(error, chinese));
                 });
             }
         });
@@ -1117,7 +1297,17 @@ public final class MainActivity extends Activity {
             if (!collapsed || !query.isEmpty()) for (JSONObject conversation : entries) group.addView(conversationCard(conversation));
             content.addView(group);
         }
-        if (groups.isEmpty()) content.addView(text(query.isEmpty() ? tr("暂无可见会话，请先在电脑授权。", "No conversations yet. Check desktop access permissions.") : tr("没有匹配的会话", "No matching conversations"), 14, muted));
+        boolean empty = groups.values().stream().allMatch(java.util.List::isEmpty);
+        if (empty) {
+            String workspace = availableWorkspaces.length() > 0 ? availableWorkspaces.optJSONObject(0).optString("id") : null;
+            boolean create = canCreate && (workspace != null || allowIndependent);
+            content.addView(new ChatEmptyState(this, chatStyle, query.isEmpty() ? "new" : "search",
+                query.isEmpty() ? tr("在这里开始新的工作", "Start something new") : tr("没有找到会话", "No conversations found"),
+                query.isEmpty() ? tr("会话会按工作区整理，方便下次继续。", "Conversations are grouped by workspace so you can pick up where you left off.")
+                    : tr("试试更短的关键词，或清除搜索查看全部会话。", "Try a shorter keyword, or clear the search to see all conversations."),
+                !query.isEmpty() ? tr("清除搜索", "Clear search") : create ? tr("新建会话", "New conversation") : tr("刷新列表", "Refresh conversations"),
+                () -> { if (!query.isEmpty()) searchInput.setText(""); else if (create) createConversation(workspace); else loadList(false); }));
+        }
         if (nextOffset >= 0) content.addView(button(tr("加载更多会话", "Load more conversations"), () -> loadList(true), false));
         scroll.post(() -> scroll.scrollTo(0, position));
     }
@@ -1139,6 +1329,7 @@ public final class MainActivity extends Activity {
                 } else { conversationId = id; conversationTitle = title; detailScreen(); connectEvents(); }
             }, () -> conversationMenu(conversation));
         card.setContentDescription(title + " · " + activity(conversation) + (unread ? " · " + tr("新消息", "New reply") : ""));
+        card.preview(ConversationPreview.remote(conversation));
         card.selection(selectingConversations, selectedConversations.contains(conversation.optString("id")));
         return card;
     }
@@ -1277,6 +1468,8 @@ public final class MainActivity extends Activity {
         canCreateWorkspace = info.optString("permission").equals("control") && capabilities.contains("\"create-workspace\"");
         canImage = capabilities.contains("\"image\"");
         canMultiImage = capabilities.contains("\"multi-image\"");
+        canAttachments = capabilities.contains("\"expanded-attachments\"");
+        canFileAttachments = canAttachments || capabilities.contains("\"attachments\"");
         canMove = info.optString("permission").equals("control") && capabilities.contains("\"move\"");
         canArchive = info.optString("permission").equals("control") && capabilities.contains("\"archive\"");
         canManageConversations = info.optString("permission").equals("control") && capabilities.contains("\"conversation-actions\"");
@@ -1403,18 +1596,22 @@ public final class MainActivity extends Activity {
         // The tiles only work when the desktop advertises the image capability
         // and this chat still has room; the sheet still opens so the capability
         // rows stay reachable.
-        int limit = canMultiImage ? 9 : 1;
-        boolean images = sendable && canImage && selectedImages.size() < limit;
+        int limit = ChatAttachments.remoteCount(canAttachments, canFileAttachments, canMultiImage);
+        boolean images = sendable && (canImage || canFileAttachments) && selectedImages.size() + selectedDocuments.size() < limit;
         boolean configurable = sendable && remoteSettings != null && remoteSettings.optBoolean("editable");
         imageConversation = conversationId; imageComputer = credentials.optString("address");
         AttachSheet sheet = new AttachSheet(this);
         LinearLayout panel = sheet.panel();
         android.app.Dialog dialog = createComputerDialog(panel);
         sheet.header(panel, "plus", tr("添加内容", "Add"), tr("关闭", "Close"), () -> dialog.dismiss());
-        sheet.subtitle(panel, tr("拍照、相册，或调整这次会话的执行方式", "Take a photo, pick from the gallery, or adjust how this chat runs"));
+        sheet.note(panel, canAttachments ? ChatAttachments.limits(chinese, true)
+            : canFileAttachments ? tr("当前电脑最多 9 个附件 · 合计 8 MiB；更新电脑端可提高限额。", "This desktop supports 9 attachments · 8 MiB total; update it for higher limits.")
+            : tr("更新并重启电脑端后，可发送文档及最多 20 个附件。", "Update and restart the desktop for documents and up to 20 attachments."));
         sheet.tiles(panel, java.util.Arrays.asList(
             new AttachSheet.Tile("camera", tr("拍照", "Camera"), "imageCamera", images, () -> { dialog.dismiss(); openCamera(); }),
-            new AttachSheet.Tile("image", tr("照片", "Photos"), "imageGallery", images, () -> { dialog.dismiss(); openGallery(); })));
+            new AttachSheet.Tile("image", tr("照片", "Photos"), "imageGallery", images, () -> { dialog.dismiss(); openGallery(); }),
+            new AttachSheet.Tile("file", tr("文件", "Files"), "remoteDocumentPicker", sendable && (canAttachments || canFileAttachments) && selectedImages.size() + selectedDocuments.size() < limit, () -> { dialog.dismiss(); openDocuments(); })));
+        sheet.note(panel, tr("文件支持 PDF、Word、Excel、PPT、文本等常见格式。", "Files support PDF, Word, Excel, PowerPoint, text and other common document formats."));
         String level = remoteSettings == null ? "ask" : remoteSettings.optString("permissionMode");
         LinearLayout group = sheet.group(panel, "");
         sheet.row(group, "shield", tr("安全级别", "Safety level"),
@@ -1427,8 +1624,8 @@ public final class MainActivity extends Activity {
                 artifactDownloads.show(credentials.optString("address"), credentials.optString("token"), conversationId);
             });
         if (!images) {
-            String reason = !canImage ? tr("添加图片需要更新并重启电脑端。", "Images require an updated and restarted desktop.")
-                : selectedImages.size() >= limit ? (canMultiImage ? tr("最多添加 9 张图片。", "Add up to 9 images.")
+            String reason = !canImage && !canFileAttachments ? tr("添加图片需要更新并重启电脑端。", "Images require an updated and restarted desktop.")
+                : selectedImages.size() + selectedDocuments.size() >= limit ? (canAttachments ? tr("最多添加 20 个附件。", "Add up to 20 attachments.") : canFileAttachments ? tr("当前电脑最多 9 个附件，请更新电脑端提高限额。", "This desktop supports up to 9 attachments; update it for higher limits.") : canMultiImage ? tr("旧版电脑端最多 9 张图片，请更新电脑端。", "This desktop supports up to 9 images; update it.")
                     : tr("多图发送需要更新并重启电脑端。", "Multiple images require an updated and restarted desktop."))
                 : tr("连接电脑后可添加图片。", "Connect to your computer to add images.");
             sheet.note(panel, reason);
@@ -1439,9 +1636,17 @@ public final class MainActivity extends Activity {
     private void openGallery() {
         android.content.Intent picker = new android.content.Intent(android.content.Intent.ACTION_GET_CONTENT);
         picker.setType("image/*"); picker.addCategory(android.content.Intent.CATEGORY_OPENABLE);
-        picker.putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, canMultiImage);
+        picker.putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, canMultiImage || canAttachments || canFileAttachments);
         try { startActivityForResult(picker, PICK_IMAGE_REQUEST); }
         catch (Exception error) { reportError("无法打开图片选择器", "Cannot open the image picker", error); }
+    }
+
+    private void openDocuments() {
+        android.content.Intent picker = new android.content.Intent(android.content.Intent.ACTION_GET_CONTENT);
+        picker.setType("*/*"); picker.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+        picker.putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true);
+        try { startActivityForResult(picker, PICK_DOCUMENT_REQUEST); }
+        catch (Exception error) { reportError("无法打开文件选择器", "Cannot open the file picker", error); }
     }
 
     private void openCamera() {
@@ -1468,10 +1673,11 @@ public final class MainActivity extends Activity {
             if (result != RESULT_OK || data == null) return;
             String address = data.getStringExtra(QrScanActivity.EXTRA_ADDRESS), code = data.getStringExtra(QrScanActivity.EXTRA_CODE);
             if (address == null || code == null) { status.setText(tr("二维码内容不完整，请在电脑端重新生成。", "The QR code is incomplete. Generate a new one on the computer.")); return; }
-            applyScannedPairing(address, code);
+            try { applyScannedPairing(address, code); }
+            catch (IllegalArgumentException error) { status.setText(tr("二维码内容无效，请在电脑端重新生成。", "Invalid QR code. Generate a new one on the computer.")); }
             return;
         }
-        if (request != PICK_IMAGE_REQUEST && request != TAKE_PHOTO_REQUEST) return;
+        if (request != PICK_IMAGE_REQUEST && request != TAKE_PHOTO_REQUEST && request != PICK_DOCUMENT_REQUEST) return;
         ArrayList<android.net.Uri> uris = new ArrayList<>();
         if (result == RESULT_OK) {
             if (request == TAKE_PHOTO_REQUEST && cameraImageUri != null) uris.add(cameraImageUri);
@@ -1480,24 +1686,37 @@ public final class MainActivity extends Activity {
             } else if (data != null && data.getData() != null) uris.add(data.getData());
         }
         if (uris.isEmpty()) { if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); return; }
-        if (loadingImages || selectedImages.size() + uris.size() > (canMultiImage ? 9 : 1)) {
-            status.setText(canMultiImage ? tr("最多添加 9 张图片。", "Add up to 9 images.") : tr("多图发送需要更新并重启电脑端。", "Multiple images require an updated and restarted desktop."));
+        if (loadingImages || selectedImages.size() + selectedDocuments.size() + uris.size() > ChatAttachments.remoteCount(canAttachments, canFileAttachments, canMultiImage)) {
+            status.setText(canAttachments ? tr("最多添加 20 个附件。", "Add up to 20 attachments.") : tr("更多附件需要更新并重启电脑端。", "More attachments require an updated and restarted desktop."));
             if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); return;
         }
         String target = imageConversation, computer = imageComputer;
+        boolean expanded = canAttachments, files = canFileAttachments, multiImage = canMultiImage;
+        ArrayList<String> existingImages = new ArrayList<>(selectedImages);
+        ArrayList<JSONObject> existingDocuments = new ArrayList<>(selectedDocuments);
         loadingImages = true; updateControls();
         worker.submit(() -> {
+            ArrayList<String> encodedImages = new ArrayList<>();
+            ArrayList<JSONObject> documents = new ArrayList<>();
+            String problem = null;
             try {
-                ArrayList<String> encodedImages = new ArrayList<>();
                 for (android.net.Uri uri : uris) {
-                    encodedImages.add(ChatImage.encode(this, uri, ChatImage.DESKTOP_MAX_SIDE, ChatImage.DESKTOP_MAX_BYTES));
+                    if (request == PICK_DOCUMENT_REQUEST && !String.valueOf(getContentResolver().getType(uri)).startsWith("image/")) documents.add(ChatDocument.read(this, uri, false));
+                    else encodedImages.add(ChatImage.encode(this, uri, ChatImage.DESKTOP_MAX_SIDE, ChatImage.DESKTOP_MAX_BYTES));
                 }
+                existingImages.addAll(encodedImages); existingDocuments.addAll(documents);
+                ChatAttachments.validateRemote(this, existingImages, existingDocuments, expanded, files, multiImage);
                 handler.post(() -> {
-                    if (isDestroyed() || !screen.equals("detail") || !java.util.Objects.equals(target, conversationId) || !computer.equals(credentials.optString("address"))) return;
-                    selectedImages.addAll(encodedImages); renderImage(); updateControls();
+                    if (isDestroyed() || !screen.equals("detail") || !java.util.Objects.equals(target, conversationId) || !computer.equals(credentials.optString("address"))) { ChatAttachments.discard(this, encodedImages, documents); return; }
+                    selectedImages.addAll(encodedImages); selectedDocuments.addAll(documents); renderImage(); persistDraft(); updateControls();
                 });
-            } catch (Exception error) { handler.post(() -> { if (!isDestroyed() && screen.equals("detail") && java.util.Objects.equals(target, conversationId) && java.util.Objects.equals(computer, credentials.optString("address"))) status.setText(ErrorDetails.withSummary(tr("无法读取图片，请选择较小的图片。", "Cannot read image. Choose a smaller image."), error)); }); }
-            finally { handler.post(() -> { loadingImages = false; if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); if (!isDestroyed() && screen.equals("detail")) updateControls(); }); }
+            } catch (Exception error) { ChatAttachments.discard(this, encodedImages, documents); problem = ErrorDetails.withSummary(tr("无法添加附件。", "Cannot add attachment."), error); }
+            finally { String failure = problem; handler.post(() -> {
+                loadingImages = false; if (request == TAKE_PHOTO_REQUEST) clearCameraImage();
+                if (!isDestroyed() && screen.equals("detail")) {
+                    updateControls(); if (failure != null && java.util.Objects.equals(target, conversationId) && java.util.Objects.equals(computer, credentials.optString("address"))) status.setText(failure);
+                }
+            }); }
         });
     }
 
@@ -1508,10 +1727,12 @@ public final class MainActivity extends Activity {
 
     private void renderImage() {
         if (imageTray == null) return;
-        if (!java.util.Objects.equals(imageConversation, conversationId) || !java.util.Objects.equals(imageComputer, credentials.optString("address"))) selectedImages.clear();
-        imageStrip.setVisibility(selectedImages.isEmpty() ? View.GONE : View.VISIBLE);
+        if (!java.util.Objects.equals(imageConversation, conversationId) || !java.util.Objects.equals(imageComputer, credentials.optString("address"))) { selectedImages.clear(); selectedDocuments.clear(); }
+        imageStrip.setVisibility(selectedImages.isEmpty() && selectedDocuments.isEmpty() ? View.GONE : View.VISIBLE);
         ChatImageTray.fill(this, imageTray, selectedImages, surface, chinese,
-            index -> { selectedImages.remove(index); renderImage(); updateControls(); });
+            index -> { selectedImages.remove(index); renderImage(); persistDraft(); updateControls(); });
+        ChatDocumentTray.append(this, imageTray, selectedDocuments, chinese,
+            index -> { selectedDocuments.remove(index); renderImage(); persistDraft(); updateControls(); });
     }
 
     private void watchList(RemoteApi client, int ticket) {
@@ -1615,6 +1836,10 @@ public final class MainActivity extends Activity {
         older = button(tr("加载更早消息", "Load earlier messages"), this::loadOlder, false); older.setEnabled(false);
         older.setVisibility(View.GONE);
         older.setBackgroundColor(Color.TRANSPARENT); older.setTextSize(12); content.addView(older);
+        remoteEmptyState = new ChatEmptyState(this, chatStyle, "brand", tr("从这里开始", "Start here"),
+            tr("描述任务，继续电脑上的工作。", "Describe a task to continue on this computer."),
+            tr("输入消息", "Write a message"), this::focusComposer);
+        remoteEmptyState.setVisibility(View.GONE); content.addView(remoteEmptyState);
         messages = column(); content.addView(messages);
         approvals = column(); content.addView(approvals); approvalSignature = "";
         // Goal and scheduled-task state sits directly above the composer, where
@@ -1628,30 +1853,13 @@ public final class MainActivity extends Activity {
         modelButton = chatComposer.model; modelButton.setTag("remoteModelPicker");
         sendButton = chatComposer.send; stopButton = chatComposer.stop;
         sendButton.setTag("remoteSend"); stopButton.setTag("remoteStop");
-        attachButton = lineButton("plus", tr("添加图片", "Add image"), this::pickImage); attachButton.setTag("remoteAttach");
+        attachButton = lineButton("plus", tr("添加附件", "Add attachments"), this::pickImage); attachButton.setTag("remoteAttach");
         imageStrip = new android.widget.HorizontalScrollView(this); imageStrip.setHorizontalScrollBarEnabled(false);
         imageTray = new LinearLayout(this); imageTray.setOrientation(LinearLayout.HORIZONTAL);
         imageStrip.addView(imageTray); composerBar.addView(imageStrip, 0, new LinearLayout.LayoutParams(-1, -2)); renderImage();
         chatComposer.addTool(attachButton);
         permissionButton = lineButton("shield", tr("安全级别", "Safety level"), () -> showRemoteSettings(true)); permissionButton.setTag("remotePermissionPicker");
         chatComposer.addTool(permissionButton);
-        // The computer answers "/find" locally without an engine call. An empty
-        // composer sends it right away, which lists the most recently produced
-        // files for someone who cannot name what they are after; with text
-        // present the button just opens the search so the words can be added.
-        findButton = lineButton("search", tr("查找文件", "Find files"), () -> {
-            if (composer.getText().toString().trim().isEmpty()) {
-                composer.setText("/find ");
-                sendMessage();
-                return;
-            }
-            composer.setSelection(composer.length());
-            composer.requestFocus();
-            ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
-                .showSoftInput(composer, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
-        });
-        findButton.setTag("remoteFind");
-        chatComposer.addTool(findButton);
         composer.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence text, int start, int before, int count) {
@@ -1660,6 +1868,13 @@ public final class MainActivity extends Activity {
             @Override public void afterTextChanged(android.text.Editable text) {}
         });
         String draft = savedDraft();
+        JSONObject attachmentDrafts = credentials.optJSONObject("draftAttachments");
+        JSONObject attachmentDraft = attachmentDrafts == null ? null : attachmentDrafts.optJSONObject(conversationId);
+        if (attachmentDraft != null && outgoingMessage == null) {
+            try { ChatAttachments.restore(attachmentDraft, selectedImages, selectedDocuments); }
+            catch (Exception error) { reportError("无法恢复附件草稿", "Cannot restore attachment draft", error); }
+            imageConversation = conversationId; imageComputer = credentials.optString("address"); renderImage();
+        }
         if (!draft.isEmpty() || savedDraftEdit() > 0) {
             composer.setText(draft); composer.setSelection(composer.length());
             long edit = savedDraftEdit();
@@ -1696,6 +1911,12 @@ public final class MainActivity extends Activity {
             if (text.isEmpty()) drafts.remove(conversationId); else drafts.put(conversationId, text);
             if (editingSeq > 0) edits.put(conversationId, editingSeq); else edits.remove(conversationId);
             saved.put("drafts", drafts).put("draftEdits", edits);
+            JSONObject attachmentDrafts = saved.optJSONObject("draftAttachments");
+            if (attachmentDrafts == null) attachmentDrafts = new JSONObject();
+            if (selectedImages.isEmpty() && selectedDocuments.isEmpty()) attachmentDrafts.remove(conversationId);
+            else if (java.util.Objects.equals(imageConversation, conversationId)) attachmentDrafts.put(conversationId,
+                new JSONObject().put("attachments", ChatAttachments.remote(selectedImages, selectedDocuments)));
+            saved.put("draftAttachments", attachmentDrafts);
             store.save(saved);
             credentials = saved;
         } catch (Exception error) { reportError("无法保存草稿，请重试。", "Could not save the draft. Try again.", error); }
@@ -1876,6 +2097,9 @@ public final class MainActivity extends Activity {
         }
         while (messages.getChildCount() > pendingMessageViews.size()) messages.removeViewAt(messages.getChildCount() - 1);
         pendingMessageViews.clear();
+        boolean empty = displayedConversation != null && messages.getChildCount() == 0;
+        if (remoteEmptyState != null) remoteEmptyState.setVisibility(empty ? View.VISIBLE : View.GONE);
+        content.setGravity(empty ? Gravity.CENTER_VERTICAL : Gravity.TOP);
         if (initialMessageScroll && messages.getChildCount() > 0) {
             initialMessageScroll = false;
             positionMessages(Integer.MAX_VALUE);
@@ -2102,7 +2326,7 @@ public final class MainActivity extends Activity {
         return trimmed;
     }
 
-    private void clearHistory() { history.clear(); historyBytes = 0; }
+    private void clearHistory() { history.clear(); historyBytes = 0; goalVisibility.reset(); }
 
     private void retainHistory(long seq, JSONObject row) {
         JSONObject previous = history.put(seq, row);
@@ -2191,10 +2415,7 @@ public final class MainActivity extends Activity {
                 // draft does not silently become a brand new message.
                 if (payload.has("editSeq")) editingSeq = payload.optLong("editSeq");
                 composer.setText(pending.optString("draft", payload.optString("prompt")));
-                selectedImages.clear();
-                JSONArray images = payload.optJSONArray("images");
-                if (images != null) for (int index = 0; index < images.length(); index++) selectedImages.add(images.getString(index));
-                else if (payload.has("image")) selectedImages.add(payload.getString("image"));
+                ChatAttachments.restore(payload, selectedImages, selectedDocuments);
                 imageConversation = conversationId; imageComputer = credentials.optString("address"); renderImage();
                 persistDraft();
             } catch (Exception error) {
@@ -2237,7 +2458,7 @@ public final class MainActivity extends Activity {
         // recently. Any other bare slash command is still not worth sending.
         boolean bareSlash = composed.matches("(?i)^/[a-z]+$") && !composed.equalsIgnoreCase("/find");
         sendButton.setEnabled(available && lastLive == null && !pending && !loadingImages && !awaitingSentMessage()
-            && ((!composed.isEmpty() && !bareSlash) || !selectedImages.isEmpty()));
+            && ((!composed.isEmpty() && !bareSlash) || !selectedImages.isEmpty() || !selectedDocuments.isEmpty()));
         if (attachButton != null) {
             attachButton.setEnabled(available && !pending && !loadingImages);
             attachButton.setAlpha(available && !pending && !loadingImages ? 1f : .45f);
@@ -2267,24 +2488,26 @@ public final class MainActivity extends Activity {
         if (composer == null || !connected || !controlAllowed || lastLive != null || commandBusy || credentials.has("pendingCommand") || awaitingSentMessage()) return;
         String prompt = composer.getText().toString(), target = conversationId, address = credentials.optString("address"), server = instance;
         ArrayList<String> images = new ArrayList<>(selectedImages);
+        ArrayList<JSONObject> documents = new ArrayList<>(selectedDocuments);
         EditText input = composer;
         locationConsent.request(prompt, computerName(credentials) + tr("（电脑及其模型服务商；会保存到会话历史）", " (computer and its model provider; saved in conversation history)"), context -> {
             if (input == composer && prompt.equals(input.getText().toString()) && target.equals(conversationId)
                     && address.equals(credentials.optString("address")) && server.equals(instance)
-                    && images.equals(selectedImages)) sendMessage(context);
+                    && images.equals(selectedImages) && documents.equals(selectedDocuments)) sendMessage(context);
         });
     }
 
     private void sendMessage(String locationContext) {
         if (!connected || !controlAllowed || lastLive != null || commandBusy || credentials.has("pendingCommand") || awaitingSentMessage()) return;
         String prompt = composer.getText().toString();
-        if (loadingImages || (prompt.trim().isEmpty() && selectedImages.isEmpty())) return;
-        if (selectedImages.size() > 1 && !canMultiImage) { status.setText(tr("多图发送需要更新并重启电脑端。", "Multiple images require an updated and restarted desktop.")); return; }
+        if (loadingImages || (prompt.trim().isEmpty() && selectedImages.isEmpty() && selectedDocuments.isEmpty())) return;
         try {
+            ChatAttachments.validateRemote(this, selectedImages, selectedDocuments, canAttachments, canFileAttachments, canMultiImage);
             boolean editing = editingSeq > 0;
-            JSONObject payload = command(editing ? "resend" : "send").put("prompt", (prompt.trim().isEmpty() ? tr("请查看这些图片。", "Please review these images.") : prompt) + locationContext).put("expectedSeq", conversationSeq);
+            JSONObject payload = command(editing ? "resend" : "send").put("prompt", (prompt.trim().isEmpty() ? tr("请查看这些附件。", "Please review these attachments.") : prompt) + locationContext).put("expectedSeq", conversationSeq);
             if (editing) payload.put("editSeq", editingSeq);
-            if (selectedImages.size() == 1) payload.put("image", selectedImages.get(0));
+            if ((canAttachments || canFileAttachments) && (!selectedImages.isEmpty() || !selectedDocuments.isEmpty())) payload.put("attachments", ChatAttachments.remote(selectedImages, selectedDocuments));
+            else if (selectedImages.size() == 1) payload.put("image", selectedImages.get(0));
             else if (!selectedImages.isEmpty()) payload.put("images", new JSONArray(selectedImages));
             submitCommand(payload);
         }
@@ -2316,13 +2539,27 @@ public final class MainActivity extends Activity {
         return card;
     }
 
+    private void focusComposer() {
+        if (composer == null) return;
+        composer.requestFocus();
+        ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(composer, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+    }
+
     private void renderAutomation(JSONObject snapshot) {
         if (automationBar == null) return;
         automationBar.removeAllViews();
         JSONObject automation = snapshot.optJSONObject("automation");
         JSONObject goal = automation == null ? null : automation.optJSONObject("goal");
         JSONArray tasks = automation == null ? null : automation.optJSONArray("tasks");
-        boolean hasGoal = goal != null && !goal.isNull("phase");
+        long latestUserSeq = 0, latestUserAt = 0;
+        for (JSONObject row : history.values()) if (row.optString("role").equals("user")) {
+            latestUserSeq = Math.max(latestUserSeq, row.optLong("seq"));
+            latestUserAt = Math.max(latestUserAt, row.optLong("at"));
+        }
+        String goalKey = goal == null ? "" : goal.optString("id", "");
+        if (goal != null && goalKey.isEmpty()) goalKey = goal.optString("objective", "");
+        boolean hasGoal = goalVisibility.show(goalKey, goal == null ? "" : goal.optString("phase", ""),
+            goal == null ? 0 : goal.optLong("completedAt"), latestUserSeq, latestUserAt);
         int taskCount = tasks == null ? 0 : tasks.length();
         automationBar.setVisibility(hasGoal || taskCount > 0 ? View.VISIBLE : View.GONE);
         if (!hasGoal && taskCount == 0) return;
@@ -2468,7 +2705,7 @@ public final class MainActivity extends Activity {
         if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) {
             outgoingMessage = pending;
             editingSeq = -1; editingText = "";
-            composer.setText(""); selectedImages.clear(); renderImage();
+            composer.setText(""); selectedImages.clear(); selectedDocuments.clear(); renderImage();
             persistDraft();
             outgoingState("sending");
             scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
@@ -2561,6 +2798,7 @@ public final class MainActivity extends Activity {
             if (result.optBoolean("ok") && submitted && target != null) {
                 JSONObject drafts = saved.optJSONObject("drafts"); if (drafts != null) drafts.remove(target);
                 JSONObject edits = saved.optJSONObject("draftEdits"); if (edits != null) edits.remove(target);
+                JSONObject files = saved.optJSONObject("draftAttachments"); if (files != null) files.remove(target);
             }
             store.save(saved); credentials = saved;
             if (result.optBoolean("ok")) {
@@ -2575,10 +2813,7 @@ public final class MainActivity extends Activity {
                     // draft does not silently become a brand new message.
                     if (payload.has("editSeq") && conversationId.equals(target)) editingSeq = payload.optLong("editSeq");
                     composer.setText(outgoingMessage.optString("draft", payload.optString("prompt")));
-                    selectedImages.clear();
-                    JSONArray images = payload.optJSONArray("images");
-                    if (images != null) for (int index = 0; index < images.length(); index++) selectedImages.add(images.getString(index));
-                    else if (payload.has("image")) selectedImages.add(payload.getString("image"));
+                    ChatAttachments.restore(payload, selectedImages, selectedDocuments);
                     imageConversation = conversationId; imageComputer = credentials.optString("address"); renderImage();
                     persistDraft();
                     outgoingState("failed");
@@ -2606,12 +2841,16 @@ public final class MainActivity extends Activity {
         }
         if (networkScreen) { leaveNetwork(); return; }
         if (screen.equals("detail")) { persistDraft(); listScreen(); loadList(false); }
-        else if (screen.equals("list") || screen.equals("pair")) { computersScreen(); refreshComputers(); }
+        else if (screen.equals("list") || screen.equals("pair")) {
+            pendingScannedPairing = false; pairingDraft = null;
+            computersScreen(); refreshComputers();
+        }
         else if (!screen.equals("home")) homeScreen();
         else super.onBackPressed();
     }
 
     private void showNetwork() {
+        if (screen.equals("pair")) rememberPairingDraft();
         if (!screen.equals("network")) networkReturn = screen;
         screen = "network";
         stopNetwork(); networkScreen = true; loginLaunched = false;

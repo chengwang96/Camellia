@@ -21,7 +21,8 @@ Object.assign(chinese, { importHint: '来源：这台 GUI 电脑。目标：{tar
 const boundDevice = new URLSearchParams(location.search).get('device') || '';
 const harnessNames = { codex: 'Codex CLI', claude: 'Claude Code', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' };
 const harnessIcons = { codex: 'codex.png', claude: 'claude.svg', dsh: 'deepseek.svg', kimi: 'kimi.svg', antigravity: 'antigravity.svg', pi: 'pi.svg' };
-Object.assign(english, { fork: 'Fork', switchEngine: 'Switch harness', compact: 'Compact context', editResend: 'Edit & resend', prompt: 'Message' });
+Object.assign(english, { fork: 'Fork', switchEngine: 'Switch harness', compact: 'Compact context', editResend: 'Edit & resend', prompt: 'Message', accountModels: 'Account models', apiModels: 'Shared API routes' });
+Object.assign(chinese, { accountModels: '账号模型', apiModels: '共享 API 路由' });
 Object.assign(english, { automation: 'Goals & scheduled tasks', pause: 'Pause', resume: 'Resume', clear: 'Clear', noAutomation: 'No goals or scheduled tasks. Ask the harness in this conversation to create one.' });
 Object.assign(chinese, { pause: '暂停', resume: '恢复', clear: '清除', noAutomation: '暂无目标或定时任务。可在当前会话中直接提出创建请求。' });
 Object.assign(chinese, { fork: '分叉会话', switchEngine: '切换引擎', compact: '压缩上下文', editResend: '编辑并重发', prompt: '消息' });
@@ -421,7 +422,22 @@ function showDialog(title, hint, fields, action, prepared = false) {
   for (const field of fields) {
     const label = document.createElement('label'); label.textContent = copy(field.key); label.htmlFor = `field-${field.key}`;
     const input = document.createElement(field.options ? 'select' : 'input'); input.id = label.htmlFor; input.name = field.key; input.required = !field.optional;
-    if (field.options) input.append(...field.options.map(option => new Option(option.name, option.id ?? '')));
+    if (field.options) {
+      // Options may name a group so a select can separate, for example, account
+      // models from shared API routes; ungrouped options stay at the top.
+      const groups = new Map();
+      for (const option of field.options) {
+        let parent = input;
+        if (option.group) {
+          if (!groups.has(option.group)) {
+            const group = document.createElement('optgroup'); group.label = option.group;
+            groups.set(option.group, group); input.append(group);
+          }
+          parent = groups.get(option.group);
+        }
+        parent.append(new Option(option.name, option.id ?? ''));
+      }
+    }
     else { input.type = field.secret ? 'password' : 'text'; input.maxLength = field.key === 'prompt' ? 16000 : field.key === 'path' ? 1024 : 200; input.autocomplete = 'off'; }
     if (field.key === 'port') { input.type = 'number'; input.inputMode = 'numeric'; input.min = '1'; input.max = '65535'; input.step = '1'; }
     if (field.key === 'ip') { input.inputMode = 'decimal'; input.placeholder = '100.x.y.z'; }
@@ -620,7 +636,11 @@ function configureConversation(prepared = false) {
   if (!settings.models.length) { elements.error.textContent = copy('noModels'); return; }
   const expectedSettings = settings.version;
   const selectedModel = settings.models.find(model => model.id === settings.model);
-  const fields = [{ key: 'model', options: settings.models, value: settings.model }, { key: 'permission', options: settings.permissionLevels.map(id => ({ id, name: copy(id) })), value: settings.permissionMode }];
+  // Keep the two connections apart: an account model can run through the
+  // subscription while every other entry is a shared API route.
+  const modelOptions = settings.models.map(model => ({ ...model, group: model.connection === 'api' && hasConnection(settings.models, 'subscription') ? copy('apiModels')
+    : model.connection === 'subscription' && hasConnection(settings.models, 'api') ? copy('accountModels') : '' }));
+  const fields = [{ key: 'model', options: modelOptions, value: settings.model }, { key: 'permission', options: settings.permissionLevels.map(id => ({ id, name: copy(id) })), value: settings.permissionMode }];
   fields.push({ key: 'thinking', optional: true, options: [{ id: '', name: copy('default') }, ...(selectedModel?.thinking || []).map(id => ({ id, name: id }))], value: settings.thinking || '' });
   showDialog(`${copy('configure')} · ${currentDevice().name}`, snapshot.conversation.title, fields, values => command(conversationId, { action: 'configure', expectedSettings,
     settings: { model: values.model, permissionMode: values.permission, thinking: values.thinking } }), prepared);
@@ -653,6 +673,7 @@ function queueRefresh() {
     void run(() => refresh());
   }, 350);
 }
+function hasConnection(models, connection) { return models.some(model => model.connection === connection); }
 bridge.onEvent(event => {
   if (event.deviceId && (event.deviceId !== selected || event.watchId !== watchId)) return;
   if (event.type === 'offline') { offline(); return; }

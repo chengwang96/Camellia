@@ -104,6 +104,52 @@ function log(message) {
   }
 }
 
+// A crash currently ends the log mid-sentence with nothing to explain it, which
+// makes a real failure indistinguishable from a deliberate quit. Record the
+// reason and end the process explicitly so the next start sees what happened.
+// These handlers must never throw and never touch the window or app state.
+function describe(value) {
+  try {
+    if (value instanceof Error) return String(value.stack || value.message || value).trimEnd();
+    return typeof value === 'string' ? value : JSON.stringify(value) ?? String(value);
+  } catch {
+    try { return String(value); } catch { return '[Unprintable error]'; }
+  }
+}
+function logFatal(message) {
+  // app.exit does not wait for the ordinary log stream to flush.
+  const line = `[${new Date().toISOString()}] ${message}\n`;
+  try {
+    fs.mkdirSync(logDir(), { recursive: true });
+    fs.appendFileSync(logPath(), line);
+  } catch {
+    try { process.stderr?.write(line); } catch { /* Reporting cannot replace the original failure. */ }
+  }
+}
+function installCrashHandlers() {
+  process.on('uncaughtException', error => {
+    logFatal('FATAL uncaughtException: ' + describe(error));
+    process.exitCode = 1;
+    // Never throw from the crash path: the test harness loads this file with a
+    // mocked Electron that has no app.exit, and throwing here would replace the
+    // original failure with a confusing one.
+    if (typeof app.exit === 'function') app.exit(1);
+  });
+  process.on('unhandledRejection', reason => {
+    logFatal('FATAL unhandledRejection: ' + describe(reason));
+  });
+  // A renderer or utility process dying leaves a blank window or a stuck action
+  // with no trace in the main log, so record which process went and why.
+  app.on('render-process-gone', (_event, contents, details) => {
+    const url = (() => { try { return contents?.getURL?.() || ''; } catch { return ''; } })();
+    log(`render process gone: reason=${details?.reason} exitCode=${details?.exitCode} url=${url}`);
+  });
+  app.on('child-process-gone', (_event, details) => {
+    log(`child process gone: type=${details?.type} reason=${details?.reason} exitCode=${details?.exitCode}`);
+  });
+}
+installCrashHandlers();
+
 // ---------------------------------------------------------------------------
 // Config (stored in the app's own userData, NOT in ~/.dsh which dsh itself owns)
 // ---------------------------------------------------------------------------
@@ -325,7 +371,24 @@ function ollamaProxyConfigPath() {
 }
 function readOllamaProxyConfig() { return routerConfig.loadConfig(ollamaProxyConfigPath()); }
 let ollamaProxyHandle = null;
+let subscriptionUsageStore = null;
+function subscriptionUsage() {
+  return subscriptionUsageStore ||= require('../api/subscription-usage').createSubscriptionUsage({
+    file: path.join(app.getPath('userData'), 'subscription-usage.json'),
+    onChange: () => broadcastApiRouter(apiRouterState()),
+  });
+}
+function subscriptionUsageState() {
+  return subscriptionUsage().state(require('../api/subscription-usage').subscriptionProfiles(loadConfig()));
+}
+function createUsageMeter(engine, { settings, home, version }) {
+  if (settings.connection !== 'subscription') return null;
+  return require('../engines/subscription-meter').createSubscriptionMeter({ engine, home, version,
+    accountId: settings.subscriptionId || 'default', model: settings.model, log,
+    record: value => subscriptionUsage().record(value) });
+}
 function broadcastApiRouter(state) {
+  state = { ...state, subscriptionUsage: subscriptionUsageState() };
   for (const window of [mainWindow, settingsWindow]) {
     if (window && !window.isDestroyed()) window.webContents.send('dsh:api-router-state', state);
   }
@@ -380,7 +443,7 @@ function broadcastAccountInsights(state) {
 }
 async function refreshInsights(payload = {}) {
   const wanted = String(payload.subscriptionId || '');
-  const kimiIds = !payload.providerId && !payload.keyId
+  const kimiIds = !payload.apiOnly && !payload.providerId && !payload.keyId
     ? kimiAccount.list().map(profile => profile.id).filter(id => !wanted || wanted === 'kimi:' + id) : [];
   await Promise.all([
     payload.subscriptionId ? null : insights().refresh(payload),
@@ -401,7 +464,7 @@ function apiRouterState() {
   try {
     const cfg = readOllamaProxyConfig();
     return { ok: true, ...(ollamaProxyHandle ? ollamaProxyHandle.getState() : { ...routerConfig.publicState(cfg), running: false, url: `http://127.0.0.1:${cfg.port}` }),
-      presets: routerConfig.PRESETS, configPath: ollamaProxyConfigPath() };
+      presets: routerConfig.PRESETS, configPath: ollamaProxyConfigPath(), subscriptionUsage: subscriptionUsageState() };
   } catch (e) { return { ok: false, error: e.message }; }
 }
 // Full-fidelity API route bundle shared by file export and the paired mobile
@@ -732,7 +795,7 @@ function ensureKimiSession(settings, opts) {
   if (subscription) {
     // A conversation keeps the account that owns its native session; a new one
     // uses whichever signed-in account still has quota.
-    const accountId = kimiAccount.bind(opts.sessionId);
+    const accountId = opts.conversationId && settings.subscriptionId || kimiAccount.bind(opts.sessionId);
     if (accountId) settings = { ...settings, subscriptionId: accountId };
     home = kimiAccount.home(accountId);
     const account = kimiAccount.state(accountId);
@@ -759,11 +822,15 @@ function ensureKimiSession(settings, opts) {
     model: settings.model, contextWindow: settings.contextWindow, env: runtimeEnvironment(exe, 'kimi'), ...engineSettings().kimiConfig() });
   const previousClosed = current?.shutdown();
   const session = new KimiSession({ gen: ++kimiGen, settings, opts, exe, spec, spawn, log, history: kimiHistory,
+    usageMeter: createUsageMeter('kimi', { settings, home, version: runtimes().locate('kimi')?.version }),
     onEvent: event => {
       if (kimiSessions.get(opts) === session) publishChatEvent('kimi', { ...event, conversationId: opts.conversationId });
     },
     onSessionId: id => {
       saveConfig({ kimiSessionConnections: { ...loadConfig().kimiSessionConnections, [id]: settings.connection || 'api' },
+        // A new session starts from the connection the last one actually used,
+        // so the settings page does not need a global selector.
+        kimi: { ...loadConfig().kimi, connection: settings.connection || 'api' },
         ...(subscription && settings.subscriptionId ? { kimiSessionAccounts: { ...loadConfig().kimiSessionAccounts, [id]: settings.subscriptionId } } : {}) });
       kimiWorkspaces.recordContext(id, opts.workspaceId, settings.cwd);
       if (!opts.conversationId) kimiGoalDriver.rememberSession(session);
@@ -809,6 +876,7 @@ const kimiAccount = createAccountPool({ engine: 'kimi', userData: app.getPath('u
 });
 
 const codex = createCodex({ dataDir: app.getPath('userData'), loadConfig, saveConfig,
+  createUsageMeter,
   getRoute: resolveClaudeRoute, getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
   getContextWindow: modelContextWindow,
   runtimes, log, environment: () => runtimeEnvironment(detectNode(), 'codex'), openExternal: url => shell.openExternal(url),
@@ -825,6 +893,7 @@ const codex = createCodex({ dataDir: app.getPath('userData'), loadConfig, saveCo
 });
 
 const antigravity = createAntigravity({ dataDir: app.getPath('userData'), loadConfig, saveConfig,
+  createUsageMeter,
   cliSettingsFile: path.join(os.homedir(), '.gemini/antigravity-cli/settings.json'), node: detectNode,
   openLogin: (file, env) => new Promise((resolve, reject) => {
     const windows = process.platform === 'win32';
@@ -875,8 +944,8 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
   createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: detectNode() }),
   drivers: {
     claude: { history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
-    kimi: { history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
-    codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
+    kimi: { history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, subscriptionAccounts: () => kimiAccount.state(), ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
+    codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, subscriptionAccounts: () => codex.accountState(), ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
     antigravity: { history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, nativeAutoCompaction: true },
     dsh: dshChat,
     pi: piChat,
@@ -1611,7 +1680,12 @@ if (!gotSingleInstanceLock) {
     'goal-pause': () => kimiGoalDriver.setPhase('paused'), 'goal-resume': () => kimiGoalDriver.resume(),
     'goal-complete': () => kimiGoalDriver.setPhase('complete'), 'goal-clear': () => kimiGoalDriver.clear(),
     'account-state': () => ({ ok: true, ...kimiAccount.state() }),
-    'account-refresh': async () => ({ ok: true, ...await kimiAccount.refresh() }),
+    'account-refresh': async payload => {
+      const id = payload?.id || kimiAccount.activeId();
+      if (!kimiAccount.list().some(account => account.id === id)) throw new Error('Unknown Kimi account');
+      await kimiAccount.refresh(id); await kimiAccount.refreshUsage({}, id);
+      return { ok: true, ...kimiAccount.state() };
+    },
     'account-select': payload => ({ ok: true, ...kimiAccount.select(payload?.id) }),
     'account-add': payload => { kimiAccount.add(payload?.label); return { ok: true, ...kimiAccount.state() }; },
     'account-remove': async payload => ({ ok: true, ...await kimiAccount.remove(payload?.id) }),

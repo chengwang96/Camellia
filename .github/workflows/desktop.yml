@@ -58,12 +58,22 @@ jobs:
         run: npm run setup:runtimes -- claude codex dsh kimi antigravity pi
       - name: Prepare the Antigravity subscription CLI
         run: npm run setup:antigravity:subscription
-      # Kimi's Glob/Grep tools shell out to ripgrep. The macOS image already
-      # ships it; Windows does not, so Kimi bootstraps its own copy and the audit
-      # fails whenever that download cannot reach the network.
-      - name: Install ripgrep for the native tool audit
+      # Kimi's Glob/Grep tools shell out to ripgrep. Install it explicitly on
+      # both runners so the audit does not depend on the image's preinstalled
+      # tools or Kimi's automatic bootstrap reaching the network.
+      - name: Install ripgrep for the native tool audit (Windows)
         if: matrix.platform == 'windows'
         run: choco install ripgrep --no-progress -y
+      - name: Install ripgrep for the native tool audit (macOS)
+        if: matrix.platform == 'macos'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then
+            brew install ripgrep
+          fi
+      - name: Verify ripgrep is available to native tools
+        run: rg --version
       - name: Unit tests
         timeout-minutes: 10
         run: node --test --test-force-exit tests/*.test.js

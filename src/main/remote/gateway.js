@@ -6,6 +6,7 @@ const { fail } = require('./access');
 const { isTailscaleIPv4 } = require('./tailscale');
 const { listArtifacts, openArtifact } = require('./artifacts');
 const { pipeline } = require('node:stream/promises');
+const { MAX_REQUEST } = require('./attachments');
 
 function number(value, fallback) {
   if (value === null) return fallback;
@@ -159,7 +160,7 @@ class RemoteGateway {
     const command = /^\/v1\/conversations\/([a-f0-9-]{36})\/commands$/.exec(url.pathname);
     if (command && request.method === 'POST' && !url.search && this.commands) {
       if (device.permission !== 'control') fail(403, 'Control permission required');
-      const payload = await body(request, 13_000_000);
+      const payload = await body(request, MAX_REQUEST);
       this.json(response, 200, await this.commands.execute(device, command[1], payload, this.instanceId));
       return;
     }
@@ -199,7 +200,7 @@ class RemoteGateway {
   }
   connectionInfo(device) {
     const fullControl = device.permission === 'control' && device.allWorkspaces === true;
-    const capabilities = this.commands ? ['artifacts', 'attachments', 'send', 'stop', 'approve', 'create', 'image', 'multi-image', 'configure', 'move', 'archive', 'restore', 'conversation-actions',
+    const capabilities = this.commands ? ['artifacts', 'attachments', 'expanded-attachments', 'send', 'stop', 'approve', 'create', 'image', 'multi-image', 'configure', 'move', 'archive', 'restore', 'conversation-actions',
       ...(fullControl ? ['create-workspace', 'delete-workspace', 'rename-workspace'] : [])] : ['artifacts'];
     if (this.apiRoutes && fullControl) capabilities.push('api-keys');
     if (this.apiImport && fullControl) capabilities.push('api-import');

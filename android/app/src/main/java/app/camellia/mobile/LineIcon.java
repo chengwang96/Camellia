@@ -83,7 +83,16 @@ final class LineIcon extends Drawable {
             case "folder":
                 path.moveTo(3, 18); path.lineTo(3, 7); path.quadTo(3, 5.2f, 5, 5.2f); path.lineTo(10, 5.2f); path.lineTo(13, 7.8f); path.lineTo(19, 7.8f); path.quadTo(21, 7.8f, 21, 9.5f);
                 path.moveTo(3, 18); path.lineTo(6, 10.3f); path.lineTo(22, 10.3f); path.lineTo(19, 18.8f); path.lineTo(3, 18.8f); canvas.drawPath(path, paint); break;
+            case "check": path.moveTo(4, 12); path.lineTo(9, 17); path.lineTo(20, 6); canvas.drawPath(path, paint); break;
+            case "switch-computer":
+                canvas.drawRoundRect(3, 3, 18, 14, 2, 2, paint); canvas.drawLine(10.5f, 14, 10.5f, 18, paint);
+                path.moveTo(5, 18); path.lineTo(15, 18); path.moveTo(18, 17); path.lineTo(21, 20); path.lineTo(18, 23);
+                path.moveTo(21, 20); path.lineTo(12, 20); canvas.drawPath(path, paint); break;
             case "computer": canvas.drawRoundRect(4, 3, 20, 15, 2, 2, paint); canvas.drawLine(12, 15, 12, 20, paint); canvas.drawLine(7, 20, 17, 20, paint); break;
+            case "file":
+                path.moveTo(5, 2); path.lineTo(14, 2); path.lineTo(20, 8); path.lineTo(20, 22); path.lineTo(5, 22); path.close();
+                path.moveTo(14, 2); path.lineTo(14, 8); path.lineTo(20, 8); path.moveTo(8, 13); path.lineTo(16, 13);
+                path.moveTo(8, 17); path.lineTo(14, 17); canvas.drawPath(path, paint); break;
             case "image":
                 canvas.drawRoundRect(3, 4, 21, 20, 2.5f, 2.5f, paint);
                 canvas.drawCircle(8.5f, 9, 1.6f, paint);

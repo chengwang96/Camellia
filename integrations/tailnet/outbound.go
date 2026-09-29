@@ -121,11 +121,11 @@ func outboundHandler(target, token string, dial tailnetDial) (http.Handler, *htt
 			http.Error(response, "Unsupported device endpoint", http.StatusBadRequest)
 			return
 		}
-		if request.ContentLength > 13_000_000 {
+		if request.ContentLength > 48*1024*1024 {
 			http.Error(response, "Device request is too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		request.Body = http.MaxBytesReader(response, request.Body, 13_000_000)
+		request.Body = http.MaxBytesReader(response, request.Body, 48*1024*1024)
 		proxy.ServeHTTP(response, request)
 	})
 	return handler, transport, nil

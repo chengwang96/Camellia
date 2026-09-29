@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { entriesOf, searchHistory, recentFiles } = require('../src/main/conversation-index');
+const { entriesOf, searchHistory, recentFiles, buildHistoryIndex } = require('../src/main/conversation-index');
 
 const cwd = path.resolve('/project');
 
@@ -91,4 +91,18 @@ test('an empty query lists the most recently produced files, live ones first', t
   assert.deepEqual(recent.map(entry => path.basename(entry.path)), ['新的.md', '旧的.md', '已删除.md']);
   assert.deepEqual(recent.map(entry => Boolean(entry.exists)), [true, true, false]);
   assert.deepEqual(recentFiles({ entries, cwd: root, limit: 2 }).map(entry => path.basename(entry.path)), ['新的.md', '旧的.md']);
+});
+
+test('equal timestamps preserve newest conversation and newest turn order', t => {
+  const fs = require('node:fs'), os = require('node:os');
+  const { removeTree } = require('./test-fs.cjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-recent-tie-'));
+  t.after(() => removeTree(root));
+  const names = ['a-old-conversation.md', 'b-old-turn.md', 'z-new-turn.md'];
+  for (const name of names) fs.writeFileSync(path.join(root, name), name);
+  const row = name => ({ role: 'assistant', text: name, at: 1000, artifacts: [{ path: path.join(root, name) }] });
+  const histories = { older: [row(names[0])], newer: [row(names[1]), row(names[2])] };
+  const manager = { get: id => ({ id, cwd: root }), rows: conversation => histories[conversation.id] };
+  const entries = buildHistoryIndex(manager, { sessions: [{ id: 'newer' }, { id: 'older' }] });
+  assert.deepEqual(recentFiles({ entries }).map(entry => path.basename(entry.path)), [...names].reverse());
 });

@@ -73,6 +73,94 @@ async function nativeFixture(context, compact) {
   return { ...harness, conversation };
 }
 
+function subscriptionFixture(t, engine = 'codex') {
+  const h = fixture(t), bindings = new Map();
+  const state = { activeId: 'a', accounts: ['a', 'b', 'c'].map(id => ({ id, signedIn: true, exhausted: false })) };
+  h.drivers[engine].subscriptionAccounts = () => state;
+  h.drivers[engine].settings = id => ({ connection: 'subscription', model: 'fixture', subscriptionId: bindings.get(id) });
+  const ensure = h.drivers[engine].ensure;
+  h.drivers[engine].ensure = opts => {
+    const s = ensure(opts); s.settings = opts.settings;
+    bindings.set(s.sessionId, opts.settings.subscriptionId); return s;
+  };
+  return { ...h, state };
+}
+
+for (const engine of ['codex', 'kimi']) {
+  test(engine + ' account selection continues an existing chat with history in a new native session', async t => {
+    const h = subscriptionFixture(t, engine);
+    const first = await h.manager.send(engine, { prompt: 'Remember my task' });
+    h.finish(engine); await first.done;
+    const prior = h.sent[0].session.sessionId;
+    h.state.activeId = 'b';
+    const next = await h.manager.send(engine, { sessionId: first.sessionId, prompt: 'Continue' });
+    assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'b');
+    assert.ok(!h.sent.at(-1).opts.sessionId);
+    assert.match(h.sent.at(-1).prompt, /Remember my task/);
+    assert.equal(h.manager.get(first.sessionId).retiredSegments[0].nativeId, prior);
+    h.finish(engine); await next.done;
+  });
+
+  test(engine + ' quota rotation tries each account once and keeps one user turn', async t => {
+    const h = subscriptionFixture(t, engine);
+    const run = await h.manager.send(engine, { prompt: 'Do the task' });
+    for (let i = 0; i < 3; i++) { h.finish(engine, 'error', 'Usage limit reached'); await h.flush(); }
+    assert.equal((await run.done).is_error, true);
+    assert.deepEqual(h.sent.map(s => s.opts.settings.subscriptionId), ['a', 'b', 'c']);
+    assert.equal(h.manager.rows(h.manager.get(run.sessionId)).filter(r => r.role === 'user').length, 1);
+    assert.match(h.sent[1].prompt, /Do the task/);
+    assert.match(h.sent[1].prompt, /Do not repeat completed actions/);
+  });
+
+  test(engine + ' ordinary errors and unfinished tools do not rotate', async t => {
+    for (const pendingTool of [false, true]) {
+      const h = subscriptionFixture(t, engine);
+      const run = await h.manager.send(engine, { prompt: 'Task' });
+      if (pendingTool) h.manager.capture(engine, { type: 'gui:tool', id: 'write', status: 'in_progress', runId: h.sent[0].session.gen });
+      h.finish(engine, 'error', pendingTool ? '429 quota exhausted' : 'File not found');
+      await run.done; await h.flush();
+      assert.equal(h.sent.length, 1);
+    }
+  });
+
+  test(engine + ' invalid login gives an actionable error when no backup is available', async t => {
+    const h = subscriptionFixture(t, engine);
+    h.state.accounts = h.state.accounts.slice(0, 1);
+    const run = await h.manager.send(engine, { prompt: 'Task' });
+    h.finish(engine, 'error', '401 unauthorized');
+    assert.match((await run.done).result, /Sign in again in Settings/);
+    assert.equal(h.sent.length, 1);
+  });
+
+  test(engine + ' account retry preserves completed tools and partial output, then resolves the original turn', async t => {
+    const h = subscriptionFixture(t, engine);
+    const run = await h.manager.send(engine, { prompt: 'Finish the work' });
+    const gen = h.sent[0].session.gen;
+    h.manager.capture(engine, { type: 'gui:tool', id: 'write', status: 'completed', output: 'saved file', runId: gen });
+    h.manager.capture(engine, { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'File already written' } }, runId: gen });
+    h.finish(engine, 'error', 'refresh token expired'); await h.flush();
+    assert.equal(h.sent.length, 2);
+    assert.match(h.sent[1].prompt, /saved file/);
+    assert.match(h.sent[1].prompt, /File already written/);
+    assert.equal(h.events.filter(e => e.type === 'conversation:continued').length, 1);
+    h.finish(engine, 'success', 'Finished');
+    assert.equal((await run.done).is_error, false);
+    assert.equal(h.events.filter(e => e.type === 'result').length, 1);
+  });
+
+  test(engine + ' stopping during account recovery prevents sending to the backup', async t => {
+    const h = subscriptionFixture(t, engine);
+    const run = await h.manager.send(engine, { prompt: 'Task' });
+    let release;
+    h.manager.prepare = () => new Promise(resolve => { release = resolve; });
+    h.finish(engine, 'error', 'Usage limit reached'); await h.flush();
+    await h.manager.cancel({ sessionId: run.sessionId, runId: run.runId });
+    release(); await h.flush();
+    assert.equal((await run.done).subtype, 'stopped');
+    assert.equal(h.sent.length, 1);
+  });
+}
+
 for (const engine of ['claude', 'kimi', 'dsh', 'antigravity']) test(engine + ' native automatic compaction owns same-session pressure without requiring a manual API', async context => {
   const harness = fixture(context), manager = harness.manager;
   harness.drivers[engine].nativeAutoCompaction = true;
@@ -544,6 +632,163 @@ for (const engine of ENGINES) test(engine + ' conversation tools create, fork, c
   assert.equal(manager.messages(manager.get(empty.conversation.id)).length, 0);
   harness.finish(engine, 'success', 'Parent finished', parentSession); await parent.done;
   assert.equal(call('list').ok, false);
+});
+
+test('device-wide read tools list, read and search every stored conversation without side effects', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  const parent = await manager.send('codex', { prompt: 'Delegate work' });
+  const token = manager.active.get(parent.sessionId).goalRunToken;
+  const call = (operation, args = {}) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation, { run_token: token, ...args });
+  // A conversation the caller does not own, with its stored settings cleared, so
+  // any lazy settings read by the tool would show up as a write.
+  const stranger = manager.create('dsh', undefined, 'Budget review');
+  manager.append(stranger, { role: 'user', text: '把预算表在周五前发给供应商' });
+  manager.append(stranger, { role: 'assistant', text: '已整理，等待确认' });
+  manager.save(stranger);
+  stranger.engineSettings = {}; delete stranger.apiModel; manager.save(stranger);
+  const stored = JSON.stringify(manager.rawRows(stranger));
+  const sessions = call('sessions');
+  assert.equal(sessions.ok, true);
+  assert.deepEqual(sessions.conversations.map(item => item.id).sort(), [parent.sessionId, stranger.id].sort());
+  assert.equal(sessions.conversations[0].id, stranger.id);
+  assert.equal(sessions.conversations[0].title, 'Budget review');
+  assert.equal(sessions.conversations[0].engine, 'dsh');
+  assert.ok(!('messages' in sessions.conversations[0]));
+  assert.equal(JSON.stringify(manager.rawRows(stranger)), stored);
+  assert.deepEqual(manager.get(stranger.id).engineSettings, {});
+  assert.equal(manager.get(stranger.id).apiModel, undefined);
+  // Reading any stored transcript, including one this conversation does not own.
+  const history = call('history', { conversation_id: stranger.id });
+  assert.equal(history.ok, true);
+  assert.equal(history.count, 2);
+  assert.equal(history.oldest_seq, 1);
+  assert.equal(history.messages.at(-1).text, '已整理，等待确认');
+  assert.equal(history.truncated, false);
+  assert.equal(JSON.stringify(manager.rawRows(stranger)), stored);
+  const page = call('history', { conversation_id: stranger.id, older_than: 2 });
+  assert.equal(page.messages.length, 1);
+  assert.equal(page.messages[0].text, '把预算表在周五前发给供应商');
+  assert.equal(call('history', { conversation_id: 'missing' }).ok, false);
+  // All terms must appear in the same message, and the reply names the source.
+  const search = call('search', { query: '预算表 供应商' });
+  assert.equal(search.ok, true);
+  assert.equal(search.results.length, 1);
+  assert.equal(search.results[0].conversation.id, stranger.id);
+  assert.equal(search.results[0].messages, 2);
+  assert.match(search.results[0].match.text, /预算表/);
+  assert.equal(call('search', { query: '预算表 确认' }).results.length, 0);
+  assert.equal(call('search', { query: '!!!' }).ok, false);
+  // Archived conversations are hidden like the sidebar, but remain readable.
+  manager.workspaces.archiveSession(stranger.id, true);
+  assert.equal(call('sessions').conversations.some(item => item.id === stranger.id), false);
+  assert.equal(call('sessions', { archived: true }).conversations.find(item => item.id === stranger.id).archived, true);
+  assert.equal(call('history', { conversation_id: stranger.id }).archived, true);
+  assert.equal(call('search', { query: '预算表' }).results.length, 0);
+});
+
+test('stored transcript pagination visits every message without skipping intermediate pages', context => {
+  const { manager } = fixture(context);
+  const parent = manager.create('codex');
+  const conversation = manager.create('dsh');
+  for (let index = 0; index < 53; index++) {
+    manager.append(conversation, { role: 'user', text: 'Message ' + index });
+    manager.append(conversation, { role: 'tool', text: '{}' });
+  }
+  const { callConversationTool } = require('../src/engines/conversation-control');
+  const actual = [];
+  let older;
+  for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+    const page = callConversationTool(manager, parent.id, 'camellia_conversation_history',
+      { conversation_id: conversation.id, older_than: older, limit: 10 });
+    if (!page.messages.length) { assert.equal(page.oldest_seq, null); break; }
+    assert.equal(page.oldest_seq, page.messages[0].seq);
+    actual.unshift(...page.messages.map(row => row.seq));
+    older = page.oldest_seq;
+  }
+  assert.deepEqual(actual, manager.messages(conversation).map(row => row.seq));
+});
+
+test('device conversation metadata follows the current engine and connection without saving settings', context => {
+  const { manager } = fixture(context);
+  const parent = manager.create('codex');
+  const conversation = manager.create('dsh');
+  conversation.apiModel = 'current-api-model';
+  conversation.segments.codex = {};
+  conversation.engineSettings = { dsh: { connection: 'api' },
+    codex: { connection: 'subscription', model: 'stale-api-model', subscriptionModel: 'account-model' } };
+  const before = JSON.stringify(conversation.engineSettings);
+  const { callConversationTool } = require('../src/engines/conversation-control');
+  const read = () => callConversationTool(manager, parent.id, 'camellia_conversation_sessions', {})
+    .conversations.find(entry => entry.id === conversation.id);
+  assert.equal(read().engine, 'dsh');
+  assert.equal(read().connection, 'api');
+  assert.equal(read().model, 'current-api-model');
+  conversation.currentEngine = 'codex';
+  assert.equal(read().model, 'account-model');
+  assert.equal(JSON.stringify(conversation.engineSettings), before);
+  conversation.engineSettings.codex.connection = 'api';
+  assert.equal(read().model, 'current-api-model');
+});
+
+test('transcript search finds older messages and accepts a single-letter search word', context => {
+  const { manager } = fixture(context);
+  const parent = manager.create('codex');
+  const conversation = manager.create('dsh');
+  manager.append(conversation, { role: 'user', text: 'Q release anchor' });
+  for (let index = 0; index < 50; index++) manager.append(conversation, { role: 'assistant', text: 'Later message ' + index });
+  const { callConversationTool } = require('../src/engines/conversation-control');
+  for (const query of ['release anchor', 'Q']) {
+    const result = callConversationTool(manager, parent.id, 'camellia_conversation_search', { query });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0].conversation.id, conversation.id);
+    assert.equal(result.results[0].match.seq, 1);
+  }
+});
+
+test('owned children and scheduled checks may read the device, but still cannot control conversations', async context => {
+  const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => harness.manager.closeGoalTools());
+  const manager = harness.manager;
+  const parent = await manager.send('codex', { prompt: 'Delegate the audit' });
+  const parentSession = harness.sent.at(-1).session;
+  const token = manager.active.get(parent.sessionId).goalRunToken;
+  const call = (operation, args = {}) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation, { run_token: token, ...args });
+  const child = manager.get(call('create', { request_id: 'reader', title: 'Reader' }).conversation.id);
+  const sendArgs = { conversation_id: child.id, request_id: 'read', prompt: 'Look around' };
+  assert.equal(call('send', sendArgs).ok, true);
+  await harness.flush();
+  const childSession = harness.sent.at(-1).session;
+  const childToken = manager.active.get(child.id).goalRunToken;
+  const childCall = (operation, args = {}) => manager.callGoalTool(child.id, 'camellia_conversation_' + operation, { run_token: childToken, ...args });
+  assert.equal(childCall('sessions').ok, true);
+  assert.ok(childCall('sessions').conversations.some(item => item.id === parent.sessionId));
+  assert.equal(childCall('search', { query: 'audit' }).ok, true);
+  assert.ok(childCall('search', { query: 'audit' }).results.some(result => result.conversation.id === parent.sessionId));
+  assert.equal(childCall('history', { conversation_id: parent.sessionId }).ok, true);
+  assert.equal(childCall('create', { request_id: 'recursive', title: 'Forbidden' }).ok, false);
+  assert.equal(childCall('send', { conversation_id: parent.sessionId, request_id: 'self', prompt: 'No' }).ok, false);
+  const childDone = manager.active.get(child.id).done, parentDone = manager.active.get(parent.sessionId).done;
+  harness.finish('codex', 'success', 'Child read the device', childSession);
+  await childDone;
+  harness.finish('codex', 'success', 'Parent finished', parentSession);
+  await parentDone;
+  const created = manager.tasks.create(parent.sessionId, 'codex', { instruction: 'Check the log', user_request: 'q', intervalMinutes: 10, maxRepairs: 0 });
+  const task = manager.tasks.get(created.id, parent.sessionId);
+  task.nextRunAt = Date.now() - 1;
+  await manager.tasks.tick(); await harness.flush();
+  const checkSession = harness.sent.at(-1).session;
+  const checkToken = manager.active.get(parent.sessionId).goalRunToken;
+  const checkDone = manager.active.get(parent.sessionId).done;
+  const checkCall = (operation, args = {}) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation, { run_token: checkToken, ...args });
+  assert.equal(checkCall('sessions').ok, true);
+  assert.equal(checkCall('search', { query: 'audit' }).ok, true);
+  assert.equal(checkCall('history', { conversation_id: child.id }).ok, true);
+  assert.equal(checkCall('create', { request_id: 'scheduled', title: 'No' }).ok, false);
+  assert.equal(checkCall('send', { conversation_id: child.id, request_id: 'no', prompt: 'No' }).ok, false);
+  harness.finish('codex', 'success', 'Checked', checkSession);
+  await checkDone;
 });
 
 for (const mode of ['cancel', 'close', 'failure', 'compact-cancel', 'compact-close']) test('child startup reservation handles ' + mode, async context => {
@@ -1917,6 +2162,8 @@ test('/find recalls a file an earlier conversation wrote, by name and by descrip
 });
 
 test('a bare /find lists the files recent conversations produced, newest first', async context => {
+  const timestamp = Date.now();
+  context.mock.method(Date, 'now', () => timestamp);
   const harness = fixture(context);
   const manager = harness.manager;
   const first = manager.create('codex', undefined, '第一份材料');

@@ -32,7 +32,7 @@ public class RemoteSettingsTest extends InstrumentationTestCase {
                     View pill = bar.getChildAt(0);
                     ChatStyle style = new ChatStyle(activity);
                     assertNotNull(pill.getBackground());
-                    assertEquals(style.dp(7), pill.getElevation(), 0f); assertEquals(style.dp(1), pill.getTranslationZ(), 0f);
+                    assertEquals(style.dp(4), pill.getElevation(), 0f); assertEquals(style.dp(1), pill.getTranslationZ(), 0f);
                     assertNotNull(root.findViewWithTag("searchBarDock").getBackground());
                     assertNotNull(root.findViewWithTag("searchBarFade").getBackground());
                     assertNotNull(root.findViewWithTag("newIndependent").getBackground());
@@ -113,7 +113,8 @@ public class RemoteSettingsTest extends InstrumentationTestCase {
                     JSONObject conversation = new JSONObject().put("title", "Same title").put("activity", "running");
                     LinearLayout running = (LinearLayout) card.invoke(activity, conversation);
                     conversation.put("activity", "idle"); LinearLayout idle = (LinearLayout) card.invoke(activity, conversation);
-                    assertEquals(((TextView) idle.getChildAt(0)).getCurrentTextColor(), ((TextView) running.getChildAt(0)).getCurrentTextColor());
+                    assertEquals(((TextView) idle.findViewWithTag("conversationRowTitle")).getCurrentTextColor(),
+                        ((TextView) running.findViewWithTag("conversationRowTitle")).getCurrentTextColor());
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             getInstrumentation().waitForIdleSync();

@@ -8,9 +8,9 @@ const uid = () => crypto.randomUUID();
 const keyName = (key, index = 0) => key.name || key.maskedKey || `Key ${index + 1}`;
 const mark = type => ({ gemini: 'G', ollama: 'O', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC', qclaw: 'Q' }[type] || 'API');
 const titles = {
-  subscriptions: ["Subscription accounts", "Manage Kimi, ChatGPT and Google sign-ins and login preferences."],
-  providers: ["API Keys", "Manage API providers, keys, models and routes."],
-  usage: ["Usage", "Track requests, balances, and quotas."],
+  subscriptions: ["Subscription accounts", "Manage subscription sign-ins, quotas and login preferences."],
+  providers: ["API Keys", "Manage API providers, keys, balances, models and routes."],
+  usage: ["Usage", "Track requests and token consumption."],
   general: ["General", "Language, appearance, and local preferences."],
   archived: ["Archived", "Restore or permanently delete archived conversations."],
   mobile: ["Mobile access", "Connect your phone through Tailscale."],
@@ -28,7 +28,7 @@ function assertClean() { if (dirty) throw new Error("Save your changes before qu
 function setView(next, engine, focus) {
   if (next === 'engines' && focus === 'account') { next = 'subscriptions'; focus = engine; }
   if (next === 'providers' && ['kimi', 'codex', 'antigravity'].includes(focus)) next = 'subscriptions';
-  if (next === 'balances') next = 'usage';
+  if (next === 'balances') next = 'providers';
   // Space cleanup now lives on the Archived page; older links still open it.
   if (next === 'storage') next = 'archived';
   // The download connection lives in General; the download prompt and older
@@ -43,7 +43,8 @@ function setView(next, engine, focus) {
   engineUI.setVisible(next === 'engines');
   window.mobileAccessUI.setVisible(next === 'mobile');
   window.cliDevicesUI?.setVisible(next === 'devices');
-  if (next === 'usage') { fillUsageFilters(); renderUsage(); renderBalances(); }
+  if (next === 'usage') { fillUsageFilters(); renderUsage(); }
+  if (next === 'providers' || next === 'subscriptions') renderBalances();
   if (next === 'general') void loadDownloadSettings(focus);
   if (next === 'subscriptions') void engineUI.accountsPage(focus || engine);
   if (next === 'engines') void (focus === 'account' ? engineUI.openAccount(engine) : engineUI.select(engine || engineUI.selected()));
@@ -52,11 +53,11 @@ function setView(next, engine, focus) {
 }
 function navigateSettings(target = {}) {
   if (target.subscriptionId) balanceKey = target.subscriptionId;
-  setView(target.page || 'general', target.engine, target.focus);
+  setView(target.subscriptionId ? 'subscriptions' : target.page || 'general', target.engine, target.subscriptionId ? 'kimi' : target.focus);
 }
 const engineUI = window.createEngineSettingsUI({ api, status, navigate: navigateSettings });
 const capacityUI = window.createContextCapacityUI({ api, current, assertClean, status, esc, fmt, keyName });
-$('kimiUsage').onclick = () => navigateSettings({ page: 'usage', subscriptionId: engineUI.activeSubscriptionId() });
+$('kimiUsage').onclick = () => refreshBalances({ subscriptionId: engineUI.activeSubscriptionId() });
 api.onSettingsNavigate(navigateSettings);
 function showLive() {
   $('routerLabel').textContent = live.running ? "Router running" : "Setup required";
@@ -206,19 +207,32 @@ function fillSelect(el, options, placeholder, includeAll = true) {
   if ([...el.options].some(o => o.value === old)) el.value = old;
 }
 function fillUsageFilters() {
-  fillSelect($('usageProvider'), live.providers.map(p => [p.id, p.name]), "All providers");
-  const providers = live.providers.filter(p => !$('usageProvider').value || p.id === $('usageProvider').value);
+  const sources = usageSources();
+  fillSelect($('usageProvider'), sources.map(p => [p.id, p.name]), "All providers");
+  const providers = sources.filter(p => !$('usageProvider').value || p.id === $('usageProvider').value);
   // Key labels stay short — just enough to tell keys apart; the provider
   // dropdown sits immediately to the left. Duplicated labels gain the provider.
   const shortKey = (k, i) => { const s = keyName(k, i); return s.length > 18 ? s.slice(0, 16) + '…' : s; };
   const keyEntries = providers.flatMap(p => p.keys.map((k,i) => ({ id: k.id, label: shortKey(k,i), provider: p.name })));
   const labelCount = new Map();
   for (const e of keyEntries) labelCount.set(e.label, (labelCount.get(e.label) || 0) + 1);
-  fillSelect($('usageKey'), keyEntries.map(e => [e.id, labelCount.get(e.label) > 1 ? e.label + ' · ' + e.provider : e.label]), "All keys");
-  const models = new Set(providers.flatMap(p => p.keys.filter(k => !$('usageKey').value || k.id === $('usageKey').value).flatMap(k => [...Object.keys(live.usage?.[k.id]?.byModel || {}), ...p.models.map(m => m.id)])));
+  fillSelect($('usageKey'), keyEntries.map(e => [e.id, labelCount.get(e.label) > 1 ? e.label + ' · ' + e.provider : e.label]), "All accounts / keys");
+  const models = new Set(providers.flatMap(p => p.keys.filter(k => !$('usageKey').value || k.id === $('usageKey').value).flatMap(k => [...Object.keys((k.usage || live.usage?.[k.id])?.byModel || {}), ...p.models.map(m => m.id)])));
   fillSelect($('usageModel'), [...models].sort().map(id => [id,id]), "All models");
 }
-const statsFields = ['requests', 'failures', 'cancelled', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'unreported'];
+function usageSources() {
+  const source = $('usageSource').value;
+  const providers = source === 'subscription' ? [] : (live.providers || []).map(p => ({ ...p, source: 'api' }));
+  if (source === 'api') return providers;
+  const subscriptions = new Map();
+  for (const account of live.subscriptionUsage?.accounts || []) {
+    const id = 'subscription:' + account.engine;
+    if (!subscriptions.has(id)) subscriptions.set(id, { id, name: account.provider || account.engine, source: 'subscription', keys: [], models: [] });
+    subscriptions.get(id).keys.push({ id: 'subscription:' + account.id, name: account.label || account.accountId, usage: account.usage || {} });
+  }
+  return [...providers, ...subscriptions.values()];
+}
+const statsFields = ['requests', 'failures', 'cancelled', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'unreported', 'reasoningTokens', 'estimatedCostUsd', 'pricedTokens', 'unpricedTokens'];
 const blankStats = () => Object.fromEntries(statsFields.map(key => [key,0]));
 function addStats(target, source) { for (const key of statsFields) target[key] += source[key] || 0; return target; }
 function localDay(date) { return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; }
@@ -226,11 +240,11 @@ function usageRows() {
   const result = [], series = [], range = $('usageRange').value, selectedModel = $('usageModel').value;
   const earliest = new Date(); earliest.setDate(earliest.getDate() - (range === 'all' ? 89 : Number(range)-1));
   const min = localDay(earliest);
-  for (const p of live.providers) {
+  for (const p of usageSources()) {
     if ($('usageProvider').value && $('usageProvider').value !== p.id) continue;
     for (const [i,k] of p.keys.entries()) {
       if ($('usageKey').value && $('usageKey').value !== k.id) continue;
-      const usage = live.usage?.[k.id] || {}, totals = {}, modelDays = new Map();
+      const usage = k.usage || live.usage?.[k.id] || {}, totals = {}, modelDays = new Map();
       for (const [day, models] of Object.entries(usage.daily || {})) {
         if (day < min) continue;
         for (const [model, stats] of Object.entries(models)) {
@@ -249,8 +263,8 @@ function usageRows() {
           if (Object.values(old).some(Boolean)) totals["Legacy totals (not grouped by model)"] = old;
         }
       }
-      for (const [model, stats] of Object.entries(totals)) result.push({ model, provider: p.name, key: keyName(k,i), keyId: k.id, ...stats });
-      for (const [model, points] of modelDays) series.push({ model, provider: p.name, key: keyName(k,i), points });
+      for (const [model, stats] of Object.entries(totals)) result.push({ model, provider: p.name, source: p.source, key: keyName(k,i), keyId: k.id, ...stats });
+      for (const [model, points] of modelDays) series.push({ model, provider: p.name, source: p.source, key: keyName(k,i), points });
     }
   }
   return { rows: result.sort((a,b) => b.requests - a.requests || a.model.localeCompare(b.model)), series };
@@ -266,17 +280,28 @@ function renderChartGrid(container, charts) {
 function renderUsage() {
   const { rows, series } = usageRows(); usageData = rows;
   const sum = rows.reduce(addStats, blankStats());
-  $('usageSummary').innerHTML = [["Successful requests", sum.requests, "requests"], ["Input tokens", sum.inputTokens, "Includes cache"], ["Output tokens", sum.outputTokens, "Reported by provider"], ["Failed / Canceled", sum.failures + sum.cancelled, "requests"]].map(([label,value,note]) => `<div><small data-i18n>${label}</small><strong>${compact(value)}</strong><small data-i18n>${note}</small></div>`).join('');
+  const hasSubscriptions = $('usageSource').value === 'subscription' || rows.some(row => row.source === 'subscription');
+  const countLabel = hasSubscriptions ? 'Successful requests / turns' : 'Successful requests';
+  const countUnit = hasSubscriptions ? 'requests / turns' : 'requests';
+  $('usageSummary').innerHTML = [[countLabel, sum.requests, countUnit], ["Input tokens", sum.inputTokens, "Includes cache"], ["Output tokens", sum.outputTokens, "Reported by provider"], ["Failed / Canceled", sum.failures + sum.cancelled, countUnit]].map(([label,value,note]) => `<div><small data-i18n>${label}</small><strong>${compact(value)}</strong><small data-i18n>${note}</small></div>`).join('');
   const t = window.CamelliaI18n.t;
+  const subscription = rows.filter(row => row.source === 'subscription').reduce(addStats, blankStats());
+  const usd = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 4 }).format(value);
+  const estimate = stats => stats.pricedTokens > 0 ? usd(stats.estimatedCostUsd) + (stats.unpricedTokens || stats.unreported ? ' + ' + t('Unpriced usage') : '') : t('Unavailable');
+  $('subscriptionCost').textContent = estimate(subscription);
+  $('subscriptionCostNote').textContent = t('Standard text API equivalent, not your subscription bill.')
+    + (live.subscriptionUsage?.pricing?.checkedAt ? ' LiteLLM · ' + live.subscriptionUsage.pricing.checkedAt : '');
+  $('subscriptionUsageSince').textContent = live.subscriptionUsage?.since ? t('Subscription recording started: ' + new Date(live.subscriptionUsage.since).toLocaleDateString(window.CamelliaI18n.locale)) : '';
+  $('subscriptionCostCard').hidden = $('usageSource').value === 'api';
   const metric = $('usageMetric').value;
-  const metricLabel = t({ tokens: 'Token usage', requests: 'Successful requests', inputTokens: 'Input tokens', outputTokens: 'Output tokens', failures: 'Failed / Canceled' }[metric]);
-  renderChartGrid($('usageChart'), [...balanceChartSeries(), ...series.map(series => ({
+  const metricLabel = t({ tokens: 'Token usage', requests: countLabel, inputTokens: 'Input tokens', outputTokens: 'Output tokens', failures: 'Failed / Canceled', estimatedCostUsd: 'Subscription estimate (USD)' }[metric]);
+  renderChartGrid($('usageChart'), series.filter(row => metric !== 'estimatedCostUsd' || row.source === 'subscription' && row.points.some(point => point.stats.pricedTokens > 0)).map(series => ({
     kind: 'usage', label: `${series.key} · ${series.model}`,
-    description: `${series.provider} · ${metricLabel}`, unit: metric === 'tokens' || metric.endsWith('Tokens') ? ' Token' : ' ' + t('requests'),
-    points: series.points.map(({ at, stats }) => ({ at, value: metric === 'tokens' ? stats.inputTokens + stats.outputTokens : metric === 'failures' ? stats.failures + stats.cancelled : stats[metric] })),
-  }))]);
-  $('usageChartNotes').innerHTML = (sum.unreported ? `<p class="hint">${fmt(sum.unreported)} successful requests did not report token usage. No estimate was added.</p>` : '') + ($('usageRange').value === 'all' ? "<p class=\"hint\" data-i18n>The chart shows the last 90 recorded days. Totals and details are cumulative.</p>" : '');
-  $('usageRows').innerHTML = rows.map(row => `<tr><td>${esc(row.model)}<small>${esc(row.provider)}</small></td><td>${esc(row.key)}</td><td>${fmt(row.requests)}</td><td>${fmt(row.inputTokens)}</td><td>${fmt(row.outputTokens)}</td><td>${fmt(row.cacheReadTokens)}</td><td>${fmt(row.failures)}</td></tr>`).join('') || "<tr><td colspan=\"7\"><div class=\"chart-empty\" data-i18n>No requests in this period.</div></td></tr>";
+    description: `${series.provider} · ${metricLabel}`, unit: metric === 'estimatedCostUsd' ? ' USD' : metric === 'tokens' || metric.endsWith('Tokens') ? ' Token' : ' ' + t(countUnit),
+    points: series.points.filter(point => metric !== 'estimatedCostUsd' || point.stats.pricedTokens > 0).map(({ at, stats }) => ({ at, value: metric === 'tokens' ? stats.inputTokens + stats.outputTokens : metric === 'failures' ? stats.failures + stats.cancelled : stats[metric] })),
+  })));
+  $('usageChartNotes').innerHTML = (sum.unreported ? `<p class="hint">${esc(t('Requests / turns with missing or incomplete token usage: ' + fmt(sum.unreported)))}</p>` : '') + ($('usageRange').value === 'all' ? "<p class=\"hint\" data-i18n>The chart shows the last 90 recorded days. Totals and details are cumulative.</p>" : '') + (live.subscriptionUsage?.error ? `<p class="error">${esc(t(live.subscriptionUsage.error))}</p>` : '');
+  $('usageRows').innerHTML = rows.map(row => `<tr><td>${esc(row.model)}<small>${esc(row.provider)}</small><small>${esc(t(row.source === 'subscription' ? 'Subscription' : 'API key'))}</small></td><td>${esc(row.key)}</td><td>${fmt(row.requests)}</td><td>${fmt(row.inputTokens)}</td><td>${fmt(row.outputTokens)}</td><td>${fmt(row.cacheReadTokens)}</td><td>${fmt(row.cacheWriteTokens)}</td><td>${fmt(row.failures + row.cancelled)}</td><td>${row.source === 'subscription' ? esc(estimate(row)) : '—'}</td></tr>`).join('') || "<tr><td colspan=\"9\"><div class=\"chart-empty\" data-i18n>No requests in this period.</div></td></tr>";
 }
 function money(balance) { return `${balance.currency === 'CNY' ? '¥' : balance.currency === 'USD' ? '$' : ''}${fmt(balance.value)}${balance.currency === 'credits' ? ' Credits' : !['CNY','USD'].includes(balance.currency) ? ' ' + balance.currency : ''}`; }
 function remaining(window) { return Math.max(0, 100 - window.usedPercent); }
@@ -294,27 +319,31 @@ function accountCard(account, selected = false) {
   const latest = info.latest, balance = latest?.balances?.[0], quota = latest?.windows?.[0];
   const summary = balance ? money(balance) : quota ? t(`${fmt(remaining(quota))}% remaining`) : capability.supported ? t('Not queried') : t('Not supported');
   const brand = subscriptionId ? `<img src="../../../assets/brands/${engine}.svg" alt="">` : mark(type);
-  return `<button class="balance-card ${selected ? 'selected' : ''}" data-balance="${esc(id)}"><span class="provider-title"><span class="provider-mark${subscriptionId ? ' engine-mark' : ''}"${subscriptionId ? ` data-engine="${engine}"` : ''}>${brand}</span>${esc(provider)}</span>
+  return `<${subscriptionId ? 'div' : 'button'} class="balance-card ${selected ? 'selected' : ''}" data-balance="${esc(id)}"><span class="provider-title"><span class="provider-mark${subscriptionId ? ' engine-mark' : ''}"${subscriptionId ? ` data-engine="${engine}"` : ''}>${brand}</span>${esc(provider)}</span>
     <p>${esc(subscriptionId ? t(name) : name)}${enabled ? '' : ' · ' + t('Disabled')}${subscriptionId ? ' · ' + t('Signed in') : ''}</p>
     <strong>${esc(summary)}</strong>${quota && !balance ? meter(quota) : ''}
     <p>${quota && !balance ? esc(t(quota.label)) + ' · ' : ''}${esc(info.refreshing ? t('Querying…') : latest ? t('Updated ' + when(latest.at)) : t(capability.label))}</p>
     ${subscriptionId ? `<div class="quota-preview">${(latest?.windows || []).slice(balance ? 0 : 1).map(w => `<small>${esc(t(w.label))} · ${esc(t(`${fmt(remaining(w))}% remaining`))}</small>`).join('')}</div>` : ''}
-    ${info.error ? `<p class="error">${esc(t(info.error))}${latest ? ' ' + esc(t('The last successful result is shown below.')) : ''}</p>` : ''}</button>`;
+    ${(latest?.windows || []).filter(w => w.resetsAt).map(w => `<small>${esc(t(w.label))} · ${esc(t('Resets'))} ${esc(when(w.resetsAt))}</small>`).join('')}
+    ${info.error ? `<p class="error">${esc(t(info.error))}${latest ? ' ' + esc(t('The last successful result is shown below.')) : ''}</p>` : ''}</${subscriptionId ? 'div' : 'button'}>`;
 }
 function renderBalances() {
-  const all = accountsList();
+  const all = accountsList().filter(account => !account.subscriptionId);
   fillSelect($('balanceProvider'), [...new Map(all.map(a => [a.providerId, a.provider])).entries()], "All providers");
   const query = $('balanceSearch').value.trim().toLowerCase();
   const accounts = all.filter(a => (!$('balanceProvider').value || a.providerId === $('balanceProvider').value) && `${a.provider} ${a.name} ${a.maskedKey || ''}`.toLowerCase().includes(query));
   if (!accounts.some(a => a.id === balanceKey)) balanceKey = accounts[0]?.id || null;
   $('balanceCards').innerHTML = accounts.map(a => accountCard(a, a.id === balanceKey)).join('') || (all.length ? "<div class=\"empty\" data-i18n>No matching accounts.</div>" : "<div class=\"empty\"><h2 data-i18n>Connect an account to view its balance</h2><p class=\"hint\" data-i18n>Add a connection in Providers & Keys.</p></div>");
-  renderUsage();
+  renderChartGrid($('balanceChart'), balanceChartSeries());
+  const subscriptions = accountsList().filter(account => account.subscriptionId && account.engine === 'kimi');
+  $('subscriptionQuotaCards').innerHTML = subscriptions.map(account => accountCard(account)).join('');
+  $('subscriptionQuotaChart').hidden = !subscriptions.length;
+  renderChartGrid($('subscriptionQuotaChart'), subscriptions.flatMap(account => balanceChartSeries(account.id)));
 }
-function balanceChartSeries() {
+function balanceChartSeries(id = balanceKey) {
   const t = window.CamelliaI18n.t;
-  const account = accountsList().find(account => account.id === balanceKey);
+  const account = accountsList().find(account => account.id === id);
   if (!account) return [];
-  if (!account.subscriptionId && (($('usageProvider').value && $('usageProvider').value !== account.providerId) || ($('usageKey').value && $('usageKey').value !== account.id))) return [];
   const latest = account.info.latest;
   const metrics = [...(latest?.balances || []).map(balance => ({ label: t(balance.label), type: 'balances', key: balance.id, unit: balance.currency })), ...(latest?.windows || []).map(window => ({ label: t(window.label) + ' · ' + t('Remaining'), type: 'windows', key: window.id, unit: '%' }))];
   return metrics.map(metric => ({
@@ -329,12 +358,15 @@ function balanceChartSeries() {
 }
 async function refreshBalances(payload = {}) {
   try {
-    if (!payload.subscriptionId) assertClean(); $('refreshBalances').disabled = true; status("Querying balances and quotas…");
-    const result = await api.providerRefresh(payload); if (!result.ok) throw new Error(result.error);
+    if (!payload.subscriptionId) assertClean(); $('refreshBalances').disabled = true; $('kimiUsage').disabled = true; status("Querying balances and quotas…");
+    const result = await api.providerRefresh(payload.subscriptionId ? payload : { ...payload, apiOnly: true }); if (!result.ok) throw new Error(result.error);
     insight = result; renderBalances(); updateKeyStats();
-    const errors = [...Object.values(insight.keys), ...(insight.subscriptions || []).map(a => a.info)].filter(info => info.status === 'error').length;
+    const refreshed = payload.subscriptionId
+      ? (insight.subscriptions || []).filter(account => account.id === payload.subscriptionId).map(account => account.info)
+      : Object.values(insight.keys);
+    const errors = refreshed.filter(info => info.status === 'error').length;
     status(errors ? `Query complete. ${errors} accounts could not be queried. See their cards for details.` : "Account status updated.");
-  } catch (e) { status(e.message, true); } finally { $('refreshBalances').disabled = false; }
+  } catch (e) { status(e.message, true); } finally { $('refreshBalances').disabled = false; $('kimiUsage').disabled = false; }
 }
 document.querySelector('.settings-nav nav').onclick = e => { const button = e.target.closest('[data-view]'); if (button && config) setView(button.dataset.view); };
 $('providers').onclick = e => {
@@ -369,8 +401,13 @@ $('editor').onclick = async e => {
   if (d.removeKey !== undefined) { p.keys.splice(Number(d.removeKey),1); edited(); renderKeys(); }
   if (d.upKey !== undefined || d.downKey !== undefined) { const i = Number(d.upKey ?? d.downKey), j = d.upKey !== undefined ? i-1 : i+1; [p.keys[i], p.keys[j]] = [p.keys[j], p.keys[i]]; edited(); renderKeys(); }
   try {
-    if (d.keyUsage) { assertClean(); setView('usage'); $('usageProvider').value = p.id; fillUsageFilters(); $('usageKey').value = d.keyUsage; fillUsageFilters(); renderUsage(); }
-    if (d.keyBalance) { assertClean(); balanceKey = d.keyBalance; setView('usage'); }
+    if (d.keyUsage) {
+      assertClean(); $('usageSource').value = 'api'; $('usageModel').value = '';
+      if ($('usageMetric').value === 'estimatedCostUsd') $('usageMetric').value = 'tokens';
+      setView('usage'); $('usageProvider').value = p.id; fillUsageFilters();
+      $('usageKey').value = d.keyUsage; fillUsageFilters(); renderUsage();
+    }
+    if (d.keyBalance) { assertClean(); balanceKey = d.keyBalance; $('balanceProvider').value = ''; $('balanceSearch').value = ''; renderBalances(); $('balanceCards').scrollIntoView({ block: 'start' }); }
     if (d.verifyNow !== undefined) {
       assertClean();
       const model = $('verifyModel').value; if (!model) throw new Error("Add and select a model first");
@@ -449,21 +486,14 @@ $('save').onclick = async () => {
   } catch (e) { status(e.message, true); }
   finally { saving = false; $('save').disabled = !dirty; $('refresh').disabled = false; document.querySelector('.scroll-content').inert = false; }
 };
-for (const id of ['usageRange','usageProvider','usageKey','usageModel','usageMetric']) $(id).onchange = () => {
+for (const id of ['usageSource','usageRange','usageProvider','usageKey','usageModel','usageMetric']) $(id).onchange = () => {
   fillUsageFilters();
-  if (id === 'usageKey' && $('usageKey').value) {
-    balanceKey = $('usageKey').value; $('balanceProvider').value = ''; $('balanceSearch').value = ''; renderBalances();
-  } else renderUsage();
+  renderUsage();
 };
 $('balanceCards').onclick = e => {
   const button = e.target.closest('[data-balance]');
   if (!button) return;
   balanceKey = button.dataset.balance;
-  const account = accountsList().find(account => account.id === balanceKey);
-  if (account && !account.subscriptionId) {
-    $('usageProvider').value = account.providerId; fillUsageFilters();
-    $('usageKey').value = account.id; $('usageModel').value = ''; fillUsageFilters();
-  }
   renderBalances();
 };
 $('balanceProvider').onchange = renderBalances;
@@ -471,7 +501,7 @@ $('balanceSearch').oninput = renderBalances;
 $('refreshBalances').onclick = () => refreshBalances();
 $('exportUsage').onclick = () => {
   const field = value => { let text = String(value ?? ''); if (/^[=+@\-\t\r]/.test(text)) text = "'" + text; return '"' + text.replace(/"/g, '""') + '"'; };
-  const rows = [["Model", "Provider", 'Key', "Successful requests", "Input tokens", "Output tokens", "Cache-read tokens", "Failed", "Cancel"], ...usageData.map(r => [r.model, r.provider, r.key, r.requests, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.failures, r.cancelled])];
+  const rows = [["Model", "Provider", 'Account / Key', "Successful requests / turns", "Input tokens", "Output tokens", "Cache-read tokens", "Failed", "Cancel", "Source", "Cache-write tokens", "Reasoning tokens (included in output)", "Standard API estimate (USD)", "Unpriced tokens", "Incomplete usage", "Account / Key ID"], ...usageData.map(r => [r.model, r.provider, r.key, r.requests, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.failures, r.cancelled, r.source, r.cacheWriteTokens, r.reasoningTokens, r.source === 'subscription' && r.pricedTokens > 0 ? r.estimatedCostUsd : '', r.unpricedTokens, r.unreported, r.keyId])];
   const url = URL.createObjectURL(new Blob(['\ufeff' + rows.map(r => r.map(field).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a'); link.href = url; link.download = `workbench-usage-${localDay(new Date())}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
@@ -626,7 +656,7 @@ async function refresh(initial = false) {
       renderPresetAccount();
       renderEditor();
     }
-    showLive(); if (view === 'usage') { fillUsageFilters(); renderUsage(); renderBalances(); } if (view === 'archived') void renderArchived();
+    showLive(); renderBalances(); if (view === 'usage') { fillUsageFilters(); renderUsage(); } if (view === 'archived') void renderArchived();
     if (!dirty) status(details.ok ? '' : details.error, !details.ok);
     if (initial) {
       const preferences = await api.workbenchSettings();
@@ -784,7 +814,7 @@ api.onApiRouterState(state => {
 });
 api.onProviderInsights(state => {
   insight = state; if (!config) return;
-  updateKeyStats(); if (view === 'usage') renderBalances();
+  updateKeyStats(); renderBalances();
   if (!dirty && !current()) renderProviders();
 });
 let chartLayoutWidth = 0, chartLayoutFrame;
@@ -795,11 +825,14 @@ new ResizeObserver(() => {
   cancelAnimationFrame(chartLayoutFrame);
   chartLayoutFrame = requestAnimationFrame(() => {
     if (!live) return;
-    if (view === 'usage') { renderUsage(); renderBalances(); }
+    if (view === 'usage') renderUsage();
+    if (view === 'providers' || view === 'subscriptions') renderBalances();
   });
 }).observe(document.querySelector('.scroll-content'));
 void refresh(true).then(() => navigateSettings(Object.fromEntries(new URLSearchParams(location.search))));
 window.addEventListener('camellia:language', () => {
   if (!live) return;
-  if (view === 'usage') { renderUsage(); renderBalances(); } if (view === 'archived') void renderArchived();
+  if (view === 'usage') renderUsage();
+  if (view === 'providers' || view === 'subscriptions') renderBalances();
+  if (view === 'archived') void renderArchived();
 });

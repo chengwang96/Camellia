@@ -15,6 +15,7 @@ const { startApiRouter } = require('../src/api/api-router');
 const { normalizeConfig, writeConfig } = require('../src/api/api-router-config');
 const { frame } = require('../src/api/api-protocol');
 const { isolatedEnvironment } = require('../src/benchmark/engines');
+const { createSubscriptionMeter } = require('../src/engines/subscription-meter');
 
 async function main() {
   const appRoot = path.resolve(__dirname, '..');
@@ -24,7 +25,7 @@ async function main() {
   const cwd = path.join(root, 'Project With Spaces'), home = path.join(root, 'profile'); fs.mkdirSync(cwd);
   const marker = path.join(cwd, 'written.txt');
   const patchText = '*** Begin Patch\n*** Add File: first file.txt\n+quotes: "double", \'single\', $literal, `tick`\n+中文 café\n*** Add File: second.txt\n+second file\n*** End Patch';
-  const requests = [], events = [], logs = [];
+  const requests = [], events = [], logs = [], usageRecords = [];
   let router, session, generation = 0, done, waiting;
   const server = http.createServer(async (req, res) => {
     try {
@@ -83,6 +84,8 @@ async function main() {
       model: nativePatch ? 'codex-fixture' : undefined, env, route: { baseUrl: router.url } });
     if (readOnly) spec.permissions = { approvalPolicy: 'on-request', sandbox: 'read-only' };
     session = new CodexSession({ gen: ++generation, settings: { cwd, model: 'codex-fixture', permissionMode: readOnly ? 'default' : 'bypassPermissions', connection: 'api' }, opts, spec, spawn, history,
+      // Loopback API supplies deterministic native events without using a paid account.
+      usageMeter: createSubscriptionMeter({ engine: 'codex', accountId: 'account-1', model: 'codex-fixture', record: row => usageRecords.push(row) }),
       log: msg => logs.push(msg), onSessionId() {}, onResult: result => done?.(result), onEvent: event => {
         events.push(event);
         if (event.type === 'gui:permission') session.answerPermission(event.requestId, false);
@@ -148,6 +151,11 @@ async function main() {
       assert.deepEqual(baseline.body.tools.map(t => t.function.name), requests[1].body.tools.filter(t => t.function.name !== 'apply_patch').map(t => t.function.name), 'Only the missing patch tool is added');
     }
     const state = router.getState(); assert.ok(state.usage.local.inputTokens >= 100);
+    await session.usageMeter.flush();
+    const measured = usageRecords.flatMap(row => row.samples).reduce((sum, sample) => ({ input: sum.input + sample.input, output: sum.output + sample.output }), { input: 0, output: 0 });
+    assert.equal(measured.input, state.usage.local.inputTokens, 'native subscription meter counts every request once across tools, resume, fork and cancellation');
+    assert.equal(measured.output, state.usage.local.outputTokens);
+    assert.equal(usageRecords.filter(row => row.outcome === 'cancelled').length, 1);
     // Read the official account API in a new empty profile, without logging in.
     const accountClient = new CodexClient({ ...codexSpawnSpec({ runtime, home: path.join(root, 'account'), env }), log: msg => logs.push(msg) });
     try { await accountClient.ready; assert.equal((await accountClient.request('account/read', { refreshToken: false })).account, null); }
@@ -156,7 +164,7 @@ async function main() {
   } finally {
     await session?.shutdown(); await router?.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
     fs.mkdirSync(path.join(appRoot, 'dist'), { recursive: true });
-    fs.writeFileSync(path.join(appRoot, 'dist/codex-smoke.json'), JSON.stringify({ requests, events, logs }, null, 2));
+    fs.writeFileSync(path.join(appRoot, 'dist/codex-smoke.json'), JSON.stringify({ requests, events, logs, usageRecords }, null, 2));
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir())); assert.ok(path.basename(root).startsWith('camellia-codex-smoke-'));
     // Native SQLite handles close asynchronously after the process is stopped.
     removeTree(root);

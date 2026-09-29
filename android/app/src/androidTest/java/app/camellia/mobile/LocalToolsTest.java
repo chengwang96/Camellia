@@ -213,7 +213,14 @@ public class LocalToolsTest extends InstrumentationTestCase {
             store = new LocalChatStore(getInstrumentation().getTargetContext());
             assertTrue(store.conversation(id).getBoolean("webTools"));
         } finally {
-            if (activity != null) { android.app.Activity selected = activity; getInstrumentation().runOnMainSync(selected::finish); }
+            if (activity != null) {
+                android.app.Activity selected = activity; getInstrumentation().runOnMainSync(selected::finish);
+                long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+                while (!selected.isDestroyed() && android.os.SystemClock.uptimeMillis() < deadline) {
+                    getInstrumentation().waitForIdleSync(); Thread.sleep(25);
+                }
+                assertTrue("Activity must stop saving before test storage is cleared", selected.isDestroyed());
+            }
             encrypted.clear();
         }
     }

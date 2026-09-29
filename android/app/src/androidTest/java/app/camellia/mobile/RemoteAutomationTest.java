@@ -22,7 +22,7 @@ public class RemoteAutomationTest extends InstrumentationTestCase {
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         ui(() -> {
             var stop = MainActivity.class.getDeclaredMethod("stopNetwork"); stop.setAccessible(true); stop.invoke(activity);
-            field("credentials", credentials); field("chinese", true);
+            field("credentials", credentials); field("chinese", true); field("foreground", false);
             field("conversationId", "automation-test");
             var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
         });
@@ -44,15 +44,83 @@ public class RemoteAutomationTest extends InstrumentationTestCase {
     }
 
     private void render(JSONObject automation) throws Exception {
+        render(automation, new JSONArray());
+    }
+
+    private void render(JSONObject automation, JSONArray rows) throws Exception {
         var apply = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class); apply.setAccessible(true);
         JSONObject snapshot = new JSONObject().put("instanceId", "test").put("cursor", 1)
             .put("conversation", new JSONObject().put("id", "automation-test").put("title", "自动化"))
-            .put("messages", new JSONArray());
+            .put("messages", rows).put("nextBefore", JSONObject.NULL);
         if (automation != null) snapshot.put("automation", automation);
         apply.invoke(activity, snapshot);
     }
 
     private ViewGroup bar() { return activity.getWindow().getDecorView().findViewWithTag("remoteAutomation"); }
+
+    private JSONObject message(long seq, String role, long at) throws Exception {
+        return new JSONObject().put("seq", seq).put("role", role).put("at", at).put("text", "会话内容 " + seq);
+    }
+
+    public void testCompletedGoalDisappearsAfterNewUserMessageAndStaysHiddenOnReopen() {
+        ui(() -> {
+            JSONObject automation = new JSONObject().put("goal", new JSONObject().put("id", "goal-1")
+                .put("objective", "完成季度报告").put("phase", "complete").put("completedAt", 2000));
+            JSONArray rows = new JSONArray().put(message(1, "user", 1000)).put(message(2, "assistant", 2000));
+            render(automation, rows);
+            assertNotNull(bar().findViewWithTag("remoteGoal"));
+            // Drafts, failed/unconfirmed sends, and assistant-only updates are
+            // not a later user turn in the confirmed transcript.
+            var composer = MainActivity.class.getDeclaredField("composer"); composer.setAccessible(true);
+            ((android.widget.EditText) composer.get(activity)).setText("下一项任务的草稿");
+            field("outgoingMessage", new JSONObject().put("conversationId", "automation-test").put("delivery", "failed")
+                .put("payload", new JSONObject().put("action", "send").put("requestId", "failed-send").put("prompt", "下一项任务")));
+            rows.put(message(3, "assistant", 2500)); render(automation, rows);
+            assertNotNull(bar().findViewWithTag("remoteGoal"));
+            field("outgoingMessage", null);
+            rows.put(message(4, "user", 3000)); render(automation, rows);
+            assertEquals(View.GONE, bar().getVisibility());
+            var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
+            render(automation, rows);
+            assertEquals(View.GONE, bar().getVisibility());
+            // A distinct goal with the same objective still gets its notice.
+            automation.getJSONObject("goal").put("id", "goal-2").put("completedAt", 4000);
+            render(automation, rows);
+            assertNotNull(bar().findViewWithTag("remoteGoal"));
+        });
+    }
+
+    public void testLegacyCompletionDoesNotReturnAndTasksRemainVisible() {
+        ui(() -> {
+            JSONObject goal = new JSONObject().put("objective", "完成季度报告").put("phase", "complete");
+            JSONObject automation = new JSONObject().put("goal", goal).put("tasks", new JSONArray()
+                .put(new JSONObject().put("id", "t1").put("instruction", "检查日志").put("status", "paused").put("intervalMinutes", 10)));
+            JSONArray rows = new JSONArray().put(message(1, "user", 1000));
+            render(automation, rows);
+            assertNull(bar().findViewWithTag("remoteGoal"));
+            assertNotNull(bar().findViewWithTag("remoteTask"));
+            goal.put("phase", "active").put("armed", true); render(automation, rows);
+            goal.put("phase", "complete").put("armed", false); render(automation, rows);
+            assertNotNull(bar().findViewWithTag("remoteGoal"));
+            rows.put(message(2, "user", 2000)); render(automation, rows);
+            assertNull(bar().findViewWithTag("remoteGoal"));
+            assertEquals(View.VISIBLE, bar().getVisibility());
+            assertEquals("恢复", ((TextView) bar().findViewWithTag("remoteTaskToggle")).getText().toString());
+        });
+    }
+
+    public void testNewMessagesKeepUnfinishedGoalControls() {
+        ui(() -> {
+            JSONObject goal = new JSONObject().put("id", "goal-1").put("objective", "完成季度报告").put("phase", "active").put("armed", true);
+            JSONObject automation = new JSONObject().put("goal", goal);
+            JSONArray rows = new JSONArray().put(message(1, "user", 1000));
+            render(automation, rows);
+            rows.put(message(2, "user", 3000)); render(automation, rows);
+            assertEquals("暂停", ((TextView) bar().findViewWithTag("remoteGoalToggle")).getText().toString());
+            goal.put("phase", "blocked").put("armed", false); render(automation, rows);
+            assertEquals("恢复", ((TextView) bar().findViewWithTag("remoteGoalToggle")).getText().toString());
+        });
+    }
 
     public void testGoalStateIsVisibleWithItsObjective() {
         ui(() -> {

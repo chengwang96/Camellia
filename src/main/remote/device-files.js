@@ -5,7 +5,9 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
-const { MAX_TOTAL, attachmentName } = require('./attachments');
+const { attachmentName } = require('./attachments');
+// The desktop remote picker retains its existing quota; mobile has its own policy.
+const MAX_TOTAL = 8 * 1024 * 1024;
 
 function bufferAttachments(files, nativeImage) {
   if (!Array.isArray(files) || !files.length || files.length > 9) throw new Error('Select 1 to 9 attachments');

@@ -29,7 +29,7 @@ function finish(error, value) {
   if (!pending) return;
   const current = pending;
   pending = null;
-  if (canceled) current.resolve({ stopReason: 'cancelled' });
+  if (canceled) current.resolve({ ...value, stopReason: 'cancelled' });
   else if (error) current.reject(error);
   else current.resolve(value);
 }
@@ -42,6 +42,7 @@ function receive(event) {
     saveSession();
   } else if (event.event === 'step_update' && pending) {
     const step = event.step_update;
+    if (step.usage) update({ sessionUpdate: 'camellia_usage', stepId: step.step_index, usage: step.usage });
     if (step.step_type === 'agent_response' && step.text_delta) { streamed += step.text_delta; text(step.text_delta); }
     else if (step.step_type !== 'agent_response' && step.step_type !== 'user_input') {
       update({ sessionUpdate: 'tool_call_update', toolCallId: String(step.step_index),

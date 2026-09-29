@@ -70,7 +70,7 @@ npm start
 
 使用账号授权时，可直接打开 **Settings → Providers & Keys → Account sign-in**，选择 **Kimi account**、**Google account · Antigravity** 或 **ChatGPT account**。快捷入口会打开对应引擎的账号设置并应用账号模式，随后点击 **Sign in** 即可。添加 API 供应商的弹窗中也提供 Kimi 和 Google 的账号入口；**Kimi Code (API key)** 则用于填写订阅 API Key。
 
-使用 ChatGPT 订阅时，打开 **Settings → Engine Settings → Codex CLI**，选择 **ChatGPT account**，点击 **Sign in with ChatGPT** 在浏览器完成官方登录，即可读取账号模型和额度。点击 **Add another account** 可同时登录第二个 ChatGPT 账号：新会话使用选中的账号，额度用尽时自动切换到仍有额度的账号，已开始的会话保持原账号。Codex 的配置、凭据与历史保存在 Camellia 自己的数据目录，不会修改个人 `~/.codex`。也可选择 **API key / third-party API** 使用统一 Key 池。
+使用 ChatGPT 订阅时，打开 **Settings → Engine Settings → Codex CLI**，选择 **ChatGPT account**，点击 **Sign in with ChatGPT** 在浏览器完成官方登录，即可读取账号模型和额度。点击 **Add another account** 可同时登录第二个 ChatGPT 账号：选中的账号从下一条消息生效，包括已有会话；额度或登录错误时可携带已保存的上下文，自动切换其他已登录账号重试。Codex 的配置、凭据与历史保存在 Camellia 自己的数据目录，不会修改个人 `~/.codex`。也可选择 **API key / third-party API** 使用统一 Key 池。
 
 使用 Google 订阅时，在 **Settings → Engine Settings → Antigravity** 中选择 **Google subscription** 并保存，点击 **Sign in with Google** 完成官方 CLI 登录，再点击 **Refresh account** 获取账号可用模型，无需填写 API Key。官方 CLI 在同一个系统用户下只保留一个 Google 登录，因此 Camellia 只显示一个 Google 账号。
 
@@ -152,7 +152,7 @@ Codex CLI 支持 API key 和第三方 API。在 **Settings → Engine Settings �
 
 ### 会话控制
 
-模型还可通过[会话控制工具](docs/conversation-tools.md)新建或分叉自己拥有的子会话、选择已配置的模型和思维强度、发送任务、读取结果及停止响应。子会话共享文件并保留原有权限，独立运行；不能递归委派或自行启动 Goal/定时任务。
+模型还可通过[会话控制工具](docs/conversation-tools.md)新建或分叉自己拥有的子会话、选择已配置的模型和思维强度、发送任务、读取结果及停止响应。同一桥接还提供只读的 `sessions`、`history`、`search` 工具，可列出本设备保存的全部会话、读取任意已存正文并按词检索正文，全程不启动引擎、不改动任何内容。子会话共享文件并保留原有权限，独立运行；不能递归委派或自行启动 Goal/定时任务。
 
 ### Goal 模式
 
