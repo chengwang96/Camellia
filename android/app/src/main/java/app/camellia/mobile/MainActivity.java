@@ -1329,7 +1329,6 @@ public final class MainActivity extends Activity {
                 } else { conversationId = id; conversationTitle = title; detailScreen(); connectEvents(); }
             }, () -> conversationMenu(conversation));
         card.setContentDescription(title + " · " + activity(conversation) + (unread ? " · " + tr("新消息", "New reply") : ""));
-        card.preview(ConversationPreview.remote(conversation));
         card.selection(selectingConversations, selectedConversations.contains(conversation.optString("id")));
         return card;
     }

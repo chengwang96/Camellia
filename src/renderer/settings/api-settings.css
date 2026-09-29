@@ -247,7 +247,8 @@ dialog > .primary { margin-top: 20px; }
 /* Subscription cards: quota first, a consistent action rail at the bottom. */
 #subscriptionsPage .account-connections { border: 0; padding: 0; }
 #subscriptionsPage .subscription-account { padding-top: 22px; margin-top: 22px; }
-#subscriptionsPage .account-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; margin: 16px 0; }
+#subscriptionsPage .account-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 16px; margin: 16px 0; }
+#subscriptionsPage .account-list > .subscription-card { width: 100%; max-width: 420px; }
 .subscription-card { min-width: 0; display: flex; flex-direction: column; padding: 18px 16px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 3px 10px #00000008; }
 .subscription-card.active { border-color: var(--dsw-static-deepseek-500); box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-static-deepseek-500) 12%, transparent); }
 .subscription-card header { display: flex; align-items: center; gap: 8px; }
