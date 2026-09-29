@@ -386,7 +386,6 @@ public final class LocalChatActivity extends Activity {
                         renderGroups(parent);
                     } else { conversationId = selectedId; detail(); }
                 }, () -> conversationMenu(conversation));
-            row.preview(ConversationPreview.local(conversation, chinese));
             row.selection(selectingConversations, selectedConversations.contains(selectedId)); group.addView(row);
         }
         if (entries.isEmpty()) {

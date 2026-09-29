@@ -6,7 +6,6 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.TextView;
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class MobileLayoutRefinementTest extends InstrumentationTestCase {
@@ -91,7 +90,7 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
         });
     }
 
-    public void testListKeepsStatusInlineWithLongTitleAboveFile() throws Exception {
+    public void testListKeepsStatusInlineWithLongTitleWithoutFilePreview() throws Exception {
         ui(() -> {
             invoke("listScreen"); field("canCreate", true); field("allowIndependent", true);
             @SuppressWarnings("unchecked") java.util.Map<String, JSONObject> rows = (java.util.Map<String, JSONObject>) field("conversations");
@@ -112,11 +111,9 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
                 assertEquals(1, title.getLineCount()); assertEquals(1, state.getLineCount());
                 assertTrue(title.getRight() <= state.getLeft());
                 assertTrue(Math.abs(title.getTop() + title.getHeight() / 2 - state.getTop() - state.getHeight() / 2) <= 1);
-                View headline = (View) title.getParent(), preview = (View) row.findViewWithTag("conversationFilePreview").getParent();
-                assertTrue(preview.getTop() >= headline.getBottom());
             }
-            assertEquals("移动端设计评审报告.pdf", ((TextView) row.findViewWithTag("conversationFilePreview")).getText().toString());
-            assertTrue(row.getContentDescription().toString().contains("移动端设计评审报告.pdf"));
+            assertNull(row.findViewWithTag("conversationFilePreview"));
+            assertFalse(row.getContentDescription().toString().contains("移动端设计评审报告.pdf"));
         });
     }
 
@@ -128,17 +125,6 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
             status.setText("正在重连，当前显示上次同步内容。"); assertEquals(View.VISIBLE, status.getVisibility()); assertEquals(1, status.getMaxLines());
             status.setText("操作待确认，请重试同一请求；不要重复发送。"); assertEquals(View.VISIBLE, status.getVisibility());
         });
-    }
-
-    public void testFilePreviewReadsLocalMetadataAndWorksWithOlderServers() throws Exception {
-        assertNull(ConversationPreview.remote(new JSONObject().put("title", "Older server")));
-        JSONObject chat = new JSONObject().put("messages", new JSONArray().put(new JSONObject().put("role", "user")
-            .put("documents", new JSONArray().put(new JSONObject().put("name", "会议材料.pdf")))
-            .put("images", new JSONArray().put("stored-image"))));
-        ConversationPreview preview = ConversationPreview.local(chat, true);
-        assertEquals("会议材料.pdf", preview.name); assertEquals(2, preview.count); assertFalse(preview.image);
-        ConversationPreview safe = ConversationPreview.remote(new JSONObject().put("filePreview", new JSONObject().put("name", "C:\\private\\\u202ereport\n.pdf")));
-        assertEquals("report.pdf", safe.name);
     }
 
     private void screenshot(String name) throws Exception {
