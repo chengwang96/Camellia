@@ -55,7 +55,7 @@ npm start
 
 `npm ci` 只安装工作台依赖，六个 harness 的运行时均为可选下载。可在首页点击 **Download & open**（下载并打开），也可在 **Settings → Runtime**（设置 → 运行环境）中单独下载。Antigravity 的 Google 订阅模式下载官方 CLI，API 模式下载 SDK 和独立 Python；Pi 只是一个 npm 包，使用共享 API 线路。无需全局安装 CLI 或 Python。
 
-下载前可选择直连或使用已保存的代理。在 **设置 → 通用 → Download connection（下载连接）** 中填写自己的 HTTP/HTTPS 代理地址。默认直连，不预设代理地址；该设置用于引擎和 benchmark 题库下载。
+网络统一在 **设置 → 通用 → Network connection（网络连接）** 中配置：**Direct connection（直连）** 直接联网；**Use system proxy（系统代理）** 使用检测到的系统 HTTP/HTTPS 代理；**Prefer direct connection（首选直连）** 先尝试直连，无法建立连接时再转系统代理。默认直连，不预设代理地址；该设置同时用于引擎与 benchmark 题库下载、订阅和 API 连接。保存后**立即生效**：引擎进程会改用新的连接方式，无需重启 Camellia；正在进行的回复不会被打断，会在结束后自动切换。若选择的系统代理已无法访问网络，Camellia 会自动降级为「首选直连」（优先直连、代理仅作回退），并在打开的工作台窗口中用统一风格的应用内弹窗提示，同时 **设置 → 通用** 的状态行会说明原因；请尽快排查代理服务与系统代理设置，恢复后重新选择「系统代理」。降级不会改写你保存的选项，重启后会重新探测。
 
 开发时可执行 `npm run setup:runtimes -- dsh kimi`，只将指定引擎下载到 `runtimes/`；Pi 使用 `npm run setup:pi` 安装。需要全部六个引擎时才使用 `--all`。启动工作台或浏览设置不会下载缺失的引擎。
 

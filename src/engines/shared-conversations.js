@@ -1061,6 +1061,9 @@ class SharedConversations {
         ? event.outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text).join('\n\n') : text;
       a.resolve({ ...event, result: event.is_error ? String(event.result || text) : finalText });
       this.publishActivity(c.id);
+      // The turn is over, so any engine waiting to be retired for a network
+      // change can be replaced before the next message.
+      this.onEvent({ type: 'conversation:turn-end', session_id: c.id, engine });
     } else if (toolBoundary && !a.internal && !a.cancelled && !a.compactRequested && !a.tools.size && !a.permissions.size
         && !this.usesNativeCompaction(c, engine, this.settings(engine, c.id))) {
       const context = this.contextPressure(c, engine, this.settings(engine, c.id), a);

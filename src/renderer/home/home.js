@@ -105,6 +105,7 @@ function renderRuntimes(rows) {
   }
 }
 window.dshDesktop.onRuntimeState(renderRuntimes);
+window.dshDesktop.onNetworkHealth(payload => window.CamelliaNetworkNotice?.sync(payload));
 window.dshDesktop.runtimeState().then(result => {
   if (!result.ok) throw new Error(result.error);
   renderRuntimes(result.engines);

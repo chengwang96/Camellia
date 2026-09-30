@@ -1,0 +1,16 @@
+/* In-app advisory shown when the selected system proxy stopped working.
+   Kept separate from page styles so any surface can reuse it unchanged. */
+.network-notice { border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px; background: var(--dsw-alias-bg-layer-1); color: inherit; padding: 24px; width: 440px; max-width: calc(100vw - 32px); box-shadow: var(--dsw-shadow-lv3); }
+.network-notice::backdrop { background: var(--dsw-alias-bg-mask-1); }
+.network-notice .notice-head { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; }
+.network-notice .notice-head h2 { flex: 1; margin: 0; font: var(--f-m-18); }
+.network-notice .notice-head button { border: 0; padding: 0 8px; font-size: 20px; background: none; color: inherit; cursor: pointer; }
+.network-notice .notice-badge { flex: 0 0 auto; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; background: var(--dsw-alias-state-error-tertiary); color: var(--dsw-alias-state-error-primary); }
+.network-notice .notice-badge svg { width: 18px; height: 18px; }
+.network-notice p { margin: 0 0 12px; color: var(--dsw-alias-label-secondary); line-height: 1.6; }
+.network-notice p.notice-mode { color: var(--dsw-alias-label-primary); font: var(--f-s-strong-14); }
+.network-notice .notice-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.network-notice .notice-actions button { padding: 7px 16px; border-radius: 18px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: inherit; cursor: pointer; }
+.network-notice .notice-actions button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.network-notice .notice-actions button.primary { background: var(--dsw-static-deepseek-500); border-color: transparent; color: #fff; }
+.network-notice .notice-actions button.primary:hover { background: var(--dsw-static-deepseek-400); }

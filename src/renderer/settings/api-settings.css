@@ -14,7 +14,15 @@ label { display: block; margin-bottom: 8px; }
 h1 { font-size: 22px; font-weight: 600; letter-spacing: -.4px; margin: 0 0 8px; }
 h2 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
 p { margin: 5px 0; }
-.hint, small { font-size: 12px; color: var(--dsw-alias-label-tertiary); line-height: 1.65; }
+/* Three deliberate text levels: body 14px, supporting 13px, footnote 12px.
+   Caption 11px is reserved for badges and version stamps, so explanatory
+   prose stops reading as a wall of fine print. */
+.hint { font-size: 13px; color: var(--dsw-alias-label-secondary); line-height: 1.6; }
+small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1.5; }
+/* Page-level caveats that belong to the whole view, not to one control. */
+.footnote { max-width: 76ch; font-size: 12.5px; color: var(--dsw-alias-label-secondary); line-height: 1.6; }
+/* Group-level explanation gets a container so long prose has a shape. */
+.setting-note { max-width: 76ch; margin: 6px 0 0; padding: 12px 16px; border-left: 2px solid var(--dsw-alias-border-l2); border-radius: 0 10px 10px 0; background: var(--dsw-alias-bg-soft); color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.6; }
 .primary { background: var(--dsw-static-deepseek-500); color: #fff; border-color: transparent; }
 .primary:hover { background: var(--dsw-static-deepseek-400); }
 .danger, .error { color: var(--dsw-alias-state-error-primary); }
@@ -284,4 +292,5 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
 
 .network-detection { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .network-detection .hint { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; margin: 0; }
+.network-detection .hint.bad { color: var(--dsw-alias-state-error-primary); font: var(--f-xs-strong-13); }
 .network-detection button { flex: 0 0 auto; }

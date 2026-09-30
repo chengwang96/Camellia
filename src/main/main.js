@@ -58,6 +58,9 @@ function publishChatEvent(engine, event) {
   // engine event pipeline, or one locked file would freeze the conversation.
   try { if (sharedConversations?.capture(engine, event)) return; }
   catch (err) { log(`shared conversation capture failed (${engine}): ${err?.message || err}`); }
+  // Native-only sessions do not emit conversation:turn-end, so a deferred
+  // network restart is released here for them.
+  if (event.type === 'result') retirePendingEngines();
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:' + engine + '-event', event);
 }
 
@@ -229,6 +232,44 @@ function engineBusy(engine) {
     || (engine === 'kimi' && (kimiSessions.legacy?.running || kimiGoalDriver.armed))
     || (engine === 'antigravity' && (antigravity.session?.running || antigravity.goal.armed));
 }
+// An engine process reads the proxy environment once, when it is spawned, so a
+// network change only reaches engines started afterwards. These helpers stop
+// the current processes; the next turn builds fresh ones from the new
+// environment, resuming each conversation's native session.
+async function stopEngine(engine) {
+  if (engine === 'claude') return claudeSessions.shutdown();
+  if (engine === 'kimi') return kimiSessions.shutdown();
+  if (engine === 'antigravity') return antigravity.shutdown();
+  if (engine === 'codex') return codex.shutdown();
+  if (engine === 'dsh') return dshChat.shutdown();
+  if (engine === 'pi') return piChat.shutdown();
+}
+const NETWORK_ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
+// Engines that still have to be retired because a network change could not
+// reach them yet. A turn in flight is never interrupted; the engine joins this
+// set and is stopped the moment it goes idle.
+const networkRestartPending = new Set();
+function retirePendingEngines() {
+  for (const engine of [...networkRestartPending]) {
+    if (engineBusy(engine)) continue;
+    networkRestartPending.delete(engine);
+    void stopEngine(engine).catch(error => log(`${engine}: deferred network restart failed: ${error.message}`));
+  }
+}
+// Called after the network settings are applied. Idle engines are retired at
+// once; busy ones are retired when their current turn ends.
+function applyNetworkChange() {
+  // Every engine has to be replaced: an idle process still holds the old
+  // environment. Busy ones wait for their turn to finish.
+  for (const engine of NETWORK_ENGINES) {
+    if (engineBusy(engine)) networkRestartPending.add(engine);
+    else void stopEngine(engine).catch(error => log(`${engine}: network change restart failed: ${error.message}`));
+  }
+  retirePendingEngines();
+  const deferred = [...networkRestartPending];
+  if (deferred.length) log('network change deferred until these engines are idle: ' + deferred.join(', '));
+  return deferred;
+}
 function runtimes() {
   if (!runtimeManager) {
     const root = app.isPackaged ? process.resourcesPath : APP_ROOT;
@@ -370,6 +411,13 @@ function subscriptionUsage() {
 let networkSettingsService, networkDispatcher;
 function networkSettings() {
   if (!networkSettingsService) networkSettingsService = require('./network-settings').createNetworkSettings({ loadConfig, saveConfig,
+    // A stale system proxy is downgraded to "prefer direct" in the background;
+    // every open window is told so the user can fix the cause.
+    onHealthChange: payload => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send('dsh:network-health', payload);
+      }
+    },
     sessions: () => require('electron').session,
     applyEnvironment: env => {
       const { PROXY_KEYS } = require('./network-settings');
@@ -980,6 +1028,8 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
         if (!window.isDestroyed()) window.webContents.send('dsh:engine-settings-changed', { engine: event.engine });
       }
     }
+    // A network change retires busy engines as soon as their turn ends.
+    if (event.type === 'conversation:turn-end') retirePendingEngines();
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-event', event);
     remoteDesktop?.publish();
   },
@@ -1491,7 +1541,16 @@ if (!gotSingleInstanceLock) {
       return runtimeUpdates().update(engine);
     },
     'network-settings': async () => ({ ok: true, ...await networkSettings().detect() }),
-    'network-save-settings': async payload => ({ ok: true, ...await networkSettings().save(payload) }),
+    'network-save-settings': async payload => {
+      const result = await networkSettings().save(payload);
+      // Engine processes inherit the proxy environment, so they have to be
+      // replaced for a change to take effect without restarting Camellia. The
+      // embedded network node is left alone: rebuilding it would drop a phone
+      // that is connected right now. Toggling mobile access off and on picks
+      // up the new settings there.
+      const deferred = applyNetworkChange();
+      return { ok: true, ...result, engineRestart: deferred.length === 0, deferred };
+    },
     'download-settings': () => ({ ok: true, ...downloadSettings(loadConfig().downloadProxy) }),
     'download-save-settings': payload => {
       const settings = downloadSettings(payload);
