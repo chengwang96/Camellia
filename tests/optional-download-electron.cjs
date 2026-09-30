@@ -82,7 +82,9 @@ async function main() {
       document.querySelector('#networkMode').value = 'system';
       document.querySelector('#networkMode').dispatchEvent(new Event('change', {bubbles: true}));
     `);
-    await wait(() => settings.webContents.executeJavaScript("document.querySelector('#status').textContent === 'Network connection saved'"));
+    // The status also states that the change reached the running engines, so a
+    // prefix match keeps this assertion stable while still proving the save.
+    await wait(() => settings.webContents.executeJavaScript("document.querySelector('#status').textContent.startsWith('Network connection saved')"));
     const saved = JSON.parse(fs.readFileSync(path.join(profile, 'desktop-config.json')));
     assert.deepEqual(saved.downloadProxy, { mode: 'proxy', url: 'http://127.0.0.1:18899/' });
     // Downloads follow the general preference without a second connection prompt.

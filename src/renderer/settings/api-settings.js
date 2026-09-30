@@ -59,6 +59,9 @@ const engineUI = window.createEngineSettingsUI({ api, status, navigate: navigate
 const capacityUI = window.createContextCapacityUI({ api, current, assertClean, status, esc, fmt, keyName });
 $('kimiUsage').onclick = () => refreshBalances({ subscriptionId: engineUI.activeSubscriptionId() });
 api.onSettingsNavigate(navigateSettings);
+// The main process downgrades a stale system proxy in the background; surface
+// the same notice here even when the network page is not open.
+api.onNetworkHealth(payload => window.CamelliaNetworkNotice?.sync(payload));
 function showLive() {
   $('routerLabel').textContent = live.running ? "Router running" : "Setup required";
   $('routerDot').classList.toggle('online', !!live.running);
@@ -287,7 +290,7 @@ function renderUsage() {
   const t = window.CamelliaI18n.t;
   const subscription = rows.filter(row => row.source === 'subscription').reduce(addStats, blankStats());
   const usd = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 4 }).format(value);
-  const estimate = stats => stats.pricedTokens > 0 ? usd(stats.estimatedCostUsd) + (stats.unpricedTokens || stats.unreported ? ' + ' + t('Unpriced usage') : '') : t('Unavailable');
+  const estimate = stats => stats.pricedTokens > 0 ? usd(stats.estimatedCostUsd) : t('Unavailable');
   $('subscriptionCost').textContent = estimate(subscription);
   $('subscriptionCostNote').textContent = t('Standard text API equivalent, not your subscription bill.')
     + (live.subscriptionUsage?.pricing?.checkedAt ? ' LiteLLM · ' + live.subscriptionUsage.pricing.checkedAt : '');
@@ -599,16 +602,24 @@ let networkSaveQueue = Promise.resolve(), networkSaving = false;
 function renderNetworkSettings(value) {
   const t = window.CamelliaI18n.t;
   $('networkMode').value = value.mode || 'direct';
-  $('systemProxyStatus').textContent = value.error ? t(value.error)
+  // A downgraded proxy is why the selector shows "Prefer direct" although the
+  // saved choice was "Use system proxy"; say so instead of only listing it.
+  $('systemProxyStatus').textContent = value.degraded
+    ? t('The detected system proxy is not reachable, so connections are using Prefer direct. Repair the proxy, then choose Use system proxy again.') + (value.detectedUrl ? ' · ' + value.detectedUrl : '')
+    : value.error ? t(value.error)
     : value.detectedUrl ? t('Detected system proxy') + ': ' + value.detectedUrl
     : t(value.unsupported ? 'The detected proxy protocol is not supported. Enable an HTTP or mixed proxy port.' : 'No system proxy detected. Enable the system proxy and detect again.');
+  $('systemProxyStatus').classList.toggle('bad', Boolean(value.degraded || value.error));
 }
+let lastNetworkValue = null;
 async function loadDownloadSettings() {
   if (networkSaving) return;
   try {
     const value = await api.networkSettings();
     if (!value.ok) throw new Error(value.error);
+    lastNetworkValue = value;
     if (!networkSaving) renderNetworkSettings(value);
+    window.CamelliaNetworkNotice?.sync({ degraded: value.degraded, proxy: value.detectedUrl });
   } catch (error) { status(error.message, true); }
 }
 $('networkMode').onchange = () => {
@@ -620,7 +631,11 @@ $('networkMode').onchange = () => {
     try {
       const value = await api.networkSaveSettings({ mode });
       if (!value.ok) throw new Error(value.error);
-      renderNetworkSettings(value); status(t('Network connection saved'));
+      renderNetworkSettings(value);
+      // Say whether the change is already live, or waiting for a running
+      // response to finish, rather than leaving the user to restart Camellia.
+      status(value.engineRestart ? t('Network connection saved and applied to running engines')
+        : t('Network connection saved; it applies once the current response finishes'));
     } catch (error) { status(t(error.message), true); }
     finally { networkSaving = false; $('networkMode').disabled = false; await loadDownloadSettings(); }
   });
@@ -824,6 +839,9 @@ new ResizeObserver(() => {
 }).observe(document.querySelector('.scroll-content'));
 void refresh(true).then(() => navigateSettings(Object.fromEntries(new URLSearchParams(location.search))));
 window.addEventListener('camellia:language', () => {
+  // This status is rendered by script, not by data-i18n, so it needs an
+  // explicit re-render to leave the previous language.
+  if (lastNetworkValue) renderNetworkSettings(lastNetworkValue);
   if (!live) return;
   if (view === 'usage') renderUsage();
   if (view === 'providers' || view === 'subscriptions') renderBalances();

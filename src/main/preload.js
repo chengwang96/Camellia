@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   downloadSettings: () => ipcRenderer.invoke('dsh:download-settings'),
   networkSettings: () => ipcRenderer.invoke('dsh:network-settings'),
   networkSaveSettings: payload => ipcRenderer.invoke('dsh:network-save-settings', payload),
+  onNetworkHealth: callback => subscribe('dsh:network-health', callback),
   downloadSaveSettings: (payload) => ipcRenderer.invoke('dsh:download-save-settings', payload),
   onRuntimeState: (callback) => subscribe('dsh:runtime-state', callback),
   onRuntimePythonState: (callback) => subscribe('dsh:runtime-python-state', callback),

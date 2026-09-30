@@ -50,3 +50,6 @@ if (sharedChat) {
 }
 
 for (const option of document.getElementById('selPermission').options) option.dataset.i18n = '';
+// A stale system proxy is downgraded in the background; report it on the chat
+// surface too, since this is where long-running work happens.
+window.dshDesktop.onNetworkHealth(payload => window.CamelliaNetworkNotice?.sync(payload));

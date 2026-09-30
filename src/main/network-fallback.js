@@ -4,34 +4,41 @@ const http = require('node:http');
 const https = require('node:https');
 const net = require('node:net');
 
+// Opening a TCP route is shared by the loopback transport below and by the
+// system-proxy health probe, so both agree on what "reachable" means.
+function directConnection(host, port, { timeout = 8000, connect = net.connect } = {}) {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host, port });
+    const timer = setTimeout(() => socket.destroy(Object.assign(new Error('Direct connection timed out'), { code: 'ETIMEDOUT' })), timeout);
+    socket.once('error', error => { clearTimeout(timer); reject(error); });
+    socket.once('connect', () => { clearTimeout(timer); resolve(socket); });
+  });
+}
+function proxyConnection(proxyUrl, host, port, { timeout = 8000 } = {}) {
+  const upstream = proxyUrl ? new URL(proxyUrl) : null;
+  return new Promise((resolve, reject) => {
+    if (!upstream) { reject(new Error('System proxy unavailable')); return; }
+    const request = (upstream.protocol === 'https:' ? https : http).request(upstream, {
+      method: 'CONNECT', path: `${host.includes(':') ? `[${host}]` : host}:${port}`, agent: false,
+    });
+    const timer = setTimeout(() => request.destroy(new Error('System proxy connection timed out')), timeout);
+    request.once('error', error => { clearTimeout(timer); reject(error); });
+    request.once('connect', (response, socket, head) => {
+      clearTimeout(timer);
+      if (response.statusCode !== 200) { socket.destroy(); reject(new Error(`System proxy returned ${response.statusCode}`)); return; }
+      if (head.length) socket.unshift(head);
+      resolve(socket);
+    });
+    request.end();
+  });
+}
+
 // A shared loopback transport lets native engines and Node use the same policy.
 // Retry only connection establishment, before application requests are sent.
 async function createFallbackProxy(proxyUrl, { timeout = 8000, connect = net.connect, allowDirect = true } = {}) {
   const upstream = proxyUrl ? new URL(proxyUrl) : null;
-  function direct(host, port) {
-    return new Promise((resolve, reject) => {
-      const socket = connect({ host, port });
-      const timer = setTimeout(() => socket.destroy(Object.assign(new Error('Direct connection timed out'), { code: 'ETIMEDOUT' })), timeout);
-      socket.once('error', error => { clearTimeout(timer); reject(error); });
-      socket.once('connect', () => { clearTimeout(timer); resolve(socket); });
-    });
-  }
-  function viaProxy(host, port) {
-    return new Promise((resolve, reject) => {
-      const request = (upstream.protocol === 'https:' ? https : http).request(upstream, {
-        method: 'CONNECT', path: `${host.includes(':') ? `[${host}]` : host}:${port}`, agent: false,
-      });
-      const timer = setTimeout(() => request.destroy(new Error('System proxy connection timed out')), timeout);
-      request.once('error', error => { clearTimeout(timer); reject(error); });
-      request.once('connect', (response, socket, head) => {
-        clearTimeout(timer);
-        if (response.statusCode !== 200) { socket.destroy(); reject(new Error(`System proxy returned ${response.statusCode}`)); return; }
-        if (head.length) socket.unshift(head);
-        resolve(socket);
-      });
-      request.end();
-    });
-  }
+  const direct = (host, port) => directConnection(host, port, { timeout, connect });
+  const viaProxy = (host, port) => proxyConnection(upstream, host, port, { timeout });
   async function route(host, port) {
     if (!allowDirect) {
       if (!upstream) throw new Error('System proxy unavailable');
@@ -78,4 +85,4 @@ async function createFallbackProxy(proxyUrl, { timeout = 8000, connect = net.con
   server.unref();
   return { url: `http://127.0.0.1:${server.address().port}`, close: () => { for (const socket of sockets) socket.destroy(); server.close(); } };
 }
-module.exports = { createFallbackProxy };
+module.exports = { createFallbackProxy, directConnection, proxyConnection };

@@ -23,33 +23,95 @@ function networkEnvironment(source, { mode = 'direct', url = '' }) {
     CAMELLIA_NETWORK_MODE: mode, CAMELLIA_NETWORK_PROXY: proxy });
   return env;
 }
-function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironment, createFallback = require('./network-fallback').createFallbackProxy }) {
-  let detected = { url: '', unsupported: false }, error = '', queue = Promise.resolve();
+// A proxy that accepts connections but cannot reach the internet leaves every
+// request hanging. Probing over raw TCP tells a working proxy apart from a
+// stale one without paying for an application request.
+function probeTarget(url) {
+  const parsed = new URL(url);
+  return { host: parsed.hostname, port: Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80) };
+}
+// The probe reuses the release/update endpoint the app already depends on, so
+// "healthy" matches something the user actually needs, and a machine that must
+// route everything through a proxy is never mistaken for a broken one.
+async function healthCheck(proxyUrl, { url = 'https://api.github.com', timeout = 5000 } = {}) {
+  const { host, port } = probeTarget(url);
+  const reachable = connect => connect().then(socket => { socket.destroy(); return true; }, () => false);
+  // Direct connectivity is the precondition for "prefer direct" to help at
+  // all: if a direct connection also fails, switching modes changes nothing.
+  const direct = await reachable(() => require('./network-fallback').directConnection(host, port, { timeout }));
+  if (!direct) return { direct, proxy: false };
+  const proxy = await reachable(() => require('./network-fallback').proxyConnection(proxyUrl, host, port, { timeout }));
+  return { direct, proxy };
+}
+function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironment, onHealthChange = () => {}, probeUrl = 'https://chatgpt.com',
+  healthCheckImpl = healthCheck, createFallback = require('./network-fallback').createFallbackProxy }) {
+  let detected = { url: '', unsupported: false }, error = '', queue = Promise.resolve(), degraded = false, monitor = null, closed = false;
   const bridges = [];
   const mode = () => ['system', 'prefer-direct'].includes(loadConfig().network?.mode) ? loadConfig().network.mode : 'direct';
-  const state = () => ({ mode: mode(), detectedUrl: detected.url, unsupported: detected.unsupported, error });
-  async function detect() {
+  // `mode` reports what is actually in use, so the settings page shows the
+  // downgrade the user needs to see; `configured` keeps their stored choice and
+  // the downgrade itself is never persisted, so a restart re-probes a proxy the
+  // user may have fixed in the meantime.
+  const state = () => ({ mode: degraded ? 'prefer-direct' : mode(), configured: mode(), degraded,
+    detectedUrl: detected.url, unsupported: detected.unsupported, error });
+  async function detectProxy() {
     error = '';
     try {
       const detector = sessions().fromPartition('camellia-system-proxy-detector');
       await detector.setProxy({ mode: 'system' });
       await detector.forceReloadProxyConfig?.();
-      detected = detectedProxy(await detector.resolveProxy('https://chatgpt.com'));
+      detected = detectedProxy(await detector.resolveProxy(probeUrl));
     } catch { detected = { url: '', unsupported: false }; error = 'Could not detect the system proxy.'; }
     return state();
   }
-  async function apply(nextMode, persist = false) {
+  // Detection only refreshes which proxy is in use. It must not clear the
+  // downgrade: reading the state from the settings page goes through here, and
+  // doing so would hide the warning until the next probe. An explicit save
+  // clears it, and a proxy that starts working again is picked up by
+  // checkHealth().
+  async function detect() { return detectProxy(); }
+  function schedule(period) {
+    clearTimeout(monitor);
+    if (closed) return;
+    monitor = setTimeout(async () => {
+      try { await checkHealth(); } catch { /* keep the last known result */ }
+      schedule(degraded ? 15000 : 60000);
+    }, period);
+    monitor.unref?.();
+  }
+  async function apply(nextMode, persist = false, probe = false) {
     if (!['direct', 'system', 'prefer-direct'].includes(nextMode)) throw new Error('Choose direct connection or system proxy');
     if (nextMode !== 'direct') {
-      await detect();
+      // Probe without clearing the downgrade flag: checkHealth() re-applies
+      // "prefer direct" through this path and must not erase its own state.
+      await detectProxy();
       if (!detected.url && nextMode === 'system') {
         error ||= detected.unsupported ? 'The detected proxy protocol is not supported. Enable an HTTP or mixed proxy port.' : 'No system proxy detected. Enable the system proxy and detect again.';
         if (persist) throw new Error(error);
       }
+      // Startup installs the environment before any window exists, so a proxy
+      // that is already broken must be caught here. Otherwise the embedded
+      // network node starts on a dead proxy and stays stuck until the page
+      // happens to re-probe. A user's explicit save uses the monitor instead,
+      // so the choice they made is applied immediately.
+      if (probe && detected.url && nextMode === 'system') {
+        const health = await healthCheckImpl(detected.url, { url: probeUrl });
+        if (health.direct && !health.proxy) {
+          degraded = true;
+          nextMode = 'prefer-direct';
+          onHealthChange({ degraded: true, proxy: detected.url, state: state() });
+        }
+      }
     }
+    // An unavailable system proxy must not become a loopback proxy with no
+    // upstream. Every request through such a proxy fails, and callers that
+    // read the inherited HTTP_PROXY instead of the Electron session (the
+    // embedded Tailscale node) then never reach the control plane and hang.
+    // Report the problem and fall back to a direct connection; only
+    // "prefer direct" keeps a bridge, because it dials direct first.
     let url = nextMode === 'system' ? detected.url : '';
-    if (nextMode === 'prefer-direct' || (nextMode === 'system' && !url)) {
-      const bridge = await createFallback(detected.url, { allowDirect: nextMode === 'prefer-direct' });
+    if (nextMode === 'prefer-direct') {
+      const bridge = await createFallback(detected.url, { allowDirect: true });
       bridges.push(bridge); // Existing engines retain their transport until restart.
       url = bridge.url;
     }
@@ -57,9 +119,37 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
     await sessions().defaultSession.setProxy(url ? { mode: 'fixed_servers', proxyRules: url, proxyBypassRules: '<local>;localhost;127.0.0.1;[::1]' } : { mode: 'direct' });
     applyEnvironment(networkEnvironment(process.env, { mode: nextMode, url }));
     saveConfig({ ...(persist ? { network: { mode: nextMode } } : {}), downloadProxy: { mode: url ? 'proxy' : 'direct', url } });
+    schedule(nextMode === 'system' ? 4000 : 60000);
     return state();
   }
-  return { state, detect, close: () => bridges.forEach(bridge => bridge.close()), initialize: () => apply(mode()),
-    save(value) { const run = () => apply(value?.mode, true); const result = queue.then(run, run); queue = result.catch(() => {}); return result; } };
+  // A selected system proxy that cannot reach the internet is downgraded to
+  // "prefer direct": direct connectivity is tried first, so work resumes
+  // immediately, while the proxy stays in the chain for hosts only it serves.
+  // The user is told through onHealthChange and must investigate the cause.
+  async function checkHealth() {
+    if (closed || mode() !== 'system' || !detected.url) return state();
+    const result = await healthCheckImpl(detected.url, { url: probeUrl });
+    if (closed) return state();
+    if (result.direct && !result.proxy && !degraded) {
+      degraded = true;
+      await apply('prefer-direct');
+      onHealthChange({ degraded: true, proxy: detected.url, state: state() });
+    } else if (degraded && result.proxy) {
+      degraded = false;
+      // Restore the stored choice so the chain matches the proxy in use now;
+      // the bridge built for the broken proxy must not outlive it.
+      await apply(mode());
+      onHealthChange({ degraded: false, proxy: detected.url, state: state() });
+    }
+    return state();
+  }
+  return { state, detect, checkHealth, close() { closed = true; clearTimeout(monitor); bridges.forEach(bridge => bridge.close()); },
+    initialize() { return apply(mode(), false, true); },
+    save(value) {
+      // An explicit choice supersedes an automatic downgrade: the new setting
+      // is applied as chosen and the health monitor re-probes it from scratch.
+      const run = () => { degraded = false; return apply(value?.mode, true); };
+      const result = queue.then(run, run); queue = result.catch(() => {}); return result;
+    } };
 }
-module.exports = { detectedProxy, networkEnvironment, createNetworkSettings, PROXY_KEYS };
+module.exports = { detectedProxy, networkEnvironment, createNetworkSettings, healthCheck, probeTarget, PROXY_KEYS };

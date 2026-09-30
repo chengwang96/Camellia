@@ -257,10 +257,10 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('engineRouteHint').textContent = engine === 'pi' ? 'Pi uses the shared API routes. Select a model in the conversation.' : engine === 'antigravity'
       ? appScope ? 'API mode uses the shared key pool; choose a Google account model in the composer to use your Google plan.'
         : 'Subscription mode uses the official Google account provider. Headless tools that require interactive approval are declined by the CLI; configure its permission rules here. AI credits are used only if you enable them.'
-      : "Camellia manages API routes centrally. CLI sessions using its router require the app to remain running. Project settings follow each engine's precedence rules.";
+      : "Camellia manages API routes centrally; CLI sessions using its router need the app running. Project settings follow each engine's precedence rules.";
     $('engineAdvancedHint').textContent = engine === 'pi' ? 'These instructions are added to every Pi session in Camellia.' : engine === 'codex' ? 'Edit native TOML, including [mcp_servers] and skills. Connection settings and credentials are managed by Camellia.' : appScope
       ? 'Add MCP servers under mcpServers and local skill directories under skillsPaths. Common options above are applied when you save.'
-      : 'Edit full native configuration, including tools, hooks, plugins, and permission rules. Camellia manages API connections. Common options above are applied when you save.';
+      : 'Edit full native configuration, including tools, hooks, plugins, and permission rules. Camellia manages API connections; common options above apply on save.';
     $('nativeDocuments').querySelector('summary').textContent = engine === 'pi' ? 'Global instructions' : engine === 'dsh' ? "Advanced configuration · Full YAML" : "Advanced configuration · MCP · " + (engine === 'kimi' ? "Terminal" : engine === 'antigravity' ? "Skills" : "Global instructions");
     $('engineCommon').innerHTML = state.fields.map((field, i) => {
       const value = field.key in state.common ? state.common[field.key] : field.value;
@@ -359,7 +359,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     badge.className = 'badge' + (saved && !pythonState.antigravitySdk ? ' bad' : pythonState.file ? ' good' : ' bad');
     $('pythonHint').textContent = saved && !pythonState.antigravitySdk
       ? t('This interpreter cannot import google.antigravity. Antigravity API mode needs the SDK; other engines and the benchmark verifier work without it.')
-      : t('Choose any Python 3 installation. Camellia does not modify it or install packages into it.');
+      : t('Choose any Python 3 installation; Camellia never edits it or installs packages.');
   }
   function updateInfoLine(id) {
     const info = runtimeUpdateInfo[id];

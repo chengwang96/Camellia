@@ -3,7 +3,7 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
 <title data-i18n>Settings — Camellia</title>
-<link rel="stylesheet" href="../shared/ui-theme.css"><link rel="stylesheet" href="./api-settings.css"><link rel="stylesheet" href="../devices/devices.css">
+<link rel="stylesheet" href="../shared/ui-theme.css"><link rel="stylesheet" href="../shared/network-notice.css"><link rel="stylesheet" href="./api-settings.css"><link rel="stylesheet" href="../devices/devices.css">
 <link rel="stylesheet" href="./engine-settings.css">
 <link rel="stylesheet" href="../shared/engine-brand.css">
 </head><body>
@@ -28,22 +28,21 @@
   <main class="scroll-content">
     <section id="subscriptionsPage" class="page" hidden>
       <section class="account-connections" aria-label="Subscription accounts" data-i18n-attrs="aria-label">
-        <p class="hint" data-i18n>Manage sign-ins independently of API routes and engine settings. New sessions start from the connection you last used; pick any model in the composer to switch.</p>
-        <p class="hint" data-i18n>The selected account applies on the next message, including existing conversations. Quota or login errors can switch to another signed-in account automatically.</p>
+        <p class="hint" data-i18n>Sign-ins are separate from API keys and engine settings. The selected account applies from the next message, and quota errors can switch accounts automatically.</p>
         <div id="accountShortcuts" role="group" aria-label="Subscription accounts" data-i18n-attrs="aria-label" class="account-shortcuts"><button data-account-engine="kimi" data-i18n>Kimi account</button><button data-account-engine="antigravity" data-i18n>Google account</button><button data-account-engine="codex" data-i18n>ChatGPT account</button></div>
         <div id="subscriptionAccounts"></div>
       </section>
     </section>
     <section id="providersPage" class="page" hidden>
-      <h2 data-i18n>API providers and keys</h2><p class="hint" data-i18n>API usage is billed by the API provider. Subscription sign-ins do not add keys to this pool.</p>
+      <h2 data-i18n>API providers and keys</h2><p class="hint" data-i18n>API usage is billed by the provider. Subscription sign-ins do not add keys to this pool.</p>
       <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><div class="toolbar-actions"><button id="exportConfig" data-i18n>Export config</button><button id="importConfig" data-i18n>Import config</button><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div></div>
       <div id="providers" class="provider-grid"></div>
       <div id="editor" hidden></div>
       <h2 class="usage-api-title" data-i18n>Balances &amp; Quotas</h2>
-      <div class="toolbar"><p class="hint" data-i18n>API balances and quotas as reported by each provider.</p><button id="refreshBalances" class="primary" data-i18n>Refresh all</button></div>
+      <div class="toolbar"><div class="toolbar-actions"><button id="refreshBalances" class="primary" data-i18n>Refresh all</button></div></div>
       <div class="balance-filter"><select id="balanceProvider" aria-label="Balance provider" data-i18n-attrs="aria-label"></select><input id="balanceSearch" aria-label="Filter accounts" placeholder="Filter by account label or masked key" data-i18n-attrs="aria-label placeholder"></div>
       <div id="balanceCards" class="balance-grid"></div>
-      <p class="hint footnote" data-i18n>Keys may share an account balance, so card amounts are not added together. Charts show local observations, including top-ups and resets; earlier history is not reconstructed.</p>
+      <p class="hint footnote" data-i18n>Keys may share one account balance, so card amounts are not added together. Charts show local observations; earlier history is not reconstructed.</p>
       <div id="balanceChart" class="chart-grid-layout"></div>
       <section class="router-options" aria-labelledby="routerOptionsTitle"><h3 id="routerOptionsTitle" data-i18n>Router options</h3><div class="row"><label data-i18n><input id="enabled" type="checkbox">Enable shared router</label><label data-i18n>Local port <input id="port" type="number" min="1024" max="65535"></label></div><div id="live" class="hint" data-i18n></div></section>
     </section>
@@ -61,15 +60,15 @@
       <p class="hint footnote" data-i18n>Subscription estimates use a dated standard text API price reference. Tool charges and speed premiums are excluded. Unknown model prices and unavailable context tiers remain unpriced; known amounts are partial when usage is missing.</p>
     </section>
     <section id="generalPage" class="page">
-      <div class="setting-row"><div><h2 data-i18n>Language</h2><p class="hint" data-i18n>Choose the display language for Camellia.</p></div><select id="language" aria-label="Language" data-i18n-attrs="aria-label"><option value="en" lang="en">English</option><option value="zh-CN" lang="zh-CN">简体中文</option></select></div>
-      <div class="setting-row"><div><h2 data-i18n>Appearance</h2><p class="hint" data-i18n>Applies throughout Camellia.</p></div><select id="theme" aria-label="Appearance" data-i18n-attrs="aria-label"><option value="system" data-i18n>System</option><option value="light" data-i18n>Light</option><option value="dark" data-i18n>Dark</option></select></div>
-      <div class="setting-row"><div><h2 data-i18n>Refresh balances automatically</h2><p class="hint" data-i18n>Query enabled keys for reported balances and quota windows while the app is running. Quota readings also keep an exhausted key out of the route pool until its window recovers.</p></div><input id="autoRefreshBalances" type="checkbox" aria-label="Refresh balances automatically" data-i18n-attrs="aria-label"></div>
-      <div class="setting-row"><div><h2 data-i18n>Balance and quota refresh interval</h2><p class="hint" data-i18n>Applies to every provider with an account API, not only Ollama Cloud.</p></div><select id="accountRefreshMinutes" aria-label="Balance and quota refresh interval" data-i18n-attrs="aria-label"><option value="5" data-i18n>Every 5 minutes</option><option value="15" data-i18n>Every 15 minutes</option><option value="30" data-i18n>Every 30 minutes</option><option value="60" data-i18n>Every 60 minutes</option></select></div>
-      <div class="setting-row"><div><h2 data-i18n>Close to tray and keep routing</h2><p class="hint" data-i18n>Closing the window hides Camellia to the system tray; the model router keeps running so other apps can keep using its keys. Quit from the tray icon to stop everything.</p></div><input id="closeToTray" type="checkbox" aria-label="Close to tray and keep routing" data-i18n-attrs="aria-label"></div>
+      <div class="setting-row"><div><h2 data-i18n>Language</h2></div><select id="language" aria-label="Language" data-i18n-attrs="aria-label"><option value="en" lang="en">English</option><option value="zh-CN" lang="zh-CN">简体中文</option></select></div>
+      <div class="setting-row"><div><h2 data-i18n>Appearance</h2></div><select id="theme" aria-label="Appearance" data-i18n-attrs="aria-label"><option value="system" data-i18n>System</option><option value="light" data-i18n>Light</option><option value="dark" data-i18n>Dark</option></select></div>
+      <div class="setting-row"><div><h2 data-i18n>Refresh balances automatically</h2><p class="hint" data-i18n>An exhausted key stays out of the route pool until its quota window recovers.</p></div><input id="autoRefreshBalances" type="checkbox" aria-label="Refresh balances automatically" data-i18n-attrs="aria-label"></div>
+      <div class="setting-row"><div><h2 data-i18n>Balance and quota refresh interval</h2></div><select id="accountRefreshMinutes" aria-label="Balance and quota refresh interval" data-i18n-attrs="aria-label"><option value="5" data-i18n>Every 5 minutes</option><option value="15" data-i18n>Every 15 minutes</option><option value="30" data-i18n>Every 30 minutes</option><option value="60" data-i18n>Every 60 minutes</option></select></div>
+      <div class="setting-row"><div><h2 data-i18n>Close to tray and keep routing</h2><p class="hint" data-i18n>Closing the window keeps the router serving other apps. Quit from the tray icon to stop everything.</p></div><input id="closeToTray" type="checkbox" aria-label="Close to tray and keep routing" data-i18n-attrs="aria-label"></div>
       <div class="setting-row"><div><h2 data-i18n>Shared conversations</h2><p class="hint" data-i18n>Continue any conversation in Claude Code, Codex CLI, DSH, Kimi Code, Antigravity or Pi.</p></div><select id="conversationMode" aria-label="Default conversation handoff" data-i18n-attrs="aria-label"><option value="direct" data-i18n>Continue directly (default)</option><option value="markdown" data-i18n>Automatic Markdown handoff</option></select></div>
-      <p class="hint" data-i18n>Direct continuation sends missing history to the next engine. Markdown asks the previous engine to summarize into a .md file and automatically starts a new native session. Both keep your shared conversation. Switching may increase latency and token usage; caches and internal state cannot transfer, and a summary may lose details.</p>
-      <div class="setting-row"><div><h2 data-i18n>Remind me when switching engines</h2><p class="hint" data-i18n>Show the context and performance tradeoffs before continuing. Off by default.</p></div><input id="conversationWarn" type="checkbox" aria-label="Remind me when switching engines" data-i18n-attrs="aria-label"></div>
-      <div class="setting-row"><div><h2 data-i18n>Show conversation origins</h2><p class="hint" data-i18n>Mark which engine created a conversation and show Markdown handoff records. Off by default.</p></div><input id="conversationOriginSetting" type="checkbox" aria-label="Show conversation origins" data-i18n-attrs="aria-label"></div>
+      <p class="setting-note" data-i18n>Direct continuation sends missing history to the next engine. Markdown asks the previous engine to summarize into a .md file and automatically starts a new native session. Both keep your shared conversation. Switching may increase latency and token usage; caches and internal state cannot transfer, and a summary may lose details.</p>
+      <div class="setting-row"><div><h2 data-i18n>Remind me when switching engines</h2></div><input id="conversationWarn" type="checkbox" aria-label="Remind me when switching engines" data-i18n-attrs="aria-label"></div>
+      <div class="setting-row"><div><h2 data-i18n>Show conversation origins</h2><p class="hint" data-i18n>Also lists Markdown handoff records.</p></div><input id="conversationOriginSetting" type="checkbox" aria-label="Show conversation origins" data-i18n-attrs="aria-label"></div>
       <div class="setting-row"><div><h2 data-i18n>Local data</h2><p class="hint" id="dataPath"></p></div><button id="openLogs" data-i18n>View logs</button></div>
       <div class="setting-row"><div><h2>Camellia</h2><p class="hint">Claude Code · Codex CLI · DeepSeek Harness · Kimi Code · Antigravity · Pi</p></div><span id="version" class="hint"></span></div>
       <div class="setting-row app-update"><div><h2 data-i18n>Application updates</h2><p class="hint" id="appUpdateStatus" role="status" aria-live="polite" data-i18n>Check the official release feed for a newer version of Camellia.</p><progress id="appUpdateProgress" max="100" hidden></progress></div><div class="app-update-actions"><button id="checkAppUpdate" data-i18n>Check for updates</button><button id="installAppUpdate" class="primary" hidden data-i18n>Download and install</button></div></div>
@@ -80,25 +79,24 @@
         <div class="engine-field"><label for="networkMode" data-i18n>Connection mode</label><select id="networkMode"><option value="direct" data-i18n>Direct connection</option><option value="system" data-i18n>Use system proxy</option><option value="prefer-direct" data-i18n>Prefer direct connection</option></select></div>
         <p class="hint" data-i18n>Prefer direct: try direct first, then the system proxy if the connection cannot be established. Requests already sent are not replayed.</p>
         <div class="network-detection"><p id="systemProxyStatus" class="hint" role="status"></p><button id="detectSystemProxy" type="button" data-i18n>Detect system proxy</button></div>
-        <p class="hint" data-i18n>Applies to new connections. Restart Camellia to update engines that are already running.</p>
+        <p class="hint" data-i18n>Saved changes apply immediately. Engine processes are replaced with the new connection, and a response that is already running keeps its connection until it finishes.</p>
       </section>
-      <p class="hint" data-i18n>Changes save automatically.</p>
     </section>
     <section id="archivedPage" class="page" hidden>
-      <div class="toolbar"><p class="hint" data-i18n>Archived conversations are hidden from the sidebar. Restore one to continue it, delete it permanently, or scan unowned files for space cleanup.</p><div class="toolbar-actions"><button id="deleteAllArchived" class="danger" disabled data-i18n>Delete all</button></div></div>
+      <div class="toolbar"><p class="hint" data-i18n>Restore a conversation to continue it, delete it permanently, or scan unowned files for space cleanup.</p><div class="toolbar-actions"><button id="deleteAllArchived" class="danger" disabled data-i18n>Delete all</button></div></div>
       <div id="archivedList"></div>
       <div class="section" id="storageSection">
         <h2 data-i18n>Space cleanup</h2>
-        <div class="toolbar"><p class="hint" data-i18n>Scan manually, review the files, then confirm cleanup. Nothing runs in the background.</p><button id="scanStorage" class="primary" data-i18n>Scan for unused files</button></div>
+        <div class="toolbar"><p class="hint" data-i18n>Nothing runs in the background.</p><button id="scanStorage" class="primary" data-i18n>Scan for unused files</button></div>
         <p class="hint" data-i18n>Protects active, archived and forked conversations, saved drafts, and files modified within 24 hours. Workspace files, original imports and shared native engine histories are excluded. Deleted conversations' dedicated engine directories may be cleaned.</p>
         <p id="storageStatus" role="status" aria-live="polite" data-i18n>No scan yet.</p>
         <div id="storageSummary"></div>
-        <details id="storageDetails" hidden><summary data-i18n>Review candidate paths</summary><p class="hint" data-i18n>Paths are relative to the Camellia data folder. Sizes are logical file sizes; actual recovered disk space may differ.</p><div id="storageFiles"></div></details>
+        <details id="storageDetails" hidden><summary data-i18n>Review candidate paths</summary><p class="hint" data-i18n>Paths are relative to the Camellia data folder. Actual recovered disk space may differ.</p><div id="storageFiles"></div></details>
         <button id="cleanStorage" class="danger" disabled data-i18n>Clean reviewed files</button>
       </div>
     </section>
     <section id="devicesPage" class="page" hidden>
-      <p class="hint" data-i18n>The CLI device browser is embedded here. Files, conversations and engines stay on the selected server.</p>
+      <p class="hint" data-i18n>Files, conversations and engines stay on the selected server.</p>
       <div id="cliDevicesRoot"></div>
     </section>
     <section id="mobilePage" class="page" hidden>
@@ -129,7 +127,7 @@
     </section>
     <section id="enginesPage" class="page" hidden>
       <div class="engine-tabs" role="tablist" aria-label="Engine" data-i18n-attrs="aria-label"><button role="tab" data-engine="claude">Claude Code</button><button role="tab" data-engine="codex">Codex CLI</button><button role="tab" data-engine="dsh">DeepSeek Harness</button><button role="tab" data-engine="kimi">Kimi Code</button><button role="tab" data-engine="antigravity">Antigravity</button><button role="tab" data-engine="pi">Pi</button></div>
-      <div class="global-notice"><strong id="engineScopeTitle" data-i18n>These settings also apply to the CLI</strong><p id="engineScopeDescription" data-i18n>Saving overwrites the CLI's global settings and affects other CLI sessions. Before the first overwrite, an original <code>.workbench.bak</code> backup is kept.</p><p class="hint" id="engineRouteHint" data-i18n>Camellia manages API routes centrally. CLI sessions using its router require the app to remain running. Project settings follow each engine's precedence rules.</p><details><summary data-i18n>View affected files</summary><div id="enginePaths"></div></details></div>
+      <div class="global-notice"><strong id="engineScopeTitle" data-i18n>These settings also apply to the CLI</strong><p id="engineScopeDescription" data-i18n>Saving overwrites the CLI's global settings and affects other CLI sessions. Before the first overwrite, an original <code>.workbench.bak</code> backup is kept.</p><p class="hint" id="engineRouteHint" data-i18n>Camellia manages API routes centrally; CLI sessions using its router need the app running. Project settings follow each engine's precedence rules.</p><details><summary data-i18n>View affected files</summary><div id="enginePaths"></div></details></div>
       <div id="engineLoading" class="hint" role="status" data-i18n>Loading settings…</div>
       <div id="engineContent" hidden>
         <div id="codexConnectionPanel" class="engine-connection" hidden>
@@ -140,12 +138,11 @@
             <div id="codexQuotas" class="codex-quotas"></div>
             <details id="codexModelDetails" hidden><summary data-i18n>Available account models</summary><ul id="codexModelList"></ul></details>
             <p class="hint" data-i18n>Sign-in opens the official ChatGPT authorization page; your personal Codex CLI settings stay separate.</p>
-            <p class="hint" data-i18n>Several accounts can stay signed in. Existing conversations follow the selected account on the next message. Quota errors can switch accounts and retry automatically.</p>
           </div>
         </div>
         <div id="kimiConnectionPanel" class="engine-connection" hidden>
           <div id="kimiAccountPanel" hidden>
-            <div class="engine-field"><label for="kimiLoginRegion" data-i18n>Login region<small class="hint" data-i18n>Choose the site where you registered your Kimi account.</small></label><select id="kimiLoginRegion"><option value="mainland-cn" data-i18n>China · kimi.com</option><option value="global" data-i18n>Global · kimi.ai</option></select></div>
+            <div class="engine-field"><label for="kimiLoginRegion" data-i18n>Login region</label><select id="kimiLoginRegion"><option value="mainland-cn" data-i18n>China · kimi.com</option><option value="global" data-i18n>Global · kimi.ai</option></select></div>
             <div id="kimiAccountList" class="account-list" role="radiogroup" aria-label="Kimi accounts" data-i18n-attrs="aria-label"></div>
             <div class="account-actions"><button id="kimiSignIn" class="primary" data-i18n>Sign in with Kimi</button><button id="kimiAddAccount" data-i18n>Add another account</button><button id="kimiRefresh" data-i18n>Refresh account</button><button id="kimiCancelLogin" hidden data-i18n>Cancel sign-in</button><button id="kimiSignOut" hidden data-i18n>Sign out</button></div>
             <p id="kimiAccountStatus" class="hint" role="status" data-i18n></p>
@@ -155,7 +152,6 @@
             <div id="kimiDeviceLogin" hidden><p data-i18n>Authorization code: <code id="kimiUserCode"></code></p><button id="kimiOpenLogin" data-i18n>Open sign-in page</button><p id="kimiLoginExpiry" class="hint" data-i18n></p></div>
             <details id="kimiModelDetails" hidden><summary data-i18n>Available account models</summary><ul id="kimiModelList"></ul></details>
             <p class="hint" data-i18n>Complete the official Kimi authorization in your browser. This login stays separate from your personal Kimi CLI, and never falls back to API billing.</p>
-            <p class="hint" data-i18n>Several accounts can stay signed in. Existing conversations follow the selected account on the next message. Quota errors can switch accounts and retry automatically.</p>
           </div>
         </div>
         <div id="antigravityConnectionPanel" class="engine-connection" hidden>
@@ -168,23 +164,23 @@
             <p class="hint" data-i18n>The official CLI keeps one Google sign-in per Windows user and reports no account identity or quota, so Camellia lists one account and only verifies model access.</p>
           </div>
         </div>
-        <div id="dshNative" hidden><p class="hint native-save-note" data-i18n>DSH's native settings panel saves immediately. Models and keys are managed in the shared pool.</p><div id="nativeLoading" class="hint" role="status" data-i18n></div><div id="dshSettingsSurface" aria-label="DSH native settings" data-i18n-attrs="aria-label"></div><button id="retryNative" hidden data-i18n>Reload panel</button></div>
+        <div id="dshNative" hidden><p class="hint native-save-note" data-i18n>This panel saves immediately. Models and keys stay in the shared pool.</p><div id="nativeLoading" class="hint" role="status" data-i18n></div><div id="dshSettingsSurface" aria-label="DSH native settings" data-i18n-attrs="aria-label"></div><button id="retryNative" hidden data-i18n>Reload panel</button></div>
         <div id="engineCommon"></div>
-        <details class="advanced native-documents" id="nativeDocuments"><summary data-i18n>Advanced configuration · MCP · Global instructions</summary><p class="hint" id="engineAdvancedHint" data-i18n>Edit full native configuration, including tools, hooks, plugins, and permission rules. Camellia manages API connections. Common options above are applied when you save.</p><div class="document-toolbar"><select id="engineDocument" aria-label="Configuration file" data-i18n-attrs="aria-label"></select><span id="documentFormat" class="badge"></span></div><textarea id="engineSource" aria-label="Native configuration" spellcheck="false" data-i18n-attrs="aria-label"></textarea></details>
+        <details class="advanced native-documents" id="nativeDocuments"><summary data-i18n>Advanced configuration · MCP · Global instructions</summary><p class="hint" id="engineAdvancedHint" data-i18n>Edit full native configuration, including tools, hooks, plugins, and permission rules. Camellia manages API connections; common options above apply on save.</p><div class="document-toolbar"><select id="engineDocument" aria-label="Configuration file" data-i18n-attrs="aria-label"></select><span id="documentFormat" class="badge"></span></div><textarea id="engineSource" aria-label="Native configuration" spellcheck="false" data-i18n-attrs="aria-label"></textarea></details>
         <div class="engine-save"><span class="hint" id="engineSaveHint" data-i18n>Applies to the next message</span><button id="reloadEngine" data-i18n>Reload</button><button id="saveEngine" class="primary" disabled data-i18n>Save engine settings</button></div>
       </div>
     </section>
     <section id="runtimesPage" class="page" hidden>
-      <p class="runtime-intro" data-i18n>All six engines are optional downloads. Choose which ones to install here, or download an engine when you first open it. Camellia includes the tools needed to install them; no separate CLI installation is required.</p>
+      <p class="runtime-intro" data-i18n>All six engines are optional downloads. Install them here or when you first open one. Camellia includes the tools needed; no separate CLI installation is required.</p>
       <div class="download-save"><p class="hint" data-i18n>Engine updates are installed in place and take effect after a restart.</p><button id="checkRuntimeUpdates" type="button" data-i18n>Check for updates</button></div>
       <article class="runtime-card runtime-python" id="pythonCard">
         <div><h2 data-i18n>Python interpreter</h2><span id="pythonBadge" data-i18n class="badge"></span></div>
-        <p class="hint" data-i18n>Shared by every harness and by the benchmark verifier, not by Antigravity alone. Leave empty to use automatic detection.</p>
-        <fieldset class="runtime-path" id="pythonPath" disabled><label for="runtime-path-python" data-i18n>Python executable</label><div class="runtime-path-actions"><input id="runtime-path-python" type="text" data-runtime-path="python" placeholder="Automatic detection" data-i18n-attrs="placeholder" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" id="pythonHint" data-i18n>Choose any Python 3 installation. Camellia does not modify it or install packages into it.</p></fieldset>
+        <p class="hint" data-i18n>Shared by every harness and the benchmark verifier, not by Antigravity alone. Leave empty for automatic detection.</p>
+        <fieldset class="runtime-path" id="pythonPath" disabled><label for="runtime-path-python" data-i18n>Python executable</label><div class="runtime-path-actions"><input id="runtime-path-python" type="text" data-runtime-path="python" placeholder="Automatic detection" data-i18n-attrs="placeholder" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" id="pythonHint" data-i18n>Choose any Python 3 installation; Camellia never edits it or installs packages.</p></fieldset>
       </article>
       <div id="runtimeCards"></div>
       <p class="hint footnote" data-i18n>DSH, Kimi and Pi use pinned open-source runtimes. Claude Code is installed from the official package and remains subject to Anthropic's terms. Antigravity downloads the official CLI for Google subscriptions, or the SDK and managed Python for API mode. Downloads do not change global CLI settings; saving native CLI settings does.</p>
-      <p class="hint footnote" data-i18n>If an engine stops working after being installed, security software may be removing its unsigned files. Add Camellia's runtimes folder to your antivirus exclusion list — steps are in docs/troubleshooting-runtimes.md.</p>
+      <p class="hint footnote" data-i18n>If an installed engine stops working, antivirus software may be removing its unsigned files. Exclude Camellia's runtimes folder — see docs/troubleshooting-runtimes.md.</p>
     </section>
   </main>
   <footer><span id="status" role="status" aria-live="polite" data-i18n></span><button id="save" class="primary" disabled hidden data-i18n>Save changes</button></footer>
@@ -208,5 +204,5 @@
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>
-<script src="./settings-charts.js"></script><script src="./subscription-cards.js"></script><script src="./engine-settings-ui.js"></script><script src="./context-capacity-ui.js"></script><script src="../remote/remote.js"></script><script src="../devices/devices-view.js"></script><script src="../devices/connections.js"></script><script src="./api-settings.js"></script>
+<script src="./settings-charts.js"></script><script src="./subscription-cards.js"></script><script src="./engine-settings-ui.js"></script><script src="./context-capacity-ui.js"></script><script src="../remote/remote.js"></script><script src="../devices/devices-view.js"></script><script src="../devices/connections.js"></script><script src="../shared/network-notice.js"></script><script src="./api-settings.js"></script>
 </body></html>

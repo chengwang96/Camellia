@@ -43,7 +43,9 @@ try:
         page.locator('[data-view=usage]').click()
         page.locator('#usageSource').select_option('subscription')
         expect(page.locator('#usageRows tr')).to_have_count(3)
-        expect(page.locator('#subscriptionCost')).to_contain_text('Unpriced usage')
+        # Unpriced or incomplete usage is described in the note below the
+        # figure, not appended to the headline amount.
+        expect(page.locator('#subscriptionCost')).not_to_contain_text('Unpriced usage')
         expect(page.locator('#subscriptionCostNote')).to_contain_text('not your subscription bill')
         expect(page.locator('#subscriptionUsageSince')).not_to_contain_text('{0}')
         expect(page.locator('#usageRows')).not_to_contain_text('gpt-5.3-codex')

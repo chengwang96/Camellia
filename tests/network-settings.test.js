@@ -40,8 +40,69 @@ test('three modes persist, share download transport and do not save missing syst
   route = 'DIRECT'; await assert.rejects(service.save({ mode: 'system' }), /No system proxy/);
   assert.equal(config.network.mode, 'prefer-direct');
   await service.save({ mode: 'direct' }); assert.equal(applied.NO_PROXY, '*');
+  // Startup must not install a loopback proxy with no upstream: the embedded
+  // Tailscale node reads this environment and would then never reach its
+  // control plane. Fall back to a direct connection and keep the reason.
   config.network.mode = 'system'; await service.initialize();
-  assert.equal(applied.HTTPS_PROXY, 'http://127.0.0.1:12345'); // unavailable system proxy fails closed
+  assert.equal(applied.HTTPS_PROXY, ''); assert.equal(applied.NO_PROXY, '*');
+  assert.match(service.state().error, /No system proxy/);
+});
+test('a system proxy that cannot reach the internet downgrades to prefer-direct once', async () => {
+  let config = { network: { mode: 'system' } }, applied, events = [];
+  const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),
+    sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY localhost:7890' }), defaultSession: { setProxy: async () => {} } }),
+    applyEnvironment: env => { applied = env; }, createFallback: async () => ({ url: 'http://127.0.0.1:12345', close() {} }),
+    healthCheckImpl: async () => ({ direct: true, proxy: false }), onHealthChange: payload => events.push(payload) });
+  await service.initialize();
+  // Startup probes first, so the dead proxy never becomes the live transport.
+  assert.equal(service.state().mode, 'prefer-direct'); assert.equal(service.state().degraded, true);
+  assert.equal(applied.HTTPS_PROXY, 'http://127.0.0.1:12345'); // prefer-direct keeps a bridge
+  assert.deepEqual(events.map(event => event.degraded), [true]);
+  assert.equal(events[0].proxy, 'http://localhost:7890/');
+  // Re-probing while still broken must not notify or re-apply repeatedly.
+  await service.checkHealth();
+  assert.deepEqual(events.map(event => event.degraded), [true]);
+  // Reading the settings state must not hide the downgrade behind a re-detect.
+  await service.detect();
+  assert.equal(service.state().degraded, true); assert.equal(service.state().mode, 'prefer-direct');
+  service.close();
+});
+test('a recovered proxy restores the stored system-proxy choice', async () => {
+  let config = { network: { mode: 'system' } }, applied, proxyDown = true, events = [];
+  const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),
+    sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY localhost:7890' }), defaultSession: { setProxy: async () => {} } }),
+    applyEnvironment: env => { applied = env; }, createFallback: async () => ({ url: 'http://127.0.0.1:12345', close() {} }),
+    healthCheckImpl: async () => ({ direct: true, proxy: !proxyDown }), onHealthChange: payload => events.push(payload) });
+  await service.initialize();
+  assert.equal(service.state().mode, 'prefer-direct');
+  proxyDown = false;
+  await service.checkHealth();
+  assert.equal(service.state().mode, 'system'); assert.equal(service.state().degraded, false);
+  assert.equal(applied.HTTPS_PROXY, 'http://localhost:7890/');
+  assert.equal(config.network.mode, 'system'); // the stored choice was never rewritten
+  assert.deepEqual(events.map(event => event.degraded), [true, false]);
+  service.close();
+});
+test('a proxy that also blocks direct connections is not downgraded', async () => {
+  let config = { network: { mode: 'system' } }, events = [];
+  const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),
+    sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY localhost:7890' }), defaultSession: { setProxy: async () => {} } }),
+    applyEnvironment: () => {}, createFallback: async () => ({ url: 'http://127.0.0.1:12345', close() {} }),
+    healthCheckImpl: async () => ({ direct: false, proxy: false }), onHealthChange: payload => events.push(payload) });
+  await service.initialize();
+  await service.checkHealth();
+  assert.equal(service.state().mode, 'system'); assert.equal(service.state().degraded, false);
+  assert.equal(events.length, 0);
+  service.close();
+});
+test('healthCheck probes direct and proxy routes over raw TCP', async () => {
+  const { healthCheck } = require('../src/main/network-settings');
+  const net = require('node:net');
+  const origin = net.createServer(socket => socket.end());
+  await new Promise(resolve => origin.listen(0, '127.0.0.1', resolve));
+  const target = `http://127.0.0.1:${origin.address().port}`;
+  assert.deepEqual(await healthCheck('http://127.0.0.1:1', { url: target, timeout: 300 }), { direct: true, proxy: false });
+  origin.closeAllConnections?.(); origin.close();
 });
 
 async function fixture(t, failDirect) {
