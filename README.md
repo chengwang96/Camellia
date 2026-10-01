@@ -17,6 +17,11 @@ Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravi
 ## Features
 
 - **Queue messages while running.** Enter or Send queues messages until the current turn ends. Each queued message has a “Send instruction now” button to steer the active turn when supported by the engine connection. Failed instructions retain their queued text and attachments without changing the composer draft.
+
+<table><tr><td>
+<img src="docs/images/message-queue.png" alt="A queued message and steering instructions while a Codex response is streaming">
+</td></tr></table>
+
 - **Multiple engines, one application.** Switch between Claude Code, Codex CLI, DSH, Kimi Code, Antigravity, and Pi with shared navigation and settings. Pi runs on the shared API routes through its RPC mode, so it needs no separate account.
 - **Long-press to organize conversations.** Hold a sidebar conversation for about 350 ms, then drag to reorder it or move it to another workspace, including collapsed workspaces. Order persists across restarts. Moving changes sidebar membership only, not files or the conversation's execution directory. The list scrolls near its edges; press Esc to cancel.
 - **Smooth desktop dragging.** Conversations lift into a subtly enlarged, shadowed preview that follows the pointer. The original fades, neighboring rows ease apart, and the preview settles on release or cancellation. Respects reduced-motion preferences.
@@ -55,7 +60,7 @@ npm start
 
 `npm ci` installs the workbench dependencies. All six harness runtimes are optional: choose **Download & open** on the home screen or download individual engines from **Settings → Runtime**. Antigravity downloads either its official CLI for Google subscriptions or the SDK and dedicated Python for API mode; Pi is a single npm package that uses the shared API routes. Separate global CLI or Python installations are not required.
 
-Networking is configured once in **Settings → General → Network connection**: **Direct connection** goes straight out; **Use system proxy** uses the detected system HTTP/HTTPS proxy; **Prefer direct connection** tries direct first and falls back to the system proxy only when a connection cannot be established. The default is direct, with no preset proxy address, and the setting covers engine and benchmark-library downloads as well as subscription and API connections. A saved change takes effect immediately: engine processes are replaced with the new connection, so Camellia does not need a restart, and a reply that is already running keeps its connection until it finishes rather than being interrupted. If the selected system proxy can no longer reach the internet, Camellia downgrades to “Prefer direct” automatically — direct connections are tried first and the proxy is kept only as a fallback — and reports it with the same in-app dialog used across the desktop UI, while **Settings → General** states the reason. Investigate the proxy service and your system proxy settings, then choose **Use system proxy** again once it works. The downgrade never rewrites your stored choice, so a restart re-probes it.
+Networking is configured once in **Settings → General → Network connection** and covers engine and benchmark-library downloads as well as subscription and API connections. **Direct connection** goes straight out; **Use system proxy** uses the detected system HTTP/HTTPS proxy; **Prefer direct connection** tries direct first and falls back to the system proxy only when a connection cannot be established. The default is direct, with no preset proxy address. A saved change takes effect immediately — engine processes are replaced with the new connection and a running reply keeps its connection until it finishes. If the selected system proxy can no longer reach the internet, Camellia downgrades to **Prefer direct** and reports it in-app and in **Settings → General**, without rewriting your stored choice, so a restart re-probes it; choose **Use system proxy** again once the proxy works. ChatGPT (Codex) and Claude subscription sign-ins skip the direct-first fallback and always use the detected system proxy, connecting directly only when none is detected.
 
 For development, `npm run setup:runtimes -- dsh kimi` downloads only the named engines into `runtimes/`, and `npm run setup:pi` installs Pi. Use `--all` only when you want all six. Launching the workbench or browsing settings does not download missing engines.
 
@@ -150,6 +155,10 @@ Use the engine selector in a conversation to switch. **Settings → General → 
 
 Multiple conversations can work at the same time, including several using the same harness. Switch conversations or start a new one without stopping background work; the sidebar shows work and pending approvals. Stop and permission actions apply only to the selected conversation. Harness switching and Markdown handoff are disabled while that conversation is working, including an active goal; stop or pause it first. Failed handoffs keep the original conversation and generated Markdown; interrupted requests are not retried automatically. See [implementation and limits](docs/design/shared-conversations.md) (Chinese).
 
+<table><tr><td>
+<img src="docs/images/shared-conversations.png" alt="A shared conversation with the engine selector and switch options in the header">
+</td></tr></table>
+
 ### Conversation control
 
 Models can also create/fork owned child conversations, choose configured models and thinking levels, send work, read results and cancel responses through [conversation-control tools](docs/conversation-tools.md). The same bridge exposes read-only `sessions`, `history` and `search` tools that list every conversation stored on the device, read any stored transcript and search transcripts for words, without starting an engine or changing anything. Children share files and existing permissions; they run independently and cannot recursively delegate or start Goals/tasks.
@@ -161,6 +170,16 @@ Use **Goal mode** (Ctrl/Cmd+G) to set an objective. All six engines continue wor
 You can also start a message with **“Set a goal: finish this feature and run its tests”** or **“设定目标：完成这个功能并通过测试”**. The model can then activate the same Goal bar through Camellia's conversation-scoped tools, adopting the current response without launching another turn. Discussion of Goal mode alone does not activate it. Intent matching is conservative: use a direct first-line request rather than a question, quote, or example. Conversational activation supports Claude, Codex, DSH, Kimi, Pi, and Antigravity **Shared API routes**; Antigravity **Google subscription** currently requires the Goal button because its CLI has no per-session MCP configuration. Existing permissions still apply; approve the Goal tool if prompted.
 
 The compact goal bar shows the objective, status and active time. Pause also stops the current response; expand the bar for the full objective, blocker details or **Mark complete**. Resume preserves progress and accumulated active time. Goals run independently in each conversation. Opening another conversation leaves them running. Closing Camellia pauses goals; continuing requires **Resume goal**. Pause a working goal before changing its harness. Goals use the selected model and permissions.
+
+<table><tr><td>
+<img src="docs/images/goal-mode.png" alt="The compact goal bar above the composer, showing the objective and active time">
+</td></tr></table>
+
+The model selector doubles as a main/secondary model switch: left-click a model to pick the primary, right-click one to set the secondary without closing the menu, and double-click the pill to swap between the two.
+
+<table><tr><td>
+<img src="docs/images/model-pair.png" alt="Model menu showing the current-selection check and the secondary-model dot">
+</td></tr></table>
 
 Antigravity supports **Google subscription** and **Shared API routes** connections. Google mode uses the official CLI's account authentication and eligible Antigravity quota; API mode uses Camellia's key pool. Connection settings, permissions, MCP servers, and skills are managed in **Settings → Engine Settings → Antigravity**. Existing sessions retain their connection. Google mode supports streaming, continuation and cancellation; session forks and image attachments are currently unavailable in this mode.
 

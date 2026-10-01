@@ -427,6 +427,60 @@ const context = { sessionId: null, workspaceId: null };
     $('modelPillName').textContent = modelLabel(currentModel);
     $('modelPillLevel').textContent = currentLevel ? levelLabel(currentLevel) : '';
   }
+  // The user keeps an explicit pair of models: left-click a model in the menu
+  // picks the primary, right-click picks the secondary without closing the
+  // menu, and a double-click on the pill swaps between the two. Kept in the
+  // page's local storage, so it survives reloads but never leaves the machine.
+  const swapKey = 'modelSwap:' + harnessId;
+  let modelSwap = (() => { try { const value = JSON.parse(localStorage.getItem(swapKey) || 'null'); return Array.isArray(value) ? value.filter(id => typeof id === 'string' && id) : []; } catch { return []; } })();
+  // The model in use is always the primary; the stored pair only contributes
+  // the alternate. Deriving the alternate as "the stored model that is not the
+  // current one" keeps the invariant that a model can never be both the primary
+  // and the secondary — previously a drift between the stored slot and the
+  // composer's model put the model in use into the secondary slot — while a
+  // double-click still toggles back to the previous model.
+  const mainModelId = () => currentModel || modelSwap[0] || '';
+  const secondaryModelId = () => modelSwap.find(id => id && id !== mainModelId()) || '';
+  function setMainModel(model) {
+    if (!model) return;
+    // Picking the model that is currently the secondary clears the secondary:
+    // a model cannot be both the main and the alternate.
+    const secondary = secondaryModelId();
+    modelSwap = secondary && secondary !== model ? [model, secondary] : [model];
+    persistModelSwap();
+  }
+  function setSecondaryModel(model) {
+    if (!model) return;
+    const main = mainModelId();
+    // The model already used as the primary cannot also be the alternate.
+    modelSwap = !main || main === model ? [main || model] : [main, model];
+    persistModelSwap();
+  }
+  // Right-clicking the model that is already the secondary clears it (a toggle).
+  function toggleSecondaryModel(model) {
+    if (model && model === secondaryModelId()) {
+      modelSwap = [mainModelId() || model];
+      persistModelSwap();
+      return;
+    }
+    setSecondaryModel(model);
+  }
+  function persistModelSwap() { try { localStorage.setItem(swapKey, JSON.stringify(modelSwap)); } catch { /* private mode */ } }
+  // The double-click only works when the pair is known and the other model is
+  // still offered on this composer.
+  function swapTarget() {
+    const other = secondaryModelId();
+    return other && other !== currentModel && selectableModels().includes(other) ? other : '';
+  }
+  function selectableModels() {
+    return [...new Set([...MODELS.map(m => m.id), ...accountModels.map(m => m.id), ...routeModels, currentModel].filter(Boolean))];
+  }
+  function swapModel() {
+    const target = swapTarget();
+    if (!target) return false;
+    void persistModel(target);
+    return true;
+  }
 
   async function persistSettings(patch, message) {
     if (sharedChat && conversationBusy()) return;
@@ -490,10 +544,31 @@ const context = { sessionId: null, workspaceId: null };
       for (const o of section.options) {
         const el = document.createElement('div');
         el.className = 'pop-opt' + (o.id === currentId ? ' current' : '');
-        el.innerHTML = '<span></span>' + checkMark();
-        el.querySelector('span').textContent = o.label;
-        if (section.options === LEVELS || !o.id) el.querySelector('span').dataset.i18n = '';
+        // The label keeps the left edge; the check and the secondary dot share
+        // one right-hand slot so they line up instead of shifting the name.
+        el.innerHTML = '<span class="pop-label"></span><span class="pop-marks">' + checkMark() + '<span class="pop-alt"></span></span>';
+        el.querySelector('.pop-label').textContent = o.label;
+        if (section.options === LEVELS || !o.id) el.querySelector('.pop-label').dataset.i18n = '';
+        if (section.options !== LEVELS && o.id) {
+          const alt = el.querySelector('.pop-alt');
+          alt.dataset.i18nAttrs = 'data-tip';
+          alt.dataset.tip = 'Right-click to set as the secondary model';
+          el.classList.toggle('alt', o.id === secondaryModelId());
+          // Right click sets this model as the secondary, or clears it when it
+          // already is; the menu stays open either way.
+          el.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+            toggleSecondaryModel(o.id);
+            const secondary = secondaryModelId();
+            for (const option of sub.querySelectorAll('.pop-opt')) {
+              const optionAlt = option.querySelector('.pop-alt');
+              if (optionAlt) optionAlt.dataset.tip = 'Right-click to set as the secondary model';
+              option.classList.toggle('alt', Boolean(option.dataset.modelId) && option.dataset.modelId === secondary);
+            }
+          });
+        }
         el.addEventListener('click', () => { void onPick(o.id); closePops(); });
+        if (o.id) el.dataset.modelId = o.id;
         sub.appendChild(el);
       }
     }
@@ -532,7 +607,7 @@ const context = { sessionId: null, workspaceId: null };
       rowModel.innerHTML = "<span data-i18n>Model</span><span class=\"pop-row-value\"></span>" + chevRight();
       rowModel.querySelector('.pop-row-value').textContent = modelLabel(currentModel);
       rowModel.addEventListener('click', () => {
-        openSubMenu(rowModel, modelSections(), currentModel, persistModel);
+        openSubMenu(rowModel, modelSections(), currentModel, (model) => { setMainModel(model); return persistModel(model); });
       });
       const rowLevel = document.createElement('div');
       rowLevel.className = 'pop-row';
@@ -547,7 +622,20 @@ const context = { sessionId: null, workspaceId: null };
     }, 260);
   }
 
-  $('modelPill').addEventListener('click', openModelMenu);
+  // A single click opens the model/reasoning menu; a double-click toggles
+  // between the two most recently selected models. Waiting briefly before
+  // opening the menu is what tells the two gestures apart, so the menu still
+  // owns the plain click (listing models and reasoning levels).
+  let modelClickTimer = null;
+  $('modelPill').addEventListener('click', () => {
+    if (modelClickTimer) return; // second click of a double-click
+    modelClickTimer = setTimeout(() => { modelClickTimer = null; openModelMenu(); }, 220);
+  });
+  $('modelPill').addEventListener('dblclick', () => {
+    clearTimeout(modelClickTimer); modelClickTimer = null;
+    if (openPops.length) closePops();
+    if (!swapModel()) openModelMenu(); // nothing to switch back to
+  });
 
   // ---------- attachments ----------
   function isImagePath(p) { return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(p); }

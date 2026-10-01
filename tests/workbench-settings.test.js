@@ -45,6 +45,27 @@ test('subscription accounts and API keys have separate navigation and page conta
   assert.doesNotMatch(providers, /id="subscriptionAccounts"/);
 });
 
+test('parked session retention settings default, clamp, persist and survive partial saves', () => {
+  const first = createHarness();
+  try {
+    assert.equal(first.call('workbench-settings').conversations.sessionTtlMinutes, 30);
+    assert.equal(first.call('workbench-settings').conversations.sessionLimit, 4);
+    assert.equal(first.call('workbench-save-settings', { conversations: { mode: 'direct', sessionTtlMinutes: 5, sessionLimit: 2 } }).ok, true);
+    assert.equal(first.call('workbench-settings').conversations.sessionTtlMinutes, 5);
+    assert.equal(first.call('workbench-settings').conversations.sessionLimit, 2);
+    // Out-of-range values are clamped instead of dropped; partial saves keep them.
+    assert.equal(first.call('workbench-save-settings', { conversations: { mode: 'direct', sessionTtlMinutes: 0, sessionLimit: 0 } }).ok, true);
+    assert.equal(first.call('workbench-settings').conversations.sessionTtlMinutes, 1);
+    assert.equal(first.call('workbench-settings').conversations.sessionLimit, 1);
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    assert.equal(first.call('workbench-settings').conversations.sessionLimit, 1);
+    const reopened = createHarness(first.root);
+    assert.equal(reopened.call('workbench-settings').conversations.sessionTtlMinutes, 1);
+    assert.equal(reopened.call('workbench-settings').conversations.sessionLimit, 1);
+    reopened.cleanup();
+  } finally { first.cleanup(); }
+});
+
 test('close-to-tray preference defaults off, persists, and survives partial saves', () => {
   const first = createHarness();
   try {

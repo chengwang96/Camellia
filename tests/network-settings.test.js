@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const net = require('node:net');
 const { PassThrough } = require('node:stream');
-const { detectedProxy, networkEnvironment, createNetworkSettings } = require('../src/main/network-settings');
+const { detectedProxy, networkEnvironment, subscriptionEnvironment, createNetworkSettings } = require('../src/main/network-settings');
 const { createFallbackProxy } = require('../src/main/network-fallback');
 
 test('system detection respects DIRECT and rejects unsupported protocols', () => {
@@ -28,6 +28,23 @@ test('subscription engines honor central preference over legacy per-account prox
       assert.equal(actual.https_proxy, undefined);
     }
   }
+});
+test('a ChatGPT subscription uses the real proxy instead of the prefer-direct bridge', () => {
+  const { codexEnvironment } = require('../src/engines/codex-client');
+  // "Prefer direct" installs a loopback bridge for the API engines; the
+  // ChatGPT CLI must skip that direct first attempt and go straight to the
+  // detected proxy, or sign-in and streaming hang on the blocked route.
+  const env = networkEnvironment({ https_proxy: 'http://old:10', CAMELLIA_SUBSCRIPTION_PROXY: 'http://127.0.0.1:7890/' },
+    { mode: 'prefer-direct', url: 'http://127.0.0.1:54321', subscriptionProxy: 'http://127.0.0.1:7890/' });
+  const subscription = codexEnvironment('/test', env, '', { subscription: true });
+  assert.equal(subscription.HTTPS_PROXY, 'http://127.0.0.1:7890/');
+  assert.equal(subscription.ALL_PROXY, '');
+  // An API route keeps the bridge because it dials direct first and falls back.
+  const api = codexEnvironment('/test', env, '', { subscription: false });
+  assert.equal(api.HTTPS_PROXY, 'http://127.0.0.1:54321');
+  // Without a detected proxy the subscription connects directly.
+  assert.equal(subscriptionEnvironment({ CAMELLIA_SUBSCRIPTION_PROXY: '', HTTPS_PROXY: 'http://stale:1' }).HTTPS_PROXY, '');
+  assert.equal(subscriptionEnvironment({ CAMELLIA_SUBSCRIPTION_PROXY: 'http://127.0.0.1:7890/' }).NO_PROXY, 'localhost,127.0.0.1,::1');
 });
 test('three modes persist, share download transport and do not save missing system proxy', async () => {
   let config = {}, route = 'PROXY localhost:7890', applied;

@@ -29,6 +29,7 @@ const { createRuntimeManager, ENGINES, run: runtimeRun } = require('./runtime-ma
 const { createRuntimeUpdates } = require('./runtime-updates.js');
 const { createAppUpdates } = require('./app-updates.js');
 const { downloadSettings } = require('./download-network.js');
+const { subscriptionEnvironment } = require('./network-settings.js');
 const { createEngineSettings, backup } = require('../engines/engine-settings.js');
 const runtimePaths = require('./runtime-paths.js');
 const { BenchmarkRunner } = require('../benchmark/runner');
@@ -661,7 +662,12 @@ function claudeSpawnSpec(settings, opts) {
   // 写到 userData 文件而不是内联 JSON，避免密钥出现在命令行里。
   const settingsPath = writeClaudeSettingsOverlay(overlayEnv, opts.conversationId);
   args.push('--settings', settingsPath);
-  return { args, env: { ...runtimeEnvironment(detectNode(), 'claude'), ...overlayEnv }, cwd: settings.cwd || undefined };
+  // Claude Code is the same class of provider CLI: on a network where direct
+  // traffic cannot reach its hosts, a "prefer direct" bridge would stall it on
+  // the direct attempt. Give the process the real detected proxy; the local
+  // router stays exempt through NO_PROXY.
+  const environment = subscriptionEnvironment(runtimeEnvironment(detectNode(), 'claude'));
+  return { args, env: { ...environment, ...overlayEnv }, cwd: settings.cwd || undefined };
 }
 
 // Pin workbench routing without changing the user's Claude CLI configuration.

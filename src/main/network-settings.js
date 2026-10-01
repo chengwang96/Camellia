@@ -13,14 +13,33 @@ function detectedProxy(result) {
     return { url: url.href, unsupported: false };
   } catch { return { url: '', unsupported: true }; }
 }
-function networkEnvironment(source, { mode = 'direct', url = '' }) {
+function networkEnvironment(source, { mode = 'direct', url = '', subscriptionProxy } = {}) {
   const env = { ...source };
   for (const key of Object.keys(env)) if (PROXY_KEYS.test(key)) delete env[key];
   const proxy = mode !== 'direct' ? url : '';
+  // "Prefer direct" hands every other process a loopback bridge that dials
+  // direct first. A subscription CLI cannot wait for that: its login and
+  // streaming endpoints are exactly the hosts a direct attempt cannot reach,
+  // so it gets the real detected proxy instead.
+  const subscription = mode !== 'direct' ? subscriptionProxy ?? url : '';
   Object.assign(env, { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, ALL_PROXY: '',
     NO_PROXY: proxy ? 'localhost,127.0.0.1,::1' : '*', NODE_USE_ENV_PROXY: '1',
     npm_config_proxy: proxy, npm_config_https_proxy: proxy, npm_config_noproxy: proxy ? 'localhost,127.0.0.1,::1' : '*',
-    CAMELLIA_NETWORK_MODE: mode, CAMELLIA_NETWORK_PROXY: proxy });
+    CAMELLIA_NETWORK_MODE: mode, CAMELLIA_NETWORK_PROXY: proxy, CAMELLIA_SUBSCRIPTION_PROXY: subscription });
+  return env;
+}
+// The provider CLIs (Codex app-server, Claude Code) are spawned with this
+// resolved transport so a "prefer direct" policy cannot make them try a direct
+// route first. An empty value means no system proxy was detected, which is the
+// only case where they connect directly. Outside the desktop there is no such
+// policy, so the caller's own proxy configuration is preserved.
+function subscriptionEnvironment(source) {
+  if (source.CAMELLIA_SUBSCRIPTION_PROXY === undefined) return { ...source };
+  const env = { ...source };
+  const proxy = String(env.CAMELLIA_SUBSCRIPTION_PROXY ?? '');
+  for (const key of Object.keys(env)) if (PROXY_KEYS.test(key)) delete env[key];
+  Object.assign(env, { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, ALL_PROXY: '',
+    NO_PROXY: proxy ? 'localhost,127.0.0.1,::1' : '*', NODE_USE_ENV_PROXY: '1' });
   return env;
 }
 // A proxy that accepts connections but cannot reach the internet leaves every
@@ -115,9 +134,14 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
       bridges.push(bridge); // Existing engines retain their transport until restart.
       url = bridge.url;
     }
+    // A degraded proxy is dead, so the subscription CLIs share the bridge that
+    // still falls back rather than the address that would hang. Otherwise they
+    // take the real detected proxy, never the loopback bridge that tries direct
+    // first.
+    const subscriptionProxy = nextMode === 'direct' ? '' : degraded ? url : detected.url || url;
     // One resolved HTTP proxy is shared by Electron, Node and engine processes.
     await sessions().defaultSession.setProxy(url ? { mode: 'fixed_servers', proxyRules: url, proxyBypassRules: '<local>;localhost;127.0.0.1;[::1]' } : { mode: 'direct' });
-    applyEnvironment(networkEnvironment(process.env, { mode: nextMode, url }));
+    applyEnvironment(networkEnvironment(process.env, { mode: nextMode, url, subscriptionProxy }));
     saveConfig({ ...(persist ? { network: { mode: nextMode } } : {}), downloadProxy: { mode: url ? 'proxy' : 'direct', url } });
     schedule(nextMode === 'system' ? 4000 : 60000);
     return state();
@@ -152,4 +176,4 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
       const result = queue.then(run, run); queue = result.catch(() => {}); return result;
     } };
 }
-module.exports = { detectedProxy, networkEnvironment, createNetworkSettings, healthCheck, probeTarget, PROXY_KEYS };
+module.exports = { detectedProxy, networkEnvironment, subscriptionEnvironment, createNetworkSettings, healthCheck, probeTarget, PROXY_KEYS };
