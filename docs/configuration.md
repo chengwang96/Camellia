@@ -247,12 +247,12 @@ Omit `--write` to preview the results. The original library revision, data hashe
 | Page | Purpose |
 | --- | --- |
 | Subscription accounts | Sign-ins, preferred accounts, default API/subscription connection, login preferences, and optional Google AI-credit billing |
-| API Keys | API endpoints, keys, model catalogs, validation, and route order |
+| API Keys | API endpoints, keys, model catalogs, validation, and route order; the **Balances & Quotas** account section sits below the provider list and both it and the overview heading step aside while one provider is open |
 | Usage | Request and token filters, trends, detailed records, and CSV export |
-| Balances & Quotas | Account balances, subscription windows, reset times, and observed trends |
 | Engine Settings | DSH's native panel, and common or advanced Claude/Codex/Kimi/Antigravity configuration |
 | Runtime | Optional downloads for each engine, installed versions, custom local paths, progress, and retries |
 | General | Interface language, theme, automatic balance refresh, application updates, application data, and logs |
+| Network | Connection mode, system-proxy detection, and the one-click connectivity test |
 
 In desktop **Settings → Runtime**, use **Browse…** or paste an absolute path, then **Save path** to select your own Claude, Codex, DSH, Kimi, or Antigravity installation. DSH and Kimi require their JavaScript entry files; Claude, Codex and Antigravity CLI require native executables. Standard npm wrappers are resolved to their package entry when possible. Saving runs the selected program to validate its version. Stop active responses before changing paths; the next message uses the new runtime. **Use automatic detection** clears the override without deleting or changing the local installation. Custom paths take priority over bundled/downloaded runtimes and are saved in the desktop configuration; update those installations with their original installer.
 

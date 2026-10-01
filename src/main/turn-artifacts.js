@@ -24,6 +24,17 @@ function describeArtifact(resolved, explicit) {
       extension: path.extname(resolved).slice(1).toUpperCase(), size: stat.size } };
 }
 
+// A network (UNC) or Windows device path never belongs to a local deliverable,
+// and touching one is not a cheap failed lookup: a missing host is a blocking
+// SMB name-resolution request, so a single ordinary reference such as the
+// `//server/share` in a prose example can freeze the whole app for seconds.
+// The rule is applied to every candidate before it reaches the filesystem, so
+// the guard cannot be bypassed by resolving the same string against another base.
+function networkPath(value) {
+  const text = String(value || '').trim();
+  return /^\\\\(?![?.]\\)/.test(text) || /^(?:[a-z]:[\\/])*[\\/]{2}(?![\\/])/.test(text);
+}
+
 function targetsFor(candidate, bases) {
   const value = candidate.trim();
   if (/^file:/i.test(value)) return [fileURLToPath(value)];
@@ -33,6 +44,7 @@ function targetsFor(candidate, bases) {
   // URL-style drive prefix as an invalid filesystem path until the slash is
   // removed; normalize after decoding so encoded links resolve the same way.
   if (process.platform === 'win32') relative = relative.replace(/^\/([a-z]:[\\/])/i, '$1');
+  if (networkPath(relative)) return [];
   relative = relative.replace(/#L\d+(?:C\d+)?$|:\d+(?::\d+)?$/, '');
   if (/^[a-z][a-z\d+.-]*:/i.test(relative) && !/^[a-z]:[\\/]/i.test(relative)) return [];
   if (path.isAbsolute(relative)) return [relative];
@@ -70,7 +82,7 @@ function usableRoots(values) {
   const directories = [];
   const seen = new Set();
   for (const value of values) {
-    if (typeof value !== 'string' || !value.trim() || /^\\\\/.test(value.trim())) continue;
+    if (typeof value !== 'string' || !value.trim() || networkPath(value)) continue;
     let resolved;
     try { resolved = path.resolve(value); } catch { continue; }
     const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;

@@ -2,6 +2,8 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 root = Path(__file__).resolve().parents[1]
+asset_png = (root / 'assets/icon-256.png').as_posix()
+asset_url = (root / 'assets/icon-256.png').as_uri()
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
     page = browser.new_page(viewport={"width": 1160, "height": 820})
@@ -178,21 +180,34 @@ with sync_playwright() as playwright:
     expect(page.locator("#chat")).to_be_visible()
     expect(page.locator("#messages")).to_contain_text("<script>unsafe</script>")
     assert page.locator("#messages script").count() == 0
-    page.evaluate("""() => {
+    page.evaluate("""([assetPng, assetUrl]) => {
       const area = document.createElement('article'); area.id = 'markdown-fixture'; area.className = 'message message-body';
-      area.append(CamelliaMarkdown.render(document, '# Result\\n\\n**bold** and `inline`\\n\\n| Item | Count |\\n| --- | ---: |\\n| one | 2 |\\n\\n- first\\n- second\\n\\n```js\\nconst html = "<script>not executable</script>";\\n```\\n\\n[unsafe](javascript:evil) [safe](https://example.com)\\n<img src=https://evil.example/pixel onerror=alert(1)>', {copy: async text => {window.copiedCode=text}}));
+      const markdown = '# Result\\n\\n**bold** and `inline`\\n\\n| Item | Count |\\n| --- | ---: |\\n| one | 2 |\\n\\n- first\\n- second\\n  - nested one\\n  - nested two\\n- [x] done task\\n- [ ] todo task\\n\\n质能 $E = mc^2$ 与 Bessel $J_\\\\nu(z)=\\\\frac{1}{2}$\\n\\n$$\\n\\\\hat{H}\\\\,\\\\psi_n = E_n\\\\,\\\\psi_n, \\\\qquad E_n = -\\\\frac{m_e e^4}{2\\\\hbar^2}\\\\cdot\\\\frac{1}{n^2}\\n$$\\n\\n价格 $5 and $10 today\\n\\n```js\\nconst html = "<script>not executable</script>";\\n```\\n\\n    const indented = true;\\n\\n[unsafe](javascript:evil) [safe](https://example.com) 自动链接 https://example.com/path 与 me@example.com\\n\\n![remote](https://evil.example/pixel.png) ![abs](' + assetPng + ') ![file](' + assetUrl + ')\\n\\n![unsafe](javascript:alert(1)) ![inline](data:image/png;base64,AAAA)\\n\\n文件 README.md 和 setup.sh 保持原样\\n<img src=https://evil.example/pixel onerror=alert(1)>';
+      area.append(CamelliaMarkdown.render(document, markdown, {copy: async text => {window.copiedCode=text}}));
       document.querySelector('main').append(area);
-    }""")
+    }""", [asset_png, asset_url])
     expect(page.locator('#markdown-fixture h1')).to_have_text('Result')
     expect(page.locator('#markdown-fixture strong')).to_have_text('bold')
     assert page.locator('#markdown-fixture table tbody tr').count() == 1
-    assert page.locator('#markdown-fixture li').count() == 2
-    assert page.locator('#markdown-fixture script, #markdown-fixture img').count() == 0
-    assert page.locator('#markdown-fixture a').count() == 1
-    page.locator('#markdown-fixture .md-code-copy').click()
+    assert page.locator('#markdown-fixture > ul > li').count() == 4
+    assert page.locator('#markdown-fixture ul ul li').count() == 2
+    assert page.locator('#markdown-fixture li.md-task').count() == 2
+    assert page.locator('#markdown-fixture li.md-task input:checked').count() == 1
+    assert page.locator('#markdown-fixture .md-math .katex').count() == 2
+    assert page.locator('#markdown-fixture .md-math-display .katex-display').count() == 1
+    assert page.locator('#markdown-fixture .md-math math').count() >= 1
+    expect(page.locator('#markdown-fixture')).to_contain_text('价格 $5 and $10 today')
+    assert page.locator('#markdown-fixture .md-code-block').count() == 2
+    assert page.locator('#markdown-fixture script').count() == 0
+    assert page.locator('#markdown-fixture img.chat-inline-image').count() == 3
+    assert page.locator('#markdown-fixture img.chat-inline-image[src^="file:"]').count() == 2
+    assert page.locator('#markdown-fixture a').count() == 3
+    assert page.locator('#markdown-fixture a[href="mailto:me@example.com"]').count() == 1
+    expect(page.locator('#markdown-fixture')).to_contain_text('README.md 和 setup.sh 保持原样')
+    page.locator('#markdown-fixture .md-code-copy').first.click()
     assert '<script>not executable</script>' in page.evaluate('copiedCode')
-    page.locator('#markdown-fixture .md-code-wrap').click()
-    expect(page.locator('#markdown-fixture .md-code')).to_have_class('md-code is-wrapped')
+    page.locator('#markdown-fixture .md-code-wrap').first.click()
+    expect(page.locator('#markdown-fixture .md-code').first).to_have_class('md-code is-wrapped')
     page.locator('#markdown-fixture').evaluate('(node) => node.remove()')
     page.locator("#attach").click()
     expect(page.locator("#attachmentTray")).to_contain_text("notes.txt")

@@ -48,7 +48,7 @@ window.createContextCapacityUI = function ({ api, current, assertClean, status, 
       <div id="contextCapacityResults" role="status" aria-live="polite"></div></details>`;
     element('contextCapacityStart').onclick = async () => {
       try {
-        assertClean();
+        await assertClean();
         const provider = current(), model = element('verifyModel').value;
         if (!model) throw new Error('Add and select a model first');
         selection = { providerId: provider.id, model };
@@ -73,7 +73,7 @@ window.createContextCapacityUI = function ({ api, current, assertClean, status, 
   element('contextProbeConfirm').onchange = event => { element('contextProbeSubmit').disabled = !event.target.checked; };
   element('contextProbeSubmit').onclick = async () => {
     try {
-      assertClean();
+      await assertClean();
       element('contextProbeSubmit').disabled = true;
       const next = await api.contextCapacityStart({ ...selection, keyId: element('contextProbeKey').value, protocol: element('contextProbeProtocol').value,
         maxEstimate: Number(element('contextProbeMax').value), maxRequests: Number(element('contextProbeRequests').value), confirmed: element('contextProbeConfirm').checked });

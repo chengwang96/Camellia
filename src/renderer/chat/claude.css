@@ -241,11 +241,31 @@
   .msg-user .bubble {
     max-width: 85%;
     padding: 10px 16px;
+    margin: 0;
     border-radius: 18px 18px 4px 18px;
     background: var(--dsw-static-deepseek-500);
     color: #fff; font: var(--f-base-16); line-height: 1.6;
     white-space: pre-wrap; word-break: break-word;
   }
+  /* A prompt keeps the same Markdown rules as a reply, on the tinted bubble. */
+  .msg-user .bubble > :first-child { margin-top: 0; }
+  .msg-user .bubble > :last-child { margin-bottom: 0; }
+  .msg-user .bubble .md-inline {
+    font: var(--f-code); background: #ffffff2e; padding: 1px 5px; border-radius: 5px;
+  }
+  .msg-user .bubble .md-code-block { background: #00000024; border-color: #ffffff33; color: #fff; }
+  .msg-user .bubble .md-code-header { color: #ffffffb3; }
+  .msg-user .bubble .md-code-wrap, .msg-user .bubble .md-code-copy { color: #ffffffb3; }
+  .msg-user .bubble .md-code-wrap:hover, .msg-user .bubble .md-code-copy:hover,
+  .msg-user .bubble .md-code-wrap[aria-pressed="true"] { background: #ffffff24; border-color: #ffffff40; color: #fff; }
+  .msg-user .bubble .md-table-wrap { border-color: #ffffff40; }
+  .msg-user .bubble .md-table th, .msg-user .bubble .md-table td { border-color: #ffffff40; }
+  .msg-user .bubble .md-table th { background: #ffffff24; }
+  .msg-user .bubble a { color: #fff; text-decoration: underline; text-underline-offset: 3px; }
+  .msg-user .bubble .md-quote { border-left-color: #ffffff66; color: #ffffffd9; }
+  .msg-user .bubble .md-rule { border-top-color: #ffffff40; }
+  .msg-user .bubble .chat-inline-image { border-color: #ffffff40; }
+  .msg-user .bubble eq, .msg-user .bubble eqn { color: #fff; }
   .msg-user .attchips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-top: 6px; }
   .message-actions { position: absolute; bottom: 0; right: 0; display: flex; align-items: center; gap: 6px; opacity: 0; transition: opacity .12s; }
   .msg-user:hover .message-actions, .msg-user:focus-within .message-actions { opacity: 1; }
@@ -316,22 +336,45 @@
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
     padding: 4px 10px 0 14px; font: var(--f-xxxs-11); color: var(--dsw-alias-label-caption);
   }
-  .md .md-code-header > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; }
+  .md .md-code-header > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; }
   .md .md-code-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-  .md .md-code-wrap, .md .md-code-copy {
+  .md .md-code-wrap, .md .md-code-copy, .md .md-code-latex {
     display: inline-flex; align-items: center; justify-content: center;
     flex-shrink: 0; width: 32px; height: 32px; padding: 5px; border: 1px solid transparent;
     border-radius: 6px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; cursor: pointer;
   }
-  .md .md-code-wrap:hover, .md .md-code-wrap[aria-pressed="true"], .md .md-code-copy:hover {
+  .md .md-code-wrap:hover, .md .md-code-wrap[aria-pressed="true"], .md .md-code-copy:hover, .md .md-code-latex:hover, .md .md-code-latex[aria-expanded="true"] {
     background: var(--dsw-alias-bg-muted); border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary);
   }
-  .md .md-code-wrap:focus-visible, .md .md-code-copy:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
+  .md .md-code-wrap:focus-visible, .md .md-code-copy:focus-visible, .md .md-code-latex:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
   .md .md-code {
     display: block; margin: 0; padding: 6px 14px 10px;
     font: var(--f-code); overflow-x: auto; white-space: pre; overflow-wrap: normal; word-break: normal;
   }
   .md .is-wrapped > .md-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .md .md-latex-panel {
+    border-top: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-base);
+    padding: 10px 14px 14px; white-space: normal;
+  }
+  .md .md-latex-panel[hidden] { display: none; }
+  .md .md-latex-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .md .md-latex-head strong { font: var(--f-xxxs-11); text-transform: uppercase; color: var(--dsw-alias-label-caption); }
+  .md .md-latex-close {
+    display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 4px;
+    border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer;
+  }
+  .md .md-latex-close:hover { background: var(--dsw-alias-bg-muted); border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary); }
+  .md .md-latex-close:focus-visible, .md .md-code-latex:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
+  .md .md-latex-notice { margin: 6px 0 0; font: var(--f-xxxs-11); color: var(--dsw-alias-label-caption); }
+  .md .md-latex-notice[hidden] { display: none; }
+  .md .md-latex-body { margin-top: 8px; overflow-x: auto; overflow-y: hidden; }
+  .md .md-latex-block + .md-latex-block { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--dsw-alias-border-l2); }
+  .md .md-latex-block .katex-display { margin: 4px 0; overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+  .md .md-latex-block.is-error .md-latex-error { margin: 0 0 6px; font: var(--f-xxxs-11); color: var(--dsw-alias-label-secondary); }
+  .md .md-latex-block .md-latex-source {
+    margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--dsw-alias-bg-soft);
+    font: var(--f-code); white-space: pre-wrap; overflow-wrap: anywhere;
+  }
   .md .md-table-wrap {
     margin: 8px 0; overflow-x: auto; white-space: normal;
     border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px;
@@ -349,6 +392,23 @@
   }
   .md .md-table th:last-child, .md .md-table td:last-child { border-right: 0; }
   .md .md-table tbody tr:last-child td { border-bottom: 0; }
+  .md .md-list { margin: 6px 0 10px; padding-left: 24px; white-space: normal; }
+  .md .md-list .md-list { margin: 4px 0 2px; }
+  .md .md-list li { margin: 2px 0; }
+  .md .md-list li.md-task { list-style: none; margin-left: -20px; }
+  .md .md-list input[type="checkbox"] { margin-right: 6px; vertical-align: -1px; }
+  .md .md-quote {
+    margin: 8px 0; padding: 2px 0 2px 14px; white-space: normal;
+    border-left: 3px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary);
+  }
+  .md .md-rule { border: 0; border-top: 1px solid var(--dsw-alias-border-l2); margin: 14px 0; }
+  .md h1, .md h2, .md h3, .md h4 { line-height: 1.4; margin: 12px 0 6px; }
+  .md eq { display: inline-block; }
+  .md eqn { display: block; }
+  .md section { margin: 10px 0; overflow-x: auto; overflow-y: hidden; white-space: normal; }
+  .md section.eqno { display: flex; flex-direction: row; align-items: center; align-content: space-between; }
+  .md section.eqno > eqn { width: 100%; margin-left: 3em; }
+  .md section.eqno > span { width: 3em; text-align: right; }
 
   /* Thinking box */
   .think {
@@ -959,14 +1019,8 @@
 .perm-options { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .perm-options:empty { display: none; }
 .perm-actions[hidden], .settings-field[hidden] { display: none; }
-.connection-note { display: block; margin: 7px auto 0; padding: 0; border: 0; background: none; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 11px; cursor: pointer; }
-.connection-note:hover { color: var(--dsw-static-deepseek-500); }
-.connection-note { height: 16px; line-height: 16px; }
-.connection-note[hidden] { display: none; }
 .status-row { display: flex; justify-content: center; align-items: center; gap: 4px; margin-top: 8px; }
-.status-row .connection-note { margin: 0; }
 .status-row .status-line { margin-top: 0; }
-.status-row .connection-note:not([hidden]) + .status-line::before { content: '· '; }
 .conversation-origin { padding: 8px 24px; color: var(--dsw-alias-label-tertiary); font-size: 12px; }
 .conversation-origin[hidden] { display: none; }
 #handoffStop[hidden], #handoffBtn[hidden] { display: none; }

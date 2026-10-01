@@ -15,6 +15,7 @@
     <button data-view="usage" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4v16h16M8 15v-4m5 4V6m5 9V9"/></svg>Usage</button>
     <div class="nav-divider"></div>
     <button data-view="general" class="active" aria-current="page" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.5 3-.6 2.3-2 .9-2.3-.7-2.5 4.3 1.7 1.6v2.2l-1.7 1.6 2.5 4.3 2.3-.7 2 .9.6 2.3h5l.6-2.3 2-.9 2.3.7 2.5-4.3-1.7-1.6v-2.2l1.7-1.6-2.5-4.3-2.3.7-2-.9L14.5 3Z"/><circle cx="12" cy="12.5" r="3"/></svg>General</button>
+    <button data-view="network" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18Z"/></svg>Network</button>
     <button data-view="engines" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h6m4 0h6M4 17h10m4 0h2"/><circle cx="12" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></svg>Engine Settings</button>
     <button data-view="runtimes" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v11m-4-4 4 4 4-4M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>Runtime</button>
     <button data-view="archived" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4"/></svg>Archived</button>
@@ -34,17 +35,21 @@
       </section>
     </section>
     <section id="providersPage" class="page" hidden>
-      <h2 data-i18n>API providers and keys</h2><p class="hint" data-i18n>API usage is billed by the provider. Subscription sign-ins do not add keys to this pool.</p>
-      <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><div class="toolbar-actions"><button id="exportConfig" data-i18n>Export config</button><button id="importConfig" data-i18n>Import config</button><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div></div>
+      <section id="providersHeading" class="providers-heading" aria-labelledby="providersTitle">
+        <h2 id="providersTitle" data-i18n>API providers and keys</h2>
+        <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><div class="toolbar-actions"><button id="exportConfig" data-i18n>Export config</button><button id="importConfig" data-i18n>Import config</button><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div></div>
+      </section>
       <div id="providers" class="provider-grid"></div>
       <div id="editor" hidden></div>
-      <h2 class="usage-api-title" data-i18n>Balances &amp; Quotas</h2>
-      <div class="toolbar"><div class="toolbar-actions"><button id="refreshBalances" class="primary" data-i18n>Refresh all</button></div></div>
-      <div class="balance-filter"><select id="balanceProvider" aria-label="Balance provider" data-i18n-attrs="aria-label"></select><input id="balanceSearch" aria-label="Filter accounts" placeholder="Filter by account label or masked key" data-i18n-attrs="aria-label placeholder"></div>
-      <div id="balanceCards" class="balance-grid"></div>
-      <p class="hint footnote" data-i18n>Keys may share one account balance, so card amounts are not added together. Charts show local observations; earlier history is not reconstructed.</p>
-      <div id="balanceChart" class="chart-grid-layout"></div>
       <section class="router-options" aria-labelledby="routerOptionsTitle"><h3 id="routerOptionsTitle" data-i18n>Router options</h3><div class="row"><label data-i18n><input id="enabled" type="checkbox">Enable shared router</label><label data-i18n>Local port <input id="port" type="number" min="1024" max="65535"></label></div><div id="live" class="hint" data-i18n></div></section>
+      <section id="balancesSection" class="balances-section" aria-labelledby="balancesTitle">
+        <h2 id="balancesTitle" class="usage-api-title" data-i18n>Balances &amp; Quotas</h2>
+        <div class="toolbar"><div class="toolbar-actions"><button id="refreshBalances" class="primary" data-i18n>Refresh all</button></div></div>
+        <div class="balance-filter"><select id="balanceProvider" aria-label="Balance provider" data-i18n-attrs="aria-label"></select><input id="balanceSearch" aria-label="Filter accounts" placeholder="Filter by account label or masked key" data-i18n-attrs="aria-label placeholder"></div>
+        <div id="balanceCards" class="balance-grid"></div>
+        <p class="hint footnote" data-i18n>Keys may share one account balance, so card amounts are not added together. Charts show local observations; earlier history is not reconstructed.</p>
+        <div id="balanceChart" class="chart-grid-layout"></div>
+      </section>
     </section>
     <section id="usagePage" class="page" hidden>
       <h2 class="usage-api-title" data-i18n>Usage history</h2>
@@ -75,14 +80,14 @@
       <div class="setting-row"><div><h2>Camellia</h2><p class="hint">Claude Code · Codex CLI · DeepSeek Harness · Kimi Code · Antigravity · Pi</p></div><span id="version" class="hint"></span></div>
       <div class="setting-row app-update"><div><h2 data-i18n>Application updates</h2><p class="hint" id="appUpdateStatus" role="status" aria-live="polite" data-i18n>Check the official release feed for a newer version of Camellia.</p><progress id="appUpdateProgress" max="100" hidden></progress></div><div class="app-update-actions"><button id="checkAppUpdate" data-i18n>Check for updates</button><button id="installAppUpdate" class="primary" hidden data-i18n>Download and install</button></div></div>
       <details id="appUpdateDetails" hidden><summary data-i18n>Release notes</summary><p class="hint" id="appUpdateMeta"></p><pre id="appUpdateNotes"></pre><p class="hint" data-i18n>Installing closes Camellia and replaces the current installation in place. Your conversations, settings and downloaded engines are kept.</p></details>
-      <section id="networkPreferences" class="download-preferences">
-        <h2 data-i18n>Network connection</h2>
-        <p class="hint" data-i18n>Choose direct access or the detected system proxy for subscriptions, API connections and downloads.</p>
-        <div class="engine-field"><label for="networkMode" data-i18n>Connection mode</label><select id="networkMode"><option value="direct" data-i18n>Direct connection</option><option value="system" data-i18n>Use system proxy</option><option value="prefer-direct" data-i18n>Prefer direct connection</option></select></div>
-        <p class="hint" data-i18n>Prefer direct: try direct first, then the system proxy if the connection cannot be established. Requests already sent are not replayed.</p>
-        <p class="hint" data-i18n>ChatGPT and Claude subscription sign-ins always use the detected system proxy instead of trying direct first. They connect directly only when no system proxy is detected.</p>
-        <div class="network-detection"><p id="systemProxyStatus" class="hint" role="status"></p><button id="detectSystemProxy" type="button" data-i18n>Detect system proxy</button></div>
-        <p class="hint" data-i18n>Saved changes apply immediately. Engine processes are replaced with the new connection, and a response that is already running keeps its connection until it finishes.</p>
+    </section>
+    <section id="networkPage" class="page" hidden>
+      <div class="setting-row"><div><h2 data-i18n>Connection mode</h2><p class="hint" id="networkModeHint"></p></div><select id="networkMode" aria-label="Connection mode" data-i18n-attrs="aria-label"><option value="auto" data-i18n>Auto</option><option value="direct" data-i18n>Direct connection</option><option value="system" data-i18n>Use system proxy</option></select></div>
+      <div class="setting-row"><div><h2 data-i18n>System proxy</h2><p class="hint" id="systemProxyStatus" role="status"></p></div><button id="detectSystemProxy" type="button" data-i18n>Detect system proxy</button></div>
+      <section class="connectivity-section">
+        <div class="section-head"><h2 data-i18n>Connectivity test</h2><div class="toolbar-actions"><button id="networkTest" class="primary" data-i18n>Test all connections</button></div></div>
+        <p class="hint" data-i18n>Tests every enabled provider host and signed-in subscription through both a direct connection and the detected proxy. Results are read-only and never change your connection mode.</p>
+        <div id="networkResults" class="network-results"></div>
       </section>
     </section>
     <section id="archivedPage" class="page" hidden>
@@ -186,7 +191,7 @@
       <p class="hint footnote" data-i18n>If an installed engine stops working, antivirus software may be removing its unsigned files. Exclude Camellia's runtimes folder — see docs/troubleshooting-runtimes.md.</p>
     </section>
   </main>
-  <footer><span id="status" role="status" aria-live="polite" data-i18n></span><button id="save" class="primary" disabled hidden data-i18n>Save changes</button></footer>
+  <div id="statusToast" class="status-toast" hidden><span id="status" role="status" aria-live="polite" data-i18n></span></div>
 </div>
 <dialog id="addDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Add API provider</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p class="hint" data-i18n>Connect with an API key. Choose a service to fill in its API address.</p><label for="preset" data-i18n>Provider</label><select id="preset"></select><div id="presetAccount" class="preset-account" hidden><p id="presetAccountHint" class="hint"></p><button id="openPresetAccount"></button></div><button id="confirmAdd" class="primary" data-i18n>Add API provider</button></dialog>
 <dialog id="modelDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Select model</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><input id="modelSearch" placeholder="Search models" aria-label="Search models" data-i18n-attrs="aria-label placeholder"><div id="catalogList"></div><button id="applyModels" class="primary" data-i18n>Apply model selection</button></dialog>

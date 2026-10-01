@@ -11,6 +11,7 @@ const { ClaudeGoal, verifyPrompt, verifySignal } = require('./claude-goal');
 const { instructions: goalToolInstructions, validateTool, matchesUserRequest } = require('./goal-tools');
 const { collector } = require('../shared/turn-artifacts');
 const { projectOutput } = require('../shared/mobile-output');
+const { contextOverflow } = require('../shared/context-overflow');
 const { resolveArtifacts } = require('../main/turn-artifacts');
 const { ScheduledTasks, taskPrompt } = require('./scheduled-tasks');
 const { callConversationTool } = require('./conversation-control');
@@ -81,7 +82,6 @@ const preferences = config => ({ mode: config.conversations?.mode === 'markdown'
   sessionLimit: clampNumber(config.conversations?.sessionLimit, 1, 20, MODEL_SESSION_LIMIT) });
 const textOf = content => typeof content === 'string' ? content : (content || []).filter(p => p.type === 'text').map(p => p.text).join('\n');
 const shortTitle = value => [...String(value || '').replace(/^[\s"'`#*-]+|[\s"'`#*-.。！!？?：:]+$/gu, '').replace(/\s+/g, ' ').trim()].slice(0, 10).join('');
-const contextOverflow = event => event.is_error && /context[_ ]?(length|window)[^ ]*.{0,20}(exceed|too|limit)|context overflow|maximum context|prompt is too long|too many tokens|context_length_exceeded|request.{0,10}too large|exceeds the maximum length of [\d,]+ characters/i.test(String(event.result || ''));
 // A native engine can lose the session it recorded for a conversation: Codex
 // refuses to resume a thread whose rollout file was removed or never persisted.
 // The logical transcript is unaffected, so the turn is revised or continued
@@ -1415,6 +1415,18 @@ class SharedConversations {
     this.save(c);
     return cap;
   }
+  // A summarization request is not a conversation turn. Its prompt only carries
+  // bounded history fragments and its answer is capped separately, so a context
+  // error there bounds the rest of this summary run instead of the conversation's
+  // own window. Letting it shrink the window made every later send re-run the
+  // same doomed compaction (the codex -> antigravity first-session report).
+  // Real turns and native compaction still learn the provider limit.
+  reduceSummaryBudget(c, engine, settings, error, current) {
+    const reported = reportedContextLimit(error);
+    const ceiling = this.contextCap(engine, settings);
+    const floor = Math.max(2048, Math.min(current, Number.isFinite(ceiling) ? Math.floor(ceiling * 0.02) : 2048));
+    return Math.max(floor, Math.min(reported || Math.floor(current / 2), current));
+  }
   contextPressure(c, engine, settings, active) {
     const segment = c.segments[engine];
     const usage = segment?.contextUsage;
@@ -1640,7 +1652,7 @@ class SharedConversations {
       metric.outputChars = result.result?.length || 0;
       metric.outcome = result.subtype;
       if (!switching.cancelled && !recovery?.cancelled && contextOverflow(result)) {
-        const reduced = this.reduceContextBudget(c, engine, settings, result.result);
+        const reduced = this.reduceSummaryBudget(c, engine, settings, result.result, budget);
         if (++retries > 4) throw new Error('Compaction rescue retry limit reached. ' + recoveryAdvice);
         diagnostics.retries = retries;
         shortening = null;
@@ -1680,7 +1692,7 @@ class SharedConversations {
         request: ({ kind, system, user, maxChars, maxTokens }) => this.summarize.run({ model: settings.model, kind, system, user, maxChars, maxTokens, signal: abort.signal }),
         stopped: () => switching.cancelled || Boolean(recovery?.cancelled),
         onOverflow: (error, current) => {
-          const reduced = this.reduceContextBudget(c, engine, settings, error.message);
+          const reduced = this.reduceSummaryBudget(c, engine, settings, error.message, current);
           diagnostics.retries = (diagnostics.retries || 0) + 1;
           return Math.min(Math.floor(current / 2), Math.floor(reduced * 1.8));
         },

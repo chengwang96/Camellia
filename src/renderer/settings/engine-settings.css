@@ -10,7 +10,10 @@
 #enginePaths p { word-break: break-all; }
 .engine-field { display: flex; align-items: center; justify-content: space-between; gap: 26px; padding: 16px 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
 .engine-field > label { margin: 0; flex: 1; }
-.engine-field input:not([type=checkbox]), .engine-field select { width: min(310px, 50%); }
+.engine-field input:not([type=checkbox]) { width: min(310px, 50%); }
+/* Let this row's dropdown hug its labels like every other settings select,
+   instead of stretching to a fixed share of the row. */
+.engine-field select { width: auto; }
 .engine-field input[type=number] { width: 125px; }
 .engine-field textarea { width: min(460px, 60%); resize: vertical; font: inherit; }
 .engine-common-title { margin: 26px 0 2px; font-size: 14px; }

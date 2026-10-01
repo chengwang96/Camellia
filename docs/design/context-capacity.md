@@ -89,10 +89,26 @@ checking the summary; cancellation or summarization failure leaves it intact.
 Markdown handoffs also use the destination budget and shorten oversized drafts
 before asking the target harness to accept them.
 
-The router pipeline repacks overflowing merge batches under the learned budget
-and splits individual oversized summaries. Retries, nesting and requests remain
-bounded. Summaries are lossy: successful capacity checks do not certify complete
-retention of every fact. The persisted original transcript remains the source for
-recovering details.
+The router pipeline repacks overflowing merge batches and retries the same
+history fragment under the smaller budget. A context error reported by a
+summarization request bounds only that summary run: it shrinks the fragments and
+the output allowance, and never lowers the conversation's own window. Letting a
+summary error rewrite the window budget made every later send re-run the same
+doomed compaction. Real conversation turns and native compaction still learn the
+provider limit. Retries, nesting and requests remain bounded. Summaries are
+lossy: successful capacity checks do not certify complete retention of every
+fact. The persisted original transcript remains the source for recovering
+details.
+
+`src/shared/context-overflow.js` is the single recognizer for "this request is
+over a context limit"; the conversation engine and the router summarizer both
+use it so a message is a context error everywhere or nowhere. It accepts the
+declared-window and per-request-input-cap wordings suppliers actually use
+(including Anthropic's `Input is too long.`, OpenAI-style `input token count …
+exceeds the maximum number of tokens allowed …`, and Codex's character cap) and
+rejects look-alikes: rate limits such as `… on tokens per min (TPM)`, an output
+budget like `Maximum tokens per request: N`, and a bare `context window: N`
+declaration. A false positive spends a summary request the provider never asked
+for.
 
 Migration regressions: `node --test tests/compaction-plan.test.js tests/shared-conversations.test.js`.

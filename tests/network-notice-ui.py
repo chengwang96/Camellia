@@ -46,7 +46,7 @@ try:
         expect(notice).to_be_visible()
         expect(notice.locator('.notice-badge svg')).to_have_count(1)
         expect(notice.locator('h2')).to_have_text('System proxy unavailable')
-        expect(notice.locator('#networkNoticeMode')).to_contain_text('Prefer direct')
+        expect(notice.locator('#networkNoticeMode')).to_contain_text('Auto')
         # The address is rendered as text, so it can never become markup.
         expect(notice.locator('#networkNoticeProxy')).to_contain_text('<img src=x onerror=alert(1)>')
         assert page.locator('dialog.network-notice img').count() == 0

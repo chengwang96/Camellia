@@ -1,14 +1,73 @@
 'use strict';
 
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('markdown-it'));
-  else root.CamelliaMarkdownLinks = factory(root.markdownit);
-})(typeof window === 'object' ? window : globalThis, function (MarkdownIt) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('markdown-it'), require('markdown-it-texmath'), require('katex'));
+  else root.CamelliaMarkdownLinks = factory(root.markdownit, root.texmath, root.katex);
+})(typeof window === 'object' ? window : globalThis, function (MarkdownIt, texmath, katex) {
   // Keep the chat's existing block layout, but use the Markdown parser for
-  // inline links (including titles, escaped characters and balanced brackets).
-  const parser = new MarkdownIt('zero').enable(['link', 'image', 'escape', 'entity', 'emphasis', 'newline']);
+  // inline links (including titles, escaped characters and balanced brackets)
+  // and for inline/display math, which shares the file preview's renderer.
+  const parser = new MarkdownIt('zero', { linkify: true })
+    .enable(['link', 'image', 'escape', 'entity', 'emphasis', 'newline', 'strikethrough', 'linkify', 'autolink']);
+  // Bare hostnames are left alone: fuzzyLink would turn file names like
+  // "README.md" or "setup.sh" into fake domains. Explicit schemes are handled
+  // by `autolink`/`linkify`, e-mail by `fuzzyEmail`, and "www." by the rule below.
+  parser.linkify.set({ fuzzyLink: false, fuzzyEmail: true, fuzzyIP: false });
+  parser.use(texmath, { engine: katex, delimiters: ['dollars', 'brackets'], katexOptions: { trust: false, strict: 'ignore', maxExpand: 200, maxSize: 20 } });
   const escape = parser.utils.escapeHtml;
   const controls = /[\x00-\x1f\x7f]/;
+
+  const wwwPattern = /www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+[^\s<>()[\]`"']*/g;
+
+  // "www.example.com" is unambiguous, but linkify-it only finds it through the
+  // fuzzy-host rule this parser deliberately disables, so link it here.
+  function linkifyWww(state) {
+    for (const block of state.tokens) {
+      if (block.type !== 'inline' || !block.children) continue;
+      const output = [];
+      let linkDepth = 0, changed = false;
+      for (const token of block.children) {
+        if (token.type === 'link_open') { linkDepth++; output.push(token); continue; }
+        if (token.type === 'link_close') { linkDepth--; output.push(token); continue; }
+        if (linkDepth > 0 || token.type !== 'text' || !token.content.includes('www.')) { output.push(token); continue; }
+        const source = token.content;
+        const parts = [];
+        let last = 0, match;
+        wwwPattern.lastIndex = 0;
+        while ((match = wwwPattern.exec(source))) {
+          const label = match[0].replace(/[.,;:!?]+$/, '');
+          const href = state.md.normalizeLink('http://' + label);
+          if (!/^https?:\/\//.test(href) || !state.md.validateLink(href)) continue;
+          if (match.index > last) {
+            const lead = new state.Token('text', '', 0);
+            lead.content = source.slice(last, match.index);
+            parts.push(lead);
+          }
+          const open = new state.Token('link_open', 'a', 1);
+          open.attrs = [['href', href]];
+          open.markup = 'linkify';
+          open.info = 'auto';
+          const text = new state.Token('text', '', 0);
+          text.content = label;
+          const close = new state.Token('link_close', 'a', -1);
+          close.markup = 'linkify';
+          close.info = 'auto';
+          parts.push(open, text, close);
+          last = match.index + label.length;
+        }
+        if (!parts.length) { output.push(token); continue; }
+        if (last < source.length) {
+          const tail = new state.Token('text', '', 0);
+          tail.content = source.slice(last);
+          parts.push(tail);
+        }
+        changed = true;
+        output.push(...parts);
+      }
+      if (changed) block.children = output;
+    }
+  }
+  parser.core.ruler.after('linkify', 'linkify_www', linkifyWww);
 
   function fileUrl(path) {
     const encoded = path.split('/').map(encodeURIComponent).join('/');
@@ -20,7 +79,13 @@
   function destination(value, cwd = '') {
     try {
       if (!value || controls.test(value)) return null;
-      if (/^https?:/i.test(value)) {
+      if (/^mailto:/i.test(value)) {
+        if (!/^mailto:[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/i.test(value)) return null;
+        return { href: new URL(value).href, mailto: true };
+      }
+      // Require the slashes so a Windows path such as "C:/x.md" is not read as
+      // a URL scheme; anything else scheme-qualified is not a local file either.
+      if (/^https?:\/\//i.test(value)) {
         const url = new URL(value);
         return url.username || url.password ? null : { href: url.href };
       }
@@ -64,7 +129,7 @@
       token.attrSet('data-chat-file', target.path);
       if (target.line) token.attrSet('data-chat-line', String(target.line));
       if (target.anchor) token.attrSet('data-chat-anchor', target.anchor);
-    } else {
+    } else if (!target.mailto) {
       token.attrSet('target', '_blank');
       token.attrSet('rel', 'noopener noreferrer');
     }
@@ -76,16 +141,24 @@
     while (open >= 0 && tokens[open].type !== 'link_open') open--;
     return destination(tokens[open]?.attrGet('href'), environment.cwd) ? '</a>' : '</span>';
   };
-  // Local preview images are safe to load as image resources. Never fetch
-  // arbitrary remote URLs automatically just because they occur in a reply.
+  // Local files and explicit http(s) URLs render inline, matching the file
+  // preview. The browser only issues the request because the author wrote an
+  // image, so remote hosts are reachable without being auto-fetched from prose.
   parser.renderer.rules.image = (tokens, index, options, environment) => {
     const token = tokens[index], target = destination(token.attrGet('src'), environment.cwd);
     const label = token.content || target?.path?.split('/').pop() || 'Image';
-    if (!target?.path || !/\.(?:png|jpe?g|gif|webp|bmp|avif|svg|ico)$/i.test(target.path))
+    if (!target) return escape('![' + token.content + '](' + token.attrGet('src') + ')');
+    if (target.path) {
+      if (!/\.(?:png|jpe?g|gif|webp|bmp|avif|svg|ico)$/i.test(target.path))
+        return escape('![' + token.content + '](' + token.attrGet('src') + ')');
+      return '<img class="chat-inline-image" src="' + escape(target.href) + '" alt="' + escape(label)
+        + '" title="' + escape(target.path) + '" data-chat-file="' + escape(target.path)
+        + '" loading="lazy" decoding="async" referrerpolicy="no-referrer" tabindex="0" role="button">';
+    }
+    if (!/^https?:/i.test(target.href) || !/\.(?:png|jpe?g|gif|webp|bmp|avif|svg|ico)(?:[?#]|$)/i.test(target.href))
       return escape('![' + token.content + '](' + token.attrGet('src') + ')');
     return '<img class="chat-inline-image" src="' + escape(target.href) + '" alt="' + escape(label)
-      + '" title="' + escape(target.path) + '" data-chat-file="' + escape(target.path)
-      + '" loading="lazy" decoding="async" tabindex="0" role="button">';
+      + '" title="' + escape(target.href) + '" loading="lazy" decoding="async" referrerpolicy="no-referrer">';
   };
 
   return { destination, renderInline: (source, cwd = '') => parser.renderInline(source, { cwd }) };

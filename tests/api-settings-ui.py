@@ -38,6 +38,24 @@ def assert_back_button_spacing(page):
     }""")
     assert spacing['left'] >= 12 and spacing['right'] >= 12 and spacing['fits'], spacing
 
+def wait_state(page, predicate, timeout=10000):
+    """Poll inside the page: polling from Python would race the shared IPC pipe."""
+    matched = page.evaluate("""async ({ predicate, timeout }) => {
+        const deadline = Date.now() + timeout;
+        while (Date.now() < deadline) {
+            const state = await window.dshDesktop.apiRouterGetState();
+            if (eval(predicate)) return true;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        return false;
+    }""", {'predicate': predicate, 'timeout': timeout})
+    assert matched, f'state never matched: {predicate}'
+
+def fill(page, selector, value):
+    """Type into a field and leave it, which flushes the change immediately."""
+    page.locator(selector).fill(value)
+    page.locator(selector).blur()
+
 try:
     port=rpc('freePort')['result']; upstream=rpc('startTestUpstream')['result']
     with sync_playwright() as p:
@@ -47,7 +65,7 @@ try:
         page.expose_function('testRpc',rpc);page.add_init_script(bridge)
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri());page.wait_for_load_state('networkidle')
         nav_icons=page.locator('.settings-nav nav button > svg.nav-icon')
-        expect(nav_icons).to_have_count(9)
+        expect(nav_icons).to_have_count(10)
         for icon in nav_icons.all():
             expect(icon).to_have_attribute('aria-hidden','true')
             expect(icon).to_have_attribute('focusable','false')
@@ -69,19 +87,22 @@ try:
         page.locator('#preset').select_option('ollama');page.locator('#confirmAdd').click()
         assert_back_button_spacing(page)
         page.locator('#connectionAdvanced > summary').click()
-        page.locator('#pUrl').fill(upstream+'/ollama/v1')
-        page.get_by_role('textbox',name='API Key 1',exact=True).fill('test-exhausted-account')
-        page.locator('#save').click();expect(page.locator('#status')).to_contain_text('Saved')
+        fill(page,'#pUrl',upstream+'/ollama/v1')
+        fill(page,'[data-field=key]','test-exhausted-account')
+        wait_state(page, "(state.providers || []).length === 1")
         expect(page.get_by_role('textbox',name='API Key 1',exact=True)).to_have_value('')
+        # The overview heading and its actions belong to the provider list, so
+        # adding the next provider goes through "back to all providers" first.
+        page.locator('#backProviders').click()
         page.locator('#addProvider').click();page.locator('#preset').select_option('commandcode');page.locator('#confirmAdd').click()
         page.locator('#connectionAdvanced > summary').click()
         expect(page.locator('#pUrl')).to_have_value('https://api.commandcode.ai/provider/v1')
-        page.locator('#pUrl').fill(upstream+'/command/v1')
-        page.get_by_role('textbox',name='API Key 1',exact=True).fill('test-command-account')
+        fill(page,'#pUrl',upstream+'/command/v1')
+        fill(page,'[data-field=key]','test-command-account')
         expect(page.locator('#pPriority')).to_have_value('0')
         expect(page.locator('#pPriority option')).to_have_text(['Low', 'Default', 'High'])
         page.locator('#pPriority').select_option('1')
-        page.locator('#save').click();expect(page.locator('#status')).to_contain_text('Saved')
+        wait_state(page, "(state.providers || []).length === 2")
         state=rpc('apiRouterGetState')['result'];assert len(state['providers'])==2
         assert state['providers'][1]['priority']==1
         assert 'test-command-account' not in json.dumps(state)
@@ -137,32 +158,35 @@ try:
                 assert all(card['sameRow'] for card in layout['cards']), (width, layout)
         page.set_viewport_size({'width':1040,'height':900})
         page.get_by_role('button',name='Move up Command Code GOAT',exact=True).click()
-        page.locator('#save').click();expect(page.locator('#status')).to_contain_text('Saved')
+        wait_state(page, "state.providers[0].type === 'commandcode'")
         page.reload();page.wait_for_load_state('networkidle')
         page.locator('[data-view=providers]').click()
         expect(page.locator('.provider').first).to_contain_text('Command Code GOAT')
         page.locator('.provider [data-select]').first.click()
         expect(page.locator('#pPriority')).to_have_value('1')
-        page.locator('#pPriority').select_option('-1');page.locator('#save').click()
-        expect(page.locator('#status')).to_contain_text('Saved')
+        page.locator('#pPriority').select_option('-1')
+        wait_state(page, "state.providers[0].priority === -1")
         assert rpc('apiRouterGetState')['result']['providers'][0]['priority']==-1
         expect(page.locator('#pPriority')).to_have_value('-1')
-        page.locator('#pPriority').select_option('0');page.locator('#save').click()
-        expect(page.locator('#status')).to_contain_text('Saved')
+        page.locator('#pPriority').select_option('0')
+        wait_state(page, "state.providers[0].priority === 0")
         assert rpc('apiRouterGetState')['result']['providers'][0]['priority']==0
-        page.locator('#pPriority').select_option('1');page.locator('#save').click()
-        expect(page.locator('#status')).to_contain_text('Saved')
+        page.locator('#pPriority').select_option('1')
+        wait_state(page, "state.providers[0].priority === 1")
         expect(page.locator('#keyRows')).to_contain_text('1 successful')
         page.locator('#connectionAdvanced > summary').click()
-        page.locator('#pUrl').fill('http://remote.invalid/v1');page.locator('#save').click()
+        fill(page,'#pUrl','http://remote.invalid/v1')
         expect(page.locator('#status')).to_contain_text('HTTPS')
         assert rpc('apiRouterGetState')['result']['providers'][0]['baseUrl']==upstream+'/command/v1'
-        page.locator('#pUrl').fill(upstream+'/command/v1');page.locator('#save').click();expect(page.locator('#status')).to_contain_text('Saved')
+        fill(page,'#pUrl',upstream+'/command/v1')
+        wait_state(page, "state.providers[0].baseUrl.endsWith('/command/v1')")
         # DeepSeek preset is available without inventing equivalence for aliases.
+        page.locator('#backProviders').click()
         page.locator('#addProvider').click();page.locator('#preset').select_option('deepseek');page.locator('#confirmAdd').click()
         expect(page.locator('#pAUrl')).to_have_value('https://api.deepseek.com/anthropic/v1')
         expect(page.locator('#modelRows tr')).to_have_count(0)
-        page.locator('#deleteProvider').click();page.locator('#save').click();expect(page.locator('#status')).to_contain_text('Saved')
+        page.locator('#deleteProvider').click()
+        wait_state(page, "!state.providers.some(p => p.type === 'deepseek')")
         # New models appear in Claude; workspace behavior is checked separately.
         claude=browser.new_page(viewport={'width':1320,'height':900});claude.expose_function('testRpc',rpc);claude.add_init_script(bridge)
         claude.on('pageerror',lambda e:errors.append(str(e)))
@@ -218,14 +242,15 @@ try:
         page.locator('#showImport').click()
         page.locator('#bulkKeys').fill('test-command-account\ntest-command-extra\ntest-command-extra')
         page.locator('#importKeys').click()
-        page.locator('#save').click();expect(page.locator('#status')).to_contain_text('Saved')
+        page.locator('#bulkKeys').blur()
+        wait_state(page, "state.providers[0].keys.length === 2")
         expect(page.locator('.key-card')).to_have_count(2)
-        page.get_by_role('textbox',name='Key label 2',exact=True).fill('Backup account')
+        fill(page,'[data-key="1"][data-field=name]','Backup account')
         page.locator('#discoverModels').click()
         expect(page.locator('#catalogList input')).to_have_count(2)
         page.locator('#modelSearch').fill('model-test')
         page.locator('#catalogList input').check();page.locator('#applyModels').click()
-        page.locator('#save').click();expect(page.locator('#status')).to_contain_text('Saved')
+        wait_state(page, "state.providers[0].models.some(m => m.id === 'model-test')")
         page.locator('#verifyModel').select_option('model-test')
         page.locator('[data-verify]').nth(1).click();expect(page.locator('#status')).to_contain_text('Validation succeeded for model-test')
         # The verify button next to the model picker validates with the first usable key.
@@ -270,6 +295,26 @@ try:
         page.evaluate('s=>window.testEmitInsights(s)',snapshot)
         page.locator('[data-view=usage]').click()
         page.locator('[data-view=providers]').click()
+        # The overview heading, its three actions and the balances all describe
+        # the whole key pool: they step aside while one provider's settings are
+        # open and come back on the list, with balances at the bottom of the page.
+        expect(page.locator('#editor')).to_be_visible()
+        expect(page.locator('#providersHeading')).to_be_hidden()
+        expect(page.locator('#balancesSection')).to_be_hidden()
+        page.locator('#backProviders').click()
+        expect(page.locator('#providersHeading')).to_be_visible()
+        expect(page.locator('#providersHeading #exportConfig')).to_be_visible()
+        expect(page.locator('#providersHeading #importConfig')).to_be_visible()
+        expect(page.locator('#providersHeading #addProvider')).to_be_visible()
+        expect(page.locator('#balancesSection')).to_be_visible()
+        router_bottom=page.locator('.router-options').bounding_box()['y']+page.locator('.router-options').bounding_box()['height']
+        assert page.locator('#balancesSection').bounding_box()['y'] > router_bottom
+        page.locator('#providers [data-select]').first.click()
+        expect(page.locator('#providersHeading')).to_be_hidden()
+        expect(page.locator('#balancesSection')).to_be_hidden()
+        page.locator('#backProviders').click()
+        expect(page.locator('#providersHeading')).to_be_visible()
+        expect(page.locator('#balancesSection')).to_be_visible()
         page.locator('#balanceSearch').fill('Backup account')
         expect(page.locator('.balance-card')).to_have_count(1)
         page.locator('#balanceSearch').fill('')
@@ -383,7 +428,6 @@ try:
         page.screenshot(path=str(repo/'dist/ui-preview/settings-multiple-charts.png'))
         page.locator('[data-view=general]').click();page.locator('#language').select_option('zh-CN')
         page.locator('[data-view=providers]').click()
-        page.locator('#backProviders').click()
         page.locator('#providers [data-select]').first.click()
         expect(page.locator('#backProviders')).to_have_text('← 所有供应商')
         assert_back_button_spacing(page)
@@ -435,7 +479,6 @@ try:
         expect(page.locator('#mobilePage')).to_be_visible()
         expect(page.locator('#generalPage')).to_be_hidden()
         expect(page.locator('#storageSection')).to_be_hidden()
-        expect(page.locator('#save')).to_be_hidden()
         expect(page.locator('#mobile-error')).to_contain_text('fully quit Camellia')
         expect(page.locator('#mobile-status')).to_have_text('Status unavailable')
         expect(page.locator('#mobile-toggle')).to_be_disabled()

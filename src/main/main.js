@@ -40,6 +40,7 @@ const { createPiChat } = require('../engines/pi-session');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
 const { saveClipboardImage, savePastedText } = require('./clipboard-attachments');
 const { StorageCleanup } = require('./storage-cleanup');
+const { IdleSessionReaper } = require('../engines/idle-session-reaper');
 const { attachInputContextMenu } = require('./input-context-menu');
 const { attachImageContextMenu } = require('./image-context-menu');
 const { describePreview } = require('./file-preview');
@@ -410,6 +411,19 @@ function subscriptionUsage() {
   });
 }
 let networkSettingsService, networkDispatcher;
+// Only the subscription CLIs that are actually signed in can use the proxy
+// environment, so the connectivity test lists them instead of probing hosts a
+// user has not connected yet.
+function activeSubscriptionEngines() {
+  const engines = [];
+  try {
+    const states = kimiAccount.states();
+    if (Object.values(states).some(state => state?.account)) engines.push('kimi');
+  } catch { }
+  try { if (codex.accountState().accounts.some(account => account.signedIn)) engines.push('codex'); } catch { }
+  try { if (antigravity.handlers['account-state']().account) engines.push('antigravity'); } catch { }
+  return engines;
+}
 function networkSettings() {
   if (!networkSettingsService) networkSettingsService = require('./network-settings').createNetworkSettings({ loadConfig, saveConfig,
     // A stale system proxy is downgraded to "prefer direct" in the background;
@@ -419,6 +433,8 @@ function networkSettings() {
         if (!window.isDestroyed()) window.webContents.send('dsh:network-health', payload);
       }
     },
+    subscriptionEngines: activeSubscriptionEngines,
+    loadRoutes: readOllamaProxyConfig,
     sessions: () => require('electron').session,
     applyEnvironment: env => {
       const { PROXY_KEYS } = require('./network-settings');
@@ -996,6 +1012,7 @@ const piChat = createPiChat({ dataDir: app.getPath('userData'), loadConfig, save
   runtime: () => runtimes().locate('pi'), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'pi'),
   instructions: () => engineSettings().piInstructions(),
   onEvent: event => publishChatEvent('pi', event), log });
+function sessionPools() { return [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, piChat.sessions]; }
 sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
   summarize: compactionSummarizer,
   contextRoute: (engine, settings) => {
@@ -1025,7 +1042,7 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
   },
   onEvent: event => {
     if (event.type === 'conversation:deleted') {
-      for (const pool of [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, piChat.sessions]) {
+      for (const pool of sessionPools()) {
         void pool.release({ conversationId: event.session_id }).catch(error => log('Conversation release failed: ' + error.message));
       }
     }
@@ -1190,6 +1207,12 @@ async function startBackend() {
 // ---------------------------------------------------------------------------
 // Chat runs on per-engine ACP/CLI sessions, not on the lazy `dsh web` backend
 // above, so the About dialog reports the live session state instead.
+// A native process per conversation is only ever stopped when that conversation
+// is deleted, so a long-running window accumulates one backend each and never
+// returns the memory. After the configured session retention elapses the process
+// is stopped; the transcript stays on disk and the engine restarts from it on the
+// next message. The minute-long sweep is the granularity of that setting.
+const IDLE_SESSION_SWEEP_MS = 60 * 1000;
 function engineStatusText() {
   const pools = [
     ['claude', 'Claude Code', claudeSessions],
@@ -1547,6 +1570,7 @@ if (!gotSingleInstanceLock) {
       return runtimeUpdates().update(engine);
     },
     'network-settings': async () => ({ ok: true, ...await networkSettings().detect() }),
+    'network-test': () => networkSettings().testConnectivity(),
     'network-save-settings': async payload => {
       const result = await networkSettings().save(payload);
       // Engine processes inherit the proxy environment, so they have to be
@@ -1841,13 +1865,22 @@ if (!gotSingleInstanceLock) {
   });
 
   // ---- Archived conversations (Settings → Archived) ------------------------
+
+  // ---- Idle native sessions ------------------------------------------------
+  const idleSessionReaper = new IdleSessionReaper(sessionPools(), {
+    intervalMs: IDLE_SESSION_SWEEP_MS, log,
+    timeoutMs: () => conversationPreferences(loadConfig()).sessionTtlMinutes * 60000,
+    isBlocked: id => sharedConversations.busy(id) || Boolean(sharedConversations.goals.get(id)?.armed),
+    onRelease: ids => log('Stopped idle engine processes for: ' + ids.join(', ')),
+  });
+
   const cleanupActivity = () => sharedConversations.isBusy() || goalDriver.armed || kimiGoalDriver.armed || codex.goal.armed || antigravity.goal.armed
-    || [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, piChat.sessions].some(pool => pool.running);
+    || sessionPools().some(pool => pool.running);
   const storageCleanup = new StorageCleanup({
     dataDir: app.getPath('userData'), conversations: sharedConversations,
     isActive: cleanupActivity,
     histories: [claudeHistory, kimiHistory, codex.history, antigravity.history, dshChat.history, piChat.history],
-    liveOwners: () => [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, piChat.sessions]
+    liveOwners: () => sessionPools()
       .flatMap(pool => [...pool.sessions.entries()].filter(([, session]) => !session.dead).map(([id]) => id)),
     references: async () => {
       let active = Boolean(cleanupActivity());
@@ -2164,6 +2197,7 @@ if (!gotSingleInstanceLock) {
     codex.goal.load();
     createMainWindow();
     setupTray();
+    idleSessionReaper.start();
     void refreshAccountBalances();
     switchMode('home');
 
@@ -2195,6 +2229,7 @@ if (!gotSingleInstanceLock) {
   let kimiClosing = false;
   app.on('before-quit', event => {
     appQuitting = true;
+    idleSessionReaper.stop();
     void remoteDesktop?.close();
     void cliDevices.close();
     contextCapacity?.cancel();

@@ -1,5 +1,6 @@
 """Language switching with real preferences IPC. No model or account requests."""
 import json
+import re
 import subprocess
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
@@ -50,12 +51,13 @@ try:
         expect(home.locator('h1')).to_have_text('Start working')
         expect(chat.locator('.ws-name')).to_have_text('Settings')
         chat.locator('#input').fill('Settings / Ready / Keep this draft 原样保留')
-        # Unsaved API entries must survive translating the settings window.
+        # A typed API entry must survive translating the settings window; the
+        # provider itself saves on change and stores the key masked.
         settings.locator('[data-view=providers]').click()
         settings.locator('#addProvider').click()
         settings.locator('#confirmAdd').click()
-        settings.locator('#pName').fill('Settings')
-        settings.locator('[data-field=key]').fill('not-a-real-key')
+        settings.locator('#pName').fill('Settings'); settings.locator('#pName').blur()
+        settings.locator('[data-field=key]').fill('not-a-real-key'); settings.locator('[data-field=key]').blur()
         settings.locator('[data-view=general]').click()
         expect(settings.locator('#language')).to_have_value('en')
         settings.locator('#language').select_option('zh-CN')
@@ -90,7 +92,8 @@ try:
         home.screenshot(path=str(preview/'home-zh-CN.png'), full_page=True)
         settings.locator('[data-view=providers]').click()
         expect(settings.locator('#pName')).to_have_value('Settings')
-        expect(settings.locator('[data-field=key]')).to_have_value('not-a-real-key')
+        expect(settings.locator('[data-field=key]')).to_have_value('')
+        expect(settings.locator('[data-field=key]')).to_have_attribute('placeholder', re.compile('Leave blank to keep'))
         expect(settings.locator('#addKey')).to_have_text('+ 添加 Key')
         settings.locator('[data-view=engines]').click()
         expect(settings.locator('label[for=nativeField0]')).to_have_text('回复语言')

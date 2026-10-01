@@ -1,6 +1,7 @@
 'use strict';
 
 const { hasRoutes, publicState } = require('./api-router-config');
+const { contextOverflowText } = require('../shared/context-overflow');
 
 // Portable compaction summarizes through the workbench router so the summary
 // never starts an engine process: fragments become independent parallel
@@ -8,8 +9,8 @@ const { hasRoutes, publicState } = require('./api-router-config');
 // a smoke test can drive the same code without Electron.
 const REQUEST_TIMEOUT_MS = 180000;
 // Only structured provider 400/422 context errors establish a smaller budget.
-// Timeouts, rate limits and gateway errors do not.
-const CONTEXT_OVERFLOW = /context[_ ]?(length|window)|context overflow|maximum context|prompt is too long|too many tokens|context_length_exceeded|request.{0,10}too large/i;
+// Timeouts, rate limits and gateway errors do not; the wording matcher is shared
+// with the conversation engine so both agree on what a context error is.
 
 function createCompactionSummarizer({ getConfig, getRoute, isRunning = () => true, fetchImpl = fetch, log = () => {} }) {
   // Routability decides the transport before the first request, so an unusable
@@ -44,7 +45,7 @@ function createCompactionSummarizer({ getConfig, getRoute, isRunning = () => tru
       const error = new Error(message);
       // A provider context limit is a budget signal: the pipeline splits that
       // fragment again under the learned cap instead of failing the whole run.
-      error.overflow = [400, 422].includes(response.status) && CONTEXT_OVERFLOW.test(message);
+      error.overflow = [400, 422].includes(response.status) && contextOverflowText(message);
       throw error;
     }
     let data;

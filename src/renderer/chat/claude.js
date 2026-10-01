@@ -172,6 +172,63 @@ const context = { sessionId: null, workspaceId: null };
     return cells.map(cell => cell.startsWith(':') && cell.endsWith(':') ? 'center' : cell.endsWith(':') ? 'right' : cell.startsWith(':') ? 'left' : '');
   }
 
+  function isRule(line) {
+    return /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line);
+  }
+
+  function isQuote(line) {
+    return /^\s{0,3}>\s?/.test(line);
+  }
+
+  function listMatch(line) {
+    return /^(\s*)(?:([-+*])|(\d+)[.)])\s+(.*)$/.exec(line);
+  }
+
+  // Four leading spaces (or a tab) start an indented code block. The blank-line
+  // separator this chat layout keeps between blocks is tolerated, so a code
+  // block can be pasted with or without surrounding blank lines.
+  function indentCodeWidth(line) {
+    if (!line.trim()) return null;
+    return /^ {4}/.test(line) ? 4 : /^\t/.test(line) ? 1 : null;
+  }
+
+  // One list block, including nested indentation and GitHub task checkboxes.
+  function parseList(lines, start) {
+    const base = listMatch(lines[start]);
+    const baseIndent = base[1].length;
+    const ordered = Boolean(base[3]);
+    const items = [];
+    let index = start;
+    while (index < lines.length) {
+      const match = listMatch(lines[index]);
+      if (!match) {
+        // A wrapped continuation line stays with the item above it.
+        if (items.length && lines[index].trim() && lines[index].search(/\S/) > baseIndent) {
+          items[items.length - 1].text += '\n' + lines[index].trim();
+          index++;
+          continue;
+        }
+        break;
+      }
+      const indent = match[1].length;
+      if (indent < baseIndent || (indent === baseIndent && Boolean(match[3]) !== ordered)) break;
+      if (indent > baseIndent && items.length) {
+        const nested = parseList(lines, index);
+        items[items.length - 1].children.push(nested.list);
+        index = nested.next;
+        continue;
+      }
+      const task = /^\[([ xX])\]\s+(.*)$/.exec(match[4]);
+      items.push({
+        task: task ? task[1].toLowerCase() === 'x' : null,
+        text: task ? task[2] : match[4],
+        children: [],
+      });
+      index++;
+    }
+    return { next: index, list: { ordered, start: ordered ? Number(base[3]) : 1, items } };
+  }
+
   // Chat block layout with Markdown inline formatting and file links.
   let codeWrap = readUi('code-wrap') === true;
   function codeWrapLabel() { return window.CamelliaI18n.t('Word wrap'); }
@@ -211,6 +268,121 @@ const context = { sessionId: null, workspaceId: null };
     refreshCodeCopy(button);
     return button.outerHTML;
   }
+  // The LaTeX preview is rendered locally with the bundled KaTeX build, so a
+  // LaTeX distribution is never required. The button and its panel only appear
+  // for blocks whose language is LaTeX/TeX.
+  function isLatexLanguage(language) {
+    return /^(?:latex|tex|ltx)$/i.test(String(language || '').trim());
+  }
+  function latexPreviewLabel() { return window.CamelliaI18n.t('Preview formula'); }
+  function latexPreviewIcon() {
+    return '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 5h18M3 12h4.5M10 5 7 19M14.5 5v14M17 9.5c.6-1.8 1.8-2.7 3.6-2.7"/></svg>';
+  }
+  function latexPreviewButton() {
+    const label = esc(latexPreviewLabel());
+    return '<button type="button" class="md-code-latex" aria-expanded="false" aria-label="' + label + '" title="' + label + '">' +
+      latexPreviewIcon() + '</button>';
+  }
+  function latexPreviewMarkup() {
+    const close = esc(window.CamelliaI18n.t('Close'));
+    return '<div class="md-latex-panel" translate="no" hidden><div class="md-latex-head"><strong>' +
+      esc(window.CamelliaI18n.t('Formula preview')) + '</strong><button type="button" class="md-latex-close" aria-label="' + close + '" title="' + close + '">' +
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>' +
+      '<p class="md-latex-notice" hidden></p><div class="md-latex-body"></div></div>';
+  }
+  function latexBlockText(block) {
+    return block?.querySelector('.md-code > code')?.textContent || '';
+  }
+  function renderLatexPanel(block) {
+    const panel = block.querySelector('.md-latex-panel');
+    const body = panel.querySelector('.md-latex-body');
+    const notice = panel.querySelector('.md-latex-notice');
+    const result = window.CamelliaLatexPreview.render(latexBlockText(block));
+    notice.hidden = true; notice.textContent = '';
+    if (!result.katex) {
+      panel.dataset.state = 'error';
+      notice.hidden = false;
+      notice.textContent = window.CamelliaI18n.t('KaTeX is still loading; retrying when the preview opens.');
+      body.replaceChildren();
+      return;
+    }
+    if (result.empty) {
+      panel.dataset.state = 'ready';
+      notice.hidden = false;
+      notice.textContent = window.CamelliaI18n.t('This LaTeX block has no formula to preview.');
+      body.replaceChildren();
+      return;
+    }
+    notice.hidden = false;
+    notice.textContent = window.CamelliaI18n.t('Rendered without a LaTeX compiler.') + ' · KaTeX ' + result.version;
+    if (result.truncated) notice.textContent += ' ' + window.CamelliaI18n.t('Only the first 20000 characters are previewed.');
+    const nodes = result.blocks.map(entry => {
+      const node = document.createElement('div');
+      node.className = 'md-latex-block';
+      if (entry.error) {
+        node.classList.add('is-error');
+        const title = document.createElement('p'); title.className = 'md-latex-error'; title.textContent = entry.error;
+        const source = document.createElement('pre'); source.className = 'md-latex-source'; source.textContent = entry.source;
+        node.append(title, source);
+      } else {
+        node.innerHTML = entry.html;
+      }
+      return node;
+    });
+    panel.dataset.state = result.ok ? 'ready' : 'error';
+    body.replaceChildren(...nodes);
+  }
+  // Streaming replaces a block's markup on every delta; an open preview follows
+  // the growing formula instead of snapping shut mid-stream.
+  function openLatexPanels(el) {
+    return [...el.querySelectorAll('.md-code-block')]
+      .map((block, index) => block.querySelector('.md-latex-panel:not([hidden])') ? index : -1)
+      .filter(index => index >= 0);
+  }
+  function restoreLatexPanels(el, indices) {
+    const blocks = [...el.querySelectorAll('.md-code-block')];
+    for (const index of indices) {
+      if (!blocks[index]) continue;
+      renderLatexPanel(blocks[index]);
+      blocks[index].querySelector('.md-latex-panel').hidden = false;
+      blocks[index].querySelector('.md-code-latex')?.setAttribute('aria-expanded', 'true');
+    }
+  }
+  document.addEventListener('click', event => {
+    const button = event.target.closest('.md-code-latex');
+    if (!button) return;
+    const block = button.closest('.md-code-block');
+    const panel = block?.querySelector('.md-latex-panel');
+    if (!panel) return;
+    const open = panel.hidden;
+    if (open) renderLatexPanel(block);
+    panel.hidden = !open;
+    button.setAttribute('aria-expanded', String(open));
+  });
+  document.addEventListener('click', event => {
+    const close = event.target.closest('.md-latex-close');
+    if (!close) return;
+    const panel = close.closest('.md-latex-panel');
+    if (!panel) return;
+    panel.hidden = true;
+    const button = panel.closest('.md-code-block')?.querySelector('.md-code-latex');
+    if (button) { button.setAttribute('aria-expanded', 'false'); button.focus(); }
+  });
+  window.addEventListener('camellia:language', () => {
+    document.querySelectorAll('.md-code-latex').forEach(button => {
+      button.setAttribute('aria-label', latexPreviewLabel());
+      button.title = latexPreviewLabel();
+    });
+    document.querySelectorAll('.md-code-block').forEach(block => {
+      const panel = block.querySelector('.md-latex-panel');
+      if (!panel) return;
+      panel.querySelector('.md-latex-head strong').textContent = window.CamelliaI18n.t('Formula preview');
+      const close = panel.querySelector('.md-latex-close');
+      close.setAttribute('aria-label', window.CamelliaI18n.t('Close'));
+      close.title = window.CamelliaI18n.t('Close');
+      if (!panel.hidden) renderLatexPanel(block);
+    });
+  });
   document.addEventListener('click', async event => {
     const button = event.target.closest('.md-code-copy');
     if (!button || button.disabled) return;
@@ -239,9 +411,12 @@ const context = { sessionId: null, workspaceId: null };
   });
   function renderCodeBlock(language, code, highlight = false) {
     const content = code.replace(/\n+$/, '');
+    const latex = isLatexLanguage(language);
     return '<div class="md-code-block' + (codeWrap ? ' is-wrapped' : '') + '"><div class="md-code-header"><span>' + esc(language) +
-      '</span><div class="md-code-actions"><button type="button" class="md-code-wrap" aria-pressed="' + codeWrap + '" aria-label="' + esc(codeWrapLabel()) + '" title="' + esc(codeWrapLabel()) + '">' + codeWrapIcon() +
-      '</button>' + codeCopyButton() + '</div></div><pre class="md-code"><code>' + (highlight ? window.CamelliaMarkdownPreview.highlight(language, content) : esc(content)) + '</code></pre></div>';
+      '</span><div class="md-code-actions">' + (latex ? latexPreviewButton() : '') +
+      '<button type="button" class="md-code-wrap" aria-pressed="' + codeWrap + '" aria-label="' + esc(codeWrapLabel()) + '" title="' + esc(codeWrapLabel()) + '">' + codeWrapIcon() +
+      '</button>' + codeCopyButton() + '</div></div><pre class="md-code"><code>' + (latex || !highlight ? esc(content) : window.CamelliaMarkdownPreview.highlight(language, content)) + '</code></pre>' +
+      (latex ? latexPreviewMarkup() : '') + '</div>';
   }
   function mdRender(src, documentMode = false, baseUrl = '') {
     if (documentMode) return window.CamelliaMarkdownPreview.render(src, { baseUrl, sourceLines: true, codeBlock: (language, code) => renderCodeBlock(language, code, true) });
@@ -258,9 +433,62 @@ const context = { sessionId: null, workspaceId: null };
       tokens.push({ t: 'inline', code });
       return SENT + (tokens.length - 1) + SENT;
     });
+    // Protect whole display-math blocks before block rules run, so a formula
+    // line that starts with "-", ">" or "---" is not read as a list or quote.
+    text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_m, math) => {
+      tokens.push({ t: 'math', raw: '$$' + math + '$$' });
+      return SENT + (tokens.length - 1) + SENT;
+    });
     const lines = text.split('\n');
     const rendered = [];
     for (let i = 0; i < lines.length; i++) {
+      const indentWidth = indentCodeWidth(lines[i]);
+      if (indentWidth) {
+        const code = [];
+        let blank = false;
+        while (i < lines.length) {
+          const width = indentCodeWidth(lines[i]);
+          if (width) {
+            const line = lines[i];
+            code.push(line.slice(/^\t/.test(line) ? 1 : 4));
+            blank = false;
+            i++;
+            continue;
+          }
+          // One blank line separates two indented runs; a second one ends the
+          // block, and a list, quote, rule or heading ends it immediately.
+          if (!blank && !lines[i].trim() && indentCodeWidth(lines[i + 1] || '')) {
+            code.push('');
+            blank = true;
+            i++;
+            continue;
+          }
+          break;
+        }
+        tokens.push({ t: 'code', lang: '', code: code.join('\n') });
+        rendered.push(SENT + (tokens.length - 1) + SENT);
+        continue;
+      }
+      if (listMatch(lines[i])) {
+        const parsed = parseList(lines, i);
+        tokens.push({ t: 'list', ...parsed.list });
+        rendered.push(SENT + (tokens.length - 1) + SENT);
+        i = parsed.next - 1;
+        continue;
+      }
+      if (isQuote(lines[i])) {
+        const quoted = [];
+        while (i < lines.length && isQuote(lines[i])) quoted.push(lines[i++].replace(/^\s{0,3}>\s?/, ''));
+        i--;
+        tokens.push({ t: 'quote', text: quoted.join('\n') });
+        rendered.push(SENT + (tokens.length - 1) + SENT);
+        continue;
+      }
+      if (isRule(lines[i])) {
+        tokens.push({ t: 'rule' });
+        rendered.push(SENT + (tokens.length - 1) + SENT);
+        continue;
+      }
       const align = i + 1 < lines.length ? tableDelimiter(lines[i + 1]) : null;
       if (!align || !lines[i].includes('|')) {
         rendered.push(lines[i]);
@@ -286,7 +514,7 @@ const context = { sessionId: null, workspaceId: null };
     text = inline(text);
     text = documentMode
       ? text.replace(/^(#{1,6})\s+(.+)$/gm, (_match, hashes, heading) => '<h' + hashes.length + '>' + heading + '</h' + hashes.length + '>')
-      : text.replace(/^(#{1,4})\s*(.+)$/gm, '<strong>$2</strong>');
+      : text.replace(/^(#{1,6})\s*(.+)$/gm, '<strong>$2</strong>');
     const sentRe = new RegExp(SENT + '(\\d+)' + SENT, 'g');
     const renderToken = (_m, idx) => {
       const tk = tokens[+idx];
@@ -295,6 +523,28 @@ const context = { sessionId: null, workspaceId: null };
         return renderCodeBlock(tk.lang, tk.code);
       }
       if (tk.t === 'inline') return '<code class="md-inline">' + esc(tk.code) + '</code>';
+      if (tk.t === 'math') return inline(tk.raw);
+      if (tk.t === 'rule') return '<hr class="md-rule">';
+      if (tk.t === 'quote') {
+        const body = inline(tk.text).replace(sentRe, renderToken).replace(/\n/g, '<br>');
+        return '<blockquote class="md-quote">' + body + '</blockquote>';
+      }
+      if (tk.t === 'list') {
+        const renderItems = list => list.items.map(item => {
+          let body = inline(item.text).replace(sentRe, renderToken);
+          if (item.task !== null) {
+            body = '<input type="checkbox" disabled' + (item.task ? ' checked' : '') +
+              ' aria-label="' + (item.task ? 'Completed' : 'Not completed') + '"> ' + body;
+          }
+          const nested = item.children.length
+            ? '<ul class="md-list">' + item.children.flatMap(renderItems).join('') + '</ul>'
+            : '';
+          return '<li' + (item.task !== null ? ' class="md-task"' : '') + '>' + body + nested + '</li>';
+        }).join('');
+        const tag = tk.ordered ? 'ol' : 'ul';
+        const startAttr = tk.ordered && tk.start !== 1 ? ' start="' + tk.start + '"' : '';
+        return '<' + tag + ' class="md-list"' + startAttr + '>' + renderItems(tk) + '</' + tag + '>';
+      }
       const renderCell = value => inline(value).replace(sentRe, renderToken);
       const cells = (tag, values) => values.map((value, index) => {
         const alignAttr = tk.align[index] ? ' style="text-align:' + tk.align[index] + '"' : '';
@@ -628,6 +878,10 @@ const context = { sessionId: null, workspaceId: null };
   // owns the plain click (listing models and reasoning levels).
   let modelClickTimer = null;
   $('modelPill').addEventListener('click', () => {
+    // An open menu closes on the next click straight away. Deferring the close
+    // behind the double-click window leaves a pending timer that swallows the
+    // following click, so the menu closes instead of reopening.
+    if (openPops.length) { clearTimeout(modelClickTimer); modelClickTimer = null; closePops(); return; }
     if (modelClickTimer) return; // second click of a double-click
     modelClickTimer = setTimeout(() => { modelClickTimer = null; openModelMenu(); }, 220);
   });
@@ -1286,8 +1540,10 @@ const context = { sessionId: null, workspaceId: null };
     div.className = 'msg-user';
     div.messageData = { text, attachments: atts || [], seq: meta.seq, at: meta.at };
     const b = document.createElement('div');
-    b.className = 'bubble';
-    b.textContent = text;
+    b.className = 'bubble md';
+    // A prompt is rendered with the same rules as a reply so a pasted snippet
+    // keeps its formatting; `textContent` stays the copy/edit source of truth.
+    b.innerHTML = mdRender(text);
     div.appendChild(b);
     if (atts && atts.length) {
       const chips = document.createElement('div');
@@ -1864,7 +2120,11 @@ const context = { sessionId: null, workspaceId: null };
   function renderBlock(b) {
     if (!b.el.isConnected) return;
     if (b.type === 'text') b.el.artifactText = b.raw;
-    if (b.type === 'text') b.el.innerHTML = mdRender(b.raw) + (b.stopped ? '' : '<span class="cursor"></span>');
+    if (b.type === 'text') {
+      const open = openLatexPanels(b.el);
+      b.el.innerHTML = mdRender(b.raw) + (b.stopped ? '' : '<span class="cursor"></span>');
+      restoreLatexPanels(b.el, open);
+    }
     else if (b.type === 'thinking') b.el.querySelector('.think-body').textContent = b.raw;
     layoutTurnProcess();
   }
@@ -3332,7 +3592,6 @@ const context = { sessionId: null, workspaceId: null };
 
   // ---------- settings panel ----------
   $('settingsBtn').addEventListener('click', () => { closePops(); void window.dshDesktop.openSettingsWindow(); });
-  $('connectionInfo').onclick = () => void window.dshDesktop.openSettingsWindow({ page: 'subscriptions', focus: harnessId });
   function applyRouterModels(state) {
     if (Array.isArray(state?.providers)) modelCtxCaps.clear();
     for (const p of state?.providers || []) {
@@ -3369,17 +3628,7 @@ const context = { sessionId: null, workspaceId: null };
 
   function applySessionSettings(s) {
     currentConnection = s.connection || 'api';
-    if (harnessId === 'codex') {
-      $('connectionInfo').hidden = false;
-      $('connectionInfo').textContent = accountSubscription() ? 'ChatGPT account · Pick an API model to switch' : 'API key / third-party API · Pick an account model to switch';
-    }
-    if (harnessId === 'kimi') {
-      $('connectionInfo').hidden = false;
-      $('connectionInfo').textContent = accountSubscription() ? 'Kimi subscription · Manage account' : 'Shared API routes · Pick an account model to switch';
-    }
     if (harnessId === 'antigravity') {
-      $('connectionInfo').hidden = false;
-      $('connectionInfo').textContent = googleSubscription() ? 'Google subscription · Manage account' : 'Shared API routes · Pick a Google model to switch';
       $('selPermission').querySelector('[value="ask"]').textContent = googleSubscription() ? 'CLI defaults' : 'Ask before acting';
       $('selPermission').title = googleSubscription() ? 'CLI permission rules apply. Tools requiring interactive review are declined in headless mode; Camellia shows a blocked-action notice, not an approval prompt.' : '';
     }

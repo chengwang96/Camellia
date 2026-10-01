@@ -9,7 +9,10 @@ const { createHarness } = require('./claude-harness.cjs');
 test('settings places General immediately before Engine Settings and shows it initially', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const categories = [...html.matchAll(/<button data-view="([^"]+)"/g)].map(match => match[1]);
-  assert.equal(categories.indexOf('general') + 1, categories.indexOf('engines'));
+  // Network owns the connection settings and sits between General and the
+  // per-engine pages; the general preferences page stays first and active.
+  assert.deepEqual(categories, ['subscriptions', 'providers', 'usage', 'general', 'network',
+    'engines', 'runtimes', 'archived', 'mobile', 'devices']);
   assert.match(html, /<button data-view="general" class="active" aria-current="page"/);
   assert.match(html, /<section id="generalPage" class="page">/);
   assert.match(html, /<section id="providersPage" class="page" hidden>/);

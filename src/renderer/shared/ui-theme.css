@@ -84,7 +84,9 @@ select::picker-icon {
 }
 select:open::picker-icon { transform: translateY(3px) rotate(225deg); }
 ::picker(select) {
-  min-width: 220px; max-width: calc(100vw - 24px);
+  /* Hug the option labels so a short list stays as compact as every other
+     settings dropdown, instead of stretching to a fixed 220px floor. */
+  width: fit-content; min-width: 0; max-width: calc(100vw - 24px);
   max-height: min(420px, calc(100vh - 24px)); overflow-y: auto;
   margin: 4px 0; padding: 6px;
   border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px;

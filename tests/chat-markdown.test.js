@@ -87,7 +87,12 @@ test('untrusted message markup, active URL schemes and network shares do not bec
     '%5C%5Cserver%5Cshare', '/tmp/..//server/share', 'D:/bad%00file.md', 'https://user:pass@example.com']) {
     assert.doesNotMatch(render('[Bad](' + target + ')'), /<a\b/, target);
   }
-  assert.doesNotMatch(render('<img src=x onerror=alert(1)>\n<script>alert(1)</script>\n![image](https://example.com/image.png)'), /<(?:img|script)\b/);
+  const markup = render('<img src=x onerror=alert(1)>\n<script>alert(1)</script>\n![image](https://example.com/image.png)');
+  assert.doesNotMatch(markup, /<script\b|<img src=x/);
+  assert.match(markup, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(markup, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.equal((markup.match(/<img\b/g) || []).length, 1);
+  assert.match(markup, /<img class="chat-inline-image" src="https:\/\/example\.com\/image\.png"[^>]*referrerpolicy="no-referrer">/);
   assert.match(render('[Doc](<D:/notes/quoted"file.md>)'), /data-chat-file="D:\/notes\/quoted&quot;file.md"/);
 });
 
@@ -111,4 +116,99 @@ test('chat renders local Markdown images with resolved paths and preview control
   assert.doesNotMatch(chatRenderer()('![Preview](D:/Code/DSH/index.html)'), /<img /);
   assert.doesNotMatch(chatRenderer()('`![Preview](D:/Code/DSH/image.png)`'), /<img /);
   assert.doesNotMatch(chatRenderer()('![Preview](D:/Code/DSH/image.png'), /<img /);
+});
+
+test('chat renders inline and display math while leaving prices and code literal', () => {
+  const html = chatRenderer()('质能方程 $E = mc^2$，以及 $J_\\nu(z)=\\frac{1}{2}$。\n\n$$\n\\hat{H}\\,\\psi_n = E_n\\,\\psi_n\n$$\n\n价格 $5 and $10 today, `$E=mc^2$`.');
+  assert.match(html, /质能方程 <eq><span class="katex">/);
+  assert.match(html, /katex-display/);
+  assert.equal((html.match(/class="katex"/g) || []).length, 3);
+  assert.match(html, /价格 \$5 and \$10 today, <code class="md-inline">\$E=mc\^2\$<\/code>\./);
+  assert.match(html, /<span class="katex-mathml">/);
+});
+
+test('chat math keeps unsupported TeX commands inert instead of executing them', () => {
+  const html = chatRenderer()('$\\href{javascript:alert(1)}{bad}$');
+  assert.doesNotMatch(html, /<a\b/);
+  assert.doesNotThrow(() => chatRenderer()('$\\notARealCommand{value}$'));
+});
+
+test('chat renders lists with nesting, ordering and GitHub task checkboxes', () => {
+  const render = chatRenderer();
+  assert.match(render('- one\n- two'), /^<ul class="md-list"><li>one<\/li><li>two<\/li><\/ul>$/);
+  assert.match(render('1. one\n2. two'), /^<ol class="md-list"><li>one<\/li><li>two<\/li><\/ol>$/);
+  assert.match(render('3. three'), /^<ol class="md-list" start="3">/);
+  assert.match(render('- parent\n  - child'), /<li>parent<ul class="md-list"><li>child<\/li><\/ul><\/li>/);
+  const tasks = render('- [x] done\n- [ ] todo');
+  assert.match(tasks, /<li class="md-task"><input type="checkbox" disabled checked aria-label="Completed"> done<\/li>/);
+  assert.match(tasks, /<li class="md-task"><input type="checkbox" disabled aria-label="Not completed"> todo<\/li>/);
+  assert.match(render('- **bold** and [Doc](D:/Code/DSH/docs/configuration.md:62)'), /<li><strong>bold<\/strong> and <a /);
+  assert.match(render('- `npm test`'), /<li><code class="md-inline">npm test<\/code><\/li>/);
+});
+
+test('chat renders blockquotes, rules and headings without touching fenced code', () => {
+  const render = chatRenderer();
+  assert.match(render('> quoted **text**'), /^<blockquote class="md-quote">quoted <strong>text<\/strong><\/blockquote>$/);
+  assert.match(render('> first\n> second'), /<blockquote class="md-quote">first<br>second<\/blockquote>/);
+  for (const rule of ['---', '***', '___']) assert.match(render('a\n\n' + rule + '\n\nb'), /a\n\n<hr class="md-rule">\n\nb/);
+  assert.match(render('###### Six'), /^<strong>Six<\/strong>$/);
+  assert.match(render('```\n- not a list\n> not a quote\n---\n```'), /<pre><code>- not a list\n&gt; not a quote\n---\n<\/code><\/pre>/);
+  assert.match(render('`- flag`'), /<code class="md-inline">- flag<\/code>/);
+});
+
+test('display math is protected from the list and quote block rules', () => {
+  const html = chatRenderer()('前文\n\n$$\n- a \\\\ - b\n$$\n\n后文');
+  assert.match(html, /katex-display/);
+  assert.doesNotMatch(html, /<ul class="md-list">/);
+  const quote = chatRenderer()('$$\n> a\n$$');
+  assert.match(quote, /katex-display/);
+  assert.doesNotMatch(quote, /<blockquote/);
+});
+
+test('autolinks cover explicit schemes, www hosts and e-mail without faking file names', () => {
+  const render = chatRenderer();
+  assert.match(render('see https://example.com/path now'), /<a href="https:\/\/example\.com\/path"[^>]*>https:\/\/example\.com\/path<\/a>/);
+  assert.match(render('see www.example.com now'), /<a href="http:\/\/www\.example\.com\/"[^>]*>www\.example\.com<\/a>/);
+  const mail = render('mail me@example.com ok');
+  assert.match(mail, /<a href="mailto:me@example\.com"[^>]*>me@example\.com<\/a>/);
+  assert.doesNotMatch(mail, /target="_blank"/);
+  assert.match(render('~~removed~~'), /^<s>removed<\/s>$/);
+  for (const name of ['README.md', 'setup.sh', 'index.html', 'D:/Code/DSH/docs/configuration.md', 'D:/bad%00file.md']) {
+    assert.doesNotMatch(render(name), /<a\b/, name);
+  }
+});
+
+test('lists, quotes and autolinks stay inert for scripts and unsafe schemes', () => {
+  const render = chatRenderer();
+  assert.doesNotMatch(render('- <script>alert(1)</script>'), /<script\b/);
+  assert.doesNotMatch(render('> <img src=x onerror=alert(1)>'), /<img\b/);
+  assert.doesNotMatch(render('- [Bad](javascript:alert(1))'), /<a\b/);
+  assert.doesNotMatch(render('- [Share](//server/share)'), /<a\b/);
+});
+
+test('chat renders indented code blocks and stops them at the next block', () => {
+  const render = chatRenderer();
+  assert.match(render('    const a = 1;\n    const b = 2;'), /^<pre><code>const a = 1;\nconst b = 2;<\/code><\/pre>$/);
+  assert.match(render('    a\n\n    b'), /^<pre><code>a\n\nb<\/code><\/pre>$/);
+  assert.match(render('    <b>x</b> **literal**'), /<pre><code>&lt;b&gt;x&lt;\/b&gt; \*\*literal\*\*<\/code><\/pre>/);
+  assert.match(render('    code\n\n- item'), /<pre><code>code<\/code><\/pre>\n<ul class="md-list">/);
+  assert.match(render('    code\n\n\ntext'), /<pre><code>code<\/code><\/pre>\n\ntext/);
+  assert.doesNotMatch(render('    code\n\n- item'), /\[/);
+});
+
+test('chat renders prompts with the same Markdown rules as replies', () => {
+  const html = chatRenderer()('- [ ] 待办\n\n**加粗** 与 `代码`\n\n1. 有序');
+  assert.match(html, /<ul class="md-list"><li class="md-task"><input type="checkbox" disabled aria-label="Not completed"> 待办<\/li><\/ul>/);
+  assert.match(html, /<strong>加粗<\/strong> 与 <code class="md-inline">代码<\/code>/);
+  assert.match(html, /<ol class="md-list"><li>有序<\/li><\/ol>/);
+  assert.doesNotMatch(chatRenderer()('![shot](javascript:alert(1))'), /<img\b/);
+});
+
+test('remote images render with a no-referrer hint and non-images stay literal', () => {
+  const render = chatRenderer();
+  assert.match(render('![chart](https://example.com/chart.png)'),
+    /^<img class="chat-inline-image" src="https:\/\/example\.com\/chart\.png" alt="chart" title="https:\/\/example\.com\/chart\.png" loading="lazy" decoding="async" referrerpolicy="no-referrer">$/);
+  for (const value of ['![x](https://example.com/file.txt)', '![x](//example.com/a.png)', '![x](data:image/png;base64,AAAA)']) {
+    assert.doesNotMatch(render(value), /<img\b/, value);
+  }
 });
