@@ -46,7 +46,7 @@ bridge = r"""(() => {
     conversationSwitch:async payload=>{window.switches.push(payload);return {ok:true};},
     apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),
     onConversationEvent:()=>{},onConversationGoal:fn=>{window.deliverGoal=goal=>{window.currentGoal=goal;fn(goal);};},onConversationStatus:()=>{},
-    onEngineSettingsChanged:()=>{},onApiRouterState:()=>{},openSettingsWindow:()=>{},
+    onEngineSettingsChanged:()=>{},onApiRouterState:()=>{},onNetworkHealth:()=>{},onHarnessNavigate:()=>{},openSettingsWindow:()=>{},
     previewFile:async()=>({ok:false,error:'fixture'}),openFileExternally:async()=>({ok:true}),
   };
 })();""".replace('FIXTURE', json.dumps(fixture))
@@ -198,7 +198,7 @@ with sync_playwright() as p:
       };
       window.dshDesktop = {
         sharedConversations:true,
-        onLanguageChanged:()=>()=>{}, onEngineSettingsChanged:()=>{}, onApiRouterState:()=>{},
+        onLanguageChanged:()=>()=>{}, onEngineSettingsChanged:()=>{}, onApiRouterState:()=>{}, onNetworkHealth:()=>{},
         onConversationEvent:fn=>window.receiveEvent=fn, onConversationGoal:fn=>window.receiveGoal=fn,
         onConversationStatus:fn=>window.receiveStatus=fn,onHarnessNavigate:fn=>window.navigateHarness=fn,
         previewFile:async()=>({ok:false,error:'fixture'}),openFileExternally:async()=>({ok:true}),
@@ -689,7 +689,7 @@ with sync_playwright() as p:
       window.actions = [];
       window.dshDesktop = {
         sharedConversations:true,
-        onLanguageChanged:()=>()=>{}, onEngineSettingsChanged:()=>{}, onApiRouterState:()=>{},
+        onLanguageChanged:()=>()=>{}, onEngineSettingsChanged:()=>{}, onApiRouterState:()=>{}, onNetworkHealth:()=>{},
         onConversationEvent:()=>{},onConversationGoal:()=>{}, onConversationStatus:()=>{}, onHarnessNavigate:()=>{},
         apiRouterGetState:async()=>({enabled:true,models:['fixture-model','kimi-k2.5']}),
         kimiAccountState:async()=>({ok:true,account:{id:'acct'},models:[{id:'k3',name:'K3'},{id:'k2.8',name:'K2.8 Preview'}]}),
@@ -722,6 +722,118 @@ with sync_playwright() as p:
     menu.get_by_text('kimi-k2.5',exact=True).click()
     page.wait_for_function("actions.some(a=>a.action==='save-settings' && a.payload.connection==='api' && a.payload.model==='kimi-k2.5')")
     page.wait_for_function("document.querySelector('#modelPillName').textContent==='kimi-k2.5'")
+    page.close()
+    # A double-click on the model pill toggles between the two most recent
+    # models (back and forth) instead of opening the menu, and the pair
+    # survives a reload through local storage.
+    swap_bridge = r"""(() => {
+      let settings = {model:'model-a',permissionMode:'default',connection:'api'};
+      try { const saved = JSON.parse(localStorage.getItem('swap-settings') || 'null'); if (saved) settings = saved; } catch {}
+      window.actions = [];
+      window.dshDesktop = {
+        sharedConversations:true,
+        onLanguageChanged:()=>()=>{}, onEngineSettingsChanged:()=>{}, onApiRouterState:()=>{}, onNetworkHealth:()=>{},
+        onConversationEvent:()=>{},onConversationGoal:()=>{}, onConversationStatus:()=>{}, onHarnessNavigate:()=>{},
+        apiRouterGetState:async()=>({enabled:true,models:['model-a','model-b','model-c']}),
+        workbenchSettings:async()=>({ok:true,conversations:{mode:'direct'}}),
+        conversationSwitch:async()=>({ok:true}), openSettingsWindow:()=>{},
+        previewFile:async()=>({ok:false,error:'fixture'}),openFileExternally:async()=>({ok:true}),
+        conversationCommand:async ({action,payload})=>{
+          window.actions.push({action,payload});
+          if(action==='get-settings') return {...settings};
+          if(action==='save-settings') { Object.assign(settings,payload); localStorage.setItem('swap-settings',JSON.stringify(settings)); return {ok:true,settings:{...settings}}; }
+          if(action==='list-sessions') return {ok:true,sessions:[],workspaces:[],pagination:{}};
+          if(action==='get-live') return {ok:true,live:null};
+          if(action==='goal-get') return {ok:true,goal:null};
+          return {ok:true};
+        },
+      };
+    })();"""
+    # A fresh context keeps the swap memory (localStorage) isolated from the
+    # earlier pages in this file, which share the default context.
+    swap_context = browser.new_context(viewport={'width':1200,'height':820})
+    page = swap_context.new_page()
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    page.add_init_script(swap_bridge)
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex',wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    # A single click keeps the full menu (model list and reasoning levels).
+    page.locator('#modelPill').click()
+    expect(page.locator('.dsh-pop')).to_have_count(1)
+    page.locator('.pop-row').first.click()
+    # Left-click a model to pick the primary model and close the menu.
+    models = page.locator('.dsh-pop').last.locator('.pop-opt')
+    assert models.all_inner_texts() == ['model-a', 'model-b', 'model-c']
+    models.get_by_text('model-c', exact=True).click()
+    page.wait_for_function("document.querySelector('#modelPillName').textContent==='model-c'")
+    assert page.evaluate('document.querySelectorAll(".dsh-pop").length') == 0, 'picking a model must close the menu'
+    # Right-click a different model to set the secondary; the menu stays open and
+    # the current selection does not change.
+    page.locator('#modelPill').click()
+    page.locator('.pop-row').first.click()
+    page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-b', exact=True).click(button='right')
+    expect(page.locator('.dsh-pop')).to_have_count(2)
+    expect(page.locator('.dsh-pop').last.locator('.pop-opt.alt')).to_contain_text('model-b')
+    assert page.evaluate("document.querySelector('#modelPillName').textContent") == 'model-c', 'right-click must not change the current model'
+    # The check and the secondary dot share one right-hand column and the model
+    # names keep the same left edge.
+    marks = page.evaluate("""() => {
+      const sub = document.querySelectorAll('.dsh-pop')[1];
+      const check = sub.querySelector('.pop-opt.current .pop-check').getBoundingClientRect();
+      const dot = sub.querySelector('.pop-opt.alt .pop-alt').getBoundingClientRect();
+      const currentLabel = sub.querySelector('.pop-opt.current .pop-label').getBoundingClientRect();
+      const altLabel = sub.querySelector('.pop-opt.alt .pop-label').getBoundingClientRect();
+      return { check: check.right, dot: dot.right, currentLeft: currentLabel.left, altLeft: altLabel.left };
+    }""")
+    assert abs(marks['check'] - marks['dot']) < 1, marks
+    assert abs(marks['currentLeft'] - marks['altLeft']) < 1, marks
+    # Right-clicking the secondary again clears it; the menu stays open.
+    page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-b', exact=True).click(button='right')
+    expect(page.locator('.dsh-pop').last.locator('.pop-opt.alt')).to_have_count(0)
+    expect(page.locator('.dsh-pop')).to_have_count(2)
+    # Re-set it so the double-click test below has a pair.
+    page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-b', exact=True).click(button='right')
+    expect(page.locator('.dsh-pop').last.locator('.pop-opt.alt')).to_contain_text('model-b')
+    page.mouse.click(10, 10)
+    expect(page.locator('.dsh-pop')).to_have_count(0)
+    # A double-click toggles between the primary and the secondary without a menu.
+    page.locator('#modelPill').dblclick()
+    page.wait_for_function("document.querySelector('#modelPillName').textContent==='model-b'")
+    assert page.evaluate('document.querySelectorAll(".dsh-pop").length') == 0, 'a double-click swap must not open the menu'
+    page.locator('#modelPill').dblclick()
+    page.wait_for_function("document.querySelector('#modelPillName').textContent==='model-c'")
+    # The pair persists across reloads, so a double-click still swaps.
+    page.reload(wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    expect(page.locator('#modelPillName')).to_have_text('model-c')
+    page.locator('#modelPill').dblclick()
+    page.wait_for_function("document.querySelector('#modelPillName').textContent==='model-b'")
+    # The model in use is the primary and the other stored model is the
+    # alternate, so after the swap above model-b is the primary and model-c the
+    # secondary. Left-clicking the secondary clears it: a model cannot be both
+    # the primary and the alternate.
+    page.locator('#modelPill').click()
+    page.locator('.pop-row').first.click()
+    page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-c', exact=True).click()
+    assert page.evaluate("document.querySelector('#modelPillName').textContent") == 'model-c'
+    page.locator('#modelPill').click()
+    page.locator('.pop-row').first.click()
+    expect(page.locator('.dsh-pop').last.locator('.pop-opt.alt')).to_have_count(0)
+    page.mouse.click(10, 10)
+    # A stored pair that drifted from the model in use must never make the
+    # current model its own secondary: the primary is always the current model.
+    # (Drift happens when a conversation carries a model other than the stored
+    # one, e.g. after switching engines or sessions.)
+    page.evaluate("localStorage.setItem('modelSwap:codex', JSON.stringify(['model-b']))")
+    page.reload(wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    expect(page.locator('#modelPillName')).to_have_text('model-c')
+    page.locator('#modelPill').click()
+    page.locator('.pop-row').first.click()
+    page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-c', exact=True).click(button='right')
+    expect(page.locator('.dsh-pop').last.locator('.pop-opt.alt')).to_have_count(0)
+    assert page.evaluate("document.querySelector('#modelPillName').textContent") == 'model-c'
+    assert page.evaluate("JSON.parse(localStorage.getItem('modelSwap:codex'))") == ['model-c']
     page.close()
     # Every reply keeps its own harness label, independent of the currently open harness.
     page = browser.new_page(viewport={'width':1200,'height':820})

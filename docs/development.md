@@ -118,6 +118,7 @@ python tests/benchmark-ui.py
 python tests/api-settings-ui.py
 python tests/engine-settings-ui.py
 python tests/claude-workspaces-ui.py
+python tests/conversation-retention-ui.py
 ```
 
 Browser checks write screenshots under `dist/`. README screenshots live in `docs/images/`; local reference captures belong in the ignored `docs/images/local/` directory.

@@ -589,12 +589,13 @@ async function saveGeneral() {
   try {
     const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked, closeToTray: $('closeToTray').checked,
       accountRefreshMinutes: Number($('accountRefreshMinutes').value),
-      conversations: { mode: $('conversationMode').value, warnOnSwitch: $('conversationWarn').checked, showOrigin: $('conversationOriginSetting').checked } });
+      conversations: { mode: $('conversationMode').value, warnOnSwitch: $('conversationWarn').checked, showOrigin: $('conversationOriginSetting').checked,
+        sessionTtlMinutes: Number($('conversationSessionTtl').value), sessionLimit: Number($('conversationSessionLimit').value) } });
     if (!result.ok) throw new Error(result.error);
     window.CamelliaI18n.setLanguage($('language').value); status("Preferences saved");
   } catch (e) { status(e.message, true); }
 }
-for (const id of ['language', 'theme', 'autoRefreshBalances', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting']) {
+for (const id of ['language', 'theme', 'autoRefreshBalances', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting', 'conversationSessionTtl', 'conversationSessionLimit']) {
   $(id).addEventListener('change', saveGeneral);
 }
 // General connection preference: serialized saves preserve the latest choice.
@@ -674,6 +675,8 @@ async function refresh(initial = false) {
       $('accountRefreshMinutes').value = String(preferences.accountRefreshMinutes || 15);
       $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;
       $('conversationOriginSetting').checked = !!preferences.conversations?.showOrigin;
+      $('conversationSessionTtl').value = String(preferences.conversations?.sessionTtlMinutes ?? 30);
+      $('conversationSessionLimit').value = String(preferences.conversations?.sessionLimit ?? 4);
       $('dataPath').textContent = preferences.dataPath; $('version').textContent = 'v' + preferences.version;
     }
   } catch (e) { status(e.message, true); }

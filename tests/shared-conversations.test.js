@@ -1241,7 +1241,17 @@ test('stopped or failed turns ignore completion claims and native events cannot 
   }
 });
 
-test('defaults continue directly with no warning or origin badge', () => assert.deepEqual(preferences({}), { mode: 'direct', warnOnSwitch: false, showOrigin: false }));
+test('defaults continue directly with no warning or origin badge', () => assert.deepEqual(preferences({}),
+  { mode: 'direct', warnOnSwitch: false, showOrigin: false, sessionTtlMinutes: 30, sessionLimit: 4 }));
+
+test('parked session retention settings are clamped to a usable range', () => {
+  assert.equal(preferences({ conversations: { sessionTtlMinutes: 0, sessionLimit: 0 } }).sessionTtlMinutes, 1);
+  assert.equal(preferences({ conversations: { sessionLimit: 0 } }).sessionLimit, 1);
+  assert.equal(preferences({ conversations: { sessionTtlMinutes: 99999, sessionLimit: 9999 } }).sessionTtlMinutes, 1440);
+  assert.equal(preferences({ conversations: { sessionLimit: 9999 } }).sessionLimit, 20);
+  assert.equal(preferences({ conversations: { sessionTtlMinutes: 'soon', sessionLimit: 'many' } }).sessionTtlMinutes, 30);
+  assert.equal(preferences({ conversations: { sessionLimit: 'many' } }).sessionLimit, 4);
+});
 
 test('immediate instructions stay in the active run, persist, and replay without another send', async t => {
   const fixtureData = fixture(t);
@@ -1861,6 +1871,151 @@ test('account models and per-engine permissions are retained without copying the
   assert.equal(f.manager.settings('claude', first.sessionId).permissionMode, 'plan');
   assert.equal(f.manager.settings('claude', first.sessionId).thinkingBudget, 'high');
   assert.equal(f.restart().settings('codex', first.sessionId).model, 'account-picked');
+});
+
+test('switching the model parks the native session and returns to its own thread on switch-back', async t => {
+  const f = fixture(t);
+  let model = 'model-one';
+  f.drivers.codex.settings = () => ({ model, connection: 'api' });
+  f.drivers.codex.saveSettings = patch => { if (patch.model) model = patch.model; return f.drivers.codex.settings(); };
+  const first = await f.manager.send('codex', { prompt: 'Remember the original task' }); f.finish('codex');
+  const conversation = f.manager.get(first.sessionId);
+  const nativeBefore = conversation.segments.codex.nativeId;
+  assert.equal(conversation.segments.codex.contextSettings.model, 'model-one');
+
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-two' });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Continue on the other model' }); f.finish('codex');
+  const switched = f.manager.get(first.sessionId).segments.codex;
+  assert.notEqual(switched.nativeId, nativeBefore, 'a different model must not resume the recorded native thread');
+  assert.equal(switched.contextSettings.model, 'model-two');
+  assert.match(f.sent.at(-1).prompt, /Conversation context[\s\S]*Remember the original task/);
+  const parked = Object.values(f.manager.get(first.sessionId).modelSessions);
+  assert.equal(parked.length, 1);
+  assert.equal(parked[0].nativeId, nativeBefore);
+
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-one' });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Back on the first model' }); f.finish('codex');
+  const resumed = f.manager.get(first.sessionId).segments.codex;
+  assert.equal(resumed.nativeId, nativeBefore, 'the return must reuse the native thread recorded on the first model');
+  assert.equal(f.sent.at(-1).opts.sessionId, nativeBefore);
+  assert.doesNotMatch(f.sent.at(-1).prompt, /Remember the original task/, 'the resumed model must not reopen the history it already recorded');
+  assert.match(f.sent.at(-1).prompt, /Continue on the other model/, 'the resumed model receives the turns it missed');
+  const parkedNow = Object.values(f.manager.get(first.sessionId).modelSessions);
+  assert.equal(parkedNow.length, 1);
+  assert.equal(parkedNow[0].nativeId, switched.nativeId, 'the other model is parked for its own return');
+});
+
+test('saving the same model keeps the native session instead of replaying history', async t => {
+  const f = fixture(t);
+  f.drivers.codex.settings = () => ({ model: 'model-one', connection: 'api' });
+  const first = await f.manager.send('codex', { prompt: 'Keep this thread' }); f.finish('codex');
+  const nativeBefore = f.manager.get(first.sessionId).segments.codex.nativeId;
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-one', thinkingBudget: 'high' });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Continue' }); f.finish('codex');
+  assert.equal(f.manager.get(first.sessionId).segments.codex.nativeId, nativeBefore);
+  assert.equal(f.sent.at(-1).opts.sessionId, nativeBefore);
+  assert.equal(f.manager.get(first.sessionId).retiredSegments, undefined);
+});
+
+test('parked model sessions are capped and the least recently used one retires', async t => {
+  const f = fixture(t);
+  let model = 'model-1';
+  f.drivers.codex.settings = () => ({ model, connection: 'api' });
+  f.drivers.codex.saveSettings = patch => { if (patch.model) model = patch.model; return f.drivers.codex.settings(); };
+  const first = await f.manager.send('codex', { prompt: 'Start' }); f.finish('codex');
+  for (const next of ['model-2', 'model-3', 'model-4', 'model-5', 'model-6']) {
+    f.manager.saveSettings('codex', { sessionId: first.sessionId, model: next });
+    await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Turn on ' + next }); f.finish('codex');
+  }
+  const conversation = f.manager.get(first.sessionId);
+  assert.equal(Object.keys(conversation.modelSessions).length, 4, 'only four parked sessions are kept');
+  assert.equal(Object.values(conversation.modelSessions).filter(segment => segment.nativeId === conversation.segments.codex.nativeId).length, 0);
+  const retired = (conversation.retiredSegments || []).filter(segment => segment.retiredReason === 'capacity');
+  assert.ok(retired.length >= 1);
+  assert.equal(retired[0].nativeId, 'codex-1', 'the least recently used parked session retires first');
+});
+
+test('a fork keeps the parked model sessions of each binding', async t => {
+  const f = fixture(t);
+  let model = 'model-one';
+  f.drivers.codex.settings = () => ({ model, connection: 'api' });
+  f.drivers.codex.saveSettings = patch => { if (patch.model) model = patch.model; return f.drivers.codex.settings(); };
+  const first = await f.manager.send('codex', { prompt: 'Work' }); f.finish('codex');
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-two' });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Continue' }); f.finish('codex');
+  const parkedNative = Object.values(f.manager.get(first.sessionId).modelSessions)[0].nativeId;
+  const forked = f.manager.fork('codex', { sessionId: first.sessionId, title: 'Branch' });
+  assert.equal(Object.values(forked.modelSessions)[0].nativeId, parkedNative);
+});
+
+test('an expired parked session is retired instead of resumed', async t => {
+  const f = fixture(t);
+  let model = 'model-one';
+  f.drivers.codex.settings = () => ({ model, connection: 'api' });
+  f.drivers.codex.saveSettings = patch => { if (patch.model) model = patch.model; return f.drivers.codex.settings(); };
+  const first = await f.manager.send('codex', { prompt: 'Start' }); f.finish('codex');
+  const conversation = f.manager.get(first.sessionId);
+  const nativeOne = conversation.segments.codex.nativeId;
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-two' });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Continue' }); f.finish('codex');
+  const parked = Object.values(conversation.modelSessions)[0];
+  parked.lastUsedAt = Date.now() - 31 * 60 * 1000;
+  f.manager.save(conversation);
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-one' });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Back again' }); f.finish('codex');
+  assert.notEqual(f.manager.get(first.sessionId).segments.codex.nativeId, nativeOne, 'a cold session must not be resumed');
+  assert.ok((f.manager.get(first.sessionId).retiredSegments || []).some(segment => segment.retiredReason === 'expired'));
+  assert.match(f.sent.at(-1).prompt, /Conversation context/);
+});
+
+test('the configured TTL and session limit govern parking', async t => {
+  const f = fixture(t);
+  let model = 'model-one';
+  f.drivers.codex.settings = () => ({ model, connection: 'api' });
+  f.drivers.codex.saveSettings = patch => { if (patch.model) model = patch.model; return f.drivers.codex.settings(); };
+  f.setConfig({ conversations: { sessionTtlMinutes: 1, sessionLimit: 4 } });
+  const first = await f.manager.send('codex', { prompt: 'Start' }); f.finish('codex');
+  const conversation = f.manager.get(first.sessionId);
+  const nativeOne = conversation.segments.codex.nativeId;
+
+  // A one-minute TTL: a fresh park still resumes, so cap the age just past it.
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-two' });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Second' }); f.finish('codex');
+  Object.values(conversation.modelSessions)[0].lastUsedAt = Date.now() - 61 * 1000;
+  f.manager.save(conversation);
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-one' });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Back' }); f.finish('codex');
+  assert.ok((conversation.retiredSegments || []).some(segment => segment.retiredReason === 'expired'));
+
+  // A limit of one: parking another model retires the least recently used.
+  f.setConfig({ conversations: { sessionTtlMinutes: 1, sessionLimit: 1 } });
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-two' });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Third' }); f.finish('codex');
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-three' });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Fourth' }); f.finish('codex');
+  assert.equal(Object.keys(f.manager.get(first.sessionId).modelSessions).length, 1);
+});
+
+test('a long absence resumes its own thread with a summary bridge instead of the full history', async t => {
+  const summaries = [];
+  const f = fixture(t, { summarize: { available: () => true, run: async options => { summaries.push(options); return { text: 'BRIDGE_SUMMARY: keep the parser table in sync.' }; } } });
+  let model = 'model-one';
+  f.drivers.codex.settings = () => ({ model, connection: 'api' });
+  f.drivers.codex.saveSettings = patch => { if (patch.model) model = patch.model; return f.drivers.codex.settings(); };
+  const first = await f.manager.send('codex', { prompt: 'Start on model one' }); f.finish('codex');
+  const conversation = f.manager.get(first.sessionId), nativeOne = conversation.segments.codex.nativeId;
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-two' });
+  f.manager.append(conversation, { role: 'user', text: 'ABSENT_DETAIL ' + 'y'.repeat(6000) });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Work on model two' }); f.finish('codex');
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-one' });
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Resume' }); f.finish('codex');
+  assert.equal(f.sent.at(-1).opts.sessionId, nativeOne, 'the model-one thread is resumed, not replaced');
+  assert.match(f.sent.at(-1).prompt, /BRIDGE_SUMMARY/);
+  assert.doesNotMatch(f.sent.at(-1).prompt, /ABSENT_DETAIL/, 'the long absence is summarized instead of replayed verbatim');
+  assert.equal(summaries.length, 1);
+  const afterResume = f.manager.get(first.sessionId).segments.codex;
+  assert.equal(afterResume.bridgeFile, undefined, 'the bridge is cleared once the thread catches up');
+  assert.equal(afterResume.bridgeToSeq, undefined);
 });
 
 test('Kimi account selections stay in their conversation when the new-session default returns to API', async t => {
@@ -3716,4 +3871,25 @@ test('a router summary failure keeps the original history and reports the reason
   assert.equal(conversation.lastCompaction.transport, 'router');
   assert.equal(conversation.lastCompaction.outcome, 'failed');
   assert.equal(manager.busy(conversation.id), false);
+});
+
+test('a portable compaction leads the prompt once, then the native thread carries it', async context => {
+  const harness = fixture(context);
+  const { manager } = harness;
+  const first = await manager.send('codex', { prompt: 'Remember the original task' });
+  harness.finish('codex'); await first.done;
+  const conversation = manager.get(first.sessionId);
+  const summary = path.join(harness.root, 'portable-summary.md');
+  fs.writeFileSync(summary, '# Compacted conversation context\n\nPORTABLE-SUMMARY-MARKER');
+  manager.append(conversation, { role: 'notice', text: 'Context compacted: summary saved', file: summary });
+  manager.save(conversation);
+  // The fresh native session that first resumes from the summary must receive
+  // it, and only then: once a native thread carries the prefix, re-sending the
+  // summary on every turn would duplicate it.
+  const seeded = await manager.send('codex', { sessionId: conversation.id, prompt: 'Continue after compaction' });
+  assert.match(harness.sent.at(-1).prompt, /PORTABLE-SUMMARY-MARKER/);
+  harness.finish('codex'); await seeded.done;
+  const resumed = await manager.send('codex', { sessionId: conversation.id, prompt: 'Continue again' });
+  assert.doesNotMatch(harness.sent.at(-1).prompt, /PORTABLE-SUMMARY-MARKER/);
+  harness.finish('codex'); await resumed.done;
 });

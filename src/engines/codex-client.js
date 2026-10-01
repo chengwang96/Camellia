@@ -126,11 +126,16 @@ class CodexClient {
   }
 }
 
-function codexEnvironment(home, inherited = process.env, proxyUrl = '') {
+function codexEnvironment(home, inherited = process.env, proxyUrl = '', { subscription = false } = {}) {
   const env = { ...inherited, CODEX_HOME: home };
   if (process.platform === 'win32') { env.PATH = inherited.PATH || inherited.Path; delete env.Path; }
   for (const name of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'OPENAI_ORGANIZATION', 'OPENAI_PROJECT_ID', 'CODEX_API_KEY', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE']) delete env[name];
-  if (!env.CAMELLIA_NETWORK_MODE && proxyUrl) for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) env[name] = proxyUrl;
+  // A subscription CLI authenticates and streams through the provider's own
+  // hosts, so it always takes the real proxy. "Prefer direct" hands the other
+  // engines a loopback bridge that would make ChatGPT sign-in and replies stall.
+  if (env.CAMELLIA_NETWORK_MODE) {
+    if (subscription) Object.assign(env, require('../main/network-settings').subscriptionEnvironment(env));
+  } else if (proxyUrl) for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) env[name] = proxyUrl;
   return env;
 }
 
@@ -161,7 +166,7 @@ function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscr
   delete config.openai_base_url; delete config.chatgpt_base_url;
   config.cli_auth_credentials_store = 'file';
   config.model_provider = connection === 'api' ? 'camellia' : 'openai';
-  const environment = codexEnvironment(home, env, proxyUrl);
+  const environment = codexEnvironment(home, env, proxyUrl, { subscription: connection === 'subscription' });
   environment.PATH = path.join(path.dirname(path.dirname(runtime.file)), 'codex-path') + path.delimiter + (environment.PATH || '');
   configureApiModel(config, home, connection === 'api' ? model : undefined, contextWindow);
   if (connection === 'api') {

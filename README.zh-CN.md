@@ -17,6 +17,11 @@ Camellia 将 **Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigrav
 ## 核心功能
 
 - **运行中默认排队。** 当前轮次运行时，Enter 或点击发送会将消息加入队列，轮次结束后依次发送；每条队列消息的“立即补充指令”按钮可将该条消息补充到当前轮次（需要引擎接入方式支持）。补充失败时保留队列消息和附件，不影响输入框草稿。
+
+<table><tr><td>
+<img src="docs/images/message-queue.png" alt="Codex 回复运行中时的排队消息与立即补充指令">
+</td></tr></table>
+
 - **多个引擎，共用应用。** 在 Claude Code、Codex CLI、DSH、Kimi Code、Antigravity 和 Pi 之间切换，使用统一的导航与设置。Pi 通过 RPC 模式使用共享 API 线路，无需单独登录账号。
 - **六个引擎共享会话。** 保留同一份聊天记录和工作目录，支持直接切换或自动 Markdown 交接；各引擎首页和会话中的输入框位置统一。支持置顶、重命名、分叉和归档。
 - **归档自动切换会话。** 归档当前会话时自动打开同一工作区的相邻会话（优先下一行）；工作区已无会话时直接进入该工作区的新建会话页面，独立会话同理。归档其他会话不影响当前打开的会话。
@@ -55,7 +60,7 @@ npm start
 
 `npm ci` 只安装工作台依赖，六个 harness 的运行时均为可选下载。可在首页点击 **Download & open**（下载并打开），也可在 **Settings → Runtime**（设置 → 运行环境）中单独下载。Antigravity 的 Google 订阅模式下载官方 CLI，API 模式下载 SDK 和独立 Python；Pi 只是一个 npm 包，使用共享 API 线路。无需全局安装 CLI 或 Python。
 
-网络统一在 **设置 → 通用 → Network connection（网络连接）** 中配置：**Direct connection（直连）** 直接联网；**Use system proxy（系统代理）** 使用检测到的系统 HTTP/HTTPS 代理；**Prefer direct connection（首选直连）** 先尝试直连，无法建立连接时再转系统代理。默认直连，不预设代理地址；该设置同时用于引擎与 benchmark 题库下载、订阅和 API 连接。保存后**立即生效**：引擎进程会改用新的连接方式，无需重启 Camellia；正在进行的回复不会被打断，会在结束后自动切换。若选择的系统代理已无法访问网络，Camellia 会自动降级为「首选直连」（优先直连、代理仅作回退），并在打开的工作台窗口中用统一风格的应用内弹窗提示，同时 **设置 → 通用** 的状态行会说明原因；请尽快排查代理服务与系统代理设置，恢复后重新选择「系统代理」。降级不会改写你保存的选项，重启后会重新探测。
+网络统一在 **设置 → 通用 → Network connection（网络连接）** 中配置，同时用于引擎与 benchmark 题库下载、订阅和 API 连接：**Direct connection（直连）** 直接联网；**Use system proxy（系统代理）** 使用检测到的系统 HTTP/HTTPS 代理；**Prefer direct connection（首选直连）** 先尝试直连，无法建立连接时再转系统代理。默认直连，不预设代理地址。保存后**立即生效**：引擎进程会改用新的连接方式，无需重启 Camellia，正在进行的回复不会被打断。若系统代理已无法访问网络，Camellia 会自动降级为「首选直连」，在工作台弹窗和 **设置 → 通用** 状态行中说明原因，且不改写你保存的选项（重启后重新探测）；代理恢复后重新选择「系统代理」即可。ChatGPT（Codex）与 Claude 的订阅登录**不走**直连回退，始终使用检测到的系统代理，仅在未检测到系统代理时才直连。
 
 开发时可执行 `npm run setup:runtimes -- dsh kimi`，只将指定引擎下载到 `runtimes/`；Pi 使用 `npm run setup:pi` 安装。需要全部六个引擎时才使用 `--all`。启动工作台或浏览设置不会下载缺失的引擎。
 
@@ -150,6 +155,10 @@ Codex CLI 支持 API key 和第三方 API。在 **Settings → Engine Settings �
 
 支持多个会话同时工作，包括同一 harness 中的多个会话。新建或打开其他会话不会停止后台任务，侧栏会显示工作和待确认状态；停止与权限确认只作用于对应会话。当前会话工作中（包括正在推进的 goal）时禁用 harness 切换和 Markdown 交接，先停止或暂停后才能切换。交接失败保留原会话和已生成的 Markdown；应用重启后不会自动重发未确认完成的请求。详见[实现与限制](docs/design/shared-conversations.md)。
 
+<table><tr><td>
+<img src="docs/images/shared-conversations.png" alt="共享会话：顶部的引擎选择器与切换选项">
+</td></tr></table>
+
 ### 会话控制
 
 模型还可通过[会话控制工具](docs/conversation-tools.md)新建或分叉自己拥有的子会话、选择已配置的模型和思维强度、发送任务、读取结果及停止响应。同一桥接还提供只读的 `sessions`、`history`、`search` 工具，可列出本设备保存的全部会话、读取任意已存正文并按词检索正文，全程不启动引擎、不改动任何内容。子会话共享文件并保留原有权限，独立运行；不能递归委派或自行启动 Goal/定时任务。
@@ -161,6 +170,16 @@ Codex CLI 支持 API key 和第三方 API。在 **Settings → Engine Settings �
 也可以在消息首行直接说 **“设定目标：完成这个功能并通过测试”** 或 **“Set a goal: finish this feature and run its tests”**。模型可通过 Camellia 的会话级工具开启同一个 Goal 状态条，将当前回复纳入目标执行，不会额外启动一轮。仅讨论 Goal 模式不会触发；意图识别采用保守规则，请使用首行直接指令，不要使用问句、引用或示例。对话开启支持 Claude、Codex、DSH、Kimi、Pi 和 Antigravity **Shared API routes**；Antigravity **Google subscription** 的 CLI 暂无会话级 MCP 配置，仍需使用 Goal 按钮。原有权限设置不变，若出现 Goal 工具授权提示，需要用户批准。
 
 紧凑的目标状态条显示目标、状态和累计运行时间。暂停会同时停止当前回复；展开可查看完整目标、阻塞原因，或手动 **Mark complete**。恢复时保留已有进展和累计时间。各会话的目标独立运行，打开其他会话不会暂停目标。关闭 Camellia 会暂停目标，需要点击 **Resume goal** 继续；切换该会话的引擎前应先暂停目标。执行沿用当前模型与权限设置。
+
+<table><tr><td>
+<img src="docs/images/goal-mode.png" alt="输入框上方的紧凑目标状态条，显示目标与运行时间">
+</td></tr></table>
+
+模型选择器同时充当主/副模型开关：左键点选主模型；右键设为副模型且菜单不关闭；双击模型按钮在两者间来回切换。
+
+<table><tr><td>
+<img src="docs/images/model-pair.png" alt="模型菜单中主模型的对勾与副模型的圆点">
+</td></tr></table>
 
 Antigravity 支持 **Google subscription**（Google 订阅）与 **Shared API routes**（共享 API 线路）。订阅模式使用官方 CLI 的 Google 账号登录及账号可用的 Antigravity 额度，API 模式使用统一 Key 池。连接、权限、MCP 服务器与技能统一在 **Settings → Engine Settings → Antigravity** 中管理。已有会话保留原来的连接方式。Google 模式支持流式回复、续聊和停止，暂不支持分叉及图片附件。
 

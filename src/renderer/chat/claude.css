@@ -934,8 +934,14 @@
   }
   .pop-opt:hover { background: var(--dsw-alias-interactive-bg-hover); }
   .pop-opt.current { background: var(--dsw-specific-sidebar-nav-item-hover); }
-  .pop-opt .pop-check { margin-left: auto; color: var(--dsw-alias-label-primary); flex-shrink: 0; visibility: hidden; }
-  .pop-opt.current .pop-check { visibility: visible; }
+  /* Only visible marks take space, so the current check and the secondary dot
+     line up in one right-hand column and the model name never shifts. */
+  .pop-opt .pop-check { display: none; color: var(--dsw-alias-label-primary); flex-shrink: 0; }
+  .pop-opt.current .pop-check { display: block; }
+  .pop-opt .pop-marks { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
+  .pop-opt .pop-alt { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; display: none; }
+  .pop-opt .pop-alt::after { content: ''; display: block; width: 8px; height: 8px; margin: 3px; border-radius: 50%; background: var(--dsw-alias-label-tertiary); }
+  .pop-opt.alt .pop-alt { display: block; }
 .history-more {
   display: block;
   width: 100%;
