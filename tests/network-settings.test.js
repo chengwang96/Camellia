@@ -121,6 +121,51 @@ test('healthCheck probes direct and proxy routes over raw TCP', async () => {
   assert.deepEqual(await healthCheck('http://127.0.0.1:1', { url: target, timeout: 300 }), { direct: true, proxy: false });
   origin.closeAllConnections?.(); origin.close();
 });
+function probeStub(summary) {
+  return async (targets, options) => targets.map(target => ({ ...target,
+    direct: summary.direct, proxy: summary.proxy, preferred: summary.direct ? 'direct' : 'proxy', durationMs: 1 }));
+}
+test('connectivity test probes provider hosts and signed-in subscriptions without changing the mode', async () => {
+  const providerTargetsImpl = () => [{ id: 'api.a.example:443', kind: 'provider', host: 'api.a.example', port: 443, label: 'Provider A', models: ['a-1'] }];
+  let config = { network: { mode: 'system' } }, applied;
+  const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),
+    sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY localhost:7890' }), defaultSession: { setProxy: async () => {} } }),
+    applyEnvironment: env => { applied = env; }, createFallback: async () => ({ url: 'http://127.0.0.1:12345', close() {} }),
+    providerTargetsImpl, subscriptionEngines: () => ['codex'], probeImpl: probeStub({ direct: true, proxy: false }) });
+  const result = await service.testConnectivity();
+  assert.equal(result.ok, true);
+  assert.equal(result.summary.total, 2);
+  assert.equal(result.summary.direct, 2);
+  // A read-only test never rewrites the stored choice or the live transport.
+  assert.equal(config.network.mode, 'system'); assert.equal(applied, undefined);
+  service.close();
+});
+test('auto falls back to the system proxy when a direct connection fails', async () => {
+  const providerTargetsImpl = () => [{ id: 'api.a.example:443', kind: 'provider', host: 'api.a.example', port: 443, label: 'Provider A', models: [] }];
+  let config = {}, applied;
+  const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),
+    sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY localhost:7890' }), defaultSession: { setProxy: async () => {} } }),
+    applyEnvironment: env => { applied = env; }, createFallback: async () => ({ url: 'http://127.0.0.1:12345', close() {} }),
+    providerTargetsImpl, subscriptionEngines: () => [], probeImpl: probeStub({ direct: false, proxy: true }) });
+  const result = await service.save({ mode: 'auto' });
+  // Direct is blocked, so the proxy stays live even though "auto" was selected.
+  assert.equal(applied.HTTPS_PROXY, 'http://localhost:7890/');
+  assert.equal(result.mode, 'auto'); assert.equal(result.autoFallback, true); assert.equal(result.directFirst, false);
+  assert.equal(config.network.mode, 'auto');
+  service.close();
+});
+test('auto takes the direct-first bridge when direct works everywhere', async () => {
+  const providerTargetsImpl = () => [{ id: 'api.a.example:443', kind: 'provider', host: 'api.a.example', port: 443, label: 'Provider A', models: [] }];
+  let config = {}, applied;
+  const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),
+    sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY localhost:7890' }), defaultSession: { setProxy: async () => {} } }),
+    applyEnvironment: env => { applied = env; }, createFallback: async () => ({ url: 'http://127.0.0.1:12345', close() {} }),
+    providerTargetsImpl, subscriptionEngines: () => [], probeImpl: probeStub({ direct: true, proxy: true }) });
+  const result = await service.save({ mode: 'auto' });
+  assert.equal(applied.HTTPS_PROXY, 'http://127.0.0.1:12345'); assert.equal(applied.CAMELLIA_NETWORK_MODE, 'auto');
+  assert.equal(result.mode, 'auto'); assert.equal(result.directFirst, true); assert.equal(result.autoFallback, false);
+  service.close();
+});
 
 async function fixture(t, failDirect) {
   let proxied = 0, received = 0;

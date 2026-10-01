@@ -276,3 +276,30 @@ test('a folder the reply names outranks one only inferred from a command', t => 
   const result = resolveArtifacts({ cwd, roots: [source], text });
   assert.deepEqual(result.map(entry => entry.path), [path.join(filled, '自查表.docx')]);
 });
+
+test('a network or device path is never probed on the filesystem', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-'));
+  const desktop = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifacts-desktop-'));
+  t.after(() => removeTree(cwd));
+  t.after(() => removeTree(desktop));
+  fs.mkdirSync(path.join(desktop, 'outputs'));
+  fs.writeFileSync(path.join(desktop, 'outputs', 'report.docx'), 'fixture');
+
+  // A reply that explains a Markdown trick by quoting the literal UNC path, then
+  // lists a real file beside it. A missing host is a blocking SMB lookup, so the
+  // network path must be dropped before any stat and the real file must survive.
+  const text = '`//server/share` 这样的链接不会解析，但 `outputs/report.docx` 会。';
+  const seen = [];
+  const stat = fs.statSync;
+  fs.statSync = (candidate, ...rest) => { seen.push(String(candidate)); return stat(candidate, ...rest); };
+  let result;
+  try { result = resolveArtifacts({ cwd: desktop, roots: [desktop], text, paths: ['//server/share/report.pdf'] }); }
+  finally { fs.statSync = stat; }
+
+  assert.deepEqual(result.map(entry => entry.path), [path.join(desktop, 'outputs', 'report.docx')]);
+  assert.deepEqual(seen.filter(candidate => /^[\\/]{2}/.test(candidate)), [], 'no UNC path reaches the filesystem');
+
+  // A device path such as \\?\C:\outputs\report.pdf is a local shape and must not
+  // be misread as a network path (it is simply not a match).
+  assert.deepEqual(resolveArtifacts({ cwd, text: String.raw`\\?\C:\outputs\report.pdf` }), []);
+});

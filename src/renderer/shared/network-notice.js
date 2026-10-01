@@ -1,18 +1,18 @@
 'use strict';
 
 // In-app advisory shown when the selected system proxy stopped working and
-// Camellia downgraded to "prefer direct". Rendered as the same <dialog> used by
+// Camellia downgraded to "auto". Rendered as the same <dialog> used by
 // the settings surfaces so it matches the product instead of a native alert.
 // Copy is translated through the shared catalogue when the page loads it.
 window.CamelliaNetworkNotice = (() => {
   const COPY = {
     title: { en: 'System proxy unavailable', zh: '系统代理不可用' },
-    body: { en: 'The system proxy you selected can no longer reach the internet, so every request through it would fail. Camellia switched to “Prefer direct”: direct connections are tried first and the proxy is kept only as a fallback.',
-      zh: '你选择的系统代理已无法访问网络，经它发出的请求都会失败。Camellia 已自动切换为「首选直连」：优先直连，代理仅作回退。' },
-    mode: { en: 'Connection mode: Prefer direct', zh: '连接方式：首选直连' },
+    body: { en: 'The system proxy you selected can no longer reach the internet, so every request through it would fail. Camellia switched to “Auto”: direct connections are tried first and the proxy is kept only as a fallback.',
+      zh: '你选择的系统代理已无法访问网络，经它发出的请求都会失败。Camellia 已自动切换为「自动」：优先直连，代理仅作回退。' },
+    mode: { en: 'Connection mode: Auto', zh: '连接方式：自动' },
     proxy: { en: 'Proxy', zh: '代理' },
-    next: { en: 'Check the proxy service and your system proxy settings as soon as possible. Once it works again, switch back to “Use system proxy” in Settings → General.',
-      zh: '请尽快排查代理服务与系统代理设置。恢复后可在 设置 → 通用 中切回「系统代理」。' },
+    next: { en: 'Check the proxy service and your system proxy settings as soon as possible. Once it works again, switch back to “Use system proxy” in Settings → Network.',
+      zh: '请尽快排查代理服务与系统代理设置。恢复后可在 设置 → 网络 中切回「系统代理」。' },
     open: { en: 'Open network settings', zh: '打开网络设置' },
     close: { en: 'Got it', zh: '知道了' },
   };
@@ -64,7 +64,7 @@ window.CamelliaNetworkNotice = (() => {
     dialog.querySelector('#networkNoticeClose').onclick = () => dialog.close();
     dialog.querySelector('#networkNoticeOpen').onclick = () => {
       dialog.close();
-      if (window.dshDesktop && window.dshDesktop.openSettingsWindow) void window.dshDesktop.openSettingsWindow({ page: 'general', focus: 'networkMode' });
+      if (window.dshDesktop && window.dshDesktop.openSettingsWindow) void window.dshDesktop.openSettingsWindow({ page: 'network', focus: 'networkMode' });
     };
     document.body.appendChild(dialog);
   }

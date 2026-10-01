@@ -333,7 +333,7 @@ async function main() {
     await home.webContents.executeJavaScript("document.querySelector('#settingsBtn').click()");
     const generalSettings = await waitWindow("document.querySelector('#generalPage') && !document.querySelector('#generalPage').hidden");
     assert.equal(await generalSettings.webContents.executeJavaScript("document.querySelector('[data-view=general]').getAttribute('aria-current')"), 'page');
-    await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').click()");
+    await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'subscriptions',engine:'kimi'})");
     const engineSettings = await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden && document.querySelector('#kimiAccountPanel') && !document.querySelector('#kimiSignIn').disabled");
     assert.equal(engineSettings, generalSettings);
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('[data-view=subscriptions]').getAttribute('aria-current')"), 'page');
@@ -362,7 +362,6 @@ async function main() {
     await home.webContents.executeJavaScript('loadSettings()');
     assert.equal(await home.webContents.executeJavaScript('currentModel'), 'kimi-code/subscription-fixture');
     assert.equal(await home.webContents.executeJavaScript('currentConnection'), 'subscription');
-    assert.match(await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').textContent"), /Kimi subscription/);
     assert.equal(await home.webContents.executeJavaScript("MODELS.some(model => model.id === 'kimi-code/subscription-fixture')"), true);
 
     // Several accounts of the same provider stay signed in side by side: adding
@@ -453,7 +452,7 @@ async function main() {
     await home.webContents.executeJavaScript('sidebar.load()');
     assert.match(await home.webContents.executeJavaScript("document.querySelector('#sessionList').textContent"), /Antigravity project/);
     assert.equal(await home.webContents.executeJavaScript('typeof chatApi.onEvent(() => {})'), 'function');
-    await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').click()");
+    await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'subscriptions',engine:'antigravity'})");
     await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden");
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'engines',engine:'antigravity'})");
     await waitWindow("document.querySelector('[data-field=instructions]')");
@@ -473,7 +472,7 @@ async function main() {
     const codexWs = await home.webContents.executeJavaScript(`chatApi.metaOp(${JSON.stringify({ op: 'create-workspace', name: 'Codex project', path: codexFolder })})`);
     assert.equal(codexWs.ok, true); await home.webContents.executeJavaScript('sidebar.load()');
     assert.match(await home.webContents.executeJavaScript("document.querySelector('#sessionList').textContent"), /Codex project/);
-    await home.webContents.executeJavaScript("document.querySelector('#connectionInfo').click()");
+    await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'subscriptions',engine:'codex'})");
     await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden");
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'engines',engine:'codex'})");
     await waitWindow("document.querySelector('#engineScopeTitle')?.textContent === 'Codex in Camellia'");

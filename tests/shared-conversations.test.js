@@ -3004,6 +3004,30 @@ test('learned context budgets persist and stay isolated by model, connection and
   assert.equal(restarted.contextPressure(restarted.get(conversation.id), 'kimi', settings).cap, 16384);
 });
 
+// A summarizer context error must bound only that summary run. Lowering the
+// conversation's own window made every later send re-run the same doomed
+// compaction, which is what the codex -> antigravity first session reported.
+test('a summarizer context error never lowers the conversation budget', async context => {
+  const harness = fixture(context, { modelContextWindow: () => 200000 });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  const settings = manager.settings('kimi', conversation.id);
+  manager.append(conversation, { role: 'user', text: 'TASK' });
+  manager.append(conversation, { role: 'assistant', text: 'x'.repeat(120000) });
+  assert.equal(manager.contextPressure(conversation, 'kimi', settings).cap, 200000);
+  const pending = manager.compact(conversation.id);
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /compact working context/);
+  harness.finish('kimi', 'error', 'maximum context length is 4096 tokens');
+  let guard = 0;
+  while (manager.busy(conversation.id) && guard++ < 40) {
+    await harness.flush();
+    harness.finish('kimi', 'success', 'SUMMARY');
+  }
+  assert.ok((await pending).file);
+  assert.equal(manager.contextPressure(conversation, 'kimi', settings).cap, 200000);
+  assert.equal(conversation.contextBudgets, undefined);
+});
+
 test('summary overflow shrinks fresh requests and retries the same history fragment', async context => {
   const harness = fixture(context, { modelContextWindow: () => 20000 });
   const manager = harness.manager, conversation = manager.create('kimi');
@@ -3025,7 +3049,9 @@ test('summary overflow shrinks fresh requests and retries the same history fragm
   assert.ok((await pending).file);
   assert.ok(harness.sent.some(request => request.prompt.includes('END-OF-HISTORY')));
   assert.equal(conversation.compactionRecovery, undefined);
-  assert.equal(manager.contextPressure(conversation, 'kimi', manager.settings('kimi', conversation.id)).cap, 8000);
+  // The summarizer error bounded this summary run only; the fragment still
+  // shrank, but the conversation's own window is untouched.
+  assert.equal(manager.contextPressure(conversation, 'kimi', manager.settings('kimi', conversation.id)).cap, 20000);
 });
 
 test('summary rescue rebuilds from full history if the accumulated summary no longer fits', async context => {
@@ -3610,7 +3636,9 @@ test('a router context overflow re-splits one fragment under the learned budget'
   assert.equal(conversation.lastCompaction.retries, 1);
   assert.ok(sizes[1] < sizes[0]);
   assert.match(fs.readFileSync(result.file, 'utf8'), /MERGED/);
-  assert.equal(manager.contextPressure(conversation, 'kimi', manager.settings('kimi', conversation.id)).cap, 8000);
+  // A router context error shrinks the summary request, not the conversation
+  // window, so later sends are not judged "over cap" after a single overflow.
+  assert.equal(manager.contextPressure(conversation, 'kimi', manager.settings('kimi', conversation.id)).cap, 131072);
   assert.ok(manager.rows(conversation).some(row => row.text.includes('HISTORY-END')));
 });
 

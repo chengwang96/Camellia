@@ -131,7 +131,7 @@ function codexEnvironment(home, inherited = process.env, proxyUrl = '', { subscr
   if (process.platform === 'win32') { env.PATH = inherited.PATH || inherited.Path; delete env.Path; }
   for (const name of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'OPENAI_ORGANIZATION', 'OPENAI_PROJECT_ID', 'CODEX_API_KEY', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE']) delete env[name];
   // A subscription CLI authenticates and streams through the provider's own
-  // hosts, so it always takes the real proxy. "Prefer direct" hands the other
+  // hosts, so it always takes the real proxy. "Auto" hands the other
   // engines a loopback bridge that would make ChatGPT sign-in and replies stall.
   if (env.CAMELLIA_NETWORK_MODE) {
     if (subscription) Object.assign(env, require('../main/network-settings').subscriptionEnvironment(env));

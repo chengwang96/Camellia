@@ -32,7 +32,7 @@ with sync_playwright() as playwright:
     # dropped page fails with a useful diff instead of an off-by-one.
     views = page.locator(".settings-nav nav [data-view]").evaluate_all(
         "els => els.map(el => el.dataset.view)")
-    assert views == ["subscriptions", "providers", "usage", "general", "engines",
+    assert views == ["subscriptions", "providers", "usage", "general", "network", "engines",
                      "runtimes", "archived", "mobile", "devices"], views
     page.locator('.settings-nav nav [data-view="devices"]').click()
     expect(page.locator("#pageTitle")).to_have_text("CLI devices")
@@ -48,6 +48,22 @@ with sync_playwright() as playwright:
     expect(page.locator("#pageTitle")).to_have_text("Mobile access")
     expect(page.locator("#mobilePage")).to_be_visible()
     expect(page.locator("#devicesPage")).to_be_hidden()
+    page.locator('.settings-nav nav [data-view="general"]').click()
+    expect(page.locator("#pageTitle")).to_have_text("General")
+    # Network is its own page: the connection choice and the one-click
+    # connectivity test live there, and neither is on General any more.
+    expect(page.locator("#networkPage")).to_be_hidden()
+    page.locator('.settings-nav nav [data-view="network"]').click()
+    expect(page.locator("#pageTitle")).to_have_text("Network")
+    expect(page.locator("#networkPage")).to_be_visible()
+    expect(page.locator("#generalPage")).to_be_hidden()
+    expect(page.locator("#networkMode")).to_be_visible()
+    expect(page.locator("#networkTest")).to_have_text("Test all connections")
+    for language in ["en", "zh-CN"]:
+        page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
+        page.set_viewport_size({"width": 1180, "height": 820})
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), language
+    page.evaluate("CamelliaI18n.setLanguage('en')")
     page.locator('.settings-nav nav [data-view="general"]').click()
     expect(page.locator("#pageTitle")).to_have_text("General")
     for language in ["en", "zh-CN"]:

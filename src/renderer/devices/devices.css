@@ -36,17 +36,41 @@ body.cli-devices-standalone { margin: 0; }
 .cli-devices .native-warning { color: var(--dsw-alias-label-secondary); font-size: 13px; }
 .cli-devices .message-body { font: var(--f-base-16); line-height: 1.75; overflow-wrap: anywhere; }
 .cli-devices .message-body p { margin: 10px 0; white-space: pre-wrap; }
-.cli-devices .message-body h1, .cli-devices .message-body h2, .cli-devices .message-body h3 { font-size: 18px; line-height: 1.5; margin: 16px 0 8px; }
+/* Headings read the same as the chat page: body-size bold text, not a larger face. */
+.cli-devices .message-body h1, .cli-devices .message-body h2, .cli-devices .message-body h3,
+.cli-devices .message-body h4, .cli-devices .message-body h5, .cli-devices .message-body h6 {
+  font: var(--f-base-16); font-weight: 600; line-height: 1.75; margin: 10px 0 2px;
+}
 .cli-devices .message-body blockquote { margin: 12px 0; border-left: 3px solid var(--dsw-alias-border-l3); padding-left: 14px; color: var(--dsw-alias-label-secondary); }
 .cli-devices .message-body code { font: var(--f-code); background: var(--dsw-alias-bg-muted); padding: 2px 5px; border-radius: 4px; }
 .cli-devices .md-code-block { border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; margin: 12px 0; min-width: 0; overflow: hidden; }
 .cli-devices .md-code-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--dsw-alias-bg-soft); font-size: 12px; }
-.cli-devices .md-code-header button { padding: 3px 8px; }
+.cli-devices .md-code-header .actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.cli-devices .md-code-wrap, .cli-devices .md-code-copy {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 30px; height: 30px; padding: 0; border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer;
+}
+.cli-devices .md-code-wrap:hover, .cli-devices .md-code-wrap[aria-pressed="true"], .cli-devices .md-code-copy:hover {
+  background: var(--dsw-alias-interactive-bg-hover); border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary);
+}
 .cli-devices .message .md-code { margin: 0; padding: 14px; white-space: pre; overflow: auto; font: var(--f-code); }
 .cli-devices .message .md-code code { background: transparent; padding: 0; font: inherit; }
 .cli-devices .md-code.is-wrapped { white-space: pre-wrap; overflow-wrap: anywhere; }
 .cli-devices .md-table-wrap { overflow-x: auto; margin: 12px 0; } .cli-devices .md-table-wrap table { border-collapse: collapse; width: 100%; }
 .cli-devices .md-table-wrap th, .cli-devices .md-table-wrap td { border: 1px solid var(--dsw-alias-border-l2); padding: 7px 12px; } .cli-devices .md-table-wrap th { background: var(--dsw-alias-bg-soft); }
+.cli-devices .message-body ul, .cli-devices .message-body ol { margin: 10px 0; padding-left: 24px; }
+.cli-devices .message-body li { white-space: normal; }
+.cli-devices .message-body li.md-task { display: flex; align-items: baseline; gap: 6px; list-style: none; margin-left: -20px; }
+/* The form controls above are full width; a task checkbox is only a marker. */
+.cli-devices .message-body li.md-task input {
+  width: auto; flex: none; margin: 0; padding: 0; border: 0; border-radius: 0;
+  background: none; accent-color: var(--dsw-static-deepseek-500);
+}
+.cli-devices .md-math { white-space: normal; }
+.cli-devices .md-math-display { display: block; margin: 10px 0; overflow-x: auto; overflow-y: hidden; }
+.cli-devices .md-math-display .katex-display { margin: 0; }
+.cli-devices .message-body .chat-inline-image { display: block; max-width: 100%; height: auto; max-height: 560px; object-fit: contain; object-position: left center; margin: 12px 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
 .cli-devices .md-align-center { text-align: center; } .cli-devices .md-align-right { text-align: right; } .cli-devices .md-align-left { text-align: left; }
 .cli-devices .message-body a { color: var(--dsw-alias-state-business-primary); text-decoration: underline; }
 .cli-devices .message.user .message-body { background: var(--dsw-alias-bg-soft); padding: 10px 14px; border-radius: 14px; }

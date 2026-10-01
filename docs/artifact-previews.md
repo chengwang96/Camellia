@@ -7,6 +7,23 @@ code languages. Code copy and wrapping remain available. Unknown languages and
 code blocks over 50,000 characters remain plain code. Raw HTML is escaped; trusted
 TeX commands and external-resource commands are disabled. Mermaid is not included.
 
+## LaTeX code blocks
+
+Chat blocks whose language is `latex`, `tex` or `ltx` get a formula button in the
+code header. It renders the block with the bundled KaTeX build in the desktop
+renderer, so no LaTeX distribution (`pdflatex`, `latexmk`, MiKTeX, TeX Live) or
+compiler process is needed. `\begin{equation}…\end{equation}` is accepted by
+unwrapping the environment into a display formula, whole `\begin{document}`
+documents are reduced to their body after the preamble and title commands are
+dropped, and blank-line separated formulas render as separate blocks. Every block
+is capped at 20,000 characters and 200 blocks. A formula KaTeX cannot parse shows
+its parse error with the original source instead of failing the message, and
+pasted `array` preambles using `=` are normalized because KaTeX requires column
+specifiers there. TeX is only interpreted as math: `trust` and macro expansion
+limits stay in place, so `\href`, `\includegraphics` or `\write18` cannot run
+anything. This is not LaTeX typesetting — documents, floats, tables, references,
+citations, fonts and page layout are not produced.
+
 CSV and TSV files open as tables with a first-row header toggle, case-insensitive
 search and 100-row pages. Quoted delimiters, escaped quotes and multiline fields
 are supported. Parsing warnings are shown without executing cell contents. The

@@ -76,8 +76,8 @@ async function main() {
     await settings.webContents.executeJavaScript("document.querySelector('#retryNative').click()");
     await wait(() => settings.webContents.executeJavaScript("document.querySelectorAll('[data-install]:not(:disabled)').length === 6"));
     assert.equal(downloads.length, 0, 'Listing available downloads is read-only');
-    await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'general',focus:'networkMode'})");
-    await wait(() => settings.webContents.executeJavaScript("!document.querySelector('#generalPage').hidden"));
+    await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'network',focus:'networkMode'})");
+    await wait(() => settings.webContents.executeJavaScript("!document.querySelector('#networkPage').hidden"));
     await settings.webContents.executeJavaScript(`
       document.querySelector('#networkMode').value = 'system';
       document.querySelector('#networkMode').dispatchEvent(new Event('change', {bubbles: true}));

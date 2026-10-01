@@ -113,10 +113,10 @@ try:
             expect(downloads.locator('#runtimeCards [data-install]:not(:disabled)')).to_have_count(6)
             expect(downloads.get_by_role('button', name='Download', exact=True)).to_have_count(6)
             downloads.goto((repo / 'src/renderer/settings/api-settings.html').as_uri() + '?page=general&focus=downloadProxyUrl')
-            expect(downloads.locator('#generalPage')).to_be_visible()
+            expect(downloads.locator('#networkPage')).to_be_visible()
             expect(downloads.locator('#networkMode')).to_have_value('direct')
             expect(downloads.locator('#downloadProxyUrl')).to_have_count(0)
-            for mode in ['system', 'prefer-direct', 'direct']:
+            for mode in ['system', 'auto', 'direct']:
                 downloads.locator('#networkMode').select_option(mode)
                 expect(downloads.locator('#networkMode')).to_be_enabled()
                 wait_for(lambda: rpc('networkSettings')['result']['mode'] == mode)
@@ -131,7 +131,8 @@ try:
         codex.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex')
         codex.wait_for_load_state('networkidle')
         expect(codex.locator('#input')).to_have_attribute('placeholder', 'Message Codex CLI')
-        expect(codex.locator('#connectionInfo')).to_contain_text('API key / third-party API')
+        expect(codex.locator('#connectionInfo')).to_have_count(0)
+        expect(codex.locator('#statusLine')).to_be_visible()
         expect(codex.locator('.ws-row.active')).to_have_count(0)
         codex.screenshot(animations='disabled', path=str(screenshots / 'codex-chat.png'))
         no_overflow(codex)
@@ -207,7 +208,7 @@ try:
             no_overflow(agy_settings)
         google_chat = new_page()
         google_chat.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=antigravity')
-        expect(google_chat.locator('#connectionInfo')).to_have_text('Google subscription · Manage account')
+        expect(google_chat.locator('#connectionInfo')).to_have_count(0)
         expect(google_chat.locator('#modelPillName')).to_have_text('Gemini Fixture (High)')
         google_chat.locator('#modelPill').click()
         google_chat.locator('.pop-row').filter(has_text='Model').first.click()
@@ -346,7 +347,7 @@ try:
         api.get_by_role('textbox', name='API Key 1', exact=True).fill('test-ui-key')
         expect(api.locator('#enabled')).to_be_visible()
         api.locator('#enabled').uncheck()
-        api.locator('#save').click()
+        api.locator('#enabled').blur()
         expect(api.locator('#status')).to_contain_text('Saved')
         saved = rpc('apiRouterGetState')['result']['providers'][0]
         assert saved['protocol'] == 'anthropic'

@@ -71,7 +71,6 @@ try:
         # A valid value is kept and saved together with the fetched cap.
         ctx.fill('131072'); ctx.press('Tab')
         expect(ctx).to_have_value('131072')
-        page.locator('#save').click()
         expect(page.locator('#status')).to_contain_text('Saved')
         models = rpc('apiRouterGetState')['result']['providers'][0]['models']
         assert models[0]['maxContext'] == 262144 and models[0]['contextWindow'] == 131072, models

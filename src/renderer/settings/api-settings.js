@@ -5,6 +5,7 @@ const fmt = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { maximum
 const compact = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { maximumFractionDigits: 1, notation: 'compact' }).format(value || 0);
 const when = value => value ? new Date(value).toLocaleString(window.CamelliaI18n.locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : "Not queried yet";
 const uid = () => crypto.randomUUID();
+const maskKey = value => { const s = String(value || ''); return s.length > 12 ? s.slice(0, 4) + '…' + s.slice(-4) : '••••••••'; };
 const keyName = (key, index = 0) => key.name || key.maskedKey || `Key ${index + 1}`;
 const mark = type => ({ gemini: 'G', ollama: 'O', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC', qclaw: 'Q' }[type] || 'API');
 const titles = {
@@ -12,6 +13,7 @@ const titles = {
   providers: ["API Keys", "Manage API providers, keys, balances, models and routes."],
   usage: ["Usage", "Track requests and token consumption."],
   general: ["General", "Language, appearance, and local preferences."],
+  network: ["Network", "Choose how Camellia reaches the internet and test each connection."],
   archived: ["Archived", "Restore or permanently delete archived conversations."],
   mobile: ["Mobile access", "Connect your phone through Tailscale."],
   devices: ["CLI devices", "Manage server connections and default harnesses. Open a server from Home to work."],
@@ -19,37 +21,109 @@ const titles = {
   runtimes: ["Runtime", "Download only the engines you need."],
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
-let dirty = false, saving = false, balanceKey = null, usageData = [];
+let balanceKey = null, usageData = [];
 let catalog = [], catalogSelected = new Set(), catalogProvider = null;
-function status(text, error = false) { $('status').textContent = text; $('status').className = error ? 'error' : ''; }
-function edited() { dirty = true; $('save').disabled = false; status("You have unsaved changes"); }
+let statusTimer;
+function status(text, error = false) {
+  const toast = $('statusToast');
+  $('status').textContent = text; $('status').className = error ? 'error' : '';
+  clearTimeout(statusTimer);
+  toast.hidden = !text;
+  // An error stays until the next message; a routine note fades out so it does
+  // not linger as a permanent banner.
+  if (text && !error) statusTimer = setTimeout(() => { if (!$('status').classList.contains('error')) toast.hidden = true; }, 2500);
+}
+// Provider edits save on change, like the engine and subscription pages. A
+// revision counter survives an edit that lands while a save is in flight.
+let revision = 0, savedRevision = 0, saving = false, saveTimer = null, saveChain = Promise.resolve(), lastSaveError = null;
+const isDirty = () => revision !== savedRevision;
+function edited() {
+  revision++;
+  clearTimeout(saveTimer);
+  // Save shortly after typing stops; leaving the field flushes immediately.
+  saveTimer = setTimeout(() => { saveTimer = null; void flushSave(false); }, 700);
+}
+// A key or model row starts empty and only becomes valid once it is filled in.
+// Stay quiet for those half-finished rows and save as soon as they are usable,
+// instead of flashing a validation error on every "add row" click.
+function draftComplete() {
+  return !config.providers.some(p => p.models.some(m => !String(m.id || '').trim() || !String(m.upstream || '').trim())
+    || p.keys.some(k => !String(k.key || '').trim() && !k.maskedKey && p.type !== 'qclaw'));
+}
+function flushSave(explicit = true) {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  saveChain = saveChain.then(() => saveProviders(explicit));
+  return saveChain;
+}
+async function saveProviders(explicit) {
+  if (saving || !isDirty() || !draftComplete()) return;
+  saving = true;
+  try {
+    let warning = null;
+    // Keep saving until the revision stops moving, so an edit typed during the
+    // round trip is never dropped.
+    while (isDirty()) {
+      const target = revision, snapshot = structuredClone(config);
+      const result = await api.apiRouterSaveConfig(snapshot);
+      if (!result.ok) throw new Error(result.error);
+      savedRevision = target; lastSaveError = null; warning = result.warning || null;
+      live = { ...live, ...result.state };
+    }
+    const data = await api.providerInsights(); if (data.ok) insight = data;
+    syncMaskedKeys();
+    showLive(); updateKeyStats(); renderRoutes(); renderProviders();
+    if (warning) status(warning, true);
+    else status("Saved. All engines share these connections.");
+  // A debounced attempt can catch a half-typed URL; keep the draft dirty and
+  // stay quiet, then report for real once the user leaves the field.
+  } catch (e) { lastSaveError = e.message; if (explicit) status(e.message, true); }
+  finally { saving = false; }
+}
+// The router stores keys masked; mirror that back into the open editor so a
+// secret that has been saved stops sitting in a password field.
+function syncMaskedKeys() {
+  for (const p of config.providers) {
+    const stored = (live.providers || []).find(item => item.id === p.id); if (!stored) continue;
+    for (const k of p.keys) {
+      const saved = stored.keys.find(item => item.id === k.id); if (!saved?.maskedKey) continue;
+      k.maskedKey = saved.maskedKey;
+      if (!k.key) continue;
+      k.key = '';
+      const input = document.querySelector(`[data-key-card="${k.id}"] [data-field=key]`);
+      if (input) { input.value = ''; input.placeholder = saved.maskedKey + ' · Leave blank to keep'; }
+    }
+  }
+}
 function current() { return config?.providers.find(p => p.id === selected); }
-function assertClean() { if (dirty) throw new Error("Save your changes before querying or validating keys"); }
+async function assertClean() {
+  if (!isDirty()) return;
+  await flushSave();
+  if (isDirty()) throw new Error(lastSaveError || "Save your changes before querying or validating keys");
+}
 function setView(next, engine, focus) {
   if (next === 'engines' && focus === 'account') { next = 'subscriptions'; focus = engine; }
   if (next === 'providers' && ['kimi', 'codex', 'antigravity'].includes(focus)) next = 'subscriptions';
   if (next === 'balances') next = 'providers';
   // Space cleanup now lives on the Archived page; older links still open it.
   if (next === 'storage') next = 'archived';
-  // The download connection lives in General; the download prompt and older
-  // links still open Runtime, so redirect them to the section that owns it.
-  if (focus === 'downloadProxyUrl') { next = 'general'; focus = 'networkMode'; }
+  // The connection settings live on their own page now; the download prompt and
+  // older links still ask for General or Runtime, so redirect them.
+  if (next === 'general' && (focus === 'networkMode' || focus === 'downloadProxyUrl')) next = 'network';
   if (!titles[next]) next = 'general';
   view = next;
   for (const id of Object.keys(titles)) $(id + 'Page').hidden = id !== next;
   document.querySelectorAll('[data-view]').forEach(button => { button.classList.toggle('active', button.dataset.view === next); button.setAttribute('aria-current', button.dataset.view === next ? 'page' : 'false'); });
   [$('pageTitle').textContent, $('pageSubtitle').textContent] = titles[next];
-  $('save').hidden = next !== 'providers';
   engineUI.setVisible(next === 'engines');
   window.mobileAccessUI.setVisible(next === 'mobile');
   window.cliDevicesUI?.setVisible(next === 'devices');
   if (next === 'usage') { fillUsageFilters(); renderUsage(); }
   if (next === 'providers' || next === 'subscriptions') renderBalances();
-  if (next === 'general') void loadDownloadSettings(focus);
   if (next === 'subscriptions') void engineUI.accountsPage(focus || engine);
   if (next === 'engines') void (focus === 'account' ? engineUI.openAccount(engine) : engineUI.select(engine || engineUI.selected()));
   if (next === 'runtimes') void engineUI.runtimePage(focus);
   if (next === 'archived') void renderArchived();
+  if (next === 'network') void loadDownloadSettings(focus);
 }
 function navigateSettings(target = {}) {
   if (target.subscriptionId) balanceKey = target.subscriptionId;
@@ -92,6 +166,10 @@ function renderProviders() {
 function renderEditor() {
   renderProviders();
   const p = current(); $('editor').hidden = !p;
+  // The overview heading and the account balances describe the whole key pool,
+  // not one provider, so both step aside while an editor is open.
+  $('providersHeading').hidden = !!p;
+  $('balancesSection').hidden = !!p;
   if (!p) { $('editor').innerHTML = ''; return; }
   $('editor').innerHTML = `<button class="back" id="backProviders" data-i18n>← All providers</button>
     <div class="editor-heading"><span class="provider-mark">${mark(p.type)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name" data-i18n-attrs="aria-label"><label><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}>Enabled</label></div>
@@ -117,7 +195,10 @@ function renderEditor() {
   $('pProtocol').value = p.protocol; $('aUrlField').hidden = p.protocol !== 'dual';
   capacityUI.mount();
   $('backProviders').onclick = () => { selected = null; renderEditor(); };
-  for (const [id, field] of [['pName','name'], ['pUrl','baseUrl'], ['pAUrl','anthropicBaseUrl']]) $(id).oninput = e => { p[field] = e.target.value; edited(); };
+  for (const [id, field] of [['pName','name'], ['pUrl','baseUrl'], ['pAUrl','anthropicBaseUrl']]) {
+    $(id).oninput = e => { p[field] = e.target.value; edited(); };
+    $(id).onblur = () => void flushSave();
+  }
   $('pProtocol').onchange = e => { p.protocol = e.target.value; $('aUrlField').hidden = p.protocol !== 'dual'; edited(); };
   $('pEnabled').onchange = e => { p.enabled = e.target.checked; edited(); };
   $('pPriority').value = String(Math.sign(p.priority ?? 0));
@@ -128,7 +209,10 @@ function renderEditor() {
     const keys = [...new Set($('bulkKeys').value.split(/\r?\n/).map(s => s.trim()).filter(Boolean))];
     if (!keys.length) return status("Paste at least one key", true);
     p.keys = p.keys.filter(k => k.key || k.maskedKey);
-    for (const key of keys) if (!p.keys.some(k => k.key === key)) p.keys.push({ id: uid(), key, name: '', enabled: true });
+    // A saved key comes back masked, so compare on the mask too. Otherwise a
+    // pasted duplicate of an already-stored key appends a second entry that
+    // looks distinct only because its stored value is masked.
+    for (const key of keys) if (!p.keys.some(k => k.key === key || k.maskedKey === maskKey(key))) p.keys.push({ id: uid(), key, name: '', enabled: true });
     $('bulkKeys').value = ''; $('keyImport').hidden = true; edited(); renderKeys(); status(`Added ${keys.length} keys. Save your changes.`);
   };
   $('addModel').onclick = () => { p.models.push({ id: '', upstream: '', protocol: 'auto' }); edited(); renderModels(); };
@@ -366,7 +450,7 @@ function balanceChartSeries(id = balanceKey) {
 }
 async function refreshBalances(payload = {}) {
   try {
-    if (!payload.subscriptionId) assertClean(); $('refreshBalances').disabled = true; $('kimiUsage').disabled = true; status("Querying balances and quotas…");
+    if (!payload.subscriptionId) await assertClean(); $('refreshBalances').disabled = true; $('kimiUsage').disabled = true; status("Querying balances and quotas…");
     const result = await api.providerRefresh(payload.subscriptionId ? payload : { ...payload, apiOnly: true }); if (!result.ok) throw new Error(result.error);
     insight = result; renderBalances(); updateKeyStats();
     const refreshed = payload.subscriptionId
@@ -410,14 +494,17 @@ $('editor').onclick = async e => {
   if (d.upKey !== undefined || d.downKey !== undefined) { const i = Number(d.upKey ?? d.downKey), j = d.upKey !== undefined ? i-1 : i+1; [p.keys[i], p.keys[j]] = [p.keys[j], p.keys[i]]; edited(); renderKeys(); }
   try {
     if (d.keyUsage) {
-      assertClean(); $('usageSource').value = 'api'; $('usageModel').value = '';
+      await assertClean(); $('usageSource').value = 'api'; $('usageModel').value = '';
       if ($('usageMetric').value === 'estimatedCostUsd') $('usageMetric').value = 'tokens';
       setView('usage'); $('usageProvider').value = p.id; fillUsageFilters();
       $('usageKey').value = d.keyUsage; fillUsageFilters(); renderUsage();
     }
-    if (d.keyBalance) { assertClean(); balanceKey = d.keyBalance; $('balanceProvider').value = ''; $('balanceSearch').value = ''; renderBalances(); $('balanceCards').scrollIntoView({ block: 'start' }); }
+    if (d.keyBalance) {
+      await assertClean(); balanceKey = d.keyBalance; $('balanceProvider').value = ''; $('balanceSearch').value = '';
+      selected = null; renderEditor(); renderBalances(); $('balanceCards').scrollIntoView({ block: 'start' });
+    }
     if (d.verifyNow !== undefined) {
-      assertClean();
+      await assertClean();
       const model = $('verifyModel').value; if (!model) throw new Error("Add and select a model first");
       const key = p.keys.find(k => k.enabled !== false && (k.key || k.maskedKey));
       if (!key) throw new Error("Add a key to validate with first");
@@ -428,7 +515,7 @@ $('editor').onclick = async e => {
       status(`Validation succeeded for ${model}. Select other models to validate them separately.`);
     }
     if (d.verify) {
-      assertClean(); const model = $('verifyModel').value; if (!model) throw new Error("Add and select a model first");
+      await assertClean(); const model = $('verifyModel').value; if (!model) throw new Error("Add and select a model first");
       button.disabled = true; status(`Validating ${model}…`);
       const result = await api.providerVerify({ providerId: p.id, keyId: d.verify, model });
       if (result.state) insight = result.state;
@@ -436,7 +523,7 @@ $('editor').onclick = async e => {
       status(`Validation succeeded for ${model}. Select other models to validate them separately.`);
     }
     if (d.rotate || d.resetModel || d.resetKey) {
-      assertClean();
+      await assertClean();
       const result = d.rotate ? await api.apiRouterRotate(d.rotate) : await api.apiRouterReset({ model: d.resetModel, keyId: d.resetKey });
       if (!result.ok) throw new Error(result.error);
       live = { ...live, ...result.state }; showLive(); updateKeyStats(); renderRoutes(); status(d.rotate ? "Switched to the next available route for the same model" : "Route checks reset. Usage history retained.");
@@ -483,17 +570,6 @@ $('applyModels').onclick = () => {
 };
 $('enabled').onchange = e => { config.enabled = e.target.checked; edited(); };
 $('port').oninput = e => { config.port = Number(e.target.value); edited(); };
-$('save').onclick = async () => {
-  if (saving) return; saving = true; $('save').disabled = true; $('refresh').disabled = true;
-  document.querySelector('.scroll-content').inert = true; status("Saving…");
-  try {
-    const result = await api.apiRouterSaveConfig(config); if (!result.ok) throw new Error(result.error);
-    live = { ...live, ...result.state }; config = structuredClone(live); dirty = false;
-    const data = await api.providerInsights(); if (data.ok) insight = data;
-    renderEditor(); showLive(); status(result.warning || live.error || "Saved. All engines share these connections.", !!(result.warning || live.error));
-  } catch (e) { status(e.message, true); }
-  finally { saving = false; $('save').disabled = !dirty; $('refresh').disabled = false; document.querySelector('.scroll-content').inert = false; }
-};
 for (const id of ['usageSource','usageRange','usageProvider','usageKey','usageModel','usageMetric']) $(id).onchange = () => {
   fillUsageFilters();
   renderUsage();
@@ -600,34 +676,92 @@ for (const id of ['language', 'theme', 'autoRefreshBalances', 'accountRefreshMin
 }
 // General connection preference: serialized saves preserve the latest choice.
 let networkSaveQueue = Promise.resolve(), networkSaving = false;
+function renderNetworkModeHint(value = lastNetworkValue) {
+  const t = window.CamelliaI18n.t;
+  const mode = value?.configured || $('networkMode').value || 'direct';
+  const text = {
+    auto: 'Auto tests the connections and keeps direct-first only when direct works everywhere; otherwise it stays on the system proxy. Requests already sent are not replayed.',
+    direct: 'Every request goes straight out without a proxy, including subscriptions and downloads.',
+    system: 'Every request goes through the detected system proxy. If that proxy stops working, Camellia switches to Auto so work continues.',
+  }[mode] || '';
+  $('networkModeHint').textContent = t(text);
+}
 function renderNetworkSettings(value) {
   const t = window.CamelliaI18n.t;
-  $('networkMode').value = value.mode || 'direct';
-  // A downgraded proxy is why the selector shows "Prefer direct" although the
+  $('networkMode').value = value.configured || (['auto', 'direct', 'system'].includes(value.mode) ? value.mode : 'direct');
+  // A downgraded proxy is why the connection is direct-first even though the
   // saved choice was "Use system proxy"; say so instead of only listing it.
-  $('systemProxyStatus').textContent = value.degraded
-    ? t('The detected system proxy is not reachable, so connections are using Prefer direct. Repair the proxy, then choose Use system proxy again.') + (value.detectedUrl ? ' · ' + value.detectedUrl : '')
-    : value.error ? t(value.error)
-    : value.detectedUrl ? t('Detected system proxy') + ': ' + value.detectedUrl
-    : t(value.unsupported ? 'The detected proxy protocol is not supported. Enable an HTTP or mixed proxy port.' : 'No system proxy detected. Enable the system proxy and detect again.');
+  const status = value.degraded
+    ? t('The detected system proxy is not reachable, so connections are using Auto. Repair the proxy, then choose Use system proxy again.')
+    : value.autoFallback
+      ? t('Auto kept the system proxy because a direct connection did not work everywhere.')
+      : value.detectedUrl ? t('Detected system proxy') + ': ' + value.detectedUrl
+      : value.error ? t(value.error)
+      : t(value.unsupported ? 'The detected proxy protocol is not supported. Enable an HTTP or mixed proxy port.' : 'No system proxy detected. Enable the system proxy and detect again.');
+  $('systemProxyStatus').textContent = status + (value.degraded || value.autoFallback ? (value.detectedUrl ? ' · ' + value.detectedUrl : '') : '');
   $('systemProxyStatus').classList.toggle('bad', Boolean(value.degraded || value.error));
+  renderNetworkModeHint(value);
+}
+function renderConnectivity(result) {
+  const t = window.CamelliaI18n.t;
+  const container = $('networkResults');
+  if (!result) { container.innerHTML = ''; return; }
+  if (result.ok === false) { container.innerHTML = `<p class="connectivity-summary bad">${esc(t(result.error || 'The connectivity test failed.'))}</p>`; return; }
+  const { summary = {}, results = [] } = result;
+  // A tick or cross is unambiguous in every language; the words only repeated
+  // "Direct"/"Proxy" under a header that already said which column it was.
+  const check = ok => `<span class="route-mark ${ok ? 'good' : 'bad'}" aria-hidden="true">${ok ? '✓' : '✕'}</span>`;
+  const summaryText = summary.total === 0
+    ? t('No provider routes or signed-in subscriptions to test yet.')
+    : `${summary.direct} / ${summary.total} ${t('reachable directly')} · ${summary.proxy} / ${summary.total} ${t('reachable through the proxy')}` +
+      (summary.unreachable?.length ? ` · ${t('No route to')}: ${summary.unreachable.join(', ')}` : '');
+  const rows = results.map(row => {
+    const label = row.label || row.host;
+    const models = (row.models || []).slice(0, 4).map(model => `<span class="model-chip">${esc(model)}</span>`).join('');
+    return `<div class="connectivity-row">
+      <div class="connectivity-target"><strong>${esc(label)}</strong><small>${esc(row.host)}:${esc(String(row.port))}</small>${row.kind === 'subscription' ? `<small>${esc(t('Subscription sign-in'))}</small>` : ''}</div>
+      <div class="connectivity-route"><small class="route-label">${esc(t('Direct'))}</small>${check(row.direct)}</div>
+      <div class="connectivity-route"><small class="route-label">${esc(t('Proxy'))}</small>${check(row.proxy)}</div>
+      <div class="connectivity-models">${models}</div>
+    </div>`;
+  }).join('');
+  container.innerHTML = `<p class="connectivity-summary${summary.unreachable?.length ? ' bad' : ''}">${esc(summaryText)}</p>` +
+    (rows ? `<div class="connectivity-head"><span>${esc(t('Target'))}</span><span>${esc(t('Direct'))}</span><span>${esc(t('Proxy'))}</span><span>${esc(t('Models'))}</span></div>${rows}` : '');
 }
 let lastNetworkValue = null;
-async function loadDownloadSettings() {
+async function loadDownloadSettings(focus) {
   if (networkSaving) return;
   try {
     const value = await api.networkSettings();
     if (!value.ok) throw new Error(value.error);
     lastNetworkValue = value;
-    if (!networkSaving) renderNetworkSettings(value);
+    if (networkSaving) return;
+    renderNetworkSettings(value);
+    if (focus === 'networkTest') void $('networkTest').click();
     window.CamelliaNetworkNotice?.sync({ degraded: value.degraded, proxy: value.detectedUrl });
   } catch (error) { status(error.message, true); }
 }
+let networkTesting = false;
+$('networkTest').onclick = async () => {
+  if (networkTesting) return;
+  const t = window.CamelliaI18n.t;
+  networkTesting = true;
+  $('networkTest').disabled = true;
+  $('networkResults').innerHTML = `<p class="connectivity-summary">${esc(t('Testing connections…'))}</p>`;
+  try {
+    const result = await api.networkTest();
+    if (!result.ok) throw new Error(result.error);
+    renderConnectivity(result);
+  } catch (error) {
+    $('networkResults').innerHTML = `<p class="connectivity-summary bad">${esc(error.message)}</p>`;
+  } finally { networkTesting = false; $('networkTest').disabled = false; }
+};
 $('networkMode').onchange = () => {
   const t = window.CamelliaI18n.t;
   const mode = $('networkMode').value;
   networkSaving = true;
   $('networkMode').disabled = true;
+  renderNetworkModeHint({ configured: mode });
   networkSaveQueue = networkSaveQueue.then(async () => {
     try {
       const value = await api.networkSaveSettings({ mode });
@@ -657,7 +791,7 @@ async function refresh(initial = false) {
     if (!state.ok) throw new Error(state.error);
     live = state; presets = state.presets || presets;
     if (details.ok) insight = details;
-    if (initial || !dirty) {
+    if (initial || !isDirty()) {
       config = structuredClone(live); $('enabled').checked = config.enabled; $('port').value = config.port;
       const selectedPreset = $('preset').value;
       $('preset').innerHTML = presets.map(p => `<option value="${p.type}">${esc(p.name)}</option>`).join('');
@@ -666,7 +800,7 @@ async function refresh(initial = false) {
       renderEditor();
     }
     showLive(); renderBalances(); if (view === 'usage') { fillUsageFilters(); renderUsage(); } if (view === 'archived') void renderArchived();
-    if (!dirty) status(details.ok ? '' : details.error, !details.ok);
+    if (!isDirty()) status(details.ok ? '' : details.error, !details.ok);
     if (initial) {
       const preferences = await api.workbenchSettings();
       if (!preferences.ok) throw new Error(preferences.error);
@@ -681,7 +815,13 @@ async function refresh(initial = false) {
     }
   } catch (e) { status(e.message, true); }
 }
-$('refresh').onclick = () => view === 'subscriptions' ? engineUI.accountsPage() : view === 'mobile' ? window.mobileAccessUI.refresh() : view === 'devices' ? window.cliDevicesUI?.refresh() : refresh();
+$('refresh').onclick = async () => {
+  await flushSave();
+  if (view === 'subscriptions') return engineUI.accountsPage();
+  if (view === 'mobile') return window.mobileAccessUI.refresh();
+  if (view === 'devices') return window.cliDevicesUI?.refresh();
+  return refresh();
+};
 let storagePreview = null, storageBusy = false;
 const storageBytes = bytes => bytes < 1024 ? fmt(bytes) + ' B' : bytes < 1024 ** 2 ? fmt(bytes / 1024) + ' KiB' : bytes < 1024 ** 3 ? fmt(bytes / 1024 ** 2) + ' MiB' : fmt(bytes / 1024 ** 3) + ' GiB';
 function storageControls() {
@@ -821,12 +961,12 @@ $('confirmDeleteAllArchived').onclick = async () => {
 api.onApiRouterState(state => {
   if (!live) return; live = { ...live, ...state }; showLive(); updateKeyStats();
   if (view === 'usage') { fillUsageFilters(); renderUsage(); }
-  if (!dirty && !current()) renderProviders();
+  if (!isDirty() && !current()) renderProviders();
 });
 api.onProviderInsights(state => {
   insight = state; if (!config) return;
   updateKeyStats(); renderBalances();
-  if (!dirty && !current()) renderProviders();
+  if (!isDirty() && !current()) renderProviders();
 });
 let chartLayoutWidth = 0, chartLayoutFrame;
 new ResizeObserver(() => {
@@ -841,6 +981,8 @@ new ResizeObserver(() => {
   });
 }).observe(document.querySelector('.scroll-content'));
 void refresh(true).then(() => navigateSettings(Object.fromEntries(new URLSearchParams(location.search))));
+// Closing the window must not drop a debounced edit.
+window.addEventListener('beforeunload', () => { if (isDirty()) void flushSave(); });
 window.addEventListener('camellia:language', () => {
   // This status is rendered by script, not by data-i18n, so it needs an
   // explicit re-render to leave the previous language.

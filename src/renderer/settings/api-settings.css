@@ -131,6 +131,7 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 .grid select { width: 100%; }
 .grid label { font-size: 12px; }
 .router-options { margin-top: 28px; }
+.balances-section { margin-top: 28px; }
 .router-options h3 { margin: 0 0 12px; color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 400; }
 .router-options .hint { margin-top: 12px; overflow-wrap: anywhere; }
 .model-table, .usage-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -201,8 +202,12 @@ td { border-top: 1px solid var(--dsw-alias-border-l2); padding: 10px 8px; overfl
 .setting-row > div { flex: 1; min-width: 0; }
 .setting-row p { overflow-wrap: anywhere; }
 #saveGeneral { margin-top: 24px; }
-footer { display: flex; align-items: center; gap: 14px; padding: 14px 32px; min-height: 66px; border-top: 1px solid var(--dsw-alias-border-l2); }
-#status { flex: 1; font-size: 12px; color: var(--dsw-alias-label-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Transient status: saves happen on change, so there is no save bar. A single
+   floating line reports the latest result without pushing the page around. */
+.status-toast { position: fixed; left: 50%; bottom: 24px; z-index: 20; transform: translateX(-50%);
+  max-width: min(720px, calc(100vw - 40px)); padding: 10px 18px; border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 18px; background: var(--dsw-alias-bg-layer-3); box-shadow: var(--dsw-shadow-lv3); }
+#status { font-size: 12px; color: var(--dsw-alias-label-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
 #status.error { color: var(--dsw-alias-state-error-primary); }
 dialog { border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px; background: var(--dsw-alias-bg-layer-1); color: inherit; padding: 24px; width: 440px; max-width: 90vw; max-height: calc(100dvh - 32px); overflow-y: auto; box-shadow: 0 20px 80px #0003; }
 dialog::backdrop { background: #15203438; }
@@ -218,7 +223,7 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
   .settings-nav { flex-basis: 176px; padding-left: 8px; padding-right: 8px; }
   .page-head { padding: 24px 22px 20px; }
   .scroll-content { padding: 0 22px 24px; }
-  footer { padding: 14px 22px; }
+  .status-toast { bottom: 20px; }
   .key-row { flex-wrap: wrap; }
   .key-row input[type=password] { min-width: 180px; }
   .filter-row label { min-width: 40%; }
@@ -247,7 +252,7 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
   .settings-nav nav button { font-size: 0; justify-content: center; gap: 0; padding: 10px 0; }
   .page-head { padding: 22px 16px; }
   .scroll-content { padding: 0 16px 24px; }
-  footer { padding: 12px 16px; }
+  .status-toast { bottom: 16px; left: 12px; right: 12px; transform: none; max-width: none; }
 }
 
 #subscriptionQuotaCards { margin: 12px 0; }
@@ -294,3 +299,32 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
 .network-detection .hint { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; margin: 0; }
 .network-detection .hint.bad { color: var(--dsw-alias-state-error-primary); font: var(--f-xs-strong-13); }
 .network-detection button { flex: 0 0 auto; }
+#networkPage { max-width: 1240px; }
+#networkMode { flex: 0 0 auto; width: auto; min-width: 0; }
+.connectivity-section { padding: 22px 0 24px; }
+.connectivity-section .section-head { align-items: flex-start; margin-bottom: 6px; }
+.connectivity-section .section-head > h2 { margin-top: 6px; }
+.connectivity-section .hint { margin: 0 0 18px; max-width: 76ch; }
+.connectivity-summary { margin: 0 0 14px; font-size: 13px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.connectivity-summary.bad { color: var(--dsw-alias-state-error-primary); }
+.connectivity-head, .connectivity-row { display: grid; grid-template-columns: minmax(180px, 1.6fr) minmax(64px, .55fr) minmax(64px, .55fr) minmax(120px, 1.6fr); gap: 10px; align-items: center; padding: 10px 4px; }
+.connectivity-head { border-bottom: 1px solid var(--dsw-alias-border-l2); font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.connectivity-row { border-bottom: 1px solid var(--dsw-alias-border-l2); font-size: 12px; }
+.connectivity-row:last-child { border-bottom: 0; }
+.connectivity-target { min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.connectivity-target strong { font-size: 13px; }
+.connectivity-target small { color: var(--dsw-alias-label-tertiary); }
+.route-mark { display: inline-block; text-align: center; font-size: 15px; font-weight: 600; line-height: 1; }
+.connectivity-row .good { color: var(--dsw-alias-state-success-primary); }
+.connectivity-row .bad { color: var(--dsw-alias-state-error-primary); }
+.connectivity-route .route-label { display: none; }
+.connectivity-models { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.connectivity-models .model-chip { padding: 2px 8px; }
+@media (max-width: 700px) {
+  .connectivity-head { display: none; }
+  .connectivity-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .connectivity-target { grid-column: 1 / -1; }
+  .connectivity-models { grid-column: 1 / -1; }
+  /* Without the header row each value needs its own label. */
+  .connectivity-route .route-label { display: block; color: var(--dsw-alias-label-tertiary); }
+}

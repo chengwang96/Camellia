@@ -1,5 +1,7 @@
 'use strict';
 
+const { providerTargets, subscriptionTargets, probeTargets, summarize } = require('./network-probe');
+
 const PROXY_KEYS = /^(https?|all|no)_proxy$|^npm_config_(proxy|https?_proxy|noproxy)$/i;
 function detectedProxy(result) {
   // Respect the first route: a leading DIRECT is not permission to use a
@@ -63,16 +65,44 @@ async function healthCheck(proxyUrl, { url = 'https://api.github.com', timeout =
   return { direct, proxy };
 }
 function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironment, onHealthChange = () => {}, probeUrl = 'https://chatgpt.com',
-  healthCheckImpl = healthCheck, createFallback = require('./network-fallback').createFallbackProxy }) {
+  healthCheckImpl = healthCheck, createFallback = require('./network-fallback').createFallbackProxy,
+  loadRoutes = () => ({ providers: [] }), providerTargetsImpl = providerTargets, subscriptionEngines = () => [], probeImpl = probeTargets }) {
   let detected = { url: '', unsupported: false }, error = '', queue = Promise.resolve(), degraded = false, monitor = null, closed = false;
   const bridges = [];
-  const mode = () => ['system', 'prefer-direct'].includes(loadConfig().network?.mode) ? loadConfig().network.mode : 'direct';
-  // `mode` reports what is actually in use, so the settings page shows the
-  // downgrade the user needs to see; `configured` keeps their stored choice and
-  // the downgrade itself is never persisted, so a restart re-probes a proxy the
-  // user may have fixed in the meantime.
-  const state = () => ({ mode: degraded ? 'prefer-direct' : mode(), configured: mode(), degraded,
+  // Whether the live transport is the direct-first bridge, or the real system
+  // proxy. "Auto" is allowed to fall back to the proxy when direct is blocked,
+  // so the settings page can explain the outcome instead of only the choice.
+  let directFirst = false;
+  // "auto" is the stored name for the direct-first bridge that tries direct and
+  // falls back to the detected proxy. Older configs still say "prefer-direct",
+  // so both spellings resolve to the same behaviour.
+  const mode = () => {
+    const saved = loadConfig().network?.mode;
+    if (saved === 'prefer-direct') return 'auto';
+    return ['direct', 'system', 'auto'].includes(saved) ? saved : 'direct';
+  };
+  // `mode` reports the transport actually in use so a background downgrade is
+  // visible; `configured` is the stored choice, always one of the selectable
+  // modes, so the settings page never renders an option that no longer exists.
+  // A downgrade is never persisted, so a restart re-probes a proxy the user may
+  // have fixed in the meantime.
+  const state = () => ({ mode: degraded ? 'prefer-direct' : mode(), configured: mode() === 'prefer-direct' ? 'auto' : mode(),
+    degraded, directFirst, autoFallback: mode() === 'auto' && !directFirst && !degraded,
     detectedUrl: detected.url, unsupported: detected.unsupported, error });
+  // A full connectivity test covers every enabled provider host and the
+  // subscription CLIs that are signed in. It is read-only: the result tells the
+  // settings page what to show and whether "auto" can safely take the
+  // direct-first bridge, and it never changes the stored choice on its own.
+  async function testConnectivity() {
+    if (closed) return { ok: false, error: 'Network settings are closed' };
+    await detectProxy();
+    const engines = subscriptionEngines();
+    const targets = [...providerTargetsImpl(loadRoutes()), ...subscriptionTargets(engines)];
+    const results = targets.length ? await probeImpl(targets, { proxyUrl: detected.url }) : [];
+    const summary = summarize(results);
+    return { ok: true, at: new Date().toISOString(), detectedUrl: detected.url, unsupported: detected.unsupported,
+      results, summary, subscriptionEngines: engines };
+  }
   async function detectProxy() {
     error = '';
     try {
@@ -99,7 +129,25 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
     monitor.unref?.();
   }
   async function apply(nextMode, persist = false, probe = false) {
-    if (!['direct', 'system', 'prefer-direct'].includes(nextMode)) throw new Error('Choose direct connection or system proxy');
+    if (!['direct', 'system', 'auto', 'prefer-direct'].includes(nextMode)) throw new Error('Choose direct connection or system proxy');
+    // Keep the user's choice ("auto") for persistence even when the resolved
+    // transport for this run is the proxy.
+    const requested = nextMode;
+    // Only an explicit save re-tests connectivity. Startup and the health
+    // monitor reuse the stored choice: the direct-first bridge already falls
+    // back per connection, so honoring it costs nothing and avoids probing on
+    // every launch.
+    if (nextMode === 'auto' && persist) {
+      // Automatic mode tests connectivity for real and only takes the
+      // direct-first bridge when direct connections work; otherwise it stays on
+      // the proxy, so a machine that needs the proxy is never cut off.
+      await detectProxy();
+      const engines = subscriptionEngines();
+      const targets = [...providerTargetsImpl(loadRoutes()), ...subscriptionTargets(engines)];
+      const summary = targets.length ? summarize(await probeImpl(targets, { proxyUrl: detected.url })) : { direct: 0, total: 0, subscriptionDirect: true, hasSubscriptions: false };
+      const eligible = summary.total === 0 || (summary.direct === summary.total && summary.subscriptionDirect);
+      nextMode = eligible ? 'auto' : 'system';
+    }
     if (nextMode !== 'direct') {
       // Probe without clearing the downgrade flag: checkHealth() re-applies
       // "prefer direct" through this path and must not erase its own state.
@@ -129,10 +177,13 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
     // Report the problem and fall back to a direct connection; only
     // "prefer direct" keeps a bridge, because it dials direct first.
     let url = nextMode === 'system' ? detected.url : '';
-    if (nextMode === 'prefer-direct') {
+    if (nextMode === 'auto' || nextMode === 'prefer-direct') {
       const bridge = await createFallback(detected.url, { allowDirect: true });
       bridges.push(bridge); // Existing engines retain their transport until restart.
       url = bridge.url;
+      directFirst = true;
+    } else {
+      directFirst = false;
     }
     // A degraded proxy is dead, so the subscription CLIs share the bridge that
     // still falls back rather than the address that would hang. Otherwise they
@@ -141,8 +192,8 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
     const subscriptionProxy = nextMode === 'direct' ? '' : degraded ? url : detected.url || url;
     // One resolved HTTP proxy is shared by Electron, Node and engine processes.
     await sessions().defaultSession.setProxy(url ? { mode: 'fixed_servers', proxyRules: url, proxyBypassRules: '<local>;localhost;127.0.0.1;[::1]' } : { mode: 'direct' });
-    applyEnvironment(networkEnvironment(process.env, { mode: nextMode, url, subscriptionProxy }));
-    saveConfig({ ...(persist ? { network: { mode: nextMode } } : {}), downloadProxy: { mode: url ? 'proxy' : 'direct', url } });
+    applyEnvironment(networkEnvironment(process.env, { mode: nextMode === 'prefer-direct' ? 'auto' : nextMode, url, subscriptionProxy }));
+    saveConfig({ ...(persist ? { network: { mode: requested } } : {}), downloadProxy: { mode: url ? 'proxy' : 'direct', url } });
     schedule(nextMode === 'system' ? 4000 : 60000);
     return state();
   }
@@ -167,7 +218,7 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
     }
     return state();
   }
-  return { state, detect, checkHealth, close() { closed = true; clearTimeout(monitor); bridges.forEach(bridge => bridge.close()); },
+  return { state, detect, checkHealth, testConnectivity, close() { closed = true; clearTimeout(monitor); bridges.forEach(bridge => bridge.close()); },
     initialize() { return apply(mode(), false, true); },
     save(value) {
       // An explicit choice supersedes an automatic downgrade: the new setting

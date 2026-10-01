@@ -32,3 +32,7 @@ __pycache__/
 # temporary screenshots. They are not inputs to any build or test.
 .ci-logs/
 .tmp-*
+
+# Per-machine UI test captures (screenshots and transcripts written by the
+# device and subscription-card UI tests). Not inputs to any build or test.
+/artifacts/
