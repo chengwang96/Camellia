@@ -19,6 +19,12 @@ test('context limits use catalog metadata, honor overrides and exclude inactive 
   config.providers.push({ enabled: true, keys: [{ enabled: true }], models: [{ id: 'model', maxContext: 64000 }] });
   assert.equal(modelContextWindow(config, 'model'), 64000);
   assert.equal(modelContextWindow(config, 'unknown'), undefined);
+  const unknown = { enabled: true, keys: [{ enabled: true }], models: [{ id: 'model' }] };
+  config.providers.push(unknown);
+  assert.equal(modelContextWindow(config, 'model'), undefined);
+  assert.equal(conversationModels('codex', {}, { router: () => config })[0].contextWindow, 0);
+  unknown.enabled = false;
+  assert.equal(modelContextWindow(config, 'model'), 64000);
   config.enabled = false;
   assert.equal(modelContextWindow(config, 'model'), undefined);
 });

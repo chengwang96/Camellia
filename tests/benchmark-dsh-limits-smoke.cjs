@@ -49,8 +49,11 @@ async function main() {
         let result;
         if (mode === 'legacy') {
           const spec = dshSpec({ runtime, home, cwd, model: 'fixture', route, env: isolatedEnvironment(home, process.execPath) });
-          const configFile = path.join(home, '.dsh/settings.yaml'), config = YAML.parse(fs.readFileSync(configFile, 'utf8'));
-          config['llm-pi-ai'].providers['api-pool'].defaultMaxTokens = 8192;
+          const patchIndex = spec.args.indexOf('--patch');
+          const configFile = patchIndex < 0 ? path.join(home, '.dsh/settings.yaml') : spec.args[patchIndex + 1];
+          const config = YAML.parse(fs.readFileSync(configFile, 'utf8'));
+          const providerConfig = Array.isArray(config) ? config.find(row => row.id === 'llm-pi-ai').config : config['llm-pi-ai'];
+          providerConfig.providers['api-pool'].defaultMaxTokens = 8192;
           fs.writeFileSync(configFile, YAML.stringify(config));
           const proc = spawn(process.execPath, [...spec.args, 'Reply briefly.'], { cwd, env: spec.env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
           let stderr = ''; proc.stdout.resume(); proc.stderr.on('data', data => { stderr += data; });

@@ -37,6 +37,8 @@ class CodexSession extends StreamingSession {
     await this.starting;
     const sourceId = this.opts.sessionId;
     const params = { cwd: this.settings.cwd, model: this.settings.model,
+      ...(this.spec.discussionInstructions ? { baseInstructions: this.spec.discussionInstructions } : {}),
+      ...(this.settings.connection === 'subscription' ? { serviceTier: this.settings.serviceTier || null } : {}),
       ...(this.opts.goalBridge ? { config: { 'mcp_servers.camellia_goals': this.opts.goalBridge.config } } : {}),
       modelProvider: this.settings.connection === 'api' ? 'camellia' : 'openai',
       ...PERMISSIONS[permissionModeOf(this.settings)],
@@ -57,7 +59,10 @@ class CodexSession extends StreamingSession {
   }
   async editBoundary(prompt) {
     await (this.ready ||= this.open());
-    const turns = this.threadTurns;
+    // The process can have completed many Goal turns since open(). Query the
+    // persisted thread instead of matching against that stale initial snapshot.
+    const result = await this.client.request('thread/read', { threadId: this.sessionId, includeTurns: true });
+    const turns = result.thread?.turns || [];
     const latest = turns.at(-1);
     const users = latest?.items?.filter(item => item.type === 'userMessage') || [];
     const text = users[0]?.content?.filter(item => item.type === 'text').map(item => item.text).join('\n');
@@ -111,6 +116,8 @@ class CodexSession extends StreamingSession {
       this.appendHistory('user', prompt); this.emitStream({ type: 'message_start' });
       const input = [{ type: 'text', text: prompt }, ...attachments.filter(a => a.isImage).map(a => ({ type: 'localImage', path: a.path }))];
       const params = { threadId: this.sessionId, input, model: this.settings.model };
+      // Explicit null clears the previous thread tier when the toggle is off.
+      if (this.settings.connection === 'subscription') params.serviceTier = this.settings.serviceTier || null;
       if (this.settings.thinkingBudget) params.effort = this.settings.thinkingBudget;
       if (this.settings.permissionMode === 'plan') params.collaborationMode = { mode: 'plan', settings: {
         model: this.settings.model, reasoning_effort: this.settings.thinkingBudget || null, developer_instructions: null } };
@@ -198,7 +205,13 @@ class CodexSession extends StreamingSession {
     // It is historical context, not consumption caused by this prompt.
     if (method === 'thread/tokenUsage/updated' && params.turnId && params.turnId !== this.turnId) return;
     if (method === 'thread/tokenUsage/updated') this.usageMeter?.codex(params.tokenUsage);
-    if (method === 'model/rerouted') this.usageMeter?.reroute(params.toModel);
+    if (method === 'model/rerouted') {
+      this.usageMeter?.reroute(params.toModel);
+      if (this.spec.discussionInstructions && params.toModel !== this.settings.model) {
+        this.interrupt(); this.finish({ subtype: 'error', is_error: true, result: 'The provider changed the discussion model. Add a member with the available model explicitly.' });
+        return;
+      }
+    }
     if (method === 'item/started' && /collab/i.test(params.item?.type || '')) this.usageMeter?.incomplete();
     if (this.compaction) {
       if (method === 'turn/started') { this.turnId = params.turn.id; if (this.cancelled) this.interrupt(); }
@@ -255,6 +268,7 @@ class CodexSession extends StreamingSession {
     else if (method === 'turn/completed') {
       const turn = params.turn, failed = turn.status === 'failed';
       this.finish({ subtype: this.cancelled || turn.status === 'interrupted' ? 'stopped' : failed ? 'error' : 'success',
+        ...(!failed && turn.id === this.turnId ? { nativeContextRetained: true } : {}),
         is_error: failed, ...(failed ? { result: turn.error?.message || 'Codex turn failed' } : {}),
         ...(this.usage ? { usage: this.usage } : {}) });
     }
@@ -286,7 +300,12 @@ class CodexSession extends StreamingSession {
     const approved = optionId ? optionId === 'accept' : allow;
     let result;
     if (request.method === 'item/tool/requestUserInput') {
-      result = { answers: Object.fromEntries(request.params.questions.map(q => [q.id, { answers: approved ? [String(input?.[q.id] || '')] : [] }])) };
+      result = { answers: Object.fromEntries(request.params.questions.map(q => {
+        const value = input?.[q.id];
+        const answers = approved ? (Array.isArray(value) ? value : [value]).filter(answer => typeof answer === 'string' && answer.trim()) : [];
+        if (approved && !answers.length) throw new Error('Answer each question before submitting');
+        return [q.id, { answers }];
+      })) };
     } else if (request.method === 'item/permissions/requestApproval') result = { permissions: approved ? request.params.permissions : {}, scope: 'turn' };
     else result = { decision: approved ? 'accept' : 'decline' };
     this.client.write({ id: request.id, result }); this.permissions.delete(requestId);

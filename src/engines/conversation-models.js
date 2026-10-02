@@ -10,7 +10,7 @@ function conversationModels(engine, settings, { router, codex, kimi, antigravity
       : engine === 'antigravity' ? antigravity?.(settings.subscriptionId) : null;
     if (!account || engine !== 'antigravity' && !account.account) return [];
     return (account.models || []).map(model => ({ id: model.id, name: model.displayName || model.name || model.id,
-      thinking: (model.supportedReasoningEfforts || []).map(level => level.reasoningEffort).filter(level => typeof level === 'string'),
+      thinking: (model.supportedReasoningEfforts || []).map(level => level.reasoningEffort || level).filter(level => typeof level === 'string'),
       ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}) }));
   }
   const config = router();

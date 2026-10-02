@@ -57,7 +57,7 @@ function createKimiAccount({ home, runtime, ensureRuntime, node, environment = (
   }
   function newClient() {
     const file = runtime()?.file;
-    if (!file) throw new Error('Download Kimi Code in Settings → Runtime first');
+    if (!file) throw new Error('Download Kimi Code in Settings → Engine Settings first');
     fs.mkdirSync(home, { recursive: true });
     const spec = { args: [file, 'acp'], env: kimiEnvironment(home, environment()) };
     const client = createClient ? createClient(spec) : new AcpSession({ name: 'Kimi account', exe: node(), spec, settings: { cwd: home }, opts: {},
@@ -79,7 +79,7 @@ function createKimiAccount({ home, runtime, ensureRuntime, node, environment = (
       try {
         managedKimiConfig(home);
         const file = runtime()?.file;
-        if (!file) throw new Error('Download Kimi Code in Settings → Runtime first');
+        if (!file) throw new Error('Download Kimi Code in Settings → Engine Settings first');
         const result = await queryQuota({ home, file, node: node(), environment: environment(), signal: controller.signal });
         if (closed || saved.account !== account || controller.signal.aborted) return;
         const latest = { ...result, at: checkedAt }, history = [...(saved.usage?.history || [])];

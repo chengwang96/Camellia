@@ -86,19 +86,15 @@ try:
         expect(page.locator('#codexAddAccount')).to_be_disabled()
         page.evaluate("""() => {
           const account = {id:'default',signedIn:true,active:true,email:'signed@example.test'};
-          window.signedAccount = {installed:true,models:[],account:{email:account.email},accounts:[account,{id:'account-1',signedIn:false}],loginPending:false};
+          window.signedAccount = {installed:true,models:[{id:'test',name:'Test model'}],account:{email:account.email},accounts:[account,{id:'account-1',signedIn:false}],loginPending:false};
           accountListeners.onCodexAccount(signedAccount);
         }""")
-        expect(page.locator('.subscription-quota-history')).to_have_count(3)
-        assert page.locator('.subscription-quota-history[open]').count() == 0
         page.evaluate("""() => {
           const windows = [{id:'weekly',label:'7d',usedPercent:20}];
           const latest = {at:new Date().toISOString(),windows};
           accountListeners.onProviderInsights({providers:{},keys:{},subscriptions:[{id:'codex:default',engine:'codex',name:'ChatGPT',label:'Test account',info:{latest,history:[latest]},capability:{supported:true}}]});
         }""")
-        page.locator('#codexQuotaChart').locator('..').locator('summary').click()
-        expect(page.locator('#codexQuotaChart svg')).to_have_count(1)
-        page.locator('#codexQuotaChart').locator('..').locator('summary').click()
+        expect(page.locator('#subscriptionAccounts details, #subscriptionAccounts .chart-grid-layout')).to_have_count(0)
 
         expect(page.locator('#codexAutoSwitchQuota')).not_to_be_visible()
         page.evaluate("accountListeners.onCodexAccount({...signedAccount,accounts:[signedAccount.accounts[0],{id:'backup',signedIn:true,email:'backup@example.test'}]})")
@@ -144,7 +140,7 @@ try:
         expect(page.locator('#pageTitle')).to_have_text('订阅账号')
         expect(page.locator('[data-view=providers]')).to_have_text('API Key')
         expect(page.locator('#googleSignIn')).to_have_text('打开官方 CLI 登录')
-        expect(page.locator('#googleAccountList')).to_have_text('尚未验证')
+        expect(page.locator('#googleAccountList')).to_contain_text('未登录')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         (repo / 'dist/ui-preview').mkdir(parents=True, exist_ok=True)
         page.locator('#googleAccountPanel').screenshot(path=str(repo / 'dist/ui-preview/subscription-accounts.png'))

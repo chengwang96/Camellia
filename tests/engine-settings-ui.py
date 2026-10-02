@@ -80,13 +80,18 @@ try:
             page.emulate_media(color_scheme=scheme)
             page.screenshot(path=str(repo/f'dist/engine-settings-qa/pi-{scheme}.png'),full_page=True)
         page.evaluate("CamelliaI18n.setLanguage('en')")
-        page.locator('[data-view=runtimes]').click()
-        # One shared Python card plus one card per engine, derived from the real
-        # runtime state so adding an engine cannot silently stale this assertion.
-        # The engine cards arrive after runtimeState resolves, so allow for the
-        # driver being busy with the native settings work above.
+        # Each tab shows only its own installation controls; Python is shared
+        # and belongs to General. All engine cards track runtime state updates.
         expect(page.locator('.runtime-card')).to_have_count(1 + len(rpc('runtimeState')['engines']), timeout=30000)
         expect(page.locator('#runtimeCards')).to_contain_text('Ready')
+        for row in rpc('runtimeState')['engines']:
+            page.locator(f'[data-engine={row["id"]}]').click()
+            expect(page.locator('#runtimeCards .runtime-card:visible')).to_have_count(1)
+            expect(page.locator(f'[data-install={row["id"]}]')).to_be_visible()
+        expect(page.locator('#pythonCard')).to_be_hidden()
+        page.locator('[data-view=general]').click()
+        expect(page.locator('#pythonCard')).to_be_visible()
+        expect(page.locator('#runtimeCards')).to_be_hidden()
         page.locator('[data-view=engines]').click()
         page.locator('[data-engine=dsh]').click()
         native_url=rpc('dshSettingsUrl')['url']

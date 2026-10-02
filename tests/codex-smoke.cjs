@@ -60,6 +60,14 @@ async function main() {
         }
         tool = { index: 0, id: 'call_' + requests.length, type: 'function', function: { name: shell.name,
           arguments: JSON.stringify({ [shell.parameters.properties.cmd ? 'cmd' : 'command']: command, login: false }) } };
+      } else if (prompt.includes('SMOKE question') && !hasTool) {
+        // Upstream advertises request_user_input in chat sessions but its router
+        // rejects the call unless default_mode_request_user_input is enabled.
+        const ask = body.tools.map(t => t.function).find(t => /(?:^|__)request_user_input$/.test(t.name));
+        assert.ok(ask, 'Codex must expose its native request_user_input tool');
+        tool = { index: 0, id: 'call_' + requests.length, type: 'function', function: { name: ask.name,
+          arguments: JSON.stringify({ questions: [{ id: 'scope', header: 'Scope', question: 'Which files should be included?',
+            options: [{ label: 'Main workflow', description: 'Only maintained code' }, { label: 'All files', description: 'Include older exploration' }] }] }) } };
       }
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       if (tool) {
@@ -81,14 +89,17 @@ async function main() {
   async function create(opts = {}, { nativePatch = true, readOnly = false } = {}) {
     await session?.shutdown();
     const spec = codexSpawnSpec({ runtime, home: path.join(home, '.codex'), cwd, connection: 'api',
-      model: nativePatch ? 'codex-fixture' : undefined, env, route: { baseUrl: router.url } });
+      model: nativePatch ? 'codex-fixture' : undefined, env, route: { baseUrl: router.url },
+      allowUserQuestions: nativePatch });
     if (readOnly) spec.permissions = { approvalPolicy: 'on-request', sandbox: 'read-only' };
     session = new CodexSession({ gen: ++generation, settings: { cwd, model: 'codex-fixture', permissionMode: readOnly ? 'default' : 'bypassPermissions', connection: 'api' }, opts, spec, spawn, history,
       // Loopback API supplies deterministic native events without using a paid account.
       usageMeter: createSubscriptionMeter({ engine: 'codex', accountId: 'account-1', model: 'codex-fixture', record: row => usageRecords.push(row) }),
       log: msg => logs.push(msg), onSessionId() {}, onResult: result => done?.(result), onEvent: event => {
         events.push(event);
-        if (event.type === 'gui:permission') session.answerPermission(event.requestId, false);
+        if (event.type !== 'gui:permission') return;
+        if (event.toolName === 'Codex needs your input') session.answerPermission(event.requestId, true, { scope: 'Main workflow' });
+        else session.answerPermission(event.requestId, false);
       } });
     session.start();
   }
@@ -113,6 +124,12 @@ async function main() {
     assert.equal(fs.readFileSync(path.join(cwd, 'first file.txt'), 'utf8'), 'quotes: "double", \'single\', $literal, `tick`\n中文 café\n');
     assert.equal(fs.readFileSync(path.join(cwd, 'second.txt'), 'utf8'), 'second file\n');
     assert.ok(events.some(e => e.type === 'gui:tool' && e.name === 'fileChange' && e.status === 'completed'));
+    result = await turn('SMOKE question');
+    assert.equal(result.subtype, 'success', JSON.stringify(result) + '\n' + logs.join('\n'));
+    const question = events.find(e => e.type === 'gui:permission' && e.toolName === 'Codex needs your input');
+    assert.ok(question, 'Codex task questions must reach the Camellia dialog');
+    assert.equal(question.questions[0].id, 'scope');
+    assert.equal(question.questions[0].options.length, 2);
     const sourceId = session.sessionId;
     await create({ sessionId: sourceId }); result = await turn('SMOKE resume');
     assert.equal(result.subtype, 'success', logs.join('\n')); assert.equal(session.sessionId, sourceId);

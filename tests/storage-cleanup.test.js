@@ -7,6 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { StorageCleanup, PROTECTION_MS } = require('../src/main/storage-cleanup');
+const { DiscussionManager } = require('../src/engines/discussions/manager');
+const { WindowsJobJournal } = require('../src/engines/discussions/windows-job-journal');
 
 function setup(context) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-storage-test-'));
@@ -84,6 +86,95 @@ test('protects references in native history and nested referenced handoffs witho
   harness.conversation('live', { retiredSegments: [{ compactFile: summary }] });
   assert.equal((await harness.cleaner.scan()).candidates.length, 0);
   assert.ok(fs.existsSync(native));
+});
+
+test('discussion snapshots retain removed and retired histories, summaries and attachments', async context => {
+  const h = setup(context), manager = new DiscussionManager({ dir: path.join(h.dataDir, 'discussions') });
+  const group = manager.create({ cwd: h.root }), member = manager.addMember(group.id, { name: 'Member', engine: 'codex', connection: 'api', model: 'fixture' });
+  const attachment = h.attachment(), summary = h.write(`conversations/handoffs/${randomUUID()}.md`);
+  manager.enqueue(group.id, { requestId: 'ref', text: attachment });
+  manager.store.update(group.id, state => Object.assign(state.participants[0].session, { nativeId: 'retired-native', summaryRef: summary }));
+  const current = manager.configureMember(group.id, member.id, { model: 'second' });
+  manager.removeMember(group.id, member.id);
+  const oldEngine = h.write(`codex/api/conversations/${member.session.runtimeId}/state.txt`);
+  const newEngine = h.write(`codex/api/conversations/${current.session.runtimeId}/state.txt`);
+  const nativeEngine = h.write('kimi-code/conversations/retired-native/state.txt');
+  const orphan = h.write('codex/api/conversations/orphan/state.txt');
+  const snapshot = manager.store.file(group.id), retainedSnapshot = snapshot.slice(0, -5) + '.JSON';
+  fs.renameSync(snapshot, retainedSnapshot);
+  h.advance(PROTECTION_MS * 2);
+  const preview = await h.cleaner.scan(); assert.equal(preview.candidates.length, 1);
+  assert.equal((await h.cleaner.clean(preview.token)).files, 1);
+  for (const file of [attachment, summary, oldEngine, newEngine, nativeEngine, retainedSnapshot]) assert.ok(fs.existsSync(file));
+  assert.equal(fs.existsSync(orphan), false);
+});
+
+test('append-only launch records, locks and seals remain protected even without a discussion snapshot', async context => {
+  const h = setup(context), journal = new WindowsJobJournal({ dir: path.join(h.dataDir, 'discussions/windows-jobs') });
+  const identity = { runtimeId: randomUUID(), deliveryId: randomUUID(), generation: 1 };
+  const record = journal.reserve(identity); fs.writeFileSync(record.sealFile, 'sealed\n');
+  const native = h.write(`codex/api/conversations/${identity.runtimeId}/state.txt`), orphan = h.attachment();
+  h.advance(PROTECTION_MS * 2);
+  const preview = await h.cleaner.scan(); assert.equal(preview.candidates.length, 1);
+  assert.equal((await h.cleaner.clean(preview.token)).files, 1);
+  for (const file of [native, record.lockFile, record.sealFile, journal.paths(identity).recordFile]) assert.ok(fs.existsSync(file));
+  assert.equal(fs.existsSync(orphan), false);
+});
+
+test('discussion storage identities retain native assets after their bridge is retired and removed', async context => {
+  const h = setup(context), manager = new DiscussionManager({ dir: path.join(h.dataDir, 'discussions') });
+  const group = manager.create({ cwd: h.root }), member = manager.addMember(group.id, { name: 'Member', engine: 'antigravity', connection: 'api', model: 'fixture' });
+  const conversationId = randomUUID().replaceAll('-', ''), nativeId = randomUUID();
+  const storageDir = path.join(h.dataDir, 'antigravity/sessions', nativeId, 'native');
+  manager.store.update(group.id, state => Object.assign(state.participants[0].session,
+    { nativeId, nativeStorage: { connection: 'api', storageDir, conversationId } }));
+  manager.configureMember(group.id, member.id, { model: 'next' }); manager.removeMember(group.id, member.id);
+  const native = h.write(`antigravity/sessions/${nativeId}/native/${conversationId}.db`);
+  const related = h.write(`conversations/goals/${conversationId}.json`, '{}');
+  const orphan = h.write('codex/api/conversations/orphan/state.txt'); h.advance(PROTECTION_MS * 2);
+  const preview = await h.cleaner.scan();
+  assert.ok(preview.candidates.some(row => row.path.includes('orphan')));
+  await h.cleaner.clean(preview.token);
+  assert.ok(fs.existsSync(native)); assert.ok(fs.existsSync(related)); assert.equal(fs.existsSync(orphan), false);
+});
+
+test('corrupt discussion and partial launch records stop cleanup before deleting unrelated candidates', async context => {
+  const h = setup(context), orphan = h.attachment(), id = randomUUID();
+  const file = h.write(`discussions/${id}.json`, '{torn');
+  await assert.rejects(h.cleaner.scan(), /JSON/); assert.ok(fs.existsSync(orphan));
+  fs.unlinkSync(file);
+  const unknown = h.write('discussions/damaged-name.json', '{}');
+  await assert.rejects(h.cleaner.scan(), /record name/); fs.unlinkSync(unknown);
+  const identity = { runtimeId: randomUUID(), deliveryId: randomUUID(), generation: 1 };
+  const journal = new WindowsJobJournal({ dir: path.join(h.dataDir, 'discussions/windows-jobs') });
+  const record = journal.reserve(identity);
+  fs.unlinkSync(record.lockFile);
+  await assert.rejects(h.cleaner.scan(), /Invalid job journal/); assert.ok(fs.existsSync(orphan));
+  fs.unlinkSync(journal.paths(identity).recordFile);
+  await assert.rejects(h.cleaner.scan(), /Job launch record/); assert.ok(fs.existsSync(orphan));
+});
+
+test('a discussion created after preview protects its previously orphaned runtime directory', async context => {
+  const h = setup(context), runtimeId = randomUUID(), file = h.write(`codex/api/conversations/${runtimeId}/state.txt`);
+  h.advance(PROTECTION_MS * 2);
+  const preview = await h.cleaner.scan(); assert.equal(preview.candidates.length, 1);
+  const manager = new DiscussionManager({ dir: path.join(h.dataDir, 'discussions') }), group = manager.create({ cwd: h.root });
+  manager.addMember(group.id, { name: 'Member', engine: 'codex', connection: 'api', model: 'fixture' });
+  manager.store.update(group.id, state => { state.participants[0].session.runtimeId = runtimeId; });
+  assert.equal((await h.cleaner.clean(preview.token)).files, 0); assert.ok(fs.existsSync(file));
+});
+
+test('a discussion directory appearing during final reference collection invalidates an empty scan', async context => {
+  const h = setup(context), file = h.attachment(), preview = await h.cleaner.scan();
+  let reads = 0;
+  h.cleaner.references = async () => {
+    if (++reads === 2) {
+      const manager = new DiscussionManager({ dir: path.join(h.dataDir, 'discussions') }), group = manager.create({ cwd: h.root });
+      manager.enqueue(group.id, { requestId: 'new', text: file });
+    }
+    return [];
+  };
+  await assert.rejects(h.cleaner.clean(preview.token), /Reference files changed/); assert.ok(fs.existsSync(file));
 });
 
 test('new files and recently modified files have a 24-hour protection window', async context => {

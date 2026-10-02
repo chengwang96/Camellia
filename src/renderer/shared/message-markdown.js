@@ -97,6 +97,18 @@
     if (!line.trim()) return null;
     return /^ {4}/.test(line) ? 4 : /^\t/.test(line) ? 1 : null;
   }
+  // A line with no marker of its own continues the item above it, so bilingual
+  // text such as a translation stays attached to its title. A blank line or a
+  // line that opens another block ends the list instead.
+  function listContinuation(line) {
+    if (!line.trim()) return false;
+    if (/^\s{0,3}>/.test(line)) return false;
+    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) return false;
+    if (/^\s{0,3}#{1,6}(\s|$)/.test(line)) return false;
+    if (/^\s{0,3}(?:`{3,}|~{3,})/.test(line)) return false;
+    if (/^\s*\$\$/.test(line)) return false;
+    return true;
+  }
   // Button icons stay identical to the chat page so both surfaces read the same.
   function wrapIcon(on) {
     const path = on ? 'M12 3v5m0 8v5M3 12h18m-4-4 4 4-4 4' : 'M21 3v18M3 7h8a4 4 0 0 1 0 8H3m4-4-4 4 4 4';
@@ -137,7 +149,7 @@
     return panel;
   }
   // One list block, keeping nested indentation and GitHub task checkboxes.
-  function readList(document, lines, start) {
+  function readList(document, lines, start, allowImages = true) {
     const base = listMatch(lines[start]);
     const baseIndent = base[1].length, ordered = Boolean(base[3]);
     const node = document.createElement(ordered ? 'ol' : 'ul');
@@ -145,11 +157,19 @@
     let index = start;
     while (index < lines.length) {
       const entry = listMatch(lines[index]);
-      if (!entry) break;
+      if (!entry) {
+        if (node.lastChild && listContinuation(lines[index])) {
+          node.lastChild.append(document.createTextNode('\n'));
+          inline(document, node.lastChild, lines[index].trim(), 0, allowImages);
+          index++;
+          continue;
+        }
+        break;
+      }
       const indent = entry[1].length;
       if (indent < baseIndent || (indent === baseIndent && Boolean(entry[3]) !== ordered)) break;
       if (indent > baseIndent && node.lastChild) {
-        const nested = readList(document, lines, index);
+        const nested = readList(document, lines, index, allowImages);
         node.lastChild.append(nested.node); index = nested.index; continue;
       }
       const item = document.createElement('li');
@@ -159,16 +179,16 @@
         box.type = 'checkbox'; box.disabled = true; box.checked = task[1].toLowerCase() === 'x';
         box.setAttribute('aria-label', box.checked ? 'Completed' : 'Not completed');
         item.className = 'md-task'; item.append(box, document.createTextNode(' '));
-        inline(document, item, task[2]);
-      } else inline(document, item, entry[4]);
+        inline(document, item, task[2], 0, allowImages);
+      } else inline(document, item, entry[4], 0, allowImages);
       node.append(item); index++;
     }
     return { index, node };
   }
-  function inline(document, parent, source, depth = 0) {
+  function inline(document, parent, source, depth = 0, allowImages = true) {
     if (depth > 8) { parent.append(document.createTextNode(source)); return; }
-    // The image form is captured first so its URL is never autolinked; the
-    // device page shows it literally rather than loading a remote resource.
+    // Text-only surfaces keep image syntax literal, including nested blocks,
+    // without creating an image element or initiating a resource request.
     const pattern = /(!\[[^\]\n]*\]\([^\s)]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\[[^\]\n]+\]\([^\s)]+\)|\*[^*\n]+\*)/g;
     let offset = 0, match;
     while ((match = pattern.exec(source))) {
@@ -176,7 +196,7 @@
       const text = match[0]; let node;
       if (text.startsWith('![')) {
         const image = /^!\[([^\]\n]*)\]\(([^\s)]+)\)$/.exec(text);
-        const href = image ? imageTarget(image[2]) : null;
+        const href = image && allowImages ? imageTarget(image[2]) : null;
         if (href) {
           node = document.createElement('img');
           node.className = 'chat-inline-image'; node.src = href;
@@ -192,13 +212,13 @@
       } else {
         const double = text.startsWith('**') || text.startsWith('~~');
         node = document.createElement(text.startsWith('**') ? 'strong' : text.startsWith('~~') ? 'del' : 'em');
-        inline(document, node, text.slice(double ? 2 : 1, double ? -2 : -1), depth + 1);
+        inline(document, node, text.slice(double ? 2 : 1, double ? -2 : -1), depth + 1, allowImages);
       }
       parent.append(node); offset = pattern.lastIndex;
     }
     appendText(document, parent, source.slice(offset));
   }
-  function render(document, value, { copyLabel = 'Copy code', wrapLabel = 'Word wrap', copiedLabel = 'Copied', failedLabel = 'Copy failed', copy = async text => root.navigator.clipboard.writeText(text) } = {}) {
+  function render(document, value, { allowImages = true, copyLabel = 'Copy code', wrapLabel = 'Word wrap', copiedLabel = 'Copied', failedLabel = 'Copy failed', copy = async text => root.navigator.clipboard.writeText(text) } = {}) {
     const fragment = document.createDocumentFragment();
     const lines = String(value || '').replace(/\r\n?/g, '\n').split('\n');
     let index = 0;
@@ -241,7 +261,7 @@
           heading.forEach((_value, position) => {
             const cell = document.createElement(tag); const align = delimiter[position];
             cell.className = align.startsWith(':') && align.endsWith(':') ? 'md-align-center' : align.endsWith(':') ? 'md-align-right' : 'md-align-left';
-            inline(document, cell, values[position] || ''); row.append(cell);
+            inline(document, cell, values[position] || '', 0, allowImages); row.append(cell);
           }); parent.append(row);
         };
         appendRow(heading, head, 'th'); index += 2;
@@ -249,7 +269,7 @@
         table.append(head, body); wrapper.append(table); fragment.append(wrapper); continue;
       }
       const title = /^(#{1,6})\s+(.+)$/.exec(line);
-      if (title) { const node = document.createElement(`h${title[1].length}`); inline(document, node, title[2]); fragment.append(node); index++; continue; }
+      if (title) { const node = document.createElement(`h${title[1].length}`); inline(document, node, title[2], 0, allowImages); fragment.append(node); index++; continue; }
       if (indentWidth(line)) {
         const code = [];
         let blank = false;
@@ -264,15 +284,15 @@
       }
       if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) { fragment.append(document.createElement('hr')); index++; continue; }
       if (listMatch(line)) {
-        const list = readList(document, lines, index);
+        const list = readList(document, lines, index, allowImages);
         fragment.append(list.node); index = list.index; continue;
       }
       if (/^>\s?/.test(line)) {
         const node = document.createElement('blockquote'), text = [];
         while (index < lines.length && /^>\s?/.test(lines[index])) text.push(lines[index++].replace(/^>\s?/, ''));
-        inline(document, node, text.join('\n')); fragment.append(node); continue;
+        inline(document, node, text.join('\n'), 0, allowImages); fragment.append(node); continue;
       }
-      const paragraph = document.createElement('p'); inline(document, paragraph, line); fragment.append(paragraph); index++;
+      const paragraph = document.createElement('p'); inline(document, paragraph, line, 0, allowImages); fragment.append(paragraph); index++;
     }
     return fragment;
   }

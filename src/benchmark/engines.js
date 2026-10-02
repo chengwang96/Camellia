@@ -3,7 +3,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const YAML = require('yaml');
 const { ClaudeSession } = require('../engines/claude-session');
 const { AcpSession } = require('../engines/acp-session');
 const { ClaudeHistory } = require('../engines/claude-history');
@@ -12,6 +11,7 @@ const { antigravitySpawnSpec } = require('../engines/antigravity');
 const { CodexSession } = require('../engines/codex-session');
 const { codexSpawnSpec } = require('../engines/codex-client');
 const { DSH_MAX_OUTPUT_TOKENS } = require('../engines/dsh-session');
+const { dshLaunchArgs } = require('../engines/dsh-config');
 const { PiSession, piSpec } = require('../engines/pi-session');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
@@ -54,13 +54,13 @@ async function stopProcess(proc, terminate = terminateProcessTree) {
 }
 function dshSpec({ runtime, home, cwd, model, route, env }) {
   const dshHome = path.join(home, '.dsh'); fs.mkdirSync(dshHome, { recursive: true });
-  fs.writeFileSync(path.join(dshHome, 'settings.yaml'), YAML.stringify({
+  const args = dshLaunchArgs({ runtime, home: dshHome, profile: 'headless', config: {
     'agent-default-model': { provider: 'api-pool', model },
     permission: { defaultPreset: 'danger-full-access' },
     'llm-pi-ai': { providers: { 'api-pool': { displayName: 'Benchmark API', apiKeyEnv: 'DSH_API_ROUTER_KEY',
       api: 'anthropic-messages', baseURL: route.baseUrl, defaultContextWindow: 65536, defaultMaxTokens: DSH_MAX_OUTPUT_TOKENS, models: [{ id: model }] } } },
-  }));
-  return { args: [runtime.file, '--profile', 'headless'], cwd, env: { ...env, DSH_HOME: dshHome, DSH_API_ROUTER_KEY: 'proxy-managed' } };
+  } });
+  return { args, cwd, env: { ...env, DSH_HOME: dshHome, DSH_API_ROUTER_KEY: 'proxy-managed' } };
 }
 function claudeSpec({ home, cwd, model, route, env }) {
   const config = path.join(home, '.claude'); fs.mkdirSync(config, { recursive: true });

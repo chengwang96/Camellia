@@ -20,7 +20,7 @@ function fixture() {
   const state = {
     sharedChat: true, context: { sessionId: 'conversation-a', workspaceId: 'workspace-a' }, sessionOpenSeq: 1,
     sending: false, loadingSession: false, switchingEngine: false, running: false, conversationActivity: null,
-    editingMessage: null, harnessId: 'codex', loadedEngine: 'codex', pendingForkId: null, currentRunId: null,
+    editingMessage: null, harnessId: 'codex', loadedEngine: 'codex', pendingForkId: null, currentRunId: null, currentFastMode: false,
     input: { value: 'Continue' }, attachments: [], chatProfile: {}, statusText: '', eventsDuringRestore: [],
     sendBtn: { classList: { toggle() {} } }, pendingConversationSends: new Map(),
     goalUI: { isActive: () => false, isDraft: () => false },

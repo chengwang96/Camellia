@@ -95,7 +95,7 @@ class AcpSession extends StreamingSession {
           const content = toolContent(tool.content);
           this.emit({ type: 'gui:permission', requestId, toolName: tool.title || tool.kind || '',
             input: tool.rawInput || (content ? { command: content } : tool.locations?.length ? { paths: tool.locations.map(loc => loc.path).join('\n') } : {}),
-            options: message.params.options });
+            options: message.params.options, ...(Array.isArray(message.params.questions) ? { questions: message.params.questions } : {}) });
         } else if (message.method === 'session/request_permission') {
           this.write({ id: message.id, result: { outcome: { outcome: 'cancelled' } } });
         } else this.write({ id: message.id, error: { code: -32601, message: 'Unsupported client method: ' + message.method } });
@@ -128,11 +128,21 @@ class AcpSession extends StreamingSession {
     // Resume keeps native model and permission state; always apply the
     // workbench selection explicitly, including on forks.
     let config = await this.request('session/set_config_option', { sessionId: this.sessionId, configId: 'model', value: this.spec.modelValue || this.settings.model });
-    if (this.settings.thinkingBudget) config = await this.request('session/set_config_option', {
+    if (this.settings.thinkingBudget && this.spec.applyThinking !== false) config = await this.request('session/set_config_option', {
       sessionId: this.sessionId, configId: this.spec.thinkingId || 'thinking', value: this.settings.thinkingBudget });
     if (!this.spec.noModes) await this.request('session/set_mode', { sessionId: this.sessionId, modeId: nativeMode(this.spec.modeEngine || 'kimi', this.settings.permissionMode || 'default') });
     this.onSessionId(this.sessionId);
     this.emit({ type: 'gui:config', options: config.configOptions });
+  }
+
+  async prepareNativeStorage() {
+    if (this.spec.modeEngine !== 'antigravity' || this.running || this.dead || !this.sessionId)
+      throw new Error('Native preparation is unavailable');
+    const result = await this.request('session/camellia_prepare', { sessionId: this.sessionId }, this.spec.prepareTimeout || 30000);
+    const pattern = this.sessionId.startsWith('agy-') ? /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/ : /^[0-9a-f]{32}$/;
+    if (this.dead || this.running || result?.sessionId !== this.sessionId || typeof result.conversationId !== 'string' || !pattern.test(result.conversationId))
+      throw new Error('Native preparation returned an invalid identity');
+    return result.conversationId;
   }
 
   sendUserMessage(prompt, attachments = []) {
@@ -269,13 +279,14 @@ class AcpSession extends StreamingSession {
     else if (kind === 'plan') this.emit({ type: 'gui:plan', entries: update.entries });
   }
 
-  answerPermission(requestId, allow, _input, _message, optionId) {
+  answerPermission(requestId, allow, input, _message, optionId) {
     const request = this.permissions.get(requestId);
     if (!request || this.dead) return false;
     const options = request.params.options;
     const chosen = optionId ? options.find(o => o.optionId === optionId) : options.find(o => o.kind === (allow ? 'allow_once' : 'reject_once'));
     if (optionId && !chosen) return false;
-    this.write({ id: request.id, result: { outcome: chosen ? { outcome: 'selected', optionId: chosen.optionId } : { outcome: 'cancelled' } } });
+    this.write({ id: request.id, result: { outcome: chosen ? { outcome: 'selected', optionId: chosen.optionId } : { outcome: 'cancelled' },
+      ...(request.params.questions?.length ? { input: allow ? input || {} : {} } : {}) } });
     this.permissions.delete(requestId);
     this.replayEvents = this.replayEvents.filter(event => event.type !== 'gui:permission' || event.requestId !== requestId);
     return true;

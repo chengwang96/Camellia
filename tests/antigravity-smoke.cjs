@@ -155,6 +155,9 @@ async function run() {
     await session?.shutdown(); await router.stop();
     server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
     fs.writeFileSync(path.join(root, 'diagnostics.json'), JSON.stringify({ logs, requests, events }, null, 2));
+    const diagnostics = path.resolve('dist/antigravity-sdk-diagnostics.json');
+    fs.mkdirSync(path.dirname(diagnostics), { recursive: true });
+    fs.copyFileSync(path.join(root, 'diagnostics.json'), diagnostics);
     console.log('SDK fixture diagnostics: ' + root);
   }
 }

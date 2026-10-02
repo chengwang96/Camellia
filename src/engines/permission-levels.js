@@ -3,7 +3,7 @@
 // Three automation levels shared by every harness:
 //   ask  — confirm before acting; only reads run on their own
 //   auto — routine changes and commands run on their own; risky ones ask
-//   full — never ask; every action and judgment runs on its own
+//   full — allow tool actions automatically; task questions still need answers
 // Engines keep accepting their native legacy values so saved configurations
 // and tests stay valid; a level (or legacy value) maps to the closest native
 // mode at the session boundary.

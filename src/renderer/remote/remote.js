@@ -33,8 +33,8 @@ Object.assign(copy.en, { login: 'Sign in to Tailscale', openLogin: 'Authorize in
   connecting: 'Connecting to embedded network…', needsLogin: 'Sign in to Tailscale', needsApproval: 'Approve this device in the Tailscale admin console', networkError: 'Embedded network disconnected. Enable it again.', networkReady: 'Embedded network connected', networkOff: 'Embedded network off' });
 Object.assign(copy.zh, { unassigned: '独立会话', allScope: '全部工作区（含今后新增）及独立会话', applyScope: '授权全部访问', confirmScope: '允许此设备查看和操作当前及今后新增的全部工作区和独立会话？' });
 Object.assign(copy.en, { unassigned: 'Independent conversations', allScope: 'All workspaces (including future ones) and independent conversations', applyScope: 'Authorize full access', confirmScope: 'Allow this device to read and control all current and future workspaces and independent conversations?' });
-Object.assign(copy.zh, { deviceName: '本机名称', deviceNameHint: '手机配对后会显示这个名字，最多 80 个字符。', deviceNameSave: '保存名称', deviceNameSaved: '已保存本机名称：', scanHint: '用手机扫描二维码即可自动填入地址和配对码，无需手动输入 IP。', scanFallback: '也可手动输入地址和一次性配对码。', qrLabel: '配对二维码', rename: '重命名', renameTitle: '重命名已授权设备', renameHint: '只更改本机设备列表中的显示名称，不改变权限。', renameSave: '保存', renameCancel: '取消', nameInvalid: '请输入 1–80 个字符的名称。' });
-Object.assign(copy.en, { deviceName: 'This computer name', deviceNameHint: 'Paired phones show this name. Up to 80 characters.', deviceNameSave: 'Save name', deviceNameSaved: 'Computer name saved: ', scanHint: 'Scan this QR code with your phone to fill in the address and pairing code automatically.', scanFallback: 'You can also enter the address and one-time code manually.', qrLabel: 'Pairing QR code', rename: 'Rename', renameTitle: 'Rename authorized device', renameHint: 'Only changes the display name in this device list; permissions are unchanged.', renameSave: 'Save', renameCancel: 'Cancel', nameInvalid: 'Enter a name of 1–80 characters.' });
+Object.assign(copy.zh, { deviceName: '本机名称', deviceNameHint: '手机配对后会显示这个名字，最多 80 个字符。', deviceNameSave: '保存名称', deviceNameSaved: '已保存本机名称：', scanHint: '用手机扫描二维码即可自动填入地址和配对码，无需手动输入 IP。', scanFallback: '也可手动输入地址和一次性配对码。', qrLabel: '配对二维码', rename: '重命名', renameTitle: '重命名移动设备', renameName: '移动设备名称', renameHint: '修改此移动设备在已授权设备列表中的显示名称，不影响访问权限。', renameSave: '保存', renameCancel: '取消', nameInvalid: '请输入 1–80 个字符的名称。' });
+Object.assign(copy.en, { deviceName: 'This computer name', deviceNameHint: 'Paired phones show this name. Up to 80 characters.', deviceNameSave: 'Save name', deviceNameSaved: 'Computer name saved: ', scanHint: 'Scan this QR code with your phone to fill in the address and pairing code automatically.', scanFallback: 'You can also enter the address and one-time code manually.', qrLabel: 'Pairing QR code', rename: 'Rename', renameTitle: 'Rename mobile device', renameName: 'Mobile device name', renameHint: 'Change this mobile device’s display name in the authorized devices list. Access permissions stay the same.', renameSave: 'Save', renameCancel: 'Cancel', nameInvalid: 'Enter a name of 1–80 characters.' });
 Object.assign(copy.zh, { unavailable: '状态加载失败', loading: '正在加载…', retry: '重试', openPanel: '打开独立手机访问面板',
   restart: '手机访问页面已更新，但桌面主进程仍是旧版。请保存工作后完全退出 Camellia（包括托盘）并重新启动；刷新页面不会更新主进程。也可先打开独立面板管理连接。',
   loadFailed: '无法加载手机访问状态，请重试。', loadDevices: '暂时无法加载已授权设备，请重试。' });
@@ -78,6 +78,12 @@ function showError(error) {
   element('error').textContent = legacy ? translate('restart') : error.message === 'Mobile access is unavailable' ? translate('loadFailed') : error.message;
   if (embedded) element('openPanel').hidden = !legacy;
 }
+function disablePageControls() {
+  // Modal forms own their busy state; background polling must not lock them.
+  for (const control of root.querySelectorAll('button, input[type="checkbox"]')) {
+    if (!control.closest('dialog')) control.disabled = true;
+  }
+}
 function renderUnavailable(error) {
   state = null;
   renderCopy();
@@ -93,7 +99,7 @@ function renderUnavailable(error) {
   renderQr(element('qr'), '');
   if (element('deviceName')) element('deviceName').value = '';
   invitationExpiry = 0;
-  for (const control of root.querySelectorAll('button, input[type="checkbox"]')) control.disabled = true;
+  disablePageControls();
   element('retry').disabled = false;
   element('retry').hidden = false;
   if (embedded) element('openPanel').disabled = false;
@@ -141,19 +147,31 @@ function renameDevice(entry) {
   const form = document.createElement('form'); form.method = 'dialog';
   const heading = document.createElement('h2'); heading.textContent = translate('renameTitle');
   const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = translate('renameHint');
-  const label = document.createElement('label'); label.textContent = translate('deviceName');
+  const label = document.createElement('label'); label.textContent = translate('renameName');
   const input = document.createElement('input'); input.maxLength = 80; input.required = true; input.value = entry.name;
   label.append(input);
-  const error = document.createElement('p'); error.className = 'hint rename-error'; error.setAttribute('role', 'alert');
+  const error = document.createElement('p'); error.className = 'hint rename-error error'; error.setAttribute('role', 'alert');
   const actions = document.createElement('div'); actions.className = 'actions';
   const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = translate('renameCancel');
   const save = document.createElement('button'); save.type = 'submit'; save.className = 'primary'; save.textContent = translate('renameSave');
+  let saving = false;
   cancel.addEventListener('click', () => dialog.close());
-  form.addEventListener('submit', event => {
+  dialog.addEventListener('cancel', event => { if (saving) event.preventDefault(); });
+  form.addEventListener('submit', async event => {
     event.preventDefault();
+    if (saving || working) return;
     const value = input.value.trim();
     if (!value || value.length > 80) { error.textContent = translate('nameInvalid'); input.focus(); return; }
-    void run(async () => { await call('rename', { id: entry.id, name: value }); dialog.close(); });
+    saving = true;
+    error.textContent = '';
+    input.disabled = cancel.disabled = save.disabled = true;
+    try {
+      await run(async () => { await call('rename', { id: entry.id, name: value }); dialog.close(); }, failure => { error.textContent = failure.message; });
+    } finally {
+      saving = false;
+      input.disabled = cancel.disabled = save.disabled = false;
+      if (dialog.open) input.focus();
+    }
   });
   actions.append(cancel, save);
   form.append(heading, hint, label, error, actions);
@@ -173,7 +191,7 @@ function render() {
   element('retry').hidden = true;
   if (embedded) element('openPanel').hidden = true;
   if (element('deviceName') && document.activeElement !== element('deviceName')) element('deviceName').value = state.computerName || '';
-  // run() disables every button up front, so each control must restore its own
+  // run() disables page buttons up front, so each control must restore its own
   // enabled state here; otherwise this one stays disabled after the first load.
   if (element('saveDeviceName')) element('saveDeviceName').disabled = working;
   element('status').textContent = translate(state.running ? 'online' : state.enabled ? 'connecting' : 'offline');
@@ -201,13 +219,12 @@ function render() {
   renderDevices(element('devices'), state.devices, false);
 }
 async function refresh() { state = await call('state'); render(); }
-async function run(operation) {
+async function run(operation, onError = showError) {
   if (working) return;
   working = true; element('error').textContent = '';
-  for (const button of root.querySelectorAll('button')) button.disabled = true;
-  for (const checkbox of root.querySelectorAll('input[type="checkbox"]')) checkbox.disabled = true;
+  disablePageControls();
   try { await operation(); }
-  catch (error) { showError(error); }
+  catch (error) { onError(error); }
   finally {
     working = false;
     try { await refresh(); } catch (error) { renderUnavailable(error); }

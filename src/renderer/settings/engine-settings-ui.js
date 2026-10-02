@@ -31,12 +31,6 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       } catch (error) { toggle.checked = !checked; status(error.message, true); }
       finally { toggle.disabled = false; }
     };
-    const curve = document.createElement('details'); curve.className = 'subscription-quota-history';
-    curve.innerHTML = '<summary data-i18n>Quota history</summary>';
-    const chart = id === 'kimi' ? $('subscriptionQuotaChart') : document.createElement('div');
-    chart.id = id === 'kimi' ? 'subscriptionQuotaChart' : id + 'QuotaChart'; chart.className = 'chart-grid-layout';
-    if (id === 'kimi') curve.append($('subscriptionQuotaCards'));
-    curve.append(chart); panel.append(curve);
 
     if (id === 'kimi') {
       const control = $('kimiLoginRegion');
@@ -121,6 +115,10 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     window.renderSubscriptionCards({ ...options, container: $(options.containerId),
       engine: options.containerId.startsWith('codex') ? 'codex' : 'kimi' });
   }
+  function renderGoogleAccountList() {
+    window.renderSubscriptionCards({ container: $('googleAccountList'), state: googleAccount, engine: 'antigravity', manage: false,
+      busy: accountBusy || googleAccount?.usage?.refreshing, onRefresh: () => void googleAction('refreshUsage') });
+  }
   async function accountAction(call, apply) {
     if (codexBusy || kimiBusy || accountBusy) return;
     codexBusy = true; kimiBusy = 'account'; renderConnection();
@@ -152,8 +150,6 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('kimiUserCode').textContent = kimiAccount?.login?.userCode || '';
     $('kimiLoginExpiry').textContent = kimiAccount?.login?.expiresAt ? 'Code expires at ' + new Date(kimiAccount.login.expiresAt).toLocaleTimeString() : '';
     $('kimiOpenLogin').disabled = !kimiAccount?.login?.verificationUrl;
-    $('kimiModelDetails').hidden = !kimiAccount?.models?.length;
-    $('kimiModelList').innerHTML = (kimiAccount?.models || []).map(model => `<li title="${esc(model.id)}">${esc(model.name)}</li>`).join('');
     renderAccountList({ containerId: 'kimiAccountList', state: kimiAccount && { ...kimiAccount, accounts: kimiAccount.accounts?.filter(account => account.signedIn) },
       busy: Boolean(busy),
       onRefresh: id => accountAction(() => api.kimiAccountRefresh(id), result => { kimiAccount = result; }),
@@ -186,8 +182,6 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     const account = codexAccount?.account;
     $('codexAccountStatus').textContent = codexBusy ? 'Connecting to Codex…'
       : codexAccount?.loginPending ? 'Complete ChatGPT sign-in in your browser.' : codexAccount?.error || (account ? (account.email || 'Signed in') + ' · ' + (account.planType || 'ChatGPT') : 'Sign in with ChatGPT to load your models and quota.');
-    $('codexModelDetails').hidden = !codexAccount?.models?.length;
-    $('codexModelList').innerHTML = (codexAccount?.models || []).map(model => '<li>' + esc(model.name) + '</li>').join('');
     $('codexQuotas').replaceChildren();
     const limits = codexAccount?.rateLimits;
     const buckets = limits?.primary || limits?.secondary ? { codex: limits } : limits || {};
@@ -220,16 +214,16 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('googleUseCredits').checked = preferences.useG1Credits === true;
     $('googleSignIn').disabled = accountBusy;
     $('googleRefresh').disabled = accountBusy || !googleAccount?.installed;
-    $('googleAccountStatus').textContent = accountBusy ? 'Connecting to Google…' : googleAccount?.error || (googleAccount?.verification === 'pending' ? 'Waiting for external sign-in. Return here to verify.'
-      : googleAccount?.verification === 'stale' ? 'Previous verification expired. Verify again.' : googleAccount?.models?.length
-        ? `${googleAccount.models.length} models available · Last checked ${new Date(googleAccount.verifiedAt).toLocaleString()}`
-        : 'Sign in or refresh an existing CLI sign-in. The required runtime is downloaded on demand.');
-    $('googleModelDetails').hidden = !googleAccount?.models?.length;
-    $('googleModelSummary').textContent = 'Available account models';
-    $('googleModelList').innerHTML = (googleAccount?.models || []).map(model => `<li title="${esc(model.id)}">${esc(model.name)}</li>`).join('');
-    // The official CLI owns one global Google credential, so the list is
-    // informational rather than selectable.
-    $('googleAccountList').textContent = t(({ verified: 'Model access verified', pending: 'Waiting for external sign-in. Return here to verify.', stale: 'Previous verification expired. Verify again.', error: 'Verification failed', unverified: 'Not verified' })[googleAccount?.verification] || 'Not verified');
+    $('googleAccountStatus').textContent = accountBusy ? 'Connecting to Google…' : googleAccount?.verification === 'pending' ? 'Waiting for external sign-in. Return here to verify.'
+      : googleAccount?.verification === 'unverified' || googleAccount?.verification === 'error' || !googleAccount?.installed
+        ? t('Sign in or refresh an existing CLI sign-in. The required runtime is downloaded on demand.') : '';
+    const quotaError = googleAccount?.usage?.error || '';
+    $('googleQuotaStatus').textContent = quotaError ? t(quotaError)
+      + (googleAccount.usage.latest ? ' ' + t('Quota refresh failed. Showing the last successful reading.') : '') : '';
+    $('googleQuotaStatus').hidden = !quotaError;
+    // The official CLI owns one global Google credential, so the list shows the
+    // single account and its two limit groups without account-selection actions.
+    renderGoogleAccountList();
   }
   async function loadAccount() {
     const result = await api.antigravityAccountState();
@@ -256,7 +250,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       : "Saving overwrites the CLI's global settings and affects other CLI sessions. Before the first overwrite, an original .workbench.bak backup is kept.";
     $('engineRouteHint').textContent = engine === 'pi' ? 'Pi uses the shared API routes. Select a model in the conversation.' : engine === 'antigravity'
       ? appScope ? 'API mode uses the shared key pool; choose a Google account model in the composer to use your Google plan.'
-        : 'Subscription mode uses the official Google account provider. Headless tools that require interactive approval are declined by the CLI; configure its permission rules here. AI credits are used only if you enable them.'
+        : 'Subscription mode uses the official Google account provider. Review tool approvals in the conversation; configure permission rules here. AI credits are used only if you enable them.'
       : "Camellia manages API routes centrally; CLI sessions using its router need the app running. Project settings follow each engine's precedence rules.";
     $('engineAdvancedHint').textContent = engine === 'pi' ? 'These instructions are added to every Pi session in Camellia.' : engine === 'codex' ? 'Edit native TOML, including [mcp_servers] and skills. Connection settings and credentials are managed by Camellia.' : appScope
       ? 'Add MCP servers under mcpServers and local skill directories under skillsPaths. Common options above are applied when you save.'
@@ -310,6 +304,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   async function select(next, reload = false) {
     if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(next)) next = 'claude';
     engine = next;
+    showSelectedRuntime();
     void placeNative();
     document.querySelectorAll('.engine-tabs [data-engine]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.engine === engine)));
     $('engineContent').hidden = true; $('engineLoading').hidden = false; $('engineLoading').textContent = "Loading settings…";
@@ -335,7 +330,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   let runtimePathBusy = false;
   function runtimePathControls(row) {
     if (!api.runtimeSetPath) return '';
-    // Python is a shared interpreter configured once above the engine cards.
+    // Python is a shared interpreter configured on the General page.
     return (row.id === 'antigravity' ? ['subscription'] : ['api']).map(mode => {
       const key = row.id + ':' + mode;
       const saved = row.paths?.[mode] || (row.mode === mode ? row.customPath : '') || '';
@@ -372,8 +367,14 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function renderRuntimes(rows) {
     runtimeRows = rows;
-    $('runtimeCards').innerHTML = rows.map(row => `<article class="runtime-card"><div><h2>${esc(row.name)}${row.id === 'antigravity' ? ` · ${row.mode === 'subscription' ? 'Google subscription' : 'API'}` : ''}</h2><span data-i18n class="badge ${row.status === 'ready' ? 'good' : row.status === 'error' ? 'bad' : ''}">${({ready:"Ready",installing:"Downloading",missing:"Not downloaded",error:"Download failed"})[row.status]}</span><button data-i18n data-install="${row.id}" ${row.status === 'ready' || row.status === 'installing' ? 'disabled' : ''}>${row.status === 'error' ? "Retry download" : row.status === 'ready' ? "Installed" : row.status === 'installing' ? "Downloading…" : "Download"}</button></div><p class="hint" data-i18n>${esc(row.status === 'ready' ? `v${row.version} · ${row.source}` : row.message || (row.id === 'antigravity' ? row.mode === 'subscription' ? 'Downloads the official CLI for Google sign-in. No Python environment is needed.' : 'Downloads the official SDK and its own Python environment. Other engines stay uninstalled.' : 'Download this engine when you need it. Other engines stay uninstalled.'))}</p>${updateInfoLine(row.id)}${row.file ? `<details><summary data-i18n>Installation path</summary><code>${esc(row.file)}</code></details>` : ''}</article>`).join('');
+    $('runtimeCards').innerHTML = rows.map(row => `<article class="runtime-card"><div><h2>${esc(row.name)}${row.id === 'antigravity' ? ` · ${row.mode === 'subscription' ? 'Google subscription' : 'API'}` : ''}</h2><span data-i18n class="badge ${row.status === 'ready' ? 'good' : row.status === 'error' ? 'bad' : ''}">${({ready:"Ready",installing:"Downloading",missing:"Not downloaded",error:"Download failed"})[row.status]}</span><button data-i18n data-install="${row.id}" ${row.status === 'ready' || row.status === 'installing' ? 'disabled' : ''}>${row.status === 'error' ? "Retry download" : row.status === 'ready' ? "Installed" : row.status === 'installing' ? "Downloading…" : "Download"}</button></div><p class="hint" data-i18n>${esc(row.status === 'ready' ? `v${row.version} · ${row.source}` : row.message || (row.id === 'antigravity' ? row.mode === 'subscription' ? 'Downloads the official CLI for Google sign-in. No Python environment is needed.' : 'Downloads the official SDK and its own Python environment. Other engines stay uninstalled.' : 'Download this engine when you need it. Other engines stay uninstalled.'))}</p>${updateInfoLine(row.id)}${row.file ? `<div class="runtime-installation-path"><span data-i18n>Installation path</span><code>${esc(row.file)}</code></div>` : ''}</article>`).join('');
     renderRuntimePaths();
+    showSelectedRuntime();
+  }
+  function showSelectedRuntime() {
+    $('runtimeCards').querySelectorAll('.runtime-card').forEach((card, index) => {
+      card.hidden = runtimeRows[index]?.id !== engine;
+    });
   }
   function renderRuntimePaths() {
     $('runtimeCards').querySelectorAll('.runtime-card').forEach((card, index) => {
@@ -381,9 +382,11 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       card.insertAdjacentHTML('beforeend', runtimePathControls(runtimeRows[index]));
     });
   }
-  $('runtimesPage').oninput = event => {
+  const rememberRuntimePath = event => {
     if (event.target.dataset.runtimePath) runtimePathDrafts.set(event.target.dataset.runtimePath, event.target.value);
   };
+  $('runtimeCards').oninput = rememberRuntimePath;
+  $('pythonCard').oninput = rememberRuntimePath;
   async function checkRuntimeUpdates() {
     if (runtimeUpdatesBusy) return;
     runtimeUpdatesBusy = true;
@@ -398,13 +401,19 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     finally { runtimeUpdatesBusy = false; $('checkRuntimeUpdates').disabled = false; renderRuntimes(runtimeRows); }
   }
   $('checkRuntimeUpdates').onclick = checkRuntimeUpdates;
-  async function runtimePage(focus) {
+  async function runtimePage() {
     try {
-      const [result, python] = await Promise.all([api.runtimeState(),
-        api.runtimePythonState ? api.runtimePythonState() : Promise.resolve({ ok: true, python: {} })]);
+      const result = await api.runtimeState();
       if (!result.ok) throw new Error(result.error);
       renderRuntimes(result.engines);
-      renderPython(python.ok ? python.python : {});
+    } catch (e) { status(e.message, true); }
+  }
+  async function pythonPage() {
+    if (!api.runtimePythonState) return;
+    try {
+      const result = await api.runtimePythonState();
+      if (!result.ok) throw new Error(result.error);
+      renderPython(result.python);
     } catch (e) { status(e.message, true); }
   }
   $('engineCommon').oninput = e => {
@@ -438,15 +447,19 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     finally { kimiBusy = false; renderKimiAccount(); }
   };
   api.onKimiAccount(account => { kimiAccount = account; renderKimiAccount(); });
+  api.onAntigravityAccount?.(account => { googleAccount = account; renderConnection(); });
   async function googleAction(action) {
     accountBusy = true; renderConnection();
     try {
       await flushLoginPreferences('antigravity');
-      const result = await api[action === 'signIn' ? 'antigravitySignIn' : 'antigravityAccountRefresh']();
+      const method = action === 'signIn' ? 'antigravitySignIn' : action === 'refreshUsage' ? 'antigravityAccountRefreshUsage' : 'antigravityAccountRefresh';
+      const result = await api[method]();
       if (!result.ok) throw new Error(result.error);
       if (!result.canceled) {
         await loadAccount();
-        status(action === 'signIn' ? 'Complete Google sign-in in the terminal, then refresh the account here.' : 'Google account models refreshed');
+        if (googleAccount.usage?.error) status(t(googleAccount.usage.error), true);
+        else status(action === 'signIn' ? 'Complete Google sign-in in the terminal, then refresh the account here.'
+          : action === 'refreshUsage' ? 'Account status updated.' : 'Google account models refreshed');
       }
     } catch (error) { status(error.message, true); await loadAccount(); }
     finally { accountBusy = false; renderConnection(); }
@@ -456,7 +469,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   $('engineSource').oninput = e => { current().files.find(file => file.id === documentId).text = e.target.value; changed(); };
   $('engineDocument').onchange = e => { documentId = e.target.value; renderDocument(); };
   $('reloadEngine').onclick = () => select(engine, true);
-  $('retryNative').onclick = () => nativeNeedsRuntime ? navigate({ page: 'runtimes' }) : nativePanel(true);
+  $('retryNative').onclick = () => nativeNeedsRuntime ? navigate({ page: 'engines', engine: 'dsh' }) : nativePanel(true);
   document.querySelectorAll('.engine-tabs [data-engine]').forEach(button => { button.onclick = () => select(button.dataset.engine); });
   $('saveEngine').onclick = async () => {
     const savingEngine = engine, state = current();
@@ -473,7 +486,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     } catch (e) { status(e.message, true); $('saveEngine').disabled = false; }
     finally { $('engineContent').inert = false; }
   };
-  $('runtimesPage').onclick = async e => {
+  const runtimeAction = async e => {
     const pathButton = e.target.closest('[data-path-action]');
     if (pathButton) {
       if (runtimePathBusy) return;
@@ -528,6 +541,8 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     try { const result = await api.runtimeEnsure({ engine: button.dataset.install }); if (!result.ok) throw new Error(result.error); status(result.canceled ? '' : "Runtime ready"); delete runtimeUpdateInfo[button.dataset.install]; }
     catch (e) { status(e.message, true); } finally { void runtimePage(); }
   };
+  $('runtimeCards').onclick = runtimeAction;
+  $('pythonCard').onclick = runtimeAction;
   api.onRuntimeState(renderRuntimes);
   // Python is shared, so its state can change without any engine card changing.
   api.onRuntimePythonState?.(renderPython);
@@ -537,7 +552,10 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   window.addEventListener('resize', layout);
   document.querySelector('.scroll-content').addEventListener('scroll', layout);
   new ResizeObserver(layout).observe($('engineContent'));
-  return { select, openAccount, accountsPage, runtimePage, selected: () => engine, setVisible,
+  // Installation status and path controls now sit above the native surface.
+  // Their height can change without resizing the surface itself.
+  new ResizeObserver(layout).observe($('runtimeCards'), { box: 'border-box' });
+  return { select, openAccount, accountsPage, runtimePage, checkRuntimeUpdates, pythonPage, selected: () => engine, setVisible,
     // Refresh quota for the preferred Kimi account.
     activeSubscriptionId: () => 'kimi:' + (kimiAccount?.activeId || 'default') };
 };

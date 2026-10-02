@@ -1,64 +1,62 @@
-# Context capacity evidence
+# Context budgets
 
-Settings → Providers & Keys → select a provider → Context capacity evidence.
-Select a model using the existing validation-model selector, then choose **Detect
-context capacity**. A confirmation dialog selects the saved account, protocol,
-maximum estimated input and request count. Nothing is probed automatically.
+Normal API requests record provider-reported input counts and explicit context
+limits for conversation budgeting. This does not send additional requests or
+change the configured context window. The capacity testing panel and active
+probe endpoints have been removed.
 
-## Evidence, not a model specification
+## Runtime budgets
 
-- Catalog `maxContext` remains the provider's declaration.
-- Normal routed requests record their largest reported accepted input and the
-  output budget used. Explicit structured context errors may add a declared limit.
-  This does not send any additional requests or retain conversation content.
-- Active probes double approximate input sizes, then bisect an explicit rejection
-  boundary to within 2,048 estimated tokens. A cap reached without rejection is
-  only an accepted lower bound, not a discovered maximum.
-- Input generation uses deterministic varied synthetic words. Search sizes use
-  four characters per estimated token, not a provider tokenizer. Reported usage
-  stays separate from these estimates; Anthropic cache input is included.
-- Start/middle/end markers provide a weak retention check. Missing markers do not
-  prove truncation, and returned markers do not prove full retention. No result
-  automatically changes the configured context window or compaction threshold.
+Runtime evidence distinguishes **accepted input lower bounds** separately from
+**confirmed upper bounds**, both in provider-reported tokens. Only explicit token
+limits in structured HTTP 400/422 context errors establish a confirmed upper bound.
+An input-only limit keeps its scope; it is not a model's total
+context-window specification. Estimated accepted/rejected search sizes, character
+or byte caps, and successful requests alone never become confirmed maxima.
 
-## Limits and compatibility
+Desktop and headless conversation budgets read this evidence on each decision:
 
-Defaults: 65,536 estimated input tokens per request, eight requests, 128 output
-tokens per request. Hard caps: 262,144 estimated tokens per request, twelve
-requests, 524,288 cumulative estimated input tokens, five minutes overall and
-sixty seconds per request. Estimates exclude framing overhead and are not a
-monetary spending guarantee. Actual usage and charges can be higher.
+- Resolve each enabled provider, upstream model and effective protocol
+  independently, using the same route enumeration as the router and sharing
+  evidence across that provider's keys. An OpenAI client
+  routed to a Messages provider uses that provider's Messages evidence.
+- Start with the configured window, then catalog metadata, then a confirmed limit.
+  Confirmed limits constrain even an explicitly configured or native-reported
+  larger window. A smaller user-configured budget stays smaller.
+- If all those limits are absent, a reported accepted input of at least 4,096
+  tokens supplies a provisional operating budget. Otherwise use a conservative
+  32,768-token fallback, labelled unknown. Neither is a verified maximum.
+- Take the minimum of the independently resolved budgets across enabled fallback
+  routes. Unknown routes participate with their own provisional budget; they do
+  not inherit another provider's window. Temporary cooldowns do not exclude a
+  candidate that could recover before dispatch or failover.
+- Keep the existing compaction headroom. When native auto-compaction still uses a
+  larger window, Camellia performs early compaction. Router summaries resolve
+  their Chat Completions transport separately from the continuing engine.
 
-Probes directly use the chosen Chat Completions or Messages endpoint, model and
-credential: no router fallback, compatibility retry, rate-limit retry or scheduler.
-The request uses `max_tokens`; providers requiring another output parameter stop
-with an API error rather than automatically sending another paid request.
-HTTP 413, 429, authentication errors, timeouts and gateway errors do not establish
-a context boundary. Only structured HTTP 400/422 context errors do.
-
-Cancel aborts the in-flight fetch and prevents later requests; it cannot undo
-upstream charges. A settings window may be reopened to view/cancel a running
-probe. App restart marks interrupted probes and never resumes them automatically.
+API evidence does not constrain subscription connections. Replacing an endpoint,
+upstream model or effective protocol invalidates its evidence and the conversation's
+associated backoff key. Adding, removing, reordering or replacing keys does not
+invalidate shared evidence or change the backoff key while the same provider routes
+remain enabled. Generic conversation overflow backoff is still a heuristic, separate from
+confirmed upper bounds. These budgets do not guarantee retention or exact token
+fit for different tools, output allowances, or multimodal input.
 
 ## Persistence
 
 `context-capacity.json` under application user data stores numerical evidence and
-timestamps keyed by a SHA-256 fingerprint of provider ID, endpoints, credential,
-key ID, canonical/upstream model IDs and effective protocol. Changes invalidate
-old evidence. Neither API keys nor prompt/response bodies are persisted. Model
-and account results are never merged across routes. Only the latest probe per
-route is retained; normal-request evidence coexists with it.
+timestamps keyed by a SHA-256 fingerprint of provider ID, endpoints,
+canonical/upstream model IDs and effective protocol. API keys are excluded from
+this identity, and neither credentials nor conversation bodies are persisted.
+Different providers, models and protocols keep separate evidence.
 
-Probe traffic bypasses router usage totals. The evidence panel reports input
-usage when returned, but is not a billing ledger; consult the supplier for charges.
+Legacy files remain readable. Per-key fingerprints for currently saved keys merge
+into shared entries, retaining the largest reported accepted input and the
+smallest explicit limit per scope. Historical probe records are kept as data;
+only actual token counts and explicit limits contribute to budgets. Estimated
+search sizes never become confirmed limits. No old probe or batch is resumed.
 
-## Verification
-
-`node --test tests/context-capacity.test.js tests/api-router.test.js`
-
-`python tests/context-capacity-ui.py`
-
-All verification uses mocked/local providers and no paid credentials.
+Regression coverage: `node --test tests/context-capacity.test.js tests/api-router.test.js`.
 
 ## Conversation migration
 
@@ -89,13 +87,33 @@ checking the summary; cancellation or summarization failure leaves it intact.
 Markdown handoffs also use the destination budget and shorten oversized drafts
 before asking the target harness to accept them.
 
+Compaction retains a five-minute total budget, including a native-to-portable
+fallback. Engine requests additionally have a two-minute timeout; router
+requests and lack of router progress are bounded at three minutes. Both
+transports allow at most 128 summary attempts, with existing overflow,
+shortening and nesting limits still in force.
+Accepted fragment and merge answers are checkpointed with hashes of their exact
+inputs. A retry after failure, cancellation or restart can reuse them only for
+the same source history and summary configuration. Legacy text-only checkpoints
+cannot be resumed safely. Neither checkpoint form replaces the conversation
+until the entire summary is complete and passes the destination budget check.
+
+Stopping a long Goal does not discard its native context. Codex's acknowledged
+turn interruption advances the logical cursor, so an ordinary follow-up does
+not replay already-consumed tool history. An edit of an in-turn steering message
+forks at that native turn's saved boundary and replays only the records before
+the edited message within that turn. Later records and the superseded message
+are excluded; earlier native compactions remain available in the fork. Repeated
+edits persist this replay boundary. Missing or stale anchors still fall back to
+portable history instead of assuming an unsafe native boundary.
+
 The router pipeline repacks overflowing merge batches and retries the same
-history fragment under the smaller budget. A context error reported by a
-summarization request bounds only that summary run: it shrinks the fragments and
-the output allowance, and never lowers the conversation's own window. Letting a
-summary error rewrite the window budget made every later send re-run the same
-doomed compaction. Real conversation turns and native compaction still learn the
-provider limit. Retries, nesting and requests remain bounded. Summaries are
+history fragment under the smaller budget. Heuristic shrinking after a summary
+error bounds only that summary run; it never rewrites the conversation's own
+backoff or configured window. Separately, an explicit upstream token limit can
+be recorded as route capacity evidence, just as in an ordinary request. Real
+conversation turns and native compaction still learn local recovery budgets.
+Retries, nesting and requests remain bounded. Summaries are
 lossy: successful capacity checks do not certify complete retention of every
 fact. The persisted original transcript remains the source for recovering
 details.

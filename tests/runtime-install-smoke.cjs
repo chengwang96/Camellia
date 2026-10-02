@@ -60,7 +60,9 @@ async function main() {
           assert.ok(version.includes(expected), `${engine}: expected ${expected}, received ${JSON.stringify(version)}`);
         }
         if (engine === 'dsh') {
-          for (const [pkg, marker] of [['dsh-client-ui-settings-general', 'WorkbenchSettingsRoot'], ['dsh-client-modules', 'workbenchComboCache']]) {
+          // Both supported releases receive the faster line scan. DSH 0.2
+          // already caches lazy artifacts upstream and needs no extra cache.
+          for (const [pkg, marker] of [['dsh-client-ui-settings-general', 'WorkbenchSettingsRoot'], ['dsh-client-modules', 'for (let index = value.indexOf(']]) {
             const file = pkg === 'dsh-client-modules' ? 'index.js' : 'client.js';
             assert.ok(fs.readFileSync(path.join(installed.dir, 'node_modules/@deepseek-ai', pkg, 'lib', file), 'utf8').includes(marker), 'DSH download receives the maintained frontend patches');
           }

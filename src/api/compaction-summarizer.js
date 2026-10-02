@@ -1,7 +1,7 @@
 'use strict';
 
 const { hasRoutes, publicState } = require('./api-router-config');
-const { contextOverflowText } = require('../shared/context-overflow');
+const { contextError } = require('../shared/context-overflow');
 
 // Portable compaction summarizes through the workbench router so the summary
 // never starts an engine process: fragments become independent parallel
@@ -45,7 +45,7 @@ function createCompactionSummarizer({ getConfig, getRoute, isRunning = () => tru
       const error = new Error(message);
       // A provider context limit is a budget signal: the pipeline splits that
       // fragment again under the learned cap instead of failing the whole run.
-      error.overflow = [400, 422].includes(response.status) && contextOverflowText(message);
+      error.overflow = Boolean(contextError(response.status, text));
       throw error;
     }
     let data;

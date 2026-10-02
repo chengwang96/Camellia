@@ -17,6 +17,7 @@ Camellia 将 **Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigrav
 ## 核心功能
 
 - **运行中默认排队。** 当前轮次运行时，Enter 或点击发送会将消息加入队列，轮次结束后依次发送；每条队列消息的“立即补充指令”按钮可将该条消息补充到当前轮次（需要引擎接入方式支持）。补充失败时保留队列消息和附件，不影响输入框草稿。
+- **模型切换在运行中排队。** 当前轮次运行时也能改模型和推理等级：正在运行的轮次保持在启动时选定的模型上，修改从下一条消息生效，因此按发送时选择执行排队消息——某条排队消息入队后又改了模型，该条及其后的排队消息都用修改后的模型。切换引擎、连接或权限模式仍需等轮次结束。
 
 <table><tr><td>
 <img src="docs/images/message-queue.png" alt="Codex 回复运行中时的排队消息与立即补充指令">
@@ -58,7 +59,7 @@ npm ci
 npm start
 ```
 
-`npm ci` 只安装工作台依赖，六个 harness 的运行时均为可选下载。可在首页点击 **Download & open**（下载并打开），也可在 **Settings → Runtime**（设置 → 运行环境）中单独下载。Antigravity 的 Google 订阅模式下载官方 CLI，API 模式下载 SDK 和独立 Python；Pi 只是一个 npm 包，使用共享 API 线路。无需全局安装 CLI 或 Python。
+`npm ci` 只安装工作台依赖，六个 harness 的运行时均为可选下载。可在首页点击 **Download & open**（下载并打开），也可在 **Settings → Engine Settings**（设置 → 引擎设置）中单独下载。Antigravity 的 Google 订阅模式下载官方 CLI，API 模式下载 SDK 和独立 Python；Pi 只是一个 npm 包，使用共享 API 线路。无需全局安装 CLI 或 Python。
 
 网络已独立为 **设置 → 网络** 页面，同时用于引擎与 benchmark 题库下载、订阅和 API 连接：**Direct connection（直连）** 直接联网；**Use system proxy（系统代理）** 使用检测到的系统 HTTP/HTTPS 代理；**Auto（自动）** 会先测试每个供应商主机与已登录订阅，仅在直连全部可用时采用优先直连，否则使用系统代理。默认直连，不预设代理地址。同一页面提供一键 **连通性测试**，会分别以直连和检测到的代理探测每个主机，且不会改变当前连接方式。保存后**立即生效**：引擎进程会改用新的连接方式，无需重启 Camellia，正在进行的回复不会被打断。若系统代理已无法访问网络，Camellia 会自动降级为「自动」，在工作台弹窗和 **设置 → 网络** 状态行中说明原因，且不改写你保存的选项（重启后重新探测）；代理恢复后重新选择「系统代理」即可。ChatGPT（Codex）与 Claude 的订阅登录**不走**直连回退，始终使用检测到的系统代理，仅在未检测到系统代理时才直连。
 
@@ -175,13 +176,9 @@ Codex CLI 支持 API key 和第三方 API。在 **Settings → Engine Settings �
 <img src="docs/images/goal-mode.png" alt="输入框上方的紧凑目标状态条，显示目标与运行时间">
 </td></tr></table>
 
-模型选择器同时充当主/副模型开关：左键点选主模型；右键设为副模型且菜单不关闭；双击模型按钮在两者间来回切换。
+在 **设置 → 模型设置** 中为各引擎设置快速切换默认模型与推理强度，双击输入框中的模型菜单即可切换。单击仍打开模型与推理等级菜单。运行中修改从下一条消息起生效。
 
-<table><tr><td>
-<img src="docs/images/model-pair.png" alt="模型菜单中主模型的对勾与副模型的圆点">
-</td></tr></table>
-
-Antigravity 支持 **Google subscription**（Google 订阅）与 **Shared API routes**（共享 API 线路）。订阅模式使用官方 CLI 的 Google 账号登录及账号可用的 Antigravity 额度，API 模式使用统一 Key 池。连接、权限、MCP 服务器与技能统一在 **Settings → Engine Settings → Antigravity** 中管理。已有会话保留原来的连接方式。Google 模式支持流式回复、续聊和停止，暂不支持分叉及图片附件。
+Antigravity 支持 **Google subscription**（Google 订阅）与 **Shared API routes**（共享 API 线路）。订阅模式使用官方 CLI 的 Google 账号登录及账号可用的 Antigravity 额度，API 模式使用统一 Key 池。连接、权限、MCP 服务器与技能统一在 **Settings → Engine Settings → Antigravity** 中管理。已有会话保留原来的连接方式。Google 模式在普通聊天和 Agent 讨论中均支持流式回复、续聊、停止、图片附件（取决于模型能力）及人工工具审批回传；暂不支持会话分叉。
 
 当前 Antigravity SDK 连接支持文本和代码对话，暂不支持图片附件。图片对话可使用 Claude、Codex 或 Kimi，也可以搭配 Gemini 供应商。
 
@@ -229,7 +226,7 @@ Camellia 不限于本机使用。两个功能都复用内置的 Tailscale helper
 
 ## 配置与数据
 
-各引擎共用应用设置窗口，集中管理供应商连接、调用用量、账户余额、原生引擎选项、运行时安装和界面外观。
+各引擎共用应用设置窗口，集中管理供应商连接、调用用量、账户余额、原生引擎选项、运行时安装和界面外观。**设置 → 通用 → 对话区宽度**可调整中间消息栏的宽度：**标准**、**较宽**或**整宽**，便于在大屏上对比、查看表格和 diff。
 
 **保存 DSH、Claude、Kimi 和 Antigravity Google 连接的原生设置会更新对应 CLI 的全局配置**，也会影响 Camellia 之外的 CLI 会话。首次接管并覆盖已有文件前，会保留一份 `.workbench.bak` 原始备份。页面列出具体文件路径。Codex 和 Antigravity SDK 的设置仅作用于 Camellia。Codex 的 API 与 ChatGPT 连接还分别使用应用自己的登录和原生历史目录。
 

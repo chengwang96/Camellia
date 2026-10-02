@@ -152,10 +152,10 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
   }
 
   // The composer send button starts the goal while draft mode is on.
-  async function startFromComposer(objective) {
+  async function startFromComposer(objective, initialSettings = {}) {
     if (!canChangeContext()) return false;
     acceptEvents();
-    const started = await updateGoal(() => chatApi.goalStart({ objective, criterion, sessionId: context.sessionId, workspaceId: context.workspaceId }), 'Goal started. Working until complete or blocked…');
+    const started = await updateGoal(() => chatApi.goalStart({ ...initialSettings, objective, criterion, sessionId: context.sessionId, workspaceId: context.workspaceId }), 'Goal started. Working until complete or blocked…');
     if (started) setDraft(false, false);
     return started;
   }

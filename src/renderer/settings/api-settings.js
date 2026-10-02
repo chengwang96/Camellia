@@ -17,8 +17,8 @@ const titles = {
   archived: ["Archived", "Restore or permanently delete archived conversations."],
   mobile: ["Mobile access", "Connect your phone through Tailscale."],
   devices: ["CLI devices", "Manage server connections and default harnesses. Open a server from Home to work."],
-  engines: ["Engine Settings", "Configure default reasoning, permissions, instructions and tools."],
-  runtimes: ["Runtime", "Download only the engines you need."],
+  engines: ["Engine Settings", "Manage engine installation, updates, permissions, instructions and tools."],
+  models: ["Model Settings", "Choose quick-switch defaults and keep model sessions ready."],
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
 let balanceKey = null, usageData = [];
@@ -101,6 +101,9 @@ async function assertClean() {
   if (isDirty()) throw new Error(lastSaveError || "Save your changes before querying or validating keys");
 }
 function setView(next, engine, focus) {
+  // Keep older download links working, including the requested engine.
+  if (next === 'runtimes') next = focus === 'python' || focus === 'runtime-path-python' ? 'general' : 'engines';
+  if (next === 'general' && ['quickSwitchModels', 'conversationSessionTtl', 'conversationSessionLimit'].includes(focus)) next = 'models';
   if (next === 'engines' && focus === 'account') { next = 'subscriptions'; focus = engine; }
   if (next === 'providers' && ['kimi', 'codex', 'antigravity'].includes(focus)) next = 'subscriptions';
   if (next === 'balances') next = 'providers';
@@ -120,8 +123,12 @@ function setView(next, engine, focus) {
   if (next === 'usage') { fillUsageFilters(); renderUsage(); }
   if (next === 'providers' || next === 'subscriptions') renderBalances();
   if (next === 'subscriptions') void engineUI.accountsPage(focus || engine);
-  if (next === 'engines') void (focus === 'account' ? engineUI.openAccount(engine) : engineUI.select(engine || engineUI.selected()));
-  if (next === 'runtimes') void engineUI.runtimePage(focus);
+  if (next === 'engines') {
+    void engineUI.select(engine || engineUI.selected());
+    void engineUI.runtimePage();
+    if (focus === 'updates') void engineUI.checkRuntimeUpdates();
+  }
+  if (next === 'general') void engineUI.pythonPage();
   if (next === 'archived') void renderArchived();
   if (next === 'network') void loadDownloadSettings(focus);
 }
@@ -130,7 +137,6 @@ function navigateSettings(target = {}) {
   setView(target.subscriptionId ? 'subscriptions' : target.page || 'general', target.engine, target.subscriptionId ? 'kimi' : target.focus);
 }
 const engineUI = window.createEngineSettingsUI({ api, status, navigate: navigateSettings });
-const capacityUI = window.createContextCapacityUI({ api, current, assertClean, status, esc, fmt, keyName });
 $('kimiUsage').onclick = () => refreshBalances({ subscriptionId: engineUI.activeSubscriptionId() });
 api.onSettingsNavigate(navigateSettings);
 // The main process downgrades a stale system proxy in the background; surface
@@ -185,7 +191,6 @@ function renderEditor() {
       <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Routes switch only within the same model ID. Keep versions and aliases such as latest and chat separate.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Canonical model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th data-i18n>Context</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><button id="addModel" data-i18n>+ Add model</button></details>
       <div class="row verify-row" style="margin-top:18px"><label data-i18n>Validation model<select id="verifyModel" aria-label="Validation model" data-i18n-attrs="aria-label"></select></label><button id="verifyNow" data-verify-now data-i18n>Validate</button></div><p class="hint" data-i18n>Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
     </div>
-    <div id="contextCapacityPanel"></div>
     <details class="advanced section" id="connectionAdvanced" ${p.type === 'custom' ? 'open' : ''}><summary data-i18n>Advanced connection settings</summary><div class="grid">
       <div class="full"><label for="pUrl" data-i18n>API URL</label><input id="pUrl" value="${esc(p.baseUrl)}" placeholder="https://api.example.com/v1" spellcheck="false" data-i18n-attrs="placeholder"></div>
       <div><label for="pProtocol" data-i18n>Default protocol</label><select id="pProtocol"><option value="openai" data-i18n>OpenAI Chat Completions</option><option value="anthropic" data-i18n>Anthropic Messages</option><option value="dual" data-i18n>Both protocols</option></select></div>
@@ -193,7 +198,6 @@ function renderEditor() {
     <details class="advanced section"><summary data-i18n>Active routes and priority</summary><div id="routeRows"></div></details>
     <button id="deleteProvider" class="danger" style="margin-top:24px" data-i18n>Remove provider</button>`;
   $('pProtocol').value = p.protocol; $('aUrlField').hidden = p.protocol !== 'dual';
-  capacityUI.mount();
   $('backProviders').onclick = () => { selected = null; renderEditor(); };
   for (const [id, field] of [['pName','name'], ['pUrl','baseUrl'], ['pAUrl','anthropicBaseUrl']]) {
     $(id).oninput = e => { p[field] = e.target.value; edited(); };
@@ -422,15 +426,6 @@ function renderBalances() {
   if (!accounts.some(a => a.id === balanceKey)) balanceKey = accounts[0]?.id || null;
   $('balanceCards').innerHTML = accounts.map(a => accountCard(a, a.id === balanceKey)).join('') || (all.length ? "<div class=\"empty\" data-i18n>No matching accounts.</div>" : "<div class=\"empty\"><h2 data-i18n>Connect an account to view its balance</h2><p class=\"hint\" data-i18n>Add a connection in Providers & Keys.</p></div>");
   renderChartGrid($('balanceChart'), balanceChartSeries());
-  for (const engine of ['kimi', 'codex', 'antigravity']) {
-    const subscriptions = accountsList().filter(account => account.subscriptionId && account.engine === engine);
-    if (engine === 'kimi') $('subscriptionQuotaCards').innerHTML = '';
-    const chart = $(engine === 'kimi' ? 'subscriptionQuotaChart' : engine + 'QuotaChart');
-    const series = subscriptions.flatMap(account => balanceChartSeries(account.id));
-    chart.hidden = false;
-    if (series.length) renderChartGrid(chart, series);
-    else chart.innerHTML = '<p class="hint">' + esc(window.CamelliaI18n.t('No quota observations yet. Refresh quota to collect available provider data.')) + '</p>';
-  }
 }
 function balanceChartSeries(id = balanceKey) {
   const t = window.CamelliaI18n.t;
@@ -660,10 +655,100 @@ api.onAppUpdateState(state => {
     : state.status === 'restarting' ? window.CamelliaI18n.t('Restarting Camellia…')
     : state.status === 'error' ? state.error : $('appUpdateStatus').textContent;
 });
-// General preferences apply on change, like the engines' own settings pages.
+// Quick-switch targets are app preferences, independent of CLI defaults. Each
+// engine gets a model and a reasoning level; both are applied together when the
+// composer's model menu is double-clicked.
+const QUICK_SWITCH_ENGINES = [['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['dsh', 'DSH'], ['kimi', 'Kimi Code'], ['antigravity', 'Antigravity'], ['pi', 'Pi']];
+const LEVEL_LABELS = { off: 'Off', none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+const levelLabel = id => LEVEL_LABELS[id] || (id ? id[0].toUpperCase() + id.slice(1) : '');
+// Account models report their own reasoning efforts; routed models fall back to
+// the shared ladder inferred from the model ID.
+function quickSwitchLadder(engine, modelId, account) {
+  const effort = ((account?.models || []).find(model => model.id === modelId)?.supportedReasoningEfforts || [])
+    .map(level => level.reasoningEffort || level).filter(level => typeof level === 'string');
+  return effort.length ? effort : window.CamelliaModelLevels.levelsForEngine(engine, modelId);
+}
+function fillQuickSwitchLevels(select, engine, modelId, saved, account) {
+  select.replaceChildren();
+  const unset = new Option('Not configured', ''); unset.dataset.i18n = '';
+  select.add(unset);
+  const levels = quickSwitchLadder(engine, modelId, account);
+  if (saved && !levels.includes(saved)) levels.push(saved);
+  for (const id of levels) {
+    const option = new Option(levelLabel(id), id);
+    option.dataset.i18n = '';
+    select.add(option);
+  }
+  select.value = saved;
+}
+async function saveQuickSwitch(patch, select, errorFallback) {
+  select.disabled = true;
+  try {
+    const result = await api.workbenchSaveSettings(patch);
+    if (!result.ok) throw new Error(result.error);
+    status('Preferences saved');
+    return true;
+  } catch (error) { select.value = select.dataset.saved; status(error.message || errorFallback, true); return false; }
+  finally { select.disabled = false; }
+}
+async function renderQuickSwitchModels(preferences) {
+  const container = $('quickSwitchModels');
+  container.replaceChildren();
+  const router = await api.apiRouterGetState();
+  const head = document.createElement('div');
+  head.className = 'quick-switch-row quick-switch-head';
+  for (const title of ['Engine', 'Model', 'Reasoning level']) {
+    const cell = document.createElement('span'); cell.className = 'hint'; cell.dataset.i18n = ''; cell.textContent = title;
+    head.append(cell);
+  }
+  container.append(head);
+  await Promise.all(QUICK_SWITCH_ENGINES.map(async ([engine, label]) => {
+    const row = document.createElement('div'); row.className = 'quick-switch-row';
+    const name = document.createElement('label'); name.textContent = label; name.htmlFor = 'quickSwitch-' + engine;
+    const modelSelect = document.createElement('select'); modelSelect.id = name.htmlFor; modelSelect.className = 'quick-switch-model'; modelSelect.disabled = true;
+    const levelSelect = document.createElement('select'); levelSelect.id = 'quickSwitchLevel-' + engine;
+    levelSelect.className = 'quick-switch-level'; levelSelect.disabled = true;
+    levelSelect.setAttribute('aria-label', label + ' reasoning level');
+    row.append(name, modelSelect, levelSelect); container.append(row);
+    const account = await Promise.resolve().then(() => api[engine + 'AccountState']?.()).catch(() => null);
+    const models = new Map((router.enabled ? router.models || [] : []).map(id => [id, id]));
+    for (const model of account?.models || []) models.set(model.id, model.name || model.displayName || model.id);
+    const savedModel = preferences.quickSwitchModels?.[engine] || '';
+    if (savedModel && !models.has(savedModel)) models.set(savedModel, savedModel);
+    const unset = new Option('Not configured', ''); unset.dataset.i18n = '';
+    modelSelect.add(unset);
+    for (const [id, title] of models) modelSelect.add(new Option(title, id));
+    const savedLevel = preferences.quickSwitchLevels?.[engine] || '';
+    modelSelect.value = savedModel; modelSelect.dataset.saved = savedModel;
+    modelSelect.disabled = false;
+    fillQuickSwitchLevels(levelSelect, engine, savedModel, savedLevel, account);
+    levelSelect.dataset.saved = savedLevel;
+    levelSelect.disabled = false;
+    modelSelect.addEventListener('change', async () => {
+      // Clearing the model clears its level in the same save: a reasoning level
+      // without a model has nothing to apply to.
+      const clearing = !modelSelect.value;
+      const patch = { quickSwitchModels: { [engine]: modelSelect.value } };
+      if (clearing && levelSelect.dataset.saved) patch.quickSwitchLevels = { [engine]: '' };
+      if (!await saveQuickSwitch(patch, modelSelect, 'Could not save the model')) return;
+      modelSelect.dataset.saved = modelSelect.value;
+      if (clearing) levelSelect.dataset.saved = '';
+      // Otherwise the ladder follows the newly chosen model.
+      fillQuickSwitchLevels(levelSelect, engine, modelSelect.value, levelSelect.dataset.saved, account);
+      levelSelect.dataset.saved = levelSelect.value;
+    });
+    levelSelect.addEventListener('change', async () => {
+      if (!await saveQuickSwitch({ quickSwitchLevels: { [engine]: levelSelect.value } }, levelSelect, 'Could not save the reasoning level')) return;
+      levelSelect.dataset.saved = levelSelect.value;
+    });
+  }));
+}
+
+// General and model-session preferences apply on change.
 async function saveGeneral() {
   try {
     const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked, closeToTray: $('closeToTray').checked,
+      chatContentWidth: $('chatContentWidth').value,
       accountRefreshMinutes: Number($('accountRefreshMinutes').value),
       conversations: { mode: $('conversationMode').value, warnOnSwitch: $('conversationWarn').checked, showOrigin: $('conversationOriginSetting').checked,
         sessionTtlMinutes: Number($('conversationSessionTtl').value), sessionLimit: Number($('conversationSessionLimit').value) } });
@@ -671,7 +756,7 @@ async function saveGeneral() {
     window.CamelliaI18n.setLanguage($('language').value); status("Preferences saved");
   } catch (e) { status(e.message, true); }
 }
-for (const id of ['language', 'theme', 'autoRefreshBalances', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting', 'conversationSessionTtl', 'conversationSessionLimit']) {
+for (const id of ['language', 'theme', 'chatContentWidth', 'autoRefreshBalances', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting', 'conversationSessionTtl', 'conversationSessionLimit']) {
   $(id).addEventListener('change', saveGeneral);
 }
 // General connection preference: serialized saves preserve the latest choice.
@@ -806,12 +891,14 @@ async function refresh(initial = false) {
       if (!preferences.ok) throw new Error(preferences.error);
       $('language').value = preferences.language || 'en';
       $('theme').value = preferences.theme; $('autoRefreshBalances').checked = preferences.autoRefreshBalances; $('closeToTray').checked = !!preferences.closeToTray;
+      $('chatContentWidth').value = preferences.chatContentWidth || 'standard';
       $('accountRefreshMinutes').value = String(preferences.accountRefreshMinutes || 15);
       $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;
       $('conversationOriginSetting').checked = !!preferences.conversations?.showOrigin;
       $('conversationSessionTtl').value = String(preferences.conversations?.sessionTtlMinutes ?? 30);
       $('conversationSessionLimit').value = String(preferences.conversations?.sessionLimit ?? 4);
       $('dataPath').textContent = preferences.dataPath; $('version').textContent = 'v' + preferences.version;
+      await renderQuickSwitchModels(preferences);
     }
   } catch (e) { status(e.message, true); }
 }
@@ -820,7 +907,9 @@ $('refresh').onclick = async () => {
   if (view === 'subscriptions') return engineUI.accountsPage();
   if (view === 'mobile') return window.mobileAccessUI.refresh();
   if (view === 'devices') return window.cliDevicesUI?.refresh();
-  return refresh();
+  if (view === 'engines') return engineUI.runtimePage();
+  if (view === 'general') await engineUI.pythonPage();
+  return refresh(view === 'general' || view === 'models');
 };
 let storagePreview = null, storageBusy = false;
 const storageBytes = bytes => bytes < 1024 ? fmt(bytes) + ' B' : bytes < 1024 ** 2 ? fmt(bytes / 1024) + ' KiB' : bytes < 1024 ** 3 ? fmt(bytes / 1024 ** 2) + ' MiB' : fmt(bytes / 1024 ** 3) + ' GiB';

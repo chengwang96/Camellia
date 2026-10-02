@@ -50,7 +50,7 @@
   <main class="main">
     <div class="main-header">
       <span class="header-title" id="headerTitle">New session</span>
-      <select class="header-pill" id="engineSwitch" aria-label="Conversation engine" data-i18n-attrs="aria-label title"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="dsh">DeepSeek Harness</option><option value="kimi">Kimi Code</option><option value="antigravity">Antigravity</option><option value="pi">Pi</option></select>
+      <select class="header-pill" id="engineSwitch" aria-label="Chat mode" title="Switch chat mode" data-i18n-attrs="aria-label title"></select>
       <button class="header-pill" id="handoffBtn" title="Choose how to continue in another engine" data-i18n data-i18n-attrs="title">Switch options</button>
       <button class="header-pill" id="handoffStop" hidden data-i18n>Stop handoff</button>
       <span style="flex:1"></span>
@@ -79,12 +79,12 @@
             <button class="btn-attach" id="attachBtn" title="Add attachments, or drop images here" data-i18n-attrs="title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             </button>
-            <span class="pill-select" title="Permission mode" data-i18n-attrs="title">
+            <span class="pill-select" title="Tool permissions. Task questions still need your answer." data-i18n-attrs="title">
               <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               <select id="selPermission" aria-label="Permission mode" data-i18n-attrs="aria-label">
                 <option value="ask" data-i18n>Ask before acting</option>
                 <option value="auto" data-i18n>Act, ask when risky</option>
-                <option value="full" data-i18n>Never ask</option>
+                <option value="full" data-i18n>Allow all tools</option>
               </select>
             </span>
             <span class="input-spacer"></span>
@@ -97,7 +97,10 @@
               <span data-i18n>Goal</span>
             </button>
             <button class="ctx-ring" id="ctxRing" hidden aria-label="Context usage" data-i18n-attrs="aria-label"><svg viewBox="0 0 36 36"><circle class="ctx-track" cx="18" cy="18" r="15.5"/><circle class="ctx-fill" id="ctxFill" cx="18" cy="18" r="15.5"/></svg></button>
-            <button class="model-pill" id="modelPill" title="Model · right-click a model to set the secondary, double-click to swap" data-i18n-attrs="title">
+            <button class="fast-mode-toggle" id="fastModeToggle" type="button" hidden aria-label="Fast mode" aria-pressed="false" data-i18n-attrs="aria-label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m13 2-9 12h7l-1 8 10-12h-7l1-8z"/></svg>
+            </button>
+            <button class="model-pill" id="modelPill" title="Model · double-click to switch to your model and reasoning default" data-i18n-attrs="title">
               <span class="model-name" id="modelPillName">Default model</span>
               <span class="model-level" id="modelPillLevel" data-i18n></span>
               <svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></svg>
@@ -120,6 +123,9 @@
         <strong class="file-viewer-title" id="fileViewerTitle"></strong>
       </div>
       <div class="file-viewer-actions">
+        <button id="fileViewerReveal" title="Show in folder" aria-label="Show in folder" data-i18n-attrs="title aria-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2Z"/></svg>
+        </button>
         <button id="fileViewerExternal" title="Open with system app" aria-label="Open with system app" data-i18n-attrs="title aria-label">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3h7v7"/><path d="m10 14 11-11"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>
         </button>
@@ -132,6 +138,9 @@
     <div class="file-viewer-body" id="fileViewerBody"></div>
   </aside>
 </div>
+
+<!-- Task questions wait for an explicit answer, independently of tool permissions. -->
+<dialog id="questionDialog" class="question-dialog" aria-labelledby="questionTitle" aria-describedby="questionHint"></dialog>
 
 <!-- Permission modal (P3): answers can_use_tool control requests -->
 <dialog id="permissionBlockedDialog" class="switch-dialog" aria-labelledby="permissionBlockedTitle">
@@ -246,6 +255,7 @@
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../../shared/model-levels.js"></script>
+<script src="../../shared/codex-speed.js"></script>
 <script src="../../shared/long-paste.js"></script>
 <script src="../shared/i18n.js"></script>
 <script src="../shared/network-notice.js"></script>
@@ -265,6 +275,9 @@
 <script src="./latex-preview.js"></script>
 <script src="./data-preview.js"></script>
 <script src="./html-preview.js"></script>
+<script src="../shared/chat-mode-select.js"></script>
+<script src="../shared/chat-controls.js"></script>
+<script src="../shared/file-preview-panel.js"></script>
 <script src="./claude.js"></script>
 </body>
 </html>

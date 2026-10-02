@@ -5,12 +5,15 @@ and persistence; Camellia owns credentials, workspace metadata and presentation.
 """
 
 import asyncio
+import importlib.metadata
 import json
 import os
 from pathlib import Path
-import shutil
+import re
 import sys
 import uuid
+
+from session_storage import copy_session
 
 from google.antigravity import Agent, LocalOpenAIAgentConfig, types
 from google.antigravity.hooks import hooks, policy
@@ -27,6 +30,13 @@ def read_json(file, fallback=None):
 class Bridge:
     def __init__(self, config):
         self.config = config
+        self.tool_free = "executionPolicy" in config
+        if self.tool_free:
+            if config["executionPolicy"] != "tool-free-v1" or importlib.metadata.version("google-antigravity") not in ("0.1.17", "0.1.20"):
+                raise ValueError("Unverified Antigravity execution policy or SDK version")
+            native = config.get("settings", {})
+            if native.get("mcpServers") or native.get("skillsPaths"):
+                raise ValueError("Tool-free Antigravity cannot load MCP servers or skills")
         self.root = Path(config["home"])
         self.agent = None
         self.session_id = None
@@ -35,11 +45,16 @@ class Bridge:
         self.pending = {}
         self.turn = None
         self.mcp_servers = []
+        self.preparation = None
+        self.prepared_id = None
+        self.preparation_closed = False
 
     def update(self, update):
         emit({"method": "session/update", "params": {"sessionId": self.session_id, "update": update}})
 
     async def approve(self, tool):
+        if self.tool_free:
+            return False
         request_id = str(uuid.uuid4())
         future = asyncio.get_running_loop().create_future()
         self.pending[request_id] = future
@@ -79,11 +94,13 @@ class Bridge:
             policies.extend(policy.allow(tool.value) for tool in [types.BuiltinTools.CREATE_FILE, types.BuiltinTools.EDIT_FILE])
         if self.mode == "bypassPermissions":
             policies = [policy.allow_all()]
+        if self.tool_free:
+            policies = [policy.deny("*")]
         capabilities = types.CapabilitiesConfig(
-            enabled_tools=reads if self.mode == "plan" else None,
+            enabled_tools=[] if self.tool_free else reads if self.mode == "plan" else None,
             # Clarifications use regular chat turns in the shared interface.
-            disabled_tools=None if self.mode == "plan" else [types.BuiltinTools.ASK_QUESTION],
-            enable_subagents=self.mode != "plan",
+            disabled_tools=None if self.tool_free or self.mode == "plan" else [types.BuiltinTools.ASK_QUESTION],
+            enable_subagents=not self.tool_free and self.mode != "plan",
         )
 
         @hooks.pre_tool_call_decide
@@ -134,10 +151,49 @@ class Bridge:
             # SDK 0.1.16's OpenAI strategy does not forward config.policies.
             # Enforce through its public tool-decision hook instead.
             policies=[], hooks=[before_tool, policy.enforce(policies), after_tool, tool_error, on_compaction], capabilities=capabilities,
-            mcp_servers=servers, skills_paths=native.get("skillsPaths", []),
+            mcp_servers=servers, skills_paths=[] if self.tool_free else native.get("skillsPaths", []),
+            subagents=[] if self.tool_free else None,
         )
         self.agent = Agent(config)
         await self.agent.__aenter__()
+
+    async def prepare_native(self):
+        # SDK 0.1.17 allocates its database during the handshake, but its public
+        # conversation_id remains empty until a step update. The fresh, scoped
+        # directory must contain one native database. The main-process raw
+        # inventory independently verifies its SQLite identity before input.
+        if self.turn is not None:
+            raise ValueError("Native preparation must precede the first prompt")
+        if not self.agent:
+            await self.open_agent()
+        directory = self.session_dir / "native"
+        names = []
+        for entry in directory.iterdir():
+            if len(names) >= 3 or not re.fullmatch(r"[0-9a-f]{32}\.db(?:-(?:wal|shm))?", entry.name):
+                raise ValueError("Ambiguous prepared Antigravity storage")
+            if entry.is_symlink() or not entry.is_file() or entry.stat().st_nlink != 1:
+                raise ValueError("Linked prepared Antigravity storage")
+            names.append(entry.name)
+        ids = {name[:32] for name in names}
+        if len(ids) != 1 or next(iter(ids)) + ".db" not in names:
+            raise ValueError("Prepared Antigravity storage is unavailable")
+        native_id = next(iter(ids))
+        metadata = read_json(self.session_dir / "session.json", {})
+        if metadata.get("conversationId", native_id) != native_id:
+            raise ValueError("Prepared Antigravity storage changed identity")
+        self.save_native_id(native_id)
+        self.prepared_id = native_id
+        return {"sessionId": self.session_id, "conversationId": native_id}
+
+    def save_native_id(self, native_id):
+        if not re.fullmatch(r"[0-9a-f]{32}", native_id or ""):
+            raise ValueError("Invalid Antigravity native identity")
+        if self.prepared_id and native_id != self.prepared_id:
+            raise ValueError("Antigravity native identity changed after preparation")
+        file = self.session_dir / "session.json"
+        temporary = file.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"conversationId": native_id}), encoding="utf-8")
+        temporary.replace(file)
 
     async def prompt(self, params):
         if any(part["type"] == "image" for part in params["prompt"]):
@@ -166,10 +222,7 @@ class Bridge:
             return {"stopReason": "cancelled"}
         finally:
             if self.agent.conversation_id:
-                file = self.session_dir / "session.json"
-                temporary = file.with_suffix(".tmp")
-                temporary.write_text(json.dumps({"conversationId": self.agent.conversation_id}), encoding="utf-8")
-                temporary.replace(file)
+                self.save_native_id(self.agent.conversation_id)
 
     async def handle(self, message):
         method, params = message.get("method"), message.get("params", {})
@@ -183,6 +236,10 @@ class Bridge:
                 result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True},
                           "agentInfo": {"name": "Camellia Antigravity", "version": "0.3.0"}}
             elif method in ("session/new", "session/resume", "session/fork"):
+                if self.preparation:
+                    raise ValueError("Prepared session identity is fixed")
+                if self.tool_free and params.get("mcpServers"):
+                    raise ValueError("Tool-free Antigravity cannot load MCP servers")
                 source = params.get("sessionId")
                 if source:
                     uuid.UUID(source)
@@ -192,21 +249,45 @@ class Bridge:
                 self.cwd = params["cwd"]
                 self.mcp_servers = params.get("mcpServers", [])
                 if method == "session/fork":
-                    shutil.copytree(self.root / "sessions" / source, self.root / "sessions" / self.session_id)
+                    copy_session(self.root / "sessions" / source, self.root / "sessions" / self.session_id)
                 result = {"sessionId": self.session_id}
             elif method == "session/set_config_option":
                 if params["configId"] == "model":
+                    if self.preparation and self.model != params["value"]:
+                        raise ValueError("Prepared session model is fixed")
                     self.model = params["value"]
                 result = {"configOptions": []}
             elif method == "session/set_mode":
+                if self.tool_free and params["modeId"] not in ("default", "plan"):
+                    raise ValueError("Tool-free Antigravity cannot elevate permissions")
+                if self.preparation and self.mode != params["modeId"]:
+                    raise ValueError("Prepared session mode is fixed")
                 self.mode = params["modeId"]
                 result = {}
+            elif method == "session/camellia_prepare":
+                if not self.session_id or params.get("sessionId") != self.session_id:
+                    raise ValueError("Native preparation identity mismatch")
+                if self.preparation_closed:
+                    raise ValueError("Native preparation has stopped")
+                if not self.preparation:
+                    self.preparation = asyncio.create_task(self.prepare_native())
+                try:
+                    result = await self.preparation
+                except asyncio.CancelledError:
+                    raise ValueError("Native preparation cancelled") from None
             elif method == "session/prompt":
+                if self.preparation and (self.preparation_closed or not self.prepared_id):
+                    raise ValueError("Native preparation has not succeeded")
                 if self.turn and not self.turn.done():
                     raise ValueError("A response is already running")
                 self.turn = asyncio.create_task(self.prompt(params))
                 result = await self.turn
             elif method in ("session/cancel", "session/close"):
+                if self.preparation:
+                    self.preparation_closed = True
+                if self.preparation and not self.preparation.done():
+                    self.preparation.cancel()
+                    await asyncio.gather(self.preparation, return_exceptions=True)
                 for future in self.pending.values():
                     if not future.done():
                         future.set_result(False)

@@ -1,6 +1,6 @@
 'use strict';
 const { removeTree } = require('./test-fs.cjs');
-// Throwaway QA: drive Settings → Runtime in a real Electron window, click
+// Throwaway QA: drive Settings → Engine Settings in a real Electron window, click
 // "Check for updates", and verify update info renders on every engine card.
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const assert = require('node:assert/strict');
@@ -47,7 +47,7 @@ async function main() {
       fs.writeFileSync(path.resolve(__dirname, '../dist/engine-settings-qa/runtime-updates.png'), shot.toPNG());
     } catch (error) { console.log('Skipping QA screenshot: ' + (error.message || error)); }
     assert.deepEqual(errors, []);
-    console.log('PASS: Settings → Runtime shows a working Check-for-updates flow with per-engine results');
+    console.log('PASS: Settings → Engine Settings shows a working Check-for-updates flow with per-engine results');
     app.quit(); return;
   }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-updates-qa-'));

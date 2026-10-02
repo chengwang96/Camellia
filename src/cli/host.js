@@ -35,6 +35,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
     privateDirectory(path.join(dataDir, 'conversations'));
     const config = require('../api/api-router-config');
     const routes = () => config.loadConfig(routeFile);
+    const capacity = require('../api/context-capacity').createContextCapacity({ file: path.join(dataDir, 'context-capacity.json'), getConfig: routes });
     const { createSubscriptionUsage, subscriptionProfiles } = require('../api/subscription-usage');
     const subscriptionUsage = createSubscriptionUsage({ file: path.join(dataDir, 'subscription-usage.json'), onChange: () => remote?.publish() });
     const createUsageMeter = (engine, { settings, home, version }) => settings.connection !== 'subscription' ? null
@@ -49,6 +50,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
       supported = Object.keys(drivers);
     } else {
       engines = require('./engine-drivers').createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, router: routes, nativeSettings,
+        contextCapacity: capacity,
         createUsageMeter,
         isBusy: engine => Boolean(manager?.isBusy(engine)),
         getRoute: () => {
@@ -64,6 +66,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
         ensure: () => { throw new Error(`${engine} is not yet enabled in the server preview`); } };
     }
     manager = new SharedConversations({ dir: path.join(dataDir, 'conversations'), loadConfig, saveConfig, drivers,
+      contextCapacity: capacity,
       prepare: async (engine, settings) => {
         if (closing) throw new Error('Camellia is closing');
         if (commandBusy) throw new Error('Wait for server settings maintenance to finish');
@@ -75,7 +78,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
           if (settings?.connection === 'subscription') return;
           if (!config.hasRoutes(routes())) throw new Error('Configure API routes in the server data directory before sending');
           if (!router) {
-            router = require('../api/api-router').startApiRouter({ configPath: routeFile, quotaCheck: { enabled: false } });
+            router = require('../api/api-router').startApiRouter({ configPath: routeFile, quotaCheck: { enabled: false }, onContextEvidence: evidence => capacity.observe(evidence) });
           }
           try { await router.ready; }
           catch (error) { const failed = router; router = null; await failed?.stop(); throw error; }

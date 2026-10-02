@@ -86,6 +86,307 @@ function subscriptionFixture(t, engine = 'codex') {
   return { ...h, state };
 }
 
+for (const engine of ENGINES) test(engine + ' reuses a native context across turns and restart without replaying compacted history', async context => {
+  const h = ['codex', 'kimi'].includes(engine) ? subscriptionFixture(context, engine) : fixture(context);
+  h.drivers[engine].nativeAutoCompaction = engine !== 'pi';
+  const first = await h.manager.send(engine, { prompt: 'Original task' });
+  const c = h.manager.get(first.sessionId);
+  h.manager.append(c, { role: 'tool', text: 'ALREADY_IN_NATIVE_CONTEXT '.repeat(30000) });
+  h.manager.capture(engine, { type: 'gui:usage', runId: h.sent.at(-1).session.gen,
+    usage: { input_tokens: 1000, context_window: 20000 } });
+  h.finish(engine); await first.done;
+  const nativeId = c.segments[engine].nativeId;
+  const manager = h.restart();
+  manager.compact = async () => { throw new Error('The native context should have been reused'); };
+  const next = await manager.send(engine, { sessionId: c.id, prompt: 'Continue' });
+  assert.equal(h.sent.at(-1).opts.sessionId, nativeId);
+  assert.equal(h.sent.at(-1).prompt, 'Continue');
+  if (['codex', 'kimi'].includes(engine)) assert.equal(manager.get(c.id).segments[engine].contextSettings.subscriptionId, 'a');
+  h.finish(engine); await next.done;
+  assert.equal(Object.keys(manager.get(c.id).modelSessions || {}).length, 0);
+});
+
+for (const engine of ['codex', 'kimi']) for (const location of ['active', 'parked'])
+test(engine + ' repairs legacy account-less ' + location + ' bindings before replay pressure triggers compaction', async context => {
+  const h = subscriptionFixture(context, engine);
+  h.drivers[engine].nativeCompaction = true;
+  const first = await h.manager.send(engine, { prompt: 'Original task' });
+  const c = h.manager.get(first.sessionId);
+  h.manager.append(c, { role: 'tool', text: 'OLD_TOOL_DATA '.repeat(80000) });
+  h.finish(engine); await first.done;
+  const segment = c.segments[engine], nativeId = segment.nativeId;
+  delete segment.contextSettings.subscriptionId;
+  segment.bindingKey = h.manager.bindingKey(engine, segment.contextSettings);
+  if (location === 'parked') {
+    c.modelSessions = { [segment.bindingKey]: { engine, ...segment } };
+    delete c.segments[engine];
+  }
+  h.manager.save(c);
+  const manager = h.restart();
+  manager.compact = async () => { throw new Error('Legacy native context was needlessly rebuilt'); };
+  const next = await manager.send(engine, { sessionId: c.id, prompt: 'Continue' });
+  assert.equal(h.sent.at(-1).opts.sessionId, nativeId);
+  assert.equal(h.sent.at(-1).prompt, 'Continue');
+  h.finish(engine); await next.done;
+  assert.equal(manager.get(c.id).segments[engine].contextSettings.subscriptionId, 'a');
+  assert.equal(Object.keys(manager.get(c.id).modelSessions || {}).length, 0);
+});
+
+for (const engine of ['codex', 'kimi']) test(engine + ' same-account subscription continues to use native manual compaction', async context => {
+  const h = subscriptionFixture(context, engine);
+  let compactedId;
+  h.drivers[engine].nativeCompaction = true;
+  const ensure = h.drivers[engine].ensure;
+  h.drivers[engine].ensure = opts => {
+    const session = ensure(opts);
+    session.compact = async () => { compactedId = opts.sessionId; };
+    return session;
+  };
+  const first = await h.manager.send(engine, { prompt: 'Task' }); h.finish(engine); await first.done;
+  const nativeId = h.manager.get(first.sessionId).segments[engine].nativeId;
+  const second = await h.manager.send(engine, { sessionId: first.sessionId, prompt: 'Continue' }); h.finish(engine); await second.done;
+  const result = await h.manager.compact(first.sessionId);
+  assert.equal(result.native, true);
+  assert.equal(compactedId, nativeId);
+  assert.equal(h.sent.length, 2);
+});
+
+test('subscription account changes still open a fresh native session after repairing an old binding', async context => {
+  const h = subscriptionFixture(context);
+  const first = await h.manager.send('codex', { prompt: 'Task' }); h.finish('codex'); await first.done;
+  const c = h.manager.get(first.sessionId), segment = c.segments.codex;
+  delete segment.contextSettings.subscriptionId;
+  segment.bindingKey = h.manager.bindingKey('codex', segment.contextSettings);
+  h.state.accounts[0].exhausted = true;
+  const next = await h.manager.send('codex', { sessionId: c.id, prompt: 'Continue on another account' });
+  assert.notEqual(h.sent.at(-1).opts.sessionId, segment.nativeId);
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'b');
+  assert.match(h.sent.at(-1).prompt, /Original|Task/);
+  h.finish('codex'); await next.done;
+});
+
+test('engine fallback maps a million-character history once and merges short summaries without changing turn effort', async context => {
+  const h = subscriptionFixture(context), manager = h.manager;
+  const first = await manager.send('codex', { prompt: 'Original task' }); h.finish('codex'); await first.done;
+  const c = manager.get(first.sessionId), nativeBefore = c.segments.codex.nativeId;
+  c.engineSettings.codex.thinkingBudget = 'max';
+  for (let n = 0; n < 10; n++) manager.append(c, { role: 'tool', text: 'FRAGMENT_' + n + ' ' + 'x'.repeat(100000) });
+  const pending = manager.compact(c.id, { portable: true, destination: { engine: 'codex', settings: manager.settings('codex', c.id) } });
+  await h.flush();
+  const requests = [];
+  while (manager.busy(c.id)) {
+    assert.ok(requests.length < 6, 'a million ASCII characters need only a few bounded summary requests');
+    const sent = h.sent.at(-1); requests.push(sent.prompt);
+    assert.equal(sent.opts.settings.thinkingBudget, 'low');
+    assert.equal(manager.settings('codex', c.id).thinkingBudget, 'max');
+    assert.equal(c.segments.codex.nativeId, nativeBefore, 'temporary summaries cannot move the real native binding');
+    const merge = /Summaries to merge/.test(sent.prompt);
+    if (!merge) assert.doesNotMatch(sent.prompt, /PART_SUMMARY/);
+    h.finish('codex', 'success', merge ? 'Merged result with constraints and next steps' : 'PART_SUMMARY ' + requests.length);
+    await h.flush();
+  }
+  const result = await pending;
+  assert.equal(requests.length, 4);
+  for (let n = 0; n < 10; n++) assert.ok(requests.some(prompt => prompt.includes('FRAGMENT_' + n)));
+  assert.match(requests.at(-1), /PART_SUMMARY 1[\s\S]*PART_SUMMARY 2[\s\S]*PART_SUMMARY 3/);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /Merged result/);
+  assert.equal(manager.settings('codex', c.id).thinkingBudget, 'max');
+  const next = await manager.send('codex', { sessionId: c.id, prompt: 'Continue after summary' });
+  assert.equal(h.sent.at(-1).opts.settings.thinkingBudget, 'max');
+  assert.doesNotMatch(h.sent.at(-1).prompt, /FRAGMENT_/);
+  h.finish('codex'); await next.done;
+});
+
+test('engine compaction deadline stops a stalled summary and retains native context and completed checkpoints', async context => {
+  const h = subscriptionFixture(context), manager = h.manager;
+  const first = await manager.send('codex', { prompt: 'Task' }); h.finish('codex'); await first.done;
+  const c = manager.get(first.sessionId), nativeId = c.segments.codex.nativeId;
+  manager.append(c, { role: 'tool', text: 'x'.repeat(600000) });
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const pending = manager.compact(c.id, { portable: true });
+  const rejected = assert.rejects(pending, /timed out[\s\S]*original history is retained/);
+  await h.flush();
+  h.finish('codex', 'success', 'Completed first fragment');
+  await h.flush();
+  const stalled = h.sent.at(-1).session;
+  context.mock.timers.tick(120001);
+  await rejected;
+  assert.equal(stalled.running, false);
+  assert.equal(manager.busy(c.id), false);
+  assert.equal(c.segments.codex.nativeId, nativeId);
+  assert.equal(c.interrupted, false, 'an auxiliary failure cannot mark the real turn interrupted');
+  assert.equal(c.compactionRecovery.summary, 'Completed first fragment');
+  assert.equal(manager.rows(c).some(row => row.file), false);
+});
+
+test('engine compaction keeps a five-minute total budget even when requests keep progressing', async context => {
+  const h = fixture(context), manager = h.manager, c = manager.create('codex');
+  manager.append(c, { role: 'tool', text: 'x'.repeat(600000) });
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const pending = manager.compact(c.id);
+  const rejected = assert.rejects(pending, /timed out/);
+  for (let n = 0; n < 2; n++) {
+    await h.flush();
+    context.mock.timers.tick(110000);
+    h.finish('codex', 'success', 'Completed fragment ' + n);
+  }
+  await h.flush();
+  assert.match(h.sent.at(-1).prompt, /Summaries to merge/);
+  context.mock.timers.tick(80001);
+  await rejected;
+  assert.equal(manager.busy(c.id), false);
+  assert.equal(c.lastCompaction.outcome, 'failed');
+  assert.ok(c.lastCompaction.totalMs <= 300001);
+  assert.ok(c.compactionRecovery.cache.length > 0);
+  assert.equal(manager.rows(c).some(row => row.file), false);
+});
+
+test('a long edited history can finish more than 32 fast requests within five minutes', async context => {
+  const h = subscriptionFixture(context), manager = h.manager, c = manager.create('codex');
+  c.engineSettings.codex = { connection: 'subscription', contextWindow: 258400 };
+  manager.append(c, { role: 'user', text: 'Original goal and constraints' });
+  for (let index = 0; index < 60; index++) manager.append(c, { role: 'tool', text: 'SOURCE_' + index + ' ' + '中'.repeat(146000) });
+  const old = manager.append(c, { role: 'user', text: 'SUPERSEDED_REQUEST' });
+  manager.append(c, { role: 'assistant', text: 'SUPERSEDED_REPLY' });
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  let failure;
+  const pending = manager.send('codex', { sessionId: c.id, editSeq: old.seq, prompt: 'REVISED_REQUEST' })
+    .catch(error => { failure = error; });
+  const requests = [], covered = new Set();
+  await h.flush();
+  while (manager.switching.has(c.id)) {
+    assert.ok(requests.length < 128, 'compaction remains bounded');
+    const prompt = h.sent.at(-1).prompt;
+    requests.push(prompt);
+    assert.doesNotMatch(prompt, /SUPERSEDED_REQUEST|SUPERSEDED_REPLY|REVISED_REQUEST/);
+    for (const match of prompt.matchAll(/SOURCE_(\d+)/g)) covered.add(Number(match[1]));
+    context.mock.timers.tick(3000);
+    h.finish('codex', 'success', /Summaries to merge/.test(prompt) ? 'Complete working context' : 'Completed fragment ' + requests.length);
+    await h.flush();
+  }
+  const revised = await pending;
+  assert.ifError(failure);
+  assert.ok(requests.length > 32);
+  assert.equal(covered.size, 60);
+  assert.ok(c.lastCompaction.totalMs < 300000);
+  assert.match(h.sent.at(-1).prompt, /Complete working context[\s\S]*REVISED_REQUEST/);
+  assert.equal(h.sent.filter(item => item.prompt.includes('REVISED_REQUEST')).length, 1);
+  h.finish('codex'); await revised.done;
+  assert.equal(manager.busy(c.id), false);
+});
+
+test('retrying engine compaction after restart reuses completed fragments without publishing partial history', async context => {
+  const h = subscriptionFixture(context), manager = h.manager, c = manager.create('codex');
+  manager.append(c, { role: 'user', text: 'Task constraints' });
+  manager.append(c, { role: 'tool', text: 'x'.repeat(600000) });
+  manager.save(c);
+  const before = manager.rows(c);
+  const first = manager.compact(c.id, { portable: true });
+  const rejected = assert.rejects(first, /Provider unavailable/);
+  await h.flush();
+  const completedPrompt = h.sent.at(-1).prompt;
+  h.finish('codex', 'success', 'COMPLETED_FRAGMENT');
+  await h.flush();
+  const unfinishedPrompt = h.sent.at(-1).prompt;
+  h.finish('codex', 'error', 'Provider unavailable');
+  await rejected;
+  assert.deepEqual(manager.rows(c).filter(row => !row.internal), before);
+  const restarted = h.restart(), restored = restarted.get(c.id);
+  const offset = h.sent.length;
+  const retry = restarted.compact(c.id, { portable: true });
+  await h.flush();
+  assert.equal(h.sent.at(-1).prompt, unfinishedPrompt);
+  h.finish('codex', 'success', 'REMAINING_FRAGMENT');
+  await h.flush();
+  assert.match(h.sent.at(-1).prompt, /COMPLETED_FRAGMENT[\s\S]*REMAINING_FRAGMENT/);
+  h.finish('codex', 'success', 'FINAL_CONTEXT');
+  const result = await retry;
+  assert.ok(h.sent.slice(offset).every(item => item.prompt !== completedPrompt));
+  assert.equal(restored.lastCompaction.reusedRequests, 1);
+  assert.equal(restored.compactionRecovery, undefined);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /FINAL_CONTEXT/);
+});
+
+test('router summary deadline aborts all pending fragments without publishing a partial context', async context => {
+  const signals = [];
+  const h = fixture(context, { summarize: { available: () => true, run: ({ signal }) => new Promise((resolve, reject) => {
+    signals.push(signal);
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }) } });
+  const c = h.manager.create('kimi');
+  h.manager.append(c, { role: 'tool', text: 'x'.repeat(500000) });
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const pending = h.manager.compact(c.id);
+  const rejected = assert.rejects(pending, /timed out/);
+  await h.flush();
+  assert.ok(signals.length > 1);
+  context.mock.timers.tick(300001);
+  await rejected;
+  assert.ok(signals.every(signal => signal.aborted));
+  assert.equal(h.manager.busy(c.id), false);
+  assert.equal(c.compactionRecovery, undefined);
+  assert.equal(h.manager.rows(c).some(row => row.file), false);
+});
+
+test('router compaction keeps a five-minute total budget across responsive batches', async context => {
+  const waiting = [];
+  const h = fixture(context, { summarize: { available: () => true, run: ({ signal }) => new Promise((resolve, reject) => {
+    waiting.push(resolve);
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }) } });
+  const manager = h.manager, c = manager.create('kimi');
+  c.engineSettings.kimi = { contextWindow: 6000 };
+  for (let index = 0; index < 17; index++) manager.append(c, { role: 'user', text: 'HISTORY_' + index + ' ' + 'x'.repeat(7000) });
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const pending = manager.compact(c.id);
+  const rejected = assert.rejects(pending, /timed out/);
+  await h.flush();
+  for (let batch = 0; batch < 2; batch++) {
+    assert.ok(waiting.length > 0);
+    context.mock.timers.tick(110000);
+    for (const resolve of waiting.splice(0)) resolve({ text: 'Complete batch summary' });
+    await h.flush();
+  }
+  context.mock.timers.tick(80001);
+  await rejected;
+  assert.equal(manager.busy(c.id), false);
+  assert.ok(c.lastCompaction.totalMs <= 300001);
+  assert.ok(c.compactionRecovery.cache.length > 0);
+  assert.equal(manager.rows(c).some(row => row.file), false);
+});
+
+for (const changed of ['none', 'history', 'model', 'legacy']) test('router retry checks checkpoint identity: ' + changed, async context => {
+  let phase = 'first';
+  const calls = [];
+  const h = fixture(context, { summarize: { available: () => true, async run(options) {
+    calls.push({ phase, ...options });
+    if (phase === 'first' && options.kind === 'reduce') throw new Error('Merge unavailable');
+    return { text: options.kind === 'reduce' ? 'COMPLETE_CONTEXT' : 'FRAGMENT_SUMMARY' };
+  } } });
+  const manager = h.manager, c = manager.create('kimi');
+  manager.append(c, { role: 'tool', text: 'x'.repeat(500000) });
+  await assert.rejects(manager.compact(c.id), /Merge unavailable/);
+  assert.ok(c.compactionRecovery.cache.length > 1);
+  if (changed === 'history') manager.append(c, { role: 'tool', text: 'Updated constraints' });
+  if (changed === 'model') manager.saveSettings('kimi', { sessionId: c.id, model: 'other' });
+  if (changed === 'legacy') {
+    delete c.compactionRecovery.cache;
+    delete c.compactionRecovery.key;
+  }
+  phase = 'retry';
+  const result = await manager.compact(c.id);
+  const retried = calls.filter(call => call.phase === 'retry');
+  if (changed === 'none') {
+    assert.deepEqual(retried.map(call => call.kind), ['reduce']);
+    assert.ok(c.lastCompaction.reusedRequests > 1);
+  } else {
+    assert.ok(retried.some(call => call.kind === 'map'));
+    assert.equal(c.lastCompaction.reusedRequests, undefined);
+  }
+  assert.equal(c.compactionRecovery, undefined);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /COMPLETE_CONTEXT/);
+});
+
 for (const engine of ['codex', 'kimi']) {
   test(engine + ' disabled quota switching retains selected exhausted account and never retries quota errors', async t => {
     const h = subscriptionFixture(t, engine);
@@ -208,7 +509,9 @@ test('native manual compaction retains thread/history and resumes without replay
   assert.equal(harness.sent.length, 1);
   assert.equal(manager.load('codex', conversation.id).compaction.state, 'running');
   complete({ ok: true });
-  assert.equal((await pending).native, true);
+  const result = await pending;
+  assert.equal(result.native, true);
+  assert.equal(typeof result.durationMs, 'number');
   assert.equal(conversation.segments.codex.nativeId, nativeId);
   assert.equal(conversation.segments.codex.compactFile, undefined);
   assert.deepEqual(manager.messages(conversation).slice(0, messages.length), messages);
@@ -233,9 +536,15 @@ test('native-owned context bypasses proactive thresholds but still shows native 
   assert.equal(manager.recovering.size, 0);
   manager.capture('codex', { type: 'gui:compaction', state: 'running', runId: session.gen });
   assert.equal(manager.load('codex', conversation.id).compaction.state, 'running');
+  assert.equal(manager.load('codex', conversation.id).compaction.native, true);
+  assert.equal(manager.load('codex', conversation.id).compaction.engine, 'codex');
+  assert.equal(harness.events.findLast(event => event.type === 'gui:compaction').native, true);
   manager.capture('codex', { type: 'gui:compaction', state: 'completed', runId: session.gen });
   assert.equal(manager.load('codex', conversation.id).compaction, null);
-  assert.equal(manager.rows(conversation).at(-1).compaction.native, true);
+  const notice = manager.rows(conversation).at(-1);
+  assert.equal(notice.compaction.native, true);
+  assert.equal(typeof notice.compaction.durationMs, 'number');
+  assert.ok(notice.compaction.durationMs >= 0);
   harness.finish('codex'); await run.done;
   assert.equal(harness.events.filter(event => event.type === 'result').length, 2);
 });
@@ -317,11 +626,11 @@ test('a replayed history over the Codex input character cap compacts before send
   await waitFor(() => /compact working context/.test(harness.sent.at(-1)?.prompt || ''));
   // One engine summary request has to stay under the same cap as the replay.
   assert.ok(harness.sent.at(-1).prompt.length <= 1 << 20);
-  for (let attempt = 0; attempt < 16 && /Next history fragment/.test(harness.sent.at(-1).prompt); attempt++) {
+  for (let attempt = 0; attempt < 16 && /compact working context/.test(harness.sent.at(-1).prompt); attempt++) {
     harness.finish('codex', 'success', '## Summary of the oversized turn');
     await harness.flush();
   }
-  await waitFor(() => harness.sent.length > 1 && !/Next history fragment/.test(harness.sent.at(-1).prompt));
+  await waitFor(() => harness.sent.length > 1 && !/compact working context/.test(harness.sent.at(-1).prompt));
   assert.match(harness.sent.at(-1).prompt, /Continue/);
   assert.doesNotMatch(harness.sent.at(-1).prompt, /Oversized tool output/);
   assert.ok(harness.manager.get(conversation.id).segments.codex.compactFile);
@@ -342,7 +651,7 @@ test('a Markdown handoff compacts a Codex replay over the input character cap fi
   const switching = harness.manager.switchEngine(conversation.id, 'kimi', 'markdown');
   await waitFor(() => /compact working context/.test(harness.sent.at(-1)?.prompt || ''));
   assert.ok(harness.sent.at(-1).prompt.length <= 1 << 20);
-  for (let attempt = 0; attempt < 16 && /Next history fragment/.test(harness.sent.at(-1).prompt); attempt++) {
+  for (let attempt = 0; attempt < 16 && /compact working context/.test(harness.sent.at(-1).prompt); attempt++) {
     harness.finish('codex', 'success', '## Summary of the oversized turn');
     await harness.flush();
   }
@@ -1905,6 +2214,58 @@ test('switching the model parks the native session and returns to its own thread
   assert.equal(parkedNow[0].nativeId, switched.nativeId, 'the other model is parked for its own return');
 });
 
+test('a model change made while a turn runs is deferred to the next message', async t => {
+  const f = fixture(t);
+  let model = 'model-one';
+  f.drivers.codex.settings = id => ({ model, connection: 'api' });
+  f.drivers.codex.saveSettings = patch => { if (patch.model) model = patch.model; return f.drivers.codex.settings(); };
+  const first = await f.manager.send('codex', { prompt: 'First task' });
+  const nativeBefore = f.manager.get(first.sessionId).segments.codex.nativeId || f.sent.at(-1).session.sessionId;
+  // The turn is still running; the change is accepted now and applies next.
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'model-two' });
+  assert.equal(f.sent.at(-1).opts.settings.model, 'model-one', 'the running turn keeps the model it started with');
+  f.finish('codex');
+  await first.done;
+  assert.equal(f.sent.length, 1, 'the deferred change did not start a second turn');
+  assert.equal(f.manager.settings('codex', first.sessionId).model, 'model-two');
+
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Queued message' });
+  f.finish('codex');
+  assert.equal(f.sent.at(-1).opts.settings.model, 'model-two', 'the next message uses the updated model');
+  const conversation = f.manager.get(first.sessionId);
+  assert.notEqual(conversation.segments.codex.nativeId, nativeBefore, 'the new model does not resume the old native thread');
+  assert.equal(Object.values(conversation.modelSessions).length, 1, 'the previous model is parked for its own return');
+
+  // A process-level setting still waits for the turn to finish.
+  await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Running again' });
+  assert.throws(() => f.manager.saveSettings('codex', { sessionId: first.sessionId, connection: 'subscription' }), /finish or stop/);
+  f.finish('codex');
+});
+
+test('Codex Fast mode stays in its conversation, survives reload, and changes only the next turn', async t => {
+  const f = subscriptionFixture(t);
+  f.drivers.codex.saveSettings = () => { throw new Error('Fast mode must not change global settings'); };
+  const first = await f.manager.send('codex', { prompt: 'First task', fastMode: true });
+  const nativeId = f.manager.get(first.sessionId).segments.codex.nativeId;
+  assert.equal(f.sent[0].opts.settings.fastMode, true);
+  const second = f.manager.create('codex');
+  assert.notEqual(f.manager.settings('codex', second.id).fastMode, true);
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, fastMode: false });
+  assert.equal(f.sent[0].opts.settings.fastMode, true, 'the running request stays pinned');
+  f.finish('codex'); await first.done;
+  const next = await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Use standard speed' });
+  assert.equal(f.sent.at(-1).opts.settings.fastMode, false);
+  assert.equal(f.sent.at(-1).opts.sessionId, nativeId, 'a speed change retains the native thread');
+  f.finish('codex'); await next.done;
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, fastMode: true });
+  const restored = f.restart();
+  assert.equal(restored.settings('codex', first.sessionId).fastMode, true);
+  assert.notEqual(restored.settings('codex', second.id).fastMode, true);
+  assert.notEqual(restored.settings('kimi', first.sessionId).fastMode, true);
+  assert.throws(() => restored.saveSettings('kimi', { sessionId: first.sessionId, fastMode: true }), /Codex conversation/);
+  assert.throws(() => restored.saveSettings('codex', { sessionId: first.sessionId, fastMode: 'true' }), /Codex conversation/);
+});
+
 test('saving the same model keeps the native session instead of replaying history', async t => {
   const f = fixture(t);
   f.drivers.codex.settings = () => ({ model: 'model-one', connection: 'api' });
@@ -2146,7 +2507,7 @@ test('portable compaction retains recent interactions exactly across restart and
   assert.ok(conversation.lastCompaction.retainedChars > 0);
   assert.ok(conversation.lastCompaction.chunks[0].firstDeltaMs >= 0);
   assert.equal(conversation.lastCompaction.chunks[0].usage.cache_read_input_tokens, 80);
-  assert.ok(statuses.some(value => value.compaction?.chunk === 1 && value.compaction.finalChunk));
+  assert.ok(statuses.some(value => value.compaction?.chunk === 1 && value.compaction.stage === 'summarizing'));
   assert.ok(statuses.some(value => value.compaction?.stage === 'saving'));
   assert.ok(logs.some(value => value.includes('context compaction metrics:')));
   assert.ok(logs.every(value => !/EXACT_TOOL_RESULT|RECENT_TASK_MARKER|SUMMARY_OF_OLD_TASK/.test(value)));
@@ -2168,8 +2529,8 @@ test('portable summary enforces a bounded output without replacing context on fa
   const pending = manager.compact(conversation.id);
   const rejected = assert.rejects(pending, /summary is too large/);
   await harness.flush();
-  assert.match(harness.sent.at(-1).prompt, /under 12000 characters/);
-  for (let attempt = 0; attempt < 3; attempt++) {
+  assert.match(harness.sent.at(-1).prompt, /under 2000 characters/);
+  for (let attempt = 0; attempt < 4; attempt++) {
     harness.finish('dsh', 'success', 'x'.repeat(12001));
     await harness.flush();
   }
@@ -2177,7 +2538,7 @@ test('portable summary enforces a bounded output without replacing context on fa
   assert.equal(manager.rows(conversation).some(row => row.file), false);
   assert.equal(conversation.lastCompaction.outcome, 'failed');
   assert.equal(conversation.lastCompaction.chunks[0].outputChars, 12001);
-  assert.equal(conversation.lastCompaction.requests, 3);
+  assert.equal(conversation.lastCompaction.requests, 4);
 });
 
 test('an oversized portable summary is shortened without losing the processed history', async context => {
@@ -2188,7 +2549,7 @@ test('an oversized portable summary is shortened without losing the processed hi
   harness.finish('codex', 'success', 'TASK_TO_PRESERVE ' + 'x'.repeat(12000));
   await harness.flush();
   assert.match(harness.sent.at(-1).prompt, /TASK_TO_PRESERVE/);
-  assert.match(harness.sent.at(-1).prompt, /previous answer exceeded/);
+  assert.match(harness.sent.at(-1).prompt, /previous answer was too long/);
   harness.finish('codex', 'success', 'Short summary preserving TASK_TO_PRESERVE');
   const result = await pending;
   assert.match(fs.readFileSync(result.file, 'utf8'), /TASK_TO_PRESERVE/);
@@ -2690,7 +3051,7 @@ test('stopping pre-send compaction during setup sends neither summary nor task',
   let release;
   f.manager.prepare = () => new Promise(resolve => { release = resolve; });
   const rejected = assert.rejects(f.manager.send('codex', { sessionId: conversation.id, prompt: 'Do not run' }), /canceled/);
-  assert.deepEqual(statuses.at(-1), { sessionId: conversation.id, text: 'Compacting context before continuing the task…', compaction: { state: 'running' } });
+  assert.deepEqual(statuses.at(-1), { sessionId: conversation.id, text: 'Compacting context before continuing the task…', compaction: { engine: 'codex', state: 'running', native: false } });
   assert.equal(f.manager.load('codex', conversation.id).compaction.state, 'running');
   await f.manager.cancel({ sessionId: conversation.id });
   release();
@@ -2744,7 +3105,8 @@ test('stopping a later summary chunk discards partial compaction and the pending
   f.finish('kimi', 'success', 'Partial summary');
   await f.flush();
   assert.equal(f.sent.length, 2);
-  assert.match(f.sent.at(-1).prompt, /Partial summary/);
+  assert.doesNotMatch(f.sent.at(-1).prompt, /Partial summary/);
+  assert.equal(conversation.compactionRecovery.summary, 'Partial summary');
   await f.manager.cancel({ sessionId: conversation.id });
   await rejected;
   assert.equal(f.sent.length, 2);
@@ -3004,6 +3366,172 @@ test('learned context budgets persist and stay isolated by model, connection and
   assert.equal(restarted.contextPressure(restarted.get(conversation.id), 'kimi', settings).cap, 16384);
 });
 
+// Exercise the actual Goal controller and steering/edit commands against a
+// clock advanced by five hours. The native fixture retains its thread across
+// rounds and reports interruption acknowledgement like Codex app-server does.
+async function longGoalFixture(context) {
+  const h = subscriptionFixture(context), turns = new Map();
+  let turn = 0;
+  h.drivers.codex.nativeAutoCompaction = true;
+  h.drivers.codex.nativeCompaction = true;
+  const ensure = h.drivers.codex.ensure;
+  h.drivers.codex.ensure = options => {
+    const session = ensure(options), send = session.sendUserMessage;
+    session.sendUserMessage = prompt => {
+      const base = options.lastTurnId || turns.get(session.sessionId);
+      send(prompt);
+      h.manager.capture('codex', { type: 'system', subtype: 'init', runId: session.gen,
+        session_id: session.sessionId, editBaseTurnId: base });
+      session.turnId = 'native-turn-' + (++turn);
+      turns.set(session.sessionId, session.turnId);
+      return true;
+    };
+    session.steerUserMessage = async () => ({ turnId: session.turnId });
+    session.interrupt = () => {
+      session.running = false;
+      h.manager.capture('codex', { type: 'result', subtype: 'stopped', result: '', runId: session.gen,
+        session_id: session.sessionId, nativeContextRetained: true });
+    };
+    return session;
+  };
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  const started = await h.manager.command('codex', 'goal-start', { objective: 'Implement the complete multi-stage plan' });
+  const c = h.manager.get(started.sessionId), goal = h.manager.goalFor(c.id);
+  for (let round = 0; round < 12; round++) {
+    goal.drive(); await h.flush();
+    const session = h.sent.at(-1).session;
+    h.manager.capture('codex', { type: 'gui:tool', id: 'work-' + round, name: 'exec', status: 'completed',
+      output: 'ROUND_' + round + '_WORK ' + 'x'.repeat(round === 11 ? 66000 : 790000), runId: session.gen });
+    if (round < 9) {
+      for (const state of ['running', 'completed']) h.manager.capture('codex', { type: 'gui:compaction', state, runId: session.gen });
+    }
+    context.mock.timers.tick(25 * 60000);
+    if (round < 11) h.finish('codex', 'success', 'Work remains; continue the plan.');
+  }
+  assert.equal(goal.view().roundsStarted, 12);
+  assert.equal(h.manager.rows(c).filter(row => row.compaction?.native).length, 9);
+  h.manager.compact = async () => { throw new Error('Long Goal follow-up must not summarize the full history'); };
+  return { h, id: c.id, nativeId: c.segments.codex.nativeId, lastTurnId: c.segments.codex.editCheckpoint.lastTurnId };
+}
+
+for (const restart of [false, true]) for (const mode of ['follow-up', 'edit-steered'])
+test(`five-hour Goal -> pause -> ${mode}, restart=${restart}, reuses native context`, async context => {
+  const { h, id, nativeId, lastTurnId } = await longGoalFixture(context);
+  let manager = h.manager, c = manager.get(id), query;
+  if (mode === 'edit-steered') {
+    query = await manager.steer('codex', { sessionId: id, runId: manager.active.get(id).facade.gen, prompt: 'ORIGINAL_PROGRESS_QUERY' });
+    manager.append(c, { role: 'tool', engine: 'codex', text: 'DISCARDED_AFTER_QUERY' });
+  }
+  await manager.command('codex', 'goal-pause', { sessionId: id });
+  assert.equal(manager.goalFor(id).view().elapsedMs, 5 * 60 * 60000);
+  assert.equal(c.segments.codex.cursor, c.seq);
+  if (restart) {
+    h.manager = manager = h.restart(); c = manager.get(id);
+    manager.compact = async () => { throw new Error('Restart must retain the native Goal context'); };
+  }
+  const count = h.sent.length;
+  const revised = await manager.send('codex', { sessionId: id, prompt: 'Explain why progress is slow',
+    ...(query ? { editSeq: query.userSeq } : {}) });
+  const sent = h.sent.at(-1);
+  assert.equal(h.sent.length, count + 1);
+  assert.equal(sent.opts.sessionId, nativeId);
+  assert.ok(sent.prompt.length < 100000);
+  assert.doesNotMatch(sent.prompt, /ROUND_0_WORK|ORIGINAL_PROGRESS_QUERY|DISCARDED_AFTER_QUERY/);
+  if (mode === 'edit-steered') {
+    assert.equal(sent.opts.fork, true);
+    assert.equal(sent.opts.lastTurnId, lastTurnId);
+    assert.match(sent.prompt, /ROUND_11_WORK/);
+  } else {
+    assert.equal(sent.opts.fork, undefined);
+    assert.equal(sent.prompt, 'Explain why progress is slow');
+  }
+  h.finish('codex', 'success', 'Progress explanation'); await revised.done;
+  // A second edit must retain the same replay prefix as the first fork.
+  const again = await manager.send('codex', { sessionId: id, editSeq: revised.userSeq, prompt: 'Explain the remaining work' });
+  assert.ok(h.sent.at(-1).prompt.length < 100000);
+  if (mode === 'edit-steered') assert.match(h.sent.at(-1).prompt, /ROUND_11_WORK/);
+  assert.doesNotMatch(h.sent.at(-1).prompt, /ROUND_0_WORK|ORIGINAL_PROGRESS_QUERY|DISCARDED_AFTER_QUERY|Progress explanation/);
+  h.finish('codex'); await again.done;
+  assert.equal(manager.goalFor(id).view().phase, 'paused');
+  assert.equal(manager.goalFor(id).view().roundsStarted, 12);
+  assert.equal(manager.goalFor(id).timer, null);
+});
+
+function capacityFixture(harness) {
+  const provider = { id: 'provider', enabled: true, baseUrl: 'https://mock.invalid/v1', protocol: 'dual',
+    keys: [{ id: 'key', key: 'local-only', enabled: true }], models: [{ id: 'fixture', upstream: 'fixture', protocol: 'auto', maxContext: 131072 }] };
+  const config = { enabled: true, providers: [provider] };
+  const capacity = require('../src/api/context-capacity').createContextCapacity({ file: path.join(harness.root, 'capacity.json'),
+    getConfig: () => config, fetchImpl: () => { throw new Error('No upstream requests'); } });
+  harness.args.contextCapacity = harness.manager.contextCapacity = capacity;
+  const limit = (tokens, protocol = 'anthropic') => capacity.observe({ provider, key: provider.keys[0], model: provider.models[0], protocol,
+    ok: false, status: 400, detail: { error: { message: 'maximum context length is ' + tokens + ' tokens' } } });
+  return { provider, capacity, limit };
+}
+
+test('route evidence bounds native usage, excludes subscriptions, and preserves backoff across provider keys', t => {
+  const h = fixture(t), { provider, limit } = capacityFixture(h);
+  const manager = h.manager, conversation = manager.create('claude');
+  const settings = { model: 'fixture', connection: 'api', contextWindow: 131072 };
+  conversation.segments.claude = { nativeId: 'native', isolated: true, contextSettings: settings,
+    contextUsage: { ...settings, cap: 131072, used: 14000 } };
+  h.drivers.claude.nativeAutoCompaction = true;
+  limit(16000);
+  const pressure = manager.contextPressure(conversation, 'claude', settings);
+  assert.equal(pressure.cap, 16000);
+  assert.equal(pressure.source, 'usage');
+  assert.equal(pressure.budgetSource, 'confirmed-upper-bound');
+  assert.equal(pressure.capacity[0].confirmedUpperBound, 16000);
+  assert.equal(manager.usesNativeCompaction(conversation, 'claude', settings), false);
+  assert.equal(manager.contextCap('codex', settings), 131072, 'Chat Completions does not use Messages evidence');
+  assert.equal(manager.contextCap('claude', { ...settings, connection: 'subscription' }), 131072);
+  assert.equal(manager.reduceContextBudget(conversation, 'claude', settings, 'context_length_exceeded'), 8000);
+  const restored = h.restart();
+  assert.equal(restored.contextPressure(restored.get(conversation.id), 'claude', settings).cap, 8000);
+  provider.keys[0].key = 'replacement';
+  assert.equal(restored.contextPressure(restored.get(conversation.id), 'claude', settings).cap, 8000);
+  provider.keys.push({ id: 'second', key: 'second-local-only', enabled: true });
+  provider.keys[0].enabled = false;
+  assert.equal(restored.contextPressure(restored.get(conversation.id), 'claude', settings).cap, 8000);
+  provider.baseUrl = 'https://other.mock.invalid/v1';
+  assert.equal(restored.contextPressure(restored.get(conversation.id), 'claude', settings).cap, 131072);
+});
+
+test('a newly learned route limit triggers compaction before a native session reaches its old window', async t => {
+  const summaries = [];
+  const h = fixture(t, { summarize: { available: () => true, run: async request => { summaries.push(request); return { text: 'ROUTE_BUDGET_SUMMARY' }; } } });
+  const { limit } = capacityFixture(h);
+  h.drivers.claude.nativeAutoCompaction = true;
+  const first = await h.manager.send('claude', { prompt: 'Remember the task' });
+  h.finish('claude'); await first.done;
+  const conversation = h.manager.get(first.sessionId);
+  h.manager.append(conversation, { role: 'tool', text: 'Completed work. '.repeat(6000) });
+  conversation.segments.claude.cursor = conversation.seq;
+  h.manager.save(conversation);
+  limit(16000);
+  const second = await h.manager.send('claude', { sessionId: first.sessionId, prompt: 'Continue' });
+  assert.ok(summaries.length > 0);
+  assert.equal(conversation.lastCompaction.cap, 16000);
+  assert.match(h.sent.at(-1).prompt, /ROUTE_BUDGET_SUMMARY/);
+  h.finish('claude'); await second.done;
+});
+
+test('router compaction sizes its requests using the summary transport protocol', async t => {
+  const calls = [];
+  const h = fixture(t, { summarize: { available: () => true, run: async options => { calls.push(options); return { text: 'SHORT_SUMMARY' }; } } });
+  const { limit } = capacityFixture(h);
+  limit(8192, 'openai');
+  const conversation = h.manager.create('claude');
+  assert.equal(h.manager.contextCap('claude', { model: 'fixture' }), 131072);
+  h.manager.append(conversation, { role: 'user', text: 'Retain this task' });
+  h.manager.append(conversation, { role: 'assistant', text: 'x'.repeat(30000) });
+  await h.manager.compact(conversation.id);
+  assert.ok(calls.filter(call => call.kind === 'map').length > 1);
+  assert.ok(calls.every(call => call.system.length + call.user.length < 8192 * 1.8));
+  assert.ok(calls.every(call => call.maxTokens <= Math.floor(8192 * 0.2)));
+  assert.equal(h.sent.length, 0);
+});
+
 // A summarizer context error must bound only that summary run. Lowering the
 // conversation's own window made every later send re-run the same doomed
 // compaction, which is what the codex -> antigravity first session reported.
@@ -3054,7 +3582,7 @@ test('summary overflow shrinks fresh requests and retries the same history fragm
   assert.equal(manager.contextPressure(conversation, 'kimi', manager.settings('kimi', conversation.id)).cap, 20000);
 });
 
-test('summary rescue rebuilds from full history if the accumulated summary no longer fits', async context => {
+test('summary rescue preserves every history fragment when a shortened draft overflows', async context => {
   const harness = fixture(context, { modelContextWindow: () => 20000 });
   const manager = harness.manager, conversation = manager.create('dsh');
   manager.append(conversation, { role: 'user', text: 'HISTORY-START ' + 'x'.repeat(60000) + ' HISTORY-END' });
@@ -3073,7 +3601,7 @@ test('summary rescue rebuilds from full history if the accumulated summary no lo
     await harness.flush();
   }
   assert.ok((await pending).file);
-  assert.ok(harness.sent.at(-1).prompt.includes('HISTORY-END'));
+  assert.ok(harness.sent.some(request => request.prompt.includes('HISTORY-END')));
 });
 
 test('pi-ai context overflow wording triggers compression retry instead of failing compaction', async context => {
@@ -3104,7 +3632,7 @@ test('summary rescue exhaustion retains native mapping, full history and a parti
   manager.append(conversation, { role: 'tool', text: 'x'.repeat(200000) });
   const snapshot = JSON.stringify(conversation.segments);
   const pending = manager.compact(conversation.id);
-  const rejected = assert.rejects(pending, /rescue retry limit.*original history is retained/);
+  const rejected = assert.rejects(pending, /context_length_exceeded[\s\S]*original history is retained/);
   await harness.flush();
   harness.finish('kimi', 'success', 'Checkpoint: file already written');
   await harness.flush();
@@ -3490,9 +4018,13 @@ test('startup reservations, failures and stop affect only their conversation', a
   release(); assert.equal((await (await starting).done).subtype, 'stopped');
   assert.equal(f.manager.active.has(b.id), true);
   assert.equal(f.sent.length, 1);
-  assert.throws(() => f.manager.saveSettings('claude', { sessionId: b.id, model: 'changed' }), /Wait/);
+  // A model or reasoning level change is stored for the next message and does
+  // not retarget the running turn; an engine-process setting still waits.
+  assert.throws(() => f.manager.saveSettings('claude', { sessionId: b.id, permissionMode: 'plan' }), /Wait/);
+  f.manager.saveSettings('claude', { sessionId: b.id, model: 'changed' });
   f.manager.saveSettings('claude', { sessionId: a.id, model: 'other' });
   assert.equal(f.manager.active.get(b.id).session.opts.settings.model, 'fixture');
+  assert.equal(f.manager.settings('claude', b.id).model, 'changed');
 });
 
 test('questions use an input-needed state while approvals remain distinct and answers stay in their conversation', async t => {
@@ -3818,19 +4350,34 @@ test('a failed destination compaction leaves both native bindings and original h
   assert.ok(manager.rows(conversation).some(row => row.text.startsWith('HISTORY_')));
 });
 
-test('Markdown handoff is shortened to the destination budget before the target starts', async context => {
+for (const transport of ['router', 'engine']) test('Markdown handoff is shortened to the destination budget before the target starts via ' + transport, async context => {
   const calls = [];
-  const harness = fixture(context, { summarize: { available: () => true, run: async options => {
-    calls.push(options); return { text: 'SHORT_HANDOFF' };
-  } } });
+  let finishSummary;
+  const harness = fixture(context, transport === 'router' ? { summarize: { available: () => true, run: options => {
+    calls.push(options);
+    return new Promise((resolve, reject) => {
+      finishSummary = () => resolve({ text: 'SHORT_HANDOFF' });
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    });
+  } } } : {});
   const manager = harness.manager;
   const first = await manager.send('codex', { prompt: 'Task' }); harness.finish('codex'); await first.done;
   manager.saveSettings('kimi', { sessionId: first.sessionId, contextWindow: 8000 });
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   const pending = manager.switchEngine(first.sessionId, 'kimi', 'markdown');
   await harness.flush();
   harness.finish('codex', 'success', '中文'.repeat(7000));
   await harness.flush();
-  assert.ok(calls.length);
+  if (transport === 'router') assert.ok(calls.length);
+  else assert.match(harness.sent.at(-1).prompt, /Summarize|summarize/);
+  // Handoffs also use these helpers, without a compaction-created deadline.
+  // An undefined deadline used to schedule a one-millisecond timeout.
+  context.mock.timers.tick(1000);
+  if (transport === 'router') {
+    assert.equal(calls[0].signal.aborted, false);
+    finishSummary();
+  } else harness.finish('codex', 'success', 'SHORT_HANDOFF');
+  await harness.flush();
   assert.equal(harness.sent.at(-1).engine, 'kimi');
   assert.match(harness.sent.at(-1).prompt, /SHORT_HANDOFF/);
   assert.doesNotMatch(harness.sent.at(-1).prompt, /中文/);

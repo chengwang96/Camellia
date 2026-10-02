@@ -8,10 +8,15 @@ with sync_playwright() as playwright:
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.add_init_script("""
-      window.deviceCalls = [];
+      window.deviceCalls = []; window.savedPreferences = {};
       const empty = { ok: true, result: {}, engines: [], providers: [], models: [], config: { providers: [], usage: {}, active: {} }, state: {} };
       window.dshDesktop = new Proxy({}, { get: (_target, name) => {
         if (String(name).startsWith('on')) return () => () => {};
+        if (name === 'workbenchSaveSettings') return async patch => {
+          if (window.failPreferences) return {ok:false,error:'Could not save preferences'};
+          window.savedPreferences = patch; return {ok:true};
+        };
+        if (name === 'apiRouterGetState') return async () => ({...empty, enabled:true, models:['model-a','model-b']});
         if (name === 'workbenchSettings') return async () => ({ ...empty, version: '0.3.0', dataPath: '/test-profile/camellia', language: 'en', theme: 'system' });
         if (name === 'camelliaDevices') return {
           onEvent() {}, onTransfer() {},
@@ -26,6 +31,31 @@ with sync_playwright() as playwright:
     """)
     page.goto((root / "src/renderer/settings/api-settings.html").as_uri())
     page.wait_for_load_state("networkidle")
+    expect(page.locator('#generalPage #pythonCard')).to_be_visible()
+    expect(page.locator('#quickSwitchModels')).to_be_hidden()
+    page.locator('[data-view=models]').click()
+    expect(page.locator('#pageTitle')).to_have_text('Model Settings')
+    expect(page.locator('#pythonCard')).to_be_hidden()
+    expect(page.locator('#contextCapacityPanel, #contextProbeDialog')).to_have_count(0)
+
+    # One model and one reasoning-level menu per engine, aligned in one grid.
+    expect(page.locator('#quickSwitchModels .quick-switch-model')).to_have_count(6)
+    expect(page.locator('#quickSwitchModels .quick-switch-level')).to_have_count(6)
+    page.locator('#quickSwitch-codex').select_option('model-b')
+    page.wait_for_function("savedPreferences.quickSwitchModels?.codex === 'model-b'")
+    page.locator('#quickSwitchLevel-codex').select_option('high')
+    page.wait_for_function("savedPreferences.quickSwitchLevels?.codex === 'high'")
+    expect(page.locator('#quickSwitchLevel-codex')).to_have_value('high')
+    # A failed clear must retain both the saved model and its reasoning level.
+    page.evaluate('window.failPreferences = true')
+    page.locator('#quickSwitch-codex').select_option('')
+    expect(page.locator('#status')).to_contain_text('Could not save preferences')
+    expect(page.locator('#quickSwitch-codex')).to_have_value('model-b')
+    expect(page.locator('#quickSwitchLevel-codex')).to_have_value('high')
+    page.evaluate('window.failPreferences = false')
+    page.locator('#quickSwitch-codex').select_option('')
+    page.wait_for_function("savedPreferences.quickSwitchModels?.codex === ''")
+    expect(page.locator('#quickSwitchLevel-codex')).to_have_value('')
 
     # Every settings script must load: a name collision here used to break the whole panel.
     # Compare the rendered categories rather than a bare count so a renamed or
@@ -33,7 +63,21 @@ with sync_playwright() as playwright:
     views = page.locator(".settings-nav nav [data-view]").evaluate_all(
         "els => els.map(el => el.dataset.view)")
     assert views == ["subscriptions", "providers", "usage", "general", "network", "engines",
-                     "runtimes", "archived", "mobile", "devices"], views
+                     "models", "archived", "mobile", "devices"], views
+    for language in ["en", "zh-CN"]:
+        page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
+        expect(page.locator('#pageTitle')).to_have_text('Model Settings' if language == 'en' else '模型设置')
+        for width in [1180, 850, 700, 390, 320]:
+            page.set_viewport_size({"width": width, "height": 820})
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (language, width, 'models')
+    page.set_viewport_size({"width": 1180, "height": 1000})
+    output = root / "dist/engine-settings-qa"
+    output.mkdir(parents=True, exist_ok=True)
+    for scheme in ['light', 'dark']:
+        page.emulate_media(color_scheme=scheme)
+        page.screenshot(path=str(output / f"models-{scheme}.png"))
+    page.emulate_media(color_scheme='light')
+    page.evaluate("CamelliaI18n.setLanguage('en')")
     page.locator('.settings-nav nav [data-view="devices"]').click()
     expect(page.locator("#pageTitle")).to_have_text("CLI devices")
     expect(page.locator("#devicesPage")).to_be_visible()
@@ -97,4 +141,4 @@ with sync_playwright() as playwright:
     assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).borderRadius") == "16px"
     assert not errors, errors
     browser.close()
-print("Settings page: all scripts load, navigation stays interactive and CLI devices render in place")
+print("Settings page: model and general groups, quick-switch saves, bilingual responsive layout and CLI device navigation passed")

@@ -52,6 +52,7 @@ for (const file of ['runtime.json', 'requirements.lock']) {
   assert.ok(fs.readFileSync(path.join(sdkDir, file)).equals(fs.readFileSync(path.join(root, 'runtimes/antigravity', file))), 'Antigravity manifest differs: ' + file);
 }
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines/antigravity/bridge.py')), 'Python bridge must be outside the ASAR archive');
+assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines/antigravity/session_storage.py')), 'Python session storage must be importable outside the ASAR archive');
 for (const file of ['goal-mcp-stdio.js', 'goal-tools.js', 'task-tools.js', 'conversation-tools.js']) {
   assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/engines', file)), 'Goal MCP helper must run under bundled Node outside ASAR: ' + file);
 }

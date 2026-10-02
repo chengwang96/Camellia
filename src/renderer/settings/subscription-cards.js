@@ -1,5 +1,5 @@
 'use strict';
-window.renderSubscriptionCards = ({ container, state, busy, engine, onSelect, onRemove, onLabel, onRefresh, onWake, onSignIn }) => {
+window.renderSubscriptionCards = ({ container, state, busy, engine, manage = true, onSelect, onRemove, onLabel, onRefresh, onWake, onSignIn }) => {
   container.setAttribute('role', 'group');
   const t = text => window.CamelliaI18n.t(text);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -14,6 +14,18 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, onSelect, on
   };
   const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>`;
   const date = value => value && Number.isFinite(new Date(value).getTime()) ? new Date(value).toLocaleString(document.documentElement.lang || undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+  const relative = value => {
+    const time = value && Date.parse(value);
+    if (!Number.isFinite(time)) return '';
+    const minutes = Math.round((time - Date.now()) / 60000);
+    if (minutes <= 0) return t('now');
+    const days = Math.floor(minutes / 1440), hours = Math.floor((minutes % 1440) / 60), rest = minutes % 60;
+    return days ? `${days}${t('d')} ${hours}${t('h')}` : hours ? `${hours}${t('h')} ${rest}${t('m')}` : `${rest}${t('m')}`;
+  };
+  const planClass = value => /max|pro|ultra/i.test(String(value || '')) ? ' premium' : /plus/i.test(String(value || '')) ? ' paid' : '';
+  // A meter turns amber below a quarter and red below a tenth so the card
+  // reads at a glance instead of relying on the number alone.
+  const level = remaining => remaining < 10 ? 'critical' : remaining < 25 ? 'low' : 'ok';
   if (container.querySelector('.subscription-note:not([hidden])')) return;
   container.innerHTML = (state?.accounts || []).map(account => {
     const action = (name, label, disabled = false, hint = label) => `<button type="button" data-card-action="${name}" title="${esc(t(hint))}" aria-label="${esc(t(label))}" ${disabled ? 'disabled' : ''}>${icon(name)}</button>`;
@@ -21,18 +33,35 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, onSelect, on
     const quotas = windows.map(window => {
       const known = typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent);
       const remaining = known ? Math.max(0, Math.min(100, 100 - window.usedPercent)) : null;
-      return `<div class="subscription-meter"><div><span>${esc(t(window.label || 'Usage'))}</span><strong>${known ? Math.round(remaining) + '%' : '—'}</strong></div>
-        ${known ? `<progress class="${remaining < 15 ? 'low' : ''}" max="100" value="${remaining}" aria-label="${esc(t(window.label || 'Usage') + ' · ' + t('Remaining quota'))}"></progress>` : ''}
-        <small>${esc(window.resetsAt ? t('Resets') + ' ' + date(window.resetsAt) : t('Reset time unavailable'))}</small></div>`;
+      const reset = window.resetsAt ? relative(window.resetsAt) : '';
+      return `<div class="subscription-meter ${known ? level(remaining) : 'unknown'}"><div class="subscription-meter-head">${esc(t(window.label || 'Usage'))}</div>
+        <div class="subscription-meter-row">${known ? `<progress max="100" value="${remaining}" aria-label="${esc(t(window.label || 'Usage') + ' · ' + t('Remaining quota'))}"></progress>` : ''}<strong>${known ? Math.round(remaining) + '%' : '—'}</strong></div>
+        <small>${esc(window.resetsAt ? t('Resets') + ' ' + date(window.resetsAt) + (reset ? ' · ' + reset : '') : t('Reset time unavailable'))}</small></div>`;
     }).join('');
+    const heading = account.email || account.label || (account.signedIn && engine === 'antigravity' ? t('Google account') : t('Not signed in'));
+    const accountStatus = account.error ? 'error' : account.loginPending ? 'pending' : account.exhausted ? 'exhausted' : account.signedIn ? 'signed-in' : '';
+    const note = typeof onLabel === 'function' ? account.label || t('No note')
+      : account.models ? t('Available account models') + ' · ' + account.models : '';
+    const badges = `${account.active ? `<span class="subscription-current">${esc(t('Current'))}</span>` : ''}<span class="subscription-plan${account.plan ? planClass(account.plan) : ''}">${esc(account.plan || (engine === 'codex' ? 'ChatGPT' : engine === 'antigravity' ? 'Google' : 'Kimi'))}</span>`;
+    const sessionActions = `${action('switch', 'Switch account', account.active || !account.signedIn, 'Use this account on the next message')}${engine === 'codex' ? action('wake', 'Wake account', !account.signedIn, 'Send 你好 once and refresh quota. Uses subscription allowance; does not reset an active window.') : ''}${!account.signedIn ? action('login', 'Sign in') : ''}${account.id === 'default' ? action('logout', 'Sign out', !account.signedIn) : action('remove', 'Remove account')}`;
     return `<article class="subscription-card${account.active ? ' active' : ''}" data-card-id="${esc(account.id)}">
-      <header><strong title="${esc(account.email || account.label || account.id)}">${esc(account.email || account.label || t('Not signed in'))}</strong>${account.active ? `<span class="subscription-current">${esc(t('Current'))}</span>` : ''}<span class="subscription-plan">${esc(account.plan || (engine === 'codex' ? 'ChatGPT' : 'Kimi'))}</span></header>
-      <p class="subscription-note-text">${esc(account.label || t('No note'))}</p>
-      <form class="subscription-note" hidden><input maxlength="60" data-account-label="${esc(account.id)}" aria-label="${esc(t('Account label'))}" value="${esc(account.label)}"><button type="submit">${esc(t('Save'))}</button><button type="button" data-note-cancel>${esc(t('Cancel'))}</button></form>
-      <p class="subscription-state${account.error ? ' error' : ''}"><i></i>${esc(account.error || t(account.loginPending ? 'Waiting for sign-in' : account.signedIn ? account.exhausted ? 'Quota exhausted' : 'Signed in' : 'Not signed in'))}</p>
+      <header><strong title="${esc(heading)}">${esc(heading)}</strong><span class="subscription-badges">${badges}</span></header>
+      <div class="subscription-identity-meta">
+        <p class="subscription-state ${accountStatus}"><i aria-hidden="true"></i>${esc(account.error || t(account.loginPending ? 'Waiting for sign-in' : account.signedIn ? account.exhausted ? 'Quota exhausted' : 'Signed in' : 'Not signed in'))}</p>
+        ${note ? `<span class="subscription-note-text${account.label ? '' : ' is-empty'}" title="${esc(note)}">${esc(note)}</span>` : ''}
+      </div>
       <div class="subscription-meters">${quotas || `<p class="hint">${esc(t(account.signedIn ? 'Quota information is currently unavailable.' : 'Sign in to view quota'))}</p>`}</div>
-      <p class="subscription-checked">${esc(account.verifiedAt ? t('Last checked') + ' ' + date(account.verifiedAt) : t('Not checked yet'))}</p>
-      <footer class="subscription-actions">${action('switch', 'Switch account', account.active || !account.signedIn, 'Use this account on the next message')}${action('edit', 'Edit note')}${action('refresh', 'Refresh quota', !account.signedIn)}${engine === 'codex' ? action('wake', 'Wake account', !account.signedIn, 'Send 你好 once and refresh quota. Uses subscription allowance; does not reset an active window.') : ''}${!account.signedIn ? action('login', 'Sign in') : ''}${account.id === 'default' ? action('logout', 'Sign out', !account.signedIn) : action('remove', 'Remove account')}</footer>
+      <form class="subscription-note" hidden><input maxlength="60" data-account-label="${esc(account.id)}" aria-label="${esc(t('Account label'))}" value="${esc(account.label)}"><button type="submit">${esc(t('Save'))}</button><button type="button" data-note-cancel>${esc(t('Cancel'))}</button></form>
+      <div class="subscription-meta">
+        <span class="subscription-checked">${esc(account.verifiedAt ? t('Last checked') + ' ' + date(account.verifiedAt) : t('Not checked yet'))}</span>
+      </div>
+      <footer class="subscription-actions">
+        <div class="subscription-actions-tools">
+          ${typeof onLabel === 'function' ? action('edit', 'Edit note') : ''}
+          <button type="button" data-card-action="refresh" title="${esc(t('Refresh quota'))}" aria-label="${esc(t('Refresh quota'))}" ${!account.signedIn ? 'disabled' : ''}>${icon('refresh')}</button>
+        </div>
+        ${manage ? `<div class="subscription-actions-main">${sessionActions}</div>` : ''}
+      </footer>
     </article>`;
   }).join('') || `<p class="hint">${esc(t('No accounts yet.'))}</p>`;
   container.querySelectorAll('.subscription-card').forEach(card => {

@@ -8,6 +8,7 @@ const path = require('node:path');
 const { createEngineDrivers, claudeSpec } = require('../src/cli/engine-drivers');
 const { createRuntimeManager } = require('../src/main/runtime-manager');
 const { removeTree } = require('./test-fs.cjs');
+const { DiscussionManager } = require('../src/engines/discussions/manager');
 
 function directory(context) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'server-engines-'));
@@ -58,6 +59,23 @@ test('server drivers keep isolated native homes and enable only implemented engi
   system.drivers.claude.saveSettings({ connection: 'subscription', model: 'my-account-model' });
   assert.equal(system.drivers.claude.settings().model, 'my-account-model');
   assert.equal(system.drivers.claude.settings().connection, 'subscription');
+});
+
+test('all server entry points reject persisted discussion runtimes and native histories before preparing a launch', async context => {
+  const root = directory(context); let saved = {}, runtimeSelections = 0;
+  const system = createEngineDrivers({ root, dataDir: root, loadConfig: () => saved, saveConfig: patch => { saved = { ...saved, ...patch }; },
+    onEvent() {}, getRoute: () => assert.fail('Rejected launch reached routing'), router: () => assert.fail('Rejected launch reached model selection'),
+    isBusy: () => false, runtimeManager: { locate: () => { runtimeSelections++; return { file: path.join(root, 'unused-native') }; } } });
+  context.after(() => Promise.all(Object.values(system.drivers).map(driver => driver.shutdown())));
+  const manager = new DiscussionManager({ dir: path.join(root, 'discussions') }), group = manager.create({ cwd: root });
+  for (const [engine, driver] of Object.entries(system.drivers)) {
+    const member = manager.addMember(group.id, { name: engine, engine, connection: 'api', model: 'fixture' });
+    manager.store.update(group.id, state => { state.participants.find(p => p.id === member.id).session.nativeId = engine + '-native'; });
+    assert.throws(() => driver.ensure({ conversationId: member.session.runtimeId, cwd: root }), /owned by a discussion/);
+    assert.throws(() => driver.ensure({ conversationId: 'ordinary', sessionId: engine + '-native', cwd: root }), /owned by a discussion/);
+    assert.throws(() => driver.history.remove(engine + '-native'), /owned by a discussion/);
+  }
+  assert.equal(runtimeSelections, 0);
 });
 
 test('Claude API and subscription spawn specs never inherit external API credentials', context => {

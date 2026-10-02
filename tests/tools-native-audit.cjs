@@ -73,14 +73,17 @@ function nativeCall(ctx, operation, options = {}) {
   let declaration = ctx.tools.find(t => t.function.name === name)
     || ctx.tools.find(t => t.function.name.toLowerCase() === String(name).toLowerCase())
     || (operation === 'shell' ? ctx.tools.find(t => /^(ba|z)?sh$|^shell$/i.test(t.function.name)) : null);
-  if (!declaration && (operation === 'glob' || operation === 'grep') && (engine === 'claude' || engine === 'pi')) {
+  if (!declaration && (operation === 'glob' || operation === 'grep') && ['claude', 'pi', 'antigravity'].includes(engine)) {
     // Some Claude builds skip Glob/Grep (e.g. when the bundled ripgrep is
     // unavailable), and Pi enables only read/bash/edit/write by default.
     // Audit the same file discovery through the shell tool.
-    const shell = ctx.tools.find(t => t.function.name.toLowerCase() === 'bash');
+    // Antigravity SDK 0.1.20 also uses its native shell for file discovery.
+    const shell = ctx.tools.find(t => t.function.name.toLowerCase() === (engine === 'antigravity' ? 'run_command' : 'bash'));
     if (shell) {
       name = shell.function.name;
-      args = { command: operation === 'glob' ? 'find ' + quotePs(ctx.cwd) + ' -name "*.txt"' : "grep -rn 'READ_BETA' " + quotePs(ctx.cwd), description: 'Audit fallback for missing Glob/Grep' };
+      args = engine === 'antigravity'
+        ? { CommandLine: (operation === 'glob' ? "rg --files --glob '*.txt' " : "rg -n -- 'READ_BETA' ") + quotePs(ctx.cwd), Cwd: ctx.cwd, WaitMsBeforeAsync: 10000, ...annotation }
+        : { command: operation === 'glob' ? 'find ' + quotePs(ctx.cwd) + ' -name "*.txt"' : "grep -rn 'READ_BETA' " + quotePs(ctx.cwd), description: 'Audit fallback for missing Glob/Grep' };
       declaration = shell;
       console.log(`note: ${engine} declared no Glob/Grep; auditing discovery through ${shell.function.name}`);
     }

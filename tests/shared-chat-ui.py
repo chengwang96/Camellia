@@ -610,20 +610,24 @@ with sync_playwright() as p:
         answered = page.evaluate('actions.find(a=>a.action==="control-respond").payload')
         assert 'input' not in answered or answered['input'] is None, 'ordinary Allow must preserve native tool arguments'
         assert answered['sessionId'] == a and answered['runId'] == arun
-        # Clarifying questions never open an approval modal, even under the
-        # middle automation tier. Answers survive navigation, serialize
-        # correctly and are scoped. (The top tier auto-skips questions.)
-        page.evaluate('currentPermission="auto"')
+        # Task questions open their own dialog even with full tool permissions.
+        # Deferring never sends an answer; choices survive closing/navigation.
+        page.evaluate('currentPermission="full"')
         question_event = {'type':'gui:permission','session_id':a,'runId':arun,'engine':engine,'requestId':'question-1','toolName':'AskUserQuestion','permissionMode':'bypassPermissions','questions':[
             {'id':'scope','question':'Which files should be included?','options':[{'label':'Main workflow','description':'Only maintained experiment code'},{'label':'All files','description':'Include older exploration'}],'multiSelect':False},
             {'id':'outputs','question':'Which outputs should be generated?','options':[{'label':'CSV'},{'label':'JSON'}],'multiSelect':True}]}
         page.evaluate('(event)=>pushEvent(event)',question_event)
         card=page.locator('.question-card').last
         expect(card).to_be_visible()
+        expect(page.get_by_role('dialog',name='Your input is needed')).to_be_visible()
+        expect(page.locator('#questionTitle')).to_be_focused()
         expect(page.locator('#permMask')).not_to_have_class('perm-mask visible')
         expect(page.locator(f'[data-sid="{a}"]')).to_contain_text('Needs input')
         expect(card.locator('input:checked')).to_have_count(0)
         before=page.evaluate('actions.filter(a=>a.action==="control-respond").length')
+        page.evaluate('(event)=>receiveEvent(event)',question_event)
+        expect(page.locator('.question-pending')).to_have_count(1)
+        assert page.evaluate('permissionQueue.length')==1
         card.get_by_role('button',name='Submit answers').click()
         expect(card.locator('[role="alert"]')).to_contain_text('Answer each question')
         assert page.evaluate('actions.filter(a=>a.action==="control-respond").length')==before
@@ -631,10 +635,21 @@ with sync_playwright() as p:
         card.get_by_role('checkbox',name='CSV',exact=True).check()
         card.get_by_role('checkbox',name='JSON',exact=True).check()
         card.locator('.question-custom input').nth(1).fill('Markdown report')
+        card.get_by_role('button',name='Answer later').click()
+        expect(page.locator('#questionDialog')).not_to_be_visible()
+        expect(page.get_by_role('button',name='Answer questions')).to_be_focused()
+        assert page.evaluate('actions.filter(a=>a.action==="control-respond").length')==before
+        assert page.evaluate('(id)=>sessionFixtures.get(id).activity',a)=='question'
+        page.get_by_role('button',name='Answer questions').click()
+        expect(card.get_by_role('checkbox',name='JSON',exact=True)).to_be_checked()
+        page.keyboard.press('Escape')
+        expect(page.locator('#questionDialog')).not_to_be_visible()
+        assert page.evaluate('actions.filter(a=>a.action==="control-respond").length')==before
         page.locator(f'[data-sid="{b}"]').click(); page.wait_for_function('!loadingSession')
         expect(page.locator('.question-card')).to_have_count(0)
         page.locator(f'[data-sid="{a}"]').click(); page.wait_for_function('!loadingSession')
         card=page.locator('.question-card').last
+        expect(page.locator('#questionDialog')).to_be_visible()
         expect(card.get_by_role('radio',name='Main workflow')).to_be_checked()
         expect(card.get_by_role('checkbox',name='CSV',exact=True)).to_be_checked()
         expect(card.locator('.question-custom input').nth(1)).to_have_value('Markdown report')
@@ -649,24 +664,30 @@ with sync_playwright() as p:
         expect(card.get_by_role('button',name='Submit answers')).to_be_disabled()
         page.evaluate('window.releaseAnswer()')
         expect(card.locator('.question-status')).to_have_text('Answers sent')
+        expect(page.locator('#questionDialog')).not_to_be_visible()
+        expect(page.locator('.question-pending')).to_have_count(0)
+        assert page.evaluate('(id)=>sessionFixtures.get(id).activity',a)=='running'
         # Submitted cards collapse to an answer summary; options fold away.
         expect(card.locator('.question-answers')).to_contain_text('Main workflow')
         expect(card.locator('.question-answers')).to_contain_text('Markdown report')
         expect(card.locator('.question-review fieldset').first).not_to_be_visible()
         sent=page.evaluate('actions.filter(a=>a.action==="control-respond").at(-1).payload')
         assert sent['sessionId']==a and sent['runId']==arun and sent['allow']
-        assert sent['input']=={'scope':'Main workflow','outputs':'CSV, JSON, Markdown report'}
+        assert sent['input']=={'scope':'Main workflow','outputs':['CSV','JSON','Markdown report']}
         assert page.evaluate('actions.filter(a=>a.action==="control-respond").length')==before+2
         page.evaluate('window.holdAnswer=false')
         page.evaluate('(event)=>pushEvent(event)',{**question_event,'requestId':'question-2'})
         card=page.locator('.question-card').last
+        card.get_by_role('radio',name='All files').check()
         card.get_by_role('button',name='Skip questions').click()
         expect(card.locator('.question-status')).to_have_text('Questions skipped')
+        expect(card.locator('.question-answers')).not_to_contain_text('All files')
         skipped=page.evaluate('actions.filter(a=>a.action==="control-respond").at(-1).payload')
         assert skipped['allow'] is False and 'no option has been confirmed' in skipped['message']
         page.evaluate('(event)=>pushEvent(event)',{**question_event,'requestId':'question-3'})
         page.screenshot(path=str(preview/f'question-card-{engine}.png'),animations='disabled')
         page.screenshot(path=str(preview/f'concurrent-{engine}.png'),animations='disabled')
+        page.get_by_role('button',name='Answer later').click()
         page.evaluate('receiveGoal({sessionId:"background-goal",goal:{sessionId:"background-goal",phase:"active",armed:true,objective:"Background goal"}})')
         expect(page.locator('#goalChipRow')).to_be_hidden()
         page.locator(f'[data-sid="{b}"]').click()
@@ -682,6 +703,110 @@ with sync_playwright() as p:
         page.locator(f'[data-sid="{b}"]').click()
         page.wait_for_function('actions.some(a=>a.action==="switch" && a.payload.navigate)')
         assert page.evaluate('actions.filter(a=>a.action==="cancel").length') == 3
+        page.close()
+    # Question lifecycle in every tool-permission tier. Queued questions,
+    # late replies and background requests must never answer another run.
+    for mode, language, theme, width, height in [
+        ('ask','en','light',1100,780), ('auto','en','dark',900,620), ('full','zh-CN','dark',480,600),
+    ]:
+        page = browser.new_page(viewport={'width':width,'height':height}, color_scheme=theme)
+        page.on('pageerror',lambda e:errors.append(str(e)))
+        page.add_init_script(concurrent_bridge)
+        page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex',wait_until='networkidle')
+        page.wait_for_function('uiReady')
+        page.locator('#input').fill('Question lifecycle'); page.locator('#send').click()
+        page.wait_for_function('running && !sending')
+        a=page.evaluate('context.sessionId'); run=page.evaluate('currentRunId')
+        page.evaluate('([mode,language])=>{currentPermission=mode;CamelliaI18n.setLanguage(language);}',[mode,language])
+        first={'type':'gui:permission','session_id':a,'runId':run,'engine':'codex','requestId':'first','questions':[
+            {'id':'formats','question':'选择本次任务的输出格式' if language=='zh-CN' else 'Which output formats should this task produce?',
+             'options':[{'label':'CSV','description':'用于检查和对比的表格' if language=='zh-CN' else 'Tables for checking and comparing results'},
+                        {'label':'A, B','description':'保留选项中的标点' if language=='zh-CN' else 'Keep punctuation inside this option'}], 'multiSelect':True}]}
+        second={**first,'requestId':'second','questions':[{'id':'secret','question':'Private response?','isSecret':True}]}
+        page.evaluate('(event)=>receiveEvent(event)',{**first,'runId':run+100})
+        expect(page.locator('#questionDialog')).not_to_be_visible()
+        assert page.evaluate('actions.filter(a=>a.action==="control-respond").length')==0
+        page.evaluate('(event)=>pushEvent(event)',first)
+        page.evaluate('(event)=>pushEvent(event)',second)
+        dialog=page.locator('#questionDialog')
+        expect(dialog).to_be_visible()
+        if mode=='full':
+            page.evaluate('(event)=>pushEvent(event)',{**first,'requestId':'tool','questions':[], 'toolName':'Shell','input':{'command':'fixture'}})
+            page.wait_for_function('actions.some(a=>a.action==="control-respond" && a.payload.requestId==="tool")')
+            assert page.evaluate('actions.filter(a=>a.action==="control-respond").at(-1).payload.allow') is True
+            expect(dialog).to_be_visible()
+        assert page.evaluate('permissionQueue.length')==2
+        expect(dialog.locator('legend')).to_have_count(1)
+        expect(dialog.locator('input:checked')).to_have_count(0)
+        dialog.get_by_role('checkbox',name='CSV',exact=False).check()
+        dialog.get_by_role('checkbox',name='A, B',exact=False).check()
+        dialog.locator('.question-custom input').fill('Markdown')
+        page.evaluate('setRunStatus("Running another tool…")')
+        expect(page.locator('.run-text').last).to_have_text('等待你的回答' if language=='zh-CN' else 'Waiting for your answer')
+        # The dialog and its actions remain inside a short/narrow viewport.
+        box=dialog.bounding_box(); actions_box=dialog.locator('.question-actions').bounding_box()
+        assert box['x']>=0 and box['y']>=0 and box['x']+box['width']<=width+1 and box['y']+box['height']<=height+1
+        assert actions_box['y']+actions_box['height']<=height
+        assert dialog.evaluate('(el)=>el.scrollWidth<=el.clientWidth+1')
+        page.screenshot(path=str(preview/f'question-dialog-{mode}-{language}.png'),animations='disabled')
+        dialog.locator('button[type="submit"]').click()
+        expect(dialog.locator('legend')).to_have_text('Private response?')
+        sent=page.evaluate('actions.filter(a=>a.action==="control-respond").at(-1).payload')
+        assert sent['requestId']=='first' and sent['input']=={'formats':['CSV','A, B','Markdown']}
+        assert page.evaluate('permissionQueue.length')==1
+        # Secret answers never enter drafts and are cleared on navigation.
+        dialog.locator('input[type="password"]').fill('private-fixture-value')
+        assert 'private-fixture-value' not in page.evaluate('JSON.stringify([...questionDrafts])')
+        page.keyboard.press('Escape')
+        page.locator('#newSessionBtn').click()
+        page.wait_for_function('context.sessionId===null && !running')
+        page.locator('#input').fill('Independent task'); page.locator('#send').click()
+        page.wait_for_function('running && !sending')
+        b=page.evaluate('context.sessionId'); brun=page.evaluate('currentRunId')
+        third={**first,'requestId':'third','questions':[{'id':'name','question':'Project name?'}]}
+        page.evaluate('(event)=>pushEvent(event)',third)
+        expect(dialog).not_to_be_visible()
+        page.evaluate('(id)=>openHistorySession(id)',a)
+        page.wait_for_function('!loadingSession')
+        expect(dialog).to_be_visible()
+        expect(dialog.locator('input[type="password"]')).to_have_value('')
+        dialog.locator('input[type="password"]').fill('private-fixture-value')
+        dialog.locator('button[type="submit"]').click()
+        expect(dialog.locator('legend')).to_have_text('Project name?')
+        expect(page.locator('.question-answers').last).to_contain_text('••••••')
+        assert page.locator('#chat input[type="password"]').input_value()==''
+        # A reply still in flight cannot consume a question in another session.
+        dialog.locator('.question-custom input').fill('Submitted in A')
+        page.evaluate('window.holdAnswer=true')
+        dialog.locator('button[type="submit"]').click()
+        expect(dialog.locator('button[type="submit"]')).to_be_disabled()
+        page.keyboard.press('Escape')
+        page.evaluate('(id)=>openHistorySession(id)',b)
+        page.wait_for_function('!loadingSession')
+        page.evaluate('(event)=>pushEvent(event)',{**third,'session_id':b,'runId':brun})
+        expect(dialog.locator('legend')).to_have_text('Project name?')
+        dialog.locator('.question-custom input').fill('Unsubmitted in B')
+        page.evaluate('window.releaseAnswer();window.holdAnswer=false')
+        expect(dialog.locator('.question-custom input')).to_have_value('Unsubmitted in B')
+        expect(dialog.locator('button[type="submit"]')).to_be_enabled()
+        assert page.evaluate('permRequestId')=='third'
+        assert page.evaluate('(id)=>sessionFixtures.get(id).activity',b)=='question'
+        # A question may be the only content before the user steers the run.
+        page.evaluate('turnEl.querySelector(".turn-body").replaceChildren()')
+        page.evaluate('(event)=>receiveEvent(event)',{'type':'conversation:steered','session_id':b,'runId':brun,'engine':'codex','userSeq':3,'prompt':'Keep the original scope'})
+        assert page.evaluate('pendingQuestion.slot.isConnected')
+        expect(page.locator('.question-pending')).to_have_count(1)
+        # Stopping this turn closes its dialog without confirming draft choices.
+        page.evaluate('(event)=>pushEvent(event)',{'type':'result','subtype':'stopped','session_id':b,'runId':brun,'engine':'codex','result':'Stopped'})
+        expect(dialog).not_to_be_visible()
+        expect(page.locator('.question-pending')).to_have_count(0)
+        expect(page.locator('.question-answers').last).not_to_contain_text('Unsubmitted in B')
+        assert page.evaluate('pendingQuestion===null && permissionQueue.length===0')
+        # Reopening A after the acknowledged reply never resurrects its dialog.
+        page.evaluate('(id)=>openHistorySession(id)',a)
+        page.wait_for_function('!loadingSession')
+        expect(dialog).not_to_be_visible()
+        assert page.evaluate('pendingQuestion===null')
         page.close()
     # A subscription composer also offers shared API routes as a model group.
     subscription_bridge = r"""(() => {
@@ -723,19 +848,17 @@ with sync_playwright() as p:
     page.wait_for_function("actions.some(a=>a.action==='save-settings' && a.payload.connection==='api' && a.payload.model==='kimi-k2.5')")
     page.wait_for_function("document.querySelector('#modelPillName').textContent==='kimi-k2.5'")
     page.close()
-    # A double-click on the model pill toggles between the two most recent
-    # models (back and forth) instead of opening the menu, and the pair
-    # survives a reload through local storage.
+    # Double-click selects the configured default, without paired-model state.
     swap_bridge = r"""(() => {
       let settings = {model:'model-a',permissionMode:'default',connection:'api'};
       try { const saved = JSON.parse(localStorage.getItem('swap-settings') || 'null'); if (saved) settings = saved; } catch {}
-      window.actions = [];
+      window.actions = []; window.quickSwitchModels = {codex:'model-b'}; window.quickSwitchLevels = {codex:'high'};
       window.dshDesktop = {
         sharedConversations:true,
         onLanguageChanged:()=>()=>{}, onEngineSettingsChanged:()=>{}, onApiRouterState:()=>{}, onNetworkHealth:()=>{},
         onConversationEvent:()=>{},onConversationGoal:()=>{}, onConversationStatus:()=>{}, onHarnessNavigate:()=>{},
         apiRouterGetState:async()=>({enabled:true,models:['model-a','model-b','model-c']}),
-        workbenchSettings:async()=>({ok:true,conversations:{mode:'direct'}}),
+        workbenchSettings:async()=>({ok:true,conversations:{mode:'direct'},quickSwitchModels:window.quickSwitchModels,quickSwitchLevels:window.quickSwitchLevels}),
         conversationSwitch:async()=>({ok:true}), openSettingsWindow:()=>{},
         previewFile:async()=>({ok:false,error:'fixture'}),openFileExternally:async()=>({ok:true}),
         conversationCommand:async ({action,payload})=>{
@@ -761,79 +884,98 @@ with sync_playwright() as p:
     page.locator('#modelPill').click()
     expect(page.locator('.dsh-pop')).to_have_count(1)
     page.locator('.pop-row').first.click()
-    # Left-click a model to pick the primary model and close the menu.
+    # Left-click selects a model and closes the menu.
     models = page.locator('.dsh-pop').last.locator('.pop-opt')
     assert models.all_inner_texts() == ['model-a', 'model-b', 'model-c']
     models.get_by_text('model-c', exact=True).click()
     page.wait_for_function("document.querySelector('#modelPillName').textContent==='model-c'")
     assert page.evaluate('document.querySelectorAll(".dsh-pop").length') == 0, 'picking a model must close the menu'
-    # Right-click a different model to set the secondary; the menu stays open and
-    # the current selection does not change.
+    # Right-click has no app action or alternate marker.
     page.locator('#modelPill').click()
     page.locator('.pop-row').first.click()
     page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-b', exact=True).click(button='right')
-    expect(page.locator('.dsh-pop')).to_have_count(2)
-    expect(page.locator('.dsh-pop').last.locator('.pop-opt.alt')).to_contain_text('model-b')
-    assert page.evaluate("document.querySelector('#modelPillName').textContent") == 'model-c', 'right-click must not change the current model'
-    # The check and the secondary dot share one right-hand column and the model
-    # names keep the same left edge.
-    marks = page.evaluate("""() => {
-      const sub = document.querySelectorAll('.dsh-pop')[1];
-      const check = sub.querySelector('.pop-opt.current .pop-check').getBoundingClientRect();
-      const dot = sub.querySelector('.pop-opt.alt .pop-alt').getBoundingClientRect();
-      const currentLabel = sub.querySelector('.pop-opt.current .pop-label').getBoundingClientRect();
-      const altLabel = sub.querySelector('.pop-opt.alt .pop-label').getBoundingClientRect();
-      return { check: check.right, dot: dot.right, currentLeft: currentLabel.left, altLeft: altLabel.left };
-    }""")
-    assert abs(marks['check'] - marks['dot']) < 1, marks
-    assert abs(marks['currentLeft'] - marks['altLeft']) < 1, marks
-    # Right-clicking the secondary again clears it; the menu stays open.
-    page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-b', exact=True).click(button='right')
-    expect(page.locator('.dsh-pop').last.locator('.pop-opt.alt')).to_have_count(0)
-    expect(page.locator('.dsh-pop')).to_have_count(2)
-    # Re-set it so the double-click test below has a pair.
-    page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-b', exact=True).click(button='right')
-    expect(page.locator('.dsh-pop').last.locator('.pop-opt.alt')).to_contain_text('model-b')
+    expect(page.locator('.pop-alt')).to_have_count(0)
+    expect(page.locator('#modelPillName')).to_have_text('model-c')
     page.mouse.click(10, 10)
+    page.locator('#modelPill').dblclick()
+    expect(page.locator('#modelPillName')).to_have_text('model-b')
+    # The paired reasoning level applies with the model.
+    page.wait_for_function("document.querySelector('#modelPillLevel').textContent==='High'")
     expect(page.locator('.dsh-pop')).to_have_count(0)
-    # A double-click toggles between the primary and the secondary without a menu.
     page.locator('#modelPill').dblclick()
-    page.wait_for_function("document.querySelector('#modelPillName').textContent==='model-b'")
-    assert page.evaluate('document.querySelectorAll(".dsh-pop").length') == 0, 'a double-click swap must not open the menu'
-    page.locator('#modelPill').dblclick()
-    page.wait_for_function("document.querySelector('#modelPillName').textContent==='model-c'")
-    # The pair persists across reloads, so a double-click still swaps.
+    expect(page.locator('#modelPillName')).to_have_text('model-b')
+    expect(page.locator('#modelPillLevel')).to_have_text('High')
     page.reload(wait_until='networkidle')
     page.wait_for_function('uiReady')
-    expect(page.locator('#modelPillName')).to_have_text('model-c')
-    page.locator('#modelPill').dblclick()
-    page.wait_for_function("document.querySelector('#modelPillName').textContent==='model-b'")
-    # The model in use is the primary and the other stored model is the
-    # alternate, so after the swap above model-b is the primary and model-c the
-    # secondary. Left-clicking the secondary clears it: a model cannot be both
-    # the primary and the alternate.
     page.locator('#modelPill').click()
     page.locator('.pop-row').first.click()
     page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-c', exact=True).click()
-    assert page.evaluate("document.querySelector('#modelPillName').textContent") == 'model-c'
-    page.locator('#modelPill').click()
-    page.locator('.pop-row').first.click()
-    expect(page.locator('.dsh-pop').last.locator('.pop-opt.alt')).to_have_count(0)
-    page.mouse.click(10, 10)
-    # A stored pair that drifted from the model in use must never make the
-    # current model its own secondary: the primary is always the current model.
-    # (Drift happens when a conversation carries a model other than the stored
-    # one, e.g. after switching engines or sessions.)
-    page.evaluate("localStorage.setItem('modelSwap:codex', JSON.stringify(['model-b']))")
-    page.reload(wait_until='networkidle')
+    page.locator('#modelPill').dblclick()
+    expect(page.locator('#modelPillName')).to_have_text('model-b')
+    # Read settings on every gesture so changes apply without reloading chat.
+    page.evaluate("window.quickSwitchModels = {codex:'model-a'}")
+    page.locator('#modelPill').dblclick()
+    expect(page.locator('#modelPillName')).to_have_text('model-a')
+    page.evaluate("window.quickSwitchModels = {codex:'missing-model'}")
+    page.locator('#modelPill').dblclick()
+    expect(page.locator('#statusLine')).to_contain_text('unavailable')
+    expect(page.locator('#modelPillName')).to_have_text('model-a')
+    # A level the chosen model does not offer is ignored, not applied.
+    page.evaluate("window.quickSwitchModels = {codex:'model-c'}; window.quickSwitchLevels = {codex:'ultra'}")
+    page.locator('#modelPill').dblclick()
+    page.wait_for_function("document.querySelector('#modelPillName').textContent==='model-c'")
+    assert not page.evaluate("window.actions.some(a => a.action==='save-settings' && a.payload.thinkingBudget==='ultra')"), \
+        'an unsupported reasoning level must not be saved'
+    page.evaluate("window.quickSwitchModels = {}")
+    page.evaluate("window.quickSwitchLevels = {}")
+    page.locator('#modelPill').dblclick()
+    expect(page.locator('#statusLine')).to_contain_text('Settings')
+    expect(page.locator('.dsh-pop')).to_have_count(0)
+    page.close()
+    # The model pill stays usable while a response runs: the running turn is
+    # unaffected and the change is saved for the next message. The harness and
+    # handoff controls still require an idle conversation.
+    running_bridge = r"""(() => {
+      let settings = {model:'model-a',permissionMode:'default',connection:'api'};
+      window.actions = [];
+      window.dshDesktop = {
+        sharedConversations:true,
+        onLanguageChanged:()=>()=>{}, onEngineSettingsChanged:()=>{}, onApiRouterState:()=>{}, onNetworkHealth:()=>{},
+        onConversationEvent:()=>{},onConversationGoal:()=>{}, onConversationStatus:()=>{}, onHarnessNavigate:()=>{},
+        apiRouterGetState:async()=>({enabled:true,models:['model-a','model-b','model-c']}),
+        workbenchSettings:async()=>({ok:true,conversations:{mode:'direct'}}),
+        conversationSwitch:async()=>({ok:true}), openSettingsWindow:()=>{},
+        previewFile:async()=>({ok:false,error:'fixture'}),openFileExternally:async()=>({ok:true}),
+        conversationCommand:async ({action,payload})=>{
+          window.actions.push({action,payload});
+          if(action==='get-settings') return {...settings};
+          if(action==='save-settings') { Object.assign(settings,payload); return {ok:true,settings:{...settings}}; }
+          if(action==='list-sessions') return {ok:true,sessions:[],workspaces:[],pagination:{}};
+          if(action==='get-live') return {ok:true,live:null};
+          if(action==='goal-get') return {ok:true,goal:null};
+          if(action==='send') { window.running=true; window.receiveEvent?.({type:'conversation:activity',session_id:payload.sessionId,activity:'running'}); return {ok:true,sessionId:payload.sessionId,runId:1}; }
+          if(action==='cancel') { window.running=false; window.receiveEvent?.({type:'conversation:activity',session_id:payload.sessionId,activity:null}); return {ok:true}; }
+          return {ok:true};
+        },
+      };
+    })();"""
+    page = swap_context.new_page()
+    page.on('pageerror',lambda e:errors.append(str(e)))
+    page.add_init_script(running_bridge)
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex',wait_until='networkidle')
     page.wait_for_function('uiReady')
-    expect(page.locator('#modelPillName')).to_have_text('model-c')
+    page.locator('#input').fill('Task while running'); page.locator('#send').click()
+    page.wait_for_function('running || conversationActivity')
+    expect(page.locator('#modelPill')).to_be_enabled()
+    expect(page.locator('#engineSwitch')).to_be_disabled()
+    expect(page.locator('#handoffBtn')).to_be_disabled()
+    # A model picked during the run is saved (not rejected) and the running turn
+    # is left untouched; the selection applies to the next message.
     page.locator('#modelPill').click()
     page.locator('.pop-row').first.click()
-    page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-c', exact=True).click(button='right')
-    expect(page.locator('.dsh-pop').last.locator('.pop-opt.alt')).to_have_count(0)
-    assert page.evaluate("document.querySelector('#modelPillName').textContent") == 'model-c'
-    assert page.evaluate("JSON.parse(localStorage.getItem('modelSwap:codex'))") == ['model-c']
+    page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-b', exact=True).click()
+    page.wait_for_function("actions.some(a=>a.action==='save-settings' && a.payload.model==='model-b')")
+    page.wait_for_function("conversationBusy() && document.querySelector('#modelPillName').textContent==='model-b'")
     page.close()
     # Every reply keeps its own harness label, independent of the currently open harness.
     page = browser.new_page(viewport={'width':1200,'height':820})
@@ -1135,4 +1277,4 @@ with sync_playwright() as p:
     page.close()
     browser.close()
     assert not errors, errors
-    print('PASS: inline questions, answer mapping, selection drafts, failed-submit retry and skips; concurrent conversations, independent stop and approval, restored streams and drafts, harness locks, plus five-engine goal lifecycle and elapsed-time bars, logos, aligned composers, shared history, switch preferences, persistent drafts and attachments, reload, light/dark layouts')
+    print('PASS: question dialogs with full tool permissions, deferred answers, answer mapping, selection drafts, failed-submit retry and explicit skips; concurrent conversations, independent stop and approval, restored streams and drafts, harness locks, plus five-engine goal lifecycle and elapsed-time bars, logos, aligned composers, shared history, switch preferences, persistent drafts and attachments, reload, light/dark layouts')

@@ -24,6 +24,31 @@ function fixture(t) {
   return { proc, session };
 }
 
+test('Antigravity storage preparation uses a no-prompt handshake and validates both identities', async t => {
+  const { session } = fixture(t), requests = [];
+  session.spec.modeEngine = 'antigravity'; session.sessionId = '00000000-0000-4000-8000-000000000001';
+  let result = { sessionId: session.sessionId, conversationId: '1'.repeat(32) };
+  session.request = async (method, params) => { requests.push({ method, params }); return result; };
+  assert.equal(await session.prepareNativeStorage(), '1'.repeat(32));
+  assert.deepEqual(requests, [{ method: 'session/camellia_prepare', params: { sessionId: session.sessionId } }]);
+  result = { ...result, sessionId: 'another' }; await assert.rejects(session.prepareNativeStorage(), /invalid identity/);
+  result = { sessionId: session.sessionId, conversationId: '../history' }; await assert.rejects(session.prepareNativeStorage(), /invalid identity/);
+  session.sessionId = 'agy-00000000-0000-4000-8000-000000000001';
+  result = { sessionId: session.sessionId, conversationId: '00000000-0000-4000-8000-000000000002' };
+  assert.equal(await session.prepareNativeStorage(), result.conversationId);
+});
+
+test('native preparation refuses a busy, closed or unrelated ACP engine', async t => {
+  const { session } = fixture(t); let requests = 0;
+  session.sessionId = 'existing'; session.request = async () => { requests++; };
+  await assert.rejects(session.prepareNativeStorage(), /unavailable/);
+  session.spec.modeEngine = 'antigravity'; session.running = true;
+  await assert.rejects(session.prepareNativeStorage(), /unavailable/);
+  session.running = false; session.dead = true;
+  await assert.rejects(session.prepareNativeStorage(), /unavailable/);
+  assert.equal(requests, 0);
+});
+
 for (const engine of ['kimi', 'dsh', 'antigravity']) test(`${engine} ACP approval reaches the UI and resolves once`, context => {
   const { session, proc } = fixture(context), events = [];
   session.spec.modeEngine = engine;
@@ -47,6 +72,17 @@ for (const engine of ['kimi', 'dsh', 'antigravity']) test(`${engine} ACP approva
   session.receive({ ...request, id: 73 });
   assert.equal(events.length, count);
   assert.equal(JSON.parse(proc.stdin.read().toString()).result.outcome.outcome, 'cancelled');
+});
+
+test('Antigravity question answers use the existing permission channel and retain typed input', context => {
+  const { session, proc } = fixture(context), events = [];
+  session.sessionId = 'native'; session.running = true; session.replayEvents = []; session.onEvent = event => events.push(event);
+  const questions = [{ id: 'agy-question-0', question: 'Language?', options: [{ label: 'Python' }] }];
+  session.receive({ id: 'question', method: 'session/request_permission', params: { sessionId: 'native', questions,
+    toolCall: { title: 'ask_question' }, options: [{ kind: 'allow_once', optionId: 'allow' }, { kind: 'reject_once', optionId: 'deny' }] } });
+  assert.deepEqual(events.at(-1).questions, questions);
+  assert.equal(session.answerPermission('question', true, { 'agy-question-0': 'Rust' }), true);
+  assert.deepEqual(JSON.parse(proc.stdin.read().toString()).result, { outcome: { outcome: 'selected', optionId: 'allow' }, input: { 'agy-question-0': 'Rust' } });
 });
 
 test('Antigravity headless denial is a failed tool and does not create a pending permission', context => {

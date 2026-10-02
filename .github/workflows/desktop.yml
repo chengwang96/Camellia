@@ -132,6 +132,7 @@ jobs:
           path: |
             dist/tools-native-audit*.json
             dist/benchmark-native-smoke.json
+            dist/antigravity-sdk-diagnostics.json
             dist/antigravity-subscription-diagnostics.json
       - uses: actions/upload-artifact@v7
         with:

@@ -6,13 +6,29 @@ const { createHash } = require('node:crypto');
 const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { writeJson } = require('../shared/json-store');
+const { execFileSync } = require('node:child_process');
+const versions = new Map();
+const SUPPORTED_CLI_VERSIONS = Object.freeze(['1.2.3', '1.2.14']);
 
 function locateAntigravityCli(dir) {
   const marker = path.join(dir, 'cli/installed.json');
   if (!fs.existsSync(marker)) return null;
   const installed = JSON.parse(fs.readFileSync(marker, 'utf8'));
   const file = path.join(dir, 'cli', process.platform === 'win32' ? 'agy.exe' : 'agy');
-  return fs.existsSync(file) ? { file, dir, version: installed.version, mode: 'subscription' } : null;
+  if (!fs.existsSync(file)) return null;
+  const stat = fs.statSync(file), signature = stat.mtimeMs + ':' + stat.size;
+  if (versions.get(file)?.signature !== signature) {
+    let version = installed.version;
+    // The official CLI can update itself outside the installer. Do not bind
+    // discussion capability evidence to the stale download marker.
+    try {
+      const output = execFileSync(file, ['--version'], { windowsHide: true, timeout: 5000, encoding: 'utf8',
+        env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      version = output.match(/\b\d+\.\d+\.\d+\b/)?.[0] || version;
+    } catch { /* Incomplete installations are reported by the runtime launcher. */ }
+    versions.set(file, { signature, version });
+  }
+  return { file, dir, version: versions.get(file).version, mode: 'subscription' };
 }
 
 async function installAntigravityCli({ source, dir, connection, run, report }) {
@@ -44,4 +60,4 @@ async function installAntigravityCli({ source, dir, connection, run, report }) {
   return locateAntigravityCli(dir);
 }
 
-module.exports = { locateAntigravityCli, installAntigravityCli };
+module.exports = { locateAntigravityCli, installAntigravityCli, SUPPORTED_CLI_VERSIONS };

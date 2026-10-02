@@ -20,8 +20,6 @@
 .engine-connection { border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; padding: 4px 20px 14px; margin-bottom: 20px; }
 .engine-connection small { display: block; margin-top: 4px; }
 .account-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
-#googleModelDetails { font-size: 12px; margin: 12px 0; }
-#googleModelList { columns: 2; padding-left: 18px; color: var(--dsw-alias-label-secondary); line-height: 1.9; }
 .native-documents { margin-top: 24px; }
 .document-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 12px 0; }
 #engineSource { min-height: 320px; font: 12px/1.8 Consolas, 'Cascadia Code', monospace; tab-size: 2; white-space: pre; }
@@ -39,12 +37,14 @@
 .download-save { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 16px; padding-top: 14px; }
 .download-save p { flex: 1 1 240px; margin: 0; }
 .download-save button { flex-shrink: 0; }
+.engine-runtime { margin-bottom: 24px; }
+.engine-runtime .download-save { padding-top: 0; }
 .runtime-card { padding: 21px 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
-.runtime-card > div:first-child { display: flex; align-items: center; gap: 12px; }
+.runtime-card > div:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .runtime-card h2 { margin: 0; flex: 1; }
 .runtime-card p { margin: 10px 0 0; overflow-wrap: anywhere; }
 .runtime-card code { display: block; overflow-wrap: anywhere; margin-top: 8px; }
-.runtime-card details { margin-top: 12px; font-size: 12px; }
+.runtime-installation-path { margin-top: 12px; font-size: 12px; }
 .runtime-path { margin: 16px 0 0; padding: 0; border: 0; min-width: 0; }
 .runtime-path label { display: block; margin-bottom: 8px; font-size: 12px; }
 .runtime-path-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
@@ -70,5 +70,3 @@
 
 .subscription-rotation { display: flex; align-items: center; gap: 8px; margin: 16px 0; }
 .subscription-rotation[hidden] { display: none; }
-.subscription-quota-history { margin-top: 16px; }
-.subscription-quota-history summary { cursor: pointer; margin-bottom: 12px; }

@@ -214,7 +214,17 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
       backup(doc.path); writeText(doc.path, stringify(value, doc.format));
     }
   }
-  return { get, save, kimiConfig, syncManagedRoutes, piInstructions: () => read(definitions('pi')[0].path),
+  function discussionConfig(engine, connection) {
+    if (engine === 'codex') return { home: codexHome };
+    if (engine === 'claude') return { home: claudeDir, config: parse(read(path.join(claudeDir, 'settings.json')), 'json'), mcp: read(path.join(home, '.claude.json')) };
+    if (engine === 'kimi') return { home: kimiHome, ...kimiConfig() };
+    if (engine === 'dsh') return { config: parse(read(path.join(dshHome(), 'settings.yaml')), 'yaml') };
+    if (engine === 'pi') return { home: piHome, instructions: read(definitions('pi')[0].path) };
+    if (engine === 'antigravity' && connection === 'subscription') return { home: path.join(home, '.gemini'), config: parse(read(path.join(home, '.gemini/antigravity-cli/settings.json')), 'json') };
+    if (engine === 'antigravity') return { config: parse(read(path.join(antigravityHome, 'settings.json')), 'json') };
+    return {};
+  }
+  return { get, save, kimiConfig, discussionConfig, syncManagedRoutes, piInstructions: () => read(definitions('pi')[0].path),
     backupDsh: () => backup(path.join(dshHome(), 'settings.yaml')) };
 }
 module.exports = { createEngineSettings, parse, stringify, backup, routeKimi };

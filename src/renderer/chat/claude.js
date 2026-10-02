@@ -69,6 +69,7 @@ const context = { sessionId: null, workspaceId: null };
   if (harnessId !== 'claude') LEVELS.splice(1);
   let currentModel = '';
   let currentLevel = '';
+  let currentFastMode = false, savingFastMode = false;
   // Three universal automation levels; stored native values fold into them.
   function permissionLevel(engine, value) {
     if (['ask', 'auto', 'full'].includes(value)) return value;
@@ -84,6 +85,10 @@ const context = { sessionId: null, workspaceId: null };
   let accountModels = [];
   let routeModels = [];
   const googleSubscription = () => harnessId === 'antigravity' && currentConnection === 'subscription';
+  // A session saved before the Google catalog was grouped still names a single
+  // effort row; show it as its base model, which now owns the effort timeline.
+  const accountFamily = id => accountModels.find(model => model.id === id
+    || model.modelIds && Object.values(model.modelIds).includes(id)) || null;
   let uiReady = false, sending = false, settingsLoadSeq = 0;
   const pendingConversationSends = new Map();
   function pendingConversationSend() { return sharedChat && pendingConversationSends.get(context.sessionId); }
@@ -98,7 +103,8 @@ const context = { sessionId: null, workspaceId: null };
   }
   function saveDraft() {
     if (!sharedChat || !uiReady || loadingSession || (sending && !pendingConversationSend())) return;
-    writeUi('draft:' + draftKey(), { text: input.value, attachments, pendingForkId });
+    writeUi('draft:' + draftKey(), { text: input.value, attachments, pendingForkId,
+      codexFastMode: harnessId === 'codex' ? currentFastMode : readUi('draft:' + draftKey())?.codexFastMode === true });
     writeUi('location', { sessionId: context.sessionId, workspaceId: context.workspaceId });
   }
   function restoreDraft() {
@@ -107,6 +113,7 @@ const context = { sessionId: null, workspaceId: null };
     input.value = typeof saved?.text === 'string' ? saved.text : '';
     attachments = Array.isArray(saved?.attachments) ? saved.attachments : [];
     pendingForkId = saved?.pendingForkId || null;
+    if (harnessId === 'codex' && !context.sessionId) { currentFastMode = saved?.codexFastMode === true; renderFastMode(); }
     restoreMessageQueue();
     renderAttachments(); autoResize(); updateSendEnabled();
   }
@@ -192,6 +199,21 @@ const context = { sessionId: null, workspaceId: null };
     return /^ {4}/.test(line) ? 4 : /^\t/.test(line) ? 1 : null;
   }
 
+  // A line with no marker of its own continues the item above it, so bilingual
+  // text such as a translation stays attached to its title. A blank line or a
+  // line that opens another block ends the list instead. A fenced code block,
+  // display formula or table is already a placeholder here, and an unindented
+  // block cannot belong to the item above it.
+  function listContinuation(line) {
+    if (!line.trim()) return false;
+    if (new RegExp('^' + SENT + '\\d+' + SENT + '$').test(line.trim())) return false;
+    if (isQuote(line) || isRule(line)) return false;
+    if (/^\s{0,3}#{1,6}(\s|$)/.test(line)) return false;
+    if (/^\s{0,3}(?:`{3,}|~{3,})/.test(line)) return false;
+    if (/^\s*\$\$/.test(line)) return false;
+    return true;
+  }
+
   // One list block, including nested indentation and GitHub task checkboxes.
   function parseList(lines, start) {
     const base = listMatch(lines[start]);
@@ -202,8 +224,7 @@ const context = { sessionId: null, workspaceId: null };
     while (index < lines.length) {
       const match = listMatch(lines[index]);
       if (!match) {
-        // A wrapped continuation line stays with the item above it.
-        if (items.length && lines[index].trim() && lines[index].search(/\S/) > baseIndent) {
+        if (items.length && listContinuation(lines[index])) {
           items[items.length - 1].text += '\n' + lines[index].trim();
           index++;
           continue;
@@ -676,69 +697,83 @@ const context = { sessionId: null, workspaceId: null };
   function renderModelPill() {
     $('modelPillName').textContent = modelLabel(currentModel);
     $('modelPillLevel').textContent = currentLevel ? levelLabel(currentLevel) : '';
+    renderFastMode();
   }
-  // The user keeps an explicit pair of models: left-click a model in the menu
-  // picks the primary, right-click picks the secondary without closing the
-  // menu, and a double-click on the pill swaps between the two. Kept in the
-  // page's local storage, so it survives reloads but never leaves the machine.
-  const swapKey = 'modelSwap:' + harnessId;
-  let modelSwap = (() => { try { const value = JSON.parse(localStorage.getItem(swapKey) || 'null'); return Array.isArray(value) ? value.filter(id => typeof id === 'string' && id) : []; } catch { return []; } })();
-  // The model in use is always the primary; the stored pair only contributes
-  // the alternate. Deriving the alternate as "the stored model that is not the
-  // current one" keeps the invariant that a model can never be both the primary
-  // and the secondary — previously a drift between the stored slot and the
-  // composer's model put the model in use into the secondary slot — while a
-  // double-click still toggles back to the previous model.
-  const mainModelId = () => currentModel || modelSwap[0] || '';
-  const secondaryModelId = () => modelSwap.find(id => id && id !== mainModelId()) || '';
-  function setMainModel(model) {
-    if (!model) return;
-    // Picking the model that is currently the secondary clears the secondary:
-    // a model cannot be both the main and the alternate.
-    const secondary = secondaryModelId();
-    modelSwap = secondary && secondary !== model ? [model, secondary] : [model];
-    persistModelSwap();
+  function currentFastTier() {
+    return harnessId === 'codex' && accountSubscription()
+      ? window.CamelliaCodexSpeed.fastTier(accountModels.find(model => model.id === currentModel)) : null;
   }
-  function setSecondaryModel(model) {
-    if (!model) return;
-    const main = mainModelId();
-    // The model already used as the primary cannot also be the alternate.
-    modelSwap = !main || main === model ? [main || model] : [main, model];
-    persistModelSwap();
+  function renderFastMode() {
+    const button = $('fastModeToggle'), tier = currentFastTier();
+    button.hidden = !tier;
+    button.setAttribute('aria-pressed', String(Boolean(tier && currentFastMode)));
+    button.disabled = savingFastMode || loadingSession || switchingEngine || sending;
+    const label = currentFastMode ? 'Fast mode on · Uses more subscription allowance' : 'Enable Fast mode · Uses more subscription allowance';
+    button.title = window.CamelliaI18n.t(label) + (tier?.description ? '\n' + window.CamelliaI18n.t(tier.description) : '');
   }
-  // Right-clicking the model that is already the secondary clears it (a toggle).
-  function toggleSecondaryModel(model) {
-    if (model && model === secondaryModelId()) {
-      modelSwap = [mainModelId() || model];
-      persistModelSwap();
-      return;
+  $('fastModeToggle').addEventListener('click', async () => {
+    if (!currentFastTier() || savingFastMode) return;
+    const fastMode = !currentFastMode;
+    const message = fastMode ? 'Fast mode enabled (applies to the next message)' : 'Fast mode disabled (applies to the next message)';
+    closePops();
+    if (!context.sessionId) {
+      currentFastMode = fastMode;
+      writeUi('draft:' + draftKey(), { ...readUi('draft:' + draftKey()), codexFastMode: fastMode });
+      renderFastMode(); setStatus(message); return;
     }
-    setSecondaryModel(model);
+    savingFastMode = true; renderFastMode();
+    try { await persistSettings({ fastMode }, message); }
+    finally { savingFastMode = false; renderFastMode(); }
+  });
+  async function switchToDefaultModel() {
+    const sessionId = context.sessionId, engine = harnessId, openSeq = sessionOpenSeq;
+    const current = () => sessionId === context.sessionId && engine === harnessId && openSeq === sessionOpenSeq;
+    try {
+      const settings = await window.dshDesktop.workbenchSettings();
+      if (!current()) return;
+      if (!settings.ok) throw new Error(settings.error);
+      const configured = settings.quickSwitchModels?.[harnessId];
+      if (!configured) {
+        setStatus('Choose a quick-switch default model in Settings → Model Settings.');
+        return;
+      }
+      // A default saved before the Google catalog was grouped names a concrete
+      // effort row; the family that now owns it is the selectable target.
+      const target = googleSubscription() && accountFamily(configured)?.id || configured;
+      if (target !== currentModel) {
+        const available = modelSections().some(section => section.options.some(model => model.id === target));
+        if (!available) {
+          setStatus('The quick-switch default model is unavailable. Update it in Settings → Model Settings.');
+          return;
+        }
+        await persistModel(target);
+      }
+      if (!current() || currentModel !== target) return;
+      await applyQuickSwitchLevel(settings);
+    } catch (error) { setStatus('Could not load settings: ' + error.message); }
   }
-  function persistModelSwap() { try { localStorage.setItem(swapKey, JSON.stringify(modelSwap)); } catch { /* private mode */ } }
-  // The double-click only works when the pair is known and the other model is
-  // still offered on this composer.
-  function swapTarget() {
-    const other = secondaryModelId();
-    return other && other !== currentModel && selectableModels().includes(other) ? other : '';
-  }
-  function selectableModels() {
-    return [...new Set([...MODELS.map(m => m.id), ...accountModels.map(m => m.id), ...routeModels, currentModel].filter(Boolean))];
-  }
-  function swapModel() {
-    const target = swapTarget();
-    if (!target) return false;
-    void persistModel(target);
-    return true;
+
+  // The quick-switch default pairs a model with a reasoning level. The level is
+  // applied only when this model actually offers it, so a stale preference
+  // never sends an unsupported effort to the engine.
+  async function applyQuickSwitchLevel(settings) {
+    const level = settings.quickSwitchLevels?.[harnessId] || '';
+    if (!level || level === currentLevel) return;
+    if (!LEVELS.some(option => option.id === level)) return;
+    await persistLevel(level);
   }
 
   async function persistSettings(patch, message) {
-    if (sharedChat && conversationBusy()) return;
-    const sessionId = context.sessionId;
+    // Model, reasoning and speed changes are deferred to the next message, so
+    // they may be saved while the current turn runs. Everything else needs the
+    // conversation to be idle.
+    const deferred = patch.model !== undefined || patch.thinkingBudget !== undefined || patch.fastMode !== undefined;
+    if (sharedChat && conversationBusy() && !deferred) return;
+    const sessionId = context.sessionId, engine = harnessId, openSeq = sessionOpenSeq;
     try {
       const result = await chatApi.saveSettings({ ...patch, ...(sharedChat || ['codex', 'antigravity'].includes(harnessId) ? { sessionId: context.sessionId } : {}) });
       if (!result.ok) throw new Error(result.error);
-      if (sessionId !== context.sessionId) return;
+      if (sessionId !== context.sessionId || engine !== harnessId || openSeq !== sessionOpenSeq) return;
       if (harnessId !== 'claude' && patch.model !== undefined) LEVELS.splice(1);
       applySessionSettings(result.settings);
       updateCtxRing();
@@ -760,7 +795,9 @@ const context = { sessionId: null, workspaceId: null };
       const inOther = accountSubscription() ? routeModels.includes(model) : accountModels.some(m => m.id === model);
       if (!inCurrent && inOther) connection = accountSubscription() ? 'api' : 'subscription';
     }
-    return persistSettings({ model, ...(connection ? { connection } : {}), ...(harnessId !== 'claude' ? { thinkingBudget: '' } : {}) },
+    // Google base models own their reasoning timeline, so a model change keeps
+    // the saved effort (the engine falls back to the family default if unset).
+    return persistSettings({ model, ...(connection ? { connection } : {}), ...(harnessId !== 'claude' && !googleSubscription() ? { thinkingBudget: '' } : {}) },
       "Model changed: " + modelLabel(model) + " (applies to the next message)")
       .then(() => { if (connection) void loadSettings(); });
   }
@@ -794,29 +831,9 @@ const context = { sessionId: null, workspaceId: null };
       for (const o of section.options) {
         const el = document.createElement('div');
         el.className = 'pop-opt' + (o.id === currentId ? ' current' : '');
-        // The label keeps the left edge; the check and the secondary dot share
-        // one right-hand slot so they line up instead of shifting the name.
-        el.innerHTML = '<span class="pop-label"></span><span class="pop-marks">' + checkMark() + '<span class="pop-alt"></span></span>';
+        el.innerHTML = '<span class="pop-label"></span><span class="pop-marks">' + checkMark() + '</span>';
         el.querySelector('.pop-label').textContent = o.label;
         if (section.options === LEVELS || !o.id) el.querySelector('.pop-label').dataset.i18n = '';
-        if (section.options !== LEVELS && o.id) {
-          const alt = el.querySelector('.pop-alt');
-          alt.dataset.i18nAttrs = 'data-tip';
-          alt.dataset.tip = 'Right-click to set as the secondary model';
-          el.classList.toggle('alt', o.id === secondaryModelId());
-          // Right click sets this model as the secondary, or clears it when it
-          // already is; the menu stays open either way.
-          el.addEventListener('contextmenu', (event) => {
-            event.preventDefault();
-            toggleSecondaryModel(o.id);
-            const secondary = secondaryModelId();
-            for (const option of sub.querySelectorAll('.pop-opt')) {
-              const optionAlt = option.querySelector('.pop-alt');
-              if (optionAlt) optionAlt.dataset.tip = 'Right-click to set as the secondary model';
-              option.classList.toggle('alt', Boolean(option.dataset.modelId) && option.dataset.modelId === secondary);
-            }
-          });
-        }
         el.addEventListener('click', () => { void onPick(o.id); closePops(); });
         if (o.id) el.dataset.modelId = o.id;
         sub.appendChild(el);
@@ -839,6 +856,7 @@ const context = { sessionId: null, workspaceId: null };
     if (!accountModels.length) return [{ title: 'Model · Same-model failover', options: MODELS }];
     const account = { title: 'Model · ' + accountName + ' account', options: accountModels.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
     const api = { title: 'Model · Shared API routes', options: routeModels.map(id => ({ id, label: id })) };
+    if (googleSubscription()) return [account];
     const sections = accountSubscription() ? [account, api] : [api, account];
     // An ID offered by both connections belongs to the active one, matching
     // persistModel and the remote picker. Never label an API choice as account usage.
@@ -857,7 +875,7 @@ const context = { sessionId: null, workspaceId: null };
       rowModel.innerHTML = "<span data-i18n>Model</span><span class=\"pop-row-value\"></span>" + chevRight();
       rowModel.querySelector('.pop-row-value').textContent = modelLabel(currentModel);
       rowModel.addEventListener('click', () => {
-        openSubMenu(rowModel, modelSections(), currentModel, (model) => { setMainModel(model); return persistModel(model); });
+        openSubMenu(rowModel, modelSections(), currentModel, persistModel);
       });
       const rowLevel = document.createElement('div');
       rowLevel.className = 'pop-row';
@@ -872,8 +890,8 @@ const context = { sessionId: null, workspaceId: null };
     }, 260);
   }
 
-  // A single click opens the model/reasoning menu; a double-click toggles
-  // between the two most recently selected models. Waiting briefly before
+  // A single click opens the model/reasoning menu; a double-click selects
+  // the default configured in General settings. Waiting briefly before
   // opening the menu is what tells the two gestures apart, so the menu still
   // owns the plain click (listing models and reasoning levels).
   let modelClickTimer = null;
@@ -888,44 +906,11 @@ const context = { sessionId: null, workspaceId: null };
   $('modelPill').addEventListener('dblclick', () => {
     clearTimeout(modelClickTimer); modelClickTimer = null;
     if (openPops.length) closePops();
-    if (!swapModel()) openModelMenu(); // nothing to switch back to
+    void switchToDefaultModel();
   });
 
   // ---------- attachments ----------
-  function isImagePath(p) { return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(p); }
-
-  // Attachment chips draw a themed glyph instead of an OS emoji, so a pasted
-  // file reads as part of the workbench rather than a stray default icon.
-  const ATTACHMENT_GLYPHS = {
-    text: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13.5h6M9 17h4"/>',
-    sheet: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8.5 13h7M8.5 17h7M12 13v4"/>',
-    slides: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 12v6m0 0-2.5-2.5M12 18l2.5-2.5"/>',
-    pdf: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 17v-5h1.6a1.7 1.7 0 0 1 0 3.4H9"/>',
-    archive: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M11 12.5h2M11 15.5h2M11 18.5h2"/>',
-    image: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="8.5" cy="9.5" r="1.4"/><path d="m20 16-4.5-4.5L6 21"/>',
-    file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
-  };
-  function attachmentGlyphKind(name, isImage) {
-    if (isImage) return 'image';
-    const extension = String(name || '').split('.').pop().toLowerCase();
-    if (extension === 'pdf') return 'pdf';
-    if (['xls', 'xlsx', 'xlsm', 'ods', 'numbers', 'csv', 'tsv'].includes(extension)) return 'sheet';
-    if (['ppt', 'pptx', 'odp', 'key'].includes(extension)) return 'slides';
-    if (['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2'].includes(extension)) return 'archive';
-    if (['txt', 'text', 'md', 'markdown', 'rst', 'log', 'tex', 'json', 'yaml', 'yml', 'toml', 'ini', 'conf', 'env', 'xml'].includes(extension)) return 'text';
-    return 'file';
-  }
-  function attachmentGlyph(name, isImage, className) {
-    const kind = attachmentGlyphKind(name, isImage);
-    return '<span class="' + className + ' attchip-file-' + kind + '">' +
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
-      ATTACHMENT_GLYPHS[kind] + '</svg></span>';
-  }
-  function fileUrl(p) {
-    const normalized = String(p).replace(/\\/g, '/');
-    const encoded = encodeURI(normalized).replace(/#/g, '%23').replace(/\?/g, '%3F');
-    return normalized.startsWith('//') ? 'file:' + encoded : 'file:///' + encoded.replace(/^\//, '');
-  }
+  const { isImagePath, attachmentGlyph, fileUrl } = window.CamelliaChatControls;
 
   const fileViewer = $('fileViewer');
   const fileViewerResize = $('fileViewerResize');
@@ -1047,207 +1032,25 @@ const context = { sessionId: null, workspaceId: null };
   window.addEventListener('blur', finishSidebarResize);
   window.addEventListener('resize', () => { finishSidebarResize(); finishPreviewResize(); updateSidebarWidth(); });
   updateSidebarWidth();
-  let previewedFile = null;
-  let previewRequest = 0;
-  const attachmentDragType = 'application/x-camellia-attachment-path';
-  function formatFileSize(bytes) {
-    if (!Number.isFinite(bytes)) return '';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(bytes < 10240 ? 1 : 0) + ' KB';
-    return (bytes / 1024 / 1024).toFixed(bytes < 1024 * 1024 * 10 ? 1 : 0) + ' MB';
+
+  // The middle conversation column width is a saved preference
+  // (Settings → General). "Full" removes the cap instead of naming a pixel
+  // value so it keeps tracking the window on every screen size.
+  const CHAT_CONTENT_WIDTHS = { standard: '768px', wide: '1080px', full: 'none' };
+  function applyChatContentWidth(value) {
+    const width = CHAT_CONTENT_WIDTHS[value] || CHAT_CONTENT_WIDTHS.standard;
+    document.documentElement.style.setProperty('--content-width', width);
+    writeUi('content-width', value);
   }
-  function previewLabel(file) {
-    return file.extension || { text: 'TEXT', image: 'IMAGE', video: 'VIDEO', audio: 'AUDIO', pdf: 'PDF' }[file.kind] || 'FILE';
-  }
-  function renderUnsupportedPreview(message) {
-    const empty = document.createElement('div');
-    empty.className = 'file-preview-empty';
-    empty.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><strong></strong><span></span><button type="button"></button>';
-    empty.querySelector('strong').textContent = message || window.CamelliaI18n.t('This file type cannot be previewed in Camellia.');
-    empty.querySelector('span').textContent = window.CamelliaI18n.t('Open it with the system app instead.');
-    empty.querySelector('button').textContent = window.CamelliaI18n.t('Open with system app');
-    empty.querySelector('button').onclick = () => openPreviewExternally();
-    $('fileViewerBody').replaceChildren(empty);
-  }
-  function renderFilePreview(file) {
-    previewedFile = file;
-    $('fileViewerTitle').textContent = file.name;
-    $('fileViewerTitle').title = file.path;
-    $('fileViewerType').textContent = previewLabel(file);
-    $('fileViewerMeta').textContent = [formatFileSize(file.size), file.path].filter(Boolean).join('  ·  ');
-    const body = $('fileViewerBody');
-    body.replaceChildren();
-    if (file.kind === 'text') {
-      const format = window.CamelliaArtifacts.documentFormat(file);
-      if (format === 'html') {
-        body.appendChild(window.CamelliaHtmlPreview.render(file));
-      } else if (format === 'markdown') {
-        const article = document.createElement('article'); article.className = 'file-preview-markdown md';
-        article.setAttribute('translate', 'no'); article.innerHTML = mdRender(file.text || '', true, file.url);
-        article.addEventListener('click', event => {
-          const link = event.target.closest('a');
-          if (!link) return;
-          event.preventDefault();
-          if (link.dataset.previewBlocked) return;
-          const href = link.getAttribute('href');
-          if (href.startsWith('#')) {
-            let anchor;
-            try { anchor = decodeURIComponent(href.slice(1)); } catch { return; }
-            [...article.querySelectorAll('[data-preview-anchor], [id]')].find(target => target.dataset.previewAnchor === anchor || target.id === anchor)?.scrollIntoView({ block: 'start' });
-          } else if (/^https?:/.test(href)) window.open(href, '_blank', 'noopener,noreferrer');
-          else if (href.startsWith('file:')) {
-            try {
-              const url = new URL(href);
-              const path = decodeURIComponent(url.pathname).replace(/^\/([a-z]:\/)/i, '$1');
-              void openFilePreview(path);
-            } catch {}
-          }
-        });
-        body.appendChild(article);
-      } else if (window.CamelliaDataPreview.supports(file)) {
-        body.appendChild(window.CamelliaDataPreview.render(file));
-      } else {
-        const text = document.createElement('pre'); text.className = 'file-preview-text'; text.textContent = file.text;
-        body.appendChild(text);
-      }
-      if (file.truncated) {
-        const notice = document.createElement('p'); notice.className = 'file-preview-notice';
-        notice.dataset.i18n = ''; notice.textContent = 'Text preview is limited to the first 2 MB.';
-        body.appendChild(notice);
-      }
-    } else if (file.kind === 'image') {
-      const stage = document.createElement('div'); stage.className = 'file-preview-image';
-      const image = document.createElement('img'); image.src = file.url; image.alt = file.name;
-      image.draggable = true;
-      image.addEventListener('dragstart', event => {
-        if (!event.dataTransfer || !file.path) { event.preventDefault(); return; }
-        event.dataTransfer.setData(attachmentDragType, file.path);
-        event.dataTransfer.effectAllowed = 'copy';
-      });
-      image.addEventListener('dragend', () => inputCard.classList.remove('dragging'));
-      stage.appendChild(image); body.appendChild(stage);
-    } else if (file.kind === 'pdf') {
-      const frame = document.createElement('iframe'); frame.src = file.url; frame.title = file.name; body.appendChild(frame);
-    } else if (file.kind === 'video' || file.kind === 'audio') {
-      const media = document.createElement(file.kind); media.src = file.url; media.controls = true; media.preload = 'metadata';
-      if (file.kind === 'video') media.setAttribute('playsinline', '');
-      body.appendChild(media);
-    } else if (file.office) {
-      const stage = document.createElement('div'); stage.className = 'file-preview-office';
-      const notice = document.createElement('p'); notice.className = 'office-preview-notice';
-      notice.dataset.i18n = ''; notice.textContent = 'Document preview · Complex layouts may differ from the original.';
-      stage.appendChild(notice);
-      if (file.office.wordHtml) {
-        const frame = document.createElement('iframe'); frame.title = file.name;
-        frame.className = 'file-preview-office-document'; frame.setAttribute('sandbox', 'allow-scripts');
-        frame.referrerPolicy = 'no-referrer'; frame.srcdoc = file.office.wordHtml;
-        stage.appendChild(frame);
-      } else if (file.office.html) {
-        const frame = document.createElement('iframe'); frame.title = file.name;
-        frame.className = 'file-preview-office-document'; frame.setAttribute('sandbox', '');
-        frame.referrerPolicy = 'no-referrer';
-        frame.srcdoc = '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'; script-src \'none\'; frame-src \'none\'; connect-src \'none\'; form-action \'none\'; base-uri \'none\'">' + file.office.html;
-        if (file.office.sheets?.length) {
-          const select = document.createElement('select');
-          select.setAttribute('aria-label', 'Worksheet / 工作表'); select.className = 'office-sheet-select';
-          file.office.sheets.forEach((sheet, index) => select.append(new Option(sheet.title, String(index))));
-          const prefix = frame.srcdoc.slice(0, frame.srcdoc.indexOf('<body>') + 6);
-          const showSheet = () => { frame.srcdoc = prefix + file.office.sheets[Number(select.value)].html + '</body></html>'; };
-          select.onchange = showSheet; showSheet(); stage.appendChild(select);
-        }
-        stage.appendChild(frame);
-      } else for (const section of file.office.sections) {
-        const page = document.createElement('section'); page.className = 'office-preview-section';
-        if (section.title) { const heading = document.createElement('h3'); heading.textContent = section.title; page.appendChild(heading); }
-        if (section.rows) {
-          const table = document.createElement('table');
-          for (const row of section.rows) {
-            const line = document.createElement('tr');
-            const number = document.createElement('th'); number.scope = 'row'; number.textContent = row.number; line.appendChild(number);
-            for (const value of row.cells) { const cell = document.createElement('td'); cell.textContent = value; line.appendChild(cell); }
-            table.appendChild(line);
-          }
-          page.appendChild(table);
-        } else for (const paragraph of section.paragraphs) {
-          const text = document.createElement('p'); text.textContent = paragraph; page.appendChild(text);
-        }
-        stage.appendChild(page);
-      }
-      if (file.office.truncated) {
-        const note = document.createElement('p'); note.dataset.i18n = ''; note.textContent = 'Preview truncated. Open with the system app to see the complete file.'; stage.appendChild(note);
-      }
-      body.appendChild(stage);
-    } else renderUnsupportedPreview();
-    fileViewer.hidden = false;
-  }
-  function focusPreviewLocation({ line = 0, anchor = '' } = {}) {
-    const body = $('fileViewerBody');
-    if (line) {
-      const candidates = [...body.querySelectorAll('[data-preview-line]')]
-        .filter(node => Number(node.dataset.previewLine) <= line && Number(node.dataset.previewEndLine) >= line)
-        .sort((a, b) => Number(b.dataset.previewLine) - Number(a.dataset.previewLine));
-      if (candidates.length) candidates[0].scrollIntoView({ block: 'center' });
-      else {
-        const text = body.querySelector('.file-preview-text')?.firstChild;
-        if (text) {
-          let offset = 0;
-          for (let current = 1; current < line; current++) {
-            const end = text.textContent.indexOf('\n', offset);
-            if (end < 0) break;
-            offset = end + 1;
-          }
-          const range = document.createRange();
-          range.setStart(text, offset); range.setEnd(text, Math.min(offset + 1, text.length));
-          body.scrollTop += range.getBoundingClientRect().top - body.getBoundingClientRect().top - body.clientHeight / 2;
-        }
-      }
-      $('fileViewerMeta').textContent += ':' + line;
-    } else if (anchor) [...body.querySelectorAll('[data-preview-anchor], [id]')]
-      .find(node => node.dataset.previewAnchor === anchor || node.id === anchor)?.scrollIntoView({ block: 'start' });
-  }
-  async function openFilePreview(filePath, location = {}) {
-    if (!filePath) return;
-    const request = ++previewRequest;
-    let result;
-    try { result = await window.dshDesktop.previewFile(filePath); }
-    catch (error) { result = { ok: false, error: error.message }; }
-    if (request !== previewRequest) return;
-    if (!result.ok) {
-      previewedFile = { path: filePath, name: String(filePath).split(/[\\/]/).pop(), kind: 'unsupported' };
-      $('fileViewerTitle').textContent = previewedFile.name;
-      $('fileViewerType').textContent = window.CamelliaI18n.t('Preview');
-      $('fileViewerMeta').textContent = filePath;
-      fileViewer.hidden = false;
-      renderUnsupportedPreview(result.error || window.CamelliaI18n.t('The file could not be opened.'));
-      return;
-    }
-    renderFilePreview(result.file);
-    focusPreviewLocation(location);
-  }
-  async function openPreviewExternally() {
-    if (!previewedFile?.path) return;
-    const result = await window.dshDesktop.openFileExternally(previewedFile.path);
-    if (!result.ok) setStatus(result.error || 'Could not open the file.');
-  }
-  // The file manager has a different name and gesture on each desktop, so the
-  // menu label follows the host platform instead of using one generic wording.
-  function revealLabel() {
-    const platform = window.dshDesktop.platform;
-    if (platform === 'darwin') return 'Reveal in Finder';
-    if (platform === 'win32') return 'Show in File Explorer';
-    if (platform === 'linux') return 'Show in file manager';
-    return 'Show in folder';
-  }
-  function closeFilePreview() {
-    previewRequest++;
-    finishPreviewResize();
-    fileViewer.hidden = true;
-    $('fileViewerBody').replaceChildren();
-    previewedFile = null;
-  }
-  $('fileViewerClose').onclick = closeFilePreview;
-  $('fileViewerExternal').onclick = () => void openPreviewExternally();
-  document.addEventListener('keydown', event => { if (event.key === 'Escape' && !fileViewer.hidden) closeFilePreview(); });
+  window.dshDesktop.onChatContentWidthChanged?.(applyChatContentWidth);
+  // Paint the cached width first so the column never flashes at the default
+  // when this window opens; the saved preference confirms or corrects it.
+  const cachedContentWidth = readUi('content-width');
+  if (CHAT_CONTENT_WIDTHS[cachedContentWidth]) applyChatContentWidth(cachedContentWidth);
+  void window.dshDesktop.workbenchSettings().then(settings => {
+    if (settings?.ok) applyChatContentWidth(settings.chatContentWidth);
+  }).catch(() => {});
+  const { openFilePreview, closeFilePreview, openPreviewExternally, revealFile, revealLabel, formatFileSize, attachmentDragType } = window.CamelliaFilePreview.create({ fileViewer, inputCard, mdRender, setStatus, finishPreviewResize });
 
   function addAttachments(paths) {
     let unsupportedImage = false;
@@ -1262,29 +1065,11 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   function renderAttachments() {
-    const row = $('attachRow');
-    row.classList.toggle('has', attachments.length > 0);
-    row.innerHTML = '';
-    attachments.forEach((a, i) => {
-      const chip = document.createElement('div');
-      chip.className = 'attchip';
-      chip.title = a.path;
-      const visual = a.isImage
-        ? '<img src="' + esc(fileUrl(a.path)) + '" alt="">'
-        : attachmentGlyph(a.name, false, 'attchip-fileicon');
-      chip.innerHTML = visual + "<span class=\"attchip-name\"></span><button class=\"attchip-x\" title=\"Remove\">✕</button>";
-      const name = chip.querySelector('.attchip-name');
-      name.textContent = a.name; name.tabIndex = 0; name.role = 'button'; name.title = window.CamelliaI18n.t('Preview');
-      name.addEventListener('click', () => void openFilePreview(a.path));
-      name.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void openFilePreview(a.path); } });
-      chip.querySelector('.attchip-x').addEventListener('click', () => {
-        attachments.splice(i, 1);
-        renderAttachments();
-      });
-      row.appendChild(chip);
+    window.CamelliaChatControls.renderAttachments($('attachRow'), attachments, {
+      preview: openFilePreview,
+      remove: index => { attachments.splice(index, 1); renderAttachments(); },
     });
-    saveDraft();
-    updateSendEnabled();
+    saveDraft(); updateSendEnabled();
   }
 
   function renderMessageQueue() {
@@ -1734,7 +1519,7 @@ const context = { sessionId: null, workspaceId: null };
   function moveTurnFooter(turn) { const footer = turn?.querySelector('.turn-actions'); if (footer) turn.appendChild(footer); }
   function turnIsEmpty(turn) {
     if (turn?.querySelector('.turn-body')?.childElementCount) return false;
-    return !turn.querySelector('.run-result, .turn-artifacts');
+    return !turn.querySelector('.run-result, .turn-artifacts, .question-pending, .question-card');
   }
   function ensureTurn() {
     if (turnEl) return turnEl;
@@ -1795,10 +1580,7 @@ const context = { sessionId: null, workspaceId: null };
             try { const result = await window.dshDesktop.openFileExternally(file.path); if (!result.ok) setStatus(result.error); }
             catch (error) { setStatus(error.message); }
           } },
-          { label: revealLabel(), run: async () => {
-            try { const result = await window.dshDesktop.revealFile(file.path); if (!result.ok) setStatus(result.error); }
-            catch (error) { setStatus(error.message); }
-          } },
+          { label: revealLabel(), run: () => void revealFile(file.path) },
         ]);
         row.append(open, menu); (index < limit ? list : overflow).appendChild(row);
       }
@@ -1826,7 +1608,7 @@ const context = { sessionId: null, workspaceId: null };
   function setRunStatus(text) {
     if (!running && !text) return;
     const el = statusRow();
-    el.querySelector('.run-text').textContent = text || "Working…";
+    el.querySelector('.run-text').textContent = pendingQuestion ? 'Waiting for your answer' : text || "Working…";
   }
   function clearRunStatus() {
     const el = turnEl && turnEl.querySelector('.run-status');
@@ -2008,89 +1790,9 @@ const context = { sessionId: null, workspaceId: null };
     return el;
   }
 
-  function toolIcon(name) {
-    const n = String(name || '').toLowerCase();
-    if (/pwsh|bash|shell|cmd|powershell/.test(n)) return '💻';
-    if (/read|glob/.test(n)) return '📄';
-    if (/edit|write/.test(n)) return '✏️';
-    if (/grep|search|web/.test(n)) return '🔍';
-    if (/todo|task/.test(n)) return '☑️';
-    if (/mcp|workflow|subagent|agent/.test(n)) return '🤖';
-    return '🔧';
-  }
-
-  function toolSummary(name, inputData) {
-    if (!inputData || typeof inputData !== 'object') return '';
-    const c = inputData.command || inputData.file_path || inputData.pattern || inputData.path || inputData.description || '';
-    if (!c) return '';
-    const line = String(c).split('\n')[0];
-    return line.length > 90 ? line.slice(0, 90) + '…' : line;
-  }
-
-  function previewableToolPath(name, inputData) {
-    if (!inputData || typeof inputData !== 'object') return '';
-    if (!/(write|edit|create|save|output|export|patch)/.test(String(name || '').toLowerCase())) return '';
-    const candidate = inputData.file_path || inputData.path || inputData.output_path || inputData.destination || inputData.filename || '';
-    return typeof candidate === 'string' ? candidate : '';
-  }
-
   function makeToolCard(name, inputData, id) {
-    const el = document.createElement('div');
-    el.className = 'tool-card';
-    el.innerHTML =
-      '<div class="tool-head">' +
-      '  <span class="arrow">▶</span>' +
-      '  <span class="tool-icon">' + toolIcon(name) + '</span>' +
-      '  <span class="tool-name"></span>' +
-      '  <span class="tool-summary"></span>' +
-      '  <span class="tool-state"></span>' +
-      '</div>' +
-      '<div class="tool-body">' +
-      "  <div class=\"tool-section-label\" data-i18n>Input</div>" +
-      '  <div class="tool-code tool-input"></div>' +
-      "  <div class=\"tool-section-label\" data-i18n>Output</div>" +
-      "  <div class=\"tool-output\" data-i18n>Waiting for result…</div>" +
-      '</div>';
-    el.querySelector('.tool-name').textContent = name || 'tool';
-    el.querySelector('.tool-head').addEventListener('click', () => el.classList.toggle('open'));
-    appendTurnBlock(el);
-    layoutTurnProcess();
-    const card = {
-      name, el,
-      inputEl: el.querySelector('.tool-input'),
-      outputEl: el.querySelector('.tool-output'),
-      stateEl: el.querySelector('.tool-state'),
-      summaryEl: el.querySelector('.tool-summary'),
-      setInput(data) {
-        this.inputData = data;
-        this.previewPath = previewableToolPath(this.name, data);
-        this.summaryEl.textContent = toolSummary(this.name, data);
-        if (data && data.command) {
-          this.inputEl.textContent = data.command +
-            Object.keys(data).filter((k) => k !== 'command')
-              .map((k) => '\n' + k + ': ' + (typeof data[k] === 'string' ? data[k] : JSON.stringify(data[k]))).join('');
-        } else if (data) {
-          this.inputEl.textContent = JSON.stringify(data, null, 2);
-        } else {
-          this.inputEl.textContent = "(No input)";
-        }
-      },
-      setOutput(text, isErr) {
-        this.finished = true;
-        this.failed = !!isErr;
-        this.outputEl.textContent = text || "(No output)";
-        this.outputEl.classList.toggle('err', !!isErr);
-        this.stateEl.className = 'tool-state ' + (isErr ? 'err' : 'done');
-        if (!isErr && this.previewPath && !this.el.querySelector('.tool-preview-file')) {
-          const button = document.createElement('button');
-          button.type = 'button'; button.className = 'tool-preview-file';
-          button.textContent = window.CamelliaI18n.t('Preview') + ' · ' + String(this.previewPath).split(/[\\/]/).pop();
-          button.addEventListener('click', event => { event.stopPropagation(); void openFilePreview(this.previewPath); });
-          this.outputEl.after(button);
-        }
-      },
-    };
-    card.setInput(inputData || null);
+    const card = window.CamelliaChatControls.makeToolCard(name, inputData, openFilePreview);
+    appendTurnBlock(card.el); layoutTurnProcess();
     if (id) pendingTools[id] = card;
     return card;
   }
@@ -2240,6 +1942,30 @@ const context = { sessionId: null, workspaceId: null };
   }
 
   // ---------- status ----------
+  function compactionDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return '';
+    const t = window.CamelliaI18n.t;
+    const seconds = Math.round(ms / 1000);
+    if (seconds < 60) return t(seconds === 1 ? '{0} second' : '{0} seconds').replace('{0}', seconds);
+    const minutes = Math.floor(seconds / 60);
+    const parts = [t(minutes === 1 ? '{0} minute' : '{0} minutes').replace('{0}', minutes)];
+    if (seconds % 60) parts.push(t(seconds % 60 === 1 ? '{0} second' : '{0} seconds').replace('{0}', seconds % 60));
+    return parts.join(' ');
+  }
+  // The label is translated in place, so the elapsed time lives beside it and
+  // is re-rendered from the stored milliseconds when the language changes.
+  function compactionDurationText(element) { element.textContent = compactionDuration(Number(element.dataset.compactionMs)); }
+  function compactionLabel(compaction) {
+    const labels = compaction.native ? {
+      running: '{0}: compacting context natively…', completed: '{0}: context compacted natively',
+      failed: '{0}: native compaction failed. The original conversation is retained.',
+      cancelled: '{0}: native compaction canceled. The original conversation is retained.',
+    } : { running: 'Compacting context…', completed: 'Context compacted', failed: 'Context compaction failed. The original conversation is retained.', cancelled: 'Context compaction canceled. The original conversation is retained.' };
+    return (labels[compaction.state] || labels.running).replace('{0}', ENGINE_SHORT_NAMES[compaction.engine || loadedEngine] || 'Harness');
+  }
+  window.addEventListener('camellia:language', () => {
+    chat.querySelectorAll('.context-compaction-duration').forEach(compactionDurationText);
+  });
   function renderCompactionStatus(compaction, historyBefore) {
     if (!compaction) return;
     const was = historyBefore === undefined && nearBottom();
@@ -2258,17 +1984,27 @@ const context = { sessionId: null, workspaceId: null };
     }
     row.dataset.state = compaction.state;
     if (compaction.seq) row.dataset.seq = compaction.seq;
-    const labels = { running: 'Compacting context…', completed: 'Context compacted', failed: 'Context compaction failed. The original conversation is retained.', cancelled: 'Context compaction canceled. The original conversation is retained.' };
+    const label = compactionLabel(compaction);
     const progress = compaction.stage === 'summarizing' && Number.isInteger(compaction.chunk)
       ? (compaction.finalChunk ? 'Summarizing context: chunk {0} (last)…' : 'Summarizing context: chunk {0}…').replace('{0}', compaction.chunk)
-      : compaction.stage === 'saving' ? 'Saving compacted context…' : labels.running;
-    row.querySelector('span').textContent = compaction.state === 'running' ? progress : labels[compaction.state] || labels.running;
+      : compaction.stage === 'saving' ? 'Saving compacted context…' : label;
+    row.querySelector('span').textContent = compaction.state === 'running' ? progress : label;
+    // The label is translated in place, so the elapsed time lives beside it
+    // instead of inside the translated text node.
+    const durationMs = compaction.state === 'completed' ? compaction.durationMs ?? compaction.totalMs : NaN;
+    let durationEl = row.querySelector('.context-compaction-duration');
+    if (Number.isFinite(durationMs) && durationMs >= 0) {
+      if (!durationEl) { durationEl = document.createElement('span'); durationEl.className = 'context-compaction-duration'; row.appendChild(durationEl); }
+      durationEl.dataset.compactionMs = durationMs;
+      compactionDurationText(durationEl);
+    } else if (durationEl) durationEl.remove();
     if (historyBefore === undefined) maybeScroll(was);
   }
   let statusText = '';
   let conversationPhase = '';
   function setStatus(text) { statusText = text; statusLine.textContent = text; }
   function handleConversationStatus({ sessionId, text, compaction }) {
+    if (text && compaction?.native && compaction.state === 'running') text = compactionLabel(compaction);
     const pending = pendingConversationSends.get(sessionId);
     if (pending) pending.phase = text;
     if (sessionId !== context.sessionId) return;
@@ -2288,7 +2024,7 @@ const context = { sessionId: null, workspaceId: null };
     runStartedAt = Date.now();
     clearInterval(runTimer);
     runTimer = setInterval(() => {
-      if (statusText === 'Stopping…') return;
+      if (statusText === 'Stopping…' || pendingQuestion) return;
       setStatus((conversationPhase || 'Running…') + " · Elapsed " + fmtDuration(Date.now() - runStartedAt));
     }, 1000);
     setStatus(conversationPhase || 'Running…');
@@ -2418,8 +2154,11 @@ const context = { sessionId: null, workspaceId: null };
       if (index >= 0) {
         permissionQueue.splice(index, 1);
         if (permRequestId === ev.requestId) {
+          finishQuestion('This request is no longer active');
+          permissionSubmission = null;
           permRequestId = null; $('permMask').classList.remove('visible');
           if (permissionQueue.length) showPermissionDialog(permissionQueue[0]);
+          else if (running) setRunStatus('Working…');
         }
       }
       return;
@@ -2427,8 +2166,7 @@ const context = { sessionId: null, workspaceId: null };
     if (sharedChat && ev.type === 'conversation:started') acceptSessionEvents = true;
     if (ev.engine && ev.engine !== turnEngine) { turnEngine = ev.engine; applyTurnMeta(); }
     if (ev.handoff && ev.type === 'gui:permission') {
-      if (currentPermission === 'full') { void autoAllowPermission(ev); return; }
-      permissionQueue.push(ev); if (!permRequestId) showPermissionDialog(ev); return;
+      queuePermission(ev); return;
     }
     if (!acceptSessionEvents) return;
     if (ev.type === 'conversation:steered') {
@@ -2450,9 +2188,6 @@ const context = { sessionId: null, workspaceId: null };
       setRunning(true);
       return;
     }
-    // Highest automation level: approvals never surface a dialog. Permission
-    // checks are allowed; question prompts continue without a confirmed answer.
-    if (ev.type === 'gui:permission' && currentPermission === 'full') { void autoAllowPermission(ev); return; }
     if (ev.type === 'conversation:started') {
       if (ev.runId !== currentRunId) {
         currentRunId = ev.runId;
@@ -2473,7 +2208,8 @@ const context = { sessionId: null, workspaceId: null };
     const was = nearBottom();
 
     if (ev.type === 'gui:compaction') {
-      handleConversationStatus({ sessionId: ev.session_id, text: ev.state === 'running' ? 'Compacting context…' : '', compaction: { state: ev.state, seq: ev.compactionSeq } });
+      handleConversationStatus({ sessionId: ev.session_id, text: ev.state === 'running' ? 'Compacting context…' : '',
+        compaction: { state: ev.state, native: ev.native !== false, engine: ev.engine || turnEngine || loadedEngine, seq: ev.compactionSeq, durationMs: ev.compactionDurationMs } });
       return;
     }
 
@@ -2550,8 +2286,7 @@ const context = { sessionId: null, workspaceId: null };
     }
 
     if (ev.type === 'gui:permission') {
-      permissionQueue.push(ev);
-      if (!permRequestId) showPermissionDialog(permissionQueue[0]);
+      queuePermission(ev);
       return;
     }
 
@@ -2574,7 +2309,9 @@ const context = { sessionId: null, workspaceId: null };
       renderTodoPanel();
       return;
     }
-    if (ev.type === 'gui:config' && harnessId !== 'claude') {
+    // The Google subscription bridge pins its model and effort at launch, so
+    // it reports no native config options; the model menu owns the levels.
+    if (ev.type === 'gui:config' && harnessId !== 'claude' && !googleSubscription()) {
       const thinking = (ev.options || []).find(option => ['thinking', 'reasoning_effort'].includes(option.id));
       LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' },
         ...(thinking?.options || []).map(option => ({ id: option.value, label: option.name })));
@@ -2726,7 +2463,9 @@ const context = { sessionId: null, workspaceId: null };
       if (!text) return;
       input.value = '';
       autoResize();
-      await goalUI.startFromComposer(text);
+      const goalDraftKey = draftKey(), newGoal = !context.sessionId;
+      const started = await goalUI.startFromComposer(text, harnessId === 'codex' && newGoal ? { fastMode: currentFastMode } : {});
+      if (started && newGoal && harnessId === 'codex') writeUi('draft:' + goalDraftKey, {});
       return;
     }
     const atts = queuedMessage ? queuedMessage.attachments : attachments.slice();
@@ -2738,7 +2477,7 @@ const context = { sessionId: null, workspaceId: null };
     saveDraft();
     const sentDraftKey = draftKey();
     const sendContext = { sessionId: context.sessionId || null, workspaceId: context.workspaceId,
-      fork: Boolean(pendingForkId), openSeq: sessionOpenSeq, dispatched: false, cancelled: false };
+      fork: Boolean(pendingForkId), openSeq: sessionOpenSeq, dispatched: false, cancelled: false, fastMode: currentFastMode };
     if (sharedChat && sendContext.sessionId && !sendContext.fork) pendingConversationSends.set(sendContext.sessionId, sendContext);
     sending = true;
     turnEngine = harnessId;
@@ -2770,6 +2509,7 @@ const context = { sessionId: null, workspaceId: null };
         sessionId: sendContext.sessionId,
         workspaceId: sendContext.workspaceId,
         fork: sendContext.fork,
+        ...(harnessId === 'codex' && !sendContext.sessionId ? { fastMode: sendContext.fastMode } : {}),
         settings,
       });
     } catch (err) { res = { ok: false, error: err.message }; }
@@ -2791,7 +2531,9 @@ const context = { sessionId: null, workspaceId: null };
       return Boolean(res.ok);
     }
     sending = false;
-    updateSendEnabled();
+    // The run is dispatched: refresh the controls so a model change can be
+    // queued behind it even if the engine has not emitted an event yet.
+    updateConversationControls();
     if (!res.ok) {
       if (!queuedMessage && !input.value && !attachments.length) { input.value = text; attachments = atts; renderAttachments(); autoResize(); }
       saveDraft();
@@ -2821,7 +2563,7 @@ const context = { sessionId: null, workspaceId: null };
       for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
       updateSendEnabled(); void sidebar.load();
     }
-    if (sharedChat) writeUi('draft:' + sentDraftKey, {});
+    if (sharedChat || harnessId === 'codex') writeUi('draft:' + sentDraftKey, {});
     saveDraft();
     return true;
   }
@@ -2925,7 +2667,11 @@ const context = { sessionId: null, workspaceId: null };
     try {
       const res = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'compact', payload: { sessionId: context.sessionId } });
       if (!res?.ok) setStatus(res?.error || 'Compaction failed');
-      else setStatus(res.native ? 'Context compacted' : 'Context compacted. The conversation continues with the summary.');
+      else {
+        const duration = compactionDuration(res.durationMs);
+        const label = res.native ? compactionLabel({ state: 'completed', native: true }) : 'Context compacted. The conversation continues with the summary.';
+        setStatus(window.CamelliaI18n.t(label) + (duration ? ' · ' + duration : ''));
+      }
     } catch (error) { setStatus(error.message); }
   }
   input.addEventListener('keydown', (e) => {
@@ -2993,16 +2739,41 @@ const context = { sessionId: null, workspaceId: null };
   $('selPermission').addEventListener('change', () => void persistSettings(
     { permissionMode: $('selPermission').value }, "Permission mode saved. Applies to the next message."));
 
-  // ---------- P3: permission dialog ----------
+  // ---------- Task questions and tool permissions ----------
+  function queuePermission(ev) {
+    if (permissionQueue.some(request => request.requestId === ev.requestId && request.runId === ev.runId)) return;
+    if (currentPermission === 'full' && !ev.questions?.length) { void autoAllowPermission(ev); return; }
+    permissionQueue.push(ev);
+    if (!permRequestId) showPermissionDialog(permissionQueue[0]);
+  }
+  function openQuestionDialog() {
+    if (!pendingQuestion || pendingQuestion.requestId !== permRequestId) return;
+    const dialog = $('questionDialog');
+    if (dialog.open) return;
+    dialog.replaceChildren(pendingQuestion.card);
+    dialog.showModal();
+    // Focus the question, without preselecting an option or a submit button.
+    $('questionTitle').focus();
+  }
+  function deferQuestion() {
+    const state = pendingQuestion;
+    if (!state) return;
+    if ($('questionDialog').open) $('questionDialog').close();
+    state.openButton.focus({ preventScroll: true });
+  }
+  $('questionDialog').addEventListener('cancel', event => { event.preventDefault(); deferQuestion(); });
   function questionError(text) {
     if (!pendingQuestion) return;
     pendingQuestion.status.textContent = text;
     pendingQuestion.status.classList.add('error');
     pendingQuestion.status.setAttribute('role', 'alert');
   }
-  function finishQuestion(text) {
+  function finishQuestion(text, confirmed = false) {
     if (!pendingQuestion) return;
     const state = pendingQuestion;
+    if ($('questionDialog').open) $('questionDialog').close();
+    const title = state.card.querySelector('h3'); title.removeAttribute('id'); title.textContent = text;
+    state.card.querySelector('.question-hint').removeAttribute('id');
     for (const control of state.card.querySelectorAll('input, textarea, button')) control.disabled = true;
     state.status.textContent = text; state.status.classList.remove('error'); state.status.setAttribute('role', 'status');
     // Collapse the answered form: a compact answer summary stays visible while
@@ -3010,7 +2781,8 @@ const context = { sessionId: null, workspaceId: null };
     const answers = document.createElement('div'); answers.className = 'question-answers';
     for (const { question: q, choices, custom } of state.fields) {
       const picked = choices.filter(c => c.checked).map(c => c.value);
-      const value = custom.value ? q.isSecret ? '••••••' : custom.value : picked.join(' · ');
+      const value = confirmed ? q.isSecret ? '••••••' : [...picked, ...(custom.value.trim() ? [custom.value.trim()] : [])].join(' · ') : '';
+      if (q.isSecret || !confirmed) { custom.value = ''; choices.forEach(choice => choice.checked = false); }
       const line = document.createElement('div');
       const name = document.createElement('strong'); name.textContent = q.question;
       const answer = document.createElement('span'); answer.textContent = value || '—';
@@ -3020,9 +2792,12 @@ const context = { sessionId: null, workspaceId: null };
     const toggle = document.createElement('summary'); toggle.dataset.i18n = ''; toggle.textContent = 'Review options';
     review.append(toggle);
     for (const field of state.card.querySelectorAll('fieldset')) review.append(field);
+    state.card.querySelector('.question-fields').remove();
     state.card.insertBefore(answers, state.status);
     state.card.insertBefore(review, state.status);
     state.card.classList.add('done');
+    state.slot.replaceWith(state.card);
+    $('questionDialog').replaceChildren();
     questionDrafts.delete(state.key); pendingQuestion = null;
   }
   function showQuestion(ev) {
@@ -3030,51 +2805,45 @@ const context = { sessionId: null, workspaceId: null };
     const was = nearBottom(), key = JSON.stringify([context.sessionId, ev.runId, ev.requestId]);
     const saved = questionDrafts.get(key) || {};
     const card = document.createElement('form'); card.className = 'question-card';
+    const header = document.createElement('header'); header.className = 'question-header';
+    const heading = document.createElement('div'); heading.className = 'question-heading';
     const title = document.createElement('h3'); title.dataset.i18n = ''; title.textContent = 'Your input is needed';
+    title.id = 'questionTitle'; title.tabIndex = -1;
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'question-close';
+    close.setAttribute('aria-label', 'Close'); close.title = 'Answer later'; close.dataset.i18nAttrs = 'aria-label title';
+    close.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+    close.onclick = deferQuestion; heading.append(title, close);
     const hint = document.createElement('p'); hint.className = 'question-hint'; hint.dataset.i18n = '';
-    hint.textContent = 'Never ask covers tool permissions. This is a question about your task.';
-    card.append(title, hint);
-    const fields = [];
-    for (const [index, question] of ev.questions.entries()) {
-      const field = document.createElement('fieldset');
-      const legend = document.createElement('legend'); legend.textContent = question.question; field.append(legend);
-      if (question.multiSelect) { const note = document.createElement('p'); note.className = 'question-hint'; note.dataset.i18n = ''; note.textContent = 'Select one or more'; field.append(note); }
-      const choices = [];
-      for (const option of question.options || []) {
-        const label = document.createElement('label'); label.className = 'question-choice';
-        const choice = document.createElement('input'); choice.type = question.multiSelect ? 'checkbox' : 'radio';
-        choice.name = 'question-' + index; choice.value = option.label; choice.checked = Boolean(saved[question.id]?.selected?.includes(option.label));
-        const content = document.createElement('span'), name = document.createElement('strong'); name.textContent = option.label; content.append(name);
-        if (option.description) { const description = document.createElement('span'); description.textContent = option.description; content.append(description); }
-        label.append(choice, content); field.append(label); choices.push(choice);
-      }
-      const customLabel = document.createElement('label'); customLabel.className = 'question-custom';
-      const customTitle = document.createElement('span'); customTitle.dataset.i18n = ''; customTitle.textContent = choices.length ? 'Or write your own answer' : 'Your answer';
-      const custom = document.createElement('input'); custom.type = question.isSecret ? 'password' : 'text'; custom.autocomplete = 'off';
-      custom.value = question.isSecret ? '' : saved[question.id]?.custom || '';
-      customLabel.append(customTitle, custom); field.append(customLabel); card.append(field);
-      const entry = { question, choices, custom }; fields.push(entry);
-      const save = () => questionDrafts.set(key, Object.fromEntries(fields.filter(f => !f.question.isSecret).map(f => [f.question.id, { selected: f.choices.filter(c => c.checked).map(c => c.value), custom: f.custom.value }])));
-      custom.oninput = () => { if (!question.multiSelect && custom.value) choices.forEach(choice => choice.checked = false); save(); };
-      choices.forEach(choice => { choice.onchange = () => { if (!question.multiSelect) custom.value = ''; save(); }; });
-    }
+    hint.id = 'questionHint'; hint.textContent = 'Choose or write an answer to continue this task. Answering later keeps it waiting.';
+    const fieldList = document.createElement('div'); fieldList.className = 'question-fields';
+    header.append(heading, hint); card.append(header, fieldList);
+    const fields = window.CamelliaChatControls.questionFields(fieldList, ev.questions, { saved,
+      changed: fields => questionDrafts.set(key, Object.fromEntries(fields.filter(f => !f.question.isSecret).map(f => [f.question.id, { selected: f.choices.filter(c => c.checked).map(c => c.value), custom: f.custom.value }]))),
+    });
     const status = document.createElement('div'); status.className = 'question-status'; status.dataset.i18n = ''; status.setAttribute('role', 'status');
     const actions = document.createElement('div'); actions.className = 'question-actions';
-    const skip = document.createElement('button'); skip.type = 'button'; skip.className = 'perm-deny'; skip.dataset.i18n = ''; skip.textContent = 'Skip questions';
+    const later = document.createElement('button'); later.type = 'button'; later.className = 'btn-secondary question-later'; later.dataset.i18n = ''; later.textContent = 'Answer later';
+    later.onclick = deferQuestion;
+    const skip = document.createElement('button'); skip.type = 'button'; skip.className = 'question-skip'; skip.dataset.i18n = ''; skip.textContent = 'Skip questions';
     skip.onclick = () => void answerPermission(false);
-    const submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'perm-allow'; submit.dataset.i18n = ''; submit.textContent = 'Submit answers';
-    actions.append(skip, submit); card.append(status, actions);
+    const submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'btn-primary'; submit.dataset.i18n = ''; submit.textContent = 'Submit answers';
+    actions.append(later, skip, submit); card.append(status, actions);
     card.onsubmit = event => { event.preventDefault(); void answerPermission(true); };
-    pendingQuestion = { card, status, fields, key, requestId: ev.requestId };
-    // Keep the card outside the streamed body so canonical assistant messages
-    // cannot replace an unanswered form or erase the user's selections.
-    ensureTurn().append(card); setRunStatus('Waiting for your answer'); setStatus('Waiting for your answer');
-    if (was) card.scrollIntoView({ block: 'start' });
+    const slot = document.createElement('div'); slot.className = 'question-pending';
+    const description = document.createElement('div'), label = document.createElement('strong'), preview = document.createElement('p');
+    label.dataset.i18n = ''; label.textContent = 'Waiting for your answer'; preview.textContent = ev.questions[0].question;
+    description.append(label, preview);
+    const openButton = document.createElement('button'); openButton.type = 'button'; openButton.className = 'btn-secondary'; openButton.dataset.i18n = ''; openButton.textContent = 'Answer questions';
+    openButton.onclick = openQuestionDialog; slot.append(description, openButton);
+    pendingQuestion = { card, status, fields, key, slot, openButton, requestId: ev.requestId };
+    // Keep the pending entry outside streamed text so replies cannot erase it.
+    ensureTurn().append(slot); setRunStatus('Waiting for your answer'); setStatus('Waiting for your answer');
+    if (was) slot.scrollIntoView({ block: 'start' });
+    openQuestionDialog();
   }
   async function autoAllowPermission(ev) {
-    const payload = ev.questions?.length
-      ? { requestId: ev.requestId, allow: false, message: 'Fully automatic mode: no question is shown. Continue from the existing request; no option has been confirmed.' }
-      : { requestId: ev.requestId, allow: true };
+    if (ev.questions?.length) return;
+    const payload = { requestId: ev.requestId, allow: true };
     if (sharedChat) Object.assign(payload, { sessionId: context.sessionId, runId: ev.runId });
     try { await chatApi.controlRespond(payload); } catch { /* the request may already be gone */ }
   }
@@ -3117,9 +2886,9 @@ const context = { sessionId: null, workspaceId: null };
     if (question && allow) {
       const entries = question.fields.map(({ question: q, choices, custom }) => {
         const selected = choices.filter(choice => choice.checked).map(choice => choice.value), text = custom.value.trim();
-        return [q.id, q.multiSelect ? [...selected, ...(text ? [text] : [])].join(', ') : text || selected[0] || ''];
+        return [q.id, q.multiSelect ? [...selected, ...(text ? [text] : [])] : text || selected[0] || ''];
       });
-      if (entries.some(([, value]) => !value)) { questionError('Answer each question before submitting'); return; }
+      if (entries.some(([, value]) => !value.length)) { questionError('Answer each question before submitting'); return; }
       input = Object.fromEntries(entries);
     }
     const submission = {}; permissionSubmission = submission;
@@ -3138,7 +2907,7 @@ const context = { sessionId: null, workspaceId: null };
       if (question && pendingQuestion === question) { question.card.querySelectorAll('input, button').forEach(el => el.disabled = false); questionError(error); }
       setStatus(error); return;
     }
-    finishQuestion(allow ? 'Answers sent' : 'Questions skipped');
+    finishQuestion(allow ? 'Answers sent' : 'Questions skipped', allow);
     setStatus(allow ? 'Answers sent' : 'Questions skipped');
     permRequestId = null;
     permissionQueue.shift();
@@ -3217,10 +2986,15 @@ const context = { sessionId: null, workspaceId: null };
   }
   function updateConversationControls() {
     const locked = sharedChat && (conversationBusy() || loadingSession || switchingEngine || sending);
+    // Changing the model or reasoning level is queued the same way a message is:
+    // it applies to the next message, not the running turn, so it stays usable
+    // while a response runs. Switching harness, and the session-level settings
+    // that restart the engine process, still wait for the turn to stop.
     $('engineSwitch').disabled = !sharedChat || locked;
-    $('engineSwitch').title = locked ? 'Available when this conversation stops working' : 'Switch harness';
+    $('engineSwitch').title = locked ? 'Available when this conversation stops working' : 'Switch chat mode';
     $('handoffBtn').disabled = locked;
-    $('modelPill').disabled = locked;
+    $('modelPill').disabled = sharedChat && (loadingSession || switchingEngine || sending);
+    renderFastMode();
     $('selPermission').disabled = locked;
     updateSendEnabled();
     updateMessageActions();
@@ -3235,6 +3009,8 @@ const context = { sessionId: null, workspaceId: null };
     ctxTip?.remove(); ctxTip = null;
     closeSlash();
     cancelMessageEdit();
+    if ($('questionDialog').open) $('questionDialog').close();
+    $('questionDialog').replaceChildren();
     pendingQuestion = null; permissionSubmission = null;
     acceptSessionEvents = false; currentRunId = null; conversationActivity = null;
     restoringRun = false; eventsDuringRestore.length = 0;
@@ -3486,7 +3262,7 @@ const context = { sessionId: null, workspaceId: null };
           }
           if (m.role === 'notice') {
             if (m.compaction || ['Context compacted automatically', 'Context compacted: summary saved'].includes(m.text)) {
-              renderCompactionStatus({ state: 'completed', seq: m.seq }, before);
+              renderCompactionStatus({ ...m.compaction, engine: m.engine, state: 'completed', seq: m.seq }, before);
               continue;
             }
             if (!conversationPrefs.showOrigin) continue;
@@ -3630,12 +3406,17 @@ const context = { sessionId: null, workspaceId: null };
     currentConnection = s.connection || 'api';
     if (harnessId === 'antigravity') {
       $('selPermission').querySelector('[value="ask"]').textContent = googleSubscription() ? 'CLI defaults' : 'Ask before acting';
-      $('selPermission').title = googleSubscription() ? 'CLI permission rules apply. Tools requiring interactive review are declined in headless mode; Camellia shows a blocked-action notice, not an approval prompt.' : '';
+      $('selPermission').title = googleSubscription() ? 'CLI permission rules apply. Camellia asks for your approval when a tool requires review.' : '';
     }
     currentPermission = permissionLevel(harnessId, s.permissionMode || chatProfile.permission);
     $('selPermission').value = currentPermission;
     currentLevel = s.thinkingBudget || '';
     currentModel = s.model || '';
+    currentFastMode = harnessId === 'codex' && (context.sessionId ? s.fastMode : readUi('draft:' + draftKey())?.codexFastMode) === true;
+    if (googleSubscription()) {
+      const family = accountFamily(currentModel);
+      if (family) currentModel = family.id;
+    }
     // Keep previously saved custom model selectable even if not in the list.
     if (currentModel && !MODELS.some((m) => m.id === currentModel)) {
       MODELS.push({ id: currentModel, label: currentModel });
@@ -3645,8 +3426,13 @@ const context = { sessionId: null, workspaceId: null };
 
   function applyApiLevels() {
     const model = accountModels.find(m => m.id === currentModel);
-    const efforts = accountSubscription() ? (model?.supportedReasoningEfforts || []).map(e => e.reasoningEffort) : window.CamelliaModelLevels.levelsFor(currentModel);
-    LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' }, ...efforts.map(id => ({ id, label: id[0].toUpperCase() + id.slice(1) })));
+    const efforts = accountSubscription() ? (model?.supportedReasoningEfforts || [])
+      .map(e => e.reasoningEffort || e).filter(id => typeof id === 'string') : window.CamelliaModelLevels.levelsFor(currentModel);
+    const labels = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+    LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' },
+      ...efforts.map(id => ({ id, label: labels[id] || id[0].toUpperCase() + id.slice(1) })));
+    // The saved level may have been rendered before its model's levels loaded.
+    renderModelPill();
   }
   async function loadSettings() {
     const seq = ++settingsLoadSeq, sessionId = context.sessionId;
@@ -3658,7 +3444,8 @@ const context = { sessionId: null, workspaceId: null };
       // account and API models together and pick the connection itself.
       const [routerState, accountState] = await Promise.all([
         window.dshDesktop.apiRouterGetState(),
-        supportsAccounts() ? Promise.resolve().then(() => window.dshDesktop[harnessId + 'AccountState']())
+        supportsAccounts() ? Promise.resolve().then(() => window.dshDesktop[harnessId + 'AccountState'](
+          harnessId === 'codex' ? { id: selected.subscriptionId } : undefined))
           .catch(error => ({ ok: false, error: error.message })) : Promise.resolve(null),
       ]);
       if (seq !== settingsLoadSeq || sessionId !== context.sessionId) return;
@@ -3673,7 +3460,7 @@ const context = { sessionId: null, workspaceId: null };
         MODELS.splice(0, MODELS.length, ...(accountModels.length ? [] : [{ id: '', label: 'Connect ' + accountName + ' in settings' }]),
           ...accountModels.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })));
         if (currentModel && !accountModels.some(model => model.id === currentModel)) MODELS.push({ id: currentModel, label: currentModel + ' (refresh account)' });
-        $('modelPill').title = 'Models available to your ' + accountName + ' account';
+        $('modelPill').title = window.CamelliaI18n.t('Model · double-click to switch to your model and reasoning default');
         renderModelPill(); updateCtxRing();
       }
       if (harnessId !== 'claude') applyApiLevels();
@@ -3708,7 +3495,7 @@ const context = { sessionId: null, workspaceId: null };
   })().catch(error => { input.disabled = false; setStatus('Could not restore the conversation: ' + error.message); });
   window.dshDesktop.onApiRouterState(applyRouterModels);
 
-  $('engineSwitch').value = harnessId;
+  window.CamelliaChatModeSelect.populate($('engineSwitch'), harnessId);
   $('engineSwitch').disabled = !sharedChat;
   $('handoffBtn').hidden = !sharedChat;
   async function switchConversation(target, mode) {
@@ -3733,7 +3520,20 @@ const context = { sessionId: null, workspaceId: null };
       $('switchTarget').value = target; $('switchMethod').value = force ? 'markdown' : conversationPrefs.mode; $('switchDialog').showModal();
     } else await switchConversation(target, conversationPrefs.mode);
   }
-  $('engineSwitch').onchange = () => { const target = $('engineSwitch').value; $('engineSwitch').value = harnessId; void switchOptions(target); };
+  async function openDiscussions() {
+    if (switchingEngine || conversationBusy() || sending || loadingSession) { setStatus('Available when this conversation stops working'); return; }
+    saveDraft(); switchingEngine = true; updateConversationControls();
+    try {
+      const result = await window.dshDesktop.switchMode('discussions');
+      if (!result?.ok) throw new Error(result?.error || 'Could not open Agent discussions.');
+    } catch (error) { setStatus(error.message); }
+    finally { switchingEngine = false; updateConversationControls(); }
+  }
+  $('engineSwitch').onchange = () => {
+    const target = $('engineSwitch').value; $('engineSwitch').value = harnessId;
+    if (target === 'discussions') void openDiscussions();
+    else if (target !== harnessId) void switchOptions(target);
+  };
   window.dshDesktop.onHarnessNavigate?.(target => { if (target !== harnessId) void switchOptions(target); });
   $('handoffBtn').onclick = () => void switchOptions(harnessId, true);
   $('switchCancel').onclick = () => $('switchDialog').close();

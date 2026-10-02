@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const YAML = require('yaml');
 const { createHarness } = require('./claude-harness.cjs');
-const { configureProvider, readCredential, syncPoolProvider, cleanupLegacyRoute } = require('../src/engines/dsh-config');
+const { configureProvider, readCredential, syncPoolProvider, cleanupLegacyRoute, dshLaunchArgs } = require('../src/engines/dsh-config');
 
 function setup(t, source = '') {
   const h = createHarness(); t.after(() => h.cleanup());
@@ -14,6 +14,22 @@ function setup(t, source = '') {
   return { home, file, read: () => YAML.parse(fs.readFileSync(file, 'utf8'), { merge: true }) };
 }
 const credentials = { providerId: 'deepseek', apiKeyEnv: 'DEEPSEEK_API_KEY', apiKey: 'true', model: 'default-model' };
+
+test('managed launches configure models before DSH 0.2 boots without rewriting legacy user data', t => {
+  const h = setup(t, '# existing configuration\npermission: {defaultPreset: read-only}\n');
+  const original = fs.readFileSync(h.file, 'utf8');
+  const config = { 'agent-default-model': { provider: 'api-pool', model: 'fixture' },
+    permission: { defaultPreset: 'workspace-write' }, shell: { timeoutMs: 15000 } };
+  const args = dshLaunchArgs({ runtime: { file: 'fixture.js', version: '0.2.0-rc.2' }, home: h.home, profile: 'acp', config });
+  assert.deepEqual(args.slice(0, 4), ['fixture.js', '--profile', 'acp', '--patch']);
+  const patches = YAML.parse(fs.readFileSync(args[4], 'utf8'));
+  assert.deepEqual(patches.slice(0, 2), Object.entries(config).slice(0, 2).map(([id, config]) => ({ id, config })));
+  assert.equal(patches[2].id, process.platform === 'win32' ? 'pwsh-sandbox' : 'bash-sandbox');
+  assert.equal(fs.readFileSync(h.file, 'utf8'), original);
+  const old = dshLaunchArgs({ runtime: { file: 'fixture.js', version: '0.1.5-rc.2' }, home: h.home, profile: 'headless', config });
+  assert.deepEqual(old, ['fixture.js', '--profile', 'headless']);
+  assert.deepEqual(h.read(), config);
+});
 
 test('credential edits preserve comments, flow maps, custom provider fields and the selected model', t => {
   const h = setup(t, `# personal settings
