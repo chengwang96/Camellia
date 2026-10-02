@@ -18,58 +18,73 @@
   <p data-i18n>Choose an engine to continue your work. Download only the engines you need.</p>
   </header>
   <nav class="home-entries" aria-label="Engines" data-i18n-attrs="aria-label">
-    <button class="agent-entry" id="enterClaude" data-mode="claude" aria-label="Open Claude" data-i18n-attrs="aria-label">
-      <span class="agent-symbol engine-mark" data-engine="claude" aria-hidden="true"><img src="../../../assets/brands/claude.svg" alt=""></span>
-      <span class="entry-title">Claude Code</span>
-      <span class="entry-description" data-i18n>Continue in a workspace or start a standalone conversation.</span>
-      <span class="entry-action" data-i18n>Open Claude <span aria-hidden="true">↗</span></span>
-    </button>
-    <button class="agent-entry" id="enterCodex" data-mode="codex" aria-label="Open Codex" data-i18n-attrs="aria-label">
-      <span class="agent-symbol engine-mark" data-engine="codex" aria-hidden="true"><img src="../../../assets/brands/codex.png" alt=""></span>
-      <span class="entry-title">Codex CLI</span>
-      <span class="entry-description" data-i18n>Work with Codex using your ChatGPT plan or shared API routes.</span>
-      <span class="entry-action" data-i18n>Open Codex <span aria-hidden="true">↗</span></span>
-    </button>
-    <button class="agent-entry" id="enterDsh" data-mode="dsh" aria-label="Open DSH" data-i18n-attrs="aria-label">
-      <span class="agent-symbol engine-mark" data-engine="dsh" aria-hidden="true"><img src="../../../assets/brands/deepseek.svg" alt=""></span>
-      <span class="entry-title">DeepSeek Harness</span>
-      <span class="entry-description" data-i18n>Work on conversations, projects, and goals in your workspace.</span>
-      <span class="entry-action" data-i18n>Open DSH <span aria-hidden="true">↗</span></span>
-    </button>
-    <button class="agent-entry" id="enterKimi" data-mode="kimi" aria-label="Open Kimi" data-i18n-attrs="aria-label">
-      <span class="agent-symbol engine-mark" data-engine="kimi" aria-hidden="true"><img src="../../../assets/brands/kimi.svg" alt=""></span>
-      <span class="entry-title">Kimi Code</span>
-      <span class="entry-description" data-i18n>Use the open-source Kimi engine with Camellia's shared API routes.</span>
-      <span class="entry-action" data-i18n>Open Kimi <span aria-hidden="true">↗</span></span>
-    </button>
-    <button class="agent-entry" id="enterAntigravity" data-mode="antigravity" aria-label="Open Antigravity" data-i18n-attrs="aria-label">
-      <span class="agent-symbol engine-mark" data-engine="antigravity" aria-hidden="true"><img src="../../../assets/brands/antigravity.svg" alt=""></span>
-      <span class="entry-title">Antigravity</span>
-      <span class="entry-description" data-i18n>Use your Google subscription or shared API routes with Google's agent engine.</span>
-      <span class="entry-action" data-i18n>Open Antigravity <span aria-hidden="true">↗</span></span>
-    </button>
-    <button class="agent-entry" id="enterPi" data-mode="pi" aria-label="Open Pi" data-i18n-attrs="aria-label">
-      <span class="agent-symbol engine-mark" data-engine="pi" aria-hidden="true"><img src="../../../assets/brands/pi.svg" alt=""></span>
-      <span class="entry-title">Pi</span>
-      <span class="entry-description" data-i18n>Use Pi with Camellia's shared API routes.</span>
-      <span class="entry-action" data-i18n>Open Pi <span aria-hidden="true">↗</span></span>
-    </button>
+    <div class="harness-card">
+      <button class="agent-entry" id="enterClaude" data-mode="claude" aria-label="Open Claude" data-i18n-attrs="aria-label">
+        <span class="agent-symbol engine-mark" data-engine="claude" aria-hidden="true"><img src="../../../assets/brands/claude.svg" alt=""></span>
+        <span class="entry-title">Claude Code</span>
+        <span class="entry-action" data-i18n>Open Claude</span>
+      </button>
+      <button class="runtime-update" data-runtime-update="claude" hidden><span data-i18n>Update available</span></button>
+    </div>
+    <div class="harness-card">
+      <button class="agent-entry" id="enterCodex" data-mode="codex" aria-label="Open Codex" data-i18n-attrs="aria-label">
+        <span class="agent-symbol engine-mark" data-engine="codex" aria-hidden="true"><img src="../../../assets/brands/codex.png" alt=""></span>
+        <span class="entry-title">Codex CLI</span>
+        <span class="entry-action" data-i18n>Open Codex</span>
+      </button>
+      <button class="runtime-update" data-runtime-update="codex" hidden><span data-i18n>Update available</span></button>
+    </div>
+    <div class="harness-card">
+      <button class="agent-entry" id="enterDsh" data-mode="dsh" aria-label="Open DSH" data-i18n-attrs="aria-label">
+        <span class="agent-symbol engine-mark" data-engine="dsh" aria-hidden="true"><img src="../../../assets/brands/deepseek.svg" alt=""></span>
+        <span class="entry-title">DeepSeek Harness</span>
+        <span class="entry-action" data-i18n>Open DSH</span>
+      </button>
+      <button class="runtime-update" data-runtime-update="dsh" hidden><span data-i18n>Update available</span></button>
+    </div>
+    <div class="harness-card">
+      <button class="agent-entry" id="enterKimi" data-mode="kimi" aria-label="Open Kimi" data-i18n-attrs="aria-label">
+        <span class="agent-symbol engine-mark" data-engine="kimi" aria-hidden="true"><img src="../../../assets/brands/kimi.svg" alt=""></span>
+        <span class="entry-title">Kimi Code</span>
+        <span class="entry-action" data-i18n>Open Kimi</span>
+      </button>
+      <button class="runtime-update" data-runtime-update="kimi" hidden><span data-i18n>Update available</span></button>
+    </div>
+    <div class="harness-card">
+      <button class="agent-entry" id="enterAntigravity" data-mode="antigravity" aria-label="Open Antigravity" data-i18n-attrs="aria-label">
+        <span class="agent-symbol engine-mark" data-engine="antigravity" aria-hidden="true"><img src="../../../assets/brands/antigravity.svg" alt=""></span>
+        <span class="entry-title">Antigravity</span>
+        <span class="entry-action" data-i18n>Open Antigravity</span>
+      </button>
+      <button class="runtime-update" data-runtime-update="antigravity" hidden><span data-i18n>Update available</span></button>
+    </div>
+    <div class="harness-card">
+      <button class="agent-entry" id="enterPi" data-mode="pi" aria-label="Open Pi" data-i18n-attrs="aria-label">
+        <span class="agent-symbol engine-mark" data-engine="pi" aria-hidden="true"><img src="../../../assets/brands/pi.svg" alt=""></span>
+        <span class="entry-title">Pi</span>
+        <span class="entry-action" data-i18n>Open Pi</span>
+      </button>
+      <button class="runtime-update" data-runtime-update="pi" hidden><span data-i18n>Update available</span></button>
+    </div>
     <div class="entries-divider" id="cliDivider" role="separator" aria-label="CLI servers" hidden><span data-i18n>CLI servers</span></div>
+    <div class="home-tools">
+    <button class="config-entry" id="openDiscussions" aria-label="Agent discussions (beta)" data-i18n-attrs="aria-label">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M3 3h14v11H8l-5 4V3Z"/><path d="M17 7h4v14l-5-4h-5v-3"/></svg>
+      <span><span class="config-title" data-i18n>Agent discussions (beta)</span><span class="entry-description" data-i18n>Invite models and mention who should reply</span></span>
+    </button>
     <button class="config-entry benchmark-entry" id="openBenchmark" aria-label="Benchmark" data-i18n-attrs="aria-label">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 20V10m5 10V4m6 16v-7m5 7V7"/></svg>
       <span><span class="config-title" data-i18n>Benchmark</span><span class="entry-description" data-i18n>Compare one model across all six engines</span></span>
-      <span class="config-arrow" aria-hidden="true">→</span>
     </button>
     <button class="config-entry" id="openCliDevices" aria-label="CLI devices">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="m7 8 3 3-3 3m6 0h4M9 21h6m-3-4v4"/></svg>
       <span><span class="config-title">CLI devices</span><span class="entry-description">Camellia · Linux · Tailscale</span></span>
-      <span class="config-arrow" aria-hidden="true">→</span>
     </button>
     <button class="config-entry" id="openConfig" aria-label="Settings" data-i18n-attrs="aria-label">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 7h7m6 0h3M4 17h3m6 0h7"/><circle cx="14" cy="7" r="3"/><circle cx="10" cy="17" r="3"/></svg>
       <span><span class="config-title" data-i18n>Settings</span><span class="entry-description" data-i18n>Providers, keys, usage, and balances</span></span>
-      <span class="config-arrow" aria-hidden="true">→</span>
     </button>
+    </div>
   </nav>
   <p id="homeStatus" role="status" aria-live="polite" data-i18n></p>
 </main>

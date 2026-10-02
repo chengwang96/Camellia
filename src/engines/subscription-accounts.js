@@ -120,9 +120,9 @@ function accountSummary(engine, account, state = {}) {
     quotaWindows: engine === 'codex' ? rateLimitWindows(state.rateLimits).map(window => ({ usedPercent: window.usedPercent,
       label: !Number.isFinite(window.windowDurationMins) ? 'Usage' : window.windowDurationMins >= 1440 ? `${Math.round(window.windowDurationMins / 1440)}d` : `${window.windowDurationMins / 60}h`,
       resetsAt: window.resetsAt ? new Date(window.resetsAt * 1000).toISOString() : null })) : (state.usage?.latest?.windows || state.usage?.windows || []).map(window => ({ label: window.label, usedPercent: window.usedPercent, resetsAt: window.resetsAt })),
-    verifiedAt: state.usage?.checkedAt || state.verifiedAt || null,
+    verifiedAt: state.usage?.latest?.at || state.usage?.checkedAt || state.verifiedAt || null,
     exhausted: accountExhausted(engine, state), installed: state.installed !== false,
-    loginPending: Boolean(state.loginPending), error: state.error || '', models: (state.models || []).length, ...detail };
+    loginPending: Boolean(state.loginPending || state.awaitingVerification), error: state.error || '', models: (state.models || []).length, ...detail };
 }
 
 function accountSummaries({ engine, accounts, states, activeId }) {

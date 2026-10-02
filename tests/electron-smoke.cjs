@@ -105,6 +105,7 @@ async function main() {
     const realHandle = ipcMain.handle.bind(ipcMain);
     ipcMain.handle = (channel, listener) => realHandle(channel, async (...args) => {
       diag('DIAG ipc: ' + channel);
+      if (channel === 'dsh:show-native-settings') diag('DIAG native placement: ' + JSON.stringify(args[1]));
       try { const result = await listener(...args); diag('DIAG ipc done: ' + channel); return result; }
       catch (error) { diag('DIAG ipc error: ' + channel + ' :: ' + error.message); throw error; }
     });
@@ -262,7 +263,9 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript('document.body.dataset.harness'), 'dsh');
     assert.equal(fs.existsSync(marker), false);
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'engines',engine:'dsh'})");
-    const startupSettings = await waitWindow("document.querySelector('#dshNative') && !document.querySelector('#dshNative').hidden");
+    const startupSettings = await waitWindow("document.querySelector('#dshNative') && !document.querySelector('#dshNative').hidden && !document.querySelector('#engineContent').hidden && !!document.querySelector('#runtimeCards .runtime-card')");
+    startupSettings.webContents.setBackgroundThrottling(false);
+    await startupSettings.webContents.executeJavaScript("document.querySelector('#dshSettingsSurface').scrollIntoView({block:'start'})");
 
     for (let i = 0; i < 150 && !fs.existsSync(marker); i++) await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(fs.existsSync(marker), true, 'DSH settings still start their native backend');
@@ -395,7 +398,7 @@ async function main() {
     assert.equal(fs.existsSync(secondKimiHome), false);
     assert.equal(await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState().then(state => state.accounts.length)'), 1);
 
-    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiModelDetails').open=true; document.querySelector('#kimiAccountPanel').scrollIntoView({block:'start'})");
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiAccountPanel').scrollIntoView({block:'start'})");
     assert.equal(await engineSettings.webContents.executeJavaScript('document.documentElement.scrollWidth <= innerWidth'), true);
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiSignOut').click()");
     await waitWindow("document.querySelector('#kimiSignOut')?.hidden && !document.querySelector('#kimiSignIn').disabled");
@@ -418,8 +421,16 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript('currentConnection'), 'api');
     diag('PASS Kimi subscription: real IPC, save, device code, cancel, account models, logout and API return; mocked OAuth only');
 
+    const originalSettingsSize = engineSettings.getSize();
+    // CI desktops can be shorter than the runtime controls above this panel.
+    // Exercise that layout and scroll the lazy native surface into view before
+    // expecting its backend document to load.
+    engineSettings.setSize(1160, 620);
+    // Hidden Electron windows need layout frames enabled after resizing too.
+    engineSettings.webContents.setBackgroundThrottling(false);
     await engineSettings.webContents.executeJavaScript("document.querySelector('[data-view=engines]').click(); document.querySelector('[data-engine=dsh]').click()");
-    await waitWindow("document.querySelector('#dshNative') && !document.querySelector('#dshNative').hidden");
+    await waitWindow("document.querySelector('#dshNative') && !document.querySelector('#dshNative').hidden && !document.querySelector('#engineContent').hidden && !!document.querySelector('#runtimeCards .runtime-card')");
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#dshSettingsSurface').scrollIntoView({block:'start'})");
     let dshSettingsReady = false;
     for (let i = 0; i < 150; i++) {
       for (const child of engineSettings.contentView.children) {
@@ -434,7 +445,19 @@ async function main() {
       if (dshSettingsReady) break;
       await new Promise(resolve => setTimeout(resolve, 200));
     }
+    if (!dshSettingsReady) {
+      diag('DIAG native views: ' + JSON.stringify(engineSettings.contentView.children.map(child => ({
+        id: child.webContents?.id, loading: child.webContents?.isLoading(), bounds: child.getBounds(), visible: child.getVisible()
+      }))));
+      diag('DIAG native panel: ' + JSON.stringify(await engineSettings.webContents.executeJavaScript(`({
+        contentHidden: document.querySelector('#engineContent').hidden,
+        surface: document.querySelector('#dshSettingsSurface').getBoundingClientRect().toJSON(),
+        viewport: document.querySelector('.scroll-content').getBoundingClientRect().toJSON(),
+        loading: document.querySelector('#nativeLoading').textContent
+      })`)));
+    }
     assert.ok(dshSettingsReady, 'Embedded DSH settings must render controls, not a blank child view');
+    engineSettings.setSize(...originalSettingsSize);
     assert.equal(fs.readFileSync(marker, 'utf8').trim().split('\n').length, 1, 'Reopening DSH settings reuses its running backend');
 
     await home.webContents.executeJavaScript("document.querySelector('#backToHome').click()");

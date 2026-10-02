@@ -6,6 +6,9 @@ const { randomUUID } = require('node:crypto');
 const { StringDecoder } = require('node:string_decoder');
 const { validSessionId } = require('../engines/claude-history');
 const { referenceMatcher } = require('./reference-matcher');
+const { readDiscussionRecord } = require('../engines/discussions/store');
+const { collectNativeOwners } = require('../engines/discussions/native-ownership');
+const { jobRecordIdentity } = require('../engines/discussions/windows-job-journal');
 
 const PROTECTION_MS = 24 * 60 * 60 * 1000;
 const READ_CHUNK_BYTES = 64 * 1024;
@@ -65,7 +68,12 @@ class StorageCleanup {
     };
     const entries = (directory, root = this.dataDir) => {
       const stat = this.safeStat(directory, root);
-      if (!stat) return [];
+      if (!stat) {
+        // A new discussion or journal directory appearing during the async
+        // scan invalidates the empty inventory just like a changed file does.
+        listedDirectories.set(directory, { file: directory, root, stat: null });
+        return [];
+      }
       if (!stat.isDirectory()) throw new Error('Unexpected storage layout; cleanup was stopped');
       const names = fs.readdirSync(directory);
       listedDirectories.set(directory, { file: directory, root, stat });
@@ -87,6 +95,32 @@ class StorageCleanup {
     for (const name of names) {
       const match = name.match(/^([a-zA-Z0-9_-]+)\.jsonl(?:\.torn-\d+)?$/);
       if (match) read(path.join(sharedDir, name), this.dataDir, false, owners.has(match[1]) && !name.includes('.torn-'));
+    }
+    // Discussion snapshots are retained references even for archived groups,
+    // removed members and retired native generations. Never offer these files,
+    // launch locks or permanent seals as cleanup candidates.
+    const discussionDir = path.join(this.dataDir, 'discussions');
+    for (const name of entries(discussionDir).filter(name => /\.json$/i.test(name))) {
+      const id = name.slice(0, -5), file = path.join(discussionDir, name);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new Error('Invalid discussion record name; cleanup was stopped');
+      read(file, this.dataDir, true);
+      const record = readDiscussionRecord(file, id);
+      for (const owner of collectNativeOwners({ discussions: [record] })) {
+        owners.add(owner.runtimeId);
+        if (owner.nativeId) owners.add(owner.nativeId);
+        if (owner.nativeStorage) owners.add(owner.nativeStorage.conversationId);
+      }
+    }
+    const journalDir = path.join(discussionDir, 'windows-jobs');
+    for (const name of entries(journalDir)) {
+      const dir = path.join(journalDir, name), file = path.join(dir, 'record.json');
+      entries(dir);
+      const info = this.safeStat(file);
+      if (!info?.isFile() || info.size < 1 || info.size > 4096) throw new Error('Job launch record is missing or invalid; cleanup was stopped');
+      const identity = jobRecordIdentity(readJson(file));
+      if (name !== identity.deliveryId || !this.safeStat(path.join(dir, 'launch.lock'))?.isFile()) throw new Error('Invalid job journal; cleanup was stopped');
+      owners.add(identity.runtimeId);
+      read(file, this.dataDir, true);
     }
     for (const history of this.histories) {
       for (const directory of entries(history.root, history.root)) {
@@ -261,7 +295,8 @@ class StorageCleanup {
   verify(records) {
     for (const { file, root, stat } of records) {
       const current = this.safeStat(file, root);
-      if (!current || current.isFile() !== stat.isFile() || current.size !== stat.size || current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs || current.ino !== stat.ino)
+      if (!stat && !current) continue;
+      if (!stat || !current || current.isFile() !== stat.isFile() || current.size !== stat.size || current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs || current.ino !== stat.ino)
         throw new Error('Reference files changed; scan again');
     }
   }

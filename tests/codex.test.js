@@ -72,6 +72,84 @@ async function outputFixture(context) {
   return { session, events, notify, message };
 }
 
+test('Codex subscription Fast mode reaches threads and turns, and disabling it clears the tier', async t => {
+  const root = temporary(t), wire = transport();
+  const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'fixture', connection: 'subscription', serviceTier: 'priority' },
+    opts: {}, spec: {}, spawn: () => wire.proc, log() {}, history: new ClaudeHistory(path.join(root, 'history')),
+    onEvent() {}, onSessionId() {}, onResult() {} });
+  t.after(() => session.shutdown());
+  session.start(); session.sendUserMessage('First'); await session.ready;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(wire.messages.find(m => m.method === 'thread/start').params.serviceTier, 'priority');
+  assert.equal(wire.messages.find(m => m.method === 'turn/start').params.serviceTier, 'priority');
+  wire.send({ method: 'turn/completed', params: { threadId: session.sessionId, turn: { id: session.turnId, status: 'completed' } } });
+  session.settings.serviceTier = null;
+  session.sendUserMessage('Standard speed');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(wire.messages.filter(m => m.method === 'turn/start').at(-1).params.serviceTier, null);
+});
+
+test('Codex API requests do not inherit the subscription speed setting', async t => {
+  const root = temporary(t), wire = transport();
+  const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'fixture', connection: 'api', serviceTier: 'priority', fastMode: true },
+    opts: {}, spec: {}, spawn: () => wire.proc, log() {}, history: new ClaudeHistory(path.join(root, 'history')),
+    onEvent() {}, onSessionId() {}, onResult() {} });
+  t.after(() => session.shutdown());
+  session.start(); session.sendUserMessage('API'); await session.ready;
+  await new Promise(resolve => setImmediate(resolve));
+  for (const message of wire.messages.filter(m => ['thread/start', 'turn/start'].includes(m.method)))
+    assert.equal(Object.hasOwn(message.params, 'serviceTier'), false);
+});
+
+test('Codex refreshes old account caches once and preserves model speed capabilities', async t => {
+  const root = temporary(t), home = path.join(root, 'codex'); let config = {}, modelReads = 0;
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(path.join(home, 'account-state.json'), JSON.stringify({ account: { type: 'chatgpt' }, models: [{ id: 'fixture' }] }));
+  const tiers = [{ id: 'priority', name: 'Fast', description: '1.5x speed, increased usage' }];
+  const engine = createCodex({ dataDir: root, loadConfig: () => config, saveConfig: patch => Object.assign(config, patch),
+    runtimes: () => ({ locate: () => ({ file: path.join(root, 'fixture.exe') }) }),
+    createAccountClient: () => ({ ready: Promise.resolve(), shutdown: async () => {}, request: async method => {
+      if (method === 'account/read') return { account: { type: 'chatgpt' } };
+      if (method === 'model/list') { modelReads++; return { data: [{ model: 'fixture', serviceTiers: tiers, defaultServiceTier: null }], nextCursor: null }; }
+      return {};
+    } }) });
+  t.after(() => engine.shutdown());
+  const first = await engine.handlers['account-state']();
+  assert.deepEqual(first.models[0].serviceTiers, tiers);
+  assert.equal(first.models[0].defaultServiceTier, null);
+  await engine.handlers['account-state']();
+  assert.equal(modelReads, 1);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'account-state.json'))).models[0].serviceTiers, tiers);
+});
+
+test('Codex resolves Fast mode only from the selected subscription model, with standard speed by default', async t => {
+  const root = temporary(t), home = path.join(root, 'codex');
+  let config = { codex: { connection: 'subscription', subscriptionModel: 'fast', apiModel: 'fast' } };
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(path.join(home, 'account-state.json'), JSON.stringify({ account: { type: 'chatgpt' }, models: [
+    { id: 'fast', serviceTiers: [{ id: 'priority' }] }, { id: 'standard', serviceTiers: [] },
+    { id: 'ultrafast-only', serviceTiers: [{ id: 'ultrafast' }] },
+  ] }));
+  t.mock.method(CodexSession.prototype, 'start', () => {});
+  const engine = createCodex({ dataDir: root, loadConfig: () => config, saveConfig: patch => Object.assign(config, patch),
+    runtimes: () => ({ locate: () => ({ file: path.join(root, 'fixture.exe') }) }),
+    getModels: () => ['fast'], getRoute: () => ({ baseUrl: 'http://127.0.0.1:1' }) });
+  t.after(() => engine.shutdown());
+  assert.equal(engine.settings().fastMode, false);
+  assert.equal(engine.ensureSession({ cwd: root }).settings.serviceTier, null);
+  for (const [connection, model, fastMode, tier] of [
+    ['subscription', 'fast', true, 'priority'], ['subscription', 'fast', false, null],
+    ['subscription', 'standard', true, null], ['subscription', 'ultrafast-only', true, null], ['api', 'fast', true, null],
+  ]) {
+    const session = engine.ensureSession({ cwd: root, settings: { connection, model, fastMode } });
+    assert.equal(session.settings.serviceTier, tier, connection + '/' + model + '/' + fastMode);
+  }
+  engine.saveSettings({ sessionId: 'legacy-a', fastMode: true });
+  assert.equal(engine.settings('legacy-a').fastMode, true);
+  assert.equal(engine.settings('legacy-b').fastMode, false);
+  assert.equal(engine.settings().fastMode, false);
+});
+
 test('Codex terminal missing-thread failure reaches the shared recovery layer', async context => {
   const { session, events, notify } = await outputFixture(context);
   const message = 'thread native-fixture not found';
@@ -223,12 +301,19 @@ test('Codex discovers legacy edit boundaries only for a matching single-message 
   const session = new CodexSession({});
   session.ready = Promise.resolve();
   const user = text => ({ type: 'userMessage', content: [{ type: 'text', text }] });
-  session.threadTurns = [{ id: 'prior-turn' }, { id: 'old-turn', items: [user('Tool instructions\n\nOriginal task')] }];
+  session.sessionId = 'live-thread';
+  session.threadTurns = [{ id: 'stale-open-snapshot' }];
+  const turns = [{ id: 'prior-turn' }, { id: 'old-turn', items: [user('Tool instructions\n\nOriginal task')] }];
+  session.client = { request: async (method, params) => {
+    assert.equal(method, 'thread/read');
+    assert.deepEqual(params, { threadId: 'live-thread', includeTurns: true });
+    return { thread: { turns } };
+  } };
   assert.equal(await session.editBoundary('Original task'), 'prior-turn');
   assert.equal(await session.editBoundary('Other task'), null);
-  session.threadTurns.at(-1).items.push(user('Steered request'));
+  turns.at(-1).items.push(user('Steered request'));
   assert.equal(await session.editBoundary('Original task'), null);
-  session.threadTurns.at(-1).items = [user('Conversation context from earlier turns follows as JSON data.\n\nOriginal task')];
+  turns.at(-1).items = [user('Conversation context from earlier turns follows as JSON data.\n\nOriginal task')];
   assert.equal(await session.editBoundary('Original task'), null);
 });
 
@@ -452,6 +537,30 @@ test('per-conversation Codex homes share one plugin cache instead of copying it'
   assert.equal(fs.lstatSync(path.join(third, '.tmp')).isSymbolicLink(), false);
 });
 
+test('Codex task questions keep waiting under full permissions and preserve multiple answers', () => {
+  const events = [], writes = [];
+  const session = new CodexSession({ gen: 7, opts: {}, settings: { permissionMode: 'full' }, onEvent: event => events.push(event) });
+  session.running = true; session.replayEvents = []; session.sessionId = 'question-thread'; session.client = { write: value => writes.push(value) };
+  const request = { id: 81, method: 'item/tool/requestUserInput', params: { threadId: session.sessionId,
+    questions: [{ id: 'formats', question: 'Which formats?', multiSelect: true }, { id: 'name', question: 'Project name?' }] } };
+  session.requestApproval(request);
+  assert.equal(events.at(-1).questions.length, 2);
+  assert.equal(writes.length, 0, 'tool permissions cannot answer task questions');
+  assert.throws(() => session.answerPermission('81', true, { formats: ['CSV'] }), /Answer each question/);
+  assert.throws(() => session.answerPermission('81', true, { formats: [' '], name: 'Experiment' }), /Answer each question/);
+  assert.equal(session.permissions.size, 1, 'incomplete answers remain retryable');
+  assert.equal(writes.length, 0);
+  assert.equal(session.answerPermission('81', true, { formats: ['CSV', 'JSON', 'A, B'], name: 'Experiment' }), true);
+  assert.deepEqual(writes.at(-1), { id: 81, result: { answers: {
+    formats: { answers: ['CSV', 'JSON', 'A, B'] }, name: { answers: ['Experiment'] },
+  } } });
+  assert.equal(session.answerPermission('81', true, { formats: ['CSV'], name: 'Duplicate' }), false);
+  assert.equal(session.permissions.size, 0);
+  session.requestApproval({ ...request, id: 82 });
+  assert.equal(session.answerPermission('82', false), true);
+  assert.deepEqual(writes.at(-1).result, { answers: { formats: { answers: [] }, name: { answers: [] } } });
+});
+
 test('Codex API metadata adds native patch support without overriding known models, reasoning, or user catalogs', t => {
   const root = temporary(t), home = path.join(root, 'profile');
   const options = { runtime: { file: path.join(root, 'native/bin/codex') }, home, connection: 'api',
@@ -485,6 +594,12 @@ test('Codex API metadata adds native patch support without overriding known mode
       ['app-server', '-c', 'model_context_window=128000']);
   }
   assert.deepEqual(codexSpawnSpec(options).args, ['app-server']);
+  // Chat sessions must opt in, because upstream Codex otherwise rejects
+  // request_user_input outside Plan mode even though it advertises the tool.
+  assert.deepEqual(codexSpawnSpec({ ...options, allowUserQuestions: true }).args,
+    ['app-server', '-c', 'features.default_mode_request_user_input=true']);
+  assert.deepEqual(codexSpawnSpec({ ...options, allowUserQuestions: true, contextWindow: 65536 }).args,
+    ['app-server', '-c', 'model_context_window=65536', '-c', 'features.default_mode_request_user_input=true']);
   assert.deepEqual(codexSpawnSpec({ ...options, connection: 'subscription', contextWindow: 128000 }).args, ['app-server']);
   codexSpawnSpec(options);
   codexSpawnSpec({ ...options, connection: 'subscription' }); assert.equal(read().model_catalog_json, undefined);
@@ -536,9 +651,11 @@ test('shutting down a Codex process settles even when a helper keeps its stdio o
 });
 
 
-test('adding an account starts one login and commits only after authenticated completion', async t => {
-  const root = temporary(t); let config = {}, callbacks, starts = 0, stops = 0;
+test('adding an account during a reply preserves the session and commits only after authenticated completion', async t => {
+  const root = temporary(t); let config = { codexSessionAccounts: { existing: 'default' } }, callbacks, starts = 0, stops = 0, busy = true;
+  const runningSession = { running: true, settings: { subscriptionId: 'default' }, shutdown: async () => { throw new Error('Existing reply must not be stopped'); } };
   const engine = createCodex({ dataDir: root, loadConfig: () => config, saveConfig: patch => Object.assign(config, patch),
+    isBusy: () => busy,
     runtimes: () => ({ ensure: async () => {}, locate: () => ({ file: path.join(root, 'fixture.exe') }) }), openExternal: async () => {},
     createAccountClient: options => {
       callbacks = options;
@@ -550,6 +667,7 @@ test('adding an account starts one login and commits only after authenticated co
       } };
     } });
   t.after(() => engine.shutdown());
+  engine.sessions.legacy = runningSession;
   await Promise.all([engine.handlers['account-add']({}), engine.handlers['account-add']({})]);
   assert.equal(starts, 1);
   assert.equal(engine.accountState().accounts.length, 1);
@@ -560,7 +678,14 @@ test('adding an account starts one login and commits only after authenticated co
   assert.equal(engine.accountState().accounts.length, 2);
   const added = engine.accountState().activeId;
   assert.notEqual(added, 'default');
+  assert.equal(callbacks.env.CODEX_HOME, path.join(root, 'subscription-accounts', 'codex', added));
+  assert.equal(engine.sessions.legacy, runningSession);
+  assert.equal(runningSession.running, true);
+  assert.equal(runningSession.settings.subscriptionId, 'default');
+  assert.deepEqual(config.codexSessionAccounts, { existing: 'default' });
   assert.equal(engine.accountState().account.email, 'new@example.test');
+  await assert.rejects(engine.handlers['account-remove']({ id: added }), /Stop the Codex response/);
+  engine.sessions.legacy = null; busy = false;
   await engine.handlers['account-remove']({ id: added });
   assert.equal(stops, 1);
   assert.equal(fs.existsSync(path.join(root, 'subscription-accounts', 'codex', added)), false);

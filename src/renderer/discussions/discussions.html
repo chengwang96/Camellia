@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Generated HTML previews inherit this policy, then apply their own sandbox and network restrictions. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data: file:; img-src 'self' file: data: blob: https: http:; frame-src 'self' file: blob:; media-src 'self' file: data: blob:">
+  <title data-i18n>Agent discussions (beta) — Camellia</title>
+  <link rel="stylesheet" href="../shared/ui-theme.css">
+  <link rel="stylesheet" href="../shared/engine-brand.css">
+  <link rel="stylesheet" href="../chat/claude.css">
+  <link rel="stylesheet" href="../chat/data-preview.css">
+  <link rel="stylesheet" href="../../../node_modules/katex/dist/katex.min.css">
+  <link rel="stylesheet" href="./discussions.css">
+</head>
+<body class="discussion-workbench">
+  <div class="app">
+    <aside class="sidebar" id="sidebar" aria-label="Discussion groups" data-i18n-attrs="aria-label">
+      <div class="sidebar-resize" id="sidebarResize" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="sidebar" aria-label="Resize sidebar" title="Drag to resize sidebar" data-i18n-attrs="aria-label title"></div>
+      <div class="sidebar-header">
+        <div class="logo"><div class="logo-icon engine-mark" aria-hidden="true"><img src="../../../assets/icon-256.png" alt=""></div><span class="logo-text" data-i18n>Agent discussions (beta)</span></div>
+        <button class="btn-new-session" id="newGroup" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8m-4-4h8"/></svg><span data-i18n>New group</span>
+        </button>
+      </div>
+      <nav class="session-list" id="groupList" aria-label="Saved discussions" data-i18n-attrs="aria-label"></nav>
+      <div class="sidebar-footer">
+        <button id="settings" class="btn-footer" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span data-i18n>Settings</span></button>
+        <button id="home" class="btn-footer" type="button" title="Home (Ctrl/Cmd+Shift+H)" data-i18n-attrs="title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg><span data-i18n>Home</span></button>
+      </div>
+    </aside>
+    <button id="sidebarBackdrop" class="sidebar-backdrop" type="button" aria-label="Close discussion list" data-i18n-attrs="aria-label" hidden></button>
+    <main class="main">
+      <header class="main-header">
+        <button id="sidebarToggle" class="header-pill sidebar-toggle" type="button" aria-label="Show discussion list" aria-controls="sidebar" aria-expanded="false" data-i18n-attrs="aria-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button>
+        <span class="header-title" id="groupTitle">New discussion</span>
+        <select class="header-pill" id="engineSwitch" aria-label="Chat mode" title="Switch chat mode" data-i18n-attrs="aria-label title"></select>
+        <div id="groupActions" class="discussion-header-actions" hidden>
+          <button id="membersToggle" class="header-pill" type="button" aria-haspopup="dialog" aria-controls="membersPanel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 4v2"/></svg><span data-i18n>Members</span><span id="memberCount"></span></button>
+          <button id="addMember" class="header-pill" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span data-i18n>Add member</span></button>
+          <button id="stopAll" class="header-pill" type="button" data-i18n>Stop all</button>
+          <button id="groupWorkspace" class="header-pill" type="button" data-i18n>Working folder</button>
+        </div>
+      </header>
+      <div id="notice" role="alert" hidden>
+        <span id="noticeText" data-i18n></span>
+        <button id="dismissNotice" type="button" title="Dismiss notice" aria-label="Dismiss notice" data-i18n-attrs="title aria-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+      </div>
+      <div class="chat-scroll" id="chatScroll">
+        <div class="column">
+          <div id="welcome" class="empty-state">
+            <div class="empty-state-heading"><span class="empty-state-wordmark" data-i18n>Agent discussions (beta)</span></div>
+            <p class="empty-state-desc" id="welcomeHint" data-i18n>Create a group, add models, and choose who replies to each message.</p>
+            <button id="firstGroup" class="btn-primary" type="button" data-i18n>Create a discussion</button>
+          </div>
+          <div id="messages" role="log" aria-label="Discussion history" data-i18n-attrs="aria-label"></div>
+        </div>
+      </div>
+      <div id="groupView" class="input-zone" hidden>
+        <div class="column">
+          <p id="connectionNotice" class="discussion-connection-note" hidden data-i18n>Some members are unavailable. Open Members for details.</p>
+          <form id="composer">
+            <div class="input-card" id="inputCard">
+              <div class="attach-row" id="attachRow"></div>
+              <div class="discussion-recipients" id="recipientRow"><span class="recipient-label" data-i18n>Reply from</span><div id="mentions" class="goal-chip-row" role="group" aria-label="Mention members" data-i18n-attrs="aria-label"></div></div>
+              <label class="sr-only" for="message" data-i18n>Message</label>
+              <textarea id="message" rows="2" maxlength="60000" placeholder="Share a question or paste material…" data-i18n-attrs="placeholder"></textarea>
+              <div class="input-row">
+                <button id="attachFiles" class="btn-attach" type="button" title="Attach files" aria-label="Attach files" data-i18n-attrs="title aria-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m21 11-8 8a6 6 0 0 1-8-8l9-9a4 4 0 0 1 6 6l-9 9a2 2 0 0 1-3-3l8-8"/></svg></button>
+                <span class="pill-select"><select id="groupPermission" aria-label="Permissions" data-i18n-attrs="aria-label"><option value="ask" data-i18n>Ask by default</option><option value="auto" data-i18n>Ask as needed</option><option value="full" data-i18n>Allow all</option></select></span>
+                <span class="pill-select"><svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg><select id="replyMode" aria-label="Replies" data-i18n-attrs="aria-label"><option value="parallel" data-i18n>In parallel</option><option value="serial" data-i18n>In order</option></select></span>
+                <span class="input-spacer"></span>
+                <button id="send" class="btn-send" type="submit" disabled title="Send" aria-label="Send" data-i18n-attrs="title aria-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m-7 7 7-7 7 7"/></svg></button>
+              </div>
+            </div>
+          </form>
+          <div class="status-row"><p id="sendHint" class="status-line" data-i18n>No mentions: save a note without calling a model.</p></div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <aside class="file-viewer" id="fileViewer" hidden aria-label="File preview" data-i18n-attrs="aria-label">
+    <div class="file-viewer-resize" id="fileViewerResize" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="fileViewer" aria-label="Resize preview" title="Drag to resize preview" data-i18n-attrs="aria-label title"></div>
+    <header class="file-viewer-header">
+      <div class="file-viewer-title-wrap">
+        <span class="file-viewer-kicker" id="fileViewerType" data-i18n>Preview</span>
+        <strong class="file-viewer-title" id="fileViewerTitle"></strong>
+      </div>
+      <div class="file-viewer-actions">
+        <button id="fileViewerReveal" title="Show in folder" aria-label="Show in folder" data-i18n-attrs="title aria-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2Z"/></svg>
+        </button>
+        <button id="fileViewerExternal" title="Open with system app" aria-label="Open with system app" data-i18n-attrs="title aria-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3h7v7"/><path d="m10 14 11-11"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>
+        </button>
+        <button id="fileViewerClose" title="Close preview" aria-label="Close preview" data-i18n-attrs="title aria-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+    </header>
+    <div class="file-viewer-meta" id="fileViewerMeta"></div>
+    <div class="file-viewer-body" id="fileViewerBody"></div>
+  </aside>
+  <dialog id="deleteDialog" class="switch-dialog discussion-dialog" aria-labelledby="deleteDialogTitle">
+    <h2 id="deleteDialogTitle" data-i18n>Delete discussion</h2>
+    <p id="deleteTitle"></p>
+    <p class="dialog-note" data-i18n>This removes the group and its discussion history. This cannot be undone.</p>
+    <p id="deleteError" class="ws-error" role="alert"></p>
+    <div class="perm-actions"><button id="deleteCancel" type="button" data-close="deleteDialog" class="perm-deny" data-i18n>Cancel</button><button id="deleteConfirm" type="button" class="perm-allow danger" data-i18n>Delete permanently</button></div>
+  </dialog>
+  <dialog id="membersPanel" class="switch-dialog discussion-dialog" aria-labelledby="membersTitle">
+    <div class="discussion-dialog-heading"><h2 id="membersTitle" data-i18n>Group members</h2><button type="button" class="settings-close" data-close="membersPanel" aria-label="Close" data-i18n-attrs="aria-label">×</button></div>
+    <p class="dialog-note" data-i18n>One topic. Up to four perspectives.</p>
+    <div id="roster"></div>
+    <p id="noMembers" class="dialog-note" data-i18n>Add members using the Add member button above the conversation.</p>
+  </dialog>
+  <dialog id="groupDialog" class="switch-dialog discussion-dialog" aria-labelledby="groupDialogTitle">
+    <form id="createForm"><h2 id="groupDialogTitle" data-i18n>New discussion</h2><div class="ws-field"><label for="title" data-i18n>Discussion topic</label><input id="title" maxlength="120" required autocomplete="off" placeholder="For example: review the research plan" data-i18n-attrs="placeholder"></div><p id="createError" class="dialog-note" role="alert"></p><div class="dialog-actions"><button type="button" data-close="groupDialog" class="btn-secondary" data-i18n>Cancel</button><button class="btn-primary" type="submit" data-i18n>Create group</button></div></form>
+  </dialog>
+  <dialog id="memberDialog" class="switch-dialog discussion-dialog" aria-labelledby="memberDialogTitle">
+    <form id="memberForm">
+      <h2 id="memberDialogTitle" data-i18n>Add a member</h2>
+      <div class="binding-filters"><div class="ws-field"><label for="engine" data-i18n>Harness</label><select id="engine"><option value="claude">Claude Code</option><option value="codex" selected>Codex CLI</option><option value="dsh">DeepSeek Harness</option><option value="kimi">Kimi Code</option><option value="antigravity">Antigravity</option><option value="pi">Pi</option></select></div><div class="ws-field"><label for="connection" data-i18n>Connection</label><select id="connection"><option value="subscription" data-i18n>Subscription</option><option value="api">API</option></select></div></div>
+      <div class="ws-field" id="providerField" hidden><label for="provider" data-i18n>API provider</label><select id="provider"></select></div>
+      <p id="providerHint" class="dialog-note" hidden data-i18n>API providers and models come from Settings. Harness selects how the member runs.</p>
+      <div class="ws-field"><label id="bindingLabel" for="binding">Model and account</label><select id="binding"></select></div>
+      <div class="ws-field"><label for="memberName" data-i18n>Member name</label><input id="memberName" maxlength="80" required autocomplete="off"></div>
+      <div class="ws-field"><label for="memberIdentityPrompt" data-i18n>Identity prompt (optional)</label><textarea id="memberIdentityPrompt" rows="3" maxlength="4096" placeholder="For example: You are a scientist. Examine the evidence and explain uncertainties." data-i18n-attrs="placeholder" aria-describedby="memberIdentityHint"></textarea></div>
+      <p id="memberIdentityHint" class="dialog-note" data-i18n>Describe this member's role, expertise, or response style. Leave blank to use the default identity.</p>
+      <p id="bindingStatus" class="dialog-note"></p>
+      <button id="verifyBinding" type="button" class="btn-secondary" hidden data-i18n>Verify connection</button>
+      <div class="dialog-actions"><button id="refreshModels" type="button" class="btn-secondary" data-i18n>Refresh models</button><button type="button" data-close="memberDialog" class="btn-secondary" data-i18n>Cancel</button><button id="saveMember" class="btn-primary" type="submit" data-i18n>Add member</button></div>
+    </form>
+  </dialog>
+  <dialog id="identityDialog" class="switch-dialog discussion-dialog" aria-labelledby="identityTitle">
+    <form id="identityForm">
+      <h2 id="identityTitle" data-i18n>Edit identity prompt</h2>
+      <div id="identityMember" class="member-head"></div>
+      <div class="ws-field"><label for="identityPrompt" data-i18n>Identity prompt (optional)</label><textarea id="identityPrompt" rows="5" maxlength="4096" placeholder="For example: You are a scientist. Examine the evidence and explain uncertainties." data-i18n-attrs="placeholder" aria-describedby="identityHint"></textarea></div>
+      <p id="identityHint" class="dialog-note" data-i18n>Applies to the next reply. Leave blank to use the default identity.</p>
+      <p id="identityBusy" class="dialog-note" role="status" hidden></p>
+      <p id="identityError" class="ws-error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" data-close="identityDialog" class="btn-secondary" data-i18n>Cancel</button><button id="saveIdentity" type="submit" class="btn-primary" data-i18n>Save</button></div>
+    </form>
+  </dialog>
+  <dialog id="discussionPermission" class="switch-dialog discussion-dialog" aria-labelledby="discussionPermissionTitle">
+    <form id="discussionPermissionForm">
+      <h2 id="discussionPermissionTitle" data-i18n>Your input is needed</h2>
+      <p id="permissionMember" class="dialog-note"></p>
+      <p id="permissionReason" class="dialog-note"></p>
+      <pre id="permissionDetail" class="perm-input"></pre>
+      <div id="permissionQuestions" class="question-fields"></div>
+      <p id="permissionError" class="ws-error" role="alert"></p>
+      <div id="permissionActions" class="perm-actions"></div>
+    </form>
+  </dialog>
+  <script src="../../shared/i18n-messages.js"></script>
+  <script src="./discussions-i18n.js"></script>
+  <script src="../../shared/i18n.js"></script>
+  <script src="../shared/i18n.js"></script>
+  <script src="../shared/message-markdown.js"></script>
+  <script src="../shared/chat-mode-select.js"></script>
+  <script src="../shared/chat-controls.js"></script>
+  <script src="../shared/file-preview-panel.js"></script>
+  <script src="../../shared/turn-artifacts.js"></script>
+  <script src="../../shared/long-paste.js"></script>
+  <script src="../../../node_modules/markdown-it/dist/markdown-it.min.js"></script>
+  <script src="../../../node_modules/markdown-it-footnote/dist/markdown-it-footnote.min.js"></script>
+  <script src="../../../node_modules/katex/dist/katex.min.js"></script>
+  <script src="../../../node_modules/markdown-it-texmath/texmath.js"></script>
+  <script src="../../../node_modules/@highlightjs/cdn-assets/highlight.min.js"></script>
+  <script src="../../../node_modules/papaparse/papaparse.min.js"></script>
+  <script src="../chat/markdown-preview.js"></script>
+  <script src="../chat/data-preview.js"></script>
+  <script src="../chat/html-preview.js"></script>
+  <script src="./discussions-rich.js"></script>
+  <script src="./discussions.js"></script>
+</body>
+</html>

@@ -1,12 +1,10 @@
 'use strict';
-const fs = require('node:fs');
 const path = require('node:path');
-const YAML = require('yaml');
 const { spawn } = require('node:child_process');
 const { SessionPool } = require('./session-pool');
 const { AcpSession } = require('./acp-session');
 const { ClaudeHistory } = require('./claude-history');
-const { writeText } = require('../shared/json-store');
+const { dshLaunchArgs } = require('./dsh-config');
 const { modelId } = require('../api/api-router-config');
 const { valid, nativeMode } = require('./permission-levels');
 // Match the pinned DSH provider default. 8K can truncate a reasoning-only reply
@@ -23,15 +21,14 @@ const DSH_PRESETS = {
 };
 
 function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig = {} }) {
-  fs.mkdirSync(home, { recursive: true });
-  writeText(path.join(home, 'settings.yaml'), YAML.stringify({
+  const args = dshLaunchArgs({ runtime, home, profile: 'acp', config: {
     ...nativeConfig,
     'agent-default-model': { provider: 'api-pool', model },
     permission: { presets: DSH_PRESETS, defaultPreset: nativeMode('dsh', permissionMode, 'auto') },
     'llm-pi-ai': { providers: { 'api-pool': { displayName: 'Camellia API', apiKeyEnv: 'DSH_API_ROUTER_KEY',
       api: 'anthropic-messages', baseURL: route.baseUrl, defaultContextWindow: 65536, defaultMaxTokens: DSH_MAX_OUTPUT_TOKENS, models: [{ id: model }] } } },
-  }));
-  return { args: [runtime.file, '--profile', 'acp'], env: { ...env, DSH_HOME: home, DSH_API_ROUTER_KEY: 'proxy-managed' },
+  } });
+  return { args, env: { ...env, DSH_HOME: home, DSH_API_ROUTER_KEY: 'proxy-managed' },
     noModes: true, modelValue: JSON.stringify(['api-pool', model]), thinkingId: 'reasoning_effort' };
 }
 function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, runtime, node, environment, onEvent, log, nativeConfig = () => ({}), nativeRevision = () => '' }) {
@@ -46,6 +43,7 @@ function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, r
     saveConfig({ dshChat: value }); return value;
   }
   function ensure(opts) {
+    sessions.assertAccess(opts);
     const current = sessions.get(opts);
     const selected = { ...settings(), ...opts.settings, cwd: opts.cwd, nativeRevision: nativeRevision() };
     selected.model = modelId(selected.model);

@@ -184,6 +184,7 @@ function createPiChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, ru
     saveConfig({ pi: value }); return value;
   }
   function ensure(opts) {
+    sessions.assertAccess(opts);
     const selected = { ...settings(), ...opts.settings, cwd: opts.cwd, instructions: instructions(), nativeRevision: nativeRevision() };
     if (selected.connection !== 'api') throw new Error('Pi supports API connections only');
     selected.model = modelId(selected.model);

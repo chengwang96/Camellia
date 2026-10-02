@@ -1,6 +1,6 @@
 /* Workbench settings shell, using DeepSeek Harness's public settings slots.
  * The registered sections, stores and controls remain provided by DSH plugins.
- * Compatible with @deepseek-ai/dsh-client-ui-settings-general 0.1.5-rc.2.
+ * Compatible with @deepseek-ai/dsh-client-ui-settings-general 0.1.5-rc.2 and 0.2.0-rc.2.
  */
 'use strict';
 const React = require('react');

@@ -19,7 +19,6 @@ const methods = {
   apiRouterGetState: 'api-router-get-state', apiRouterSaveConfig: 'api-router-save-config',
   apiRouterReset: 'api-router-reset', apiRouterRotate: 'api-router-rotate',
   providerInsights: 'provider-insights', providerRefresh: 'provider-refresh', providerModels: 'provider-models', providerVerify: 'provider-verify',
-  contextCapacity: 'context-capacity', contextCapacityStart: 'context-capacity-start', contextCapacityCancel: 'context-capacity-cancel',
   engineSettingsGet: 'engine-settings-get', engineSettingsSave: 'engine-settings-save', runtimeState: 'runtime-state', runtimeEnsure: 'runtime-ensure',
   runtimePythonState: 'runtime-python-state',
   networkSettings: 'network-settings', networkSaveSettings: 'network-save-settings',
@@ -27,6 +26,7 @@ const methods = {
   runtimeSetPath: 'runtime-set-path',
   subscriptionPreferencesGet: 'subscription-preferences-get', subscriptionPreferencesSave: 'subscription-preferences-save',
   antigravityAccountState: 'antigravity-account-state', antigravityAccountRefresh: 'antigravity-account-refresh', antigravitySignIn: 'antigravity-sign-in',
+  antigravityAccountRefreshUsage: 'antigravity-account-refresh-usage',
   codexAccountState: 'codex-account-state', codexAccountRefresh: 'codex-account-refresh', codexSignIn: 'codex-sign-in',
   kimiAccountState: 'kimi-account-state',
   workbenchSettings: 'workbench-settings', workbenchSaveSettings: 'workbench-save-settings',
@@ -61,6 +61,17 @@ rl.on('line', async (line) => {
       writeJson(path.join(h.userData, 'antigravity/google-account.json'), { models: [
         { id: 'gemini-fixture-high', name: 'Gemini Fixture (High)' }, { id: 'gemini-fixture-low', name: 'Gemini Fixture (Low)' },
       ], verifiedAt: Date.now(), error: '' });
+      // The official CLI reports both limit groups; the settings card renders
+      // them exactly as the CLI's own status panel does.
+      const at = new Date().toISOString();
+      const windows = [
+        { id: 'gemini-models:gemini-weekly', label: 'Gemini Models · Weekly', usedPercent: 0, resetsAt: '2026-10-08T18:47:45Z' },
+        { id: 'gemini-models:gemini-5h', label: 'Gemini Models · 5-hour', usedPercent: 1, resetsAt: '2026-10-01T23:47:45Z' },
+        { id: 'claude-and-gpt-models:3p-weekly', label: 'Claude and GPT models · Weekly', usedPercent: 60, resetsAt: '2026-10-08T18:47:58Z' },
+        { id: 'claude-and-gpt-models:3p-5h', label: 'Claude and GPT models · 5-hour', usedPercent: 100, resetsAt: '2026-10-01T23:47:58Z' },
+      ];
+      writeJson(path.join(h.userData, 'antigravity/google-quota.json'), { status: 'ok', checkedAt: at, error: null,
+        latest: { at, balances: [], windows, modelUsage: [] }, history: [{ at, balances: [], windows }] });
       await h.call('antigravity-save-settings', { connection: 'subscription', model: 'gemini-fixture-high' });
       result = true;
     }

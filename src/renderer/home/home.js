@@ -43,6 +43,10 @@ document.getElementById('openCliDevices').addEventListener('click', async () => 
   catch (error) { status.textContent = error.message; status.className = 'error'; }
 });
 document.getElementById('openBenchmark').addEventListener('click', () => window.dshDesktop.switchMode('benchmark'));
+document.getElementById('openDiscussions').addEventListener('click', async () => {
+  try { const result = await window.dshDesktop.switchMode('discussions'); if (!result.ok) throw new Error(result.error); }
+  catch (error) { status.textContent = error.message; status.className = 'error'; }
+});
 let loadingServers = false;
 async function renderServers() {
   if (loadingServers) return;
@@ -51,7 +55,7 @@ async function renderServers() {
     const result = await window.dshDesktop.listCliServers();
     if (!result.ok) throw new Error(result.error);
     const english = result.language === 'en';
-    const anchor = document.getElementById('openBenchmark');
+    const anchor = document.querySelector('.home-tools');
     const names = { codex: 'Codex CLI', claude: 'Claude Code', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' };
     document.getElementById('cliDivider').hidden = result.devices.length === 0;
     for (const entry of document.querySelectorAll('[data-server]')) entry.remove();
@@ -64,7 +68,7 @@ async function renderServers() {
       const title = document.createElement('span'); title.className = 'entry-title'; title.textContent = device.name;
       const description = document.createElement('span'); description.className = 'entry-description'; description.textContent = `CLI SERVER · ${names[device.defaultHarness] || (english ? 'Server harness' : '服务器 Harness')}`;
       const address = document.createElement('span'); address.className = 'server-address'; address.textContent = device.address;
-      const action = document.createElement('span'); action.className = 'entry-action'; action.textContent = english ? 'Open server ↗' : '打开服务器 ↗';
+      const action = document.createElement('span'); action.className = 'entry-action'; action.textContent = english ? 'Open server' : '打开服务器';
       button.append(symbol, title, description, address, action);
       button.onclick = async () => {
         button.disabled = true;
@@ -79,8 +83,55 @@ async function renderServers() {
 }
 window.addEventListener('focus', () => void renderServers());
 void renderServers();
+const runtimeRows = new Map();
+let runtimeUpdates = [], checkingRuntimeUpdates = false, runtimeCheckedAt = 0;
+const runtimeCheckInterval = 5 * 60 * 1000;
+function renderRuntimeUpdates() {
+  const t = text => window.CamelliaI18n?.t(text) || text;
+  for (const button of document.querySelectorAll('[data-runtime-update]')) {
+    const info = runtimeUpdates.find(row => row.id === button.dataset.runtimeUpdate);
+    const row = runtimeRows.get(button.dataset.runtimeUpdate);
+    // A check can finish after an install, path change, or removal. Never show
+    // a result for a different installation or an app-managed runtime.
+    const available = info?.updateAvailable && info.checkable && !info.error && info.installed && info.latest
+      && row?.status === 'ready' && !row.external && !(row.id === 'antigravity' && row.mode === 'subscription') && row.version === info.installed;
+    button.hidden = !available;
+    if (!available) continue;
+    const label = t('{0} runtime: v{1} → v{2}. View update')
+      .replace('{0}', () => row.name).replace('{1}', () => info.installed).replace('{2}', () => info.latest);
+    button.title = label;
+    button.setAttribute('aria-label', label);
+  }
+}
+async function checkRuntimeUpdates() {
+  if (!window.dshDesktop.runtimeCheckUpdates || checkingRuntimeUpdates || Date.now() - runtimeCheckedAt < runtimeCheckInterval) return;
+  checkingRuntimeUpdates = true;
+  runtimeCheckedAt = Date.now();
+  try {
+    const result = await window.dshDesktop.runtimeCheckUpdates();
+    runtimeUpdates = result.ok && Array.isArray(result.engines) ? result.engines : [];
+  } catch {
+    // A background registry failure should not replace launch progress/errors.
+    runtimeUpdates = [];
+  } finally {
+    checkingRuntimeUpdates = false;
+    renderRuntimeUpdates();
+  }
+}
+for (const button of document.querySelectorAll('[data-runtime-update]')) {
+  button.addEventListener('click', async () => {
+    try {
+      const result = await window.dshDesktop.openSettingsWindow({ page: 'engines', engine: button.dataset.runtimeUpdate, focus: 'updates' });
+      if (result?.ok === false) throw new Error(result.error);
+    } catch (error) { status.textContent = error.message; status.className = 'error'; }
+  });
+}
+window.addEventListener('camellia:language', renderRuntimeUpdates);
 function renderRuntimes(rows) {
   for (const row of rows) {
+    const previous = runtimeRows.get(row.id);
+    if (!previous || ['version', 'status', 'external', 'mode', 'file'].some(key => previous[key] !== row[key])) runtimeCheckedAt = 0;
+    runtimeRows.set(row.id, row);
     const button = document.querySelector(`[data-mode="${row.id}"]`);
     if (!button) continue;
     const name = { dsh: 'DSH', claude: 'Claude', codex: 'Codex', kimi: 'Kimi', antigravity: 'Antigravity', pi: 'Pi' }[row.id];
@@ -98,15 +149,24 @@ function renderRuntimes(rows) {
     if (row.status === 'ready') { runtimeMessage = ''; showProgress(); }
     if (row.status === 'error') {
       clearInterval(progressTimer);
-      status.textContent = `${row.name} could not be prepared. Retry in Settings → Runtime.`;
+      status.textContent = `${row.name} could not be prepared. Retry in Settings → Engine Settings.`;
       status.className = 'error';
       activeButton = null;
     }
   }
+  renderRuntimeUpdates();
 }
-window.dshDesktop.onRuntimeState(renderRuntimes);
+window.dshDesktop.onRuntimeState(rows => { renderRuntimes(rows); void checkRuntimeUpdates(); });
 window.dshDesktop.onNetworkHealth(payload => window.CamelliaNetworkNotice?.sync(payload));
-window.dshDesktop.runtimeState().then(result => {
-  if (!result.ok) throw new Error(result.error);
-  renderRuntimes(result.engines);
-}).catch(error => { status.textContent = error.message; status.className = 'error'; });
+async function refreshRuntimes(background = false) {
+  try {
+    const result = await window.dshDesktop.runtimeState();
+    if (!result.ok) throw new Error(result.error);
+    renderRuntimes(result.engines);
+    void checkRuntimeUpdates();
+  } catch (error) {
+    if (!background) { status.textContent = error.message; status.className = 'error'; }
+  }
+}
+window.addEventListener('focus', () => void refreshRuntimes(true));
+void refreshRuntimes();

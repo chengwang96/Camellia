@@ -49,7 +49,18 @@ test('Tool diagnostics identify native failures without treating successfully re
   assert.equal(failedToolResult('pwsh', 'output\n[exit code: 0]'), false);
   assert.equal(failedToolResult('pwsh', 'output\n[exit code: 7]'), true);
   assert.equal(failedToolResult('run_command', '\nThe command exited with code 7.\nOutput:\nx'), true);
+  const nativeTime = 'Created At: 2026-10-02T21:58:44+08:00\nCompleted At: 2026-10-02T21:58:47+08:00\n\n';
+  assert.equal(failedToolResult('run_command', nativeTime + 'The command exited with code 7.\nOutput:\nx'), true);
+  assert.equal(failedToolResult('run_command', nativeTime + 'The command exited with code 0.\nOutput:\nThe command exited with code 7.'), false);
+  assert.equal(failedToolResult('replace_file_content', 'Created At: 2026-10-02T13:58:44.123Z\nError invalid tool call: missing target'), true);
+  assert.equal(failedToolResult('Read', nativeTime + 'Error invalid tool call: sample log'), false);
+  assert.equal(failedToolResult('run_command', 'Some output\n' + nativeTime + 'Error invalid tool call: sample log'), false);
   assert.equal(failedToolResult('Bash', '<system>ERROR: Tool execution failed.</system>\nx'), true);
+  const kimiFailure = 'Wall time: 0.056 seconds\n<system>ERROR: Tool execution failed.</system>\nEXPECTED_SHELL_ERROR_7\nCommand failed with exit code: 7.';
+  assert.equal(failedToolResult('Bash', kimiFailure), true);
+  assert.equal(failedToolResult('Bash', kimiFailure.replaceAll('\n', '\r\n')), true);
+  assert.equal(failedToolResult('Read', kimiFailure), false);
+  assert.equal(failedToolResult('Bash', 'Wall time: 0.056 seconds\nRead log:\n' + kimiFailure), false);
   assert.equal(failedToolResult('apply_patch', 'apply_patch verification failed: no match'), true);
   assert.equal(failedToolResult('exec_command', 'Chunk ID: 7302aa\nWall time: 0.3 seconds\nProcess exited with code 7\nOriginal token count: 6\nOutput:\nEXPECTED_SHELL_ERROR_7'), true);
   assert.equal(failedToolResult('exec_command', 'Chunk ID: 7302aa\nWall time: 0.3 seconds\nProcess exited with code 0\nOriginal token count: 9\nOutput:\nProcess exited with code 3 in a log'), false);

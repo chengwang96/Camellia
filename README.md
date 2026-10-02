@@ -17,6 +17,7 @@ Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravi
 ## Features
 
 - **Queue messages while running.** Enter or Send queues messages until the current turn ends. Each queued message has a “Send instruction now” button to steer the active turn when supported by the engine connection. Failed instructions retain their queued text and attachments without changing the composer draft.
+- **Model changes queue while running.** Model and reasoning-level changes are accepted during a run too: the running turn stays on the model it started with, and the change applies from the next message. Queued messages therefore run on the selection in force when they are sent — change the model after queueing and that message and those after it use the new one. Switching harness, connection, or permission mode still waits for the turn to end.
 
 <table><tr><td>
 <img src="docs/images/message-queue.png" alt="A queued message and steering instructions while a Codex response is streaming">
@@ -58,7 +59,7 @@ npm ci
 npm start
 ```
 
-`npm ci` installs the workbench dependencies. All six harness runtimes are optional: choose **Download & open** on the home screen or download individual engines from **Settings → Runtime**. Antigravity downloads either its official CLI for Google subscriptions or the SDK and dedicated Python for API mode; Pi is a single npm package that uses the shared API routes. Separate global CLI or Python installations are not required.
+`npm ci` installs the workbench dependencies. All six harness runtimes are optional: choose **Download & open** on the home screen or download individual engines from **Settings → Engine Settings**. Antigravity downloads either its official CLI for Google subscriptions or the SDK and dedicated Python for API mode; Pi is a single npm package that uses the shared API routes. Separate global CLI or Python installations are not required.
 
 Networking lives on its own page, **Settings → Network**, and covers engine and benchmark-library downloads as well as subscription and API connections. **Direct connection** goes straight out; **Use system proxy** uses the detected system HTTP/HTTPS proxy; **Auto** tests every provider host and signed-in subscription once and keeps direct-first only when direct works everywhere, otherwise it stays on the system proxy. The default is direct, with no preset proxy address. The same page has a one-click **Connectivity test** that probes every host through both a direct connection and the detected proxy without changing your mode. A saved change takes effect immediately — engine processes are replaced with the new connection and a running reply keeps its connection until it finishes. If the selected system proxy can no longer reach the internet, Camellia downgrades to **Auto** and reports it in-app and in **Settings → Network**, without rewriting your stored choice, so a restart re-probes it; choose **Use system proxy** again once the proxy works. ChatGPT (Codex) and Claude subscription sign-ins skip the direct-first fallback and always use the detected system proxy, connecting directly only when none is detected.
 
@@ -175,13 +176,9 @@ The compact goal bar shows the objective, status and active time. Pause also sto
 <img src="docs/images/goal-mode.png" alt="The compact goal bar above the composer, showing the objective and active time">
 </td></tr></table>
 
-The model selector doubles as a main/secondary model switch: left-click a model to pick the primary, right-click one to set the secondary without closing the menu, and double-click the pill to swap between the two.
+Set a quick-switch default model and reasoning level for each engine in **Settings → Model Settings**, then double-click the model menu in the composer to select them. Single-click opens the model and reasoning menus. Changes made during a turn apply from the next message.
 
-<table><tr><td>
-<img src="docs/images/model-pair.png" alt="Model menu showing the current-selection check and the secondary-model dot">
-</td></tr></table>
-
-Antigravity supports **Google subscription** and **Shared API routes** connections. Google mode uses the official CLI's account authentication and eligible Antigravity quota; API mode uses Camellia's key pool. Connection settings, permissions, MCP servers, and skills are managed in **Settings → Engine Settings → Antigravity**. Existing sessions retain their connection. Google mode supports streaming, continuation and cancellation; session forks and image attachments are currently unavailable in this mode.
+Antigravity supports **Google subscription** and **Shared API routes** connections. Google mode uses the official CLI's account authentication and eligible Antigravity quota; API mode uses Camellia's key pool. Connection settings, permissions, MCP servers, and skills are managed in **Settings → Engine Settings → Antigravity**. Existing sessions retain their connection. Google mode supports streaming, continuation, cancellation, image attachments for supported models, and interactive tool approvals in both ordinary chat and Agent discussions. Session forks remain unavailable in this mode.
 
 The current Antigravity SDK connection supports text and code conversations. Image attachments are unavailable; use Claude, Codex, or Kimi for image conversations, including with the Gemini provider.
 
@@ -229,7 +226,7 @@ Camellia can work beyond this computer. Both features reuse the embedded Tailsca
 
 ## Configuration and data
 
-All engines share the application settings window, covering provider connections, usage, account balances, native engine options, runtime installation, and appearance.
+All engines share the application settings window, covering provider connections, usage, account balances, native engine options, runtime installation, and appearance. **Settings → General → Conversation width** sets how wide the middle message column grows — **Standard width**, **Wider**, or **Full width** for comparisons, tables and diffs on a large screen.
 
 **Saving native settings for DSH, Claude, Kimi, or Antigravity’s Google connection updates the corresponding CLI’s global configuration**, which can affect sessions outside Camellia. Existing files receive a one-time `.workbench.bak` backup before their first managed overwrite. The interface shows the affected paths. Codex and Antigravity SDK settings apply only within Camellia. Codex also uses separate application-owned directories for API and ChatGPT authentication and native history.
 

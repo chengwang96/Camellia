@@ -25,7 +25,9 @@ Release notes: [v0.1.0 — Windows preview](releases/v0.1.0.md).
 | [Linux server CLI proposal](design/linux-server-cli.md) | Headless architecture, GUI device flows, credential boundaries, and runnable settings design preview (not a server release) | 简体中文 |
 | [Provider account adapters](design/provider-balances.md) | Account APIs, units, verification scope, and adapter maintenance | 简体中文 |
 | [Harness integration](design/harness-integration.md) | Integration decisions and earlier engine evaluation | 简体中文 |
-| [Per-binding model-switch segments](design/model-switch-segments.md) | One native session per engine/connection/model/account, cross-model bridge summaries, and the main/secondary model pair | 简体中文 |
+| [Per-binding model-switch segments](design/model-switch-segments.md) | One native session per engine/connection/model/account, cross-model bridge summaries, and the quick-switch default model | 简体中文 |
+| [Group-chat discussion design](design/group-chat-discussion.md) | Frozen v1 scope; desktop interaction foundation integrated, real model connections and summaries pending | 简体中文 |
+| [Group-chat implementation plan](design/group-chat-implementation-plan.md) | Frozen scope, eight release checks, desktop integration evidence, remaining connection blockers, and deferred P6–P7 roadmap | 简体中文 |
 | [DSH integration](../integrations/dsh/README.md) | Maintained source patches and pinned upstream packages | English |
 | [Kimi runtime](../runtimes/kimi/README.md) | Runtime package, execution directories, and ACP integration | English |
 

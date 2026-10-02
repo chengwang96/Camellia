@@ -185,12 +185,25 @@ function writeConfig(file, cfg) {
   writeJson(file, cfg);
 }
 function hasRoutes(cfg) { return cfg.enabled && cfg.providers.some(p => p.enabled && p.models.length && p.keys.some(k => k.enabled)); }
+// The actual upstream protocol can differ from the client's protocol. Keep
+// enumeration shared by routing and capacity evidence so neither guesses it.
+function modelRoutes(cfg, id, protocol) {
+  if (!cfg.enabled) return [];
+  return cfg.providers.filter(provider => provider.enabled).flatMap(provider => {
+    const model = provider.models.find(model => model.id === id);
+    if (!model) return [];
+    const protocols = model.protocol && model.protocol !== 'auto' ? [model.protocol]
+      : provider.protocol === 'dual' ? (protocol ? [protocol === 'responses' ? 'openai' : protocol] : ['openai', 'anthropic']) : [provider.protocol || 'openai'];
+    return provider.keys.filter(key => key.enabled).flatMap(key => protocols.map(protocol => ({ provider, key, model, protocol })));
+  });
+}
 function modelContextWindow(cfg, id) {
   if (!hasRoutes(cfg)) return undefined;
   const limits = cfg.providers.filter(provider => provider.enabled && provider.keys.some(key => key.enabled))
     .flatMap(provider => provider.models).filter(model => model.id === id)
-    .map(model => model.contextWindow || model.maxContext).filter(limit => Number.isInteger(limit) && limit >= 4096);
-  return limits.length ? Math.min(...limits) : undefined;
+    .map(model => model.contextWindow || model.maxContext);
+  // An unknown fallback route must not inherit another provider's declaration.
+  return limits.length && limits.every(limit => Number.isInteger(limit) && limit >= 4096) ? Math.min(...limits) : undefined;
 }
 function publicState(cfg) {
   const providers = cfg.providers.map(p => ({ ...p, models: p.models.map(m => ({ ...m })), keys: p.keys.map(({ key, ...k }) => ({ ...k, maskedKey: maskKey(key) })) }));
@@ -198,4 +211,4 @@ function publicState(cfg) {
   return { version: 2, enabled: cfg.enabled, port: cfg.port, providers, models, usage: structuredClone(cfg.usage), active: { ...cfg.active } };
 }
 
-module.exports = { DEFAULT_PORT, PRESETS, modelId, endpoint, normalizeConfig, loadConfig, writeConfig, hasRoutes, publicState, maskKey, modelContextWindow };
+module.exports = { DEFAULT_PORT, PRESETS, modelId, endpoint, normalizeConfig, loadConfig, writeConfig, hasRoutes, publicState, maskKey, modelRoutes, modelContextWindow };

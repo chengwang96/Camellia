@@ -1,10 +1,14 @@
 # 共享会话与 Harness 切换
 
-更新：2026-09-16。已实现五个引擎的共享聊天界面、增量上下文续聊和自动 Markdown 交接。
+更新：2026-10-02。六个引擎共用聊天界面、增量上下文续聊和自动 Markdown 交接；顶部新增独立 Agent 讨论入口。
 
 ## 用户行为
 
-会话顶部的引擎选择器用于切换 Claude Code、Codex CLI、DSH、Kimi Code 和 Antigravity。五个引擎使用同一套会话列表、工作区和输入框布局。共享会话的工作目录保持固定。
+会话顶部的选择器用于切换 Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigravity、Pi 和 Agent 讨论。六个引擎使用同一套会话列表、工作区和输入框布局。共享会话的工作目录保持固定。
+
+Agent 讨论页在标题旁使用相同的七入口菜单，可直接返回任一 harness。它保留独立的群记录、草稿、@ 顺序及回复模式；页面导航不转换群历史，也不增加成员或调用模型。六个 harness 之间仍使用下方的会话接续规则。导航与草稿恢复的桌面验证见[讨论实施记录](group-chat-implementation-plan.md#七入口快速切换交接2026-10-02)。
+
+用户已确认首版不需要普通聊天的工作区、独立会话记录与 Agent 讨论互通。两者共用导航和设计，列表、记录及草稿各自保存；工作区挂接、历史导入、上下文传递和群与单聊转换均不列入当前实现范围。
 
 通用设置中的默认值为直接续聊、关闭提醒、隐藏来源标签。用户可单独开启提醒和来源标签，也可将默认方式改为 Markdown。`Switch options` 可以为某一次切换选择方式，也可在同一引擎中通过 Markdown 开始新的原生会话。
 
@@ -129,9 +133,11 @@ Claude 的普通权限批准保留工具原始参数。应用选择 Allow all �
 
 ### 需求提问与工具审批
 
-Allow all 控制工具权限，不代替用户回答需求。Claude 的 `AskUserQuestion` 和 Codex 的 `requestUserInput` 使用对话内提问卡片，支持单选、多选和自填答案；侧栏显示“等待回答”。工具审批仍单独显示“等待确认”，不会把问题参数当成需要 Allow / Deny 的命令。
+Allow all / `full` 控制工具权限，不代替用户回答需求，也不自动跳过问题。Claude 的 `AskUserQuestion` 和 Codex 的 `requestUserInput` 在当前会话中弹出独立的提问窗口，支持单选、多选和自填答案；侧栏显示“等待回答”。提交后将答案回传给原生工具，原任务继续执行。工具审批仍单独显示“等待确认”，不会把问题参数当成需要 Allow / Deny 的命令。普通文本中的“请确认”不会触发弹窗，需要引擎发出结构化提问。
 
-提问卡片不遮挡其他会话，切换回来后恢复未提交的选项；敏感输入不缓存。空答案不提交，提交失败保留选择并显示错误。跳过问题明确回传“未选择答案”，不会代选推荐项。所有回答仍校验会话 ID、运行编号和请求 ID，避免串到并行会话。Claude 的回答保留原始 `questions`，并将答案放入以问题正文为键的 `answers`，遵循[原生协议](https://code.claude.com/docs/en/agent-sdk/user-input)。
+上游 Codex 在普通会话里也会列出 `request_user_input`，但只有 Plan 模式或启用 `features.default_mode_request_user_input` 时才真正接受该调用，否则路由直接报 `request_user_input is unavailable in Default mode`，模型只能改用纯文本列选项。聊天会话因此通过 `codexSpawnSpec({ allowUserQuestions: true })` 传入该 feature；文本讨论保留自身策略继续关闭此工具。升级 Codex 运行时需重新核对这条原生行为。
+
+“稍后回答”或 Escape 只收起弹窗，保持任务等待；对话中保留“回答问题”入口，允许切换其他会话。后台会话的提问不抢占当前会话，切换回来后恢复未提交的选项；敏感输入不缓存。空答案不提交，提交失败保留选择并显示错误。显式跳过问题才回传“未选择答案”，不会代选推荐项，也不会把尚未提交的选择记为已确认。停止或结束任务会关闭弹窗；多条请求依次显示。所有回答仍校验会话 ID、运行编号和请求 ID，避免串到并行会话。多选答案按数组传递，Codex 保留独立选项；Claude 的回答保留原始 `questions`，并将答案放入以问题正文为键的 `answers`，遵循[原生协议](https://code.claude.com/docs/en/agent-sdk/user-input)。
 
 ### 回归检查
 

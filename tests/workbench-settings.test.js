@@ -6,13 +6,13 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createHarness } = require('./claude-harness.cjs');
 
-test('settings places General immediately before Engine Settings and shows it initially', () => {
+test('settings separates general, engine and model preferences and starts on General', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const categories = [...html.matchAll(/<button data-view="([^"]+)"/g)].map(match => match[1]);
   // Network owns the connection settings and sits between General and the
   // per-engine pages; the general preferences page stays first and active.
   assert.deepEqual(categories, ['subscriptions', 'providers', 'usage', 'general', 'network',
-    'engines', 'runtimes', 'archived', 'mobile', 'devices']);
+    'engines', 'models', 'archived', 'mobile', 'devices']);
   assert.match(html, /<button data-view="general" class="active" aria-current="page"/);
   assert.match(html, /<section id="generalPage" class="page">/);
   assert.match(html, /<section id="providersPage" class="page" hidden>/);
@@ -103,6 +103,55 @@ test('the balance and quota refresh interval is global, validated, and preserved
   } finally { first.cleanup(); }
 });
 
+const WIDTH_EVENT = 'dsh:chat-content-width-changed';
+
+test('conversation width defaults to standard, validates, persists, and survives partial saves', () => {
+  const first = createHarness();
+  try {
+    assert.equal(first.call('workbench-settings').chatContentWidth, 'standard');
+    // Unknown values fall back to the default instead of being written.
+    assert.equal(first.call('workbench-save-settings', { chatContentWidth: 'gigantic' }).ok, true);
+    assert.equal(first.call('workbench-settings').chatContentWidth, 'standard');
+    assert.equal(first.call('workbench-save-settings', { chatContentWidth: 'wide' }).ok, true);
+    assert.equal(first.call('workbench-settings').chatContentWidth, 'wide');
+    // Callers that do not know about the key keep the saved width.
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    assert.equal(first.call('workbench-settings').chatContentWidth, 'wide');
+    const reopened = createHarness(first.root);
+    assert.equal(reopened.call('workbench-settings').chatContentWidth, 'wide');
+    reopened.cleanup();
+  } finally { first.cleanup(); }
+});
+
+test('only a real conversation-width change broadcasts to the open workbench', () => {
+  const harness = createHarness();
+  try {
+    harness.events.length = 0;
+    harness.call('workbench-save-settings', { chatContentWidth: 'standard' });
+    assert.equal(harness.events.filter(event => event.channel === WIDTH_EVENT).length, 0, 'an unchanged width must not re-broadcast');
+    harness.call('workbench-save-settings', { chatContentWidth: 'full' });
+    const widths = harness.events.filter(event => event.channel === WIDTH_EVENT).map(event => event.data);
+    assert.deepEqual(widths, ['full']);
+    harness.call('workbench-save-settings', { theme: 'light' });
+    assert.deepEqual(harness.events.filter(event => event.channel === WIDTH_EVENT).map(event => event.data), ['full'],
+      'a partial save keeps the width and stays silent');
+  } finally { harness.cleanup(); }
+});
+
+test('General exposes the conversation width selector and the chat column reads the variable', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
+  const general = html.slice(html.indexOf('<section id="generalPage"'), html.indexOf('<section id="networkPage"'));
+  assert.match(general, /<select id="chatContentWidth"[^>]*>/);
+  assert.match(general, /<option value="standard"[^>]*>Standard width</);
+  assert.match(general, /<option value="wide"[^>]*>Wider</);
+  assert.match(general, /<option value="full"[^>]*>Full width</);
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.js'), 'utf8');
+  assert.ok(source.includes("chatContentWidth: $('chatContentWidth').value"));
+  assert.ok(source.includes("$('chatContentWidth').value = preferences.chatContentWidth"));
+  const css = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.css'), 'utf8');
+  assert.match(css, /\.column \{ width: 100%; max-width: var\(--content-width\); margin: 0 auto; \}/);
+});
+
 // The router's quota probe is what keeps an exhausted key out of rotation, so it
 // must follow the switch and cadence that drive it — and nothing else.
 test('only the quota switch and cadence re-run the router quota check', async () => {
@@ -139,4 +188,39 @@ test('only the quota switch and cadence re-run the router quota check', async ()
     await first.api.stopRouter();
     first.cleanup();
   }
+});
+
+
+test('quick-switch defaults persist per engine, clear independently, and preserve other preferences', () => {
+  const harness = createHarness();
+  try {
+    assert.deepEqual({ ...harness.call('workbench-settings').quickSwitchModels }, {});
+    assert.deepEqual({ ...harness.call('workbench-settings').quickSwitchLevels }, {});
+    harness.call('workbench-save-settings', { theme: 'dark', autoRefreshBalances: false });
+    assert.equal(harness.call('workbench-save-settings', { quickSwitchModels: { codex: 'model-a', claude: 'model-b' } }).ok, true);
+    harness.call('workbench-save-settings', { quickSwitchModels: { codex: 'model-c' } });
+    const saved = harness.call('workbench-settings');
+    assert.deepEqual({ ...saved.quickSwitchModels }, { codex: 'model-c', claude: 'model-b' });
+    assert.equal(saved.theme, 'dark');
+    assert.equal(saved.autoRefreshBalances, false);
+    assert.equal(harness.call('workbench-save-settings', { quickSwitchLevels: { codex: 'high', claude: 'medium' } }).ok, true);
+    harness.call('workbench-save-settings', { quickSwitchLevels: { codex: 'xhigh' } });
+    assert.deepEqual({ ...harness.call('workbench-settings').quickSwitchLevels }, { codex: 'xhigh', claude: 'medium' });
+    // A model change leaves the level of other engines, and the level itself, alone.
+    harness.call('workbench-save-settings', { quickSwitchModels: { codex: 'model-d' } });
+    assert.deepEqual({ ...harness.call('workbench-settings').quickSwitchLevels }, { codex: 'xhigh', claude: 'medium' });
+    const reopened = createHarness(harness.root);
+    assert.deepEqual({ ...reopened.call('workbench-settings').quickSwitchModels }, { codex: 'model-d', claude: 'model-b' });
+    assert.deepEqual({ ...reopened.call('workbench-settings').quickSwitchLevels }, { codex: 'xhigh', claude: 'medium' });
+    reopened.call('workbench-save-settings', { quickSwitchModels: { codex: '' } });
+    assert.deepEqual({ ...reopened.call('workbench-settings').quickSwitchModels }, { claude: 'model-b' });
+    reopened.call('workbench-save-settings', { quickSwitchLevels: { codex: '' } });
+    assert.deepEqual({ ...reopened.call('workbench-settings').quickSwitchLevels }, { claude: 'medium' });
+    for (const invalid of [[], null, { unknown: 'model' }, { codex: 123 }]) {
+      assert.equal(reopened.call('workbench-save-settings', { quickSwitchModels: invalid }).ok, false);
+      assert.equal(reopened.call('workbench-save-settings', { quickSwitchLevels: invalid }).ok, false);
+    }
+    assert.deepEqual({ ...reopened.call('workbench-settings').quickSwitchModels }, { claude: 'model-b' });
+    assert.deepEqual({ ...reopened.call('workbench-settings').quickSwitchLevels }, { claude: 'medium' });
+  } finally { harness.cleanup(); }
 });

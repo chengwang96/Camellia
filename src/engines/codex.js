@@ -11,13 +11,16 @@ const { ClaudeGoal } = require('./claude-goal');
 const { createSessionWorkspaces } = require('./session-workspaces');
 const { readJson, writeJson } = require('../shared/json-store');
 const { modelId } = require('../api/api-router-config');
+const { fastTier } = require('../shared/codex-speed');
 const { downloadSettings } = require('../main/download-network');
 const accountOptions = require('./subscription-accounts');
+const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
 
 function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = () => [], getContextWindow = () => undefined, runtimes, environment = () => process.env,
   openExternal, onEvent, onGoal, onAccount = () => {}, createUsageMeter = () => null, isBusy = () => false, log = () => {}, createAccountClient = options => new CodexClient(options) }) {
   const home = path.join(dataDir, 'codex');
   const history = new ClaudeHistory(path.join(dataDir, 'codex-history'));
+  const discussionHistory = new ClaudeHistory(path.join(dataDir, 'discussions', 'transcripts', 'codex'));
   const sessions = new SessionPool();
   let generation = 0;
   // One entry per signed-in ChatGPT account. Every account owns a CODEX_HOME so
@@ -77,9 +80,13 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       if (accountBindings()[sessionId]) value.subscriptionId = accountBindings()[sessionId];
     }
     value.model = value[value.connection + 'Model'] || '';
+    value.fastMode = sessionId ? loadConfig().codexSessionFastModes?.[sessionId] === true : false;
     return value;
   }
   function saveSettings(patch) {
+    if (patch.fastMode !== undefined) {
+      if (typeof patch.fastMode !== 'boolean' || !patch.sessionId) throw new Error('Choose a conversation before changing Fast mode');
+    }
     const value = settings();
     if (patch.connection !== undefined) {
       if (!['api', 'subscription'].includes(patch.connection)) throw new Error('Invalid Codex connection');
@@ -89,13 +96,15 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     if (!PERMISSIONS[value.permissionMode] && !valid('codex', value.permissionMode)) throw new Error('Invalid Codex permission mode');
     if (value.proxyUrl) value.proxyUrl = downloadSettings({ mode: 'proxy', url: value.proxyUrl }).url;
     if (patch.model !== undefined) value[(patch.connection || (patch.sessionId ? connectionFor(patch.sessionId) : value.connection)) + 'Model'] = String(patch.model).trim();
-    delete value.model; delete value.subscriptionId;
-    saveConfig({ codex: value }); return settings(patch.sessionId);
+    delete value.model; delete value.subscriptionId; delete value.fastMode;
+    saveConfig({ codex: value,
+      ...(patch.fastMode !== undefined ? { codexSessionFastModes: { ...loadConfig().codexSessionFastModes, [patch.sessionId]: patch.fastMode } } : {}) });
+    return settings(patch.sessionId);
   }
   function spec(connection, runtime, cwd, model, conversationId, accountId) {
     const target = connection === 'api' ? path.join(home, 'api', ...(conversationId ? ['conversations', conversationId] : []))
       : accountHome(accountId || activeId());
-    return codexSpawnSpec({ runtime, home: target, configHome: home, cwd,
+    return codexSpawnSpec({ runtime, home: target, configHome: home, cwd, allowUserQuestions: true,
       connection, model, route: connection === 'api' ? getRoute() : null, contextWindow: connection === 'api' ? getContextWindow(model) : undefined, env: environment(), proxyUrl: settings().proxyUrl,
       sharedPluginCache: connection === 'api' ? path.join(home, '.tmp') : '' });
   }
@@ -132,7 +141,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     if (value.removing) throw new Error('Account is being removed');
     if (!value.client || value.client.dead) {
       const runtime = runtimes().locate('codex');
-      if (!runtime) throw new Error('Download Codex CLI in Settings → Runtime first');
+      if (!runtime) throw new Error('Download Codex CLI in Settings → Engine Settings first');
       value.client = createAccountClient({ ...spec('subscription', runtime, home, undefined, undefined, id), log,
         onNotification: (method, params) => {
           if (value.removing) return;
@@ -164,7 +173,9 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       const page = await client.request('model/list', { cursor, limit: 100 });
       models.push(...page.data.map(model => ({ id: model.model, name: model.displayName || model.model,
         isDefault: model.isDefault, defaultReasoningEffort: model.defaultReasoningEffort,
-        supportedReasoningEfforts: model.supportedReasoningEfforts })));
+        supportedReasoningEfforts: model.supportedReasoningEfforts,
+        serviceTiers: Array.isArray(model.serviceTiers) ? model.serviceTiers : [],
+        defaultServiceTier: model.defaultServiceTier ?? null })));
       cursor = page.nextCursor;
     } while (cursor);
     // Quota errors do not invalidate a successful sign-in or hide usable models.
@@ -180,40 +191,53 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   const workspaces = createSessionWorkspaces({ history, loadConfig, saveConfig, metaKey: 'codexMeta', settingsKey: 'codex',
     standaloneCwd, getSession: () => sessions.legacy, fixedCwd: false, onDetach: id => goal.detachWorkspace(id) });
   function ensureSession(opts) {
+    const discussion = getDiscussionLaunch(opts, 'codex');
+    assertDiscussionPoolAccess(sessions, opts, discussion);
     const current = sessions.get(opts);
-    const value = { ...settings(opts.sessionId), ...opts.settings }, context = opts.cwd ? { cwd: opts.cwd, workspaceId: null } : workspaces.resolveContext(value, opts);
+    const value = discussion ? { ...discussion.settings } : { ...settings(opts.sessionId), ...opts.settings };
+    const context = opts.cwd ? { cwd: opts.cwd, workspaceId: null } : workspaces.resolveContext(value, opts);
     const selected = { ...value, cwd: context.cwd };
     opts = { ...opts, workspaceId: context.workspaceId };
     if (selected.cwd === standaloneCwd({})) fs.mkdirSync(selected.cwd, { recursive: true });
     if (!fs.statSync(selected.cwd).isDirectory()) throw new Error('Working directory does not exist: ' + selected.cwd);
     if (!selected.model) throw new Error(selected.connection === 'subscription' ? 'Sign in with ChatGPT in Settings → Engine Settings → Codex CLI.' : 'Select a configured model first');
+    if (discussion && opts.sessionId && connections()[opts.sessionId] !== selected.connection) throw new Error('Discussion native connection is not verified');
     if (selected.connection === 'api') {
       selected.model = modelId(selected.model);
       if (!getModels().includes(selected.model)) throw new Error('No API route is configured for this model');
-      selected.contextWindow = getContextWindow(selected.model);
+      if (!discussion) selected.contextWindow = getContextWindow(selected.model);
     } else {
       // A conversation keeps the account that owns its native thread; a new
       // conversation picks an account that still has quota.
-      const accountId = opts.conversationId && opts.settings?.subscriptionId || selectAccountId(opts.sessionId);
+      const accountId = discussion ? selected.subscriptionId : opts.conversationId && opts.settings?.subscriptionId || selectAccountId(opts.sessionId);
+      if (discussion && (!accountList().some(account => account.id === accountId) || !accountEntry(accountId).state.account
+        || opts.sessionId && accountBindings()[opts.sessionId] !== accountId)) throw new Error('Discussion subscription account is not verified');
       if (accountId) selected.subscriptionId = accountId;
       else delete selected.subscriptionId;
     }
+    // Resolve against the account actually serving this turn, including quota
+    // failover. A saved preference cannot enable Fast mode on an API route or
+    // on an account/model that does not advertise it.
+    selected.serviceTier = selected.connection === 'subscription' && selected.fastMode === true
+      ? fastTier(accountEntry(selected.subscriptionId).state.models?.find(model => model.id === selected.model))?.id || null : null;
     if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
-      && current.opts.workspaceId === opts.workspaceId && ['cwd', 'model', 'permissionMode', 'thinkingBudget', 'connection', 'proxyUrl', 'contextWindow', 'subscriptionId'].every(key => current.settings[key] === selected[key])) return current;
+      && current.opts.workspaceId === opts.workspaceId && ['cwd', 'model', 'permissionMode', 'thinkingBudget', 'connection', 'proxyUrl', 'contextWindow', 'subscriptionId', 'serviceTier'].every(key => current.settings[key] === selected[key])) return current;
     const runtime = runtimes().locate('codex');
-    if (!runtime) throw new Error('Download Codex CLI in Settings → Runtime first');
-    const launch = spec(selected.connection, runtime, selected.cwd, selected.model, opts.conversationId, selected.subscriptionId);
+    if (!runtime) throw new Error('Download Codex CLI in Settings → Engine Settings first');
+    const launch = discussion ? buildDiscussionSpec(discussion, runtime, selected)
+      : spec(selected.connection, runtime, selected.cwd, selected.model, opts.conversationId, selected.subscriptionId);
     const previousClosed = current?.shutdown();
-    const next = new CodexSession({ gen: ++generation, settings: selected, opts, spec: launch, spawn, log, history,
+    const next = new CodexSession({ gen: ++generation, settings: selected, opts, spec: launch, spawn: discussion?.spawn || spawn, log, history: discussion ? discussionHistory : history,
       usageMeter: createUsageMeter('codex', { settings: selected }),
       onEvent: event => { if (sessions.get(opts) === next) onEvent({ ...event, conversationId: opts.conversationId }); },
       onSessionId: id => {
         saveConfig({ codexSessionConnections: { ...connections(), [id]: selected.connection },
+          ...(!opts.conversationId ? { codexSessionFastModes: { ...loadConfig().codexSessionFastModes, [id]: selected.fastMode === true } } : {}),
           // A new session starts from the connection the last one actually
           // used, so the settings page does not need a global selector.
-          codex: { ...loadConfig().codex, connection: selected.connection },
+          ...(!discussion ? { codex: { ...loadConfig().codex, connection: selected.connection } } : {}),
           ...(selected.connection === 'subscription' && selected.subscriptionId ? { codexSessionAccounts: { ...accountBindings(), [id]: selected.subscriptionId } } : {}) });
-        workspaces.recordContext(id, opts.workspaceId, selected.cwd); if (!opts.conversationId) goal.rememberSession(next);
+        if (!discussion) workspaces.recordContext(id, opts.workspaceId, selected.cwd); if (!opts.conversationId) goal.rememberSession(next);
       },
       onResult: event => { if (!opts.conversationId && sessions.legacy === next) goal.handleResult(event); },
     });
@@ -231,7 +255,15 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     'rename-session': payload => workspaces.renameSession(payload.id, payload.title),
     'archive-session': payload => workspaces.archiveSession(payload.id, payload.archived !== false),
     'meta-op': payload => workspaces.metaOp(payload),
-    'account-state': () => ({ ok: true, ...accountState() }),
+    'account-state': async payload => {
+      const id = payload?.id || activeId(), entry = accountEntry(id);
+      // Older Camellia caches omitted tier capabilities. Refresh them once so
+      // an existing sign-in can expose the toggle without signing in again.
+      if (entry.state.account && entry.state.models?.some(model => !Array.isArray(model.serviceTiers))) {
+        try { await refreshAccount(id); } catch (error) { log('Codex model capabilities: ' + error.message); }
+      }
+      return { ok: true, ...accountState(id) };
+    },
     'account-refresh': async payload => {
       const id = payload?.id || activeId();
       if (!accountList().some(account => account.id === id)) throw new Error('Unknown Codex account');
@@ -244,7 +276,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       const entry = accountEntry(id);
       if (!entry.state.account || entry.loginId) throw new Error('Sign in to this account first');
       const runtime = runtimes().locate('codex');
-      if (!runtime) throw new Error('Download Codex CLI in Settings → Runtime first');
+      if (!runtime) throw new Error('Download Codex CLI in Settings → Engine Settings first');
       const model = (entry.state.models || []).find(model => model.isDefault)?.id || entry.state.models?.[0]?.id;
       if (!model) throw new Error('Refresh the account to load its models first');
       wakingAccounts.add(id);
@@ -272,7 +304,8 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       if (pendingAccount) return { ok: true, ...accountState() };
       const accounts = accountList();
       if (accounts.length >= accountOptions.MAX_ACCOUNTS) throw new Error('Too many accounts for this provider');
-      if (sessions.running || isBusy()) throw new Error('Stop the Codex response before adding an account');
+      // New accounts have their own home and login client; existing replies
+      // can keep running with the credentials their sessions are bound to.
       const id = 'account-' + require('node:crypto').randomUUID().slice(0, 20);
       pendingAccount = { id, label: accountOptions.normalizeLabel(payload?.label) };
       onAccount(accountState());
@@ -357,7 +390,8 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     'send': async payload => {
       if (sessions.legacy?.running) throw new Error('Wait for the response to finish or stop it before sending another message');
       const sessionId = payload.sessionId || null;
-      const current = ensureSession({ sessionId, workspaceId: payload.workspaceId || null, fork: Boolean(payload.fork) });
+      const current = ensureSession({ sessionId, workspaceId: payload.workspaceId || null, fork: Boolean(payload.fork),
+        ...(!sessionId && typeof payload.fastMode === 'boolean' ? { settings: { fastMode: payload.fastMode } } : {}) });
       return { ok: current.sendUserMessage(String(payload.prompt || ''), payload.attachments || []), runId: current.gen };
     },
     'cancel': runId => { if (sessions.legacy?.gen === runId) { if (goal.armed) goal.setPhase('paused'); sessions.legacy.interrupt(); } return { ok: true }; },

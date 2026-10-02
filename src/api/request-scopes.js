@@ -7,11 +7,11 @@ const { collectToolResults } = require('./tool-results');
 // accounting, but pin the provider/model and keep concurrent chat usage apart.
 class RequestScopes {
   constructor() { this.scopes = new Map(); }
-  create({ model, providerId, upstream, routeFingerprint, maxRequests = 40, maxTokens = 1000000, onUsage = () => {}, onLimit = () => {}, onRequest = () => {}, onToolResult = () => {} }) {
+  create({ model, providerId, keyId, upstream, routeFingerprint, maxRequests = 40, maxTokens = 1000000, onUsage = () => {}, onLimit = () => {}, onRequest = () => {}, onToolResult = () => {} }) {
     const id = randomUUID();
     const seenTools = new Set();
     const limit = () => { if (!scope.limited) { scope.limited = true; try { onLimit(); } catch { /* observer */ } } };
-    const scope = { model, providerId, upstream, routeFingerprint, maxRequests, maxTokens, requests: 0, tokens: 0,
+    const scope = { model, providerId, keyId, upstream, routeFingerprint, maxRequests, maxTokens, requests: 0, tokens: 0,
       closed: false, limited: false, responses: new Set(), pending: new Set(),
       observeTools: (body, protocol) => {
         if (scope.closed) return;

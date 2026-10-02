@@ -93,3 +93,15 @@ test('Antigravity model selections land in the slot of the chosen connection', a
   assert.equal(settings.connection, 'api'); assert.equal(settings.model, 'api-model');
   assert.equal(settings.subscriptionModel, 'account-model'); assert.equal(settings.apiModel, 'api-model');
 });
+
+test('Antigravity reasoning effort survives settings reads and unrelated saves', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  const saved = await h.call('antigravity-save-settings', { connection: 'subscription', model: 'account-model', thinkingBudget: 'low' });
+  assert.equal(saved.ok, true, saved.error);
+  assert.equal(saved.settings.thinkingBudget, 'low');
+  assert.equal((await h.call('antigravity-get-settings')).thinkingBudget, 'low');
+  await h.call('antigravity-save-settings', { permissionMode: 'plan' });
+  assert.equal((await h.call('antigravity-get-settings')).thinkingBudget, 'low');
+  await h.call('antigravity-save-settings', { thinkingBudget: '' });
+  assert.equal((await h.call('antigravity-get-settings')).thinkingBudget, '');
+});

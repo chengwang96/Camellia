@@ -55,9 +55,10 @@ with sync_playwright() as playwright:
         page.evaluate("deliverStatus({sessionId:'another-session',text:'',compaction:{state:'failed'}})")
         expect(row).to_have_attribute('data-state', 'running')
         page.screenshot(path=str(scope['preview'] / f'compaction-running-{theme}.png'))
-        page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'',compaction:{state:'completed',seq:3}});deliverStatus({sessionId:'shared-fixture',text:''})")
+        page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'',compaction:{state:'completed',seq:3,durationMs:42000}});deliverStatus({sessionId:'shared-fixture',text:''})")
         expect(row).to_have_count(1)
-        expect(row).to_have_text('Context compacted')
+        expect(row.locator('span[data-i18n]')).to_have_text('Context compacted')
+        expect(row.locator('.context-compaction-duration')).to_have_text('42 seconds')
         page.screenshot(path=str(scope['preview'] / f'compaction-completed-{theme}.png'))
         for state in ['failed', 'cancelled']:
             page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Compacting context…',compaction:{state:'running'}})")
@@ -67,13 +68,15 @@ with sync_playwright() as playwright:
         page.locator('[data-sid="another-session"]').click()
         expect(page.locator('.context-compaction')).to_have_count(1)
         expect(page.locator('.context-compaction')).to_have_attribute('data-state', 'running')
-        page.evaluate("fixtureCompaction=null;chatFixture.messages.push({role:'notice',text:'Context compacted: summary saved',seq:3})")
+        page.evaluate("fixtureCompaction=null;chatFixture.messages.push({role:'notice',text:'Context compacted: summary saved',seq:3,compaction:{durationMs:95000}})")
         page.locator('[data-sid="shared-fixture"]').click()
         expect(page.locator('.context-compaction')).to_have_count(1)
-        expect(page.locator('.context-compaction')).to_have_text('Context compacted')
+        expect(page.locator('.context-compaction span[data-i18n]')).to_have_text('Context compacted')
+        expect(page.locator('.context-compaction .context-compaction-duration')).to_have_text('1 minute 35 seconds')
         expect(page.locator('.handoff-notice')).to_have_count(0)
         page.evaluate("changeLanguage('zh-CN')")
-        expect(page.locator('.context-compaction')).to_have_text('上下文已压缩')
+        expect(page.locator('.context-compaction span[data-i18n]')).to_have_text('上下文已压缩')
+        expect(page.locator('.context-compaction .context-compaction-duration')).to_have_text('1 分钟 35 秒')
         page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Compacting context…',compaction:{state:'running'}})")
         expect(page.locator('.context-compaction[data-state="running"]')).to_have_text('正在压缩上下文…')
         page.evaluate("deliverStatus({sessionId:'shared-fixture',text:'Asking the engine to summarize the conversation…',compaction:{state:'running',stage:'summarizing',chunk:3}})")
@@ -91,10 +94,34 @@ with sync_playwright() as playwright:
             'running marker is not anchored above the streaming turn'
         page.evaluate("deliverEvent({type:'gui:compaction',session_id:'shared-fixture',engine:'codex',runId:91,state:'completed',compactionSeq:9})")
         expect(page.locator('.context-compaction[data-state="running"]')).to_have_count(0)
-        expect(page.locator('.context-compaction[data-seq="9"]')).to_have_text('上下文已压缩')
+        expect(page.locator('.context-compaction[data-seq="9"]')).to_have_text('Codex：上下文已原生压缩')
         page.evaluate("deliverEvent({type:'result',session_id:'shared-fixture',engine:'codex',runId:91,subtype:'success',result:'Continued'})")
         assert marker_before_last_turn(page, '.context-compaction[data-seq="9"]'), \
             'completed marker drifted below the finished turn'
+        # The source belongs to the event/history, not the page's selected harness
+        # or the connection type. Portable and old unknown notices stay generic.
+        for seq, (engine, name) in enumerate([('codex', 'Codex'), ('claude', 'Claude'),
+                ('kimi', 'Kimi'), ('dsh', 'DSH'), ('antigravity', 'Antigravity'), ('pi', 'Pi')], start=20):
+            page.evaluate("""engine => deliverStatus({sessionId:'shared-fixture',text:'Compacting context…',
+              compaction:{state:'running',native:true,engine}})""", engine)
+            expect(page.locator('.context-compaction[data-state="running"]')).to_have_text(f'{name}：正在原生压缩上下文…')
+            page.evaluate("""({engine,seq}) => {
+              deliverStatus({sessionId:'shared-fixture',text:'',compaction:{state:'completed',native:true,engine,seq,durationMs:42000}});
+              chatFixture.messages.push({role:'notice',engine,seq,text:'Context compacted automatically',compaction:{native:true,durationMs:42000}});
+            }""", {'engine': engine, 'seq': seq})
+            expect(page.locator(f'.context-compaction[data-seq="{seq}"]')).to_have_text(f'{name}：上下文已原生压缩42 秒')
+        page.locator('[data-sid="another-session"]').click()
+        page.locator('[data-sid="shared-fixture"]').click()
+        expect(page.locator('.context-compaction[data-seq="21"]')).to_have_text('Claude：上下文已原生压缩42 秒')
+        expect(page.locator('.context-compaction[data-seq="3"]')).to_have_text('上下文已压缩1 分钟 35 秒')
+        page.evaluate("changeLanguage('en')")
+        expect(page.locator('.context-compaction[data-seq="22"]')).to_have_text('Kimi: context compacted natively42 seconds')
+        page.evaluate("""() => {
+          deliverStatus({sessionId:'shared-fixture',text:'Compacting context…',compaction:{state:'running',native:true,engine:'codex'}});
+          deliverStatus({sessionId:'shared-fixture',text:'Asking the engine to summarize the conversation…',compaction:{state:'running'}});
+        }""")
+        expect(page.locator('.context-compaction[data-state="running"]')).to_have_text('Compacting context…')
+        page.screenshot(path=str(scope['preview'] / f'compaction-native-{theme}.png'), animations='disabled')
         assert not errors, errors
         page.close()
     browser.close()

@@ -13,7 +13,7 @@ function harness() {
   const stopButton = { hidden: true };
   const state = {
     context: { sessionId: 'conversation-a' }, running: true, runStartedAt: 0, runTimer: null,
-    pendingConversationSends: new Map(),
+    pendingConversationSends: new Map(), pendingQuestion: null,
     statusLine: { textContent: '' }, rows: [],
     $: () => stopButton,
     setRunStatus: text => state.rows.push(text),

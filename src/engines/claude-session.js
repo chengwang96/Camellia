@@ -201,14 +201,21 @@ class ClaudeSession {
       : { behavior: 'deny', message: message || "The user denied this action in the desktop interface" });
   }
 
-  sendUserMessage(text) {
+  sendUserMessage(text, attachments = []) {
     if (this.dead || this.running) return false;
+    const content = [{ type: 'text', text }];
+    const { IMAGE_TYPES } = require('./discussions/assets');
+    for (const file of attachments) if (file.isImage) {
+      const media_type = IMAGE_TYPES[require('node:path').extname(file.path).toLowerCase()];
+      if (!media_type) throw new Error('Unsupported image format');
+      content.push({ type: 'image', source: { type: 'base64', media_type, data: require('node:fs').readFileSync(file.path).toString('base64') } });
+    }
     this.cancelled = false;
     this.running = true;
     if (!this.initialized) {
       this.watchdog = this.setTimer(() => this.fail('session_timeout', "Claude did not initialize within 25 seconds (stream-json handshake failed)."), 25_000);
     }
-    return this.write({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } });
+    return this.write({ type: 'user', message: { role: 'user', content } });
   }
 
   interrupt() {

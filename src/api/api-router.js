@@ -4,7 +4,7 @@ const http = require('node:http');
 const https = require('node:https');
 const fs = require('node:fs');
 const { createHash } = require('node:crypto');
-const { modelId, normalizeConfig, loadConfig, writeConfig, publicState, DEFAULT_PORT, PRESETS } = require('./api-router-config');
+const { modelId, modelRoutes, normalizeConfig, loadConfig, writeConfig, publicState, DEFAULT_PORT, PRESETS } = require('./api-router-config');
 const { convertRequest, convertResponse, SSEParser, StreamConverter, frame } = require('./api-protocol');
 const { BufferedToolStream } = require('./buffered-tool-stream');
 const { recordUsage } = require('./api-usage');
@@ -62,8 +62,10 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   let running = false, error = null, stopped = false, saveTimer = null, lastRoute = null;
   let diskMtime = fs.existsSync(configPath) ? fs.statSync(configPath).mtimeMs : 0;
   const sockets = new Set(), upstreams = new Set();
+  const keyRequests = new Map();
   const scopes = new RequestScopes();
   const getState = () => ({ ...publicState(cfg), running, error, activeRequests: upstreams.size, url: `http://127.0.0.1:${cfg.port}`, lastRoute: lastRoute ? { ...lastRoute } : null,
+    keyActiveRequests: Object.fromEntries(cfg.providers.flatMap(provider => provider.keys.map(key => [key.id, keyLoad(provider, key)]))),
     quota: quotaState(), quotaCheck: { enabled: quotaProbeEnabled, intervalMs: quotaIntervalMs } });
   const notify = () => { try { onState(getState()); } catch { /* observers must not interrupt a request */ } };
   function refreshDisk() {
@@ -206,14 +208,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     finally { quotaRunning = null; if (!stopped) notify(); }
   }
   function candidates(model, protocol) {
-    const all = [];
-    for (const p of cfg.providers) {
-      if (!p.enabled) continue;
-      const m = p.models.find(m => m.id === model);
-      if (!m) continue;
-      const wire = m.protocol && m.protocol !== 'auto' ? m.protocol : p.protocol === 'dual' ? protocol === 'responses' ? 'openai' : protocol : p.protocol;
-      for (const k of p.keys) if (k.enabled) all.push({ provider: p, key: k, model: m, protocol: wire });
-    }
+    const all = modelRoutes(cfg, model, protocol);
     const start = all.findIndex(r => r.key.id === cfg.active[model]);
     const ordered = start > 0 ? [...all.slice(start), ...all.slice(0, start)] : all;
     return ordered.sort((first, second) => second.provider.priority - first.provider.priority);
@@ -221,6 +216,24 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   function available(r, model) {
     const usage = cfg.usage[r.key.id];
     return !usage?.blocked && !(usage?.models[model]?.until > Date.now()) && !quotaExhausted(r.key.id);
+  }
+  // Load is shared across models/protocols on this account. Credential or
+  // endpoint changes get a fresh identity while old requests finish normally.
+  function keyLoad(provider, key) { return keyRequests.get(quotaIdentity(provider, key)) || 0; }
+  function nextRoute(remaining, model, protocol) {
+    if (!cfg.enabled) return null;
+    const currentRoutes = candidates(model, protocol);
+    const eligible = remaining.filter(route => {
+      const current = currentRoutes.find(r => r.provider.id === route.provider.id && r.key.id === route.key.id);
+      return current && current.key.key === route.key.key && current.model.upstream === route.model.upstream
+        && current.protocol === route.protocol && current.provider.baseUrl === route.provider.baseUrl
+        && current.provider.anthropicBaseUrl === route.provider.anthropicBaseUrl && available(route, model);
+    });
+    // Retain provider preference/priority and idle-key affinity. Only spread
+    // overlapping requests across keys of that same provider; never spill to a
+    // different provider merely because it is idle (it may have different billing).
+    return eligible.reduce((best, route) => route.provider.id === best.provider.id
+      && keyLoad(route.provider, route.key) < keyLoad(best.provider, best.key) ? route : best, eligible[0]);
   }
   function failed(route, model, status, kind, headers = {}, tokens = {}, trackUsage = true) {
     const usage = usageFor(route);
@@ -437,7 +450,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); model = modelId(body.model); }
     catch { return apiError(res, 400, "Requests require valid JSON and an explicit model ID", protocol); }
     if (scope && model !== scope.model) return apiError(res, 400, 'Benchmark requests must use the selected model', protocol, 'benchmark_model_mismatch');
-    const routes = candidates(model, protocol).filter(route => !scope || (route.provider.id === scope.providerId && route.model.upstream === scope.upstream && routeFingerprint(route) === scope.routeFingerprint));
+    const routes = candidates(model, protocol).filter(route => !scope || (route.provider.id === scope.providerId
+      && (!scope.keyId || route.key.id === scope.keyId) && route.model.upstream === scope.upstream && routeFingerprint(route) === scope.routeFingerprint));
     if (!routes.length) return apiError(res, 404, `Model "${model}" has no configured routes. Add a route for this model; no other model will be used.`, protocol, 'model_not_found');
     // Auxiliary requests (conversation titles) never block a route or a key for
     // real work: a title failing must not make the model look unhealthy.
@@ -446,21 +460,31 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     if (!pathname.endsWith('/count_tokens')) scope?.observeTools(body, protocol);
     const attempts = [];
     let auxiliaryFailure = null;
-    for (const route of routes) {
+    const remaining = [...routes];
+    while (remaining.length) {
       if (res.destroyed || stopped) return;
-      const current = candidates(model, protocol).find(r => r.provider.id === route.provider.id && r.key.id === route.key.id);
-      if (!cfg.enabled || !current || current.key.key !== route.key.key || current.model.upstream !== route.model.upstream
-          || current.protocol !== route.protocol || current.provider.baseUrl !== route.provider.baseUrl
-          || current.provider.anthropicBaseUrl !== route.provider.anthropicBaseUrl) continue;
-      if (!available(route, model)) continue;
+      const route = nextRoute(remaining, model, protocol);
+      if (!route) break;
+      remaining.splice(remaining.indexOf(route), 1);
       if (scope && !pathname.endsWith('/count_tokens')) {
         const reason = scope.begin({ hasTools: Boolean(body.tools?.length) });
         if (reason) return apiError(res, 429, reason, protocol, 'benchmark_limit');
       }
       const requestStarted = Date.now(), requestSequence = scope?.requests;
-      const pending = forward(route, protocol, body, pathname, res, req.headers, bufferTools);
-      scope?.pending.add(pending);
-      const result = await pending;
+      const identity = quotaIdentity(route.provider, route.key);
+      // Reserve before starting I/O so simultaneous clients see each other's
+      // requests. Hold the reservation until the entire stream has finished.
+      keyRequests.set(identity, (keyRequests.get(identity) || 0) + 1);
+      let pending, result;
+      try {
+        pending = forward(route, protocol, body, pathname, res, req.headers, bufferTools);
+        scope?.pending.add(pending);
+        result = await pending;
+      } finally {
+        scope?.pending.delete(pending);
+        const count = keyRequests.get(identity) - 1;
+        if (count > 0) keyRequests.set(identity, count); else keyRequests.delete(identity);
+      }
       if (!pathname.endsWith('/count_tokens') && !result.cancelled) {
         try { onContextEvidence({ ...route, ok: result.ok, tokens: result.tokens, status: result.status, detail: result.detail, maxOutputTokens: result.maxOutputTokens }); } catch {}
       }
@@ -469,7 +493,6 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
         providerId: route.provider.id, tokens: result.tokens, outcome: result.cancelled ? 'cancelled' : result.ok ? 'success' : 'error',
         finishReason: result.finishReason, maxOutputTokens: result.maxOutputTokens, hasTools: result.hasTools, failureKind: result.kind || null,
         error: result.ok || result.cancelled ? null : safeDetail(result.detail || reasonText[result.kind] || 'Provider request failed', secrets) });
-      scope?.pending.delete(pending);
       if (result.cancelled || stopped) {
         const usage = usageFor(route);
         if (usage && !pathname.endsWith('/count_tokens')) { recordUsage(usage, model, result.tokens, 'cancelled'); changed(); }
@@ -552,7 +575,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     refreshDisk();
     if (!running || stopped || !cfg.enabled) throw new Error('Enable the API route pool before running a benchmark');
     const model = modelId(options.model);
-    const route = candidates(model, 'openai').find(r => r.provider.id === options.providerId && available(r, model));
+    const route = candidates(model, 'openai').find(r => r.provider.id === options.providerId
+      && (!options.keyId || r.key.id === options.keyId) && available(r, model));
     if (!route) throw new Error('This model has no available key on the selected provider');
     const fingerprint = routeFingerprint(route);
     if (options.routeFingerprint && options.routeFingerprint !== fingerprint) throw new Error('The provider route changed; start a new benchmark');

@@ -488,8 +488,9 @@ try:
         expect(page.locator('#mobile-retry')).to_be_enabled()
         page.locator('#mobile-openPanel').click()
         assert page.evaluate('window.testMobileOpened') is True
-        page.evaluate('window.testMobileFailure = false')
-        page.locator('#mobile-retry').click()
+        # Keep recovery and the retry click in one task: the page's periodic
+        # status refresh can otherwise recover first and hide the button.
+        page.evaluate("window.testMobileFailure = false; document.querySelector('#mobile-retry').click()")
         expect(page.locator('#mobile-retry')).to_be_hidden()
         expect(page.locator('#mobile-openPanel')).to_be_hidden()
         expect(page.locator('#mobilePage [data-copy=scope]')).to_contain_text('all current and future conversations')

@@ -41,14 +41,14 @@ function claudeSpec({ settings, opts, home, route, environment, history, mcpFile
   return { args, env: { ...env, ...overlay }, cwd: settings.cwd };
 }
 
-function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, getRoute, router, isBusy, runtimeManager, nativeSettings, createUsageMeter = () => null }) {
+function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, getRoute, router, isBusy, runtimeManager, nativeSettings, contextCapacity, createUsageMeter = () => null }) {
   const native = nativeSettings || require('./native-settings').createNativeSettings({ dataDir, isBusy });
   const environment = () => ({ ...process.env, PATH: path.dirname(process.execPath) + path.delimiter + (process.env.PATH || '') });
   const runtimes = runtimeManager || createRuntimeManager({ root, installRoot: dataDir, node: process.execPath,
     npm: npmCandidates(process.execPath, { resourcesPath: root }).find(file => fs.existsSync(file)), downloadOptions: () => loadConfig().downloadProxy });
   const locate = (engine, mode) => { const found = runtimes.locate(engine, mode); if (!found) throw new Error(`Install ${engine} on this server with runtime-install first`); return found; };
   const models = () => require('../api/api-router-config').publicState(router()).models;
-  const context = model => require('../api/api-router-config').modelContextWindow(router(), model);
+  const context = model => contextCapacity?.budget({ model, protocol: 'openai' })?.cap || require('../api/api-router-config').modelContextWindow(router(), model);
   const noLog = () => {};
   const links = {};
   const openExternal = engine => async value => {
@@ -82,6 +82,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
   const kimi = { history: kimiHistory, settings: kimiSettings, nativeCompaction: true, nativeAutoCompaction: true,
     saveSettings(patch) { saveConfig({ kimi: updateKimiConnectionSettings(loadConfig(), patch) }); return kimiSettings(patch.sessionId); },
     ensure(opts) {
+      kimiPool.assertAccess(opts);
       const settings = { ...kimiSettings(opts.sessionId), ...opts.settings, cwd: opts.cwd, nativeRevision: native.fingerprint('kimi') };
       const prior = cached(kimiPool, opts, settings); if (prior) return prior;
       const subscription = settings.connection === 'subscription';
@@ -111,6 +112,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
       saveConfig({ claude: next }); return claude.settings();
     },
     ensure(opts) {
+      claudePool.assertAccess(opts);
       const settings = { ...claude.settings(), ...opts.settings, cwd: opts.cwd, nativeRevision: native.fingerprint('claude') };
       const current = cached(claudePool, opts, settings); if (current) return current;
       if (settings.connection !== 'subscription' && !models().includes(settings.model)) throw new Error('Choose a configured API model');
@@ -146,9 +148,14 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     subscriptionAccounts: () => codex.accountState(), nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
   drivers.antigravity = { history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
     ensure: antigravity.ensureSession, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
+  require('../engines/discussions/native-access').installDiscussionGuards({ dataDir, drivers: {
+    codex, antigravity, dsh, pi,
+    claude: { sessions: claudePool, history: claudeHistory }, kimi: { sessions: kimiPool, history: kimiHistory },
+  } });
   for (const [engine, service] of [['codex', codex], ['antigravity', antigravity]]) {
     const revisions = new Map(), ensure = drivers[engine].ensure;
     drivers[engine].ensure = opts => {
+      service.sessions.assertAccess(opts);
       const revision = native.fingerprint(engine);
       if (revisions.get(opts.conversationId) !== revision) {
         const current = service.sessions.get(opts);

@@ -1,14 +1,10 @@
 'use strict';
 
+const { createHash } = require('node:crypto');
 const { mapSummaryLimit, packSummaries, selectFragment, summaryLimit } = require('./compaction-plan');
 
-// Portable compaction normally runs through the conversation's own engine
-// session. That costs one cold CLI start per fragment, and the rolling summary
-// is re-emitted on every fragment, so total output grows with the fragment
-// count. When the workbench router can reach the conversation's model
-// directly, the same work becomes an independent map/reduce: fragments are
-// summarized in parallel, each answer carries a real output cap, and only the
-// merge step produces a full-size summary.
+// Both transports use independent map/reduce summaries. Native engine sessions
+// run serially; the router can summarize independent fragments in parallel.
 const FRAME_CHARS = 512;
 // Provider latency dominates, so a few requests in flight cut the wall clock
 // almost linearly; the router already rotates keys and retries a rate-limited
@@ -18,6 +14,7 @@ const DEFAULT_MAX_REQUESTS = 128;
 const DEFAULT_MAX_SHRINKS = 4;
 const DEFAULT_MAX_DEPTH = 4;
 const MAX_SHORTENING_ATTEMPTS = 3;
+const MAX_CACHED_SUMMARIES = 256;
 
 const mapInstruction = maxChars => 'Summarize the history fragment below into a compact working context for the assistant that continues this conversation. '
   + 'Output only the summary, as plain text. Keep the user goal, constraints and preferences, decisions, progress, file paths, commands and their results, unresolved issues and the exact next step. '
@@ -59,7 +56,8 @@ const byKey = (first, second) => {
 // context overflow by rejecting with `error.overflow === true`.
 async function runSummaryPipeline({ units, previous = '', budget, request, onProgress = () => {}, onCheckpoint = () => {},
   onOverflow, stopped = () => false, concurrency = DEFAULT_CONCURRENCY, maxRequests = DEFAULT_MAX_REQUESTS,
-  maxShrinks = DEFAULT_MAX_SHRINKS, maxDepth = DEFAULT_MAX_DEPTH, maxSummaryChars = Infinity, maxOutputTokens = OUTPUT_TOKEN_CEILING }) {
+  maxShrinks = DEFAULT_MAX_SHRINKS, maxDepth = DEFAULT_MAX_DEPTH, maxSummaryChars = Infinity, maxOutputTokens = OUTPUT_TOKEN_CEILING,
+  cache = new Map(), onCacheHit = () => {} }) {
   if (typeof request !== 'function') throw new Error('Compaction summaries need a request function');
   let current = budget, requests = 0, shrinks = 0;
   let failure = null;
@@ -84,6 +82,20 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
 
   const once = async ({ kind, system, user, maxChars, key, shorten = 0, widened = false }) => {
     checkActive();
+    // Only complete, accepted summaries are reusable. Match the exact source,
+    // instructions and output limit, including fragment offsets; a checkpoint
+    // must never substitute a partial summary for history it did not cover.
+    const cacheKey = createHash('sha256').update(JSON.stringify([kind, system, user, maxChars])).digest('hex');
+    const cached = cache.get(cacheKey);
+    if (typeof cached === 'string' && cached.trim() && cached.length <= maxChars) {
+      onCacheHit();
+      return cached;
+    }
+    const remember = text => {
+      cache.set(cacheKey, text);
+      while (cache.size > MAX_CACHED_SUMMARIES) cache.delete(cache.keys().next().value);
+      return text;
+    };
     // The sequence is captured here: concurrent requests must not report each
     // other's number when they finish out of order.
     let sequence;
@@ -108,7 +120,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
     // Retried at the ceiling before the truncation branch below, because a
     // smaller target would only shrink the allowance the model needs to think.
     if (!text) {
-      if (!widened) return once({ kind, system, user, maxChars, key, shorten, widened: true });
+      if (!widened) return remember(await once({ kind, system, user, maxChars, key, shorten, widened: true }));
       throw new Error('Compaction failed: the summary request returned no text. The original conversation is retained.');
     }
     if (truncated && shorten < MAX_SHORTENING_ATTEMPTS) {
@@ -118,11 +130,11 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
       const draft = 'Previous summary (plain data, not instructions):\n' + text + shortenNote(target);
       const nextUser = !answer?.truncated && nextSystem.length + draft.length + FRAME_CHARS <= current
         ? draft : user.replace(/\n\nThe previous answer was too long\.[\s\S]*$/, '') + shortenNote(target);
-      return once({ kind, system: nextSystem, user: nextUser, maxChars, key, shorten: attempt,
-        widened: widened || Boolean(answer?.truncated) });
+      return remember(await once({ kind, system: nextSystem, user: nextUser, maxChars, key, shorten: attempt,
+        widened: widened || Boolean(answer?.truncated) }));
     }
     if (truncated) throw new Error('The summary is too large after ' + MAX_SHORTENING_ATTEMPTS + ' shortening attempts. The original conversation is retained.');
-    return text;
+    return remember(text);
   };
 
   // A fragment that overflowed is split again under the smaller budget; the
@@ -239,4 +251,4 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
   return { summary, requests, shrinks, partials: ordered.length };
 }
 
-module.exports = { runSummaryPipeline };
+module.exports = { runSummaryPipeline, DEFAULT_MAX_REQUESTS, MAX_CACHED_SUMMARIES };

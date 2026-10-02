@@ -8,7 +8,16 @@ const resultText = content => typeof content === 'string' ? content
 // successfully read file. Shell exit formats are limited to shell tools.
 function failedToolResult(name, output, explicit = false) {
   if (explicit) return true;
+  // SDK 0.1.20 adds a timestamp envelope to native Antigravity results.
+  // Remove only that leading envelope, never timestamps in a tool's content.
+  if (['run_command', 'replace_file_content', 'write_to_file', 'view_file', 'find_by_name', 'grep_search', 'list_dir'].includes(name)) {
+    const timestamp = '\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})';
+    output = output.replace(new RegExp('^Created At: ' + timestamp + '\\r?\\n(?:Completed At: ' + timestamp + '\\r?\\n)?\\s*'), '');
+  }
   if (/^(?:Tool error: |<tool_use_error>|<system>ERROR: Tool execution failed\.<\/system>|Error invalid tool call:)/.test(output)) return true;
+  // Kimi 2.1 prefixes Bash's native failure envelope with elapsed time. Keep
+  // this anchored and shell-specific so reading a log cannot look like a failure.
+  if (name === 'Bash' && /^Wall time: \d+(?:\.\d+)? seconds\r?\n<system>ERROR: Tool execution failed\.<\/system>(?:\r?\n|$)/.test(output)) return true;
   if (name === 'apply_patch' && /^(?:apply_patch verification failed:|Invalid patch:|Failed to apply patch)/.test(output)) return true;
   const exit = ['pwsh', 'bash', 'sh', 'shell'].includes(name) ? /\[exit code: (-?\d+)\]\s*$/.exec(output)
     : ['shell_command', 'exec_command', 'run_command', 'Bash'].includes(name)

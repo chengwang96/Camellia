@@ -155,7 +155,7 @@ function sharePluginCache(home, shared) {
   }
 }
 
-function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscription', model, route, contextWindow, env = process.env, proxyUrl = '', cwd = home, sharedPluginCache = '' }) {
+function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscription', model, route, contextWindow, env = process.env, proxyUrl = '', cwd = home, sharedPluginCache = '', allowUserQuestions = false }) {
   fs.mkdirSync(home, { recursive: true });
   if (sharedPluginCache) sharePluginCache(home, sharedPluginCache);
   const file = path.join(configHome, 'config.toml');
@@ -187,6 +187,11 @@ function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscr
   if (connection === 'api' && Number.isInteger(contextWindow) && contextWindow >= 4096) {
     args.push('-c', `model_context_window=${contextWindow}`);
   }
+  // Upstream Codex advertises request_user_input in every chat session but its
+  // router refuses the call outside Plan mode unless this feature is enabled.
+  // Camellia renders task questions as its own dialog, so turn the tool on for
+  // chat sessions. Discussions keep it off through their own feature policy.
+  if (allowUserQuestions) args.push('-c', 'features.default_mode_request_user_input=true');
   return { exe: runtime.file, args, cwd, env: environment,
     permissions: { approvalPolicy: config.approval_policy || 'untrusted', sandbox: config.sandbox_mode || 'workspace-write' } };
 }

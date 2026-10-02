@@ -50,12 +50,40 @@ const { readOfficePreview } = require('./office-preview');
 const { createConversationTitles, titleCandidates, titleErrorKind, TitleRequestError,
   TITLE_INSTRUCTION, MINIMAL_INSTRUCTION, AUXILIARY_HEADER, MAX_MESSAGE_CHARS, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } = require('./conversation-title.js');
 let sharedConversations = null;
+let discussionBoundary = null;
+let discussionService = null;
+let discussionProduction = null;
+function productionDiscussions() {
+  if (!discussionProduction) {
+    const { discussionCatalog } = require('../engines/discussions/catalog');
+    const getCatalog = () => discussionCatalog({ router: readOllamaProxyConfig, codex, kimi: kimiAccount, antigravity, contextWindow: modelContextWindow });
+    discussionProduction = new (require('../engines/discussions/production').DiscussionProduction)({
+      dataDir: app.getPath('userData'), registry: discussionBoundary.registry, codex, antigravity,
+      runtimes, node: detectNode, refreshKimi: id => kimiAccount.refreshUsage({ force: true }, id), log,
+      getNativeConfig: (engine, connection) => engineSettings().discussionConfig(engine, connection),
+      getRouter: () => ollamaProxyHandle, getCatalog, environment: () => runtimeEnvironment(detectNode(), 'codex') });
+  }
+  return discussionProduction;
+}
+function discussions() {
+  if (!discussionService) {
+    const { DiscussionService } = require('../engines/discussions/service');
+    const production = productionDiscussions();
+    discussionService = new DiscussionService({ dataDir: app.getPath('userData'), registry: discussionBoundary.registry, production: discussionProduction,
+      getCatalog: production.getCatalog,
+      onEvent: event => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:discussion-event', event); },
+      onError: error => log('Discussion: ' + error.message) });
+  }
+  return discussionService;
+}
 let remoteDesktop = null;
 // Mobile access and CLI devices share one embedded Tailscale node so the user
 // signs in once; each consumer registers its own failure handler.
 const sharedDesktopNetwork = require('./remote/shared-network').createSharedNetwork({ options: {
   app, safeStorage: require('electron').safeStorage, openExternal: url => shell.openExternal(url) } });
 function publishChatEvent(engine, event) {
+  try { if (discussionBoundary?.registry.capture(engine, event)) return; }
+  catch (error) { log(`discussion event capture failed (${engine}): ${error?.message || error}`); return; }
   // Persistence is best-effort here: a failed save must not escape into the
   // engine event pipeline, or one locked file would freeze the conversation.
   try { if (sharedConversations?.capture(engine, event)) return; }
@@ -174,6 +202,7 @@ function defaultConfig() {
     mode: 'dsh',            // Last selected agent; startup always opens the home panel.
     claude: {},             // Claude Code GUI settings
     language: 'en',         // Workbench UI language, independent of the engines' prompts.
+    chatContentWidth: 'standard', // Conversation column width: standard | wide | full
     computerName: '',       // Display name of this computer, shared with paired phones.
     downloadProxy: { mode: 'direct', url: '' },
   };
@@ -473,6 +502,13 @@ function accountRefreshMinutes() {
   return ACCOUNT_REFRESH_MINUTES.includes(value) ? value : 15;
 }
 function accountRefreshEnabled() { return loadConfig().autoRefreshBalances !== false; }
+
+// The middle conversation column is readable at its standard width; a wider or
+// full-width column helps comparisons, tables and diffs on large screens.
+const CHAT_CONTENT_WIDTHS = ['standard', 'wide', 'full'];
+function normalizeChatContentWidth(value) {
+  return CHAT_CONTENT_WIDTHS.includes(value) ? value : 'standard';
+}
 function quotaCheckOptions() {
   return { enabled: accountRefreshEnabled(), intervalMs: accountRefreshMinutes() * 60000 };
 }
@@ -483,7 +519,6 @@ let contextCapacity = null;
 function capacity() {
   if (!contextCapacity) contextCapacity = createContextCapacity({
     file: path.join(app.getPath('userData'), 'context-capacity.json'), getConfig: readOllamaProxyConfig,
-    onChange: state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('dsh:context-capacity', state); },
   });
   return contextCapacity;
 }
@@ -512,6 +547,11 @@ function accountInsights(state = insights().state()) {
     subscriptions.push({ id: 'codex:' + profile.id, engine: 'codex', name: 'ChatGPT / Codex', label: profile.label || profile.email,
       info: { latest: history.at(-1), history }, capability: { supported: true, label: 'ChatGPT quota', source: 'client' } });
   }
+  const google = antigravity.handlers['account-state']();
+  if (google.models?.length && google.verifiedAt && !google.awaitingVerification) {
+    subscriptions.push({ id: 'antigravity:default', engine: 'antigravity', name: 'Google / Antigravity', label: 'Google account',
+      info: google.usage, capability: { supported: true, label: 'Google subscription quota', source: 'client' } });
+  }
   return { ...state, subscriptions };
 }
 function broadcastAccountInsights(state) {
@@ -523,10 +563,14 @@ async function refreshInsights(payload = {}) {
     ? kimiAccount.list().map(profile => profile.id).filter(id => !wanted || wanted === 'kimi:' + id) : [];
   const codexIds = !payload.apiOnly && !payload.providerId && !payload.keyId
     ? codex.accountState().accounts.filter(account => account.signedIn && (!wanted || wanted === 'codex:' + account.id)).map(account => account.id) : [];
+  const google = antigravity.handlers['account-state']();
+  const refreshGoogle = !payload.apiOnly && !payload.providerId && !payload.keyId
+    && (!wanted || wanted === 'antigravity:default') && google.models?.length && google.verifiedAt && !google.awaitingVerification;
   await Promise.all([
     payload.subscriptionId ? null : insights().refresh(payload),
     ...kimiIds.map(id => kimiAccount.refreshUsage({ force: payload.force !== false }, id)),
     ...codexIds.map(id => codex.handlers['account-refresh']({ id })),
+    refreshGoogle ? antigravity.handlers['account-refresh-usage']({ force: payload.force !== false }) : null,
   ]);
   return accountInsights();
 }
@@ -700,7 +744,7 @@ function managedClaudeModelEnv(model) {
     ANTHROPIC_DEFAULT_HAIKU_MODEL: model, ANTHROPIC_SMALL_FAST_MODEL: model, CLAUDE_CODE_SUBAGENT_MODEL: model };
 }
 function modelContextWindow(model) {
-  return routerConfig.modelContextWindow(readOllamaProxyConfig(), model);
+  return capacity().budget({ model, protocol: 'openai' })?.cap || routerConfig.modelContextWindow(readOllamaProxyConfig(), model);
 }
 function resolveClaudeRoute() {
   const cfg = readOllamaProxyConfig();
@@ -771,6 +815,7 @@ function sessionSettingsEqual(a, b) {
 // Ensure a live session matching the requested settings; respawn when the
 // conversation id changes or a locking setting changed mid-conversation.
 function ensureClaudeSession(settings, opts) {
+  claudeSessions.assertAccess(opts);
   const current = claudeSessions.get(opts);
   opts = { ...opts };
   const context = opts.cwd ? { cwd: opts.cwd, workspaceId: null } : resolveClaudeSessionContext(settings, opts);
@@ -866,6 +911,7 @@ function saveKimiSettings(patch) {
   return kimiSettings(patch.sessionId);
 }
 function ensureKimiSession(settings, opts) {
+  kimiSessions.assertAccess(opts);
   const current = kimiSessions.get(opts);
   const context = opts.cwd ? { cwd: opts.cwd, workspaceId: null } : kimiWorkspaces.resolveContext(settings, opts);
   settings = { ...settings, cwd: context.cwd };
@@ -898,7 +944,7 @@ function ensureKimiSession(settings, opts) {
       && current.settings.contextWindow === settings.contextWindow && current.settings.connection === settings.connection
       && (current.settings.subscriptionId || null) === (settings.subscriptionId || null)) return current;
   const runtime = runtimes().locate('kimi')?.file;
-  if (!runtime) throw new Error("Kimi is being prepared. Check progress or retry in Settings → Runtime.");
+  if (!runtime) throw new Error("Kimi is being prepared. Check progress or retry in Settings → Engine Settings.");
   const exe = detectNode();
   if (!exe) throw new Error("Kimi Code requires Node.js 22.19 or later. Configure the runtime in settings.");
   const spec = kimiSpawnSpec({ home,
@@ -1001,6 +1047,12 @@ const antigravity = createAntigravity({ dataDir: app.getPath('userData'), loadCo
   isBusy: () => sharedConversations?.isBusy('antigravity'),
   onEvent: event => publishChatEvent('antigravity', event),
   onGoal: goal => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:antigravity-goal', goal); },
+  onAccount: account => {
+    broadcastAccountInsights();
+    for (const window of BrowserWindow?.getAllWindows?.() || []) if (!window.isDestroyed()) {
+      window.webContents.send('dsh:antigravity-account', account);
+    }
+  },
 });
 
 const dshChat = createDshChat({ dataDir: app.getPath('userData'), loadConfig, saveConfig, getRoute: resolveClaudeRoute,
@@ -1013,7 +1065,18 @@ const piChat = createPiChat({ dataDir: app.getPath('userData'), loadConfig, save
   instructions: () => engineSettings().piInstructions(),
   onEvent: event => publishChatEvent('pi', event), log });
 function sessionPools() { return [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, piChat.sessions]; }
+discussionBoundary = require('../engines/discussions/native-boundary').createDiscussionBoundary({
+  dataDir: app.getPath('userData'), conversations: () => sharedConversations ? [...sharedConversations.items.values()] : null,
+  managedNative: () => productionDiscussions().inventory(),
+  nativeStorage: () => productionDiscussions().nativeStorage(),
+  ordinaryNativeSeparate: input => productionDiscussions().ordinaryStorageSeparate(input),
+  drivers: {
+    claude: { sessions: claudeSessions, history: claudeHistory }, kimi: { sessions: kimiSessions, history: kimiHistory },
+    codex, antigravity, dsh: dshChat, pi: piChat,
+  },
+});
 sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
+  contextCapacity: { budget: options => capacity().budget(options) },
   summarize: compactionSummarizer,
   contextRoute: (engine, settings) => {
     if (settings.connection === 'subscription') return settings.subscriptionId || engine;
@@ -1388,7 +1451,7 @@ if (!gotSingleInstanceLock) {
     try {
       if (!payload.visible) { nativeSettingsView?.setVisible(false); return { ok: true }; }
       if (!loadConfig().dshBin && !runtimes().locate('dsh')) return { ok: false, needsRuntime: true,
-        error: 'Download DeepSeek Harness from Settings → Runtime to use its native panel.' };
+        error: 'Download DeepSeek Harness from Settings → Engine Settings to use its native panel.' };
       if (!nativeSettingsView) {
         // The DSH settings UI is laid out for a full workbench window. Embed it one
         // zoom step finer so its density matches the surrounding settings panel.
@@ -1638,15 +1701,15 @@ if (!gotSingleInstanceLock) {
     'provider-refresh': payload => refreshInsights(payload),
     'provider-models': payload => insights().models(payload),
     'provider-verify': payload => insights().verify(payload),
-    'context-capacity': () => capacity().state(),
-    'context-capacity-start': payload => capacity().start(payload),
-    'context-capacity-cancel': () => capacity().cancel(),
   })) ipcMain.handle('dsh:' + channel, async (_event, payload) => {
     try { return await handler(payload); } catch (e) { return { ok: false, error: e.message }; }
   });
   ipcMain.handle('dsh:workbench-settings', () => ({ ok: true, language: normalizeLanguage(loadConfig().language), theme: loadConfig().theme || 'system',
     conversations: conversationPreferences(loadConfig()), autoRefreshBalances: accountRefreshEnabled(), accountRefreshMinutes: accountRefreshMinutes(),
     closeToTray: loadConfig().closeToTray === true,
+    quickSwitchModels: loadConfig().quickSwitchModels || {},
+    quickSwitchLevels: loadConfig().quickSwitchLevels || {},
+    chatContentWidth: normalizeChatContentWidth(loadConfig().chatContentWidth),
     computerName: computerName(), dataPath: app.getPath('userData'), version: app.getVersion() }));
   ipcMain.handle('dsh:workbench-save-settings', (_event, payload) => {
     try {
@@ -1654,17 +1717,44 @@ if (!gotSingleInstanceLock) {
       // saving a theme, language or tray preference must not re-query every
       // provider account or re-broadcast router state.
       const previousQuotaCheck = { enabled: accountRefreshEnabled(), minutes: accountRefreshMinutes() };
-      const theme = ['system', 'light', 'dark'].includes(payload?.theme) ? payload.theme : 'system';
+      const theme = ['system', 'light', 'dark'].includes(payload?.theme) ? payload.theme : loadConfig().theme || 'system';
       const language = normalizeLanguage(payload?.language ?? loadConfig().language);
-      const patch = { theme, language, autoRefreshBalances: payload?.autoRefreshBalances !== false };
+      const previousContentWidth = normalizeChatContentWidth(loadConfig().chatContentWidth);
+      const patch = { theme, language, autoRefreshBalances: payload?.autoRefreshBalances === undefined ? accountRefreshEnabled() : payload.autoRefreshBalances !== false };
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'accountRefreshMinutes')) {
         const minutes = Number(payload.accountRefreshMinutes);
         patch.accountRefreshMinutes = ACCOUNT_REFRESH_MINUTES.includes(minutes) ? minutes : accountRefreshMinutes();
       }
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'closeToTray')) patch.closeToTray = payload.closeToTray === true;
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'computerName')) patch.computerName = normalizeComputerName(payload.computerName);
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'chatContentWidth')) patch.chatContentWidth = normalizeChatContentWidth(payload.chatContentWidth);
+      if (payload?.quickSwitchModels !== undefined) {
+        const models = payload.quickSwitchModels;
+        if (!models || typeof models !== 'object' || Array.isArray(models)) throw new Error('Invalid quick-switch models');
+        patch.quickSwitchModels = { ...loadConfig().quickSwitchModels };
+        for (const [engine, model] of Object.entries(models)) {
+          if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine) || typeof model !== 'string' || model.length > 256) {
+            throw new Error('Invalid quick-switch model');
+          }
+          if (model.trim()) patch.quickSwitchModels[engine] = model.trim();
+          else delete patch.quickSwitchModels[engine];
+        }
+      }
+      if (payload?.quickSwitchLevels !== undefined) {
+        const levels = payload.quickSwitchLevels;
+        if (!levels || typeof levels !== 'object' || Array.isArray(levels)) throw new Error('Invalid quick-switch levels');
+        patch.quickSwitchLevels = { ...loadConfig().quickSwitchLevels };
+        for (const [engine, level] of Object.entries(levels)) {
+          if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine) || typeof level !== 'string' || level.length > 64) {
+            throw new Error('Invalid quick-switch level');
+          }
+          if (level.trim()) patch.quickSwitchLevels[engine] = level.trim();
+          else delete patch.quickSwitchLevels[engine];
+        }
+      }
       saveConfig(patch);
       if (payload?.conversations) saveConfig({ conversations: conversationPreferences({ conversations: payload.conversations }) });
+      const contentWidth = normalizeChatContentWidth(patch.chatContentWidth ?? previousContentWidth);
       nativeTheme.themeSource = theme;
       setMenu();
       refreshTrayMenu();
@@ -1672,6 +1762,9 @@ if (!gotSingleInstanceLock) {
         if (window && !window.isDestroyed()) window.webContents.send('dsh:language-changed', language);
       }
       if (nativeSettingsView) nativeSettingsView.webContents.send('dsh:language-changed', language);
+      if (contentWidth !== previousContentWidth && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('dsh:chat-content-width-changed', contentWidth);
+      }
       if (accountRefreshEnabled() !== previousQuotaCheck.enabled || accountRefreshMinutes() !== previousQuotaCheck.minutes) syncQuotaCheck();
       void refreshAccountBalances();
       return { ok: true };
@@ -1841,6 +1934,8 @@ if (!gotSingleInstanceLock) {
     } catch (error) { return { ok: false, error: error.message }; }
   });
 
+  require('./discussion-ipc').registerDiscussionIpc({ ipcMain, service: { call: (...args) => discussions().call(...args) },
+    page: path.join(RENDERER_ROOT, 'discussions/discussions.html'), getWindow: () => mainWindow });
   ipcMain.handle('dsh:switch-mode', (_event, mode) => navigateMode(mode));
   ipcMain.handle('dsh:conversation-command', async (_event, { engine, action, payload }) => {
     try { return await sharedConversations.command(engine, action, payload); }
@@ -2232,7 +2327,6 @@ if (!gotSingleInstanceLock) {
     idleSessionReaper.stop();
     void remoteDesktop?.close();
     void cliDevices.close();
-    contextCapacity?.cancel();
     clearTimeout(balanceRefreshTimer);
     for (const goal of [goalDriver, kimiGoalDriver, antigravity.goal, codex.goal]) {
       if (goal.armed) goal.setPhase('paused');
@@ -2240,10 +2334,10 @@ if (!gotSingleInstanceLock) {
     }
     sharedConversations.pauseGoals();
     sharedConversations.closeGoalTools();
-    if ((claudeSessions.active || codex.active || kimiAccount.active || piChat.sessions.active || dshChat.sessions.active || kimiSessions.active || antigravity.sessions.active || benchmarkRunner?.pending) && !kimiClosing) {
+    if ((discussionService?.active || claudeSessions.active || codex.active || kimiAccount.active || piChat.sessions.active || dshChat.sessions.active || kimiSessions.active || antigravity.sessions.active || benchmarkRunner?.pending) && !kimiClosing) {
       event.preventDefault();
       kimiClosing = true;
-      void Promise.allSettled([claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), piChat.shutdown(), dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown(), benchmarkRunner?.shutdown()]).finally(() => app.quit());
+      void Promise.allSettled([discussionService?.shutdown(), claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), piChat.shutdown(), dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown(), benchmarkRunner?.shutdown()]).finally(() => app.quit());
       return;
     }
     stopBackend();
@@ -2268,21 +2362,21 @@ if (!gotSingleInstanceLock) {
     return switchMode(mode);
   }
   async function switchMode(mode, conversationId) {
-    if (!['home', 'benchmark', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(mode)) {
+    if (!['home', 'benchmark', 'discussions', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(mode)) {
       return { ok: false, error: 'Unknown engine or page' };
     }
     const request = ++modeRequest;
     const next = mode;
     try {
-      if (!['home', 'benchmark'].includes(next) && !(next === 'dsh' && loadConfig().dshBin)) await runtimes().ensure(next, conversationId ? sharedConversations.settings(next, conversationId).connection : undefined);
+      if (!['home', 'benchmark', 'discussions'].includes(next) && !(next === 'dsh' && loadConfig().dshBin)) await runtimes().ensure(next, conversationId ? sharedConversations.settings(next, conversationId).connection : undefined);
     } catch (error) {
       if (error.code === 'DOWNLOAD_CANCELLED') return { ok: true, canceled: true };
       log(`runtime preparation failed: ${error.message}`);
-      openSettingsWindow({ page: 'runtimes', engine: next });
+      openSettingsWindow({ page: 'engines', engine: next });
       return { ok: false, error: error.message };
     }
     if (request !== modeRequest) return { ok: true, canceled: true };
-    if (!['home', 'benchmark'].includes(next)) saveConfig({ mode: next });
+    if (!['home', 'benchmark', 'discussions'].includes(next)) saveConfig({ mode: next });
     currentMode = next;
     log(`switch mode → ${next}`);
     // Update window title and menu according to mode
@@ -2299,12 +2393,12 @@ if (!gotSingleInstanceLock) {
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
         if (currentMode !== next) return;
-        await mainWindow.loadFile(path.join(RENDERER_ROOT, next === 'benchmark' ? 'benchmark/benchmark.html' : next === 'home' ? 'home/home.html' : 'chat/claude.html'),
-          ['home', 'benchmark'].includes(next) ? undefined : { query: { harness: next, ...(conversationId ? { conversation: conversationId } : {}) } });
+        await mainWindow.loadFile(path.join(RENDERER_ROOT, next === 'discussions' ? 'discussions/discussions.html' : next === 'benchmark' ? 'benchmark/benchmark.html' : next === 'home' ? 'home/home.html' : 'chat/claude.html'),
+          ['home', 'benchmark', 'discussions'].includes(next) ? undefined : { query: { harness: next, ...(conversationId ? { conversation: conversationId } : {}) } });
       }
     } catch (err) {
       log(`switch mode failed: ${err && err.stack || err}`);
-      if (['claude', 'codex', 'kimi', 'antigravity', 'pi'].includes(next)) openSettingsWindow({ page: 'runtimes', engine: next });
+      if (['claude', 'codex', 'kimi', 'antigravity', 'pi'].includes(next)) openSettingsWindow({ page: 'engines', engine: next });
       if (next === 'dsh' && currentMode === 'dsh' && mainWindow && !mainWindow.isDestroyed()) {
         await mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(errorHtml(err, backendUrl)));
       }

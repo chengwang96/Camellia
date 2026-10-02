@@ -48,7 +48,7 @@ with sync_playwright() as playwright:
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.add_init_script(BRIDGE)
-    page.goto((root / "src/renderer/settings/api-settings.html").as_uri() + "?page=general")
+    page.goto((root / "src/renderer/settings/api-settings.html").as_uri() + "?page=models")
     page.wait_for_load_state("networkidle")
 
     ttl = page.locator("#conversationSessionTtl")
@@ -86,8 +86,8 @@ with sync_playwright() as playwright:
         ("zh-CN", "短暂保留模型的会话", "每个引擎保留就绪的模型数"),
     ]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
-        assert ttl_label in page.locator("#generalPage").inner_text()
-        assert limit_label in page.locator("#generalPage").inner_text()
+        assert ttl_label in page.locator("#modelsPage").inner_text()
+        assert limit_label in page.locator("#modelsPage").inner_text()
 
     # The new rows do not introduce horizontal overflow at narrow widths.
     for width in [1160, 700, 390, 320]:

@@ -398,7 +398,7 @@ class BenchmarkRunner {
       if (!timeLimitMs) { timeout(); throw new Error(String(control.signal.reason)); }
       timer = setTimeout(timeout, timeLimitMs);
       const trialRuntime = this.runtimes().locate(trial.engine, 'api');
-      if (!trialRuntime) throw new Error(`${NAMES[trial.engine]} runtime is not installed or is incomplete. Reinstall it in Settings → Runtime, then start a new benchmark. If the runtime keeps disappearing, your antivirus may be removing it — see docs/troubleshooting-runtimes.md for the exclusion steps.`);
+      if (!trialRuntime) throw new Error(`${NAMES[trial.engine]} runtime is not installed or is incomplete. Reinstall it in Settings → Engine Settings, then start a new benchmark. If the runtime keeps disappearing, your antivirus may be removing it — see docs/troubleshooting-runtimes.md for the exclusion steps.`);
       const result = await this.execute({ engine: trial.engine, runtime: trialRuntime, node, cwd, home,
         model: report.model, route, signal: control.signal,
         python: this.execution.runtime?.python,

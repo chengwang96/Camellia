@@ -5,6 +5,27 @@ const path = require('node:path');
 const YAML = require('yaml');
 const { writeText } = require('../shared/json-store');
 
+// DSH 0.2 imports settings.yaml only after boot. ACP/headless requests must
+// receive their model and permission configuration in the initial composition.
+function dshLaunchArgs({ runtime, home, profile, config }) {
+  let version = runtime.version;
+  if (!version) {
+    try { version = JSON.parse(fs.readFileSync(path.resolve(path.dirname(runtime.file), '../package.json'), 'utf8')).version; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  const [major, minor] = String(version || '0.1').split('.').map(Number);
+  const args = [runtime.file, '--profile', profile];
+  fs.mkdirSync(home, { recursive: true });
+  if (major > 0 || minor >= 2) {
+    const aliases = { 'ui-developer-tools': 'ui-settings', 'ui-onboarding': 'ui-settings-general',
+      shell: process.platform === 'win32' ? 'pwsh-sandbox' : 'bash-sandbox' };
+    const file = path.join(home, 'camellia-runtime.patch.yml');
+    writeText(file, YAML.stringify(Object.entries(config).map(([id, value]) => ({ id: aliases[id] || id, config: value }))));
+    args.push('--patch', file);
+  } else writeText(path.join(home, 'settings.yaml'), YAML.stringify(config));
+  return args;
+}
+
 function readDocument(file) {
   let source;
   try { source = fs.readFileSync(file, 'utf8'); }
@@ -102,4 +123,4 @@ function cleanupLegacyRoute(file) {
   return true;
 }
 
-module.exports = { configureProvider, readCredential, syncPoolProvider, cleanupLegacyRoute };
+module.exports = { configureProvider, readCredential, syncPoolProvider, cleanupLegacyRoute, dshLaunchArgs };

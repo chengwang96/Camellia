@@ -42,6 +42,9 @@ function describePreview(filePath) {
   if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('A file path is required.');
   const resolvedPath = path.resolve(filePath);
   const stat = fs.statSync(resolvedPath);
+  if (stat.isDirectory()) {
+    return { path: resolvedPath, name: path.basename(resolvedPath) || resolvedPath, kind: 'directory' };
+  }
   if (!stat.isFile()) throw new Error('The selected path is not a file.');
   const kind = previewKind(resolvedPath);
   const preview = {

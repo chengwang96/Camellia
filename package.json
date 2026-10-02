@@ -1,6 +1,6 @@
 {
   "name": "camellia-desktop",
-  "version": "0.4.0",
+  "version": "1.0.0-beta",
   "description": "Camellia: a shared workbench for Claude Code, Codex CLI, DSH, Kimi Code and Antigravity",
   "main": "src/main/main.js",
   "author": "Camellia contributors",
@@ -171,6 +171,7 @@
       "src/engines/find-tools.js",
       "src/engines/antigravity/**",
       "src/engines/pi-extension.mjs",
+      "src/engines/discussions/dsh-text-policy.mjs",
       "src/engines/goal-tools.js",
       "src/engines/task-tools.js",
       "src/engines/conversation-tools.js",

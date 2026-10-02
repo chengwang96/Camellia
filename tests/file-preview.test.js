@@ -38,19 +38,24 @@ test('text previews are bounded and local media receives file URLs', t => {
   assert.equal(video.name, 'clip.mp4');
 });
 
-test('preview rejects directories and missing paths', t => {
+test('preview identifies directories for opening in the file manager and rejects missing paths', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-preview-'));
   t.after(() => removeTree(directory));
-  assert.throws(() => describePreview(directory), /not a file/);
+  const folder = path.join(directory, '中文 outputs, with spaces & (brackets).md');
+  fs.mkdirSync(folder);
+  assert.deepEqual(describePreview(folder), { path: folder, name: path.basename(folder), kind: 'directory' });
   assert.throws(() => describePreview(path.join(directory, 'missing.txt')), /ENOENT/);
 });
 
 test('renderer exposes previews only from attachments and successful file outputs', () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
+  const controls = fs.readFileSync(path.join(__dirname, '../src/renderer/shared/chat-controls.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.html'), 'utf8');
   assert.doesNotMatch(html, /id="openFileViewer"/);
   assert.doesNotMatch(source, /pickPreviewFile/);
   assert.match(source, /c\.addEventListener\('click', \(\) => void openFilePreview\(a\.path\)\)/);
-  assert.match(source, /previewableToolPath/);
-  assert.match(source, /tool-preview-file/);
+  assert.match(source, /CamelliaChatControls\.makeToolCard/);
+  assert.match(html, /shared\/chat-controls\.js/);
+  assert.match(controls, /previewableToolPath/);
+  assert.match(controls, /tool-preview-file/);
 });

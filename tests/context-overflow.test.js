@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { contextOverflow, contextOverflowText } = require('../src/shared/context-overflow');
+const { contextOverflow, contextOverflowText, contextError, contextTokenLimit } = require('../src/shared/context-overflow');
 
 // Real provider wordings that mean "this request is over a context limit".
 const overflow = [
@@ -59,4 +59,35 @@ test('context overflow requires an error result', () => {
   assert.equal(contextOverflow({ result: 'maximum context length is 8192 tokens' }), false);
   assert.equal(contextOverflow({ is_error: false, result: 'maximum context length is 8192 tokens' }), false);
   assert.equal(contextOverflow({ is_error: true, result: '' }), false);
+});
+
+test('capacity errors use the shared recognizer while requiring structured 400/422 evidence', () => {
+  for (const message of overflow.filter(message => !/bytes/.test(message))) {
+    assert.equal(contextError(400, { error: { type: 'invalid_request_error', message } })?.kind, 'context', message);
+  }
+  for (const code of ['context_length_exceeded', 'context_window_exceeded', 'input_too_long', 'prompt_too_long'])
+    assert.equal(contextError(422, { error: { code } })?.kind, 'context');
+  for (const message of [...unrelated, 'Request payload size exceeds the limit: 1048576 bytes',
+    'Request too large on tokens per min (TPM). Maximum context length is 1000000 tokens.']) {
+    assert.equal(contextError(400, { error: { message } }), null, message);
+  }
+  for (const status of [200, 401, 403, 413, 429, 500, 502])
+    assert.equal(contextError(status, { error: { code: 'context_length_exceeded' } }), null);
+  assert.equal(contextError(400, 'Input is too long.'), null);
+});
+
+test('numeric evidence separates input limits from context windows and rejects output or character counts', () => {
+  assert.deepEqual(contextTokenLimit('maximum context length is 32,768 tokens'), { tokens: 32768, scope: 'context' });
+  for (const message of [
+    'The input token count (120000) exceeds the maximum number of tokens allowed (100000).',
+    'prompt is too long: 120000 tokens > 100000 maximum',
+    'The request is invalid: prompt token count of 120000 exceeds the limit of 100000',
+    'This model supports at most 100000 input tokens.',
+    'Input exceeds the maximum input length of 100000 tokens.',
+  ]) assert.deepEqual(contextTokenLimit(message), { tokens: 100000, scope: 'input' }, message);
+  for (const message of ['Input is too long.', 'Maximum tokens per request: 4096',
+    'Input exceeds the maximum length of 1048576 characters.', 'Input exceeds maximum input length of 1048576 characters.',
+    'Request payload size exceeds the limit: 1048576 bytes']) assert.equal(contextTokenLimit(message), null, message);
+  assert.deepEqual(contextError(400, { error: { message: 'prompt is too long: 120000 tokens > 100000 maximum' } }),
+    { kind: 'context', declared: null, inputLimit: 100000 });
 });

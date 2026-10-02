@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { EventEmitter, once } = require('node:events');
 const { CodexSession } = require('../src/engines/codex-session');
 const { ClaudeSession } = require('../src/engines/claude-session');
 const { KimiSession, kimiSpawnSpec } = require('../src/engines/kimi-session');
@@ -26,14 +27,25 @@ async function main() {
   assert.ok(runtime, 'Install the ' + engine + ' runtime first');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-native-compact-'));
   const requests = [], notifications = [], events = [], logs = [];
+  const arrivals = new EventEmitter(), held = [];
+  let holdResponses = false;
   let router, session, complete;
   const server = http.createServer(async (request, response) => {
     try {
       let raw = '';
       for await (const chunk of request) raw += chunk;
       const body = JSON.parse(raw); requests.push(body);
+      if (holdResponses) {
+        await new Promise(resolve => {
+          held.push({ release: resolve });
+          response.once('close', resolve);
+          arrivals.emit('held');
+        });
+        if (response.destroyed) return;
+      }
       response.writeHead(200, { 'content-type': 'text/event-stream' });
-      response.write(frame({ choices: [{ index: 0, delta: { role: 'assistant', content: 'Task checkpoint: preserve NATIVE_MARKER_7391 and continue.' } }] }));
+      response.write(frame({ choices: [{ index: 0, delta: { role: 'assistant', content: holdResponses
+        ? 'IN_TURN_WORK_BEFORE_QUERY' : 'Task checkpoint: preserve NATIVE_MARKER_7391 and continue.' } }] }));
       response.write(frame({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 20 } }));
       response.end(frame('[DONE]'));
     } catch (error) { response.writeHead(500); response.end(error.message); }
@@ -104,7 +116,43 @@ async function main() {
     assert.equal(session.sessionId, threadId);
     assert.match(JSON.stringify(requests.at(-1)), /NATIVE_MARKER_7391/);
     console.log('PASS installed ' + engine + ': native compaction, lifecycle completion, same process/thread, checkpoint continuation; loopback only');
+    if (engine === 'codex') {
+      const sourceId = session.sessionId, lastTurnId = session.lastTurnId;
+      holdResponses = true;
+      const firstRequest = once(arrivals, 'held', { signal: AbortSignal.timeout(15000) });
+      const pending = turn('GOAL_PROGRESS_ROUND_12');
+      await firstRequest;
+      await session.steerUserMessage('ORIGINAL_PROGRESS_QUERY');
+      const steeredRequest = once(arrivals, 'held', { signal: AbortSignal.timeout(15000) });
+      held[0].release();
+      await steeredRequest;
+      assert.match(JSON.stringify(requests.at(-1)), /ORIGINAL_PROGRESS_QUERY/);
+      session.interrupt();
+      const interrupted = await pending;
+      assert.equal(interrupted.subtype, 'stopped');
+      assert.equal(interrupted.nativeContextRetained, true);
+      holdResponses = false;
+      for (const request of held) request.release();
+      await session.shutdown();
+      session = new CodexSession({ gen: 3, settings: { cwd: root, model: 'compact-fixture', connection: 'api', permissionMode: 'bypassPermissions' },
+        opts: { sessionId: sourceId, fork: true, lastTurnId }, spec, spawn, history: new ClaudeHistory(path.join(root, 'history')),
+        log: text => logs.push(text), onEvent: event => events.push(event), onResult: result => complete?.(result), onSessionId() {} });
+      session.start();
+      const prefix = JSON.stringify({ history: [{ role: 'user', text: 'GOAL_PROGRESS_ROUND_12' },
+        { role: 'assistant', text: 'IN_TURN_WORK_BEFORE_QUERY' }] });
+      assert.equal((await turn('Conversation context from earlier turns follows as JSON data.\n' + prefix
+        + '\n\nREVISED_PROGRESS_QUERY')).subtype, 'success');
+      const replay = JSON.stringify(requests.at(-1));
+      assert.match(replay, /NATIVE_MARKER_7391/);
+      assert.match(replay, /IN_TURN_WORK_BEFORE_QUERY/);
+      assert.match(replay, /REVISED_PROGRESS_QUERY/);
+      assert.doesNotMatch(replay, /ORIGINAL_PROGRESS_QUERY/);
+      const original = await session.client.request('thread/read', { threadId: sourceId, includeTurns: true });
+      assert.match(JSON.stringify(original), /ORIGINAL_PROGRESS_QUERY/);
+      console.log('PASS installed Codex: compacted history -> Goal turn -> steering -> acknowledged stop -> bounded edit fork; earlier native context and in-turn work retained, superseded query excluded; loopback only');
+    }
   } finally {
+    for (const request of held) request.release();
     if (session?.shutdown) await session.shutdown();
     else if (session) {
       const closed = new Promise(resolve => session.proc.once('close', resolve));

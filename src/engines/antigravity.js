@@ -10,41 +10,63 @@ const { ClaudeGoal } = require('./claude-goal');
 const { createSessionWorkspaces } = require('./session-workspaces');
 const { readJson } = require('../shared/json-store');
 const { modelId } = require('../api/api-router-config');
-const { pythonEnvironment, globalPythonEnvironment } = require('../main/python-runtime');
+const { pythonEnvironment, globalPythonEnvironment, SUPPORTED_SDK_VERSIONS } = require('../main/python-runtime');
 const { downloadSettings } = require('../main/download-network');
-const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider } = require('./antigravity/subscription');
+const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider, effectiveSelection } = require('./antigravity/subscription');
 const { valid } = require('./permission-levels');
 const { accountSummary, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts');
+const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
+const { SUPPORTED_CLI_VERSIONS } = require('../main/antigravity-cli-runtime');
 
-function antigravitySpawnSpec({ runtime, home, route, config = {}, env, python }) {
+function antigravitySpawnSpec({ runtime, home, route, config = {}, env, python, executionPolicy }) {
+  // Explicit main-process launch input, never a native settings/permission-mode
+  // field. This primitive does not register production discussion capability.
+  if (executionPolicy !== undefined && (executionPolicy !== 'tool-free-v1' || !SUPPORTED_SDK_VERSIONS.includes(runtime.version)))
+    throw new Error('Unverified Antigravity execution policy or SDK version');
+  if (executionPolicy && (Object.keys(config.mcpServers || {}).length || config.skillsPaths?.length))
+    throw new Error('Tool-free Antigravity cannot load MCP servers or skills');
   return { args: ['-u', path.join(__dirname, 'antigravity/bridge.py').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', env: {
     ...(runtime.packages ? pythonEnvironment(runtime.dir, env) : python ? globalPythonEnvironment(python, env)
       : runtime.custom ? { ...env, PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1' } : pythonEnvironment(runtime.dir, env)),
-    CAMELLIA_ANTIGRAVITY_CONFIG: JSON.stringify({ home, baseUrl: route.baseUrl + '/compat/antigravity/v1', settings: config }),
+    CAMELLIA_ANTIGRAVITY_CONFIG: JSON.stringify({ home, baseUrl: route.baseUrl + '/compat/antigravity/v1', settings: config,
+      ...(executionPolicy === undefined ? {} : { executionPolicy }) }),
   } };
 }
 
-function subscriptionSpawnSpec({ runtime, home, env, proxyUrl }) {
-  return { args: [path.join(__dirname, 'antigravity/cli-bridge.cjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', env: {
-    ...subscriptionEnvironment(env, proxyUrl), CAMELLIA_ANTIGRAVITY_CLI: JSON.stringify({ exe: runtime.file, home }),
+function subscriptionSpawnSpec({ runtime, home, env, proxyUrl, model = '', effort = '', literalInput = false, discussion = false, skipPermissions = false }) {
+  // Discussion/context inputs must remain text. This prevents native slash
+  // expansion only; it is not a tool or extension execution policy.
+  if (typeof literalInput !== 'boolean' || literalInput && !SUPPORTED_CLI_VERSIONS.includes(runtime.version))
+    throw new Error('Unverified Antigravity CLI literal input or runtime version');
+  if (discussion && (!literalInput || !SUPPORTED_CLI_VERSIONS.includes(runtime.version))) throw new Error('Unsupported Antigravity discussion runtime');
+  return { args: [path.join(__dirname, 'antigravity/cli-bridge.cjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', applyThinking: false, prepareTimeout: 65000, env: {
+    ...subscriptionEnvironment(env, proxyUrl), CAMELLIA_ANTIGRAVITY_CLI: JSON.stringify({ exe: runtime.file, home, model, effort,
+      ...(literalInput ? { literalInput: true } : {}), ...(discussion ? { discussion: true } : {}), ...(skipPermissions ? { skipPermissions: true } : {}) }),
   } };
 }
 const sessionConnection = id => id.startsWith('agy-') ? 'subscription' : 'api';
 
-function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConfig, saveConfig, getRoute, getModels, runtimes, environment = () => process.env, python = () => null, onEvent, onGoal, createUsageMeter = () => null, isBusy = () => false, log }) {
+function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConfig, saveConfig, getRoute, getModels, runtimes, environment = () => process.env, python = () => null, onEvent, onGoal, onAccount = () => {}, createUsageMeter = () => null, isBusy = () => false, log }) {
   const sessions = new SessionPool();
   let generation = 0;
   const home = path.join(dataDir, 'antigravity');
   const history = new ClaudeHistory(path.join(dataDir, 'antigravity-history'));
+  const discussionHistory = new ClaudeHistory(path.join(dataDir, 'discussions', 'transcripts', 'antigravity'));
   function settings(sessionId) {
-    const value = { connection: 'api', permissionMode: 'default', ...loadConfig().antigravity, thinkingBudget: '' };
+    const value = { connection: 'api', permissionMode: 'default', thinkingBudget: '', ...loadConfig().antigravity };
     if (sessionId && sessionConnection(sessionId) !== value.connection) {
       value.connection = sessionConnection(sessionId);
       value.model = value[value.connection + 'Model'] || '';
     }
     return value;
   }
-  const account = createGoogleAccount({ home, cliSettingsFile, runtime: runtimes, environment, settings, openLogin });
+  const account = createGoogleAccount({ home, cliSettingsFile, runtime: runtimes, environment, settings, openLogin,
+    onChange: () => onAccount(accountState()) });
+  function accountState() {
+    const value = account.state();
+    return { ok: true, ...value, activeId: DEFAULT_ACCOUNT_ID,
+      accounts: [{ ...accountSummary('antigravity', { id: DEFAULT_ACCOUNT_ID, label: '' }, value), active: true }] };
+  }
   const standaloneCwd = value => value.cwd || path.join(dataDir, 'antigravity-sessions');
   const workspaces = createSessionWorkspaces({ history, loadConfig, saveConfig, metaKey: 'antigravityMeta', settingsKey: 'antigravity',
     standaloneCwd, getSession: () => sessions.legacy, fixedCwd: true, onDetach: id => goal.detachWorkspace(id) });
@@ -57,7 +79,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
       next.connection = patch.connection;
       next.model = next[next.connection + 'Model'] || '';
     }
-    for (const key of ['cwd', 'permissionMode', 'proxyUrl']) if (patch[key] !== undefined) next[key] = String(patch[key]).trim();
+    for (const key of ['cwd', 'permissionMode', 'proxyUrl', 'thinkingBudget']) if (patch[key] !== undefined) next[key] = String(patch[key]).trim();
     if (patch.model !== undefined) {
       const connection = patch.connection || (patch.sessionId ? sessionConnection(patch.sessionId) : next.connection);
       next[connection + 'Model'] = String(patch.model).trim();
@@ -69,42 +91,55 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     return settings(patch.sessionId);
   }
   function ensureSession(opts) {
+    const discussion = getDiscussionLaunch(opts, 'antigravity');
+    assertDiscussionPoolAccess(sessions, opts, discussion);
     const current = sessions.get(opts);
-    const value = { ...settings(opts.sessionId), ...opts.settings };
+    const value = discussion ? { ...discussion.settings } : { ...settings(opts.sessionId), ...opts.settings };
     const context = opts.cwd ? { cwd: opts.cwd, workspaceId: null } : workspaces.resolveContext(value, opts);
     const selected = { ...value, cwd: context.cwd };
     opts = { ...opts, workspaceId: context.workspaceId };
     if (selected.cwd === standaloneCwd({})) fs.mkdirSync(selected.cwd, { recursive: true });
     if (!fs.statSync(selected.cwd).isDirectory()) throw new Error('Working directory does not exist: ' + selected.cwd);
     const subscription = selected.connection === 'subscription';
+    if (discussion && opts.sessionId && sessionConnection(opts.sessionId) !== selected.connection) throw new Error('Discussion native connection is not verified');
     if (!selected.model) throw new Error(subscription ? 'Sign in with Google and refresh available models in Settings → Engine settings → Antigravity.' : 'Select a configured model in the composer first');
     if (subscription) {
+      if (discussion && (selected.subscriptionId !== DEFAULT_ACCOUNT_ID || account.state().awaitingVerification)) throw new Error('Discussion subscription account is not verified');
       requireGoogleProvider(cliSettingsFile);
       if (opts.fork) throw new Error('Google subscription sessions do not support forks. Start a new session instead.');
-      if (!account.state().models.some(model => model.id === selected.model)) throw new Error('This model is not in the Google account model list. Refresh the account in Antigravity settings.');
+      // The picker lists one entry per base model; a session saved before that
+      // still names a concrete effort id, which maps back onto its family.
+      const accountModels = account.state().models || [];
+      if (!accountModels.some(model => model.id === selected.model
+        || model.modelIds && Object.values(model.modelIds).includes(selected.model))) throw new Error('This model is not in the Google account model list. Refresh the account in Antigravity settings.');
+      const selection = effectiveSelection(accountModels, selected.model, selected.thinkingBudget);
+      selected.model = selection.model;
+      selected.thinkingBudget = selection.thinking;
     } else {
       selected.model = modelId(selected.model);
       if (!getModels().includes(selected.model)) throw new Error('No route is available for this model. Add one in Camellia settings.');
     }
     if (current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
-      && current.opts.workspaceId === opts.workspaceId && ['cwd', 'model', 'permissionMode', 'connection', 'proxyUrl'].every(key => current.settings[key] === selected[key])) return current;
+      && current.opts.workspaceId === opts.workspaceId && ['cwd', 'model', 'thinkingBudget', 'permissionMode', 'connection', 'proxyUrl'].every(key => current.settings[key] === selected[key])) return current;
     const runtime = runtimes().locate('antigravity', selected.connection);
-    if (!runtime) throw new Error('Prepare Antigravity in Settings → Runtime, then retry');
+    if (!runtime) throw new Error('Prepare Antigravity in Settings → Engine Settings, then retry');
     // A configured shared interpreter takes precedence; otherwise the managed
     // SDK environment (or an explicit script path) provides the runtime.
-    const sharedPython = python() || null;
-    const spec = subscription ? subscriptionSpawnSpec({ runtime, home, env: environment(), proxyUrl: selected.proxyUrl })
+    const sharedPython = !discussion && python() || null;
+    const spec = discussion ? buildDiscussionSpec(discussion, runtime, selected) : subscription ? subscriptionSpawnSpec({ runtime, home, env: environment(), proxyUrl: selected.proxyUrl,
+      model: selected.model, effort: selected.thinkingBudget })
       : antigravitySpawnSpec({ runtime, home, route: getRoute(), env: environment(),
         python: sharedPython?.file ? sharedPython : null, config: readJson(path.join(home, 'settings.json'), {}) });
     const previousClosed = current?.shutdown();
-    const next = new AcpSession({ name: 'Antigravity', gen: ++generation, settings: selected, opts, exe: subscription ? node() : runtime.file, spec, spawn, log, history,
+    const next = new AcpSession({ name: 'Antigravity', gen: ++generation, settings: selected, opts,
+      exe: discussion ? spec.exe : subscription ? node() : runtime.file, spec, spawn: discussion?.spawn || spawn, log, history: discussion ? discussionHistory : history,
       usageMeter: createUsageMeter('antigravity', { settings: selected }),
       onEvent: event => { if (sessions.get(opts) === next) onEvent({ ...event, conversationId: opts.conversationId }); },
       onSessionId: id => {
         // A new session starts from the connection the last one actually used,
         // so the settings page does not need a global selector.
-        if (loadConfig().antigravity?.connection !== selected.connection) saveConfig({ antigravity: { ...loadConfig().antigravity, connection: selected.connection } });
-        workspaces.recordContext(id, opts.workspaceId, selected.cwd); if (!opts.conversationId) goal.rememberSession(next);
+        if (!discussion && loadConfig().antigravity?.connection !== selected.connection) saveConfig({ antigravity: { ...loadConfig().antigravity, connection: selected.connection } });
+        if (!discussion) workspaces.recordContext(id, opts.workspaceId, selected.cwd); if (!opts.conversationId) goal.rememberSession(next);
       },
       onResult: event => { if (!opts.conversationId && sessions.legacy === next) goal.handleResult(event); },
     });
@@ -123,17 +158,15 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     'load-session': async id => ({ ok: true, ...await workspaces.transcript(id), settings: settings(id) }),
     // The official CLI keeps one global Google credential, so there is exactly
     // one account to report; the shape matches the multi-account engines.
-    'account-state': () => {
-      const value = account.state();
-      return { ok: true, ...value, activeId: DEFAULT_ACCOUNT_ID,
-        accounts: [{ ...accountSummary('antigravity', { id: DEFAULT_ACCOUNT_ID, label: '' }, value), active: true }] };
-    },
+    'account-state': accountState,
     'account-refresh': async () => {
       const state = await account.refresh();
       if (!settings().subscriptionModel) saveConfig({ antigravity: { ...loadConfig().antigravity, subscriptionModel: state.models[0].id,
         ...(settings().connection === 'subscription' ? { model: state.models[0].id } : {}) } });
-      return { ok: true, ...state };
+      return accountState();
     },
+    // Quota-only refresh so the account card can update without re-verifying models.
+    'account-refresh-usage': async payload => { await account.refreshUsage({ force: payload?.force !== false }); return accountState(); },
     'sign-in': async () => {
       if (sessions.running || isBusy()) throw new Error('Stop Antigravity conversations before changing accounts');
       return { ok: true, ...await account.signIn() };
@@ -157,6 +190,12 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     'goal-complete': () => goal.setPhase('complete'), 'goal-clear': () => goal.clear(),
   };
   return { get session() { return sessions.legacy; }, home, goal, settings, saveSettings, handlers, ensureSession, history, sessions, workspaces,
+    nativeStorageDirectory(id) {
+      if (sessionConnection(id) === 'api') return path.join(home, 'sessions', id, 'native');
+      const env = environment();
+      const profile = (process.platform === 'win32' ? env.USERPROFILE : env.HOME) || require('node:os').homedir();
+      return path.join(profile, '.gemini/antigravity-cli/conversations');
+    },
     async shutdown() { await sessions.shutdown(); } };
 }
 

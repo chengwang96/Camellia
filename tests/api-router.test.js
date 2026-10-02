@@ -82,6 +82,22 @@ test('router reports context evidence on its actual route without letting observ
   assert.equal(evidence.length, 2); assert.match(evidence[1].detail, /context_length_exceeded/);
 });
 
+test('capacity budgets retain the exact failing route after provider failover', async t => {
+  let capacity;
+  const harness = await fixture(t, (request, response) => {
+    if (request.headers.authorization === 'Bearer secret-first') return reply(response, 503, { error: { message: 'unavailable' } });
+    return reply(response, 400, { error: { message: 'The input token count (120000) exceeds the maximum number of tokens allowed (16000).' } });
+  }, url => [provider('first', url), provider('second', url)], { onContextEvidence: evidence => capacity.observe(evidence) });
+  capacity = require('../src/api/context-capacity').createContextCapacity({ file: path.join(path.dirname(harness.file), 'capacity.json'), getConfig: () => loadConfig(harness.file) });
+  assert.equal((await harness.post({ max_tokens: 128 })).status, 400);
+  assert.equal(harness.requests.length, 2);
+  const budget = capacity.budget({ model: 'kimi-k3', protocol: 'openai' });
+  assert.equal(budget.cap, 16000);
+  assert.equal(budget.routes.find(route => route.providerId === 'first').confirmedUpperBound, null);
+  assert.equal(budget.routes.find(route => route.providerId === 'second').confirmedUpperBound, 16000);
+  assert.equal(budget.routes.find(route => route.providerId === 'second').upperBoundScope, 'input');
+});
+
 test('unknown Responses tools report the cause without cooling down a healthy route', async t => {
   const harness = await fixture(t, (request, response) => {
     if (!request.body.tools) return reply(response, 200, completion(request.body.model));
@@ -290,6 +306,38 @@ test('benchmark routes pin provider and model, isolate usage, and expire on clos
   assert.equal(f.requests.length, 2);
 });
 
+test('explicit key scopes remain pinned across cooldowns and config changes', async t => {
+  const f = await fixture(t, (r, res) => reply(res, r.headers.authorization === 'Bearer two' ? 429 : 200,
+    r.headers.authorization === 'Bearer two' ? { error: { message: 'selected key exhausted' } } : completion(r.body.model)),
+  url => [provider('p', url, ['one', 'two'])]);
+  const scoped = f.router.createScope({ model: 'kimi-k3', providerId: 'p', keyId: 'p-key-1' });
+  assert.equal((await f.post({}, scoped.path + '/v1/chat/completions')).status, 503);
+  assert.deepEqual(f.requests.map(r => r.headers.authorization), ['Bearer two']);
+  assert.throws(() => f.router.createScope({ model: 'kimi-k3', providerId: 'p', keyId: 'p-key-1' }), /no available key/);
+  assert.equal((await f.post({})).status, 200, 'ordinary chat retains existing key rotation');
+  const cfg = f.router.getState(); cfg.providers[0].keys = cfg.providers[0].keys.filter(k => k.id !== 'p-key-1'); f.router.updateConfig(cfg);
+  assert.equal((await f.post({}, scoped.path + '/v1/chat/completions')).status, 404);
+  assert.equal(f.requests.length, 2); await scoped.close();
+});
+
+test('discussion provider scopes rotate keys inside the selected provider only', async t => {
+  const f = await fixture(t, (r, res) => reply(res, r.headers.authorization === 'Bearer two' ? 200 : 429,
+    r.headers.authorization === 'Bearer two' ? completion(r.body.model) : { error: { message: 'quota exhausted' } }),
+  url => [provider('p', url + '/selected', ['one', 'two']), provider('other', url + '/other', ['other-key'])]);
+  const config = f.router.getState(), selected = config.providers[0];
+  const account = JSON.parse(require('../src/engines/discussions/catalog').apiAccountRef(selected, selected.models[0]));
+  const scope = f.router.createScope({ model: 'kimi-k3', providerId: account.providerId, routeFingerprint: account.route });
+  const endpoint = scope.path + '/v1/chat/completions';
+  assert.equal((await f.post({}, endpoint)).status, 200);
+  assert.deepEqual(f.requests.map(r => r.headers.authorization), ['Bearer one', 'Bearer two']);
+  config.providers[0].keys = config.providers[0].keys.filter(k => k.id !== 'p-key-0'); f.router.updateConfig(config);
+  assert.equal((await f.post({}, endpoint)).status, 200, 'removing the old key does not invalidate the selected provider');
+  config.providers[0].keys[0].enabled = false; f.router.updateConfig(config);
+  assert.equal((await f.post({}, endpoint)).status, 404);
+  assert.ok(f.requests.every(r => r.url.startsWith('/selected/')));
+  await scope.close();
+});
+
 test('benchmark API limits stop requests without falling through to other keys or models', async t => {
   const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('p', url, ['one', 'two'])]);
   let limits = 0;
@@ -429,6 +477,123 @@ test('manual rotation respects priority and preserves equal-priority key rotatio
   config.providers[1].keys[1].enabled = false;
   harness.router.updateConfig(config);
   assert.throws(() => harness.router.rotate('kimi-k3'), /same priority/);
+});
+
+async function waitForRouting(predicate) {
+  const deadline = Date.now() + 3000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for router state');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+test('eight concurrent requests balance keys within the preferred provider and release all reservations', async t => {
+  const held = [];
+  const f = await fixture(t, (r, res) => held.push({ r, res }), url => {
+    const pool = provider('pool', url + '/pool', ['account-a', 'account-b', 'disabled']);
+    pool.keys[2].enabled = false;
+    return [{ ...provider('low', url + '/low'), priority: -1 }, pool, provider('peer', url + '/peer')];
+  }, { timeoutMs: 5000 });
+  const pending = Array.from({ length: 8 }, () => f.post({}).then(async res => { assert.equal(res.status, 200); return res.json(); }));
+  await waitForRouting(() => held.length === 8);
+  assert.deepEqual(f.router.getState().keyActiveRequests, {
+    'low-key-0': 0, 'pool-key-0': 4, 'pool-key-1': 4, 'pool-key-2': 0, 'peer-key-0': 0,
+  });
+  assert.ok(f.requests.every(r => r.url === '/pool/chat/completions'));
+  assert.equal(f.requests.filter(r => r.headers.authorization === 'Bearer account-a').length, 4);
+  assert.equal(f.requests.filter(r => r.headers.authorization === 'Bearer account-b').length, 4);
+  for (const { r, res } of held) reply(res, 200, completion(r.body.model));
+  await Promise.all(pending);
+  assert.ok(Object.values(f.router.getState().keyActiveRequests).every(n => n === 0));
+  assert.equal(f.router.getState().usage['pool-key-0'].requests, 4);
+  assert.equal(f.router.getState().usage['pool-key-1'].requests, 4);
+});
+
+test('stream reservations span models and client protocols, release on cancel, and keep idle affinity', async t => {
+  const f = await fixture(t, (r, res) => {
+    if (r.body.stream) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(frame(openEvents()[0]));
+    } else reply(res, 200, completion(r.body.model));
+  }, url => [provider('pool', url, ['a', 'b'], [mapping(), mapping('other', 'Other')])]);
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const response = await f.post({ stream: true }, '/v1/messages', { signal: controller.signal });
+  await response.body.getReader().read();
+  assert.equal(f.router.getState().keyActiveRequests['pool-key-0'], 1);
+  assert.equal((await f.post({ model: 'other' })).status, 200);
+  assert.equal(f.requests.at(-1).headers.authorization, 'Bearer b');
+  assert.equal(f.router.getState().keyActiveRequests['pool-key-0'], 1, 'Receiving stream headers must not release load');
+  controller.abort();
+  await waitForRouting(() => f.router.getState().keyActiveRequests['pool-key-0'] === 0);
+  assert.equal(f.router.getState().usage['pool-key-0'].cancelled, 1);
+  const before = f.requests.length;
+  for (let i = 0; i < 2; i++) assert.equal((await f.post({ model: 'other' })).status, 200);
+  assert.deepEqual(f.requests.slice(before).map(r => r.headers.authorization), ['Bearer b', 'Bearer b']);
+  assert.ok(Object.values(f.router.getState().keyActiveRequests).every(n => n === 0));
+});
+
+test('failover reselects the least busy remaining key and skips keys in cooldown', async t => {
+  let held;
+  const f = await fixture(t, (r, res) => {
+    if (r.body.messages[0].content === 'hold') { held = { r, res }; return; }
+    if (r.headers.authorization === 'Bearer b') return reply(res, 429, { error: 'rate limit' });
+    reply(res, 200, completion(r.body.model));
+  }, url => [provider('pool', url, ['a', 'b', 'c'])], { timeoutMs: 5000 });
+  const pending = f.post({ messages: [{ role: 'user', content: 'hold' }] });
+  await waitForRouting(() => Boolean(held));
+  assert.equal((await f.post({})).status, 200);
+  assert.deepEqual(f.requests.map(r => r.headers.authorization), ['Bearer a', 'Bearer b', 'Bearer c']);
+  assert.ok(f.router.getState().usage['pool-key-1'].models['kimi-k3'].until > Date.now());
+  assert.deepEqual(f.router.getState().keyActiveRequests, { 'pool-key-0': 1, 'pool-key-1': 0, 'pool-key-2': 0 });
+  assert.equal((await f.post({})).status, 200);
+  assert.equal(f.requests.at(-1).headers.authorization, 'Bearer c');
+  reply(held.res, 200, completion(held.r.body.model));
+  assert.equal((await pending).status, 200);
+  assert.ok(Object.values(f.router.getState().keyActiveRequests).every(n => n === 0));
+});
+
+test('credential replacement isolates new load from old in-flight requests', async t => {
+  const held = new Map();
+  const f = await fixture(t, (r, res) => {
+    const content = r.body.messages[0].content;
+    if (content.startsWith('hold')) { held.set(content, { r, res }); return; }
+    reply(res, 200, completion(r.body.model));
+  }, url => [provider('pool', url, ['old-a', 'b'])], { timeoutMs: 5000 });
+  const old = f.post({ messages: [{ role: 'user', content: 'hold-old' }] });
+  await waitForRouting(() => held.has('hold-old'));
+  const state = f.router.getState();
+  state.providers[0].keys[0].key = 'new-a';
+  f.router.updateConfig(state);
+  assert.equal(f.router.getState().keyActiveRequests['pool-key-0'], 0);
+  const current = f.post({ messages: [{ role: 'user', content: 'hold-new' }] });
+  await waitForRouting(() => held.has('hold-new'));
+  assert.equal(held.get('hold-new').r.headers.authorization, 'Bearer new-a');
+  reply(held.get('hold-old').res, 200, completion('vendor/Kimi-K3'));
+  assert.equal((await old).status, 200);
+  assert.equal(f.router.getState().keyActiveRequests['pool-key-0'], 1, 'Old completion must not release the new credential');
+  assert.equal((await f.post({})).status, 200);
+  assert.equal(f.requests.at(-1).headers.authorization, 'Bearer b');
+  reply(held.get('hold-new').res, 200, completion('vendor/Kimi-K3'));
+  assert.equal((await current).status, 200);
+  assert.ok(Object.values(f.router.getState().keyActiveRequests).every(n => n === 0));
+});
+
+test('explicitly pinned scopes keep their key even when a sibling is idle', async t => {
+  const held = [];
+  const f = await fixture(t, (r, res) => held.push({ r, res }), url => [provider('pool', url, ['a', 'b'])], { timeoutMs: 5000 });
+  const scope = f.router.createScope({ model: 'kimi-k3', providerId: 'pool', keyId: 'pool-key-0' });
+  const endpoint = scope.path + '/v1/chat/completions';
+  const pending = [f.post({}, endpoint), f.post({}, endpoint)];
+  await waitForRouting(() => held.length === 2);
+  assert.deepEqual(f.router.getState().keyActiveRequests, { 'pool-key-0': 2, 'pool-key-1': 0 });
+  const ordinary = f.post({});
+  await waitForRouting(() => held.length === 3);
+  assert.equal(f.requests.at(-1).headers.authorization, 'Bearer b');
+  for (const { r, res } of held) reply(res, 200, completion(r.body.model));
+  for (const response of await Promise.all([...pending, ordinary])) assert.equal(response.status, 200);
+  await scope.close();
+  assert.ok(Object.values(f.router.getState().keyActiveRequests).every(n => n === 0));
 });
 
 test('quota failure advances across providers for the same model, then stays on that key', async t => {

@@ -12,11 +12,19 @@
   // GPT-5.5 and newer (including 6.x) accept the wider ladder. Matches Codex's
   // ReasoningEffort enum minus the newest ultra/persistent levels.
   const WIDE_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  // Claude Code owns its effort flag, so its ladder is fixed instead of being
+  // inferred from the routed model ID.
+  const CLAUDE_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
   function levelsFor(model) {
     const id = String(model || '').toLowerCase();
     if (/gpt-(5\.[5-9]|[6-9])/.test(id)) return WIDE_LEVELS.slice();
     if (/gpt-5|\bo[1-9]/.test(id)) return DEFAULT_LEVELS.slice();
     return DEFAULT_LEVELS.slice();
   }
-  return { levelsFor };
+  // Engine-aware ladder used by settings surfaces that do not have a composer
+  // session to resolve account reasoning efforts from.
+  function levelsForEngine(engine, model) {
+    return engine === 'claude' ? CLAUDE_LEVELS.slice() : levelsFor(model);
+  }
+  return { levelsFor, levelsForEngine };
 });

@@ -146,6 +146,24 @@ test('chat renders lists with nesting, ordering and GitHub task checkboxes', () 
   assert.match(render('- `npm test`'), /<li><code class="md-inline">npm test<\/code><\/li>/);
 });
 
+test('a bilingual line stays inside the list item it belongs to', () => {
+  const render = chatRenderer();
+  const html = render('- `Title one`\n中文译文一\n- `Title two`\n中文译文二');
+  assert.match(html, /^<ul class="md-list"><li><code class="md-inline">Title one<\/code>\n中文译文一<\/li><li><code class="md-inline">Title two<\/code>\n中文译文二<\/li><\/ul>$/);
+  assert.equal((html.match(/<ul /g) || []).length, 1);
+  assert.match(render('- item\n  缩进的续行'), /<li>item\n缩进的续行<\/li>/);
+  assert.match(render('- item\n    - child\n    子项续行'), /<li>item<ul class="md-list"><li>child\n子项续行<\/li><\/ul><\/li>/);
+});
+
+test('a list still ends at a blank line or the next block', () => {
+  const render = chatRenderer();
+  assert.match(render('- item\n\n普通段落'), /<\/ul>\n+普通段落$/);
+  assert.match(render('- item\n## 标题'), /<\/ul>\n<strong>标题<\/strong>$/);
+  assert.match(render('- item\n> 引用'), /<\/ul>\n<blockquote class="md-quote">引用<\/blockquote>$/);
+  assert.match(render('- item\n---'), /<\/ul>\n<hr class="md-rule">$/);
+  assert.match(render('- item\n```\ncode\n```'), /<\/ul>\n<pre><code>code\n<\/code><\/pre>$/);
+});
+
 test('chat renders blockquotes, rules and headings without touching fenced code', () => {
   const render = chatRenderer();
   assert.match(render('> quoted **text**'), /^<blockquote class="md-quote">quoted <strong>text<\/strong><\/blockquote>$/);

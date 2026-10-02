@@ -276,6 +276,51 @@ test('failed parallel compaction cannot publish late progress or checkpoints', a
   assert.deepEqual(checkpoints, []);
 });
 
+test('checkpoint retries reuse shortened and widened answers only after they are complete', async () => {
+  const cache = new Map();
+  const units = ['A', 'B', 'C'].map((letter, sourceSeq) => [{ role: 'user', sourceSeq, text: letter.repeat(3000) }]);
+  let aCalls = 0, bCalls = 0;
+  await assert.rejects(runSummaryPipeline({ units, budget: 6000, concurrency: 1, cache,
+    request: async options => {
+      if (options.kind === 'reduce') throw new Error('Merge unavailable');
+      if (options.user.startsWith('Previous summary')) return { text: '<A>' };
+      if (options.user.includes('AAA')) {
+        aCalls++;
+        return { text: 'A'.repeat(options.maxChars + 1) };
+      }
+      if (options.user.includes('BBB')) return ++bCalls === 1 ? { text: '', truncated: true } : { text: '<B>' };
+      return { text: '<C>' };
+    } }), /Merge unavailable/);
+  assert.equal(aCalls, 1);
+  assert.equal(bCalls, 2);
+  const restored = new Map(JSON.parse(JSON.stringify([...cache])));
+  const calls = [];
+  const result = await runSummaryPipeline({ units, budget: 6000, cache: restored, request: async options => {
+    calls.push(options.kind);
+    assert.match(options.user, /<A>[\s\S]*<B>[\s\S]*<C>/);
+    return { text: 'Complete context' };
+  } });
+  assert.deepEqual(calls, ['reduce']);
+  assert.equal(result.summary, 'Complete context');
+});
+
+test('a cancelled request cannot cache its late answer for the next attempt', async () => {
+  const cache = new Map();
+  let cancelled = false, resolve;
+  const units = [[{ role: 'user', text: 'Original task' }]];
+  const pending = runSummaryPipeline({ units, budget: 6000, cache, stopped: () => cancelled,
+    request: () => new Promise(done => { resolve = done; }) });
+  const rejected = assert.rejects(pending, /canceled/);
+  await new Promise(done => setImmediate(done));
+  cancelled = true;
+  resolve({ text: 'Late answer' });
+  await rejected;
+  assert.equal(cache.size, 0);
+  const result = await runSummaryPipeline({ units, budget: 6000, cache, request: async () => ({ text: 'Fresh complete answer' }) });
+  assert.equal(result.requests, 1);
+  assert.equal(result.summary, 'Fresh complete answer');
+});
+
 test('a reasoning model that spends the whole cap on thinking is retried at the ceiling', async () => {
   const budgets = [];
   const result = await runSummaryPipeline({ units: [[{ role: 'user', text: 'x'.repeat(600) }]], budget: 6000,

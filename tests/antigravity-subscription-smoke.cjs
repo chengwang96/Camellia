@@ -1,5 +1,5 @@
 'use strict';
-// Exercise the actual CLI stream protocol with a local Gemini fixture. OAuth
+// Exercise the actual CLI interactive protocol with a local Gemini fixture. OAuth
 // and subscriptions remain owned by Google; this test needs no Google account.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -11,7 +11,7 @@ const { AcpSession } = require('../src/engines/acp-session');
 const { ClaudeHistory } = require('../src/engines/claude-history');
 const { subscriptionSpawnSpec } = require('../src/engines/antigravity');
 const { locateAntigravityCli } = require('../src/main/antigravity-cli-runtime');
-const { parseModels, runCli } = require('../src/engines/antigravity/subscription');
+const { parseModels, groupModels, runCli } = require('../src/engines/antigravity/subscription');
 
 async function run() {
   const runtime = locateAntigravityCli(path.resolve(process.argv[2] || 'runtimes/antigravity'));
@@ -21,7 +21,7 @@ async function run() {
   const settingsFile = path.join(profile, '.gemini/antigravity-cli/settings.json');
   fs.mkdirSync(path.dirname(settingsFile), { recursive: true }); fs.mkdirSync(cwd);
   fs.writeFileSync(settingsFile, JSON.stringify({ modelProvider: 'gemini', enableTelemetry: false }));
-  let session, complete, waiting;
+  let session, complete, waiting, permission;
   const events = [], errors = [], requests = [];
   const usageRecords = [];
   seen.events = events; seen.errors = errors;
@@ -37,10 +37,10 @@ async function run() {
       if (mainRequest && prompt.includes('GOOGLE SMOKE wait')) { waiting?.(); return; }
       const hasResponse = body.contents?.slice(userIndex + 1).some(message => message.parts?.some(part => part.functionResponse));
       let parts = [{ text: 'Google CLI fixture reply.' }];
-      if (mainRequest && /GOOGLE SMOKE (write|deny)/.test(prompt) && !hasResponse) {
+      if (mainRequest && /GOOGLE SMOKE (write|deny|review stop|discussion member)/.test(prompt) && !hasResponse) {
         const tool = declarations.find(tool => tool.name === 'write_to_file');
         assert.ok(tool, 'The official write tool must be present');
-        parts = [{ functionCall: { name: tool.name, args: { TargetFile: path.join(cwd, prompt.includes('deny') ? 'denied.txt' : 'written.txt'),
+        parts = [{ functionCall: { name: tool.name, args: { TargetFile: path.join(cwd, prompt.includes('review stop') ? 'stopped.txt' : prompt.includes('discussion member') ? 'discussion-plan.txt' : prompt.includes('deny') ? 'denied.txt' : 'written.txt'),
           CodeContent: 'written-by-official-cli', Overwrite: false, Description: 'Local test file', toolAction: 'Testing file edits', toolSummary: 'Write a fixture' } }, thoughtSignature: Buffer.from('fixture-signature').toString('base64') }];
       }
       res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -54,25 +54,27 @@ async function run() {
   const history = new ClaudeHistory(path.join(root, 'history'));
   let generation = 0;
   function start(opts = {}, permissionMode = 'default') {
-    const spec = subscriptionSpawnSpec({ runtime, home: path.join(root, 'adapter'), env: baseEnv });
-    if (process.argv[3]) spec.args[0] = path.resolve(process.argv[3]);
+    const spec = subscriptionSpawnSpec({ runtime, home: path.join(root, 'adapter'), env: baseEnv,
+      model: selected.id, effort: selected.defaultReasoningEffort || selected.thinkingBudget || '' });
+    if (process.argv[3] && !process.argv[3].startsWith('--')) spec.args[0] = path.resolve(process.argv[3]);
     // Only the test supplies API mode and a local transport, after asserting the
     // production subscription spec has removed inherited API credentials.
     assert.equal(spec.env.GEMINI_API_KEY, undefined);
     Object.assign(spec.env, fixtureEnv);
-    session = new AcpSession({ name: 'Antigravity CLI', gen: ++generation, settings: { cwd, model: selected.id, permissionMode }, opts,
+    session = new AcpSession({ name: 'Antigravity CLI', gen: ++generation,
+      settings: { cwd, model: selected.id, thinkingBudget: selected.defaultReasoningEffort || '', permissionMode }, opts,
       usageMeter: require('../src/engines/subscription-meter').createSubscriptionMeter({ engine: 'antigravity', model: selected.id, record: row => usageRecords.push(row) }),
-      exe: process.execPath, spec, spawn, history, log: message => errors.push(message), onEvent: event => events.push(event),
+      exe: process.execPath, spec, spawn, history, log: message => errors.push(message), onEvent: event => { events.push(event); if (event.type === 'gui:permission') permission?.(event); },
       onSessionId() {}, onResult: result => complete?.(result) });
     session.start();
     return session;
   }
-  async function send(prompt) {
+  async function send(prompt, attachments = []) {
     const result = new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('CLI turn timed out: ' + errors.join('\n'))), 45000);
       complete = value => { clearTimeout(timer); resolve(value); };
     });
-    assert.ok(session.sendUserMessage(prompt));
+    assert.ok(session.sendUserMessage(prompt, attachments));
     return result;
   }
   async function closeSession() {
@@ -83,7 +85,7 @@ async function run() {
   }
   let selected;
   try {
-    const models = parseModels(await runCli(runtime.file, ['models'], { env: fixtureEnv, cwd }));
+    const models = groupModels(parseModels(await runCli(runtime.file, ['models'], { env: fixtureEnv, cwd })));
     selected = models[0]; assert.ok(selected);
     start();
     const first = await send('GOOGLE SMOKE hello');
@@ -106,30 +108,45 @@ async function run() {
     assert.equal(resumed.session_id, first.session_id);
     assert.equal(fs.readFileSync(path.join(cwd, 'written.txt'), 'utf8').trim(), 'written-by-official-cli');
     assert.ok(events.some(event => event.type === 'gui:tool'));
+    assert.ok(events.some(event => event.type === 'gui:tool' && event.name === 'write_to_file'
+      && event.input?.TargetFile === path.join(cwd, 'written.txt') && event.status === 'completed'));
     await closeSession();
     fs.writeFileSync(settingsFile, JSON.stringify({ modelProvider: 'gemini', enableTelemetry: false, permissions: { ask: ['write_file(*)'] } }));
     start({ sessionId: first.session_id });
-    const denied = await send('GOOGLE SMOKE deny');
-    assert.equal(denied.subtype, 'success', JSON.stringify(denied) + errors.join('\n'));
-    assert.equal(fs.existsSync(path.join(cwd, 'denied.txt')), false, 'Headless mode must not silently approve an explicit CLI review rule');
-    // Let the CLI's stderr pipe drain: the notice is written there, and reading it
-    // after the turn's result is what decides whether this is a CLI difference or
-    // an adapter that drops a late notice.
-    await new Promise(resolve => setTimeout(resolve, 500));
-    // The denial travels on the CLI's stderr, which is a separate pipe from the
-    // stdout result that closes the turn. When this fails we need to know whether
-    // the notice never arrived, arrived after the turn closed, or arrived but was
-    // not marked, so report the raw evidence instead of only a false/true diff.
-    const tools = events.filter(event => event.type === 'gui:tool');
-    const noticeLines = errors.filter(message => /headless mode cannot prompt for|auto-denied/i.test(message));
-    assert.ok(events.some(event => event.type === 'gui:tool' && event.permissionBlocked && event.status === 'failed'
-      && /headless mode cannot prompt for/.test(event.output)),
-      'The native denial must reach the UI, not only the log'
-      + '\n  adapter stderr lines carrying the notice: ' + noticeLines.length
-      + (noticeLines.length ? '\n    ' + noticeLines.join('\n    ') : '')
-      + '\n  gui:tool events (' + tools.length + '): ' + JSON.stringify(tools, null, 2)
-      + '\n  all adapter stderr: ' + JSON.stringify(errors, null, 2));
-    assert.equal(events.filter(event => event.type === 'gui:permission').length, 0, 'A completed denial cannot pretend to be a pending approval');
+    async function review(prompt, allow) {
+      let resolve;
+      const pending = new Promise(yes => { resolve = yes; });
+      permission = resolve;
+      const result = send(prompt);
+      const event = await Promise.race([pending, result.then(r => { throw new Error('Missing native approval: ' + JSON.stringify(r)); })]);
+      assert.equal(fs.existsSync(path.join(cwd, 'denied.txt')), false, 'The write must wait for the user');
+      assert.equal(session.answerPermission(event.requestId, allow), true);
+      permission = null;
+      assert.equal((await result).subtype, 'success');
+      assert.equal(session.answerPermission(event.requestId, true), false, 'Approval is consumed once');
+      return event;
+    }
+    await review('GOOGLE SMOKE deny', false);
+    assert.equal(fs.existsSync(path.join(cwd, 'denied.txt')), false, 'Deny must keep the file absent');
+    assert.ok(events.some(event => event.type === 'gui:tool' && event.status === 'failed' && /user denied/.test(event.output)), 'Native denial reason reaches the UI');
+    await review('GOOGLE SMOKE deny then approve', true);
+    assert.equal(fs.readFileSync(path.join(cwd, 'denied.txt'), 'utf8').trim(), 'written-by-official-cli');
+    const imageFile = path.join(cwd, 'image.png');
+    const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR1sAAAAASUVORK5CYII=', 'base64');
+    fs.writeFileSync(imageFile, imageBytes);
+    assert.equal((await send('GOOGLE SMOKE image', [{path: imageFile, isImage: true}])).subtype, 'success');
+    assert.ok(requests.at(-1).contents.flatMap(m => m.parts || []).some(p => p.inlineData?.mimeType === 'image/png'
+      && Buffer.from(p.inlineData.data, 'base64').equals(imageBytes)), 'Actual image bytes must reach the native model request');
+    const reviewPending = new Promise(resolve => { permission = resolve; });
+    const reviewStopped = send('GOOGLE SMOKE review stop');
+    const oldRequest = await Promise.race([reviewPending, reviewStopped.then(r => { throw new Error('Missing pending approval: ' + JSON.stringify(r)); })]);
+    session.interrupt();
+    assert.equal((await reviewStopped).subtype, 'stopped');
+    assert.equal(session.answerPermission(oldRequest.requestId, true), false);
+    assert.equal(fs.existsSync(path.join(cwd, 'stopped.txt')), false);
+    permission = null;
+    const continued = await send('GOOGLE SMOKE after cancelled approval');
+    assert.equal(continued.subtype, 'success', 'A stopped turn can continue in the same bridge: ' + JSON.stringify(continued));
     const requestStarted = new Promise(resolve => { waiting = resolve; });
     const stopped = send('GOOGLE SMOKE wait');
     await Promise.race([requestStarted, stopped.then(() => { throw new Error('The waiting request ended too early'); })]);
@@ -150,16 +167,36 @@ async function run() {
     assert.equal(requests.length, count, 'An invalid pinned model must not fall back to a different model');
     await closeSession();
     selected = available;
+    // P0 discussion probe: a second member must start with an independent
+    // native conversation. Inspect plan-mode tools rather than assuming that
+    // the mode name establishes a security boundary.
+    if (process.argv.includes('--discussion-probe')) {
+      // Remove the explicit review rule used above: otherwise that rule, not
+      // plan mode, could be the reason the write was blocked.
+      fs.writeFileSync(settingsFile, JSON.stringify({ modelProvider: 'gemini', enableTelemetry: false }));
+      start({}, 'plan');
+      const probe = await send('GOOGLE SMOKE discussion member');
+      assert.equal(probe.subtype, 'success', JSON.stringify(probe));
+      assert.notEqual(probe.session_id, first.session_id);
+      const input = requests.at(-1);
+      assert.ok(input.contents.some(message => message.parts?.some(part => part.text?.includes('GOOGLE SMOKE discussion member'))));
+      assert.ok(!JSON.stringify(input.contents).includes('GOOGLE SMOKE hello'), 'A new member must not inherit another member history');
+      console.log('DISCUSSION PROBE plan tools: ' + JSON.stringify((input.tools || []).flatMap(tool => tool.functionDeclarations || []).map(tool => tool.name)));
+      console.log('DISCUSSION PROBE plan write executed: ' + fs.existsSync(path.join(cwd, 'discussion-plan.txt')));
+      await closeSession();
+    }
     start({ sessionId: invalid.session_id });
     assert.equal((await send('GOOGLE SMOKE retry after setup error')).subtype, 'success', 'A failed initialization can be retried from its saved workbench session');
     await closeSession();
     start({ sessionId: first.session_id, fork: true });
     assert.match((await send('GOOGLE SMOKE fork')).result, /does not support forks/);
     assert.equal(errors.filter(message => /AssertionError/.test(message)).length, 0, errors.join('\n'));
-    console.log('PASS: Official CLI models, streaming, per-turn usage, native resume, edits, review denial, cancel and resume.');
+    console.log('PASS: Official CLI models, streaming, per-turn usage, native resume, edits, images, interactive allow/deny, cancel and resume.');
   } finally {
     await closeSession();
     server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    seen.runtimeVersion = runtime.version;
+    seen.fixtureRequests = requests.length;
     assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
@@ -177,7 +214,7 @@ run().catch(error => {
         denialLinesInAdapterStderr: seen.errors.filter(message => /headless mode cannot prompt for|auto-denied/i.test(message)),
         guiToolEvents: seen.events.filter(event => event.type === 'gui:tool'),
         permissionEvents: seen.events.filter(event => event.type === 'gui:permission'),
-        adapterStderr: seen.errors }, null, 2));
+        adapterStderr: seen.errors, runtimeVersion: seen.runtimeVersion, fixtureRequests: seen.fixtureRequests }, null, 2));
   } catch (writeError) { console.error('Could not write diagnostics: ' + writeError.message); }
   process.exitCode = 1;
 });

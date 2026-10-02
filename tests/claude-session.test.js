@@ -21,6 +21,21 @@ function fixture(t, opts = {}) {
   return { session, proc, writes, events, results, timers, spawns };
 }
 
+test('image input failure leaves Claude idle and the next valid image send retains its actual bytes', context => {
+  const fs = require('node:fs'), os = require('node:os');
+  const file = path.join(os.tmpdir(), 'claude-image-' + require('node:crypto').randomUUID() + '.png');
+  context.after(() => fs.rmSync(file, { force: true }));
+  const h = fixture(context), before = h.writes.length;
+  assert.throws(() => h.session.sendUserMessage('Read this', [{ path: file, isImage: true }]), /ENOENT/);
+  assert.equal(h.session.running, false); assert.equal(h.writes.length, before); assert.equal(h.timers.size, 0);
+  const pixels = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aLa8AAAAASUVORK5CYII=', 'base64');
+  fs.writeFileSync(file, pixels);
+  assert.equal(h.session.sendUserMessage('Read this', [{ path: file, isImage: true }]), true);
+  const image = h.writes.at(-1).message.content[1];
+  assert.equal(image.source.media_type, 'image/png');
+  assert.deepEqual(Buffer.from(image.source.data, 'base64'), pixels);
+});
+
 test('Claude native compact requires a compact boundary and a successful result without a user result', async context => {
   const harness = fixture(context, { sessionId: 'original' });
   const done = harness.session.compact();

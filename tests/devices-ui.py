@@ -209,6 +209,16 @@ with sync_playwright() as playwright:
     page.locator('#markdown-fixture .md-code-wrap').first.click()
     expect(page.locator('#markdown-fixture .md-code').first).to_have_class('md-code is-wrapped')
     page.locator('#markdown-fixture').evaluate('(node) => node.remove()')
+    page.evaluate("""() => {
+      const area = document.createElement('article'); area.id = 'bilingual-fixture'; area.className = 'message message-body';
+      area.append(CamelliaMarkdown.render(document, '- `Title one`\\n中文译文一\\n- `Title two`\\n中文译文二\\n\\n- item\\n\\n普通段落'));
+      document.querySelector('main').append(area);
+    }""")
+    assert page.locator('#bilingual-fixture > ul').first.locator('> li').count() == 2
+    expect(page.locator('#bilingual-fixture li').first).to_contain_text('中文译文一')
+    expect(page.locator('#bilingual-fixture')).to_contain_text('普通段落')
+    assert page.locator('#bilingual-fixture > p').count() == 1
+    page.locator('#bilingual-fixture').evaluate('(node) => node.remove()')
     page.locator("#attach").click()
     expect(page.locator("#attachmentTray")).to_contain_text("notes.txt")
     page.locator("#older").click()
