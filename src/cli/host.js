@@ -140,8 +140,18 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
           if (action === 'usage') {
             const counters = require('../api/api-usage').counters;
             const cfg = routes();
-            return { ok: true, result: { scope: 'server', subscriptionUsage: subscriptionUsage.state(subscriptionProfiles(loadConfig())), providers: cfg.providers.map(provider => ({ name: provider.name,
-              ...provider.keys.reduce((total, key) => { for (const [field, value] of Object.entries(counters(cfg.usage?.[key.id]))) total[field] += value; return total; }, counters()) })) } };
+            const providers = cfg.providers.map(provider => ({ id: provider.id, name: provider.name, ...counters() }));
+            const byId = new Map(providers.map(provider => [provider.id, provider]));
+            const add = (provider, usage) => { for (const [field, value] of Object.entries(counters(usage))) provider[field] += value; };
+            for (const provider of cfg.providers) for (const key of provider.keys) add(byId.get(provider.id), cfg.usage?.[key.id]);
+            for (const archived of cfg.usageArchive || []) {
+              if (!byId.has(archived.providerId)) {
+                const provider = { id: archived.providerId, name: archived.providerName, ...counters() };
+                byId.set(provider.id, provider); providers.push(provider);
+              }
+              add(byId.get(archived.providerId), archived.usage);
+            }
+            return { ok: true, result: { scope: 'server', subscriptionUsage: subscriptionUsage.state(subscriptionProfiles(loadConfig())), providers } };
           }
           if (action === 'storage-scan') return { ok: true, result: await cleanup.scan() };
           if (action === 'storage-clean') {

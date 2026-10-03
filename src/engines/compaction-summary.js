@@ -121,7 +121,12 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
     // smaller target would only shrink the allowance the model needs to think.
     if (!text) {
       if (!widened) return remember(await once({ kind, system, user, maxChars, key, shorten, widened: true }));
-      throw new Error('Compaction failed: the summary request returned no text. The original conversation is retained.');
+      // Some reasoning models still spend the full ceiling on a large input.
+      // Let the map/reduce driver retry this same source in smaller fragments
+      // before giving up; an empty answer never counts as a summary.
+      const error = new Error('Compaction failed: the summary request returned no text. The original conversation is retained.');
+      error.emptySummary = true;
+      throw error;
     }
     if (truncated && shorten < MAX_SHORTENING_ATTEMPTS) {
       const attempt = shorten + 1;
@@ -156,7 +161,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
       checkpoint();
       return [{ key: task.key, text }];
     } catch (error) {
-      if (!error.overflow || !onOverflow || depth >= maxShrinks) throw error;
+      if (!(error.overflow || error.emptySummary) || !onOverflow || depth >= maxShrinks) throw error;
       if (current >= sized) { shrinks++; current = onOverflow(error, current); }
       return pool(split([task.units], task.key, depth + 1), depth + 1);
     }
@@ -228,7 +233,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
         try {
           text = await once({ kind: 'reduce', system: reduceInstruction(maxChars), user: mergePrompt(batch), maxChars, key: 'merge-' + depth + '-' + index });
         } catch (error) {
-          if (!error.overflow || !onOverflow || depth >= maxShrinks) throw error;
+          if (!(error.overflow || error.emptySummary) || !onOverflow || depth >= maxShrinks) throw error;
           if (current >= sized) { shrinks++; current = onOverflow(error, current); }
           text = await merge(batch, depth + 1);
         }

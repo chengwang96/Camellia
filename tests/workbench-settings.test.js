@@ -246,3 +246,32 @@ test('quick-switch defaults persist per engine, clear independently, and preserv
     assert.deepEqual({ ...reopened.call('workbench-settings').quickSwitchLevels }, { claude: 'medium' });
   } finally { harness.cleanup(); }
 });
+
+test('settings initialization preserves navigation made while preferences are loading', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.js'), 'utf8');
+  const navigation = source.slice(source.indexOf('function setView('), source.indexOf('const engineUI ='));
+  const startup = source.slice(source.indexOf('void refresh(true)'), source.indexOf('// Closing the window'));
+  for (const [initial, chosen, viaIpc] of [['mobile', null, false], ['general', 'mobile', false], ['mobile', 'general', false], ['general', 'mobile', true]]) {
+    let finishLoading;
+    const panels = new Map();
+    const context = vm.createContext({
+      hasNavigated: false, view: 'general', titles: { general: ['General', ''], mobile: ['Mobile access', ''] },
+      $: id => { if (!panels.has(id)) panels.set(id, {}); return panels.get(id); },
+      document: { querySelectorAll: () => [] },
+      engineUI: { setVisible() {}, pythonPage() {} },
+      window: { mobileAccessUI: { setVisible() {} } },
+      refresh: () => new Promise(resolve => { finishLoading = resolve; }),
+      URLSearchParams, location: { search: '?page=' + initial },
+    });
+    vm.runInContext(navigation + '\n' + startup, context);
+    if (chosen) {
+      if (viaIpc) context.navigateSettings({ page: chosen });
+      else context.setView(chosen);
+    }
+    finishLoading();
+    await new Promise(resolve => setImmediate(resolve));
+    const expected = chosen || initial;
+    assert.equal(context.view, expected);
+    assert.equal(panels.get(expected + 'Page').hidden, false);
+  }
+});

@@ -69,10 +69,10 @@ function createHarness(existingRoot) {
   vm.runInNewContext(source + '\nmodule.exports = { subscriptionUsage, claudeSessionMeta, resolveClaudeSessionContext, claudeGoalDrive: () => goalDriver.drive(), syncOllamaBaseUrl, resolveClaudeRoute, claudeSpawnSpec, stopRouter: stopOllamaProxyHandle, getSession: () => claudeSessions.legacy, sharedConversations, claudeSessions, kimiSessions, codex, antigravity, dshChat, setWindow: (w) => { mainWindow = w; } };', sandbox, { filename: 'src/main/main.js' });
   const api = sandbox.module.exports;
   api.setWindow({ isDestroyed: () => false, webContents: { send: (channel, data) => events.push({ channel, data }) } });
-  function call(channel, payload) {
+  function call(channel, payload, event = null) {
     const handler = handlers.get('dsh:' + channel);
     if (!handler) throw new Error('Unknown IPC: ' + channel);
-    return handler(null, payload);
+    return handler(event, payload);
   }
   function folder(name) { const dir = path.join(root, name); fs.mkdirSync(dir, { recursive: true }); return dir; }
   function configureApi() {

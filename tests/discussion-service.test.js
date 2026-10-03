@@ -57,6 +57,23 @@ test('public discussion workflow persists notes, bounds members, and rejects for
   assert.equal((await service.call('load', { id: group.id })).group.messages[0].text, 'A note');
 });
 
+test('new discussion messages rise to the top within their pin group across reloads', async t => {
+  const h = setup(t);
+  const first = (await h.service.call('create', { title: 'First' })).group;
+  const second = (await h.service.call('create', { title: 'Second' })).group;
+  const third = (await h.service.call('create', { title: 'Third' })).group;
+  assert.deepEqual(h.service.list().map(row => row.id), [third.id, second.id, first.id]);
+  await h.service.call('send', { id: first.id, requestId: 'first-note', text: 'New note', participantIds: [] });
+  assert.deepEqual(h.service.list().map(row => row.id), [first.id, third.id, second.id]);
+  await h.service.call('rename', { id: second.id, title: 'Renamed' });
+  assert.equal(h.service.list()[0].id, first.id);
+  await h.service.call('pin', { id: third.id, pinned: true });
+  await h.service.call('send', { id: second.id, requestId: 'second-note', text: 'Later note', participantIds: [] });
+  assert.deepEqual(new DiscussionService(h.options).list().map(row => row.id), [third.id, second.id, first.id]);
+  await h.service.call('send', { id: first.id, requestId: 'first-note', text: 'New note', participantIds: [] });
+  assert.deepEqual(h.service.list().map(row => row.id), [third.id, second.id, first.id]);
+});
+
 test('serial discussion sends attributed prior replies, resumes after restart, and keeps native details out of IPC', async t => {
   const h = setup(t), group = await createMembers(h.service);
   await h.service.call('send', { id: group.id, requestId: 'first', text: 'Compare these designs', participantIds: group.participants.map(p => p.id), mode: 'serial' });

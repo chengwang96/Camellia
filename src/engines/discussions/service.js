@@ -80,9 +80,10 @@ class DiscussionService {
   }
   list() {
     return this.manager.list().map(s => ({ id: s.id, title: s.title, pinned: Boolean(s.pinned), revision: s.revision, seq: s.seq,
+      lastMessageAt: s.lastMessageAt || 0,
       members: s.participants.filter(p => !p.removed).length, active: this.busy(s.id, s),
       preview: (s.messages.at(-1)?.text || '').slice(0, 120) }))
-      .sort((a, b) => Number(b.pinned) - Number(a.pinned));
+      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.lastMessageAt - a.lastMessageAt || a.id.localeCompare(b.id));
   }
   busy(id, state = this.manager.get(id)) {
     return state.stopPending || state.deliveries.some(d => OPEN.has(d.status))

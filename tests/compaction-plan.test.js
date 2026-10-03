@@ -338,6 +338,22 @@ test('a reasoning model that spends the whole cap on thinking is retried at the 
     request: async () => ({ text: '', truncated: true }) }), /returned no text/);
 });
 
+test('an empty summary at the output ceiling retries smaller source fragments', async () => {
+  const calls = [];
+  const result = await runSummaryPipeline({ units: [[{ role: 'user', text: 'A'.repeat(9000) }]], budget: 12000,
+    onOverflow: (_error, current) => current / 2,
+    request: async options => {
+      calls.push({ kind: options.kind, inputChars: options.user.length, maxTokens: options.maxTokens });
+      if (options.kind === 'map' && options.user.length > 5000) return { text: '', truncated: true };
+      return { text: options.kind === 'map' ? 'Complete fragment' : 'Complete summary' };
+    } });
+  assert.equal(calls[0].inputChars, calls[1].inputChars);
+  assert.ok(calls[1].maxTokens > calls[0].maxTokens);
+  assert.ok(calls.some(call => call.kind === 'map' && call.inputChars < 5000));
+  assert.ok(result.shrinks > 0);
+  assert.ok(result.summary.trim());
+});
+
 test('a large summarizer budget still obeys the smaller destination summary limit', async () => {
   const calls = [];
   const result = await runSummaryPipeline({ units: [[{ role: 'user', text: 'History' }]], budget: 120000,

@@ -124,7 +124,11 @@
     for (const [index, file] of files.entries()) {
       const chip = document.createElement('div'); chip.className = 'attchip'; chip.title = file.path;
       if (file.isImage || file.kind === 'image') { const image = document.createElement('img'); image.src = fileUrl(file.path); image.alt = ''; chip.append(image); }
-      else { const glyph = document.createElement('span'); glyph.innerHTML = attachmentGlyph(file.name, false, 'attchip-fileicon'); chip.append(...glyph.childNodes); }
+      else if (file.kind === 'conversation') {
+        const glyph = document.createElement('span'); glyph.className = 'attchip-fileicon attchip-conversation-icon';
+        glyph.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+        chip.append(glyph);
+      } else { const glyph = document.createElement('span'); glyph.innerHTML = attachmentGlyph(file.name, false, 'attchip-fileicon'); chip.append(...glyph.childNodes); }
       const name = document.createElement('span'); name.className = 'attchip-name'; name.textContent = file.name;
       name.tabIndex = 0; name.role = 'button'; name.title = window.CamelliaI18n.t('Preview');
       name.onclick = () => preview?.(file.path);

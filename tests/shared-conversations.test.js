@@ -616,6 +616,11 @@ test('native compaction failure and cancellation retain mappings without silent 
     assert.equal(harness.sent.length, 1);
     assert.equal(manager.busy(conversation.id), false);
     assert.equal(conversation.pending, null);
+    const restarted = harness.restart(), restored = restarted.load('codex', conversation.id);
+    assert.equal(restored.compaction.state, mode === 'failure' ? 'failed' : 'cancelled');
+    if (mode === 'failure') assert.match(restored.compaction.error, /Provider unavailable/);
+    restarted.append(restarted.get(conversation.id), { role: 'user', text: 'Continue after compaction' });
+    assert.equal(restarted.load('codex', conversation.id).compaction, null);
   }
 });
 
@@ -3218,7 +3223,7 @@ test('stopping pre-send compaction during setup sends neither summary nor task',
   assert.equal(f.manager.busy(conversation.id), false);
   assert.equal(statuses.at(-1).text, '');
   assert.equal(statuses.at(-1).compaction.state, 'cancelled');
-  assert.equal(f.manager.load('codex', conversation.id).compaction, null);
+  assert.equal(f.manager.load('codex', conversation.id).compaction.state, 'cancelled');
 });
 
 test('resending after stop reports internal compaction before the visible turn starts', async context => {
@@ -3283,6 +3288,12 @@ test('failed pre-send compaction rejects the task instead of sending oversized h
   assert.equal(f.sent.length, 1);
   assert.equal(f.manager.busy(conversation.id), false);
   assert.equal(f.manager.messages(conversation).some(row => row.role === 'user' || row.file), false);
+  const restarted = f.restart(), restored = restarted.load('dsh', conversation.id);
+  assert.equal(restored.compaction.state, 'failed');
+  assert.match(restored.compaction.error, /Provider unavailable/);
+  assert.equal(restored.messages.some(row => row.role === 'user'), false);
+  restarted.append(restarted.get(conversation.id), { role: 'user', text: 'Continue after compaction' });
+  assert.equal(restarted.load('dsh', conversation.id).compaction, null);
 });
 
 test('a conversation under its window cap sends without pre-compaction', async t => {
@@ -4015,6 +4026,97 @@ test('summary failure surfaces a terminal error without replaying the original t
   await f.flush();
   assert.equal(f.sent.length, 2);
   assert.equal(f.manager.busy(run.sessionId), false);
+});
+
+test('terminal errors keep their result styling after history reload and stay out of model context', async context => {
+  const harness = fixture(context);
+  const run = await harness.manager.send('codex', { prompt: 'Finish the task' });
+  harness.finish('codex', 'error', 'Provider unavailable');
+  await run.done;
+  let manager = harness.manager;
+  let conversation = manager.get(run.sessionId);
+  let row = manager.messages(conversation).at(-1);
+  assert.equal(row.role, 'assistant');
+  assert.equal(row.runResult.result, 'Provider unavailable');
+  assert.equal(row.runResult.is_error, true);
+  assert.ok(Number.isFinite(row.runResult.duration_ms));
+  manager = harness.restart();
+  conversation = manager.get(run.sessionId);
+  row = manager.load('codex', run.sessionId).messages.at(-1);
+  assert.equal(row.runResult.result, 'Provider unavailable');
+  assert.doesNotMatch(manager.context(conversation, 'codex'), /Provider unavailable/);
+
+  const old = manager.create('codex');
+  manager.append(old, { role: 'user', text: 'Earlier task' });
+  manager.append(old, { role: 'assistant', text: 'Context recovery failed: Compaction failed: the summary request returned no text.' });
+  const legacy = manager.load('codex', old.id).messages.at(-1);
+  assert.equal(legacy.runResult.is_error, true);
+  assert.doesNotMatch(manager.context(old, 'codex'), /Context recovery failed/);
+});
+
+test('conversation attachments snapshot the saved transcript and remain available after deleting the source', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const source = manager.create('codex', undefined, 'Broken context');
+  manager.append(source, { role: 'user', engine: 'codex', text: 'Implement the feature' });
+  manager.append(source, { role: 'tool', engine: 'codex', text: 'Changed src/example.js' });
+  manager.append(source, { role: 'assistant', engine: 'codex', text: 'Connection failed',
+    runResult: { subtype: 'error', is_error: true, result: 'Connection failed' } });
+  const listed = await manager.command('claude', 'list-attachable-conversations', { query: 'broken' });
+  assert.deepEqual(listed.sessions.map(session => session.id), [source.id]);
+  assert.equal((await manager.command('claude', 'list-attachable-conversations', { excludeId: source.id })).sessions.length, 0);
+  const { attachment } = await manager.command('claude', 'attach-conversation', { sessionId: source.id });
+  assert.equal(attachment.kind, 'conversation');
+  const snapshot = fs.readFileSync(attachment.path, 'utf8');
+  assert.match(snapshot, /Implement the feature/);
+  assert.match(snapshot, /Changed src\/example\.js/);
+  assert.match(snapshot, /Connection failed/);
+  const unused = (await manager.command('claude', 'attach-conversation', { sessionId: source.id })).attachment;
+  assert.deepEqual(await manager.command('claude', 'discard-conversation-attachment', { path: unused.path }), { ok: true, discarded: true });
+  assert.equal(fs.existsSync(unused.path), false);
+  manager.purge(source.id);
+  assert.equal(fs.existsSync(attachment.path), true);
+  const destination = manager.create('claude');
+  manager.append(destination, { role: 'user', engine: 'claude', text: 'Continue', attachments: [attachment] });
+  assert.deepEqual(await manager.command('claude', 'discard-conversation-attachment', { path: attachment.path }), { ok: true, discarded: false });
+  manager.purge(destination.id);
+  assert.equal(fs.existsSync(attachment.path), false);
+});
+
+test('manual compaction can retry after a failed turn and a temporary summary quota error', async context => {
+  let quotaFailed = true;
+  const harness = fixture(context, { summarize: { available: () => true,
+    run: async () => { if (quotaFailed) throw new Error('HTTP 429: quota exceeded'); return { text: 'Recovered task summary' }; } } });
+  const manager = harness.manager;
+  const run = await manager.send('codex', { prompt: 'Finish the original task' });
+  harness.finish('codex', 'error', 'Connection failed before the answer completed');
+  await run.done;
+  const conversation = manager.get(run.sessionId);
+  await assert.rejects(manager.compact(conversation.id), /quota exceeded/);
+  assert.equal(manager.busy(conversation.id), false);
+  assert.equal(conversation.pending, null);
+  quotaFailed = false;
+  const compacted = await manager.compact(conversation.id);
+  assert.ok(compacted.file && fs.existsSync(compacted.file));
+  assert.doesNotMatch(fs.readFileSync(compacted.file, 'utf8'), /Connection failed before the answer completed/);
+  const next = await manager.send('codex', { sessionId: conversation.id, prompt: 'Continue' });
+  assert.match(harness.sent.at(-1).prompt, /Recovered task summary/);
+  harness.finish('codex', 'success', 'Completed');
+  await next.done;
+});
+
+test('retrying a failed turn revises it without replaying the failed result', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const first = await manager.send('codex', { prompt: 'Complete the report' });
+  harness.finish('codex', 'error', 'Safety check failed');
+  await first.done;
+  const retried = await manager.send('codex', { sessionId: first.sessionId, editSeq: first.userSeq,
+    prompt: 'Complete the report', displayText: 'Complete the report' });
+  assert.notEqual(retried.userSeq, first.userSeq);
+  assert.match(harness.sent.at(-1).prompt, /Complete the report/);
+  assert.doesNotMatch(harness.sent.at(-1).prompt, /Safety check failed/);
+  assert.equal(manager.rows(manager.get(first.sessionId)).filter(row => row.role === 'user').length, 1);
+  harness.finish('codex', 'success', 'Done');
+  await retried.done;
 });
 
 test('a summary failure that already carries the advice is not repeated in the recovery error', async context => {

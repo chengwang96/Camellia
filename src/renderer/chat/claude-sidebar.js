@@ -363,6 +363,20 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
   function positionDragPreview() {
     drag.preview.style.transform = `translate3d(${drag.x - drag.offsetX}px, ${drag.y - drag.offsetY}px, 0)`;
   }
+  function sessionGapTarget(hit, scrollDelta) {
+    // The margins between cards belong to their insertion slots too. Without
+    // this, a gap hits the workspace container and loses the row position.
+    if (hit?.element.dataset.sid) return hit;
+    const rows = drag.dropRects.filter(candidate => candidate.element.dataset.sid && candidate.element.dataset.sid !== drag.sessionId);
+    const distance = candidate => Math.max(candidate.rect.top - scrollDelta - drag.y, drag.y - candidate.rect.bottom + scrollDelta, 0);
+    const nearest = rows.reduce((best, candidate) => !best || distance(candidate) < distance(best) ? candidate : best, null);
+    const group = hit?.element.dataset.dropGroup || (nearest && distance(nearest) <= 12 ? nearest.element.dataset.dropGroup : null);
+    if (!group) return hit;
+    const groupRows = rows.filter(candidate => candidate.element.dataset.dropGroup === group);
+    if (!groupRows.length || drag.y < groupRows[0].rect.top - scrollDelta - 12
+        || drag.y > groupRows.at(-1).rect.bottom - scrollDelta + 12) return hit;
+    return groupRows.find(candidate => drag.y < candidate.rect.top - scrollDelta + candidate.rect.height / 2) || groupRows.at(-1);
+  }
   function updateDropTarget() {
     const list = $('sessionList');
     const bounds = list.getBoundingClientRect();
@@ -373,6 +387,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
         const rect = candidate.rect;
         if (drag.x >= rect.left && drag.x <= rect.right && drag.y >= rect.top - scrollDelta && drag.y <= rect.bottom - scrollDelta) hit = candidate;
       }
+      if (!drag.workspaceId) hit = sessionGapTarget(hit, scrollDelta);
     }
     const isSource = drag.workspaceId ? hit?.element.dataset.workspaceId === drag.workspaceId : hit?.element.dataset.sid === drag.sessionId;
     const hovered = isSource ? null : hit?.element;

@@ -28,36 +28,70 @@ jobs:
           cache-dependency-path: android/tailnet/go.sum
       - name: SDK and Java
         run: |
-          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
-          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
-          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'system-images;android-35;default;x86_64' 'emulator'
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          android_tools="$ANDROID_HOME/cmdline-tools/latest/bin"
+          export PATH="$JAVA_HOME/bin:$android_tools:$ANDROID_HOME/platform-tools:$PATH"
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> "$GITHUB_ENV"
+          printf '%s\n' "$JAVA_HOME/bin" "$android_tools" "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          sdkmanager --version
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'system-images;android-35;default;x86_64'
+      - name: Pin Android emulator
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libpulse0
+          # Keep the host emulator reproducible; use ANGLE rendering below.
+          # Version 36.4.10 and checksum: https://developer.android.com/studio/emulator_archive
+          archive="$RUNNER_TEMP/emulator-linux_x64-15004761.zip"
+          curl --fail --location --retry 3 --output "$archive" https://redirector.gvt1.com/edgedl/android/repository/emulator-linux_x64-15004761.zip
+          echo "58bfdf0572f06ec007a7287154cdc6b2ebfea947d07a1e26a0f6b5e1a39e9191  $archive" | sha256sum --check
+          unzip -q "$archive" -d "$RUNNER_TEMP/camellia-emulator"
+          echo "EMULATOR=$RUNNER_TEMP/camellia-emulator/emulator/emulator" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/camellia-emulator/emulator/emulator" -version
       - name: Build embedded networking
         run: bash android/build-tailnet.sh
       - name: Android build, unit tests and lint
         working-directory: android
         run: bash gradlew assembleDebug testDebugUnitTest lintDebug assembleDebugAndroidTest
       - name: Remote protocol tests
-        run: node --test tests/remote-access.test.js tests/remote-desktop.test.js tests/remote-approvals.test.js tests/remote-discussions.test.js tests/remote-settings.test.js
+        run: node --test tests/android-integration-cleanup.test.js tests/remote-access.test.js tests/remote-desktop.test.js tests/remote-approvals.test.js tests/remote-discussions.test.js tests/remote-settings.test.js
       - name: Android UI and gateway integration
+        timeout-minutes: 10
+        shell: bash
         env:
           ANDROID_SERIAL: emulator-5584
         run: |
           export ADB="$ANDROID_HOME/platform-tools/adb"
-          mkdir -p .ci-logs
+          export ANDROID_USER_HOME="$RUNNER_TEMP/camellia-android"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p .ci-logs "$ANDROID_AVD_HOME"
           sudo chmod 666 /dev/kvm
           echo no | avdmanager create avd --name CamelliaCI --package 'system-images;android-35;default;x86_64' --device pixel_4
-          "$ANDROID_HOME/emulator/emulator" -avd CamelliaCI -port 5584 -no-window -no-snapshot -no-audio -no-boot-anim -gpu swiftshader -cores 2 > .ci-logs/emulator.log 2>&1 &
+          test -f "$ANDROID_AVD_HOME/CamelliaCI.ini"
+          "$EMULATOR" -list-avds | grep -Fx CamelliaCI
+          # Native SwiftShader GLES crashes during activity transitions on this
+          # runner; swangle uses ANGLE with the SwiftShader software drivers.
+          "$EMULATOR" -avd CamelliaCI -port 5584 -no-window -no-snapshot -no-audio -no-boot-anim -gpu swangle -feature -Vulkan,-WiFiPacketStream -cores 2 > .ci-logs/emulator.log 2>&1 &
           trap '"$ADB" -s "$ANDROID_SERIAL" emu kill || true' EXIT
           timeout 180 "$ADB" -s "$ANDROID_SERIAL" wait-for-device
           for i in $(seq 1 90); do
             if [ "$("$ADB" -s "$ANDROID_SERIAL" shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; then break; fi
             sleep 2
           done
-          "$ADB" -s "$ANDROID_SERIAL" root
-          "$ADB" -s "$ANDROID_SERIAL" wait-for-device
-          node tests/android-pairing-smoke.cjs
-          node tests/android-gateway-smoke.cjs
-          node tests/android-discussions-smoke.cjs
+          test "$("$ADB" -s "$ANDROID_SERIAL" shell getprop sys.boot_completed | tr -d '\r')" = 1
+          # adbd can close its first connection while the guest finishes booting
+          # or switches to root. Verify the resulting identity, not that reply.
+          for i in $(seq 1 5); do
+            timeout 15 "$ADB" -s "$ANDROID_SERIAL" root || true
+            if timeout 30 "$ADB" -s "$ANDROID_SERIAL" wait-for-device &&
+              [ "$(timeout 10 "$ADB" -s "$ANDROID_SERIAL" shell id -u | tr -d '\r')" = 0 ]; then break; fi
+            sleep 2
+          done
+          test "$(timeout 10 "$ADB" -s "$ANDROID_SERIAL" shell id -u | tr -d '\r')" = 0
+          node tests/android-pairing-smoke.cjs 2>&1 | tee .ci-logs/android-pairing.log
+          node tests/android-gateway-smoke.cjs 2>&1 | tee .ci-logs/android-gateway.log
+          node tests/android-discussions-smoke.cjs 2>&1 | tee .ci-logs/android-discussions.log
           "$ADB" -s "$ANDROID_SERIAL" shell am instrument -w -e class app.camellia.mobile.RemoteAutomationTest,app.camellia.mobile.PendingCommandTest,app.camellia.mobile.RemoteRichControlsTest,app.camellia.mobile.MobileLayoutRefinementTest,app.camellia.mobile.RemoteSettingsTest,app.camellia.mobile.RemoteConnectionTest,app.camellia.mobile.RemoteComposerInputTest,app.camellia.mobile.RemoteViewportTest,app.camellia.mobile.RemoteMessageQueueTest,app.camellia.mobile.NavigationTest app.camellia.mobile.test/android.test.InstrumentationTestRunner | tee .ci-logs/android-ui.log
           grep -q '^OK (' .ci-logs/android-ui.log
       - name: Save Android package and test reports
@@ -65,6 +99,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: camellia-android-debug-and-reports
+          include-hidden-files: true
           path: |
             android/app/build/outputs/apk/debug/*.apk
             android/app/build/reports/

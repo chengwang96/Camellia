@@ -23,7 +23,7 @@ function fixture(storage = new Map()) {
   vm.createContext(state);
   vm.runInContext([
     extract('  function saveMessageQueue(', "  window.addEventListener('beforeunload'"),
-    extract('  function drainMessageQueue()', "  $('attachBtn').addEventListener"),
+    extract('  function drainMessageQueue()', "  const attachBtn = $('attachBtn');"),
   ].join('\n'), state);
   state.navigate = id => {
     state.context.sessionId = id;

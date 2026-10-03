@@ -646,10 +646,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     for (const p of openPops) p.remove();
     openPops = [];
     $('modelPill').classList.remove('open');
+    $('attachBtn').setAttribute('aria-expanded', 'false');
   }
   document.addEventListener('mousedown', (e) => {
     if (!openPops.length) return;
-    if (openPops.some((p) => p.contains(e.target)) || $('modelPill').contains(e.target)) return;
+    if (openPops.some((p) => p.contains(e.target)) || $('modelPill').contains(e.target) || $('attachBtn').contains(e.target)) return;
     closePops();
   });
 
@@ -1069,7 +1070,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function renderAttachments() {
     window.CamelliaChatControls.renderAttachments($('attachRow'), attachments, {
       preview: openFilePreview,
-      remove: index => { attachments.splice(index, 1); renderAttachments(); },
+      remove: index => {
+        const [removed] = attachments.splice(index, 1);
+        renderAttachments();
+        if (removed?.kind === 'conversation') void window.dshDesktop.conversationCommand({ engine: harnessId,
+          action: 'discard-conversation-attachment', payload: { path: removed.path } }).catch(error => setStatus(error.message));
+      },
     });
     saveDraft(); updateSendEnabled();
   }
@@ -1205,10 +1211,103 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     });
   }
 
-  $('attachBtn').addEventListener('click', async () => {
-    const res = await window.dshDesktop.pickAttachments();
-    if (!res.canceled) addAttachments(res.paths);
-  });
+  const attachBtn = $('attachBtn');
+  function positionAttachPop(pop) {
+    const rect = attachBtn.getBoundingClientRect();
+    pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - pop.offsetWidth - 8)) + 'px';
+    clampPopPosition(pop, rect.top - pop.offsetHeight - 8, null);
+  }
+  function attachmentMenu() {
+    if (openPops.some(pop => pop.classList.contains('attach-pop'))) { closePops(); return; }
+    closePops();
+    const pop = document.createElement('div');
+    pop.className = 'dsh-pop attach-pop';
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', window.CamelliaI18n.t('Add attachments'));
+    pop.onkeydown = event => {
+      if (event.key === 'Escape') { event.preventDefault(); closePops(); attachBtn.focus(); }
+    };
+    document.body.appendChild(pop);
+    openPops.push(pop);
+    attachBtn.setAttribute('aria-expanded', 'true');
+    const t = value => window.CamelliaI18n.t(value);
+    const icon = kind => kind === 'file'
+      ? '<path d="M21 11.5V17a5 5 0 0 1-10 0V6a3 3 0 0 1 6 0v10a1 1 0 0 1-2 0V7"/>'
+      : '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>';
+    function row(label, kind, action) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'pop-row attach-option';
+      button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + icon(kind) + '</svg><span></span>';
+      button.querySelector('span').textContent = t(label);
+      button.onclick = action;
+      return button;
+    }
+    function mainMenu() {
+      pop.replaceChildren();
+      const heading = document.createElement('div'); heading.className = 'pop-group'; heading.textContent = t('Add');
+      const files = row('Files', 'file', async () => {
+        closePops();
+        try { const result = await window.dshDesktop.pickAttachments(); if (!result.canceled) addAttachments(result.paths); }
+        catch (error) { setStatus(error.message || t('Could not add attachments')); }
+      });
+      const conversation = row('Conversation', 'conversation', showConversations);
+      pop.append(heading, files, conversation);
+      positionAttachPop(pop);
+      files.focus();
+    }
+    let searchSeq = 0;
+    function showConversations() {
+      pop.replaceChildren();
+      const header = document.createElement('div'); header.className = 'attach-picker-header';
+      const back = document.createElement('button'); back.type = 'button'; back.className = 'attach-picker-back'; back.setAttribute('aria-label', t('Back')); back.textContent = '‹'; back.onclick = mainMenu;
+      const title = document.createElement('strong'); title.textContent = t('Attach a conversation');
+      header.append(back, title);
+      const search = document.createElement('input'); search.type = 'search'; search.className = 'attach-picker-search';
+      search.placeholder = t('Search conversations'); search.setAttribute('aria-label', t('Search conversations'));
+      const list = document.createElement('div'); list.className = 'attach-picker-list'; list.setAttribute('role', 'listbox');
+      pop.append(header, search, list);
+      positionAttachPop(pop);
+      search.focus();
+      async function load() {
+        const seq = ++searchSeq;
+        list.textContent = t('Loading conversations…');
+        try {
+          const result = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'list-attachable-conversations',
+            payload: { query: search.value, excludeId: context.sessionId } });
+          if (seq !== searchSeq || !pop.isConnected) return;
+          if (!result.ok) throw new Error(result.error);
+          list.replaceChildren();
+          if (!result.sessions.length) { list.textContent = t('No conversations found'); positionAttachPop(pop); return; }
+          for (const session of result.sessions) {
+            const option = document.createElement('button'); option.type = 'button'; option.className = 'attach-conversation-option';
+            option.setAttribute('role', 'option');
+            const name = document.createElement('span'); name.className = 'attach-conversation-title'; name.textContent = session.title;
+            const detail = document.createElement('span'); detail.className = 'attach-conversation-detail';
+            detail.textContent = (ENGINE_SHORT_NAMES[session.engine] || session.engine) + ' · ' + session.cwd;
+            option.append(name, detail);
+            option.onclick = async () => {
+              const alreadyAttached = () => attachments.some(file => file.kind === 'conversation' && file.sourceSessionId === session.id);
+              if (alreadyAttached()) { closePops(); input.focus(); return; }
+              option.disabled = true;
+              try {
+                const attached = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'attach-conversation', payload: { sessionId: session.id } });
+                if (!attached.ok) throw new Error(attached.error);
+                if (alreadyAttached()) await window.dshDesktop.conversationCommand({ engine: harnessId,
+                  action: 'discard-conversation-attachment', payload: { path: attached.attachment.path } });
+                else attachments.push(attached.attachment);
+                renderAttachments(); closePops(); input.focus();
+              } catch (error) { option.disabled = false; setStatus(error.message || t('Could not attach conversation')); }
+            };
+            list.append(option);
+          }
+          positionAttachPop(pop);
+        } catch (error) { if (seq === searchSeq && pop.isConnected) list.textContent = error.message; }
+      }
+      search.oninput = () => void load();
+      void load();
+    }
+    mainMenu();
+  }
+  attachBtn.addEventListener('click', attachmentMenu);
 
   // Drag & drop onto the input card
   inputCard.addEventListener('dragover', (e) => {
@@ -1364,6 +1463,31 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     return div;
   }
 
+  function showFailedSend(attempt, existing) {
+    if (!attempt || !context.sessionId) return;
+    const persisted = !existing && Number.isFinite(attempt.at)
+      ? [...chat.querySelectorAll('.msg-user')].reverse().find(row => row.messageData?.seq
+        && row.messageData.at >= attempt.at && row.messageData.text === (attempt.text || '[Attachments]')) : null;
+    const div = existing || persisted || addUser(attempt.text || '[Attachments]', attempt.attachments, { at: attempt.at || Date.now() });
+    if (div.querySelector('.failed-send')) return;
+    const controls = document.createElement('div'); controls.className = 'failed-send';
+    const error = document.createElement('span'); error.textContent = window.CamelliaI18n.t('Failed to start') + ': ' + attempt.error;
+    const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'Edit message'; edit.dataset.i18n = '';
+    edit.onclick = () => {
+      if (div.messageData.seq) {
+        beginMessageEdit(div);
+        if (editingMessage?.div === div) { writeUi('failed-send:' + context.sessionId, null); controls.remove(); }
+        return;
+      }
+      input.value = attempt.text;
+      attachments = attempt.attachments || [];
+      renderAttachments(); autoResize(); updateSendEnabled(); saveDraft();
+      writeUi('failed-send:' + context.sessionId, null);
+      div.remove(); input.focus();
+    };
+    controls.append(error, edit); div.appendChild(controls);
+  }
+
   function updateMessageActions() {
     const users = [...chat.querySelectorAll('.msg-user')];
     const editable = sharedChat && context.sessionId && !conversationBusy() && !loadingSession && !sending && !switchingEngine;
@@ -1400,7 +1524,15 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const status = document.createElement('div'); status.className = 'message-edit-status'; status.dataset.i18n = ''; status.hidden = true; status.setAttribute('role', 'status');
     controls.append(cancel, submit); form.append(textarea, hint, status, controls); div.appendChild(form); div.classList.add('editing');
     const state = { div, form, textarea, submit, cancel, status, sessionId: context.sessionId }; editingMessage = state;
-    const resize = () => { textarea.style.height = 'auto'; textarea.style.height = Math.min(320, Math.max(100, textarea.scrollHeight)) + 'px'; submit.disabled = !textarea.value.trim() && !div.messageData.attachments.length; };
+    const resize = () => {
+      const previousHeight = textarea.offsetHeight;
+      textarea.style.height = 'auto';
+      textarea.style.height = Math.min(320, Math.max(100, textarea.scrollHeight)) + 'px';
+      submit.disabled = !textarea.value.trim() && !div.messageData.attachments.length;
+      if (textarea.offsetHeight > previousHeight) requestAnimationFrame(() => {
+        if (editingMessage === state) controls.scrollIntoView({ block: 'nearest' });
+      });
+    };
     textarea.oninput = resize;
     textarea.onkeydown = event => {
       if (event.key === 'Escape') { event.preventDefault(); cancelMessageEdit(); }
@@ -1408,12 +1540,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     };
     form.onsubmit = event => { event.preventDefault(); void resendEditedMessage(state); };
     updateConversationControls(); resize(); textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    controls.scrollIntoView({ block: 'nearest' });
   }
 
   function showMessageEditStatus(state, text, error = false) {
     state.status.textContent = text; state.status.hidden = false;
     state.status.classList.toggle('error', error); state.status.setAttribute('role', error ? 'alert' : 'status');
     state.status.scrollIntoView({ block: 'nearest' });
+    state.submit.scrollIntoView({ block: 'nearest' });
   }
 
   async function resendEditedMessage(state) {
@@ -1505,7 +1639,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!body) return '';
     const visible = [...body.children].filter(el => el.classList.contains('md') && !el.closest('.execution-process'));
     const blocks = visible.length ? visible : [...body.querySelectorAll('.md')];
-    return blocks.map(el => el.artifactText ?? el.textContent).filter(text => text?.trim()).join('\n\n').trim();
+    return blocks.map(el => el.artifactText ?? el.textContent).filter(text => text?.trim()).join('\n\n').trim()
+      || turn?.querySelector('.run-result')?.textContent || '';
   }
   function turnFooter(turn, at, readText) {
     if (!turn) return null;
@@ -1991,6 +2126,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       ? (compaction.finalChunk ? 'Summarizing context: chunk {0} (last)…' : 'Summarizing context: chunk {0}…').replace('{0}', compaction.chunk)
       : compaction.stage === 'saving' ? 'Saving compacted context…' : label;
     row.querySelector('span').textContent = compaction.state === 'running' ? progress : label;
+    let errorEl = row.querySelector('.context-compaction-error');
+    if (compaction.state === 'failed' && compaction.error) {
+      if (!errorEl) { errorEl = document.createElement('div'); errorEl.className = 'context-compaction-error'; row.appendChild(errorEl); }
+      errorEl.textContent = compaction.error;
+    } else errorEl?.remove();
     // The label is translated in place, so the elapsed time lives beside it
     // instead of inside the translated text node.
     const durationMs = compaction.state === 'completed' ? compaction.durationMs ?? compaction.totalMs : NaN;
@@ -2090,22 +2230,47 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   });
   $('ctxRing').addEventListener('mouseleave', () => { ctxTip?.remove(); ctxTip = null; });
 
-  function resultStats(ev) {
+  function resultStats(ev, updateUsage = true) {
     const parts = [];
     if (ev.num_turns != null) parts.push(ev.num_turns + " ");
-    parts.push("Elapsed " + (ev.duration_ms != null ? fmtDuration(ev.duration_ms) : fmtDuration(Date.now() - runStartedAt)));
+    if (ev.duration_ms != null || updateUsage) parts.push("Elapsed " + (ev.duration_ms != null ? fmtDuration(ev.duration_ms) : fmtDuration(Date.now() - runStartedAt)));
     if (ev.total_cost_usd != null) parts.push('$' + Number(ev.total_cost_usd).toFixed(4));
     const u = ev.usage;
     if (u) {
-      lastUsage = u;
-      if (!lastCallUsage && contextTokens(u) > 0) contextUsage = u;
-      updateCtxRing();
+      if (updateUsage) {
+        lastUsage = u;
+        if (!lastCallUsage && contextTokens(u) > 0) contextUsage = u;
+        updateCtxRing();
+      }
       const input = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
       parts.push("Input " + fmtTokens(input) + ' tok');
       parts.push("Output " + fmtTokens(u.output_tokens) + ' tok');
       if (u.cache_read_input_tokens) parts.push("Cache hit " + fmtTokens(u.cache_read_input_tokens) + ' tok');
     }
     return parts;
+  }
+  function runResultChip(ev, updateUsage = true, retrySeq = null) {
+    const stopped = ev.subtype === 'stopped';
+    const ok = !ev.is_error && ev.subtype !== 'error_max_turns' && !stopped;
+    const stats = resultStats(ev, updateUsage);
+    const chip = document.createElement('div');
+    chip.className = 'run-result ' + (ok ? 'ok' : 'err');
+    const errLabel = ev.subtype && ev.subtype !== 'success' ? ev.subtype : 'Error';
+    chip.textContent = (stopped ? '■ Stopped' : ok ? '✓ Done' : '✗ ' + (ev.result || errLabel))
+      + (stats.length ? ' · ' + stats.slice(0, 3).join(' · ') : '');
+    if (!ok && !stopped && sharedChat && Number.isSafeInteger(retrySeq)) {
+      const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'run-retry';
+      retry.textContent = window.CamelliaI18n.t('Retry turn');
+      retry.title = window.CamelliaI18n.t('Restart this turn from the saved history');
+      retry.onclick = () => {
+        const user = [...chat.querySelectorAll('.msg-user')].at(-1);
+        if (!user || user.messageData?.seq !== retrySeq || conversationBusy() || contextBusy()) return;
+        beginMessageEdit(user);
+        if (editingMessage?.div === user) void resendEditedMessage(editingMessage);
+      };
+      chip.append(retry);
+    }
+    return { chip, stats, stopped, ok };
   }
 
   function setRunning(v) {
@@ -2341,14 +2506,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       finalizeStreamBlocks();
       clearRunStatus();
       consolidateFinishedTurn();
-      const stopped = ev.subtype === 'stopped';
-      const ok = !ev.is_error && ev.subtype !== 'error_max_turns' && !stopped;
+      const { chip, stats, stopped, ok } = runResultChip(ev, true, ev.userSeq);
       for (const card of Object.values(pendingTools)) if (!card.finished) card.setOutput(stopped ? 'Stopped before a tool result was received.' : 'No tool result was received before the response ended.', true);
-      const stats = resultStats(ev);
-      const chip = document.createElement('div');
-      chip.className = 'run-result ' + (ok ? 'ok' : 'err');
-      const errLabel = ev.subtype && ev.subtype !== 'success' ? ev.subtype : "Error";
-      chip.textContent = (stopped ? "■ Stopped" : ok ? "✓ Done" : '✗ ' + (ev.result || errLabel)) + ' · ' + stats.slice(0, 3).join(' · ');
       (turnEl || chat).appendChild(chip);
       moveTurnFooter(turnEl);
       if (ev.session_id) {
@@ -2375,8 +2534,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   // ---------- send ----------
   function buildPrompt(text, atts) {
     if (!atts.length) return text;
-    const lines = atts.map((a) => "[Attachment" + (a.isImage ? " (image; inspect its contents directly)" : '') + '] ' + a.path);
-    const base = text || "Please review and process these attachments.";
+    const lines = atts.map((a) => a.kind === 'conversation'
+      ? '[Attached Camellia conversation transcript; read it to continue the work] ' + a.path
+      : "[Attachment" + (a.isImage ? " (image; inspect its contents directly)" : '') + '] ' + a.path);
+    const base = text || (atts.some(a => a.kind === 'conversation')
+      ? 'Continue the attached Camellia conversation from where it stopped. Read its transcript, inspect current files and state, and avoid repeating completed actions.'
+      : "Please review and process these attachments.");
     return base + '\n\n' + lines.join('\n');
   }
 
@@ -2482,6 +2645,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     saveDraft();
     const sentDraftKey = draftKey();
+    if (sharedChat && context.sessionId) {
+      writeUi('failed-send:' + context.sessionId, null);
+      chat.querySelectorAll('.failed-send').forEach(row => {
+        const message = row.closest('.msg-user');
+        if (message?.messageData?.seq) row.remove(); else message?.remove();
+      });
+    }
     const sendContext = { sessionId: context.sessionId || null, workspaceId: context.workspaceId,
       fork: Boolean(pendingForkId), openSeq: sessionOpenSeq, dispatched: false, cancelled: false, fastMode: currentFastMode };
     if (sharedChat && sendContext.sessionId && !sendContext.fork) pendingConversationSends.set(sendContext.sessionId, sendContext);
@@ -2522,13 +2692,23 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (pendingConversationSends.get(sendContext.sessionId) === sendContext) pendingConversationSends.delete(sendContext.sessionId);
     if (sharedChat && sendContext.openSeq !== sessionOpenSeq) {
       void sidebar.load();
-      if (!res.ok && !queuedMessage) {
+      if (!res.ok && !queuedMessage && sendContext.sessionId && sendContext.dispatched) {
+        writeUi('failed-send:' + sendContext.sessionId, { text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
+        const saved = readUi('draft:' + sentDraftKey);
+        if (saved?.text === text) writeUi('draft:' + sentDraftKey, { ...saved, text: '', attachments: [] });
+      } else if (!res.ok && !queuedMessage) {
         const saved = readUi('draft:' + sentDraftKey);
         if (!saved?.text && !saved?.attachments?.length) writeUi('draft:' + sentDraftKey, { ...saved, text, attachments: atts });
+      } else if (res.ok) {
+        const saved = readUi('draft:' + sentDraftKey);
+        if (saved?.text === text) writeUi('draft:' + sentDraftKey, { ...saved, text: '', attachments: [] });
       }
       if (context.sessionId === sendContext.sessionId && !loadingSession && !sending) {
         if (!res.ok) {
-          if (!input.value && !attachments.length) restoreDraft();
+          if (sendContext.dispatched) {
+            if (sendContext.sessionId && input.value === text) { input.value = ''; attachments = []; renderAttachments(); autoResize(); saveDraft(); }
+            showFailedSend({ text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
+          }
           clearRunStatus();
           setStatus('Failed to start: ' + res.error);
         }
@@ -2541,7 +2721,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // queued behind it even if the engine has not emitted an event yet.
     updateConversationControls();
     if (!res.ok) {
-      if (!queuedMessage && !input.value && !attachments.length) { input.value = text; attachments = atts; renderAttachments(); autoResize(); }
+      if (sharedChat && sendContext.sessionId && sendContext.dispatched && !queuedMessage) {
+        writeUi('failed-send:' + sendContext.sessionId, { text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
+        showFailedSend({ text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at }, userMessage);
+      } else if (!queuedMessage && !input.value && !attachments.length) { input.value = text; attachments = atts; renderAttachments(); autoResize(); }
       saveDraft();
       finalizeStreamBlocks();
       const chip = document.createElement('div');
@@ -3203,6 +3386,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       $('headerTitle').textContent = s ? s.title : "Session " + id.slice(0, 8);
       $('headerTitle').dataset.titled = '1';
       if (!res.live && !await renderHistoryMessages(res.messages)) return false;
+      if (sharedChat) showFailedSend(readUi('failed-send:' + id));
       if (!chat.childElementCount) chat.innerHTML = "<div class=\"empty-state\"><div class=\"empty-state-desc\" data-i18n>No messages to display. Send a message to continue this session.</div></div>";
       sidebar.render();
       restoreDraft();
@@ -3215,7 +3399,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         restoringRun = false;
         for (const event of eventsDuringRestore.splice(0)) if (event.type === 'conversation:activity' || event.runId !== liveRun || event.eventSeq > lastSeq) handleEvent(event);
         const pending = pendingConversationSend();
-        if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id, text: pending?.phase || 'Compacting context…', compaction: res.compaction });
+        if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id,
+          text: pending?.phase || (res.compaction?.state === 'running' ? 'Compacting context…' : ''), compaction: res.compaction });
         void goalUI.refresh();
       }
       if (sharedChat && res.lastReplyAt) sidebar.markReplyRead(id, res.lastReplyAt);
@@ -3231,6 +3416,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const openSeq = sessionOpenSeq;
       const latest = messages.findLast(message => message.role === 'assistant'
         && (contextTokens(message.lastCallUsage) > 0 || contextTokens(message.usage) > 0));
+      const latestAssistant = messages.findLast(message => message.role === 'assistant');
+      const latestUser = messages.findLast(message => message.role === 'user');
       contextUsage = null;
       lastUsage = latest?.usage || null;
       lastCallUsage = latest?.lastCallUsage || null;
@@ -3271,7 +3458,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
           }
           if (m.role === 'notice') {
             if (m.compaction || ['Context compacted automatically', 'Context compacted: summary saved'].includes(m.text)) {
-              renderCompactionStatus({ ...m.compaction, engine: m.engine, state: 'completed', seq: m.seq }, before);
+              renderCompactionStatus({ ...m.compaction, engine: m.engine, state: m.compaction?.state || 'completed', error: m.compaction?.error || (m.compaction?.state === 'failed' ? m.text : ''), seq: m.seq }, before);
               continue;
             }
             if (!conversationPrefs.showOrigin) continue;
@@ -3288,6 +3475,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
             div.className = 'turn';
             const label = m.engine ? ENGINE_SHORT_NAMES[m.engine] || m.engine : 'Assistant';
             div.innerHTML = '<div class="turn-meta">' + (m.engine ? engineAvatar(m.engine) : chatAvatar) + '<span>' + esc(label) + '</span></div><div class="turn-body"><div class="md"></div></div>';
+            const runResult = m.runResult;
+            const resultOnly = runResult && m.text === runResult.result;
           if (Array.isArray(m.outputBlocks)) {
             const body = div.querySelector('.turn-body');
             body.innerHTML = '';
@@ -3302,18 +3491,20 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
               }
               body.appendChild(process);
             }
-            for (const block of m.outputBlocks.filter(block => block.phase === 'final_answer' && block.text)) {
+            for (const block of m.outputBlocks.filter(block => !resultOnly && block.phase === 'final_answer' && block.text)) {
               const el = document.createElement('div'); el.className = 'md'; el.innerHTML = mdRender(block.text);
               el.artifactText = block.text; body.appendChild(el);
             }
           } else {
             const el = div.querySelector('.md');
-            el.innerHTML = mdRender(m.text);
-            el.artifactText = m.text;
+              if (resultOnly) el.remove();
+              else { el.innerHTML = mdRender(m.text); el.artifactText = m.text; }
           }
+            if (runResult) div.appendChild(runResultChip(runResult, false,
+              m === latestAssistant && latestUser?.seq < m.seq ? m.userSeq || latestUser.seq : null).chip);
             turnFooter(div, m.at, () => turnCopyText(div));
             chat.insertBefore(div, before);
-            void showTurnArtifacts(div, m.text, m.artifacts);
+            void showTurnArtifacts(div, resultOnly ? '' : m.text, m.artifacts);
           }
         }
         return true;
@@ -3477,9 +3668,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   window.dshDesktop.onEngineSettingsChanged(({ engine }) => { if (engine === harnessId) void loadSettings(); });
-  window.dshDesktop.onArchivedChanged?.(({ id, action }) => {
+  window.dshDesktop.onArchivedChanged?.(({ id, action, ids }) => {
     // Our own delete already reloaded and moved to the neighbor; ignore its echo.
     if (selfDeletedIds.has(id)) { selfDeletedIds.delete(id); return; }
+    if (action === 'delete-all') {
+      if (context.sessionId && ids?.includes(context.sessionId)) void newSession(null);
+      else void sidebar.load();
+      return;
+    }
     if (action === 'delete' && context.sessionId === id) void newSession(null);
     else void sidebar.load();
   });
