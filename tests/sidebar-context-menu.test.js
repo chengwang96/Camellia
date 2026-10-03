@@ -27,6 +27,7 @@ function fixture(session) {
   const context = {
     document: { createElement: element },
     context: { sessionId: 'active' },
+    discussionOpening: () => false,
     $: () => ({ textContent: 'New session' }),
     input: { focus() { opened.push('input'); } },
     sidebarIcon: () => '', relTime: () => 'Now',

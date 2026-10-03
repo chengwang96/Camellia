@@ -54,8 +54,17 @@ with sync_playwright() as playwright:
         expect(page.locator('#statusLine')).to_contain_text('Model changed: Account model')
 
         menu = model_menu()
+        if engine == 'antigravity':
+            # Google subscription mode owns its native model list. Returning
+            # to API routes is a settings change, not a subscription-model pick.
+            expect(menu.locator('.pop-opt')).to_have_count(2)
+            expect(menu).not_to_contain_text('route-only')
+            page.locator('#modelPill').click()
+            page.evaluate("settings.connection = 'api'; settings.model = 'route-only'; refreshSettings({engine: 'antigravity'})")
+            expect(page.locator('#modelPillName')).to_have_text('route-only')
+            menu = model_menu()
         expect(menu.locator('.pop-opt')).to_have_count(3)
-        expect(menu.locator('.pop-opt', has_text='Shared account model')).to_have_count(1)
+        expect(menu.locator('.pop-opt', has_text='Shared account model')).to_have_count(0 if engine == 'antigravity' else 1)
         menu.locator('.pop-opt', has_text='route-only').click()
         page.wait_for_function("settings.connection === 'api' && settings.model === 'route-only'")
 

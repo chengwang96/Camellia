@@ -33,7 +33,7 @@ async function main() {
   if (online) assert.ok(source && path.isAbsolute(source), 'Pass the existing app data directory explicitly');
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-production-'));
   const runtime = createRuntimeManager({ root: path.resolve(__dirname, '..'), installRoot: path.resolve(__dirname, '..') });
-  let router, server, service, production, boundary, config = {}, requests = 0, holdVerification = false;
+  let router, server, service, production, boundary, remoteGateway, config = {}, requests = 0, holdVerification = false;
   const faults = [], logs = [];
   let approvals = 0;
   let profile;
@@ -101,6 +101,42 @@ async function main() {
       getNativeConfig: engine => engine === 'antigravity' && online && toolCheck ? { config: { permissions: { ask: ['write_file(*)'] } } } : {},
       log: line => logs.push(line) });
     service = new DiscussionService({ dataDir, registry: boundary.registry, production, getCatalog, onError: error => faults.push(error.message) });
+    if (process.argv.includes('--remote')) {
+      const { RemoteDiscussions } = require('../src/main/remote/discussions');
+      const { RemoteAccess } = require('../src/main/remote/access');
+      const { RemoteGateway } = require('../src/main/remote/gateway');
+      const access = new RemoteAccess({ file: path.join(dataDir, 'remote-devices.json') });
+      const invite = access.invite([], { allWorkspaces: true }), pending = access.request({ code: invite.code, name: 'Native integration fixture' });
+      access.approve(pending.id); const credential = access.claim(pending.id, pending.claim);
+      const nativeCall = service.call.bind(service), backend = Object.create(service); backend.call = nativeCall;
+      const remote = new RemoteDiscussions({ file: path.join(dataDir, 'remote-receipts.json'), getService: () => backend, access });
+      remoteGateway = new RemoteGateway({ access, reader: { manager: {}, workspaces: () => [] }, discussions: remote, validateHost: host => host === '127.0.0.1' });
+      await remoteGateway.start('127.0.0.1', 0);
+      async function request(route, value) {
+        const response = await fetch(remoteGateway.url + route, { method: value ? 'POST' : 'GET', headers: { Authorization: 'Bearer ' + credential.token, 'Content-Type': 'application/json' }, ...(value ? { body: JSON.stringify(value) } : {}) });
+        assert.equal(response.status, 200); return response.json();
+      }
+      service.call = async (action, payload = {}) => {
+        if (!['create', 'add-member', 'send', 'stop', 'permission-response'].includes(action)) return nativeCall(action, payload);
+        const { id, requestId, ...parameters } = payload;
+        if (action === 'send' && parameters.attachments?.length) parameters.attachments = parameters.attachments.map(file => ({ name: file.name, isImage: file.isImage, data: fs.readFileSync(file.path).toString('base64') }));
+        if (action === 'permission-response') {
+          const snapshot = await request('/v1/discussions/' + id);
+          const permission = snapshot.group.pendingApprovals.find(p => p.requestId === requestId && p.deliveryId === parameters.deliveryId);
+          assert.ok(permission); parameters.approvalId = requestId; parameters.fingerprint = permission.fingerprint;
+        }
+        const commandId = action === 'send' ? requestId : randomUUID();
+        let receipt = await request('/v1/discussions/commands', { requestId: commandId, instanceId: remoteGateway.instanceId, action, ...(id ? { id } : {}), parameters });
+        const started = Date.now();
+        while (receipt.state === 'pending') {
+          if (Date.now() - started > 180000) throw new Error('Remote native command timed out');
+          await new Promise(resolve => setTimeout(resolve, 200)); receipt = await request('/v1/discussions/commands/' + commandId);
+        }
+        assert.equal(receipt.state, 'completed', receipt.error);
+        return request('/v1/discussions/' + receipt.groupId);
+      };
+      console.log('Using authenticated remote HTTP commands, uploaded attachment bytes, and fingerprinted approval responses');
+    }
     const catalog = (await service.call('catalog')).bindings;
     assert.equal(catalog[0].capability.available, false);
     if (!online && !onlineApi) {
@@ -227,9 +263,11 @@ async function main() {
     console.log(JSON.stringify({ online: online || Boolean(onlineApi), engine, model: profile.model, dataDir, messages: second.messages.length, localRequests: requests, faults }));
   } catch (error) { error.message += '\nTest data: ' + dataDir + '\n' + logs.slice(-15).join('\n'); throw error;
   } finally {
+    await remoteGateway?.stop();
     await service?.shutdown(); await codex.shutdown(); await antigravity.shutdown(); await router?.stop();
     if (online) fs.rmSync(path.join(dataDir, 'codex/subscription/auth.json'), { force: true });
     if (online && engine === 'kimi') fs.rmSync(path.join(dataDir, 'kimi-subscription/credentials/kimi-code.json'), { force: true });
+    if (online && engine === 'antigravity') fs.rmSync(path.join(dataDir, 'antigravity/google-account.json'), { force: true });
     if (onlineApi) fs.rmSync(path.join(dataDir, 'router.json'), { force: true });
     if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
   }

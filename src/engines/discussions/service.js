@@ -153,8 +153,9 @@ class DiscussionService {
     this.memberChecks.set(participantId, { id, promise });
     return promise;
   }
-  async call(action, payload = {}) {
+  async call(action, payload = {}, { authorize = () => {} } = {}) {
     input(payload);
+    authorize();
     if (this.platform !== 'win32') throw new Error('Agent discussions are currently available on Windows desktop.');
     if (action === 'catalog') return { bindings: await this.catalog() };
     if (action === 'cancel-verification') { this.production?.cancel(payload.bindingId); return {}; }
@@ -231,6 +232,7 @@ class DiscussionService {
     } else if (action === 'add-member') {
       if (state.participants.filter(p => !p.removed).length >= 4) throw new Error('A discussion can have at most 4 members.');
       const row = (await this.catalog()).find(b => b.id === payload.bindingId);
+      authorize();
       if (!row) throw new Error('This model or account is no longer available. Refresh the member list.');
       if (row.capability.supported === false) throw new Error(row.capability.detail);
       // Re-read after the asynchronous catalog lookup so concurrent additions
@@ -263,6 +265,7 @@ class DiscussionService {
       if (state.requests.some(r => r.id === payload.requestId)) {
         this.scheduler.enqueue(state.id, { requestId: payload.requestId, text: payload.text, participantIds: payload.participantIds, mode: payload.mode || 'parallel', attachments });
       } else await this.prepareMembers(state.id, payload.participantIds, () => {
+        authorize();
         const current = this.manager.get(state.id);
         const historyAttachments = [...new Map([...current.messages.flatMap(m => m.attachments || []), ...attachments].map(a => [a.id, a])).values()];
         this.assets.resolve(state.id, historyAttachments, 256);
@@ -287,6 +290,7 @@ class DiscussionService {
       const request = state.requests.find(r => r.id === delivery?.requestId);
       if (!delivery || !['failed', 'cancelled', 'interrupted'].includes(delivery.status)) throw new Error('This response cannot be retried.');
       await this.prepareMembers(state.id, [delivery.participantId], () => {
+        authorize();
         if (request.mode === 'serial') this.scheduler.resolveSerial(state.id, delivery.id, 'retry', payload.actionId);
         else this.scheduler.enqueue(state.id, { requestId: payload.actionId, participantIds: [delivery.participantId],
           text: state.messages.find(m => m.id === request.messageId).text, attachments: state.messages.find(m => m.id === request.messageId).attachments || [], mode: 'parallel' });

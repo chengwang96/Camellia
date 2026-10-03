@@ -1,11 +1,60 @@
 'use strict';
 
-function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canReadReply = () => true, setStatus, newSession, openHistorySession, forkSession, canFork = () => true, openActionMenu, closePops, noteLocalDelete = () => {} }) {
+function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canReadReply = () => true, getDiscussionId = () => null, discussionVisible = () => false, discussionOpening = () => false, setStatus, newSession, openHistorySession, openDiscussions, forkSession, canFork = () => true, openActionMenu, closePops, noteLocalDelete = () => {} }) {
   const input = $('input');
   let sessionHistory = [], workspaces = [];
   let historyLoadSeq = 0;
   let pagination = {}, limits = {};
   let drag = null, suppressClickUntil = 0;
+  const navigation = window.CamelliaWorkbenchNavigation;
+  let discussionGroups = [], discussionLoadSeq = 0, discussionTimer;
+  let renamingDiscussionId = null;
+  async function loadDiscussions() {
+    if (!navigation || !openDiscussions || typeof window.dshDesktop.discussion !== 'function') return;
+    const seq = ++discussionLoadSeq;
+    try {
+      const result = await window.dshDesktop.discussion('list');
+      if (seq !== discussionLoadSeq) return;
+      if (!result?.ok) throw new Error(result?.error || 'Could not load discussions');
+      discussionGroups = result.groups; renderDiscussionSection($('sessionList'));
+    } catch (error) { setStatus(error.message); }
+  }
+  function discussionActions(anchor, row) {
+    openActionMenu(anchor, [
+      { label: 'Rename', run: () => renameDiscussion(row) },
+      { label: row.pinned ? 'Unpin' : 'Pin discussion', run: async () => {
+        try { const result = await window.dshDesktop.discussion('pin', { id: row.id, pinned: !row.pinned });
+          if (!result?.ok) throw new Error(result?.error || 'Discussion request failed.'); await loadDiscussions();
+        } catch (error) { setStatus(error.message); }
+      } },
+      { label: 'Delete discussion', danger: true, disabled: row.active, run: () => openDiscussions({ id: row.id, intent: 'delete' }) },
+    ]);
+  }
+  function renameDiscussion(row) {
+    const item = $('discussionSessions')?.querySelector('[data-group-id="' + row.id + '"]'); if (!item) return;
+    renamingDiscussionId = row.id;
+    const input = document.createElement('input'); input.className = 'session-rename-input'; input.value = row.title; input.maxLength = 120;
+    input.setAttribute('aria-label', window.CamelliaI18n.t('Discussion topic'));
+    item.querySelector('.session-item-text').replaceChildren(input); input.focus(); input.select();
+    let done = false;
+    async function finish(save) {
+      if (done) return; done = true;
+      try {
+        if (save && input.value.trim() !== row.title) {
+          const result = await window.dshDesktop.discussion('rename', { id: row.id, title: input.value });
+          if (!result?.ok) throw new Error(result?.error || 'Could not rename discussion');
+        }
+      } catch (error) { setStatus(error.message); }
+      finally { renamingDiscussionId = null; await loadDiscussions(); }
+    }
+    input.onclick = event => event.stopPropagation();
+    input.onkeydown = event => { event.stopPropagation(); if (['Enter', 'Escape'].includes(event.key)) { event.preventDefault(); void finish(event.key === 'Enter'); } };
+    input.onblur = () => void finish(true);
+  }
+  const unsubscribeDiscussions = navigation && window.dshDesktop.onDiscussionEvent?.(() => {
+    clearTimeout(discussionTimer); discussionTimer = setTimeout(loadDiscussions, 100);
+  });
+  window.addEventListener('beforeunload', () => { unsubscribeDiscussions?.(); clearTimeout(discussionTimer); });
   const replyReadKey = id => 'reply-read:' + id;
   function replyReadAt(id) {
     const value = Number(localStorage.getItem('camellia-chat-' + replyReadKey(id)));
@@ -62,6 +111,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       if (active) context.workspaceId = active.workspaceId || null;
       if (context.workspaceId && !workspaces.some((w) => w.id === context.workspaceId)) context.workspaceId = null;
       renderSessionSidebar();
+      void loadDiscussions();
       return true;
     } catch (err) {
       setStatus("Could not load session: " + err.message);
@@ -87,7 +137,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     return group;
   }
   function renderSessionSidebar() {
-    if (drag?.active) return;
+    if (drag?.active || renamingDiscussionId) return;
     const list = $('sessionList');
     const scroll = list.scrollTop;
     list.replaceChildren();
@@ -178,7 +228,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     const independent = document.createElement('div');
     independent.id = 'independentSessions';
     independent.dataset.dropGroup = 'recent';
-    if (!context.sessionId && !context.workspaceId) independent.appendChild(makeSessionItem(null));
+    if (!discussionVisible() && !context.sessionId && !context.workspaceId) independent.appendChild(makeSessionItem(null));
     (groupedSessions.get(null) || []).filter((s) => !s.pinned).forEach((s) => independent.appendChild(makeSessionItem(s)));
     appendMore(independent, 'recent');
     if (!independent.childElementCount) {
@@ -188,8 +238,23 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       independent.appendChild(empty);
     }
     list.appendChild(independent);
+    if (navigation && openDiscussions) renderDiscussionSection(list);
     list.scrollTop = scroll;
     updateWorkspaceLabel();
+  }
+  function renderDiscussionSection(list) {
+    if (renamingDiscussionId) return;
+    const discussions = document.createElement('div'); discussions.id = 'discussionSessions';
+    for (const row of discussionGroups) discussions.appendChild(navigation.discussionRow(row, {
+      open: id => openDiscussions({ id }), actions: discussionActions, activeId: getDiscussionId(),
+    }));
+    if (!discussions.childElementCount) {
+      const empty = document.createElement('div'); empty.className = 'ws-empty'; empty.dataset.i18n = ''; empty.textContent = 'No discussions. Click + to start.'; discussions.appendChild(empty);
+    }
+    const section = navigation.section({ key: 'discussions', title: 'Agent discussions (beta)', content: discussions,
+      add: () => openDiscussions({ intent: 'create' }), addId: 'newDiscussionBtn' });
+    const previous = list.querySelector('[data-nav-section=discussions]');
+    if (previous) previous.replaceWith(section); else list.appendChild(section);
   }
   function appendMore(container, group) {
     const page = pagination[group];
@@ -228,7 +293,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     const activity = s?.activity;
     item.dataset.activity = activity || '';
     item.querySelector('.session-item-time').textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : s ? relTime(s.mtimeMs) : 'Now';
-    const open = () => { if (s && (s.id !== context.sessionId || ['permission', 'question'].includes(s.activity))) void openHistorySession(s.id); else input.focus(); };
+    const open = () => { if (s && (discussionOpening() || s.id !== context.sessionId || ['permission', 'question'].includes(s.activity))) void openHistorySession(s.id); else input.focus(); };
     item.addEventListener('click', open);
     item.addEventListener('keydown', (e) => {
       if (e.target !== item) return;
@@ -828,7 +893,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
   window.addEventListener('camellia:language', updateWorkspaceLabel);
   return {
     load: loadSessionHistory, render: renderSessionSidebar, updateLabel: updateWorkspaceLabel, metaOp: runMetaOp,
-    markReplyRead,
+    markReplyRead, renameDiscussion,
     get sessions() { return sessionHistory; }, get workspaces() { return workspaces; },
   };
 }

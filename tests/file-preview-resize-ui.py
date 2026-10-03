@@ -7,6 +7,7 @@ bridge = r"""(() => {
   const settings = {model:'fixture-model',permissionMode:'default',connection:'api'};
   window.previewKind = 'image';
   window.dshDesktop = {
+    onNetworkHealth: () => () => {},
     sharedConversations:true,
     conversationCommand:async ({action}) => {
       if(action==='list-sessions') return {ok:true,sessions:[],workspaces:[],pagination:{}};
@@ -186,6 +187,10 @@ with sync_playwright() as playwright:
     for viewport_width in [960, 801, 760, 360]:
         page.set_viewport_size({'width': viewport_width, 'height': 820})
         page.wait_for_function("Number(document.getElementById('sidebarResize').getAttribute('aria-valuenow')) === Math.max(210, Math.min(520, innerWidth - (innerWidth > 800 ? 540 : 320)))")
+        if viewport_width <= 680:
+            expect(sidebar).not_to_be_visible()
+            page.locator('.workbench-sidebar-toggle').first.click()
+            expect(sidebar).to_be_visible()
         assert sidebar_width() >= 210
         assert sidebar_width() < viewport_width
         assert viewer.bounding_box()['x'] + width() <= viewport_width + 1

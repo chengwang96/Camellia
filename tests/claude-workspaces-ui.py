@@ -41,6 +41,8 @@ bridge = r"""
     return response.result;
   };
   window.dshDesktop = new Proxy({}, { get: (_, method) => {
+    if (method === 'discussion') return async () => ({ok:true,groups:[]});
+    if (['onDiscussionEvent', 'onNetworkHealth', 'onChatContentWidthChanged', 'onDiscussionNavigate'].includes(method)) return () => () => {};
     if (method === 'onEngineSettingsChanged') return () => () => {};
     if (method === 'onLanguageChanged') return () => () => {};
     if (method === 'onArchivedChanged') return () => () => {};

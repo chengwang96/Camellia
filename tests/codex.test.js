@@ -570,6 +570,7 @@ test('Codex API metadata adds native patch support without overriding known mode
   const first = read(), catalog = JSON.parse(fs.readFileSync(first.model_catalog_json, 'utf8'));
   const model = catalog.models.find(m => m.slug === 'kimi-k3');
   assert.equal(model.apply_patch_tool_type, 'freeform');
+  assert.equal(model.shell_type, 'unified_exec');
   assert.equal(model.default_reasoning_level, null); assert.equal(first.model_reasoning_effort, undefined);
   const instructions = model.model_messages.instructions_template;
   assert.doesNotMatch(instructions, /update_plan|^## Planning/m);
@@ -588,7 +589,7 @@ test('Codex API metadata adds native patch support without overriding known mode
   const next = JSON.parse(fs.readFileSync(read().model_catalog_json, 'utf8'));
   assert.ok(next.models.some(m => m.slug === 'deepseek-v4.1-flash'));
   assert.ok(!next.models.some(m => m.slug === 'kimi-k3'));
-  for (const native of ['gpt-5.5', 'openai/gpt-5.5-2026']) {
+  for (const native of ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5', 'openai/gpt-5.5-2026']) {
     codexSpawnSpec({ ...options, model: native }); assert.equal(read().model_catalog_json, undefined);
     assert.deepEqual(codexSpawnSpec({ ...options, model: native, contextWindow: 128000 }).args,
       ['app-server', '-c', 'model_context_window=128000']);
@@ -606,7 +607,7 @@ test('Codex API metadata adds native patch support without overriding known mode
   const own = path.join(root, 'user-models.json');
   fs.writeFileSync(path.join(home, 'config.toml'), TOML.stringify({ model_catalog_json: own, model_reasoning_effort: 'high' }));
   codexSpawnSpec(options); assert.equal(read().model_catalog_json, own); assert.equal(read().model_reasoning_effort, 'high');
-  assert.equal(require('../runtimes/codex/package.json').dependencies['@openai/codex'], '0.154.0', 'Review native metadata when upgrading Codex');
+  assert.equal(require('../runtimes/codex/package.json').dependencies['@openai/codex'], '0.160.0', 'Review native metadata when upgrading Codex');
 });
 
 test('shutting down a Codex process settles even when a helper keeps its stdio open', async t => {

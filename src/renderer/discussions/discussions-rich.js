@@ -1,8 +1,8 @@
 'use strict';
-window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachments, setAttachments, changed, error }) {
-  const $ = id => document.getElementById(id), t = text => window.CamelliaI18n.t(text), desktop = window.dshDesktop;
+window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachments, setAttachments, changed, error, root = document, isVisible = () => true }) {
+  const $ = id => root.getElementById(id), t = text => window.CamelliaI18n.t(text), desktop = window.dshDesktop;
   const controls = window.CamelliaChatControls, cards = new Map(), artifacts = new Map(), questionDrafts = new Map();
-  const preview = window.CamelliaFilePreview.create({ fileViewer: $('fileViewer'), inputCard: $('inputCard'), setStatus: text => error(new Error(text)),
+  const preview = window.CamelliaFilePreview.create({ root, fileViewer: $('fileViewer'), inputCard: $('inputCard'), setStatus: text => error(new Error(text)),
     mdRender: (text, _documentMode, baseUrl) => window.CamelliaMarkdownPreview.render(text, { baseUrl, sourceLines: true }) });
   let uploading = false, pending = null, fields = [], answering = false, deferred = null;
   const node = (tag, className, text) => { const el = document.createElement(tag); el.className = className || ''; if (text !== undefined) el.textContent = text; return el; };
@@ -28,8 +28,8 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
   $('attachFiles').onclick = async () => { const groupId = getGroup()?.id; try { const result = await desktop.pickAttachments(); if (!result.canceled) await importFiles(result.paths, groupId); } catch (err) { error(err); } };
   $('inputCard').addEventListener('dragover', event => { event.preventDefault(); $('inputCard').classList.add('dragging'); });
   $('inputCard').addEventListener('dragleave', () => $('inputCard').classList.remove('dragging'));
-  document.addEventListener('dragover', event => event.preventDefault());
-  document.addEventListener('drop', event => {
+  root.addEventListener('dragover', event => event.preventDefault());
+  root.addEventListener('drop', event => {
     event.preventDefault(); $('inputCard').classList.remove('dragging');
     try { const local = event.dataTransfer.getData('application/x-camellia-attachment-path');
       void importFiles(local ? [local] : [...event.dataTransfer.files].map(f => desktop.attachmentPath(f)).filter(Boolean)).catch(error);
@@ -159,7 +159,7 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
     $('groupPermission').disabled = group.verifying || group.deliveries.some(d => ['queued', 'preparing', 'running', 'stopping'].includes(d.status));
     if (pending && !group.permissions?.some(p => key(p) === key(pending))) { $('discussionPermission').close(); pending = null; }
     const next = group.permissions?.[0];
-    if (next && key(next) !== key(pending) && key(next) !== deferred && !answering) showPermission(next);
+    if (isVisible() && next && key(next) !== key(pending) && key(next) !== deferred && !answering) showPermission(next);
   }
   $('messages').addEventListener('click', event => {
     const link = event.target.closest('a'); if (!link) return;
@@ -174,5 +174,5 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
   $('fileViewerResize').onpointerdown = event => { if (event.button !== 0) return; drag = { x: event.clientX, width: $('fileViewer').getBoundingClientRect().width }; $('fileViewerResize').setPointerCapture(event.pointerId); };
   $('fileViewerResize').onpointermove = event => { if (drag) $('fileViewer').style.setProperty('--file-viewer-width', Math.max(260, Math.min(innerWidth - 40, drag.width + drag.x - event.clientX)) + 'px'); };
   $('fileViewerResize').onpointerup = $('fileViewerResize').onpointercancel = () => { drag = null; };
-  return { render, renderTools, attachments, get uploading() { return uploading; } };
+  return { render, renderTools, attachments, suspend() { pending = null; $('discussionPermission').close(); preview.closeFilePreview(); }, get uploading() { return uploading; } };
 } };

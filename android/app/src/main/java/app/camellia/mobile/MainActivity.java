@@ -74,6 +74,11 @@ public final class MainActivity extends Activity {
     private final LinkedHashMap<String, View> renderedMessages = new LinkedHashMap<>();
     private final java.util.ArrayList<View> pendingMessageViews = new java.util.ArrayList<>();
     private TextView status, headerConnection;
+    private ChatStatusLine workStatus;
+    private boolean reconnecting, connectionBlocked;
+    private JSONArray discussionGroups = new JSONArray();
+    private boolean moreDiscussions;
+    private boolean canDiscussions;
     private ScrollView scroll;
     private boolean initialMessageScroll;
     private ScrollView pendingScrollView;
@@ -97,6 +102,7 @@ public final class MainActivity extends Activity {
     private long cursor = -1;
     private JSONObject pendingSnapshot;
     private JSONObject lastLive;
+    private JSONObject remoteCompaction;
     private boolean snapshotPosted;
     private EditText composer;
     private ChatComposer chatComposer;
@@ -113,6 +119,8 @@ public final class MainActivity extends Activity {
     private boolean controlAllowed, connected, commandBusy;
     private long conversationSeq;
     private String approvalSignature = "";
+    private android.app.AlertDialog remoteApprovalDialog;
+    private String remoteApprovalKey = "";
     private boolean networkScreen;
     private android.app.Dialog computerDialog;
     private android.net.Uri cameraImageUri;
@@ -234,7 +242,7 @@ public final class MainActivity extends Activity {
         else if (restored.equals("computers")) computersScreen();
         else if (restored.equals("settings")) settingsScreen();
         else homeScreen();
-        if (recovery != null) status.setText(recovery);
+        if (recovery != null) setStatusNotice(recovery);
     }
 
     @Override protected void onStart() {
@@ -273,7 +281,7 @@ public final class MainActivity extends Activity {
         artifactDownloads.stop();
         if (!EmbeddedNetwork.online()) {
             stopNetwork(); updateControls();
-            status.setText(tr("网络已断开，联网后自动重连。未确认的消息不会重复发送。", "Offline. Reconnecting when the network returns; unconfirmed messages will not be resent."));
+            connectionFailure(tr("网络已断开，联网后自动重连。未确认的消息不会重复发送。", "Offline. Reconnecting when the network returns; unconfirmed messages will not be resent."));
             return;
         }
         if (screen.equals("computers")) refreshComputers();
@@ -328,6 +336,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (workStatus != null) workStatus.close();
         RemoteKeepAliveService.finish(this, false);
         artifactDownloads.close();
         if (computerDialog != null) computerDialog.dismiss();
@@ -370,6 +379,7 @@ public final class MainActivity extends Activity {
 
     private RemoteApi begin() {
         stopNetwork();
+        connectionBlocked = false;
         updateControls();
         api = new RemoteApi(this, credentials.optString("address"));
         return api;
@@ -417,6 +427,8 @@ public final class MainActivity extends Activity {
     }
 
     private void shell(String title, String subtitle) {
+        if (workStatus != null) { workStatus.close(); workStatus = null; }
+        reconnecting = false; connectionBlocked = false;
         if (conversationPopup != null) conversationPopup.dismiss();
         locationConsent.cancel();
         headerConnection = null;
@@ -492,17 +504,13 @@ public final class MainActivity extends Activity {
                         || label.equals(tr("尚未添加电脑", "No computers added"));
                     status.setVisibility(quiet ? View.GONE : View.VISIBLE); return;
                 }
-                if (!screen.equals("list") && !screen.equals("detail")) return;
-                String label = value.toString(), online = tr("已连接", "Connected");
-                boolean normal = label.equals(online) || label.startsWith(online + " · ");
-                status.setVisibility(label.isEmpty() || normal ? View.GONE : View.VISIBLE);
-                if (headerConnection != null) {
-                    headerConnection.setText(normal ? label.replace(online + " · ", "") : connected ? online : "");
-                    headerConnection.setVisibility(headerConnection.length() == 0 ? View.GONE : View.VISIBLE);
-                }
+                if (screen.equals("detail")) status.setVisibility(View.VISIBLE);
+                else if (screen.equals("list")) status.setVisibility(value.length() == 0 ? View.GONE : View.VISIBLE);
             }
         });
         bindStatusDetails();
+        if (screen.equals("detail")) workStatus = new ChatStatusLine(status, chatStyle, chinese);
+        updateConnectionHeader();
         scroll = new RefreshScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
@@ -726,7 +734,7 @@ public final class MainActivity extends Activity {
         group.addView(add, new LinearLayout.LayoutParams(-1, -2));
         if (credentials.has("claim")) content.addView(button(tr("继续配对", "Resume pairing"), () -> { pairScreen(); waitForApproval(); }, false));
         ((RefreshScrollView) scroll).setRefreshAction(this::refreshComputers,
-            ready -> status.setText(ready ? tr("松开检查状态", "Release to check status") : tr("下拉检查电脑状态", "Pull to check computers")));
+            ready -> setStatusNotice(ready ? tr("松开检查状态", "Release to check status") : tr("下拉检查电脑状态", "Pull to check computers")));
     }
 
     private void computerDivider(LinearLayout group, SettingsStyle style) {
@@ -861,7 +869,7 @@ public final class MainActivity extends Activity {
         try {
             var computers = store.all();
             ((RefreshScrollView) scroll).setRefreshing(!computers.isEmpty());
-            status.setText(computers.isEmpty() ? tr("尚未添加电脑", "No computers added") : tr("正在检查电脑状态…", "Checking computers…"));
+            setStatusNotice(computers.isEmpty() ? tr("尚未添加电脑", "No computers added") : tr("正在检查电脑状态…", "Checking computers…"));
             int[] remaining = {computers.size()};
             for (JSONObject computer : computers) {
                 String address = computer.getString("address");
@@ -894,7 +902,7 @@ public final class MainActivity extends Activity {
                         updateComputerState(address, state);
                         if (--remaining[0] == 0) {
                             ((RefreshScrollView) scroll).setRefreshing(false);
-                            status.setText(tr("电脑状态已更新", "Computer status updated"));
+                            setStatusNotice(tr("电脑状态已更新", "Computer status updated"));
                         }
                     });
                     try {
@@ -1054,7 +1062,7 @@ public final class MainActivity extends Activity {
 
     private void pairingFieldError(EditText field, String message) {
         ((SettingsField) field.getParent()).showError(message);
-        status.setText(message);
+        setStatusNotice(message);
         scroll.post(() -> { if (screen.equals("pair")) field.requestRectangleOnScreen(new android.graphics.Rect(0, 0, field.getWidth(), field.getHeight()), false); });
     }
 
@@ -1073,7 +1081,7 @@ public final class MainActivity extends Activity {
         addressInput.setText(endpoint.host()); portInput.setText(endpoint.port());
         codeInput.setText(code.toLowerCase(Locale.ROOT));
         rememberPairingDraft();
-        status.setText(tr("已填入二维码中的地址和配对码。", "Address and pairing code filled in from the QR code."));
+        setStatusNotice(tr("已填入二维码中的地址和配对码。", "Address and pairing code filled in from the QR code."));
         pendingScannedPairing = true;
     }
 
@@ -1103,7 +1111,7 @@ public final class MainActivity extends Activity {
             store.save(credentials);
             RemoteApi client = begin(); int ticket = generation;
             setPairingBusy(true);
-            status.setText(tr("正在请求配对…", "Requesting pairing…"));
+            setStatusNotice(tr("正在请求配对…", "Requesting pairing…"));
             JSONObject payload = new JSONObject().put("code", code.toLowerCase(Locale.ROOT)).put("name", name);
             job = worker.submit(() -> {
                 try {
@@ -1119,7 +1127,7 @@ public final class MainActivity extends Activity {
                             store.save(credentials); codeInput.setText(""); rememberPairingDraft(); waitForApproval();
                         } catch (Exception error) { setPairingBusy(false); reportError("无法保存配对，请重新生成配对码。", "Could not save pairing. Generate a new code.", error); }
                     });
-                } catch (Exception error) { deliver(ticket, () -> { setPairingBusy(false); status.setText(RemoteApi.failureMessage(error, chinese)); }); }
+                } catch (Exception error) { deliver(ticket, () -> { setPairingBusy(false); setStatusNotice(RemoteApi.failureMessage(error, chinese)); }); }
             });
         } catch (Exception error) { setPairingBusy(false); reportError("无法发起配对，请重试。", "Could not start pairing. Try again.", error); }
     }
@@ -1128,7 +1136,7 @@ public final class MainActivity extends Activity {
         if (!foreground || !credentials.has("claim")) return;
         RemoteApi client = begin(); int ticket = generation;
         setPairingBusy(true);
-        status.setText(tr("请求已发送，请在电脑端确认授权。", "Request sent. Approve it on your computer."));
+        setStatusNotice(tr("请求已发送，请在电脑端确认授权。", "Request sent. Approve it on your computer."));
         pollPair(client, ticket);
     }
 
@@ -1138,7 +1146,7 @@ public final class MainActivity extends Activity {
             credentials.remove("claim"); credentials.remove("id");
             try { store.save(credentials); } catch (Exception ignored) { }
             setPairingBusy(false);
-            status.setText(tr("配对已过期，请在电脑重新生成配对码。", "Pairing expired. Generate another code on the computer.")); return;
+            setStatusNotice(tr("配对已过期，请在电脑重新生成配对码。", "Pairing expired. Generate another code on the computer.")); return;
         }
         final JSONObject payload = new JSONObject();
         try { payload.put("id", credentials.getString("id")).put("claim", credentials.getString("claim")); }
@@ -1166,7 +1174,7 @@ public final class MainActivity extends Activity {
                         try { store.save(credentials); } catch (Exception ignored) { }
                     }
                     setPairingBusy(false);
-                    status.setText(RemoteApi.failureMessage(error, chinese));
+                    setStatusNotice(RemoteApi.failureMessage(error, chinese));
                 });
             }
         });
@@ -1177,6 +1185,7 @@ public final class MainActivity extends Activity {
         networkScreen = false;
         stopNetwork(); conversationId = null; clearHistory(); conversations.clear(); nextOffset = -1;
         canCreate = false; canCreateWorkspace = false; canMove = false; canArchive = false; canManageConversations = false;
+        canDiscussions = false;
         selectingConversations = false; selectedConversations.clear();
         availableWorkspaces = new JSONArray(); allowIndependent = false;
         listEventsUnavailable = false;
@@ -1205,7 +1214,7 @@ public final class MainActivity extends Activity {
         });
         if (credentials.has("pendingCreate")) content.addView(button(tr("查询新建结果 / 重试", "Check creation / retry"), this::retryCreate, false));
         content.addView(chatStyle.workspaceHeader(tr("工作区", "Workspaces"), tr("新建工作区", "New workspace"), "remoteNewWorkspace", this::createWorkspace));
-        ((RefreshScrollView) scroll).setRefreshAction(() -> loadList(false), ready -> status.setText(ready
+        ((RefreshScrollView) scroll).setRefreshAction(() -> loadList(false), ready -> setStatusNotice(ready
             ? tr("松开刷新", "Release to refresh") : computerStates.getOrDefault(credentials.optString("address"), tr("下拉刷新", "Pull to refresh"))));
         JSONObject cached = listCache.get(credentials);
         if (cached != null) {
@@ -1213,7 +1222,7 @@ public final class MainActivity extends Activity {
             if (availableWorkspaces == null) availableWorkspaces = new JSONArray();
             allowIndependent = cached.optBoolean("includeUnassigned");
             applyConversationPage(cached, false);
-            status.setText(tr("显示上次缓存，正在同步…", "Showing cached conversations; syncing…"));
+            setStatusNotice(tr("显示上次缓存，正在同步…", "Showing cached conversations; syncing…"));
         }
     }
 
@@ -1302,7 +1311,8 @@ public final class MainActivity extends Activity {
             if (!collapsed || !query.isEmpty()) for (JSONObject conversation : entries) group.addView(conversationCard(conversation));
             content.addView(group);
         }
-        boolean empty = groups.values().stream().allMatch(java.util.List::isEmpty);
+        boolean hasDiscussions = renderDiscussionSection(query);
+        boolean empty = groups.values().stream().allMatch(java.util.List::isEmpty) && !hasDiscussions;
         if (empty) {
             String workspace = availableWorkspaces.length() > 0 ? availableWorkspaces.optJSONObject(0).optString("id") : null;
             boolean create = canCreate && (workspace != null || allowIndependent);
@@ -1315,6 +1325,47 @@ public final class MainActivity extends Activity {
         }
         if (nextOffset >= 0) content.addView(button(tr("加载更多会话", "Load more conversations"), () -> loadList(true), false));
         scroll.post(() -> scroll.scrollTo(0, position));
+    }
+
+    private boolean renderDiscussionSection(String query) {
+        if (!canDiscussions) return false;
+        String key = credentials.optString("address") + "/discussions";
+        boolean collapsed = collapsedGroups.computeIfAbsent(key, value -> getPreferences(MODE_PRIVATE).getBoolean("collapsed:" + value, false));
+        LinearLayout section = column(); section.setTag("remoteDiscussionsSection");
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(12), 0, dp(4)); section.setLayoutParams(params);
+        LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
+        String label = tr("Agent 讨论 (beta)", "Agent discussions (beta)");
+        DisclosureHeader heading = new DisclosureHeader(this, label, muted, muted, collapsed);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); heading.setPadding(0, dp(8), dp(4), dp(8));
+        heading.setBackground(interactive(background)); heading.setTag("group:discussions"); heading.setFocusable(true);
+        heading.setContentDescription(label + " · " + discussionGroups.length() + " · " + (collapsed ? tr("展开", "Expand") : tr("折叠", "Collapse")));
+        heading.setOnClickListener(view -> { collapsedGroups.put(key, !collapsed); getPreferences(MODE_PRIVATE).edit().putBoolean("collapsed:" + key, !collapsed).apply(); renderConversations(); });
+        header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageButton create = lineButton("new", tr("新建讨论群", "New discussion"), () -> openDiscussion(null, true, false));
+        create.setTag("newDiscussion"); header.addView(create, new LinearLayout.LayoutParams(dp(48), dp(48))); section.addView(header);
+        boolean found = false;
+        for (int i = 0; i < discussionGroups.length(); i++) {
+            JSONObject group = discussionGroups.optJSONObject(i); if (group == null) continue;
+            String title = group.optString("title"), id = group.optString("id");
+            if (!query.isEmpty() && !title.toLowerCase(Locale.ROOT).contains(query)) continue;
+            found = true; if (collapsed && query.isEmpty()) continue;
+            String indicator = group.optBoolean("active") ? tr("运行中", "Running") : "";
+            if (group.optBoolean("pinned")) indicator += (indicator.isEmpty() ? "" : " · ") + tr("已置顶", "Pinned");
+            section.addView(new ConversationRow(this, chatStyle, false, title, indicator, "discussion:" + id, "discussionStatus:" + id,
+                () -> openDiscussion(id, false, false), () -> openDiscussion(id, false, true)));
+        }
+        if (!collapsed || !query.isEmpty()) {
+            if (!found && query.isEmpty()) { TextView hint = text(tr("暂无讨论群，点击 + 新建", "No discussions yet. Tap + to create one."), 13, muted); hint.setPadding(0, dp(8), 0, dp(12)); section.addView(hint); }
+            if (moreDiscussions) section.addView(button(tr("查看全部讨论群", "View all discussions"), () -> openDiscussion(null, false, false), false));
+        }
+        content.addView(section); return found;
+    }
+
+    private void openDiscussion(String id, boolean create, boolean actions) {
+        if (!canDiscussions) return;
+        persistDraft(); stopNetwork();
+        startActivity(new android.content.Intent(this, RemoteDiscussionsActivity.class).putExtra("address", credentials.optString("address"))
+            .putExtra("groupId", id).putExtra("createGroup", create).putExtra("showActions", actions).putExtra("fromNavigation", true));
     }
 
     private View conversationCard(JSONObject conversation) {
@@ -1340,7 +1391,7 @@ public final class MainActivity extends Activity {
 
     private void conversationMenu(JSONObject conversation) {
         if (!canManageConversations || commandBusy || credentials.has("pendingCreate")) {
-            status.setText(canManageConversations ? tr("请等待当前操作完成。", "Wait for the current operation to finish.") : tr("会话管理需要控制权限，并更新重启电脑端。", "Conversation actions require control permission and an updated, restarted desktop."));
+            setStatusNotice(canManageConversations ? tr("请等待当前操作完成。", "Wait for the current operation to finish.") : tr("会话管理需要控制权限，并更新重启电脑端。", "Conversation actions require control permission and an updated, restarted desktop."));
             return;
         }
         if (conversationPopup != null) conversationPopup.dismiss();
@@ -1381,7 +1432,7 @@ public final class MainActivity extends Activity {
 
     private void manageConversations(String action, java.util.Set<String> ids, String title, boolean pinned) {
         if (!canManageConversations || commandBusy || credentials.has("pendingCreate") || ids.isEmpty()) return;
-        if (ids.size() > 100) { status.setText(tr("每次最多选择 100 个会话。", "Select at most 100 chats at a time.")); return; }
+        if (ids.size() > 100) { setStatusNotice(tr("每次最多选择 100 个会话。", "Select at most 100 chats at a time.")); return; }
         try {
             JSONArray targets = new JSONArray();
             for (String id : ids) {
@@ -1399,7 +1450,7 @@ public final class MainActivity extends Activity {
 
     private void archiveConversation(JSONObject conversation) {
         if (!canArchive) {
-            status.setText(tr("这台电脑未开放归档，请更新电脑端并授予控制权限。", "This computer does not allow archiving. Update the desktop and grant control permission."));
+            setStatusNotice(tr("这台电脑未开放归档，请更新电脑端并授予控制权限。", "This computer does not allow archiving. Update the desktop and grant control permission."));
             return;
         }
         if (commandBusy || credentials.has("pendingCreate")) return;
@@ -1425,7 +1476,7 @@ public final class MainActivity extends Activity {
         ((RefreshScrollView) scroll).setRefreshing(true);
         String token = credentials.optString("token"); int offset = append ? nextOffset : 0;
         boolean searching = searchInput != null && !searchInput.getText().toString().trim().isEmpty();
-        status.setText(conversations.isEmpty() ? tr("正在同步…", "Syncing…")
+        setStatusNotice(conversations.isEmpty() ? tr("正在同步…", "Syncing…")
             : tr("显示上次缓存，正在同步…", "Showing cached conversations; syncing…"));
         job = worker.submit(() -> {
             try {
@@ -1459,6 +1510,13 @@ public final class MainActivity extends Activity {
     private JSONObject listInfo(RemoteApi client, String token, JSONObject page) throws IOException {
         JSONObject info = page.has("protocol") ? page : client.json("/v1/status", token, null);
         if (info.optInt("protocol") != 1) throw new IOException("Unsupported protocol");
+        // Older hosts expose discussions separately from the combined navigation snapshot.
+        if (info.optString("permission").equals("control") && String.valueOf(info.optJSONArray("capabilities")).contains("\"discussions\"") && !info.has("discussionGroups")) {
+            try {
+                JSONObject groups = client.json("/v1/discussions", token, null);
+                info.put("discussionGroups", groups.optJSONArray("groups")).put("discussionsNextOffset", groups.opt("nextOffset"));
+            } catch (org.json.JSONException error) { throw new IOException(error); }
+        }
         return info;
     }
 
@@ -1468,6 +1526,10 @@ public final class MainActivity extends Activity {
         if (engines != null) for (int index = 0; index < engines.length(); index++) advertised.add(engines.optString(index));
         availableEngines = RemoteEngines.available(advertised);
         String capabilities = String.valueOf(info.optJSONArray("capabilities"));
+        canDiscussions = info.optString("permission").equals("control") && capabilities.contains("\"discussions\"");
+        discussionGroups = canDiscussions ? info.optJSONArray("discussionGroups") : null;
+        if (discussionGroups == null) discussionGroups = new JSONArray();
+        moreDiscussions = canDiscussions && info.optInt("discussionsNextOffset", -1) >= 0;
         canCreate = info.optString("permission").equals("control") && capabilities.contains("\"create\"");
         canCreateWorkspace = info.optString("permission").equals("control") && capabilities.contains("\"create-workspace\"");
         canImage = capabilities.contains("\"image\"");
@@ -1495,7 +1557,7 @@ public final class MainActivity extends Activity {
 
     private void createWorkspace() {
         if (!canCreateWorkspace) {
-            status.setText(tr("请更新电脑端，并授权控制所有工作区后再新建。", "Update the desktop and authorize control of all workspaces to create one.")); return;
+            setStatusNotice(tr("请更新电脑端，并授权控制所有工作区后再新建。", "Update the desktop and authorize control of all workspaces to create one.")); return;
         }
         if (commandBusy) return;
         if (credentials.has("pendingCreate")) { retryCreate(); return; }
@@ -1523,7 +1585,7 @@ public final class MainActivity extends Activity {
 
     private void createConversation(String workspace) {
         if (!canCreate || workspace == null && !allowIndependent) {
-            status.setText(tr("请更新电脑端，并授权控制及对应会话范围。", "Update the desktop and authorize control and this workspace scope.")); return;
+            setStatusNotice(tr("请更新电脑端，并授权控制及对应会话范围。", "Update the desktop and authorize control and this workspace scope.")); return;
         }
         if (credentials.has("pendingCreate")) { retryCreate(); return; }
         LinearLayout panel = computerDialogPanel(tr("新建会话", "New conversation"), tr("选择执行引擎，沿用电脑端的连接设置。", "Choose an engine using your desktop connection settings."));
@@ -1548,8 +1610,8 @@ public final class MainActivity extends Activity {
         boolean moving = payload != null && payload.optString("action").equals("move");
         boolean archiving = payload != null && payload.optString("action").equals("archive");
         boolean managing = payload != null && java.util.Set.of("rename", "pin", "delete").contains(payload.optString("action"));
-        status.setText(archiving ? tr("正在归档会话…", "Archiving conversation…") : moving ? tr("正在移动会话…", "Moving conversation…") : workspaceCreation ? tr("正在新建工作区…", "Creating workspace…") : tr("正在新建会话…", "Creating conversation…"));
-        if (managing) status.setText(tr("正在更新会话…", "Updating conversations…"));
+        setStatusNotice(archiving ? tr("正在归档会话…", "Archiving conversation…") : moving ? tr("正在移动会话…", "Moving conversation…") : workspaceCreation ? tr("正在新建工作区…", "Creating workspace…") : tr("正在新建会话…", "Creating conversation…"));
+        if (managing) setStatusNotice(tr("正在更新会话…", "Updating conversations…"));
         job = worker.submit(() -> {
             try {
                 JSONObject request = new JSONObject(payload.toString());
@@ -1559,7 +1621,7 @@ public final class MainActivity extends Activity {
                     commandBusy = false;
                     if (result.optString("state").equals("pending")) {
                         renderConversations();
-                        status.setText(tr("电脑正在准备操作，请稍后重试同一请求查询结果。", "The computer is preparing the operation. Retry the same request shortly to check its result."));
+                        setStatusNotice(tr("电脑正在准备操作，请稍后重试同一请求查询结果。", "The computer is preparing the operation. Retry the same request shortly to check its result."));
                         return;
                     }
                     try {
@@ -1574,12 +1636,12 @@ public final class MainActivity extends Activity {
                             loadList(false);
                         } else if (result.optBoolean("ok") && archiving) {
                             loadList(false);
-                            status.setText(tr("会话已归档", "Conversation archived"));
+                            setStatusNotice(tr("会话已归档", "Conversation archived"));
                         } else if (result.optBoolean("ok") && workspaceCreation && result.optJSONObject("workspace") != null) {
                             loadList(false);
                         } else if (result.optBoolean("ok") && conversation != null) {
                             conversationId = conversation.getString("id"); conversationTitle = conversation.optString("title"); detailScreen(); connectEvents();
-                        } else { renderConversations(); status.setText(tr("操作未确认成功，请先在电脑核对。", "Operation not confirmed. Check the desktop before retrying.") + " " + result.optString("error")); }
+                        } else { renderConversations(); setStatusNotice(tr("操作未确认成功，请先在电脑核对。", "Operation not confirmed. Check the desktop before retrying.") + " " + result.optString("error")); }
                     } catch (Exception error) { reportError("无法保存结果，请重试同一请求。", "Could not save result. Retry the same request.", error); }
                 });
             } catch (Exception error) { deliver(ticket, () -> {
@@ -1676,9 +1738,9 @@ public final class MainActivity extends Activity {
         if (request == SCAN_QR_REQUEST) {
             if (result != RESULT_OK || data == null) return;
             String address = data.getStringExtra(QrScanActivity.EXTRA_ADDRESS), code = data.getStringExtra(QrScanActivity.EXTRA_CODE);
-            if (address == null || code == null) { status.setText(tr("二维码内容不完整，请在电脑端重新生成。", "The QR code is incomplete. Generate a new one on the computer.")); return; }
+            if (address == null || code == null) { setStatusNotice(tr("二维码内容不完整，请在电脑端重新生成。", "The QR code is incomplete. Generate a new one on the computer.")); return; }
             try { applyScannedPairing(address, code); }
-            catch (IllegalArgumentException error) { status.setText(tr("二维码内容无效，请在电脑端重新生成。", "Invalid QR code. Generate a new one on the computer.")); }
+            catch (IllegalArgumentException error) { setStatusNotice(tr("二维码内容无效，请在电脑端重新生成。", "Invalid QR code. Generate a new one on the computer.")); }
             return;
         }
         if (request != PICK_IMAGE_REQUEST && request != TAKE_PHOTO_REQUEST && request != PICK_DOCUMENT_REQUEST) return;
@@ -1691,7 +1753,7 @@ public final class MainActivity extends Activity {
         }
         if (uris.isEmpty()) { if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); return; }
         if (loadingImages || selectedImages.size() + selectedDocuments.size() + uris.size() > ChatAttachments.remoteCount(canAttachments, canFileAttachments, canMultiImage)) {
-            status.setText(canAttachments ? tr("最多添加 20 个附件。", "Add up to 20 attachments.") : tr("更多附件需要更新并重启电脑端。", "More attachments require an updated and restarted desktop."));
+            setStatusNotice(canAttachments ? tr("最多添加 20 个附件。", "Add up to 20 attachments.") : tr("更多附件需要更新并重启电脑端。", "More attachments require an updated and restarted desktop."));
             if (request == TAKE_PHOTO_REQUEST) clearCameraImage(); return;
         }
         String target = imageConversation, computer = imageComputer;
@@ -1718,7 +1780,7 @@ public final class MainActivity extends Activity {
             finally { String failure = problem; handler.post(() -> {
                 loadingImages = false; if (request == TAKE_PHOTO_REQUEST) clearCameraImage();
                 if (!isDestroyed() && screen.equals("detail")) {
-                    updateControls(); if (failure != null && java.util.Objects.equals(target, conversationId) && java.util.Objects.equals(computer, credentials.optString("address"))) status.setText(failure);
+                    updateControls(); if (failure != null && java.util.Objects.equals(target, conversationId) && java.util.Objects.equals(computer, credentials.optString("address"))) setStatusError(failure);
                 }
             }); }
         });
@@ -1740,13 +1802,13 @@ public final class MainActivity extends Activity {
     }
 
     private void watchList(RemoteApi client, int ticket) {
+        listConnected();
         if (listEventsUnavailable) {
-            status.setText(tr("已连接，定时刷新列表。更新并重启电脑端可启用实时同步。", "Connected; refreshing periodically. Update and restart the desktop for live sync."));
+            setStatusNotice(tr("已连接，定时刷新列表。更新并重启电脑端可启用实时同步。", "Connected; refreshing periodically. Update and restart the desktop for live sync."));
             handler.postDelayed(() -> {
                 if (networkActive() && ticket == generation && screen.equals("list")) loadList(false);
             }, 15_000);
         } else {
-            status.setText(tr("已连接", "Connected"));
             streamList(client, ticket, 0);
         }
     }
@@ -1768,7 +1830,7 @@ public final class MainActivity extends Activity {
                     if (initial && attempt == 0 && syncedCursor >= 0 && syncedCursor == snapshot.optLong("cursor", -1)
                             && syncedInstance.equals(snapshot.optString("instanceId"))) {
                         received[0] = true;
-                        deliver(ticket, () -> status.setText(tr("已连接", "Connected")));
+                        deliver(ticket, () -> listConnected());
                         return;
                     }
                     JSONArray entries = new JSONArray();
@@ -1793,7 +1855,7 @@ public final class MainActivity extends Activity {
                         applyConversationPage(updated, false);
                         cacheConversations();
                         computerStates.put(credentials.optString("address"), tr("已连接", "Connected"));
-                        status.setText(tr("已连接", "Connected"));
+                        listConnected();
                     });
                 });
             } catch (Exception error) { failure = error; }
@@ -1805,9 +1867,10 @@ public final class MainActivity extends Activity {
                     watchList(client, ticket); return;
                 }
                 if (error instanceof RemoteApi.Failure && (((RemoteApi.Failure) error).status == 401 || ((RemoteApi.Failure) error).status == 403 || ((RemoteApi.Failure) error).status == 404)) {
+                    connected = false;
                     showFailure(error, true); return;
                 }
-                status.setText(RemoteApi.failureMessage(error, chinese) + tr(" 正在重连，当前显示上次同步内容。", " Reconnecting; displayed content may be stale."));
+                connectionFailure(RemoteApi.failureMessage(error, chinese) + tr(" 正在重连，当前显示上次同步内容。", " Reconnecting; displayed content may be stale."));
                 long delay = error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000 : Math.min(30_000, 1000L << nextAttempt);
                 handler.postDelayed(() -> streamList(client, ticket, nextAttempt), delay);
             });
@@ -1828,6 +1891,7 @@ public final class MainActivity extends Activity {
         screen = "detail"; networkScreen = false;
         stopNetwork(); clearHistory(); instance = ""; cursor = -1; nextBefore = null; lastLive = null; historyLimited = false; editingSeq = -1;
         remoteSettings = null;
+        remoteCompaction = null;
         remoteQueue = new JSONArray(); canQueue = false; queueVersion = -1; queueSignature = "";
         displayedConversation = null;
         outgoingMessage = credentials.optJSONObject("pendingCommand");
@@ -1940,14 +2004,13 @@ public final class MainActivity extends Activity {
         }
         connected = false; controlAllowed = false; lastLive = null; remoteSettings = null;
         trimHistory(); renderMessages(null);
-        status.setText(tr("显示预加载内容，正在同步最新消息…", "Showing preloaded messages; syncing latest…"));
+        updateWorkStatus();
     }
 
     private void connectEvents() {
         if (!networkActive()) return;
         RemoteApi client = begin(); int ticket = generation;
-        status.setText(history.isEmpty() ? tr("正在连接…", "Connecting…")
-            : tr("显示缓存内容，正在同步最新消息…", "Showing cached messages; syncing latest…"));
+        updateWorkStatus();
         String token = credentials.optString("token");
         worker.submit(() -> {
             try {
@@ -1973,8 +2036,7 @@ public final class MainActivity extends Activity {
                     connected = false; updateControls();
                     showFailure(error, true); return;
                 }
-                connected = false; updateControls();
-                status.setText(RemoteApi.failureMessage(error, chinese) + tr(" 正在重连，当前显示上次同步内容。", " Reconnecting; displayed content may be stale."));
+                connectionFailure(RemoteApi.failureMessage(error, chinese) + tr(" 正在重连，当前显示上次同步内容。", " Reconnecting; displayed content may be stale."));
                 long delay = error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000 : Math.min(30_000, 1000L << nextAttempt);
                 handler.postDelayed(() -> stream(client, ticket, nextAttempt), delay);
             });
@@ -2015,7 +2077,7 @@ public final class MainActivity extends Activity {
         TextView pageTitle = root.findViewWithTag("pageTitle");
         if (pageTitle != null) pageTitle.setText(conversationTitle);
         JSONObject settings = snapshot.optJSONObject("settings");
-        if (settingsPopup != null && (settings == null || remoteSettings == null || !settings.optString("version").equals(remoteSettings.optString("version")) || !settings.optBoolean("editable"))) {
+        if (settingsPopup != null && (settings == null || remoteSettings == null || !settings.optString("version").equals(remoteSettings.optString("version")) || !settings.optBoolean("modelEditable", settings.optBoolean("editable")))) {
             settingsPopup.dismiss(); settingsPopup = null;
         }
         remoteSettings = settings;
@@ -2037,6 +2099,7 @@ public final class MainActivity extends Activity {
         if (history.isEmpty() || history.firstKey() >= first) nextBefore = snapshot.isNull("nextBefore") ? null : snapshot.optLong("nextBefore");
         trimHistory();
         lastLive = snapshot.optJSONObject("live");
+        remoteCompaction = ContextCompactionView.fromSnapshot(snapshot, remoteCompaction, conversationSeq);
         displayedConversation = conversation;
         canQueue = snapshot.has("queue");
         if (!canQueue) remoteQueue = new JSONArray();
@@ -2047,10 +2110,6 @@ public final class MainActivity extends Activity {
         syncReplyRead(conversation);
         renderApprovals(); updateControls();
         updateOlderControl();
-        status.setText(controlAllowed ? credentials.has("pendingCommand")
-            ? tr("操作待确认，请重试同一请求；不要重复发送。", "Operation awaiting confirmation. Retry the same request; do not send another copy.")
-            : String.format(tr("已连接 · %s", "Connected · %s"), activity(conversation))
-            : tr("请更新并重启电脑端以操作会话", "Update and restart the desktop to control conversations"));
         if (following && !olderLoading) positionMessages(Integer.MAX_VALUE);
     }
 
@@ -2071,7 +2130,12 @@ public final class MainActivity extends Activity {
         JSONArray pendingProcess = new JSONArray();
         long turn = 0;
         pendingMessageViews.clear();
+        boolean showCompaction = remoteCompaction != null && !history.containsKey(remoteCompaction.optLong("seq", -1));
+        long compactionBoundary = remoteCompaction == null ? Long.MAX_VALUE : remoteCompaction.optLong("afterSeq", conversationSeq);
         for (JSONObject row : history.values()) {
+            if (showCompaction && row.optLong("seq") > compactionBoundary) {
+                retained.add("compaction:live"); addCompaction("compaction:live", remoteCompaction); showCompaction = false;
+            }
             String role = row.optString("role");
             if (role.equals("user")) { pendingProcess = new JSONArray(); turn = row.optLong("seq"); }
             if (role.equals("tool")) {
@@ -2081,11 +2145,14 @@ public final class MainActivity extends Activity {
             }
             String label = role.equals("user") ? tr("你", "You") : role.equals("assistant") ? "Camellia" : tr("提示", "Notice");
             String key = "message:" + row.optLong("seq"); retained.add(key);
+            JSONObject compaction = ContextCompactionView.fromMessage(row);
+            if (compaction != null) { addCompaction(key, compaction); continue; }
             JSONArray process = row.optJSONArray("process");
             if (role.equals("assistant") && (process == null || process.length() == 0)) process = pendingProcess;
             addMessage(key, label, row.optString("text"), role.equals("user"), row.optBoolean("textTruncated"), process, false, "turn:" + turn, row.optLong("at"), row.optLong("seq"));
             if (role.equals("assistant")) pendingProcess = new JSONArray();
         }
+        if (showCompaction) { retained.add("compaction:live"); addCompaction("compaction:live", remoteCompaction); }
         if (live != null) {
             retained.add("live");
             JSONArray process = live.optJSONArray("process");
@@ -2158,7 +2225,7 @@ public final class MainActivity extends Activity {
         editingSeq = seq;
         composer.requestFocus();
         ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(composer, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
-        status.setText(tr("正在编辑上一条消息 · 发送后将重新生成回复", "Editing previous message · sending regenerates the reply"));
+        if (workStatus != null) workStatus.clear();
         updateControls();
     }
 
@@ -2166,7 +2233,7 @@ public final class MainActivity extends Activity {
         if (composer == null || commandBusy || credentials.has("pendingCommand") || lastLive != null) return;
         locationConsent.cancel();
         editingSeq = -1; editingText = ""; composer.setText("");
-        persistDraft(); status.setText(""); updateControls();
+        persistDraft(); if (workStatus != null) workStatus.clear(); updateControls();
     }
 
     private void renderOutgoing(java.util.Set<String> retained) {
@@ -2232,6 +2299,14 @@ public final class MainActivity extends Activity {
 
     private final ExecutionProcessView.State processState = new ExecutionProcessView.State();
 
+    private void addCompaction(String key, JSONObject compaction) {
+        View existing = renderedMessages.get(key);
+        ContextCompactionView view = existing instanceof ContextCompactionView ? (ContextCompactionView) existing
+            : new ContextCompactionView(this, chatStyle, chinese);
+        view.setTag("remoteCompaction:" + key); view.update(compaction);
+        renderedMessages.put(key, view); pendingMessageViews.add(view);
+    }
+
     private void addMessage(String key, String label, String value, boolean user, boolean truncated, JSONArray process, boolean live, String turn, long at, long seq) {
         long latestUserSeq = -1;
         if (user) for (JSONObject row : history.values()) if (row.optString("role").equals("user")) latestUserSeq = row.optLong("seq");
@@ -2276,7 +2351,7 @@ public final class MainActivity extends Activity {
         older.setEnabled(available && !olderLoading);
         older.setVisibility(available ? View.VISIBLE : View.GONE);
         ((RefreshScrollView) scroll).setRefreshAction(available ? this::loadOlder : null, ready -> {
-            if (ready) status.setText(tr("松开加载更早消息", "Release to load earlier messages"));
+            if (ready) setStatusNotice(tr("松开加载更早消息", "Release to load earlier messages"));
         });
     }
 
@@ -2290,7 +2365,7 @@ public final class MainActivity extends Activity {
         String id = conversationId, token = credentials.optString("token"); older.setEnabled(false);
         olderLoading = true;
         ((RefreshScrollView) scroll).setRefreshing(true);
-        status.setText(tr("正在加载更早消息…", "Loading earlier messages…"));
+        setStatusNotice(tr("正在加载更早消息…", "Loading earlier messages…"));
         worker.submit(() -> {
             try {
                 JSONObject snapshot = client.json("/v1/conversations/" + id + "?before=" + before, token, null);
@@ -2316,8 +2391,8 @@ public final class MainActivity extends Activity {
                             targetScroll.scrollTo(0, messages.getTop() + retainedAnchor.getTop() - anchorOffset);
                         }
                     });
-                    if (trimmed) status.setText(tr("已达到历史显示上限，请在电脑查看更早消息。", "History display limit reached. Read earlier messages on the computer."));
-                    else status.setText(nextBefore == null ? tr("已加载全部消息", "All messages loaded") : tr("已加载更早消息", "Earlier messages loaded"));
+                    if (trimmed) setStatusNotice(tr("已达到历史显示上限，请在电脑查看更早消息。", "History display limit reached. Read earlier messages on the computer."));
+                    else setStatusNotice(nextBefore == null ? tr("已加载全部消息", "All messages loaded") : tr("已加载更早消息", "Earlier messages loaded"));
                 });
             } catch (Exception error) { deliver(ticket, () -> {
                 olderLoading = false; ((RefreshScrollView) scroll).setRefreshing(false);
@@ -2363,6 +2438,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showFailure(Exception error, boolean authenticated) {
+        if (!connected) { connectionBlocked = true; updateConnectionHeader(); }
         if (authenticated) computerStates.put(credentials.optString("address"), RemoteApi.failureMessage(error, chinese));
         if (error instanceof RemoteApi.Failure) {
             int code = ((RemoteApi.Failure) error).status;
@@ -2376,7 +2452,7 @@ public final class MainActivity extends Activity {
                     try { store.save(credentials); } catch (Exception ignored) { }
                     pairScreen();
                 }
-                status.setText(tr("凭据已失效、配对已过期或被拒绝，请重新配对。", "Access was revoked, expired or rejected. Pair again.")
+                setStatusError(tr("凭据已失效、配对已过期或被拒绝，请重新配对。", "Access was revoked, expired or rejected. Pair again.")
                     + "\n" + RemoteApi.failureMessage(error, chinese)); return;
             }
             if (code == 404) {
@@ -2385,10 +2461,10 @@ public final class MainActivity extends Activity {
                 if (screen.equals("detail") && conversationId != null) {
                     boolean released = releasePendingCommandForUnavailableConversation();
                     clearHistory(); if (messages != null) messages.removeAllViews();
-                    status.setText(tr("会话不可用，可能已归档或不再授权。", "Conversation unavailable, archived or no longer authorized.")
+                    setStatusError(tr("会话不可用，可能已归档或不再授权。", "Conversation unavailable, archived or no longer authorized.")
                         + (released ? tr(" 未确认的消息已恢复到输入框且未发送。", " The unconfirmed message was returned to the box and was not sent.") : "")
                         + "\n" + RemoteApi.failureMessage(error, chinese));
-                } else status.setText(tr("电脑端不支持此接口，请更新并重启电脑端。", "This endpoint is unavailable. Update and restart the desktop.")
+                } else setStatusError(tr("电脑端不支持此接口，请更新并重启电脑端。", "This endpoint is unavailable. Update and restart the desktop.")
                     + "\n" + RemoteApi.failureMessage(error, chinese));
                 return;
             }
@@ -2397,9 +2473,9 @@ public final class MainActivity extends Activity {
                 prefetch.remove(credentials, null);
                 if (screen.equals("detail")) { clearHistory(); if (messages != null) messages.removeAllViews(); }
             }
-            if (code == 429 || code == 403 || code == 409) { status.setText(RemoteApi.failureMessage(error, chinese)); return; }
+            if (code == 429 || code == 403 || code == 409) { setStatusError(RemoteApi.failureMessage(error, chinese)); return; }
         }
-        status.setText(RemoteApi.failureMessage(error, chinese) + tr(" 当前内容可能是缓存。", " Displayed content may be cached."));
+        setStatusError(RemoteApi.failureMessage(error, chinese) + tr(" 当前内容可能是缓存。", " Displayed content may be cached."));
     }
 
     // A command queued for a conversation the desktop deleted or archived can
@@ -2441,15 +2517,64 @@ public final class MainActivity extends Activity {
         ErrorDetails.bindStatus(this, status, chinese);
     }
 
+    private void setStatusNotice(String value) {
+        if (workStatus != null) workStatus.notice(value);
+        else if (status != null) status.setText(value);
+    }
+
+    private void setStatusError(String value) {
+        if (workStatus != null) workStatus.error(value, false);
+        else if (status != null) status.setText(value);
+    }
+
+    private void connectionFailure(String value) {
+        connected = false; reconnecting = true; connectionBlocked = false;
+        updateControls();
+        if (workStatus != null) workStatus.error(value, true);
+        else setStatusError(value);
+    }
+
+    private void updateConnectionHeader() {
+        if (headerConnection == null) return;
+        headerConnection.setText(connected ? tr("已连接", "Connected") : connectionBlocked || !EmbeddedNetwork.online() ? tr("离线", "Offline")
+            : reconnecting ? tr("正在重连", "Reconnecting") : tr("正在连接", "Connecting"));
+        headerConnection.setVisibility(View.VISIBLE);
+    }
+
+    private void listConnected() {
+        connected = true; reconnecting = false; updateConnectionHeader(); setStatusNotice("");
+    }
+
+    private void updateWorkStatus() {
+        updateConnectionHeader();
+        if (workStatus == null) return;
+        if (connected) workStatus.reconnected();
+        String value = "";
+        JSONObject pending = credentials.optJSONObject("pendingCommand");
+        if (!connected) value = tr("等待同步会话…", "Waiting for conversation sync…");
+        else if (pending != null) {
+            JSONObject payload = pending.optJSONObject("payload");
+            value = payload != null && payload.optString("action").equals("stop") ? tr("正在停止…", "Stopping…")
+                : tr("操作待确认…", "Awaiting action confirmation…");
+        } else if (commandBusy) value = tr("正在提交操作…", "Submitting action…");
+        else value = RemoteWorkStatus.conversation(displayedConversation, lastLive, remoteCompaction, chinese);
+        if (value.isEmpty()) value = loadingImages ? tr("正在读取附件…", "Loading attachments…")
+            : editingSeq > 0 ? tr("正在编辑上一条消息", "Editing previous message")
+            : !controlAllowed ? tr("只读会话", "Read-only conversation")
+            : remoteQueue.length() > 0 ? tr("等待处理队列…", "Waiting for queued messages…") : tr("就绪", "Ready");
+        workStatus.work(value);
+    }
+
     private void reportError(String zh, String en, Exception error) {
-        status.setText(ErrorDetails.withSummary(tr(zh, en), error));
+        setStatusError(ErrorDetails.withSummary(tr(zh, en), error));
     }
 
     private void updateControls() {
+        updateWorkStatus();
         if (sendButton == null || conversationId == null) return;
         boolean pending = credentials.has("pendingCommand");
         boolean available = connected && controlAllowed && !commandBusy;
-        boolean configurable = available && !pending && remoteSettings != null && remoteSettings.optBoolean("editable");
+        boolean configurable = available && !pending && remoteSettings != null && remoteSettings.optBoolean("modelEditable", remoteSettings.optBoolean("editable"));
         if (!configurable && settingsPopup != null) { settingsPopup.dismiss(); settingsPopup = null; }
         if (modelButton != null) {
             String model = remoteSettings == null ? tr("模型", "Model") : remoteSettings.optString("model", tr("模型", "Model"));
@@ -2459,7 +2584,8 @@ public final class MainActivity extends Activity {
         chatComposer.editing(editingSeq > 0, !commandBusy && !pending && lastLive == null);
         if (permissionButton != null) {
             String level = remoteSettings == null ? "ask" : remoteSettings.optString("permissionMode");
-            permissionButton.setEnabled(configurable); permissionButton.setAlpha(configurable ? 1f : .45f);
+            boolean permissionsEditable = configurable && remoteSettings.optBoolean("editable");
+            permissionButton.setEnabled(permissionsEditable); permissionButton.setAlpha(permissionsEditable ? 1f : .45f);
             permissionButton.setContentDescription(tr("安全级别：", "Safety level: ") + RemoteSettingsPopup.permissionLabel(level, chinese));
             permissionButton.setImageDrawable(new LineIcon("shield", level.equals("full") ? 0xffc28a35 : ink));
         }
@@ -2485,12 +2611,7 @@ public final class MainActivity extends Activity {
         stopButton.setVisibility(lastLive != null && !showQueueSend ? View.VISIBLE : View.GONE);
         composer.setEnabled(!commandBusy && !pending);
         if (retryMessage != null) retryMessage.setEnabled(available && pending);
-        status.setOnClickListener(pending && retryMessage == null ? view -> retryCommand() : null);
-        status.setClickable(available && pending && retryMessage == null);
-        status.setFocusable(available && pending && retryMessage == null);
-        if (screen.equals("detail") && editingSeq > 0 && available && !pending && lastLive == null) {
-            status.setText(tr("正在编辑上一条消息 · 发送后将重新生成回复", "Editing previous message · sending regenerates the reply"));
-        }
+        if (workStatus != null) workStatus.retry(available && pending && retryMessage == null ? this::retryCommand : null);
         if (approvals != null) for (int index = 0; index < approvals.getChildCount(); index++) {
             View child = approvals.getChildAt(index);
             if (child instanceof Button) child.setEnabled(available && !pending);
@@ -2743,6 +2864,11 @@ public final class MainActivity extends Activity {
     private void renderApprovals() {
         JSONArray requests = controlAllowed && lastLive != null ? lastLive.optJSONArray("approvals") : null;
         String signature = instance + ":" + (lastLive == null ? "" : lastLive.optLong("runId")) + ":" + String.valueOf(requests);
+        String scope = conversationId + ":" + instance + ":" + (lastLive == null ? "" : lastLive.optLong("runId")) + ":";
+        boolean stillPending = false;
+        for (int i = 0; requests != null && i < requests.length(); i++)
+            if (requests.optJSONObject(i) != null && remoteApprovalKey.equals(scope + requests.optJSONObject(i).optString("fingerprint"))) stillPending = true;
+        if (remoteApprovalDialog != null && !stillPending) { remoteApprovalDialog.dismiss(); remoteApprovalDialog = null; }
         if (signature.equals(approvalSignature)) return;
         approvalSignature = signature; approvals.removeAllViews();
         if (requests == null) return;
@@ -2750,10 +2876,25 @@ public final class MainActivity extends Activity {
             JSONObject request = requests.optJSONObject(index); if (request == null) continue;
             approvals.addView(text(request.optString("toolName"), 17, accent));
             TextView details = text(request.optString("details"), 13, ink); details.setTypeface(Typeface.MONOSPACE); details.setTextIsSelectable(true); approvals.addView(details);
-            if (!request.optBoolean("actionable")) {
+            if (!request.optBoolean("responseSupported", request.optBoolean("actionable"))) {
                 approvals.addView(text(tr("此请求需要电脑处理（问答或内容过长）。", "Handle this request on the computer (questions or oversized details)."), 13, muted)); continue;
             }
             long runId = lastLive.optLong("runId"); String server = instance;
+            if (request.optJSONArray("questions") != null && request.optJSONArray("questions").length() > 0) {
+                approvals.addView(button(tr("回答问题", "Answer questions"), () -> {
+                    if (!connected || !controlAllowed || commandBusy || credentials.has("pendingCommand")) return;
+                    if (remoteApprovalDialog != null) remoteApprovalDialog.dismiss();
+                    String target = conversationId;
+                    remoteApprovalKey = scope + request.optString("fingerprint");
+                    remoteApprovalDialog = RemoteApprovalDialog.show(this, request, conversationTitle, (allow, input, optionId) -> {
+                        if (!target.equals(conversationId) || !server.equals(instance) || lastLive == null || lastLive.optLong("runId") != runId || !connected || commandBusy || credentials.has("pendingCommand")) return false;
+                        JSONObject payload = command("approve").put("instanceId", server).put("runId", runId).put("approvalId", request.getString("requestId"))
+                            .put("fingerprint", request.getString("fingerprint")).put("allow", allow);
+                        if (input != null) payload.put("input", input); if (optionId != null) payload.put("optionId", optionId);
+                        submitCommand(payload); return true;
+                    });
+                }, true)); continue;
+            }
             for (boolean allow : new boolean[]{false, true}) {
                 approvals.addView(button(allow ? tr("允许一次", "Allow once") : tr("拒绝", "Deny"), () -> {
                     if (!connected || !controlAllowed || commandBusy || credentials.has("pendingCommand")) return;
@@ -2770,13 +2911,16 @@ public final class MainActivity extends Activity {
     }
 
     private void showRemoteSettings(boolean permissions) {
-        if (!connected || !controlAllowed || commandBusy || credentials.has("pendingCommand") || remoteSettings == null || !remoteSettings.optBoolean("editable")) return;
+        if (!connected || !controlAllowed || commandBusy || credentials.has("pendingCommand") || remoteSettings == null
+            || !(permissions ? remoteSettings.optBoolean("editable") : remoteSettings.optBoolean("modelEditable", remoteSettings.optBoolean("editable")))) return;
         if (settingsPopup != null) settingsPopup.dismiss();
         String version = remoteSettings.optString("version"), server = instance, target = conversationId;
         settingsPopup = new RemoteSettingsPopup(this, chinese, background, ink, muted, accent, remoteSettings, (key, value) -> {
             if (!target.equals(conversationId) || !server.equals(instance) || remoteSettings == null || !version.equals(remoteSettings.optString("version"))) return;
             try {
-                submitCommand(command("configure").put("instanceId", server).put("expectedSettings", version).put("settings", new JSONObject().put(key, value)));
+                JSONObject changes = key.equals("modelChoice") ? new JSONObject(value)
+                    : new JSONObject().put(key, key.equals("fastMode") || key.equals("quickSwitch") ? Boolean.parseBoolean(value) : value);
+                submitCommand(command("configure").put("instanceId", server).put("expectedSettings", version).put("settings", changes));
             } catch (Exception error) { reportError("无法保存设置，请重试。", "Could not save settings. Try again.", error); }
         });
         settingsPopup.show(permissions ? permissionButton : modelButton, permissions);
@@ -2820,7 +2964,7 @@ public final class MainActivity extends Activity {
         if (userInitiated) {
             commandCheckDeadline = android.os.SystemClock.elapsedRealtime() + COMMAND_CONFIRM_TIMEOUT_MS;
             if (sending) outgoingState("sending");
-            status.setText(tr("正在提交操作…", "Submitting operation…"));
+            if (workStatus != null) workStatus.clear();
         }
         updateControls();
         RemoteApi client = api; int ticket = generation; String token = credentials.optString("token");
@@ -2836,7 +2980,7 @@ public final class MainActivity extends Activity {
                         showFailure(error, true);
                     } else {
                         if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) outgoingState("unconfirmed");
-                        status.setText(ErrorDetails.withSummary(tr("发送未确认：连接失败或超时。请重试同一请求，避免重复发送。", "Send unconfirmed: connection failed or timed out. Retry the same request to avoid duplicates."), error));
+                        setStatusError(ErrorDetails.withSummary(tr("发送未确认：连接失败或超时。请重试同一请求，避免重复发送。", "Send unconfirmed: connection failed or timed out. Retry the same request to avoid duplicates."), error));
                         updateControls();
                         new CamelliaDialog.Builder(this).setMessage(ErrorDetails.withSummary(
                             tr("未收到电脑确认。操作可能已执行，请勿重复新建发送；点击未确认提示，重试同一请求。", "No confirmation received. The operation may have executed. Tap the unconfirmed status to retry the same request; do not send a new copy."),
@@ -2853,11 +2997,10 @@ public final class MainActivity extends Activity {
         if (result.optString("state").equals("pending")) {
             if (android.os.SystemClock.elapsedRealtime() >= commandCheckDeadline) {
                 if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) outgoingState("unconfirmed");
-                status.setText(tr("等待电脑确认超时，操作可能已执行。请重试同一请求，不要重复发送。", "Timed out waiting for confirmation; the operation may have executed. Retry the same request, not a new copy."));
+                setStatusError(tr("等待电脑确认超时，操作可能已执行。请重试同一请求，不要重复发送。", "Timed out waiting for confirmation; the operation may have executed. Retry the same request, not a new copy."));
                 updateControls(); return;
             }
             if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) outgoingState("preparing");
-            status.setText(tr("电脑正在准备操作，正在查询结果…", "The computer is preparing the operation; checking its result…"));
             int ticket = generation;
             handler.postDelayed(() -> {
                 JSONObject pending = credentials.optJSONObject("pendingCommand");
@@ -2872,7 +3015,7 @@ public final class MainActivity extends Activity {
         }
         if (result.optString("state").equals("unknown")) {
             if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) outgoingState("unconfirmed");
-            status.setText(tr("电脑无法确认该请求结果，请先到电脑核对；不会自动重复发送。", "The computer cannot confirm this request. Inspect it on the computer; it will not be resent automatically."));
+            setStatusError(tr("电脑无法确认该请求结果，请先到电脑核对；不会自动重复发送。", "The computer cannot confirm this request. Inspect it on the computer; it will not be resent automatically."));
             updateControls(); return;
         }
         try {
@@ -2889,6 +3032,7 @@ public final class MainActivity extends Activity {
             }
             store.save(saved); credentials = saved;
             if (result.optBoolean("ok")) {
+                if (workStatus != null) workStatus.clear();
                 applyQueue(result);
                 if (submitted && result.optString("state").equals("queued")) {
                     outgoingMessage = null; renderMessages(lastLive);
@@ -2896,7 +3040,7 @@ public final class MainActivity extends Activity {
                     if (result.has("userSeq")) outgoingMessage.put("userSeq", result.getLong("userSeq"));
                     outgoingState("accepted");
                 }
-                status.setText(result.optString("state").equals("queued") ? tr("已加入电脑队列", "Queued on the computer") : tr("电脑已接收操作", "Computer accepted the operation"));
+                setStatusNotice(result.optString("state").equals("queued") ? tr("已加入电脑队列", "Queued on the computer") : tr("电脑已接收操作", "Computer accepted the operation"));
             } else {
                 if (submitted && outgoingMessage != null) {
                     // A refused edit stays an edit: keep its target so the restored
@@ -2962,8 +3106,8 @@ public final class MainActivity extends Activity {
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("清除", "Forget"), (dialog, which) -> {
                 stopNetwork(); int ticket = generation;
                 networkWorker.submit(() -> {
-                    try { EmbeddedNetwork.forget(); deliver(ticket, () -> status.setText(tr("已清除，请重新登录。", "Identity removed. Sign in again."))); }
-                    catch (Exception error) { deliver(ticket, () -> status.setText(ErrorDetails.withSummary(tr("清除失败，请重试。", "Could not clear identity. Retry."), error))); }
+                    try { EmbeddedNetwork.forget(); deliver(ticket, () -> setStatusNotice(tr("已清除，请重新登录。", "Identity removed. Sign in again."))); }
+                    catch (Exception error) { deliver(ticket, () -> setStatusNotice(ErrorDetails.withSummary(tr("清除失败，请重试。", "Could not clear identity. Retry."), error))); }
                 });
             }).show());
         LinearLayout about = settingsStyle.group(content, tr("关于", "About"));
@@ -2991,9 +3135,9 @@ public final class MainActivity extends Activity {
 
     private void refreshNetwork(boolean login) {
         if (!foreground || !networkScreen) return;
-        if (!EmbeddedNetwork.enabled()) { status.setText(tr("外部模式：请自行连接 Tailscale App。", "External mode: connect the Tailscale app separately.")); return; }
+        if (!EmbeddedNetwork.enabled()) { setStatusNotice(tr("外部模式：请自行连接 Tailscale App。", "External mode: connect the Tailscale app separately.")); return; }
         int ticket = generation;
-        status.setText(tr("正在检查内置连接…", "Checking embedded connection…"));
+        setStatusNotice(tr("正在检查内置连接…", "Checking embedded connection…"));
         networkWorker.submit(() -> {
             try {
                 var node = EmbeddedNetwork.node();
@@ -3002,7 +3146,7 @@ public final class MainActivity extends Activity {
                 deliver(ticket, () -> {
                     if (!networkScreen) return;
                     String phase = state.optString("state");
-                    status.setText(phase.equals("Running") ? tr("已连接，可以返回配对。", "Connected. Return to pairing.") : tr("网络状态：", "Network state: ") + phase);
+                    setStatusNotice(phase.equals("Running") ? tr("已连接，可以返回配对。", "Connected. Return to pairing.") : tr("网络状态：", "Network state: ") + phase);
                     String url = EmbeddedNetwork.loginUrl(state.optString("loginUrl"));
                     if (login && url != null && !loginLaunched) {
                         loginLaunched = true;
@@ -3010,7 +3154,7 @@ public final class MainActivity extends Activity {
                         catch (Exception error) { reportError("找不到浏览器，无法打开登录页面。", "No browser available to open the login page.", error); }
                     } else if (login && !phase.equals("Running")) handler.postDelayed(() -> refreshLoginStatus(ticket), 2000);
                 });
-            } catch (Exception error) { deliver(ticket, () -> status.setText(RemoteApi.failureMessage(error, chinese))); }
+            } catch (Exception error) { deliver(ticket, () -> setStatusNotice(RemoteApi.failureMessage(error, chinese))); }
         });
     }
 
@@ -3026,9 +3170,9 @@ public final class MainActivity extends Activity {
                         try { startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))); }
                         catch (Exception error) { reportError("无法打开登录浏览器。", "Could not open sign-in browser.", error); }
                     } else if (!state.optString("state").equals("Running")) handler.postDelayed(() -> refreshLoginStatus(ticket), 2000);
-                    else status.setText(tr("已连接，可以返回配对。", "Connected. Return to pairing."));
+                    else setStatusNotice(tr("已连接，可以返回配对。", "Connected. Return to pairing."));
                 });
-            } catch (Exception error) { deliver(ticket, () -> status.setText(ErrorDetails.withSummary(tr("登录连接中断，请重试。", "Login connection interrupted. Retry."), error))); }
+            } catch (Exception error) { deliver(ticket, () -> setStatusNotice(ErrorDetails.withSummary(tr("登录连接中断，请重试。", "Login connection interrupted. Retry."), error))); }
         });
     }
 }

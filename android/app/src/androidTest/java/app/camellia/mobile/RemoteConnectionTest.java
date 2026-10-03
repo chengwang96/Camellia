@@ -44,12 +44,14 @@ public class RemoteConnectionTest extends InstrumentationTestCase {
                 var member = MainActivity.class.getDeclaredField(name); member.setAccessible(true); assertFalse(member.getBoolean(activity));
             }
             var historyField = MainActivity.class.getDeclaredField("history"); historyField.setAccessible(true);
-            assertEquals(1, ((java.util.Map<?, ?>) historyField.get(activity)).size());
+            java.util.Map<?, ?> history = (java.util.Map<?, ?>) historyField.get(activity);
+            assertEquals(1, history.size());
+            assertEquals("preloaded text", ((JSONObject) history.values().iterator().next()).getString("text"));
             var send = MainActivity.class.getDeclaredField("sendButton"); send.setAccessible(true);
             assertFalse(((android.view.View) send.get(activity)).isEnabled());
             var status = MainActivity.class.getDeclaredField("status"); status.setAccessible(true);
             String text = ((android.widget.TextView) status.get(activity)).getText().toString();
-            assertTrue(text.contains("预加载") || text.contains("preloaded"));
+            assertTrue(text, text.contains("等待同步会话") || text.contains("Waiting for conversation sync"));
         });
     }
 

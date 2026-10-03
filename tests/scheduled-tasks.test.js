@@ -134,6 +134,43 @@ test('missing or failed reports pause instead of looping or accepting completion
   assert.equal(harness.scheduler.get(task.id, task.sessionId).status, 'paused');
 });
 
+test('task edits are atomic, conversation-scoped and never implicitly resume a paused task', context => {
+  const harness = fixture(context), task = harness.create();
+  harness.scheduler.action(task.id, task.sessionId, 'pause');
+  const before = harness.scheduler.list();
+  assert.throws(() => harness.scheduler.action(task.id, 'other', 'cancel'), /not found/);
+  assert.throws(() => harness.scheduler.action(task.id, task.sessionId, 'update', { instruction: 'Changed', maxRuns: 0 }), /Invalid/);
+  assert.deepEqual(harness.scheduler.list(), before);
+  const updated = harness.scheduler.action(task.id, task.sessionId, 'update', { intervalMinutes: 30 });
+  assert.equal(updated.status, 'paused');
+  assert.equal(updated.nextRunAt, null);
+  updated.instruction = 'Mutated returned snapshot';
+  assert.equal(harness.scheduler.get(task.id, task.sessionId).instruction, task.instruction);
+  const restored = new ScheduledTasks(harness.options); context.after(() => restored.close());
+  assert.equal(restored.get(task.id, task.sessionId).intervalMinutes, 30);
+  assert.equal(restored.get(task.id, task.sessionId).status, 'paused');
+});
+
+test('cancelling one running conversation leaves another running task independent', async context => {
+  const harness = fixture(context), first = harness.create();
+  const second = harness.scheduler.create('other', 'claude', { instruction: 'Inspect another log', intervalMinutes: 1 });
+  harness.advance(1); await harness.scheduler.tick();
+  assert.equal(harness.runs.length, 2);
+  harness.scheduler.report(first.id, first.sessionId, { status: 'complete', summary: 'Late completion' });
+  harness.scheduler.action(first.id, first.sessionId, 'cancel');
+  assert.throws(() => harness.scheduler.action(first.id, first.sessionId, 'resume'), /ended/);
+  assert.deepEqual(harness.interrupts, [first.id]);
+  harness.scheduler.report(second.id, second.sessionId, { status: 'continue', summary: 'Healthy' });
+  for (const run of harness.runs) run.resolve({ subtype: 'success' });
+  await harness.flush();
+  assert.equal(harness.scheduler.get(first.id, first.sessionId).status, 'cancelled');
+  assert.equal(harness.scheduler.get(second.id, second.sessionId).status, 'scheduled');
+  harness.advance(1); await harness.scheduler.tick();
+  assert.equal(harness.runs.length, 3);
+  assert.equal(harness.runs[2].task.id, second.id);
+  harness.runs[2].resolve({ subtype: 'stopped' }); await harness.flush();
+});
+
 test('shutdown and deletion disarm timers and leave external experiments alone', async context => {
   const harness = fixture(context), task = harness.create();
   harness.scheduler.removeSession(task.sessionId);

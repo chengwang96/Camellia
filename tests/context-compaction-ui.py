@@ -92,6 +92,9 @@ with sync_playwright() as playwright:
         # riding at the bottom of the transcript while the turn keeps growing.
         assert marker_before_last_turn(page, '.context-compaction[data-state="running"]'), \
             'running marker is not anchored above the streaming turn'
+        # The transcript marker owns the compaction progress; the in-turn run
+        # row must not repeat the same sentence beside it.
+        expect(page.locator('.turn').last.locator('.run-status')).not_to_contain_text('正在原生压缩上下文')
         page.evaluate("deliverEvent({type:'gui:compaction',session_id:'shared-fixture',engine:'codex',runId:91,state:'completed',compactionSeq:9})")
         expect(page.locator('.context-compaction[data-state="running"]')).to_have_count(0)
         expect(page.locator('.context-compaction[data-seq="9"]')).to_have_text('Codex：上下文已原生压缩')

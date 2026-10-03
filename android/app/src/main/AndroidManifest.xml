@@ -32,6 +32,7 @@
         <activity android:name=".SettingsActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".QrScanActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:theme="@style/AppTheme" />
         <activity android:name=".LocalChatActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".RemoteDiscussionsActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".MainActivity" android:exported="true" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

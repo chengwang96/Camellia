@@ -17,6 +17,7 @@ bridge = r"""(() => {
   const engine = new URLSearchParams(location.search).get('harness');
   const settings = {model:'fixture-model',permissionMode:'default',connection:'api'};
   window.dshDesktop = {
+    onNetworkHealth: () => () => {},
     sharedConversations:true,
     onLanguageChanged:fn=>{window.changeLanguage=fn;return()=>{};},
     conversationCommand:async ({action,payload}) => {

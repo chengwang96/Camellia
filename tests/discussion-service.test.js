@@ -130,6 +130,34 @@ test('unsupported discussion actions cross IPC with an actionable code and leave
   assert.equal(calls.length, 0);
 });
 
+test('integrated workbench can operate discussions while foreign pages and subframes remain denied', async () => {
+  let handler; const calls = [], navigations = [];
+  const page = path.resolve('src/renderer/discussions/discussions.html'), chatPage = path.resolve('src/renderer/chat/claude.html');
+  const frame = { url: pathToFileURL(chatPage).href + '?harness=codex' }, sender = { mainFrame: frame };
+  const window = { isDestroyed: () => false, webContents: sender };
+  registerDiscussionIpc({ ipcMain: { handle(_name, fn) { handler = fn; } }, page, chatPage, getWindow: () => window,
+    service: { call(action) { calls.push(action); return { groups: [{ id: 'group-one' }] }; } },
+    navigate: async query => { navigations.push(query); return { ok: true }; } });
+  const event = { sender, senderFrame: frame };
+  assert.equal((await handler(event, { action: 'list' })).ok, true);
+  assert.equal((await handler(event, { action: 'pin', payload: { id: 'group-one', pinned: true } })).ok, true);
+  for (const action of ['send', 'create', 'load', 'add-member', 'delete', 'permission-response']) {
+    assert.equal((await handler(event, { action })).ok, true);
+    assert.equal((await handler({ ...event, senderFrame: { ...frame } }, { action })).ok, false);
+  }
+  const template = await handler(event, { action: 'template', payload: { path: 'must-not-read-user-files' } });
+  assert.equal(template.ok, true); assert.match(template.html, /id="groupView"/);
+  assert.equal((await handler({ ...event, sender: { mainFrame: frame } }, { action: 'template' })).ok, false);
+  assert.equal((await handler(event, { action: 'open', payload: { id: 'group-one', intent: 'rename' } })).ok, true);
+  assert.equal((await handler(event, { action: 'open', payload: { intent: 'create' } })).ok, true);
+  assert.equal((await handler(event, { action: 'open', payload: { id: 'missing' } })).ok, false);
+  assert.equal((await handler(event, { action: 'open', payload: { intent: 'send' } })).ok, false);
+  assert.equal((await handler({ ...event, senderFrame: { ...frame } }, { action: 'open' })).ok, false);
+  frame.url = 'https://example.com'; assert.equal((await handler(event, { action: 'list' })).ok, false);
+  assert.deepEqual(navigations, [{ group: 'group-one', intent: 'rename' }, { intent: 'create' }]);
+  assert.deepEqual(calls, ['list', 'pin', 'send', 'create', 'load', 'add-member', 'delete', 'permission-response', 'list', 'list']);
+});
+
 test('group rename, pin and permanent removal survive restart and leave the neighboring history intact', async t => {
   const h = setup(t), first = await createMembers(h.service, 1);
   const second = (await h.service.call('create', { title: 'Neighbor' })).group;

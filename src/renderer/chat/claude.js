@@ -2,6 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const context = { sessionId: null, workspaceId: null };
+let discussionVisible = false, discussionOpening = false, discussionSurface, discussionNavigationSeq = 0;
   const chat = $('chat');
   const emptyStateTemplate = $('emptyState').cloneNode(true);
   const chatScroll = $('chatScroll');
@@ -102,6 +103,7 @@ const context = { sessionId: null, workspaceId: null };
     catch { setStatus('Could not save the draft on this computer. Keep this page open until you copy or send it.'); }
   }
   function saveDraft() {
+    if (discussionVisible) return;
     if (!sharedChat || !uiReady || loadingSession || (sending && !pendingConversationSend())) return;
     writeUi('draft:' + draftKey(), { text: input.value, attachments, pendingForkId,
       codexFastMode: harnessId === 'codex' ? currentFastMode : readUi('draft:' + draftKey())?.codexFastMode === true });
@@ -2004,6 +2006,10 @@ const context = { sessionId: null, workspaceId: null };
   let conversationPhase = '';
   function setStatus(text) { statusText = text; statusLine.textContent = text; }
   function handleConversationStatus({ sessionId, text, compaction }) {
+    // The transcript marker owns the compaction progress. Mirroring its text
+    // into the in-turn run row would print the same sentence twice inside the
+    // transcript, so the row keeps its own neutral placeholder meanwhile.
+    const runText = compaction?.state === 'running' ? 'Working…' : text;
     if (text && compaction?.native && compaction.state === 'running') text = compactionLabel(compaction);
     const pending = pendingConversationSends.get(sessionId);
     if (pending) pending.phase = text;
@@ -2013,7 +2019,7 @@ const context = { sessionId: null, workspaceId: null };
     if (statusText === 'Stopping…') { renderCompactionStatus(compaction); return; }
     if (text) {
       setStatus(text);
-      if (running || pending) setRunStatus(text);
+      if (running || pending) setRunStatus(runText);
     } else if (running) {
       setStatus('Running…');
       setRunStatus('Waiting for the engine to respond…');
@@ -2688,6 +2694,7 @@ const context = { sessionId: null, workspaceId: null };
   async function newSession(workspaceId = null) {
     if (!canChangeContext()) return;
     saveDraft();
+    if (!leaveDiscussion()) return;
     const wasReady = uiReady; uiReady = false;
     ++sessionOpenSeq;
     resetConversationView();
@@ -3022,8 +3029,9 @@ const context = { sessionId: null, workspaceId: null };
     messageQueue = []; remoteMessageQueue = []; remoteQueueVersion = -1; renderMessageQueue();
   }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
-    canReadReply: () => !loadingSession && !restoringRun,
-    newSession, openHistorySession, forkSession, canFork: s => sharedChat || harnessId !== 'antigravity' || !s.id.startsWith('agy-'), openActionMenu, closePops,
+    canReadReply: () => !discussionVisible && !loadingSession && !restoringRun,
+    getDiscussionId: () => discussionVisible ? discussionSurface?.groupId : null, discussionVisible: () => discussionVisible, discussionOpening: () => discussionOpening,
+    newSession, openHistorySession, openDiscussions, forkSession, canFork: s => sharedChat || harnessId !== 'antigravity' || !s.id.startsWith('agy-'), openActionMenu, closePops,
     noteLocalDelete: (id) => {
       for (const key of Object.keys(localStorage)) if (key.startsWith('camellia-chat-') && key.endsWith(':' + id)) localStorage.removeItem(key);
       selfDeletedIds.add(id);
@@ -3139,6 +3147,7 @@ const context = { sessionId: null, workspaceId: null };
   async function openHistorySession(id) {
     if (!canChangeContext()) return false;
     saveDraft();
+    if (!leaveDiscussion()) return false;
     const seq = ++sessionOpenSeq;
     resetConversationView();
     loadingSession = true; input.disabled = true;
@@ -3475,6 +3484,7 @@ const context = { sessionId: null, workspaceId: null };
     else void sidebar.load();
   });
 
+  window.CamelliaWorkbenchNavigation?.rememberEngine(harnessId);
   sidebar.render();
   void goalUI.refresh();
   chatApi.onEvent((ev) => handleEvent(ev));
@@ -3483,15 +3493,24 @@ const context = { sessionId: null, workspaceId: null };
     await sidebar.load();
     if (!sharedChat && harnessId !== 'claude') await restoreLiveRun();
     const previous = sharedChat ? readUi('location') : null;
-    const id = new URLSearchParams(location.search).get('conversation') || previous?.sessionId;
+    const navigation = new URLSearchParams(location.search), newDraft = navigation.get('new') === '1';
+    const id = newDraft ? null : navigation.get('conversation') || previous?.sessionId;
     if (!running) {
       if (id) await openHistorySession(id);
-      else if (previous?.workspaceId && sidebar.workspaces.some(w => w.id === previous.workspaceId)) context.workspaceId = previous.workspaceId;
+      else {
+        const workspace = newDraft ? navigation.get('workspace') : previous?.workspaceId;
+        if (workspace && sidebar.workspaces.some(w => w.id === workspace)) context.workspaceId = workspace;
+      }
     }
     restoringRun = false; eventsDuringRestore.length = 0;
     await loadSettings();
     await goalUI.refresh();
     restoreDraft(); uiReady = true; input.disabled = false; saveDraft(); sidebar.render();
+    if (navigation.get('addWorkspace') === '1') $('wsCreateBtn')?.click();
+    if (newDraft) { for (const key of ['new', 'workspace', 'addWorkspace']) navigation.delete(key); history.replaceState(null, '', '?' + navigation); }
+    if (navigation.get('discussion') === '1') {
+      await openDiscussions({ group: navigation.get('group'), intent: navigation.get('intent') });
+    } else if (window.requestIdleCallback) requestIdleCallback(() => { void discussionSurface.prepare().catch(() => {}); });
   })().catch(error => { input.disabled = false; setStatus('Could not restore the conversation: ' + error.message); });
   window.dshDesktop.onApiRouterState(applyRouterModels);
 
@@ -3520,21 +3539,83 @@ const context = { sessionId: null, workspaceId: null };
       $('switchTarget').value = target; $('switchMethod').value = force ? 'markdown' : conversationPrefs.mode; $('switchDialog').showModal();
     } else await switchConversation(target, conversationPrefs.mode);
   }
-  async function openDiscussions() {
-    if (switchingEngine || conversationBusy() || sending || loadingSession) { setStatus('Available when this conversation stops working'); return; }
-    saveDraft(); switchingEngine = true; updateConversationControls();
+  async function openDiscussions(navigation) {
+    if (!uiReady || !canChangeContext()) return;
+    const ticket = ++discussionNavigationSeq;
+    discussionOpening = true;
     try {
-      const result = await window.dshDesktop.switchMode('discussions');
-      if (!result?.ok) throw new Error(result?.error || 'Could not open Agent discussions.');
-    } catch (error) { setStatus(error.message); }
-    finally { switchingEngine = false; updateConversationControls(); }
+      await discussionSurface.prepare();
+      if (ticket !== discussionNavigationSeq || !canChangeContext()) return;
+      if (discussionVisible && !discussionSurface.suspend()) return;
+      await discussionSurface.open(navigation);
+      if (ticket !== discussionNavigationSeq || !canChangeContext()) return;
+      if (!discussionVisible) {
+        saveDraft(); ++sessionOpenSeq; resetConversationView(); closeFilePreview();
+        loadingSession = false; input.disabled = false;
+        context.sessionId = null; context.workspaceId = null;
+        discussionVisible = true; document.querySelector('.app > .main').hidden = true;
+        $('discussionSurface').hidden = false;
+      }
+      if (ticket === discussionNavigationSeq && discussionVisible) { setWorkbenchSidebarOpen(false); sidebar.render(); updateDiscussionLocation(); discussionSurface.refresh(); }
+    } catch (error) { if (ticket === discussionNavigationSeq) { if (discussionVisible) discussionSurface.error(error); else setStatus(error.message); } }
+    finally { if (ticket === discussionNavigationSeq) discussionOpening = false; }
   }
+  function leaveDiscussion() {
+    if (discussionVisible && !discussionSurface.suspend()) return false;
+    ++discussionNavigationSeq;
+    discussionOpening = false;
+    discussionVisible = false;
+    setWorkbenchSidebarOpen(false);
+    updateDiscussionLocation();
+    if ($('discussionSurface')) $('discussionSurface').hidden = true;
+    document.querySelector('.app > .main').hidden = false;
+    return true;
+  }
+  function updateDiscussionLocation() {
+    const query = new URLSearchParams(location.search);
+    for (const key of ['discussion', 'group', 'intent']) query.delete(key);
+    if (discussionVisible) {
+      query.delete('conversation'); query.set('discussion', '1');
+      if (discussionSurface.groupId) query.set('group', discussionSurface.groupId);
+    }
+    history.replaceState(null, '', '?' + query);
+  }
+  const discussionHost = document.createElement('section');
+  discussionHost.id = 'discussionSurface'; discussionHost.className = 'discussion-surface'; discussionHost.hidden = true;
+  document.querySelector('.app').append(discussionHost);
+  function setWorkbenchSidebarOpen(open) {
+    const narrow = innerWidth <= 680;
+    document.body.classList.toggle('workbench-sidebar-open', narrow && open);
+    $('sidebar').inert = narrow && !open;
+    $('workbenchSidebarBackdrop').hidden = !narrow || !open;
+    $('workbenchSidebarToggle').setAttribute('aria-expanded', String(narrow && open));
+    discussionHost.shadowRoot?.getElementById('sidebarToggle')?.setAttribute('aria-expanded', String(narrow && open));
+  }
+  const toggleWorkbenchSidebar = () => setWorkbenchSidebarOpen(!document.body.classList.contains('workbench-sidebar-open'));
+  $('workbenchSidebarToggle').onclick = toggleWorkbenchSidebar;
+  $('workbenchSidebarBackdrop').onclick = () => setWorkbenchSidebarOpen(false);
+  window.addEventListener('resize', () => setWorkbenchSidebarOpen(false));
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !document.querySelector('dialog[open]') && !discussionHost.shadowRoot?.querySelector('dialog[open]')) setWorkbenchSidebarOpen(false);
+  });
+  setWorkbenchSidebarOpen(false);
+  let selectedDiscussionId = null;
+  async function navigateFromDiscussion(target) {
+    if (target !== harnessId) return window.dshDesktop.conversationSwitch({ engine: target, navigate: true });
+    const previous = readUi('location');
+    if (previous?.sessionId) await openHistorySession(previous.sessionId); else await newSession(previous?.workspaceId);
+    return { ok: true };
+  }
+  discussionSurface = window.CamelliaDiscussionSurface.create({ host: discussionHost,
+    onChange: id => { if (discussionVisible && id !== selectedDiscussionId) { selectedDiscussionId = id; sidebar.render(); updateDiscussionLocation(); } },
+    onRename: row => sidebar.renameDiscussion(row), onSidebarToggle: toggleWorkbenchSidebar,
+  });
   $('engineSwitch').onchange = () => {
     const target = $('engineSwitch').value; $('engineSwitch').value = harnessId;
-    if (target === 'discussions') void openDiscussions();
-    else if (target !== harnessId) void switchOptions(target);
+    if (target !== harnessId) void switchOptions(target);
   };
-  window.dshDesktop.onHarnessNavigate?.(target => { if (target !== harnessId) void switchOptions(target); });
+  window.dshDesktop.onHarnessNavigate?.(target => { if (discussionVisible) void navigateFromDiscussion(target); else if (target !== harnessId) void switchOptions(target); });
+  window.dshDesktop.onDiscussionNavigate?.(openDiscussions);
   $('handoffBtn').onclick = () => void switchOptions(harnessId, true);
   $('switchCancel').onclick = () => $('switchDialog').close();
   $('switchConfirm').onclick = () => { $('switchDialog').close(); void switchConversation($('switchTarget').value, $('switchMethod').value); };

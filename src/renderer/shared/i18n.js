@@ -7,6 +7,7 @@ window.CamelliaI18n = (() => {
   let language = 'en';
   const textSources = new WeakMap(), attributeSources = new WeakMap();
   const selector = '[data-i18n], [data-i18n-attrs]';
+  const roots = new Set([document]);
   function translated(source, previous) {
     const original = previous && previous.rendered === source ? previous.original : source;
     return { original, rendered: translate(original, language) };
@@ -40,22 +41,28 @@ window.CamelliaI18n = (() => {
   function setLanguage(value) {
     language = normalizeLanguage(value);
     document.documentElement.lang = language;
-    scan(document);
+    roots.forEach(scan);
     window.dispatchEvent(new CustomEvent('camellia:language', { detail: { language } }));
   }
   // Translate new menus and status updates without rebuilding forms or chats.
-  new MutationObserver(records => {
+  const observer = new MutationObserver(records => {
     for (const record of records) {
       const element = record.target.nodeType === Node.TEXT_NODE ? record.target.parentElement : record.target;
       if (element?.matches(selector)) apply(element);
       for (const node of record.addedNodes) if (node.nodeType === Node.ELEMENT_NODE) scan(node);
     }
-  }).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true,
-    attributeFilter: ['title', 'placeholder', 'aria-label', 'data-i18n', 'data-i18n-attrs'] });
+  });
+  function observe(root) {
+    roots.add(root);
+    observer.observe(root === document ? document.documentElement : root, { subtree: true, childList: true, characterData: true, attributes: true,
+      attributeFilter: ['title', 'placeholder', 'aria-label', 'data-i18n', 'data-i18n-attrs'] });
+    scan(root);
+  }
+  observe(document);
   window.dshDesktop.onLanguageChanged(setLanguage);
   const ready = window.dshDesktop.workbenchSettings().then(preferences => {
     if (preferences.ok) setLanguage(preferences.language);
   });
-  return { ready, setLanguage, t: text => translate(text, language),
+  return { ready, setLanguage, observe, t: text => translate(text, language),
     get language() { return language; }, get locale() { return language === 'en' ? 'en-US' : 'zh-CN'; } };
 })();

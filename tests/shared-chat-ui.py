@@ -758,6 +758,8 @@ with sync_playwright() as p:
         dialog.locator('input[type="password"]').fill('private-fixture-value')
         assert 'private-fixture-value' not in page.evaluate('JSON.stringify([...questionDrafts])')
         page.keyboard.press('Escape')
+        if not page.locator('#newSessionBtn').is_visible():
+            page.locator('.workbench-sidebar-toggle').first.click()
         page.locator('#newSessionBtn').click()
         page.wait_for_function('context.sessionId===null && !running')
         page.locator('#input').fill('Independent task'); page.locator('#send').click()

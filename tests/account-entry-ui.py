@@ -94,7 +94,10 @@ try:
           const latest = {at:new Date().toISOString(),windows};
           accountListeners.onProviderInsights({providers:{},keys:{},subscriptions:[{id:'codex:default',engine:'codex',name:'ChatGPT',label:'Test account',info:{latest,history:[latest]},capability:{supported:true}}]});
         }""")
-        expect(page.locator('#subscriptionAccounts details, #subscriptionAccounts .chart-grid-layout')).to_have_count(0)
+        # The account panel keeps a hidden error-details disclosure; quota
+        # history charts still belong to the separate usage page.
+        expect(page.locator('#subscriptionAccounts details:visible, #subscriptionAccounts .chart-grid-layout')).to_have_count(0)
+        expect(page.locator('#googleQuotaErrorDetails')).to_be_hidden()
 
         expect(page.locator('#codexAutoSwitchQuota')).not_to_be_visible()
         page.evaluate("accountListeners.onCodexAccount({...signedAccount,accounts:[signedAccount.accounts[0],{id:'backup',signedIn:true,email:'backup@example.test'}]})")

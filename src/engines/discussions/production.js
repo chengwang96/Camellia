@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
-const { codexTextSpec, VERSION } = require('./codex-text-policy');
+const { codexTextSpec, VERSION, SUPPORTED_VERSIONS: CODEX_VERSIONS } = require('./codex-text-policy');
 const { antigravitySpawnSpec } = require('../antigravity');
 const { SUPPORTED_CLI_VERSIONS } = require('../../main/antigravity-cli-runtime');
 const { SUPPORTED_SDK_VERSIONS } = require('../../main/python-runtime');
@@ -112,14 +112,13 @@ class DiscussionProduction {
     });
   }
   runtimeInfo(binding) {
-    return { version: binding.engine === 'codex' ? VERSION : binding.engine === 'antigravity'
+    return { version: binding.engine === 'codex' ? this.runtimes().locate('codex', binding.connection)?.version || VERSION : binding.engine === 'antigravity'
       ? 'sdk:' + (this.runtimes().locate('antigravity', 'api')?.version || '0.1.17') + '/cli:' + (this.runtimes().locate('antigravity', 'subscription')?.version || '1.2.3')
         : this.runtimes().locate(binding.engine, binding.connection)?.version || VERSIONS[binding.engine],
       policyVersion: binding.engine + (binding.engine === 'antigravity' ? '-discussion-interactive-v2' : '-discussion-tools-v1') };
   }
   expectedVersion(binding) {
-    if (binding.engine === 'codex') return VERSION;
-    const supported = binding.engine === 'antigravity' ? binding.connection === 'subscription' ? SUPPORTED_CLI_VERSIONS : SUPPORTED_SDK_VERSIONS
+    const supported = binding.engine === 'codex' ? CODEX_VERSIONS : binding.engine === 'antigravity' ? binding.connection === 'subscription' ? SUPPORTED_CLI_VERSIONS : SUPPORTED_SDK_VERSIONS
       : SUPPORTED_VERSIONS[binding.engine] || [];
     const installed = this.runtimes().locate(binding.engine, binding.connection)?.version;
     return supported.find(version => version === installed) || supported[0];

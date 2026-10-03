@@ -32,8 +32,11 @@ function compareVersions(a, b) {
   return x.pre < y.pre ? -1 : 1;
 }
 
-function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettings = () => undefined, registries = {}, promptRestart = async () => false, log = () => {} }) {
+function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettings = () => undefined, registries = {}, promptRestart = async () => false, onChange = () => {}, log = () => {} }) {
   const pending = new Map();
+  const completed = [];
+  let restartPrompt = null;
+  const state = (rows = manager.state()) => rows.map(row => ({ ...row, updating: pending.has(row.id) }));
   const registryUrls = {
     npm: registries.npm || (pkg => `https://registry.npmjs.org/${pkg}/latest`),
     pypi: registries.pypi || (pkg => `https://pypi.org/pypi/${pkg}/json`),
@@ -76,9 +79,32 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
   function update(engine) {
     if (!engines[engine]) return Promise.reject(new Error('Unknown engine'));
     if (pending.has(engine)) return pending.get(engine);
-    const task = perform(engine).finally(() => pending.delete(engine));
+    const task = Promise.resolve().then(async () => {
+      if (restartPrompt) await restartPrompt;
+      return perform(engine);
+    }).then(async result => {
+      if (result.changed) completed.push({ name: engines[engine].name, ...result });
+      result.restarting = await finish(engine);
+      return result;
+    }, async error => {
+      await finish(engine);
+      throw error;
+    });
     pending.set(engine, task);
+    onChange(state());
     return task;
+  }
+
+  async function finish(engine) {
+    pending.delete(engine);
+    onChange(state());
+    if (pending.size || !completed.length) return false;
+    const batch = completed.splice(0);
+    const first = batch[0];
+    restartPrompt = Promise.resolve().then(() => promptRestart(first.name, first.from, first.to, batch));
+    try { return await restartPrompt; }
+    catch (error) { log(`runtime restart prompt failed: ${error.message}`); return false; }
+    finally { restartPrompt = null; }
   }
 
   async function perform(engine) {
@@ -100,8 +126,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
       else await upgradeNpmRuntime(engine, found.dir, connection, latest);
       const updated = manager.locate(engine);
       if (!updated || compareVersions(updated.version, latest) !== 0) throw new Error(`The update to v${latest} did not complete. Please retry.`);
-      const restarting = await promptRestart(engines[engine].name, found.version, latest);
-      return { ok: true, engine, from: found.version, to: latest, changed: true, restartRequired: true, restarting };
+      return { ok: true, engine, from: found.version, to: latest, changed: true, restartRequired: true, restarting: false };
     } finally {
       await connection.close();
     }
@@ -119,7 +144,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     if (engine === 'dsh') patchDsh(dir);
   }
 
-  return { check, update };
+  return { check, update, state };
 }
 
 module.exports = { compareVersions, createRuntimeUpdates };

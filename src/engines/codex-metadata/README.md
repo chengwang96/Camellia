@@ -1,9 +1,9 @@
 # Codex native model metadata
 
-These unmodified files come from OpenAI Codex `rust-v0.154.0` and are covered by the included Apache 2.0 license:
+These unmodified files come from OpenAI Codex `rust-v0.160.0` and are covered by the included Apache 2.0 license:
 
-- `models.json`: https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/models-manager/models.json
-- `fallback-prompt.md`: https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/models-manager/prompt.md
+- `models.json`: https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/models-manager/models.json
+- `fallback-prompt.md`: https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/models-manager/prompt.md
 
 `codex-models.js` copies the pinned CLI's unknown-model descriptor from
 `codex-rs/models-manager/src/model_info.rs`, changing `apply_patch_tool_type`
@@ -13,6 +13,9 @@ register that tool for this profile. The vendored prompt remains unmodified.
 Shell type, reasoning defaults, context window and truncation policy stay the same. The generated catalog also
 retains the native entries. Known native models and user-supplied catalogs keep
 their own configuration. Subscription connections do not use this catalog.
+
+The 0.160.0 refresh includes the new native model entries and uses the explicit
+`unified_exec` shell type (the former `default` value is now an alias).
 
 This exposes Codex's existing patch handler to third-party API models. Patch
 parsing, file-change events and permission enforcement still run inside Codex.

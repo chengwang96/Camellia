@@ -26,6 +26,7 @@ async function main() {
   let config = { sharedMeta: { workspaces: [{ id: 'fixture', name: 'Android fixture', path: root }] } }, gateway;
   const timers = [];
   const manager = new SharedConversations({ dir: path.join(root, 'conversations'), loadConfig: () => config, saveConfig: patch => { config = { ...config, ...patch }; }, onEvent: () => gateway?.publish(),
+    createGoalBridge: async options => ({ call: options.call, close() {} }),
     drivers: Object.fromEntries(ENGINES.map(engine => [engine, { settings: () => ({ model: 'fixture' }), ensure() { throw new Error('No real engines in this test'); } }])) });
   const access = new RemoteAccess({ file: path.join(root, 'devices.json'), onRevoke: id => gateway.revoke(id) });
   const reader = new RemoteReadModel(manager);
@@ -51,6 +52,16 @@ async function main() {
   for (let index = 0; index < artifactBytes.length; index++) artifactBytes[index] = index % 251;
   fs.writeFileSync(path.join(root, '手机产物.pdf'), artifactBytes);
   manager.append(conversation, { role: 'assistant', text: '`手机产物.pdf`' });
+  fs.writeFileSync(path.join(root, '手机搜索结果.txt'), 'remoteautomationneedle: verified on the desktop');
+  // Exercise the production control state machine without letting this fixture
+  // start a model. The goal timer is controlled; remote resume must arm it once.
+  const goal = manager.goalFor(conversation.id);
+  let goalSchedules = 0;
+  goal.setTimer = () => { goalSchedules++; return {}; }; goal.clearTimer = () => {};
+  assert.equal((await manager.command('codex', 'goal-start', { sessionId: conversation.id, objective: 'Android automation fixture' })).ok, true);
+  goal.setPhase('paused');
+  const task = manager.tasks.create(conversation.id, 'codex', { instruction: 'Inspect fixture logs', intervalMinutes: 1440 });
+  manager.tasks.action(task.id, conversation.id, 'pause');
   const download = gateway.download.bind(gateway);
   let downloads = 0;
   gateway.download = async (...args) => {
@@ -101,8 +112,11 @@ async function main() {
     assert.equal(result.code, 0, result.output);
     assert.match(result.output, /OK \(1 test\)/, result.output);
     assert.equal(sent, 1); assert.equal(answered, 1); assert.equal(stopped, 1);
+    assert.equal(goalSchedules, 2, 'Initial goal plus one deduplicated remote resume');
+    assert.equal(goal.view(), null, 'Remote clear must clear the goal');
+    assert.equal(manager.tasks.get(task.id, conversation.id).status, 'cancelled');
     assert.equal(listSubscriptions, 3, 'Unsupported list streams must not be retried during polling');
-    console.log('PASS Android ↔ desktop gateway: rename/pin/batch delete with retries and stale-state rejection, artifact list/binary download, live list sync, legacy 404 polling fallback, send deduplication, approval, stop, history, SSE and revocation');
+    console.log('PASS Android ↔ desktop gateway: goal/task pause, resume and cancellation; content search/download and retry deduplication; rename/pin/batch delete with stale-state rejection; artifact downloads, live list sync, legacy polling, send deduplication, approval, stop, history, SSE and revocation');
   } finally {
     for (const timer of timers) clearTimeout(timer);
     if (ruleAdded) { const undo = [...rule]; undo[2] = '-D'; command(['shell', 'iptables', ...undo]); }

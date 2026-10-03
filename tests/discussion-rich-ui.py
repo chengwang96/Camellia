@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
         try:
             page.set_viewport_size({'width': 1440, 'height': 1000})
             page.locator('#openDiscussions').click()
-            page.wait_for_function("() => document.querySelector('#firstGroup')?.onclick != null")
+            page.wait_for_function("() => document.querySelector('#discussionSurface')?.shadowRoot?.querySelector('#firstGroup')?.onclick != null")
             assert not errors, errors
             page.locator('#firstGroup').click()
             page.locator('#title').fill('首版范围评审')
@@ -108,33 +108,33 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             page.locator('#mentions .mention').first.click()
             original = root / 'evidence.txt'
             original.write_text('Attachment evidence 42', encoding='utf8')
-            page.evaluate("""path => { const data = new DataTransfer(); data.setData('application/x-camellia-attachment-path', path); document.querySelector('#inputCard').dispatchEvent(new DragEvent('drop', {bubbles:true, dataTransfer:data})); }""", str(original))
+            page.evaluate("""path => { const data = new DataTransfer(); data.setData('application/x-camellia-attachment-path', path); document.querySelector('#discussionSurface').shadowRoot.querySelector('#inputCard').dispatchEvent(new DragEvent('drop', {bubbles:true, dataTransfer:data})); }""", str(original))
             expect(page.locator('#attachRow .attchip')).to_have_count(1)
             original.unlink()
             page.locator('#attachRow .attchip-name').click()
-            expect(page.locator('#fileViewerBody')).to_contain_text('Attachment evidence 42')
-            page.locator('#fileViewerClose').click()
+            expect(page.locator('#discussionSurface #fileViewerBody')).to_contain_text('Attachment evidence 42')
+            page.locator('#discussionSurface #fileViewerClose').click()
             page.reload()
             expect(page.locator('#attachRow .attchip')).to_have_count(1)
-            expect(page.locator('#send')).to_be_enabled()
-            page.locator('#send').click()
+            expect(page.locator('#discussionSurface #send')).to_be_enabled()
+            page.locator('#discussionSurface #send').click()
             expect(page.locator('.message.assistant')).to_have_count(1)
             assert calls()[0]['plan']['attachments'][0]['name'] == 'evidence.txt'
             assert len(discussion()['messages'][0]['attachments']) == 1
             # In-memory clipboard bitmap exercises the real preload/image saver.
-            page.evaluate("""() => { const raw = atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aLa8AAAAASUVORK5CYII='); const data = new DataTransfer(); data.items.add(new File([Uint8Array.from(raw, c=>c.charCodeAt(0))], 'pixel.png', {type:'image/png'})); document.querySelector('#message').dispatchEvent(new ClipboardEvent('paste', {bubbles:true, clipboardData:data})); }""")
+            page.evaluate("""() => { const raw = atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aLa8AAAAASUVORK5CYII='); const data = new DataTransfer(); data.items.add(new File([Uint8Array.from(raw, c=>c.charCodeAt(0))], 'pixel.png', {type:'image/png'})); document.querySelector('#discussionSurface').shadowRoot.querySelector('#message').dispatchEvent(new ClipboardEvent('paste', {bubbles:true, clipboardData:data})); }""")
             expect(page.locator('#attachRow img')).to_have_count(1)
             page.locator('#mentions .mention').nth(1).click()
-            page.locator('#send').click()
+            page.locator('#discussionSurface #send').click()
             expect(page.locator('#notice')).to_contain_text('Programmer: This connection does not support image input.')
             expect(page.locator('#attachRow img')).to_have_count(1)
             assert len(calls()) == 1
             page.locator('#mentions .mention').nth(1).click()
-            page.locator('#send').click()
+            page.locator('#discussionSurface #send').click()
             expect(page.locator('.message.assistant')).to_have_count(2)
             assert calls()[1]['plan']['attachments'][0]['isImage']
             page.locator('#message').fill('[tools] write a fixture')
-            page.locator('#send').click()
+            page.locator('#discussionSurface #send').click()
             expect(page.locator('#discussionPermission')).to_be_visible()
             expect(page.locator('#permissionMember')).to_contain_text('Scientist')
             page.screenshot(path=str(preview / 'discussion-tools-permission-light.png'))
@@ -143,7 +143,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             expect(page.locator('.message.assistant')).to_have_count(3)
             expect(page.locator('.tool-card .tool-output').last).to_contain_text('Denied by the user')
             page.locator('#message').fill('[tools] allow a fixture')
-            page.locator('#send').click()
+            page.locator('#discussionSurface #send').click()
             expect(page.locator('#discussionPermission')).to_be_visible()
             page.emulate_media(color_scheme='dark')
             page.set_viewport_size({'width':390,'height':844})
@@ -153,12 +153,12 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             expect(page.locator('.message.assistant')).to_have_count(4)
             expect(page.locator('.discussion-artifacts .attchip-name')).to_contain_text(['fixture-result.txt'])
             page.locator('.discussion-artifacts .attchip-name').last.click()
-            expect(page.locator('#fileViewerBody')).to_contain_text('Synthetic UI result')
-            page.locator('#fileViewerClose').click()
+            expect(page.locator('#discussionSurface #fileViewerBody')).to_contain_text('Synthetic UI result')
+            page.locator('#discussionSurface #fileViewerClose').click()
             page.emulate_media(color_scheme='light')
             page.set_viewport_size({'width':1440,'height':1000})
             page.locator('#message').fill('[tools] cancel pending approval')
-            page.locator('#send').click()
+            page.locator('#discussionSurface #send').click()
             expect(page.locator('#discussionPermission')).to_be_visible()
             page.locator('#discussionPermission').press('Escape')
             page.locator('#stopAll').click()
@@ -168,7 +168,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             page.locator('#groupPermission').select_option('auto')
             expect(page.locator('#groupPermission')).to_have_value('auto')
             page.locator('#message').fill('[questions] choose a role')
-            page.locator('#send').click()
+            page.locator('#discussionSurface #send').click()
             expect(page.locator('#discussionPermission')).to_be_visible()
             page.locator('#permissionQuestions').get_by_role('radio', name='Scientist').check()
             page.locator('#permissionQuestions').get_by_role('checkbox', name='CSV').check()
@@ -182,7 +182,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             assert json.loads((root / 'question-answer.json').read_text())['input'] == {'role': 'Scientist', 'formats': ['CSV', 'Markdown']}
             html = root / 'preview.html'
             html.write_text('''<!doctype html><style>body{background:rgb(240, 241, 242)}</style><button id="increment">Add</button><span id="count">0</span><span id="isolation"></span><span id="network"></span><script>let n=0;document.querySelector('#increment').onclick=()=>document.querySelector('#count').textContent=++n;document.querySelector('#isolation').textContent=typeof window.dshDesktop;fetch('https://example.com').catch(()=>document.querySelector('#network').textContent='blocked')</script>''', encoding='utf8')
-            page.evaluate("""path => { const data = new DataTransfer(); data.setData('application/x-camellia-attachment-path', path); document.querySelector('#inputCard').dispatchEvent(new DragEvent('drop', {bubbles:true, dataTransfer:data})); }""", str(html))
+            page.evaluate("""path => { const data = new DataTransfer(); data.setData('application/x-camellia-attachment-path', path); document.querySelector('#discussionSurface').shadowRoot.querySelector('#inputCard').dispatchEvent(new DragEvent('drop', {bubbles:true, dataTransfer:data})); }""", str(html))
             page.locator('#attachRow .attchip-name').click()
             frame = page.frame_locator('.file-preview-html')
             expect(frame.locator('#isolation')).to_have_text('undefined')
@@ -193,7 +193,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             frame.locator('#increment').press('Enter')
             expect(frame.locator('#count')).to_have_text('1')
             expect(frame.locator('body')).to_have_css('background-color', 'rgb(240, 241, 242)')
-            page.locator('#fileViewerClose').click()
+            page.locator('#discussionSurface #fileViewerClose').click()
             page.locator('#attachRow .attchip-x').click()
             page.screenshot(path=str(preview / 'discussion-rich-light.png'))
 
@@ -221,8 +221,8 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             expect(page.locator('#message')).to_have_value('尚未发送的草稿')
             page.locator('.discussion-artifact-error').scroll_into_view_if_needed()
             bounds = page.locator('#notice').bounding_box()
-            assert bounds['y'] >= page.locator('.main-header').bounding_box()['height']
-            assert bounds['y'] + bounds['height'] <= page.locator('#chatScroll').bounding_box()['y'] + 1
+            assert bounds['y'] >= page.locator('#discussionSurface .main-header').bounding_box()['height']
+            assert bounds['y'] + bounds['height'] <= page.locator('#discussionSurface #chatScroll').bounding_box()['y'] + 1
             page.screenshot(path=str(preview / 'discussion-errors-light.png'))
             page.emulate_media(color_scheme='dark')
             page.set_viewport_size({'width':390,'height':844})

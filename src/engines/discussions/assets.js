@@ -23,6 +23,27 @@ function validateAttachments(list, maxCount = 16) {
 }
 class DiscussionAssets {
   constructor(root) { this.root = path.resolve(root, 'assets'); }
+  importData(groupId, entries) {
+    if (!Array.isArray(entries) || entries.length > 16) throw new Error('Choose at most 16 attachments.');
+    const directory = this.directory(groupId), created = [];
+    for (const entry of entries) {
+      if (!entry || typeof entry.name !== 'string' || path.basename(entry.name) !== entry.name || /[\\/\x00-\x1f]/.test(entry.name)
+        || !Buffer.isBuffer(entry.bytes) || entry.bytes.length > MAX_FILE
+        || entry.isImage !== Boolean(IMAGE_TYPES[path.extname(entry.name).toLowerCase()])) throw new Error('Invalid discussion attachment.');
+    }
+    try {
+      return entries.map(entry => {
+        const id = randomUUID(), dir = path.join(directory, id), target = path.join(dir, entry.name);
+        fs.mkdirSync(dir, { recursive: true });
+        if (fs.realpathSync(dir) !== path.join(fs.realpathSync(this.root), groupId, id)) throw new Error('Invalid discussion attachment directory.');
+        created.push(dir); fs.writeFileSync(target, entry.bytes, { flag: 'wx', mode: 0o600 });
+        return { id, path: target, name: entry.name, isImage: entry.isImage, size: entry.bytes.length, sha256: digest(entry.bytes) };
+      });
+    } catch (error) {
+      for (const dir of created) fs.rmSync(dir, { recursive: true, force: true });
+      throw error;
+    }
+  }
   directory(groupId) {
     if (typeof groupId !== 'string' || !/^[0-9a-f-]{36}$/i.test(groupId)) throw new Error('Invalid discussion ID');
     return path.join(this.root, groupId);

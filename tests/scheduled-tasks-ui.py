@@ -10,6 +10,7 @@ bridge = r"""(() => {
   const settings = {model:'fixture',connection:'api',permissionMode:'ask'};
   const conversation = {id:'task-conversation',title:'Experiment',currentEngine:'codex',origin:'codex',messages:[],settings};
   window.dshDesktop = {
+    onNetworkHealth: () => () => {},
     sharedConversations:true, onLanguageChanged:fn=>{window.changeLanguage=fn;},
     workbenchSettings:async()=>({ok:true,language:'zh-CN',conversations:{mode:'direct'}}),
     apiRouterGetState:async()=>({enabled:true,models:['fixture']}),

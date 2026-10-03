@@ -65,6 +65,7 @@
       <p class="hint footnote" data-i18n>Subscription estimates use a dated standard text API price reference. Tool charges and speed premiums are excluded. Unknown model prices and unavailable context tiers remain unpriced; known amounts are partial when usage is missing.</p>
     </section>
     <section id="generalPage" class="page">
+      <div class="setting-row memory-setting"><div><h2><label for="memoryDirectory" data-i18n>Global memory</label></h2><p class="hint" data-i18n>All harnesses and models use this folder for shared memory. Reading and writing follow the rules in your files. Leave blank to disable.</p><div class="memory-folder"><input id="memoryDirectory" type="text" placeholder="Choose a memory folder" data-i18n-attrs="placeholder" spellcheck="false"><button id="chooseMemoryDirectory" data-i18n>Choose folder</button></div></div></div>
       <div class="setting-row"><div><h2 data-i18n>Language</h2></div><select id="language" aria-label="Language" data-i18n-attrs="aria-label"><option value="en" lang="en">English</option><option value="zh-CN" lang="zh-CN">简体中文</option></select></div>
       <div class="setting-row"><div><h2 data-i18n>Appearance</h2></div><select id="theme" aria-label="Appearance" data-i18n-attrs="aria-label"><option value="system" data-i18n>System</option><option value="light" data-i18n>Light</option><option value="dark" data-i18n>Dark</option></select></div>
       <div class="setting-row"><div><h2 data-i18n>Conversation width</h2><p class="hint" data-i18n>How wide the message column grows on a large window. Full width uses the whole workbench.</p></div><select id="chatContentWidth" aria-label="Conversation width" data-i18n-attrs="aria-label"><option value="standard" data-i18n>Standard width</option><option value="wide" data-i18n>Wider</option><option value="full" data-i18n>Full width</option></select></div>
@@ -180,6 +181,7 @@
             <div class="account-actions"><button id="googleSignIn" class="primary" data-i18n>Sign in with Google</button><button id="googleRefresh" data-i18n>Refresh account</button></div>
             <p id="googleAccountStatus" class="hint" role="status" data-i18n></p>
             <p id="googleQuotaStatus" class="hint error" role="alert" hidden></p>
+            <details id="googleQuotaErrorDetails" class="account-error-details" hidden><summary data-i18n>Error details</summary><pre id="googleQuotaErrorRaw" translate="no"></pre></details>
             <div id="googleAccountList" class="account-list" role="radiogroup" aria-label="Google accounts" data-i18n-attrs="aria-label"></div>
             <p class="hint" data-i18n>Sign-in opens the official CLI and your browser; return here and refresh. To switch accounts, use <code>/logout</code> in that terminal.</p>
             <p class="hint" data-i18n>Google sign-in is shared with the official CLI. Gemini and Claude/GPT have separate weekly and 5-hour limits.</p>

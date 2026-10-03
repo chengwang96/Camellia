@@ -58,6 +58,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         assertTrue(created.getBoolean("ok"));
         assertEquals(created.getJSONObject("conversation").getString("id"), client.json("/v1/commands", token, create).getJSONObject("conversation").getString("id"));
         verifyConversationActions(client, token, info.getString("instanceId"), workspace, created.getJSONObject("conversation").getString("id"));
+        verifyAutomationAndSearch(client, token, info.getString("instanceId"), id);
         verifyApiKeyImport(client, token);
         JSONObject snapshot = client.json("/v1/conversations/" + id, token, null);
         assertEquals("Fixture answer", snapshot.getJSONArray("messages").getJSONObject(1).getString("text"));
@@ -86,6 +87,51 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         try { client.json("/v1/status", token, null); fail("Revoked credentials must fail"); }
         catch (RemoteApi.Failure expected) { assertEquals(401, expected.status); }
         client.cancel();
+    }
+
+    private void verifyAutomationAndSearch(RemoteApi client, String token, String instance, String id) throws Exception {
+        String base = "/v1/conversations/" + id, endpoint = base + "/commands";
+        JSONObject initial = client.json(base, token, null).getJSONObject("automation");
+        assertEquals("Android automation fixture", initial.getJSONObject("goal").getString("objective"));
+        assertEquals("paused", initial.getJSONObject("goal").getString("phase"));
+        JSONObject resume = operation("goal-control", instance).put("operation", "resume");
+        assertTrue(client.json(endpoint, token, resume).getBoolean("ok"));
+        assertTrue(client.json(endpoint, token, resume).getBoolean("ok"));
+        assertTrue(client.json(base, token, null).getJSONObject("automation").getJSONObject("goal").getBoolean("armed"));
+        assertTrue(client.json(endpoint, token, operation("goal-control", instance).put("operation", "pause")).getBoolean("ok"));
+        assertEquals("paused", client.json(base, token, null).getJSONObject("automation").getJSONObject("goal").getString("phase"));
+        assertTrue(client.json(endpoint, token, operation("goal-control", instance).put("operation", "clear")).getBoolean("ok"));
+        assertTrue(client.json(base, token, null).getJSONObject("automation").isNull("goal"));
+
+        String task = initial.getJSONArray("tasks").getJSONObject(0).getString("id");
+        for (String action : new String[]{"resume", "pause", "cancel"}) {
+            JSONObject command = operation("task-control", instance).put("taskId", task).put("operation", action);
+            assertTrue(client.json(endpoint, token, command).getBoolean("ok"));
+            assertTrue(client.json(endpoint, token, command).getBoolean("ok"));
+            String expected = action.equals("resume") ? "scheduled" : action.equals("pause") ? "paused" : "cancelled";
+            assertEquals(expected, client.json(base, token, null).getJSONObject("automation").getJSONArray("tasks").getJSONObject(0).getString("status"));
+        }
+        assertFalse(client.json(endpoint, token, operation("task-control", instance).put("taskId", task).put("operation", "resume")).getBoolean("ok"));
+        JSONObject snapshot = client.json(base, token, null);
+        JSONObject search = operation("find", instance).put("query", "inside: remoteautomationneedle")
+            .put("expectedSeq", snapshot.getJSONObject("conversation").getLong("seq"));
+        JSONObject found = client.json(endpoint, token, search);
+        assertTrue(found.getBoolean("ok")); assertEquals(1, found.getInt("count"));
+        assertEquals(found.getLong("seq"), client.json(endpoint, token, search).getLong("seq"));
+        JSONObject file = found.getJSONArray("files").getJSONObject(0);
+        assertEquals("手机搜索结果.txt", file.getString("name")); assertFalse(file.has("path")); assertFalse(found.has("roots"));
+        search.put("requestId", java.util.UUID.randomUUID().toString());
+        assertFalse(client.json(endpoint, token, search).getBoolean("ok"));
+        org.json.JSONArray artifacts = client.json(base + "/artifacts", token, null).getJSONArray("artifacts");
+        JSONObject download = null;
+        for (int index = 0; index < artifacts.length(); index++) {
+            JSONObject item = artifacts.getJSONObject(index);
+            if (item.getString("name").equals("手机搜索结果.txt")) download = item;
+        }
+        assertNotNull(download);
+        var bytes = new java.io.ByteArrayOutputStream();
+        client.download(base + "/artifacts/" + download.getString("id"), token, bytes, download.getLong("size"), (received, total) -> {});
+        assertEquals("remoteautomationneedle: verified on the desktop", bytes.toString("UTF-8"));
     }
 
     private void verifyListScreen(JSONObject credential) throws Exception {

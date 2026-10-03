@@ -6,6 +6,28 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createHarness } = require('./claude-harness.cjs');
 
+test('global memory validates a user folder, persists across restart and partial saves, and clears', () => {
+  const first = createHarness();
+  try {
+    assert.equal(first.call('workbench-settings').memoryDirectory, '');
+    const directory = first.folder('shared memory 记忆');
+    assert.equal(first.call('workbench-save-settings', { memoryDirectory: '  ' + directory + '  ' }).ok, true);
+    assert.equal(first.call('workbench-settings').memoryDirectory, directory);
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    const reopened = createHarness(first.root);
+    assert.equal(reopened.call('workbench-settings').memoryDirectory, directory);
+    const file = path.join(directory, 'MEMORY.md');
+    fs.writeFileSync(file, 'User-owned memory rules');
+    for (const memoryDirectory of [null, {}, 42, 'relative/folder', file, directory + '-missing', directory + '\n']) {
+      assert.equal(reopened.call('workbench-save-settings', { memoryDirectory }).ok, false);
+      assert.equal(reopened.call('workbench-settings').memoryDirectory, directory);
+    }
+    assert.equal(reopened.call('workbench-save-settings', { memoryDirectory: '' }).ok, true);
+    assert.equal(reopened.call('workbench-settings').memoryDirectory, '');
+    assert.equal(fs.readFileSync(file, 'utf8'), 'User-owned memory rules');
+  } finally { first.cleanup(); }
+});
+
 test('settings separates general, engine and model preferences and starts on General', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const categories = [...html.matchAll(/<button data-view="([^"]+)"/g)].map(match => match[1]);

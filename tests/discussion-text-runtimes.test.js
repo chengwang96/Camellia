@@ -25,7 +25,7 @@ test('validated runtime upgrades stay available and produce distinct evidence; u
   const installed = {};
   production.registry = { get: () => ({}) };
   production.runtimes = () => ({ locate: (engine, connection) => ({ version: installed[engine + ':' + connection] }) });
-  for (const [engine, previous, next] of [['claude', '2.1.273', '2.1.287'], ['dsh', '0.1.5-rc.2', '0.2.0-rc.2'],
+  for (const [engine, previous, next] of [['codex', '0.154.0', '0.160.0'], ['claude', '2.1.273', '2.1.287'], ['claude', '2.1.287', '2.1.288'], ['dsh', '0.1.5-rc.2', '0.2.0-rc.2'],
     ['kimi', '2.0.0', '2.1.1'], ['antigravity', '0.1.17', '0.1.20']]) {
     const binding = { engine, connection: 'api' }, key = engine + ':api';
     installed[key] = previous;
@@ -36,6 +36,23 @@ test('validated runtime upgrades stay available and produce distinct evidence; u
     assert.notEqual(production.runtimeInfo(binding).version, before.version, 'Old evidence cannot admit an upgraded runtime');
     installed[key] = '99.0.0';
     assert.equal(production.canVerify(binding), false);
+  }
+});
+
+test('shipped Claude and Codex installer versions can enter discussion verification', () => {
+  const production = Object.create(DiscussionProduction.prototype);
+  production.registry = { get: () => ({}) };
+  const installed = Object.fromEntries(Object.entries({ claude: '@anthropic-ai/claude-code', codex: '@openai/codex' }).map(([engine, dependency]) => {
+    const manifest = require('../runtimes/' + engine + '/package.json');
+    return [engine, manifest.dependencies[dependency]];
+  }));
+  production.runtimes = () => ({ locate: engine => ({ version: installed[engine] }) });
+  for (const engine of ['claude', 'codex']) {
+    for (const connection of engine === 'codex' ? ['api', 'subscription'] : ['api']) {
+      const binding = { engine, connection };
+      assert.equal(production.canVerify(binding), true, engine + ' installer must match the validated discussion policy');
+      assert.equal(production.runtimeInfo(binding).version, installed[engine]);
+    }
   }
 });
 

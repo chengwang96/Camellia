@@ -21,6 +21,7 @@ const { searchFiles, searchContents } = require('../main/file-search');
 const { buildHistoryIndex, searchHistory: matchHistory } = require('../main/conversation-index');
 const { previewKind } = require('../main/file-preview');
 const { subscriptionFailure, availableAccount } = require('./subscription-recovery');
+const { memoryInstructions } = require('./global-memory');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
 
@@ -344,7 +345,7 @@ class SharedConversations {
       if (!matchesUserRequest(active.goalUserPrompt ?? active.prompt, args.user_request)) throw new Error('user_request must quote the current user message. Interpret scheduling intent from context; no fixed command format is required');
       const request = active.goalUserPrompt ?? active.prompt;
       if (args.maxRepairs > 0 && (!/(?:允许|可以|自动|尝试).{0,16}(?:恢复|修复|重启)|(?:allow|automatic|automatically|try).{0,30}(?:recover|repair|restart)/i.test(request)
-        || /(?:不允许|禁止|不能|不得|不可以).{0,16}(?:恢复|修复|重启)|(?:never|no|do not|don't).{0,30}(?:recover|repair|restart)/i.test(request)))
+        || /(?:不允许|禁止|不能|不得|不可以|不要|不必|不需要|无需|无须|请勿|别).{0,16}(?:恢复|修复|重启)|(?:never|no|do not|don't).{0,30}(?:recover|repair|restart)/i.test(request)))
         throw new Error('Recovery requires explicit user authorization');
       this.assertTaskEngine(active.engine, id);
       if (operation === 'create') {
@@ -493,6 +494,7 @@ class SharedConversations {
   // engine call or protocol change.
   async find(id, query, { userText, origin = 'desktop' } = {}) {
     const c = this.get(id);
+    const seq = c.seq;
     if (this.workspaces.sessionMeta().archived[id]) throw new Error('This conversation is archived. Restore it before searching.');
     if (this.busy(id)) throw new Error('Wait for this conversation to finish or stop it first.');
     const meta = this.workspaces.sessionMeta();
@@ -509,12 +511,16 @@ class SharedConversations {
     const found = /^inside:\s*/i.test(String(query || ''))
       ? await searchContents({ ...scope, query: String(query).replace(/^inside:\s*/i, '') })
       : searchFiles({ ...scope, query });
+    // Content extraction yields. A deletion, archive or newer turn must not
+    // let its late answer recreate the conversation or overwrite its ordering.
+    if (this.items.get(id) !== c || c.seq !== seq || this.busy(id)
+        || this.workspaces.sessionMeta().archived[id]) {
+      throw new Error('Conversation changed while searching. Run the search again.');
+    }
     // Files written by any conversation come first: they are what the user is
     // usually after, and they need no file-content reading to be recalled.
     const history = /^inside:\s*/i.test(String(query || '')) ? []
       : this.searchHistory(String(query || '').replace(/^find\s*/i, ''), { cwd: c.cwd, limit: 20 });
-    const files = resolveArtifacts({ text: found.text, cwd: c.cwd, roots: found.roots,
-      explicitPaths: history.map(entry => entry.path) });
     return this.recordFind(c, { query: found.query, history, fallback: found.text, language, userText, origin, roots: found.roots });
   }
 
@@ -582,6 +588,7 @@ class SharedConversations {
     const conversation = this.create(engine, source.workspaceId, forkTitle, source.cwd);
     conversation.apiModel = source.apiModel;
     conversation.engineSettings = JSON.parse(JSON.stringify(source.engineSettings || {}));
+    if (source.hasGlobalMemory) conversation.hasGlobalMemory = true;
     // A fork starts a fresh native session, but it keeps the parked sessions of
     // each binding so switching models there also returns to its own thread.
     conversation.modelSessions = JSON.parse(JSON.stringify(source.modelSessions || {}));
@@ -910,7 +917,9 @@ class SharedConversations {
     const editReplay = nativeEdit && checkpoint.replayFromSeq !== undefined
       ? edit.prior.filter(row => row.seq >= checkpoint.replayFromSeq) : [];
     let editContext = edit && ((nativeEdit ? this.formatContext(c, editReplay) : this.compactionContext(c, edit.prior)) + this.formatContext(c, [revisionNotice]));
-    let prompt = promptOverride ?? ((edit ? editContext : this.context(c, engine)) + String(promptSuffix ?? payload.prompt ?? ''));
+    const memoryDirectory = !internal && this.loadConfig().memoryDirectory;
+    const memory = internal ? '' : memoryInstructions(memoryDirectory, c.hasGlobalMemory === true);
+    let prompt = memory + (promptOverride ?? ((edit ? editContext : this.context(c, engine)) + String(promptSuffix ?? payload.prompt ?? '')));
     const promptCap = this.contextPressure(c, engine, settings).cap;
     if (!internal && !continuation && (contextTokens(prompt) > promptCap * 0.85 || overInputChars(engine, prompt))) {
       // Give automatic compaction one chance before refusing to send; a huge
@@ -927,9 +936,9 @@ class SharedConversations {
       assertAvailable();
       if (edit) {
         editContext = compactedEdit.summary + '\n\n' + this.formatContext(c, [revisionNotice]);
-        prompt = editContext + String(payload.prompt || '');
+        prompt = memory + editContext + String(payload.prompt || '');
       } else {
-        prompt = this.context(c, engine) + String(promptSuffix ?? payload.prompt ?? '');
+        prompt = memory + this.context(c, engine) + String(promptSuffix ?? payload.prompt ?? '');
       }
       if (contextTokens(prompt) > promptCap * 0.85 || overInputChars(engine, prompt)) throw new Error('The conversation is still too large after automatic compaction. Compact it manually from the engine menu or start a new conversation. Nothing was sent.');
     }
@@ -954,6 +963,7 @@ class SharedConversations {
       c.engineSettings ||= {};
       if (!ephemeral) c.engineSettings[engine] = conversationSettings(settings);
       c.pending = { engine, at: Date.now(), internal }; c.updatedAt = this.stamp();
+      if (memoryDirectory) c.hasGlobalMemory = true;
       if (!internal && !continuation) {
         const row = this.append(c, { role: edit ? 'revision' : 'user', ...(edit ? { replacesSeq: edit.row.seq } : {}), engine,
           text: String(payload.prompt || ''), displayText: payload.displayText ?? String(payload.prompt || ''), attachments: payload.attachments || [], ...(payload.queueId ? { queueId: payload.queueId } : {}) });
@@ -1311,7 +1321,9 @@ class SharedConversations {
     if (!prompt.trim()) throw new Error('Enter an instruction first.');
     active.steering = true;
     try {
-      await active.session.steerUserMessage(prompt, payload.attachments || []);
+      const memoryDirectory = this.loadConfig().memoryDirectory;
+      await active.session.steerUserMessage(memoryInstructions(memoryDirectory, active.c.hasGlobalMemory === true) + prompt, payload.attachments || []);
+      if (memoryDirectory) active.c.hasGlobalMemory = true;
       active.goalUserPrompt = prompt;
       active.goalReport = undefined;
       const row = this.append(active.c, { role: 'user', engine, text: prompt,

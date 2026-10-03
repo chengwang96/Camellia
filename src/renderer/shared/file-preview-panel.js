@@ -1,6 +1,6 @@
 'use strict';
-window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStatus, finishPreviewResize = () => {} }) {
-  const $ = id => document.getElementById(id);
+window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStatus, finishPreviewResize = () => {}, root = document }) {
+  const $ = id => root.getElementById(id);
   let previewedFile = null;
   let previewRequest = 0;
   const attachmentDragType = 'application/x-camellia-attachment-path';
@@ -217,7 +217,7 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
   $('fileViewerReveal').title = revealLabel();
   $('fileViewerReveal').setAttribute('aria-label', revealLabel());
   $('fileViewerReveal').onclick = () => void revealFile(previewedFile?.path);
-  document.addEventListener('keydown', event => { if (event.key === 'Escape' && !fileViewer.hidden) closeFilePreview(); });
+  root.addEventListener('keydown', event => { if (event.key === 'Escape' && !fileViewer.hidden) closeFilePreview(); });
 
   return { openFilePreview, closeFilePreview, openPreviewExternally, revealFile, revealLabel, formatFileSize, attachmentDragType };
 } };

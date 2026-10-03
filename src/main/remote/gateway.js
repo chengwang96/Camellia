@@ -26,8 +26,8 @@ async function body(request, limit = 4096) {
 }
 
 class RemoteGateway {
-  constructor({ access, reader, commands, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, validateHost = isTailscaleIPv4 }) {
-    Object.assign(this, { access, reader, commands, apiRoutes, apiImport, nativeSettings, management, validateHost });
+  constructor({ access, reader, commands, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, discussions = null, validateHost = isTailscaleIPv4 }) {
+    Object.assign(this, { access, reader, commands, apiRoutes, apiImport, nativeSettings, management, discussions, validateHost });
     this.streams = new Set();
     this.downloads = new Set();
     this.sequence = 0;
@@ -60,7 +60,8 @@ class RemoteGateway {
     this.heartbeat = setInterval(() => {
       for (const stream of this.streams) {
         try {
-          if (stream.id) this.reader.conversation(stream.device, stream.id);
+          if (stream.kind === 'discussions') this.discussions.authorize(stream.device);
+          else if (stream.id) this.reader.conversation(stream.device, stream.id);
           if (!stream.blocked) stream.blocked = !stream.response.write(': heartbeat\n\n');
         } catch { stream.response.end(); }
       }
@@ -104,6 +105,10 @@ class RemoteGateway {
     const authorization = request.headers.authorization || '';
     if (!/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization)) fail(401, 'Device authentication required');
     const device = this.access.authenticate(authorization.slice(7));
+    if (this.discussions && /^\/v1\/discussions(?:\/|$)/.test(url.pathname)) {
+      await this.handleDiscussions(request, response, url, device);
+      return;
+    }
     const operation = /^\/v1\/server-management(?:\/([a-f0-9-]{36}))?$/.exec(url.pathname);
     if (operation && this.management) {
       if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
@@ -188,7 +193,7 @@ class RemoteGateway {
     } else if (url.pathname === '/v1/archived') {
       this.json(response, 200, { ...this.reader.archived(device, number(url.searchParams.get('offset'), 0)), ...this.stamp() });
     } else if (url.pathname === '/v1/conversations') {
-      this.json(response, 200, { ...this.connectionInfo(device), ...this.reader.list(device, number(url.searchParams.get('offset'), 0)), ...this.stamp() });
+      this.json(response, 200, { ...this.connectionInfo(device), ...this.reader.list(device, number(url.searchParams.get('offset'), 0)), ...this.discussionNavigation(device), ...this.stamp() });
     } else if (url.pathname === '/v1/conversations/events') {
       this.subscribe(response, device, null);
     } else {
@@ -206,19 +211,54 @@ class RemoteGateway {
     if (this.apiImport && fullControl) capabilities.push('api-import');
     if (this.nativeSettings && fullControl) capabilities.push('native-settings');
     if (this.management && fullControl) capabilities.push('server-management');
+    if (this.discussions && fullControl) capabilities.push('discussions', 'discussion-rich');
+    if (this.commands) capabilities.push('interactive-approvals', 'next-turn-settings');
     if (this.commands) capabilities.push('fork', 'switch-engine', 'compact', 'find', 'resend', 'automation-control', 'message-queue');
     return { protocol: 1, permission: device.permission, capabilities,
       engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine)),
       workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
       includeUnassigned: Boolean(device.allWorkspaces || device.includeUnassigned) };
   }
-  async download(response, device, conversationId, id) {
+  async handleDiscussions(request, response, url, device) {
+    this.discussions.authorize(device);
+    const route = url.pathname.slice('/v1/discussions'.length);
+    if (route === '/commands' && request.method === 'POST' && !url.search) {
+      this.json(response, 200, { ...this.discussions.submit(device, await body(request, MAX_REQUEST), this.instanceId), ...this.stamp() });
+      return;
+    }
+    if (request.method !== 'GET') fail(405, 'Unsupported discussion method');
+    const artifact = /^\/([a-f0-9-]{36})\/artifacts(?:\/([a-f0-9]{64}))?$/.exec(route);
+    if (artifact) {
+      for (const key of url.searchParams.keys()) if (key !== 'offset' || artifact[2]) fail(400, 'Unsupported artifact query');
+      if (artifact[2]) await this.download(response, device, artifact[1], artifact[2], true);
+      else this.json(response, 200, this.discussions.artifacts(device, artifact[1], number(url.searchParams.get('offset'), 0)));
+      return;
+    }
+    let result;
+    if (route === '') {
+      for (const key of url.searchParams.keys()) if (key !== 'offset') fail(400, 'Unsupported discussion query');
+      result = this.discussions.list(device, number(url.searchParams.get('offset'), 0));
+    } else if (route === '/catalog' && !url.search) result = await this.discussions.catalog(device);
+    else if (route === '/events' && !url.search) { this.subscribe(response, device, null, 'discussions'); return; }
+    else {
+      const receipt = /^\/commands\/([a-f0-9-]{36})$/.exec(route);
+      const group = /^\/([a-f0-9-]{36})(\/events)?$/.exec(route);
+      if (receipt && !url.search) result = this.discussions.receipt(device, receipt[1]);
+      else if (group) {
+        for (const key of url.searchParams.keys()) if (group[2] || key !== 'before') fail(400, 'Unsupported discussion query');
+        if (group[2]) { this.subscribe(response, device, group[1], 'discussions'); return; }
+        result = this.discussions.snapshot(device, group[1], number(url.searchParams.get('before'), undefined));
+      } else fail(404, 'Discussion endpoint not found');
+    }
+    this.json(response, 200, { ...result, ...this.stamp() });
+  }
+  async download(response, device, conversationId, id, discussion = false) {
     if (this.downloads.size >= 8 || [...this.downloads].filter(entry => entry.device.id === device.id).length >= 2) fail(429, 'Too many downloads');
     const entry = { response, device };
     this.downloads.add(entry);
     let file;
     try {
-      file = await openArtifact(this.reader, device, conversationId, id);
+      file = discussion ? await this.discussions.openArtifact(device, conversationId, id) : await openArtifact(this.reader, device, conversationId, id);
       if (response.destroyed) return;
       response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': file.size,
         'Content-Disposition': `attachment; filename="artifact"; filename*=UTF-8''${encodeURIComponent(file.name).replace(/['()*]/g, value => '%' + value.charCodeAt(0).toString(16))}`,
@@ -230,11 +270,26 @@ class RemoteGateway {
       this.downloads.delete(entry);
     }
   }
-  subscribe(response, device, id) {
+  discussionNavigation(device) {
+    if (!this.discussions || device.permission !== 'control' || device.allWorkspaces !== true) return {};
+    const snapshot = this.discussions.list(device);
+    return { discussionGroups: snapshot.groups, discussionsNextOffset: snapshot.nextOffset, discussionVersion: snapshot.listVersion };
+  }
+  streamSnapshot({ device, id, kind }) {
+    if (kind === 'discussions') {
+      if (!id) return this.discussions.list(device);
+      try { return this.discussions.snapshot(device, id); }
+      catch (error) { if (error.status === 404) return { deleted: true, id }; throw error; }
+    }
+    if (id) return this.reader.snapshot(device, id);
+    const snapshot = this.reader.listSnapshot(device), discussions = this.discussionNavigation(device);
+    return { ...snapshot, listVersion: snapshot.listVersion + (discussions.discussionVersion ? ':' + discussions.discussionVersion : '') };
+  }
+  subscribe(response, device, id, kind = 'conversations') {
     if (this.streams.size >= 16 || [...this.streams].filter(stream => stream.device.id === device.id).length >= 4) fail(429, 'Too many event streams');
-    const snapshot = id ? this.reader.snapshot(device, id) : this.reader.listSnapshot(device);
+    const snapshot = this.streamSnapshot({ device, id, kind });
     response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
-    const stream = { response, device, id, dirty: false, blocked: false };
+    const stream = { response, device, id, kind, dirty: false, blocked: false };
     this.streams.add(stream);
     response.on('close', () => this.streams.delete(stream));
     response.on('drain', () => {
@@ -261,7 +316,7 @@ class RemoteGateway {
       for (const stream of this.streams) {
         if (!stream.dirty || stream.blocked) continue;
         stream.dirty = false;
-        try { this.writeSnapshot(stream, stream.id ? this.reader.snapshot(stream.device, stream.id) : this.reader.listSnapshot(stream.device)); }
+        try { this.writeSnapshot(stream, this.streamSnapshot(stream)); }
         catch { stream.response.end(); }
       }
     }, 250);
@@ -278,6 +333,7 @@ class RemoteGateway {
     this.flushTimer = null;
     this.access.clearPairing();
     this.commands?.cancelPending();
+    this.discussions?.cancelPending();
     for (const entry of this.downloads) entry.response.destroy();
     for (const stream of this.streams) stream.response.destroy();
     this.streams.clear();

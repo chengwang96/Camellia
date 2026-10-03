@@ -34,12 +34,13 @@ function queuedRuns(manager, id) {
 function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings = null, management = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-remote-'));
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
-  let clock = 1000, config = { sharedMeta: { workspaces: [{ id: 'allowed', name: 'Allowed', path: root }, { id: 'private', name: 'Private', path: root }] } }, gateway;
+  let clock = 1000, config = { sharedMeta: { workspaces: [{ id: 'allowed', name: 'Allowed', path: root }, { id: 'private', name: 'Private', path: root }] } }, gateway, reader;
   const drivers = Object.fromEntries(ENGINES.map(engine => [engine, { settings: () => ({ model: 'test', apiKey: 'must-not-leak' }), ensure() { throw new Error('Read-only access must not start engines'); } }]));
   const manager = new SharedConversations({ dir: path.join(root, 'conversations'), loadConfig: () => config, saveConfig: patch => { config = { ...config, ...patch }; }, drivers,
-    onEvent: () => gateway?.publish() });
+    onEvent: event => { reader?.observeCompaction(event); gateway?.publish(); },
+    onStatus: status => { reader?.observeCompaction(status); gateway?.publish(); } });
   const access = new RemoteAccess({ file: path.join(root, 'devices.json'), now: () => clock, onRevoke: id => gateway?.revoke(id) });
-  const reader = new RemoteReadModel(manager);
+  reader = new RemoteReadModel(manager);
   const commands = new RemoteCommands({ file: path.join(root, 'commands.json'), access, reader, publish: () => gateway.publish() });
   gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, validateHost: host => host === '127.0.0.1' });
   const start = gateway.start.bind(gateway);
@@ -825,7 +826,7 @@ test('read model isolates workspace scope and strips paths, credentials and nati
   const snapshot = reader.snapshot(device, visible.id);
   assert.equal(snapshot.messages.length, 2);
   for (const field of ['apiKey', 'attachments', 'artifacts', 'segments', 'cwd']) assert.ok(!JSON.stringify(snapshot).includes(`"${field}"`));
-  assert.deepEqual(Object.keys(snapshot.settings).sort(), ['connection', 'editable', 'engine', 'model', 'models', 'permissionLevels', 'permissionMode', 'thinking', 'version']);
+  assert.deepEqual(Object.keys(snapshot.settings).sort(), ['appliesNextTurn', 'connection', 'editable', 'engine', 'fastMode', 'model', 'modelEditable', 'models', 'permissionLevels', 'permissionMode', 'quickSwitch', 'supportsFast', 'thinking', 'version']);
   manager.workspaces.archiveSession(visible.id, true);
   assert.throws(() => reader.snapshot(device, visible.id), /not found/);
   manager.workspaces.archiveSession(visible.id, false);
@@ -865,7 +866,7 @@ test('remote settings use desktop models and persistence, reject stale or unsafe
   await assert.rejects(commands.execute(device, hidden.id, payload({ permissionMode: 'ask' }), gateway.instanceId), /not found/);
   manager.controlStarts.set(visible.id, {});
   assert.equal(snapshot().editable, false);
-  assert.match((await commands.execute(device, visible.id, payload({ permissionMode: 'ask' }), gateway.instanceId)).error, /busy/);
+  assert.match((await commands.execute(device, visible.id, payload({ permissionMode: 'ask' }), gateway.instanceId)).error, /Stop/);
   manager.controlStarts.delete(visible.id);
   assert.equal((await commands.execute(device, visible.id, payload({ model: 'test' }), gateway.instanceId)).ok, true);
   assert.equal(snapshot().thinking, '');
@@ -1036,6 +1037,55 @@ test('SSE snapshots catch up after disconnect and close immediately on revocatio
   assert.notEqual(gateway.instanceId, previousInstance);
 });
 
+test('remote compaction states survive coalescing and completed notices retain only display metadata', async context => {
+  const { reader, manager, visible, hidden, access, pair } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Work' });
+  const capture = value => manager.capture('codex', { ...value, conversationId: visible.id, runId: manager.active.get(visible.id).session.gen });
+  capture({ type: 'gui:compaction', state: 'running' });
+  assert.equal(reader.snapshot(device, visible.id).compaction.state, 'running');
+  capture({ type: 'gui:compaction', state: 'completed', durationMs: 42000 });
+  let snapshot = reader.snapshot(device, visible.id);
+  assert.equal(snapshot.compaction.state, 'completed');
+  const notice = snapshot.messages.find(row => row.compaction);
+  assert.deepEqual(notice.compaction, { state: 'completed', native: true, engine: 'codex', seq: notice.seq, durationMs: 42000 });
+  assert.equal(snapshot.compaction.seq, notice.seq, 'Phone can deduplicate the live and persisted completion');
+  runs.finish();
+  assert.equal(reader.snapshot(device, visible.id).compaction.state, 'completed');
+  const otherReader = new RemoteReadModel(manager);
+  assert.equal(otherReader.snapshot(device, visible.id).messages.find(row => row.compaction).compaction.state, 'completed');
+  manager.append(visible, { role: 'user', text: 'Continue' });
+  assert.equal(reader.snapshot(device, visible.id).compaction, null);
+  manager.append(visible, { role: 'notice', text: 'Context compacted: summary saved', compaction: { durationMs: 1000, used: 123456, cap: 32000, summary: 'private diagnostic' } });
+  assert.deepEqual(reader.snapshot(device, visible.id).messages.at(-1).compaction, { state: 'completed', native: false, seq: visible.seq, durationMs: 1000 });
+  assert.throws(() => reader.snapshot(device, hidden.id), /not found/);
+});
+
+test('remote compaction progress streams without usage data and keeps failure distinct from completion', { timeout: 8000 }, async context => {
+  const { gateway, reader, manager, visible, pair } = fixture(context);
+  manager.contextPressure = () => null;
+  const credential = pair();
+  await gateway.start('127.0.0.1', 0);
+  const connection = await stream(gateway, visible.id, credential.token);
+  await connection.next();
+  const compaction = { state: 'running', stage: 'summarizing', chunk: 2, finalChunk: true };
+  manager.switching.set(visible.id, { target: 'codex', compaction });
+  manager.onStatus({ sessionId: visible.id, compaction });
+  let snapshot = await connection.next();
+  assert.equal(snapshot.context, undefined);
+  assert.deepEqual(snapshot.compaction, { ...compaction, native: false, afterSeq: visible.seq });
+  assert.equal(reader.snapshot(gateway.access.authenticate(credential.token), visible.id, visible.seq).compaction, null);
+  manager.switching.delete(visible.id);
+  manager.onStatus({ sessionId: visible.id, compaction: { state: 'failed' } });
+  manager.onStatus({ sessionId: visible.id, text: '' });
+  snapshot = await connection.next();
+  assert.equal(snapshot.compaction.state, 'failed');
+  manager.onStatus({ sessionId: visible.id, compaction: { state: 'cancelled' } });
+  snapshot = await connection.next();
+  assert.equal(snapshot.compaction.state, 'cancelled');
+  connection.close();
+});
+
 test('remote projection carries bounded folded process for live and persisted replies', context => {
   const { reader, manager, visible, access, pair } = fixture(context);
   const device = access.authenticate(pair().token);
@@ -1154,6 +1204,41 @@ test('control operations are scoped, deduplicated, run-bound and retain desktop 
   access.revoke(credential.deviceId);
   assert.equal((await send(stop)).status, 401);
   assert.equal(commands.entries.filter(entry => entry.result?.state === 'accepted').length, 1);
+});
+
+test('ordinary remote questions deliver native answers once and reject stale requests', async context => {
+  const { gateway, manager, access, reader, visible, pair, root } = fixture(context);
+  const { token } = pair(), answers = [];
+  manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage() { return true; }, interrupt() {},
+    answerPermission(...args) { answers.push(args); return true; } });
+  await gateway.start('127.0.0.1', 0);
+  const route = `/v1/conversations/${visible.id}/commands`;
+  const send = payload => request(gateway, route, { token, method: 'POST', payload: {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, ...payload } });
+  assert.equal((await send({ action: 'send', prompt: 'Ask questions', expectedSeq: visible.seq })).body.ok, true);
+  const active = manager.active.get(visible.id);
+  const event = { requestId: 'questions', toolName: 'AskUserQuestion', input: {}, questions: [
+    { id: 'role', question: 'Role?', options: [{ label: 'Scientist' }] },
+    { id: 'inputs', question: 'Inputs?', multiSelect: true, options: [{ label: 'Image' }, { label: 'Text' }] },
+    { id: 'note', question: 'Private note?', isSecret: true, options: [] },
+  ] };
+  active.permissions.set(event.requestId, event);
+  const projected = reader.snapshot(access.authenticate(token), visible.id).live.approvals[0];
+  assert.equal(projected.actionable, false); assert.equal(projected.responseSupported, true);
+  const response = { requestId: require('node:crypto').randomUUID(), action: 'approve', runId: active.facade.gen,
+    approvalId: event.requestId, fingerprint: projected.fingerprint, allow: true,
+    input: { role: 'Scientist', inputs: ['Image', 'Text'], note: 'private-answer-marker' } };
+  assert.equal((await send({ ...response, requestId: require('node:crypto').randomUUID(), input: { role: 'Scientist' } })).body.ok, false);
+  assert.equal(answers.length, 0);
+  assert.equal((await send(response)).body.ok, true);
+  assert.equal((await send(response)).body.ok, true);
+  assert.equal(answers.length, 1);
+  assert.deepEqual(answers[0].slice(0, 3), [event.requestId, true, response.input]);
+  assert.ok(!fs.readFileSync(path.join(root, 'commands.json'), 'utf8').includes('private-answer-marker'));
+  active.permissions.set(event.requestId, { ...event, questions: [{ id: 'changed', question: 'Changed question?' }] });
+  assert.equal((await send({ ...response, requestId: require('node:crypto').randomUUID() })).body.ok, false);
+  assert.equal(answers.length, 1);
+  await send({ action: 'stop', runId: active.facade.gen });
 });
 
 test('mobile creation is scoped, deduplicated and does not start engines', async context => {

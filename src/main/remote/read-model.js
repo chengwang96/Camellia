@@ -13,6 +13,17 @@ function text(value) {
   const source = typeof value === 'string' ? value : '';
   return { text: source.slice(-TEXT_LIMIT), textTruncated: source.length > TEXT_LIMIT };
 }
+function compactionView(value) {
+  if (!value || !['running', 'completed', 'failed', 'cancelled'].includes(value.state)) return null;
+  const result = { state: value.state, native: value.native === true };
+  if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(value.engine)) result.engine = value.engine;
+  if (['summarizing', 'saving'].includes(value.stage)) result.stage = value.stage;
+  for (const key of ['seq', 'afterSeq', 'chunk', 'durationMs']) {
+    if (Number.isSafeInteger(value[key]) && value[key] >= 0) result[key] = value[key];
+  }
+  if (value.finalChunk === true) result.finalChunk = true;
+  return result;
+}
 function message(row) {
   let value = row.displayText ?? row.mobileText ?? row.text, process = cleanProcess(row.process);
   if (row.role === 'tool') {
@@ -26,7 +37,10 @@ function message(row) {
   }
   const attachedFiles = (Array.isArray(row.attachments) ? row.attachments : []).filter(file => typeof file?.name === 'string')
     .slice(0, MAX_ATTACHMENTS).map(file => ({ name: file.name.replace(/[\\/\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '_').slice(0, 180), isImage: file.isImage === true }));
-  return { seq: row.seq, role: row.role, engine: row.engine, at: row.at, ...text(value), ...(process.length ? { process } : {}), ...(attachedFiles.length ? { attachedFiles } : {}) };
+  const compaction = row.role === 'notice' && row.compaction
+    ? compactionView({ ...row.compaction, state: row.compaction.state || 'completed', engine: row.engine, seq: row.seq }) : null;
+  return { seq: row.seq, role: row.role, engine: row.engine, at: row.at, ...text(value), ...(compaction ? { compaction } : {}),
+    ...(process.length ? { process } : {}), ...(attachedFiles.length ? { attachedFiles } : {}) };
 }
 
 function mobileGoal(goal, rows) {
@@ -42,7 +56,28 @@ function mobileGoal(goal, rows) {
 }
 
 class RemoteReadModel {
-  constructor(manager) { this.manager = manager; this.previewCache = new WeakMap(); }
+  constructor(manager) { this.manager = manager; this.previewCache = new WeakMap(); this.compactions = new WeakMap(); }
+  observeCompaction(update) {
+    if (!update?.compaction && update?.type !== 'gui:compaction') return;
+    const conversation = this.manager.items.get(update?.sessionId || update?.session_id);
+    if (!conversation) return;
+    const value = compactionView(update.type === 'gui:compaction'
+      ? { state: update.state, native: true, engine: update.engine, seq: update.compactionSeq, durationMs: update.compactionDurationMs }
+      : update.compaction);
+    if (!value) return;
+    const previous = this.compactions.get(conversation);
+    value.afterSeq = previous?.value.state === 'running' ? previous.value.afterSeq : conversation.seq;
+    this.compactions.set(conversation, { value, observedSeq: conversation.seq });
+  }
+  currentCompaction(conversation, active, transcript) {
+    const saved = this.compactions.get(conversation);
+    const current = compactionView(this.manager.switching?.get(conversation.id)?.compaction || active?.compaction);
+    if (current) return { ...current, afterSeq: saved?.value.state === 'running' ? saved.value.afterSeq : conversation.seq };
+    // A missing running state is not evidence of success. Terminal events survive
+    // stream coalescing, but a later user turn retires this transient indicator.
+    if (!saved || saved.value.state === 'running' || transcript.some(row => row.role === 'user' && row.seq > saved.observedSeq)) return null;
+    return saved.value;
+  }
   workspaces() {
     return this.manager.workspaces.sessionMeta().workspaces.map(({ id, name }) => ({ id, name }));
   }
@@ -127,7 +162,13 @@ class RemoteReadModel {
       ...(output?.process.length ? { process: output.process } : {}),
       pendingApprovals: active.permissions.size, approvals: device.permission === 'control' ? [...active.permissions.values()].map(approval) : [] } : null;
     const goal = this.manager.goalFor?.(id)?.view();
+    const selected = active?.settings || this.manager.settings(conversation.currentEngine, id);
+    const pressure = this.manager.contextPressure?.(conversation, conversation.currentEngine, selected, active);
+    const compaction = before === undefined ? this.currentCompaction(conversation, active, transcript) : null;
     return { conversation: this.summary(conversation), messages, live, permission: device.permission,
+      compaction,
+      ...(pressure ? { context: { used: Math.max(0, Math.round(pressure.used)), cap: pressure.cap, source: pressure.source,
+        compacting: compaction?.state === 'running', compactionState: compaction?.state || '' } } : {}),
       ...(this.manager.remoteQueue ? this.manager.remoteQueue.snapshot(id) : {}),
       automation: { goal: mobileGoal(goal, transcript),
         tasks: (this.manager.tasks?.list(id) || []).map(task => ({ id: task.id, instruction: String(task.instruction || '').slice(0, 500), status: task.status, state: task.state, intervalMinutes: task.intervalMinutes, lastResult: String(task.lastResult || '').slice(0, 600) })) },

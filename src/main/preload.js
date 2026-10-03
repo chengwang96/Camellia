@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   benchmarkState: () => ipcRenderer.invoke('dsh:benchmark-state'),
   discussion: (action, payload = {}) => ipcRenderer.invoke('dsh:discussion', { action, payload }),
   onDiscussionEvent: callback => subscribe('dsh:discussion-event', callback),
+  onDiscussionNavigate: callback => subscribe('dsh:discussion-navigate', callback),
   benchmarkStart: payload => ipcRenderer.invoke('dsh:benchmark-start', payload),
   benchmarkCancel: () => ipcRenderer.invoke('dsh:benchmark-cancel'),
   benchmarkReport: id => ipcRenderer.invoke('dsh:benchmark-report', { id }),
