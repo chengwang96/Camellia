@@ -21,18 +21,18 @@ function configureApiModel(config, home, model, contextWindow) {
     if (managed) delete config.model_catalog_json;
     return;
   }
-  // Match 0.154.0's unknown-model defaults, adding only its native patch tool.
+  // Match 0.160.0's unknown-model defaults, adding only its native patch tool.
   // Without this metadata Codex invokes apply_patch.bat through PowerShell;
   // Windows batch argument parsing truncates valid multiline patches.
   const fallback = {
     slug: model, display_name: model, description: null,
     default_reasoning_level: null, supported_reasoning_levels: [],
-    shell_type: 'default', visibility: 'none', supported_in_api: true, priority: 99,
+    shell_type: 'unified_exec', visibility: 'none', supported_in_api: true, priority: 99,
     model_messages: { instructions_template: toolAwareFallbackPrompt },
     include_skills_usage_instructions: false, include_plugin_usage_instructions: false, include_apps_usage_instructions: false,
     supports_reasoning_summary_parameter: true, default_reasoning_summary: 'auto',
     support_verbosity: false, apply_patch_tool_type: 'freeform',
-    truncation_policy: { mode: 'bytes', limit: 10000 }, supports_parallel_tool_calls: false,
+    truncation_policy: { mode: 'bytes', limit: 10000 },
     context_window: contextWindow || 272000, max_context_window: contextWindow || 272000, effective_context_window_percent: 95,
     experimental_supported_tools: [], input_modalities: ['text', 'image'],
   };

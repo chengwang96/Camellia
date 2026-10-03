@@ -117,14 +117,41 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
         });
     }
 
-    public void testHealthyStatusMovesToHeaderButErrorsStayVisible() throws Exception {
+    public void testConnectionAndWorkStatusStaySeparateWithAStableFooterHeight() throws Exception {
         ui(() -> {
             detail(); TextView status = (TextView) field("status");
-            status.setText("已连接 · 空闲"); assertEquals(View.GONE, status.getVisibility());
-            assertEquals("空闲", ((TextView) root().findViewWithTag("headerConnectionState")).getText().toString());
-            status.setText("正在重连，当前显示上次同步内容。"); assertEquals(View.VISIBLE, status.getVisibility()); assertEquals(1, status.getMaxLines());
-            status.setText("操作待确认，请重试同一请求；不要重复发送。"); assertEquals(View.VISIBLE, status.getVisibility());
+            field("connected", true); field("controlAllowed", true); invoke("updateControls");
+            TextView header = root().findViewWithTag("headerConnectionState");
+            assertEquals("已连接", header.getText().toString()); assertEquals("就绪", status.getText().toString());
+            int height = statusHeight(status);
+            field("lastLive", new JSONObject().put("text", "reply")); invoke("updateControls");
+            assertEquals("正在回复…", status.getText().toString()); assertEquals(height, statusHeight(status));
+            assertEquals("已连接", header.getText().toString());
+            field("remoteCompaction", new JSONObject().put("state", "running")); invoke("updateControls");
+            assertEquals("正在压缩上下文…", status.getText().toString()); assertEquals(height, statusHeight(status));
+            field("lastLive", null); field("remoteCompaction", new JSONObject().put("state", "completed")); invoke("updateControls");
+            assertEquals("就绪", status.getText().toString()); assertEquals(height, statusHeight(status));
+            assertEquals(View.VISIBLE, status.getVisibility()); assertEquals(1, status.getMaxLines());
         });
+    }
+
+    public void testStatusFailureSurvivesSyncAndKeepsDetailsClickable() throws Exception {
+        ui(() -> {
+            detail(); field("connected", true); field("controlAllowed", true); invoke("updateControls");
+            var failure = MainActivity.class.getDeclaredMethod("setStatusError", String.class); failure.setAccessible(true);
+            failure.invoke(activity, "发送未确认：网络超时\n保留同一请求 ID");
+            field("lastLive", new JSONObject().put("text", "reply")); invoke("updateControls");
+            TextView status = (TextView) field("status");
+            assertTrue(status.getText().toString().startsWith("发送未确认")); assertTrue(status.isClickable());
+            assertEquals("已连接", ((TextView) root().findViewWithTag("headerConnectionState")).getText().toString());
+            ((ChatStatusLine) field("workStatus")).clear(); invoke("updateControls");
+            assertEquals("正在回复…", status.getText().toString());
+        });
+    }
+
+    private int statusHeight(TextView status) {
+        status.measure(View.MeasureSpec.makeMeasureSpec(280, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        return status.getMeasuredHeight();
     }
 
     private void screenshot(String name) throws Exception {

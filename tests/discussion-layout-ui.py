@@ -21,17 +21,22 @@ group = {'id': 'group-fixture', 'title': chat['title'], 'revision': 1, 'particip
          'requests': [{'id': 'request-one', 'messageId': 'user-one', 'mode': 'parallel', 'deliveryIds': ['delivery-one']}],
          'deliveries': [{'id': 'delivery-one', 'requestId': 'request-one', 'participantId': 'member-0', 'status': 'completed'}]}
 bridge = r"""(() => {
-  const fixture = CHAT, group = GROUP;
+  window.requestIdleCallback = undefined;
+  const fixture = CHAT, group = GROUP, template = TEMPLATE;
   const preferences = {mode:'direct',warnOnSwitch:false,showOrigin:false};
   const settings = {model:'gpt-test',connection:'subscription',permissionMode:'ask'};
   window.fixtureSends = [];
+  window.fixtureCommands = []; window.extraSessions = []; window.fixtureChat = fixture;
+  const chatListeners = new Set();
+  window.fixtureActivity = activity => { fixture.activity = activity; for (const fn of chatListeners) fn({type:'conversation:activity',session_id:fixture.id,engine:'codex',activity}); };
   window.modeNavigations = []; window.handoffs = []; window.failNavigation = false;
   window.dshDesktop = {
     sharedConversations:true, onLanguageChanged:fn=>{window.changeLanguage=fn;return()=>{};},
     onChatContentWidthChanged:fn=>{window.changeWidth=fn;return()=>{};},
     workbenchSettings:async()=>({ok:true,language:'zh-CN',chatContentWidth:'standard',conversations:preferences}),
     conversationCommand:async ({action}) => {
-      if(action==='list-sessions') return {ok:true,sessions:[{...fixture,mtimeMs:Date.now()}],workspaces:[],pagination:{}};
+      window.fixtureCommands.push(action);
+      if(action==='list-sessions') return {ok:true,sessions:[{...fixture,mtimeMs:Date.now()},...window.extraSessions],workspaces:[],pagination:{}};
       if(action==='get-live') return {ok:true,live:null};
       if(action==='load-session') return {ok:true,...fixture,preferences,settings};
       if(action==='get-settings') return settings;
@@ -41,19 +46,21 @@ bridge = r"""(() => {
     },
     discussion:async (action,payload) => {
       if(action==='list') return {ok:true,groups:[{id:group.id,title:group.title,members:4,preview:prompt}]};
-      if(action==='load') return {ok:true,group};
+      if(action==='template') return {ok:true,html:template};
+      if(action==='load') {window.modeNavigations.push('discussions');if(window.delayDiscussionLoad) await new Promise(resolve=>window.releaseDiscussionLoad=resolve);return window.failNavigation ? {ok:false,error:'Mode navigation failed.'} : {ok:true,group};}
+      if(action==='open') {window.modeNavigations.push('discussions');return window.failNavigation ? {ok:false,error:'Mode navigation failed.'} : {ok:true};}
       if(action==='send') {window.fixtureSends.push(payload);return {ok:true,group};}
       return {ok:false,error:'Layout fixture has no model connection.'};
     },
     onDiscussionEvent:fn=>{window.emitDiscussion=fn;return()=>{};},
-    conversationSwitch:async payload=>{window.handoffs.push(payload);return {ok:true};}, apiRouterGetState:async()=>({enabled:true,models:['gpt-test']}),
+    conversationSwitch:async payload=>{window.handoffs.push(payload);return window.failNavigation ? {ok:false,error:'Mode navigation failed.'} : {ok:true};}, apiRouterGetState:async()=>({enabled:true,models:['gpt-test']}),
     codexAccountState:async()=>({ok:true,models:[{id:'gpt-test',name:'gpt-test'}]}),
-    onConversationEvent:()=>{},onConversationGoal:()=>{},onConversationStatus:()=>{},
+    onConversationEvent:fn=>{chatListeners.add(fn);return()=>chatListeners.delete(fn);},onConversationGoal:()=>{},onConversationStatus:()=>{},
     onEngineSettingsChanged:()=>{},onApiRouterState:()=>{},onNetworkHealth:()=>{},onHarnessNavigate:()=>{},
     openSettingsWindow:()=>{},switchMode:async mode=>{window.modeNavigations.push(mode);return window.failNavigation ? {ok:false,error:'Mode navigation failed.'} : {ok:true};},
     previewFile:async()=>({ok:false}),openFileExternally:async()=>({ok:true}),
   };
-})();""".replace('CHAT', json.dumps(chat)).replace('GROUP', json.dumps(group)).replace('preview:prompt', 'preview:' + json.dumps(prompt))
+})();""".replace('CHAT', json.dumps(chat)).replace('GROUP', json.dumps(group)).replace('TEMPLATE', json.dumps((repo / 'src/renderer/discussions/discussions.html').read_text(encoding='utf8'))).replace('preview:prompt', 'preview:' + json.dumps(prompt))
 
 
 def styles(page, selector, properties):
@@ -79,25 +86,33 @@ with sync_playwright() as p:
         expect(normal.locator('#chat')).to_contain_text('需要补充的验证')
         discussion.goto((repo / 'src/renderer/discussions/discussions.html').as_uri(), wait_until='networkidle')
         expect(discussion.locator('#groupTitle')).to_have_text(group['title'])
-        modes = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi', 'discussions']
-        for page, current, surface in [(normal, 'codex', 'chat'), (discussion, 'discussions', 'discussion')]:
-            select = page.locator('#engineSwitch')
-            assert select.locator('option').evaluate_all('(items)=>items.map(item=>item.value)') == modes
-            expect(select).to_have_value(current)
-            expect(select.locator('[value=discussions]')).to_have_text('Agent 讨论 (beta)')
-            select.click()
-            page.wait_for_function("document.querySelector('#engineSwitch').matches(':open')")
-            page.screenshot(path=str(preview / f'chat-mode-menu-{surface}-{theme}.png'), animations='disabled')
-            select.press('Escape')
-            expect(select).to_have_value(current)
-            expect(select).to_be_focused()
+        for page, rows in [(normal, '#discussionSessions'), (discussion, '#groupList')]:
+            section = page.locator('[data-nav-section="discussions"]')
+            expect(section).to_be_visible()
+            expect(section.locator('[data-group-id="group-fixture"]')).to_have_count(1)
+            section.locator('.nav-section-toggle').click()
+            expect(page.locator(rows)).not_to_be_visible()
+            section.locator('.nav-section-toggle').press('Enter')
+            expect(page.locator(rows)).to_be_visible()
+        expect(discussion.locator('#conversationNavigation [data-conversation-id="chat-fixture"]')).to_be_visible()
+        modes = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']
+        expect(discussion.locator('#engineSwitch')).to_have_count(0)
+        select = normal.locator('#engineSwitch')
+        assert select.locator('option').evaluate_all('(items)=>items.map(item=>item.value)') == modes
+        expect(select).to_have_value('codex')
+        expect(select.locator('[value=discussions]')).to_have_count(0)
+        select.click()
+        normal.wait_for_function("document.querySelector('#engineSwitch').matches(':open')")
+        normal.screenshot(path=str(preview / f'chat-mode-menu-chat-{theme}.png'), animations='disabled')
+        select.press('Escape')
+        expect(select).to_have_value('codex')
+        expect(select).to_be_focused()
+        for page in (normal, discussion):
             page.evaluate("changeLanguage('en')")
-            expect(select.locator('[value=discussions]')).to_have_text('Agent discussions (beta)')
             page.evaluate("changeLanguage('zh-CN')")
         for left, right, properties in [
             ('.sidebar', '.sidebar', ['width', 'backgroundColor', 'borderRightWidth']),
             ('.main-header', '.main-header', ['padding', 'borderBottomWidth', 'height']),
-            ('#engineSwitch', '#engineSwitch', ['font', 'padding', 'height', 'borderRadius', 'backgroundColor', 'color']),
             ('.btn-new-session', '.btn-new-session', ['borderRadius', 'backgroundColor', 'font', 'padding']),
             ('.btn-footer', '.btn-footer', ['font', 'color', 'padding']),
             ('#inputCard', '#inputCard', ['borderRadius', 'boxShadow', 'backgroundColor', 'padding']),
@@ -138,30 +153,91 @@ with sync_playwright() as p:
         # must never submit "discussions" to the single-chat handoff API.
         normal.locator('#input').fill('保留普通聊天草稿')
         normal.evaluate('failNavigation = true')
-        normal.select_option('#engineSwitch', 'discussions')
+        normal.locator('#discussionSessions [data-group-id="group-fixture"]').click()
         expect(normal.locator('#statusLine')).to_have_text('Mode navigation failed.')
-        expect(normal.locator('#engineSwitch')).to_have_value('codex')
-        expect(normal.locator('#engineSwitch')).to_be_enabled()
+        expect(normal.locator(':light(#engineSwitch)')).to_have_value('codex')
+        expect(normal.locator(':light(#engineSwitch)')).to_be_enabled()
         expect(normal.locator('#input')).to_have_value('保留普通聊天草稿')
         assert normal.evaluate('handoffs.length') == 0
         assert normal.evaluate('modeNavigations') == ['discussions']
         normal.evaluate('failNavigation = false')
-        normal.select_option('#engineSwitch', 'discussions')
+        normal.locator('#discussionSessions [data-group-id="group-fixture"]').click()
         normal.wait_for_function('modeNavigations.length === 2')
         expect(normal.locator('#switchDialog')).not_to_be_visible()
+        expect(normal.locator('#discussionSurface')).to_be_visible()
+        normal.locator('#sessionList [data-sid="chat-fixture"]').click()
+        expect(normal.locator('#discussionSurface')).not_to_be_visible()
+        expect(normal.locator('#input')).to_have_value('保留普通聊天草稿')
+        # A running ordinary conversation can be left without stopping its
+        # backend, replacing the sidebar, or reloading the document.
+        normal.evaluate("""() => {
+          window.extraSessions = Array.from({length:24}, (_,i)=>({...fixtureChat,id:'extra-'+i,title:'History '+i,mtimeMs:Date.now()}));
+          fixtureActivity('running');
+        }""")
+        expect(normal.locator(':light(#engineSwitch)')).to_be_disabled()
+        normal.locator(':light(#sidebarResize)').press('End')
+        width = normal.locator(':light(#sidebar)').bounding_box()['width']
+        expect(normal.locator('#sessionList [data-sid="extra-23"]')).to_have_count(1)
+        target = normal.locator('#discussionSessions [data-group-id="group-fixture"]')
+        target.scroll_into_view_if_needed()
+        normal.evaluate("window.sidebarIdentity = document.getElementById('sidebar'); window.documentOrigin = performance.timeOrigin")
+        sidebar_scroll = normal.locator(':light(#sessionList)').evaluate('(node)=>node.scrollTop')
+        target.click()
+        expect(normal.locator('#discussionSurface')).to_be_visible()
+        assert normal.locator(':light(#sidebar)').bounding_box()['width'] == width
+        assert normal.locator(':light(#sessionList)').evaluate('(node)=>node.scrollTop') == sidebar_scroll
+        assert normal.evaluate('sidebarIdentity === document.getElementById("sidebar") && documentOrigin === performance.timeOrigin')
+        normal.locator(':light(#sidebarResize)').press('Shift+ArrowLeft')
+        width -= 50
+        assert normal.locator(':light(#sidebar)').bounding_box()['width'] == width
+        expect(normal.locator('#sessionList [data-sid="chat-fixture"]')).to_have_attribute('data-activity', 'running')
+        normal.locator('#message').fill('讨论中未发送的草稿')
+        normal.evaluate("fixtureChat.messages.push({role:'assistant',engine:'codex',text:'Completed while reading the discussion'}); fixtureActivity(null)")
+        normal.locator('#sessionList [data-sid="chat-fixture"]').click()
+        expect(normal.locator('#chat')).to_contain_text('Completed while reading the discussion')
+        expect(normal.locator('#input')).to_have_value('保留普通聊天草稿')
+        assert normal.locator(':light(#sidebar)').bounding_box()['width'] == width
+        assert normal.evaluate('documentOrigin === performance.timeOrigin && !fixtureCommands.includes("cancel")')
+        # A slow discussion load cannot take focus back after a newer session click.
+        normal.evaluate('delayDiscussionLoad = true')
+        target.click()
+        normal.wait_for_function('typeof releaseDiscussionLoad === "function"')
+        normal.locator('#sessionList [data-sid="chat-fixture"]').click()
+        normal.evaluate('releaseDiscussionLoad(); delayDiscussionLoad = false')
+        normal.wait_for_function('!discussionOpening && !loadingSession')
+        expect(normal.locator('#discussionSurface')).not_to_be_visible()
+        target.click()
+        expect(normal.locator('#message')).to_have_value('讨论中未发送的草稿')
+        assert normal.evaluate('documentOrigin === performance.timeOrigin')
+        normal.screenshot(path=str(preview / f'discussion-integrated-{theme}.png'), animations='disabled')
+        normal.set_viewport_size({'width': 390, 'height': 844})
+        expect(normal.locator(':light(#sidebar)')).not_to_be_visible()
+        assert normal.locator('#discussionSurface').bounding_box()['width'] == 390
+        normal.locator('#discussionSurface #sidebarToggle').click()
+        expect(normal.locator(':light(#sidebar)')).to_be_visible()
+        normal.locator('#sessionList [data-sid="chat-fixture"]').click()
+        expect(normal.locator(':light(#sidebar)')).not_to_be_visible()
+        expect(normal.locator('#input')).to_be_visible()
+        normal.locator('#workbenchSidebarToggle').click()
+        expect(normal.locator(':light(#sidebar)')).to_be_visible()
+        target.click()
+        expect(normal.locator(':light(#sidebar)')).not_to_be_visible()
+        normal.screenshot(path=str(preview / f'discussion-integrated-narrow-{theme}.png'), animations='disabled')
+        normal.set_viewport_size({'width': 1440, 'height': 960})
+        assert normal.locator(':light(#sidebar)').bounding_box()['width'] == width
+        normal.locator('#sessionList [data-sid="chat-fixture"]').click()
         normal.locator('#input').fill('')
         discussion.locator('#message').fill('保留讨论草稿')
         discussion.evaluate('failNavigation = true')
-        discussion.select_option('#engineSwitch', 'pi')
+        discussion.locator('#conversationNavigation [data-conversation-id="chat-fixture"]').click()
         expect(discussion.locator('#notice')).to_have_text('Mode navigation failed.')
-        expect(discussion.locator('#engineSwitch')).to_have_value('discussions')
-        expect(discussion.locator('#engineSwitch')).to_be_enabled()
+        expect(discussion.locator('#engineSwitch')).to_have_count(0)
         expect(discussion.locator('#message')).to_have_value('保留讨论草稿')
-        assert discussion.evaluate('handoffs.length') == 0
-        assert discussion.evaluate('modeNavigations') == ['pi']
+        assert discussion.evaluate('handoffs') == [{'engine': 'codex', 'navigate': True, 'sessionId': 'chat-fixture'}]
+        assert discussion.evaluate('modeNavigations') == ['discussions']
         discussion.evaluate('failNavigation = false')
         discussion.locator('#message').fill('')
-        discussion.evaluate('clearNotice()')
+        discussion.locator('#dismissNotice').click()
 
         # Normal chat uses Enter to send, Shift+Enter for a newline, and a
         # bounded growing input. Verify discussion uses the same interaction.
@@ -223,4 +299,4 @@ with sync_playwright() as p:
         discussion.close()
     browser.close()
     assert not errors, errors
-    print('PASS: shared seven-mode menu in light/dark and Chinese/English; failed navigation preserves selection/drafts; normal-chat element metrics; standard/wide/full preferences; 4-member dialog; avatars; Enter/Shift+Enter; bounded input; code wrap; keyboard sidebar resize; narrow drawer; text-only image rendering.')
+    print('PASS: running chat to discussion without document reload; background completion; shared sidebar width/scroll/drawer; latest navigation wins; drafts and failed navigation; six-harness menu; light/dark and Chinese/English; normal-chat metrics; content widths; members; composer; code wrap; text-only image rendering.')

@@ -142,6 +142,10 @@ public class RemoteApi {
         eventsAt("/v1/conversations/events", token, listener);
     }
 
+    public void discussionEvents(String id, String token, SnapshotListener listener) throws IOException {
+        eventsAt("/v1/discussions" + (id == null ? "" : "/" + id) + "/events", token, listener);
+    }
+
     private void eventsAt(String path, String token, SnapshotListener listener) throws IOException {
         if (EmbeddedNetwork.enabled()) { embeddedEvents(path, token, listener); return; }
         HttpURLConnection connection = open(path, token);

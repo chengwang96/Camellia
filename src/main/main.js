@@ -35,6 +35,7 @@ const runtimePaths = require('./runtime-paths.js');
 const { BenchmarkRunner } = require('../benchmark/runner');
 const { createLibraryManager } = require('../benchmark/libraries');
 const { SharedConversations, preferences: conversationPreferences, shortTitle } = require('../engines/shared-conversations');
+const { validateMemoryDirectory } = require('../engines/global-memory');
 const { createDshChat } = require('../engines/dsh-session');
 const { createPiChat } = require('../engines/pi-session');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
@@ -71,7 +72,10 @@ function discussions() {
     const production = productionDiscussions();
     discussionService = new DiscussionService({ dataDir: app.getPath('userData'), registry: discussionBoundary.registry, production: discussionProduction,
       getCatalog: production.getCatalog,
-      onEvent: event => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:discussion-event', event); },
+      onEvent: event => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:discussion-event', event);
+        remoteDesktop?.publish();
+      },
       onError: error => log('Discussion: ' + error.message) });
   }
   return discussionService;
@@ -316,7 +320,7 @@ function runtimes() {
       runtimeMode: engine => engine === 'antigravity' ? antigravity.settings().connection : 'api',
       onChange: state => {
         for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) {
-          window.webContents.send('dsh:runtime-state', state);
+          window.webContents.send('dsh:runtime-state', runtimeUpdatesService?.state(state) || state);
           window.webContents.send('dsh:runtime-python-state', runtimeManager.pythonState());
         }
       } });
@@ -352,14 +356,22 @@ function runtimeUpdates() {
     runtimeUpdatesService = createRuntimeUpdates({ manager: runtimes(), engines: ENGINES, node, npm, run: runtimeRun,
       downloadSettings: () => loadConfig().downloadProxy,
       promptRestart: promptRuntimeRestart,
+      onChange: state => {
+        for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) {
+          window.webContents.send('dsh:runtime-state', state);
+        }
+      },
       log });
   }
   return runtimeUpdatesService;
 }
-async function promptRuntimeRestart(name, from, to) {
+async function promptRuntimeRestart(name, from, to, updates = []) {
   const { response } = await dialog.showMessageBox(BrowserWindow.getFocusedWindow() || mainWindow, {
     type: 'info', title: uiText('Restart required'),
-    message: uiText(`${name} was updated to v${to}. Restart Camellia to use the new version.`),
+    message: updates.length > 1
+      ? uiText('Engine updates are complete. Restart Camellia to use the new versions.')
+      : uiText(`${name} was updated to v${to}. Restart Camellia to use the new version.`),
+    detail: updates.length > 1 ? updates.map(update => `${update.name}: v${update.from} → v${update.to}`).join('\n') : '',
     buttons: [uiText('Later'), uiText('Restart now')], defaultId: 1, cancelId: 0, noLink: true,
   });
   if (response !== 1) return false;
@@ -1117,13 +1129,17 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
     // A network change retires busy engines as soon as their turn ends.
     if (event.type === 'conversation:turn-end') retirePendingEngines();
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-event', event);
-    remoteDesktop?.publish();
+    remoteDesktop?.publish(event);
   },
   onGoal: goal => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-goal', goal); },
-  onStatus: status => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-status', status); },
+  onStatus: status => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:conversation-status', status);
+    remoteDesktop?.publish(status);
+  },
 });
 
 remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme,
+  getDiscussions: process.platform === 'win32' ? discussions : null,
   manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow, apiRoutes: apiRoutesBundle,
   networkFactory: sharedDesktopNetwork.factory, computerName, saveComputerName: name => normalizeComputerName(saveConfig({ computerName: normalizeComputerName(name) }).computerName) });
 const cliDevices = require('./remote/devices-desktop').createDevicesDesktop({ app, ipcMain, BrowserWindow,
@@ -1583,7 +1599,7 @@ if (!gotSingleInstanceLock) {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:engine-settings-changed', { engine });
       return { ok: true, ...result };
     },
-    'runtime-state': () => ({ ok: true, engines: runtimes().state() }),
+    'runtime-state': () => ({ ok: true, engines: runtimeUpdates().state() }),
     'runtime-set-path': async ({ engine, file, mode }) => {
       if (engineBusy(engine)) throw new Error('Stop conversations using this engine before changing its path');
       const engines = await runtimes().setPath(engine, file, mode);
@@ -1593,7 +1609,7 @@ if (!gotSingleInstanceLock) {
       if (engine === 'codex') await codex.shutdown();
       if (engine === 'dsh') await dshChat.shutdown();
       if (engine === 'pi') await piChat.shutdown();
-      return { ok: true, engines };
+      return { ok: true, engines: runtimeUpdates().state(engines) };
     },
     'runtime-python-state': () => ({ ok: true, python: runtimes().pythonState() }),
     'runtime-set-python': async ({ file }) => {
@@ -1707,6 +1723,7 @@ if (!gotSingleInstanceLock) {
   ipcMain.handle('dsh:workbench-settings', () => ({ ok: true, language: normalizeLanguage(loadConfig().language), theme: loadConfig().theme || 'system',
     conversations: conversationPreferences(loadConfig()), autoRefreshBalances: accountRefreshEnabled(), accountRefreshMinutes: accountRefreshMinutes(),
     closeToTray: loadConfig().closeToTray === true,
+    memoryDirectory: loadConfig().memoryDirectory || '',
     quickSwitchModels: loadConfig().quickSwitchModels || {},
     quickSwitchLevels: loadConfig().quickSwitchLevels || {},
     chatContentWidth: normalizeChatContentWidth(loadConfig().chatContentWidth),
@@ -1728,6 +1745,7 @@ if (!gotSingleInstanceLock) {
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'closeToTray')) patch.closeToTray = payload.closeToTray === true;
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'computerName')) patch.computerName = normalizeComputerName(payload.computerName);
       if (payload && Object.prototype.hasOwnProperty.call(payload, 'chatContentWidth')) patch.chatContentWidth = normalizeChatContentWidth(payload.chatContentWidth);
+      if (payload && Object.prototype.hasOwnProperty.call(payload, 'memoryDirectory')) patch.memoryDirectory = validateMemoryDirectory(payload.memoryDirectory);
       if (payload?.quickSwitchModels !== undefined) {
         const models = payload.quickSwitchModels;
         if (!models || typeof models !== 'object' || Array.isArray(models)) throw new Error('Invalid quick-switch models');
@@ -1935,7 +1953,8 @@ if (!gotSingleInstanceLock) {
   });
 
   require('./discussion-ipc').registerDiscussionIpc({ ipcMain, service: { call: (...args) => discussions().call(...args) },
-    page: path.join(RENDERER_ROOT, 'discussions/discussions.html'), getWindow: () => mainWindow });
+    page: path.join(RENDERER_ROOT, 'discussions/discussions.html'), chatPage: path.join(RENDERER_ROOT, 'chat/claude.html'),
+    navigate: query => switchMode('discussions', null, query), getWindow: () => mainWindow });
   ipcMain.handle('dsh:switch-mode', (_event, mode) => navigateMode(mode));
   ipcMain.handle('dsh:conversation-command', async (_event, { engine, action, payload }) => {
     try { return await sharedConversations.command(engine, action, payload); }
@@ -1949,7 +1968,9 @@ if (!gotSingleInstanceLock) {
           if (sharedConversations.get(payload.sessionId).currentEngine !== payload.engine) throw new Error('The conversation engine changed. Open the conversation again.');
         } else await sharedConversations.switchEngine(payload.sessionId, payload.engine, payload.mode);
       }
-      const result = await switchMode(payload.engine, payload.sessionId);
+      const navigation = !payload.sessionId && payload.newSession === true ? { new: '1',
+        ...(typeof payload.workspaceId === 'string' ? { workspace: payload.workspaceId } : {}), ...(payload.addWorkspace === true ? { addWorkspace: '1' } : {}) } : undefined;
+      const result = await switchMode(payload.engine, payload.sessionId, navigation);
       return result;
     } catch (error) { return { ok: false, error: error.message }; }
   });
@@ -2361,12 +2382,17 @@ if (!gotSingleInstanceLock) {
     }
     return switchMode(mode);
   }
-  async function switchMode(mode, conversationId) {
+  async function switchMode(mode, conversationId, navigation) {
     if (!['home', 'benchmark', 'discussions', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(mode)) {
       return { ok: false, error: 'Unknown engine or page' };
     }
     const request = ++modeRequest;
     const next = mode;
+    if (next === 'discussions' && mainWindow && !mainWindow.isDestroyed()
+      && mainWindow.webContents.getURL().split(/[?#]/)[0] === require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href) {
+      mainWindow.webContents.send('dsh:discussion-navigate', navigation || {});
+      return { ok: true };
+    }
     try {
       if (!['home', 'benchmark', 'discussions'].includes(next) && !(next === 'dsh' && loadConfig().dshBin)) await runtimes().ensure(next, conversationId ? sharedConversations.settings(next, conversationId).connection : undefined);
     } catch (error) {
@@ -2385,16 +2411,18 @@ if (!gotSingleInstanceLock) {
       mainWindow.setTitle(engineName ? `${engineName} — ${APP_NAME}` : APP_NAME);
     }
     setMenu();
-    void loadMode(next, conversationId);
+    void loadMode(next, conversationId, navigation);
     return { ok: true };
   }
 
-  async function loadMode(next, conversationId) {
+  async function loadMode(next, conversationId, navigation) {
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
         if (currentMode !== next) return;
-        await mainWindow.loadFile(path.join(RENDERER_ROOT, next === 'discussions' ? 'discussions/discussions.html' : next === 'benchmark' ? 'benchmark/benchmark.html' : next === 'home' ? 'home/home.html' : 'chat/claude.html'),
-          ['home', 'benchmark', 'discussions'].includes(next) ? undefined : { query: { harness: next, ...(conversationId ? { conversation: conversationId } : {}) } });
+        const discussionEngine = Object.hasOwn(ENGINES, loadConfig().mode) ? loadConfig().mode : 'claude';
+        await mainWindow.loadFile(path.join(RENDERER_ROOT, next === 'benchmark' ? 'benchmark/benchmark.html' : next === 'home' ? 'home/home.html' : 'chat/claude.html'),
+          ['home', 'benchmark'].includes(next) ? undefined : { query: next === 'discussions' ? { harness: discussionEngine, discussion: '1', ...navigation }
+            : { harness: next, ...(conversationId ? { conversation: conversationId } : {}), ...navigation } });
       }
     } catch (err) {
       log(`switch mode failed: ${err && err.stack || err}`);

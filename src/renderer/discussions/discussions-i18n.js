@@ -1,5 +1,6 @@
 'use strict';
 Object.assign(window.CamelliaMessages, {
+  'Show sidebar': '显示侧栏', 'Close sidebar': '关闭侧栏',
   'Working folder': '工作目录', 'Attach files': '添加附件', 'Permissions': '权限', 'Review permission': '查看权限请求',
   'Waiting for your input': '等待你的输入',
   'This connection is not verified for discussions yet.': '此连接尚未通过讨论验证。', 'Ready for discussions.': '可用于讨论。',

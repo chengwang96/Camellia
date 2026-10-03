@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="../shared/network-notice.css">
 <link rel="stylesheet" href="../shared/engine-brand.css">
 <link rel="stylesheet" href="./claude.css">
+<link rel="stylesheet" href="../shared/workbench-navigation.css">
 <link rel="stylesheet" href="../../../node_modules/katex/dist/katex.min.css">
 <link rel="stylesheet" href="./data-preview.css">
 </head>
@@ -46,9 +47,12 @@
     </div>
   </aside>
 
+  <button id="workbenchSidebarBackdrop" class="workbench-sidebar-backdrop" type="button" aria-label="Close sidebar" data-i18n-attrs="aria-label" hidden></button>
+
   <!-- Main -->
   <main class="main">
     <div class="main-header">
+      <button id="workbenchSidebarToggle" class="header-pill workbench-sidebar-toggle" type="button" aria-label="Show sidebar" aria-controls="sidebar" aria-expanded="false" data-i18n-attrs="aria-label"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button>
       <span class="header-title" id="headerTitle">New session</span>
       <select class="header-pill" id="engineSwitch" aria-label="Chat mode" title="Switch chat mode" data-i18n-attrs="aria-label title"></select>
       <button class="header-pill" id="handoffBtn" title="Choose how to continue in another engine" data-i18n data-i18n-attrs="title">Switch options</button>
@@ -253,6 +257,7 @@
   </form>
 </dialog>
 <script src="../../shared/i18n-messages.js"></script>
+<script src="../discussions/discussions-i18n.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../../shared/model-levels.js"></script>
 <script src="../../shared/codex-speed.js"></script>
@@ -261,6 +266,7 @@
 <script src="../shared/network-notice.js"></script>
 <script src="./chat-runtime.js"></script>
 <script src="../../shared/turn-artifacts.js"></script>
+<script src="../shared/workbench-navigation.js"></script>
 <script src="./claude-sidebar.js"></script>
 <script src="./claude-goal-ui.js"></script>
 <script src="./scheduled-tasks-ui.js"></script>
@@ -278,6 +284,10 @@
 <script src="../shared/chat-mode-select.js"></script>
 <script src="../shared/chat-controls.js"></script>
 <script src="../shared/file-preview-panel.js"></script>
+<script src="../shared/message-markdown.js"></script>
+<script src="../discussions/discussions-rich.js"></script>
+<script src="../discussions/discussions.js"></script>
+<script src="../shared/discussion-surface.js"></script>
 <script src="./claude.js"></script>
 </body>
 </html>

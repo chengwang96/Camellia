@@ -54,6 +54,10 @@ final class RemoteSettingsPopup {
     }
     private void models() {
         body.removeAllViews();
+        if (settings.optBoolean("appliesNextTurn")) heading(tr("模型与思考等级更改从下一轮生效", "Changes apply to the next message"));
+        JSONObject quick = settings.optJSONObject("quickSwitch");
+        if (quick != null && quick.optBoolean("available")) row(tr("切换默认模型", "Quick-switch default"), quick.optString("model"), false,
+            "remoteQuickSwitch", () -> choose("quickSwitch", "true"));
         JSONArray models = settings.optJSONArray("models");
         if (models == null || models.length() == 0) row(tr("暂无可用模型", "No models available"), tr("请在电脑端配置模型或登录账号", "Configure models or sign in on your computer"), false, "remoteModelsEmpty", () -> {});
         else {
@@ -67,10 +71,21 @@ final class RemoteSettingsPopup {
                     if (!account && !apiHeading) { heading(tr("共享 API 路由", "Shared API routes")); apiHeading = true; }
                 }
                 String id = model.optString("id"), name = model.optString("name", id);
-                row(name, name.equals(id) ? "" : id, id.equals(settings.optString("model")), "remoteModelOption:" + id, () -> choose("model", id));
+                String connection = model.optString("connection", settings.optString("connection"));
+                boolean sameConnection = connection.equals(settings.optString("connection"));
+                String description = name.equals(id) ? "" : id;
+                if (settings.optBoolean("appliesNextTurn") && !sameConnection) description += tr(" · 停止回复后可切换连接", " · Stop the reply to change connection");
+                row(name, description, id.equals(settings.optString("model")) && sameConnection, "remoteModelOption:" + id, () -> {
+                    if (settings.optBoolean("appliesNextTurn") && !sameConnection) return;
+                    if (!settings.has("modelEditable")) { choose("model", id); return; }
+                    try { choose("modelChoice", new JSONObject().put("model", id).put("connection", connection).toString()); }
+                    catch (org.json.JSONException error) { throw new IllegalArgumentException(error); }
+                });
             }
         }
         divider();
+        if (settings.optBoolean("supportsFast")) row("Fast", tr("消耗更多订阅用量；从下一轮生效", "Uses more subscription allowance; applies next turn"),
+            settings.optBoolean("fastMode"), "remoteFastMode", () -> choose("fastMode", String.valueOf(!settings.optBoolean("fastMode"))));
         row(tr("思考等级", "Thinking level"), LocalChatThinking.display(settings.optString("thinking"), chinese), false, "remoteThinkingSettings", this::thinking);
         position();
     }
@@ -93,7 +108,8 @@ final class RemoteSettingsPopup {
         row(tr("默认", "Default"), tr("遵循引擎默认设置", "Use engine defaults"), settings.optString("thinking").isEmpty(), "remoteThinkingOption:", () -> choose("thinking", ""));
         JSONArray models = settings.optJSONArray("models");
         if (models != null) for (int index = 0; index < models.length(); index++) {
-            JSONObject model = models.optJSONObject(index); if (model == null || !model.optString("id").equals(settings.optString("model"))) continue;
+            JSONObject model = models.optJSONObject(index); if (model == null || !model.optString("id").equals(settings.optString("model"))
+                || !model.optString("connection", settings.optString("connection")).equals(settings.optString("connection"))) continue;
             JSONArray levels = model.optJSONArray("thinking"); if (levels == null) continue;
             for (int levelIndex = 0; levelIndex < levels.length(); levelIndex++) {
                 String level = levels.optString(levelIndex);

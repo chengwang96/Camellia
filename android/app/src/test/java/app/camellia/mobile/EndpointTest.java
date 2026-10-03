@@ -4,6 +4,19 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class EndpointTest {
+    @Test public void discussionRoutesKeepOpaqueIdsAndBoundedQueries() {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        String id = "12345678-1234-1234-1234-123456789abc";
+        for (String suffix : new String[] { "", "?offset=100", "/catalog", "/events", "/commands", "/commands/" + id, "/" + id, "/" + id + "?before=20", "/" + id + "/events" })
+            assertEquals("http://100.64.0.1:43127/v1/discussions" + suffix, endpoint.uri("/v1/discussions" + suffix).toString());
+        String artifacts = "/v1/discussions/" + id + "/artifacts";
+        for (String suffix : new String[]{"", "?offset=100", "/" + "a".repeat(64)})
+            assertEquals("http://100.64.0.1:43127" + artifacts + suffix, endpoint.uri(artifacts + suffix).toString());
+        for (String suffix : new String[]{"/../private", "/result.txt", "?path=C:/private", "?offset=-1", "/" + "a".repeat(63), "/" + "a".repeat(64) + "?path=file"})
+            assertThrows(IllegalArgumentException.class, () -> endpoint.uri(artifacts + suffix));
+        for (String suffix : new String[] { "/../api-keys", "?path=C:/private", "/catalog?offset=1", "/commands/" + id + "/events", "/" + id + "?before=-1", "/" + id + "/events?before=1" })
+            assertThrows(IllegalArgumentException.class, () -> endpoint.uri("/v1/discussions" + suffix));
+    }
     @Test public void combinesSeparateIpAndPort() {
         Endpoint endpoint = new Endpoint(" 100.80.1.2 ", " 43128 ");
         assertEquals("http://100.80.1.2:43128", endpoint.origin());

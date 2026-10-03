@@ -27,14 +27,6 @@
 .discussion-workbench .header-title { min-width: 0; }
 .discussion-header-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .discussion-workbench #stopAll:not(:disabled) { color: var(--dsw-alias-state-error-primary); }
-.group-item { width: 100%; border: 0; color: inherit; background: transparent; text-align: left; }
-.group-item-pin { display: flex; color: var(--dsw-alias-label-caption); }
-.group-item-pin svg { width: 13px; height: 13px; }
-.group-item .session-rename-input { width: 100%; }
-@media (hover: none) { .group-item .session-more { opacity: 1; } }
-.group-item .session-item-icon { display: inline-flex; }
-.group-item .session-item-icon svg { width: 15px; height: 15px; }
-.group-item-count { color: var(--dsw-alias-label-caption); font: var(--f-xxxs-11); }
 .discussion-recipients { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
 .recipient-label { padding-top: 5px; color: var(--dsw-alias-label-caption); font: var(--f-xxs-12); flex-shrink: 0; }
 #mentions { min-width: 0; margin-bottom: 0; }

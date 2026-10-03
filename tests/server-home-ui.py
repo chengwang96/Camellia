@@ -14,6 +14,7 @@ with sync_playwright() as playwright:
         {id:'build',name:'Build server',address:'http://100.80.1.3:43127',defaultHarness:'kimi'}
       ];
       window.dshDesktop = {
+        onNetworkHealth: () => () => {},
         onRuntimeState() {}, onConfig() {}, onLanguageChanged() {},
         async workbenchSettings() { return {ok:true,language:'zh-CN'}; },
         async getConfig() { return {language:'zh-CN',theme:'light'}; },

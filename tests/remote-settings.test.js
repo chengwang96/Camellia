@@ -33,17 +33,16 @@ const choose = (target, changes, engine = 'codex') => configure(target, { id: 'c
 test('a subscription conversation also offers the shared API routes', () => {
   const models = view(manager()).models;
   assert.equal(view(manager()).connection, 'subscription');
-  // The active connection's list comes first and owns any duplicated id, so a
-  // model can never be reported twice with conflicting labels or levels.
+  // The same model can be selected independently through either connection.
   assert.deepEqual(models.map(model => [model.id, model.connection]),
-    [['account-a', 'subscription'], ['shared-id', 'subscription'], ['route-a', 'api']]);
+    [['account-a', 'subscription'], ['shared-id', 'subscription'], ['route-a', 'api'], ['shared-id', 'api']]);
   assert.deepEqual(models.find(model => model.id === 'route-a').thinking, ['low']);
 });
 
 test('an API conversation also offers the signed-in account models', () => {
   const models = view(manager({ connection: 'api', model: 'route-a' })).models;
   assert.deepEqual(models.map(model => [model.id, model.connection]),
-    [['route-a', 'api'], ['shared-id', 'api'], ['account-a', 'subscription']]);
+    [['route-a', 'api'], ['shared-id', 'api'], ['account-a', 'subscription'], ['shared-id', 'subscription']]);
   assert.deepEqual(models.find(model => model.id === 'account-a').thinking, ['high']);
 });
 
@@ -69,7 +68,7 @@ test('picking a route model switches the conversation connection and clears stal
   assert.equal(target.state.thinkingBudget, '');
   assert.equal(target.state.contextWindow, 64000);
   assert.equal(result.settings.connection, 'api');
-  assert.deepEqual(result.settings.models.map(model => model.connection), ['api', 'api', 'subscription']);
+  assert.deepEqual(result.settings.models.map(model => model.connection), ['api', 'api', 'subscription', 'subscription']);
 });
 
 test('picking an account model from an API conversation switches back to the subscription', () => {
@@ -79,7 +78,7 @@ test('picking an account model from an API conversation switches back to the sub
   assert.equal(target.state.model, 'account-a');
   assert.equal(target.state.contextWindow, 0);
   assert.equal(result.settings.connection, 'subscription');
-  assert.deepEqual(result.settings.models.map(model => model.id), ['account-a', 'shared-id', 'route-a']);
+  assert.deepEqual(result.settings.models.map(model => model.id), ['account-a', 'shared-id', 'route-a', 'shared-id']);
 });
 
 test('a duplicated id keeps the current connection instead of flapping', () => {
@@ -95,4 +94,29 @@ test('an unknown model or unsupported connection still fails', async () => {
   assert.throws(() => choose(target, { model: 'missing' }), /unavailable/);
   assert.throws(() => choose(target, { thinking: 'low' }), /Unsupported thinking level/);
   assert.throws(() => choose(target, { connection: 'api' }), /Invalid settings/);
+});
+
+test('explicit connection disambiguates the same model and busy model changes remain deferred', () => {
+  const target = manager();
+  choose(target, { model: 'shared-id', connection: 'api' });
+  assert.equal(target.state.connection, 'api');
+  target.busy = () => true;
+  const selected = choose(target, { model: 'route-a', thinking: 'low' });
+  assert.equal(selected.appliesNextTurn, true);
+  assert.equal(selected.settings.editable, false); assert.equal(selected.settings.modelEditable, true);
+  assert.equal(target.state.thinkingBudget, 'low');
+  assert.throws(() => choose(target, { model: 'shared-id', connection: 'subscription' }), /Stop/);
+  assert.throws(() => choose(target, { permissionMode: 'full' }), /Stop/);
+});
+
+test('fast uses catalog support and quick switch uses the host preference', () => {
+  const target = manager(), original = target.conversationModels;
+  target.conversationModels = (...args) => original(...args).map(m => ({ ...m, supportsFast: m.id === 'account-a' }));
+  const save = target.saveSettings; target.saveSettings = (engine, patch) => { save(engine, patch); if (patch.fastMode !== undefined) target.state.fastMode = patch.fastMode; };
+  assert.equal(view(target).supportsFast, true);
+  choose(target, { fastMode: true }); assert.equal(target.state.fastMode, true);
+  assert.throws(() => choose(target, { model: 'shared-id', fastMode: true }), /Fast/);
+  target.loadConfig = () => ({ quickSwitchModels: { codex: 'route-a' }, quickSwitchLevels: { codex: 'low' } });
+  choose(target, { quickSwitch: true }); assert.equal(target.state.model, 'route-a'); assert.equal(target.state.thinkingBudget, 'low');
+  assert.equal(view(target).supportsFast, false);
 });

@@ -207,6 +207,15 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     const result = await api.codexAccountState(); if (!result.ok) throw new Error(result.error);
     codexAccount = result; renderCodexAccount();
   }
+  function googleQuotaMessage(error) {
+    // CLI diagnostics can contain URLs, JSON and terminal output. Keep them in
+    // the disclosure and use stable, translatable messages for the main notice.
+    const raw = String(error || '');
+    if (/failed to get profile picture/i.test(raw)) return t('Could not load the Google account picture. Check your network or proxy settings and retry.');
+    if (/\b(invalid_grant|unauthenticated|unauthorized)\b|(?:token|credentials?|session).*(?:expired|invalid)/i.test(raw)) return t('Google sign-in has expired or is invalid. Sign in again and retry.');
+    if (/\b(EOF|ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT)\b|timed?\s*out|network|connection|fetch failed/i.test(raw)) return t('Could not connect to Google. Check your network or proxy settings and retry.');
+    return t('Could not refresh Google quota. Try again later or expand the error details.');
+  }
   function renderConnection() {
     renderCodexAccount();
     renderKimiAccount();
@@ -218,9 +227,13 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       : googleAccount?.verification === 'unverified' || googleAccount?.verification === 'error' || !googleAccount?.installed
         ? t('Sign in or refresh an existing CLI sign-in. The required runtime is downloaded on demand.') : '';
     const quotaError = googleAccount?.usage?.error || '';
-    $('googleQuotaStatus').textContent = quotaError ? t(quotaError)
+    $('googleQuotaStatus').textContent = quotaError ? googleQuotaMessage(quotaError)
       + (googleAccount.usage.latest ? ' ' + t('Quota refresh failed. Showing the last successful reading.') : '') : '';
     $('googleQuotaStatus').hidden = !quotaError;
+    const details = $('googleQuotaErrorDetails');
+    if ($('googleQuotaErrorRaw').textContent !== quotaError || !quotaError) details.open = false;
+    details.hidden = !quotaError;
+    $('googleQuotaErrorRaw').textContent = quotaError;
     // The official CLI owns one global Google credential, so the list shows the
     // single account and its two limit groups without account-selection actions.
     renderGoogleAccountList();
@@ -325,6 +338,8 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     navigate({ page: 'subscriptions', focus: next });
   }
   let runtimeRows = [], runtimeUpdateInfo = {}, runtimeUpdatesBusy = false;
+  const runtimeUpdating = new Set();
+  const isRuntimeUpdating = id => runtimeUpdating.has(id) || runtimeRows.some(row => row.id === id && row.updating);
   const runtimePathDrafts = new Map();
   let pythonState = {};
   let runtimePathBusy = false;
@@ -357,12 +372,13 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       : t('Choose any Python 3 installation; Camellia never edits it or installs packages.');
   }
   function updateInfoLine(id) {
+    if (isRuntimeUpdating(id)) return `<p class="hint"><button data-update="${id}" data-i18n disabled>Updating…</button></p>`;
     const info = runtimeUpdateInfo[id];
     if (!info) return '';
     if (!info.checkable) return `<p class="hint" data-i18n>${info.external ? 'Update this CLI using its original installer' : 'Updates ship with the app'}</p>`;
     if (info.error) return `<p class="hint"><span data-i18n>Update check failed</span> · ${esc(info.error)}</p>`;
     if (!info.installed) return '';
-    if (info.updateAvailable) return `<p class="hint"><span data-i18n>v${esc(info.latest)} is available</span> <button data-update="${id}" data-i18n ${runtimeUpdatesBusy ? 'disabled' : ''}>Update</button></p>`;
+    if (info.updateAvailable && info.latest !== runtimeRows.find(row => row.id === id)?.version) return `<p class="hint"><span data-i18n>v${esc(info.latest)} is available</span> <button data-update="${id}" data-i18n ${runtimeUpdatesBusy ? 'disabled' : ''}>Update</button></p>`;
     return `<p class="hint" data-i18n>Up to date</p>`;
   }
   function renderRuntimes(rows) {
@@ -457,7 +473,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       if (!result.ok) throw new Error(result.error);
       if (!result.canceled) {
         await loadAccount();
-        if (googleAccount.usage?.error) status(t(googleAccount.usage.error), true);
+        if (googleAccount.usage?.error) status(googleQuotaMessage(googleAccount.usage.error), true);
         else status(action === 'signIn' ? 'Complete Google sign-in in the terminal, then refresh the account here.'
           : action === 'refreshUsage' ? 'Account status updated.' : 'Google account models refreshed');
       }
@@ -521,10 +537,13 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     }
     const updateButton = e.target.closest('[data-update]');
     if (updateButton) {
-      updateButton.disabled = true;
+      const updatingEngine = updateButton.dataset.update;
+      if (updateButton.disabled || isRuntimeUpdating(updatingEngine)) return;
+      runtimeUpdating.add(updatingEngine);
+      renderRuntimes(runtimeRows);
       status('Updating…');
       try {
-        const result = await api.runtimeUpdate({ engine: updateButton.dataset.update });
+        const result = await api.runtimeUpdate({ engine: updatingEngine });
         if (!result.ok) throw new Error(result.error);
         if (result.restarting) return;
         await checkRuntimeUpdates();
@@ -533,7 +552,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
           status(`Updated ${name} to v${result.to}`);
         } else status('Up to date');
       } catch (error) { status(error.message, true); }
-      finally { void runtimePage(); }
+      finally { runtimeUpdating.delete(updatingEngine); await runtimePage(); }
       return;
     }
     const button = e.target.closest('[data-install]'); if (!button) return;

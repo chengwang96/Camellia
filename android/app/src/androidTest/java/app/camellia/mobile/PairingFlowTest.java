@@ -197,6 +197,13 @@ public class PairingFlowTest extends InstrumentationTestCase {
 
     public void testPairingPageUsesSettingsSurfaceAndVisibleAction() throws Exception {
         getInstrumentation().waitForIdleSync();
+        // Main-thread idleness does not mean the page transition and layout
+        // have completed. Check visibility after the real button is laid out.
+        await(() -> {
+            android.graphics.Rect visible = new android.graphics.Rect();
+            return action().isLaidOut() && action().getHeight() > 0
+                && action().getGlobalVisibleRect(visible) && action().getHeight() == visible.height();
+        });
         ui(() -> {
             View root = activity.getWindow().getDecorView();
             assertNotNull(root.findViewWithTag("settingsBack"));

@@ -2,7 +2,34 @@
 
 当前版本提供桌面网关、本地授权面板和[原生 Android 客户端](../android/README.md)。设备授权后即可查看和操作会话，无需区分只读或控制，支持已有会话中的文本发送、停止当前运行、单次允许/拒绝工具审批。不开放任意文件读取、终端或全局设置修改；手机只能在「设置 → 供应商与 Key → 配置迁移」中**读取**一次电脑端的 API Key 配置，导入后仅写入手机本地加密存储，不回写电脑端，也不开放其他全局设置。
 
-Android 会话标题统一使用正文颜色，不再用标题颜色表示运行状态。远程输入框下方提供安全级别和模型选择浮层：左侧盾牌可选择手动批准、默认（常规自动、风险询问）或全自动；右侧可选择电脑端当前连接提供的模型及其思考等级。Codex、Kimi、Antigravity 会话会同时列出账号模型与共享 API 路由，并按「账号模型」「共享 API 路由」分组，与电脑端模型菜单的两个分组一致；当前连接的一组排在前面。选择另一组的模型会为该会话切换连接，两个方向都可切换，等同于在电脑端跨组选择。编辑框内部元素与本地会话保持一致：工具图标固定 48 dp、空闲时同为墨色，模型按钮显示模型缩写与本地化思考等级；电脑端上报的 `low`／`medium`／`high`／`xhigh` 等协议值在按钮和菜单中显示为「快速／标准／进阶／极限」，未知值按原样显示，`GET /v1/status` 返回的 `settings.thinking` 字段本身不变。设置沿用主机端的会话设置保存逻辑，从下一条消息生效，不切换引擎；连接只在跨组选择模型时改变。未登录账号时该组为空，列表只显示另一组。运行中、离线或有未确认操作时不可修改；主机端设置发生变化后需重新选择，避免覆盖较新的设置。旧版电脑未提供设置能力时，入口保持禁用。全自动会取消工具操作确认，仅在信任当前任务时选择。
+Android 会话标题统一使用正文颜色，不再用标题颜色表示运行状态。远程输入框下方提供安全级别和模型选择浮层：左侧盾牌可选择手动批准、默认（常规自动、风险询问）或全自动；右侧可选择电脑端当前连接提供的模型及其思考等级。Codex、Kimi、Antigravity 会话会同时列出账号模型与共享 API 路由，并按「账号模型」「共享 API 路由」分组，与电脑端模型菜单的两个分组一致；当前连接的一组排在前面。选择另一组的模型会为该会话切换连接，两个方向都可切换，等同于在电脑端跨组选择。编辑框内部元素与本地会话保持一致：工具图标固定 48 dp、空闲时同为墨色，模型按钮显示模型缩写与本地化思考等级；电脑端上报的 `low`／`medium`／`high`／`xhigh` 等协议值在按钮和菜单中显示为「快速／标准／进阶／极限」，未知值按原样显示，`GET /v1/status` 返回的 `settings.thinking` 字段本身不变。设置沿用主机端的会话设置保存逻辑，从下一条消息生效，不切换引擎；连接只在跨组选择模型时改变。未登录账号时该组为空，列表只显示另一组。离线或有未确认操作时不可修改；运行中是否允许改下一轮的模型，按下述 next-turn-settings 能力判断；主机端设置发生变化后需重新选择，避免覆盖较新的设置。旧版电脑未提供设置能力时，入口保持禁用。全自动会取消工具操作确认，仅在信任当前任务时选择。
+
+## Agent 讨论远程接口（beta）
+
+Windows 主机提供讨论服务且设备具有全部工作区控制权限时，`GET /v1/status` 增加 `discussions` 和 `discussion-rich` capability。受限工作区设备不因此获得讨论访问权；Linux 和旧主机不宣告该能力。手机使用主机现有 `DiscussionService`、模型目录、自动验证和群存储。
+
+统一导航：`GET /v1/conversations` 对上述设备附加 `discussionGroups`（前 100 个群）、`discussionsNextOffset` 和 `discussionVersion`；普通会话数组保持独立。列表 SSE 的 `listVersion` 同时覆盖讨论变化，电脑新建、重命名、置顶、删除群后，手机刷新该板块。受限或只读设备不返回讨论元数据。旧版讨论主机缺少这些附加字段时，APK 使用 `/v1/discussions` 读取群列表；回到列表或下拉刷新同步。
+
+- `GET /v1/discussions?offset=N`：每页最多 100 群；`GET /v1/discussions/events`：首屏列表快照 SSE。
+- `GET /v1/discussions/catalog`：六个 harness 的现有模型绑定；不含 accountRef、Key、原生目录，手机按返回的不透明 binding ID 添加成员。
+- `GET /v1/discussions/:id?before=SEQ`：每页最多 80 条消息及约 512 KiB 消息内容；`GET /v1/discussions/:id/events`：当前群快照 SSE。返回 `instanceId/cursor`，群删除返回 `deleted: true`。
+- `POST /v1/discussions/commands`：`{requestId, instanceId, action, id?, parameters}`。动作白名单为 create、rename、pin、delete、add-member、remove-member、set-identity、verify-member、cancel-member-verification、send、stop、retry、resolve-serial、set-permission、permission-response。create 无 id，其余使用群 id。身份 prompt 可选，最多 4096 字符；每群最多四位成员。发送参数为 text、participantIds、mode（parallel/serial）及可选 attachments。
+- `GET /v1/discussions/commands/:requestId`：查询同一设备的持久化回执。状态为 pending、completed、failed 或 interrupted；completed 可包含 groupId。慢速连接验证不阻塞 HTTP 请求。网络故障先查回执；明确重试须沿用原 requestId 和原参数。重启中断的操作不自动重放。
+- `GET /v1/discussions/:id/artifacts?offset=N` 和 `GET /v1/discussions/:id/artifacts/:artifactId`：使用普通会话相同的产物列表、64 位十六进制不透明 ID、流式下载及撤销检查；包含上传的附件、完成的工具生成文件和回复中引用的文件。用户正文中的路径不作为产物授权。
+
+`attachments` 使用 `{name, isImage, data}`，data 为原始文件字节的 Base64，不接受远程提供的本地路径。讨论最多 16 个附件；JPEG 每张最多 4 MiB、文档每个 10 MiB，解码合计 32 MiB；复用普通会话的扩展名和内容检查，HTTP JSON 限制 48 MiB。主机将附件导入所属群，再交给原有调度器。手机仅保留加密的本地草稿引用，上传请求在发送时读取本机文件。
+
+`group.pendingApprovals` 包含 requestId、fingerprint、participantId、deliveryId、runId、toolName、details、reason、questions、options、responseSupported。questions 每项为 id/header/question/multiSelect/isSecret/options（label/description）；只允许一次批准或拒绝，原生永久授权选项不会投影。详情过长或无法表示的请求 responseSupported=false。回应 action=permission-response，parameters 为 `{deliveryId, runId, approvalId, fingerprint, allow, input?, optionId?}`，approvalId 指原生 requestId，与外层命令 requestId 分开。input 的键为问题 ID，单选/自由输入为字符串，多选为字符串数组；批准时每题必答，拒绝时不带 input。主机在原运行中再次核对指纹并调用原有权限响应，不创建新运行。回执日志只保存请求摘要，不落盘秘密回答。
+
+每个回复的工具快照保留最近 24 项的名称、状态、最多 8,000 字符的输入和末尾 8,000 字符输出。整页执行详情共享 512 KiB 预算，优先保留最新回复，并通过 detailsTruncated/toolsTruncated 标明省略；已完成的回复不重复附带 partialText，避免长工具历史超过手机响应限制。手机工具详情和产物菜单沿用普通聊天组件。消息附件仍只投影公开元数据；主机原生存储路径和账号凭据不出现在配置目录中。
+
+## 普通会话的新增远程字段
+
+主机宣告 `interactive-approvals` 时，普通会话的 `live.approvals` 使用上述 question/responseSupported 格式。旧字段 actionable 在问答请求中仍为 false，避免旧客户端把回答问题误作直接授权。原有 approve 命令增加 input、optionId，其 instanceId/runId/approvalId/fingerprint 校验及幂等规则不变。
+
+`next-turn-settings` 能力下，settings 增加 modelEditable、appliesNextTurn、fastMode、supportsFast 和 quickSwitch；models 按 `(id, connection)` 区分，不能按 id 去重。configure 的 settings 可发送 `{model, connection}` 明确选择，或 thinking、fastMode，或单独 `{quickSwitch:true}` 使用主机已配置的快捷默认。Fast 仅在 Codex 订阅目录声明对应模型支持时接受。运行中 editable=false 保持旧客户端行为，新客户端可根据 modelEditable 改模型/思考等级/Fast，响应 appliesNextTurn=true；连接和权限仍须空闲，所有操作继续校验 expectedSettings。
+
+会话快照可包含 `context:{used,cap,source,compacting,compactionState}`，保留协议兼容；Android v0.4.4 不在会话区常驻显示 tokens 用量和容量。主机新增独立的 `compaction`（无状态时为 null），包括 state（running/completed/failed/cancelled）、native、engine、afterSeq，以及可选 stage、chunk、finalChunk、durationMs、seq；不依赖用量是否上报。afterSeq 定位当前状态行，seq 对应已保存的完成通知，客户端据此去重。历史 notice 的 compaction 只含展示字段，不附带摘要内容或 tokens 诊断。压缩状态事件触发 SSE 更新；终态保留到下一条用户消息，以免事件合并漏掉结束状态。旧主机可回退到 context.compacting/compactionState 和文本完成通知，状态缺失不能推断为压缩成功。已有 compact 操作继续复用。iOS 可按同一 capability 探测、审批字段、上传和回执协议实现；本轮未在 Windows 构建 iOS，也未给 Linux 主机开启讨论。
 
 ## 桌面使用
 
@@ -66,7 +93,7 @@ Android 会话标题统一使用正文颜色，不再用标题颜色表示运行
 
 `GET /v1/api-keys` 不接受查询参数，授权范围不足时返回 403。响应顶层是导出 bundle，另附 `instanceId` 和 `cursor`；列表页、详情页仍不返回任何密钥。Android 在「设置 → 供应商与 Key → 配置迁移」中提供「从电脑导入」，未配对时提示先在主界面连接电脑，配对后显示电脑名称；配对多台电脑时先在列表中选择要读取的一台，再于应用统一风格的确认弹层中核对来源电脑、将被替换的本机供应商数量与「聊天记录保留」，确认后才发起读取，取消不改动本机配置。读取失败沿用统一的本地化错误提示（例如旧版电脑返回 404 时提示更新电脑端）并保留原配置，导入成功后替换手机上已有的供应商与密钥配置，聊天记录不受影响。
 
-会话快照包括 `conversation`、`messages`、`live`、`permission`、`nextBefore`、`instanceId`、`cursor`。`conversation.seq` 用于发送前校验。`live` 包含当前 `runId`、`eventSeq`、`userSeq`、正文和待审批数量；控制设备额外获得审批详情、内容指纹、单次审批选项。问答型请求或超过 32,000 字符的详情不允许手机审批。正文按纯文本显示，不提供图片、富文本块或文件预览。消息数量最多 200，页面正文与执行过程预算约 1 Mi 字符，单条正文最多保留末尾 256 Ki 字符并标记 `textTruncated`。
+会话快照包括 `conversation`、`messages`、`live`、`permission`、`nextBefore`、`instanceId`、`cursor`。`conversation.seq` 用于发送前校验。`live` 包含当前 `runId`、`eventSeq`、`userSeq`、正文和待审批数量；控制设备额外获得审批详情、内容指纹、单次审批选项。超过 32,000 字符的详情不允许手机审批；问答是否可回传以 responseSupported 为准。消息附件返回名称和类型，图片预览与文件下载通过产物接口读取，不在快照中嵌入原始字节。消息数量最多 200，页面正文与执行过程预算约 1 Mi 字符，单条正文最多保留末尾 256 Ki 字符并标记 `textTruncated`。
 
 ### 控制接口
 
@@ -106,6 +133,14 @@ Android 在后台立即断开页面请求及 SSE，未切网时保留内置网�
 node --test tests/remote-access.test.js tests/remote-desktop.test.js
 python tests/remote-ui.py
 node tests/electron-smoke.cjs
+# 以下三项要求已构建 APK/测试 APK，并显式选择可丢弃的 root 模拟器：
+# $env:ADB = '<Android SDK>/platform-tools/adb.exe'
+# $env:ANDROID_SERIAL = 'emulator-5586'
+node tests/android-pairing-smoke.cjs
+node tests/android-gateway-smoke.cjs
+node tests/android-discussions-smoke.cjs
 ```
 
-测试使用临时数据目录、假引擎和回环地址，不读取真实会话、不执行模型请求，也不会打开本机 Tailscale 监听。Android Keystore 和原生界面已通过 Android 15 模拟器测试；`tests/android-gateway-smoke.cjs` 通过模拟器专用网络转发验证客户端与真实网关的配对、历史、SSE 更新和撤销。真实手机的 Tailscale 互通仍需单独验收。
+测试使用临时数据目录、假引擎和回环地址，不读取真实会话、不执行模型请求，也不会打开本机 Tailscale 监听。Android Keystore 和原生界面已通过 Android 15 模拟器测试；`tests/android-gateway-smoke.cjs` 通过模拟器专用网络转发验证客户端与真实网关的配对、历史、SSE 更新、撤销，以及目标/定时任务控制、内容搜索、下载和重复请求去重。目标计时器由夹具控制，不启动模型；定时任务只检查控制状态，不等待真实周期。`android-pairing-smoke.cjs` 覆盖二维码扫描、失败重试和授权，`android-discussions-smoke.cjs` 覆盖讨论群、附件、问答和丢失回执恢复。真实手机的 Tailnet 互通仍需单独验收。
+
+macOS 主机和 iOS 客户端应另行验证实际 Tailnet 配对、Wi-Fi/蜂窝切换、休眠/后台恢复，以及旧主机的能力协商。iOS 沿用 `protocol: 1` 和 `capabilities`，保持 `requestId` 重试语义、`instanceId`/`runId`/审批指纹校验，并用快照替换更新状态；不能用请求超时推断操作未执行，也不能因显示缓存而授予控制权限。

@@ -39,6 +39,8 @@ public class PendingCommandTest extends InstrumentationTestCase {
                     assertEquals("", ((EditText) field(activity, "composer")).getText().toString());
                     assertEquals("Keep this message", ((JSONObject) field(activity, "outgoingMessage"))
                         .getJSONObject("payload").getString("prompt"));
+                    var deadline = MainActivity.class.getDeclaredField("commandCheckDeadline"); deadline.setAccessible(true);
+                    deadline.setLong(activity, android.os.SystemClock.elapsedRealtime() + 60000);
                     var finish = MainActivity.class.getDeclaredMethod("finishCommand", JSONObject.class, JSONObject.class); finish.setAccessible(true);
                     finish.invoke(activity, payload, new JSONObject().put("ok", false).put("state", "pending"));
                     assertEquals(payload.toString(), encrypted.load().getJSONObject("pendingCommand").getJSONObject("payload").toString());
@@ -47,7 +49,14 @@ public class PendingCommandTest extends InstrumentationTestCase {
                         .put("conversation", new JSONObject().put("id", id).put("seq", 3)).put("messages", new JSONArray()).put("nextBefore", JSONObject.NULL));
                     assertFalse(((EditText) field(activity, "composer")).isEnabled());
                     String status = ((TextView) field(activity, "status")).getText().toString();
-                    assertTrue(status, status.contains("待确认") || status.contains("awaiting confirmation"));
+                    assertTrue(status, status.contains("待确认") || status.contains("Awaiting action confirmation"));
+                    assertEquals("preparing", ((JSONObject) field(activity, "outgoingMessage")).getString("delivery"));
+                    deadline.setLong(activity, 0);
+                    finish.invoke(activity, payload, new JSONObject().put("ok", false).put("state", "pending"));
+                    assertEquals("unconfirmed", ((JSONObject) field(activity, "outgoingMessage")).getString("delivery"));
+                    assertEquals(payload.toString(), encrypted.load().getJSONObject("pendingCommand").getJSONObject("payload").toString());
+                    status = ((TextView) field(activity, "status")).getText().toString();
+                    assertTrue(status, status.contains("确认超时") || status.contains("Timed out waiting for confirmation"));
                     finish.invoke(activity, payload, new JSONObject().put("ok", true).put("state", "accepted"));
                     assertFalse(encrypted.load().has("pendingCommand"));
                     assertEquals("", ((EditText) field(activity, "composer")).getText().toString());

@@ -45,7 +45,9 @@ test('conversation API catalog follows enabled routes and UI efforts without dis
 test('subscription catalog uses account metadata, never API guesses or account secrets', () => {
   const sources = { codex: () => ({ account: { token: 'secret' }, models: [{ id: 'account-model', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }] }),
     kimi: () => ({ account: {}, models: [{ id: 'kimi-model', contextWindow: 100000 }] }) };
-  assert.deepEqual(conversationModels('codex', { connection: 'subscription' }, sources), [{ id: 'account-model', name: 'account-model', thinking: ['high'] }]);
+  assert.deepEqual(conversationModels('codex', { connection: 'subscription' }, sources), [{ id: 'account-model', name: 'account-model', thinking: ['high'], supportsFast: false }]);
+  sources.codex = () => ({ account: {}, models: [{ id: 'fast-model', serviceTiers: [{ id: 'fast' }] }] });
+  assert.equal(conversationModels('codex', { connection: 'subscription' }, sources)[0].supportsFast, true);
   assert.deepEqual(conversationModels('kimi', { connection: 'subscription' }, sources), [{ id: 'kimi-model', name: 'kimi-model', thinking: [], contextWindow: 100000 }]);
   sources.codex = () => ({ account: null, models: [{ id: 'stale' }] });
   assert.deepEqual(conversationModels('codex', { connection: 'subscription' }, sources), []);

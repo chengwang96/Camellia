@@ -29,7 +29,8 @@ function fixture() {
       : list.children.flatMap(group => group.children).find(child => child.id === id),
     context: { sessionId: null, workspaceId: 'selected-workspace' },
     contextBusy: () => false,
-    sessionHistory: [], workspaces: [], pagination: {}, importableCount: 0, drag: null,
+    renamingDiscussionId: null, discussionVisible: () => false,
+    sessionHistory: [], workspaces: [], pagination: {}, importableCount: 0, drag: null, navigation: null,
     sidebarIcon: name => name,
     newSession: workspaceId => created.push(workspaceId),
   };

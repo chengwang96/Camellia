@@ -31,6 +31,11 @@ public class RemoteAutomationTest extends InstrumentationTestCase {
     @Override protected void tearDown() throws Exception {
         ui(() -> activity.finish());
         getInstrumentation().waitForIdleSync();
+        // onStop persists drafts. Finish the old fixture's lifecycle before
+        // another test writes its own credentials and pending command.
+        long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+        while (!activity.isDestroyed() && android.os.SystemClock.uptimeMillis() < deadline) android.os.SystemClock.sleep(20);
+        assertTrue("Automation fixture activity did not finish", activity.isDestroyed());
         super.tearDown();
     }
 

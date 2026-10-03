@@ -46,7 +46,7 @@ try:
         print('after :', after)
         print('select shows:', shown)
         print('placeholder:', page.locator('#input').get_attribute('placeholder'))
-        assert after == ['每步操作先问我', '常规自动，风险再问', '不再询问'], after
+        assert after == ['每步操作先问我', '常规自动，风险再问', '工具全部放行'], after
         assert not errors, errors
         print('PASS')
         browser.close()

@@ -86,6 +86,55 @@ function subscriptionFixture(t, engine = 'codex') {
   return { ...h, state };
 }
 
+for (const engine of ENGINES) test(engine + ' receives global memory independently of model, MCP and connection', async t => {
+  const h = fixture(t);
+  const directory = path.join(h.root, 'shared memory');
+  h.setConfig({ memoryDirectory: directory });
+  if (['codex', 'kimi', 'antigravity'].includes(engine))
+    h.drivers[engine].settings = () => ({ model: 'fixture', connection: 'subscription' });
+  const first = await h.manager.send(engine, { prompt: 'Use my preferences' }, { goalToolsDisabled: true });
+  assert.ok(h.sent.at(-1).prompt.includes(JSON.stringify(directory)));
+  assert.match(h.sent.at(-1).prompt, /file tools to read its index/);
+  assert.ok(h.sent.at(-1).prompt.endsWith('Use my preferences'));
+  assert.equal(h.manager.rows(h.manager.get(first.sessionId)).find(row => row.role === 'user').text, 'Use my preferences');
+  h.finish(engine); await first.done;
+
+  const replacement = path.join(h.root, 'another folder');
+  h.setConfig({ memoryDirectory: replacement });
+  const second = await h.manager.send(engine, { sessionId: first.sessionId, prompt: 'Continue' });
+  assert.ok(h.sent.at(-1).prompt.includes(JSON.stringify(replacement)));
+  assert.ok(!h.sent.at(-1).prompt.includes(JSON.stringify(directory)));
+  h.finish(engine); await second.done;
+
+  h.setConfig({ memoryDirectory: '' });
+  const manager = h.restart();
+  const fork = manager.fork(engine, { sessionId: first.sessionId });
+  for (const sessionId of [first.sessionId, fork.id]) {
+    const cleared = await manager.send(engine, { sessionId, prompt: 'Continue without memory' });
+    assert.match(h.sent.at(-1).prompt, /global memory is disabled/);
+    assert.ok(!h.sent.at(-1).prompt.includes(JSON.stringify(replacement)));
+    h.finish(engine); await cleared.done;
+  }
+});
+
+test('global memory is excluded from auxiliary summary turns and refreshed for steering', async t => {
+  const h = fixture(t);
+  h.setConfig({ memoryDirectory: path.join(h.root, 'memory') });
+  const run = await h.manager.send('codex', { prompt: 'Work' });
+  let steered;
+  h.sent.at(-1).session.steerUserMessage = async prompt => { steered = prompt; };
+  const replacement = path.join(h.root, 'replacement');
+  h.setConfig({ memoryDirectory: replacement });
+  await h.manager.steer('codex', { sessionId: run.sessionId, runId: run.runId, prompt: 'Change direction' });
+  assert.ok(steered.includes(JSON.stringify(replacement)));
+  assert.ok(steered.endsWith('Change direction'));
+  h.finish('codex'); await run.done;
+  const summary = await h.manager.send('codex', { sessionId: run.sessionId },
+    { internal: true, fresh: true, ephemeral: true, promptOverride: 'Summarize only' });
+  assert.equal(h.sent.at(-1).prompt, 'Summarize only');
+  h.finish('codex'); await summary.done;
+});
+
 for (const engine of ENGINES) test(engine + ' reuses a native context across turns and restart without replaying compacted history', async context => {
   const h = ['codex', 'kimi'].includes(engine) ? subscriptionFixture(context, engine) : fixture(context);
   h.drivers[engine].nativeAutoCompaction = engine !== 'pi';
@@ -1282,6 +1331,71 @@ test('child request limits, bounded reads and interrupted restart states are per
   assert.deepEqual(JSON.parse(fs.readFileSync(restarted.file(child.id))).controlSends.map(entry => entry.state), ['interrupted', 'interrupted', 'finished']);
 });
 
+test('real stdio MCP carries search, scheduled reports and verified goals through the conversation manager', { timeout: 15000 }, async t => {
+  const { createGoalToolBridge } = require('../src/engines/goal-tool-bridge');
+  const { spawn } = require('node:child_process');
+  const readline = require('node:readline');
+  const harness = fixture(t, { createGoalBridge: options => createGoalToolBridge({ ...options, node: process.execPath }) });
+  const manager = harness.manager;
+  t.after(() => manager.closeGoalTools());
+  const run = await manager.send('codex', { prompt: '检查现有实验，每分钟检查日志，不要自动修复。' });
+  const config = harness.sent.at(-1).opts.goalBridge.config;
+  const proc = spawn(config.command, config.args, { env: { ...process.env, ...config.env }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const lines = readline.createInterface({ input: proc.stdout });
+  const pending = new Map(); let sequence = 0;
+  lines.on('line', line => { const reply = JSON.parse(line); pending.get(reply.id)?.(reply); pending.delete(reply.id); });
+  t.after(() => { proc.kill(); lines.close(); });
+  const request = (method, params) => new Promise(resolve => {
+    const id = ++sequence; pending.set(id, resolve);
+    proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+  });
+  const call = async (name, args, token = manager.active.get(run.sessionId)?.goalRunToken) => {
+    const reply = await request('tools/call', { name, arguments: { run_token: token, ...args } });
+    assert.equal(reply.error, undefined);
+    return JSON.parse(reply.result.content[0].text);
+  };
+  await request('initialize', { protocolVersion: '2025-06-18' });
+  const file = path.join(manager.get(run.sessionId).cwd, 'experiment-log.txt');
+  fs.writeFileSync(file, 'Epoch 8 checkpoint verified');
+  const before = fs.statSync(file).mtimeMs;
+  const found = await call('camellia_find_files', { query: 'checkpoint', inside: true });
+  assert.equal(found.ok, true);
+  assert.deepEqual(found.files.map(item => item.path), [fs.realpathSync.native(file)]);
+  assert.equal(fs.statSync(file).mtimeMs, before);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'Epoch 8 checkpoint verified');
+  assert.equal((await call('camellia_find_files', { query: 'checkpoint' }, 'stale')).ok, false);
+  const options = { instruction: 'Inspect the existing log', user_request: '每分钟检查日志', intervalMinutes: 1 };
+  assert.equal((await call('camellia_task_create', { ...options, maxRepairs: 1 })).ok, false);
+  const created = await call('camellia_task_create', options);
+  assert.equal(created.ok, true);
+  assert.equal(created.task.maxRepairs, 0);
+  const oldToken = manager.active.get(run.sessionId).goalRunToken;
+  harness.finish('codex'); await run.done;
+  assert.equal((await call('camellia_task_list', {}, oldToken)).ok, false);
+  const task = manager.tasks.get(created.task.id, run.sessionId);
+  task.nextRunAt = Date.now() - 1;
+  await manager.tasks.tick(); await harness.flush();
+  assert.equal((await call('camellia_task_repair', { task_id: task.id })).ok, false);
+  assert.equal((await call('camellia_task_report', { task_id: task.id, status: 'complete', summary: 'Checkpoint verified' })).ok, true);
+  const check = manager.active.get(run.sessionId);
+  harness.finish('codex'); await check.done; await harness.flush();
+  assert.equal(task.status, 'complete');
+
+  const goalRun = await manager.send('codex', { sessionId: run.sessionId, prompt: '能设定一个目标，直到检查通过吗？' });
+  assert.equal((await call('camellia_create_goal', { objective: 'Verify checkpoint', user_request: '设定一个目标' })).ok, true);
+  assert.equal((await call('camellia_get_goal', {})).goal.objective, 'Verify checkpoint');
+  assert.equal((await call('camellia_update_goal', { status: 'complete', reason: 'Checkpoint checked' })).status, 'verification_pending');
+  const goal = manager.goalFor(run.sessionId);
+  assert.equal(goal.view().phase, 'active');
+  harness.finish('codex'); await goalRun.done; await harness.flush();
+  assert.equal(goal.view().verifying.report, 'Checkpoint checked');
+  assert.equal(harness.sent.at(-1).opts.goalBridge, undefined);
+  harness.finish('codex', 'success', '<verify:pass> Independently checked checkpoint');
+  await harness.flush();
+  assert.equal(goal.view().phase, 'complete');
+  assert.match(goal.view().verified.evidence, /Independently checked/);
+});
+
 test('scheduled checks use current-turn tools, report once and cannot create autonomous loops', async t => {
   const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
   t.after(() => harness.manager.closeGoalTools());
@@ -1309,6 +1423,25 @@ test('scheduled checks use current-turn tools, report once and cannot create aut
   assert.equal(task.status, 'running');
   harness.finish('codex'); await active.done; await harness.flush();
   assert.equal(task.status, 'complete');
+});
+
+test('negative recovery requests cannot grant a repair budget on creation or update', async t => {
+  for (const prohibition of ['不要自动修复', '请勿自动重启', '无需自动恢复', '无须自动恢复', '别尝试修复', '不需要自动修复', '不必自动恢复']) {
+    const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+    t.after(() => harness.manager.closeGoalTools());
+    const run = await harness.manager.send('codex', { prompt: '每分钟检查日志，' + prohibition });
+    const bridge = harness.sent.at(-1).opts.goalBridge;
+    const token = harness.manager.active.get(run.sessionId).goalRunToken;
+    const args = { run_token: token, user_request: '每分钟检查日志', instruction: 'Inspect logs', maxRepairs: 1 };
+    assert.equal(bridge.call('camellia_task_create', args).ok, false, prohibition);
+    assert.deepEqual(harness.manager.tasks.list(), []);
+    const created = bridge.call('camellia_task_create', { ...args, maxRepairs: 0 });
+    assert.equal(created.ok, true);
+    assert.equal(bridge.call('camellia_task_pause', { run_token: token, task_id: created.task.id }).ok, true);
+    assert.equal(bridge.call('camellia_task_update', { run_token: token, task_id: created.task.id, user_request: prohibition, maxRepairs: 1 }).ok, false);
+    assert.equal(harness.manager.tasks.get(created.task.id, run.sessionId).maxRepairs, 0);
+    harness.finish('codex'); await run.done;
+  }
 });
 
 test('scheduled task creation and updates accept conversational requests across engines', async t => {
@@ -2668,6 +2801,31 @@ test('the model can search for a file by content and the hits become turn artifa
   const reply = rows.filter(row => row.role === 'assistant').at(-1);
   assert.deepEqual(reply.artifacts.map(file => file.name), ['未命名草稿.md']);
   assert.deepEqual(byContent.searched, [fs.realpathSync.native(cwd)]);
+});
+
+test('a content search cannot restore a deleted conversation when its result arrives late', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const conversation = manager.create('codex', undefined, 'Search lifecycle');
+  fs.writeFileSync(path.join(conversation.cwd, 'search.txt'), 'lifecycle search fixture');
+  const pending = manager.find(conversation.id, 'inside: lifecycle', { userText: '/find inside: lifecycle' });
+  manager.purge(conversation.id);
+  await assert.rejects(pending, /Conversation not found|changed/);
+  assert.equal(manager.items.has(conversation.id), false);
+  assert.equal(fs.existsSync(manager.file(conversation.id)), false);
+  assert.equal(fs.existsSync(path.join(harness.root, conversation.id + '.jsonl')), false);
+  assert.equal(harness.events.some(event => event.type === 'conversation:transcript'), false);
+});
+
+test('a content search does not append results after another turn changes the transcript', async context => {
+  const harness = fixture(context), manager = harness.manager;
+  const conversation = manager.create('codex', undefined, 'Search lifecycle');
+  fs.writeFileSync(path.join(conversation.cwd, 'search.txt'), 'lifecycle search fixture');
+  const pending = manager.find(conversation.id, 'inside: lifecycle');
+  const rejected = assert.rejects(pending, /changed|finish/);
+  const run = await manager.send('codex', { sessionId: conversation.id, prompt: 'New request' });
+  harness.finish('codex'); await run.done;
+  await rejected;
+  assert.equal(manager.rows(conversation).some(row => row.find), false);
 });
 
 test('/find recalls a file an earlier conversation wrote, by name and by description, without reading it', async context => {

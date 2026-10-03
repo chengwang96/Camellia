@@ -8,15 +8,9 @@ const path = require('node:path');
 const { configure } = require('./settings');
 const { storeAttachments, MAX_COUNT, MAX_IMAGE, MAX_TOTAL } = require('./attachments');
 const { RemoteMessageQueue } = require('./message-queue');
+const { approval, answer } = require('./approvals');
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-function approval(event) {
-  const details = JSON.stringify(event.input || {}, null, 2);
-  const options = Array.isArray(event.options) ? event.options.filter(option => ['allow_once', 'reject_once'].includes(option.kind)) : [];
-  return { requestId: event.requestId, fingerprint: digest(event), toolName: String(event.toolName || 'Tool approval'),
-    details: details.slice(0, 32_000), actionable: !event.questions?.length && details.length <= 32_000 && (!event.options?.length || options.some(option => option.kind === 'allow_once')),
-    options: options.map(({ optionId, kind, name }) => ({ optionId, kind, name })) };
-}
 // A phone learns about the found files from the conversation's own artifact
 // list, so the command reply carries no server filesystem paths: only the
 // names, kinds and sizes the client can show or count.
@@ -86,6 +80,7 @@ class RemoteCommands {
     if (['fork', 'compact', 'switch-engine', 'find'].includes(action)) fields.splice(3, fields.length - 3, 'expectedSeq', ...(action === 'switch-engine' ? ['engine'] : []), ...(action === 'find' ? ['query'] : []));
     if (['goal-control', 'task-control'].includes(action)) fields.splice(3, fields.length - 3, 'operation', ...(action === 'task-control' ? ['taskId'] : []));
     if (['send', 'resend'].includes(action) && payload.attachments !== undefined) fields.push('attachments');
+    if (action === 'approve') fields.push('input', 'optionId');
     if (action === 'send' && payload.queue !== undefined) fields.push('queue');
     if (action === 'queue-remove' || action === 'queue-resume') fields.splice(3, fields.length - 3, ...(action === 'queue-remove' ? ['queueId'] : []));
     if (Object.keys(payload).some(key => !fields.includes(key))) fail(400, 'Unsupported command field');
@@ -299,11 +294,10 @@ class RemoteCommands {
     if (!Number.isSafeInteger(payload.runId) || !active || active.facade.gen !== payload.runId || active.cancelled) fail(409, 'This run is no longer active');
     if (payload.action === 'stop') return manager.cancel({ sessionId: id, runId: payload.runId });
     const event = active.permissions.get(payload.approvalId);
-    if (!event || typeof payload.allow !== 'boolean' || payload.fingerprint !== digest(event) || !approval(event).actionable) fail(409, 'Approval changed or needs desktop input');
-    const option = event.options?.find(option => option.kind === (payload.allow ? 'allow_once' : 'reject_once'));
-    if (event.options?.length && !option) fail(409, 'This approval option is unavailable');
+    if (!event) fail(409, 'This request is no longer active');
+    const response = answer(event, payload);
     const result = await manager.command(conversation.currentEngine, 'control-respond', { sessionId: id, runId: payload.runId, requestId: payload.approvalId,
-      allow: payload.allow, optionId: option?.optionId });
+      ...response });
     if (result.ok) manager.onEvent({ type: 'conversation:approval-resolved', session_id: id, runId: payload.runId, requestId: payload.approvalId, eventSeq: ++active.eventSeq });
     return result;
   }

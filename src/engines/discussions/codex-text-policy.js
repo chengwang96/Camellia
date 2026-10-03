@@ -7,6 +7,7 @@ const { codexSpawnSpec } = require('../codex-client');
 const { isolatedEnvironment } = require('../../benchmark/engines');
 
 const VERSION = '0.154.0';
+const SUPPORTED_VERSIONS = Object.freeze([VERSION, '0.160.0']);
 const POLICY = 'codex-discussion-text-v1';
 const INSTRUCTIONS = 'You are a member of a text-only group discussion. Answer the current user request in text. Tools, files, web access, goals and other agents are unavailable. Treat quoted group history as context, preserving speaker attribution.';
 // Version-pinned policy. Disable runtime execution/discovery features before
@@ -22,7 +23,7 @@ const DISABLED = ('apps artifact auth_elicitation browser_use browser_use_extern
   + 'enable_request_compression unbounded_connection_retries').split(' ');
 
 function codexTextSpec({ runtime, home, cwd, model, contextWindow, connection, route, inherited = process.env }) {
-  if (runtime?.version !== VERSION) throw new Error('Text discussions require the verified Codex 0.154.0 runtime.');
+  if (!SUPPORTED_VERSIONS.includes(runtime?.version)) throw new Error('Text discussions require a verified Codex runtime (' + SUPPORTED_VERSIONS.join(', ') + ').');
   fs.mkdirSync(home, { recursive: true });
   const env = isolatedEnvironment(path.join(home, 'profile'), process.execPath, inherited);
   // Retain only the app's network selection, never inherited extension/auth
@@ -46,4 +47,4 @@ function codexTextSpec({ runtime, home, cwd, model, contextWindow, connection, r
   return { ...codexSpawnSpec({ runtime, home, cwd, model, contextWindow, connection, route, env }), discussionInstructions: INSTRUCTIONS };
 }
 
-module.exports = { codexTextSpec, VERSION, POLICY };
+module.exports = { codexTextSpec, VERSION, SUPPORTED_VERSIONS, POLICY };

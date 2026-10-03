@@ -24,6 +24,7 @@ final class ArtifactDownloads {
     private final boolean chinese;
     private RemoteApi client;
     private ArtifactSheet dialog;
+    private android.app.AlertDialog imagePreview;
     private JSONObject pending;
     private int generation;
 
@@ -44,7 +45,13 @@ final class ArtifactDownloads {
     }
 
     void show(String address, String token, String conversation) {
+        show(address, token, conversation, false);
+    }
+    void showDiscussion(String address, String token, String conversation) { show(address, token, conversation, true); }
+    private boolean discussion;
+    private void show(String address, String token, String conversation, boolean discussion) {
         stop();
+        this.discussion = discussion;
         int ticket = generation;
         RemoteApi request = new RemoteApi(address); client = request;
         dialog = new ArtifactSheet(activity, tr("会话产物", "Conversation files"), tr("电脑上的成果，随身带走。", "Take your work with you."));
@@ -65,9 +72,10 @@ final class ArtifactDownloads {
     private void loadPage(RemoteApi request, String address, String token, String conversation, long offset, int ticket,
                           LinearLayout rows, TextView status, TextView more) {
         more.setEnabled(false);
+        String route = "/v1/" + (discussion ? "discussions/" : "conversations/") + conversation + "/artifacts?offset=" + offset;
         worker.submit(() -> {
             try {
-                JSONObject result = request.json("/v1/conversations/" + conversation + "/artifacts?offset=" + offset, token, null);
+                JSONObject result = request.json(route, token, null);
                 JSONArray files = result.getJSONArray("artifacts");
                 handler.post(() -> {
                     if (ticket != generation || activity.isDestroyed()) return;
@@ -83,6 +91,10 @@ final class ArtifactDownloads {
                         TextView download = sheet.action(tr("下载到手机", "Save to phone"), true, () -> choose(file, address, conversation));
                         download.setContentDescription(file.optString("name") + " · " + download.getText());
                         row.addView(download);
+                        if (java.util.Arrays.asList("png", "jpg", "jpeg", "webp", "gif", ".png", ".jpg", ".jpeg", ".webp", ".gif").contains(file.optString("extension").toLowerCase(java.util.Locale.ROOT)) && file.optLong("size") <= 32L * 1024 * 1024) {
+                            TextView preview = sheet.action(tr("查看图片", "View image"), false, () -> preview(request, token, conversation, file, ticket, status));
+                            preview.setTag("artifactPreview:" + file.optString("id")); row.addView(preview);
+                        }
                     }
                     status.setText(rows.getChildCount() == 0 ? tr("未找到可下载文件。只显示此会话引用且仍存在的产物（含在其他目录中生成的文件）；若刚生成，请关闭后重新打开，或更新并重启电脑端。", "No downloadable files found. Only files this conversation referenced and that still exist are shown, including ones produced in another directory. Reopen this panel after generation, or update and restart the desktop.")
                         : tr("选择保存位置后可切换应用或锁屏，下载会继续。", "Choose a save location, then switch apps or lock your phone. Downloads continue."));
@@ -113,7 +125,7 @@ final class ArtifactDownloads {
                 toast(tr("请设置通知权限后再次点击下载；拒绝通知也可下载。", "Set notification permission, then tap download again; downloads also work without notifications."));
                 return;
             }
-            pending = new JSONObject(file.toString()).put("address", address).put("conversation", conversation);
+            pending = new JSONObject(file.toString()).put("address", address).put("conversation", conversation).put("discussion", discussion);
             String name = file.getString("name").replaceAll("[\\\\/\\p{Cntrl}]", "_");
             Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
                 .setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE, name);
@@ -145,6 +157,35 @@ final class ArtifactDownloads {
     }
 
     private boolean notificationAsked;
+
+    private void preview(RemoteApi request, String token, String conversation, JSONObject file, int ticket, TextView status) {
+        status.setText(tr("正在读取图片…", "Loading image…"));
+        String route = "/v1/" + (discussion ? "discussions/" : "conversations/") + conversation + "/artifacts/" + file.optString("id");
+        worker.submit(() -> {
+            java.io.File temporary = null;
+            try {
+                temporary = java.io.File.createTempFile("artifact-preview-", ".image", activity.getCacheDir());
+                try (var output = new java.io.FileOutputStream(temporary)) { request.download(route, token, output, file.optLong("size"), (read, total) -> {}); }
+                android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options(); options.inJustDecodeBounds = true;
+                android.graphics.BitmapFactory.decodeFile(temporary.getPath(), options); options.inJustDecodeBounds = false; options.inSampleSize = 1;
+                while (Math.max(options.outWidth, options.outHeight) / options.inSampleSize > 2048) options.inSampleSize *= 2;
+                android.graphics.Bitmap bitmap = android.graphics.BitmapFactory.decodeFile(temporary.getPath(), options);
+                if (bitmap == null) throw new java.io.IOException(tr("无法读取图片。", "Cannot read this image."));
+                handler.post(() -> {
+                    if (ticket != generation || activity.isDestroyed()) { bitmap.recycle(); return; }
+                    if (imagePreview != null) imagePreview.dismiss();
+                    android.widget.ImageView image = new android.widget.ImageView(activity); image.setAdjustViewBounds(true); image.setImageBitmap(bitmap); image.setTag("artifactImage");
+                    image.setContentDescription(file.optString("name"));
+                    android.app.AlertDialog preview = new CamelliaDialog.Builder(activity).setTitle(file.optString("name")).setView(image)
+                        .setPositiveButton(tr("关闭", "Close"), null).show();
+                    imagePreview = preview;
+                    preview.setOnDismissListener(ignored -> { image.setImageDrawable(null); bitmap.recycle(); if (imagePreview == preview) imagePreview = null; });
+                    status.setText(tr("可下载后打开或分享。", "Download to open or share."));
+                });
+            } catch (Exception error) { handler.post(() -> { if (ticket == generation && !activity.isDestroyed()) status.setText(RemoteApi.failureMessage(error, chinese)); }); }
+            finally { if (temporary != null) temporary.delete(); }
+        });
+    }
 
     void showProgress() {
         stop();
@@ -190,6 +231,7 @@ final class ArtifactDownloads {
         generation++;
         handler.removeCallbacksAndMessages(null);
         if (client != null) { client.cancel(); client = null; }
+        if (imagePreview != null) { imagePreview.dismiss(); imagePreview = null; }
         if (dialog != null) { dialog.dismiss(); dialog = null; }
     }
 

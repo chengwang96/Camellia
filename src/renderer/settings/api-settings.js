@@ -745,6 +745,27 @@ async function renderQuickSwitchModels(preferences) {
 }
 
 // General and model-session preferences apply on change.
+let memorySaveQueue = Promise.resolve();
+function saveMemoryDirectory() {
+  const memoryDirectory = $('memoryDirectory').value;
+  memorySaveQueue = memorySaveQueue.then(async () => {
+    try {
+      const result = await api.workbenchSaveSettings({ memoryDirectory });
+      if (!result.ok) throw new Error(result.error);
+      status('Memory folder saved. Applies from the next message.');
+    } catch (error) { status(error.message, true); }
+  });
+  return memorySaveQueue;
+}
+$('memoryDirectory').addEventListener('change', saveMemoryDirectory);
+$('chooseMemoryDirectory').onclick = async () => {
+  try {
+    const result = await api.pickFile({ kind: 'directory', title: 'Choose a memory folder' });
+    if (result.canceled || !result.path) return;
+    $('memoryDirectory').value = result.path;
+    await saveMemoryDirectory();
+  } catch (error) { status(error.message, true); }
+};
 async function saveGeneral() {
   try {
     const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked, closeToTray: $('closeToTray').checked,
@@ -892,6 +913,7 @@ async function refresh(initial = false) {
       $('language').value = preferences.language || 'en';
       $('theme').value = preferences.theme; $('autoRefreshBalances').checked = preferences.autoRefreshBalances; $('closeToTray').checked = !!preferences.closeToTray;
       $('chatContentWidth').value = preferences.chatContentWidth || 'standard';
+      $('memoryDirectory').value = preferences.memoryDirectory || '';
       $('accountRefreshMinutes').value = String(preferences.accountRefreshMinutes || 15);
       $('conversationMode').value = preferences.conversations?.mode || 'direct'; $('conversationWarn').checked = !!preferences.conversations?.warnOnSwitch;
       $('conversationOriginSetting').checked = !!preferences.conversations?.showOrigin;

@@ -220,6 +220,60 @@ test('antigravity API runtime upgrades its SDK through the bundled installer', a
   assert.equal(manager.locate('antigravity').version, '0.2.0');
 });
 
+for (const failures of [[], ['kimi'], ['claude'], ['claude', 'kimi']]) {
+  test(`concurrent updates publish persistent state and prompt only after the last settles (failures: ${failures.join(', ') || 'none'})`, async t => {
+    const root = fixtureRoot(t);
+    const ids = ['claude', 'kimi'];
+    const directories = Object.fromEntries(ids.map(id => [id, npmRuntime(root, id, '1.0.0')]));
+    const registries = await registryFixture(t, Object.fromEntries(ids.map(id => [ENGINES[id].package, '2.0.0'])));
+    const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere'), discoverLocal: false });
+    const gates = Object.fromEntries(ids.map(id => [id, Promise.withResolvers()]));
+    const started = Object.fromEntries(ids.map(id => [id, Promise.withResolvers()]));
+    const snapshots = [], prompts = [], calls = [];
+    const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: '/node', npm: '/npm-cli.js',
+      downloadSettings: direct, registries, onChange: rows => snapshots.push(rows),
+      run: async (_exe, args) => {
+        const id = ids.find(id => args.includes(`${ENGINES[id].package}@2.0.0`));
+        calls.push(id);
+        started[id].resolve();
+        await gates[id].promise;
+        if (failures.includes(id)) throw new Error(`${id} installation failed`);
+        fs.writeFileSync(path.join(directories[id], 'node_modules', ENGINES[id].package, 'package.json'),
+          JSON.stringify({ name: ENGINES[id].package, version: '2.0.0' }));
+      },
+      promptRestart: async (_name, _from, _to, batch) => {
+        assert.equal(updates.state().some(row => row.updating), false);
+        prompts.push(batch);
+        return false;
+      } });
+    const first = updates.update('claude');
+    const second = updates.update('kimi');
+    const firstSettled = first.catch(error => error);
+    const secondSettled = second.catch(error => error);
+    assert.strictEqual(updates.update('claude'), first);
+    assert.deepEqual(updates.state().filter(row => row.updating).map(row => row.id).sort(), ids);
+    await Promise.all(ids.map(id => started[id].promise));
+    gates.claude.resolve();
+    const firstResult = await firstSettled;
+    assert.equal(firstResult instanceof Error, failures.includes('claude'));
+    assert.equal(prompts.length, 0, 'Never prompt while another installation is running');
+    assert.deepEqual(updates.state().filter(row => row.updating).map(row => row.id), ['kimi']);
+    gates.kimi.resolve();
+    const secondResult = await secondSettled;
+    assert.equal(secondResult instanceof Error, failures.includes('kimi'));
+    const successful = ids.filter(id => !failures.includes(id));
+    assert.equal(prompts.length, successful.length ? 1 : 0);
+    if (successful.length) assert.deepEqual(prompts[0].map(row => row.engine), successful);
+    assert.equal(updates.state().some(row => row.updating), false);
+    assert.equal(snapshots.at(-1).some(row => row.updating), false);
+    assert.deepEqual(calls.sort(), ids);
+    if (!failures.length) {
+      await updates.update('kimi');
+      assert.equal(prompts.length, 1, 'Already completed updates must not be prompted again');
+    }
+  });
+}
+
 test('update rejects engines that are not installed and surfaces registry failures', async t => {
   const root = fixtureRoot(t);
   const registries = await registryFixture(t, {});

@@ -7,7 +7,7 @@ const { RemoteReadModel } = require('./read-model');
 const { RemoteGateway } = require('./gateway');
 const { RemoteCommands } = require('./commands');
 
-function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null,
+function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, getDiscussions = null,
   preferences = () => ({}), setComputerName = () => '' }) {
   let gateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
   let startupChecked = false, monitor = null;
@@ -16,7 +16,9 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     if (gateway) return;
     access = new RemoteAccess({ file: path.join(dataDir, 'remote', 'devices.json'), onRevoke: id => gateway.revoke(id) });
     const commands = new RemoteCommands({ file: path.join(dataDir, 'remote', 'commands.json'), reader, access, publish: () => gateway.publish() });
-    gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management });
+    const discussions = getDiscussions ? new (require('./discussions').RemoteDiscussions)({
+      file: path.join(dataDir, 'remote', 'discussion-commands.json'), getService: getDiscussions, access, publish: () => gateway?.publish() }) : null;
+    gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, discussions });
     try { network = networkFactory({ onFailure: () => { enabled = false; void gateway.stop(); } }); }
     catch (error) { gateway = null; access = null; throw error; }
   }
@@ -125,7 +127,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
         await startAccess(false);
       } finally { busy = false; }
     },
-    publish() { gateway?.publish(); },
+    publish(update) { reader.observeCompaction(update); gateway?.publish(); },
     async close() {
       closed = true; enabled = false; clearTimeout(monitor);
       try { await network?.stop(); }

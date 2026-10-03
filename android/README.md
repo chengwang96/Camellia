@@ -4,9 +4,45 @@
 
 ## 当前范围
 
+### 与桌面端版本对齐（v1.0.0-beta / 78）
+
+Android 的 `versionName` 与桌面端统一为 `1.0.0-beta`，`versionCode` 从 77 升至 78。本次仅调整版本信息，沿用原 debug 签名，支持覆盖升级。当前交付包为 `dist/Camellia-Android-1.0.0-beta-debug.apk`，同时更新 `dist/Camellia-Android-debug.apk`；下方旧版记录保留其原始版本号。
+
+### 远程工作状态统一（v0.4.5 / 77）
+
+普通远程会话和 Agent 讨论共用固定一行的输入框下方状态栏，展示就绪、回复、执行工具、等待审批／回答、压缩上下文、成员验证和操作待确认。顶部电脑名称旁只展示连接中、已连接、重连或离线，不再把运行状态移到顶部，也不因空闲而隐藏底部状态栏。详细工具过程、压缩完成及回复结果继续留在消息流内，不常驻展示 tokens 数量。
+
+普通提示短暂展示后回到当前工作状态；错误保留到用户查看、重试或该操作确认成功，实时快照不会覆盖未读错误。网络恢复只清理连接错误，不清理未确认操作；仍按原请求 ID 查询／重试。
+
+验证更新（2026-10-03）：56 项 JVM 单元测试通过，`assembleDebug testDebugUnitTest lintDebug assembleDebugAndroidTest` 通过；Lint 为 0 错误、4 项既有告警。Windows 主机上的 Android 15 隔离模拟器已完成 37 个相关仪器测试类，报告 184 项通过，其中 1 项线上登录用例未开启；另外，配对/扫码 10 项、普通网关联调 1 项、讨论群联调 4 项通过（扫码测试与前述类别有重复）。普通网关联调包括目标及任务控制、内容搜索下载、请求去重、权限撤销和实时同步。交付包为 `dist/Camellia-Android-0.4.5-debug.apk`，沿用原 debug 签名，可覆盖升级。模拟器使用 `-feature -WiFiPacketStream` 绕过本机 Emulator 37.1.11 的启动离线问题；回环转发验证不替代实体手机的 Tailnet、切网及长期后台验收。
+
+### 上下文压缩状态（v0.4.4 / 76）
+
+远程会话以消息流内的状态行显示正在压缩、总结分块、保存、完成、失败及取消；完成记录重新进入会话后仍可查看。会话区不再常驻显示上下文 tokens 用量或容量。新主机将压缩进度单独同步，旧主机仍可使用已有压缩状态和文本完成记录。测试包为 `dist/Camellia-Android-0.4.4-debug.apk`，沿用同一 debug 签名，可覆盖安装。
+
+本次验证：APK 和仪器测试包编译通过，46 项 Android 单元测试、100 项相关主机测试通过；Lint 为 0 错误、11 项既有告警，安装包版本与签名验证通过。已补充压缩状态转换、去重、恢复和不显示 tokens 的仪器测试，但本机模拟器启动失败，本轮尚未执行手机界面测试。
+
+### 远程 Agent 讨论与聊天控制（v0.4.3 / 75）
+
+连接支持 `discussions` 的 Windows 主机后，会话列表按 **工作区 → 独立会话 → Agent 讨论 (beta)** 排列。讨论直接列出群名，沿用普通会话行、折叠箭头和新建图标；点击群名进入，点击右侧“＋”新建，长按打开群管理。返回回到统一会话列表。手机与电脑操作同一份群记录；普通会话、群历史及手机本机聊天仍独立保存。桌面普通聊天和讨论页面也提供这三个板块，并保留首页入口。
+
+支持群新建、重命名、置顶和删除，最多四位成员；模型来自主机的六个 harness 及已配置订阅/API，API 按 provider 展示。添加时可填写身份 prompt，留空使用默认身份；点击消息里的成员名字或成员面板可编辑。添加后沿用主机的自动连接验证，并显示进度、结果及重试/取消入口。支持选择回答者、并行/依次回复、流式输出、单条/全部停止、重试和串行失败跳过。
+
+讨论群可从相册、相机或文档选择器添加附件；支持附件单独发送，每次最多 16 个，图片转为 JPEG 后每张 4 MiB，文档每个 10 MiB，总计 32 MiB。查看工具输入、执行状态和结果；原生审批支持允许一次/拒绝，问题支持单选、多选和自由输入，直接回传原有请求。附件和生成产物可下载、查看图片及通过系统打开/分享。实际能力来自主机对应 harness，不以手机设置绕过模型或权限限制。
+
+普通远程会话同步接入上述问答界面；同名模型保留订阅/API 两种选择，思考等级跟随对应连接。Codex Fast 仅在主机目录声明支持时显示，快捷切换使用电脑既有默认模型和思考等级；运行中允许改下一轮的模型、思考等级和 Fast，连接及权限切换仍须等待空闲。
+
+草稿及附件引用按电脑和群保存到加密存储；断网后的未确认操作查询持久化回执，只有用户明确重试时才重发同一请求 ID。前后台切换自动重连并合并快照，主机重启不自动重放旧操作。审批绑定主机实例、群/会话、运行 ID 及内容指纹，过期操作不会送到另一轮。
+
+需要使用本次代码并重启的 Windows 桌面主机；原来的 v1.0.0-beta 安装包尚无此远程接口。旧主机不支持的能力保持禁用；Linux 主机未开放讨论。测试包为 `dist/Camellia-Android-0.4.5-debug.apk`；沿用本机 debug 签名，供测试使用。配套 Windows 测试包为 `dist/android-remote-host/Camellia-1.0.0-beta-remote-navigation-win-x64.zip`，退出旧客户端后解压运行，保留原用户数据位置；新增的压缩状态同步需使用重启后的最新开发版。iOS 本轮只复用[协议文档](../docs/remote-access.md)，不在本机编译。
+
+验证入口：`npm test`；Android 的 `assembleDebug testDebugUnitTest lintDebug assembleDebugAndroidTest`；在可丢弃的 root 模拟器设置 `ADB` 和 `ANDROID_SERIAL` 后执行 `node tests/android-discussions-smoke.cjs`，并运行 `RemoteRichControlsTest` 及普通聊天回归。联调使用真实网关与讨论服务、隔离模型夹具；真实账号可另行用 `tests/discussion-production-smoke.cjs --remote --online <userData> --engine antigravity --tools` 或 `--image <JPEG>` 验证，消耗实际模型用量。模拟器回环测试不代替实体手机 Tailnet 验收。
+
+`.github/workflows/android.yml` 在 Linux 构建 Go/JNI 库、APK、单元测试、Lint 以及模拟器界面联调；Linux 构建入口为 `bash android/build-tailnet.sh`，使用与 PowerShell 脚本相同的固定依赖版本。
+
 ### 移动端布局细化
 
-远程会话与会话列表右上角提供电脑切换入口，展示当前电脑、连接状态，以及添加和管理入口。切换前保存当前会话草稿、编辑目标和待确认请求；对话内的文件卡片仍可进入产物菜单。正常连接状态放在顶部电脑名称旁，重连、错误及待确认操作继续保留可展开的底部提示。
+远程会话与会话列表右上角提供电脑切换入口，展示当前电脑、连接状态，以及添加和管理入口。切换前保存当前会话草稿、编辑目标和待确认请求；对话内的文件卡片仍可进入产物菜单。顶部电脑名称旁固定展示连接状态；普通远程聊天和讨论的输入框下方固定展示当前工作状态，错误与未确认操作可点开查看详情。
 
 首次连接、空会话及搜索无结果提供说明与直接操作。会话列表的标题与运行、新消息等状态保持同一行，长标题以省略号收尾。本机与远程会话列表均不展示最近产物的文件预览或数量。
 
@@ -36,7 +72,7 @@ Windows 上的 Emulator 37.1.11 在本机会话菜单测试中曾发生宿主 `q
 
 真机验收使用同签名 APK 覆盖安装，不卸载、不清除数据。连接 USB 并授权调试后先用 `adb devices -l` 确认设备；如有多台设备，所有命令必须指定 `-s <serial>`。在手机中新建专用测试会话，再检查长按菜单、置顶顺序、重命名持久化、归档后从列表隐藏、多选取消以及只删除测试会话。远程控制需手机和电脑登录同一 Tailnet 并已有配对，使用专用测试工作区验证重命名、置顶、归档、批量删除与下载；最后手动切换 Wi-Fi／蜂窝、切后台和锁屏，核对恢复后无重复消息、历史未丢失、下载状态明确。不以模拟器回环网关联调代替真机网络验收。
 
-不关闭全局检查，也不使用 baseline 隐藏新问题。纯 Java 创建且需要业务参数的 `ArtifactMessageView`、`ChatChoiceRow`、`ConversationRow`、`ComputerRow`、`PageTransitions`、`PopupSurface` 仅豁免 `ViewConstructor`，不提供无法正确初始化的 XML 构造器。
+不关闭全局检查，也不使用 baseline 隐藏新问题。纯 Java 创建且需要业务参数的 `ArtifactMessageView`、`ChatChoiceRow`、`ConversationRow`、`ComputerRow`、`PageTransitions`、`PopupSurface`、`ContextCompactionView` 仅豁免 `ViewConstructor`，不提供无法正确初始化的 XML 构造器。
 
 会话菜单、本地模型选择和远程设置浮层以屏幕左上角计算绝对坐标，背景采样使用同一坐标；仅在定位方法／构造器豁免 `RtlHardcoded`，保留 `Gravity.LEFT`。`PopupCoordinatesTest` 检查 LTR／RTL 下的锚点对齐和可见边界。图片关闭按钮仍固定在物理右上角，其方向性告警暂保留，避免未经设计确认改变交互。
 
@@ -72,9 +108,9 @@ Windows 上的 Emulator 37.1.11 在本机会话菜单测试中曾发生宿主 `q
 
 远程新建会话支持 Pi：引擎列表跟随电脑端或 CLI 服务器公布的能力，只在服务端支持时显示 Pi。Pi 使用服务器上的共享 API 线路，不在手机本机安装运行时。旧服务器未公布引擎列表时保留原有五个入口。
 
-当前安装包版本：**v0.4.0**（versionCode 72）。
+当前安装包版本：**v1.0.0-beta**（versionCode 78）。
 
-交付包：`dist/Camellia-Android-0.4.0-debug.apk`，同时更新 `dist/Camellia-Android-debug.apk`。
+交付包：`dist/Camellia-Android-1.0.0-beta-debug.apk`，同时更新 `dist/Camellia-Android-debug.apk`。
 
 ### 版本对齐（v0.4.0）
 
@@ -415,6 +451,8 @@ adb shell am start -n app.camellia.mobile/.MainActivity
 
 ### 已执行的验证
 
+- v0.4.3：讨论群改为与工作区、独立会话并列的板块。新增手机折叠、搜索、直接进入群、新建与长按管理检查；Android 46 项 JVM、38 项界面/联调测试通过，另复跑中文深色 320 dp 窄屏。桌面真实 Electron 检查覆盖六个 harness 的讨论板块、直接打开、新建、重命名和草稿往返；首页入口保留。全量 Node 测试 1733 通过、5 跳过、0 失败；修正工作区 Codex 0.160.0 升级后的模型元数据及旧版本断言，真实 CLI 补丁、审批、续聊、取消等检查通过。Lint 为 0 错误、11 项既有告警。APK 为 75 / 0.4.3，签名保持一致。上述为本地验证，未推送远程 CI。
+- v0.4.2：本地主机全量测试 1732 通过、5 跳过、0 失败；Android 46 项 JVM 测试、37 项界面/联调测试通过。讨论联调还复跑中文深色 320 dp 窄屏，覆盖图片和文档实际字节上传、审批单选/多选/自由输入、原命令回执恢复、生成文件下载及图片预览；Lint 为 0 错误、11 项既有告警。Antigravity 订阅通过真实远程 HTTP 图片识别、原生工具写文件和人工审批回传检查；首次原生工具检查因存储清单变化被拒，独立重跑通过，未放宽原有检查。Windows 测试包内 269 个源码文件与工作区一致；APK 元数据为 74 / 0.4.2、ARM64/x86_64，签名与 v0.4.1 一致。新增 GitHub Android 工作流尚未推送执行；实体手机 Tailnet 网络切换仍需设备验收。
 - 远程文档兼容：`MobileAttachmentsTest` 与 `LocalImageComposerTest` 共 11 项 Android 仪器测试通过，覆盖旧电脑的文件入口、PDF/Word 多选与发送、14 种文档原始内容保留、容量边界和草稿恢复；电脑端附件及会话预览共 68 项测试通过。APK 构建、40 项 JVM 测试与 Lint 检查通过。调试包：`dist/Camellia-Android-remote-documents-debug.apk`（v0.3.63 / 68，签名与原安装包一致）。
 - v0.3.63：APK 构建与 Lint 检查通过（0 错误、13 项告警），Gradle 复用 40 项已通过的 JVM 单元测试结果。安装包内的 versionCode／versionName 已核实为 68／0.3.63，签名与 v0.3.62 一致；版本包与通用下载包的 SHA-256 一致。
 - v0.3.62：重新构建 APK，40 项 JVM 单元测试通过，Lint 为 0 错误、13 项告警。安装包内的 versionCode／versionName 已核实为 67／0.3.62，签名与 v0.3.61 一致；版本包与通用下载包的 SHA-256 一致。

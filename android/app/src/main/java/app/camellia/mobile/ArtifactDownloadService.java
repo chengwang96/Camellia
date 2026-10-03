@@ -41,7 +41,7 @@ public final class ArtifactDownloadService extends Service {
         volatile boolean cancelled;
         Job(JSONObject file, String token, Uri destination) throws Exception {
             name = file.getString("name"); address = file.getString("address"); this.token = token;
-            path = "/v1/conversations/" + file.getString("conversation") + "/artifacts/" + file.getString("id");
+            path = "/v1/" + (file.optBoolean("discussion") ? "discussions/" : "conversations/") + file.getString("conversation") + "/artifacts/" + file.getString("id");
             new Endpoint(address).uri(path);
             size = file.getLong("size");
             if (size < 0 || !token.matches("[A-Za-z0-9_-]{43}") || !"content".equals(destination.getScheme())) throw new IOException("Invalid download");

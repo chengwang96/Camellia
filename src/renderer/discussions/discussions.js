@@ -1,9 +1,15 @@
 'use strict';
 
-const $ = id => document.getElementById(id);
+window.CamelliaDiscussions = { create({ root = document, embedded = false, onChange = () => {}, onRename } = {}) {
+const $ = id => root.getElementById(id);
+const body = embedded ? root.querySelector('.discussion-workbench') : document.body;
+const isVisible = () => !embedded || !root.host.hidden;
 const desktop = window.dshDesktop;
 const t = text => window.CamelliaI18n.t(text);
-let groups = [], group = null, bindings = [], selected = new Set(), sending = false, switchingMode = false, loading = 0, refreshTimer;
+const navigation = window.CamelliaWorkbenchNavigation;
+$('discussionNavigation').replaceChildren(navigation.section({ key: 'discussions', title: 'Agent discussions (beta)', content: $('groupList'), add: newGroup, addId: 'newGroup' }));
+let conversationNavigation, navigationRequest = 0, pendingNavigationIntent, navigating = false;
+let groups = [], group = null, bindings = [], selected = new Set(), sending = false, loading = 0, refreshTimer;
 const verifyingMembers = new Set();
 const verificationErrors = new Map();
 let verifyingBinding = null;
@@ -18,7 +24,7 @@ let groupMenu = null, renamingId = null, deleteTarget = null;
 const openStatuses = new Set(['queued', 'preparing', 'running', 'stopping']);
 const stateLabels = { queued: 'Waiting', preparing: 'Preparing context', context: 'Preparing context', running: 'Replying', stopping: 'Stopping',
   failed: 'Response failed', cancelled: 'Stopped', interrupted: 'Interrupted', completed: 'Finished', summary: 'Preparing context', approval: 'Waiting for your input' };
-const rich = window.CamelliaDiscussionRich.create({ getGroup: () => group, call, mutate: (action, payload) => mutate(action, payload, true),
+const rich = window.CamelliaDiscussionRich.create({ root, isVisible, getGroup: () => group, call, mutate: (action, payload) => mutate(action, payload, true),
   getAttachments: () => attachments, setAttachments: value => { attachments = value; }, changed: () => { rememberDraft(); resizeComposer(); }, error });
 function node(tag, className, text) { const value = document.createElement(tag); if (className) value.className = className; if (text !== undefined) value.textContent = text; return value; }
 function button(text, action, className = 'btn-secondary') {
@@ -51,7 +57,7 @@ function identityButton(memberId, name, engine, roster = false) {
 }
 function openIdentity(memberId) {
   const member = group?.participants.find(p => p.id === memberId); if (!member) return;
-  identityTarget = { groupId: group.id, memberId }; identityReturnFocus = document.activeElement;
+  identityTarget = { groupId: group.id, memberId }; identityReturnFocus = root.activeElement;
   $('identityMember').replaceChildren(avatar(member.engine), node('strong', '', member.name));
   $('identityPrompt').value = member.identityPrompt || ''; $('identityError').textContent = '';
   updateIdentityState(); $('identityDialog').showModal(); $('identityPrompt').focus();
@@ -89,8 +95,7 @@ function copyAction(text, assistant) {
 function resizeComposer() {
   const input = $('message'); input.style.height = 'auto';
   input.style.height = Math.min(Math.max(input.scrollHeight, 52), 180) + 'px';
-  $('send').disabled = sending || switchingMode || rich.uploading || (!input.value.trim() && !attachments.length);
-  $('engineSwitch').disabled = sending || switchingMode;
+  $('send').disabled = sending || rich.uploading || (!input.value.trim() && !attachments.length);
 }
 async function call(action, payload) {
   const result = await desktop.discussion(action, payload);
@@ -122,27 +127,13 @@ function readDraft(id) {
 }
 function renderGroups() {
   if (renamingId) return;
-  $('groupList').replaceChildren(...groups.map(row => {
-    const item = node('div', 'session-item group-item'); item.tabIndex = 0; item.setAttribute('role', 'button');
-    item.onclick = () => load(row.id).catch(error);
-    item.onkeydown = event => {
-      if (event.target !== item) return;
-      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void load(row.id).catch(error); }
-      if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') { event.preventDefault(); openGroupMenu(more, row); }
-    };
-    item.dataset.groupId = row.id; item.title = row.preview || row.title;
-    if (row.id === group?.id) { item.setAttribute('aria-current', 'page'); item.classList.add('active'); }
-    const symbol = node('span', 'session-item-icon'); symbol.append(icon('M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z'));
-    const more = node('button', 'session-more'); more.type = 'button'; more.title = t('Discussion actions');
-    more.setAttribute('aria-label', t('Discussion actions')); more.setAttribute('aria-haspopup', 'menu');
-    more.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
-    more.onclick = event => { event.stopPropagation(); openGroupMenu(more, row); };
-    item.oncontextmenu = event => { event.preventDefault(); openGroupMenu(more, row, { x: event.clientX, y: event.clientY }); };
-    item.append(symbol, node('span', 'session-item-text', row.title));
-    if (row.pinned) { const pin = node('span', 'group-item-pin'); pin.title = t('Pinned'); pin.append(icon('m16 3 5 5-4 1-3 5-1 4-7-7 4-1 5-3 1-4ZM9 15l-6 6')); item.append(pin); }
-    item.append(node('span', 'group-item-count', String(row.members)), more);
-    return item;
-  }));
+  $('groupList').replaceChildren(...groups.map(row => navigation.discussionRow(row, { open: id => load(id).catch(error), actions: openGroupMenu, activeId: group?.id })));
+  if (!groups.length) $('groupList').append(node('div', 'ws-empty', t('No discussions. Click + to start.')));
+}
+function confirmDeleteGroup(row) {
+  if (row.active) { error(new Error('Stop all replies before deleting this discussion.')); return; }
+  deleteTarget = row.id; $('deleteTitle').textContent = row.title; $('deleteError').textContent = '';
+  $('deleteConfirm').disabled = false; $('deleteDialog').showModal(); $('deleteCancel').focus();
 }
 function closeGroupMenu(restore = false) {
   if (!groupMenu) return;
@@ -158,10 +149,7 @@ function openGroupMenu(anchor, row, position) {
       const result = await call('pin', { id: row.id, pinned: !row.pinned });
       groups = result.groups; if (group?.id === row.id && result.group.revision >= group.revision) group = result.group; render();
     } },
-    { label: 'Delete discussion', action: 'delete', disabled: row.active, run: () => {
-      deleteTarget = row.id; $('deleteTitle').textContent = row.title; $('deleteError').textContent = '';
-      $('deleteConfirm').disabled = false; $('deleteDialog').showModal(); $('deleteCancel').focus();
-    } },
+    { label: 'Delete discussion', action: 'delete', disabled: row.active, run: () => confirmDeleteGroup(row) },
   ];
   for (const action of actions) {
     const item = button('', async () => { closeGroupMenu(); await action.run(); }, 'pop-row' + (action.action === 'delete' ? ' danger' : ''));
@@ -171,18 +159,19 @@ function openGroupMenu(anchor, row, position) {
   menu.onkeydown = event => {
     const items = [...menu.querySelectorAll('button:not(:disabled)')];
     if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
-      event.preventDefault(); const index = items.indexOf(document.activeElement);
+      event.preventDefault(); const index = items.indexOf(root.activeElement);
       items[event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
     }
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeGroupMenu(true); }
     if (event.key === 'Tab') closeGroupMenu(true);
   };
-  document.body.append(menu); const rect = anchor.getBoundingClientRect();
+  body.append(menu); const rect = anchor.getBoundingClientRect();
   menu.style.left = Math.max(8, Math.min(position?.x ?? rect.left, innerWidth - menu.offsetWidth - 8)) + 'px';
   menu.style.top = Math.max(8, Math.min(position?.y ?? rect.bottom + 4, innerHeight - menu.offsetHeight - 8)) + 'px';
   groupMenu = { element: menu, id: row.id }; menu.querySelector('button')?.focus();
 }
 function renameGroup(row) {
+  if (onRename) { onRename(row); return; }
   const item = $('groupList').querySelector('[data-group-id="' + row.id + '"]'); if (!item) return;
   renamingId = row.id;
   const input = node('input', 'session-rename-input'); input.value = row.title; input.maxLength = 120; input.setAttribute('aria-label', t('Discussion topic'));
@@ -213,7 +202,7 @@ async function discardGroup(id, nextGroups) {
   }
   render();
 }
-document.addEventListener('click', event => { if (groupMenu && !groupMenu.element.contains(event.target) && !event.target.closest('.session-more')) closeGroupMenu(); });
+root.addEventListener('click', event => { if (groupMenu && !groupMenu.element.contains(event.target) && !event.target.closest('.session-more')) closeGroupMenu(); });
 $('groupList').addEventListener('scroll', () => closeGroupMenu());
 function reason(value) {
   if (['unknown-runtime-policy', 'unverified-connection', 'incomplete-enforcement', 'evidence-mismatch'].includes(value)) return t('This connection is not verified for discussions yet.');
@@ -335,6 +324,7 @@ function renderMessages() {
   if (bottom) scroll.scrollTop = scroll.scrollHeight;
 }
 function render() {
+  onChange(group?.id || null);
   const empty = !group?.messages.length;
   $('welcome').hidden = !empty; $('welcome').classList.toggle('empty-state', empty);
   $('firstGroup').hidden = Boolean(group); $('groupView').hidden = !group; $('groupActions').hidden = !group;
@@ -409,17 +399,6 @@ function bindingChanged() {
   $('saveMember').disabled = !row || row.capability.supported === false || Boolean(verifyingBinding);
 }
 function newGroup() { $('title').value = ''; $('createError').textContent = ''; $('groupDialog').showModal(); $('title').focus(); }
-window.CamelliaChatModeSelect.populate($('engineSwitch'), 'discussions');
-$('engineSwitch').onchange = async () => {
-  const target = $('engineSwitch').value; $('engineSwitch').value = 'discussions';
-  if (target === 'discussions' || switchingMode || sending || !rememberDraft()) return;
-  switchingMode = true; resizeComposer(); clearNotice();
-  try {
-    const result = await desktop.switchMode(target);
-    if (!result?.ok) throw new Error(result?.error || 'Could not switch chat mode.');
-  } catch (err) { error(err); }
-  finally { switchingMode = false; resizeComposer(); }
-};
 $('home').onclick = () => desktop.switchMode('home'); $('settings').onclick = () => desktop.openSettingsWindow();
 $('newGroup').onclick = newGroup; $('firstGroup').onclick = newGroup;
 $('deleteConfirm').onclick = async () => {
@@ -431,7 +410,7 @@ $('deleteConfirm').onclick = async () => {
 };
 $('deleteDialog').addEventListener('close', () => { const id = deleteTarget; deleteTarget = null; $('groupList').querySelector('[data-group-id="' + id + '"]')?.focus(); });
 $('membersToggle').onclick = () => $('membersPanel').showModal();
-for (const el of document.querySelectorAll('[data-close]')) el.onclick = () => $(el.dataset.close).close();
+for (const el of root.querySelectorAll('[data-close]')) el.onclick = () => $(el.dataset.close).close();
 $('createForm').onsubmit = async event => {
   event.preventDefault();
   const submit = event.currentTarget.querySelector('[type=submit]'); if (submit.disabled) return; submit.disabled = true;
@@ -477,13 +456,15 @@ $('identityForm').onsubmit = async event => {
 };
 $('identityDialog').addEventListener('cancel', event => { if (identitySaving) event.preventDefault(); });
 $('identityDialog').addEventListener('close', () => {
+  // The close event is queued; the user may already have reopened the editor.
+  if ($('identityDialog').open) return;
   identityTarget = null;
   if (identityReturnFocus?.isConnected) identityReturnFocus.focus({ preventScroll: true });
   identityReturnFocus = null;
 });
 $('stopAll').onclick = () => mutate('stop', {}); $('replyMode').onchange = () => { if (group) { renderMembers(); rememberDraft(); } };
 $('composer').onsubmit = async event => {
-  event.preventDefault(); if (sending || switchingMode || rich.uploading || !group || (!$('message').value.trim() && !attachments.length)) return;
+  event.preventDefault(); if (sending || rich.uploading || !group || (!$('message').value.trim() && !attachments.length)) return;
   const id = group.id, text = $('message').value, participantIds = [...selected], sentAttachments = [...attachments];
   sending = true; resizeComposer(); clearNotice();
   try { const result = await call('send', { id, requestId: crypto.randomUUID(), text, participantIds, mode: $('replyMode').value, attachments: sentAttachments });
@@ -499,7 +480,9 @@ $('message').addEventListener('input', () => { resizeComposer(); rememberDraft()
 $('message').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('composer').requestSubmit(); } };
 const unsubscribe = desktop.onDiscussionEvent(event => {
   if (event.reason) failures.set(event.deliveryId, event.reason);
+  if (!isVisible() || navigating) return;
   clearTimeout(refreshTimer); refreshTimer = setTimeout(async () => {
+    if (!isVisible() || navigating) return;
     try {
       const next = (await call('list')).groups;
       if (group && !next.some(row => row.id === group.id)) await discardGroup(group.id, next);
@@ -509,15 +492,16 @@ const unsubscribe = desktop.onDiscussionEvent(event => {
   }, 60);
 });
 function setSidebarOpen(open) {
-  document.body.classList.toggle('sidebar-open', open); $('sidebarBackdrop').hidden = !open;
+  body.classList.toggle('sidebar-open', open); $('sidebarBackdrop').hidden = !open;
   $('sidebarToggle').setAttribute('aria-expanded', String(open));
   // Prevent keyboard focus entering the narrow-window drawer while closed.
   $('sidebar').inert = innerWidth <= 680 && !open;
 }
-$('sidebarToggle').onclick = () => { setSidebarOpen(!document.body.classList.contains('sidebar-open')); if (document.body.classList.contains('sidebar-open')) $('newGroup').focus(); };
+$('sidebarToggle').onclick = () => { setSidebarOpen(!body.classList.contains('sidebar-open')); if (body.classList.contains('sidebar-open')) $('newGroup').focus(); };
 $('sidebarBackdrop').onclick = () => { setSidebarOpen(false); $('sidebarToggle').focus(); };
-document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && document.body.classList.contains('sidebar-open') && !document.querySelector('dialog[open]')) { setSidebarOpen(false); $('sidebarToggle').focus(); }
+root.addEventListener('keydown', event => {
+  if (!isVisible()) return;
+  if (event.key === 'Escape' && body.classList.contains('sidebar-open') && !root.querySelector('dialog[open]')) { setSidebarOpen(false); $('sidebarToggle').focus(); }
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'h') { event.preventDefault(); void desktop.switchMode('home'); }
 });
 let preferredSidebarWidth = null, sidebarDrag = null;
@@ -562,13 +546,62 @@ function applyContentWidth(value) {
 try { applyContentWidth(JSON.parse(localStorage.getItem('camellia-chat-content-width'))); } catch { /* use CSS default */ }
 const unsubscribeWidth = desktop.onChatContentWidthChanged?.(applyContentWidth);
 void desktop.workbenchSettings().then(settings => { if (settings?.ok) applyContentWidth(settings.chatContentWidth); }).catch(error);
-window.addEventListener('beforeunload', () => { rememberDraft(); unsubscribe?.(); unsubscribeWidth?.(); clearTimeout(refreshTimer); });
+window.addEventListener('beforeunload', () => { conversationNavigation?.destroy(); rememberDraft(); unsubscribe?.(); unsubscribeWidth?.(); clearTimeout(refreshTimer); });
 window.addEventListener('camellia:language', () => { closeGroupMenu(); messageNodes.clear(); render(); if ($('memberDialog').open) renderProviders(); });
-(async () => {
-  try {
-    await window.CamelliaI18n.ready; groups = (await call('list')).groups;
-    let previous; try { previous = localStorage.getItem(selectedGroupKey); } catch { /* storage may be unavailable */ }
-    if (groups.length) await load(groups.find(row => row.id === previous)?.id || groups[0].id); else render();
+const ready = (async () => {
+  await window.CamelliaI18n.ready;
+  if (!embedded) {
+    conversationNavigation = navigation.conversations({ container: $('conversationNavigation'), beforeNavigate: () => {
+      if (sending || rich.uploading) return false;
+      return rememberDraft();
+    }, error });
+    $('newSessionBtn').onclick = () => conversationNavigation.create();
   }
-  catch (err) { error(err); }
 })();
+async function open({ id, group: requestedGroup, intent } = {}) {
+  const request = ++navigationRequest;
+  navigating = true;
+  try {
+    await ready;
+    const requested = id || requestedGroup;
+    let previous; try { previous = localStorage.getItem(selectedGroupKey); } catch { /* storage may be unavailable */ }
+    const snapshot = (await call('list')).groups;
+    if (request !== navigationRequest) return;
+    groups = snapshot;
+    if (requested && !groups.some(row => row.id === requested)) throw new Error('Discussion not found');
+    if (groups.length) await load(requested || groups.find(row => row.id === previous)?.id || groups[0].id); else render();
+    if (request !== navigationRequest) return;
+    pendingNavigationIntent = () => {
+      if (intent === 'create') newGroup();
+      if (requested && ['rename', 'delete'].includes(intent)) {
+        if ($('groupList').hidden) $('discussionNavigation').querySelector('.nav-section-toggle').click();
+        const row = groups.find(row => row.id === requested);
+        if (intent === 'rename') renameGroup(row); else confirmDeleteGroup(row);
+      }
+    };
+    if (isVisible()) activate();
+  } finally { if (request === navigationRequest) navigating = false; }
+}
+function activate() {
+  render();
+  const intent = pendingNavigationIntent; pendingNavigationIntent = null;
+  intent?.();
+}
+function suspend() {
+  if (sending || rich.uploading || !rememberDraft()) return false;
+  ++navigationRequest; ++loading;
+  navigating = false;
+  pendingNavigationIntent = null;
+  rich.suspend(); closeGroupMenu();
+  root.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
+  return true;
+}
+if (!embedded) {
+  const query = new URLSearchParams(location.search);
+  void open({ group: query.get('group'), intent: query.get('intent') }).then(() => {
+    if (query.has('group') || query.has('intent')) history.replaceState(null, '', location.pathname);
+  }).catch(error);
+}
+return { ready, open, suspend, activate, error, get groupId() { return group?.id || null; } };
+} };
+if (document.body.classList.contains('discussion-workbench')) window.CamelliaDiscussions.create();
