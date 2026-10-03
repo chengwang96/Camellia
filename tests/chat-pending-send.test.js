@@ -24,7 +24,7 @@ function fixture() {
     input: { value: 'Continue' }, attachments: [], chatProfile: {}, statusText: '', eventsDuringRestore: [],
     sendBtn: { classList: { toggle() {} } }, pendingConversationSends: new Map(),
     goalUI: { isActive: () => false, isDraft: () => false },
-    sidebar: { render() {}, load() {} }, chat: { querySelector: () => null, appendChild() {} },
+    sidebar: { render() {}, load() {} }, chat: { querySelector: () => null, querySelectorAll: () => [], appendChild() {} },
     renderAttachments() {}, renderMessageQueue() {}, autoResize() {}, updateConversationControls() { state.updateSendEnabled(); },
     canChangeContext: () => !state.contextBusy(),
     draftKey: () => state.context.sessionId,
@@ -32,6 +32,7 @@ function fixture() {
     saveDraft: () => drafts.set('draft:' + state.context.sessionId, { text: state.input.value, attachments: state.attachments.slice() }),
     restoreDraft() { state.input.value = drafts.get('draft:' + state.context.sessionId)?.text || ''; },
     addUser: () => ({ messageData: {} }), buildPrompt: text => text,
+    showFailedSend: attempt => { state.failedSend = attempt; },
     setRunning: value => { state.running = value; }, setStatus: text => { state.statusText = text; },
     handleEvent() {},
     setRunStatus() {}, clearRunStatus() {}, finalizeStreamBlocks() {}, updateSwitchHint() {},
@@ -81,6 +82,7 @@ test('pending settings and compaction allow navigation without retargeting the r
   await flush();
   harness.replies[0].resolve({ ok: true, sessionId: 'conversation-a', runId: 1, userSeq: 1 });
   assert.equal(await sending, true);
+  assert.equal(harness.drafts.get('draft:conversation-a').text, '');
   assert.equal(state.context.sessionId, 'conversation-b');
   assert.equal(state.sending, true);
   assert.equal(state.currentRunId, null);
@@ -91,7 +93,7 @@ test('pending settings and compaction allow navigation without retargeting the r
   assert.equal(state.sending, false);
 });
 
-test('background send failure restores only its own draft and does not unlock another send', async () => {
+test('background send failure keeps an edit action and does not unlock another send', async () => {
   const harness = fixture(), { state } = harness;
   harness.settings.resolve({});
   const first = state.send();
@@ -104,7 +106,8 @@ test('background send failure restores only its own draft and does not unlock an
   assert.equal(await first, false);
   assert.equal(state.sending, true);
   assert.equal(state.statusText, '');
-  assert.equal(harness.drafts.get('draft:conversation-a').text, 'Continue');
+  assert.equal(harness.drafts.get('draft:conversation-a').text, '');
+  assert.equal(harness.drafts.get('failed-send:conversation-a').text, 'Continue');
   harness.replies[1].resolve({ ok: true, sessionId: 'conversation-b', runId: 2 });
   await second;
 });
@@ -124,7 +127,8 @@ test('returning during pending compaction cannot dispatch a duplicate and can st
   assert.equal(harness.requests.length, 1);
   harness.replies[0].resolve({ ok: false, error: 'Compaction canceled' });
   await first;
-  assert.equal(state.input.value, 'Continue');
+  assert.equal(state.input.value, '');
+  assert.equal(state.failedSend.text, 'Continue');
   assert.equal(state.conversationBusy(), false);
 });
 
@@ -214,7 +218,7 @@ for (const returnToOrigin of [false, true]) {
     });
     vm.runInContext([
       extract('  function saveMessageQueue(', "  window.addEventListener('beforeunload'"),
-      extract('  function drainMessageQueue()', "  $('attachBtn').addEventListener"),
+      extract('  function drainMessageQueue()', "  const attachBtn = $('attachBtn');"),
     ].join('\n'), state);
     state.saveMessageQueue();
     state.drainMessageQueue();

@@ -142,7 +142,9 @@ function createSubscriptionMeter({ engine, accountId = 'default', model, home, v
         try {
           // Kimi's journal writer buffers independently of its ACP response.
           // Wait for the native completion marker, not an arbitrary first read.
-          const deadline = Date.now() + 1500;
+          // Windows CI can take more than 1.5s to persist the final batch. Keep
+          // the next prompt's baseline behind this bounded flush wait.
+          const deadline = Date.now() + 5000;
           let usage;
           do {
             usage = await readKimiUsage(home, current.sessionId, current.baseline, { model: current.model, version });

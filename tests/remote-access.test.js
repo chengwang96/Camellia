@@ -1104,6 +1104,20 @@ test('remote projection carries bounded folded process for live and persisted re
   assert.equal(snapshot.live.text, 'Final'); assert.equal(snapshot.live.process[0].text, 'Progress');
 });
 
+test('remote projection retains terminal errors alongside structured output', context => {
+  const { reader, manager, visible, access, pair } = fixture(context);
+  const device = access.authenticate(pair().token);
+  manager.append(visible, { role: 'assistant', text: '', outputBlocks: [{ phase: 'commentary', text: 'Working' }],
+    runResult: { subtype: 'error', is_error: true, result: 'Provider unavailable' }, mobileText: 'Provider unavailable' });
+  let snapshot = reader.snapshot(device, visible.id);
+  assert.equal(snapshot.messages.at(-1).text, 'Provider unavailable');
+  assert.equal(snapshot.messages.at(-1).process[0].text, 'Working');
+  manager.append(visible, { role: 'assistant', text: 'Partial answer', outputBlocks: [{ phase: 'final_answer', text: 'Partial answer' }],
+    runResult: { subtype: 'error', is_error: true, result: 'Provider unavailable' } });
+  snapshot = reader.snapshot(device, visible.id);
+  assert.equal(snapshot.messages.at(-1).text, 'Partial answer\n\nProvider unavailable');
+});
+
 test('SSE scope changes end access and live snapshots include ongoing text', { timeout: 8000 }, async context => {
   const { gateway, manager, visible, pair } = fixture(context);
   const credential = pair();

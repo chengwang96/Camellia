@@ -210,6 +210,25 @@ test('completed agent replies promote their conversation within its current grou
   assert.ok(shared.get(first.id).lastReplyAt > 0);
 });
 
+for (const groupType of ['workspace', 'recent']) test('an immediate instruction promotes its conversation in ' + groupType, async context => {
+  const { harness, shared, command, workspace } = fixture(context);
+  const group = workspace('Instructions');
+  const workspaceId = groupType === 'workspace' ? group.id : null;
+  const key = workspaceId || 'recent';
+  const first = shared.create('claude', workspaceId, 'First');
+  const second = shared.create('claude', workspaceId, 'Second');
+  const sent = await harness.call('conversation-command', { engine: 'claude', action: 'send', payload: { sessionId: first.id, prompt: 'Start work' } });
+  assert.equal(sent.ok, true, sent.error);
+  await command('meta-op', { op: 'move-session', sessionId: second.id, group: key, targetSessionId: first.id, placement: 'before' });
+  const active = shared.active.get(first.id);
+  active.session.steerUserMessage = async () => {};
+  await shared.steer('claude', { sessionId: first.id, runId: sent.runId, prompt: 'Update the task' });
+  const listed = await command('list-sessions');
+  assert.deepEqual(listed.sessions.filter(row => row.workspaceId === workspaceId && [first.id, second.id].includes(row.id)).map(row => row.id), [first.id, second.id]);
+  assert.equal(shared.workspaces.sessionMeta().sessionOrder[key][0], first.id);
+  harness.finishTurn();
+});
+
 test('conversations created within the same millisecond keep the newest first', async context => {
   const { shared, command, workspace } = fixture(context);
   const group = workspace('Same millisecond');

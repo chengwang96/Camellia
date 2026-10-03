@@ -4,6 +4,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { writeJson } = require('../../shared/json-store');
 const { UUID, LIMITS, validateDiscussion: validate, admissionBytes, capacityError } = require('./schema');
+let lastMessageClock = 0;
+function messageStamp(previous = 0) {
+  lastMessageClock = Math.max(Date.now(), lastMessageClock + 1, previous + 1);
+  return lastMessageClock;
+}
 
 function byteLimit(value = LIMITS.recordBytes) {
   if (!Number.isSafeInteger(value) || value < 1 || value > LIMITS.recordBytes) throw new Error('Invalid discussion byte limit');
@@ -133,6 +138,7 @@ class DiscussionStore {
   create(state) {
     const file = this.file(state.id); directoryStat(this.dir);
     if (fs.existsSync(file)) throw new Error('Discussion already exists');
+    state.lastMessageAt = messageStamp();
     this.checked(state, state.id, true);
     const result = structuredClone(state);
     this.write(file, state); return result;
@@ -146,6 +152,7 @@ class DiscussionStore {
     if (result && typeof result.then === 'function') {
       Promise.resolve(result).catch(() => {}); throw new Error('Discussion updates must be synchronous');
     }
+    if (state.messages.length > count) state.lastMessageAt = messageStamp(state.lastMessageAt);
     validate(state, id);
     if (JSON.stringify(state) === original) return structuredClone(result);
     if (state.revision !== revision || JSON.stringify([state.version, state.id, state.threadId, state.cwd]) !== identity

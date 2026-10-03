@@ -53,7 +53,7 @@
     </section>
     <section id="usagePage" class="page" hidden>
       <h2 class="usage-api-title" data-i18n>Usage history</h2>
-      <div class="filter-row"><label data-i18n>Source<select id="usageSource"><option value="" data-i18n>All activity</option><option value="subscription" data-i18n>Subscription accounts</option><option value="api" data-i18n>API Keys</option></select></label><label data-i18n>Date<select id="usageRange"><option value="7" data-i18n>Last 7 days</option><option value="30" data-i18n>Last 30 days</option><option value="90" data-i18n>Last 90 days</option><option value="all" data-i18n>Total</option></select></label><label data-i18n>Provider<select id="usageProvider"></select></label><label data-i18n>Account / Key<select id="usageKey"></select></label><label data-i18n>Model<select id="usageModel"></select></label></div>
+      <div class="filter-row"><label data-i18n>Source<select id="usageSource"><option value="" data-i18n>All activity</option><option value="subscription" data-i18n>Subscription accounts</option><option value="api" data-i18n>API Keys</option></select></label><label data-i18n>Date<select id="usageRange"><option value="7" data-i18n>Last 7 days</option><option value="30" data-i18n>Last 30 days</option><option value="90" data-i18n>Last 90 days</option><option value="all" selected data-i18n>Total</option></select></label><label data-i18n>Provider<select id="usageProvider"></select></label><label data-i18n>Account / Key<select id="usageKey"></select></label><label data-i18n>Model<select id="usageModel"></select></label></div>
       <div id="usageSummary" class="usage-summary"></div>
       <div id="subscriptionCostCard" class="subscription-cost"><div><small data-i18n>Subscription estimate (USD)</small><strong id="subscriptionCost"></strong></div><div><p id="subscriptionCostNote" class="hint"></p><p id="subscriptionUsageSince" class="hint"></p></div></div>
       <div class="section-head"><h2 data-i18n>Account/model usage trends</h2><select id="usageMetric" aria-label="Usage chart metric" data-i18n-attrs="aria-label"><option value="tokens" data-i18n>Token usage</option><option value="requests" data-i18n>Successful requests</option><option value="inputTokens" data-i18n>Input tokens</option><option value="outputTokens" data-i18n>Output tokens</option><option value="failures" data-i18n>Failed / Canceled</option><option value="estimatedCostUsd" data-i18n>Subscription estimate (USD)</option></select></div>
@@ -61,8 +61,6 @@
       <div id="usageChartNotes"></div>
       <div class="section-head table-head"><h2 data-i18n>Model and account details</h2><button id="exportUsage" data-i18n>Export CSV</button></div>
       <div class="table-scroll"><table class="usage-table"><thead><tr><th data-i18n>Model / Provider</th><th data-i18n>Account / Key</th><th data-i18n>Success</th><th data-i18n>Input</th><th data-i18n>Output</th><th data-i18n>Cache read</th><th data-i18n>Cache write</th><th data-i18n>Failed / Canceled</th><th data-i18n>Subscription estimate (USD)</th></tr></thead><tbody id="usageRows"></tbody></table></div>
-      <p class="hint footnote" data-i18n>Usage recorded by Camellia. API counts are requests; subscription counts are turns. Input includes cache; output includes reasoning. Missing usage is not zero. Existing native histories and other clients are not imported.</p>
-      <p class="hint footnote" data-i18n>Subscription estimates use a dated standard text API price reference. Tool charges and speed premiums are excluded. Unknown model prices and unavailable context tiers remain unpriced; known amounts are partial when usage is missing.</p>
     </section>
     <section id="generalPage" class="page">
       <div class="setting-row memory-setting"><div><h2><label for="memoryDirectory" data-i18n>Global memory</label></h2><p class="hint" data-i18n>All harnesses and models use this folder for shared memory. Reading and writing follow the rules in your files. Leave blank to disable.</p><div class="memory-folder"><input id="memoryDirectory" type="text" placeholder="Choose a memory folder" data-i18n-attrs="placeholder" spellcheck="false"><button id="chooseMemoryDirectory" data-i18n>Choose folder</button></div></div></div>
@@ -106,6 +104,7 @@
     </section>
     <section id="archivedPage" class="page" hidden>
       <div class="toolbar"><p class="hint" data-i18n>Restore a conversation to continue it, delete it permanently, or scan unowned files for space cleanup.</p><div class="toolbar-actions"><button id="deleteAllArchived" class="danger" disabled data-i18n>Delete all</button></div></div>
+      <div id="archivedDeleteActivity" class="archived-delete-activity" hidden><p id="archivedDeleteStatus" role="status" aria-live="polite"></p><progress id="archivedDeleteProgress" max="1" value="0"></progress></div>
       <div id="archivedList"></div>
       <div class="section" id="storageSection">
         <h2 data-i18n>Space cleanup</h2>

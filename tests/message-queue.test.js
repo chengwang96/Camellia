@@ -58,7 +58,7 @@ function queueHarness(send, overrides = {}) {
   };
   vm.createContext(state);
   vm.runInContext(source.slice(source.indexOf('  function saveMessageQueue('), source.indexOf("  window.addEventListener('beforeunload'")), state);
-  vm.runInContext(source.slice(source.indexOf('  function drainMessageQueue()'), source.indexOf("  $('attachBtn')")), state);
+  vm.runInContext(source.slice(source.indexOf('  function drainMessageQueue()'), source.indexOf("  const attachBtn = $('attachBtn');")), state);
   return state;
 }
 

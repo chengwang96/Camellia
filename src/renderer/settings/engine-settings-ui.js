@@ -116,7 +116,9 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       engine: options.containerId.startsWith('codex') ? 'codex' : 'kimi' });
   }
   function renderGoogleAccountList() {
-    window.renderSubscriptionCards({ container: $('googleAccountList'), state: googleAccount, engine: 'antigravity', manage: false,
+    window.renderSubscriptionCards({ container: $('googleAccountList'),
+      state: googleAccount && { ...googleAccount, accounts: googleAccount.accounts?.filter(account => account.signedIn) },
+      engine: 'antigravity', manage: false,
       busy: accountBusy || googleAccount?.usage?.refreshing, onRefresh: () => void googleAction('refreshUsage') });
   }
   async function accountAction(call, apply) {

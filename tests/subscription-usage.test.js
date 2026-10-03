@@ -160,7 +160,7 @@ test('Kimi 2.x records session-scoped compaction deltas and new subagent journal
   assert.equal(f.account('kimi').usage.unreported, 0);
 });
 
-test('Kimi waits for buffered journal writes before the next turn snapshots its history', async t => {
+test('Kimi waits for journal writes delayed beyond 1.5 seconds before the next turn snapshots history', async t => {
   const f = fixture(t), home = path.join(f.root, 'kimi');
   const dir = path.join(home, 'sessions', 'workspace', 'native', 'agents', 'main');
   fs.mkdirSync(dir, { recursive: true });
@@ -172,7 +172,7 @@ test('Kimi waits for buffered journal writes before the next turn snapshots its 
   await meter.begin('native');
   const finished = meter.end({ subtype: 'success' });
   const next = meter.begin('native');
-  const writer = setTimeout(() => fs.appendFileSync(file, usage + turnEnd), 75);
+  const writer = setTimeout(() => fs.appendFileSync(file, usage + turnEnd), 1800);
   t.after(() => clearTimeout(writer));
   await finished;
   assert.equal(await next, true);

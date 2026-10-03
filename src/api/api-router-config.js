@@ -2,7 +2,7 @@
 
 const { readJson, writeJson } = require('../shared/json-store.js');
 const { createHash, randomUUID } = require('node:crypto');
-const { counters, normalizeBreakdown } = require('./api-usage');
+const { FIELDS, counters, normalizeBreakdown } = require('./api-usage');
 const { discoverQclaw, DEFAULT_BASE_URL } = require('./qclaw-provider');
 const DEFAULT_PORT = 8788;
 // QClaw answers through an agent runtime, so the prompt also carries that
@@ -75,6 +75,25 @@ function normalizeUsage(value) {
   }
   return usage;
 }
+function recordedUsage(value) {
+  return value && (FIELDS.some(field => Number(value[field]) > 0)
+    || Object.values(value.byModel || {}).some(stats => FIELDS.some(field => Number(stats[field]) > 0)));
+}
+function normalizeUsageArchive(entries) {
+  if (entries !== undefined && !Array.isArray(entries)) throw new Error('Usage archive must be an array');
+  const seen = new Set();
+  return (entries || []).flatMap(entry => {
+    if (!record(entry) || !validId(entry.id) || !validId(entry.providerId)) throw new Error('Invalid usage archive entry');
+    if (seen.has(entry.id)) return [];
+    seen.add(entry.id);
+    return [{ id: entry.id, providerId: entry.providerId,
+      keyId: validId(entry.keyId) ? entry.keyId : '',
+      providerName: String(entry.providerName || 'Provider').slice(0, 100),
+      keyName: String(entry.keyName || '').slice(0, 80),
+      maskedKey: String(entry.maskedKey || '').slice(0, 80),
+      usage: normalizeUsage(entry.usage) }];
+  });
+}
 
 // Keep the historical file name so the desktop app and existing CLI share one pool.
 function normalizeConfig(raw = {}, previous = null, options = {}) {
@@ -84,7 +103,8 @@ function normalizeConfig(raw = {}, previous = null, options = {}) {
   if (raw.keys !== undefined && !Array.isArray(raw.keys)) throw new Error("Legacy keys must be an array");
   const port = Number(raw.port ?? DEFAULT_PORT);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Router port must be between 1024 and 65535");
-  const cfg = { version: 2, enabled: raw.enabled !== false, port, providers: [], usage: {}, active: {} };
+  const cfg = { version: 2, enabled: raw.enabled !== false, port, providers: [], usage: {},
+    usageArchive: normalizeUsageArchive(previous?.usageArchive || raw.usageArchive), active: {} };
   // QClaw rewrites its gateway port and token into its own state file on every
   // start, so a stored endpoint goes stale. Resolve the live one once, and only
   // when a QClaw route is actually present, so other providers never touch disk.
@@ -163,13 +183,24 @@ function normalizeConfig(raw = {}, previous = null, options = {}) {
       keys.push({ id: kid, key, name: String(k.name || '').trim().slice(0, 80), enabled: k.enabled !== false });
       // QClaw rotates its token on purpose, so a changed value must not reset
       // the counters the way a manually swapped API key does.
-      const rotated = old && old.key !== key && !(type === 'qclaw' && kid === 'qclaw-auto');
-      const stats = rotated ? {} : (previous?.usage?.[kid] || raw.usage?.[kid] || {});
+      const sameCredential = old && (old.key === key || type === 'qclaw' && kid === 'qclaw-auto');
+      const stats = previous ? (sameCredential ? previous.usage?.[kid] : {}) : raw.usage?.[kid];
       cfg.usage[kid] = normalizeUsage(stats);
     }
     cfg.providers.push({ id, type, name: String(p.name || "Provider").trim().slice(0, 100),
       enabled: p.enabled !== false, priority, protocol, baseUrl: endpoint(live?.baseUrl || declaredBaseUrl),
       anthropicBaseUrl: p.anthropicBaseUrl ? endpoint(p.anthropicBaseUrl) : '', models, keys });
+  }
+  // A replaced or deleted credential leaves the route pool, but its recorded
+  // traffic remains part of Usage. Archive metadata never contains the secret.
+  for (const provider of previous?.providers || []) for (const key of provider.keys) {
+    const current = cfg.providers.find(p => p.id === provider.id)?.keys.find(k => k.id === key.id);
+    if (current && (current.key === key.key || provider.type === 'qclaw' && key.id === 'qclaw-auto')) continue;
+    const usage = previous.usage?.[key.id];
+    if (!recordedUsage(usage) && !options.archiveEmptyKeys?.has(provider.id + '/' + key.id)) continue;
+    cfg.usageArchive.push({ id: 'history-' + randomUUID(), providerId: provider.id, keyId: key.id,
+      providerName: provider.name, keyName: key.name || '', maskedKey: maskKey(key.key),
+      usage: normalizeUsage(usage) });
   }
   const availableKeys = new Set(cfg.providers.flatMap(p => p.keys.map(k => k.id)));
   for (const [m, k] of Object.entries(previous?.active || raw.active || {})) {
@@ -179,7 +210,15 @@ function normalizeConfig(raw = {}, previous = null, options = {}) {
 }
 
 function loadConfig(file) {
-  return normalizeConfig(readJson(file, {}));
+  const raw = readJson(file, {});
+  // Optional one-time recovery of older counters. IDs make repeated loads
+  // harmless after the archive is written into the main configuration.
+  const recovery = readJson(file + '.usage-recovery.json', null);
+  if (recovery) {
+    if (recovery.version !== 1 || !Array.isArray(recovery.entries)) throw new Error('Invalid usage recovery file');
+    raw.usageArchive = [...(raw.usageArchive || []), ...recovery.entries];
+  }
+  return normalizeConfig(raw);
 }
 function writeConfig(file, cfg) {
   writeJson(file, cfg);
@@ -208,7 +247,8 @@ function modelContextWindow(cfg, id) {
 function publicState(cfg) {
   const providers = cfg.providers.map(p => ({ ...p, models: p.models.map(m => ({ ...m })), keys: p.keys.map(({ key, ...k }) => ({ ...k, maskedKey: maskKey(key) })) }));
   const models = [...new Set(cfg.providers.filter(p => p.enabled && p.keys.some(k => k.enabled)).flatMap(p => p.models.map(m => m.id)))];
-  return { version: 2, enabled: cfg.enabled, port: cfg.port, providers, models, usage: structuredClone(cfg.usage), active: { ...cfg.active } };
+  return { version: 2, enabled: cfg.enabled, port: cfg.port, providers, models, usage: structuredClone(cfg.usage),
+    usageArchive: structuredClone(cfg.usageArchive), active: { ...cfg.active } };
 }
 
 module.exports = { DEFAULT_PORT, PRESETS, modelId, endpoint, normalizeConfig, loadConfig, writeConfig, hasRoutes, publicState, maskKey, modelRoutes, modelContextWindow };

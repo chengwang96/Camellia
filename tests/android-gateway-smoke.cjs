@@ -76,19 +76,34 @@ async function main() {
   }, answerPermission() { answered++; return true; }, interrupt() { stopped++; } });
   const subscribe = gateway.subscribe.bind(gateway);
   let listSubscriptions = 0;
+  let addedConversation, listChanges = 0;
+  const handle = gateway.handle.bind(gateway);
+  gateway.handle = async (request, response) => {
+    // The phone acknowledges each observed list before advancing the fixture.
+    // Fixed timers race SSE delivery, HTTP reads and UI rendering on CI hosts.
+    if (request.method === 'POST' && ['/fixture/list/add', '/fixture/list/remove'].includes(request.url)) {
+      access.authenticate(String(request.headers.authorization || '').slice(7));
+      request.resume();
+      if (request.url.endsWith('/add')) {
+        assert.equal(addedConversation, undefined);
+        addedConversation = manager.create('codex', 'fixture', listSubscriptions >= 3 ? 'Legacy desktop conversation' : 'Desktop-created conversation');
+      } else {
+        assert.ok(addedConversation);
+        manager.purge(addedConversation.id); addedConversation = undefined;
+      }
+      listChanges++;
+      gateway.json(response, 200, { ok: true });
+      return;
+    }
+    return handle(request, response);
+  };
   gateway.subscribe = (response, device, id) => {
     if (!id && ++listSubscriptions >= 3) {
       gateway.json(response, 404, { error: 'Endpoint not found' });
-      if (listSubscriptions === 3) timers.push(setTimeout(() => manager.create('codex', 'fixture', 'Legacy desktop conversation'), 200));
       return;
     }
     subscribe(response, device, id);
-    if (!id) {
-      let added;
-      timers.push(setTimeout(() => { added = manager.create('codex', 'fixture', 'Desktop-created conversation'); }, 200));
-      timers.push(setTimeout(() => { manager.purge(added.id); }, 1000));
-      return;
-    }
+    if (!id) return;
     timers.push(setTimeout(() => { manager.append(conversation, { role: 'assistant', text: 'Live update from desktop' }); gateway.publish(); }, 200));
     timers.push(setTimeout(() => access.revoke(device.id), 1200));
   };
@@ -106,7 +121,9 @@ async function main() {
         'app.camellia.mobile.test/android.test.InstrumentationTestRunner'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
       process.stdout.on('data', chunk => { output += chunk; }); process.stderr.on('data', chunk => { output += chunk; });
-      const timeout = setTimeout(() => process.kill(), 60_000);
+      // Includes background downloads, UI transitions and a 22s legacy poll;
+      // leave headroom for the same bounded phases on shared CI runners.
+      const timeout = setTimeout(() => process.kill(), 120_000);
       process.on('error', reject); process.on('exit', code => { clearTimeout(timeout); resolve({ code, output }); });
     });
     assert.equal(result.code, 0, result.output);
@@ -116,11 +133,16 @@ async function main() {
     assert.equal(goal.view(), null, 'Remote clear must clear the goal');
     assert.equal(manager.tasks.get(task.id, conversation.id).status, 'cancelled');
     assert.equal(listSubscriptions, 3, 'Unsupported list streams must not be retried during polling');
+    assert.equal(listChanges, 5, 'Stream, list UI and legacy polling must observe each desktop change');
     console.log('PASS Android ↔ desktop gateway: goal/task pause, resume and cancellation; content search/download and retry deduplication; rename/pin/batch delete with stale-state rejection; artifact downloads, live list sync, legacy polling, send deduplication, approval, stop, history, SSE and revocation');
   } finally {
     for (const timer of timers) clearTimeout(timer);
-    if (ruleAdded) { const undo = [...rule]; undo[2] = '-D'; command(['shell', 'iptables', ...undo]); }
-    command(['reverse', '--remove', 'tcp:43128']);
+    // A crashed emulator must not prevent closing the host server, or the
+    // original test failure leaves Node (and the CI job) alive indefinitely.
+    try {
+      if (ruleAdded) { const undo = [...rule]; undo[2] = '-D'; command(['shell', 'iptables', ...undo]); }
+      command(['reverse', '--remove', 'tcp:43128']);
+    } catch (error) { console.error('ADB cleanup failed: ' + error.message); }
     await gateway.stop(); manager.closeGoalTools(); manager.pauseGoals(); removeTree(root);
   }
 }

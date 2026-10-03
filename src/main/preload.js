@@ -94,6 +94,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   workbenchSaveSettings: (payload) => ipcRenderer.invoke('dsh:workbench-save-settings', payload),
   archivedSessionsList: () => ipcRenderer.invoke('dsh:archived-sessions-list'),
   archivedSessionAction: (payload) => ipcRenderer.invoke('dsh:archived-session-action', payload),
+  onArchivedDeleteProgress: (callback) => subscribe('dsh:archived-delete-progress', callback),
   storageScan: () => ipcRenderer.invoke('dsh:storage-scan'),
   storageClean: (token) => ipcRenderer.invoke('dsh:storage-clean', { token }),
   onArchivedChanged: (callback) => subscribe('dsh:archived-changed', callback),

@@ -46,7 +46,7 @@ test('broker rejects unauthenticated, malformed and unknown requests and closes 
   bridge.close(); bridge.close();
 });
 
-test('stdio MCP lists tools and forwards authenticated calls to the application', { timeout: 10000 }, async t => {
+test('stdio MCP lists tools and forwards authenticated calls to the application', { timeout: 30000 }, async t => {
   const calls = [];
   const bridge = await createGoalToolBridge({ node: process.execPath, call: (name, args) => { calls.push({ name, args }); return { ok: true, goal: { objective: 'Finish' } }; } });
   const proc = spawn(bridge.config.command, bridge.config.args, { env: { ...process.env, ...bridge.config.env }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });

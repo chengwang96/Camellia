@@ -516,9 +516,13 @@
   .run-result {
     display: inline-flex; align-items: center; gap: 6px;
     margin: 2px 0 4px; padding: 5px 12px;
+    max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere;
     border-radius: 999px; font: var(--f-xxs-12);
   }
   .run-result.ok { background: var(--dsw-alias-state-success-tertiary); color: var(--dsw-alias-state-success-primary); }
+  .run-retry { margin-left: 6px; padding: 2px 7px; border: 1px solid currentColor; border-radius: 999px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+  .run-retry:hover { background: var(--dsw-alias-interactive-bg-hover); }
+  .run-retry:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
   .run-result.err { background: var(--dsw-alias-state-error-tertiary); color: var(--dsw-alias-state-error-primary); }
 
   .cursor {
@@ -640,6 +644,7 @@
     display: grid; place-items: center;
   }
   .attchip-fileicon svg { width: 15px; height: 15px; }
+  .attchip-conversation-icon { color: var(--dsw-static-deepseek-500); }
   .attchip-file-pdf { color: #ed5362; }
   .attchip-file-sheet { color: #29875c; }
   .attchip-file-slides { color: #c86b31; }
@@ -664,6 +669,21 @@
   }
   .btn-attach:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
   .btn-attach svg { width: 16px; height: 16px; }
+  .btn-attach:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 2px; }
+  .attach-pop { width: min(360px, calc(100vw - 16px)); max-height: min(440px, calc(100vh - 24px)); }
+  .attach-option { width: 100%; border: 0; background: transparent; text-align: left; }
+  .attach-option svg { width: 18px; height: 18px; flex: none; color: var(--dsw-alias-label-secondary); }
+  .attach-picker-header { display: flex; align-items: center; gap: 8px; padding: 4px 6px 8px; font: var(--f-s-strong-14); }
+  .attach-picker-back { width: 28px; height: 28px; border: 0; border-radius: 7px; background: transparent; color: var(--dsw-alias-label-primary); font: var(--f-base-16); cursor: pointer; }
+  .attach-picker-back:hover, .attach-conversation-option:hover { background: var(--dsw-alias-interactive-bg-hover); }
+  .attach-picker-search { box-sizing: border-box; width: 100%; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: var(--f-s-14); outline: none; }
+  .attach-picker-search:focus { border-color: var(--dsw-static-deepseek-500); }
+  .attach-picker-list { display: flex; flex-direction: column; gap: 2px; padding-top: 6px; min-height: 32px; max-height: min(300px, 45vh); overflow-y: auto; font: var(--f-xxs-12); color: var(--dsw-alias-label-caption); }
+  .attach-conversation-option { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; }
+  .attach-conversation-title, .attach-conversation-detail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .attach-conversation-title { color: var(--dsw-alias-label-primary); font: var(--f-s-14); }
+  .attach-conversation-detail { color: var(--dsw-alias-label-caption); font: var(--f-xxs-12); }
+  .attach-conversation-option:focus-visible, .attach-option:focus-visible, .attach-picker-back:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: -2px; }
 
   .pill-select { position: relative; display: inline-flex; align-items: center; }
   .pill-select select {
@@ -762,6 +782,10 @@
   .context-compaction .context-compaction-duration { color: var(--dsw-alias-label-caption); }
   .context-compaction[data-state="running"] { color: var(--dsw-alias-label-primary); }
   .context-compaction[data-state="running"] svg { animation: pulse 1.2s ease-in-out infinite; }
+  .context-compaction[data-state="failed"] { color: var(--dsw-alias-label-error, #c33); flex-wrap: wrap; }
+  .context-compaction-error { flex-basis: 100%; margin-left: 29px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .failed-send { display: flex; align-items: center; gap: 12px; margin-top: 7px; color: var(--dsw-alias-label-error, #c33); font: var(--f-xs-13); }
+  .failed-send button { border: 0; background: none; color: var(--dsw-alias-label-primary); cursor: pointer; text-decoration: underline; }
   @media (prefers-reduced-motion: reduce) {
     .context-compaction[data-state="running"] svg { animation: none; }
   }

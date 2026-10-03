@@ -116,7 +116,16 @@ async function main() {
   await run("document.querySelector('#deleteAllArchived').click()");
   await wait(() => run("document.querySelector('#deleteAllArchivedDialog').open"), 'delete-all dialog opens');
   assert.equal(await run("document.querySelector('#deleteAllArchivedCount').textContent"), 'All 1 archived conversations will be deleted.');
-  await run("document.querySelector('#confirmDeleteAllArchived').click()");
+  const deletingState = await run(`(() => {
+    document.querySelector('#confirmDeleteAllArchived').click();
+    return {
+      visible: !document.querySelector('#archivedDeleteActivity').hidden,
+      disabled: document.querySelector('#deleteAllArchived').disabled,
+      busy: document.querySelector('#archivedList').getAttribute('aria-busy'),
+      progress: document.querySelector('#archivedDeleteStatus').textContent,
+    };
+  })()`);
+  assert.deepEqual(deletingState, { visible: true, disabled: true, busy: 'true', progress: 'Deleting archived conversations: 0 of 1' });
   await wait(() => run("!!document.querySelector('#archivedList .empty')"), 'empty state after delete-all');
   assert.equal(fs.existsSync(legacyFile), false);
   assert.ok(!JSON.parse(fs.readFileSync(path.join(userData, 'desktop-config.json'), 'utf8')).claudeMeta?.archived?.[legacyId]);

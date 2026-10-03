@@ -21,6 +21,7 @@ const titles = {
   models: ["Model Settings", "Choose quick-switch defaults and keep model sessions ready."],
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
+let hasNavigated = false;
 let balanceKey = null, usageData = [];
 let catalog = [], catalogSelected = new Set(), catalogProvider = null;
 let statusTimer;
@@ -101,6 +102,7 @@ async function assertClean() {
   if (isDirty()) throw new Error(lastSaveError || "Save your changes before querying or validating keys");
 }
 function setView(next, engine, focus) {
+  hasNavigated = true;
   // Keep older download links working, including the requested engine.
   if (next === 'runtimes') next = focus === 'python' || focus === 'runtime-path-python' ? 'general' : 'engines';
   if (next === 'general' && ['quickSwitchModels', 'conversationSessionTtl', 'conversationSessionLimit'].includes(focus)) next = 'models';
@@ -313,7 +315,18 @@ function fillUsageFilters() {
 }
 function usageSources() {
   const source = $('usageSource').value;
-  const providers = source === 'subscription' ? [] : (live.providers || []).map(p => ({ ...p, source: 'api' }));
+  const providers = source === 'subscription' ? [] : (live.providers || []).map(p => ({ ...p, keys: [...p.keys], source: 'api' }));
+  if (source !== 'subscription') for (const archived of live.usageArchive || []) {
+    let provider = providers.find(p => p.id === archived.providerId || p.id === 'history:' + archived.providerId);
+    if (!provider) {
+      provider = { id: 'history:' + archived.providerId, name: archived.providerName,
+        keys: [], models: [], source: 'api' };
+      providers.push(provider);
+    }
+    const label = archived.keyName || archived.maskedKey || 'Key';
+    provider.keys.push({ id: archived.id, name: `${label} · ${window.CamelliaI18n.t('Previous key')}`,
+      usage: archived.usage });
+  }
   if (source === 'api') return providers;
   const subscriptions = new Map();
   for (const account of live.subscriptionUsage?.accounts || []) {
@@ -364,7 +377,7 @@ function renderChartGrid(container, charts) {
   container.innerHTML = charts.map(chart => `<section class="chart-panel chart-tile" data-chart-kind="${esc(chart.kind)}"><h3>${esc(chart.label)}</h3><p class="hint">${esc(chart.description)}</p><div class="chart-tile-body"></div></section>`).join('') || '<div class="chart-empty" data-i18n>No requests in this period.</div>';
   container.querySelectorAll('.chart-tile-body').forEach((body, index) => {
     const chart = charts[index];
-    body.innerHTML = SettingsCharts.line(chart.points, { ...chart, width: body.clientWidth });
+    body.innerHTML = SettingsCharts.line(chart.points, { ...chart, width: body.clientWidth, area: chart.kind === 'usage' });
     SettingsCharts.bindHover(body);
   });
 }
@@ -1010,11 +1023,29 @@ $('confirmCleanStorage').onclick = async () => {
 };
 // ---------- Archived conversations ----------
 const engineNames = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' };
-let archivedPendingDelete = null, archivedCount = 0;
+let archivedPendingDelete = null, archivedCount = 0, archivedDeleting = false, archivedRenderSeq = 0;
+function archivedDeleteProgress({ processed, total }) {
+  const t = window.CamelliaI18n.t;
+  $('archivedDeleteStatus').textContent = t('Deleting archived conversations: {0} of {1}')
+    .replace('{0}', () => fmt(processed)).replace('{1}', () => fmt(total));
+  $('archivedDeleteProgress').max = Math.max(total, 1);
+  $('archivedDeleteProgress').value = processed;
+}
+api.onArchivedDeleteProgress(archivedDeleteProgress);
+function setArchivedDeleting(busy) {
+  archivedDeleting = busy;
+  $('archivedDeleteActivity').hidden = !busy;
+  $('deleteAllArchived').disabled = busy || !archivedCount;
+  $('archivedList').setAttribute('aria-busy', String(busy));
+  $('archivedList').querySelectorAll('button').forEach(button => { button.disabled = busy; });
+}
 async function renderArchived() {
+  if (archivedDeleting) return;
+  const sequence = ++archivedRenderSeq;
   try {
     const result = await api.archivedSessionsList();
     if (!result.ok) throw new Error(result.error);
+    if (sequence !== archivedRenderSeq || archivedDeleting) return;
     archivedCount = result.sessions.length;
     $('deleteAllArchived').disabled = !archivedCount;
     const t = window.CamelliaI18n.t;
@@ -1022,9 +1053,10 @@ async function renderArchived() {
       <div><h2>${esc(s.title)}</h2><p class="hint">${esc(engineNames[s.origin || s.source] || s.source)} · ${esc(t("Archived"))} ${when(s.archivedAt)}${s.missing ? ' · ' + esc(t("Files missing")) : ''}</p></div>
       <div class="archived-actions"><button data-restore="${esc(s.source)}:${esc(s.id)}" data-i18n>Restore</button><button class="danger" data-delete="${esc(s.source)}:${esc(s.id)}" data-i18n>Delete</button></div>
     </div>`).join('') || `<div class="empty"><h2 data-i18n>No archived conversations</h2><p class="hint" data-i18n>Archive a conversation from its ⋯ menu in the sidebar and it will appear here.</p></div>`;
-  } catch (e) { status(e.message, true); }
+  } catch (e) { if (sequence === archivedRenderSeq && !archivedDeleting) status(e.message, true); }
 }
 $('archivedList').onclick = async e => {
+  if (archivedDeleting) return;
   const button = e.target.closest('button'); if (!button) return;
   const key = button.dataset.restore ?? button.dataset.delete;
   if (key === undefined) return;
@@ -1045,6 +1077,7 @@ $('archivedList').onclick = async e => {
   await renderArchived();
 };
 $('confirmDeleteArchived').onclick = async () => {
+  if (archivedDeleting) return;
   const target = archivedPendingDelete;
   archivedPendingDelete = null;
   $('deleteArchivedDialog').close();
@@ -1057,17 +1090,25 @@ $('confirmDeleteArchived').onclick = async () => {
   await renderArchived();
 };
 $('deleteAllArchived').onclick = () => {
+  if (archivedDeleting || !archivedCount) return;
   $('deleteAllArchivedCount').textContent = window.CamelliaI18n.t(`All ${archivedCount} archived conversations will be deleted.`);
   $('deleteAllArchivedDialog').showModal();
 };
 $('confirmDeleteAllArchived').onclick = async () => {
   $('deleteAllArchivedDialog').close();
+  if (archivedDeleting || !archivedCount) return;
+  setArchivedDeleting(true);
+  archivedDeleteProgress({ processed: 0, total: archivedCount });
   try {
     const result = await api.archivedSessionAction({ action: 'delete-all' });
     if (!result.ok) throw new Error(result.error);
-    status("All archived conversations deleted");
+    status(window.CamelliaI18n.t('Deleted {0} archived conversations.').replace('{0}', () => fmt(result.deleted)));
   } catch (err) { status(err.message, true); }
-  await renderArchived();
+  finally {
+    archivedDeleting = false;
+    try { await renderArchived(); }
+    finally { setArchivedDeleting(false); }
+  }
 };
 api.onApiRouterState(state => {
   if (!live) return; live = { ...live, ...state }; showLive(); updateKeyStats();
@@ -1091,7 +1132,10 @@ new ResizeObserver(() => {
     if (view === 'providers' || view === 'subscriptions') renderBalances();
   });
 }).observe(document.querySelector('.scroll-content'));
-void refresh(true).then(() => navigateSettings(Object.fromEntries(new URLSearchParams(location.search))));
+void refresh(true).then(() => {
+  // A click or IPC navigation during loading is newer than the launch URL.
+  if (!hasNavigated) navigateSettings(Object.fromEntries(new URLSearchParams(location.search)));
+});
 // Closing the window must not drop a debounced edit.
 window.addEventListener('beforeunload', () => { if (isDirty()) void flushSave(); });
 window.addEventListener('camellia:language', () => {
@@ -1099,7 +1143,7 @@ window.addEventListener('camellia:language', () => {
   // explicit re-render to leave the previous language.
   if (lastNetworkValue) renderNetworkSettings(lastNetworkValue);
   if (!live) return;
-  if (view === 'usage') renderUsage();
+  if (view === 'usage') { fillUsageFilters(); renderUsage(); }
   if (view === 'providers' || view === 'subscriptions') renderBalances();
   if (view === 'archived') void renderArchived();
 });

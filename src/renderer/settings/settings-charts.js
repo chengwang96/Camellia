@@ -2,7 +2,7 @@
 window.SettingsCharts = (() => {
   const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const format = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { maximumFractionDigits: 2, notation: Math.abs(value) >= 10000 ? 'compact' : 'standard' }).format(value);
-  function line(points, { label, unit = '', percent = false, width = 780 } = {}) {
+  function line(points, { label, unit = '', percent = false, width = 780, area = false } = {}) {
     const rows = points.filter(p => p.value !== null && Number.isFinite(p.value) && Number.isFinite(Date.parse(p.at))).sort((a,b) => Date.parse(a.at) - Date.parse(b.at));
     if (!rows.length) return "<div class=\"chart-empty\" data-i18n>No observations yet. Use the app or refresh a balance to start recording.</div>";
     const chartWidth = Math.max(240, Math.round(width));
@@ -21,7 +21,9 @@ window.SettingsCharts = (() => {
     const sameDay = new Date(minX).toDateString() === new Date(maxX).toDateString();
     const date = at => new Date(at).toLocaleString(window.CamelliaI18n.locale, sameDay && rows.length > 1 ? { hour: '2-digit', minute: '2-digit' } : { month: 'numeric', day: 'numeric' });
     const axis = rows.length === 1 ? `<text x="${x(rows[0].at)}" y="235" text-anchor="middle" class="chart-label">${date(rows[0].at)}</text>` : `<text x="${left}" y="235" class="chart-label">${date(rows[0].at)}</text><text x="${right}" y="235" text-anchor="end" class="chart-label">${date(rows.at(-1).at)}</text>`;
-    return `<svg class="line-chart" viewBox="0 0 ${chartWidth} 248" width="${chartWidth}" height="248" role="img" aria-label="${escape(label)}">${grid}${rows.length > 1 ? `<polyline points="${coords}" fill="none" class="chart-line"/>` : ''}${dots}${axis}</svg>${rows.length === 1 ? "<p class=\"hint\" data-i18n>One observation recorded. More observations will form a trend.</p>" : ''}`;
+    const fill = area && rows.length > 1 ? `<polygon points="${left},${bottom} ${coords} ${right},${bottom}" class="chart-area"/>` : '';
+    const single = area && rows.length === 1 ? `<line x1="${x(rows[0].at)}" x2="${x(rows[0].at)}" y1="${y(rows[0].value)}" y2="${bottom}" class="chart-single-guide"/><circle cx="${x(rows[0].at)}" cy="${y(rows[0].value)}" r="11" class="chart-single-halo"/>` : '';
+    return `<svg class="line-chart" viewBox="0 0 ${chartWidth} 248" width="${chartWidth}" height="248" role="img" aria-label="${escape(label)}">${grid}${fill}${single}${rows.length > 1 ? `<polyline points="${coords}" fill="none" class="chart-line"/>` : ''}${dots}${axis}</svg>`;
   }
   function bindHover(container) {
     const chart = container.querySelector('.line-chart');

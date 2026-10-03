@@ -58,8 +58,11 @@ async function main() {
     console.log('PASS: scan lifecycle, normalized address, duplicate guard, HTTP failure/retry, desktop approval, camera lifecycle and pairing layout');
   } finally {
     for (const timer of timers) clearTimeout(timer);
-    if (added) { const undo = [...rule]; undo[2] = '-D'; command(['shell', 'iptables', ...undo]); }
-    command(['reverse', '--remove', 'tcp:43129']); await gateway.stop();
+    try {
+      if (added) { const undo = [...rule]; undo[2] = '-D'; command(['shell', 'iptables', ...undo]); }
+      command(['reverse', '--remove', 'tcp:43129']);
+    } catch (error) { console.error('ADB cleanup failed: ' + error.message); }
+    await gateway.stop();
     assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -230,9 +230,38 @@ test('delete-all removes every archived session across sources', async (t) => {
     assert.equal(meta[key]['old-one'], undefined);
     assert.equal(meta[key]['old-two'], undefined);
   }
-  for (const id of ['old-one', 'old-two', c.id]) {
-    assert.equal(h.events.some(e => e.channel === 'dsh:archived-changed' && e.data.action === 'delete' && e.data.id === id), true);
+  const change = h.events.find(e => e.channel === 'dsh:archived-changed' && e.data.action === 'delete-all');
+  assert.deepEqual(new Set(change.data.ids), new Set(['old-one', 'old-two', c.id]));
+});
+
+test('delete-all keeps the event loop responsive and sends one sidebar refresh', async (t) => {
+  const h = setup(t);
+  const ids = Array.from({ length: 40 }, (_, index) => `bulk-${index}`);
+  for (const id of ids) {
+    h.seedSession(id, h.folder('proj'), id);
+    h.call('claude-archive-session', { id });
   }
+  const progress = [];
+  const sender = { isDestroyed: () => false, send: (channel, value) => progress.push({ channel, value }) };
+  let settled = false;
+  const pending = h.call('archived-session-action', { action: 'delete-all' }, { sender })
+    .then(result => { settled = true; return result; });
+  const duplicate = await h.call('archived-session-action', { action: 'delete-all' });
+  assert.equal(duplicate.ok, false);
+  assert.match(duplicate.error, /already being deleted/);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(settled, false, 'bulk deletion must yield so the main event loop can serve other windows');
+  const result = await pending;
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.deleted, ids.length);
+  assert.equal((await archivedList(h)).length, 0);
+  assert.equal(progress[0].channel, 'dsh:archived-delete-progress');
+  assert.deepEqual({ processed: progress[0].value.processed, total: progress[0].value.total }, { processed: 0, total: ids.length });
+  assert.equal(progress.at(-1).value.processed, ids.length);
+  const changes = h.events.filter(event => event.channel === 'dsh:archived-changed' && ['delete', 'delete-all'].includes(event.data.action));
+  assert.equal(changes.length, 1, 'chat windows should reload their sidebar only once');
+  assert.equal(changes[0].data.action, 'delete-all');
+  assert.deepEqual(new Set(changes[0].data.ids), new Set(ids));
 });
 
 test('delete-all stops at a busy conversation and reports the error', async (t) => {
@@ -250,5 +279,7 @@ test('delete-all stops at a busy conversation and reports the error', async (t) 
   const remaining = await archivedList(h);
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].id, c.id);
+  const change = h.events.find(e => e.channel === 'dsh:archived-changed' && e.data.action === 'delete-all');
+  assert.deepEqual([...change.data.ids], ['busy-peer'], 'a partial failure must still refresh the sidebar for deleted conversations');
   shared.active.delete(c.id);
 });

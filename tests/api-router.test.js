@@ -9,6 +9,7 @@ const path = require('node:path');
 const { once } = require('node:events');
 const { startApiRouter, retryDelay } = require('../src/api/api-router');
 const { normalizeConfig, writeConfig, loadConfig, publicState, PRESETS } = require('../src/api/api-router-config');
+const { recordUsage } = require('../src/api/api-usage');
 const { frame, SSEParser, convertRequest } = require('../src/api/api-protocol');
 const { BAD_PORTS } = require('./bad-ports.cjs');
 
@@ -577,6 +578,11 @@ test('credential replacement isolates new load from old in-flight requests', asy
   reply(held.get('hold-new').res, 200, completion('vendor/Kimi-K3'));
   assert.equal((await current).status, 200);
   assert.ok(Object.values(f.router.getState().keyActiveRequests).every(n => n === 0));
+  assert.equal(f.router.getState().usageArchive.length, 1);
+  assert.equal(f.router.getState().usageArchive[0].usage.inputTokens, 10,
+    'A request started before replacement belongs to the retired key');
+  assert.equal(f.router.getState().usage['pool-key-0'].inputTokens, 10,
+    'The replacement key keeps only its own request');
 });
 
 test('explicitly pinned scopes keep their key even when a sibling is idle', async t => {
@@ -784,6 +790,56 @@ test('usage survives shutdown and masked edits/reordering; invalid config never 
   assert.throws(()=>f.router.updateConfig({...state,providers:[{...state.providers[0],baseUrl:'http://remote.invalid/v1'}]}),/HTTPS/);
   await f.router.stop();
   const saved=loadConfig(f.file); assert.equal(saved.providers[0].keys[0].key,'two-secret'); assert.equal(saved.usage['a-key-0'].requests,1);
+  assert.equal(saved.usageArchive.length, 0);
+});
+
+test('replacing and deleting API keys preserves old usage without carrying it to the new credential', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-usage-archive-'));
+  t.after(() => removeTree(root));
+  const file = path.join(root, 'pool.json');
+  const first = normalizeConfig({ providers: [provider('history', 'http://127.0.0.1:19099', ['old-secret'])] });
+  first.providers[0].keys[0].name = 'Original';
+  recordUsage(first.usage['history-key-0'], 'kimi-k3', { input: 100, output: 5, cacheRead: 20, cacheWrite: 0, reported: true },
+    'requests', new Date('2026-09-25T12:00:00'));
+  const edit = publicState(first);
+  edit.providers[0].keys[0].key = 'new-secret';
+  const rotated = normalizeConfig(edit, first);
+  assert.equal(rotated.usage['history-key-0'].inputTokens, 0);
+  assert.equal(rotated.usageArchive.length, 1);
+  assert.equal(rotated.usageArchive[0].usage.inputTokens, 100);
+  assert.equal(rotated.usageArchive[0].usage.byModel['kimi-k3'].outputTokens, 5);
+  assert.equal(rotated.usageArchive[0].keyName, 'Original');
+  assert.ok(!JSON.stringify(publicState(rotated)).includes('old-secret'));
+  recordUsage(rotated.usage['history-key-0'], 'kimi-k3', { input: 30, output: 2, cacheRead: 0, cacheWrite: 0, reported: true },
+    'requests', new Date('2026-10-04T12:00:00'));
+  const removed = publicState(rotated);
+  removed.providers[0].keys = [];
+  const next = normalizeConfig(removed, rotated);
+  assert.equal(next.usageArchive.length, 2);
+  assert.equal(next.usageArchive.reduce((sum, row) => sum + row.usage.inputTokens, 0), 130);
+  assert.equal(Object.keys(next.usage).length, 0);
+  writeConfig(file, next);
+  const loaded = loadConfig(file);
+  assert.equal(loaded.usageArchive.length, 2);
+  assert.equal(loaded.usageArchive.reduce((sum, row) => sum + row.usage.requests, 0), 2);
+});
+
+test('recovered usage is merged once across reloads and later saves', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-usage-recovery-'));
+  t.after(() => removeTree(root));
+  const file = path.join(root, 'pool.json');
+  const cfg = normalizeConfig({ providers: [provider('current', 'http://127.0.0.1:19099')] });
+  writeConfig(file, cfg);
+  fs.writeFileSync(file + '.usage-recovery.json', JSON.stringify({ version: 1, entries: [{
+    id: 'history-recovered', providerId: 'removed', providerName: 'Removed provider', keyName: 'Old account',
+    usage: { requests: 2, inputTokens: 200, outputTokens: 12, byModel: { 'kimi-k3': { requests: 2, inputTokens: 200, outputTokens: 12 } } },
+  }] }));
+  const first = loadConfig(file);
+  assert.equal(first.usageArchive.length, 1);
+  writeConfig(file, first);
+  const second = loadConfig(file);
+  assert.equal(second.usageArchive.length, 1);
+  assert.equal(second.usageArchive[0].usage.inputTokens, 200);
 });
 
 test('Retry-After accepts seconds and dates; unsupported rich blocks fail visibly', () => {
