@@ -71,7 +71,12 @@ class RemoteReadModel {
   }
   currentCompaction(conversation, active, transcript) {
     const saved = this.compactions.get(conversation);
-    const current = compactionView(this.manager.switching?.get(conversation.id)?.compaction || active?.compaction);
+    const last = conversation.lastCompaction;
+    const current = compactionView(this.manager.switching?.get(conversation.id)?.compaction || active?.compaction
+      || (['failed', 'cancelled'].includes(last?.outcome) && Number.isSafeInteger(last.boundary)
+        && !transcript.some(row => row.role === 'user' && row.seq > last.boundary)
+        ? { state: last.outcome, engine: last.engine || conversation.currentEngine,
+        native: last.route === 'native' } : null));
     if (current) return { ...current, afterSeq: saved?.value.state === 'running' ? saved.value.afterSeq : conversation.seq };
     // A missing running state is not evidence of success. Terminal events survive
     // stream coalescing, but a later user turn retires this transient indicator.

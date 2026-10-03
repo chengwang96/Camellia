@@ -87,8 +87,11 @@ async function main() {
     assert.equal(service.list().length, 0);
     console.log('PASS Android UI ↔ production gateway/service: group CRUD, catalog, identity, serial replies, SSE, lost-ack recovery, image/document upload, question answers, and artifact download. Model execution uses isolated fixtures; no subscription calls.');
   } finally {
-    if (ruleAdded) { const undo = [...rule]; undo[2] = '-D'; command(['shell', 'iptables', ...undo]); }
-    command(['reverse', '--remove', 'tcp:43129']); await gateway.stop(); await service.shutdown(); removeTree(root);
+    try {
+      if (ruleAdded) { const undo = [...rule]; undo[2] = '-D'; command(['shell', 'iptables', ...undo]); }
+      command(['reverse', '--remove', 'tcp:43129']);
+    } catch (error) { console.error('ADB cleanup failed: ' + error.message); }
+    await gateway.stop(); await service.shutdown(); removeTree(root);
   }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

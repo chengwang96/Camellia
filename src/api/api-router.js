@@ -63,6 +63,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   let diskMtime = fs.existsSync(configPath) ? fs.statSync(configPath).mtimeMs : 0;
   const sockets = new Set(), upstreams = new Set();
   const keyRequests = new Map();
+  const retiredRequests = new Map();
   const scopes = new RequestScopes();
   const getState = () => ({ ...publicState(cfg), running, error, activeRequests: upstreams.size, url: `http://127.0.0.1:${cfg.port}`, lastRoute: lastRoute ? { ...lastRoute } : null,
     keyActiveRequests: Object.fromEntries(cfg.providers.flatMap(provider => provider.keys.map(key => [key.id, keyLoad(provider, key)]))),
@@ -95,7 +96,10 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     notify();
   }
   function usageFor(route) {
-    return cfg.providers.some(p => p.id === route.provider.id && p.keys.some(k => k.id === route.key.id && k.key === route.key.key)) ? cfg.usage[route.key.id] : null;
+    if (cfg.providers.some(p => p.id === route.provider.id && p.keys.some(k => k.id === route.key.id
+      && (k.key === route.key.key || p.type === 'qclaw' && route.provider.type === 'qclaw' && k.id === 'qclaw-auto')))) return cfg.usage[route.key.id];
+    const archivedId = retiredRequests.get(quotaIdentity(route.provider, route.key));
+    return cfg.usageArchive.find(entry => entry.id === archivedId)?.usage || null;
   }
   // Provider-reported quota is advisory routing state and is never persisted:
   // the probe below refreshes it, so a key returns to the pool by itself once
@@ -534,9 +538,19 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   // Callers can await ready; avoid an unhandled rejection for historical CLI callers.
   ready.catch(() => {});
   function updateConfig(raw) {
-    const next = normalizeConfig(raw, cfg);
+    const previous = cfg;
+    const archiveEmptyKeys = new Set(previous.providers.flatMap(provider => provider.keys
+      .filter(key => keyLoad(provider, key) > 0).map(key => provider.id + '/' + key.id)));
+    const next = normalizeConfig(raw, previous, { archiveEmptyKeys });
     if (next.port !== cfg.port) throw new Error("Changing the port requires a router restart");
     writeConfig(configPath, next);
+    const newArchives = next.usageArchive.slice(previous.usageArchive.length);
+    for (const provider of previous.providers) for (const key of provider.keys) {
+      const current = next.providers.find(p => p.id === provider.id)?.keys.find(k => k.id === key.id);
+      if (current && (current.key === key.key || provider.type === 'qclaw' && key.id === 'qclaw-auto')) continue;
+      const archived = newArchives.find(entry => entry.providerId === provider.id && entry.keyId === key.id);
+      if (archived) retiredRequests.set(quotaIdentity(provider, key), archived.id);
+    }
     clearTimeout(saveTimer); cfg = next; diskMtime = fs.statSync(configPath).mtimeMs; reconcileQuota(); notify();
     return getState();
   }

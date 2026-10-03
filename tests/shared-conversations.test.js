@@ -616,6 +616,11 @@ test('native compaction failure and cancellation retain mappings without silent 
     assert.equal(harness.sent.length, 1);
     assert.equal(manager.busy(conversation.id), false);
     assert.equal(conversation.pending, null);
+    const restarted = harness.restart(), restored = restarted.load('codex', conversation.id);
+    assert.equal(restored.compaction.state, mode === 'failure' ? 'failed' : 'cancelled');
+    if (mode === 'failure') assert.match(restored.compaction.error, /Provider unavailable/);
+    restarted.append(restarted.get(conversation.id), { role: 'user', text: 'Continue after compaction' });
+    assert.equal(restarted.load('codex', conversation.id).compaction, null);
   }
 });
 
@@ -3218,7 +3223,7 @@ test('stopping pre-send compaction during setup sends neither summary nor task',
   assert.equal(f.manager.busy(conversation.id), false);
   assert.equal(statuses.at(-1).text, '');
   assert.equal(statuses.at(-1).compaction.state, 'cancelled');
-  assert.equal(f.manager.load('codex', conversation.id).compaction, null);
+  assert.equal(f.manager.load('codex', conversation.id).compaction.state, 'cancelled');
 });
 
 test('resending after stop reports internal compaction before the visible turn starts', async context => {
@@ -3283,6 +3288,12 @@ test('failed pre-send compaction rejects the task instead of sending oversized h
   assert.equal(f.sent.length, 1);
   assert.equal(f.manager.busy(conversation.id), false);
   assert.equal(f.manager.messages(conversation).some(row => row.role === 'user' || row.file), false);
+  const restarted = f.restart(), restored = restarted.load('dsh', conversation.id);
+  assert.equal(restored.compaction.state, 'failed');
+  assert.match(restored.compaction.error, /Provider unavailable/);
+  assert.equal(restored.messages.some(row => row.role === 'user'), false);
+  restarted.append(restarted.get(conversation.id), { role: 'user', text: 'Continue after compaction' });
+  assert.equal(restarted.load('dsh', conversation.id).compaction, null);
 });
 
 test('a conversation under its window cap sends without pre-compaction', async t => {

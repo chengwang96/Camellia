@@ -5,6 +5,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { setImmediate: nextEventLoopTurn } = require('node:timers/promises');
 const { pathToFileURL } = require('node:url');
 const { liveWebContents } = require('./live-web-contents');
 const { startApiRouter } = require('../api/api-router.js');
@@ -2049,9 +2050,10 @@ if (!gotSingleInstanceLock) {
     claude: claudeWorkspaces, kimi: kimiWorkspaces, codex: codex.workspaces,
     antigravity: antigravity.workspaces, shared: sharedConversations.workspaces,
   });
-  const notifyArchivedChanged = (source, id, action) => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:archived-changed', { source, id, action });
+  const notifyArchivedChanged = (source, id, action, ids) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:archived-changed', { source, id, action, ...(ids ? { ids } : {}) });
   };
+  let deletingAllArchived = false;
   // Permanent delete of one conversation from the sidebar: stop and clear any
   // goal that owns it (a running goal must be paused first), drop its native
   // connection binding, then remove the transcript and every metadata entry.
@@ -2108,24 +2110,55 @@ if (!gotSingleInstanceLock) {
       return { ok: true, ...result };
     } catch (error) { return { ok: false, error: error.message }; }
   });
-  ipcMain.handle('dsh:archived-session-action', async (_event, payload) => {
+  ipcMain.handle('dsh:archived-session-action', async (event, payload) => {
     const notify = notifyArchivedChanged;
     const removeArchived = removeEngineSession;
     try {
       const { source, id, action } = payload || {};
       if (!['restore', 'delete', 'delete-all'].includes(action)) throw new Error('Unknown action');
       if (action === 'delete-all') {
-        // Notify per deleted conversation so open chats reset like a single delete.
+        if (deletingAllArchived) throw new Error('Archived conversations are already being deleted');
+        deletingAllArchived = true;
         let deleted = 0;
-        for (const [each, workspaces] of Object.entries(archivedSources())) {
-          for (const session of await workspaces.listArchived()) {
-            await removeArchived(each, session.id);
-            deleted += 1;
-            notify(each, session.id, 'delete');
+        const deletedIds = [];
+        try {
+          // Metadata already identifies archived conversations. Avoid reading
+          // every transcript head again just to build the deletion queue.
+          const sources = archivedSources();
+          const targets = Object.entries(sources).flatMap(([each, workspaces]) =>
+            Object.keys(workspaces.sessionMeta().archived).map(id => ({ source: each, id })));
+          let processed = 0, lastReport = 0;
+          const report = () => {
+            const now = Date.now();
+            if (processed && processed < targets.length && processed % 10 && now - lastReport < 100) return;
+            lastReport = now;
+            try {
+              if (event?.sender && !event.sender.isDestroyed()) event.sender.send('dsh:archived-delete-progress', { processed, total: targets.length, deleted });
+            } catch { /* Closing Settings must not interrupt deletion. */ }
+          };
+          report();
+          // Each removal can synchronously update configuration and files. A
+          // real event-loop turn between removals keeps Electron responsive.
+          await nextEventLoopTurn();
+          for (const target of targets) {
+            if (sources[target.source].sessionMeta().archived[target.id]) {
+              await removeArchived(target.source, target.id);
+              deleted++;
+              deletedIds.push(target.id);
+            }
+            processed++;
+            report();
+            await nextEventLoopTurn();
           }
+          return { ok: true, deleted, skipped: targets.length - deleted };
+        } finally {
+          // One sidebar refresh is enough, including after a partial failure.
+          deletingAllArchived = false;
+          try { if (deletedIds.length) notify(null, null, 'delete-all', deletedIds); }
+          catch (error) { log('Could not notify chat windows after deleting archived conversations: ' + error.message); }
         }
-        return { ok: true, deleted };
       }
+      if (deletingAllArchived) throw new Error('Archived conversations are being deleted');
       const workspaces = archivedSources()[source];
       if (!workspaces) throw new Error('Unknown conversation source');
       if (action === 'restore') workspaces.archiveSession(id, false);

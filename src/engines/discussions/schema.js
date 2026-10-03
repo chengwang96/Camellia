@@ -64,9 +64,10 @@ function validateIdentityPrompt(value) {
 }
 
 function validateDiscussion(state, id) {
-  shape(state, ['version', 'revision', 'id', 'threadId', 'cwd', 'title', 'seq', 'participants', 'messages', 'deliveries', 'requests'], ['stopPending', 'pinned', 'permissionMode']);
+  shape(state, ['version', 'revision', 'id', 'threadId', 'cwd', 'title', 'seq', 'participants', 'messages', 'deliveries', 'requests'], ['stopPending', 'pinned', 'permissionMode', 'lastMessageAt']);
   check(state.version === 1 && state.id === id, 'state version or identity'); uuid(id); uuid(state.threadId);
   integer(state.revision, 1); integer(state.seq, 0, LIMITS.messages);
+  if (state.lastMessageAt !== undefined) integer(state.lastMessageAt, 0);
   text(state.cwd, 32768); check(path.isAbsolute(state.cwd) && !state.cwd.includes('\0'), 'working directory'); text(state.title);
   if (state.stopPending !== undefined) check(typeof state.stopPending === 'boolean', 'stop state');
   if (state.pinned !== undefined) check(typeof state.pinned === 'boolean', 'pinned state');

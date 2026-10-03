@@ -88,6 +88,7 @@ test('a rotating QClaw token keeps one key entry and its counters', () => {
   assert.equal(next.providers[0].baseUrl, 'http://127.0.0.1:28794/v1');
   assert.equal(next.usage['qclaw-auto'].requests, 7, 'a rotated token does not reset the counters');
   assert.equal(next.usage['qclaw-auto'].inputTokens, 1200);
+  assert.equal(next.usageArchive.length, 0, 'automatic token rotation keeps one continuous usage record');
 });
 
 test('the shipped preset needs no key and points at the documented default port', () => {

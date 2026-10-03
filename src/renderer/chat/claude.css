@@ -762,6 +762,10 @@
   .context-compaction .context-compaction-duration { color: var(--dsw-alias-label-caption); }
   .context-compaction[data-state="running"] { color: var(--dsw-alias-label-primary); }
   .context-compaction[data-state="running"] svg { animation: pulse 1.2s ease-in-out infinite; }
+  .context-compaction[data-state="failed"] { color: var(--dsw-alias-label-error, #c33); flex-wrap: wrap; }
+  .context-compaction-error { flex-basis: 100%; margin-left: 29px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .failed-send { display: flex; align-items: center; gap: 12px; margin-top: 7px; color: var(--dsw-alias-label-error, #c33); font: var(--f-xs-13); }
+  .failed-send button { border: 0; background: none; color: var(--dsw-alias-label-primary); cursor: pointer; text-decoration: underline; }
   @media (prefers-reduced-motion: reduce) {
     .context-compaction[data-state="running"] svg { animation: none; }
   }

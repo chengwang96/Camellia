@@ -41,6 +41,8 @@ try:
         page.goto((repo / 'src/renderer/settings/api-settings.html').as_uri())
         page.wait_for_load_state('networkidle')
         page.locator('[data-view=usage]').click()
+        expect(page.locator('#usageRange')).to_have_value('all')
+        page.locator('#usageRange').select_option('7')
         page.locator('#usageSource').select_option('subscription')
         expect(page.locator('#usageRows tr')).to_have_count(3)
         # Unpriced or incomplete usage is described in the note below the
@@ -77,6 +79,31 @@ try:
         page.locator('#usageSource').select_option('api')
         expect(page.locator('#subscriptionCostCard')).to_be_hidden()
         expect(page.locator('#usageRows')).not_to_contain_text('future-model')
+        page.evaluate('''() => {
+          const today = localDay(new Date());
+          live.usageArchive = [
+            {id: 'history-test', providerId: 'test', providerName: 'Local test', keyName: 'Earlier key',
+              usage: {requests: 2, inputTokens: 200, outputTokens: 8,
+                byModel: {'test-model': {requests: 2, inputTokens: 200, outputTokens: 8}},
+                daily: {[today]: {'test-model': {requests: 1, inputTokens: 50, outputTokens: 2}}}}},
+            {id: 'history-gone', providerId: 'gone', providerName: 'Removed provider', keyName: 'Former account',
+              usage: {requests: 1, inputTokens: 25, byModel: {'test-model': {requests: 1, inputTokens: 25}}}},
+            {id: 'history-gone-second', providerId: 'gone', providerName: 'Removed provider', keyName: 'Another account',
+              usage: {requests: 1, inputTokens: 15, byModel: {'test-model': {requests: 1, inputTokens: 15}}}}
+          ];
+          fillUsageFilters(); renderUsage();
+        }''')
+        page.locator('#usageProvider').select_option('test')
+        expect(page.locator('#usageKey')).to_contain_text('Earlier key')
+        assert page.evaluate("usageData.filter(row => row.keyId === 'history-test').reduce((sum, row) => sum + row.inputTokens, 0)") == 200
+        page.locator('#usageRange').select_option('7')
+        assert page.evaluate("usageData.filter(row => row.keyId === 'history-test').reduce((sum, row) => sum + row.inputTokens, 0)") == 50
+        page.locator('#usageRange').select_option('all')
+        page.locator('#usageProvider').select_option('history:gone')
+        assert page.evaluate("usageData.some(row => row.keyId === 'history-gone' && row.inputTokens === 25)")
+        assert page.evaluate("usageData.some(row => row.keyId === 'history-gone-second' && row.inputTokens === 15)")
+        expect(page.locator('#usageProvider option[value="history:gone"]')).to_have_count(1)
+        page.evaluate('''() => { live.usageArchive = []; fillUsageFilters(); renderUsage(); }''')
 
         # A key's Usage shortcut must leave subscription-only filters behind.
         page.locator('#usageSource').select_option('subscription')
@@ -97,6 +124,7 @@ try:
         rpc('restart')
         page.reload(); page.wait_for_load_state('networkidle')
         page.locator('[data-view=usage]').click()
+        page.locator('#usageRange').select_option('7')
         page.locator('#usageSource').select_option('subscription')
         expect(page.locator('#usageRows tr')).to_have_count(3)
         page.locator('[data-view=general]').click()

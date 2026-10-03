@@ -612,7 +612,12 @@ class SharedConversations {
     if (this.workspaces.sessionMeta().archived[id]) return { ok: false, error: 'This conversation is archived. Restore it from Settings → Archived first.' };
     const messages = this.messages(c);
     const live = this.live(c.currentEngine, id, messages).live;
-    return { ok: true, ...c, activity: this.activity(id), compaction: this.switching.get(id)?.compaction || this.active.get(id)?.compaction || null, live, preferences: prefs, messages, settings: this.settings(engine, id), truncated: false,
+    const last = c.lastCompaction;
+    const compaction = this.switching.get(id)?.compaction || this.active.get(id)?.compaction
+      || (['failed', 'cancelled'].includes(last?.outcome) && Number.isSafeInteger(last.boundary)
+        && !messages.some(row => row.role === 'user' && row.seq > last.boundary) ? { state: last.outcome, engine: last.engine || c.currentEngine,
+        native: last.route === 'native', error: last.error || '' } : null);
+    return { ok: true, ...c, activity: this.activity(id), compaction, live, preferences: prefs, messages, settings: this.settings(engine, id), truncated: false,
       remoteQueue: this.remoteQueue?.snapshot(id) };
   }
   settings(engine, id) {
@@ -1077,6 +1082,7 @@ class SharedConversations {
       if (event.state === 'running') a.nativeCompactionStartedAt ||= Date.now();
       a.compaction = { state: event.state, native: true, engine };
       if (event.state === 'completed') {
+        c.lastCompaction = { outcome: 'completed', route: 'native', engine };
         const durationMs = Number.isFinite(event.durationMs) ? event.durationMs
           : a.nativeCompactionStartedAt ? Date.now() - a.nativeCompactionStartedAt : undefined;
         const notice = this.append(c, { role: 'notice', engine, text: 'Context compacted automatically',
@@ -1085,6 +1091,9 @@ class SharedConversations {
         if (durationMs !== undefined) a.compaction.durationMs = durationMs;
         event = { ...event, compactionSeq: notice.seq, ...(durationMs === undefined ? {} : { compactionDurationMs: durationMs }) };
         if (c.segments[engine]) delete c.segments[engine].contextUsage;
+        this.save(c);
+      } else if (event.state === 'failed' || event.state === 'cancelled') {
+        c.lastCompaction = { outcome: event.state, route: 'native', engine, boundary: c.seq, error: event.error || '' };
         this.save(c);
       }
       if (event.state !== 'running') { a.compaction = null; a.nativeCompactionStartedAt = 0; }
@@ -1330,6 +1339,9 @@ class SharedConversations {
         displayText: payload.displayText ?? prompt, attachments: payload.attachments || [], steered: true });
       active.c.updatedAt = this.stamp();
       this.save(active.c);
+      this.workspaces.promoteSession(active.c.id, [...this.items.values()]
+        .sort((first, second) => second.updatedAt - first.updatedAt || first.id.localeCompare(second.id)).map(conversation => conversation.id));
+      this.publishActivity(active.c.id);
       const event = { type: 'conversation:steered', session_id: active.c.id, engine, runId: active.facade.gen,
         prompt, displayText: row.displayText, attachments: row.attachments, userSeq: row.seq, eventSeq: ++active.eventSeq };
       active.events.push(event);
@@ -1612,6 +1624,7 @@ class SharedConversations {
           : !this.usesNativeCompaction(c, engine, pinnedSettings || this.settings(engine, id)) ? 'native-session-ineligible'
             : !recovery && sourceRows.some(row => row.seq > segment.cursor) ? 'unsynchronized-history' : 'native-eligible';
     let completed = false;
+    let failureMessage = '';
     const status = (text, compaction) => {
       if (compaction) compaction = { engine, ...compaction };
       switching.compaction = compaction || null;
@@ -1762,17 +1775,18 @@ class SharedConversations {
       status('', { state: 'completed', seq: notice.seq, durationMs });
       return { ok: true, sessionId: id, file, durationMs };
     } catch (error) {
+      failureMessage = error.message;
       if (switching.cancelled || recovery?.cancelled || error.message.includes(recoveryAdvice)) throw error;
       throw Object.assign(new Error(error.message + '\n' + recoveryAdvice, { cause: error }), { code: error.code });
     } finally {
       diagnostics.reason = routeReason;
       diagnostics.totalMs = Date.now() - startedAt;
       diagnostics.outcome = completed ? 'completed' : switching.cancelled || recovery?.cancelled ? 'cancelled' : 'failed';
-      c.lastCompaction = diagnostics;
+      c.lastCompaction = { ...diagnostics, engine, error: failureMessage };
       this.save(c);
       this.log('context compaction metrics: ' + JSON.stringify({ sessionId: id, engine, ...diagnostics }));
       this.switching.delete(id);
-      status('', completed ? undefined : { state: switching.cancelled || recovery?.cancelled ? 'cancelled' : 'failed', native: diagnostics.route === 'native' });
+      status('', completed ? undefined : { state: switching.cancelled || recovery?.cancelled ? 'cancelled' : 'failed', native: diagnostics.route === 'native', error: failureMessage });
       this.publishActivity(id);
     }
   }

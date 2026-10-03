@@ -71,6 +71,17 @@ with sync_playwright() as playwright:
     expect(page.locator('.session-drag-preview')).to_have_count(0)
     assert page.evaluate('calls[0]') == dict(op='move-session', sessionId='first', group='workspace', targetSessionId='second', placement='after')
     assert page.evaluate('opened') == ['second']
+    first = page.locator('[data-sid="first"]').bounding_box()
+    second = page.locator('[data-sid="second"]').bounding_box()
+    gap_y = (first['y'] + first['height'] + second['y']) / 2
+    for gap_x in (second['x'] + 70, second['x'] - 4):
+        hold('[data-sid="third"]')
+        page.mouse.move(gap_x, gap_y)
+        expect(page.locator('[data-sid="second"]')).to_have_class('session-item session-drop-before')
+        page.mouse.up()
+        page.wait_for_function('calls.length === 2')
+        assert page.evaluate('calls[1]') == dict(op='move-session', sessionId='third', group='workspace', targetSessionId='second', placement='before')
+        page.evaluate('calls.splice(1)')
     hold('[data-sid="first"]')
     page.mouse.move(*center('[data-workspace-id="target"] .ws-row'))
     expect(page.locator('[data-workspace-id="target"]')).to_have_class('session-drop-group')

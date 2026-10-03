@@ -44,6 +44,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
                 int count = lists.incrementAndGet();
                 assertEquals(count == 2 ? 2 : 1, page.optJSONArray("conversations").length());
                 if (count == 3) throw complete;
+                advanceListFixture(token, count == 1 ? "add" : "remove");
             });
             fail("Expected three list snapshots");
         } catch (IOException expected) { assertSame(complete, expected); }
@@ -134,6 +135,18 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         assertEquals("remoteautomationneedle: verified on the desktop", bytes.toString("UTF-8"));
     }
 
+    private void advanceListFixture(String token, String operation) throws IOException {
+        // Fixture coordination is deliberately outside the production RemoteApi
+        // endpoint allowlist. Only the disposable host test serves this route.
+        var connection = (java.net.HttpURLConnection) new java.net.URL("http://100.64.0.1:43128/fixture/list/" + operation).openConnection();
+        try {
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Authorization", "Bearer " + token);
+            connection.setConnectTimeout(5000); connection.setReadTimeout(5000);
+            assertEquals(200, connection.getResponseCode());
+        } finally { connection.disconnect(); }
+    }
+
     private void verifyListScreen(JSONObject credential) throws Exception {
         CredentialStore encrypted = new CredentialStore(getInstrumentation().getTargetContext());
         encrypted.clear();
@@ -148,7 +161,10 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
                     var load = MainActivity.class.getDeclaredMethod("loadList", boolean.class); load.setAccessible(true); load.invoke(activity, false);
                 } catch (Exception error) { throw new AssertionError(error); }
             });
+            awaitConversationCount(activity, 1);
+            advanceListFixture(credential.getString("token"), "add");
             awaitConversationCount(activity, 2);
+            advanceListFixture(credential.getString("token"), "remove");
             awaitConversationCount(activity, 1);
         } finally {
             getInstrumentation().runOnMainSync(activity::finish);
@@ -320,6 +336,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             awaitConversationCount(activity, 1);
+            advanceListFixture(credential.getString("token"), "add");
             awaitConversationCount(activity, 2, 22_000);
             getInstrumentation().runOnMainSync(() -> {
                 android.widget.TextView status = activity.getWindow().getDecorView().findViewWithTag("connectionStatus");

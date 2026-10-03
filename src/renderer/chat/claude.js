@@ -1364,6 +1364,31 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     return div;
   }
 
+  function showFailedSend(attempt, existing) {
+    if (!attempt || !context.sessionId) return;
+    const persisted = !existing && Number.isFinite(attempt.at)
+      ? [...chat.querySelectorAll('.msg-user')].reverse().find(row => row.messageData?.seq
+        && row.messageData.at >= attempt.at && row.messageData.text === (attempt.text || '[Attachments]')) : null;
+    const div = existing || persisted || addUser(attempt.text || '[Attachments]', attempt.attachments, { at: attempt.at || Date.now() });
+    if (div.querySelector('.failed-send')) return;
+    const controls = document.createElement('div'); controls.className = 'failed-send';
+    const error = document.createElement('span'); error.textContent = window.CamelliaI18n.t('Failed to start') + ': ' + attempt.error;
+    const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'Edit message'; edit.dataset.i18n = '';
+    edit.onclick = () => {
+      if (div.messageData.seq) {
+        beginMessageEdit(div);
+        if (editingMessage?.div === div) { writeUi('failed-send:' + context.sessionId, null); controls.remove(); }
+        return;
+      }
+      input.value = attempt.text;
+      attachments = attempt.attachments || [];
+      renderAttachments(); autoResize(); updateSendEnabled(); saveDraft();
+      writeUi('failed-send:' + context.sessionId, null);
+      div.remove(); input.focus();
+    };
+    controls.append(error, edit); div.appendChild(controls);
+  }
+
   function updateMessageActions() {
     const users = [...chat.querySelectorAll('.msg-user')];
     const editable = sharedChat && context.sessionId && !conversationBusy() && !loadingSession && !sending && !switchingEngine;
@@ -1991,6 +2016,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       ? (compaction.finalChunk ? 'Summarizing context: chunk {0} (last)…' : 'Summarizing context: chunk {0}…').replace('{0}', compaction.chunk)
       : compaction.stage === 'saving' ? 'Saving compacted context…' : label;
     row.querySelector('span').textContent = compaction.state === 'running' ? progress : label;
+    let errorEl = row.querySelector('.context-compaction-error');
+    if (compaction.state === 'failed' && compaction.error) {
+      if (!errorEl) { errorEl = document.createElement('div'); errorEl.className = 'context-compaction-error'; row.appendChild(errorEl); }
+      errorEl.textContent = compaction.error;
+    } else errorEl?.remove();
     // The label is translated in place, so the elapsed time lives beside it
     // instead of inside the translated text node.
     const durationMs = compaction.state === 'completed' ? compaction.durationMs ?? compaction.totalMs : NaN;
@@ -2482,6 +2512,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     saveDraft();
     const sentDraftKey = draftKey();
+    if (sharedChat && context.sessionId) {
+      writeUi('failed-send:' + context.sessionId, null);
+      chat.querySelectorAll('.failed-send').forEach(row => {
+        const message = row.closest('.msg-user');
+        if (message?.messageData?.seq) row.remove(); else message?.remove();
+      });
+    }
     const sendContext = { sessionId: context.sessionId || null, workspaceId: context.workspaceId,
       fork: Boolean(pendingForkId), openSeq: sessionOpenSeq, dispatched: false, cancelled: false, fastMode: currentFastMode };
     if (sharedChat && sendContext.sessionId && !sendContext.fork) pendingConversationSends.set(sendContext.sessionId, sendContext);
@@ -2522,13 +2559,23 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (pendingConversationSends.get(sendContext.sessionId) === sendContext) pendingConversationSends.delete(sendContext.sessionId);
     if (sharedChat && sendContext.openSeq !== sessionOpenSeq) {
       void sidebar.load();
-      if (!res.ok && !queuedMessage) {
+      if (!res.ok && !queuedMessage && sendContext.sessionId && sendContext.dispatched) {
+        writeUi('failed-send:' + sendContext.sessionId, { text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
+        const saved = readUi('draft:' + sentDraftKey);
+        if (saved?.text === text) writeUi('draft:' + sentDraftKey, { ...saved, text: '', attachments: [] });
+      } else if (!res.ok && !queuedMessage) {
         const saved = readUi('draft:' + sentDraftKey);
         if (!saved?.text && !saved?.attachments?.length) writeUi('draft:' + sentDraftKey, { ...saved, text, attachments: atts });
+      } else if (res.ok) {
+        const saved = readUi('draft:' + sentDraftKey);
+        if (saved?.text === text) writeUi('draft:' + sentDraftKey, { ...saved, text: '', attachments: [] });
       }
       if (context.sessionId === sendContext.sessionId && !loadingSession && !sending) {
         if (!res.ok) {
-          if (!input.value && !attachments.length) restoreDraft();
+          if (sendContext.dispatched) {
+            if (sendContext.sessionId && input.value === text) { input.value = ''; attachments = []; renderAttachments(); autoResize(); saveDraft(); }
+            showFailedSend({ text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
+          }
           clearRunStatus();
           setStatus('Failed to start: ' + res.error);
         }
@@ -2541,7 +2588,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // queued behind it even if the engine has not emitted an event yet.
     updateConversationControls();
     if (!res.ok) {
-      if (!queuedMessage && !input.value && !attachments.length) { input.value = text; attachments = atts; renderAttachments(); autoResize(); }
+      if (sharedChat && sendContext.sessionId && sendContext.dispatched && !queuedMessage) {
+        writeUi('failed-send:' + sendContext.sessionId, { text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
+        showFailedSend({ text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at }, userMessage);
+      } else if (!queuedMessage && !input.value && !attachments.length) { input.value = text; attachments = atts; renderAttachments(); autoResize(); }
       saveDraft();
       finalizeStreamBlocks();
       const chip = document.createElement('div');
@@ -3203,6 +3253,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       $('headerTitle').textContent = s ? s.title : "Session " + id.slice(0, 8);
       $('headerTitle').dataset.titled = '1';
       if (!res.live && !await renderHistoryMessages(res.messages)) return false;
+      if (sharedChat) showFailedSend(readUi('failed-send:' + id));
       if (!chat.childElementCount) chat.innerHTML = "<div class=\"empty-state\"><div class=\"empty-state-desc\" data-i18n>No messages to display. Send a message to continue this session.</div></div>";
       sidebar.render();
       restoreDraft();
@@ -3215,7 +3266,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         restoringRun = false;
         for (const event of eventsDuringRestore.splice(0)) if (event.type === 'conversation:activity' || event.runId !== liveRun || event.eventSeq > lastSeq) handleEvent(event);
         const pending = pendingConversationSend();
-        if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id, text: pending?.phase || 'Compacting context…', compaction: res.compaction });
+        if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id,
+          text: pending?.phase || (res.compaction?.state === 'running' ? 'Compacting context…' : ''), compaction: res.compaction });
         void goalUI.refresh();
       }
       if (sharedChat && res.lastReplyAt) sidebar.markReplyRead(id, res.lastReplyAt);
@@ -3271,7 +3323,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
           }
           if (m.role === 'notice') {
             if (m.compaction || ['Context compacted automatically', 'Context compacted: summary saved'].includes(m.text)) {
-              renderCompactionStatus({ ...m.compaction, engine: m.engine, state: 'completed', seq: m.seq }, before);
+              renderCompactionStatus({ ...m.compaction, engine: m.engine, state: m.compaction?.state || 'completed', error: m.compaction?.error || (m.compaction?.state === 'failed' ? m.text : ''), seq: m.seq }, before);
               continue;
             }
             if (!conversationPrefs.showOrigin) continue;
@@ -3477,9 +3529,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   window.dshDesktop.onEngineSettingsChanged(({ engine }) => { if (engine === harnessId) void loadSettings(); });
-  window.dshDesktop.onArchivedChanged?.(({ id, action }) => {
+  window.dshDesktop.onArchivedChanged?.(({ id, action, ids }) => {
     // Our own delete already reloaded and moved to the neighbor; ignore its echo.
     if (selfDeletedIds.has(id)) { selfDeletedIds.delete(id); return; }
+    if (action === 'delete-all') {
+      if (context.sessionId && ids?.includes(context.sessionId)) void newSession(null);
+      else void sidebar.load();
+      return;
+    }
     if (action === 'delete' && context.sessionId === id) void newSession(null);
     else void sidebar.load();
   });
