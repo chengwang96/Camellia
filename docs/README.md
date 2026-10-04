@@ -1,40 +1,39 @@
 # Documentation
 
-The [English README](../README.md) and [简体中文 README](../README.zh-CN.md) introduce Camellia and explain how to get started.
+Start with the [English README](../README.md) or [Simplified Chinese README](../README.zh-CN.md). The two READMEs provide the same short product overview; the guides and records below are in English.
 
-Release notes: [v0.1.0 — Windows preview](releases/v0.1.0.md).
+## Use Camellia
 
-## Guides
+| Guide | Covers |
+| --- | --- |
+| [Configuration](configuration.md) | Providers, accounts, same-model routing, benchmarks, settings, usage, and data locations. |
+| [Android](../android/README.md) | Native app, local chat, remote pairing, attachments, build, and tests. |
+| [Desktop remote access](remote-access.md) | Embedded Tailnet, device approval, protocol, security, and discussion controls. |
+| [Linux server preview](linux-server-preview.md) | Headless host, one-terminal pairing, systemd user service, package, and checks. |
+| [Linux acceptance record](linux-server-acceptance.md) | Tested artifact and remaining live host acceptance. |
+| [Conversation control](conversation-tools.md) | Child conversations and device-wide read-only history tools. |
+| [Scheduled checks](scheduled-tasks.md) | Natural-language scheduling, recovery, and task scope. |
+| [File finding](file-find.md) | `/find`, recent files, name/content search, and phone downloads. |
+| [Artifact previews](artifact-previews.md) | File cards and desktop preview behavior. |
+| [Storage maintenance](storage-maintenance.md) | Manual cleanup and protected data. |
+| [Runtime troubleshooting](troubleshooting-runtimes.md) | Engines missing or failing to launch. |
+| [Development](development.md) | Code layout, runtime preparation, testing, and packaging. |
 
-| Document | Contents | Language |
-| --- | --- | --- |
-| [Configuration](configuration.md) | Providers, routing, native settings, usage, and local data | English |
-| [Development](development.md) | Code layout, runtime preparation, testing, and packaging | English |
-| [Mobile access preview](remote-access.md) | Tailscale-only read gateway, device pairing, scope and reconnect protocol | 简体中文 |
-| [Linux server development preview](linux-server-preview.md) | Headless foreground service, local control, pairing and current implementation limits | 简体中文 |
-| [Linux server acceptance record](linux-server-acceptance.md) | Built x64 artifact, actual native-engine checks and remaining user-assisted acceptance | English |
-| [Android client](../android/README.md) | APK installation, native client, secure credentials, build and tests | 简体中文 |
-| [Troubleshooting: runtimes](troubleshooting-runtimes.md) | Engines disappearing or failing to start; antivirus exclusions for the runtimes folder | English |
-| [WBL API usage](wbl-api.md) | Direct curl requests, tested Responses behavior, and proxy troubleshooting | 简体中文 |
+## Design and implementation records
 
-## Implementation references
+These explain current structures and past decisions. Check the guide and current code before using a dated record as a product claim.
 
-| Document | Contents | Language |
-| --- | --- | --- |
-| [Unified settings and runtimes](design/unified-settings.md) | Configuration files, synchronization, backups, and runtime delivery | 简体中文 |
-| [Linux server CLI proposal](design/linux-server-cli.md) | Headless architecture, GUI device flows, credential boundaries, and runnable settings design preview (not a server release) | 简体中文 |
-| [Provider account adapters](design/provider-balances.md) | Account APIs, units, verification scope, and adapter maintenance | 简体中文 |
-| [Harness integration](design/harness-integration.md) | Integration decisions and earlier engine evaluation | 简体中文 |
-| [Per-binding model-switch segments](design/model-switch-segments.md) | One native session per engine/connection/model/account, cross-model bridge summaries, and the quick-switch default model | 简体中文 |
-| [Group-chat discussion design](design/group-chat-discussion.md) | Frozen v1 scope; desktop interaction foundation integrated, real model connections and summaries pending | 简体中文 |
-| [Group-chat implementation plan](design/group-chat-implementation-plan.md) | Frozen scope, eight release checks, desktop integration evidence, remaining connection blockers, and deferred P6–P7 roadmap | 简体中文 |
-| [DSH integration](../integrations/dsh/README.md) | Maintained source patches and pinned upstream packages | English |
-| [Kimi runtime](../runtimes/kimi/README.md) | Runtime package, execution directories, and ACP integration | English |
+| Area | Records |
+| --- | --- |
+| Shared chat and context | [Shared conversations](design/shared-conversations.md), [native model bindings](design/model-switch-segments.md), [context capacity](design/context-capacity.md). |
+| Discussion groups | [Coordinator design](design/group-chat-discussion.md), [implementation and acceptance](design/group-chat-implementation-plan.md), [rich interaction](design/group-chat-rich-interaction-plan.md), [capability and isolation audit](design/group-chat-capabilities.md). |
+| Engines and settings | [Unified settings](design/unified-settings.md), [harness integration](design/harness-integration.md), [provider balances](design/provider-balances.md). |
+| Server and benchmarks | [Linux CLI design](design/linux-server-cli.md), [benchmark modes](design/benchmark-modes.md). |
 
-Implementation notes include dated research. Use the guides and current code for supported behavior; verify upstream interfaces again before extending an adapter.
+## Dated investigations
 
-## Archive and images
+- [Benchmark audit](benchmark-audit-2026-09-16.md), [built-in basic set](benchmark-basics-2026-09-16.md), [preview timeouts](benchmark-preview-timeouts-2026-09-16.md), [Codex patch retries](benchmark-codex-patch-2026-09-16.md), and [SciCode errors](benchmark-errors-2026-09-16.md).
+- [Native harness tool calls](harness-tools-audit-2026-09-16.md) and the [WBL API connectivity record](wbl-api.md).
+- [v0.1.0 release note](releases/v0.1.0.md) and [archived planning documents](archive/README.md).
 
-[Archived documents](archive/README.md) preserve earlier reviews and design work. They are not current installation or configuration instructions.
-
-`images/` contains README screenshots. Account and usage examples use demonstration data. Local reference captures are kept in the ignored `images/local/` directory.
+`images/` contains current README screenshots captured from the renderer with local demonstration data. Run `python scripts/capture-readme-screenshots.py` from the repository root with Playwright and Chromium installed to regenerate them. Ignored `images/local/` reference captures are not part of the public documentation.

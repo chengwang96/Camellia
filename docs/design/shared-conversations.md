@@ -1,154 +1,28 @@
-# 共享会话与 Harness 切换
+# Shared conversations and harness switching
 
-更新：2026-10-02。六个引擎共用聊天界面、增量上下文续聊和自动 Markdown 交接；顶部新增独立 Agent 讨论入口。
+As of 2026-10-02, six desktop harnesses share a conversation list, workspace structure, composer layout, and public transcript. A seventh navigation entry opens **Agent discussions**; discussions keep separate groups, member histories, and drafts. Switching pages does not convert a group into an ordinary conversation or invoke a model.
 
-## 用户行为
+## Switching behavior
 
-通用设置中的“全局记忆”接受一个用户选择的文件夹，留空关闭。从下一条消息起，六个 harness 的普通会话都会收到同一目录入口，并使用各自的文件工具按需读取索引、相关记忆及用户写在文件里的约定，适时更新长期偏好和事实。入口不依赖 MCP，适用于 API 和订阅连接；沿用原有工具权限。应用不区分设备，不改造目录结构，也不接管 Git 同步。目录入口随每轮消息刷新，但不会批量把所有记忆文件载入上下文。清空后，已有会话会收到停止使用旧全局记忆目录的指示；已经读入的文字仍可能保留在原生历史中。辅助摘要轮次不加载记忆。
-
-会话顶部的选择器用于切换 Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigravity、Pi 和 Agent 讨论。六个引擎使用同一套会话列表、工作区和输入框布局。共享会话的工作目录保持固定。
-
-Agent 讨论页在标题旁使用相同的七入口菜单，可直接返回任一 harness。它保留独立的群记录、草稿、@ 顺序及回复模式；页面导航不转换群历史，也不增加成员或调用模型。六个 harness 之间仍使用下方的会话接续规则。导航与草稿恢复的桌面验证见[讨论实施记录](group-chat-implementation-plan.md#七入口快速切换交接2026-10-02)。
-
-用户已确认首版不需要普通聊天的工作区、独立会话记录与 Agent 讨论互通。两者共用导航和设计，列表、记录及草稿各自保存；工作区挂接、历史导入、上下文传递和群与单聊转换均不列入当前实现范围。
-
-通用设置中的默认值为直接续聊、关闭提醒、隐藏来源标签。用户可单独开启提醒和来源标签，也可将默认方式改为 Markdown。`Switch options` 可以为某一次切换选择方式，也可在同一引擎中通过 Markdown 开始新的原生会话。
-
-| 方式 | 实际行为 | 代价 |
+| Choice | Behavior | Cost or limit |
 | --- | --- | --- |
-| 直接续聊 | 下一条用户请求携带目标引擎尚未接收的公开历史；回切时复用该引擎自己的原生会话 | 上下文较长时增加输入 token；原生缓存和内部状态不能跨引擎复用 |
-| Markdown 交接 | 原引擎生成摘要，保存 .md，目标引擎自动新建会话、接收摘要并等待下一条用户请求 | 额外调用会产生耗时与 token；摘要可能遗漏细节 |
+| Direct continuation | The target harness receives public turns it has not yet seen and may resume its own native binding when returning. | Longer history can increase input usage; another engine's private state is not transferred. |
+| Markdown handoff | The source harness writes a summary file, then the target starts a new native session with that file. | An extra request uses time and tokens; a summary can omit detail. |
 
-这两种方式都不能保证与始终使用同一引擎等效。尚未量化真实模型的质量变化或成本差值，本机模拟 API 测试只验证会话传递和执行流程。
+Direct is the default. General settings can enable a switch warning, show origin labels, or prefer Markdown. **Switch options** can override one transition. Busy turns, an active Goal, or a handoff block switching that conversation until settled; other conversations can continue. A stopped or failed handoff leaves the source conversation available. Neither choice is guaranteed to equal staying on one engine.
 
-## 切换时保留的状态
+The logical conversation keeps its title, workspace, archive state, and public messages. Model, connection/account, permission, reasoning, and native state follow their own engine and binding rules; one-time approvals never transfer. API routes keep the selected model ID and warn when it has no configured route instead of silently changing it. Draft text, unsent attachments, and reading position are keyed by conversation in Chromium storage, while the public transcript and bindings live under `userData/conversations/`. The working directory is fixed when a conversation is created. An attachment still needs to exist and be supported by the target engine.
 
-| 状态 | 保存与恢复规则 |
-| --- | --- |
-| API 模型 | 保存在逻辑会话中，所有 API 模式的引擎沿用同一个模型；另一段会话选择模型不会覆盖它。模型线路失效时提示缺少线路，不悄悄换模型。 |
-| 账户连接与模型 | 已有原生会话继续使用原来的 API／订阅连接。ChatGPT、Google 的账户模型分别保存，不被共享 API 模型替换。 |
-| 目录、标题、历史、归档、工作区分组 | 使用统一会话和工作区数据；工作目录在会话创建后固定。 |
-| 权限、推理强度、上下文窗口 | 按会话和引擎保存已使用或明确选择的值，首次进入未使用的引擎采用其默认值；一次性工具批准不会传递。原生 DSH 已有会话的权限限制仍适用。 |
-| 草稿与附件 | 浏览器本地存储按会话保存未发送文本、附件路径和待分叉状态；新会话草稿按工作区区分。切换引擎、从首页返回、刷新和正常重启后恢复。附件文件本身必须仍存在；目标不支持图片时保留附件并提示。 |
-| 阅读位置与缩放 | 阅读位置随会话保存，缩放使用应用级配置。 |
-| 自动执行与原生状态 | 每段会话独立执行；当前会话有回复、目标或交接在运行时，拒绝切换 harness，不会自动中断。原生推理、缓存、后台进程和一次性批准不能跨引擎恢复。 |
+Each engine has its own native ID and synchronized sequence cursor. New public text and relevant tool results are appended to Camellia's JSONL transcript. Direct continuation replays only the missing public part and instructs the target not to re-execute old tools. Very long histories require an explicit handoff rather than silent truncation. A Markdown file is saved before switching; a failed target start restores the previous mapping. The logical list does not scan arbitrary personal CLI histories.
 
-顶部 Engine 菜单通过会话选择器的同一交接流程切换，避免只更换页面导致丢失当前会话。首页入口恢复上次查看的会话或工作区草稿；选择 New session 可开始另一段会话。
+The **Global memory** setting points to a user-chosen folder. Ordinary turns receive its entry path and may read relevant index and memory files under existing tool permissions; Camellia does not inject every file into every prompt. Clearing the setting stops future references, although text already read may remain in native history. The app does not manage that folder's layout or Git synchronization.
 
-API 模型和各引擎设置位于 `conversations/<id>.json`；最后明确选择的 API 模型同时作为新会话默认值。草稿与阅读位置位于应用的 Chromium 本地存储，不进入模型上下文，直到用户发送。
+## Recovery and compaction
 
-## 存储和传输
+On reopening, a snapshot restores history and active state before newer events are applied. Stop and approval actions bind to the current logical conversation, run, and request. On restart, unfinished requests become interrupted and are not automatically resent. Multiple conversations in the same workspace still share the same disk files, and provider concurrency remains shared.
 
-`userData/conversations/` 保存逻辑会话元数据和追加式 JSONL 公开记录；`handoffs/` 保存生成的 Markdown。每个引擎有自己的原生会话 ID 和同步序号。退休映射也保留，避免重复导入。
+Native compaction is preferred where its protocol confirms completion: Codex uses `thread/compact/start`, Claude uses its native compact boundary, and Kimi uses its advertised ACP command with completion detection. DSH ACP and unverified Antigravity manual paths use a portable summary. Native automatic compaction remains owned by the engine. A portable summary is required for cross-engine handoff, a new native thread, or history the target has never seen; a native engine's internal summary is not passed off as portable Markdown.
 
-- 新会话保存完整公开文字、工具事件、附件路径引用及来源。模型内部推理不作为跨引擎上下文。
-- 直接传递按同步序号补入增量；历史作为数据传递，明确要求不重复执行已完成的工具调用。特别长的历史会明确要求改用 Markdown，不会静默截断。
-- Markdown 由源引擎生成，文件写入成功后才启动目标；接收失败会恢复原映射。文件保留便于检查。
-- 共享列表只读取 Camellia 自己的逻辑会话记录，不扫描或导入各 CLI 的历史。旧开发版本的历史解码、格式迁移和兼容性不在当前支持范围内。
-- 图片的原生消息格式不在引擎之间重建，保留可读路径。目标引擎的图片能力和本地文件权限仍适用。
+When a known input window or Codex's separate per-turn character limit is approached, Camellia can summarize older public turns while keeping recent interactions. A summary is only committed after successful completion, with bounded retries after an explicit context overflow. Network, auth, or provider failures are reported instead of silently starting a second paid channel. Learned conservative budgets are scoped to engine, connection, model, route set, and conversation, and cannot raise a published model limit. Summaries can lose detail; they are not a verbatim archive. See [context capacity](context-capacity.md) for implementation budgets and [model binding segments](model-switch-segments.md) for parked native sessions.
 
-DSH 共享聊天通过 ACP 工作，使用应用数据中的 `dsh-chat` 配置与会话目录。共享 DSH 使用统一 API 路由。DSH 权限默认值用于新原生会话；恢复已有原生会话时仍遵循它已保存的权限。
-
-## 运行与恢复
-
-共享调度器按逻辑会话 ID 保存运行状态和目标，同一引擎也可同时运行多个会话。每段会话只允许一个回复或交接；目标在自动续轮的间隙仍占用这段会话。工作中的会话拒绝切换 harness，不会先取消再切换；其他会话不受影响。
-
-五个原生驱动按逻辑会话管理进程。Claude 使用独立的设置覆盖文件；Codex、Kimi、DSH 的 API 配置使用各自的会话目录，避免并发选择不同模型时互相覆盖。订阅凭据仍由官方客户端在原账户目录中管理，模型通过原生会话参数设置。升级后旧的共用 API 配置映射首次继续时会创建独立原生会话，并传入完整的公开历史；逻辑记录保留。
-
-侧栏显示工作或待确认状态。返回会话时，历史和运行中事件使用同一个快照恢复，再补入较新的事件；已回答的权限请求不重放。停止操作验证逻辑会话与运行编号，权限确认还需匹配该运行的请求编号。后台消息不会改变当前查看的会话。各会话的 goal 分开保存；退出应用会暂停目标并关闭全部原生会话进程。
-
-同一工作区的会话仍然共用磁盘文件；同时使用同一供应商的请求共用其并发和速率额度。
-
-目标权限仍由目标引擎决定，不自动复制一次性批准。交接可以停止，失败保留原会话和错误状态。重启时把未完成请求标记为中断，不会自动重发。断电导致日志尾行不完整时，先备份再修复尾行。
-
-Markdown 交接请求同样把历史作为一条输入发给原引擎，超出该引擎输入字符上限时先做一次可移植压缩，再生成摘要；压缩失败或取消的交接不会启动目标引擎。
-
-## 验证
-
-### 长任务自动压缩
-
-压缩采用原生能力优先、可移植摘要兜底的策略。自动管理上下文与主动请求压缩是两个独立能力，不假定不同 CLI/ACP 的接口等价。
-
-| 引擎 | 同原生会话自动压缩 | 手动压缩 |
-| --- | --- | --- |
-| Codex | 引擎管理 | `thread/compact/start` |
-| Claude Code | 引擎管理；转发 `compact_boundary` | 原会话 `/compact`；必须收到边界及成功结果 |
-| Kimi Code | 引擎管理 | ACP 宣告 `compact` 命令后发送 `/compact`，等待后台完成通知 |
-| DSH | 原生 `compaction-basic` 管理 | 当前 ACP 未暴露命令接口，使用可移植摘要 |
-| Antigravity | SDK/CLI 管理；SDK hook 转发完成通知 | 当前 SDK/CLI 适配面未验证可调用接口，使用可移植摘要 |
-
-已恢复的上述原生会话不会被 Camellia 的 85% 公共历史阈值抢先打断；没有原生会话、未同步的大段历史仍保留输入大小预检与摘要兜底。DSH 的交互界面虽然有 `/compact`，当前 automation-only ACP 不提供 slash command 分派，不能把该字符串作为普通用户请求发送冒充压缩。
-
-Kimi 2.0.0 的 `/compact` 返回仅表示后台任务已启动，ACP 当前以本地文本通知报告完成。适配器仅在独占手动压缩期间识别完整的 `Compaction completed.` 及消息数、前后 token 数格式，并同时等待命令确认；不能把普通模型回答当成成功。未宣告该命令时退回摘要。超时会关闭进程并保留会话；取消同样关闭进程，因为该版本 ACP `session/cancel` 只取消活动回复，不能确认后台压缩已停止。后续应优先替换为上游结构化完成事件（如果提供）。
-
-Codex 已有可恢复的原生线程时，自动压缩交给 Codex，不再因公共历史估算达到 85% 而抢先停止任务。手动 `/compact` 使用 App Server 的 `thread/compact/start`，保留原生线程 ID 和公共历史，不另开摘要会话；同样用于一次性的上下文溢出恢复。RPC 返回 `{}` 不代表压缩完成，适配器等待 `turn/completed`，并识别 `contextCompaction` 事件。压缩不计为用户回复或 Goal 轮次，界面显示原生压缩状态，自动压缩事件可随运行快照重放。
-
-手动原生压缩支持取消，120 秒未完成会报错并关闭该进程，原生线程映射和公共记录保留。接口明确不支持（JSON-RPC `-32601`）或原生压缩本身发生上下文超限时，自动退回新的临时会话生成通用摘要；网络、认证、其他供应商错误或超时直接报告，不隐式叠加另一轮摘要费用。重启后不自动重发未确认的压缩。跨引擎交接、修改历史、无原生线程或尚未同步的历史需要使用应用层的可移植上下文；原生压缩不会把引擎内部摘要伪装成可跨引擎传递的 Markdown。
-
-对未宣告原生自动压缩能力的驱动，除发送前的 85% 窗口预检查外，共享调度器在工具结果到达、已知并行工具全部结束且没有待回答的权限请求时，估算当前历史长度。超过窗口的 85% 后请求原生引擎停止，收到停止结果后生成摘要，再用新的原生会话继续原任务。仍沿用同一个逻辑会话、运行编号和用户消息；最终结果和 Goal 轮次结算只发生一次。工具结果缺少可识别的完成状态时不主动中断，仍保留上下文超限报错兜底。估算并非精确 token 用量，原生引擎自身的压缩也可能先发生。
-
-上下文超限错误同样触发摘要及自动续跑，包括 Goal 模式。没有新工具结果时，超限恢复只重试一次，避免反复压缩同一失败请求；摘要失败或过大时保留原会话并显示错误，Goal 停止并说明原因。超长历史分块生成滚动摘要，不直接把整个超限提示再次交给模型。摘要会产生额外模型请求，且不能保证逐字保留历史细节。
-
-Codex App Server 另外按字符数限制单轮输入（`MAX_USER_INPUT_TEXT_CHARS`，`1 << 20`，与模型窗口无关），因此当模型窗口远大于该上限时，回放式续聊可能在公共历史估算达到 85% 之前就被拒绝，并让会话在每次发送时重复失败。发送前预检、续跑前复检和引擎通道的摘要字符预算因此都同时受该上限约束（保留 10% 余量）；这条按字符报告的上限按三字符一 token 换算成学习预算，复用同一套自动压缩与续跑。
-
-超限后优先从错误中识别明确的 token 上限，否则将当前工作预算减半；学习到的预算只能收紧，不能被后续较大的 usage 窗口覆盖。预算保存在当前会话中，按引擎、连接方式、模型、显式窗口和 API 路由配置指纹隔离，重启后仍有效，不更改全局设置或模型标称上限。API 路由指纹包含供应商、端点、上游模型和启用的 key ID，不保存凭证；同一路由集合内的自动故障转移共享保守预算。
-
-可移植摘要通过引擎会话执行时（订阅连接、路由器不可达或未建模的模型）有独立救援预算：超限后将字符预算至少减半，最多重试 4 次，最多发出 128 个摘要请求，字符预算低于 2048 时停止。失败片段不前移游标；已有摘要需要缩小时先重新压缩摘要，连已有摘要也放不下时从完整历史重新分块，而不是截断或丢弃早期记录。每个成功片段保存带历史边界和剩余分组数量的 `compactionRecovery` 部分检查点，失败或取消后保留供排查，但不作为完整上下文使用；只有完整摘要成功才替换原生会话映射。临时摘要会话不推进原会话的同步游标。
-
-工作台路由器能直接到达该模型且连接方式不是订阅时，可移植摘要改走路由器通道：历史片段各自独立摘要（最多 3 个并发，互不携带对方的滚动摘要），最后一次合并产出完整摘要。该通道的每个请求都带真实输出上限，片段超限时只用更小的预算重切该片段，已完成片段不重做，超限重试上限为 1 次。因此不再为每个片段冷启动一个引擎进程，也不再在每次片段里重写整份摘要；请求按会话当前模型和路由发送，标记 `x-camellia-aux: compaction` 作为辅助请求（失败不改变路由健康度，成功仍计入用量）。网络、认证、超时或供应商错误直接报告，不会在同一请求上隐式改用另一条通道。
-
-可移植摘要优先按用户交互单元分组，保留预算内最新至多两个交互单元的原文（含工具结果、附件引用），其余历史和上次摘要交给模型。近期原文最多占摘要输入字符预算的 20%，且不超过 12,000 字符；必须至少留下一个旧分组供摘要。摘要正文上限为 `min(12000, floor(inputCharacterBudget / 3))`，并作为提示词约束；引擎会话通道只在返回后校验，路由器通道另外带上真实输出上限（约为目标字符数的 1.5 倍，不低于 1024、不超过 8192 个 token），超过目标的答案会以一半的目标重问一次，仍超限则失败并保留原历史。推理型模型可能把全部输出上限耗在思考上、以 `finish_reason: length` 返回空正文；这类空答案先以上限 8192 个 token 重问一次（缩小目标只会进一步压缩其思考空间），仍为空才失败并保留原历史。路由器通道的片段上限为该预算的八分之一，介于 1024 与 4,000 字符之间。这些是保守初始字符预算，不是精确 token 计数或质量最优值；模型保持原设置，路由器通道按该模型路由的默认推理强度执行，不携带引擎进程内的思考等级。片段的多少只取决于历史字符总量与预算，不取决于并发度；并发只影响墙钟时间，供应商延迟因此是路由器通道的主要耗时来源。
-
-每个请求只包含完整 JSON 记录，尽量保持工具交互分组；单个分组超预算时按记录拆分，单条文本仍超预算才拆成带 `sourceSeq`、字符偏移和原文总长度的片段，不截断 JSON 或 Unicode 代理对。超大附件元数据无法容纳时明确失败，原历史保留。服务端报告更小窗口后，超预算的近期原文会重新纳入摘要，不被丢弃；并发的在途片段可能同时报溢出，此时整体预算只按首次反馈缩小一次，其余片段改用缩小后的预算重切，避免预算被反复减半导致分块爆炸撞上请求上限。重切只作用于该片段自己携带的记录，不会重复摘要后续片段的记录，因此每个片段只计费一次。完整摘要与近期原文一起写入现有 handoff 文件，继续兼容重启、跨引擎续接和后续滚动摘要。
-
-`lastCompaction` 和 `context compaction metrics` 日志记录原生／可移植路径、可移植摘要的通道（`transport` 为 `engine` 或 `router`）、选择或回退原因、历史边界、准备／摘要请求／保存／总耗时、每请求输入输出字符量、首个流式增量耗时，以及引擎实际报告的 token/cache usage。未报告的字段不填零，`setupMs` 仅表示内部 send 返回时间，不代表原生进程已经启动完成；路由器通道不产生流式增量和引擎 usage；日志不包含摘要或历史正文。界面显示当前请求块号、最后一块和保存阶段；重试或重新规划可能改变分块，因此不显示未经确定的总块数。该阶段没有更换模型、后台预压缩或工具输出删减，也不承诺实测加速倍数。
-
-续跑前再次检查摘要加原始任务是否仍超预算；过大则停止，不重复发送任务。达到救援上限、摘要失败或再次超限时安全退出，保留完整历史和已有摘要，提示手动压缩、切换更大窗口模型、新会话接续或拆分消息/附件。停止不回滚文件或外部操作，也不启动后台重试。
-
-压缩和恢复期间会话保持工作状态，可停止或暂停 Goal；取消后不会自动续跑。恢复提示明确要求检查已执行操作的现状、避免重复副作用，并继续遵循当前权限与用户审批。工具完成通知与引擎停止不是事务边界，不能保证绝无在途操作；不回滚文件或外部状态。应用重启后仍不自动恢复未确认的任务。
-
-发送前自动压缩被停止或失败时，当前待发送请求直接终止，不继续发送原始超长历史；普通对话与 Goal 均适用。取消多段摘要时不将部分检查点提交为正式摘要，也不替换原生会话。
-
-验证命令：`node --test tests/shared-conversations.test.js` 覆盖调度、停止及失败边界；`python tests/shared-chat-ui.py` 验证界面续接；`node tests/context-compaction-native-smoke.cjs` 使用已安装的 Claude CLI 和隔离的本地模拟模型服务，验证真实工具完成事件、停止确认、分块摘要、新会话续跑，以及用户消息、Read 操作和最终结果均不重复。该原生测试不使用真实账户或付费模型，不代表其他四种引擎已完成相同的原生端到端验收。
-
-路由器摘要通道：map 片段与彼此独立的合并批次共用一个并发池，并用信号量把「真正在途的请求数」全局限制在并发度以内（默认 8）；重切会嵌套新的池，只按池限制会让实际并发成倍放大。合并批次按索引回填、只在已完成的连续前缀上写检查点，保证恢复摘要的顺序与串行时一致。并发只压缩墙钟时间、不改变片段数，而片段数由历史量除以预算决定：接近窗口上限的历史通常只需一两个片段，此时请求少、单请求大，实测比把同一历史切成二十多个片段更快也更省 token，因此并发是兜底而不是主要手段。`node --test tests/compaction-plan.test.js tests/shared-conversations.test.js` 覆盖片段拆分与就地重切、并发 map、合并批次并行与顺序、全局在途上限、请求数上限、超限缩小预算和失败保留历史；这些用例用桩替换摘要通道，不发出真实 HTTP 请求。端到端验收由 `node tests/compaction-router-smoke.cjs <model> [router-config.json]` 承担：它用本机 `~/.dsh/ollama-proxy.json` 的副本启动真实 API 路由器，经 `src/api/compaction-summarizer.js` 发送真实辅助请求（`x-camellia-aux: compaction`），先用同一条管线加内存桩预测分块数，再断言通道为 `router`、已摘要片段数与合并请求数、输出上限重问次数、请求上限、最近一轮原文保留，并打印每请求输入输出字符量、耗时与 usage。历史规模由 `COMPACTION_SMOKE_STEPS`（默认 5）、`COMPACTION_SMOKE_NOTES`（默认 80）与 `COMPACTION_SMOKE_WINDOW`（默认 8000，小窗口用于压出大量片段）控制。该脚本消耗真实供应商配额，不在 `npm test` 或 CI 中运行。
-
-Codex 专项：`node --test tests/codex-compaction.test.js tests/shared-conversations.test.js`；`node tests/codex-compaction-native-smoke.cjs` 使用已安装的 Codex CLI、隔离配置和 loopback 模型响应，验证原生压缩生命周期、同一进程及线程继续、摘要上下文保留，不访问真实账户或付费模型；`python tests/context-compaction-ui.py` 覆盖通用与原生状态显示。
-
-同一原生 smoke 脚本支持参数 `claude` 和 `kimi`，分别验证已安装的 Claude Code 与 Kimi Code 的手动压缩、同一进程/会话续聊、无额外用户结果。`node --test tests/claude-session.test.js tests/acp-session.test.js` 覆盖完成确认、取消、退出、不支持、超时及后台完成延迟。Antigravity 的普通 SDK smoke 覆盖 hook 注册后的会话运行，不等同于实测触发自动压缩；DSH、Antigravity 的真实自动阈值压缩仍需专门端到端验收。
-
-### 停止后编辑
-
-会话空闲时，最后一条用户消息在悬停或键盘聚焦时显示编辑按钮。可修改并重新发送，也可取消；附件随原消息保留，主输入框草稿不变。点击 Send 后立即隐藏旧回复并显示发送状态，提交失败在编辑框中显示原因并恢复旧回复；提交成功后重新发起这一轮。已执行的文件和外部操作不撤销。
-
-JSONL 追加 `revision` 记录，引用被替换消息的序号；原始日志保留供故障排查，但这一轮的旧回复、工具输入输出不再出现在会话记录或后续模型上下文中。所有引擎的旧原生映射退休，下一次使用新的原生会话接收之前完整轮次的历史和这次消息。上下文长度检查在丢弃旧轮次之后进行，避免失败轮的大量工具输出阻挡重发。忙碌、过期消息序号、仍然超长的上下文和编辑加分叉组合均在提交前拒绝。
-
-Claude 的普通权限批准保留工具原始参数。应用选择 Allow all 时禁止原生 EnterPlanMode 自行改为规划审批，Plan only 仍可由用户选择。保留原生明确权限规则和用户输入请求；原生返回审批原因时显示原因。停止等待最多 8 秒，再关闭该会话进程；Windows 还终止它的子进程。流式记录只合并同一个内容块的相邻文本、推理或工具参数增量，消息结束和 usage 事件保持独立。
-
-### 原生线程丢失恢复
-
-原生会话在启动或续跑时明确返回 rollout 丢失错误，或 Codex 返回 `thread <id> not found`，且当前轮尚未产生正文、推理、工具活动或审批请求时，应用最多自动重试一次：退休失效的原生映射，以共享历史创建新线程，保留同一个共享运行编号、用户消息及附件。编辑重发的恢复上下文不包含被撤销的那轮回复；恢复期间停止会阻止新请求。
-
-工具完成后也视为已经执行过工作，不因待执行工具集合变空而自动重放。已有进展、取消、再次失败及不相关错误直接结束并报告错误。stderr 的 `failed to record rollout items` 是持久化诊断，不等同于线程启动失败，不凭这条日志终止或重放任务。仅出现该日志、没有终止事件的长时间等待仍需单独排查，不能视作已经恢复。
-
-`node --test tests/codex.test.js tests/shared-conversations.test.js` 覆盖终止错误传递、诊断日志不触发重试、一次重试上限、执行后禁止重放、恢复取消、过期事件隔离和编辑历史保留范围。
-
-### 需求提问与工具审批
-
-Allow all / `full` 控制工具权限，不代替用户回答需求，也不自动跳过问题。Claude 的 `AskUserQuestion` 和 Codex 的 `requestUserInput` 在当前会话中弹出独立的提问窗口，支持单选、多选和自填答案；侧栏显示“等待回答”。提交后将答案回传给原生工具，原任务继续执行。工具审批仍单独显示“等待确认”，不会把问题参数当成需要 Allow / Deny 的命令。普通文本中的“请确认”不会触发弹窗，需要引擎发出结构化提问。
-
-上游 Codex 在普通会话里也会列出 `request_user_input`，但只有 Plan 模式或启用 `features.default_mode_request_user_input` 时才真正接受该调用，否则路由直接报 `request_user_input is unavailable in Default mode`，模型只能改用纯文本列选项。聊天会话因此通过 `codexSpawnSpec({ allowUserQuestions: true })` 传入该 feature；文本讨论保留自身策略继续关闭此工具。升级 Codex 运行时需重新核对这条原生行为。
-
-“稍后回答”或 Escape 只收起弹窗，保持任务等待；对话中保留“回答问题”入口，允许切换其他会话。后台会话的提问不抢占当前会话，切换回来后恢复未提交的选项；敏感输入不缓存。空答案不提交，提交失败保留选择并显示错误。显式跳过问题才回传“未选择答案”，不会代选推荐项，也不会把尚未提交的选择记为已确认。停止或结束任务会关闭弹窗；多条请求依次显示。所有回答仍校验会话 ID、运行编号和请求 ID，避免串到并行会话。多选答案按数组传递，Codex 保留独立选项；Claude 的回答保留原始 `questions`，并将答案放入以问题正文为键的 `answers`，遵循[原生协议](https://code.claude.com/docs/en/agent-sdk/user-input)。
-
-### 回归检查
-
-聊天流式输出只在正文区突出最新文本，较早文本、推理与工具卡片按原顺序放入可展开的“执行过程”。运行期间保留用户的展开选择，且最新文本始终可见，包括尚未确认为最终答复的进度文本，因此长任务能看到 agent 正在说什么；结束后默认折叠过程，进度文本移入过程，正文保留最后一次工具或推理之后的回复，没有工具或推理时保留最后一个文本块。停止且没有后续回复时不把工具前的进度当作最终答案，过程仍可展开。该规则基于事件顺序而非关键词，不删除文本、不改模型输入、协议或续跑逻辑，也不减少实际调用次数。
-
-运行中事件快照重放使用相同布局；只有纯文本的已结束历史仍按原样展示，不猜测拆分进度和最终回复。`python tests/execution-process-ui.py` 覆盖实时折叠、顺序、键盘展开、工具结果更新、收尾、停止、正文重建与中英文/明暗主题。
-
-- 单元测试覆盖 20 个有向引擎组合、A → B → A 增量、默认偏好、Markdown 流程、失败恢复、长消息和中断恢复。
-- `node tests/shared-native-smoke.cjs`：本机模拟 API 驱动五个真实运行时，验证指定 API 模型覆盖各引擎默认模型、上下文传递、Claude 恢复和自动创建 DSH Markdown 接收会话，还验证五个引擎各两个会话同时保持 API 请求、不同模型的配置隔离、单独停止 Codex、输出与历史隔离；无外部模型调用。
-- `node tests/electron-smoke.cjs`：真实 Electron 主进程、preload 和渲染器；校验五个引擎的首页与会话输入框位置、菜单切换、首页返回、会话模型、草稿、附件、工作区和缩放恢复。
-
-核心代码：`src/engines/shared-conversations.js`、`dsh-session.js`，公共界面位于 `src/renderer/chat/`。
+Regression entry points include `tests/shared-conversations.test.js` and `tests/shared-chat-ui.py`; real API quality and cost across handoff styles require separate experiments.

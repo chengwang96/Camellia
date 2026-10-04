@@ -1,10 +1,10 @@
-# Find files / 查找文件
+# Find files
 
 `/find` looks for files on the computer that runs Camellia and hands them back as
 downloadable deliverables. It answers locally: no engine is started and no model
 tokens are spent.
 
-## Listing recent files / 列出最近文件
+## Listing recent files
 
 A /find with no words is a real request, not an error: it lists the files
 recent conversations edited or produced, newest first, so a file can be retrieved
@@ -12,7 +12,7 @@ without naming it at all. Files that still exist come first; a file that has
 since been deleted is shown last and marked as missing. On the phone the **Find
 files** button sends this directly when the composer is empty, so one tap lists
 what was last worked on.
-## Desktop / 桌面端
+## Desktop
 
 Type `/find` in the composer and pick **/find** from the slash menu, or select it
 directly. The composer switches to a search box with a chip showing which folder
@@ -25,7 +25,7 @@ opened with a system app, revealed in the file manager or attached to a later
 message. The folder is the one this conversation already uses, so files created
 by earlier turns are reachable without leaving the conversation.
 
-## Phone / 手机端
+## Phone
 
 The Android composer has a **Find files** button next to the safety-level button.
 It pre-fills `/find ` so the command is discoverable, and typing `/find` by hand
@@ -39,7 +39,7 @@ composer has always been able to send text, and the desktop recognizes the
 command on the way in. Newer clients also see `find` in the connection
 `capabilities` list and may call the dedicated action instead.
 
-## Where results come from / 结果来源
+## Where results come from
 
 The first place /find looks is not the filesystem but Camellia's own history. The
 usual case is a file some conversation already edited or produced, and the
@@ -52,25 +52,25 @@ folder rank first.
 
 Anything the history does not cover falls back to the filesystem search below.
 The model gets the same behaviour through `camellia_find_files`.
-## What is searched / 搜索范围
+## What is searched
 
 - The conversation's working folder, plus its workspace folder when the two
   differ. Results are deduplicated across both.
 - File names and extensions, matched case-insensitively. Multi-word and
-  non-ASCII queries match word by word, so `报告 2024` is satisfied by a file
+  non-ASCII queries match word by word, so `report 2024` is satisfied by a file
   whose name contains both words.
 - `*` works as a wildcard: `report-*.pdf`, `*.mp4`.
 - The walk descends at most eight levels and stops after 20,000 visited entries
   or 100,000 examined entries, and returns at most 20 files, newest first.
 
-### Searching inside files / 按内容搜索
+### Searching inside files
 
 The common case is knowing a file exists without knowing its name or folder.
 Prefix the query with `inside:` to search the text inside readable files instead
 of their names:
 
 ```
-/find inside: 供应商谈判 三条原则
+/find inside: supplier negotiation terms
 /find inside: quarterly revenue
 ```
 
@@ -83,8 +83,8 @@ per search), and files too large to sample are skipped rather than failing the
 search.
 
 The model gets the same search through the `camellia_find_files` tool, which it
-should prefer over guessing shell commands. Ask in plain language — "把讲供应商
-谈判的那份材料找出来" — and it will search by content, narrow with more terms,
+should prefer over guessing shell commands. Ask in plain language — "Find the
+document about supplier negotiations" — and it will search by content, narrow with more terms,
 and report the paths it found. Either way the hits become ordinary artifacts, so
 they open on the desktop and download to the phone.
 
@@ -102,7 +102,7 @@ A match whose type the artifact list cannot hand over (for example a `.zip` or a
 `.psd`) is still reported by name, but it is listed rather than quoted as a
 downloadable path, so no panel offers a file it cannot actually serve.
 
-## Boundaries / 边界
+## Boundaries
 
 - Search only covers the conversation's own folders. It is not a general
   filesystem browser and does not accept an arbitrary root path from the phone.

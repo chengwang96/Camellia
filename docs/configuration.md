@@ -14,7 +14,7 @@ Camellia separates the engine that executes a task from the provider that suppli
 
 ## Display language
 
-Open **Settings → General → Language**, choose **English** or **简体中文**, and click **Save preferences**. English is the default. The choice is saved on this device and updates open workbench pages and the embedded DSH settings panel without restarting conversations. It changes interface labels, not conversation content, model IDs, native configuration values, or an engine's response language.
+Open **Settings → General → Language**, choose **English** or **Simplified Chinese**, and click **Save preferences**. English is the default. The choice is saved on this device and updates open workbench pages and the embedded DSH settings panel without restarting conversations. It changes interface labels, not conversation content, model IDs, native configuration values, or an engine's response language.
 
 ## Providers and API keys
 
@@ -67,7 +67,7 @@ Quota steers the choice the same way it does for API keys. A Kimi window or Code
 
 The Google connection through Antigravity is the exception: the official CLI stores a single Google credential per operating-system user, so it appears as one account and has no **Add another account** action.
 
-Account cards show each account's reported quota windows and reset times. The bottom actions switch the preferred account, edit its note, refresh that account's quota, and remove the account (the default slot signs out instead). ChatGPT cards also offer **Wake account**: one explicit “你好” request on that account, followed by a quota refresh. This uses subscription allowance, never rotates to another account, and does not reset an already-active quota window. The next reset time is displayed only as reported by the provider. Wake requests use a temporary native thread and do not appear as shared conversations.
+Account cards show each account's reported quota windows and reset times. The bottom actions switch the preferred account, edit its note, refresh that account's quota, and remove the account (the default slot signs out instead). ChatGPT cards also offer **Wake account**: one explicit greeting request on that account, followed by a quota refresh. This uses subscription allowance, never rotates to another account, and does not reset an already-active quota window. The next reset time is displayed only as reported by the provider. Wake requests use a temporary native thread and do not appear as shared conversations.
 
 ### ChatGPT subscription and API routes (Codex)
 

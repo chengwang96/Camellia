@@ -13,12 +13,12 @@ Desktop builds include only download manifests. Opening Antigravity prepares the
 selected connection on demand, without requiring a global CLI or Python install.
 The download prompt uses the device's saved connection preferences.
 
-- SDK: `google-antigravity==0.1.17`; dependencies pinned in `requirements.lock`.
+- SDK: `google-antigravity==0.1.20`; dependencies pinned in `requirements.lock`.
 - CLI: version and official Windows/macOS download URLs pinned in `runtime.json`;
   the SHA-512 is verified before installation. Automatic CLI updates are disabled.
 - Interpreter and installer: pinned in `runtime.json`. The uv wheel is fetched
   from PyPI and checked against its SHA-256 before extraction.
-- Platforms: Windows x64 and macOS ARM64.
+- Platforms in the pinned manifest: Windows x64, macOS ARM64, Linux x64, and Linux ARM64.
 - Python packages are stored separately from the interpreter for relocation.
 - The application installs no global Python packages and changes no shell PATH.
 - SDK configuration is stored in Camellia's own data directory. Google mode uses
