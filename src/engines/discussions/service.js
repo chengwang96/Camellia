@@ -10,6 +10,7 @@ const { prepareTextInput } = require('./context');
 const { validateReply } = require('./schema');
 const { DiscussionAssets } = require('./assets');
 const { resolveArtifacts } = require('../../main/turn-artifacts');
+const { isVisible: subscriptionModelVisible } = require('../../shared/subscription-models');
 
 const { ENGINES: SUPPORTED_ENGINES, apiProviderRef } = require('./catalog');
 const ENGINES = new Set(SUPPORTED_ENGINES);
@@ -20,9 +21,9 @@ function input(value) {
 }
 
 class DiscussionService {
-  constructor({ dataDir, registry, production, getCatalog = () => [], onEvent = () => {}, onError = () => {}, manager, adapters, platform = process.platform }) {
+  constructor({ dataDir, registry, production, getCatalog = () => [], hiddenSubscriptionModels = () => ({}), onEvent = () => {}, onError = () => {}, manager, adapters, platform = process.platform }) {
     this.onError = onError;
-    this.platform = platform; this.getCatalog = getCatalog; this.onEvent = onEvent;
+    this.platform = platform; this.getCatalog = getCatalog; this.hiddenSubscriptionModels = hiddenSubscriptionModels; this.onEvent = onEvent;
     this.root = path.join(dataDir, 'discussions');
     this.assets = new DiscussionAssets(this.root);
     this.manager = manager || new DiscussionManager({ dir: this.root });
@@ -51,7 +52,9 @@ class DiscussionService {
   async catalog() {
     this.production?.refresh();
     const values = await this.getCatalog();
-    return values.filter(row => ENGINES.has(row.binding?.engine) && ['api', 'subscription'].includes(row.binding.connection))
+    const hidden = this.hiddenSubscriptionModels();
+    return values.filter(row => ENGINES.has(row.binding?.engine) && ['api', 'subscription'].includes(row.binding.connection)
+      && (row.binding.connection !== 'subscription' || subscriptionModelVisible(hidden, row.binding.engine, row.binding.model)))
       .map(row => ({ id: bindingFingerprint(row.binding), label: String(row.label || row.binding.model),
         providerId: String(row.providerId || ''), providerLabel: String(row.providerLabel || ''),
         accountLabel: String(row.accountLabel || ''), binding: { engine: row.binding.engine, connection: row.binding.connection,

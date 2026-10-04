@@ -85,6 +85,11 @@
       <details id="appUpdateDetails" hidden><summary data-i18n>Release notes</summary><p class="hint" id="appUpdateMeta"></p><pre id="appUpdateNotes"></pre><p class="hint" data-i18n>Installing closes Camellia and replaces the current installation in place. Your conversations, settings and downloaded engines are kept.</p></details>
     </section>
     <section id="modelsPage" class="page" hidden>
+      <section class="subscription-models-section" aria-labelledby="subscriptionModelsTitle">
+        <h2 id="subscriptionModelsTitle" data-i18n>Subscription models</h2>
+        <p class="hint" data-i18n>Choose which account models appear in model menus. Hidden models stay available to existing conversations. This preference applies to all accounts of the same subscription.</p>
+        <div id="subscriptionModels" class="subscription-model-groups"></div>
+      </section>
       <div class="setting-row"><div><h2 data-i18n>Quick-switch defaults</h2><p class="hint" data-i18n>Choose a model and reasoning level for each engine. Double-click the model menu in the composer to switch to them.</p></div></div>
       <div id="quickSwitchModels"></div>
       <section class="section" aria-labelledby="modelSessionsTitle">
@@ -202,6 +207,7 @@
 <dialog id="cleanStorageDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Clean unused files</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="cleanStorageEstimate"></p><p class="hint" data-i18n>Files are permanently deleted, not moved to the recycle bin. References are checked again; changed or newly referenced files are skipped.</p><button id="confirmCleanStorage" class="danger" data-i18n>Confirm cleanup</button></dialog>
 <script src="../../shared/qr.js"></script>
 <script src="../../shared/model-levels.js"></script>
+<script src="../../shared/subscription-models.js"></script>
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>

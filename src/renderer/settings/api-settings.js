@@ -18,7 +18,7 @@ const titles = {
   mobile: ["Mobile access", "Connect your phone through Tailscale."],
   devices: ["CLI devices", "Manage server connections and default harnesses. Open a server from Home to work."],
   engines: ["Engine Settings", "Manage engine installation, updates, permissions, instructions and tools."],
-  models: ["Model Settings", "Choose quick-switch defaults and keep model sessions ready."],
+  models: ["Model Settings", "Choose visible subscription models, quick-switch defaults and model sessions."],
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
 let hasNavigated = false;
@@ -131,6 +131,7 @@ function setView(next, engine, focus) {
     if (focus === 'updates') void engineUI.checkRuntimeUpdates();
   }
   if (next === 'general') void engineUI.pythonPage();
+  if (next === 'models') void renderModelSettings();
   if (next === 'archived') void renderArchived();
   if (next === 'network') void loadDownloadSettings(focus);
 }
@@ -672,6 +673,91 @@ api.onAppUpdateState(state => {
 // engine gets a model and a reasoning level; both are applied together when the
 // composer's model menu is double-clicked.
 const QUICK_SWITCH_ENGINES = [['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['dsh', 'DSH'], ['kimi', 'Kimi Code'], ['antigravity', 'Antigravity'], ['pi', 'Pi']];
+const SUBSCRIPTION_MODEL_ENGINES = [['codex', 'ChatGPT'], ['kimi', 'Kimi'], ['antigravity', 'Google']];
+let modelPreferences = null, subscriptionModelAccounts = {}, visibilitySaving = false, modelSettingsSeq = 0;
+
+async function accountModelState(engine) {
+  try {
+    const active = await api[engine + 'AccountState']();
+    if (!active?.ok) throw new Error(active?.error || 'Could not load account models');
+    const accounts = await Promise.all((active.accounts || []).filter(account => account.signedIn && account.id !== active.activeId)
+      .map(account => api[engine + 'AccountState']({ id: account.id }).catch(() => null)));
+    const models = new Map();
+    for (const state of [active, ...accounts]) {
+      for (const model of state?.models || []) {
+        if (typeof model.id === 'string' && model.id && !models.has(model.id)) models.set(model.id, model);
+      }
+    }
+    return { active, models: [...models.values()] };
+  } catch (error) { return { active: null, models: [], error: error.message }; }
+}
+
+function renderSubscriptionModels() {
+  const container = $('subscriptionModels'), t = window.CamelliaI18n.t;
+  container.replaceChildren();
+  for (const [engine, title] of SUBSCRIPTION_MODEL_ENGINES) {
+    const group = document.createElement('section'); group.className = 'subscription-model-group';
+    const heading = document.createElement('h3'); heading.textContent = title;
+    group.append(heading);
+    const account = subscriptionModelAccounts[engine] || { models: [] };
+    const models = account.models;
+    if (!models.length) {
+      const hint = document.createElement('p'); hint.className = 'hint';
+      hint.textContent = account.error || t('Sign in or refresh this subscription to load models.');
+      group.append(hint);
+    } else {
+      const shown = models.filter(model => window.CamelliaSubscriptionModels.isVisible(modelPreferences?.hiddenSubscriptionModels, engine, model.id)).length;
+      const count = document.createElement('p'); count.className = 'hint'; count.textContent = t(`${shown} of ${models.length} shown`);
+      group.append(count);
+      for (const model of models) {
+        const row = document.createElement('label'); row.className = 'subscription-model-row';
+        const name = document.createElement('span'); name.textContent = model.name || model.displayName || model.id;
+        name.title = model.id;
+        const checkbox = document.createElement('input'); checkbox.type = 'checkbox';
+        checkbox.checked = window.CamelliaSubscriptionModels.isVisible(modelPreferences?.hiddenSubscriptionModels, engine, model.id);
+        checkbox.disabled = visibilitySaving;
+        checkbox.addEventListener('change', () => void saveSubscriptionModelVisibility(engine, model.id, checkbox.checked));
+        row.append(name, checkbox); group.append(row);
+      }
+    }
+    container.append(group);
+  }
+}
+
+async function saveSubscriptionModelVisibility(engine, modelId, visible) {
+  if (visibilitySaving || !modelPreferences) return;
+  visibilitySaving = true; renderSubscriptionModels();
+  const previous = modelPreferences.hiddenSubscriptionModels?.[engine] || [];
+  const next = new Set(previous);
+  if (visible) next.delete(modelId); else next.add(modelId);
+  try {
+    const result = await api.workbenchSaveSettings({ hiddenSubscriptionModels: { [engine]: [...next] } });
+    if (!result.ok) throw new Error(result.error);
+    modelPreferences.hiddenSubscriptionModels = { ...modelPreferences.hiddenSubscriptionModels, [engine]: [...next] };
+    status('Preferences saved');
+    void renderQuickSwitchModels(modelPreferences, subscriptionModelAccounts);
+  } catch (error) { status(error.message || 'Could not save model visibility', true); }
+  finally { visibilitySaving = false; renderSubscriptionModels(); }
+}
+
+async function renderModelSettings(preferences) {
+  const seq = ++modelSettingsSeq;
+  const [loaded, ...accounts] = await Promise.all([
+    preferences || api.workbenchSettings(),
+    ...SUBSCRIPTION_MODEL_ENGINES.map(([engine]) => accountModelState(engine)),
+  ]);
+  if (seq !== modelSettingsSeq) return;
+  if (!loaded?.ok) { status(loaded?.error || 'Could not load model settings', true); return; }
+  modelPreferences = { ...loaded, hiddenSubscriptionModels: loaded.hiddenSubscriptionModels || {} };
+  subscriptionModelAccounts = Object.fromEntries(SUBSCRIPTION_MODEL_ENGINES.map(([engine], index) => [engine, accounts[index]]));
+  renderSubscriptionModels();
+  await renderQuickSwitchModels(modelPreferences, subscriptionModelAccounts);
+}
+window.addEventListener('camellia:language', () => {
+  if (!modelPreferences) return;
+  renderSubscriptionModels();
+  void renderQuickSwitchModels(modelPreferences, subscriptionModelAccounts);
+});
 const LEVEL_LABELS = { off: 'Off', none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 const levelLabel = id => LEVEL_LABELS[id] || (id ? id[0].toUpperCase() + id.slice(1) : '');
 // Account models report their own reasoning efforts; routed models fall back to
@@ -699,12 +785,15 @@ async function saveQuickSwitch(patch, select, errorFallback) {
   try {
     const result = await api.workbenchSaveSettings(patch);
     if (!result.ok) throw new Error(result.error);
+    for (const key of ['quickSwitchModels', 'quickSwitchLevels']) {
+      if (patch[key]) modelPreferences[key] = { ...modelPreferences[key], ...patch[key] };
+    }
     status('Preferences saved');
     return true;
   } catch (error) { select.value = select.dataset.saved; status(error.message || errorFallback, true); return false; }
   finally { select.disabled = false; }
 }
-async function renderQuickSwitchModels(preferences) {
+async function renderQuickSwitchModels(preferences, accountStates = {}) {
   const container = $('quickSwitchModels');
   container.replaceChildren();
   const router = await api.apiRouterGetState();
@@ -723,14 +812,26 @@ async function renderQuickSwitchModels(preferences) {
     levelSelect.className = 'quick-switch-level'; levelSelect.disabled = true;
     levelSelect.setAttribute('aria-label', label + ' reasoning level');
     row.append(name, modelSelect, levelSelect); container.append(row);
-    const account = await Promise.resolve().then(() => api[engine + 'AccountState']?.()).catch(() => null);
+    const account = accountStates[engine]?.active || null;
     const models = new Map((router.enabled ? router.models || [] : []).map(id => [id, id]));
-    for (const model of account?.models || []) models.set(model.id, model.name || model.displayName || model.id);
+    for (const model of account?.models || []) {
+      if (window.CamelliaSubscriptionModels.isVisible(preferences.hiddenSubscriptionModels, engine, model.id)) {
+        models.set(model.id, model.name || model.displayName || model.id);
+      }
+    }
     const savedModel = preferences.quickSwitchModels?.[engine] || '';
-    if (savedModel && !models.has(savedModel)) models.set(savedModel, savedModel);
+    let hiddenSavedModel = false;
+    if (savedModel && !models.has(savedModel)) {
+      hiddenSavedModel = !window.CamelliaSubscriptionModels.isVisible(preferences.hiddenSubscriptionModels, engine, savedModel);
+      models.set(savedModel, savedModel + (hiddenSavedModel ? ' (' + window.CamelliaI18n.t('Hidden') + ')' : ''));
+    }
     const unset = new Option('Not configured', ''); unset.dataset.i18n = '';
     modelSelect.add(unset);
-    for (const [id, title] of models) modelSelect.add(new Option(title, id));
+    for (const [id, title] of models) {
+      const option = new Option(title, id);
+      option.disabled = hiddenSavedModel && id === savedModel;
+      modelSelect.add(option);
+    }
     const savedLevel = preferences.quickSwitchLevels?.[engine] || '';
     modelSelect.value = savedModel; modelSelect.dataset.saved = savedModel;
     modelSelect.disabled = false;
@@ -933,13 +1034,14 @@ async function refresh(initial = false) {
       $('conversationSessionTtl').value = String(preferences.conversations?.sessionTtlMinutes ?? 30);
       $('conversationSessionLimit').value = String(preferences.conversations?.sessionLimit ?? 4);
       $('dataPath').textContent = preferences.dataPath; $('version').textContent = 'v' + preferences.version;
-      await renderQuickSwitchModels(preferences);
+      await renderModelSettings(preferences);
     }
   } catch (e) { status(e.message, true); }
 }
 $('refresh').onclick = async () => {
   await flushSave();
   if (view === 'subscriptions') return engineUI.accountsPage();
+  if (view === 'models') return renderModelSettings();
   if (view === 'mobile') return window.mobileAccessUI.refresh();
   if (view === 'devices') return window.cliDevicesUI?.refresh();
   if (view === 'engines') return engineUI.runtimePage();

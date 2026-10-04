@@ -3,6 +3,7 @@
 const { createHash } = require('node:crypto');
 const { LEVELS } = require('../../engines/permission-levels');
 const { fail } = require('./access');
+const { isVisible: subscriptionModelVisible } = require('../../shared/subscription-models');
 
 // Engines that can run either a signed-in account or the shared API routes.
 // Everything else has a single model source.
@@ -33,15 +34,23 @@ function settingsView(manager, conversation) {
   const native = selected.permissionMode || 'default';
   const permissionMode = LEVELS.includes(native) ? native : native === 'default' ? (engine === 'dsh' ? 'auto' : 'ask')
     : ({ acceptEdits: 'auto', 'workspace-write': 'auto', bypassPermissions: 'full', yolo: 'full', 'danger-full-access': 'full' }[native] || 'ask');
+  const preferences = manager.loadConfig?.() || {};
+  const allModels = selectableModels(manager, engine, selected);
+  const visibleModels = allModels.filter(model => model.connection !== 'subscription'
+    || subscriptionModelVisible(preferences.hiddenSubscriptionModels, engine, model.id)
+    || model.connection === connection && model.id === selected.model);
   const settings = { engine, connection, model: selected.model || '', thinking: selected.thinkingBudget || '', permissionMode,
     fastMode: selected.fastMode === true,
-    models: selectableModels(manager, engine, selected).map(model => ({ id: model.id, name: model.name, thinking: model.thinking, connection: model.connection, supportsFast: model.supportsFast })),
+    models: visibleModels.map(model => ({ id: model.id,
+      name: model.connection === 'subscription' && !subscriptionModelVisible(preferences.hiddenSubscriptionModels, engine, model.id)
+        ? model.name + ' (hidden)' : model.name,
+      thinking: model.thinking, connection: model.connection, supportsFast: model.supportsFast })),
     permissionLevels: LEVELS };
-  const preferences = manager.loadConfig?.() || {};
   const quickModel = preferences.quickSwitchModels?.[engine];
   settings.quickSwitch = quickModel ? { model: quickModel, thinking: preferences.quickSwitchLevels?.[engine] || '',
-    available: settings.models.some(m => m.id === quickModel) } : null;
-  settings.supportsFast = engine === 'codex' && connection === 'subscription' && settings.models.some(m => m.connection === connection && m.id === settings.model && m.supportsFast);
+    available: settings.models.some(m => m.id === quickModel && (m.connection !== 'subscription'
+      || subscriptionModelVisible(preferences.hiddenSubscriptionModels, engine, m.id))) } : null;
+  settings.supportsFast = engine === 'codex' && connection === 'subscription' && allModels.some(m => m.connection === connection && m.id === settings.model && m.supportsFast);
   const version = createHash('sha256').update(JSON.stringify([settings, selected.connection, selected.permissionMode, selected.contextWindow])).digest('hex');
   const busy = manager.busy(conversation.id);
   return { ...settings, version, editable: !busy, modelEditable: true, appliesNextTurn: busy };

@@ -1,6 +1,6 @@
 # Camellia for Android
 
-Camellia's Android client is a native Java/View application for Android 8.0 (API 26) and newer. It has local provider chat and a separate remote-control view for paired desktop conversations. The current debug build is `1.0.0-beta` (`versionCode` 78); the deliverable, when built, is `dist/Camellia-Android-1.0.0-beta-debug.apk`. Debug packages are test builds signed with the development key, not store releases.
+Camellia's Android client is a native Java/View application for Android 8.0 (API 26) and newer. It has local provider chat and a separate remote-control view for paired desktop conversations. The current debug build is `1.0.0` (`versionCode` 79); the deliverable, when built, is `dist/Camellia-Android-1.0.0-debug.apk`. Debug packages are test builds signed with the development key, not store releases.
 
 ## Local chat
 

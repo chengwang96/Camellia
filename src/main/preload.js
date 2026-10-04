@@ -155,7 +155,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   codexAccountAdd: label => ipcRenderer.invoke('dsh:codex-account-add', { label }),
   codexAccountRemove: id => ipcRenderer.invoke('dsh:codex-account-remove', { id }),
   codexAccountLabel: (id, label) => ipcRenderer.invoke('dsh:codex-account-label', { id, label }),
-  kimiAccountState: () => ipcRenderer.invoke('dsh:kimi-account-state'),
+  kimiAccountState: payload => ipcRenderer.invoke('dsh:kimi-account-state', payload),
   kimiAccountRefresh: id => ipcRenderer.invoke('dsh:kimi-account-refresh', { id }),
   kimiSignIn: () => ipcRenderer.invoke('dsh:kimi-sign-in'),
   kimiCancelLogin: () => ipcRenderer.invoke('dsh:kimi-cancel-login'),

@@ -84,6 +84,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   const accountSubscription = () => supportsAccounts() && currentConnection === 'subscription';
   const accountName = { codex: 'ChatGPT', kimi: 'Kimi', antigravity: 'Google' }[harnessId];
   let accountModels = [];
+  let hiddenSubscriptionModels = {};
+  const visibleAccountModels = () => window.CamelliaSubscriptionModels.visibleModels(accountModels, hiddenSubscriptionModels, harnessId);
   let routeModels = [];
   const googleSubscription = () => harnessId === 'antigravity' && currentConnection === 'subscription';
   // A session saved before the Google catalog was grouped still names a single
@@ -735,6 +737,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const settings = await window.dshDesktop.workbenchSettings();
       if (!current()) return;
       if (!settings.ok) throw new Error(settings.error);
+      hiddenSubscriptionModels = settings.hiddenSubscriptionModels || {};
       const configured = settings.quickSwitchModels?.[harnessId];
       if (!configured) {
         setStatus('Choose a quick-switch default model in Settings → Model Settings.');
@@ -796,8 +799,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     let connection;
     const canSwitch = supportsAccounts() && model && (sharedChat || !context.sessionId);
     if (canSwitch) {
-      const inCurrent = accountSubscription() ? accountModels.some(m => m.id === model) : routeModels.includes(model);
-      const inOther = accountSubscription() ? routeModels.includes(model) : accountModels.some(m => m.id === model);
+      const accountOffersModel = visibleAccountModels().some(item => item.id === model);
+      const inCurrent = accountSubscription() ? accountOffersModel : routeModels.includes(model);
+      const inOther = accountSubscription() ? routeModels.includes(model) : accountOffersModel;
       if (!inCurrent && inOther) connection = accountSubscription() ? 'api' : 'subscription';
     }
     const targetConnection = connection || currentConnection;
@@ -825,7 +829,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     return '<svg class="pop-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
   }
 
-  function openSubMenu(rowEl, sections, currentId, onPick) {
+  function openSubMenu(rowEl, sections, currentId, onPick, manageModels = false) {
     // Remove existing sibling submenus first (keep the root menu).
     const root = openPops[0];
     for (const p of openPops.slice(1)) p.remove();
@@ -852,6 +856,18 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         sub.appendChild(el);
       }
     }
+    if (!sections.some(section => section.options.length)) {
+      const empty = document.createElement('div'); empty.className = 'pop-group'; empty.dataset.i18n = '';
+      empty.textContent = 'No visible models'; sub.appendChild(empty);
+    }
+    if (manageModels) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'pop-manage';
+      button.textContent = window.CamelliaI18n.t('Manage subscription models');
+      button.addEventListener('click', () => {
+        closePops(); void window.dshDesktop.openSettingsWindow({ page: 'models', focus: 'subscriptionModels' });
+      });
+      sub.appendChild(button);
+    }
     document.body.appendChild(sub);
     sub.style.visibility = 'hidden';
     const rootRect = root.getBoundingClientRect();
@@ -867,9 +883,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!supportsAccounts() || (!sharedChat && context.sessionId)) return [{ title: 'Model · Same-model failover', options: MODELS }];
     // With no account signed in there is only one list, so keep the plain group.
     if (!accountModels.length) return [{ title: 'Model · Same-model failover', options: MODELS }];
-    const account = { title: 'Model · ' + accountName + ' account', options: accountModels.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
+    const account = { title: 'Model · ' + accountName + ' account', options: visibleAccountModels().map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
     const api = { title: 'Model · Shared API routes', options: routeModels.map(id => ({ id, label: id })) };
-    if (googleSubscription()) return [account];
+    if (googleSubscription()) return account.options.length ? [account] : [];
     const sections = accountSubscription() ? [account, api] : [api, account];
     // An ID offered by both connections belongs to the active one, matching
     // persistModel and the remote picker. Never label an API choice as account usage.
@@ -888,7 +904,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       rowModel.innerHTML = "<span data-i18n>Model</span><span class=\"pop-row-value\"></span>" + chevRight();
       rowModel.querySelector('.pop-row-value').textContent = modelLabel(currentModel);
       rowModel.addEventListener('click', () => {
-        openSubMenu(rowModel, modelSections(), currentModel, persistModel);
+        openSubMenu(rowModel, modelSections(), currentModel, persistModel, supportsAccounts());
       });
       const rowLevel = document.createElement('div');
       rowLevel.className = 'pop-row';
@@ -3659,13 +3675,15 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const subscription = supportsAccounts() && selected.connection === 'subscription';
       // Engines with subscriptions load both lists so the composer can offer
       // account and API models together and pick the connection itself.
-      const [routerState, accountState] = await Promise.all([
+      const [routerState, accountState, preferences] = await Promise.all([
         window.dshDesktop.apiRouterGetState(),
         supportsAccounts() ? Promise.resolve().then(() => window.dshDesktop[harnessId + 'AccountState'](
           harnessId === 'codex' ? { id: selected.subscriptionId } : undefined))
           .catch(error => ({ ok: false, error: error.message })) : Promise.resolve(null),
+        window.dshDesktop.workbenchSettings(),
       ]);
       if (seq !== settingsLoadSeq || sessionId !== context.sessionId) return;
+      hiddenSubscriptionModels = preferences?.hiddenSubscriptionModels || {};
       accountModels = accountState?.ok && Array.isArray(accountState.models) ? accountState.models : [];
       applySessionSettings(selected);
       // Fills the API route list and context caps; it leaves MODELS alone while
@@ -3674,8 +3692,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (subscription) {
         const account = accountState || {};
         if (!account.ok) throw new Error(account.error);
+        const visible = visibleAccountModels();
         MODELS.splice(0, MODELS.length, ...(accountModels.length ? [] : [{ id: '', label: 'Connect ' + accountName + ' in settings' }]),
-          ...accountModels.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })));
+          ...visible.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })));
         if (currentModel && !accountModels.some(model => model.id === currentModel)) MODELS.push({ id: currentModel, label: currentModel + ' (refresh account)' });
         $('modelPill').title = window.CamelliaI18n.t('Model · double-click to switch to your model and reasoning default');
         renderModelPill(); updateCtxRing();
