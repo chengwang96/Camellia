@@ -1,56 +1,29 @@
-<p align="center">
-  <img src="assets/icon-256.png" width="88" height="88" alt="Camellia cat logo">
-</p>
+<p align="center"><img src="assets/icon-256.png" width="88" height="88" alt="Camellia cat logo"></p>
 
 <h1 align="center">Camellia</h1>
 
-<p align="center">A desktop workbench for coding agents.</p>
+<p align="center">One workbench for coding agents, local and remote.</p>
 
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
 
-Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravity, and Pi** into one desktop application. It centralizes provider credentials, model routing, usage tracking, and engine settings while preserving each engine's execution model and conversation history. The same workbench can also drive a headless Linux server or a paired Android phone over Tailscale.
+Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravity, and Pi** into a shared desktop workbench. Use a provider API key or a supported subscription, switch engines within a conversation, and keep settings, usage, and account visibility in one place. A paired Android client and a headless Linux server extend the same workflow beyond the desktop.
 
-<table><tr><td>
-<img src="docs/images/home.png" alt="Camellia home screen with engine selection and shared settings">
-</td></tr></table>
+![Current Camellia home screen showing six engines and the discussion, benchmark, server, and settings entries](docs/images/home.png)
 
-## Features
+## What makes Camellia useful
 
-- **Queue messages while running.** Enter or Send queues messages until the current turn ends. Each queued message has a “Send instruction now” button to steer the active turn when supported by the engine connection. Failed instructions retain their queued text and attachments without changing the composer draft.
-- **Model changes queue while running.** Model and reasoning-level changes are accepted during a run too: the running turn stays on the model it started with, and the change applies from the next message. Queued messages therefore run on the selection in force when they are sent — change the model after queueing and that message and those after it use the new one. Switching harness, connection, or permission mode still waits for the turn to end.
+- **Shared conversations.** Move between engines in one workspace and conversation. Choose a direct continuation or a Markdown handoff when context needs to cross engines. Native histories remain tied to their engines.
+- **Agent discussions (beta).** Invite up to four configured agents, assign roles, and choose who replies. Discussion messages, member state, tool activity, and approvals stay together in the desktop or paired Android view.
+- **One routing and account view.** Manage API providers, multiple keys, supported subscription sign-ins, same-model failover, usage, balances, and optional engine runtimes in the app.
+- **Comparable benchmarks.** Run the same model through six harnesses against built-in, DS-1000, or SciCode tasks. Inspect checks, time, token usage, and saved reports.
+- **Remote work.** Pair a headless Linux server as another workbench, or approve an Android device to read and control selected desktop conversations over the embedded Tailscale connection.
+- **Long-running work.** Goals, scheduled checks, queued messages, and next-turn model changes help manage work that outlasts one reply.
 
-<table><tr><td>
-<img src="docs/images/message-queue.png" alt="A queued message and steering instructions while a Codex response is streaming">
-</td></tr></table>
+![Illustrative shared conversation in the current desktop interface](docs/images/shared-conversation.png)
 
-- **Multiple engines, one application.** Switch between Claude Code, Codex CLI, DSH, Kimi Code, Antigravity, and Pi with shared navigation and settings. Pi runs on the shared API routes through its RPC mode, so it needs no separate account.
-- **Long-press to organize conversations.** Hold a sidebar conversation for about 350 ms, then drag to reorder it or move it to another workspace, including collapsed workspaces. Order persists across restarts. Moving changes sidebar membership only, not files or the conversation's execution directory. The list scrolls near its edges; press Esc to cancel.
-- **Smooth desktop dragging.** Conversations lift into a subtly enlarged, shadowed preview that follows the pointer. The original fades, neighboring rows ease apart, and the preview settles on release or cancellation. Respects reduced-motion preferences.
-- **Shared conversations across six engines.** Keep one conversation and workspace while switching harnesses. Continue directly or use an automatic Markdown handoff. Start pages and active chats share an aligned composer.
-- **Archive follows the workspace.** Archiving the open conversation opens its neighbor in the same workspace, preferring the row below. When a workspace has no conversation left, its new-session page opens there; standalone conversations behave the same way. Archiving another conversation keeps the current one open.
-- **Delete from the sidebar menu.** The conversation menu adds **Delete conversation**, which asks for confirmation and then permanently removes that conversation's transcript, sidebar metadata and native binding. Deleting the open conversation follows the same neighbor rule as archiving. A running conversation, or one owning an armed goal, must be stopped or paused first; workspace files are never touched.
-- **Manual space cleanup.** Settings → Archived → Space cleanup → Scan previews categories, logical sizes and relative paths before permanent deletion. Only unowned Camellia conversation remnants, handoffs/summaries, pasted attachments and dedicated engine directories are eligible. Existing/archived/forked conversations, drafts, queued attachments and files modified within 24 hours are protected. Confirmation rechecks references and file identity; no background scans run. Workspace files, external files, original imports and shared/global native engine histories are excluded; deleted conversations' dedicated engine directories may include their private native state. Running conversations do not block cleanup of verified unowned remnants and engine directories; pasted attachments and handoffs/summaries remain protected until an idle scan. Unreadable, damaged or changing references stop cleanup; unsafe or oversized candidates are skipped. References in orphan records are protected too, so another manual scan may reclaim their attachments after those records are removed. Actual recovered disk space may differ from logical sizes.
-- **Large pastes become attachments.** Pasting a long text block stores it as a `pasted-text-*.txt` attachment instead of a huge prompt; short pastes stay inline.
-- **Deliverables appear below replies.** Successful file-writing tools and local file links or inline-code paths in replies produce deduplicated cards after an existence check. Installer packages appear first, followed by images, videos, presentations, Markdown and HTML; more than four files collapse behind an expandable row. **Open with** offers Camellia, the system default app, or revealing the file in the platform file manager. Built-in previews cover images, audio/video, PDF, text, CSV/TSV tables, JSON trees, and DOCX/PPTX/XLSX documents; installers have no inline preview. The right sidebar renders Markdown with headings, tables, footnotes, KaTeX math and syntax highlighting, and displays HTML in a sandbox with scripts disabled. Office documents are parsed locally and rendered in a sandbox without scripts or network access: Word headings, formatted text, tables and embedded images; PPTX slides with theme colours, master and layout decoration, grouped shapes, connectors, tables, cached chart data, positioned text and images; Excel worksheets, cell styles and common number formats. Animations, transitions, SmartArt, OLE objects and decoded EMF/WMF media may be omitted; formulas are not recalculated. Legacy DOC/PPT/XLS deliverables are still listed, and open through the system app because their binary format has no inline preview. Script-generated files should be linked in the reply. Shared conversations retain per-turn artifact records without scanning the workspace. See [desktop artifact previews](docs/artifact-previews.md).
-- **Deliverables from any working directory.** Relative paths in a reply resolve against the conversation workspace, every directory the turn's commands ran in, any absolute folder the reply itself names, and the folders of the absolute paths in the turn's own commands, so files produced in another project directory, or listed as bare names under a folder the reply names only in prose (a Desktop folder a command scanned, for example), still appear as cards. A folder the reply names outranks one only inferred from a command, so an older template that shares a file name cannot shadow the finished file.
-- **Centralized API management.** Configure providers, import and label keys, discover models, and validate connections in one place.
-- **Same-model failover.** Choose **Low**, **Default**, or **High** for **API priority** in each provider's settings; routes are tried in the order High → Default → Low. Retry eligible failures through another key or provider serving the same configured model. Camellia never substitutes a different model automatically. Higher-priority routes are retried after cooldown; equal priorities retain the current route, then follow provider and key order. **Next route** switches only within the highest available priority. Previously saved numeric priorities map to Default (0) or High (positive values).
-- **Usage and account visibility.** Filter local requests and token statistics by provider, key, model, and date. View balances, subscription limits, and observed trends for supported account APIs.
-- **Optional engine downloads.** Install only the engines you use, with pinned versions, download status, and retries in settings.
-- **Compare six harnesses.** Run the same model and provider through the six benchmark engines in **Home → Benchmark**, with automatic task grading, time and token usage, saved reports, and JSON export.
-- **Drive a headless Linux server.** Run `./camellia` for one-terminal startup, Tailscale sign-in and explicit pairing approval, then pair the desktop under **Settings → CLI devices**. Each paired server opens its own workbench with server settings for runtimes, engines, usage, archived conversations and space cleanup.
-- **Control your desktop from a phone.** Turn on **Mobile access** to pair an Android phone over the shared embedded Tailscale network. Pair by QR code or a one-time code; authorize every device explicitly, rename this computer, and revoke access at any time.
+## Get started
 
-## Getting started
-
-### Requirements
-
-- Windows x64 or macOS on Apple Silicon (ARM64)
-- For source runs and builds: Node.js **22.19 or later in the 22.x series**, or **24 and later**. Desktop builds include Node.js.
-- Git; on Windows, install Git for Windows with Bash for engine shell tools
-- Network access for initial runtime installation, and credentials for a supported model provider
-
-### Run from source
+Desktop builds target **Windows x64** and **macOS Apple Silicon**. To run from source, use Node.js **22.19+ in the 22.x series or 24+**, Git, and Git for Windows with Bash on Windows:
 
 ```sh
 git clone https://github.com/chengwang96/Camellia.git
@@ -59,228 +32,10 @@ npm ci
 npm start
 ```
 
-`npm ci` installs the workbench dependencies. All six harness runtimes are optional: choose **Download & open** on the home screen or download individual engines from **Settings → Engine Settings**. Antigravity downloads either its official CLI for Google subscriptions or the SDK and dedicated Python for API mode; Pi is a single npm package that uses the shared API routes. Separate global CLI or Python installations are not required.
+Choose an engine on the home screen and install it when prompted. Then configure an API provider under **Settings → Providers & Keys**, or connect a supported subscription in **Settings → Engine Settings**. Camellia downloads only the runtimes you choose. Connection validation sends a short model request and may incur provider usage.
 
-Networking lives on its own page, **Settings → Network**, and covers engine and benchmark-library downloads as well as subscription and API connections. **Direct connection** goes straight out; **Use system proxy** uses the detected system HTTP/HTTPS proxy; **Auto** tests every provider host and signed-in subscription once and keeps direct-first only when direct works everywhere, otherwise it stays on the system proxy. The default is direct, with no preset proxy address. The same page has a one-click **Connectivity test** that probes every host through both a direct connection and the detected proxy without changing your mode. A saved change takes effect immediately — engine processes are replaced with the new connection and a running reply keeps its connection until it finishes. If the selected system proxy can no longer reach the internet, Camellia downgrades to **Auto** and reports it in-app and in **Settings → Network**, without rewriting your stored choice, so a restart re-probes it; choose **Use system proxy** again once the proxy works. ChatGPT (Codex) and Claude subscription sign-ins skip the direct-first fallback and always use the detected system proxy, connecting directly only when none is detected.
+For Android installation and desktop pairing, see the [Android guide](android/README.md) and [remote access guide](docs/remote-access.md). For a headless host, see the [Linux server guide](docs/linux-server-preview.md).
 
-For development, `npm run setup:runtimes -- dsh kimi` downloads only the named engines into `runtimes/`, and `npm run setup:pi` installs Pi. Use `--all` only when you want all six. Launching the workbench or browsing settings does not download missing engines.
+## Documentation
 
-The application defaults to English. Switch between English and Simplified Chinese in **Settings → General → Language**, then save your preferences.
-
-### Configure your first session
-
-1. Open **Settings → Providers & Keys**.
-2. Add a provider, enter API keys, and select or enter its available models.
-3. Save the configuration and validate a key against the model you intend to use.
-4. Return home, select an engine and model, and start a session. Every engine supports both workspace and standalone conversations.
-
-For browser account sign-in, open **Settings → Providers & Keys → Account sign-in** and choose **Kimi account**, **Google account · Antigravity**, or **ChatGPT account**. The shortcut opens the matching engine's account settings and applies account mode, then click its **Sign in** button. The API-provider dialog also links to Kimi and Google account settings; **Kimi Code (API key)** is the separate key-based connection.
-
-To use your ChatGPT plan, open **Settings → Engine Settings → Codex CLI**, select **ChatGPT account**, and choose **Sign in with ChatGPT**. Camellia opens the official login in your browser and loads your account models and quota. **Add another account** signs in a second ChatGPT account at the same time; the next message uses the selected account, including in existing conversations. Quota or login errors can automatically retry on another signed-in account with saved context. Codex settings, credentials, and history stay in Camellia’s own data directory; your personal `~/.codex` is untouched. Select **API key / third-party API** to use the central Key pool instead.
-
-To use a Google subscription, select **Settings → Engine Settings → Antigravity → Google subscription**, save, and choose **Sign in with Google**. Complete the official CLI sign-in, then **Refresh account** to load the models available to your account. This connection needs no API key; the official CLI keeps one Google sign-in per operating-system user, so Camellia lists a single Google account.
-
-To use a Kimi Code subscription, open **Settings → Engine Settings → Kimi Code**, choose **Kimi subscription** and your login region, save, then click **Sign in with Kimi**. Complete the official device authorization in your browser; account models appear automatically, with no API key required. Each signed-in account appears in **Providers & Keys** and **Usage**, with quota windows, reset times, and observed trends in **Balances & Quotas**. **Add another account** keeps several Kimi logins side by side, and a new conversation starts on the selected account or on one that still has quota. Camellia keeps these logins separate from your personal Kimi CLI. **Shared API routes** remains available, including the Kimi Code subscription key preset. See [Kimi subscription setup](docs/configuration.md#kimi-code-subscription).
-
-Connection validation sends a short model request and may incur a small charge. Reading a model catalog does not establish access to every listed model.
-
-Use `Ctrl+,` to open settings and `Ctrl+Shift+H` to return home. On macOS, use `Cmd` instead of `Ctrl`.
-
-## Benchmark a model
-
-Open **Home → Benchmark** after configuring and validating your API model. The **Question library** selector explains what each benchmark evaluates:
-
-**5-minute preview** is the default: six engines run the same three small coding tasks, with one attempt and a five-minute whole-run deadline. Each engine's three tasks share 4.5 minutes, so a slower task can use more of the available time. The last 30 seconds are reserved for verification and cleanup. It gives early evidence about coding, tool use, latency and token usage. Engine downloads must finish first; process cleanup can take a few extra seconds. A slow or unavailable API may yield little evidence. This sample does not measure vision, long-term memory or advanced research.
-
-Built-in **v2** starts with a basic ASCII text-formatting repair and a supplied `node check.cjs` self-test containing all six acceptance cases, followed by file processing and a multi-file repair. The broader Unicode normalization question remains in **Standard**, which now has seven tasks. The entry task checks whether a model and harness can complete a small edit and run checks; compare time, tokens and harder tasks for more evidence. Results show the task-set version, and saved v1 reports keep their original questions and scores.
-
-<table><tr><td>
-<img src="docs/images/benchmark.png" alt="Camellia benchmark results with check scores, token usage, and per-task results">
-</td></tr></table>
-
-*Example: a five-minute preview with DeepSeek V4.1 Flash on Ollama Cloud — all six engines pass.*
-
-Choose **Full library** to run every question in the selected library unattended, or **Custom sample** to choose task count and limits. Full-library mode shows the combined task/check time allowances and saves every attempt. Keep the application open and the computer awake; closing it stops the run.
-
-| Question library | Capabilities evaluated | Available task sets |
-| --- | --- | --- |
-| Camellia built-in | Basic coding and tool use, file processing, and coordinated changes across files. Standard adds Unicode edge cases, algorithms, retry logic and configuration tracing. | 3 or 7 tasks |
-| [DS-1000](https://github.com/xlang-ai/DS-1000) | Data-science coding: table and array transformations, plotting, and Python library use across pandas, NumPy, SciPy, Matplotlib, scikit-learn, PyTorch, and TensorFlow. | Fixed samples of 3, 6, or 12; full 1,000-problem test split |
-| [SciCode](https://github.com/scicode-bench/SciCode) | Research coding: translating scientific requirements into numerical methods, simulations, and scientific calculations; combining subproblems into a working solution. | Fixed samples of 3, 6, or 12; full 65-problem test split |
-
-1. Choose a model/provider and question library, and download any missing engines.
-2. For an external library, click **Prepare library** once to download verified data and a dedicated Python environment. Downloads use the saved connection and are cached locally. SciCode includes a 1.05 GB numerical-target file.
-3. Choose the task set, one or three attempts per task, and run limits. Click **Run benchmark**: all six harnesses run in parallel, each completing one task at a time. Every attempt starts with fresh files and uses the engine's native tools; an independent checker grades the files produced.
-4. Click a result for passed checks, failure details, and file changes. **Export JSON** saves the report with question IDs, source versions, scores, usage, and limits.
-
-Expand **Limits & scoring** for budgets and grading rules, or **Run details** for a saved run's full configuration. The main view keeps the capability summary, progress and results visible.
-
-**Time limits:** full-library and custom runs recommend **5 minutes per built-in task, 10 minutes for DS-1000, and 30 minutes for SciCode**. You can select up to 60 minutes; every engine receives the same limit. Time and token limits appear before starting and in saved reports. Longer time limits do not raise token allowances; adjust the per-task token limit separately when needed.
-
-**Token limits:** each task attempt gets its own budget: **250K tokens for built-in tasks, 500K for DS-1000, and 1M for SciCode** by default, adjustable up to 5M. Each engine and repeat starts a fresh allowance. Reaching one task's limit stops that attempt; the other tasks continue. The optional whole-run cap is **off by default** and can be set up to 1B. The page shows both the per-task limit and combined allowances before starting. These are usage ceilings, not cost estimates.
-
-**Scoring:** the primary **Check score** averages each attempt's fraction of passed checks, with equal weight per task and repeat. **11/12 earns 91.7 points**, shown as **Partial**; the full-task pass rate is shown separately. Runtime/API errors, timeouts, and per-task limits earn zero. Scores update after each evaluated attempt. Incomplete runs show **Preliminary check score** with coverage; unstarted or user-stopped attempts do not count as failures. Final scores require the entire task set. Compare preliminary results only on matching completed tasks.
-
-OCRBench, MMMU-Pro Vision, BEAM (1M) and DeepSWE have been [assessed for future integration](docs/design/benchmark-modes.md). They are not yet selectable libraries.
-
-SciCode validates its test dependencies and numerical data before model requests begin. A **Grader error** leaves the affected scores unavailable. Saved solutions can be [rechecked without model calls](docs/configuration.md#recheck-saved-answers), preserving the original report and API usage.
-
-Equal scores can reflect a shared model strategy or limitations in a question's tests. SciCode #46 is one verified example: equivalent Monte Carlo acceptance rules can receive different scores because its checks require a particular seeded trajectory. SciCode #15 also omits a physical constant's coefficient in its original prompt. Short samples omit these questions; the full split retains them with notices and their raw scores. Reports flag common failed checks across engines. Scores measure the model, harness, questions and limits together; they cannot isolate harness quality by themselves.
-
-Runs consume your API quota and can be stopped. These are Camellia integration scores, including when using official DS-1000 or SciCode questions and checks; they are not official leaderboard submissions. SciCode runs include scientific background and ask for all subproblems together. Compare runs with the same questions, model/provider, versions, and limits. Codex uses shared API routes and Antigravity uses its API SDK for this comparison, independently of the connection used for chat. See [benchmark scoring and limits](docs/configuration.md#benchmark).
-
-## Engine integration
-
-| Engine | Integration | Runtime in desktop builds |
-| --- | --- | --- |
-| Claude Code | Official CLI over stream-json, with a Camellia-managed desktop interface | Optional download from the official npm package |
-| Codex CLI | Official app-server over stdio; ChatGPT subscription or shared API routes | Optional download from the official npm package |
-| DeepSeek Harness | ACP in the shared conversation interface, using the shipped headless profile | Optional download; patches applied during installation |
-| Kimi Code | Official runtime over ACP; Kimi subscription sign-in or shared API routes, using the shared conversation interface | Optional download |
-| Antigravity | Official CLI for Google subscriptions, or Python SDK for shared API routes; both use Camellia's conversation interface | Optional CLI or SDK/Python download |
-| Pi | Official coding agent over its RPC mode with a Camellia extension for permissions and goal tools; shared API routes only | Optional download from the official npm package |
-
-The installer and portable downloads contain no harness runtimes. They include the shared Node.js/npm tools needed to download your selections into application data. Before offering a download, Camellia automatically checks global npm packages, npm prefixes on PATH, the npx cache, and standard native CLI locations. Recognized local installations appear as ready with their version and installation path and are reused without downloading again. Externally installed CLIs are not patched or upgraded by Camellia; update them with their original installer. Antigravity API mode still requires its dedicated Python SDK environment; its subscription CLI is detected separately. DSH's pnpm and Antigravity's Python are downloaded only with those engines. After installation, an engine is reused on later launches. Shell tools use the native shell on macOS and require Git Bash on Windows.
-
-Camellia keeps shared conversation records and a separate native session for each engine. Shared conversations retain their working directory; start a new conversation to change folders. The shared sidebar lists conversations created in Camellia. Pre-release and external CLI histories are not imported; legacy session format compatibility is not maintained. Codex native history can be imported from its desktop app on demand; other engines start with new conversations.
-
-Switching engines keeps the conversation's API model, working directory, unsent text, attachment paths and reading position. Each conversation remembers its own API model; ChatGPT and Google account models stay separate. Permissions and reasoning choices remain specific to each engine. The top **Engine** menu uses the same switch flow as the conversation selector. Returning from Home or reloading restores the last conversation or workspace draft; zoom is saved across restarts. Pasting more than **5,000 characters** of text saves it as a `pasted-text-*.txt` attachment under application data instead of inserting a huge prompt; shorter pastes stay inline.
-
-Codex CLI also supports API keys and third-party APIs. Select **Settings → Engine Settings → Codex CLI → API key / third-party API**, save, and use a model configured in **Providers & Keys**. No ChatGPT sign-in is required in API mode. Existing Codex native sessions retain their original connection; the connection setting applies to new native sessions.
-
-Use the engine selector in a conversation to switch. **Settings → General → Shared conversations** controls the default:
-
-- **Continue directly** (default): send missing context with the next message. Returning to an engine resumes its native session and supplies intervening history. No reminder or origin badge appears by default.
-- **Automatic Markdown handoff**: the previous engine writes a summary, Camellia saves a `.md` file, then the target opens a new native session and receives it automatically. The same shared conversation remains visible. **Switch options** also offers this for a single switch.
-- Optional reminders explain the tradeoff; optional origin labels identify where a conversation began. Switching can add latency and tokens. Native caches, live tools and internal reasoning do not transfer; summaries can omit details. Handoffs use your configured model quota.
-
-Multiple conversations can work at the same time, including several using the same harness. Switch conversations or start a new one without stopping background work; the sidebar shows work and pending approvals. Stop and permission actions apply only to the selected conversation. Harness switching and Markdown handoff are disabled while that conversation is working, including an active goal; stop or pause it first. Failed handoffs keep the original conversation and generated Markdown; interrupted requests are not retried automatically. See [implementation and limits](docs/design/shared-conversations.md) (Chinese).
-
-<table><tr><td>
-<img src="docs/images/shared-conversations.png" alt="A shared conversation with the engine selector and switch options in the header">
-</td></tr></table>
-
-### Conversation control
-
-Models can also create/fork owned child conversations, choose configured models and thinking levels, send work, read results and cancel responses through [conversation-control tools](docs/conversation-tools.md). The same bridge exposes read-only `sessions`, `history` and `search` tools that list every conversation stored on the device, read any stored transcript and search transcripts for words, without starting an engine or changing anything. Children share files and existing permissions; they run independently and cannot recursively delegate or start Goals/tasks.
-
-### Goal mode
-
-Use **Goal mode** (Ctrl/Cmd+G) to set an objective. All six engines continue working without a fixed turn limit, until completion passes independent verification, you pause or remove the goal, or progress is blocked. Recoverable execution errors and model-reported blockers receive up to three consecutive attempts before the goal stops with a reason; an unavailable workspace or engine stops it immediately. A model completion report triggers a separate verification session rather than marking the goal complete directly.
-
-You can also start a message with **“Set a goal: finish this feature and run its tests”** or **“设定目标：完成这个功能并通过测试”**. The model can then activate the same Goal bar through Camellia's conversation-scoped tools, adopting the current response without launching another turn. Discussion of Goal mode alone does not activate it. Intent matching is conservative: use a direct first-line request rather than a question, quote, or example. Conversational activation supports Claude, Codex, DSH, Kimi, Pi, and Antigravity **Shared API routes**; Antigravity **Google subscription** currently requires the Goal button because its CLI has no per-session MCP configuration. Existing permissions still apply; approve the Goal tool if prompted.
-
-The compact goal bar shows the objective, status and active time. Pause also stops the current response; expand the bar for the full objective, blocker details or **Mark complete**. Resume preserves progress and accumulated active time. Goals run independently in each conversation. Opening another conversation leaves them running. Closing Camellia pauses goals; continuing requires **Resume goal**. Pause a working goal before changing its harness. Goals use the selected model and permissions.
-
-<table><tr><td>
-<img src="docs/images/goal-mode.png" alt="The compact goal bar above the composer, showing the objective and active time">
-</td></tr></table>
-
-Set a quick-switch default model and reasoning level for each engine in **Settings → Model Settings**, then double-click the model menu in the composer to select them. Single-click opens the model and reasoning menus. Changes made during a turn apply from the next message.
-
-Antigravity supports **Google subscription** and **Shared API routes** connections. Google mode uses the official CLI's account authentication and eligible Antigravity quota; API mode uses Camellia's key pool. Connection settings, permissions, MCP servers, and skills are managed in **Settings → Engine Settings → Antigravity**. Existing sessions retain their connection. Google mode supports streaming, continuation, cancellation, image attachments for supported models, and interactive tool approvals in both ordinary chat and Agent discussions. Session forks remain unavailable in this mode.
-
-The current Antigravity SDK connection supports text and code conversations. Image attachments are unavailable; use Claude, Codex, or Kimi for image conversations, including with the Gemini provider.
-
-## Providers and routing
-
-Engine selection and model-provider selection are independent. The engine manages tools and task execution; the local API router selects a configured route to the requested model.
-
-```mermaid
-flowchart LR
-    UI[Camellia] --> Claude[Claude Code]
-    UI --> Codex[Codex CLI]
-    UI --> DSH[DeepSeek Harness]
-    UI --> Kimi[Kimi Code]
-    UI --> Antigravity[Antigravity]
-    UI --> Pi[Pi]
-    DSH --> Router[Local API router]
-    Claude --> Router
-    Codex -->|API| Router
-    Codex -->|ChatGPT account| ChatGPT[ChatGPT subscription]
-    Kimi --> Router
-    Kimi -->|Kimi account| KimiAccount[Kimi subscription]
-    Antigravity -->|API| Router
-    Antigravity -->|Google account| Google[Google subscription]
-    Pi --> Router
-    Router --> A[Provider A / Key pool]
-    Router --> B[Provider B / Key pool]
-    Router --> Usage[Usage records]
-```
-
-Connection presets cover **Google Gemini API, Ollama Cloud, DeepSeek, Kimi / Moonshot, Kimi Code, Command Code GOAT, OpenCode Go, and OpenCode Zen**. Custom OpenAI Chat Completions and Anthropic Messages endpoints are supported, subject to protocol and model capabilities.
-
-The Gemini preset uses Google's OpenAI-compatible API. Camellia retains Gemini tool-call thought signatures across turns and session resumes. Usage appears in the shared usage page; billing and account quotas are available in Google AI Studio.
-
-A route group must represent the **same model and version**, even when providers use different upstream names. Quota exhaustion, rate limits, authentication failures, and eligible temporary errors can advance to another route in that group. If no route remains, the request fails. Responses that have begun producing content are not replayed automatically.
-
-Local usage records describe requests through Camellia. Account balances and subscription quotas come from provider APIs and may include other clients' activity. Some adapters use undocumented or client-derived endpoints. See the [configuration guide](docs/configuration.md#balances-and-subscription-quotas) for coverage and verification limits.
-
-## Servers and mobile access
-
-Camellia can work beyond this computer. Both features reuse the embedded Tailscale helper, so no separate Tailscale client is required on either side.
-
-**Headless Linux server.** On a Linux host, run `./camellia` for a guided session: it reuses or starts the background service, signs in to Tailscale, prints the browser sign-in link, then shows the address and one-time pairing code. Approve each pairing request explicitly by typing `YES` in the same terminal. Pair the desktop under **Settings → CLI devices**, give the server a name and a default harness, then open it from Home. Each server runs its own window with server settings for runtimes, engine defaults, usage, archived conversations and space cleanup. Files stay on the server; the desktop window keeps its own subscriptions, attachments and downloads. See the [Linux server preview](docs/linux-server-preview.md) (Chinese).
-
-**Mobile access.** Turn on **Mobile access** in Settings to share the embedded Tailscale network with an Android phone. Name this computer, generate a one-time pairing code, scan its QR code with the phone, then authorize the device on the desktop. Authorization covers all current and future workspaces and standalone conversations; archived conversations stay out of reach. Authorized devices can send messages, stop a running turn and answer tool approvals under the conversation's existing permissions; the desktop can rename or revoke them at any time. To pull a file off the computer while out, send `/find` with a description (the phone shows a **Find files** button beside the composer); the computer searches the conversation's own folders and returns the matches as deliverables for **Save to phone**. When only the content is known, use `/find inside: <terms>`, or just describe it (“find the material about the supplier negotiation”); the model searches by content through `camellia_find_files`. See [mobile access](docs/remote-access.md) and [find files](docs/file-find.md) (Chinese), and the [Android client](android/README.md) (Chinese).
-
-## Configuration and data
-
-All engines share the application settings window, covering provider connections, usage, account balances, native engine options, runtime installation, and appearance. **Settings → General → Conversation width** sets how wide the middle message column grows — **Standard width**, **Wider**, or **Full width** for comparisons, tables and diffs on a large screen.
-
-**Saving native settings for DSH, Claude, Kimi, or Antigravity’s Google connection updates the corresponding CLI’s global configuration**, which can affect sessions outside Camellia. Existing files receive a one-time `.workbench.bak` backup before their first managed overwrite. The interface shows the affected paths. Codex and Antigravity SDK settings apply only within Camellia. Codex also uses separate application-owned directories for API and ChatGPT authentication and native history.
-
-Provider keys are stored in local configuration files. Engines use the local router URL and placeholder credentials; CLI sessions configured for that router require Camellia to remain running.
-
-Application data lives in `%APPDATA%/dsh-desktop` on Windows and `~/Library/Application Support/dsh-desktop` on macOS. The existing directory name is retained so settings and sessions remain available. See [configuration and data locations](docs/configuration.md) for engine-specific paths and environment overrides.
-
-<details>
-<summary>Usage and balance interface — demonstration data</summary>
-
-<table><tr><td>
-<img src="docs/images/balances.png" alt="Account balances and subscription quotas using demonstration data">
-</td></tr></table>
-
-</details>
-
-## Development
-
-```sh
-npm run dev    # Start the development application
-npm test       # Run unit and local integration tests
-npm run pack   # Build an unpacked application for the host platform
-npm run dist   # Build distributable artifacts for the host platform
-```
-
-Build on the target platform: `npm run dist:win` produces a Windows x64 NSIS installer and portable ZIP; `npm run dist:mac` produces macOS ARM64 DMG and ZIP files. macOS builds require an Apple Silicon Mac running ARM64 Node.js.
-
-Directory builds are at `dist/win-unpacked/Camellia.exe` or `dist/mac-arm64/Camellia.app`. Extract the Windows portable ZIP once and launch `Camellia.exe`. Keep the full extracted directory together, including `resources/`.
-
-```text
-assets/         Application icons
-src/
-  main/         Electron lifecycle, IPC, processes, and runtime management
-  api/          Routing, protocol conversion, provider adapters, and usage
-  engines/      Engine sessions, workspaces, and native settings
-  renderer/     Home, conversation, settings, and shared styles
-  shared/       Shared storage utilities
-integrations/   Maintained upstream source patches
-runtimes/       Per-engine package manifests and lockfiles
-scripts/        Runtime preparation, packaging, and standalone utilities
-tests/          Unit, integration, Electron, and browser checks
-docs/           Guides, technical notes, and historical records
-```
-
-Build instructions, runtime pins, regression commands, and contribution guidance are in the [development guide](docs/development.md). Generated files under `build/` and `dist/` are not committed.
-
-## Documentation and upstream projects
-
-Shared conversations support **scheduled tasks** through **Tasks** beside the composer or `/tasks`: periodically check experiments with check-count, lifetime and recovery limits, and pause, edit, resume or cancel monitoring. The app must remain open; restarting requires manual resume. Each check invokes the model. See [scheduled experiment checks](docs/scheduled-tasks.md).
-
-- [Configuration guide](docs/configuration.md) — providers, failover, native settings, usage, and local data.
-- [Development guide](docs/development.md) — architecture, runtimes, testing, and packaging.
-- [Documentation index](docs/README.md) — implementation notes and archived design records.
-
-Engine and remote features have their own references: [conversation-control tools](docs/conversation-tools.md), [scheduled tasks](docs/scheduled-tasks.md), [desktop artifact previews](docs/artifact-previews.md), [find files](docs/file-find.md), [mobile access](docs/remote-access.md), the [Linux server preview](docs/linux-server-preview.md), and the [Android client](android/README.md). The last three are written in Chinese.
-
-Camellia integrates [Claude Code](https://github.com/anthropics/claude-code), [Codex CLI](https://github.com/openai/codex), [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), [Kimi Code](https://github.com/MoonshotAI/kimi-code), the [Antigravity Python SDK](https://github.com/google-antigravity/antigravity-sdk-python), and the [Pi coding agent](https://www.npmjs.com/package/@mariozechner/pi-coding-agent). DSH, Kimi Code and Pi retain their MIT licenses; Codex CLI and the Antigravity Python SDK source are Apache-2.0 licensed. Claude Code is proprietary; Camellia integrates its official CLI without modifying or redistributing its core. Upstream components, including the SDK's native runtime, retain their respective licenses and terms.
+The [documentation index](docs/README.md) links configuration, development, remote access, benchmark notes, and design records. The guides outside these two READMEs are in English. Screenshots use local demonstration data and show the current interface; they do not show a live account or a benchmark result.

@@ -1,268 +1,34 @@
-# Agent 讨论实施计划
+# Agent discussion implementation and acceptance record
 
-本轮更新（2026-10-02）：用户确认继续开发后，已开放原生工具、文件/图片附件、权限与提问交互、群工作目录和产物预览，继续保留可选成员身份 prompt。六条 API 及三条现有订阅路径已实测文件协作，Codex/Kimi/Antigravity 订阅另通过原生图片输入验证；Antigravity 订阅已通过群内人工审批回传验证。实现、验证证据及 Antigravity CLI 等能力边界见[身份、工具与多种输入接入计划](group-chat-rich-interaction-plan.md)。下文冻结的纯文本范围及隔离规则是先前阶段的历史基线；其中禁用一般工具和附件的限制已被本轮授权与实现取代，不再描述当前生产路径。
+Updated 2026-10-02. The original v1 gate below was drafted for a Windows text-only group. Later user decisions expanded the delivered beta to six harnesses, existing subscriptions and APIs, native tools, files, identity prompts, and Android control. Do not apply the old “no tools or attachments” gate to the current feature. This is a development record, not a claim that every provider, long-context path, and physical-device network has been accepted.
 
-更新：2026-10-02（六个 harness 与现有订阅/API 接入）。用户明确要求“两处都缺，我要六个 harness，所有的订阅和 api”，取代此前仅接入 Codex / Antigravity 的范围。现在成员选择与顶部导航均包含 Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigravity、Pi；六者均接现有 API 供应商，Codex / Kimi / Antigravity 复用普通桌面聊天已有订阅账号。其他三者与普通桌面聊天一致，仅显示 API；没有新增登录体系。
+## Delivered integration
 
-随后用户要求“这里不要区分 key，只看 provider 就行”：API 成员按供应商与模型选择，同一供应商的多个 key 不再展开成重复模型或显示 key 名称。调用固定供应商、模型和线路，由现有路由器在该供应商内部选择、轮换可用 key；不跨供应商切换。旧成员按同一供应商/模型/线路迁移，公开讨论记录保留，原生上下文按既有配置变更流程重建，旧失败回合仍可重试。订阅继续区分实际登录账号。
+- Desktop home has a 2×2 tools grid: Agent discussions, Benchmark, Server connections, and Settings. Ordinary chats and discussions share a seven-entry navigation menu while retaining separate histories and drafts.
+- Members can use Claude Code, Codex CLI, DSH, Kimi Code, Antigravity, and Pi through currently configured API routes. Codex, Kimi, and Antigravity also reuse supported subscription sign-ins. API members select a **provider and model**, not an individual key; the router can rotate keys within that provider, while the member binding does not silently change providers.
+- Groups can be created, renamed, pinned, and deleted; a member can have an identity prompt. Structured mentions select one or more responders, with parallel/serial mode, streaming replies, stop, retry, and serial-failure handling.
+- The native-tools path uses the corresponding ordinary-chat transport and permissions. The discussion UI shares attachment, tool card, question/approval, and file preview components. A group has a managed work directory and can pass real generated files between members. [Rich interaction](group-chat-rich-interaction-plan.md) records tested bindings and input limits.
+- An all-access paired Android device can manage and participate in discussion groups when the Windows host advertises the discussion capabilities. Ordinary conversation and group records remain separate. See [remote access](../remote-access.md).
 
-本轮真实连接验证：六个 harness 均使用现有 DeepSeek `deepseek-flash` API 通过首次发送检查、同绑定双成员、串行回复、续聊、保存与停止；Antigravity Google 订阅 `gemini-3.8-flash`、Kimi 订阅 `kimi-code/kimi-for-coding` 也通过上述流程，Codex `gpt-6-astra` 订阅已有前轮真实证据。新接入的四个原生运行时另通过本地模型夹具的并行与验证取消测试。实际配置中的五家 API 供应商均列入六个 harness 的目录；这些目录检查不代表已逐家调用所有供应商。
+## Acceptance ledger
 
-Antigravity 订阅原先被讨论层硬性排除，没有调用普通聊天已登录的 CLI。现在使用 CLI 1.2.3、原 Google 登录和独立讨论目录；显式禁止文件、命令、URL 和 MCP 操作，禁用用户扩展。CLI 仍暴露内置元数据工具，因此该路径如实标记为 `workspace-read-only`，不宣称完全零工具；其余路径为 `tool-free`。CLI 刷新登录和加载模型时可能超过原 25 秒初始化期限，现延长到 60 秒并保持可取消。Kimi 使用选定账号及地区对应的短期凭据，临近原生刷新时间时通过现有账号服务刷新，成员不持有 refresh token。
+These eight checks preserve the intent of the original release review. Evidence is scoped to the tested build and connection; “local fixture” does not mean “live provider.” The tools/files expansion adds its own checks in the rich-interaction record.
 
-首次发送或重试自动检查所选连接；取消或失败保留草稿。旧成员缺失的上下文窗口从原绑定目录补齐，原生目录缺少容量时使用普通聊天同样的保守工作预算，不把预算宣称为供应商最大窗口。群重命名、置顶/取消置顶、删除与七入口导航保持现有实现及样式。长文本摘要、异常恢复和完整混用验收仍待完成，**不能宣称完整 v1 或 P2 全部退出条件已通过**。以下早期交接描述当时状态，以本节和冻结范围为当前依据。
-
-最后复测：Antigravity Google 订阅在初始化期限修复后再次通过真实发送/续聊/停止，并确认群运行期间普通订阅会话可以独立恢复，存储相同的会话仍拒绝混用。`discussion-ui.py` 的真实 Electron/IPC 回归、`discussion-verification-ui.py` 的六个 harness/五家供应商筛选回归、讨论 Node 测试以及受影响 ACP/订阅测试通过；UI 回复夹具不计入真实模型证据。主进程修改需重启开发版后生效。
-
-产品与行为依据：[群聊讨论设计](group-chat-discussion.md)。本文的“v1 冻结范围”和八项验收是首版唯一范围入口，优先于两份文档中较早的完整目标和历史待办。用户后续明确调整优先，调整时同步记录原因；已有本地测试不能替代真实验收。2026-10-02 用户明确补充群重命名、置顶、删除；这是本轮新增的群管理范围。
-
-本轮验证：真实 Codex 订阅 GPT-6-Astra 从未手动验证的成员直接发送，自动检查、旧配置补齐、双成员串行回复、续聊、保存及停止均通过；Antigravity SDK API 同流程以真实运行时和本地模型夹具验证，不冒充本轮真实订阅/API 结果。实际 Electron/IPC 检查了行内重命名/取消、置顶重启保存、取消删除、运行中禁删、删除后邻群草稿与最后一个群的空页。删除移除群记录及页面草稿；原生运行时缓存按已有保留规则处理，不将其路径作为递归删除入口。验证结果仍只对本次运行有效，应用启动不会自动调用模型。
-
-前轮根据“供应商不完整、无法测试”的反馈核对实际目录：本机五个已启用 API 供应商均可被现有目录读到，每个已支持 harness 各有 12 个模型/账号组合。成员弹窗新增独立“API 供应商”选择，不再只能在模型/账号文字中寻找供应商；后台传递明确的供应商 ID/名称，同名模型不合并，刷新和切换 harness 保留供应商选择。当时 Google 订阅及其余四个 harness 尚未接入，本轮已补齐并取得上述真实连接证据。
-
-## v1 冻结范围
-
-首版只交付：**Windows 桌面上的纯文本 Agent 群聊，支持六个 harness 的现有 API 与订阅路径及混用，不操作工作区或调用外部工具，保留完整的文本上下文管理。** 用户通过首页进入，创建群、添加成员、@ 回答、继续讨论，并能停止和重启恢复。
-
-| 项目 | v1 必须做 | 明确延期或不支持 |
+| ID | Observable outcome | Status at this record |
 | --- | --- | --- |
-| 平台与规模 | Windows 10+ 本地桌面；每群 1–4 名未移除成员；一个群一个主题；可保存和切换多个群 | macOS/Linux 群聊、手机/远程群聊、多主题、超过 4 名活动成员和大规模性能工程 |
-| 连接 | 六个 harness 的 API；Codex、Kimi、Antigravity 现有订阅；API 固定供应商及内部 key 池，订阅固定账号；模型和线路固定，首次发送检查绑定 | 新账号体系、原普通聊天不支持的订阅类型、跨供应商或订阅账号切换、自动换模型、穷举所有模型与账户组合 |
-| 会话 | 应用新建的独立成员会话；同绑定双成员互不串用；只恢复本功能已保存的会话；讨论记录与普通聊天分开 | 与六个 harness 的工作区/独立会话互通、群与单聊转换或历史导入、接管任意原生历史、外部 CLI 共用讨论状态目录、用户自定义原生配置目录 |
-| 交互 | 建群、群列表、添加/移除成员、昵称及绑定显示、结构化 @、并行/依次回复、流式文字、停止单成员/全部、显式重试或跳过 | 自动辩论、轮转、模型 @ 触发模型、Goal/定时任务/递归子会话、运行中修改成员绑定 |
-| 输入与权限 | 用户输入/粘贴的文本与代码块；关闭外部工具和工作区操作；CLI 内置元数据工具如实记录；独立状态目录可写引擎日志 | 附件/图片/PDF、自动读工作区、搜索/浏览、shell、MCP、用户插件/hooks、子代理、文件修改和外部写入 |
-| 上下文 | 固定输入快照、成员署名、独立预算、增量补历史、摘要加近期原文、新成员补历史、原生状态失效后重建；仅订阅也可摘要 | 附件预算、跨主题摘要、多摘要器配置界面、为不支持的运行时另造原生压缩框架 |
-| 页面 | 首页 Agent 讨论/基准测试/服务器连接/设置 2×2；独立群聊页；中英文、主题、窄窗口和键盘基本可用 | 新工作台、复杂工具面板、执行成员/写权限面板 |
+| V1-01 | Enter from home, create a group, add up to four members, reject a fifth, use structured mentions; no responder means no model call. | Desktop Electron/IPC and layout checks passed with response fixtures. |
+| V1-02 | Configured API and supported subscriptions send, continue, and stop on the selected binding. | Six API harnesses and three subscription paths have individual real-response evidence; all provider/account combinations were not exhausted. |
+| V1-03 | Same-binding members stay independent; parallel/serial delivery has no cross-talk or duplicate result. | Two-member serial and continuation checks passed per tested path; complete mixed-path evidence remained open. |
+| V1-04 | Long text, summarization, new-member context, cancellation, and native rebuild preserve the intended public context. | Long-context and subscription-only summary acceptance remained open. |
+| V1-05 | Tool and permission behavior matches the selected actual native path and group policy. | Native tools and approvals were later enabled and tested for representative paths; the original tool-free wording is superseded. |
+| V1-06 | Stop and restart handle preparation, active replies, queues, and late events without automatic side-effect replay. | Live stop and local process-tree checks passed; abnormal-exit and summary lifecycle coverage remained open. |
+| V1-07 | History, attribution, results, and cursors persist together; cleanup preserves referenced state. | Completed-round desktop restart passed; in-flight and summary recovery remained open. |
+| V1-08 | Ordinary chat, benchmark, server, settings, and unsupported-path errors remain sound. | Focused desktop/IPC regression passed; full release regression remained open. |
 
-“4 名”是首版产品限制，不改写已有存储 schema 的 64 个保留成员上限；已移除成员的历史署名继续保留。绑定改变在首版通过移除旧成员、添加新成员完成，当前活动先停止并确认。
+## Decision history and boundaries
 
-2026-10-02 用户补充确认：六个 harness 的普通聊天工作区、独立会话记录与 Agent 讨论暂不互通，当前没有互通需求。七入口共用导航和设计元素，各自保存和恢复记录、草稿；不合并列表、不挂接普通聊天工作区、不导入历史或转换会话，也不把互通预留框架作为首版任务。六个 harness 之间已有的共享会话机制按原规则继续；这次界定的是普通聊天与 Agent 讨论之间的边界。
+The first frozen scope allowed only Codex and Antigravity text discussion; it was expanded to six harnesses and supported subscription/API combinations. The first implementation used an empty production adapter registry and fake model replies as a UI skeleton; later production binding checks and native sends replaced that state. Early Antigravity CLI “tool-free” assumptions were withdrawn because the native CLI still exposed metadata/extension surfaces. A later authorized native-tools phase deliberately replaced the text-only policy, so the relevant gate became real permission and tool-event routing rather than absence of all tools.
 
-关闭工作区及外部工具操作必须在实际运行时生效，不能只添加提示词；保留的原生元数据工具必须如实记录，不得把 CLI 的受限模式称为完全无工具。讨论使用应用管理的专属运行目录和显式启动配置，凭据引用现有账号；不能为实现首版而修改用户全局权限。外部自定义配置/重定向不纳入支持范围。若选定启动路径仍会读到共享配置、其他会话或启动扩展，必须隔离或拒绝该路径，不能把未扫描来源伪报为 complete。
+Normal shared conversations and discussion groups still do not merge workspaces or transcripts. Adding a seventh navigation entry does not import history or add a group member. Subscription credentials stay with the native account service; a member receives only the selected account binding. API-provider selection does not expose or pin a specific key. Changing a member identity or binding must rebuild that member's future context without changing past public messages.
 
-### 八项发布验收
-
-以下全部通过才可宣称 v1 完成；新增缺陷归入对应项。测试总数、文档更新次数和代码行数不替代这些验收。
-
-| ID | 可观察结果 | 所需证据 | 当前状态 |
-| --- | --- | --- | --- |
-| V1-01 | 从首页进入、建群、添加至 4 名成员、结构化 @；第 5 名明确拒绝；无 @ 不调用模型 | 桌面实际点击与事件记录；中英文/主题/窄窗口/键盘检查 | 界面验收通过：真实 Electron/IPC；可回复连接由测试夹具提供，不计为 V1-02 |
-| V1-02 | 六个 API 与三个现有订阅路径能连续往返；混用及同 harness 多模型可选 | 每条固定一个已配置绑定，另覆盖同 harness 两个实际模型；记录版本/账号引用/模型/用量，不穷举全部组合 | 九条路径分别有真实回复及续聊证据；完整混用仍待验 |
-| V1-03 | 同绑定双成员独立；并行共享输入上界，串行后者看到前者结果；同成员排队，失败后显式重试/跳过，无串话或重复回复 | 调度测试 + 真实双成员续聊；运行时事件与公开记录对应 | 九条连接分别通过真实双成员串行和续聊；六种原生运行时本地并行测试通过；完整混用待验 |
-| V1-04 | 长中文/代码、小窗口与大窗口混用、新成员加入、摘要失败/取消、原生重建均正确；仅订阅无需 API 密钥 | 预算/覆盖范围测试 + 真实仅订阅长文本摘要及继续讨论；保留约束和分歧，不静默截断 | 未通过 |
-| V1-05 | 成员和摘要不能操作工作区、调用外部工具或启动用户扩展；账号/线路不被悄悄替换 | 开放路径的运行时正反对照、文件/扩展启动检查与真实连接绑定核查 | 八条路径工具关闭；Google CLI 显式拒绝外部操作但保留内置元数据工具；摘要待验 |
-| V1-06 | 停止单成员/全部覆盖准备、摘要、回答和排队；迟到事件不污染新回合；退出/重启无自动重发；残留未核查前不启动替代活动 | 本地实进程、故障注入 + 真实停止/重启检查；复用现有 Windows Job 基础 | 九条连接真实回答停止；本地原生验证取消及 Windows Job 清空；异常退出恢复和摘要生命周期待验 |
-| V1-07 | 历史、署名、结果和游标一致保存；重启恢复；清理不误删所需历史/摘要；容量不足明确失败 | 存储/清理测试与一次桌面重启恢复；不要求首版先做存储迁移或大规模基准 | 部分通过：已完成回合的整应用重启与历史恢复；原生活动恢复、摘要待验 |
-| V1-08 | 普通单聊、Benchmark、服务器、设置不退化；不支持的入口/配置明确拒绝；操作与限制有简明说明 | 受影响路径回归、桌面使用检查和文档核对 | 部分通过：实际首页/IPC、生产服务拒绝未验证绑定及局部回归；完整回归待验 |
-
-API/订阅能力不能互相替代。核心双订阅若不能满足无工具及停止要求，明确记录为 V1-02/V1-05 阻塞；不得把仅 API 或模拟界面宣布为首版完成。
-
-### P2 退出条件与推进约束
-
-P2 只负责冻结范围内的运行链路，满足以下四项即可退出 P2；P3/P4/P5 仍需完成各自验收：
-
-1. 主进程实例化 manager、scheduler 和生产适配器；四条范围内连接有明确的可用/失败结果，不再只有空注册表。
-2. 核心双订阅、API 和混合路径可通过协调器真实发送、续聊、记录结果；并行/串行、同成员排队和事件归属复用现有模块。
-3. 范围内启动能固定账号/线路、落实无工具、确认停止并接入退出/重启；摘要通过同一生命周期接口，P3 尚未完成时不得声称摘要已验收。
-4. 应用专属目录与会话的归属可核实，不接管已有原生历史；未支持路径明确拒绝。无需先完成所有外部目录、历史配置层或其他平台的发现与停止实现。
-
-- 下一次集成优先交付“两名核心订阅成员，经协调器 @ 往返并停止”的可运行证据，先定位现有 Antigravity CLI 阻塞；同时推进独立的 P3 文本上下文和 P4 页面。这里的“同时”指任务可交错，不要求启动多个 agent。
-- 每个开发回合选定一项 V1 验收结果或上述 P2 退出条件，结束报告它从什么状态变成什么状态；不得只报告新增测试数和“继续完善边界”。
-- 同一阻塞连续两个开发回合无可验收进展，必须记录最小复现、已排除方案与下一种有界方案，并转做可独立推进的验收项。不能继续扩成通用框架或把真实核心障碍藏在外围工作后面。
-- 只修复影响上述验收的已复现问题或代码中可明确定位的缺陷。未来能力、大规模优化、新平台和通用加固进入后续清单；已有保护不为赶进度而删除。
-- P1/P2 已通过的模块继续复用。只有新改动、失败或明确未解决风险才扩大/重复测试；不反复重跑无关全套测试。
-- 未经用户后续明确调整，不增加首版能力或发布验收项。普通实现取舍在此范围内自主处理；发现首版必须解决的新缺陷，归入已有验收项。
-
-## 真实连接首次接入交接（2026-10-02，历史）
-
-本轮推进 P2 的真实发送/续聊/停止与 V1-02/03/05/06；不增加 harness、不打通普通工作区或会话历史。实现为 `src/engines/discussions/production.js`、`codex-text-policy.js` 及已有服务/注册表/主进程接线。主进程注册固定版本策略，只有选定绑定实际通过两次短消息（跨原生进程续聊）并确认停止后，才授予该绑定本次运行内的使用资格。页面新增“验证连接/取消验证”、用量说明、具体失败和未启用原因；每次启动不会自动发送验证或重放用户请求。
-
-- Codex 0.154.0 使用应用专属 home、受控模型元数据与启动配置，关闭工具及扩展相关特性；仅设置 `shell_tool=false` 不够，需要同时移除模型原生补丁工具。参考 [Codex 配置说明](https://learn.chatgpt.com/docs/config-file/config-reference)，实际效果以安装运行时探针为准。订阅只引用选中账号的当前 access token，不把 refresh token 交给并行成员；过期后提示在设置刷新。成员保存账号身份校验，运行中服务端改模型会失败，不静默换模型。
-- API scope 增加具体 `keyId`，保留 provider/upstream/线路指纹限制；密钥耗尽或删除时不会轮换到其他密钥，普通聊天的原有轮换行为保持不变。
-- Antigravity SDK 0.1.17 复用现有 `tool-free-v1`。专属 native home、原生准备握手及数据库身份核实在输入发送前完成；桥接记录单独保存，不进入普通聊天历史。
-- 三条路径复用 Windows Job，成功、失败、取消和验证均要求进程确认停止。并行期间使用受控启动与已核实的会话归属，避免另一成员写 SQLite/WAL 时导致假冲突；静止目录仍读取原生记录。普通 SDK 的固定独立目录可直接排除讨论存储别名，不再把所有旧 CLI 索引格式作为正常续聊的前置条件。
-
-真实网络验收命令为 `node tests/discussion-production-smoke.cjs --online <原账号资料目录>`（Codex GPT-6-Astra 订阅），以及指定 `DISCUSSION_SMOKE_MODEL=deepseek-flash` 后运行 `--online-api <现有路由文件> --engine codex` / `--engine antigravity`。三条均通过：验证往返、两个独立成员、依次回复、续聊、公开结果持久化、停止并清空进程池。验证在隔离临时资料目录中运行，源账号配置和普通历史不修改；输出不含凭据。首次复制凭据的实现已改为停止后删除副本及不复制 refresh token；最新 Codex 订阅版本已重验。
-
-补充检查：`discussion-production-smoke.cjs` 默认及 `--engine antigravity` 使用实际安装运行时和本地模型夹具，覆盖验证取消、并行、历史隔离及群运行时普通 Antigravity 续聊；`discussion-codex-policy-smoke.cjs --force-tool` 检查真实请求工具列表为空、强制注入 apply_patch 不执行；新增 API key 不轮换回归；`discussion-verification-ui.py` 检查开始/取消/失败/就绪；`discussion-ui.py`、`discussion-layout-ui.py` 及受影响 Node 用例通过。前述本地夹具检查不冒充真实订阅或 API 证据。
-
-仍待完成：Antigravity CLI 1.2.3 无工具限制、核心双订阅与真实混用、P3 摘要与原生重建、异常退出恢复及完整发布验收。不会用三条已通路径替代第四条，也不会把测试数量作为 P2 退出依据。
-
-## 冻结后的首轮集成交接（2026-10-02，历史）
-
-本轮推进 V1-01，并把已有 P1/P2 模块接入应用；没有增加发布范围。入口为首页「Agent 讨论」。可建多个群、切换主题、保留切换时草稿、添加/移除最多四名成员、选择结构化 @、并行或按编号依次回复、查看流式状态、停止单成员/全部、显式重试或跳过。无 @ 只保存记录，文件粘贴/拖入明确拒绝。生产连接没有验证证据时显示不可用，不生成演示回复、不发送模型请求。
-
-实现位置：`src/renderer/discussions/`；`src/engines/discussions/service.js`、`catalog.js`、`context.js`；`src/main/discussion-ipc.js`；首页和主进程模式入口。服务复用 manager/store/scheduler，使用独立状态目录；API 成员的目录项记录明确 provider/key 引用和线路指纹，订阅成员选择明确账号。账号显示名、失败原因保存在群记录中；重启后仍能看到失败原因。页面不接收原生 ID、启动目录、提示词或凭据。
-
-文本上下文目前包含固定快照、署名、增量补历史、原生累计输入输出和保守字节预算。未知窗口或超预算明确失败，不截断、不自动换连接。**摘要及原生状态重建尚未实现，V1-04 未通过。**
-
-验证：
-
-- `python tests/discussion-ui.py`：使用真实主进程、preload 和 IPC，在隔离测试资料目录中点击首页/建群/四成员/@/串行/流式/停止/不可用/重试，验证多群切换、键盘发送、中英文、深浅主题、390px 窄窗口、刷新与整应用重启；第三次启动不注入适配器，验证真正的生产服务/模型目录仍拒绝未验证连接，保存记录可用。回复明确标记 `[UI fixture]`，真实模型调用为 **0**。
-- `node --test --test-reporter=dot tests/discussion-catalog.test.js tests/discussion-service.test.js tests/discussion-context.test.js tests/discussion-scheduler.test.js tests/discussion-store.test.js tests/discussions.test.js tests/storage-cleanup.test.js tests/chat-markdown.test.js tests/conversation-models.test.js`：**151 项通过**。覆盖新增模型目录、应用服务、快照预算，以及受影响的调度/持久化/清理/渲染/模型目录回归。
-- 界面截图位于 `dist/ui-preview/discussion-home.png`、`discussions-light.png`、`discussions-dark.png`、`discussions-narrow.png`；截图中的回复是测试夹具，不是真实模型验证。
-- `python tests/devices-ui.py`：已有服务器工作台入口、harness 选择、离线限制和窄窗口回归通过。
-
-剩余阻塞与下一步保持有界：生产注册表仍为空；Antigravity CLI 1.2.3 的扩展启动/残留工具问题保留此前最小复现，未以权限名称或 SDK 证据代替。API 的已有 scope 限定 provider/upstream/线路，尚未限定具体 key；不能直接把普通聊天的可轮换线路当作已固定账号的讨论策略。后续仅补冻结四条路径的专属启动、固定绑定及停止策略，再接真实往返和成员摘要；不扩展外部全量历史扫描、其他平台或写权限框架。核心双订阅未通过前，不能发布为已完成 v1。
-
-## 正常聊天布局对齐交接（2026-10-02）
-
-本轮继续推进 V1-01/V1-08，落实用户的设计要求，不增加功能范围。讨论页直接加载普通聊天的 `claude.css`，复用侧栏、会话列表、顶部操作、消息列、用户气泡、模型图标、Markdown、输入框和圆形发送按钮；讨论专属 CSS 只补充成员、@、状态及窄窗口布局。移除独立的大顶栏和聊天记录上方的成员卡片，成员管理改为顶部「成员」弹窗。
-
-- 使用相同的聊天宽度设置（标准 768px、宽 1080px、铺满）及侧栏宽度偏好；设置变化即时生效。窗口收窄后侧栏改为可收起的列表，选中当前群也会收起。
-- @ 选择留在输入框内，并行/依次使用普通聊天的下拉控件；Enter 发送、Shift+Enter 换行，输入框随内容增长至 180px，消息区域独立滚动。停止按钮同时位于对应回复旁，成员弹窗仍可停止或移除成员。
-- 已完成消息保留渲染节点，刷新不会重置代码换行状态；标题、列表、引用、表格和代码按钮与普通聊天采用相同排版元素。文字讨论关闭 Markdown 图片节点生成，模型图标正常加载，其他页面默认的图片渲染保持兼容。
-- `python tests/discussion-layout-ui.py` 通过：打开实际普通聊天页和讨论页，对比浅色/深色的关键样式与三档宽度，检查四人成员弹窗、图标、键盘发送、长输入、代码换行、侧栏键盘调整、390px 窄窗口及纯文本渲染。
-- `python tests/discussion-ui.py` 通过：真实 Electron/IPC 操作链、测试夹具流式回复/停止/重试、重启，以及无适配器的生产服务。`python tests/shared-chat-ui.py` 和 `python tests/devices-ui.py` 回归通过。模型请求为 **0**，以上不计为 V1-02 的真实连接证据。
-- 截图：`dist/ui-preview/discussion-normal-reference-light.png`、`discussion-aligned-light.png`、`discussion-aligned-dark.png`、`discussion-members-dark.png`、`discussion-aligned-narrow-light.png`；已逐张检查。正文含「布局测试」的回复是界面夹具。
-
-真实绑定、核心双订阅往返和长文本摘要仍是下一阶段工作；本轮没有开放未验证连接或改动执行策略。
-
-## 七入口快速切换交接（2026-10-02）
-
-用户要求在截图中的顶部菜单快速切换六个 harness 和 Agent 讨论。本轮继续推进 V1-01/V1-08：普通聊天和讨论页在标题旁使用同一个 `chat-mode-select.js` 菜单，选项依次为 Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigravity、Pi、Agent 讨论。两页共用现有原生 select 和主题样式，位置、圆角、字体、勾选及深浅主题保持一致。
-
-六个 harness 之间保留原有会话接续和工作中禁止切换的规则；进入讨论使用独立页面导航，不把群记录送入单聊交接接口，也不添加任何群成员。讨论页可直接返回任一 harness；当前群、未发送文本、@ 顺序和回复模式持久保存，发送成功后清除已发送文本。普通聊天继续使用已有草稿恢复机制。切换失败保留原页面和选择，并显示实际错误。
-
-- `python tests/discussion-ui.py` 通过真实 Electron/main/preload/IPC，逐个往返六个 harness 和讨论页，验证单聊草稿、讨论草稿、当前群、@ 及依次模式恢复。测试仅替换运行时准备以避免下载或启动真实引擎；导航本身调用模型数为 **0**。原有建群、停止、失败、重启和生产无适配器检查也通过。
-- `python tests/discussion-layout-ui.py` 通过菜单顺序、当前勾选、中英文、深浅主题、Escape、切换失败保留草稿，以及正常聊天元素、聊天宽度和窄窗口对照。截图已检查：`dist/ui-preview/chat-mode-menu-chat-light.png`、`chat-mode-menu-discussion-light.png`、`chat-mode-menu-discussion-dark.png`。
-- `python tests/shared-chat-ui.py` 通过已有会话接续、运行中切换限制、独立停止、权限、草稿和布局回归。
-
-本轮未修改生产模型准入，真实群聊连接与摘要的未通过状态保持不变。
-
-## 完整目标与阶段边界
-
-用户在首页进入 Agent 讨论，创建群、随时添加 harness / connection / model / account 组合成员，通过结构化 @ 指定回答者。支持 API、订阅与两者混合；包括同 harness 多模型以及 Codex 订阅与 Antigravity 订阅组合；实际开放组合须通过能力验证。
-
-首版边界以上表为准。工作区只读工具、附件、更多 harness/平台和 P6/P7 受控写入保留在后续路线图，均不是 v1 前置条件。以后开放指定成员修改时，必须先完成应用内工作区互斥；首版无工具，不实现写入租约系统。完整文本上下文仍是首版必需项。
-
-## 每一步都必须遵守的工作约定
-
-1. 开始前阅读本文的目标、进度和当前步骤，再阅读设计文档相关章节；检查当前工作区差异，保留其他工作的修改。
-2. 每个实现回合说明正在推进哪一步，列出本次交付和验收范围。遇到问题先判断是否影响整体目标，不用临时简化悄悄替换需求。
-3. 每步结束更新下表，并填写末尾交接记录：改了什么、验证证据、未解决事项、明确下一步。未验证不能记为完成。
-4. 跨回合或上下文压缩后从交接记录继续；不能把已完成的文档、模拟验证和真实验证混为一谈。
-5. 范围或架构变化写入决策记录，并同步设计文档；产品方向改变须向用户说明。常规实现细节按本计划自主推进。
-
-贯穿首版的要求：**成员与摘要无工具且无工作区/外部副作用；每成员独立计算上下文预算。** 后续写入版本再验收同一重叠工作区唯一写入者。
-
-## 首页入口
-
-采用用户提供的基准测试卡片样式，四个入口单独组成 2×2 网格：
-
-| 左列 | 右列 |
-| --- | --- |
-| Agent 讨论 | 基准测试 |
-| 服务器连接 | 设置 |
-
-保留浅色背景、圆角、左侧线性图标、标题与说明、右侧箭头，复用现有主题变量和 hover/focus 样式。Agent 讨论说明建议为“邀请多个模型，通过 @ 开始讨论”。窄窗口改为单列，顺序为讨论、基准测试、服务器连接、设置。中英文、深色主题、键盘导航和缩放均需验证。
-
-代码落点为 `src/renderer/home/home.html`、`home.css`、`home.js` 及导航、preload、国际化。现有 `.home-entries` 为引擎卡片三列网格，`.config-entry` 跨整行，因此四个入口应使用独立网格容器，避免把引擎卡片一起改成两列。检查 `home.js` 动态服务器卡片插入位置，保持其位于工具入口之前。入口与可用页面一起接通，不交付无响应按钮。
-
-## 分步实施与验收
-
-| 步骤 | 交付 | 验收门槛 | 状态 |
-| --- | --- | --- | --- |
-| P0 能力核实 | 仅核实冻结的四条 API/订阅路径与已选绑定；优先解决核心双订阅无工具、固定连接、续聊、停止 | V1-02/V1-05 的运行时证据；不能把 plan/ask 名称或 SDK API 证据当作 CLI 订阅证明 | 进行中：SDK 有本地证据；CLI MCP 启动和残留工具仍是已知阻塞 |
-| P1 群记录与持久化 | 复用现有 manager/store/schema，接入应用；按 P3 必需字段最小扩展 | V1-07，已有幂等、原子提交和恢复语义不退化 | 已接入应用并通过整应用重启；摘要字段随 P3 推进；大规模优化延期 |
-| P2 驱动接入与调度 | 仅接通冻结范围内的协调器、真实策略、成员调度及应用生命周期 | 上述四项 P2 退出条件；对应 V1-02/03/05/06，不增加外部全量扫描门槛 | 协调器/IPC/退出调用已接入；生产策略仍未注册，真实往返未通过 |
-| P3 完整文本上下文 | 固定快照、署名、独立预算、摘要、新成员历史和重建；可靠原生压缩可复用，不支持则走预算内重建 | V1-04；摘要使用该成员固定连接/账号，失败或取消不重投 | 短文本快照、署名、增量及保守预算已接入；摘要和原生重建待完成 |
-| P4 页面与首页入口 | 群列表、成员编辑、结构化 @、并行/依次、流式回复、成员状态、停止全部；首页 2×2 卡片 | 实际点击链路可用；中英文、深浅主题、窄窗口、缩放、键盘交互与旧入口回归通过 | 交互骨架及真实 Electron 操作链已通过；尚未与真实模型及摘要状态联验 |
-| P5 首版发布验收 | 汇总真实群聊、完整文本上下文、页面、无工具和恢复证据 | V1-01 至 V1-08 全部通过；冻结范围外能力不计入阻塞 | 待开始 |
-| P6 工作区执行控制 | 应用级重叠目录租约、指定成员执行、读写协调和副作用恢复 | 后续版本另行定义验收，继续遵守唯一写入者原则 | 延期，不阻塞 v1 |
-| P7 写入版本验收 | 文件变更广播、重新读文件、写入恢复交互和最终回归 | P6 及后续版本承诺完成 | 延期，不阻塞 v1 |
-
-不再把 P0–P7 全部串行完成作为首版前提。P0/P2 聚焦已选连接，P3 与 P4 用现有模拟接口交错推进，再与真实链路集成并通过 P5。未验证连接保持关闭；模拟页面不能算真实讨论通过，P6/P7 不进入首版关键路径。
-
-### P0：优先消除订阅风险
-
-先检查已有探针，再对所选运行时和专属启动配置验证无工具路径。实际请求记录模型、连接、运行时和用量。Antigravity SDK API 的无工具证据不能替代 CLI 订阅；核心订阅若不支持，明确报告具体阻塞并按“两个回合”规则收敛调查，同时推进独立模块，不能只支持 API 就宣布完成。
-
-### P1–P3：后端边界
-
-建议新增 `src/engines/discussions/`，按 store、manager、context、driver-adapter、capabilities 分离职责。命名可随现有代码规范调整，避免把群聊并发状态塞入单聊的 `currentEngine` 和活动槽。
-
-- 成员 ID 独立于绑定，相同 harness/model 的两名成员也拥有不同运行 UUID、原生会话、游标和取消信号。使用现有 SessionPool 时先验证其 ID 校验和释放路径。
-- 群公开日志持久化 speakerId、消息 ID、seq 与 requestId；摘要保留这些身份和覆盖区间，不能只保留 engine 导致同引擎成员混淆。
-- 并行成员共享固定输入上界；结束时确认该上界，不确认群最新 seq。自身输出用当前 generation 的已知消息集合去重。
-- 同一成员的新请求排队；其输入快照不得倒退到已原生接收的历史之前。调度时检测冲突，必要时重新构造独立 generation，不能声称已经看过的内容仍不可见。
-- 每成员分别扣除原生占用、固定开销、当前文本请求、输出与余量。摘要执行端输入容量和目标成员可接收摘要容量分别计算；首版在入口明确拒绝附件。
-- 只读策略与模型回答风格分开；不提供 Goal、调度任务或递归会话控制来绕过群调度。外部副作用工具也必须被限制。
-- 原生续聊、缓存和压缩属于可用时复用的派生状态。恢复不确定时不盲目重发；保留公开历史并明确恢复状态。
-
-### P4–P5：可用性与发布边界
-
-群页面复用 Markdown 文字展示，拥有独立的成员/请求状态；首版不接附件和工具面板。渲染事件包含 discussionId、participantId、requestId 和 generation；切换页面再返回可恢复快照及后续事件。
-
-IPC/导航校验调用来源、群归属、成员配置和请求身份。讨论存储接入现有清理引用保护，保留所需原生状态和摘要；不为首版新增完整归档管理界面。应用退出、账号/线路/运行时变化时先停止相关活动、保留公开历史，再由用户显式继续，不实现无缝热迁移。
-
-首版仅支持 Windows 本地桌面。远程/手机和其他平台讨论入口明确不支持，不能经单聊接口错误操作群记录；原有功能继续保持。
-
-### P6–P7：受控写入（后续版本）
-
-先实现并接通租约，再开放“指定成员执行”。目录冲突覆盖同目录、父子目录和规范化别名；拒绝超出租约范围的工作区写入。取消确认覆盖工具子进程，不以 UI 停止或租约到期推断文件已停止变化。写入权限限本次授权范围，结束后恢复讨论策略。
-
-测试重点是可观察行为：文件确实不能被只读成员修改、互斥期间第二写入者不能启动、重启不重复执行、上下文不漏他人回复。原生验证与模拟验证分别列出；真实环境没测到的能力保持“待验证”。
-
-## 决策记录
-
-- 2026-10-02（本次冻结）：用户要求限制首版实现范围。默认收敛为 Windows、每群至多 4 名未移除成员、Codex/Antigravity 四条连接路径、纯文本无工具和完整文本上下文；采用 V1-01–08 与四项 P2 退出条件。文件工具/附件、更多平台和 harness、外部旧历史兼容、大规模优化及 P6/P7 延期。能力声明依然以实际证据为准，不改代码即可视为隔离完成的做法无效。
-
-以下为冻结前的实现决策历史，保留事实和已有保护；其中“全部来源”“附件”“其他平台”“P3–P7 保留”等范围描述不得自动变为新的首版前置条件，发生冲突按上方冻结清单执行。
-
-- 2026-10-02：P1 当前 v1 使用严格字段与关联校验，坏记录不能降级为空历史；单条读取、列表和写入统一 32 MiB 快照上限，文字按含 JSON 转义的 UTF-8 字节计算。新工作先预留固定输入、部分回复、待提交结果、公开回复和退休记录的空间；控制/收尾使用预留额度。公开日志及既有请求身份不可改写，幂等重取不写盘。P3 新增摘要、附件和预算字段时须同步扩展版本与校验，存储容量不充当模型窗口。
-
-- 2026-10-02：更正 CLI 权限证据：裸 deny=["*"] 不是所需 action(target) 规则；旧命令的 SafeToAutoRun 字段被 schema 拒绝，不能用 “not allowed” 判断工具权限。探针改为有效参数、明确匹配原生 deny-rule 反馈，并以文件/本地 URL 作为正反对照。完整 action(*) 在 Allow/Ask/自动放行并存时仍拒绝 5 类调用，重启续聊保持；但 MCP 启动和 tools: [] 主 Agent 的残留 MCP/任务工具不受完整隔离。上一轮裸规则显式拒绝结论撤销，不新增生产能力。
-- 2026-10-02：CLI literalInput 是显式主进程启动参数，限制版本 1.2.3，以 --disable-slash-commands 保留输入。原生 CLI 会因此忽略 --mode plan，故桥接在启动前拒绝非 default 模式组合。该入口只控制文字展开，不提供只读策略；普通聊天默认保留原路径。
-- 2026-10-02：Antigravity SDK 的 tool-free-v1 必须由主进程启动参数显式选择，普通原生设置和环境不能选择或移除它；JS 及 Python 均限制到 SDK 0.1.17。原生工具白名单为空、子代理关闭，执行前 deny-all；拒绝 MCP/skills 配置、ACP MCP 注入和权限提升。该入口不是生产注册或完整策略，仍需固定账号/线路、来源、生命周期及真实连接验收。CLI 结论以后续正反对照为准，不能依据此前裸 deny 配置开放订阅讨论。
-- 2026-10-02：Antigravity 桥接记录、summary、父级/cascade 引用只保留归属，不能替代对应原生数据库。读取器仅在实际数据库通过身份检查后返回 databaseVerified；投射层仅据此给出当前 storageVerified。数据库缺失或证据消失时拒绝认领/继续发送，已有归属和停止后的保留记录不释放。
-- 2026-10-02：Codex 读取器保留默认数据库及配置中所有绝对 sqlite_home，包括内嵌/独立 profile；可信调用方可显式传入 configFiles 和已解析的 sqliteHomes，覆盖环境/命令行及额外配置层。相同 home 合并声明，不漏掉后传来源；不同 home 的重复 ID 仍拒绝。相对或 ~ 配置、缺失显式配置、链接、未知布局、变化和超限均拒绝。CLI 0.154.0 隔离探针确认相对 CODEX_SQLITE_HOME 按 cwd 解析，sqlite_home 优先；读取器本身不读取宿主环境，也不声明全部配置/外部活动已发现。
-- 2026-10-02：Antigravity 的 nativeStorage 由 connection、规范 storageDir、conversationId 组成，作为独立于桥接 ID 的归属身份。原始拓扑投射时保留全部未归属别名和孤立历史；准备前/期间见过的外部存储不能后来被新桥接认领。首次输入前必须核实当前映射，并在 started 事务中保存到成员及 Delivery；启动保存失败不发送输入。停止保留内存归属，退休/移除及重启保留持久化身份。缺少存储身份的旧续聊和只在首次 prompt 后才分配身份的当前路径不能作为已核实讨论启动；需实现无推理预分配策略后再开放。
-- 2026-10-02：Antigravity 必须保留桥接 ID、存储目录和底层 conversationId 三者的关系。SDK 0.1.17 的 fork 复制独立 save_dir，保留同一个底层 ID，后续回复互不追加；CLI 1.2.3 中不同 agy-* 桥接 ID 可以恢复同一目录的同一 conversationId。CLI 数据库文件名使用 cascade_id，内部 trajectory_id 可以不同；索引 app_data_dir 的 antigravity-cli 是产品命名空间。新增有界读取器显式保留这些差异；该拓扑不是完整归属证明，准入及恢复的接线见最新记录；不得只取 bridges.nativeId 冒充完成。
-- 2026-10-02：Codex 原生归属读取不能复用桌面导入列表的筛选与分页。新增读取所有 `threads.id`、sessions/archived_sessions 元数据的有界读取器，保留归档、未命名、子会话和缺失 rollout 的索引记录；不打开源数据库执行 SQL，复制主文件与 WAL 后在临时目录以只读方式核查。Windows 活动 SHM 含字节锁，不作为内容复制；SQLite 在临时目录重建它。显式枚举应用标准 API/账号目录及孤立目录，外部和讨论专用目录由可信调用方传入；读取器不自行声称完整外部覆盖或活动已停止。
-- 2026-10-02：新增 `native-inventory.js` 有界同步归属扫描，合并普通会话磁盘与内存、当前/停放/退休段、全部保留池项、讨论快照、历史镜像及启动记录。`native-boundary.js` 在桌面把清单、共享归属、空注册表和普通反向检查组合为同一边界，讨论事件先于单聊分流。每次准备前及准备后重查均保留已经观察到的外部 ID，不能被本轮新开进程覆盖。镜像不是完整原生存储来源，未提供明确完整的原生 CLI/账号清单时正向派发仍拒绝；不会据此开放生产绑定。
-- 2026-10-02：普通入口与原生删除读取持久化讨论、启动记录及活动池归属；池释放、重启、移除和退休均不能使讨论历史变成普通会话。桌面和 CLI 服务端的六个入口均安装检查，但不提供服务端讨论派发。清理读取 `discussions/<groupId>.json` 与 `discussions/windows-jobs/<deliveryId>/record.json`，保留历史引用、运行目录、锁与永久封闭标记；扫描中出现原本不存在的目录也须使本次删除失效。损坏/未知记录不按空清单处理。反向检查不替代生产派发所需的完整普通/外部归属来源。
-- 2026-10-02：Windows 每轮启动必须先独占创建只追加的启动记录；记录绑定 runtimeId/deliveryId/generation，不保存凭据、任意 PID 或可自报的 stopped 标记。恢复器在与 Job 创建/目标启动共用的文件锁下，先 flush 永久封闭标记，再打开全局命名 Job，终止并查询活动计数；仅明确不存在的 Job 可返回缺席证据。缺记录、损坏、身份不符或访问错误均不释放限制。封闭标记与记录须纳入清理引用保护；这两个文件本身都不是停止证明，恢复结果不包含会话池 released 声明。
-- 2026-10-02：执行策略 prepare 已开始就产生资源清理义务；准备失败或返回绑定被拒绝时，也须等待 confirmStopped。不能因为尚未调用驱动 ensure，就假定没有监督器或隔离状态需要排空。
-- 2026-10-02：Windows 10+ 的本地进程监督基础采用独立 Job。用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时纳入目标进程，禁止 breakaway、启用末句柄关闭时终止；先封闭启动，再终止并查询活动进程数归零，才发停止证明。控制消息与原生 stdout/stderr 分帧，模型或工具输出不能充当监督器声明。监督器失联即使触发系统清理，也不能直接据此返回已核实停止。当前只验证本地程序和仓库驱动类；后续停止恢复见本节首条，跨平台和真实 CLI 策略仍待验收。
-- 2026-10-02：Codex/Antigravity 讨论启动使用进程内不可序列化的凭据，绑定运行 ID、目录、原生 ID 和完整成员设置；执行策略显式提供启动参数和受监督的 spawn 工厂，不能回落到普通聊天的全局配置、代理或自动切账号路径。原生 ID 回调只记录该会话元数据，不改全局连接选择。会话池的普通释放不能释放讨论槽，整体 shutdown 保留讨论句柄，直到所属适配器取得独立停止证明；上述接口本身不证明只读或后代终止。
-- 2026-10-02：原生适配器必须共用主进程归属注册表；普通会话的当前、停放、退休段以及已移除成员均保留原生 ID 归属。准备前先保留运行 ID，准备、验证和派发之间重新检查，停止后仅释放活动占用，不把历史交给其他成员。应用侧完整索引与共享实例已按最新记录接线，原生 CLI/账号目录的完整覆盖仍缺失；普通入口持久化反向检查已接入，此机制不构成外部 CLI 的操作系统锁。
-- 2026-10-02：可信适配器注册复制并固定绑定、运行时/策略版本和证据；撤销立即禁止新派发并取消包含准备中的活动，成功排空前不能替换。跨注册保留进程 generation 和事件归属，避免旧输出串入重新注册的续聊。注册表默认空，没有生产策略或生产证据。
-- 2026-10-02：账号、网络和运行时变更使用先 `suspend`、再 `drainSuspension` 的内部生命周期入口，确认排空后才允许主进程变更配置并显式 `resume`。准入限制在任何磁盘访问前安装；重叠限制独立解除，恢复不重投已取消请求。退出使用不可恢复的全局限制。主进程设置/退出处理器仍待接入，不能把内部入口测试算作整应用验证。
-- 2026-10-02：停止/移除的持久化失败不能阻止取消。进程内先保留准入限制，记录并报告写盘错误，仍向所有已知活动发出取消；停止与释放证明、结果提交未齐备时不释放成员槽，也不启动串行后继。已取得的成功结果有不可改写的待提交记录，显式停止复查只重试核查和提交，不重新推理。停止证明必须对应 runtimeId、deliveryId 和 generation，避免同一原生会话下一轮误用旧证明。
-- 2026-10-02：P2 原生适配层每轮关闭进程并释放 SessionPool 槽，下轮使用相同 nativeId 续聊；关闭进程不删除原生历史。现有事件 runId 标识进程，不能单独区分同一进程内的不同回合，因此暂不跨回合保留活动进程。这增加启动开销，但可以用进程 generation 和完整 Delivery 身份隔离迟到事件。释放前仍必须由执行策略独立核实整轮活动及子进程停止，不能把 shutdown 返回当作证明。
-- 2026-10-02：P1 用每群一个版本化 JSON 原子快照持久化有序公开记录、请求及游标，复用 writeJson 的临时写入、flush 和 rename；逻辑消息仅追加，物理文件整体替换。失败保留旧快照，孤立临时文件不重放。当前只允许应用主进程单写者，未提供跨进程锁；每次写入随历史大小增长，后续有实际性能证据再迁移日志/检查点存储，保持事务语义。
-- 2026-10-02：采用独立协调器和现有驱动；群聊与单聊活动状态分开。
-- 2026-10-02：首页采用 2×2 工具入口，Agent 讨论在左上，沿用基准测试卡片样式。
-- 2026-10-02：先交付完整上下文的只读群聊，再交付受控写入；跨 harness 订阅是核心验收场景。
-
-- 2026-10-02：Antigravity 讨论启动加入 session/camellia_prepare。CLI 等待 init 并保存底层 ID，SDK 先建立原生连接、从独立目录取得唯一数据库 ID，再由主进程读取器独立核验 SQLite 身份；不以 SDK 此时为空的 conversation_id 属性判定不存在。准备结果、当前归属映射和 started 持久化必须一致后才发输入。失败、取消或停止不自动重试；普通聊天仍按原路径按需启动。此握手不代替执行限制或完整来源证明。
-
-## 范围冻结时的交接记录（历史）
-
-- 本次交付：冻结首版范围、八项发布验收和四项 P2 退出条件，并同步设计与能力文档。没有修改功能代码、注册真实连接、启动模型或更改原开发会话的 Goal。
-- 实现现状：P1/P2 已有基础模块与本地证据；生产适配器仍未注册，协调器和页面未接通，P3 完整文本上下文未交付。冻结范围不表示这些工作已完成。
-- 下一次实现：先为核心双订阅建立专属启动配置和无工具/停止的有界验证，尽快提供协调器真实往返证据；P3 固定快照、逐成员预算/摘要与 P4 页面可按接口独立推进。不得先扩大旧原生历史兼容扫描。
-- 汇报方式：引用 V1 验收 ID，说明本轮新增的可观察结果、证据及具体阻塞；未通过项继续保留未通过。真实请求遵循已有授权与配置，若确有缺少的账号、凭据或额度授权，报告具体缺项。
-
-## 第 11 轮历史交接（冻结前）
-
-下列“下一步”“整体范围”和未解决项是当时记录，后续实施以本次冻结与当前交接为准。
-
-- 当前步骤：第 11 轮推进 P1，补齐现有 v1 schema 和规模边界。新增 schema.js、discussion-store.test.js；更新 store、manager、scheduler、清理读取及对应回归。没有注册生产来源、适配器或讨论协调器，没有修改运行时/账户配置。
-- 记录校验：白名单字段覆盖群、成员、当前/退休 session、请求、消息、Delivery、输入和 settlement。核对请求指纹、署名、结果、串行 retry 链、完整绑定和存储身份；校验代际、游标与 nativeOwnMessageIds，并拒绝复用含未来回复的原生 generation。不得把字段格式校验当作真实停止证明。
-- 写入不变式：公开消息只追加，群身份/工作目录和既有请求身份不可改写；异步 callback、非法字段或不可复制返回值在写入前失败。幂等重取不增 revision、不写盘，不因没有新准入空间而丢失已接受请求。
-- 字节限制：read/list/create/update 统一单群 32 MiB，按 writeJson 的实际缩进、换行和 UTF-8 计算。公开输入/回复各 256 KiB、固定 prompt 1 MiB，均含 JSON 字符串引号和转义。读取在打开的文件描述符上限制分配及读入长度，拒绝坏 JSON/UTF-8、硬链接、链接根和读取中替换/增长；清理复用同一读取器。
-- 数量限制：每群含保留/已移除成员共 64，未结束 Delivery 共 128；请求 10000、消息及 Delivery 各 20000、每成员退休 session 1024。库存最多 1024 群、目录 4096 项、总计 256 MiB；超限拒绝，不静默截断或清除旧记录。这是当前本地存储策略，后续性能验证可调整，不能替代各模型预算。
-- 收尾预留：创建、添加/配置成员、enqueue、prepare、显式 retry 在提交前检查本群及库存容量；已启动活动预留输入、部分文本、settlement、公开回复和退休元数据。新消息填满可用空间后，最大允许回复仍可提交并停止；最后一个退休槽仍可用于停止或恢复。准备容量不足的排队项明确失败，空间恢复后不自动重投。
-- 超大内容：超大输入在原生打开前失败；超大最终回复在冻结成功结果前改为失败，完成排空和资源释放，避免永远无法落盘的成功意图。有效公开记录保留，不截断回复冒充成功。
-- 最新验证：十七文件模块 **239 项通过**（4/9/19/20/28/17/9/12/6/6/26/33/24/18/3/2/3），加 storage-cleanup **42 项**的最终执行共 **281 项通过、0 失败、0 跳过**。新增存储 18 项、调度从 30 增至 33 项；包括损坏记录、读取竞争、队列/历史/退休/目录上限、UTF-8 转义边界、收尾容量和不重投。
-- 模块命令：node --test tests/discussion-antigravity-policy.test.js tests/discussion-antigravity-prepare.test.js tests/discussion-native-storage.test.js tests/discussion-antigravity-inventory.test.js tests/discussion-codex-inventory.test.js tests/discussion-native-inventory.test.js tests/discussion-native-access.test.js tests/discussion-native-launch.test.js tests/discussion-adapter-registry.test.js tests/discussion-native-ownership.test.js tests/discussion-native-adapter.test.js tests/discussion-scheduler.test.js tests/discussions.test.js tests/discussion-store.test.js tests/discussion-capabilities.test.js tests/session-pool.test.js tests/conversation-models.test.js tests/storage-cleanup.test.js。
-- 普通路径回归：node --test tests/codex.test.js tests/acp-session.test.js tests/antigravity.test.js tests/antigravity-subscription.test.js tests/storage-cleanup.test.js，**118 项通过**。其中清理 42 项与上组重合，不累加；本轮没有真实账号、模型调用或原生 smoke。此前九文件 377 项通过/1 项 Linux 跳过及 Windows Job 19 项保留为历史证据，未整组重跑。
-- 前轮运行时证据：SDK 0.1.17 tool-free 的零工具目录与强制工具拒绝、CLI 1.2.3 的 action(*) 五类拒绝及续聊、裸 deny=["*"] 反例、扩展启动及零输入准备均见能力表，本轮未重跑。旧裸规则显式拒绝结论已撤销；本轮同步清除设计正文中遗漏的一处旧表述。完整 Deny、literalInput 和空工具主 Agent 仍不能隔离全部 MCP/任务工具；hooks 没有有效正向对照。
-- P2 归属基础保留：Antigravity connection/storageDir/conversationId 与桥接 ID 分开；实际数据库核查才提供当前 storageVerified。准备前/期间观察到的外部身份及停止后的 tombstone 保留。先无输入准备、可信映射核验和 started 原子保存，再发送 prompt；准备失败/取消不重试。Codex 默认与显式重定向读取、SQLite 主文件/WAL 临时副本、Windows Job/journal 停止恢复基础保留。
-- P2 缺口不变：CLI 专属 profile/工作区配置、扩展和残留工具的限制；Codex 执行策略、固定账号/线路、完整外部目录/活动和配置层/历史重定向覆盖、Antigravity 旧缓存/protobuf 索引；主进程生产回调、协调器、账号/网络/运行时/退出及启动恢复接线。不得把 Deny、空 tools、布局读取或模拟停止声明当成完整生产证明。
-- 下一步：推进不依赖真实连接的 P3 纯上下文模块：固定输入快照、成员署名、自身输出去重、已覆盖消息与新成员补历史、每成员预算。先为现有绑定/目录和原生占用定义互不重叠的预算，再加入摘要、附件、原生压缩及新 generation 的受控切换；同步扩展 schema 和容量预留。模型摘要必须接入完整取消/停止生命周期；不能直接让当前纯 prepareInput 回调启动推理。
-- 整体范围：P0/P2 未完成；P3 完整上下文尚未交付，P4 页面与首页 2×2、P5 真实 API/订阅/混合群、P6 含普通聊天的全应用受控写入互斥、P7 最终验收均保留。跨 harness 订阅不可删减；不引入自动辩论或多话题。生产绑定全部关闭，真实连接验收仍需用户授权。
-- 静态检查：本轮 10 个 JS 文件语法、13 个任务文件空白/冲突标记、三份文档的最新证据及生产准入声明检查通过；git diff --check 通过。最终文档补记后再次核对，未重跑未修改的原生 smoke。
-- 工作区：保留其他修改，尤其 tests/chat-deferred-settings.test.js、Codex Fast mode/UI、package-lock；未提交。
+For further work, choose an observable acceptance item above or a concrete rich-interaction boundary, collect evidence at the real UI/native layer when needed, and distinguish local fixtures from live provider behavior. Physical phone Tailnet, Wi-Fi/cellular handoff, macOS discussion hosting, and long-term background behavior have not been established by desktop or emulator fixtures.

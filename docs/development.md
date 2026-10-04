@@ -27,7 +27,7 @@ The installation and startup hooks only check already installed engines and reap
 | `src/benchmark/` | Versioned tasks, independent file/code graders, isolated native harness profiles, trial scheduling and reports |
 | `src/renderer/home/` | Home screen and engine selection |
 | `src/renderer/benchmark/` | Model selection, run limits, six-engine scores, per-task evidence and report history |
-| `src/renderer/chat/` | Shared Claude/Codex/Kimi/Antigravity conversation UI, sidebar, and goal controls |
+| `src/renderer/chat/` | Shared six-engine conversation UI, sidebar, and goal controls |
 | `src/renderer/settings/` | Provider, usage, account, and engine-settings interfaces |
 | `src/renderer/shared/` | Theme tokens and shared desktop styles |
 | `src/shared/` | File-persistence helpers |
@@ -44,14 +44,15 @@ The entry point is `src/main/main.js`; `src/main/preload.js` exposes the rendere
 
 | Component | Pinned package | Interface |
 | --- | --- | --- |
-| Claude Code | `@anthropic-ai/claude-code@2.1.273` | stream-json |
-| Codex CLI | `@openai/codex@0.154.0` | app-server over stdin/stdout |
-| DSH | `@deepseek-ai/dsh@0.1.5-rc.1` | Local web backend and embedded UI |
-| Kimi Code | `@moonshot-ai/kimi-code@0.43.1` | ACP over stdin/stdout |
-| Antigravity | CLI 1.2.3; `google-antigravity==0.1.17`, Python 3.13.14, uv 0.12.15 | CLI stream-json for Google subscriptions; Python SDK for API routing |
+| Claude Code | `@anthropic-ai/claude-code@2.1.288` | stream-json |
+| Codex CLI | `@openai/codex@0.160.0` | app-server over stdin/stdout |
+| DSH | `@deepseek-ai/dsh@0.2.0-rc.2` | Local web backend and embedded UI |
+| Kimi Code | `@moonshot-ai/kimi-code@2.1.1` | ACP over stdin/stdout |
+| Antigravity | CLI 1.2.3 on desktop; `google-antigravity==0.1.20`, Python 3.13.14, uv 0.12.15 | CLI connection for Google subscriptions; Python SDK for API routing |
+| Pi | `@mariozechner/pi-coding-agent@0.73.1` | Native RPC through shared API routes |
 | DSH plugin package manager | `pnpm@11.7.0` | Runtime tooling |
 
-The per-engine manifests and lockfiles are authoritative. The patched DSH settings and client-modules packages are pinned to `0.1.5-rc.2`, differing from the top-level runtime package. Review patch compatibility before changing upstream pins.
+The per-engine manifests and lockfiles are authoritative. The patched DSH settings and client-modules packages are pinned to `0.2.0-rc.2`; review patch compatibility before changing upstream pins.
 
 `scripts/prepare-runtimes.cjs` prepares explicitly selected development runtimes. `scripts/prepare-package.cjs` copies only Node.js, npm, and the Node license into generated `build/runtime-assets/`; it does not install any harness.
 
@@ -67,7 +68,7 @@ For third-party API models absent from the native catalog, `codex-models.js` sup
 
 Antigravity uses `LocalOpenAIAgentConfig` against Camellia's local router. `src/engines/antigravity/bridge.py` adapts SDK chunks, policies, tool hooks, and saved conversations to the ACP transport shared with Kimi. This Python file is unpacked from ASAR in desktop builds. Its package directory is selected through `PYTHONPATH`; no global Python or CLI settings are changed. Runtime downloads and dependencies are pinned with checksums in `runtimes/antigravity/`.
 
-SDK 0.1.16's OpenAI strategy does not forward configuration policies or image parts. The bridge enforces permissions through the public `policy.enforce` tool hook and rejects image input explicitly. The native smoke test covers both behaviors, along with shell execution, MCP, cancellation, and independent session forks; retain those checks when updating the SDK.
+The Antigravity bridge enforces permissions through the SDK's policy hook and checks image input against the installed SDK/model capability. Native smoke tests cover permissions, image handling, shell execution, MCP, cancellation, and independent session forks; retain those checks when updating the SDK.
 
 Google subscription mode uses `src/engines/antigravity/cli-bridge.cjs` under bundled Node. It translates the official CLI's stream-json protocol into ACP, maps Camellia's `agy-` session IDs to native conversation IDs, and converts cumulative usage to per-turn counts. Authentication remains in the official CLI. The native CLI settings are managed alongside the other engines' settings. No OAuth token extraction or internal Google gateway emulation is used. Both adapters are unpacked from ASAR.
 
