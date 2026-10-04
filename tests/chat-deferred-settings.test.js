@@ -19,6 +19,7 @@ function fixture(overrides = {}) {
     chatApi: { saveSettings: async patch => { saved.push(patch); return { ok: true, settings: { model: patch.model, thinkingBudget: patch.thinkingBudget, permissionMode: 'default' } }; } },
     levelLabel: level => level,
     applySessionSettings() {}, updateCtxRing() {}, applyApiLevels() {},
+    visibleAccountModels: () => state.accountModels || [],
     setStatus(text) { state.status = text; },
     $: () => ({ value: '' }),
     LEVELS: [{}],
@@ -117,6 +118,7 @@ function modelMenu(subscription, google = false) {
     supportsAccounts: () => true, sharedChat: true, context: { sessionId: 'conversation-a' },
     accountName: google ? 'Google' : 'Kimi', MODELS: [],
     accountModels: [{ id: 'shared-model', name: 'Shared model' }, { id: 'account-only', name: 'Account model' }],
+    visibleAccountModels: () => state.accountModels,
     routeModels: ['shared-model', 'api-only'],
     accountSubscription: () => subscription, googleSubscription: () => google,
   };

@@ -52,6 +52,17 @@ test('an account that is not signed in contributes no selectable models', () => 
   assert.deepEqual(view(signedOut).models.map(model => model.connection), ['api']);
 });
 
+test('hidden subscription models leave current remote selections intact but disappear from other choices', () => {
+  const target = manager({ connection: 'api', model: 'route-a' });
+  target.loadConfig = () => ({ hiddenSubscriptionModels: { codex: ['account-a'] }, quickSwitchModels: { codex: 'account-a' } });
+  assert.deepEqual(view(target).models.map(model => model.id), ['route-a', 'shared-id', 'shared-id']);
+  assert.equal(view(target).quickSwitch.available, false);
+  target.state.connection = 'subscription'; target.state.model = 'account-a';
+  assert.match(view(target).models[0].name, /hidden/);
+  assert.equal(view(target).models[0].id, 'account-a');
+  assert.equal(view(target).quickSwitch.available, false);
+});
+
 test('engines with a single model source never merge the other connection', () => {
   assert.deepEqual(view(manager({ engine: 'claude', connection: 'api', model: 'route-a' }), 'claude').models
     .map(model => model.connection), ['api', 'api']);

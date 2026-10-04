@@ -46,6 +46,7 @@ const { IdleSessionReaper } = require('../engines/idle-session-reaper');
 const { attachInputContextMenu } = require('./input-context-menu');
 const { attachImageContextMenu } = require('./image-context-menu');
 const { describePreview } = require('./file-preview');
+const { ENGINES: SUBSCRIPTION_MODEL_ENGINES } = require('../shared/subscription-models');
 const { revealInFileManager } = require('./reveal-file');
 const { resolveArtifacts } = require('./turn-artifacts');
 const { readOfficePreview } = require('./office-preview');
@@ -73,6 +74,7 @@ function discussions() {
     const production = productionDiscussions();
     discussionService = new DiscussionService({ dataDir: app.getPath('userData'), registry: discussionBoundary.registry, production: discussionProduction,
       getCatalog: production.getCatalog,
+      hiddenSubscriptionModels: () => loadConfig().hiddenSubscriptionModels || {},
       onEvent: event => {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:discussion-event', event);
         remoteDesktop?.publish();
@@ -1727,6 +1729,7 @@ if (!gotSingleInstanceLock) {
     memoryDirectory: loadConfig().memoryDirectory || '',
     quickSwitchModels: loadConfig().quickSwitchModels || {},
     quickSwitchLevels: loadConfig().quickSwitchLevels || {},
+    hiddenSubscriptionModels: loadConfig().hiddenSubscriptionModels || {},
     chatContentWidth: normalizeChatContentWidth(loadConfig().chatContentWidth),
     computerName: computerName(), dataPath: app.getPath('userData'), version: app.getVersion() }));
   ipcMain.handle('dsh:workbench-save-settings', (_event, payload) => {
@@ -1771,6 +1774,20 @@ if (!gotSingleInstanceLock) {
           else delete patch.quickSwitchLevels[engine];
         }
       }
+      if (payload?.hiddenSubscriptionModels !== undefined) {
+        const models = payload.hiddenSubscriptionModels;
+        if (!models || typeof models !== 'object' || Array.isArray(models)) throw new Error('Invalid hidden subscription models');
+        const previous = loadConfig().hiddenSubscriptionModels || {};
+        patch.hiddenSubscriptionModels = { ...previous };
+        for (const [engine, ids] of Object.entries(models)) {
+          if (!SUBSCRIPTION_MODEL_ENGINES.includes(engine) || !Array.isArray(ids) || ids.length > 512
+            || ids.some(id => typeof id !== 'string' || !id.trim() || id !== id.trim() || id.length > 256)) {
+            throw new Error('Invalid hidden subscription models');
+          }
+          if (ids.length) patch.hiddenSubscriptionModels[engine] = [...new Set(ids)];
+          else delete patch.hiddenSubscriptionModels[engine];
+        }
+      }
       saveConfig(patch);
       if (payload?.conversations) saveConfig({ conversations: conversationPreferences({ conversations: payload.conversations }) });
       const contentWidth = normalizeChatContentWidth(patch.chatContentWidth ?? previousContentWidth);
@@ -1783,6 +1800,11 @@ if (!gotSingleInstanceLock) {
       if (nativeSettingsView) nativeSettingsView.webContents.send('dsh:language-changed', language);
       if (contentWidth !== previousContentWidth && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('dsh:chat-content-width-changed', contentWidth);
+      }
+      if (patch.hiddenSubscriptionModels && mainWindow && !mainWindow.isDestroyed()) {
+        for (const engine of Object.keys(payload.hiddenSubscriptionModels)) {
+          mainWindow.webContents.send('dsh:engine-settings-changed', { engine });
+        }
       }
       if (accountRefreshEnabled() !== previousQuotaCheck.enabled || accountRefreshMinutes() !== previousQuotaCheck.minutes) syncQuotaCheck();
       void refreshAccountBalances();
@@ -1909,7 +1931,10 @@ if (!gotSingleInstanceLock) {
     'goal-start': payload => kimiGoalDriver.start(payload),
     'goal-pause': () => kimiGoalDriver.setPhase('paused'), 'goal-resume': () => kimiGoalDriver.resume(),
     'goal-complete': () => kimiGoalDriver.setPhase('complete'), 'goal-clear': () => kimiGoalDriver.clear(),
-    'account-state': () => ({ ok: true, ...kimiAccount.state() }),
+    'account-state': payload => {
+      if (payload?.id && !kimiAccount.list().some(account => account.id === payload.id)) throw new Error('Unknown Kimi account');
+      return { ok: true, ...kimiAccount.state(payload?.id) };
+    },
     'account-refresh': async payload => {
       const id = payload?.id || kimiAccount.activeId();
       if (!kimiAccount.list().some(account => account.id === id)) throw new Error('Unknown Kimi account');

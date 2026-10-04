@@ -247,6 +247,28 @@ test('quick-switch defaults persist per engine, clear independently, and preserv
   } finally { harness.cleanup(); }
 });
 
+test('hidden subscription models persist by provider without changing routes or other preferences', () => {
+  const first = createHarness();
+  try {
+    assert.deepEqual({ ...first.call('workbench-settings').hiddenSubscriptionModels }, {});
+    first.events.length = 0;
+    assert.equal(first.call('workbench-save-settings', { hiddenSubscriptionModels: { codex: ['gpt-a'], kimi: ['kimi-a'] } }).ok, true);
+    assert.deepEqual(first.events.filter(event => event.channel === 'dsh:engine-settings-changed').map(event => event.data.engine), ['codex', 'kimi']);
+    assert.equal(first.call('workbench-save-settings', { hiddenSubscriptionModels: { codex: ['gpt-b', 'gpt-b'] } }).ok, true);
+    assert.deepEqual(first.call('workbench-settings').hiddenSubscriptionModels, { codex: ['gpt-b'], kimi: ['kimi-a'] });
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    const reopened = createHarness(first.root);
+    assert.deepEqual(reopened.call('workbench-settings').hiddenSubscriptionModels, { codex: ['gpt-b'], kimi: ['kimi-a'] });
+    assert.equal(reopened.call('workbench-save-settings', { hiddenSubscriptionModels: { codex: [] } }).ok, true);
+    assert.deepEqual(reopened.call('workbench-settings').hiddenSubscriptionModels, { kimi: ['kimi-a'] });
+    for (const value of [null, [], { claude: ['model'] }, { codex: 'model' }, { kimi: [42] }, { antigravity: [' '] },
+      { codex: ['a'.repeat(257)] }]) {
+      assert.equal(reopened.call('workbench-save-settings', { hiddenSubscriptionModels: value }).ok, false);
+      assert.deepEqual(reopened.call('workbench-settings').hiddenSubscriptionModels, { kimi: ['kimi-a'] });
+    }
+  } finally { first.cleanup(); }
+});
+
 test('settings initialization preserves navigation made while preferences are loading', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.js'), 'utf8');
   const navigation = source.slice(source.indexOf('function setView('), source.indexOf('const engineUI ='));

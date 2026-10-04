@@ -57,6 +57,16 @@ test('public discussion workflow persists notes, bounds members, and rejects for
   assert.equal((await service.call('load', { id: group.id })).group.messages[0].text, 'A note');
 });
 
+test('hiding a subscription model removes it from new discussion choices without retiring an existing member', async t => {
+  const h = setup(t);
+  const group = await createMembers(h.service, 1);
+  h.service.hiddenSubscriptionModels = () => ({ codex: ['test-model'] });
+  assert.deepEqual((await h.service.call('catalog')).bindings, []);
+  await h.service.call('send', { id: group.id, requestId: 'still-works', text: 'Continue', participantIds: [group.participants[0].id] });
+  for (let i = 0; i < 10 && h.service.active; i++) await tick();
+  assert.equal(h.calls.length, 1);
+});
+
 test('new discussion messages rise to the top within their pin group across reloads', async t => {
   const h = setup(t);
   const first = (await h.service.call('create', { title: 'First' })).group;

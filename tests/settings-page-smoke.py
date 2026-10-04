@@ -8,16 +8,22 @@ with sync_playwright() as playwright:
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.add_init_script("""
-      window.deviceCalls = []; window.savedPreferences = {};
+      window.deviceCalls = []; window.savedPreferences = {}; window.hiddenModels = {};
       const empty = { ok: true, result: {}, engines: [], providers: [], models: [], config: { providers: [], usage: {}, active: {} }, state: {} };
       window.dshDesktop = new Proxy({}, { get: (_target, name) => {
         if (String(name).startsWith('on')) return () => () => {};
         if (name === 'workbenchSaveSettings') return async patch => {
           if (window.failPreferences) return {ok:false,error:'Could not save preferences'};
+          if (patch.hiddenSubscriptionModels) Object.assign(window.hiddenModels, patch.hiddenSubscriptionModels);
           window.savedPreferences = patch; return {ok:true};
         };
         if (name === 'apiRouterGetState') return async () => ({...empty, enabled:true, models:['model-a','model-b']});
-        if (name === 'workbenchSettings') return async () => ({ ...empty, version: '0.3.0', dataPath: '/test-profile/camellia', language: 'en', theme: 'system' });
+        if (name === 'workbenchSettings') return async () => ({ ...empty, version: '0.3.0', dataPath: '/test-profile/camellia', language: 'en', theme: 'system', hiddenSubscriptionModels: window.hiddenModels });
+        if (name === 'codexAccountState') return async payload => payload?.id === 'other'
+          ? {ok:true, models:[{id:'gpt-other',name:'GPT Other'}]}
+          : {ok:true, activeId:'default', accounts:[{id:'default',signedIn:true},{id:'other',signedIn:true}], models:[{id:'gpt-a',name:'GPT A'},{id:'gpt-b',name:'GPT B'}]};
+        if (name === 'kimiAccountState') return async () => ({ok:true,models:[{id:'kimi-a',name:'Kimi A'}]});
+        if (name === 'antigravityAccountState') return async () => ({ok:true,models:[{id:'google-a',name:'Google A'}]});
         if (name === 'camelliaDevices') return {
           onEvent() {}, onTransfer() {},
           async call(action) {
@@ -41,8 +47,29 @@ with sync_playwright() as playwright:
     # One model and one reasoning-level menu per engine, aligned in one grid.
     expect(page.locator('#quickSwitchModels .quick-switch-model')).to_have_count(6)
     expect(page.locator('#quickSwitchModels .quick-switch-level')).to_have_count(6)
+    expect(page.locator('#subscriptionModels .subscription-model-group')).to_have_count(3)
+    expect(page.locator('#subscriptionModels .subscription-model-row')).to_have_count(5)
+    expect(page.locator('#subscriptionModels .subscription-model-row span[title="gpt-other"]')).to_have_text('GPT Other')
+    page.locator('#quickSwitch-codex').select_option('gpt-b')
+    page.wait_for_function("savedPreferences.quickSwitchModels?.codex === 'gpt-b'")
+    page.locator('#subscriptionModels .subscription-model-row', has_text='GPT B').locator('input').uncheck()
+    page.wait_for_function("hiddenModels.codex?.includes('gpt-b')")
+    expect(page.locator('#quickSwitch-codex')).to_have_value('gpt-b')
+    expect(page.locator('#quickSwitch-codex option[value="gpt-b"]')).to_be_disabled()
+    page.locator('#subscriptionModels .subscription-model-row', has_text='Kimi A').locator('input').uncheck()
+    page.wait_for_function("hiddenModels.kimi?.includes('kimi-a')")
+    page.locator('#subscriptionModels .subscription-model-row', has_text='Google A').locator('input').uncheck()
+    page.wait_for_function("hiddenModels.antigravity?.includes('google-a')")
+    page.evaluate('window.failPreferences = true')
+    page.locator('#subscriptionModels .subscription-model-row', has_text='GPT A').locator('input').click()
+    expect(page.locator('#status')).to_contain_text('Could not save preferences')
+    expect(page.locator('#subscriptionModels .subscription-model-row', has_text='GPT A').locator('input')).to_be_checked()
+    page.evaluate('window.failPreferences = false')
     page.locator('#quickSwitch-codex').select_option('model-b')
     page.wait_for_function("savedPreferences.quickSwitchModels?.codex === 'model-b'")
+    page.locator('#subscriptionModels .subscription-model-row', has_text='GPT Other').locator('input').uncheck()
+    page.wait_for_function("hiddenModels.codex?.includes('gpt-other')")
+    expect(page.locator('#quickSwitch-codex')).to_have_value('model-b')
     page.locator('#quickSwitchLevel-codex').select_option('high')
     page.wait_for_function("savedPreferences.quickSwitchLevels?.codex === 'high'")
     expect(page.locator('#quickSwitchLevel-codex')).to_have_value('high')

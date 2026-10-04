@@ -1036,6 +1036,8 @@
   .pop-opt .pop-check { display: none; color: var(--dsw-alias-label-primary); flex-shrink: 0; }
   .pop-opt.current .pop-check { display: block; }
   .pop-opt .pop-marks { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
+  .pop-manage { display: block; width: 100%; margin-top: 5px; padding: 9px 12px; border: 0; border-top: 1px solid var(--dsw-alias-border-l2); border-radius: 0 0 8px 8px; background: transparent; color: var(--dsw-alias-label-secondary); font: var(--f-xxs-12); text-align: left; cursor: pointer; }
+  .pop-manage:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .history-more {
   display: block;
   width: 100%;
