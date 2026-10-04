@@ -1627,8 +1627,12 @@ class SharedConversations {
     const current = this.contextPressure(c, engine, settings).cap;
     const reported = reportedContextLimit(error);
     const cap = Math.max(1, Math.min(current, reported || Math.floor(current / 2)));
+    const previous = c.contextBudgets?.[key];
+    const knownProviderCap = previous?.providerCap || (previous?.source === 'provider-error' ? previous.cap : null);
+    const providerCap = reported ? Math.min(reported, knownProviderCap || Infinity) : knownProviderCap;
     c.contextBudgets ||= {};
-    c.contextBudgets[key] = { cap, source: reported ? 'provider-error' : 'backoff', at: Date.now() };
+    c.contextBudgets[key] = { cap, source: reported ? 'provider-error' : 'backoff',
+      ...(providerCap ? { providerCap } : {}), at: Date.now() };
     const keys = Object.keys(c.contextBudgets);
     for (const stale of keys.slice(0, Math.max(0, keys.length - 32))) delete c.contextBudgets[stale];
     this.save(c);
@@ -1660,6 +1664,19 @@ class SharedConversations {
     const cap = Number.isFinite(learned) && learned > 0 ? Math.min(configured, learned) : configured;
     return { source: reusable ? 'usage' : 'estimate', used: reusable ? usage.used : estimate, cap, estimate,
       ...(budget ? { budgetSource: budget.source, capacity: budget.routes } : {}) };
+  }
+  // Summary requests are auxiliary: the router answers them directly, or a
+  // throwaway engine session does. Size their fragments from that transport's
+  // capacity and only honour an explicitly reported provider limit. A purely
+  // heuristic recovery backoff must not shrink them, because each halving
+  // doubled the request count until a retry could never finish inside the
+  // compaction deadline. Real turns keep learning the smaller window.
+  summaryTransportCap(c, engine, settings) {
+    const budget = this.routeContextBudget(engine, settings);
+    const learned = c.contextBudgets?.[this.contextBudgetKey(engine, settings, budget)];
+    const cap = this.contextCap(engine, settings, budget);
+    const providerCap = learned?.providerCap || (learned?.source === 'provider-error' ? learned.cap : null);
+    return Number.isFinite(providerCap) && providerCap > 0 ? Math.min(cap, providerCap) : cap;
   }
   usesNativeCompaction(c, engine, settings = this.settings(engine, c.id)) {
     const segment = c.segments[engine];
@@ -1766,7 +1783,7 @@ class SharedConversations {
       const previousSettings = segment?.contextSettings;
       if (destination && previousSettings?.model && previousSettings.connection === settings.connection
           && this.contextCap(engine, previousSettings) > this.contextCap(engine, settings)) Object.assign(settings, previousSettings);
-      let cap = this.contextPressure(c, engine, settings).cap;
+      let cap = this.summaryTransportCap(c, engine, settings);
       // A fragment is one engine request, so an engine that caps its input text
       // by characters must cap the character budget for engine summaries too.
       let budget = Math.floor(cap * 1.8);
@@ -1810,7 +1827,7 @@ class SharedConversations {
       catch (error) {
         if (!destination || switching.cancelled || recovery?.cancelled || settings.model === selectedSettings.model) throw error;
         settings = selectedSettings;
-        cap = this.contextPressure(c, engine, settings).cap;
+        cap = this.summaryTransportCap(c, engine, settings);
         budget = Math.min(Math.floor(cap * 0.6), inputCharLimit(engine) || Infinity);
         diagnostics.fallbackModel = settings.model;
         summary = await summarize();

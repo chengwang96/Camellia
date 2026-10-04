@@ -1243,6 +1243,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     function mainMenu() {
       pop.replaceChildren();
+      pop.classList.add('attach-menu');
       const heading = document.createElement('div'); heading.className = 'pop-group'; heading.textContent = t('Add');
       const files = row('Files', 'file', async () => {
         closePops();
@@ -1257,6 +1258,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     let searchSeq = 0;
     function showConversations() {
       pop.replaceChildren();
+      pop.classList.remove('attach-menu');
       const header = document.createElement('div'); header.className = 'attach-picker-header';
       const back = document.createElement('button'); back.type = 'button'; back.className = 'attach-picker-back'; back.setAttribute('aria-label', t('Back')); back.textContent = '‹'; back.onclick = mainMenu;
       const title = document.createElement('strong'); title.textContent = t('Attach a conversation');
