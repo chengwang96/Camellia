@@ -125,6 +125,14 @@ with sync_playwright() as playwright:
         }""")
         expect(page.locator('.context-compaction[data-state="running"]')).to_have_text('Compacting context…')
         page.screenshot(path=str(scope['preview'] / f'compaction-native-{theme}.png'), animations='disabled')
+        page.evaluate("""() => chatFixture.messages.push({role:'notice',engine:'codex',seq:40,
+          text:'Context compacted: older context omitted',compaction:{fallback:true,durationMs:1600}})""")
+        page.locator('[data-sid="another-session"]').click()
+        page.locator('[data-sid="shared-fixture"]').click()
+        fallback = page.locator('.context-compaction[data-seq="40"] span[data-i18n]')
+        expect(fallback).to_have_text('Context compacted: older context omitted')
+        page.evaluate("changeLanguage('zh-CN')")
+        expect(fallback).to_have_text('上下文已压缩：较早内容已省略')
         assert not errors, errors
         page.close()
     browser.close()

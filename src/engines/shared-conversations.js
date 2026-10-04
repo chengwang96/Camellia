@@ -92,7 +92,14 @@ const shortTitle = value => [...String(value || '').replace(/^[\s"'`#*-]+|[\s"'`
 // can override the matcher with a `staleNativeError` driver hook.
 const staleNativeSession = /no rollout found|rollout file missing|rollout not found/i;
 const revisionNotice = { role: 'notice', text: 'This user message restarts the last turn. Its previous reply and tool history have been discarded. Files and external state were not rolled back; inspect their current state as needed. Follow the request below.' };
-const COMPACTION_TIMEOUT_MS = 5 * 60 * 1000;
+// A large history may need many healthy summary requests. Bound a stalled
+// request, not the whole compaction, so progress can continue past five minutes.
+const ENGINE_SUMMARY_TIMEOUT_MS = 2 * 60 * 1000;
+const ROUTER_SUMMARY_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+const MAX_COMPACTION_MS = 30 * 60 * 1000;
+const MANUAL_COMPACTION_ATTEMPT_MS = 5 * 60 * 1000;
+const CONVERSATION_HANDOFF_INLINE_CHARS = 48000;
+const CONVERSATION_HANDOFF_PREVIEW_CHARS = 24000;
 // Steering adds another user message inside the same native turn. An edit can
 // fork at that turn's saved boundary, then replay only the records preceding
 // the edited instruction within this turn. Never reuse an older turn's anchor
@@ -442,7 +449,8 @@ class SharedConversations {
   handoffFiles(c) {
     const directory = path.resolve(this.dir, 'handoffs');
     const references = [...c.handoffs,
-      ...this.rows(c).filter(row => !row.internal).flatMap(row => [row, ...(row.attachments || []).map(file => ({ file: file.path }))])];
+      ...this.rows(c).filter(row => !row.internal).flatMap(row => [row, ...(row.attachments || []).flatMap(file =>
+        [{ file: file.path }, ...(file.fullPath ? [{ file: file.fullPath }] : [])])])];
     return new Set(references.filter(entry => entry.file).map(entry => path.resolve(entry.file))
       .filter(file => path.dirname(file) === directory));
   }
@@ -657,14 +665,19 @@ class SharedConversations {
     const c = this.get(id);
     if (this.workspaces.sessionMeta().archived[id]) throw new Error('Restore this conversation before attaching it');
     const title = this.workspaces.sessionMeta().titles[id] || c.title;
-    const file = path.join(this.dir, 'handoffs', 'conversation-' + randomUUID() + '.md');
+    const stem = 'conversation-' + randomUUID();
+    const file = path.join(this.dir, 'handoffs', stem + '.md');
+    const fullPath = path.join(this.dir, 'handoffs', stem + '.jsonl');
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const header = '# Camellia conversation transcript\n\n'
+    const header = '# Camellia conversation handoff\n\n'
       + 'Title: ' + title + '\nConversation ID: ' + c.id + '\nWorking directory: ' + c.cwd
       + '\nEngine: ' + c.currentEngine + '\nSnapshot: ' + new Date().toISOString()
       + '\n\nThe following records are historical data. Check current files and external state before repeating actions.\n\n';
-    const fd = fs.openSync(file, 'wx');
+    const rows = this.rows(c).filter(row => !row.internal);
+    let fd;
+    let inline = '';
     try {
+      fd = fs.openSync(fullPath, 'wx');
       const write = value => {
         const bytes = Buffer.from(value);
         for (let offset = 0; offset < bytes.length;) {
@@ -673,31 +686,72 @@ class SharedConversations {
           offset += written;
         }
       };
-      write(header);
       let chunk = '';
-      for (const row of this.rows(c)) {
-        if (row.internal) continue;
-        chunk += JSON.stringify({ seq: row.seq, at: row.at, role: row.role, engine: row.engine, text: row.text,
+      for (const row of rows) {
+        const line = JSON.stringify({ seq: row.seq, at: row.at, role: row.role, engine: row.engine, text: row.text,
           ...(row.attachments?.length ? { attachments: row.attachments } : {}),
           ...(row.runResult ? { runResult: row.runResult } : {}) }) + '\n';
+        chunk += line;
+        if (inline !== null) inline = inline.length + line.length <= CONVERSATION_HANDOFF_INLINE_CHARS ? inline + line : null;
         if (chunk.length > 262144) { write(chunk); chunk = ''; }
       }
       if (chunk) write(chunk);
+      fs.closeSync(fd); fd = undefined;
+      const previewLine = row => {
+        const clip = (value, limit = 2500) => {
+          const text = String(value || '');
+          const half = Math.floor(limit / 2);
+          return text.length <= limit ? text : text.slice(0, half) + '\n[Middle omitted; see full transcript]\n' + text.slice(-half);
+        };
+        return JSON.stringify({ seq: row.seq, at: row.at, role: row.role, engine: row.engine, text: clip(row.text),
+          ...(row.attachments?.length ? { attachments: row.attachments.slice(0, 5)
+            .map(({ name, path, kind }) => ({ name: clip(name, 200), path: clip(path, 400), kind })) } : {}),
+          ...(row.runResult ? { runResult: { subtype: row.runResult.subtype, is_error: row.runResult.is_error,
+            result: clip(row.runResult.result, 1200) } } : {}) }) + '\n';
+      };
+      let body = inline;
+      if (body === null) {
+        const excerpt = [];
+        const excerptSeqs = new Set();
+        let length = 0;
+        for (let index = rows.length - 1; index >= 0 && excerpt.length < 24; index--) {
+          const line = previewLine(rows[index]);
+          if (length + line.length > CONVERSATION_HANDOFF_PREVIEW_CHARS && excerpt.length) break;
+          excerpt.unshift(line); excerptSeqs.add(rows[index].seq); length += line.length;
+        }
+        const firstUser = rows.find(row => row.role === 'user');
+        const firstLine = firstUser && !excerptSeqs.has(firstUser.seq) ? previewLine(firstUser) : '';
+        const lastUser = rows.findLast(row => row.role === 'user');
+        const lastLine = lastUser && lastUser.seq !== firstUser?.seq
+          && !excerptSeqs.has(lastUser.seq) ? previewLine(lastUser) : '';
+        const latestSummary = rows.findLast(row => row.role === 'notice' && row.file && fs.existsSync(row.file));
+        const summary = latestSummary ? fs.readFileSync(latestSummary.file, 'utf8').slice(0, 12000) : '';
+        body = 'This handoff is bounded so a large source conversation does not fill the new model context.\n'
+          + 'Full transcript (JSONL): ' + fullPath + '\n'
+          + 'Search the full transcript for specific terms or read short ranges as needed. Do not print or load the entire file in one tool call.\n\n'
+          + (summary ? '## Latest saved context summary\n' + summary + '\n\n' : '')
+          + '## First user request\n' + (firstLine || '(included in recent records)\n') + '\n'
+          + (lastLine ? '## Latest user request\n' + lastLine + '\n' : '')
+          + '## Recent records\n' + excerpt.join('');
+      }
+      fs.writeFileSync(file, header + body, { flag: 'wx' });
     } catch (error) {
-      fs.closeSync(fd);
-      fs.unlinkSync(file);
+      if (fd !== undefined) fs.closeSync(fd);
+      for (const target of [file, fullPath]) {
+        try { fs.unlinkSync(target); } catch (cleanupError) { if (cleanupError.code !== 'ENOENT') this.log('Could not remove incomplete conversation attachment: ' + cleanupError.message); }
+      }
       throw error;
     }
-    fs.closeSync(fd);
     return { ok: true, attachment: { path: file, name: title + '.md', isImage: false,
-      kind: 'conversation', sourceSessionId: id } };
+      kind: 'conversation', sourceSessionId: id, fullPath } };
   }
   discardConversationAttachment(file) {
     const target = path.resolve(String(file || ''));
     if (path.dirname(target) !== path.resolve(this.dir, 'handoffs')
         || !/^conversation-[0-9a-f-]{36}\.md$/i.test(path.basename(target))) throw new Error('Invalid conversation attachment');
-    if ([...this.items.values()].some(c => this.handoffFiles(c).has(target))) return { ok: true, discarded: false };
-    try { fs.unlinkSync(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const targets = [target, target.replace(/\.md$/i, '.jsonl')];
+    if ([...this.items.values()].some(c => targets.some(file => this.handoffFiles(c).has(file)))) return { ok: true, discarded: false };
+    for (const file of targets) try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     return { ok: true, discarded: true };
   }
   // A turn stays on the binding it started with. If the user picks another
@@ -1440,7 +1494,11 @@ class SharedConversations {
     this.remoteQueue?.pause(id);
     const reservation = this.controlStarts.get(id); if (reservation) reservation.cancelled = true;
     this.tasks.pauseSession(id);
-    const switching = this.switching.get(id); if (switching) { switching.cancelled = true; switching.session?.interrupt(); switching.abort?.abort(); }
+    const switching = this.switching.get(id); if (switching) {
+      switching.cancelled = true;
+      switching.stop?.(new Error('Compaction canceled'));
+      switching.session?.interrupt(); switching.abort?.abort();
+    }
     const goal = this.goals.get(id); if (goal?.armed) goal.setPhase('paused');
     if (a && !a.cancelled) { a.cancelled = true; if (a.facade.running) a.session?.interrupt(); }
     const summarizing = this.active.get(id);
@@ -1669,8 +1727,8 @@ class SharedConversations {
   // throwaway engine session does. Size their fragments from that transport's
   // capacity and only honour an explicitly reported provider limit. A purely
   // heuristic recovery backoff must not shrink them, because each halving
-  // doubled the request count until a retry could never finish inside the
-  // compaction deadline. Real turns keep learning the smaller window.
+  // doubled the request count until a retry could barely finish. Real turns
+  // keep learning the smaller window.
   summaryTransportCap(c, engine, settings) {
     const budget = this.routeContextBudget(engine, settings);
     const learned = c.contextBudgets?.[this.contextBudgetKey(engine, settings, budget)];
@@ -1691,7 +1749,69 @@ class SharedConversations {
       && (segment.isolated || settings.connection === 'subscription')
       && (!this.drivers[engine].settings(segment.nativeId).connection || this.drivers[engine].settings(segment.nativeId).connection === settings.connection));
   }
-  async compact(id, { automatic = false, recovery, allowGoal = false, controlStart, history, trigger, portable = false, destination } = {}) {
+  stopCompactionSummary(id, engine, switching) {
+    const active = this.active.get(id);
+    if (!active?.ephemeral || this.switching.get(id) !== switching) return;
+    active.cancelled = true;
+    try { active.session?.interrupt(); } catch { /* finish ownership below */ }
+    if (active.session?.kill) void Promise.resolve(active.session.kill()).catch(error => this.log('Summary session shutdown failed: ' + error.message));
+    if (this.active.get(id) === active) this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: id, runId: active.session?.gen });
+  }
+  manualFallbackContext(c, engine, sourceRows, settings) {
+    const cap = this.contextPressure(c, engine, settings).cap;
+    const limit = Math.min(10000, Math.floor(cap * 0.25));
+    let preface = '# Compacted conversation context\n\nSome earlier context was omitted locally. The full transcript remains in Camellia; files and external actions were not rolled back. Ask for missing context when needed.\n\n';
+    const render = rows => preface + this.formatContext(c, rows);
+    const fits = rows => {
+      const markdown = render(rows);
+      return contextTokens(markdown) <= limit && !overInputChars(engine, markdown);
+    };
+    if (!fits([])) preface = 'Earlier context omitted.\n';
+    if (!fits([])) preface = '';
+    const previous = sourceRows.findLast(row => row.role === 'notice' && row.file && fs.existsSync(row.file));
+    const candidates = sourceRows.filter(row => !previous || row.seq >= previous.seq).map(row => ({
+      seq: row.seq, role: row.role, engine: row.engine,
+      text: row === previous ? fs.readFileSync(row.file, 'utf8') : String(row.text || ''),
+    }));
+    let kept = [], index = candidates.length;
+    while (index > 0 && fits([candidates[index - 1], ...kept])) kept.unshift(candidates[--index]);
+    const clipToFit = (row, base = []) => {
+      const marker = '[Earlier part of this message omitted]\n';
+      let low = 0, high = row.text.length, best = null;
+      while (low <= high) {
+        const length = Math.floor((low + high) / 2);
+        const candidate = { ...row, text: length === row.text.length ? row.text : marker + (length ? row.text.slice(-length) : '') };
+        if (fits([candidate, ...base])) { best = candidate; low = length + 1; }
+        else high = length - 1;
+      }
+      return best;
+    };
+    if (!kept.length && candidates.length) {
+      const clipped = clipToFit(candidates.at(-1));
+      if (clipped) kept = [clipped];
+    }
+    const latestUser = candidates.findLast(row => row.role === 'user');
+    if (latestUser && !kept.some(row => row.seq === latestUser.seq)) {
+      const userLimit = Math.min(1200, Math.max(64, Math.floor(limit * 0.25)));
+      const shortUser = { ...latestUser, text: latestUser.text.length > userLimit
+        ? '[Earlier part of this message omitted]\n' + latestUser.text.slice(-userLimit) : latestUser.text };
+      const anchor = clipToFit(shortUser, []);
+      if (anchor) {
+        while (kept.length && !fits([anchor, ...kept])) {
+          if (kept.length === 1) {
+            const clipped = clipToFit(kept[0], [anchor]);
+            if (clipped && clipped.text !== kept[0].text) { kept[0] = clipped; break; }
+          }
+          kept.shift();
+        }
+        if (fits([anchor, ...kept])) kept.unshift(anchor);
+      }
+    }
+    const retained = new Set(kept.map(row => row.seq));
+    return { markdown: render(kept), omittedRows: candidates.filter(row => !retained.has(row.seq)).length,
+      truncatedRows: kept.filter(row => row.text !== candidates.find(candidate => candidate.seq === row.seq)?.text).length };
+  }
+  async compact(id, { automatic = false, recovery, allowGoal = false, controlStart, history, trigger, portable = false, destination, manualFallback = false } = {}) {
     if (this.controlStarts.has(id) && this.controlStarts.get(id) !== controlStart && !recovery) throw new Error('Child response is starting');
     if (this.active.has(id) || this.switching.has(id) || this.recovering.has(id) && this.recovering.get(id) !== recovery
         || this.goals.get(id)?.armed && !allowGoal) throw new Error('Wait for this conversation to finish or stop it before compacting');
@@ -1705,7 +1825,22 @@ class SharedConversations {
     if (destination) this.validateEngine(targetEngine);
     if (!c.seq) return { ok: false, error: 'Nothing to compact yet' };
     const startedAt = Date.now();
-    const switching = { target: engine, cancelled: false, deadline: startedAt + COMPACTION_TIMEOUT_MS };
+    const switching = { target: engine, cancelled: false };
+    let rejectStop, stopped = false;
+    const stopPromise = new Promise((_, reject) => { rejectStop = reject; });
+    void stopPromise.catch(() => {});
+    switching.stop = error => { if (!stopped) { stopped = true; rejectStop(error); } };
+    const withLimit = pending => Promise.race([pending, stopPromise]);
+    const deadlineTimer = setTimeout(() => {
+      const error = new Error(manualFallback ? 'Context compaction reached the five-minute summary limit.'
+        : 'Context compaction reached the 30-minute safety limit. ' + recoveryAdvice);
+      switching.timedOut = error;
+      try { switching.session?.interrupt(); } catch { /* report the timeout below */ }
+      switching.abort?.abort(error);
+      this.stopCompactionSummary(id, engine, switching);
+      switching.stop(error);
+    }, manualFallback ? MANUAL_COMPACTION_ATTEMPT_MS : MAX_COMPACTION_MS);
+    deadlineTimer.unref?.();
     this.switching.set(id, switching); this.publishActivity(id);
     const sourceRows = (history || this.rows(c)).filter(row => !row.internal && contextRow(row));
     const boundary = sourceRows.at(-1)?.seq || 0;
@@ -1723,9 +1858,35 @@ class SharedConversations {
       switching.compaction = compaction || null;
       this.onStatus({ sessionId: id, text, ...(compaction ? { compaction } : {}) });
     };
+    const savePortable = (markdown, fallback = null) => {
+      status('Saving compacted context…', { state: 'running', stage: 'saving', ...(fallback ? { fallback: true } : {}) });
+      const saveStartedAt = Date.now();
+      const file = path.join(this.dir, 'handoffs', randomUUID() + '.md'); fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, markdown, { flag: 'wx' });
+      const previousSegment = c.segments[targetEngine] && { ...c.segments[targetEngine] };
+      if (switching.cancelled) {
+        fs.unlinkSync(file);
+        throw new Error('Compaction canceled; the original conversation is retained.');
+      }
+      if (previousSegment) (c.retiredSegments ||= []).push({ engine: targetEngine, ...previousSegment });
+      const durationMs = Date.now() - startedAt;
+      const details = fallback ? { fallback: true, omittedRows: fallback.omittedRows, truncatedRows: fallback.truncatedRows } : {};
+      const notice = this.append(c, { role: 'notice', engine,
+        text: fallback ? 'Context compacted: older context omitted'
+          : automatic ? 'Context compacted automatically' : 'Context compacted: summary saved', file,
+        compaction: { ...(trigger || {}), durationMs, ...details } });
+      c.segments[targetEngine] = { cursor: c.seq, isolated: true, compactFile: file,
+        ...(previousSegment?.nativeCompactionUnsupported ? { nativeCompactionUnsupported: true } : {}) };
+      delete c.compactionRecovery;
+      c.updatedAt = this.stamp(); this.save(c);
+      completed = true;
+      diagnostics.saveMs = Date.now() - saveStartedAt;
+      status('', { state: 'completed', seq: notice.seq, durationMs, ...details });
+      return { ok: true, sessionId: id, file, durationMs, ...details };
+    };
     try {
       status('Compacting context before continuing the task…', { state: 'running', native: routeReason === 'native-eligible' });
-      await this.prepare(engine, pinnedSettings || this.settings(engine, id));
+      await withLimit(this.prepare(engine, pinnedSettings || this.settings(engine, id)));
       diagnostics.prepareMs = Date.now() - startedAt;
       if (switching.cancelled) throw new Error('Compaction canceled');
       if (automatic) this.log('context compaction: ' + JSON.stringify({ sessionId: id, engine, ...trigger }));
@@ -1739,8 +1900,8 @@ class SharedConversations {
         try {
           const nativeStartedAt = Date.now();
           if (typeof session.compact !== 'function') throw Object.assign(new Error('Native compaction is unavailable'), { code: -32601 });
-          await session.compact({ timeoutMs: Math.max(1, Math.min(120000, switching.deadline - Date.now())),
-            onProgress: () => status('Compacting context…', { state: 'running', native: true }) });
+          await withLimit(session.compact({ timeoutMs: ENGINE_SUMMARY_TIMEOUT_MS,
+            onProgress: () => status('Compacting context…', { state: 'running', native: true }) }));
           diagnostics.nativeMs = Date.now() - nativeStartedAt;
           if (switching.cancelled || recovery?.cancelled) throw new Error('Compaction canceled');
           delete segment.contextUsage;
@@ -1752,21 +1913,23 @@ class SharedConversations {
           status('', { state: 'completed', seq: notice.seq, native: true, durationMs });
           return { ok: true, sessionId: id, native: true, durationMs };
         } catch (error) {
+          if (switching.timedOut) throw switching.timedOut;
           const lostNative = !switching.cancelled && !recovery?.cancelled && this.nativeSessionLost(engine, error);
           if (lostNative) {
             const lost = this.forgetNativeSession(c, engine);
             this.log(`${engine}: native session ${lost || ''} is unavailable; summarizing from the stored history: ${error.message}`);
           }
           const overflow = contextOverflow({ is_error: true, result: error.message });
+          const nativeTimeout = /context compaction timed out/i.test(String(error.message));
           // A replay can contain years of logical history in one native user
           // message. Too few native groups is temporary, not missing support.
           const tooFewMessages = engine === 'claude' && /^Not enough messages to compact\.?$/i.test(String(error.message).trim());
-          if (switching.cancelled || recovery?.cancelled || !lostNative && error.code !== -32601 && !overflow && !tooFewMessages) throw error;
+          if (switching.cancelled || recovery?.cancelled || !lostNative && error.code !== -32601 && !overflow && !nativeTimeout && !tooFewMessages) throw error;
           if (overflow) this.reduceContextBudget(c, engine, pinnedSettings || this.settings(engine, id), error.message);
-          else if (!lostNative && !tooFewMessages) { segment.nativeCompactionUnsupported = true; this.save(c); }
+          else if (!lostNative && !nativeTimeout && !tooFewMessages) { segment.nativeCompactionUnsupported = true; this.save(c); }
           routeReason = lostNative ? 'native-session-unavailable' : overflow ? 'native-overflow'
-            : tooFewMessages ? 'native-too-few-messages' : 'native-unsupported';
-          this.log('native compaction unavailable or over context limit; using portable summary: ' + engine);
+            : nativeTimeout ? 'native-timeout' : tooFewMessages ? 'native-too-few-messages' : 'native-unsupported';
+          this.log('native compaction unavailable, timed out, or over context limit; using portable summary: ' + engine);
         } finally {
           switching.session = null;
           c.pending = null; this.save(c);
@@ -1823,22 +1986,26 @@ class SharedConversations {
           : this.summarizeViaEngine({ ...args, plan, cap,
             budget: Math.min(Math.floor(cap * 1.8), inputCharLimit(engine) || Infinity) });
       };
-      try { summary = await summarize(); }
+      try { summary = await withLimit(summarize()); }
       catch (error) {
-        if (!destination || switching.cancelled || recovery?.cancelled || settings.model === selectedSettings.model) throw error;
+        if (!destination || switching.cancelled || switching.timedOut || recovery?.cancelled || settings.model === selectedSettings.model) throw error;
         settings = selectedSettings;
         cap = this.summaryTransportCap(c, engine, settings);
         budget = Math.min(Math.floor(cap * 0.6), inputCharLimit(engine) || Infinity);
         diagnostics.fallbackModel = settings.model;
-        summary = await summarize();
+        summary = await withLimit(summarize());
       }
-      status('Saving compacted context…', { state: 'running', stage: 'saving' });
-      const saveStartedAt = Date.now();
+      if (manualFallback && originalUnits.length && !String(summary).trim())
+        throw new Error('The summarizer returned an empty context.');
       const markdown = '# Compacted conversation context\n\nWorkspace: ' + c.cwd + '\n\n' + summary
         + (plan.recent.length ? '\n\n## Recent conversation (verbatim JSON data)\n\n' + this.formatContext(c, plan.recent) : '');
       if (destination && (contextTokens(markdown) > targetTokens + 256 || overInputChars(targetEngine, markdown)))
         throw new Error('The compacted context does not fit the target model. ' + recoveryAdvice);
+      if (manualFallback && (contextTokens(markdown) > targetCap * 0.5 || overInputChars(targetEngine, markdown)))
+        throw new Error('The summary is too large for the selected model.');
       if (history) {
+        status('Saving compacted context…', { state: 'running', stage: 'saving' });
+        const saveStartedAt = Date.now();
         delete c.compactionRecovery;
         this.save(c);
         diagnostics.saveMs = Date.now() - saveStartedAt;
@@ -1847,31 +2014,25 @@ class SharedConversations {
         status('', { state: 'completed', durationMs });
         return { ok: true, sessionId: id, summary: markdown, durationMs };
       }
-      const file = path.join(this.dir, 'handoffs', randomUUID() + '.md'); fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, markdown, { flag: 'wx' });
-      const previousSegment = c.segments[targetEngine] && { ...c.segments[targetEngine] };
-      if (switching.cancelled) {
-        fs.unlinkSync(file);
-        throw new Error('Compaction canceled; the original conversation is retained.');
-      }
-      if (previousSegment) (c.retiredSegments ||= []).push({ engine: targetEngine, ...previousSegment });
-      const durationMs = Date.now() - startedAt;
-      const notice = this.append(c, { role: 'notice', engine,
-        text: automatic ? 'Context compacted automatically' : 'Context compacted: summary saved', file,
-        compaction: { ...(trigger || {}), durationMs } });
-      c.segments[targetEngine] = { cursor: c.seq, isolated: true, compactFile: file,
-        ...(previousSegment?.nativeCompactionUnsupported ? { nativeCompactionUnsupported: true } : {}) };
-      delete c.compactionRecovery;
-      c.updatedAt = this.stamp(); this.save(c);
-      completed = true;
-      diagnostics.saveMs = Date.now() - saveStartedAt;
-      status('', { state: 'completed', seq: notice.seq, durationMs });
-      return { ok: true, sessionId: id, file, durationMs };
+      return savePortable(markdown);
     } catch (error) {
+      if (switching.timedOut) error = switching.timedOut;
+      if (manualFallback && !switching.cancelled && !recovery?.cancelled && !history && !destination) {
+        try {
+          const fallback = this.manualFallbackContext(c, engine, sourceRows, targetSettings);
+          diagnostics.route = 'local-fallback';
+          diagnostics.fallbackReason = error.message;
+          diagnostics.omittedRows = fallback.omittedRows;
+          diagnostics.truncatedRows = fallback.truncatedRows;
+          failureMessage = '';
+          return savePortable(fallback.markdown, fallback);
+        } catch (fallbackError) { error = fallbackError; }
+      }
       failureMessage = error.message;
       if (switching.cancelled || recovery?.cancelled || error.message.includes(recoveryAdvice)) throw error;
       throw Object.assign(new Error(error.message + '\n' + recoveryAdvice, { cause: error }), { code: error.code });
     } finally {
+      clearTimeout(deadlineTimer);
       diagnostics.reason = routeReason;
       diagnostics.totalMs = Date.now() - startedAt;
       diagnostics.outcome = completed ? 'completed' : switching.cancelled || recovery?.cancelled ? 'cancelled' : 'failed';
@@ -1909,13 +2070,11 @@ class SharedConversations {
     if (['codex', 'claude', 'dsh', 'pi'].includes(engine) && ['medium', 'high', 'xhigh', 'max', 'ultra'].includes(settings.thinkingBudget))
       summarySettings.thinkingBudget = 'low';
     diagnostics.thinkingBudget = summarySettings.thinkingBudget || 'default';
-    const deadline = switching.deadline ??= Date.now() + COMPACTION_TIMEOUT_MS;
     const checkpoint = this.summaryCheckpoint({ c, engine, settings, units, budget, boundary, maxSummaryChars, diagnostics });
     let currentBudget = budget, recent = null;
-    const stopped = () => switching.cancelled || Boolean(recovery?.cancelled);
+    const stopped = () => switching.cancelled || Boolean(switching.timedOut || recovery?.cancelled);
     const request = async ({ kind, system, user, maxChars }) => {
       if (stopped()) throw new Error('Compaction canceled');
-      if (Date.now() >= deadline) throw new Error('Context compaction timed out. ' + recoveryAdvice);
       // Aim below the acceptance limit so a small length overshoot needs no
       // extra model call. This only affects the auxiliary summary turn.
       system = system.replace(/under (\d+) characters\.$/, (_, limit) => 'under ' + Math.max(128, Math.floor(Number(limit) / 2)) + ' characters.');
@@ -1933,15 +2092,9 @@ class SharedConversations {
       try {
         const timeout = new Promise((resolve, reject) => {
           timer = setTimeout(() => {
-            const active = this.active.get(id);
-            if (active?.ephemeral && this.switching.get(id) === switching) {
-              active.cancelled = true;
-              try { active.session?.interrupt(); } catch { /* finish ownership below */ }
-              if (active.session?.kill) void Promise.resolve(active.session.kill()).catch(error => this.log('Summary session shutdown failed: ' + error.message));
-              if (this.active.get(id) === active) this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: id, runId: active.session?.gen });
-            }
-            reject(new Error('Context compaction timed out. ' + recoveryAdvice));
-          }, Math.min(120000, deadline - startedAt));
+            this.stopCompactionSummary(id, engine, switching);
+            reject(new Error('A compaction summary request timed out after no progress. ' + recoveryAdvice));
+          }, ENGINE_SUMMARY_TIMEOUT_MS);
           timer.unref?.();
         });
         const result = await Promise.race([timeout, (async () => {
@@ -1983,13 +2136,12 @@ class SharedConversations {
   // full-size summary. A fragment that overflows is split again under a smaller
   // learned budget, so work already summarized is never redone.
   async summarizePortable({ c, engine, id, settings, units, budget, boundary, diagnostics, switching, recovery, status, maxSummaryChars = Infinity, maxOutputTokens = 8192 }) {
-    const deadline = switching.deadline ??= Date.now() + COMPACTION_TIMEOUT_MS;
     const abort = switching.abort = new AbortController();
     let timeout;
     const progress = () => {
       clearTimeout(timeout);
-      timeout = setTimeout(() => abort.abort(new Error('Context compaction timed out. ' + recoveryAdvice)),
-        Math.max(1, Math.min(180000, deadline - Date.now())));
+      timeout = setTimeout(() => abort.abort(new Error('Context compaction timed out after no progress. ' + recoveryAdvice)),
+        ROUTER_SUMMARY_IDLE_TIMEOUT_MS);
       timeout.unref?.();
     };
     progress();
@@ -1999,7 +2151,7 @@ class SharedConversations {
     try {
       const result = await runSummaryPipeline({ units, budget, maxSummaryChars, maxOutputTokens, ...checkpoint,
         request: ({ kind, system, user, maxChars, maxTokens }) => this.summarize.run({ model: settings.model, kind, system, user, maxChars, maxTokens, signal: abort.signal }),
-        stopped: () => { abort.signal.throwIfAborted(); return switching.cancelled || Boolean(recovery?.cancelled); },
+        stopped: () => { abort.signal.throwIfAborted(); return switching.cancelled || Boolean(switching.timedOut || recovery?.cancelled); },
         onOverflow: (error, current) => {
           const reduced = this.reduceSummaryBudget(c, engine, settings, error.message, current);
           diagnostics.retries = (diagnostics.retries || 0) + 1;
@@ -2077,7 +2229,7 @@ class SharedConversations {
       case 'compact': {
         const id = payload?.sessionId;
         if (!id) throw new Error('Choose a conversation to compact first');
-        return this.compact(id);
+        return this.compact(id, { manualFallback: true });
       }
       case 'find': {
         const id = payload?.sessionId || this.create(engine, payload?.workspaceId,

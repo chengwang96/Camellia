@@ -516,11 +516,12 @@
   .run-result {
     display: inline-flex; align-items: center; gap: 6px;
     margin: 2px 0 4px; padding: 5px 12px;
-    max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere;
+    box-sizing: border-box; max-width: 100%;
     border-radius: 999px; font: var(--f-xxs-12);
   }
+  .run-result-text { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .run-result.ok { background: var(--dsw-alias-state-success-tertiary); color: var(--dsw-alias-state-success-primary); }
-  .run-retry { flex: none; white-space: nowrap; margin-left: 6px; padding: 2px 7px; border: 1px solid currentColor; border-radius: 999px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+  .run-retry { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: max-content; white-space: nowrap; overflow-wrap: normal; word-break: normal; margin-left: 6px; padding: 2px 7px; border: 1px solid currentColor; border-radius: 999px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
   .run-retry:hover { background: var(--dsw-alias-interactive-bg-hover); }
   .run-retry:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
   .run-result.err { background: var(--dsw-alias-state-error-tertiary); color: var(--dsw-alias-state-error-primary); }

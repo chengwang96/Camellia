@@ -749,10 +749,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
           setStatus('The quick-switch default model is unavailable. Update it in Settings → Model Settings.');
           return;
         }
-        await persistModel(target);
+        // Save the configured pair together. A connection refresh after the
+        // model save must not race a separate reasoning-level save.
+        await persistModel(target, settings.quickSwitchLevels?.[harnessId] || '');
+        return;
       }
-      if (!current() || currentModel !== target) return;
-      await applyQuickSwitchLevel(settings);
+      if (current()) await applyQuickSwitchLevel(settings);
     } catch (error) { setStatus('Could not load settings: ' + error.message); }
   }
 
@@ -787,7 +789,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       setStatus("Could not save settings: " + error.message);
     }
   }
-  function persistModel(model) {
+  function persistModel(model, quickLevel = '') {
     // The composer lists account and API models together, so picking a model
     // that only the other connection offers also selects that connection.
     // A model both connections offer keeps the current one.
@@ -798,10 +800,18 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const inOther = accountSubscription() ? routeModels.includes(model) : accountModels.some(m => m.id === model);
       if (!inCurrent && inOther) connection = accountSubscription() ? 'api' : 'subscription';
     }
+    const targetConnection = connection || currentConnection;
+    const supportedLevels = !quickLevel ? [] : targetConnection === 'subscription' && supportsAccounts()
+      ? (accountModels.find(item => item.id === model)?.supportedReasoningEfforts || [])
+        .map(item => item.reasoningEffort || item).filter(id => typeof id === 'string')
+      : harnessId === 'claude' ? LEVELS.map(item => item.id) : window.CamelliaModelLevels.levelsFor(model);
+    const selectedLevel = quickLevel && supportedLevels.includes(quickLevel) ? quickLevel : '';
     // Google base models own their reasoning timeline, so a model change keeps
     // the saved effort (the engine falls back to the family default if unset).
-    return persistSettings({ model, ...(connection ? { connection } : {}), ...(harnessId !== 'claude' && !googleSubscription() ? { thinkingBudget: '' } : {}) },
-      "Model changed: " + modelLabel(model) + " (applies to the next message)")
+    return persistSettings({ model, ...(connection ? { connection } : {}),
+      ...(selectedLevel ? { thinkingBudget: selectedLevel }
+        : harnessId !== 'claude' && !googleSubscription() ? { thinkingBudget: '' } : {}) },
+      (selectedLevel ? "Model and reasoning level changed: " : "Model changed: ") + modelLabel(model) + " (applies to the next message)")
       .then(() => { if (connection) void loadSettings(); });
   }
   function persistLevel(level) {
@@ -2095,6 +2105,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   // is re-rendered from the stored milliseconds when the language changes.
   function compactionDurationText(element) { element.textContent = compactionDuration(Number(element.dataset.compactionMs)); }
   function compactionLabel(compaction) {
+    if (compaction.state === 'completed' && compaction.fallback) return 'Context compacted: older context omitted';
     const labels = compaction.native ? {
       running: '{0}: compacting context natively…', completed: '{0}: context compacted natively',
       failed: '{0}: native compaction failed. The original conversation is retained.',
@@ -2258,8 +2269,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const chip = document.createElement('div');
     chip.className = 'run-result ' + (ok ? 'ok' : 'err');
     const errLabel = ev.subtype && ev.subtype !== 'success' ? ev.subtype : 'Error';
-    chip.textContent = (stopped ? '■ Stopped' : ok ? '✓ Done' : '✗ ' + (ev.result || errLabel))
+    const label = document.createElement('span');
+    label.className = 'run-result-text';
+    label.textContent = (stopped ? '■ Stopped' : ok ? '✓ Done' : '✗ ' + (ev.result || errLabel))
       + (stats.length ? ' · ' + stats.slice(0, 3).join(' · ') : '');
+    chip.append(label);
     if (!ok && !stopped && sharedChat && Number.isSafeInteger(retrySeq)) {
       const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'run-retry';
       retry.textContent = window.CamelliaI18n.t('Retry turn');
@@ -2537,10 +2551,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function buildPrompt(text, atts) {
     if (!atts.length) return text;
     const lines = atts.map((a) => a.kind === 'conversation'
-      ? '[Attached Camellia conversation transcript; read it to continue the work] ' + a.path
+      ? '[Attached Camellia conversation handoff; read this overview first and consult the linked full transcript in bounded sections only as needed] ' + a.path
       : "[Attachment" + (a.isImage ? " (image; inspect its contents directly)" : '') + '] ' + a.path);
     const base = text || (atts.some(a => a.kind === 'conversation')
-      ? 'Continue the attached Camellia conversation from where it stopped. Read its transcript, inspect current files and state, and avoid repeating completed actions.'
+      ? 'Continue the attached Camellia conversation from where it stopped. Read its handoff overview, inspect current files and state, and consult the linked full transcript in bounded sections only when needed. Avoid repeating completed actions.'
       : "Please review and process these attachments.");
     return base + '\n\n' + lines.join('\n');
   }
@@ -2783,7 +2797,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     { id: 'usage', label: '/usage', desc: 'Show request and token usage through the local router',
       icon: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
       run: () => void showUsageCard() },
-    { id: 'compact', label: '/compact', desc: 'Summarize and compact the conversation context',
+    { id: 'compact', label: '/compact', desc: 'Compact context; keep recent messages if summarization fails',
       icon: '<path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"/>',
       run: () => void compactConversation() },
   ];
@@ -2860,7 +2874,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (!res?.ok) setStatus(res?.error || 'Compaction failed');
       else {
         const duration = compactionDuration(res.durationMs);
-        const label = res.native ? compactionLabel({ state: 'completed', native: true }) : 'Context compacted. The conversation continues with the summary.';
+        const label = res.fallback ? 'Context compacted: older context omitted'
+          : res.native ? compactionLabel({ state: 'completed', native: true }) : 'Context compacted. The conversation continues with the summary.';
         setStatus(window.CamelliaI18n.t(label) + (duration ? ' · ' + duration : ''));
       }
     } catch (error) { setStatus(error.message); }

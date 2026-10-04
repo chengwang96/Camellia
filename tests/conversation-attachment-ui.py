@@ -74,7 +74,7 @@ with sync_playwright() as playwright:
         if (request.action === 'load-session') return {ok:true,id:'failed',title:'Failed turn',origin:'codex',currentEngine:'codex',workspaceId:null,
           preferences:{mode:'direct',warnOnSwitch:false,showOrigin:false},settings:{model:'fixture-model',permissionMode:'default',connection:'api'},live:null,messages:[
             {seq:1,role:'user',engine:'codex',text:'Finish the task'},
-            {seq:2,role:'assistant',engine:'codex',text:'Connection failed',userSeq:1,runResult:{subtype:'error',is_error:true,result:'Connection failed'}}]};
+            {seq:2,role:'assistant',engine:'codex',text:'Connection failed',userSeq:1,runResult:{subtype:'error',is_error:true,result:'Context recovery failed: Compaction summary request limit reached. The original history is retained. Try manual compaction, switch to a larger-context model, or continue in a new conversation. Split oversized messages or attachments. Files and external actions have not been rolled back.'}}]};
         return command(request);
       };
     })();"""
@@ -85,6 +85,9 @@ with sync_playwright() as playwright:
     page.wait_for_function('uiReady')
     page.locator('[data-sid="failed"]').click()
     expect(page.locator('.run-retry')).to_be_visible()
+    retry_size = page.locator('.run-retry').bounding_box()
+    assert retry_size['height'] < 35 and retry_size['width'] > 55, retry_size
+    assert page.locator('.run-retry').evaluate('(el) => getComputedStyle(el).whiteSpace') == 'nowrap'
     page.locator('.run-retry').click()
     page.wait_for_function('Boolean(window.sentPayload)')
     assert page.evaluate('sentPayload.editSeq') == 1

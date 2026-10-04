@@ -74,6 +74,22 @@ test('protects archived and fork references, compaction summaries, saved drafts 
   assert.equal(preview.candidates.length, 0);
 });
 
+test('conversation handoff pairs stay together while referenced and clean up when unused', async context => {
+  const harness = setup(context);
+  const keptStem = `conversation-${randomUUID()}`, orphanStem = `conversation-${randomUUID()}`;
+  const keptFull = harness.write(`conversations/handoffs/${keptStem}.jsonl`, 'full saved history');
+  const keptOverview = harness.write(`conversations/handoffs/${keptStem}.md`, `Full transcript: ${keptFull}`);
+  const orphanFull = harness.write(`conversations/handoffs/${orphanStem}.jsonl`, 'unused full history');
+  const orphanOverview = harness.write(`conversations/handoffs/${orphanStem}.md`, `Full transcript: ${orphanFull}`);
+  harness.conversation('live', {}, [{ role: 'user', attachments: [{ path: keptOverview, fullPath: keptFull }] }]);
+  const preview = await harness.cleaner.scan();
+  assert.deepEqual(preview.candidates.map(entry => entry.path).sort(),
+    [orphanOverview, orphanFull].map(file => path.relative(harness.dataDir, file)).sort());
+  assert.equal((await harness.cleaner.clean(preview.token)).files, 2);
+  for (const file of [keptOverview, keptFull]) assert.equal(fs.existsSync(file), true);
+  for (const file of [orphanOverview, orphanFull]) assert.equal(fs.existsSync(file), false);
+});
+
 test('protects references in native history and nested referenced handoffs without deleting native history', async context => {
   const harness = setup(context);
   const attachment = harness.attachment();
