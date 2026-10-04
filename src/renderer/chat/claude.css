@@ -520,7 +520,7 @@
     border-radius: 999px; font: var(--f-xxs-12);
   }
   .run-result.ok { background: var(--dsw-alias-state-success-tertiary); color: var(--dsw-alias-state-success-primary); }
-  .run-retry { margin-left: 6px; padding: 2px 7px; border: 1px solid currentColor; border-radius: 999px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+  .run-retry { flex: none; white-space: nowrap; margin-left: 6px; padding: 2px 7px; border: 1px solid currentColor; border-radius: 999px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
   .run-retry:hover { background: var(--dsw-alias-interactive-bg-hover); }
   .run-retry:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
   .run-result.err { background: var(--dsw-alias-state-error-tertiary); color: var(--dsw-alias-state-error-primary); }
@@ -671,6 +671,7 @@
   .btn-attach svg { width: 16px; height: 16px; }
   .btn-attach:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 2px; }
   .attach-pop { width: min(360px, calc(100vw - 16px)); max-height: min(440px, calc(100vh - 24px)); }
+  .attach-pop.attach-menu { width: min(240px, calc(100vw - 16px)); }
   .attach-option { width: 100%; border: 0; background: transparent; text-align: left; }
   .attach-option svg { width: 18px; height: 18px; flex: none; color: var(--dsw-alias-label-secondary); }
   .attach-picker-header { display: flex; align-items: center; gap: 8px; padding: 4px 6px 8px; font: var(--f-s-strong-14); }

@@ -3526,6 +3526,8 @@ test('learned context budgets persist and stay isolated by model, connection and
   assert.equal(manager.reduceContextBudget(conversation, 'kimi', settings, 'maximum context length is 32,768 tokens'), 32768);
   assert.equal(manager.contextPressure(conversation, 'kimi', settings).cap, 32768);
   assert.equal(manager.reduceContextBudget(conversation, 'kimi', settings, 'context_length_exceeded'), 16384);
+  assert.equal(manager.summaryTransportCap(conversation, 'kimi', settings), 32768,
+    'later heuristic backoff must retain the explicit provider limit for summaries');
   for (const patch of [{ model: 'other' }, { connection: 'subscription' }])
     assert.equal(manager.contextPressure(conversation, 'kimi', { ...settings, ...patch }).cap, 128000);
   route = 'provider-two';
@@ -3533,6 +3535,7 @@ test('learned context budgets persist and stay isolated by model, connection and
   route = 'provider-one';
   const restarted = harness.restart();
   assert.equal(restarted.contextPressure(restarted.get(conversation.id), 'kimi', settings).cap, 16384);
+  assert.equal(restarted.summaryTransportCap(restarted.get(conversation.id), 'kimi', settings), 32768);
 });
 
 // Exercise the actual Goal controller and steering/edit commands against a
@@ -4432,6 +4435,45 @@ test('a router context overflow re-splits one fragment under the learned budget'
   // window, so later sends are not judged "over cap" after a single overflow.
   assert.equal(manager.contextPressure(conversation, 'kimi', manager.settings('kimi', conversation.id)).cap, 131072);
   assert.ok(manager.rows(conversation).some(row => row.text.includes('HISTORY-END')));
+});
+
+// A native session that already overflows its provider halves the
+// conversation's recovery backoff on every failed native compaction. Summary
+// requests run on their own transport, so that halving must not shrink their
+// fragments: doing so multiplied the request count on every retry and no
+// attempt could finish inside the compaction deadline.
+test('a learned recovery backoff never shrinks summary fragments on retry', async context => {
+  const requests = [];
+  let phase = 'first';
+  // A three-megabyte logical history, like a long drafting session.
+  const harness = fixture(context, { modelContextWindow: () => 1048576,
+    summarize: { available: () => true, run: async options => {
+      requests.push({ phase, ...options });
+      if (phase === 'first' && options.kind === 'reduce') throw new Error('Merge unavailable');
+      return { text: options.kind === 'reduce' ? 'Recovered context' : 'Fragment summary' };
+    } } });
+  const manager = harness.manager, conversation = manager.create('kimi');
+  manager.append(conversation, { role: 'user', text: 'Retain the original task' });
+  for (let index = 0; index < 30; index++) manager.append(conversation, { role: 'tool', text: 'WORK_' + index + ' ' + 'x'.repeat(100000) });
+  const settings = manager.settings('kimi', conversation.id);
+  await assert.rejects(manager.compact(conversation.id), /Merge unavailable/);
+  const firstMaps = requests.filter(request => request.phase === 'first' && request.kind === 'map');
+  assert.ok(firstMaps.length > 1, 'the first attempt summarized several fragments');
+  assert.ok(firstMaps.length < 20, 'a three-megabyte history stays a handful of bounded requests');
+  // A native session that then overflows its provider halves the conversation's
+  // recovery backoff, once per retry. That heuristic must not resize the
+  // summary transport, or every retry costs more requests than the last.
+  assert.equal(manager.reduceContextBudget(conversation, 'kimi', settings, 'context_length_exceeded'), 524288);
+  assert.equal(manager.contextPressure(conversation, 'kimi', settings).cap, 524288);
+  assert.equal(manager.summaryTransportCap(conversation, 'kimi', settings), 1048576);
+  assert.equal(manager.reduceContextBudget(conversation, 'kimi', settings, 'context_length_exceeded'), 262144);
+  assert.equal(manager.summaryTransportCap(conversation, 'kimi', settings), 1048576);
+  phase = 'retry';
+  const result = await manager.compact(conversation.id);
+  const retried = requests.filter(request => request.phase === 'retry');
+  assert.deepEqual(retried.map(request => request.kind), ['reduce'], 'completed fragments stay reusable');
+  assert.ok(conversation.lastCompaction.reusedRequests >= firstMaps.length);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /Recovered context/);
 });
 
 for (const target of ['codex', 'kimi']) test('long native model migrates to a short model on ' + target, async context => {
