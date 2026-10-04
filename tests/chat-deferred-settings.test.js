@@ -95,6 +95,23 @@ test('quick switch never applies its reasoning level to a conversation opened du
   assert.deepEqual(levels, []);
 });
 
+test('quick switch saves a supported model and reasoning level in one update', async () => {
+  const { state, saved } = fixture({ currentConnection: 'api', routeModels: ['route-model'],
+    accountModels: [{ id: 'account-model', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }],
+    supportsAccounts: () => true, accountSubscription: () => false, googleSubscription: () => false,
+    modelLabel: id => id, loadSettings: async () => {},
+    window: { CamelliaModelLevels: { levelsFor: () => ['low', 'medium', 'high'] } } });
+  vm.runInContext(extract('  function persistModel(', '  function persistLevel('), state);
+  await state.persistModel('account-model', 'high');
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].model, 'account-model');
+  assert.equal(saved[0].connection, 'subscription');
+  assert.equal(saved[0].thinkingBudget, 'high');
+  await state.persistModel('route-model', 'ultra');
+  assert.equal(saved.length, 2);
+  assert.equal(saved[1].thinkingBudget, '', 'an unsupported level is not sent to the new model');
+});
+
 function modelMenu(subscription, google = false) {
   const state = {
     supportsAccounts: () => true, sharedChat: true, context: { sessionId: 'conversation-a' },

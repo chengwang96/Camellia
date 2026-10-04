@@ -246,7 +246,7 @@ test('engine fallback maps a million-character history once and merges short sum
   h.finish('codex'); await next.done;
 });
 
-test('engine compaction deadline stops a stalled summary and retains native context and completed checkpoints', async context => {
+test('engine summary timeout leaves a retryable checkpoint and the original native context', async context => {
   const h = subscriptionFixture(context), manager = h.manager;
   const first = await manager.send('codex', { prompt: 'Task' }); h.finish('codex'); await first.done;
   const c = manager.get(first.sessionId), nativeId = c.segments.codex.nativeId;
@@ -266,14 +266,114 @@ test('engine compaction deadline stops a stalled summary and retains native cont
   assert.equal(c.interrupted, false, 'an auxiliary failure cannot mark the real turn interrupted');
   assert.equal(c.compactionRecovery.summary, 'Completed first fragment');
   assert.equal(manager.rows(c).some(row => row.file), false);
+  const retry = manager.compact(c.id, { portable: true });
+  await h.flush();
+  assert.equal(h.sent.at(-1).prompt, h.sent.find(item => item.session === stalled).prompt);
+  h.finish('codex', 'success', 'Completed second fragment');
+  await h.flush();
+  h.finish('codex', 'success', 'Recovered summary');
+  assert.match(fs.readFileSync((await retry).file, 'utf8'), /Recovered summary/);
+  assert.equal(manager.busy(c.id), false);
 });
 
-test('engine compaction keeps a five-minute total budget even when requests keep progressing', async context => {
+test('user /compact falls back to recent context after a provider failure and can continue chatting', async context => {
+  const h = fixture(context, { summarize: { available: () => true, run: async () => { throw new Error('Provider unavailable'); } } });
+  const manager = h.manager, c = manager.create('kimi');
+  c.engineSettings.kimi = { contextWindow: 6000 };
+  manager.append(c, { role: 'user', text: 'OLD_CONTEXT_' + 'x'.repeat(30000) });
+  manager.append(c, { role: 'user', text: 'LATEST_REQUEST: continue the review' });
+  const original = manager.rows(c);
+  const result = await manager.command('kimi', 'compact', { sessionId: c.id });
+  assert.equal(result.ok, true);
+  assert.equal(result.fallback, true);
+  assert.ok(result.omittedRows > 0);
+  const markdown = fs.readFileSync(result.file, 'utf8');
+  assert.match(markdown, /LATEST_REQUEST: continue the review/);
+  assert.doesNotMatch(markdown, /OLD_CONTEXT_/);
+  assert.deepEqual(manager.rows(c).slice(0, original.length), original, 'the transcript remains intact');
+  assert.equal(c.lastCompaction.route, 'local-fallback');
+  assert.equal(manager.busy(c.id), false);
+  const restarted = h.restart();
+  const next = await restarted.send('kimi', { sessionId: c.id, prompt: 'Proceed' });
+  assert.match(h.sent.at(-1).prompt, /LATEST_REQUEST: continue the review/);
+  assert.doesNotMatch(h.sent.at(-1).prompt, /OLD_CONTEXT_/);
+  h.finish('kimi'); await next.done;
+});
+
+test('user /compact clips a giant recent record while retaining the latest user request', async context => {
+  const h = fixture(context, { summarize: { available: () => true, run: async () => { throw new Error('Provider unavailable'); } } });
+  const manager = h.manager, c = manager.create('kimi');
+  c.engineSettings.kimi = { contextWindow: 6000 };
+  manager.append(c, { role: 'user', text: 'LATEST_REQUEST: inspect the tool result' });
+  manager.append(c, { role: 'tool', text: 'x'.repeat(100000) + 'LATEST_TOOL_TAIL' });
+  const result = await manager.command('kimi', 'compact', { sessionId: c.id });
+  const markdown = fs.readFileSync(result.file, 'utf8');
+  assert.equal(result.fallback, true);
+  assert.match(markdown, /LATEST_REQUEST: inspect the tool result/);
+  assert.match(markdown, /LATEST_TOOL_TAIL/);
+  assert.ok(result.truncatedRows > 0);
+  assert.ok(manager.contextPressure(c, 'kimi', manager.settings('kimi', c.id)).used < 6000 * 0.85);
+});
+
+test('user /compact can clear model context when even the fallback framing does not fit', async context => {
+  const h = fixture(context, { summarize: { available: () => true, run: async () => { throw new Error('Provider unavailable'); } } });
+  const manager = h.manager, c = manager.create('kimi');
+  c.engineSettings.kimi = { contextWindow: 64 };
+  manager.append(c, { role: 'user', text: 'A request that cannot fit into the configured context window' });
+  const result = await manager.command('kimi', 'compact', { sessionId: c.id });
+  assert.equal(result.fallback, true);
+  const markdown = fs.readFileSync(result.file, 'utf8');
+  assert.ok(markdown.length < 64 * 0.75);
+  assert.doesNotMatch(markdown, /A request that cannot fit/);
+  assert.equal(manager.rows(c)[0].role, 'user', 'the stored transcript remains available');
+  assert.equal(manager.busy(c.id), false);
+  const next = await manager.send('kimi', { sessionId: c.id, prompt: 'Continue' });
+  h.finish('kimi'); await next.done;
+});
+
+test('user /compact falls back after native compaction fails', async context => {
+  const h = await nativeFixture(context, async () => { throw new Error('Provider unavailable'); });
+  const { manager, conversation } = h;
+  const oldNativeId = conversation.segments.codex.nativeId;
+  const result = await manager.command('codex', 'compact', { sessionId: conversation.id });
+  assert.equal(result.fallback, true);
+  assert.equal(conversation.segments.codex.nativeId, undefined);
+  assert.ok(conversation.retiredSegments.some(segment => segment.nativeId === oldNativeId));
+  const next = await manager.send('codex', { sessionId: conversation.id, prompt: 'Continue' });
+  assert.match(h.sent.at(-1).prompt, /Remember the original task/);
+  h.finish('codex'); await next.done;
+});
+
+test('user /compact reaches a local fallback at five minutes even when preparation never resolves', async context => {
+  const h = fixture(context), manager = h.manager, c = manager.create('codex');
+  manager.append(c, { role: 'user', text: 'Keep this request available' });
+  manager.prepare = () => new Promise(() => {});
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const pending = manager.command('codex', 'compact', { sessionId: c.id });
+  context.mock.timers.tick(5 * 60 * 1000 + 1);
+  const result = await pending;
+  assert.equal(result.fallback, true);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /Keep this request available/);
+  assert.equal(manager.busy(c.id), false);
+});
+
+test('stopping user /compact does not discard context or publish a local fallback', async context => {
+  const h = fixture(context), manager = h.manager, c = manager.create('codex');
+  manager.append(c, { role: 'user', text: 'Keep this history' });
+  manager.prepare = () => new Promise(() => {});
+  const pending = manager.command('codex', 'compact', { sessionId: c.id });
+  const rejected = assert.rejects(pending, /canceled/i);
+  await manager.cancel({ sessionId: c.id });
+  await rejected;
+  assert.equal(manager.rows(c).some(row => row.file), false);
+  assert.equal(manager.busy(c.id), false);
+});
+
+test('engine compaction continues past five minutes while requests keep progressing', async context => {
   const h = fixture(context), manager = h.manager, c = manager.create('codex');
   manager.append(c, { role: 'tool', text: 'x'.repeat(600000) });
   context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   const pending = manager.compact(c.id);
-  const rejected = assert.rejects(pending, /timed out/);
   for (let n = 0; n < 2; n++) {
     await h.flush();
     context.mock.timers.tick(110000);
@@ -282,10 +382,51 @@ test('engine compaction keeps a five-minute total budget even when requests keep
   await h.flush();
   assert.match(h.sent.at(-1).prompt, /Summaries to merge/);
   context.mock.timers.tick(80001);
+  assert.equal(manager.busy(c.id), true);
+  h.finish('codex', 'success', 'Complete working context');
+  const result = await pending;
+  assert.equal(manager.busy(c.id), false);
+  assert.equal(c.lastCompaction.outcome, 'completed');
+  assert.ok(c.lastCompaction.totalMs > 300000);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /Complete working context/);
+});
+
+test('a stalled preparation releases the conversation at the whole-run safety limit', async context => {
+  const h = fixture(context), manager = h.manager, c = manager.create('codex');
+  manager.append(c, { role: 'user', text: 'Preserve this task' });
+  manager.prepare = () => new Promise(() => {});
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const pending = manager.compact(c.id);
+  const rejected = assert.rejects(pending, /30-minute safety limit/);
+  context.mock.timers.tick(30 * 60 * 1000 + 1);
   await rejected;
   assert.equal(manager.busy(c.id), false);
   assert.equal(c.lastCompaction.outcome, 'failed');
-  assert.ok(c.lastCompaction.totalMs <= 300001);
+  assert.deepEqual(manager.rows(c).map(row => row.text), ['Preserve this task']);
+});
+
+test('the whole-run safety limit stops even a long sequence of healthy fragments', async context => {
+  const h = fixture(context), manager = h.manager, c = manager.create('codex');
+  c.engineSettings.codex = { connection: 'subscription', contextWindow: 6000 };
+  for (let index = 0; index < 25; index++) manager.append(c, { role: 'tool', text: 'FRAGMENT_' + index + ' ' + 'x'.repeat(7000) });
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const started = Date.now();
+  const pending = manager.compact(c.id, { portable: true });
+  const rejected = assert.rejects(pending, /30-minute safety limit/);
+  await h.flush();
+  let completed = 0;
+  while (manager.busy(c.id)) {
+    assert.ok(completed < 25, 'the safety limit must stop the run');
+    context.mock.timers.tick(110000);
+    if (Date.now() - started < 30 * 60 * 1000) {
+      h.finish('codex', 'success', 'Completed fragment ' + completed);
+      completed++;
+    }
+    await h.flush();
+  }
+  await rejected;
+  assert.ok(completed > 10, 'the run made steady progress before the safety limit');
+  assert.equal(c.lastCompaction.outcome, 'failed');
   assert.ok(c.compactionRecovery.cache.length > 0);
   assert.equal(manager.rows(c).some(row => row.file), false);
 });
@@ -356,7 +497,7 @@ test('retrying engine compaction after restart reuses completed fragments withou
   assert.match(fs.readFileSync(result.file, 'utf8'), /FINAL_CONTEXT/);
 });
 
-test('router summary deadline aborts all pending fragments without publishing a partial context', async context => {
+test('router summary idle timeout aborts all pending fragments without publishing a partial context', async context => {
   const signals = [];
   const h = fixture(context, { summarize: { available: () => true, run: ({ signal }) => new Promise((resolve, reject) => {
     signals.push(signal);
@@ -369,7 +510,7 @@ test('router summary deadline aborts all pending fragments without publishing a 
   const rejected = assert.rejects(pending, /timed out/);
   await h.flush();
   assert.ok(signals.length > 1);
-  context.mock.timers.tick(300001);
+  context.mock.timers.tick(180001);
   await rejected;
   assert.ok(signals.every(signal => signal.aborted));
   assert.equal(h.manager.busy(c.id), false);
@@ -377,9 +518,11 @@ test('router summary deadline aborts all pending fragments without publishing a 
   assert.equal(h.manager.rows(c).some(row => row.file), false);
 });
 
-test('router compaction keeps a five-minute total budget across responsive batches', async context => {
+test('router compaction continues past five minutes across responsive batches', async context => {
   const waiting = [];
+  const signals = [];
   const h = fixture(context, { summarize: { available: () => true, run: ({ signal }) => new Promise((resolve, reject) => {
+    signals.push(signal);
     waiting.push(resolve);
     signal.addEventListener('abort', () => reject(signal.reason), { once: true });
   }) } });
@@ -388,7 +531,6 @@ test('router compaction keeps a five-minute total budget across responsive batch
   for (let index = 0; index < 17; index++) manager.append(c, { role: 'user', text: 'HISTORY_' + index + ' ' + 'x'.repeat(7000) });
   context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   const pending = manager.compact(c.id);
-  const rejected = assert.rejects(pending, /timed out/);
   await h.flush();
   for (let batch = 0; batch < 2; batch++) {
     assert.ok(waiting.length > 0);
@@ -397,9 +539,50 @@ test('router compaction keeps a five-minute total budget across responsive batch
     await h.flush();
   }
   context.mock.timers.tick(80001);
-  await rejected;
+  assert.equal(manager.busy(c.id), true);
+  assert.ok(signals.every(signal => !signal.aborted));
+  for (let batch = 0; manager.busy(c.id); batch++) {
+    assert.ok(batch < 20, 'the bounded summary should finish');
+    for (const resolve of waiting.splice(0)) resolve({ text: 'Complete batch summary' });
+    await h.flush();
+  }
+  const result = await pending;
   assert.equal(manager.busy(c.id), false);
-  assert.ok(c.lastCompaction.totalMs <= 300001);
+  assert.equal(c.lastCompaction.outcome, 'completed');
+  assert.ok(c.lastCompaction.totalMs > 300000);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /Complete batch summary/);
+});
+
+test('router compaction aborts healthy outstanding batches at the whole-run safety limit', async context => {
+  const waiting = [], signals = [];
+  const h = fixture(context, { summarize: { available: () => true, run: ({ signal }) => new Promise((resolve, reject) => {
+    signals.push(signal);
+    waiting.push(resolve);
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }) } });
+  const manager = h.manager, c = manager.create('kimi');
+  c.engineSettings.kimi = { contextWindow: 6000 };
+  for (let index = 0; index < 100; index++) manager.append(c, { role: 'tool', text: 'HISTORY_' + index + ' ' + 'x'.repeat(7000) });
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const started = Date.now();
+  const pending = manager.compact(c.id);
+  const rejected = assert.rejects(pending, /30-minute safety limit/);
+  await h.flush();
+  let batches = 0;
+  while (manager.busy(c.id)) {
+    assert.ok(batches < 20, 'the safety limit must stop the run');
+    assert.ok(waiting.length > 0);
+    context.mock.timers.tick(150000);
+    if (Date.now() - started < 30 * 60 * 1000) {
+      for (const resolve of waiting.splice(0)) resolve({ text: 'Completed batch fragment' });
+    }
+    await h.flush();
+    batches++;
+  }
+  await rejected;
+  assert.ok(batches > 10, 'the router kept making progress before the safety limit');
+  assert.ok(signals.every(signal => signal.aborted));
+  assert.equal(c.lastCompaction.outcome, 'failed');
   assert.ok(c.compactionRecovery.cache.length > 0);
   assert.equal(manager.rows(c).some(row => row.file), false);
 });
@@ -608,7 +791,7 @@ test('native compaction failure and cancellation retain mappings without silent 
     const { manager, conversation } = harness;
     const snapshot = JSON.stringify(conversation.segments);
     const done = manager.compact(conversation.id);
-    const rejected = assert.rejects(done, mode === 'failure' ? /Provider unavailable/ : /Canceled/);
+    const rejected = assert.rejects(done, mode === 'failure' ? /Provider unavailable/ : /canceled/i);
     await harness.flush();
     if (mode === 'cancel') { assert.ok(started); await manager.cancel({ sessionId: conversation.id }); }
     await rejected;
@@ -635,6 +818,22 @@ test('unsupported native compaction falls back to portable summary', async conte
   assert.ok(result.file);
   assert.equal(conversation.segments.codex.nativeCompactionUnsupported, true);
   assert.equal(conversation.segments.codex.nativeId, undefined);
+});
+
+test('timed-out native compaction falls back to a portable summary and keeps native support', async context => {
+  const harness = await nativeFixture(context, async () => { throw new Error('Codex context compaction timed out; the original thread is retained.'); });
+  const { manager, conversation } = harness;
+  const nativeId = conversation.segments.codex.nativeId;
+  const pending = manager.compact(conversation.id);
+  await harness.flush();
+  assert.match(harness.sent.at(-1).prompt, /compact working context/);
+  assert.equal(conversation.segments.codex.nativeId, nativeId);
+  harness.finish('codex', 'success', 'Recovered working context');
+  const result = await pending;
+  assert.match(fs.readFileSync(result.file, 'utf8'), /Recovered working context/);
+  assert.equal(conversation.lastCompaction.reason, 'native-timeout');
+  assert.notEqual(conversation.segments.codex.nativeCompactionUnsupported, true);
+  assert.equal(manager.busy(conversation.id), false);
 });
 
 test('native overflow recovery keeps one user turn and waits for the continued result', async context => {
@@ -3217,8 +3416,8 @@ test('stopping pre-send compaction during setup sends neither summary nor task',
   assert.deepEqual(statuses.at(-1), { sessionId: conversation.id, text: 'Compacting context before continuing the task…', compaction: { engine: 'codex', state: 'running', native: false } });
   assert.equal(f.manager.load('codex', conversation.id).compaction.state, 'running');
   await f.manager.cancel({ sessionId: conversation.id });
-  release();
   await rejected;
+  release();
   assert.equal(f.sent.length, 0);
   assert.equal(f.manager.busy(conversation.id), false);
   assert.equal(statuses.at(-1).text, '');
@@ -4070,19 +4269,47 @@ test('conversation attachments snapshot the saved transcript and remain availabl
   const { attachment } = await manager.command('claude', 'attach-conversation', { sessionId: source.id });
   assert.equal(attachment.kind, 'conversation');
   const snapshot = fs.readFileSync(attachment.path, 'utf8');
+  assert.equal(fs.existsSync(attachment.fullPath), true);
   assert.match(snapshot, /Implement the feature/);
   assert.match(snapshot, /Changed src\/example\.js/);
   assert.match(snapshot, /Connection failed/);
   const unused = (await manager.command('claude', 'attach-conversation', { sessionId: source.id })).attachment;
   assert.deepEqual(await manager.command('claude', 'discard-conversation-attachment', { path: unused.path }), { ok: true, discarded: true });
   assert.equal(fs.existsSync(unused.path), false);
+  assert.equal(fs.existsSync(unused.fullPath), false);
   manager.purge(source.id);
   assert.equal(fs.existsSync(attachment.path), true);
+  assert.equal(fs.existsSync(attachment.fullPath), true);
   const destination = manager.create('claude');
   manager.append(destination, { role: 'user', engine: 'claude', text: 'Continue', attachments: [attachment] });
   assert.deepEqual(await manager.command('claude', 'discard-conversation-attachment', { path: attachment.path }), { ok: true, discarded: false });
   manager.purge(destination.id);
   assert.equal(fs.existsSync(attachment.path), false);
+  assert.equal(fs.existsSync(attachment.fullPath), false);
+});
+
+test('large conversation attachments keep the first read bounded and preserve the full transcript', async context => {
+  const manager = fixture(context).manager;
+  const source = manager.create('codex', undefined, 'Long source');
+  manager.append(source, { role: 'user', engine: 'codex', text: 'Continue the important task' });
+  manager.append(source, { role: 'user', engine: 'codex', text: 'Latest user instruction: finish the review' });
+  for (let index = 0; index < 80; index++) manager.append(source, {
+    role: 'tool', engine: 'codex', text: `record-${index} ` + 'x'.repeat(3200) });
+  manager.append(source, { role: 'assistant', engine: 'codex', text: 'Next step: inspect src/example.js' });
+  const { attachment } = await manager.command('codex', 'attach-conversation', { sessionId: source.id });
+  const overview = fs.readFileSync(attachment.path, 'utf8');
+  const full = fs.readFileSync(attachment.fullPath, 'utf8');
+  assert.ok(Buffer.byteLength(overview) < 45000);
+  assert.ok(Buffer.byteLength(full) > 250000);
+  assert.match(overview, /Continue the important task/);
+  assert.match(overview, /Latest user instruction: finish the review/);
+  assert.match(overview, /Next step: inspect src\/example\.js/);
+  assert.match(overview, /read short ranges/i);
+  assert.match(full, /record-0 /);
+  assert.match(full, /record-79 /);
+  assert.equal((await manager.command('codex', 'discard-conversation-attachment', { path: attachment.path })).discarded, true);
+  assert.equal(fs.existsSync(attachment.path), false);
+  assert.equal(fs.existsSync(attachment.fullPath), false);
 });
 
 test('manual compaction can retry after a failed turn and a temporary summary quota error', async context => {
@@ -4441,7 +4668,7 @@ test('a router context overflow re-splits one fragment under the learned budget'
 // conversation's recovery backoff on every failed native compaction. Summary
 // requests run on their own transport, so that halving must not shrink their
 // fragments: doing so multiplied the request count on every retry and no
-// attempt could finish inside the compaction deadline.
+  // attempt could finish in a reasonable number of requests.
 test('a learned recovery backoff never shrinks summary fragments on retry', async context => {
   const requests = [];
   let phase = 'first';
@@ -4672,8 +4899,8 @@ for (const transport of ['router', 'engine']) test('Markdown handoff is shortene
   await harness.flush();
   if (transport === 'router') assert.ok(calls.length);
   else assert.match(harness.sent.at(-1).prompt, /Summarize|summarize/);
-  // Handoffs also use these helpers, without a compaction-created deadline.
-  // An undefined deadline used to schedule a one-millisecond timeout.
+  // Handoffs also use these helpers. They must retain the per-request timeout
+  // without a whole-run cutoff.
   context.mock.timers.tick(1000);
   if (transport === 'router') {
     assert.equal(calls[0].signal.aborted, false);

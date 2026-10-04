@@ -161,8 +161,8 @@ class StorageCleanup {
       }
     }
     const handoffDir = path.join(sharedDir, 'handoffs');
-    const handoffs = entries(handoffDir).filter(name => /^[a-f0-9-]{36}\.md$/i.test(name));
-    for (const name of handoffs) read(path.join(handoffDir, name));
+    const handoffs = entries(handoffDir).filter(name => /^[a-f0-9-]{36}\.md$|^conversation-[a-f0-9-]{36}\.(?:md|jsonl)$/i.test(name));
+    for (const name of handoffs) if (/^[a-f0-9-]{36}\.md$/i.test(name)) read(path.join(handoffDir, name));
     const guards = new Map();
     const add = (file, category, recursive = false, identity = '') => {
       if (active && (category === 'Handoffs and summaries' || category === 'Unused pasted attachments')) {
