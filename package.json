@@ -2,7 +2,7 @@
   "name": "camellia-desktop",
   "version": "1.0.0",
   "description": "Camellia: a shared workbench for Claude Code, Codex CLI, DSH, Kimi Code and Antigravity",
-  "main": "src/main/main.js",
+  "main": "src/main/entry.js",
   "author": "Camellia contributors",
   "license": "MIT",
   "private": true,
@@ -54,6 +54,7 @@
     "files": [
       "src/**/*",
       "assets/icon-256.png",
+      "assets/icon.ico",
       "assets/icon-1024.png",
       "assets/brands/**/*",
       "scripts/ollama-proxy-cli.js",

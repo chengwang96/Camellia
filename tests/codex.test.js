@@ -9,10 +9,12 @@ const { PassThrough } = require('node:stream');
 const { EventEmitter, once } = require('node:events');
 const TOML = require('smol-toml');
 const { CodexSession } = require('../src/engines/codex-session');
-const { CodexClient, codexSpawnSpec } = require('../src/engines/codex-client');
+const { CodexClient, codexSpawnSpec, QUESTION_INSTRUCTIONS } = require('../src/engines/codex-client');
+const { apiContextWindow } = require('../src/engines/codex-models');
 const { ClaudeHistory } = require('../src/engines/claude-history');
 const { createCodex } = require('../src/engines/codex');
 const { createEngineSettings } = require('../src/engines/engine-settings');
+const { toolModelId } = require('../src/shared/codex-tool-model');
 
 function temporary(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-codex-test-'));
@@ -99,6 +101,18 @@ test('Codex API requests do not inherit the subscription speed setting', async t
   await new Promise(resolve => setImmediate(resolve));
   for (const message of wire.messages.filter(m => ['thread/start', 'turn/start'].includes(m.method)))
     assert.equal(Object.hasOwn(message.params, 'serviceTier'), false);
+});
+
+test('Codex sends the API tool profile model at both native request boundaries', async t => {
+  const root = temporary(t), wire = transport(), runtimeModel = toolModelId('gpt-6-sol');
+  const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'gpt-6-sol', connection: 'api' },
+    opts: {}, spec: { model: runtimeModel }, spawn: () => wire.proc, log() {},
+    history: new ClaudeHistory(path.join(root, 'history')), onEvent() {}, onSessionId() {}, onResult() {} });
+  t.after(() => session.shutdown());
+  session.start(); session.sendUserMessage('Read a file'); await session.ready;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(wire.messages.find(message => message.method === 'thread/start').params.model, runtimeModel);
+  assert.equal(wire.messages.find(message => message.method === 'turn/start').params.model, runtimeModel);
 });
 
 test('Codex refreshes old account caches once and preserves model speed capabilities', async t => {
@@ -266,12 +280,13 @@ test('Codex rejected steering does not add a phantom user message', async () => 
 test('Codex goal MCP registration is scoped to both new and resumed threads', async () => {
   for (const sourceId of [undefined, 'saved-thread']) {
     const config = { command: process.execPath, args: ['goal-mcp-stdio.js'], env: { CAMELLIA_GOAL_TOKEN: 'private' } };
-    const session = new CodexSession({ settings: { cwd: os.tmpdir(), model: 'fixture', connection: 'api' }, opts: { sessionId: sourceId, goalBridge: { config } }, spec: {}, onSessionId() {} });
+    const session = new CodexSession({ settings: { cwd: os.tmpdir(), model: 'fixture', connection: 'api' }, opts: { sessionId: sourceId, goalBridge: { config } }, spec: { developerInstructions: QUESTION_INSTRUCTIONS }, onSessionId() {} });
     const requests = [];
     session.client = { request: async (method, params) => { requests.push({ method, params }); return { thread: { id: 'thread-fixture' } }; } };
     await session.open();
     assert.equal(requests[0].method, sourceId ? 'thread/resume' : 'thread/start');
     assert.deepEqual(requests[0].params.config, { 'mcp_servers.camellia_goals': config });
+    assert.equal(requests[0].params.developerInstructions, QUESTION_INSTRUCTIONS);
   }
 });
 
@@ -320,7 +335,7 @@ test('Codex discovers legacy edit boundaries only for a matching single-message 
 test('Codex transport initializes before turns, relays approval and question answers, and reports process failure once', async t => {
   const root = temporary(t), wire = transport(), events = [];
   const session = new CodexSession({ gen: 1, settings: { cwd: root, model: 'fixture', connection: 'api', permissionMode: 'default' },
-    opts: {}, spec: { permissions: { approvalPolicy: 'never', sandbox: 'workspace-write' } }, spawn: () => wire.proc, log() {}, history: new ClaudeHistory(path.join(root, 'history')),
+    opts: {}, spec: { permissions: { approvalPolicy: 'never', sandbox: 'workspace-write' }, developerInstructions: 'Show task choices in a dialog.' }, spawn: () => wire.proc, log() {}, history: new ClaudeHistory(path.join(root, 'history')),
     onEvent: e => events.push(e), onSessionId() {}, onResult() {} });
   session.start(); session.sendUserMessage('Do this task'); await session.ready;
   // Let turn/start complete before injecting server-originated interactions.
@@ -328,6 +343,7 @@ test('Codex transport initializes before turns, relays approval and question ans
   assert.equal(wire.messages[0].method, 'initialize'); assert.equal(wire.messages[1].method, 'initialized');
   const thread = wire.messages.find(m => m.method === 'thread/start').params;
   assert.equal(thread.approvalPolicy, 'never'); assert.equal(thread.sandbox, 'workspace-write');
+  assert.equal(thread.developerInstructions, 'Show task choices in a dialog.');
   wire.send({ id: 20, method: 'item/commandExecution/requestApproval', params: { threadId: session.sessionId, command: 'fixture command' } });
   assert.equal(session.answerPermission('20', false), true);
   assert.deepEqual(wire.messages.find(m => m.id === 20).result, { decision: 'decline' });
@@ -590,15 +606,25 @@ test('Codex API metadata adds native patch support without overriding known mode
   assert.ok(next.models.some(m => m.slug === 'deepseek-v4.1-flash'));
   assert.ok(!next.models.some(m => m.slug === 'kimi-k3'));
   for (const native of ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5', 'openai/gpt-5.5-2026']) {
-    codexSpawnSpec({ ...options, model: native }); assert.equal(read().model_catalog_json, undefined);
+    const spec = codexSpawnSpec({ ...options, model: native });
+    if (native.startsWith('gpt-6')) {
+      assert.equal(spec.model, toolModelId(native));
+      const catalog = JSON.parse(fs.readFileSync(read().model_catalog_json, 'utf8'));
+      assert.equal(catalog.models.find(entry => entry.slug === spec.model).shell_type, 'unified_exec');
+    } else {
+      assert.equal(spec.model, native);
+      assert.equal(read().model_catalog_json, undefined);
+    }
     assert.deepEqual(codexSpawnSpec({ ...options, model: native, contextWindow: 128000 }).args,
       ['app-server', '-c', 'model_context_window=128000']);
   }
   assert.deepEqual(codexSpawnSpec(options).args, ['app-server']);
   // Chat sessions must opt in, because upstream Codex otherwise rejects
   // request_user_input outside Plan mode even though it advertises the tool.
-  assert.deepEqual(codexSpawnSpec({ ...options, allowUserQuestions: true }).args,
+  const questions = codexSpawnSpec({ ...options, allowUserQuestions: true });
+  assert.deepEqual(questions.args,
     ['app-server', '-c', 'features.default_mode_request_user_input=true']);
+  assert.equal(questions.developerInstructions, QUESTION_INSTRUCTIONS);
   assert.deepEqual(codexSpawnSpec({ ...options, allowUserQuestions: true, contextWindow: 65536 }).args,
     ['app-server', '-c', 'model_context_window=65536', '-c', 'features.default_mode_request_user_input=true']);
   assert.deepEqual(codexSpawnSpec({ ...options, connection: 'subscription', contextWindow: 128000 }).args, ['app-server']);
@@ -607,7 +633,20 @@ test('Codex API metadata adds native patch support without overriding known mode
   const own = path.join(root, 'user-models.json');
   fs.writeFileSync(path.join(home, 'config.toml'), TOML.stringify({ model_catalog_json: own, model_reasoning_effort: 'high' }));
   codexSpawnSpec(options); assert.equal(read().model_catalog_json, own); assert.equal(read().model_reasoning_effort, 'high');
-  assert.equal(require('../runtimes/codex/package.json').dependencies['@openai/codex'], '0.160.0', 'Review native metadata when upgrading Codex');
+  assert.equal(codexSpawnSpec({ ...options, model: 'gpt-6-sol' }).model, 'gpt-6-sol', 'user catalog keeps its model profile');
+  fs.writeFileSync(path.join(home, 'config.toml'), TOML.stringify({ developer_instructions: 'Use short replies.' }));
+  assert.equal(codexSpawnSpec({ ...options, allowUserQuestions: true }).developerInstructions,
+    'Use short replies.\n\n' + QUESTION_INSTRUCTIONS);
+  assert.equal(require('../runtimes/codex/package.json').dependencies['@openai/codex'], '0.160.1', 'Review native metadata when upgrading Codex');
+});
+
+test('Codex API window ignores an accepted lower bound but honors explicit route limits', () => {
+  const provisional = { routes: [{ source: 'accepted-lower-bound', cap: 26603 }] };
+  assert.equal(apiContextWindow('gpt-6-sol', provisional), 272000);
+  assert.equal(apiContextWindow('gpt-6-sol', { routes: [
+    ...provisional.routes, { source: 'confirmed-upper-bound', cap: 65536 },
+  ] }), 65536);
+  assert.equal(apiContextWindow('gpt-6-sol', { routes: [{ source: 'configured', cap: 128000 }] }), 128000);
 });
 
 test('shutting down a Codex process settles even when a helper keeps its stdio open', async t => {

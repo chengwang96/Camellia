@@ -158,6 +158,28 @@ test('sign out uses native logout, clears metadata and keeps the API profile int
   assert.equal(fs.readFileSync(path.join(apiHome, 'config.toml'), 'utf8'), 'api profile');
 });
 
+test('wake sends one greeting on the default account model, clears its session and refreshes quota', async t => {
+  const f = fixture(t); f.put(); await f.account.refresh();
+  assert.equal(f.account.state().waking, false);
+  const state = await f.account.wake();
+  assert.equal(state.wakeSent, true); assert.equal(state.warning, undefined);
+  assert.equal(state.waking, false);
+  const wakeCalls = f.calls.slice(-5).map(call => call.method);
+  assert.deepEqual(wakeCalls, ['initialize', 'session/new', 'session/set_config_option', 'session/prompt', 'session/delete']);
+  const prompt = f.calls.find(call => call.method === 'session/prompt').params;
+  assert.equal(prompt.prompt[0].text, '你好');
+  const model = f.calls.find(call => call.method === 'session/set_config_option').params;
+  assert.equal(model.value, 'kimi-code/coding');
+  assert.equal(f.clients.every(client => client.closed), true, 'the greeting client is shut down');
+  assert.doesNotMatch(JSON.stringify(f.events), /你好/, 'the greeting is not stored in account state');
+  // A refresh failure after a successful greeting stays a warning, not an error.
+  const g = fixture(t, { queryQuota: async () => { throw new Error('private-native-token'); } });
+  g.put(); await g.account.refresh();
+  const warned = await g.account.wake();
+  assert.equal(warned.wakeSent, true);
+  assert.match(warned.warning, /Quota refresh failed/);
+});
+
 test('subscription quota persists, coalesces observations and retains the last success on a query failure', async t => {
   let clock = Date.parse('2026-09-17T01:00:00Z'), fail = false, calls = 0;
   const f = fixture(t, { now: () => clock, queryQuota: async () => {

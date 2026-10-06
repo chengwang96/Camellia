@@ -141,7 +141,12 @@
   function questionFields(container, questions, { saved = {}, changed = () => {} } = {}) {
     const fields = []; container.replaceChildren();
     for (const [index, question] of questions.entries()) {
-      const field = document.createElement('fieldset'), legend = document.createElement('legend'); legend.textContent = question.question; field.append(legend);
+      const field = document.createElement('fieldset');
+      const legend = document.createElement('legend'); legend.textContent = question.question; field.append(legend);
+      // The native payload carries a short topic header ("下一步", "任务确认").
+      // Surface it under the question so a queued dialog still states its subject.
+      const topic = typeof question.header === 'string' ? question.header.trim() : '';
+      if (topic) { const tag = document.createElement('span'); tag.className = 'question-tag'; tag.textContent = topic; field.append(tag); }
       if (question.multiSelect) { const note = document.createElement('p'); note.className = 'question-hint'; note.dataset.i18n = ''; note.textContent = 'Select one or more'; field.append(note); }
       const choices = [];
       for (const option of question.options || []) {

@@ -293,7 +293,12 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     const activity = s?.activity;
     item.dataset.activity = activity || '';
     item.querySelector('.session-item-time').textContent = activity === 'permission' ? 'Needs approval' : activity === 'question' ? 'Needs input' : activity ? 'Working' : s ? relTime(s.mtimeMs) : 'Now';
-    const open = () => { if (s && (discussionOpening() || s.id !== context.sessionId || ['permission', 'question'].includes(s.activity))) void openHistorySession(s.id); else input.focus(); };
+    const open = () => {
+      const wrongHarness = Boolean(s?.currentEngine && s.currentEngine !== harnessId);
+      if (s && (discussionOpening() || s.id !== context.sessionId || wrongHarness || ['permission', 'question'].includes(s.activity)))
+        void openHistorySession(s.id);
+      else input.focus();
+    };
     item.addEventListener('click', open);
     item.addEventListener('keydown', (e) => {
       if (e.target !== item) return;

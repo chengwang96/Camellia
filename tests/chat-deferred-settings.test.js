@@ -134,12 +134,14 @@ test('the Google subscription model menu opens with only its account models', ()
   assert.deepEqual(sections[0].options.map(model => model.id), ['shared-model', 'account-only']);
 });
 
-test('shared model IDs belong to the active subscription in the model menu', () => {
+test('shared model IDs retain both connections with the active subscription first', () => {
   const sections = modelMenu(true);
-  assert.deepEqual(sections.map(section => section.options.map(model => model.id)), [['shared-model', 'account-only'], ['api-only']]);
+  assert.deepEqual(sections.map(section => section.connection), ['subscription', 'api']);
+  assert.deepEqual(sections.map(section => section.options.map(model => model.id)), [['shared-model', 'account-only'], ['shared-model', 'api-only']]);
 });
 
-test('shared model IDs belong to the active API connection in the model menu', () => {
+test('shared model IDs retain both connections with the active API connection first', () => {
   const sections = modelMenu(false);
-  assert.deepEqual(sections.map(section => section.options.map(model => model.id)), [['shared-model', 'api-only'], ['account-only']]);
+  assert.deepEqual(sections.map(section => section.connection), ['api', 'subscription']);
+  assert.deepEqual(sections.map(section => section.options.map(model => model.id)), [['shared-model', 'api-only'], ['shared-model', 'account-only']]);
 });

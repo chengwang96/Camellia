@@ -4,17 +4,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const MAX_TEXT_BYTES = 2 * 1024 * 1024;
+const MAX_TEXT_BYTES = 20 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.avif']);
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.ogv']);
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.opus']);
 // Installable application artifacts. They cannot be previewed inline, but they
 // are the deliverable of a build turn, so they must not be discarded as noise.
 const PACKAGE_EXTENSIONS = new Set(['.apk', '.aab', '.ipa', '.exe', '.msi', '.dmg', '.pkg', '.deb', '.rpm', '.appimage']);
-// The pre-2007 Office binaries are OLE compound files instead of ZIP
-// archives, so they cannot be parsed like .docx/.xlsx/.pptx. They are still
-// real deliverables and must stay in the artifact list, just not previewed.
-const LEGACY_DOCUMENT_EXTENSIONS = new Set(['.doc', '.xls', '.ppt']);
+// The pre-2007 `.doc`, `.xls` and `.ppt` files are OLE2 compound binaries rather
+// than ZIP archives, so each has a dedicated reader: a BIFF decoder for
+// workbooks, a FIB/piece-table decoder for Word, and a record-tree decoder for
+// PowerPoint. `.doc`/`.ppt` keep their `document` kind so artifact ordering and
+// the remote list stay unchanged; the preview handler routes them by extension.
+const LEGACY_DOCUMENT_EXTENSIONS = new Set(['.doc', '.ppt']);
+const BIFF_SPREADSHEET_EXTENSIONS = new Set(['.xls']);
 const TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.json', '.jsonl', '.js', '.cjs', '.mjs', '.ts', '.tsx', '.jsx', '.css', '.scss',
   '.html', '.htm', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.log', '.csv', '.tsv', '.sql',
@@ -29,6 +32,7 @@ function previewKind(filePath) {
   if (extension === '.docx') return 'word';
   if (extension === '.pptx') return 'presentation';
   if (extension === '.xlsx') return 'spreadsheet';
+  if (BIFF_SPREADSHEET_EXTENSIONS.has(extension)) return 'spreadsheet';
   if (IMAGE_EXTENSIONS.has(extension)) return 'image';
   if (VIDEO_EXTENSIONS.has(extension)) return 'video';
   if (AUDIO_EXTENSIONS.has(extension)) return 'audio';
@@ -68,4 +72,4 @@ function describePreview(filePath) {
   return preview;
 }
 
-module.exports = { MAX_TEXT_BYTES, describePreview, previewKind, LEGACY_DOCUMENT_EXTENSIONS };
+module.exports = { MAX_TEXT_BYTES, describePreview, previewKind, LEGACY_DOCUMENT_EXTENSIONS, BIFF_SPREADSHEET_EXTENSIONS };

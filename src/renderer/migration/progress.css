@@ -1,0 +1,29 @@
+:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; color: #252833; background: #fafbfe; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { padding: 26px 30px; }
+.brand { color: #5968de; font-size: 13px; font-weight: 650; margin-bottom: 10px; }
+h1 { font-size: 21px; margin: 0 0 8px; font-weight: 650; }
+p { font-size: 13px; color: #69707f; margin: 0 0 22px; line-height: 1.6; max-height: 72px; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
+.phase, .metrics { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+.phase { margin-bottom: 10px; }
+.metrics { color: #69707f; margin: 9px 0; }
+progress { display: block; width: 100%; height: 9px; accent-color: #6673e3; }
+progress::-webkit-progress-bar { background: #e7eaf4; border-radius: 8px; }
+progress::-webkit-progress-value { background: #6673e3; border-radius: 8px; transition: width .15s; }
+progress:indeterminate { opacity: .7; animation: pulse 1.4s ease-in-out infinite; }
+.path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: #747c8d; }
+#current { min-height: 16px; margin-bottom: 18px; }
+.folders { border-top: 1px solid #e7eaf4; padding-top: 13px; line-height: 1.8; }
+footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; }
+#hint { font-size: 11px; color: #747c8d; line-height: 1.5; }
+button { flex-shrink: 0; border: 1px solid #dce0ec; border-radius: 7px; padding: 7px 12px; color: inherit; background: #fff; cursor: pointer; font: inherit; font-size: 12px; }
+button:disabled { cursor: default; opacity: .5; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-color-scheme: dark) {
+  :root { color: #e3e6ef; background: #20232c; }
+  p, .metrics, .path, #hint { color: #a1a8b9; }
+  .folders { border-color: #3b4050; }
+  button { background: #292e3a; border-color: #424859; }
+  progress::-webkit-progress-bar { background: #3b4050; }
+}

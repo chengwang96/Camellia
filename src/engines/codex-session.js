@@ -36,8 +36,9 @@ class CodexSession extends StreamingSession {
   async open() {
     await this.starting;
     const sourceId = this.opts.sessionId;
-    const params = { cwd: this.settings.cwd, model: this.settings.model,
+    const params = { cwd: this.settings.cwd, model: this.spec.model || this.settings.model,
       ...(this.spec.discussionInstructions ? { baseInstructions: this.spec.discussionInstructions } : {}),
+      ...(this.spec.developerInstructions ? { developerInstructions: this.spec.developerInstructions } : {}),
       ...(this.settings.connection === 'subscription' ? { serviceTier: this.settings.serviceTier || null } : {}),
       ...(this.opts.goalBridge ? { config: { 'mcp_servers.camellia_goals': this.opts.goalBridge.config } } : {}),
       modelProvider: this.settings.connection === 'api' ? 'camellia' : 'openai',
@@ -115,12 +116,12 @@ class CodexSession extends StreamingSession {
       if (this.cancelled) return this.finish({ subtype: 'stopped' });
       this.appendHistory('user', prompt); this.emitStream({ type: 'message_start' });
       const input = [{ type: 'text', text: prompt }, ...attachments.filter(a => a.isImage).map(a => ({ type: 'localImage', path: a.path }))];
-      const params = { threadId: this.sessionId, input, model: this.settings.model };
+      const params = { threadId: this.sessionId, input, model: this.spec.model || this.settings.model };
       // Explicit null clears the previous thread tier when the toggle is off.
       if (this.settings.connection === 'subscription') params.serviceTier = this.settings.serviceTier || null;
       if (this.settings.thinkingBudget) params.effort = this.settings.thinkingBudget;
       if (this.settings.permissionMode === 'plan') params.collaborationMode = { mode: 'plan', settings: {
-        model: this.settings.model, reasoning_effort: this.settings.thinkingBudget || null, developer_instructions: null } };
+        model: this.spec.model || this.settings.model, reasoning_effort: this.settings.thinkingBudget || null, developer_instructions: null } };
       const result = await this.client.request('turn/start', params);
       if (this.running) { this.turnId = result.turn.id; this.lastTurnId = result.turn.id; if (this.cancelled) this.interrupt(); }
     } catch (error) {

@@ -1,5 +1,6 @@
 """Real preferences IPC; authorization is simulated and never opens a login."""
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -34,7 +35,6 @@ window.dshDesktop = new Proxy({}, {get: (_, method) => method.startsWith('on') ?
   if (method === 'kimiSignIn') return {ok:true,installed:true,models:[],account:null,loginPending:true,
     login:{userCode:'TEST-123',verificationUrl:'https://auth.kimi.com/device',expiresAt:1790000000000}};
   if (method === 'codexSignIn') return {ok:true,installed:true,models:[],account:null,loginPending:true};
-  if (method === 'antigravitySignIn') return {ok:true,opened:true};
   return window.testRpc(method, payload);
 }});"""
 try:
@@ -68,9 +68,13 @@ try:
         expect(page.locator('#port')).not_to_be_visible()
         expect(page.locator('#codexSignIn')).to_be_enabled()
         expect(page.locator('#kimiSignIn')).to_be_enabled()
-        expect(page.locator('#googleSignIn')).to_be_enabled()
+        expect(page.locator('#googleSignIn, #googleRefresh')).to_have_count(0)
+        expect(page.locator('#googleAccountPanel > .account-actions')).to_have_count(0)
         expect(page.locator('#codexConnection')).to_have_count(0)
         expect(page.locator('#enginesPage [id$="Connection"]')).to_have_count(0)
+        page.locator('.account-shortcuts [data-account-engine=antigravity]').click()
+        expect(page.locator('#googleAccountPanel')).to_be_in_viewport()
+        expect(page.locator('#googleUseCredits')).to_be_focused()
         page.locator('.account-shortcuts [data-account-engine=kimi]').click()
         expect(page.locator('#kimiAccountPanel')).to_be_in_viewport()
         page.locator('#kimiLoginRegion').select_option('global')
@@ -114,8 +118,6 @@ try:
 
         expect(page.locator('#googleProxyUrl')).to_have_count(0)
         baseline = len(page.evaluate('calls'))
-        page.locator('#googleSignIn').click()
-        expect(page.locator('#status')).to_contain_text('Complete Google sign-in in the terminal')
         for engine in ['kimi', 'codex', 'antigravity']:
             assert rpc(engine + 'GetSettings')['connection'] == 'api'
         # The connection follows the session that last ran; the composer now
@@ -142,14 +144,22 @@ try:
         page.evaluate("CamelliaI18n.setLanguage('zh-CN')")
         expect(page.locator('#pageTitle')).to_have_text('订阅账号')
         expect(page.locator('[data-view=providers]')).to_have_text('API Key')
-        expect(page.locator('#googleSignIn')).to_have_text('打开官方 CLI 登录')
+        expect(page.locator('#googleSignIn, #googleRefresh')).to_have_count(0)
         expect(page.locator('#googleAccountList .subscription-card')).to_have_count(0)
         expect(page.locator('#googleAccountList')).to_contain_text('暂无账号。')
-        expect(page.locator('#googleSignIn')).to_be_visible()
         page.evaluate("accountListeners.onAntigravityAccount({ok:true,installed:true,accounts:[{id:'default',signedIn:true,active:true}],usage:{}})")
         expect(page.locator('#googleAccountList .subscription-card')).to_have_count(1)
         page.evaluate("accountListeners.onAntigravityAccount({ok:true,installed:true,accounts:[{id:'default',signedIn:false,active:true}],usage:{}})")
         expect(page.locator('#googleAccountList .subscription-card')).to_have_count(0)
+        # An expired model verification keeps the account visible with a warning
+        # and a usable quota refresh instead of hiding it as signed out.
+        page.evaluate("accountListeners.onAntigravityAccount({ok:true,installed:true,accounts:[{id:'default',signedIn:false,stale:true,active:true,quotaWindows:[{label:'Gemini\\u00a0Models \\u00b7 Weekly',usedPercent:5,resetsAt:'2026-10-08T18:47:45Z'}],verifiedAt:1790880533399,models:1}],usage:{}})")
+        google = page.locator('#googleAccountList .subscription-card')
+        expect(google).to_have_count(1)
+        expect(google.locator('.subscription-state')).to_have_class(re.compile(r'\bstale\b'))
+        expect(google.locator('.subscription-state')).to_contain_text('上次验证已过期')
+        expect(google.locator('[data-card-action=refresh]')).to_be_enabled()
+        expect(google.locator('.subscription-meter')).to_have_count(1)
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         (repo / 'dist/ui-preview').mkdir(parents=True, exist_ok=True)
         page.locator('#googleAccountPanel').screenshot(path=str(repo / 'dist/ui-preview/subscription-accounts.png'))

@@ -526,7 +526,7 @@ public class LocalChatTest extends InstrumentationTestCase {
                 ui(() -> {
                     View root = activity.getWindow().getDecorView();
                     assertEquals("Hello", ((EditText) root.findViewWithTag("localComposer")).getText().toString());
-                    assertTrue(root.findViewWithTag("localModel").getContentDescription().toString().matches("(?s).*(Advanced|进阶).*"));
+                    assertTrue(root.findViewWithTag("localModel").getContentDescription().toString().matches("(?s).*(High|高).*"));
                     root.findViewWithTag("localSend").performClick(); assertFalse(root.findViewWithTag("localModel").isEnabled());
                 });
                 long deadline = System.currentTimeMillis() + 5000;

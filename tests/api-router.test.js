@@ -11,6 +11,7 @@ const { startApiRouter, retryDelay } = require('../src/api/api-router');
 const { normalizeConfig, writeConfig, loadConfig, publicState, PRESETS } = require('../src/api/api-router-config');
 const { recordUsage } = require('../src/api/api-usage');
 const { frame, SSEParser, convertRequest } = require('../src/api/api-protocol');
+const { toolModelId } = require('../src/shared/codex-tool-model');
 const { BAD_PORTS } = require('./bad-ports.cjs');
 
 async function port() {
@@ -118,6 +119,22 @@ test('unknown Responses tools report the cause without cooling down a healthy ro
   assert.ok(!usage?.models?.['kimi-k3']);
   assert.equal((await harness.post({})).status, 200);
   assert.equal(harness.requests.length, 2);
+});
+
+test('Codex tool profile alias routes to the configured model and returns a native function call', async t => {
+  const harness = await fixture(t, (request, response) => reply(response, 200, {
+    id: 'tool-test', choices: [{ index: 0, message: { role: 'assistant', content: null,
+      tool_calls: [{ id: 'call-probe', type: 'function', function: { name: 'probe', arguments: '{"value":"ok"}' } }] },
+      finish_reason: 'tool_calls' }], usage: { prompt_tokens: 12, completion_tokens: 5 },
+  }), url => [provider('codex-pool', url, ['secret'], [mapping('gpt-6-sol', 'gpt-6-sol')])]);
+  const response = await harness.post({ model: toolModelId('gpt-6-sol'), input: 'Call probe', stream: false,
+    tools: [{ type: 'function', name: 'probe', parameters: { type: 'object', properties: { value: { type: 'string' } } } }] }, '/v1/responses');
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.output[0].type, 'function_call');
+  assert.equal(result.output[0].name, 'probe');
+  assert.equal(harness.requests[0].body.model, 'gpt-6-sol');
+  assert.equal(harness.requests[0].body.tools[0].function.name, 'probe');
 });
 
 test('MiMo Token Plan presets use regional subscription endpoints and current coding models', () => {

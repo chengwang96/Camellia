@@ -88,3 +88,12 @@ test('the high-resolution Dock icon is packaged and matches the macOS bundle ico
   assert.equal(png.readUInt32BE(16), 1024);
   assert.equal(png.readUInt32BE(20), 1024);
 });
+
+test('the Windows tray icon is packaged as a valid ICO resource', () => {
+  const icon = 'assets/icon.ico';
+  assert.ok(manifest.build.files.includes(icon));
+  const ico = fs.readFileSync(path.join(root, icon));
+  assert.equal(ico.readUInt16LE(0), 0);
+  assert.equal(ico.readUInt16LE(2), 1);
+  assert.ok(ico.readUInt16LE(4) > 0);
+});

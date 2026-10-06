@@ -94,7 +94,7 @@ function renderRuntimeUpdates() {
     // A check can finish after an install, path change, or removal. Never show
     // a result for a different installation or an app-managed runtime.
     const available = info?.updateAvailable && info.checkable && !info.error && info.installed && info.latest
-      && row?.status === 'ready' && !row.external && !(row.id === 'antigravity' && row.mode === 'subscription') && row.version === info.installed;
+      && row?.status === 'ready' && !row.updating && !row.external && !(row.id === 'antigravity' && row.mode === 'subscription') && row.version === info.installed;
     button.hidden = !available;
     if (!available) continue;
     const label = t('{0} runtime: v{1} → v{2}. View update')
@@ -135,12 +135,12 @@ function renderRuntimes(rows) {
     const button = document.querySelector(`[data-mode="${row.id}"]`);
     if (!button) continue;
     const name = { dsh: 'DSH', claude: 'Claude', codex: 'Codex', kimi: 'Kimi', antigravity: 'Antigravity', pi: 'Pi' }[row.id];
-    const action = row.status === 'ready' ? `Open ${name}` : row.status === 'installing' ? `Downloading ${name}…`
+    const action = row.updating ? `Updating ${name}…` : row.status === 'ready' ? `Open ${name}` : row.status === 'installing' ? `Downloading ${name}…`
       : row.status === 'error' ? `Retry download & open ${name}` : `Download & open ${name}`;
     button.querySelector('.entry-action').firstChild.textContent = action + ' ';
     button.setAttribute('aria-label', action);
     button.dataset.runtimeState = row.status;
-    button.disabled = row.status === 'installing' || (button === activeButton && row.status !== 'error');
+    button.disabled = row.updating || row.status === 'installing' || (button === activeButton && row.status !== 'error');
     if (row.id !== activeButton?.dataset.mode) continue;
     if (row.status === 'installing') {
       runtimeMessage = `${row.name}: ${row.message || "Preparing runtime…"}`;

@@ -19,14 +19,15 @@ bridge = r"""(() => {
   window.switches = [];
   window.currentGoal = null;
   const engine = new URLSearchParams(location.search).get('harness');
+  const fixtureEngine = new URLSearchParams(location.search).get('fixtureHarness') || engine;
   const settings = {model:'fixture-model',permissionMode:'default',connection:'api'};
   window.dshDesktop = {
     sharedConversations:true,
     onLanguageChanged:fn=>{window.changeLanguage=fn;return()=>{};},
     conversationCommand:async ({action,payload}) => {
-      if(action==='list-sessions') return {ok:true,sessions:[{...fixture,mtimeMs:Date.now(),showOrigin:window.fixturePreferences.showOrigin},{...fixture,id:'another-session',title:'Another task',mtimeMs:Date.now()}],workspaces:[],pagination:{}};
+      if(action==='list-sessions') return {ok:true,sessions:[{...fixture,currentEngine:fixtureEngine,mtimeMs:Date.now(),showOrigin:window.fixturePreferences.showOrigin},{...fixture,currentEngine:fixtureEngine,id:'another-session',title:'Another task',mtimeMs:Date.now()}],workspaces:[],pagination:{}};
       if(action==='get-live') return {ok:true,live:null};
-      if(action==='load-session') return {ok:true,...fixture,preferences:window.fixturePreferences,settings};
+      if(action==='load-session') return {ok:true,...fixture,currentEngine:fixtureEngine,preferences:window.fixturePreferences,settings};
       if(action==='get-settings') return settings;
       if(action==='goal-get') return {ok:true,goal:window.currentGoal};
       if(action==='goal-start') {
@@ -280,6 +281,34 @@ with sync_playwright() as p:
       };
       window.sessionFixtures = sessions;
     })();"""
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    page.add_init_script(concurrent_bridge)
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex', wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    page.locator('#input').fill('Active turn')
+    page.locator('#send').click()
+    page.wait_for_function('running && !sending')
+    stopped_session = page.evaluate('context.sessionId')
+    page.locator('#input').fill('Keep this queued message')
+    page.locator('#input').press('Alt+Enter')
+    expect(page.locator('.queue-text')).to_have_text('Keep this queued message')
+    page.locator('#send').click()
+    page.wait_for_function('!running && !sending && !conversationActivity')
+    expect(page.locator('.queue-resume')).to_be_visible()
+    assert page.evaluate('actions.filter(entry=>entry.action==="send").length') == 1
+    page.locator(f'[data-sid="{stopped_session}"] .session-more').click()
+    expect(page.locator('.dsh-pop .pop-row', has_text='Delete conversation')).to_be_enabled()
+    page.keyboard.press('Escape')
+    page.locator('#newSessionBtn').click()
+    page.evaluate('(id) => openHistorySession(id)', stopped_session)
+    page.wait_for_function('(id) => context.sessionId === id && !loadingSession', arg=stopped_session)
+    expect(page.locator('.queue-resume')).to_be_visible()
+    assert page.evaluate('actions.filter(entry=>entry.action==="send").length') == 1
+    page.locator('.queue-resume').click()
+    page.wait_for_function('actions.filter(entry=>entry.action==="send").length === 2 && running && !sending')
+    assert page.evaluate('actions.filter(entry=>entry.action==="send").at(-1).payload.displayText') == 'Keep this queued message'
+    page.close()
     for finish in ['cancel', 'complete']:
         page = browser.new_page(viewport={'width':1200,'height':820})
         page.on('pageerror', lambda error: errors.append(str(error)))
@@ -313,7 +342,9 @@ with sync_playwright() as p:
             expect(page.locator('#send')).to_be_enabled()
             page.locator('#send').click()
             page.wait_for_function('!pendingConversationSend() && !conversationBusy()')
-            expect(page.locator('#input')).to_have_value('Continue pending A')
+            expect(page.locator('#input')).to_have_value('')
+            expect(page.locator('.failed-send')).to_contain_text('Fixture compaction canceled')
+            expect(page.locator('.failed-send button')).to_have_count(1)
             expect(page.locator('#handoffStop')).to_be_hidden()
             expect(page.locator('#modelPill')).to_be_enabled()
             assert page.evaluate('actions.filter(entry=>entry.action==="send").length') == 1
@@ -599,7 +630,7 @@ with sync_playwright() as p:
         page.wait_for_function('chatScroll.scrollTop + chatScroll.clientHeight >= chatScroll.scrollHeight - 2')
         page.evaluate("chat.insertAdjacentHTML('beforeend','<div style=\"height:900px\">Late agent output</div>');maybeScroll(false)")
         page.wait_for_function('chatScroll.scrollTop + chatScroll.clientHeight >= chatScroll.scrollHeight - 2')
-        # Stop needs an empty composer; drop the queued draft first so stopping does not drain it into a new run.
+        # Stop needs an empty composer; this branch removes its queued draft first.
         page.locator('.queue-remove').click()
         page.locator('#send').click()
         page.wait_for_function('!running')
@@ -719,7 +750,7 @@ with sync_playwright() as p:
         a=page.evaluate('context.sessionId'); run=page.evaluate('currentRunId')
         page.evaluate('([mode,language])=>{currentPermission=mode;CamelliaI18n.setLanguage(language);}',[mode,language])
         first={'type':'gui:permission','session_id':a,'runId':run,'engine':'codex','requestId':'first','questions':[
-            {'id':'formats','question':'选择本次任务的输出格式' if language=='zh-CN' else 'Which output formats should this task produce?',
+            {'id':'formats','header':'输出格式' if language=='zh-CN' else 'Output format','question':'选择本次任务的输出格式' if language=='zh-CN' else 'Which output formats should this task produce?',
              'options':[{'label':'CSV','description':'用于检查和对比的表格' if language=='zh-CN' else 'Tables for checking and comparing results'},
                         {'label':'A, B','description':'保留选项中的标点' if language=='zh-CN' else 'Keep punctuation inside this option'}], 'multiSelect':True}]}
         second={**first,'requestId':'second','questions':[{'id':'secret','question':'Private response?','isSecret':True}]}
@@ -737,6 +768,9 @@ with sync_playwright() as p:
             expect(dialog).to_be_visible()
         assert page.evaluate('permissionQueue.length')==2
         expect(dialog.locator('legend')).to_have_count(1)
+        # The topic header and the owning conversation stay visible with the question.
+        expect(dialog.locator('.question-tag')).to_have_text('输出格式' if language=='zh-CN' else 'Output format')
+        expect(dialog.locator('.question-context')).to_contain_text('Question lifecycle')
         expect(dialog.locator('input:checked')).to_have_count(0)
         dialog.get_by_role('checkbox',name='CSV',exact=False).check()
         dialog.get_by_role('checkbox',name='A, B',exact=False).check()
@@ -979,18 +1013,15 @@ with sync_playwright() as p:
     page.wait_for_function("actions.some(a=>a.action==='save-settings' && a.payload.model==='model-b')")
     page.wait_for_function("conversationBusy() && document.querySelector('#modelPillName').textContent==='model-b'")
     page.close()
-    # Every reply keeps its own harness label, independent of the currently open harness.
+    # A mismatched URL reopens the conversation in its saved harness, including
+    # when the conversation is idle. No handoff is requested.
     page = browser.new_page(viewport={'width':1200,'height':820})
     page.on('pageerror',lambda e:errors.append(str(e)))
     page.add_init_script(bridge)
-    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=kimi&conversation=shared-fixture',wait_until='networkidle')
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=kimi&conversation=shared-fixture&fixtureHarness=claude',wait_until='networkidle')
     page.wait_for_function('uiReady')
-    expect(page.locator('#chat .turn-meta').first).to_contain_text('Claude')
-    expect(page.locator('#chat .turn-meta img[src*="claude.svg"]')).to_have_count(1)
-    hint = page.locator('#chat .switch-hint')
-    expect(hint).to_contain_text('Claude')
-    expect(hint).to_contain_text('Kimi Code')
-    expect(hint).to_contain_text('Continue directly')
+    page.wait_for_function('switches.some(entry => entry.navigate && entry.engine === "claude" && entry.sessionId === "shared-fixture")')
+    expect(page.locator('#chat .switch-hint')).to_have_count(0)
     page.close()
     page = browser.new_page(viewport={'width':1200,'height':820})
     page.on('pageerror',lambda e:errors.append(str(e)))

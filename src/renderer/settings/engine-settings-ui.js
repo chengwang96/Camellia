@@ -40,8 +40,6 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       control.onchange = () => { draftPreference(); void queueLoginPreferences(id); renderConnection(); };
     }
     if (id === 'antigravity') {
-      $('googleSignIn').textContent = 'Open official CLI sign-in';
-      $('googleRefresh').textContent = 'Verify after sign-in';
       $('googleAccountList').removeAttribute('role');
       const credits = document.createElement('div'); credits.className = 'engine-field';
       credits.innerHTML = '<label for="googleUseCredits" data-i18n>Use AI credits after the plan quota is exhausted</label><input id="googleUseCredits" type="checkbox">';
@@ -104,8 +102,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     if (!$('subscriptionsPage').hidden && ['codex', 'kimi', 'antigravity'].includes(focus)) {
       const panel = $((focus === 'antigravity' ? 'google' : focus) + 'AccountPanel');
       panel.scrollIntoView({ block: 'start' });
-      const prefix = focus === 'antigravity' ? 'google' : focus;
-      const target = $(prefix + 'SignIn');
+      const target = focus === 'antigravity' ? panel.querySelector('[data-card-action="refresh"]') || $('googleUseCredits') : $(focus + 'SignIn');
       if (!target.disabled) target.focus({ preventScroll: true });
     }
   }
@@ -117,9 +114,9 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function renderGoogleAccountList() {
     window.renderSubscriptionCards({ container: $('googleAccountList'),
-      state: googleAccount && { ...googleAccount, accounts: googleAccount.accounts?.filter(account => account.signedIn) },
+      state: googleAccount && { ...googleAccount, accounts: googleAccount.accounts?.filter(account => account.signedIn || account.stale) },
       engine: 'antigravity', manage: false,
-      busy: accountBusy || googleAccount?.usage?.refreshing, onRefresh: () => void googleAction('refreshUsage') });
+      busy: accountBusy || googleAccount?.usage?.refreshing, onRefresh: () => void refreshGoogleUsage() });
   }
   async function accountAction(call, apply) {
     if (codexBusy || kimiBusy || accountBusy) return;
@@ -130,7 +127,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function renderKimiAccount() {
     renderRotation('kimi', kimiAccount);
-    const preferences = accountPreferences('kimi'), pending = Boolean(kimiAccount?.loginPending), busy = kimiBusy || kimiAccount?.refreshing || kimiAccount?.signingOut;
+    const preferences = accountPreferences('kimi'), pending = Boolean(kimiAccount?.loginPending), busy = kimiBusy || kimiAccount?.refreshing || kimiAccount?.signingOut || kimiAccount?.waking;
     const hasAccounts = kimiAccount?.accounts?.some(account => account.signedIn);
     $('kimiSignIn').hidden = Boolean(hasAccounts);
     $('kimiAddAccount').hidden = !hasAccounts;
@@ -155,6 +152,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     renderAccountList({ containerId: 'kimiAccountList', state: kimiAccount && { ...kimiAccount, accounts: kimiAccount.accounts?.filter(account => account.signedIn) },
       busy: Boolean(busy),
       onRefresh: id => accountAction(() => api.kimiAccountRefresh(id), result => { kimiAccount = result; }),
+      onWake: id => accountAction(() => api.kimiAccountWake(id), result => { kimiAccount = result; status(t(result.warning || 'Greeting sent. Quota refreshed; reset time follows the provider.')); }),
       onSignIn: id => accountAction(async () => { const selected = await api.kimiAccountSelect(id); if (!selected.ok) throw new Error(selected.error); await flushLoginPreferences('kimi'); return api.kimiSignIn(); }, result => { kimiAccount = result; }),
       onSelect: id => accountAction(() => api.kimiAccountSelect(id), result => { kimiAccount = result; renderKimiAccount(); }),
       onRemove: id => accountAction(() => api.kimiAccountRemove(id), result => { kimiAccount = result; renderKimiAccount(); }),
@@ -213,22 +211,22 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     // CLI diagnostics can contain URLs, JSON and terminal output. Keep them in
     // the disclosure and use stable, translatable messages for the main notice.
     const raw = String(error || '');
-    if (/failed to get profile picture/i.test(raw)) return t('Could not load the Google account picture. Check your network or proxy settings and retry.');
     if (/\b(invalid_grant|unauthenticated|unauthorized)\b|(?:token|credentials?|session).*(?:expired|invalid)/i.test(raw)) return t('Google sign-in has expired or is invalid. Sign in again and retry.');
     if (/\b(EOF|ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT)\b|timed?\s*out|network|connection|fetch failed/i.test(raw)) return t('Could not connect to Google. Check your network or proxy settings and retry.');
     return t('Could not refresh Google quota. Try again later or expand the error details.');
   }
+  const isGoogleAvatarFailure = error => /profile picture/i.test(String(error || ''));
   function renderConnection() {
     renderCodexAccount();
     renderKimiAccount();
     const preferences = accountPreferences('antigravity');
     $('googleUseCredits').checked = preferences.useG1Credits === true;
-    $('googleSignIn').disabled = accountBusy;
-    $('googleRefresh').disabled = accountBusy || !googleAccount?.installed;
     $('googleAccountStatus').textContent = accountBusy ? 'Connecting to Google…' : googleAccount?.verification === 'pending' ? 'Waiting for external sign-in. Return here to verify.'
+      : googleAccount?.verification === 'stale-error' ? t('The last model refresh failed. Showing the previous model list; refresh the account to update it.')
       : googleAccount?.verification === 'unverified' || googleAccount?.verification === 'error' || !googleAccount?.installed
         ? t('Sign in or refresh an existing CLI sign-in. The required runtime is downloaded on demand.') : '';
-    const quotaError = googleAccount?.usage?.error || '';
+    const rawQuotaError = googleAccount?.usage?.error || '';
+    const quotaError = isGoogleAvatarFailure(rawQuotaError) ? '' : rawQuotaError;
     $('googleQuotaStatus').textContent = quotaError ? googleQuotaMessage(quotaError)
       + (googleAccount.usage.latest ? ' ' + t('Quota refresh failed. Showing the last successful reading.') : '') : '';
     $('googleQuotaStatus').hidden = !quotaError;
@@ -352,7 +350,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       const key = row.id + ':' + mode;
       const saved = row.paths?.[mode] || (row.mode === mode ? row.customPath : '') || '';
       const label = row.id === 'antigravity' ? 'Antigravity CLI executable (Google subscription)' : ['dsh', 'kimi', 'pi'].includes(row.id) ? 'Local JavaScript entry file' : 'Local executable';
-      return `<fieldset class="runtime-path" data-runtime="${row.id}" data-mode="${mode}" ${runtimePathBusy || row.status === 'installing' ? 'disabled' : ''}><label for="runtime-path-${row.id}-${mode}" data-i18n>${label}</label><div class="runtime-path-actions"><input id="runtime-path-${row.id}-${mode}" type="text" data-runtime-path="${key}" value="${esc(runtimePathDrafts.get(key) ?? saved)}" placeholder="${esc(t('Automatic detection'))}" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" data-i18n>Choose a local executable or paste its full path. Saving runs it to check its version. Clear to use automatic detection.</p></fieldset>`;
+      return `<fieldset class="runtime-path" data-runtime="${row.id}" data-mode="${mode}" ${runtimePathBusy || row.status === 'installing' || row.updating ? 'disabled' : ''}><label for="runtime-path-${row.id}-${mode}" data-i18n>${label}</label><div class="runtime-path-actions"><input id="runtime-path-${row.id}-${mode}" type="text" data-runtime-path="${key}" value="${esc(runtimePathDrafts.get(key) ?? saved)}" placeholder="${esc(t('Automatic detection'))}" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" data-i18n>Choose a local executable or paste its full path. Saving runs it to check its version. Clear to use automatic detection.</p></fieldset>`;
     }).join('');
   }
   function renderPython(python) {
@@ -385,7 +383,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function renderRuntimes(rows) {
     runtimeRows = rows;
-    $('runtimeCards').innerHTML = rows.map(row => `<article class="runtime-card"><div><h2>${esc(row.name)}${row.id === 'antigravity' ? ` · ${row.mode === 'subscription' ? 'Google subscription' : 'API'}` : ''}</h2><span data-i18n class="badge ${row.status === 'ready' ? 'good' : row.status === 'error' ? 'bad' : ''}">${({ready:"Ready",installing:"Downloading",missing:"Not downloaded",error:"Download failed"})[row.status]}</span><button data-i18n data-install="${row.id}" ${row.status === 'ready' || row.status === 'installing' ? 'disabled' : ''}>${row.status === 'error' ? "Retry download" : row.status === 'ready' ? "Installed" : row.status === 'installing' ? "Downloading…" : "Download"}</button></div><p class="hint" data-i18n>${esc(row.status === 'ready' ? `v${row.version} · ${row.source}` : row.message || (row.id === 'antigravity' ? row.mode === 'subscription' ? 'Downloads the official CLI for Google sign-in. No Python environment is needed.' : 'Downloads the official SDK and its own Python environment. Other engines stay uninstalled.' : 'Download this engine when you need it. Other engines stay uninstalled.'))}</p>${updateInfoLine(row.id)}${row.file ? `<div class="runtime-installation-path"><span data-i18n>Installation path</span><code>${esc(row.file)}</code></div>` : ''}</article>`).join('');
+    $('runtimeCards').innerHTML = rows.map(row => `<article class="runtime-card"><div><h2>${esc(row.name)}${row.id === 'antigravity' ? ` · ${row.mode === 'subscription' ? 'Google subscription' : 'API'}` : ''}</h2><span data-i18n class="badge ${!row.updating && row.status === 'ready' ? 'good' : !row.updating && row.status === 'error' ? 'bad' : ''}">${row.updating ? 'Updating…' : ({ready:"Ready",installing:"Downloading",missing:"Not downloaded",error:"Download failed"})[row.status]}</span><button data-i18n data-install="${row.id}" ${row.updating || row.status === 'ready' || row.status === 'installing' ? 'disabled' : ''}>${row.status === 'error' ? "Retry download" : row.status === 'ready' ? "Installed" : row.status === 'installing' ? "Downloading…" : "Download"}</button></div><p class="hint" data-i18n>${esc(row.status === 'ready' ? `v${row.version} · ${row.source}` : row.message || (row.id === 'antigravity' ? row.mode === 'subscription' ? 'Downloads the official CLI for Google sign-in. No Python environment is needed.' : 'Downloads the official SDK and its own Python environment. Other engines stay uninstalled.' : 'Download this engine when you need it. Other engines stay uninstalled.'))}</p>${updateInfoLine(row.id)}${row.file ? `<div class="runtime-installation-path"><span data-i18n>Installation path</span><code>${esc(row.file)}</code></div>` : ''}</article>`).join('');
     renderRuntimePaths();
     showSelectedRuntime();
   }
@@ -466,24 +464,20 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   };
   api.onKimiAccount(account => { kimiAccount = account; renderKimiAccount(); });
   api.onAntigravityAccount?.(account => { googleAccount = account; renderConnection(); });
-  async function googleAction(action) {
+  async function refreshGoogleUsage() {
     accountBusy = true; renderConnection();
     try {
       await flushLoginPreferences('antigravity');
-      const method = action === 'signIn' ? 'antigravitySignIn' : action === 'refreshUsage' ? 'antigravityAccountRefreshUsage' : 'antigravityAccountRefresh';
-      const result = await api[method]();
+      const result = await api.antigravityAccountRefreshUsage();
       if (!result.ok) throw new Error(result.error);
       if (!result.canceled) {
         await loadAccount();
-        if (googleAccount.usage?.error) status(googleQuotaMessage(googleAccount.usage.error), true);
-        else status(action === 'signIn' ? 'Complete Google sign-in in the terminal, then refresh the account here.'
-          : action === 'refreshUsage' ? 'Account status updated.' : 'Google account models refreshed');
+        if (googleAccount.usage?.error && !isGoogleAvatarFailure(googleAccount.usage.error)) status(googleQuotaMessage(googleAccount.usage.error), true);
+        else status('Account status updated.');
       }
     } catch (error) { status(error.message, true); await loadAccount(); }
     finally { accountBusy = false; renderConnection(); }
   }
-  $('googleSignIn').onclick = () => void googleAction('signIn');
-  $('googleRefresh').onclick = () => void googleAction('refresh');
   $('engineSource').oninput = e => { current().files.find(file => file.id === documentId).text = e.target.value; changed(); };
   $('engineDocument').onchange = e => { documentId = e.target.value; renderDocument(); };
   $('reloadEngine').onclick = () => select(engine, true);

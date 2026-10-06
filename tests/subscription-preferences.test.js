@@ -74,7 +74,7 @@ test('Google credit billing is configured in subscriptions and preserved by engi
   assert.equal(JSON.parse(fs.readFileSync(file)).useG1Credits, true);
 });
 
-test('Google distinguishes unverified, pending, verified, stale and failed validation', async context => {
+test('Google distinguishes unverified, pending, verified, stale and a failed refresh over a good list', async context => {
   const harness = createHarness(); context.after(() => harness.cleanup());
   const home = harness.folder('google-account'), cliSettingsFile = path.join(home, 'cli.json');
   writeJson(cliSettingsFile, {});
@@ -92,13 +92,17 @@ test('Google distinguishes unverified, pending, verified, stale and failed valid
   assert.equal(account.state().verification, 'stale');
   fail = true;
   await assert.rejects(account.refresh(), /offline/);
-  assert.equal(account.state().verification, 'error');
-  assert.equal(account.state().verifiedAt, null);
-  assert.deepEqual(account.state().models, []);
+  // A transient CLI failure must not discard the models the account already
+  // proved: the composer keeps its list and the account stays signed in.
+  assert.equal(account.state().verification, 'stale-error');
+  assert.equal(account.state().verifiedAt, 1000);
+  assert.deepEqual(account.state().models.map(model => model.id), ['gemini-test']);
   writeJson(path.join(home, 'google-account.json'), { models: [{ id: 'test' }], verifiedAt: time });
   writeJson(cliSettingsFile, { modelProvider: 'gemini' });
   await assert.rejects(account.refresh(), /API provider/);
-  assert.equal(account.state().verification, 'error');
-  assert.equal(account.state().verifiedAt, null);
+  // An unreadable provider config is not a network blip, but the last good
+  // catalog is still kept; the sign-in prompt comes from the raw error.
+  assert.equal(account.state().verification, 'stale-error');
+  assert.equal(account.state().verifiedAt, time);
   assert.ok(fs.existsSync(cliSettingsFile));
 });

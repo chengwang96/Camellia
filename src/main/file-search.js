@@ -8,7 +8,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { previewKind } = require('./file-preview');
-const { extractText, readable } = require('./file-text');
+const { extractText, readable, clearLegacyCache } = require('./file-text');
 
 const MAX_RESULTS = 20;
 const MAX_VISITED = 20_000;
@@ -133,7 +133,10 @@ function collectReadable(roots, budget) {
         if (!entry.isFile() && !entry.isSymbolicLink()) continue;
         budget.entries--;
         if (IGNORED_FILES.some(pattern => pattern.test(name))) continue;
-        const kind = readable(name);
+        // A legacy `.doc`/`.ppt` is only readable once its OLE stream proves the
+        // format, so the probe needs the full path rather than just the name.
+        const full = path.join(current, name);
+        const kind = readable(full);
         if (!kind) continue;
         let stats;
         try {
@@ -223,6 +226,7 @@ function searchFiles({ query, cwd, workspacePath, workspaceId, workspaces, roots
   if (!text) throw new Error(copy.empty);
   if (text.length > 500) throw new Error(copy.tooLong);
   const searched = rootsFor({ cwd, workspacePath, workspaceId, workspaces, roots });
+  clearLegacyCache();
   const results = [];
   const budget = { visited: 0, entries: DEFAULT_ENTRIES };
   for (const root of searched) {
@@ -245,6 +249,7 @@ async function searchContents({ query, cwd, workspacePath, workspaceId, workspac
   const needles = tokens(text).filter(token => !/[*?]/.test(token));
   if (!needles.length) return searchFiles({ query: text, cwd, workspacePath, workspaceId, workspaces, roots, language });
   const searched = rootsFor({ cwd, workspacePath, workspaceId, workspaces, roots });
+  clearLegacyCache();
   const budget = { visited: 0, entries: DEFAULT_ENTRIES };
   const candidates = collectReadable(searched, budget);
   const results = [];

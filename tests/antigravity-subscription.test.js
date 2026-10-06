@@ -6,7 +6,7 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { createHarness } = require('./claude-harness.cjs');
 const { createAntigravity, subscriptionSpawnSpec } = require('../src/engines/antigravity');
-const { subscriptionEnvironment, systemProxy, parseModels, parseGoogleQuota, groupModels, normalizeSelection, effectiveSelection, loginScript, requireGoogleProvider } = require('../src/engines/antigravity/subscription');
+const { subscriptionEnvironment, parseModels, parseGoogleQuota, groupModels, normalizeSelection, effectiveSelection, loginScript, requireGoogleProvider, headlessEnvironment, describeCliFailure } = require('../src/engines/antigravity/subscription');
 const { createGoogleAccount } = require('../src/engines/antigravity/subscription');
 const { createRuntimeManager } = require('../src/main/runtime-manager');
 const { installAntigravityCli } = require('../src/main/antigravity-cli-runtime');
@@ -19,12 +19,34 @@ test('Google subscription strips API auth, preserves unrelated environment and s
   for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'AGY_ADC_AUTH', 'GOOGLE_GEMINI_BASE_URL']) assert.equal(env[key], undefined);
   assert.equal(env.HTTPS_PROXY, 'http://proxy.example:8080'); assert.equal(env.http_proxy, undefined);
   assert.equal(env.Path, input.Path); assert.equal(env.unrelated, 'keep'); assert.equal(input.GEMINI_API_KEY, 'fixture');
-  // An enabled Windows system proxy is a legitimate override, so this assertion
-  // only holds on machines without one.
-  if (!systemProxy()) assert.equal(subscriptionEnvironment(input).http_proxy, input.http_proxy, 'An empty custom proxy preserves environment proxy settings');
+  const automatic = subscriptionEnvironment(input);
+  if (automatic.HTTPS_PROXY) {
+    assert.equal(automatic.HTTP_PROXY, automatic.HTTPS_PROXY);
+    assert.equal(automatic.http_proxy, undefined);
+    assert.equal(automatic.ALL_PROXY, '');
+    assert.equal(automatic.NO_PROXY, 'localhost,127.0.0.1,::1');
+  } else assert.equal(automatic.http_proxy, input.http_proxy, 'An empty custom proxy preserves environment proxy settings');
   const spec = subscriptionSpawnSpec({ runtime: { file: 'official-agy' }, home: '/profile', env: input });
   assert.equal(spec.env.GEMINI_API_KEY, undefined);
   assert.deepEqual(JSON.parse(spec.env.CAMELLIA_ANTIGRAVITY_CLI), { exe: 'official-agy', home: '/profile', model: '', effort: '' });
+  const managed = subscriptionEnvironment({ CAMELLIA_NETWORK_MODE: 'auto', CAMELLIA_NETWORK_PROXY: 'http://127.0.0.1:54321',
+    CAMELLIA_SUBSCRIPTION_PROXY: 'http://127.0.0.1:7890', HTTPS_PROXY: 'http://stale:1' });
+  assert.equal(managed.HTTPS_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(managed.HTTP_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(managed.ALL_PROXY, '');
+  assert.equal(managed.NO_PROXY, 'localhost,127.0.0.1,::1');
+});
+
+test('Background Google checks stay headless so a stalled credential read cannot open a browser', () => {
+  const env = headlessEnvironment({ Path: 'shell-tools', AGY_CLI_DISABLE_AUTO_UPDATE: 'true' });
+  assert.equal(env.AGY_CLI_NONINTERACTIVE_HEADLESS, 'true');
+  assert.equal(env.Path, 'shell-tools');
+  assert.equal(env.AGY_CLI_DISABLE_AUTO_UPDATE, 'true');
+  // A headless credential failure is reported as an ordinary sign-in problem,
+  // never as raw terminal text or a browser prompt.
+  assert.match(describeCliFailure('Headless auth: no valid auth (keyring unavailable); starting login', '', 3), /sign-in has expired or is invalid/);
+  assert.equal(describeCliFailure('', '', 7), 'Antigravity CLI exited (7)');
+  assert.equal(describeCliFailure('network down', '', 1), 'network down');
 });
 
 test('Google account model parsing preserves model versions and reasoning variants while removing duplicate rows', () => {
@@ -173,6 +195,9 @@ test('Google quota refresh runs /quota, records history, and keeps the last good
   const first = await account.refreshUsage({ force: true });
   assert.deepEqual(calls[0].args, ['-p', '/quota', '--output-format', 'json']);
   assert.equal(calls[0].options.env.GEMINI_API_KEY, undefined);
+  // A background check must stay headless so a stalled credential read never
+  // falls back to opening the Google authorization page in a browser.
+  assert.equal(calls[0].options.env.AGY_CLI_NONINTERACTIVE_HEADLESS, 'true');
   assert.deepEqual(first.usage.latest.windows, [{ id: 'gemini-models:gemini-weekly', label: 'Gemini Models · Weekly', usedPercent: 75, resetsAt: '2026-10-08T18:47:45Z' }]);
   assert.equal(first.usage.status, 'ok'); assert.equal(first.usage.history.length, 1);
   // A failed refresh keeps the previous reading but surfaces the refresh error.
@@ -182,6 +207,63 @@ test('Google quota refresh runs /quota, records history, and keeps the last good
   const third = await account.refreshUsage({ force: false });
   assert.equal(third.usage.error, second.usage.error, 'A fresh reading suppresses the throttled refresh entirely');
   assert.equal(calls.length, 2);
+});
+
+test('A failed model refresh keeps the last good Google catalog so the composer never empties', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  const home = h.folder('antigravity-models'); fs.mkdirSync(home, { recursive: true });
+  const cliSettingsFile = path.join(home, 'cli.json');
+  const okModels = 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n';
+  const quota = JSON.stringify({ command: { data: { groups: [
+    { name: 'Gemini Models', buckets: [{ id: 'weekly', window: 'weekly', remaining_fraction: 0.5 }] },
+  ] } } });
+  let modelCalls = 0;
+  const account = createGoogleAccount({ home, cliSettingsFile, runtime: () => ({ locate: () => ({ file: 'official-agy' }) }),
+    environment: () => ({}), settings: () => ({ proxyUrl: '' }), openLogin: async () => {},
+    run: async (file, args) => {
+      if (args[0] === 'models') { modelCalls++; if (modelCalls === 1) return okModels; throw new Error('Bad Gateway'); }
+      return quota;
+    } });
+  const first = await account.refresh();
+  assert.deepEqual(first.models.map(model => model.id), ['gemini-3.8-flash']);
+  assert.equal(first.verification, 'verified'); assert.ok(first.verifiedAt);
+  // A transient CLI failure must not wipe the catalog: the saved model stays
+  // selectable and the account still counts as signed in.
+  await assert.rejects(account.refresh(), /Bad Gateway/);
+  const failed = account.state();
+  assert.deepEqual(failed.models.map(model => model.id), ['gemini-3.8-flash'], 'The last good catalog survives a failed refresh');
+  assert.equal(failed.verifiedAt, first.verifiedAt, 'The successful verification time is preserved');
+  assert.match(failed.error, /Bad Gateway/);
+  assert.equal(failed.verification, 'stale-error');
+  assert.equal(require('../src/engines/subscription-accounts').accountSignedIn('antigravity', failed), true);
+});
+
+test('Google avatar lookup failures keep the last good models and quota without surfacing an error', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  const home = h.folder('avatar-failure'), cliSettingsFile = path.join(home, 'cli.json');
+  const okModels = 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n';
+  const quota = JSON.stringify({ command: { data: { groups: [
+    { name: 'Gemini Models', buckets: [{ id: 'weekly', window: 'weekly', remaining_fraction: 0.5 }] },
+  ] } } });
+  const avatarFailure = 'error: Eligibility check failed: failed to get profile picture: EOF';
+  let modelCalls = 0, quotaCalls = 0;
+  const account = createGoogleAccount({ home, cliSettingsFile, runtime: () => ({ locate: () => ({ file: 'official-agy' }) }),
+    environment: () => ({}), settings: () => ({ proxyUrl: '' }), openLogin: async () => {},
+    run: async (file, args) => {
+      if (args[0] === 'models') return ++modelCalls === 1 ? okModels : avatarFailure;
+      return ++quotaCalls === 1 ? quota : avatarFailure;
+    } });
+  const first = await account.refresh();
+  assert.deepEqual(first.models.map(model => model.id), ['gemini-3.8-flash']);
+  assert.equal(first.usage.status, 'ok');
+  const modelFallback = await account.refresh();
+  assert.deepEqual(modelFallback.models.map(model => model.id), ['gemini-3.8-flash']);
+  assert.equal(modelFallback.error, '');
+  assert.equal(modelFallback.verification, 'verified');
+  const quotaFallback = await account.refreshUsage({ force: true });
+  assert.deepEqual(quotaFallback.usage.latest, first.usage.latest);
+  assert.equal(quotaFallback.usage.status, 'stale');
+  assert.equal(quotaFallback.usage.error, null);
 });
 
 test('Google quota refresh deduplicates requests, retains 30 days, and clears old-account data on sign-in', async t => {

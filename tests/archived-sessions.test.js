@@ -101,16 +101,18 @@ test('shared conversations are archived and purged with all their files', async 
   assert.equal((await archivedList(h)).length, 0);
 });
 
-test('a busy shared conversation cannot be deleted', async (t) => {
+test('deleting an archived shared conversation releases its idle engine process', async (t) => {
   const h = setup(t);
   const shared = h.api.sharedConversations;
-  const c = shared.create('claude', null, 'Busy chat');
-  shared.active.set(c.id, { facade: { gen: 1 }, permissions: new Map() });
+  const c = shared.create('claude', null, 'Archived chat');
+  let releases = 0;
+  h.api.codex.sessions.set({ conversationId: c.id }, { running: false, shutdown: async () => { releases++; } });
   shared.workspaces.archiveSession(c.id, true);
   const res = await h.call('archived-session-action', { source: 'shared', id: c.id, action: 'delete' });
-  assert.equal(res.ok, false);
-  assert.match(res.error, /Stop this conversation/);
-  shared.active.delete(c.id);
+  assert.equal(res.ok, true, res.error);
+  assert.equal(releases, 1);
+  assert.equal(h.api.codex.sessions.get({ conversationId: c.id }), null);
+  assert.equal(shared.items.has(c.id), false);
 });
 
 test('unknown sources and actions are rejected', async (t) => {
@@ -158,17 +160,6 @@ test('the sidebar delete path is also wired through the shared conversation comm
   assert.equal(fs.existsSync(logFile), false);
   assert.equal(shared.items.has(c.id), false);
   assert.equal((await archivedList(h)).length, 0);
-});
-
-test('a busy shared conversation cannot be deleted from the sidebar', async (t) => {
-  const h = setup(t);
-  const shared = h.api.sharedConversations;
-  const c = shared.create('claude', null, 'Busy delete-me');
-  shared.active.set(c.id, { facade: { gen: 1 }, permissions: new Map() });
-  const res = await h.call('conversation-command', { engine: 'claude', action: 'delete-session', payload: { id: c.id } });
-  assert.equal(res.ok, false);
-  assert.match(res.error, /Stop this conversation/);
-  shared.active.delete(c.id);
 });
 
 test('codex, antigravity and kimi sidebar deletes remove their own engine histories', async (t) => {

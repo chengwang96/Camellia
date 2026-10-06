@@ -10,8 +10,11 @@ function createProviderInsights({ file, getConfig, onChange = () => {}, now = ()
   const pending = new Map();
   function find(providerId, keyId) {
     const provider = getConfig().providers.find(p => p.id === providerId);
-    const key = provider?.keys.find(k => k.id === keyId);
-    if (!key) throw new Error("Save this key first");
+    const key = provider?.keys.find(k => k.id === keyId)
+      || (provider?.type === 'qclaw' ? provider.keys.find(k => k.id === 'qclaw-auto') : null);
+    if (!key) throw new Error(provider?.type === 'qclaw'
+      ? "QClaw gateway was not found. Start QClaw and try again; no API key is required."
+      : "Save this key first");
     return { provider, key };
   }
   function entryFor(provider, key) {
@@ -90,6 +93,10 @@ function createProviderInsights({ file, getConfig, onChange = () => {}, now = ()
     return { ok: verification.ok, error: verification.error, state: state() };
   }
   async function models({ provider: draft, keyId }) {
+    if (draft.type === 'qclaw') {
+      const { provider, key } = find(draft.id, keyId);
+      return { ok: true, models: await accounts.fetchModels(provider, key.key, { fetchImpl }) };
+    }
     const provider = structuredClone(draft);
     const key = provider.keys?.find(k => k.id === keyId) || provider.keys?.find(k => k.key || k.maskedKey);
     if (!key) throw new Error("Paste an API key first");

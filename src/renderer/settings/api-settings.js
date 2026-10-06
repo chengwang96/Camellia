@@ -13,6 +13,7 @@ const titles = {
   providers: ["API Keys", "Manage API providers, keys, balances, models and routes."],
   usage: ["Usage", "Track requests and token consumption."],
   general: ["General", "Language, appearance, and local preferences."],
+  data: ["Data & backups", ""],
   network: ["Network", "Choose how Camellia reaches the internet and test each connection."],
   archived: ["Archived", "Restore or permanently delete archived conversations."],
   mobile: ["Mobile access", "Connect your phone through Tailscale."],
@@ -21,7 +22,6 @@ const titles = {
   models: ["Model Settings", "Choose visible subscription models, quick-switch defaults and model sessions."],
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
-let hasNavigated = false;
 let balanceKey = null, usageData = [];
 let catalog = [], catalogSelected = new Set(), catalogProvider = null;
 let statusTimer;
@@ -37,19 +37,57 @@ function status(text, error = false) {
 // Provider edits save on change, like the engine and subscription pages. A
 // revision counter survives an edit that lands while a save is in flight.
 let revision = 0, savedRevision = 0, saving = false, saveTimer = null, saveChain = Promise.resolve(), lastSaveError = null;
+const savedModels = new WeakMap();
 const isDirty = () => revision !== savedRevision;
-function edited() {
+function edited(immediate = false) {
   revision++;
   clearTimeout(saveTimer);
   // Save shortly after typing stops; leaving the field flushes immediately.
-  saveTimer = setTimeout(() => { saveTimer = null; void flushSave(false); }, 700);
+  if (immediate) void flushSave();
+  else saveTimer = setTimeout(() => { saveTimer = null; void flushSave(false); }, 700);
 }
 // A key or model row starts empty and only becomes valid once it is filled in.
 // Stay quiet for those half-finished rows and save as soon as they are usable,
 // instead of flashing a validation error on every "add row" click.
 function draftComplete() {
-  return !config.providers.some(p => p.models.some(m => !String(m.id || '').trim() || !String(m.upstream || '').trim())
-    || p.keys.some(k => !String(k.key || '').trim() && !k.maskedKey && p.type !== 'qclaw'));
+  return !config.providers.some(p => !String(p.baseUrl || '').trim()
+    || p.models.some(m => (savedModels.has(m) || String(m.id || '').trim() || String(m.upstream || '').trim())
+      && (!String(m.id || '').trim() || !String(m.upstream || '').trim()))
+    || p.keys.some(k => !String(k.key || '').trim() && !k.maskedKey && k.name && p.type !== 'qclaw'));
+}
+function providerSnapshot() {
+  const snapshot = structuredClone(config);
+  snapshot.providers = snapshot.providers.flatMap((provider, index) => {
+    const draft = config.providers[index];
+    if (!String(provider.baseUrl || '').trim()) {
+      const stored = live.providers.find(item => item.id === provider.id);
+      if (!stored) return [];
+      provider.baseUrl = stored.baseUrl;
+    }
+    provider.keys = provider.keys.filter(key => String(key.key || '').trim() || key.maskedKey);
+    provider.models = provider.models.flatMap((model, modelIndex) => {
+      if (String(model.id || '').trim() && String(model.upstream || '').trim()) return [model];
+      const stored = savedModels.get(draft.models[modelIndex]);
+      return stored ? [structuredClone(stored)] : [];
+    });
+    return [provider];
+  });
+  return snapshot;
+}
+function modelReferences() {
+  return config.providers.flatMap(provider => provider.models.map(model => {
+    const id = String(model.id || '').trim(), upstream = String(model.upstream || '').trim();
+    const stored = savedModels.get(model), complete = id && upstream;
+    return { providerId: provider.id, model, id: complete ? id.replace(/:cloud$/, '') : stored?.id,
+      upstream: complete ? upstream : stored?.upstream };
+  }));
+}
+function rememberSavedModels(references = modelReferences()) {
+  for (const reference of references) {
+    const stored = live.providers.find(item => item.id === reference.providerId);
+    const saved = stored?.models.find(item => item.id === reference.id && item.upstream === reference.upstream);
+    if (saved) savedModels.set(reference.model, structuredClone(saved));
+  }
 }
 function flushSave(explicit = true) {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
@@ -57,35 +95,50 @@ function flushSave(explicit = true) {
   return saveChain;
 }
 async function saveProviders(explicit) {
-  if (saving || !isDirty() || !draftComplete()) return;
+  if (saving || !isDirty()) return;
   saving = true;
   try {
     let warning = null;
     // Keep saving until the revision stops moving, so an edit typed during the
     // round trip is never dropped.
-    while (isDirty()) {
-      const target = revision, snapshot = structuredClone(config);
-      const result = await api.apiRouterSaveConfig(snapshot);
-      if (!result.ok) throw new Error(result.error);
-      savedRevision = target; lastSaveError = null; warning = result.warning || null;
-      live = { ...live, ...result.state };
-    }
-    const data = await api.providerInsights(); if (data.ok) insight = data;
-    syncMaskedKeys();
+    do {
+      while (isDirty()) {
+        const target = revision, snapshot = providerSnapshot(), references = modelReferences();
+        const result = await api.apiRouterSaveConfig(snapshot);
+        if (!result.ok) throw new Error(result.error);
+        savedRevision = target; lastSaveError = null; warning = result.warning || null;
+        live = { ...live, ...result.state };
+        rememberSavedModels(references);
+        syncMaskedKeys(snapshot);
+      }
+      const data = await api.providerInsights().catch(error => ({ ok: false, error: error.message }));
+      if (data.ok) insight = data;
+      else warning = warning || data.error;
+    } while (isDirty());
+    if (current()?.type === 'qclaw') renderKeys();
     showLive(); updateKeyStats(); renderRoutes(); renderProviders();
     if (warning) status(warning, true);
-    else status("Saved. All engines share these connections.");
-  // A debounced attempt can catch a half-typed URL; keep the draft dirty and
-  // stay quiet, then report for real once the user leaves the field.
-  } catch (e) { lastSaveError = e.message; if (explicit) status(e.message, true); }
+    else if (draftComplete()) status("Saved. All engines share these connections.");
+    else if (explicit) status("Complete the API URL, key or model fields to finish saving.", true);
+  } catch (e) { lastSaveError = e.message; status(e.message, true); }
   finally { saving = false; }
 }
 // The router stores keys masked; mirror that back into the open editor so a
 // secret that has been saved stops sitting in a password field.
-function syncMaskedKeys() {
+function syncMaskedKeys(snapshot) {
+  let changed = false;
   for (const p of config.providers) {
     const stored = (live.providers || []).find(item => item.id === p.id); if (!stored) continue;
+    if (p.type === 'qclaw') {
+      if (JSON.stringify(p.keys) !== JSON.stringify(stored.keys)) changed = true;
+      p.keys = structuredClone(stored.keys); p.baseUrl = stored.baseUrl;
+      continue;
+    }
     for (const k of p.keys) {
+      if (snapshot) {
+        const submitted = snapshot.providers.find(item => item.id === p.id)?.keys.find(item => item.id === k.id);
+        if (!submitted || String(k.key || '').trim() !== String(submitted.key || '').trim()) continue;
+      }
       const saved = stored.keys.find(item => item.id === k.id); if (!saved?.maskedKey) continue;
       k.maskedKey = saved.maskedKey;
       if (!k.key) continue;
@@ -94,23 +147,25 @@ function syncMaskedKeys() {
       if (input) { input.value = ''; input.placeholder = saved.maskedKey + ' · Leave blank to keep'; }
     }
   }
+  return changed;
 }
 function current() { return config?.providers.find(p => p.id === selected); }
 async function assertClean() {
   if (!isDirty()) return;
   await flushSave();
-  if (isDirty()) throw new Error(lastSaveError || "Save your changes before querying or validating keys");
+  if (isDirty()) throw new Error(lastSaveError || "API changes could not be saved. Check the highlighted error and try again.");
 }
 function setView(next, engine, focus) {
-  hasNavigated = true;
+  if (isDirty()) void flushSave();
   // Keep older download links working, including the requested engine.
   if (next === 'runtimes') next = focus === 'python' || focus === 'runtime-path-python' ? 'general' : 'engines';
   if (next === 'general' && ['quickSwitchModels', 'conversationSessionTtl', 'conversationSessionLimit'].includes(focus)) next = 'models';
   if (next === 'engines' && focus === 'account') { next = 'subscriptions'; focus = engine; }
   if (next === 'providers' && ['kimi', 'codex', 'antigravity'].includes(focus)) next = 'subscriptions';
   if (next === 'balances') next = 'providers';
-  // Space cleanup now lives on the Archived page; older links still open it.
-  if (next === 'storage') next = 'archived';
+  if (next === 'storage') { next = 'data'; focus ||= 'storageSection'; }
+  if (next === 'general' && ['dataDirectorySection', 'dataPath', 'dataDirectoryStatus', 'migrateDataDirectory', 'openLogs',
+    'dataMigrationSection', 'dataMigrationStatus', 'exportData', 'importData', 'importDataAgain', 'storageSection'].includes(focus)) next = 'data';
   // The connection settings live on their own page now; the download prompt and
   // older links still ask for General or Runtime, so redirect them.
   if (next === 'general' && (focus === 'networkMode' || focus === 'downloadProxyUrl')) next = 'network';
@@ -122,8 +177,8 @@ function setView(next, engine, focus) {
   engineUI.setVisible(next === 'engines');
   window.mobileAccessUI.setVisible(next === 'mobile');
   window.cliDevicesUI?.setVisible(next === 'devices');
-  if (next === 'usage') { fillUsageFilters(); renderUsage(); }
-  if (next === 'providers' || next === 'subscriptions') renderBalances();
+  if (next === 'usage' && live) { fillUsageFilters(); renderUsage(); }
+  if ((next === 'providers' || next === 'subscriptions') && live) renderBalances();
   if (next === 'subscriptions') void engineUI.accountsPage(focus || engine);
   if (next === 'engines') {
     void engineUI.select(engine || engineUI.selected());
@@ -134,6 +189,9 @@ function setView(next, engine, focus) {
   if (next === 'models') void renderModelSettings();
   if (next === 'archived') void renderArchived();
   if (next === 'network') void loadDownloadSettings(focus);
+  if (next === 'data' && focus) requestAnimationFrame(() => {
+    if (view === 'data' && $(focus)?.closest('#dataPage')) $(focus).scrollIntoView({ block: 'center' });
+  });
 }
 function navigateSettings(target = {}) {
   if (target.subscriptionId) balanceKey = target.subscriptionId;
@@ -187,8 +245,8 @@ function renderEditor() {
     ${p.type.startsWith('mimo-token-plan-') ? '<p class="hint" data-i18n>Use your Token Plan tp- key and the region shown in your console. Coding use only. Do not add a pay-as-you-go route for the same model unless you want paid fallback. Check remaining Credits in the MiMo console.</p>' : ''}
     ${p.type === 'mimo' ? '<p class="hint" data-i18n>Use a regular MiMo API key, not a Token Plan tp- key. Requests are billed to your API balance. Adding this provider alongside Token Plan for the same model allows paid fallback.</p>' : ''}
     ${p.type === 'qclaw' ? '<p class="hint" data-i18n>QClaw chooses its local gateway port at start time and rotates its token, so Camellia reads both from QClaw state file on every request. Start QClaw first; there is no key or URL to fill in here.</p>' : ''}
-    <div class="section-head"><h2 data-i18n>API Key</h2><button id="showImport" data-i18n>Import keys</button><button id="addKey" data-i18n>+ Add key</button></div>
-    <p class="hint" data-i18n>Keys are tried in order. Leave a key blank to keep it. Use labels to identify accounts.</p><div id="keyRows"></div>
+    <div class="section-head"><h2 data-i18n>${p.type === 'qclaw' ? 'Connection' : 'API Key'}</h2><button id="showImport" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Import keys</button><button id="addKey" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>+ Add key</button></div>
+    <p class="hint" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Keys are tried in order. Leave a key blank to keep it. Use labels to identify accounts.</p><div id="keyRows"></div>
     <div id="keyImport" class="key-import" hidden><label for="bulkKeys" data-i18n>One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false" data-i18n-attrs="placeholder"></textarea><button id="importKeys" data-i18n>Add to key pool</button><p class="hint" data-i18n>Duplicate keys for this provider are merged on save.</p></div>
     <div class="section"><div class="section-head"><h2 data-i18n>Model</h2><button id="discoverModels" data-i18n>Fetch models</button></div><div id="modelChips" class="model-chips"></div>
       <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Routes switch only within the same model ID. Keep versions and aliases such as latest and chat separate.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Canonical model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th data-i18n>Context</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><button id="addModel" data-i18n>+ Add model</button></details>
@@ -201,15 +259,15 @@ function renderEditor() {
     <details class="advanced section"><summary data-i18n>Active routes and priority</summary><div id="routeRows"></div></details>
     <button id="deleteProvider" class="danger" style="margin-top:24px" data-i18n>Remove provider</button>`;
   $('pProtocol').value = p.protocol; $('aUrlField').hidden = p.protocol !== 'dual';
-  $('backProviders').onclick = () => { selected = null; renderEditor(); };
+  $('backProviders').onclick = () => { void flushSave(); selected = null; renderEditor(); };
   for (const [id, field] of [['pName','name'], ['pUrl','baseUrl'], ['pAUrl','anthropicBaseUrl']]) {
     $(id).oninput = e => { p[field] = e.target.value; edited(); };
     $(id).onblur = () => void flushSave();
   }
-  $('pProtocol').onchange = e => { p.protocol = e.target.value; $('aUrlField').hidden = p.protocol !== 'dual'; edited(); };
-  $('pEnabled').onchange = e => { p.enabled = e.target.checked; edited(); };
+  $('pProtocol').onchange = e => { p.protocol = e.target.value; $('aUrlField').hidden = p.protocol !== 'dual'; edited(true); };
+  $('pEnabled').onchange = e => { p.enabled = e.target.checked; edited(true); };
   $('pPriority').value = String(Math.sign(p.priority ?? 0));
-  $('pPriority').onchange = e => { p.priority = Number(e.target.value); edited(); };
+  $('pPriority').onchange = e => { p.priority = Number(e.target.value); edited(true); };
   $('addKey').onclick = () => { p.keys.push({ id: uid(), key: '', name: '', enabled: true }); edited(); renderKeys(); };
   $('showImport').onclick = () => { $('keyImport').hidden = !$('keyImport').hidden; if (!$('keyImport').hidden) $('bulkKeys').focus(); };
   $('importKeys').onclick = () => {
@@ -220,15 +278,20 @@ function renderEditor() {
     // pasted duplicate of an already-stored key appends a second entry that
     // looks distinct only because its stored value is masked.
     for (const key of keys) if (!p.keys.some(k => k.key === key || k.maskedKey === maskKey(key))) p.keys.push({ id: uid(), key, name: '', enabled: true });
-    $('bulkKeys').value = ''; $('keyImport').hidden = true; edited(); renderKeys(); status(`Added ${keys.length} keys. Save your changes.`);
+    $('bulkKeys').value = ''; $('keyImport').hidden = true; edited(true); renderKeys(); status(`Added ${keys.length} keys.`);
   };
   $('addModel').onclick = () => { p.models.push({ id: '', upstream: '', protocol: 'auto' }); edited(); renderModels(); };
   $('discoverModels').onclick = () => discoverModels(p);
-  $('deleteProvider').onclick = () => { config.providers = config.providers.filter(x => x.id !== p.id); selected = null; edited(); renderEditor(); };
+  $('deleteProvider').onclick = () => { config.providers = config.providers.filter(x => x.id !== p.id); selected = null; edited(true); renderEditor(); };
   renderKeys(); renderModels(); renderRoutes();
 }
 function renderKeys() {
   const p = current(); if (!p) return;
+  if (p.type === 'qclaw') {
+    $('keyRows').innerHTML = p.keys.map(key => `<div class="key-card" data-key-card="${key.id}"><div class="key-actions"><span data-i18n data-badge="${key.id}"></span><button data-verify="${key.id}" data-i18n>Validate</button><button data-key-usage="${key.id}" data-i18n>Usage</button><button data-reset-key="${key.id}" data-i18n>Reset</button></div><div class="key-note" data-i18n data-note="${key.id}"></div></div>`).join('') || '<p class="hint" data-i18n>QClaw gateway was not found. Start QClaw and try again; no API key is required.</p>';
+    updateKeyStats();
+    return;
+  }
   $('keyRows').innerHTML = p.keys.map((k,i) => `<div class="key-card" data-key-card="${k.id}"><div class="key-row"><input type="checkbox" data-key="${i}" data-field="enabled" ${k.enabled ? 'checked' : ''} aria-label="Enable key ${i+1}" data-i18n-attrs="aria-label"><input class="key-name" data-key="${i}" data-field="name" value="${esc(k.name)}" placeholder="Key ${i+1}" aria-label="Key label ${i+1}" data-i18n-attrs="aria-label placeholder"><input type="password" data-key="${i}" data-field="key" value="${esc(k.key || '')}" placeholder="${esc(k.maskedKey ? k.maskedKey + " · Leave blank to keep" : "Paste API key")}" aria-label="API Key ${i+1}" autocomplete="new-password" spellcheck="false" data-i18n-attrs="aria-label placeholder"></div><div class="key-actions"><span data-i18n data-badge="${k.id}"></span><button data-verify="${k.id}" data-i18n>Validate</button><button data-key-usage="${k.id}" data-i18n>Usage</button><button data-key-balance="${k.id}" data-i18n>Balance</button><button data-up-key="${i}" aria-label="Move key up ${i+1}" ${i ? '' : 'disabled'} data-i18n-attrs="aria-label">↑</button><button data-down-key="${i}" aria-label="Move key down ${i+1}" ${i === p.keys.length-1 ? 'disabled' : ''} data-i18n-attrs="aria-label">↓</button><button data-reset-key="${k.id}" data-i18n>Reset</button><button data-remove-key="${i}" aria-label="Remove key ${i+1}" data-i18n-attrs="aria-label">×</button></div><div class="key-note" data-i18n data-note="${k.id}"></div></div>`).join('') || "<p class=\"hint\" data-i18n>Add a key to connect this provider.</p>";
   updateKeyStats();
 }
@@ -266,11 +329,12 @@ function renderRoutes() {
     const active = (live.providers || []).find(p => p.keys.some(k => k.id === live.active?.[id]));
     const key = active?.keys.find(k => k.id === live.active?.[id]);
     return `<div class="route-row"><span>${esc(id)}<br><small>${active ? esc(active.name + ' · ' + keyName(key)) : "Use priority order"}</small></span><button data-rotate="${esc(id)}" data-i18n>Next route</button><button data-reset-model="${esc(id)}" data-i18n>Reset priority</button></div>`;
-  }).join('') || "<p class=\"hint\" data-i18n>Save models and keys to see available routes.</p>";
+  }).join('') || "<p class=\"hint\" data-i18n>Add models and keys to see available routes.</p>";
 }
 async function discoverModels(p) {
   const button = $('discoverModels'); button.disabled = true; status("Fetching model catalog…");
   try {
+    await assertClean();
     const result = await api.providerModels({ provider: p }); if (!result.ok) throw new Error(result.error);
     catalog = result.models; catalogProvider = p.id; catalogSelected = new Set(p.models.map(model => model.id));
     // Catalogs that report context limits backfill models added earlier, so the
@@ -469,38 +533,51 @@ async function refreshBalances(payload = {}) {
     status(errors ? `Query complete. ${errors} accounts could not be queried. See their cards for details.` : "Account status updated.");
   } catch (e) { status(e.message, true); } finally { $('refreshBalances').disabled = false; $('kimiUsage').disabled = false; }
 }
-document.querySelector('.settings-nav nav').onclick = e => { const button = e.target.closest('[data-view]'); if (button && config) setView(button.dataset.view); };
+document.querySelector('.settings-nav nav').onclick = e => { const button = e.target.closest('[data-view]'); if (button) setView(button.dataset.view); };
 $('providers').onclick = e => {
   const button = e.target.closest('button'); if (!button) return;
   if (button.dataset.select) { selected = button.dataset.select; renderEditor(); return; }
   const i = Number(button.dataset.up ?? button.dataset.down), j = button.dataset.up !== undefined ? i-1 : i+1;
-  [config.providers[i], config.providers[j]] = [config.providers[j], config.providers[i]]; edited(); renderProviders();
+  [config.providers[i], config.providers[j]] = [config.providers[j], config.providers[i]]; edited(true); renderProviders();
 };
-$('editor').oninput = e => {
-  const el = e.target, p = current(); if (!p) return;
-  if (el.dataset.model !== undefined) { p.models[Number(el.dataset.model)][el.dataset.field] = el.value; edited(); }
-  if (el.dataset.key !== undefined) { p.keys[Number(el.dataset.key)][el.dataset.field] = el.type === 'checkbox' ? el.checked : el.value; edited(); }
-};
+function updateEditorField(element) {
+  const provider = current(); if (!provider) return;
+  const row = element.dataset.model !== undefined ? provider.models[Number(element.dataset.model)]
+    : element.dataset.key !== undefined ? provider.keys[Number(element.dataset.key)] : null;
+  if (!row) return;
+  const value = element.type === 'checkbox' ? element.checked : element.value;
+  if (row[element.dataset.field] === value) return;
+  row[element.dataset.field] = value; edited();
+}
+$('editor').oninput = event => updateEditorField(event.target);
 // Clamp the context window to the model's known limit once editing finishes,
 // so a value beyond the catalog maximum never reaches save-time validation.
 $('editor').onchange = e => {
   const el = e.target, p = current();
-  if (!p || el.dataset.model === undefined || el.dataset.field !== 'contextWindow') return;
-  const m = p.models[Number(el.dataset.model)], raw = String(el.value).trim();
-  if (!raw) { m.contextWindow = ''; return; }
-  const value = Number(raw);
-  if (!Number.isInteger(value)) return;
-  const cap = m.maxContext || 2000000, clamped = Math.min(cap, Math.max(4096, value));
-  if (clamped === value) return;
-  el.value = clamped; m.contextWindow = clamped;
-  status(value > cap ? `Context window capped at the model's maximum (${cap})` : "Context window must be an integer between 4096 and 2000000", true);
+  if (!p) return;
+  updateEditorField(el);
+  if (el.dataset.model !== undefined && el.dataset.field === 'contextWindow') {
+    const model = p.models[Number(el.dataset.model)], raw = String(el.value).trim();
+    const value = Number(raw);
+    if (raw && Number.isInteger(value)) {
+      const cap = model.maxContext || 2000000, clamped = Math.min(cap, Math.max(4096, value));
+      if (clamped !== value) {
+        el.value = clamped; model.contextWindow = clamped; edited();
+        status(value > cap ? `Context window capped at the model's maximum (${cap})` : "Context window must be an integer between 4096 and 2000000", true);
+      }
+    }
+  }
+  void flushSave();
 };
+$('editor').addEventListener('focusout', event => {
+  if (event.target.matches('input, select, textarea')) void flushSave();
+});
 $('editor').onclick = async e => {
   const button = e.target.closest('button'), p = current(); if (!button || !p) return;
   const d = button.dataset;
-  if (d.removeModel !== undefined) { p.models.splice(Number(d.removeModel),1); edited(); renderModels(); renderRoutes(); }
-  if (d.removeKey !== undefined) { p.keys.splice(Number(d.removeKey),1); edited(); renderKeys(); }
-  if (d.upKey !== undefined || d.downKey !== undefined) { const i = Number(d.upKey ?? d.downKey), j = d.upKey !== undefined ? i-1 : i+1; [p.keys[i], p.keys[j]] = [p.keys[j], p.keys[i]]; edited(); renderKeys(); }
+  if (d.removeModel !== undefined) { p.models.splice(Number(d.removeModel),1); edited(true); renderModels(); renderRoutes(); }
+  if (d.removeKey !== undefined) { p.keys.splice(Number(d.removeKey),1); edited(true); renderKeys(); }
+  if (d.upKey !== undefined || d.downKey !== undefined) { const i = Number(d.upKey ?? d.downKey), j = d.upKey !== undefined ? i-1 : i+1; [p.keys[i], p.keys[j]] = [p.keys[j], p.keys[i]]; edited(true); renderKeys(); }
   try {
     if (d.keyUsage) {
       await assertClean(); $('usageSource').value = 'api'; $('usageModel').value = '';
@@ -516,9 +593,9 @@ $('editor').onclick = async e => {
       await assertClean();
       const model = $('verifyModel').value; if (!model) throw new Error("Add and select a model first");
       const key = p.keys.find(k => k.enabled !== false && (k.key || k.maskedKey));
-      if (!key) throw new Error("Add a key to validate with first");
+      if (!key && p.type !== 'qclaw') throw new Error("Add a key to validate with first");
       button.disabled = true; status(`Validating ${model}…`);
-      const result = await api.providerVerify({ providerId: p.id, keyId: key.id, model });
+      const result = await api.providerVerify({ providerId: p.id, keyId: key?.id, model });
       if (result.state) insight = result.state;
       updateKeyStats(); if (!result.ok) throw new Error(result.error);
       status(`Validation succeeded for ${model}. Select other models to validate them separately.`);
@@ -561,8 +638,8 @@ $('preset').onchange = renderPresetAccount;
 $('addProvider').onclick = () => { if (config) { renderPresetAccount(); $('addDialog').showModal(); } };
 $('confirmAdd').onclick = () => {
   const p = structuredClone(presets.find(p => p.type === $('preset').value));
-  p.id = uid(); p.enabled = true; p.keys = [{ id: uid(), name: '', key: '', enabled: true }];
-  config.providers.push(p); selected = p.id; $('addDialog').close(); edited(); renderEditor();
+  p.id = uid(); p.enabled = true; p.keys = p.type === 'qclaw' ? [] : [{ id: uid(), name: '', key: '', enabled: true }];
+  config.providers.push(p); selected = p.id; $('addDialog').close(); edited(true); renderEditor();
 };
 $('modelSearch').oninput = renderCatalog;
 $('catalogList').onchange = e => { const id = e.target.dataset.catalog; if (id) e.target.checked ? catalogSelected.add(id) : catalogSelected.delete(id); };
@@ -572,13 +649,15 @@ $('applyModels').onclick = () => {
     const catalogIds = new Set(catalog.map(model => model.id));
     p.models = p.models.filter(model => !catalogIds.has(model.id) || catalogSelected.has(model.id));
     for (const model of catalog) if (catalogSelected.has(model.id) && !p.models.some(existing => existing.id === model.id)) p.models.push(model);
-    edited();
+    edited(true);
     if (selected === p.id) { renderModels(); renderRoutes(); }
   }
   $('modelDialog').close();
 };
-$('enabled').onchange = e => { config.enabled = e.target.checked; edited(); };
+$('enabled').onchange = e => { config.enabled = e.target.checked; edited(true); };
 $('port').oninput = e => { config.port = Number(e.target.value); edited(); };
+$('port').onchange = () => void flushSave();
+$('port').onblur = () => void flushSave();
 for (const id of ['usageSource','usageRange','usageProvider','usageKey','usageModel','usageMetric']) $(id).onchange = () => {
   fillUsageFilters();
   renderUsage();
@@ -598,21 +677,182 @@ $('exportUsage').onclick = () => {
   const url = URL.createObjectURL(new Blob(['\ufeff' + rows.map(r => r.map(field).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a'); link.href = url; link.download = `workbench-usage-${localDay(new Date())}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
-$('exportConfig').onclick = async () => {
-  try {
-    const result = await api.apiRouterExport();
-    if (result?.ok && !result.canceled) status("Configuration exported. The file contains raw API keys — store it carefully.");
-    else if (result && !result.ok) throw new Error(result.error);
-  } catch (e) { status(e.message, true); }
-};
-$('importConfig').onclick = async () => {
-  try {
-    const result = await api.apiRouterImport();
-    if (result?.ok && !result.canceled) { status(`Configuration imported: ${result.providers} providers. Subscriptions still need a local sign-in.`); await refresh(); }
-    else if (result && !result.ok) throw new Error(result.error);
-  } catch (e) { status(e.message, true); }
-};
 $('openLogs').onclick = () => api.openLogs();
+
+// Move the profile to another install, folder or computer. Both directions are
+// explicit and the page reports real progress; importing overwrites matching
+// files, so the main process asks for confirmation first.
+let dataMigrationBusy = false, dataMigrationActive = false, dataMigrationPackage = null, dataDirectory = null;
+const migrationBytes = bytes => bytes < 1024 ? bytes + ' B' : bytes < 1024 ** 2 ? (bytes / 1024).toFixed(1) + ' KiB' : bytes < 1024 ** 3 ? (bytes / 1024 ** 2).toFixed(1) + ' MiB' : (bytes / 1024 ** 3).toFixed(2) + ' GiB';
+const migrationIdle = () => window.CamelliaI18n.t('Choose API configuration, application settings or conversation history to transfer.');
+function dataMigrationControls() {
+  $('exportData').disabled = dataMigrationBusy;
+  $('importData').disabled = dataMigrationBusy;
+  $('importDataAgain').hidden = !dataMigrationPackage;
+  $('importDataAgain').disabled = dataMigrationBusy;
+  $('migrateDataDirectory').disabled = dataMigrationBusy || !dataDirectory?.canMigrate;
+}
+function renderDataDirectory(state) {
+  dataDirectory = state;
+  $('migrateDataDirectory').hidden = !state?.legacy;
+  const message = state?.migrationError || state?.error || (state?.legacy ? 'Restart to move your data. The old folder is deleted after verification.' : '');
+  $('dataDirectoryStatus').hidden = !message;
+  $('dataDirectoryStatus').textContent = window.CamelliaI18n.t(message);
+  $('dataDirectoryStatus').classList.toggle('error', Boolean(state?.error || state?.migrationError));
+  dataMigrationControls();
+}
+$('migrateDataDirectory').onclick = async () => {
+  if (dataMigrationBusy) return;
+  dataMigrationBusy = true; dataMigrationControls();
+  try {
+    await assertClean();
+    const result = await api.dataDirectoryMigrate();
+    if (!result.ok) throw new Error(result.error);
+    $('dataDirectoryStatus').classList.remove('error');
+    $('dataDirectoryStatus').textContent = window.CamelliaI18n.t('Restarting to move your data…');
+  } catch (error) {
+    $('dataDirectoryStatus').textContent = window.CamelliaI18n.t(error.message);
+    $('dataDirectoryStatus').classList.add('error');
+    dataMigrationBusy = false; dataMigrationControls();
+  }
+};
+$('exportData').onclick = async () => {
+  if (dataMigrationBusy) return;
+  dataMigrationBusy = true; dataMigrationActive = true; dataMigrationControls();
+  $('dataMigrationProgress').hidden = false; $('dataMigrationProgress').value = 0;
+  $('dataMigrationStatus').classList.remove('error');
+  $('dataMigrationStatus').textContent = window.CamelliaI18n.t('Preparing the data package…');
+  try {
+    await assertClean();
+    const scope = await chooseDataScope({ mode: 'export' });
+    if (!scope) { $('dataMigrationStatus').textContent = migrationIdle(); return; }
+    const result = await api.dataExport(scope);
+    if (result.canceled) $('dataMigrationStatus').textContent = migrationIdle();
+    else if (!result.ok) throw new Error(result.error);
+    else {
+      const parts = Array.isArray(result.parts) ? result.parts : [result.file];
+      const baseName = String(parts[0] || '').split(/[\\/]/).pop();
+      const where = parts.length > 1
+        ? window.CamelliaI18n.t('{0} parts beside {1}').replace('{0}', () => fmt(parts.length)).replace('{1}', () => baseName)
+        : result.file;
+      $('dataMigrationStatus').textContent = window.CamelliaI18n.t('Exported {0} files ({1}) to {2}.')
+        .replace('{0}', () => fmt(result.files)).replace('{1}', () => migrationBytes(result.bytes)).replace('{2}', () => where);
+    }
+  } catch (error) { $('dataMigrationStatus').textContent = error.message; $('dataMigrationStatus').classList.add('error'); }
+  finally { dataMigrationBusy = false; dataMigrationActive = false; dataMigrationControls(); $('dataMigrationProgress').hidden = true; }
+};
+const importData = async file => {
+  if (dataMigrationBusy) return;
+  dataMigrationBusy = true; dataMigrationControls();
+  $('dataMigrationProgress').hidden = false; $('dataMigrationProgress').value = 0;
+  $('dataMigrationStatus').classList.remove('error');
+  $('dataMigrationStatus').textContent = window.CamelliaI18n.t('Reading the data package…');
+  try {
+    await assertClean();
+    let selectedFile = file;
+    // First call only reads the package; the main process answers with the
+    // category totals so this page can offer a real multi-select.
+    let result = await api.dataImport(file);
+    if (result.ok && result.needsSelection) {
+      const scope = await chooseDataScope(result);
+      if (!scope) { $('dataMigrationStatus').textContent = migrationIdle(); return; }
+      $('dataMigrationStatus').textContent = window.CamelliaI18n.t('Reading the data package…');
+      dataMigrationActive = true;
+      selectedFile = result.file || file;
+      result = await api.dataImport(selectedFile, scope);
+    }
+    if (result.canceled) $('dataMigrationStatus').textContent = migrationIdle();
+    else if (!result.ok) throw new Error(result.error);
+    else {
+      const scope = scopeLabel(result.scope);
+      const note = window.CamelliaI18n.t('Imported {0} files ({1}) · {2}. Restart Camellia to use the restored data.')
+        .replace('{0}', () => fmt(result.restored)).replace('{1}', () => migrationBytes(result.bytes)).replace('{2}', () => scope);
+      const backup = result.backupDir ? ' ' + window.CamelliaI18n.t('Previous files were backed up; review them only if something looks wrong.') : '';
+      $('dataMigrationStatus').textContent = note + backup;
+      dataMigrationPackage = selectedFile || true;
+    }
+  } catch (error) { $('dataMigrationStatus').textContent = error.message; $('dataMigrationStatus').classList.add('error'); }
+  finally { dataMigrationBusy = false; dataMigrationActive = false; dataMigrationControls(); $('dataMigrationProgress').hidden = true; }
+};
+const scopeLabel = kinds => {
+  const list = Array.isArray(kinds) ? kinds : [];
+  if (list.length === 3) return window.CamelliaI18n.t('Everything');
+  return list.map(kind => window.CamelliaI18n.t(kind === 'api' ? 'API configuration'
+    : kind === 'conversations' ? 'Conversation history' : 'Application settings')).join(' + ');
+};
+// The scope dialog is opened by script so the checkboxes can reflect what the
+// package actually contains; an empty category is disabled and unchecked.
+function chooseDataScope({ mode = 'import', categories = {} }) {
+  const exporting = mode === 'export';
+  $('dataScopeTitle').textContent = exporting ? 'Export data' : 'Import data';
+  $('confirmImportData').textContent = exporting ? 'Export selected data' : 'Import selected data';
+  $('dataScopeNote').textContent = exporting ? 'Data packages can contain API keys. Keep them private.'
+    : 'Selected files overwrite matching ones in this installation; current files are backed up first. Restart Camellia when the import finishes.';
+  const rows = [['api', 'importScopeApi'], ['settings', 'importScopeSettings'], ['conversations', 'importScopeConversations']];
+  for (const [kind, id] of rows) {
+    const entry = categories[kind];
+    const available = exporting || Number(entry?.files) > 0;
+    $(id).disabled = !available;
+    $(id).checked = available;
+  }
+  for (const [kind, id] of [['api', 'importScopeApiHint'], ['settings', 'importScopeSettingsHint'], ['conversations', 'importScopeConversationsHint']]) {
+    const entry = categories[kind];
+    $(id).hidden = exporting;
+    $(id).textContent = Number(entry?.files) > 0 ? window.CamelliaI18n.t('{0} files · {1}').replace('{0}', () => fmt(entry.files)).replace('{1}', () => migrationBytes(entry.bytes))
+      : window.CamelliaI18n.t('None in this package');
+  }
+  const available = rows.map(([, id]) => $(id)).filter(input => !input.disabled);
+  const selectAll = $('dataScopeAll');
+  const updateAll = () => {
+    const count = available.filter(input => input.checked).length;
+    selectAll.disabled = !available.length;
+    selectAll.checked = count > 0 && count === available.length;
+    selectAll.indeterminate = count > 0 && count < available.length;
+  };
+  selectAll.onchange = () => { for (const input of available) input.checked = selectAll.checked; updateAll(); };
+  for (const input of available) input.onchange = updateAll;
+  updateAll();
+  $('importDataError').hidden = true;
+  const dialog = $('importDataDialog');
+  dialog.showModal();
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      dialog.close();
+      $('confirmImportData').onclick = null;
+      dialog.oncancel = null;
+      dialog.onclose = null;
+      selectAll.onchange = null;
+      for (const [, id] of rows) $(id).onchange = null;
+      resolve(value);
+    };
+    dialog.oncancel = () => finish(null);
+    dialog.onclose = () => finish(null);
+    $('confirmImportData').onclick = () => {
+      const scope = rows.filter(([, id]) => $(id).checked && !$(id).disabled).map(([kind]) => kind);
+      if (!scope.length) { $('importDataError').textContent = window.CamelliaI18n.t(exporting ? 'Choose at least one category to export' : 'Choose at least one category to import'); $('importDataError').hidden = false; return; }
+      finish(scope);
+    };
+  });
+}
+// Reuse the exact file when the main process already knows it, otherwise ask.
+$('importData').onclick = () => importData(null);
+$('importDataAgain').onclick = () => importData(typeof dataMigrationPackage === 'string' ? dataMigrationPackage : null);
+api.onDataMigrationProgress(state => {
+  // Ignore any progress event that arrives after the call already finished, so
+  // a late percentage cannot overwrite the final result text.
+  if (!state || !dataMigrationActive) return;
+  const bar = $('dataMigrationProgress');
+  if (typeof state.bytes === 'number' && typeof state.totalBytes === 'number' && state.totalBytes > 0) {
+    bar.value = Math.min(100, Math.round(state.bytes / state.totalBytes * 100));
+    $('dataMigrationStatus').textContent = (state.phase === 'import'
+      ? window.CamelliaI18n.t('Importing data…') : window.CamelliaI18n.t('Exporting data…')) + ' ' + bar.value + '%';
+  } else if (state.files && state.totalFiles) {
+    bar.value = Math.min(100, Math.round(state.files / state.totalFiles * 100));
+  }
+});
 
 // Application updates: checking is read-only; installing replaces this
 // installation in place and restarts, so both steps stay explicit.
@@ -758,7 +998,7 @@ window.addEventListener('camellia:language', () => {
   renderSubscriptionModels();
   void renderQuickSwitchModels(modelPreferences, subscriptionModelAccounts);
 });
-const LEVEL_LABELS = { off: 'Off', none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+const LEVEL_LABELS = { off: 'Off', none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
 const levelLabel = id => LEVEL_LABELS[id] || (id ? id[0].toUpperCase() + id.slice(1) : '');
 // Account models report their own reasoning efforts; routed models fall back to
 // the shared ladder inferred from the model ID.
@@ -1013,6 +1253,7 @@ async function refresh(initial = false) {
     if (details.ok) insight = details;
     if (initial || !isDirty()) {
       config = structuredClone(live); $('enabled').checked = config.enabled; $('port').value = config.port;
+      rememberSavedModels();
       const selectedPreset = $('preset').value;
       $('preset').innerHTML = presets.map(p => `<option value="${p.type}">${esc(p.name)}</option>`).join('');
       if (presets.some(p => p.type === selectedPreset)) $('preset').value = selectedPreset;
@@ -1034,20 +1275,11 @@ async function refresh(initial = false) {
       $('conversationSessionTtl').value = String(preferences.conversations?.sessionTtlMinutes ?? 30);
       $('conversationSessionLimit').value = String(preferences.conversations?.sessionLimit ?? 4);
       $('dataPath').textContent = preferences.dataPath; $('version').textContent = 'v' + preferences.version;
+      renderDataDirectory(preferences.dataDirectory);
       await renderModelSettings(preferences);
     }
   } catch (e) { status(e.message, true); }
 }
-$('refresh').onclick = async () => {
-  await flushSave();
-  if (view === 'subscriptions') return engineUI.accountsPage();
-  if (view === 'models') return renderModelSettings();
-  if (view === 'mobile') return window.mobileAccessUI.refresh();
-  if (view === 'devices') return window.cliDevicesUI?.refresh();
-  if (view === 'engines') return engineUI.runtimePage();
-  if (view === 'general') await engineUI.pythonPage();
-  return refresh(view === 'general' || view === 'models');
-};
 let storagePreview = null, storageBusy = false;
 const storageBytes = bytes => bytes < 1024 ? fmt(bytes) + ' B' : bytes < 1024 ** 2 ? fmt(bytes / 1024) + ' KiB' : bytes < 1024 ** 3 ? fmt(bytes / 1024 ** 2) + ' MiB' : fmt(bytes / 1024 ** 3) + ' GiB';
 function storageControls() {
@@ -1214,6 +1446,7 @@ $('confirmDeleteAllArchived').onclick = async () => {
 };
 api.onApiRouterState(state => {
   if (!live) return; live = { ...live, ...state }; showLive(); updateKeyStats();
+  if (!saving && !isDirty() && syncMaskedKeys() && current()?.type === 'qclaw') renderKeys();
   if (view === 'usage') { fillUsageFilters(); renderUsage(); }
   if (!isDirty() && !current()) renderProviders();
 });
@@ -1234,16 +1467,24 @@ new ResizeObserver(() => {
     if (view === 'providers' || view === 'subscriptions') renderBalances();
   });
 }).observe(document.querySelector('.scroll-content'));
-void refresh(true).then(() => {
-  // A click or IPC navigation during loading is newer than the launch URL.
-  if (!hasNavigated) navigateSettings(Object.fromEntries(new URLSearchParams(location.search)));
-});
+navigateSettings(Object.fromEntries(new URLSearchParams(location.search)));
+void refresh(true);
+window.flushApiSettings = async () => {
+  if (!config) return { ok: !isDirty() };
+  await flushSave();
+  if (!draftComplete()) {
+    status("Complete the API URL, key or model fields to finish saving.", true);
+    return { ok: false };
+  }
+  return { ok: !isDirty() && !lastSaveError };
+};
 // Closing the window must not drop a debounced edit.
 window.addEventListener('beforeunload', () => { if (isDirty()) void flushSave(); });
 window.addEventListener('camellia:language', () => {
   // This status is rendered by script, not by data-i18n, so it needs an
   // explicit re-render to leave the previous language.
   if (lastNetworkValue) renderNetworkSettings(lastNetworkValue);
+  if (dataDirectory && !dataMigrationBusy) renderDataDirectory(dataDirectory);
   if (!live) return;
   if (view === 'usage') { fillUsageFilters(); renderUsage(); }
   if (view === 'providers' || view === 'subscriptions') renderBalances();

@@ -125,6 +125,18 @@ rl.on('line', async (line) => {
     }
     else if (method === 'openSettingsWindow') result = { ok: true, target: payload };
     else if (method === 'freePort') { const server=http.createServer(); await new Promise(r=>server.listen(0,'127.0.0.1',r)); result=server.address().port; await new Promise(r=>server.close(r)); }
+    else if (method === 'configureTestQclaw') {
+      if (!testUpstream) throw new Error('Start the loopback upstream before configuring QClaw');
+      const stateDir = h.folder('QClaw');
+      process.env.QCLAW_STATE_DIR = stateDir;
+      process.env.USERPROFILE = h.home;
+      process.env.HOME = h.home;
+      writeJson(path.join(stateDir, 'openclaw.json'), payload?.enabled === false ? {} : {
+        gateway: { mode: 'local', port: testUpstream.address().port,
+          auth: { mode: 'token', token: payload?.token || 'test-qclaw-token' } },
+      });
+      result = { ok: true };
+    }
     else if (method === 'startTestUpstream') {
       testUpstream=http.createServer(async (req,res)=>{
         if (req.method === 'GET') { res.writeHead(200, {'content-type':'application/json'}); res.end(JSON.stringify({ data: [{ id: 'kimi-k3' }, { id: 'model-test' }, { id: 'model-test' }] })); return; }

@@ -11,7 +11,7 @@ const extract = (start, end) => source.slice(source.indexOf(start), source.index
 
 function fixture(storage = new Map()) {
   const state = {
-    sharedChat: true, context: { sessionId: 'first' }, messageQueue: [], conversationQueues: new Map(),
+    sharedChat: true, context: { sessionId: 'first' }, messageQueue: [], messageQueuePaused: false, conversationQueues: new Map(),
     sessionOpenSeq: 1, drainingQueue: false, running: false, sending: false, loadingSession: false,
     conversationActivity: null, switchingEngine: false, editingMessage: null,
     goalUI: { isActive: () => false }, pendingConversationSend: () => null,
@@ -102,4 +102,31 @@ test('a new conversation does not inherit the previous conversation queue', () =
   assert.equal(state.messageQueue.length, 0);
   state.navigate('created');
   assert.equal(state.messageQueue[0].text, 'Only for created');
+});
+
+test('queue pause survives navigation and renderer recreation until explicitly resumed', async () => {
+  const storage = new Map(), state = fixture(storage);
+  state.messageQueue.push({ text: 'Paused message', attachments: [] });
+  state.saveMessageQueue();
+  state.setMessageQueuePaused(true);
+  state.send = async () => { assert.fail('Paused queues must not dispatch'); };
+  state.drainMessageQueue();
+  state.navigate('other');
+  assert.equal(state.messageQueuePaused, false);
+  state.navigate('first');
+  assert.equal(state.messageQueuePaused, true);
+  state.drainMessageQueue();
+  const restored = fixture(storage);
+  restored.restoreMessageQueue();
+  assert.equal(restored.messageQueuePaused, true);
+  const sent = [];
+  restored.send = async message => { sent.push(message.text); return true; };
+  restored.drainMessageQueue();
+  assert.deepEqual(sent, []);
+  restored.setMessageQueuePaused(false);
+  restored.drainMessageQueue();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(sent, ['Paused message']);
+  assert.equal(restored.messageQueue.length, 0);
+  assert.equal(restored.readUi('queue-paused:first'), false);
 });

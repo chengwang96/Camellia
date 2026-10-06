@@ -15,6 +15,7 @@
     <button data-view="usage" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4v16h16M8 15v-4m5 4V6m5 9V9"/></svg>Usage</button>
     <div class="nav-divider"></div>
     <button data-view="general" class="active" aria-current="page" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.5 3-.6 2.3-2 .9-2.3-.7-2.5 4.3 1.7 1.6v2.2l-1.7 1.6 2.5 4.3 2.3-.7 2 .9.6 2.3h5l.6-2.3 2-.9 2.3.7 2.5-4.3-1.7-1.6v-2.2l1.7-1.6-2.5-4.3-2.3.7-2-.9L14.5 3Z"/><circle cx="12" cy="12.5" r="3"/></svg>General</button>
+    <button data-view="data" title="Data &amp; backups" data-i18n data-i18n-attrs="title"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 16h.01M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11zM21.946 12.013H2.054M6 16h.01"/></svg>Data &amp; backups</button>
     <button data-view="network" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18Z"/></svg>Network</button>
     <button data-view="engines" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h6m4 0h6M4 17h10m4 0h2"/><circle cx="12" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></svg>Engine Settings</button>
     <button data-view="models" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></svg>Model Settings</button>
@@ -22,10 +23,10 @@
     <button data-view="mobile" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10 5h4m-3 13.5h2"/></svg>Mobile access</button>
     <button data-view="devices" data-i18n><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="m7 8 3 3-3 3m6 0h4M9 21h6m-3-4v4"/></svg>CLI devices</button>
   </nav>
-  <div class="nav-foot"><span class="status-dot" id="routerDot"></span><span id="routerLabel" data-i18n>Connecting</span><small data-i18n>Automatic failover within the same model</small></div>
+  <div class="nav-foot"><span class="status-dot" id="routerDot"></span><span id="routerLabel" data-i18n>Connecting</span></div>
 </aside>
 <div class="settings-main">
-  <header class="page-head"><div><h1 id="pageTitle" data-i18n>General</h1><p id="pageSubtitle" data-i18n>Language, appearance, and local preferences.</p></div><button id="refresh" aria-label="Refresh status" data-i18n data-i18n-attrs="aria-label">Refresh</button></header>
+  <header class="page-head"><div><h1 id="pageTitle" data-i18n>General</h1><p id="pageSubtitle" data-i18n>Language, appearance, and local preferences.</p></div></header>
   <main class="scroll-content">
     <section id="subscriptionsPage" class="page" hidden>
       <section class="account-connections" aria-label="Subscription accounts" data-i18n-attrs="aria-label">
@@ -37,7 +38,7 @@
     <section id="providersPage" class="page" hidden>
       <section id="providersHeading" class="providers-heading" aria-labelledby="providersTitle">
         <h2 id="providersTitle" data-i18n>API providers and keys</h2>
-        <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><div class="toolbar-actions"><button id="exportConfig" data-i18n>Export config</button><button id="importConfig" data-i18n>Import config</button><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div></div>
+        <div class="toolbar"><p class="hint" id="providerSummary" data-i18n></p><div class="toolbar-actions"><button id="addProvider" class="primary" data-i18n>+ Add provider</button></div></div>
       </section>
       <div id="providers" class="provider-grid"></div>
       <div id="editor" hidden></div>
@@ -79,10 +80,22 @@
         <p class="hint" data-i18n>Shared by every harness and the benchmark verifier, not by Antigravity alone. Leave empty for automatic detection.</p>
         <fieldset class="runtime-path" id="pythonPath" disabled><label for="runtime-path-python" data-i18n>Python executable</label><div class="runtime-path-actions"><input id="runtime-path-python" type="text" data-runtime-path="python" placeholder="Automatic detection" data-i18n-attrs="placeholder" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" id="pythonHint" data-i18n>Choose any Python 3 installation; Camellia never edits it or installs packages.</p></fieldset>
       </article>
-      <div class="setting-row"><div><h2 data-i18n>Local data</h2><p class="hint" id="dataPath"></p></div><button id="openLogs" data-i18n>View logs</button></div>
       <div class="setting-row"><div><h2>Camellia</h2><p class="hint">Claude Code · Codex CLI · DeepSeek Harness · Kimi Code · Antigravity · Pi</p></div><span id="version" class="hint"></span></div>
       <div class="setting-row app-update"><div><h2 data-i18n>Application updates</h2><p class="hint" id="appUpdateStatus" role="status" aria-live="polite" data-i18n>Check the official release feed for a newer version of Camellia.</p><progress id="appUpdateProgress" max="100" hidden></progress></div><div class="app-update-actions"><button id="checkAppUpdate" data-i18n>Check for updates</button><button id="installAppUpdate" class="primary" hidden data-i18n>Download and install</button></div></div>
       <details id="appUpdateDetails" hidden><summary data-i18n>Release notes</summary><p class="hint" id="appUpdateMeta"></p><pre id="appUpdateNotes"></pre><p class="hint" data-i18n>Installing closes Camellia and replaces the current installation in place. Your conversations, settings and downloaded engines are kept.</p></details>
+    </section>
+    <section id="dataPage" class="page" hidden>
+      <div class="setting-row app-update" id="dataDirectorySection"><div><h2 data-i18n>Local data</h2><p class="hint" id="dataPath"></p><p class="hint" id="dataDirectoryStatus" role="status" aria-live="polite" hidden></p></div><div class="app-update-actions"><button id="migrateDataDirectory" hidden data-i18n>Move to camellia folder</button><button id="openLogs" data-i18n>View logs</button></div></div>
+      <div class="setting-row app-update" id="dataMigrationSection"><div><h2 data-i18n>Move to another installation</h2><p class="hint" id="dataMigrationStatus" role="status" aria-live="polite" data-i18n>Choose API configuration, application settings or conversation history to transfer.</p><progress id="dataMigrationProgress" max="100" hidden></progress></div><div class="app-update-actions"><button id="exportData" data-i18n>Export data</button><button id="importData" data-i18n>Import data</button><button id="importDataAgain" hidden data-i18n>Import another package</button></div></div>
+      <div class="section" id="storageSection">
+        <h2 data-i18n>Space cleanup</h2>
+        <div class="toolbar"><p class="hint" data-i18n>Nothing runs in the background.</p><button id="scanStorage" class="primary" data-i18n>Scan for unused files</button></div>
+        <p class="hint" data-i18n>Protects active, archived and forked conversations, saved drafts, and files modified within 24 hours. Workspace files, original imports and shared native engine histories are excluded. Deleted conversations' dedicated engine directories may be cleaned.</p>
+        <p id="storageStatus" role="status" aria-live="polite" data-i18n>No scan yet.</p>
+        <div id="storageSummary"></div>
+        <details id="storageDetails" hidden><summary data-i18n>Review candidate paths</summary><p class="hint" data-i18n>Paths are relative to the Camellia data folder. Actual recovered disk space may differ.</p><div id="storageFiles"></div></details>
+        <button id="cleanStorage" class="danger" disabled data-i18n>Clean reviewed files</button>
+      </div>
     </section>
     <section id="modelsPage" class="page" hidden>
       <section class="subscription-models-section" aria-labelledby="subscriptionModelsTitle">
@@ -108,27 +121,18 @@
       </section>
     </section>
     <section id="archivedPage" class="page" hidden>
-      <div class="toolbar"><p class="hint" data-i18n>Restore a conversation to continue it, delete it permanently, or scan unowned files for space cleanup.</p><div class="toolbar-actions"><button id="deleteAllArchived" class="danger" disabled data-i18n>Delete all</button></div></div>
+      <div class="toolbar"><p class="hint" data-i18n>Restore or permanently delete archived conversations.</p><div class="toolbar-actions"><button id="deleteAllArchived" class="danger" disabled data-i18n>Delete all</button></div></div>
       <div id="archivedDeleteActivity" class="archived-delete-activity" hidden><p id="archivedDeleteStatus" role="status" aria-live="polite"></p><progress id="archivedDeleteProgress" max="1" value="0"></progress></div>
       <div id="archivedList"></div>
-      <div class="section" id="storageSection">
-        <h2 data-i18n>Space cleanup</h2>
-        <div class="toolbar"><p class="hint" data-i18n>Nothing runs in the background.</p><button id="scanStorage" class="primary" data-i18n>Scan for unused files</button></div>
-        <p class="hint" data-i18n>Protects active, archived and forked conversations, saved drafts, and files modified within 24 hours. Workspace files, original imports and shared native engine histories are excluded. Deleted conversations' dedicated engine directories may be cleaned.</p>
-        <p id="storageStatus" role="status" aria-live="polite" data-i18n>No scan yet.</p>
-        <div id="storageSummary"></div>
-        <details id="storageDetails" hidden><summary data-i18n>Review candidate paths</summary><p class="hint" data-i18n>Paths are relative to the Camellia data folder. Actual recovered disk space may differ.</p><div id="storageFiles"></div></details>
-        <button id="cleanStorage" class="danger" disabled data-i18n>Clean reviewed files</button>
-      </div>
     </section>
     <section id="devicesPage" class="page" hidden>
       <p class="hint" data-i18n>Files, conversations and engines stay on the selected server.</p>
       <div id="cliDevicesRoot"></div>
     </section>
     <section id="mobilePage" class="page" hidden>
-      <section class="mobile-section" aria-labelledby="mobile-connectionTitle">
+      <section class="mobile-section mobile-connection-card" aria-labelledby="mobile-connectionTitle">
         <div class="mobile-heading"><h2 id="mobile-connectionTitle" data-copy="connection">连接</h2><span id="mobile-status" role="status"></span></div>
-        <div class="mobile-connection-row"><p id="mobile-address" class="mobile-address"></p><button id="mobile-toggle" class="primary" disabled>…</button></div>
+        <div class="mobile-connection-row"><p id="mobile-address" class="mobile-address"></p><button id="mobile-copyAddress" data-copy="copyAddress">复制地址</button><button id="mobile-toggle" class="primary" disabled>…</button><span id="mobile-copyStatus" class="hint" role="status" aria-live="polite"></span></div>
         <div id="mobile-networkControls" hidden><p id="mobile-networkState" class="hint" role="status"></p><button id="mobile-login" hidden data-copy="login">登录 Tailscale</button></div>
         <details class="mobile-help">
           <summary data-copy="connectionHelp">连接与权限说明</summary>
@@ -137,13 +141,16 @@
           <button id="mobile-logout" hidden data-copy="logout">退出 Tailscale 登录</button>
         </details>
       </section>
-      <section class="mobile-section" aria-labelledby="mobile-pairTitle">
+      <section class="mobile-section mobile-pair-card" aria-labelledby="mobile-pairTitle">
         <div class="mobile-heading"><h2 id="mobile-pairTitle" data-copy="pair">配对设备</h2><button id="mobile-invite" disabled data-copy="generate">生成配对码</button></div>
-        <p class="hint" data-copy="scope"></p>
         <label for="mobile-deviceName" data-copy="deviceName">本机名称</label>
         <div class="name-row"><input id="mobile-deviceName" maxlength="80" autocomplete="off"><button id="mobile-saveDeviceName" data-copy="deviceNameSave">保存名称</button></div>
         <p class="hint" data-copy="deviceNameHint"></p><p id="mobile-deviceNameStatus" class="hint" role="status"></p>
-        <div id="mobile-invitation" hidden><div id="mobile-qr" class="qr"></div><code id="mobile-code"></code><p id="mobile-expires" class="hint"></p><p class="hint" data-copy="scanHint"></p><p class="hint" data-copy="scanFallback"></p></div>
+        <div id="mobile-invitation" hidden><div class="mobile-pair-layout"><div id="mobile-qr" class="qr"></div><div class="mobile-pair-details"><code id="mobile-code"></code><p id="mobile-expires" class="hint" role="timer"></p><p class="hint" data-copy="scanHint"></p><p class="hint" data-copy="scanFallback"></p></div></div></div>
+        <button id="mobile-refreshInvite" hidden data-copy="refreshCode">刷新二维码</button>
+        <div id="mobile-pairPending" class="mobile-pair-success" role="status" hidden><span class="mobile-success-mark" aria-hidden="true">…</span><div><strong id="mobile-pairPendingLabel" data-copy="pairWaiting">等待电脑授权</strong><span id="mobile-pendingName"></span></div></div>
+        <div id="mobile-pair-success" class="mobile-pair-success" role="status" hidden><span class="mobile-success-mark" aria-hidden="true">✓</span><div><strong data-copy="pairSuccess">配对成功</strong><span id="mobile-pairedName"></span></div><button id="mobile-continuePair" data-copy="continuePair">继续配对</button></div>
+        <p id="mobile-pairFailed" class="hint" role="status" hidden data-copy="pairFailed">配对请求已结束，请重新生成二维码。</p>
         <div id="mobile-pending"></div>
       </section>
       <section class="mobile-section" aria-labelledby="mobile-devicesTitle"><h2 id="mobile-devicesTitle" data-copy="devices">已授权设备</h2><div id="mobile-devices"></div></section>
@@ -154,7 +161,7 @@
     <section id="enginesPage" class="page" hidden>
       <div class="engine-tabs" role="tablist" aria-label="Engine" data-i18n-attrs="aria-label"><button role="tab" data-engine="claude">Claude Code</button><button role="tab" data-engine="codex">Codex CLI</button><button role="tab" data-engine="dsh">DeepSeek Harness</button><button role="tab" data-engine="kimi">Kimi Code</button><button role="tab" data-engine="antigravity">Antigravity</button><button role="tab" data-engine="pi">Pi</button></div>
       <section class="engine-runtime" aria-label="Engine installation" data-i18n-attrs="aria-label">
-        <div class="download-save"><p class="hint" data-i18n>Engine updates are installed in place and take effect after a restart.</p><button id="checkRuntimeUpdates" type="button" data-i18n>Check for updates</button></div>
+        <div class="download-save"><p class="hint" data-i18n>The selected engine pauses during its update and becomes available again when the update finishes.</p><button id="checkRuntimeUpdates" type="button" data-i18n>Check for updates</button></div>
         <div id="runtimeCards"></div>
       </section>
       <div class="global-notice"><strong id="engineScopeTitle" data-i18n>These settings also apply to the CLI</strong><p id="engineScopeDescription" data-i18n>Saving overwrites the CLI's global settings and affects other CLI sessions. Before the first overwrite, an original <code>.workbench.bak</code> backup is kept.</p><p class="hint" id="engineRouteHint" data-i18n>Camellia manages API routes centrally; CLI sessions using its router need the app running. Project settings follow each engine's precedence rules.</p><details><summary data-i18n>View affected files</summary><div id="enginePaths"></div></details></div>
@@ -182,7 +189,6 @@
         </div>
         <div id="antigravityConnectionPanel" class="engine-connection" hidden>
           <div id="googleAccountPanel" hidden>
-            <div class="account-actions"><button id="googleSignIn" class="primary" data-i18n>Sign in with Google</button><button id="googleRefresh" data-i18n>Refresh account</button></div>
             <p id="googleAccountStatus" class="hint" role="status" data-i18n></p>
             <p id="googleQuotaStatus" class="hint error" role="alert" hidden></p>
             <details id="googleQuotaErrorDetails" class="account-error-details" hidden><summary data-i18n>Error details</summary><pre id="googleQuotaErrorRaw" translate="no"></pre></details>
@@ -204,7 +210,16 @@
 <dialog id="modelDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Select model</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><input id="modelSearch" placeholder="Search models" aria-label="Search models" data-i18n-attrs="aria-label placeholder"><div id="catalogList"></div><button id="applyModels" class="primary" data-i18n>Apply model selection</button></dialog>
 <dialog id="deleteArchivedDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Delete conversation</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="deleteArchivedTitle"></p><p class="hint" data-i18n>Deleting removes this conversation and its files permanently. This cannot be undone.</p><button id="confirmDeleteArchived" class="danger" data-i18n>Delete permanently</button></dialog>
 <dialog id="deleteAllArchivedDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Delete all archived conversations</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="deleteAllArchivedCount"></p><p class="hint" data-i18n>Deleting removes every archived conversation and its files permanently. This cannot be undone.</p><button id="confirmDeleteAllArchived" class="danger" data-i18n>Delete permanently</button></dialog>
-<dialog id="cleanStorageDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Clean unused files</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="cleanStorageEstimate"></p><p class="hint" data-i18n>Files are permanently deleted, not moved to the recycle bin. References are checked again; changed or newly referenced files are skipped.</p><button id="confirmCleanStorage" class="danger" data-i18n>Confirm cleanup</button></dialog>
+      <dialog id="cleanStorageDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Clean unused files</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p id="cleanStorageEstimate"></p><p class="hint" data-i18n>Files are permanently deleted, not moved to the recycle bin. References are checked again; changed or newly referenced files are skipped.</p><button id="confirmCleanStorage" class="danger" data-i18n>Confirm cleanup</button></dialog>
+      <dialog id="importDataDialog"><form method="dialog" class="dialog-head"><h2 id="dataScopeTitle" data-i18n>Import data</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form>
+        <label class="import-scope"><input type="checkbox" id="dataScopeAll"><span data-i18n>Select all</span></label>
+        <label class="import-scope"><input type="checkbox" id="importScopeApi" checked><span><strong data-i18n>API configuration</strong><span class="hint" id="importScopeApiHint"></span></span></label>
+        <label class="import-scope"><input type="checkbox" id="importScopeSettings" checked><span><strong data-i18n>Application settings</strong><span class="hint" id="importScopeSettingsHint"></span></span></label>
+        <label class="import-scope"><input type="checkbox" id="importScopeConversations" checked><span><strong data-i18n>Conversation history</strong><span class="hint" id="importScopeConversationsHint"></span></span></label>
+        <p class="hint" id="dataScopeNote" data-i18n>Selected files overwrite matching ones in this installation; current files are backed up first. Restart Camellia when the import finishes.</p>
+        <p class="hint error" id="importDataError" hidden></p>
+        <button id="confirmImportData" class="primary" data-i18n>Import selected data</button>
+      </dialog>
 <script src="../../shared/qr.js"></script>
 <script src="../../shared/model-levels.js"></script>
 <script src="../../shared/subscription-models.js"></script>

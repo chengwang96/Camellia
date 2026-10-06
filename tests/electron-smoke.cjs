@@ -109,12 +109,17 @@ async function main() {
       try { const result = await listener(...args); diag('DIAG ipc done: ' + channel); return result; }
       catch (error) { diag('DIAG ipc error: ' + channel + ' :: ' + error.message); throw error; }
     });
-    const userData = path.join(root, firstRun ? 'app' : 'dsh-desktop');
+    const profileMode = process.env.CAMELLIA_SMOKE_PROFILE || 'legacy';
+    const userData = path.join(root, firstRun ? 'app' : profileMode === 'legacy' ? 'dsh-desktop' : 'camellia');
     if (firstRun) {
       app.setPath('userData', userData);
     } else {
       // Simulate Electron's new package name while existing data is in the old directory.
-      fs.cpSync(path.join(root, 'app'), userData, { recursive: true });
+      const initialProfile = profileMode === 'migrate' ? path.join(root, 'dsh-desktop') : userData;
+      fs.cpSync(path.join(root, 'app'), initialProfile, { recursive: true });
+      if (profileMode === 'migrate') {
+        require('../src/main/data-directory').requestDirectoryMigration({ appData: root, dataDir: initialProfile });
+      }
       const renamedDefault = path.join(root, 'camellia-desktop');
       fs.mkdirSync(renamedDefault);
       app.setPath('appData', root);
@@ -155,7 +160,7 @@ async function main() {
     // Trace the shutdown path so a hang shows which stage was reached.
     for (const event of ['before-quit', 'will-quit', 'quit']) app.on(event, () => diag('DIAG app event: ' + event));
     assert.equal(app.getName(), 'Camellia');
-    assert.equal(app.getPath('userData'), userData, 'Renaming preserves old data and explicit profiles');
+    assert.equal(app.getPath('userData'), userData, 'Startup selects the correct new, legacy, migrated or explicit profile');
     if (!firstRun) assert.equal(app.getPath('sessionData'), userData, 'Browser cookies and caches stay with existing data');
     const closingWindows = new Set();
     const closeWindow = window => new Promise(resolve => {
@@ -525,6 +530,7 @@ async function main() {
     diag('PASS composer alignment: five engines, start pages and active conversations');
     await home.webContents.executeJavaScript('window.dshDesktop.codexSaveSettings({connection:"api"})');
     await home.webContents.executeJavaScript('openHistorySession("switch-fixture-a")');
+    await waitWindow("document.body.dataset.harness === 'claude' && typeof uiReady !== 'undefined' && uiReady && !loadingSession && context.sessionId === 'switch-fixture-a'");
     await home.webContents.executeJavaScript(`input.value='Keep this unsent draft'; input.dispatchEvent(new Event('input')); addAttachments([${JSON.stringify(path.join(root, 'notes.md'))}]);`);
     Menu.getApplicationMenu().items.find(item => item.label === 'Engine').submenu.items.find(item => item.label === 'Switch to DSH').click();
     await waitWindow("document.body.dataset.harness === 'dsh' && typeof uiReady !== 'undefined' && uiReady");
@@ -535,16 +541,19 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('.logo-icon img').naturalWidth > 0"), true);
     await home.webContents.executeJavaScript('window.dshDesktop.switchMode("home")'); await waitWindow("document.querySelector('#enterCodex')");
     await home.webContents.executeJavaScript("document.querySelector('#enterCodex').click()");
-    await waitWindow("document.body.dataset.harness === 'codex' && typeof uiReady !== 'undefined' && uiReady");
+    await waitWindow("document.body.dataset.harness === 'dsh' && typeof uiReady !== 'undefined' && uiReady && !loadingSession && context.sessionId === 'switch-fixture-a'");
+    assert.equal((await home.webContents.executeJavaScript('chatApi.loadSession("switch-fixture-a")')).currentEngine, 'dsh');
     assert.equal(await home.webContents.executeJavaScript('currentModel'), 'shared-api-a');
     assert.equal(await home.webContents.executeJavaScript('input.value'), 'Keep this unsent draft');
     await home.webContents.executeJavaScript('openHistorySession("switch-fixture-b")');
+    await waitWindow("document.body.dataset.harness === 'claude' && typeof uiReady !== 'undefined' && uiReady && !loadingSession && context.sessionId === 'switch-fixture-b'");
     assert.equal(await home.webContents.executeJavaScript('currentModel'), 'shared-api-b');
     assert.equal(await home.webContents.executeJavaScript('input.value'), '');
     await home.webContents.executeJavaScript('openHistorySession("switch-fixture-a")');
+    await waitWindow("document.body.dataset.harness === 'dsh' && typeof uiReady !== 'undefined' && uiReady && !loadingSession && context.sessionId === 'switch-fixture-a'");
     assert.equal(await home.webContents.executeJavaScript('currentModel'), 'shared-api-a');
     home.webContents.reload();
-    await waitWindow("document.body.dataset.harness === 'codex' && typeof uiReady !== 'undefined' && uiReady");
+    await waitWindow("document.body.dataset.harness === 'dsh' && typeof uiReady !== 'undefined' && uiReady && !loadingSession && context.sessionId === 'switch-fixture-a'");
     assert.equal(await home.webContents.executeJavaScript('input.value'), 'Keep this unsent draft');
     await home.webContents.executeJavaScript(`newSession(${JSON.stringify(codexWs.workspace.id)})`);
     await home.webContents.executeJavaScript("input.value='A workspace draft'; input.dispatchEvent(new Event('input'))");

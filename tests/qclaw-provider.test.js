@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { discoverQclaw, gatewayEndpoint, DEFAULT_BASE_URL } = require('../src/api/qclaw-provider');
 const { normalizeConfig, publicState, hasRoutes, PRESETS } = require('../src/api/api-router-config');
+const { createProviderInsights } = require('../src/api/provider-insights');
 
 const CLASH = { gateway: { mode: 'remote', port: 28790, auth: { mode: 'token', token: 'live-token' } } };
 const gateway = (port = 28790, token = 'live-token') => ({ gateway: { mode: 'local', port, auth: { mode: 'token', token } } });
@@ -117,4 +118,57 @@ test('a provider that stores the qclaw type by hand also resolves its endpoint',
   { discoverQclaw: () => ({ baseUrl: 'http://127.0.0.1:28795/v1', token: 'manual-token' }) });
   assert.equal(config.providers[0].baseUrl, 'http://127.0.0.1:28795/v1');
   assert.equal(config.providers[0].keys[0].key, 'manual-token');
+});
+
+test('QClaw model discovery uses the live gateway without a saved draft key', async t => {
+  const root = scratch(t);
+  let config = normalizeConfig({ providers: [qclaw()] }, null,
+    { discoverQclaw: () => ({ baseUrl: 'http://127.0.0.1:28791/v1', token: 'auto-token' }) });
+  const requests = [];
+  const insights = createProviderInsights({ file: path.join(root, 'insights.json'), getConfig: () => config,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, authorization: options.headers.Authorization });
+      return { ok: true, json: async () => ({ data: [{ id: 'openclaw/main' }] }) };
+    } });
+  for (const keys of [qclaw().keys, [], [{ id: 'qclaw-auto', maskedKey: 'old-mask' }],
+    [{ id: 'manual-key', key: 'draft-token' }]]) {
+    const result = await insights.models({ provider: qclaw({ baseUrl: 'http://127.0.0.1:1/v1', keys }) });
+    assert.deepEqual(result.models.map(model => model.id), ['openclaw/main']);
+  }
+  assert.deepEqual(requests, Array.from({ length: 4 }, () => ({
+    url: 'http://127.0.0.1:28791/v1/models', authorization: 'Bearer auto-token',
+  })));
+  config = normalizeConfig(publicState(config), config,
+    { discoverQclaw: () => ({ baseUrl: 'http://127.0.0.1:28794/v1', token: 'rotated-token' }) });
+  await insights.models({ provider: qclaw() });
+  assert.deepEqual(requests.at(-1), {
+    url: 'http://127.0.0.1:28794/v1/models', authorization: 'Bearer rotated-token',
+  });
+});
+
+test('QClaw verification resolves an obsolete draft key to the automatic key', async t => {
+  const root = scratch(t);
+  const config = normalizeConfig({ providers: [qclaw()] }, null,
+    { discoverQclaw: () => ({ baseUrl: 'http://127.0.0.1:28791/v1', token: 'auto-token' }) });
+  const insights = createProviderInsights({ file: path.join(root, 'insights.json'), getConfig: () => config,
+    fetchImpl: async (url, options) => {
+      assert.equal(url, 'http://127.0.0.1:28791/v1/chat/completions');
+      assert.equal(options.headers.Authorization, 'Bearer auto-token');
+      assert.equal(JSON.parse(options.body).model, 'openclaw/main');
+      return { ok: true, json: async () => ({ choices: [{ message: { content: 'OK' } }] }) };
+    } });
+  const result = await insights.verify({ providerId: 'qclaw-local', keyId: 'qclaw-key', model: 'openclaw/main' });
+  assert.equal(result.ok, true);
+  assert.equal(result.state.keys['qclaw-auto'].verification.ok, true);
+  assert.ok(!JSON.stringify(result).includes('auto-token'));
+});
+
+test('a missing QClaw gateway asks to start QClaw rather than save a key', async t => {
+  const root = scratch(t);
+  const config = normalizeConfig({ providers: [qclaw()] }, null, { discoverQclaw: () => null });
+  const insights = createProviderInsights({ file: path.join(root, 'insights.json'), getConfig: () => config,
+    fetchImpl: async () => { throw new Error('No request should be sent without a gateway'); } });
+  await assert.rejects(insights.models({ provider: qclaw() }), /QClaw gateway was not found/);
+  await assert.rejects(insights.verify({ providerId: 'qclaw-local', keyId: 'qclaw-auto', model: 'openclaw/main' }),
+    /QClaw gateway was not found/);
 });

@@ -2,6 +2,7 @@
 
 const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeTheme } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
+const { once } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -23,6 +24,7 @@ const { KimiSession, kimiSpawnSpec, kimiConnectionSettings, updateKimiConnection
 const { createKimiAccount } = require('../engines/kimi-account.js');
 const { createAccountPool } = require('../engines/subscription-accounts.js');
 const { createCodex } = require('../engines/codex');
+const { apiContextWindow } = require('../engines/codex-models');
 const { createAntigravity } = require('../engines/antigravity');
 const { createProviderInsights } = require('../api/provider-insights.js');
 const { createContextCapacity } = require('../api/context-capacity.js');
@@ -42,6 +44,9 @@ const { createPiChat } = require('../engines/pi-session');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
 const { saveClipboardImage, savePastedText } = require('./clipboard-attachments');
 const { StorageCleanup } = require('./storage-cleanup');
+const { createDataPackage, importDataPackage, inspectDataPackage, resolveKinds: normalizeMigrationScope } = require('./data-migration');
+const { configureDataDirectory, migrationStatus: dataDirectoryStatus, requestDirectoryMigration, cancelDirectoryMigration, readDirectoryMigrationResult } = require('./data-directory');
+const { migrateDataDirectory } = require('./data-directory-progress');
 const { IdleSessionReaper } = require('../engines/idle-session-reaper');
 const { attachInputContextMenu } = require('./input-context-menu');
 const { attachImageContextMenu } = require('./image-context-menu');
@@ -50,6 +55,9 @@ const { ENGINES: SUBSCRIPTION_MODEL_ENGINES } = require('../shared/subscription-
 const { revealInFileManager } = require('./reveal-file');
 const { resolveArtifacts } = require('./turn-artifacts');
 const { readOfficePreview } = require('./office-preview');
+const { isOleWorkbook, readXlsPreview } = require('./xls-preview');
+const { isWordDocument, readDocPreview } = require('./doc-preview');
+const { isLegacyPresentation, readPptPreview } = require('./ppt-preview');
 const { createConversationTitles, titleCandidates, titleErrorKind, TitleRequestError,
   TITLE_INSTRUCTION, MINIMAL_INSTRUCTION, AUXILIARY_HEADER, MAX_MESSAGE_CHARS, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } = require('./conversation-title.js');
 let sharedConversations = null;
@@ -75,6 +83,7 @@ function discussions() {
     discussionService = new DiscussionService({ dataDir: app.getPath('userData'), registry: discussionBoundary.registry, production: discussionProduction,
       getCatalog: production.getCatalog,
       hiddenSubscriptionModels: () => loadConfig().hiddenSubscriptionModels || {},
+      assertAvailable: assertRuntimeAvailable,
       onEvent: event => {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:discussion-event', event);
         remoteDesktop?.publish();
@@ -109,16 +118,26 @@ const STARTUP_TIMEOUT_MS = 120_000;
 const DEFAULT_PORT = 3000;
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
 
-// Keep existing conversations, settings and cookies when the product is renamed.
-// An explicit user-data directory (including test profiles) stays authoritative.
-const initialUserData = app.getPath('userData');
-if (path.basename(initialUserData) === app.getName() && initialUserData === path.join(app.getPath('appData'), app.getName())) {
-  const userData = path.join(app.getPath('appData'), 'dsh-desktop');
-  fs.mkdirSync(userData, { recursive: true });
-  if (app.getPath('sessionData') === initialUserData) app.setPath('sessionData', userData);
-  app.setPath('userData', userData);
-}
+const managedDataDirectory = configureDataDirectory(app);
+const appDataDirectory = (() => { try { return app.getPath('appData'); } catch { return null; } })();
 app.setName(APP_NAME);
+let gotSingleInstanceLock = app.requestSingleInstanceLock();
+const managedBrowserDirectory = app.getPath('sessionData') === app.getPath('userData');
+function lockDataDirectory(directory) {
+  app.releaseSingleInstanceLock();
+  if (managedBrowserDirectory) app.setPath('sessionData', directory);
+  app.setPath('userData', directory);
+  gotSingleInstanceLock = app.requestSingleInstanceLock();
+  if (!gotSingleInstanceLock) throw new Error('Could not lock the data directory: ' + directory);
+}
+const directoryMigration = managedDataDirectory && gotSingleInstanceLock
+  ? migrateDataDirectory({ app, appData: appDataDirectory, dataDir: app.getPath('userData'),
+    suspend: () => { app.releaseSingleInstanceLock(); gotSingleInstanceLock = false; },
+    lockDestination: state => lockDataDirectory(state.destination),
+    activate: state => { if (!gotSingleInstanceLock || app.getPath('userData') !== state.destination) lockDataDirectory(state.destination); },
+    resume: state => lockDataDirectory(state.source) }) : null;
+if (directoryMigration?.recoveryRequired) throw new Error('Data directory recovery is required: ' + directoryMigration.rollbackError);
+const lastDirectoryMigration = directoryMigration || (managedDataDirectory ? readDirectoryMigrationResult(appDataDirectory) : null);
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -189,6 +208,7 @@ function installCrashHandlers() {
   });
 }
 installCrashHandlers();
+if (lastDirectoryMigration) log('Data directory migration result: ' + JSON.stringify(lastDirectoryMigration));
 
 // ---------------------------------------------------------------------------
 // Config (stored in the app's own userData, NOT in ~/.dsh which dsh itself owns)
@@ -336,6 +356,10 @@ async function chooseDownloadConnection(engine) {
 
 let runtimeUpdatesService;
 let appUpdatesService;
+function anyRuntimeUpdating() { return Object.keys(ENGINES).some(engine => runtimeUpdatesService?.isUpdating(engine)); }
+function assertRuntimeAvailable(engine) {
+  if (runtimeUpdatesService?.isUpdating(engine)) throw new Error(`${ENGINES[engine]?.name || engine} is updating. Try again when the update finishes.`);
+}
 function appUpdates() {
   if (!appUpdatesService) {
     appUpdatesService = createAppUpdates({ currentVersion: app.getVersion(),
@@ -358,7 +382,29 @@ function runtimeUpdates() {
     const npm = firstExisting(runtimePaths.npmCandidates(node, { resourcesPath: app.isPackaged ? root : undefined, env: process.env }));
     runtimeUpdatesService = createRuntimeUpdates({ manager: runtimes(), engines: ENGINES, node, npm, run: runtimeRun,
       downloadSettings: () => loadConfig().downloadProxy,
-      promptRestart: promptRuntimeRestart,
+      beforeInstall: async engine => {
+        if (appUpdatesService?.state().installing) throw new Error('Wait for the Camellia update to finish before updating a runtime');
+        if (benchmarkRunner?.pending || discussionService?.active) throw new Error('Stop the benchmark or discussion before updating a runtime');
+        if (engineBusy(engine)) throw new Error('Stop conversations using this engine before updating it');
+        if (engine === 'kimi' && kimiAccount.active) throw new Error('Wait for Kimi account activity to finish before updating it');
+        const reopenDshPanel = engine === 'dsh' && Boolean(nativeSettingsLoad || backend.current);
+        // Idle sessions and the DSH settings server still hold files on Windows.
+        await stopEngineForUpdate(engine);
+        if (engine === 'dsh') {
+          const oldLoad = nativeSettingsLoad;
+          if (oldLoad) await oldLoad.catch(() => {});
+          await backend.stopAndWait();
+        }
+        return async () => {
+          if (!reopenDshPanel || !settingsWindow || settingsWindow.isDestroyed()
+            || !nativeSettingsView || nativeSettingsView.webContents.isDestroyed()) return;
+          nativeSettingsLoad = (async () => {
+            const { url } = await startBackend();
+            await nativeSettingsView.webContents.loadURL(url);
+          })().catch(error => { nativeSettingsLoad = null; throw error; });
+          await nativeSettingsLoad;
+        };
+      },
       onChange: state => {
         for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) {
           window.webContents.send('dsh:runtime-state', state);
@@ -367,20 +413,6 @@ function runtimeUpdates() {
       log });
   }
   return runtimeUpdatesService;
-}
-async function promptRuntimeRestart(name, from, to, updates = []) {
-  const { response } = await dialog.showMessageBox(BrowserWindow.getFocusedWindow() || mainWindow, {
-    type: 'info', title: uiText('Restart required'),
-    message: updates.length > 1
-      ? uiText('Engine updates are complete. Restart Camellia to use the new versions.')
-      : uiText(`${name} was updated to v${to}. Restart Camellia to use the new version.`),
-    detail: updates.length > 1 ? updates.map(update => `${update.name}: v${update.from} → v${update.to}`).join('\n') : '',
-    buttons: [uiText('Later'), uiText('Restart now')], defaultId: 1, cancelId: 0, noLink: true,
-  });
-  if (response !== 1) return false;
-  app.relaunch();
-  app.exit(0);
-  return true;
 }
 function runtimeEnvironment(node, engine) {
   const root = app.isPackaged ? process.resourcesPath : APP_ROOT;
@@ -575,12 +607,12 @@ function broadcastAccountInsights(state) {
 async function refreshInsights(payload = {}) {
   const wanted = String(payload.subscriptionId || '');
   const kimiIds = !payload.apiOnly && !payload.providerId && !payload.keyId
-    ? kimiAccount.list().map(profile => profile.id).filter(id => !wanted || wanted === 'kimi:' + id) : [];
+    ? kimiAccount.list().map(profile => profile.id).filter(id => !runtimeUpdatesService?.isUpdating('kimi') && (!wanted || wanted === 'kimi:' + id)) : [];
   const codexIds = !payload.apiOnly && !payload.providerId && !payload.keyId
-    ? codex.accountState().accounts.filter(account => account.signedIn && (!wanted || wanted === 'codex:' + account.id)).map(account => account.id) : [];
+    ? codex.accountState().accounts.filter(account => account.signedIn && !runtimeUpdatesService?.isUpdating('codex') && (!wanted || wanted === 'codex:' + account.id)).map(account => account.id) : [];
   const google = antigravity.handlers['account-state']();
   const refreshGoogle = !payload.apiOnly && !payload.providerId && !payload.keyId
-    && (!wanted || wanted === 'antigravity:default') && google.models?.length && google.verifiedAt && !google.awaitingVerification;
+    && !runtimeUpdatesService?.isUpdating('antigravity') && (!wanted || wanted === 'antigravity:default') && google.models?.length && google.verifiedAt && !google.awaitingVerification;
   await Promise.all([
     payload.subscriptionId ? null : insights().refresh(payload),
     ...kimiIds.map(id => kimiAccount.refreshUsage({ force: payload.force !== false }, id)),
@@ -760,6 +792,9 @@ function managedClaudeModelEnv(model) {
 }
 function modelContextWindow(model) {
   return capacity().budget({ model, protocol: 'openai' })?.cap || routerConfig.modelContextWindow(readOllamaProxyConfig(), model);
+}
+function codexContextWindow(model) {
+  return apiContextWindow(model, capacity().budget({ model, protocol: 'openai' }));
 }
 function resolveClaudeRoute() {
   const cfg = readOllamaProxyConfig();
@@ -1023,7 +1058,7 @@ const kimiAccount = createAccountPool({ engine: 'kimi', userData: app.getPath('u
 const codex = createCodex({ dataDir: app.getPath('userData'), loadConfig, saveConfig,
   createUsageMeter,
   getRoute: resolveClaudeRoute, getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
-  getContextWindow: modelContextWindow,
+  getContextWindow: codexContextWindow,
   runtimes, log, environment: () => runtimeEnvironment(detectNode(), 'codex'), openExternal: url => shell.openExternal(url),
   isBusy: () => sharedConversations?.isBusy('codex'),
   onEvent: event => publishChatEvent('codex', event),
@@ -1080,6 +1115,22 @@ const piChat = createPiChat({ dataDir: app.getPath('userData'), loadConfig, save
   instructions: () => engineSettings().piInstructions(),
   onEvent: event => publishChatEvent('pi', event), log });
 function sessionPools() { return [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, piChat.sessions]; }
+async function stopEngineForUpdate(engine) {
+  const pool = { claude: claudeSessions, kimi: kimiSessions, codex: codex.sessions,
+    antigravity: antigravity.sessions, dsh: dshChat.sessions, pi: piChat.sessions }[engine];
+  const processes = [...(pool?.sessions.values() || [])]
+    .map(session => session.proc || session.client?.proc)
+    .filter(proc => proc && proc.exitCode == null && proc.signalCode == null);
+  // Register exit listeners before shutdown so a fast exit cannot be missed.
+  const exits = processes.map(proc => once(proc, 'exit', { signal: AbortSignal.timeout(10000) }));
+  for (const exit of exits) void exit.catch(() => {});
+  await stopEngine(engine);
+  try { await Promise.all(exits); }
+  catch (error) {
+    if (error.name === 'AbortError') throw new Error(`${ENGINES[engine]?.name || engine} process did not stop before the update`);
+    throw error;
+  }
+}
 discussionBoundary = require('../engines/discussions/native-boundary').createDiscussionBoundary({
   dataDir: app.getPath('userData'), conversations: () => sharedConversations ? [...sharedConversations.items.values()] : null,
   managedNative: () => productionDiscussions().inventory(),
@@ -1091,6 +1142,7 @@ discussionBoundary = require('../engines/discussions/native-boundary').createDis
   },
 });
 sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
+  assertAvailable: assertRuntimeAvailable,
   contextCapacity: { budget: options => capacity().budget(options) },
   summarize: compactionSummarizer,
   contextRoute: (engine, settings) => {
@@ -1116,6 +1168,7 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
     pi: piChat,
   },
   prepare: async (engine, settings) => {
+    assertRuntimeAvailable(engine);
     if (engine !== 'dsh' || !loadConfig().dshBin) await runtimes().ensure(engine, settings?.connection);
   },
   onEvent: event => {
@@ -1320,6 +1373,7 @@ let appQuitting = false;
 let currentMode = 'home';
 
 let settingsWindow = null;
+let settingsCloseReady = false, settingsFlush = null, settingsQuitPending = false;
 let nativeSettingsView = null;
 let nativeSettingsLoad = null;
 const { welcomeHtml, errorHtml } = require('./desktop-views.js').createDesktopViews({
@@ -1331,13 +1385,35 @@ function openApiSettingsWindow() {
   openSettingsWindow();
 }
 
+function flushSettingsWindow() {
+  if (!settingsWindow || settingsWindow.isDestroyed() || settingsWindow.webContents.isLoading()) return Promise.resolve(true);
+  if (settingsFlush) return settingsFlush;
+  const contents = settingsWindow.webContents;
+  let timeout;
+  settingsFlush = Promise.race([
+    contents.executeJavaScript('window.flushApiSettings ? window.flushApiSettings() : ({ ok: true })'),
+    new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('API settings save timed out')), 10000); }),
+  ]).then(result => result?.ok === true).catch(error => {
+    log(`settings close: ${error.message}`);
+    return false;
+  }).finally(() => { clearTimeout(timeout); settingsFlush = null; });
+  return settingsFlush;
+}
+
 function openSettingsWindow(target = {}) {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
-    settingsWindow.show();
-    settingsWindow.focus();
-    settingsWindow.webContents.send('dsh:settings-navigate', target);
+    const existingSettingsWindow = settingsWindow;
+    existingSettingsWindow.show();
+    existingSettingsWindow.focus();
+    const navigate = () => {
+      if (settingsWindow !== existingSettingsWindow || existingSettingsWindow.isDestroyed()) return;
+      existingSettingsWindow.webContents.send('dsh:settings-navigate', target);
+    };
+    if (existingSettingsWindow.webContents.isLoading()) existingSettingsWindow.webContents.once('did-finish-load', navigate);
+    else navigate();
     return;
   }
+  settingsCloseReady = false;
   settingsWindow = new BrowserWindow({
     width: 1160,
     height: 860,
@@ -1360,6 +1436,16 @@ function openSettingsWindow(target = {}) {
     },
   });
   const settingsContents = settingsWindow.webContents;
+  const closingWindow = settingsWindow;
+  settingsWindow.on('close', event => {
+    if (settingsCloseReady) return;
+    event.preventDefault();
+    void flushSettingsWindow().then(saved => {
+      if (!saved || closingWindow.isDestroyed()) return;
+      settingsCloseReady = true;
+      closingWindow.close();
+    });
+  });
   desktopZoom().attach(settingsContents);
   settingsWindow.once('ready-to-show', () => {
     if (!settingsWindow || settingsWindow.isDestroyed()) return;
@@ -1417,7 +1503,6 @@ function createMainWindow() {
 // ---------------------------------------------------------------------------
 // Main flow
 // ---------------------------------------------------------------------------
-const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
@@ -1469,6 +1554,7 @@ if (!gotSingleInstanceLock) {
     if (event.sender !== settingsWindow?.webContents) return { ok: false, error: "The native panel can only be opened from the settings window" };
     try {
       if (!payload.visible) { nativeSettingsView?.setVisible(false); return { ok: true }; }
+      if (runtimeUpdatesService?.isUpdating('dsh')) return { ok: false, error: 'DeepSeek Harness is updating. Reload this panel after the update.' };
       if (!loadConfig().dshBin && !runtimes().locate('dsh')) return { ok: false, needsRuntime: true,
         error: 'Download DeepSeek Harness from Settings → Engine Settings to use its native panel.' };
       if (!nativeSettingsView) {
@@ -1498,12 +1584,16 @@ if (!gotSingleInstanceLock) {
 
   for (const [name, handler] of Object.entries({
     'benchmark-state': () => ({ ok: true, ...benchmarks().state() }),
-    'benchmark-start': async payload => ({ ok: true, ...await benchmarks().start(payload) }),
+    'benchmark-start': async payload => {
+      if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before starting a benchmark');
+      return { ok: true, ...await benchmarks().start(payload) };
+    },
     'benchmark-cancel': () => benchmarks().cancel(),
     'benchmark-report': ({ id }) => ({ ok: true, report: benchmarks().report(id) }),
     'benchmark-delete': ({ id }) => benchmarks().deleteReport(id),
     'benchmark-install': async ({ engine }) => {
       if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine)) throw new Error('Unknown benchmark engine');
+      assertRuntimeAvailable(engine);
       if (benchmarkRunner?.pending) throw new Error('Stop the benchmark before downloading an engine');
       await runtimes().ensure(engine, 'api');
       return { ok: true, ...benchmarks().state() };
@@ -1589,6 +1679,7 @@ if (!gotSingleInstanceLock) {
       return { ok: true, preferences: { proxyUrl, connection: codex.settings().connection } };
     },
     'engine-settings-save': async ({ engine, ...payload }) => {
+      assertRuntimeAvailable(engine);
       if (engineBusy(engine)) throw new Error("Stop the current response or goal before changing global settings");
       if (engine === 'antigravity' && payload.expectedConnection && payload.expectedConnection !== antigravity.settings().connection)
         throw new Error('The subscription connection changed. Reload engine settings before saving.');
@@ -1604,6 +1695,7 @@ if (!gotSingleInstanceLock) {
     },
     'runtime-state': () => ({ ok: true, engines: runtimeUpdates().state() }),
     'runtime-set-path': async ({ engine, file, mode }) => {
+      assertRuntimeAvailable(engine);
       if (engineBusy(engine)) throw new Error('Stop conversations using this engine before changing its path');
       const engines = await runtimes().setPath(engine, file, mode);
       if (engine === 'claude') await claudeSessions.shutdown();
@@ -1616,6 +1708,7 @@ if (!gotSingleInstanceLock) {
     },
     'runtime-python-state': () => ({ ok: true, python: runtimes().pythonState() }),
     'runtime-set-python': async ({ file }) => {
+      if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before changing Python');
       // Python is shared by every harness, so a running session anywhere may be
       // using it; stop the engines that depend on it before switching.
       if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].some(engineBusy)) {
@@ -1625,16 +1718,18 @@ if (!gotSingleInstanceLock) {
       await antigravity.shutdown();
       return { ok: true, engines, python: runtimes().pythonState() };
     },
-    'runtime-ensure': async ({ engine }) => ({ ok: true, runtime: await runtimes().ensure(engine) }),
+    'runtime-ensure': async ({ engine }) => { assertRuntimeAvailable(engine); return { ok: true, runtime: await runtimes().ensure(engine) }; },
     'runtime-check-updates': async () => ({ ok: true, engines: await runtimeUpdates().check() }),
     'app-update-check': () => appUpdates().check(),
     'app-update-install': async () => {
+      if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before updating Camellia');
       const send = state => {
         for (const window of [settingsWindow, mainWindow]) if (window && !window.isDestroyed()) window.webContents.send('dsh:app-update-state', state);
       };
       // Replacing the installation closes the application, so confirm first and
       // reuse this check instead of querying the release feed twice.
       const available = await appUpdates().check();
+      if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before updating Camellia');
       if (!available.updateAvailable) throw new Error('Camellia is already up to date');
       const busy = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].filter(engineBusy);
       const { response } = await dialog.showMessageBox(settingsWindow || mainWindow, {
@@ -1645,10 +1740,14 @@ if (!gotSingleInstanceLock) {
         buttons: [uiText('Cancel'), uiText('Install and restart')], defaultId: 1, cancelId: 0,
       });
       if (response !== 1) return { ok: true, canceled: true };
+      if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before updating Camellia');
       return appUpdates().install(send, available);
     },
     'runtime-update': async ({ engine }) => {
+      if (appUpdatesService?.state().installing) throw new Error('Wait for the Camellia update to finish before updating a runtime');
+      if (benchmarkRunner?.pending || discussionService?.active) throw new Error('Stop the benchmark or discussion before updating a runtime');
       if (engineBusy(engine)) throw new Error('Stop conversations using this engine before updating it');
+      if (engine === 'kimi' && kimiAccount.active) throw new Error('Wait for Kimi account activity to finish before updating it');
       return runtimeUpdates().update(engine);
     },
     'network-settings': async () => ({ ok: true, ...await networkSettings().detect() }),
@@ -1731,7 +1830,9 @@ if (!gotSingleInstanceLock) {
     quickSwitchLevels: loadConfig().quickSwitchLevels || {},
     hiddenSubscriptionModels: loadConfig().hiddenSubscriptionModels || {},
     chatContentWidth: normalizeChatContentWidth(loadConfig().chatContentWidth),
-    computerName: computerName(), dataPath: app.getPath('userData'), version: app.getVersion() }));
+    computerName: computerName(), dataPath: app.getPath('userData'), version: app.getVersion(),
+    dataDirectory: { ...dataDirectoryStatus({ appData: appDataDirectory, dataDir: app.getPath('userData') }),
+      ...(!managedDataDirectory ? { legacy: false, canMigrate: false } : {}), migrationError: lastDirectoryMigration?.error || null } }));
   ipcMain.handle('dsh:workbench-save-settings', (_event, payload) => {
     try {
       // The router's quota probe follows only its own switch and cadence:
@@ -1827,6 +1928,7 @@ if (!gotSingleInstanceLock) {
   // ---- Claude Code GUI ---------------------------------------------------
   ipcMain.handle('dsh:claude-send', (_event, payload) => {
     try {
+      assertRuntimeAvailable('claude');
       if (claudeSessions.legacy && claudeSessions.legacy.running) return { ok: false, error: "Wait for the response to finish or stop it before sending another message" };
       const settings = (payload && payload.settings) || claudeSettings();
       const session = ensureClaudeSession(settings, {
@@ -1892,7 +1994,10 @@ if (!gotSingleInstanceLock) {
     'goal-clear': () => goalDriver.clear(),
   };
   for (const [name, handler] of Object.entries(claudeCommands)) ipcMain.handle('dsh:claude-' + name, (_event, payload) => {
-    try { return handler(payload || {}); }
+    try {
+      if (['goal-start', 'goal-resume'].includes(name)) assertRuntimeAvailable('claude');
+      return handler(payload || {});
+    }
     catch (error) { return { ok: false, error: error.message }; }
   });
 
@@ -1912,6 +2017,7 @@ if (!gotSingleInstanceLock) {
     },
     'meta-op': payload => kimiWorkspaces.metaOp(payload),
     'send': async payload => {
+      assertRuntimeAvailable('kimi');
       if (kimiSessions.legacy?.running) return { ok: false, error: "Wait for the response to finish or stop it before sending another message" };
       const sessionId = payload.sessionId || null;
       const session = ensureKimiSession(kimiSettings(sessionId), { sessionId,
@@ -1941,6 +2047,14 @@ if (!gotSingleInstanceLock) {
       await kimiAccount.refresh(id); await kimiAccount.refreshUsage({}, id);
       return { ok: true, ...kimiAccount.state() };
     },
+    'account-wake': async payload => {
+      const id = payload?.id || kimiAccount.activeId();
+      if (!kimiAccount.list().some(account => account.id === id)) throw new Error('Unknown Kimi account');
+      const service = kimiAccount.service(id);
+      const result = await service.wake();
+      broadcastAccountInsights();
+      return { ok: true, ...result };
+    },
     'account-select': payload => ({ ok: true, ...kimiAccount.select(payload?.id) }),
     'account-add': async payload => ({ ok: true, ...await kimiAccount.beginAdd(payload?.label) }),
     'account-remove': async payload => ({ ok: true, ...await kimiAccount.remove(payload?.id) }),
@@ -1958,12 +2072,17 @@ if (!gotSingleInstanceLock) {
     },
   };
   for (const [name, handler] of Object.entries(kimiHandlers)) ipcMain.handle('dsh:kimi-' + name, async (_event, payload) => {
-    try { return await handler(payload); }
+    try {
+      if (['goal-start', 'goal-resume', 'account-refresh', 'account-wake', 'account-add', 'account-remove', 'sign-in', 'sign-out'].includes(name)) assertRuntimeAvailable('kimi');
+      return await handler(payload);
+    }
     catch (error) { log('kimi-' + name + ': ' + error.message); return { ok: false, error: error.message }; }
   });
 
   for (const [engine, instance] of Object.entries({ codex, antigravity })) for (const [name, handler] of Object.entries(instance.handlers)) ipcMain.handle('dsh:' + engine + '-' + name, async (_event, payload) => {
     try {
+      if (['send', 'goal-start', 'goal-resume', 'account-state', 'account-refresh', 'account-refresh-usage',
+        'account-wake', 'account-add', 'account-remove', 'sign-in', 'sign-out'].includes(name)) assertRuntimeAvailable(engine);
       const result = await handler(payload);
       if (name === 'account-refresh' && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:engine-settings-changed', { engine });
       return result;
@@ -2071,6 +2190,87 @@ if (!gotSingleInstanceLock) {
     try { return { ok: true, ...await storageCleanup.clean(payload?.token) }; }
     catch (error) { return { ok: false, error: error.message }; }
   });
+  // Move a profile between installs, folders or computers. Both directions are
+  // explicit, refuse to run while an engine is busy, and report progress so the
+  // settings page can show a real bar instead of a frozen button.
+  let migrationBusy = false;
+  let dataDirectoryRestart = false;
+  const migrationHome = os.homedir();
+  const migrationProgress = state => {
+    for (const window of [settingsWindow, mainWindow]) if (window && !window.isDestroyed()) window.webContents.send('dsh:data-migration-progress', state);
+  };
+  const assertMigrationIdle = () => {
+    if (cleanupActivity()) throw new Error('Stop the current response or goal before moving your data');
+    if (benchmarkRunner?.pending || discussionService?.active) throw new Error('Stop the benchmark or discussion before moving your data');
+    if (runtimeManager?.busy || anyRuntimeUpdating() || benchmarkLibraryManager?.busy || appUpdatesService?.state().installing) {
+      throw new Error('Wait for downloads and updates to finish before moving your data');
+    }
+  };
+  ipcMain.handle('dsh:data-directory-migrate', async () => {
+    if (migrationBusy) return { ok: false, error: uiText('A data transfer is already running') };
+    migrationBusy = true;
+    let requested = false;
+    try {
+      if (!managedDataDirectory) throw new Error('Custom data directories are kept unchanged');
+      assertMigrationIdle();
+      if (!await flushSettingsWindow()) throw new Error('Save your settings before moving your data');
+      assertMigrationIdle();
+      const state = requestDirectoryMigration({ appData: appDataDirectory, dataDir: app.getPath('userData') });
+      requested = true;
+      dataDirectoryRestart = true;
+      app.relaunch();
+      app.quit();
+      return { ok: true, restarting: true, ...state };
+    } catch (error) {
+      if (requested) cancelDirectoryMigration(appDataDirectory);
+      dataDirectoryRestart = false;
+      migrationBusy = false;
+      return { ok: false, error: error.message };
+    }
+  });
+  ipcMain.handle('dsh:data-export', async (_event, payload) => {
+    if (migrationBusy) throw new Error('A data transfer is already running');
+    migrationBusy = true;
+    try {
+      assertMigrationIdle();
+      const scope = payload?.scope === undefined ? 'all' : normalizeMigrationScope(payload.scope);
+      if (!scope) return { ok: false, error: uiText('Choose at least one category to export') };
+      const result = await dialog.showSaveDialog(settingsWindow || mainWindow, { title: uiText('Export Camellia data'),
+        defaultPath: `camellia-data-${new Date().toISOString().slice(0, 10)}.zip`, filters: [{ name: 'Camellia data package', extensions: ['zip'] }] });
+      if (result.canceled || !result.filePath) return { ok: true, canceled: true };
+      assertMigrationIdle();
+      migrationProgress({ phase: 'export', bytes: 0, totalBytes: 0 });
+      const summary = await createDataPackage({ dataDir: app.getPath('userData'), home: migrationHome, appVersion: app.getVersion(),
+        destination: result.filePath, scope, onProgress: migrationProgress });
+      return { ok: true, file: result.filePath, ...summary };
+    } catch (error) { log('data export failed: ' + error.message); return { ok: false, error: error.message }; }
+    finally { migrationBusy = false; migrationProgress({ phase: 'done' }); }
+  });
+  ipcMain.handle('dsh:data-import', async (_event, payload) => {
+    if (migrationBusy) throw new Error('A data transfer is already running');
+    migrationBusy = true;
+    try {
+      assertMigrationIdle();
+      let file = payload?.file;
+      if (!file) {
+        const result = await dialog.showOpenDialog(settingsWindow || mainWindow, { title: uiText('Import Camellia data'),
+          filters: [{ name: 'Camellia data package', extensions: ['zip'] }], properties: ['openFile'] });
+        if (result.canceled || !result.filePaths.length) return { ok: true, canceled: true };
+        file = result.filePaths[0];
+      }
+      const scope = payload?.scope === 'all' ? 'all' : normalizeMigrationScope(payload?.scope);
+      if (!scope) {
+        if (payload?.scope !== undefined && payload?.scope !== null) return { ok: false, error: uiText('Choose at least one category to import') };
+        const { categories } = await inspectDataPackage(file);
+        return { ok: true, needsSelection: true, file, categories };
+      }
+      assertMigrationIdle();
+      migrationProgress({ phase: 'import', bytes: 0, totalBytes: 0 });
+      const summary = await importDataPackage({ file, scope, dataDir: app.getPath('userData'), home: migrationHome, onProgress: migrationProgress });
+      return { ok: true, ...summary };
+    } catch (error) { log('data import failed: ' + error.message); return { ok: false, error: error.message }; }
+    finally { migrationBusy = false; migrationProgress({ phase: 'done' }); }
+  });
   const archivedSources = () => ({
     claude: claudeWorkspaces, kimi: kimiWorkspaces, codex: codex.workspaces,
     antigravity: antigravity.workspaces, shared: sharedConversations.workspaces,
@@ -2088,7 +2288,10 @@ if (!gotSingleInstanceLock) {
       if (goal.armed) throw new Error('Pause the goal before deleting its conversation');
       goal.clear();
     }
-    await archivedSources()[source].removeSession(id);
+    if (source === 'shared') {
+      if (sharedConversations.busy(id)) throw new Error('Stop this conversation before deleting it');
+      await sharedConversations.deleteConversation(id);
+    } else await archivedSources()[source].removeSession(id);
     const bindingKeys = [
       { kimi: 'kimiSessionConnections', codex: 'codexSessionConnections' }[source],
       { kimi: 'kimiSessionAccounts', codex: 'codexSessionAccounts' }[source],
@@ -2230,7 +2433,15 @@ if (!gotSingleInstanceLock) {
   ipcMain.handle('dsh:preview-file', async (_event, filePath) => {
     try {
       const file = describePreview(filePath);
-      if (['word', 'presentation', 'spreadsheet'].includes(file.kind)) file.office = await readOfficePreview(file.path, file.kind);
+      // The pre-2007 formats are `document`/`spreadsheet` OLE2 binaries rather
+      // than ZIP archives, so they route to their own readers. An OLE container
+      // that fails its format check falls through to the system-app message
+      // instead of failing the whole preview request.
+      const isLegacy = file.kind === 'document';
+      if (file.kind === 'spreadsheet' && isOleWorkbook(file.path)) file.office = readXlsPreview(file.path);
+      else if (isLegacy && isWordDocument(file.path)) file.office = readDocPreview(file.path);
+      else if (isLegacy && isLegacyPresentation(file.path)) file.office = readPptPreview(file.path);
+      else if (['word', 'presentation', 'spreadsheet'].includes(file.kind)) file.office = await readOfficePreview(file.path, file.kind);
       return { ok: true, file };
     }
     catch (error) { return { ok: false, error: error?.message || String(error) }; }
@@ -2400,12 +2611,24 @@ if (!gotSingleInstanceLock) {
     app.quit();
   });
 
-  let kimiClosing = false;
+  let kimiClosing = false, directoryClosing = false, directoryCloseReady = false;
   app.on('before-quit', event => {
+    if (settingsWindow && !settingsWindow.isDestroyed() && !settingsCloseReady) {
+      event.preventDefault();
+      if (settingsQuitPending) return;
+      settingsQuitPending = true;
+      void flushSettingsWindow().then(saved => {
+        settingsQuitPending = false;
+        if (!saved) return;
+        settingsCloseReady = true;
+        app.quit();
+      });
+      return;
+    }
+    if (dataDirectoryRestart && directoryClosing && !directoryCloseReady) { event.preventDefault(); return; }
     appQuitting = true;
     idleSessionReaper.stop();
-    void remoteDesktop?.close();
-    void cliDevices.close();
+    if (!dataDirectoryRestart) { void remoteDesktop?.close(); void cliDevices.close(); }
     clearTimeout(balanceRefreshTimer);
     for (const goal of [goalDriver, kimiGoalDriver, antigravity.goal, codex.goal]) {
       if (goal.armed) goal.setPhase('paused');
@@ -2413,6 +2636,22 @@ if (!gotSingleInstanceLock) {
     }
     sharedConversations.pauseGoals();
     sharedConversations.closeGoalTools();
+    if (dataDirectoryRestart && !directoryClosing) {
+      event.preventDefault();
+      directoryClosing = true;
+      kimiClosing = true;
+      void Promise.allSettled([remoteDesktop?.close(), cliDevices.close(), backend.stopAndWait(), stopOllamaProxyHandle(),
+        discussionService?.shutdown(), claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), piChat.shutdown(),
+        dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown(), benchmarkRunner?.shutdown()]).then(results => {
+        if (results.some(result => result.status === 'rejected')) {
+          try { cancelDirectoryMigration(appDataDirectory); } catch (error) { log('Cancel directory migration: ' + error.message); }
+          log('Data directory migration canceled because a background process did not stop');
+        }
+        directoryCloseReady = true;
+        app.quit();
+      });
+      return;
+    }
     if ((discussionService?.active || claudeSessions.active || codex.active || kimiAccount.active || piChat.sessions.active || dshChat.sessions.active || kimiSessions.active || antigravity.sessions.active || benchmarkRunner?.pending) && !kimiClosing) {
       event.preventDefault();
       kimiClosing = true;
@@ -2446,6 +2685,10 @@ if (!gotSingleInstanceLock) {
     }
     const request = ++modeRequest;
     const next = mode;
+    if (Object.hasOwn(ENGINES, next)) {
+      try { assertRuntimeAvailable(next); }
+      catch (error) { return { ok: false, error: error.message }; }
+    }
     if (next === 'discussions' && mainWindow && !mainWindow.isDestroyed()
       && mainWindow.webContents.getURL().split(/[?#]/)[0] === require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href) {
       mainWindow.webContents.send('dsh:discussion-navigate', navigation || {});

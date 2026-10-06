@@ -11,8 +11,9 @@ const { isolatedEnvironment } = require('../src/benchmark/engines');
 const { summarize } = require('../src/benchmark/runner');
 const { PYTHON_SCRATCH_FLAGS } = require('../src/benchmark/runner');
 const { spawnSync } = require('node:child_process');
+const { defaultDataDirectory } = require('../src/main/data-directory');
 
-const directory = process.argv[2] || path.join(process.env.APPDATA || path.join(os.homedir(), 'Library/Application Support'), 'dsh-desktop/benchmark-libraries');
+const directory = process.argv[2] || path.join(defaultDataDirectory(), 'benchmark-libraries');
 const manager = createLibraryManager({ directory });
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-science-smoke-'));
 let number = 0;

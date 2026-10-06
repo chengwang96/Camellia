@@ -36,3 +36,9 @@ __pycache__/
 # Per-machine UI test captures (screenshots and transcripts written by the
 # device and subscription-card UI tests). Not inputs to any build or test.
 /artifacts/
+
+# Android release signing material must stay outside Git.
+/android/*.jks
+/android/*.keystore
+/android/*.p12
+/android/keystore.properties

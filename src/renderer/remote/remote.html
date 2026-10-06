@@ -13,8 +13,7 @@
     <header><span class="eyebrow">CAMELLIA / TAILSCALE</span><h1 data-copy="title">手机访问</h1><p data-copy="intro">通过 Tailscale 连接手机。</p></header>
     <section aria-labelledby="connectionTitle">
       <div class="heading"><h2 id="connectionTitle" data-copy="connection">连接</h2><span id="status" class="status"></span></div>
-      <p id="address" class="address"></p>
-      <button id="toggle" class="primary" disabled>…</button>
+      <div class="connection-row"><p id="address" class="address"></p><button id="copyAddress" data-copy="copyAddress">复制地址</button><button id="toggle" class="primary" disabled>…</button><span id="copyStatus" class="hint" role="status" aria-live="polite"></span></div>
       <div id="networkControls" hidden><p id="networkState" class="hint" role="status"></p><button id="login" hidden data-copy="login">登录 Tailscale</button></div>
       <details class="mobile-help">
         <summary data-copy="connectionHelp">连接与权限说明</summary>
@@ -27,12 +26,15 @@
     </section>
     <section aria-labelledby="pairTitle">
       <h2 id="pairTitle" data-copy="pair">配对设备</h2>
-      <p data-copy="scope">可查看和操作全部现有及未来会话，仅授权可信设备。</p>
       <label for="deviceName" data-copy="deviceName">本机名称</label>
       <div class="name-row"><input id="deviceName" maxlength="80" autocomplete="off"><button id="saveDeviceName" data-copy="deviceNameSave">保存名称</button></div>
       <p class="hint" data-copy="deviceNameHint"></p><p id="deviceNameStatus" class="hint" role="status"></p>
       <button id="invite" disabled data-copy="generate">生成配对码</button>
-      <div id="invitation" hidden><div id="qr" class="qr"></div><code id="code"></code><p id="expires" class="hint"></p><p class="hint" data-copy="scanHint">用手机扫描二维码即可自动填入地址和配对码。</p><p class="hint" data-copy="scanFallback">也可手动输入地址和一次性配对码。</p></div>
+      <div id="invitation" hidden><div class="pair-layout"><div id="qr" class="qr"></div><div class="pair-details"><code id="code"></code><p id="expires" class="hint"></p><p class="hint" data-copy="scanHint">用手机扫描二维码即可自动填入地址和配对码。</p><p class="hint" data-copy="scanFallback">也可手动输入地址和一次性配对码。</p></div></div></div>
+      <button id="refreshInvite" hidden data-copy="refreshCode">刷新二维码</button>
+      <div id="pairPending" class="pair-success" role="status" hidden><span class="success-mark" aria-hidden="true">…</span><div><strong id="pairPendingLabel" data-copy="pairWaiting">等待电脑授权</strong><span id="pendingName"></span></div></div>
+      <div id="pair-success" class="pair-success" role="status" hidden><span class="success-mark" aria-hidden="true">✓</span><div><strong data-copy="pairSuccess">配对成功</strong><span id="pairedName"></span></div><button id="continuePair" data-copy="continuePair">继续配对</button></div>
+      <p id="pairFailed" class="hint" role="status" hidden data-copy="pairFailed">配对请求已结束，请重新生成二维码。</p>
       <div id="pending"></div>
     </section>
     <section aria-labelledby="devicesTitle"><h2 id="devicesTitle" data-copy="devices">已授权设备</h2><div id="devices"></div></section>

@@ -38,13 +38,13 @@ function createKimiAccount({ home, runtime, ensureRuntime, node, environment = (
   createClient, queryQuota = readKimiQuota, now = () => Date.now(), loginTimeoutMs = 15 * 60 * 1000 }) {
   const stateFile = path.join(home, 'account-state.json');
   let saved = readJson(stateFile, { account: null, models: [], verifiedAt: null });
-  let login = null, refreshing = null, signingOut = null, closed = false;
+  let login = null, refreshing = null, signingOut = null, waking = null, closed = false;
   let quotaPending = null, quotaController = null;
   const clients = new Set();
   const empty = () => ({ account: null, models: [], verifiedAt: null, usage: null });
   function state() {
     return { ...saved, installed: Boolean(runtime()), loginPending: Boolean(login), refreshing: Boolean(refreshing), signingOut: Boolean(signingOut),
-      login: login?.details || null, usage: { ...saved.usage, refreshing: Boolean(quotaPending) } };
+      waking: Boolean(waking), login: login?.details || null, usage: { ...saved.usage, refreshing: Boolean(quotaPending) } };
   }
   function publish(patch, persist = true) {
     saved = { ...saved, ...patch };
@@ -133,6 +133,45 @@ function createKimiAccount({ home, runtime, ensureRuntime, node, environment = (
     await refreshUsage();
     return state();
   }
+  // One explicit greeting on this account's own profile; no retries and no
+  // account rotation. Kimi usually reports quota through its local account API,
+  // so this optional action is for users who want to send a single message
+  // through the subscription, mirroring Codex's wake.
+  async function wake({ timeoutMs = 120000 } = {}) {
+    idle();
+    if (signingOut) throw new Error('Wait for Kimi sign-out to finish');
+    if (login) throw new Error('Complete or cancel Kimi sign-in first');
+    if (refreshing) throw new Error('Wait for the Kimi account check to finish');
+    if (waking) throw new Error('This account is already waking');
+    if (!saved.account) throw new Error('Sign in to this account first');
+    const model = (saved.models || []).find(item => item.isDefault)?.id || (saved.models || [])[0]?.id;
+    if (!model) throw new Error('Refresh the account to load its models first');
+    const task = (async () => {
+      let client, sessionId;
+      try {
+        managedKimiConfig(home);
+        const wakeDir = path.join(home, 'wake'); fs.mkdirSync(wakeDir, { recursive: true });
+        client = newClient(); await initialize(client);
+        const session = await client.request('session/new', { cwd: wakeDir, mcpServers: [] });
+        sessionId = session.sessionId;
+        await client.request('session/set_config_option', { sessionId, configId: 'model', value: model });
+        await client.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: '你好' }] }, timeoutMs);
+      } finally {
+        if (client) {
+          if (sessionId) { try { await client.request('session/delete', { sessionId }, 5000); } catch { /* isolated greeting session */ } }
+          await client.shutdown(); clients.delete(client);
+        }
+      }
+      let warning;
+      try { await refreshUsage({ force: true }); } catch { /* refreshUsage reports failures in account state */ }
+      if (state().usage?.error) warning = 'Greeting sent. Quota refresh failed; refresh it again later.';
+      return { wakeSent: true, warning };
+    })();
+    waking = task; onChange(state());
+    let warning;
+    try { ({ warning } = await task); } finally { if (waking === task) waking = null; if (!closed) onChange(state()); }
+    return { ...state(), wakeSent: true, ...(warning ? { warning } : {}) };
+  }
   async function signIn() {
     idle();
     if (signingOut) throw new Error('Wait for Kimi sign-out to finish');
@@ -212,8 +251,8 @@ function createKimiAccount({ home, runtime, ensureRuntime, node, environment = (
     try { await task; } finally { signingOut = null; if (!closed) onChange(state()); }
     return state();
   }
-  return { state, refresh, refreshUsage, signIn, cancelLogin, signOut,
-    get active() { return Boolean(login || refreshing || signingOut || quotaPending || clients.size); },
+  return { state, refresh, refreshUsage, wake, signIn, cancelLogin, signOut,
+    get active() { return Boolean(login || refreshing || signingOut || waking || quotaPending || clients.size); },
     // Login preferences live in the desktop config, not in the account. A
     // background quota check still holds a client, but it neither reads nor
     // writes those preferences, so it must not block saving them. Only the

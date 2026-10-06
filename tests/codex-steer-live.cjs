@@ -9,10 +9,11 @@ const { CodexSession } = require('../src/engines/codex-session');
 const { codexSpawnSpec } = require('../src/engines/codex-client');
 const { SharedConversations } = require('../src/engines/shared-conversations');
 const routerConfig = require('../src/api/api-router-config');
+const { defaultDataDirectory } = require('../src/main/data-directory');
 
 async function main() {
   if (process.env.CAMELLIA_LIVE_STEER !== '1') throw new Error('Set CAMELLIA_LIVE_STEER=1 to authorize one real paid API turn.');
-  const dataDir = process.env.CAMELLIA_DATA_DIR || path.join(process.env.APPDATA, 'dsh-desktop');
+  const dataDir = process.env.CAMELLIA_DATA_DIR || defaultDataDirectory();
   const desktop = JSON.parse(fs.readFileSync(path.join(dataDir, 'desktop-config.json'), 'utf8'));
   const route = routerConfig.loadConfig(path.join(desktop.dshHome || path.join(os.homedir(), '.dsh'), 'ollama-proxy.json'));
   assert.equal(desktop.codex.connection, 'api');

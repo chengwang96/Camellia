@@ -22,7 +22,7 @@ class GeminiToolState {
     }
     // Claude's generic thinking flag is not a Gemini Chat Completions option.
     delete body.thinking;
-    if (['max', 'xhigh'].includes(body.reasoning_effort)) body.reasoning_effort = 'high';
+    if (['max', 'xhigh', 'ultra'].includes(body.reasoning_effort)) body.reasoning_effort = 'high';
     return body;
   }
 

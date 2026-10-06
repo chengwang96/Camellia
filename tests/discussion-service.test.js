@@ -44,6 +44,21 @@ async function createMembers(service, count = 2) {
   return (await service.call('load', { id: group.id })).group;
 }
 
+test('an updating member cannot be started while discussion history stays readable', async t => {
+  const h = setup(t);
+  const group = await createMembers(h.service, 1);
+  h.service.assertAvailable = engine => { if (engine === 'codex') throw new Error('Codex is updating'); };
+  await assert.rejects(h.service.call('send', { id: group.id, requestId: 'during-update', text: 'Question',
+    participantIds: [group.participants[0].id] }), /updating/);
+  assert.equal(h.calls.length, 0);
+  assert.equal((await h.service.call('load', { id: group.id })).group.messages.length, 0);
+  h.service.assertAvailable = () => {};
+  await h.service.call('send', { id: group.id, requestId: 'after-update', text: 'Question',
+    participantIds: [group.participants[0].id] });
+  for (let i = 0; i < 10 && h.service.active; i++) await tick();
+  assert.equal(h.calls.length, 1);
+});
+
 test('public discussion workflow persists notes, bounds members, and rejects forged bindings and attachments', async t => {
   const { service, calls } = setup(t);
   const group = await createMembers(service, 4), catalog = await service.call('catalog');

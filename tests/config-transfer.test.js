@@ -9,6 +9,12 @@ test('API route configuration exports raw keys and imports back with usage prese
   const first = createHarness();
   try {
     first.configureApi();
+    const configPath = path.join(first.home, '.dsh', 'ollama-proxy.json');
+    const { loadConfig, writeConfig } = require('../src/api/api-router-config');
+    const config = loadConfig(configPath);
+    config.providers[0].models[0].contextWindow = 131072;
+    config.providers[0].models[0].maxContext = 262144;
+    writeConfig(configPath, config);
     const outFile = path.join(first.root, 'export.json');
     first.dialogBehavior.save = async () => ({ canceled: false, filePath: outFile });
     const exported = await first.call('api-router-export');
@@ -16,6 +22,8 @@ test('API route configuration exports raw keys and imports back with usage prese
     const bundle = JSON.parse(fs.readFileSync(outFile, 'utf8'));
     assert.equal(bundle.format, 'camellia-api-routes');
     assert.equal(bundle.config.providers[0].keys[0].key, 'isolated-test-key', 'raw keys are exported for migration');
+    assert.equal(bundle.config.providers[0].models[0].contextWindow, 131072, 'confirmed context windows are exported');
+    assert.equal(bundle.config.providers[0].models[0].maxContext, 262144, 'model context maxima are exported');
     assert.equal(bundle.config.usage, undefined, 'live usage counters are not exported');
 
     // New machine: import the bundle into an empty configuration.
@@ -26,6 +34,8 @@ test('API route configuration exports raw keys and imports back with usage prese
       assert.equal(imported.ok, true);
       const state = second.call('api-router-get-state');
       assert.equal(state.providers[0].models[0].id, 'test-model');
+      assert.equal(state.providers[0].models[0].contextWindow, 131072, 'confirmed context windows survive import');
+      assert.equal(state.providers[0].models[0].maxContext, 262144, 'model context maxima survive import');
       assert.equal(state.providers[0].keys[0].maskedKey.includes('isolated'), false, 'state stays masked');
     } finally { second.cleanup(); }
   } finally { first.cleanup(); }
