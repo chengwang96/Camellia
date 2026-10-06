@@ -212,12 +212,26 @@ test('standalone native migration removes only the selected executable and keeps
   assert.ok(!ready.external);
 });
 
+test('standalone native migration through a directory alias removes the executable once', async t => {
+  const f = fixture(t, { engine: 'codex', probe: async () => ({ stdout: 'codex 2.0.0' }) });
+  const directory = path.join(f.root, 'tools'), alias = path.join(f.root, 'tools-alias');
+  const executable = put(path.join(directory, 'codex.exe'), 'standalone native CLI');
+  const adjacent = put(path.join(directory, 'keep.exe'), 'another program');
+  fs.symlinkSync(directory, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  writeJson(f.config, { codex: { file: path.join(alias, 'codex.exe'), version: '1.0.0' } });
+  const ready = await f.manager.reinstall('codex');
+  assert.equal(fs.existsSync(executable), false);
+  assert.equal(fs.existsSync(adjacent), true);
+  assert.equal(fs.lstatSync(alias).isSymbolicLink(), true, 'The containing directory alias is preserved');
+  assert.ok(!ready.external);
+});
+
 test('global Unix npm prefixes and Codex companion binaries identify the owning package', async t => {
   const f = fixture(t);
   const prefix = path.join(f.root, 'global'), modules = path.join(prefix, 'lib', 'node_modules');
   const file = npmTree(prefix, 'codex', '1.0.0', modules);
   const plan = runtimeRemovalPlan({ engine: 'codex', definition: ENGINES.codex, file, destination: path.join(f.managed, 'runtimes', 'codex'), platform: 'darwin' });
-  assert.equal(plan.prefix, prefix);
+  assert.equal(plan.prefix, fs.realpathSync.native(prefix));
   assert.equal(plan.global, true);
   let args;
   await removeRuntime(plan, { node: 'node', npm: 'npm-cli', run: async (_exe, value) => {
@@ -226,7 +240,7 @@ test('global Unix npm prefixes and Codex companion binaries identify the owning 
   } });
   assert.ok(args.includes('--global'));
   assert.ok(args.includes('@openai/codex'));
-  assert.equal(args[args.indexOf('--prefix') + 1], prefix);
+  assert.equal(args[args.indexOf('--prefix') + 1], fs.realpathSync.native(prefix));
 });
 
 test('an older DSH bin.js entry in the npx cache is recognized without assuming the current entry layout', t => {
@@ -237,7 +251,7 @@ test('an older DSH bin.js entry in the npx cache is recognized without assuming 
   const file = put(path.join(pkg, 'bin.js'), 'old DSH entry');
   const plan = runtimeRemovalPlan({ engine: 'dsh', definition: ENGINES.dsh, file, destination: path.join(f.managed, 'runtimes', 'dsh') });
   assert.equal(plan.kind, 'npm');
-  assert.equal(plan.prefix, prefix);
+  assert.equal(plan.prefix, fs.realpathSync.native(prefix));
   assert.equal(plan.global, false);
   assert.equal(plan.package, '@deepseek-ai/dsh');
 });
@@ -298,12 +312,12 @@ test('native removal checks every launcher link before deleting the original exe
   catch (error) { if (['EPERM', 'EACCES'].includes(error.code)) { t.skip('File symlinks unavailable'); return; } throw error; }
   const plan = runtimeRemovalPlan({ engine: 'claude', definition: ENGINES.claude, file: original,
     destination: path.join(f.managed, 'runtimes', 'claude'), env: { PATH: `"${directory}"` }, home: f.root });
-  assert.ok(plan.files.includes(link));
+  assert.ok(plan.files.includes(path.join(fs.realpathSync.native(directory), path.basename(link))));
   fs.unlinkSync(link); fs.symlinkSync(unrelated, link);
   await assert.rejects(removeRuntime(plan, {}), /runtime path changed/);
   assert.equal(fs.existsSync(original), true);
   assert.equal(fs.existsSync(unrelated), true);
-  assert.equal(fs.realpathSync.native(link), unrelated);
+  assert.equal(fs.realpathSync.native(link), fs.realpathSync.native(unrelated));
 });
 
 test('a reinstall locks path changes and stays unavailable until its harness is restored', async t => {
