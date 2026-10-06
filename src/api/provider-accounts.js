@@ -1,6 +1,7 @@
 'use strict';
 
 const { endpoint, modelId } = require('./api-router-config');
+const { normalizeThinking } = require('../shared/model-levels');
 const number = value => value === null || value === undefined || value === '' ? null : Number.isFinite(Number(value)) ? Number(value) : null;
 const labels = { session: "Current session", rolling: "5-hour", fiveHour: "5-hour", weekly: "Weekly", monthly: "Monthly", daily: "Daily" };
 const time = value => value && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
@@ -13,17 +14,17 @@ function requireData(result) {
   if (!result.balances.length && !result.windows.length) throw new Error("The API returned no recognized balance or quota. The previous result was retained.");
   return result;
 }
-async function requestJson(url, key, { fetchImpl = fetch, method = 'GET', body, headers = {} } = {}) {
+async function requestJson(url, key, { fetchImpl = fetch, method = 'GET', body, headers = {}, timeoutMs = 20000, signal } = {}) {
   let response;
   try {
     response = await fetchImpl(url, {
       method, headers: { Authorization: `Bearer ${key}`, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
-      ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20000), redirect: 'error',
+      ...(body ? { body: JSON.stringify(body) } : {}), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs), redirect: 'error',
     });
   } catch (e) { throw new Error(e.name === 'TimeoutError' || e.name === 'AbortError' ? "Query timed out. Try again later." : "Cannot connect to the provider. Check the network and API URL."); }
   if (!response.ok) {
     const reason = { 401: "Key is invalid or expired", 402: "Insufficient account balance", 403: "This key lacks access or the required subscription", 404: "The provider does not offer this endpoint", 429: "Too many queries. Try again later." }[response.status];
-    throw new Error(`HTTP ${response.status} · ${reason || "The provider cannot complete this query right now"}`);
+    throw Object.assign(new Error(`HTTP ${response.status} · ${reason || "The provider cannot complete this query right now"}`), { status: response.status });
   }
   try { return await response.json(); } catch { throw new Error("The provider returned an unreadable response"); }
 }
@@ -147,25 +148,93 @@ async function queryAccount(provider, key, options = {}) {
   return { status: 'ok', ...capability, ...await adapter.query(new URL(provider.baseUrl), url => requestJson(url, key, options)) };
 }
 function catalogModel(provider, entry) {
-  const upstream = typeof entry === 'string' ? entry : entry.id;
+  const upstream = typeof entry === 'string' ? entry : entry?.id || entry?.name || entry?.model;
   if (typeof upstream !== 'string' || !upstream.trim()) return null;
   let id = upstream;
   if (provider.type === 'commandcode') id = id.replace(/^(moonshotai|deepseek|z-ai|anthropic)\//, '');
   try { id = modelId(id); } catch { return null; }
-  const wire = typeof entry === 'object' ? entry.api || entry.protocol : '';
+  const wire = typeof entry === 'object' && entry !== null ? entry.api || entry.protocol : '';
   const protocol = /anthropic|messages/i.test(wire) || (provider.type === 'commandcode' && /claude/.test(id)) ? 'anthropic' : 'auto';
   // Catalogs like OpenRouter report the model's context limit; keep it as the cap.
   const maxContext = typeof entry === 'object' && entry !== null
-    ? Number(entry.context_length ?? entry.context_window ?? entry.max_context_length ?? entry.max_context) || undefined : undefined;
-  return { id, upstream, protocol, ...(Number.isSafeInteger(maxContext) && maxContext >= 4096 ? { maxContext } : {}) };
+    ? Number(entry.context_length ?? entry.context_window ?? entry.max_context_length ?? entry.max_context ?? entry.max_input_tokens) || undefined : undefined;
+  const thinking = catalogThinking(entry);
+  return { id, upstream, protocol, ...(Number.isSafeInteger(maxContext) && maxContext >= 4096 ? { maxContext } : {}), ...(thinking ? { thinking } : {}) };
+}
+function catalogThinking(entry) {
+  if (!entry || typeof entry !== 'object') return undefined;
+  for (const source of [entry, entry.capabilities, entry.metadata]) {
+    if (!source || typeof source !== 'object') continue;
+    const thinking = normalizeThinking(source.thinking);
+    if (thinking) return thinking;
+    const efforts = source.supported_reasoning_efforts ?? source.supportedReasoningEfforts ?? source.supported_reasoning_levels
+      ?? source.reasoning_efforts ?? source.effort?.supported_levels ?? source.reasoning?.supported_efforts ?? source.reasoning?.efforts;
+    if (!Array.isArray(efforts)) continue;
+    const reported = normalizeThinking({ values: efforts.map(level => typeof level === 'object' && level !== null ? level.reasoningEffort ?? level.effort : level),
+      default: source.default_reasoning_effort ?? source.defaultReasoningEffort ?? source.default_reasoning_level ?? source.effort?.default_level ?? source.reasoning?.default });
+    if (reported) return reported;
+  }
+}
+function documentedThinking(provider, model) {
+  const host = new URL(provider.baseUrl).hostname;
+  const mimoHosts = ['api.xiaomimimo.com', 'token-plan-cn.xiaomimimo.com', 'token-plan-sgp.xiaomimimo.com', 'token-plan-ams.xiaomimimo.com'];
+  const mimoModels = ['mimo-v2.6-flash', 'mimo-v2.6-pro', 'mimo-v2.6-pro-ultraspeed', 'mimo-v2.5-pro', 'mimo-v2.5'];
+  if (!model.thinking && mimoHosts.includes(host) && mimoModels.includes(model.upstream)) model.thinking = { values: [false, true], default: true };
+  if (host === 'api.deepseek.com' && model.thinking?.values.some(value => typeof value === 'string') && !model.thinking.values.includes('none')) {
+    model.thinking.values.unshift('none');
+  }
 }
 async function fetchModels(provider, key, options = {}) {
   const base = endpoint(provider.baseUrl);
   const data = await requestJson(base + '/models', key, options);
   if (!Array.isArray(data.data) && !Array.isArray(data.models)) throw new Error("No model catalog was returned. Add models manually.");
   const unique = new Map();
-  for (const entry of data.data || data.models) { const model = catalogModel(provider, entry); if (model && !unique.has(model.id)) unique.set(model.id, model); }
-  return [...unique.values()];
+  for (const entry of data.data || data.models) {
+    const model = catalogModel(provider, entry);
+    if (!model) continue;
+    const existing = unique.get(model.id);
+    if (!existing) unique.set(model.id, model);
+    else if (existing.upstream === model.upstream) {
+      if (!existing.thinking && model.thinking) existing.thinking = model.thinking;
+      if (!existing.maxContext && model.maxContext) existing.maxContext = model.maxContext;
+    }
+  }
+  const models = [...unique.values()];
+  for (const model of models) documentedThinking(provider, model);
+  const ollama = provider.type === 'ollama' || new URL(base).hostname === 'ollama.com';
+  if (provider.type !== 'qclaw') {
+    const configured = new Set((provider.models || []).map(model => model.upstream));
+    const queue = models.filter(model => ollama || !model.thinking).sort((first, second) => Number(configured.has(second.upstream)) - Number(configured.has(first.upstream)));
+    const showUrl = base.replace(/\/(?:v1|api)$/, '') + '/api/show';
+    const budget = AbortSignal.timeout(options.detailBudgetMs || 15000);
+    const signal = options.signal ? AbortSignal.any([options.signal, budget]) : budget;
+    let unsupported = 0;
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+      while (queue.length && !signal.aborted && unsupported < 4) {
+        const model = queue.shift();
+        try {
+          const data = await requestJson(ollama ? showUrl : base + '/models/' + encodeURIComponent(model.upstream), key, {
+            ...options, method: ollama ? 'POST' : 'GET', body: ollama ? { model: model.upstream } : undefined, timeoutMs: 5000, signal,
+          });
+          const details = data?.data && !Array.isArray(data.data) ? data.data : data;
+          if (!details || typeof details !== 'object') continue;
+          const reportedId = details.id || details.name || details.model;
+          if (!ollama && reportedId !== model.upstream) continue;
+          const thinking = catalogThinking(details);
+          if (thinking) model.thinking = thinking;
+          documentedThinking(provider, model);
+          const detailedModel = catalogModel(provider, details);
+          const limits = Object.entries(details.model_info || {}).filter(([name]) => name.endsWith('.context_length'))
+            .map(([, value]) => Number(value)).filter(value => Number.isSafeInteger(value) && value >= 4096);
+          if (!model.maxContext && detailedModel?.maxContext) model.maxContext = detailedModel.maxContext;
+          if (!model.maxContext && limits.length) model.maxContext = Math.min(...limits);
+        } catch (error) {
+          if (!ollama && [400, 404, 405, 501].includes(error.status)) unsupported++;
+        }
+      }
+    }));
+  }
+  return models;
 }
 async function verifyModel(provider, key, model, options = {}) {
   const wire = model.protocol && model.protocol !== 'auto' ? model.protocol : provider.protocol === 'anthropic' ? 'anthropic' : 'openai';

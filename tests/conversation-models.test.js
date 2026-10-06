@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { conversationModels } = require('../src/engines/conversation-models');
 const { levelsFor } = require('../src/shared/model-levels');
-const { modelContextWindow } = require('../src/api/api-router-config');
+const { modelContextWindow, normalizeConfig, publicState } = require('../src/api/api-router-config');
 
 test('context limits use catalog metadata, honor overrides and exclude inactive routes', () => {
   const config = { enabled: true, providers: [
@@ -40,6 +40,20 @@ test('conversation API catalog follows enabled routes and UI efforts without dis
   assert.ok(!JSON.stringify(conversationModels('codex', {}, sources)).includes('secret'));
   config.enabled = false;
   assert.deepEqual(conversationModels('codex', {}, sources), []);
+});
+
+test('fetched thinking metadata survives config reload and drives conversation model choices', () => {
+  const thinking = { values: ['low', 'high', 'max'], default: 'max' };
+  const config = normalizeConfig({ providers: [{ id: 'ollama', type: 'ollama', baseUrl: 'https://ollama.com/v1',
+    models: [{ id: 'glm-5.3', upstream: 'glm-5.3:cloud', thinking }], keys: [{ id: 'key', key: 'secret' }] }] });
+  const restored = normalizeConfig(JSON.parse(JSON.stringify(config)));
+  assert.deepEqual(restored.providers[0].models[0].thinking, thinking);
+  const state = publicState(restored);
+  assert.deepEqual(state.modelThinking['glm-5.3'], thinking);
+  assert.ok(!JSON.stringify(state).includes('secret'));
+  assert.deepEqual(conversationModels('codex', {}, { router: () => restored })[0].thinking, ['low', 'high', 'max']);
+  restored.providers[0].models[0].thinking = { values: ['low', {}], default: 'low' };
+  assert.equal(normalizeConfig(restored).providers[0].models[0].thinking, undefined);
 });
 
 test('subscription catalog uses account metadata, never API guesses or account secrets', () => {

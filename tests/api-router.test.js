@@ -227,6 +227,52 @@ test('Codex Responses streams preserve tool calls, same-model failover and per-k
   assert.equal(f.router.getState().usage['p-key-1'].byModel['kimi-k3'].inputTokens, 15);
 });
 
+test('Responses preserve explicit thinking controls and leave the default effort unset', async context => {
+  const harness = await fixture(context, (request, response) => reply(response, 200, completion(request.body.model)), url => [provider('ollama', url)]);
+  for (const effort of [undefined, 'max', 'none']) {
+    const response = await harness.post({ input: 'Reply OK.', ...(effort ? { reasoning: { effort } } : {}) }, '/v1/responses');
+    assert.equal(response.status, 200);
+    await response.json();
+    assert.equal(harness.requests.at(-1).body.reasoning_effort, effort);
+  }
+});
+
+test('Ollama OpenAI routes translate disabled native thinking into the supported none effort', async context => {
+  const harness = await fixture(context, (request, response) => reply(response, 200, completion(request.body.model)), url => [{ ...provider('ollama', url), type: 'ollama' }]);
+  const response = await harness.post({ max_tokens: 32, thinking: { type: 'disabled' } }, '/v1/messages');
+  assert.equal(response.status, 200);
+  await response.json();
+  assert.equal(harness.requests.at(-1).body.reasoning_effort, 'none');
+});
+
+test('boolean-only provider controls translate Responses efforts to native thinking switches', async context => {
+  const model = { ...mapping('mimo-v2.6-pro', 'mimo-v2.6-pro'), thinking: { values: [false, true], default: true } };
+  const harness = await fixture(context, (request, response) => reply(response, 200, completion(request.body.model)), url => [provider('mimo', url, ['secret'], [model])]);
+  for (const effort of [undefined, 'none', 'high']) {
+    const response = await harness.post({ model: 'mimo-v2.6-pro', input: 'Reply OK.', ...(effort ? { reasoning: { effort } } : {}) }, '/v1/responses');
+    assert.equal(response.status, 200);
+    await response.json();
+    const request = harness.requests.at(-1).body;
+    assert.equal(request.reasoning_effort, undefined);
+    assert.deepEqual(request.thinking, effort ? { type: effort === 'none' ? 'disabled' : 'enabled' } : undefined);
+  }
+});
+
+test('boolean-only Anthropic routes use thinking switches instead of fabricated effort levels', async context => {
+  const model = { ...mapping('mimo-v2.6-pro', 'mimo-v2.6-pro'), thinking: { values: [false, true], default: true } };
+  const harness = await fixture(context, (request, response) => reply(response, 200, {
+    id: 'reply', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 },
+  }), url => [provider('mimo', url, ['secret'], [model], 'anthropic')]);
+  for (const effort of [undefined, 'none', 'high']) {
+    const response = await harness.post({ model: 'mimo-v2.6-pro', max_tokens: 32, ...(effort ? { output_config: { effort } } : {}) }, '/v1/messages');
+    assert.equal(response.status, 200);
+    await response.json();
+    const request = harness.requests.at(-1).body;
+    assert.equal(request.output_config, undefined);
+    assert.deepEqual(request.thinking, effort ? { type: effort === 'none' ? 'disabled' : 'enabled' } : undefined);
+  }
+});
+
 test('Responses tool continuation retains reasoning and groups parallel calls', async t => {
   const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)), url => [provider('p', url)]);
   const response = await f.post({ input: [

@@ -275,6 +275,18 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
         const converted = responsesToChat(body); responseTools = converted.tools;
         payload = convertRequest(converted.body, 'openai', source);
       } else payload = convertRequest(body, clientProtocol, source);
+      if (source === 'openai' && (route.provider.type === 'ollama' || new URL(route.provider.baseUrl).hostname === 'ollama.com')) {
+        if (payload.thinking?.type === 'disabled' || payload.reasoning_effort === 'off') payload.reasoning_effort = 'none';
+      }
+      const booleanThinking = route.model.thinking?.values;
+      const effort = payload.reasoning_effort || payload.output_config?.effort;
+      if (booleanThinking?.length && booleanThinking.every(value => typeof value === 'boolean') && effort) {
+        payload.thinking = { type: ['none', 'off'].includes(effort) ? 'disabled' : 'enabled' };
+        if (source === 'anthropic') {
+          delete payload.output_config.effort;
+          if (!Object.keys(payload.output_config).length) delete payload.output_config;
+        } else if (route.provider.type !== 'ollama' && new URL(route.provider.baseUrl).hostname !== 'ollama.com') delete payload.reasoning_effort;
+      }
       if (isGemini) geminiTools.restore(payload, body.model);
     }
     catch (e) { return Promise.resolve({ status: 400, kind: 'protocol', detail: e.message }); }

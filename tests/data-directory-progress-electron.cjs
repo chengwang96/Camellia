@@ -8,11 +8,16 @@ const { spawn } = require('node:child_process');
 const { removeTree } = require('./test-fs.cjs');
 
 async function main() {
+  // Local regression runs must not put a simulated migration on the desktop.
+  // CI and explicit visual checks still exercise the real window visibility.
+  const showWindow = process.argv.includes('--show-window') || process.env.CAMELLIA_DIRECTORY_PROGRESS_TEST_VISIBLE === '1';
   if (process.versions.electron) {
     const { app } = require('electron');
     const { showDirectoryMigrationProgress } = require('../src/main/data-directory-progress');
     const window = await showDirectoryMigrationProgress();
-    assert.equal(window.isVisible(), true, 'The migration window must be visible to the user');
+    assert.equal(window.isVisible(), showWindow, showWindow
+      ? 'The migration window must be visible during an explicit visual check'
+      : 'A local regression must keep the simulated migration window hidden');
     const root = process.argv[process.argv.indexOf('--camellia-directory-progress') + 1];
     assert.equal(app.getPath('userData'), path.join(root, 'profile'));
     assert.equal(app.getPath('sessionData'), path.join(root, 'profile'));
@@ -57,7 +62,7 @@ async function main() {
       stage: 'error', error: 'EPERM: symlink ' + 'C:/very-long/dependency/path/'.repeat(15), cancellable: false };
     fs.writeFileSync(path.join(root, 'progress.json'), JSON.stringify(failed));
     await new Promise(resolve => setTimeout(resolve, 2100));
-    assert.equal(window.isDestroyed(), false, 'A failure must stay visible until acknowledged');
+    assert.equal(window.isDestroyed(), false, 'A failure must remain available until acknowledged');
     assert.equal((await state()).title, '迁移已停止');
     assert.equal((await state()).disabled, false, 'The error can be dismissed');
     assert.equal(await window.webContents.executeJavaScript("document.getElementById('cancel').getBoundingClientRect().bottom <= innerHeight"), true,
@@ -73,11 +78,10 @@ async function main() {
       stage: 'scan', processedEntries: 0, processedBytes: 0, cancellable: true };
     const write = update => fs.writeFileSync(path.join(root, 'progress.json'), JSON.stringify({ ...state, ...update }));
     write({});
-    const env = { ...process.env };
-    delete env.CAMELLIA_DIRECTORY_PROGRESS_HIDDEN;
+    const env = { ...process.env, CAMELLIA_DIRECTORY_PROGRESS_HIDDEN: showWindow ? '0' : '1' };
     delete env.ELECTRON_RUN_AS_NODE;
-    child = spawn(require('electron'), [__filename, '--camellia-directory-progress', root],
-      { env, windowsHide: false, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    child = spawn(require('electron'), [__filename, '--camellia-directory-progress', root, ...(showWindow ? ['--show-window'] : [])],
+      { env, windowsHide: !showWindow, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     let output = '', errors = '';
     child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { errors += chunk; });
@@ -90,7 +94,7 @@ async function main() {
       })]);
       assert.equal(first.type, 'ready');
       write({ stage: 'copy', processedEntries: 2, totalEntries: 4, processedBytes: 1024, totalBytes: 2048 });
-      // A visible, changing helper must survive a blocked owner's event loop.
+      // The helper must keep updating while its owner's event loop is blocked.
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2200);
       assert.equal(fs.readFileSync(path.join(root, 'responsive'), 'utf8'), 'yes');
       child.send('cancel');

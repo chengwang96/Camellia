@@ -7,6 +7,7 @@ const { ClaudeHistory } = require('./claude-history');
 const { dshLaunchArgs } = require('./dsh-config');
 const { modelId } = require('../api/api-router-config');
 const { valid, nativeMode } = require('./permission-levels');
+const { levelsFor } = require('../shared/model-levels');
 // Match the pinned DSH provider default. 8K can truncate a reasoning-only reply
 // before the model emits code or a tool call, ending the native turn early.
 const DSH_MAX_OUTPUT_TOKENS = 32768;
@@ -20,18 +21,23 @@ const DSH_PRESETS = {
     description: 'Full access without confirmation prompts.' },
 };
 
-function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig = {} }) {
+function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig = {}, thinking }) {
+  const levels = levelsFor(model, { thinking });
+  const supported = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const reasoningEfforts = Object.fromEntries(levels.map(level => [level === 'none' ? 'off' : level, level]).filter(([level]) => supported.includes(level)));
+  const canThink = Object.keys(reasoningEfforts).some(level => level !== 'off');
   const args = dshLaunchArgs({ runtime, home, profile: 'acp', config: {
     ...nativeConfig,
     'agent-default-model': { provider: 'api-pool', model },
     permission: { presets: DSH_PRESETS, defaultPreset: nativeMode('dsh', permissionMode, 'auto') },
     'llm-pi-ai': { providers: { 'api-pool': { displayName: 'Camellia API', apiKeyEnv: 'DSH_API_ROUTER_KEY',
-      api: 'anthropic-messages', baseURL: route.baseUrl, defaultContextWindow: 65536, defaultMaxTokens: DSH_MAX_OUTPUT_TOKENS, models: [{ id: model }] } } },
+      api: 'anthropic-messages', baseURL: route.baseUrl, defaultContextWindow: 65536, defaultMaxTokens: DSH_MAX_OUTPUT_TOKENS,
+      models: [{ id: model, reasoningEfforts: canThink ? reasoningEfforts : false }] } } },
   } });
   return { args, env: { ...env, DSH_HOME: home, DSH_API_ROUTER_KEY: 'proxy-managed' },
-    noModes: true, modelValue: JSON.stringify(['api-pool', model]), thinkingId: 'reasoning_effort' };
+    noModes: true, modelValue: JSON.stringify(['api-pool', model]), thinkingId: 'reasoning_effort', applyThinking: canThink };
 }
-function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, runtime, node, environment, onEvent, log, nativeConfig = () => ({}), nativeRevision = () => '' }) {
+function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, getModelThinking = () => undefined, runtime, node, environment, onEvent, log, nativeConfig = () => ({}), nativeRevision = () => '' }) {
   const sessions = new SessionPool();
   let generation = 0;
   const history = new ClaudeHistory(path.join(dataDir, 'dsh-chat-history'));
@@ -47,10 +53,12 @@ function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, r
     const current = sessions.get(opts);
     const selected = { ...settings(), ...opts.settings, cwd: opts.cwd, nativeRevision: nativeRevision() };
     selected.model = modelId(selected.model);
+    selected.modelThinking = getModelThinking(selected.model);
     if (!selected.model || !getModels().includes(selected.model)) throw new Error('Select a configured model first');
     if (current && !current.dead && current.opts.goalBridge === opts.goalBridge && current.sessionId === opts.sessionId && JSON.stringify(current.settings) === JSON.stringify(selected)) return current;
     const spec = dshAcpSpec({ runtime: runtime(), home: path.join(dataDir, 'dsh-chat', ...(opts.conversationId ? ['conversations', opts.conversationId] : [])), model: selected.model,
-      route: getRoute(), permissionMode: selected.permissionMode, env: environment(), nativeConfig: nativeConfig() });
+      route: getRoute(), permissionMode: selected.permissionMode, env: environment(), nativeConfig: nativeConfig(), thinking: selected.modelThinking });
+    if (selected.thinkingBudget === 'none') spec.thinkingValue = 'off';
     const previous = current?.shutdown();
     const session = new AcpSession({ name: 'DSH', gen: ++generation, opts, settings: selected, spec, exe: node(), spawn, log, history,
       onEvent: event => { if (sessions.get(opts) === session) onEvent({ ...event, conversationId: opts.conversationId }); }, onSessionId: () => {}, onResult: () => {} });

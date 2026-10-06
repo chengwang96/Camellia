@@ -4,9 +4,10 @@ const { createHash } = require('node:crypto');
 const { readJson, writeJson } = require('../../shared/json-store');
 const routerConfig = require('../../api/api-router-config');
 const { fail } = require('./access');
+const { normalizeThinking } = require('../../shared/model-levels');
 
 const PROVIDER = ['id', 'type', 'name', 'enabled', 'priority', 'protocol', 'baseUrl', 'anthropicBaseUrl', 'models', 'keys'];
-const MODEL = ['id', 'upstream', 'protocol', 'contextWindow', 'maxContext'];
+const MODEL = ['id', 'upstream', 'protocol', 'contextWindow', 'maxContext', 'thinking'];
 const KEY = ['id', 'key', 'name', 'enabled'];
 const pick = (value, fields) => Object.fromEntries(fields.filter(field => value[field] !== undefined).map(field => [field, value[field]]));
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -30,7 +31,13 @@ function validateProviders(providers) {
       if (provider.enabled !== undefined && typeof provider.enabled !== 'boolean') fail(400, 'Invalid provider enabled state');
       remoteEndpoint(provider.baseUrl);
       if (provider.anthropicBaseUrl) remoteEndpoint(provider.anthropicBaseUrl);
-      for (const model of provider.models) shape(model, MODEL);
+      for (const model of provider.models) {
+        shape(model, MODEL);
+        if (model.thinking !== undefined) {
+          shape(model.thinking, ['values', 'default']);
+          if (!normalizeThinking(model.thinking)) fail(400, 'Invalid model thinking metadata');
+        }
+      }
       for (const key of provider.keys) {
         shape(key, KEY);
         if (key.enabled !== undefined && typeof key.enabled !== 'boolean') fail(400, 'Invalid key enabled state');

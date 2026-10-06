@@ -43,6 +43,7 @@ test('Pi defaults and global instructions reach the runtime without changing per
   const session = driver.ensure({ cwd: f.home });
   assert.equal(session.spec.env.CAMELLIA_PI_PERMISSION, 'auto');
   assert.equal(session.spec.args[session.spec.args.indexOf('--thinking') + 1], 'high');
+  assert.equal(session.spec.env.CAMELLIA_PI_EFFORT, 'high');
   assert.equal(session.spec.args[session.spec.args.indexOf('--append-system-prompt') + 1], value.files[0].text);
   const model = JSON.parse(fs.readFileSync(path.join(f.home, 'runtime/pi', session.sessionId, 'models.json'))).providers.camellia.models[0];
   assert.equal(model.contextWindow, 131072);
@@ -53,7 +54,47 @@ test('Pi defaults and global instructions reach the runtime without changing per
   const next = driver.ensure({ cwd: f.home, sessionId: session.sessionId });
   assert.notEqual(next, session);
   assert.equal(next.spec.args.includes('--thinking'), false);
+  assert.equal(next.spec.env.CAMELLIA_PI_EFFORT, '');
   assert.equal(next.spec.args[next.spec.args.indexOf('--append-system-prompt') + 1], 'Updated instructions');
+});
+
+test('Pi provider requests retain exact discovered efforts and never inject an effort for Default', async () => {
+  const { default: extension } = await import('../src/engines/pi-extension.mjs');
+  const previous = process.env.CAMELLIA_PI_EFFORT;
+  const handlers = new Map();
+  extension({ on: (name, handler) => handlers.set(name, handler), registerTool() {} });
+  const handler = handlers.get('before_provider_request');
+  try {
+    for (const effort of ['', 'max', 'ultra', 'custom-depth', 'none']) {
+      process.env.CAMELLIA_PI_EFFORT = effort;
+      const payload = { model: 'glm-5.3', thinking: { type: 'enabled', budget_tokens: 10000 }, output_config: { effort: 'medium', format: 'text' } };
+      assert.equal(handler({ payload }), payload);
+      assert.equal(payload.output_config.effort, effort && effort !== 'none' ? effort : undefined);
+      assert.equal(payload.output_config.format, 'text');
+      assert.deepEqual(payload.thinking, effort === 'none' ? { type: 'disabled' } : effort ? { type: 'enabled', budget_tokens: 10000 } : undefined);
+    }
+    delete process.env.CAMELLIA_PI_EFFORT;
+    const untouched = { thinking: { type: 'enabled', budget_tokens: 1000 } };
+    assert.equal(handler({ payload: untouched }), undefined);
+    assert.deepEqual(untouched.thinking, { type: 'enabled', budget_tokens: 1000 });
+  } finally {
+    if (previous === undefined) delete process.env.CAMELLIA_PI_EFFORT;
+    else process.env.CAMELLIA_PI_EFFORT = previous;
+  }
+});
+
+test('DSH launch profiles declare reported reasoning capabilities instead of guessing from model names', context => {
+  const fixtureState = fixture(context);
+  const { dshAcpSpec } = require('../src/engines/dsh-session');
+  for (const thinking of [{ values: ['low', 'high', 'max'], default: 'max' }, { values: [false, true], default: true }, { values: [false] }, undefined]) {
+    const home = path.join(fixtureState.home, 'dsh-profile');
+    const spec = dshAcpSpec({ runtime: { file: '/runtime/dsh', version: '0.1.0' }, home, model: 'glm-5.3', route: fixtureState.route, env: {}, thinking });
+    const model = parse(fs.readFileSync(path.join(home, 'settings.yaml'), 'utf8'), 'yaml')['llm-pi-ai'].providers['api-pool'].models[0];
+    const expected = !thinking ? { low: 'low', medium: 'medium', high: 'high' } : thinking.values.length === 1 ? false
+      : thinking.values.includes(true) ? { off: 'none', high: 'high' } : { low: 'low', high: 'high', max: 'max' };
+    assert.deepEqual(model.reasoningEfforts, expected);
+    assert.equal(spec.applyThinking, expected !== false);
+  }
 });
 
 test('invalid or stale Pi settings do not partially overwrite defaults or instructions', t => {

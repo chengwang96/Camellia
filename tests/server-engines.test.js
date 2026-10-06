@@ -86,6 +86,9 @@ test('Claude API and subscription spawn specs never inherit external API credent
   assert.equal(api.env.CLAUDE_CONFIG_DIR, root);
   assert.equal(api.env.ANTHROPIC_API_KEY, '');
   assert.equal(api.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+  const disabled = claudeSpec({ ...common, settings: { connection: 'api', model: 'model-a', thinkingBudget: 'none' }, route: { baseUrl: 'http://127.0.0.1:8788', authToken: 'managed' } });
+  assert.equal(disabled.args.includes('--effort'), false);
+  assert.equal(disabled.env.MAX_THINKING_TOKENS, '0');
   const subscription = claudeSpec({ ...common, settings: { connection: 'subscription', permissionMode: 'ask', model: 'account-model', cwd: root } });
   assert.equal(subscription.env.ANTHROPIC_API_KEY, undefined);
   assert.equal(subscription.env.ANTHROPIC_BASE_URL, undefined);
