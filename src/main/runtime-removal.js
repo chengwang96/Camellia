@@ -59,7 +59,16 @@ function runtimeRemovalPlan({ engine, definition, file, destination, platform = 
   if (!['claude', 'codex', 'antigravity'].includes(engine) || /\.(?:m?js|cjs)$/i.test(realFile)) {
     throw new Error('Could not identify this CLI installation. Choose its installed npm entry file before reinstalling.');
   }
-  const files = new Set([file, realFile]);
+  // Resolve directory aliases while preserving launcher symlinks themselves.
+  // A regular entry reached through /var or a junction is the same file as
+  // realFile and must not be unlinked twice.
+  const files = new Map();
+  const addFile = candidate => {
+    const entry = path.join(fs.realpathSync.native(path.dirname(candidate)), path.basename(candidate));
+    files.set(platform === 'win32' ? entry.toLowerCase() : entry, entry);
+  };
+  addFile(realFile);
+  if (fs.lstatSync(file).isSymbolicLink()) addFile(file);
   const command = engine === 'antigravity' ? 'agy' : engine;
   const directories = [...(env.PATH || env.Path || '').split(platform === 'win32' ? ';' : ':'),
     ...(home ? [path.join(home, '.local', 'bin')] : [])];
@@ -68,10 +77,10 @@ function runtimeRemovalPlan({ engine, definition, file, destination, platform = 
     if (!path.isAbsolute(directory)) continue;
     const link = path.join(directory, command + (platform === 'win32' ? '.exe' : ''));
     try {
-      if (fs.lstatSync(link).isSymbolicLink() && fs.realpathSync.native(link) === realFile) files.add(link);
+      if (fs.lstatSync(link).isSymbolicLink() && fs.realpathSync.native(link) === realFile) addFile(link);
     } catch { /* Not a link to this installation. */ }
   }
-  return { kind: 'native', file, realFile, signature, files: [...files] };
+  return { kind: 'native', file, realFile, signature, files: [...files.values()] };
 }
 
 async function removeRuntime(plan, { node, npm, run, env }) {
