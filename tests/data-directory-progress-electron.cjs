@@ -81,7 +81,7 @@ async function main() {
     const env = { ...process.env, CAMELLIA_DIRECTORY_PROGRESS_HIDDEN: showWindow ? '0' : '1' };
     delete env.ELECTRON_RUN_AS_NODE;
     child = spawn(require('electron'), [__filename, '--camellia-directory-progress', root, ...(showWindow ? ['--show-window'] : [])],
-      { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      { env, windowsHide: !showWindow, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     let output = '', errors = '';
     child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { errors += chunk; });
