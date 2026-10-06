@@ -172,6 +172,31 @@ test('the balance and quota refresh interval is global, validated, and preserved
   } finally { first.cleanup(); }
 });
 
+test('the per-engine background quota refresh is opt-out only and survives partial saves', () => {
+  const first = createHarness();
+  try {
+    // Every subscription engine refreshes by default.
+    const defaults = first.call('workbench-settings').subscriptionAutoRefresh;
+    assert.equal(defaults.antigravity, true); assert.equal(defaults.codex, true); assert.equal(defaults.kimi, true);
+    // An opt-out is stored; a request to turn an engine back on clears the flag.
+    assert.equal(first.call('workbench-save-settings', { subscriptionAutoRefresh: { antigravity: false } }).ok, true);
+    assert.equal(first.call('workbench-settings').subscriptionAutoRefresh.antigravity, false);
+    assert.equal(first.call('workbench-settings').subscriptionAutoRefresh.codex, true);
+    // A partial save that never mentions the key keeps the choice.
+    assert.equal(first.call('workbench-save-settings', { theme: 'dark' }).ok, true);
+    assert.equal(first.call('workbench-settings').subscriptionAutoRefresh.antigravity, false);
+    const reopened = createHarness(first.root);
+    assert.equal(reopened.call('workbench-settings').subscriptionAutoRefresh.antigravity, false);
+    assert.equal(reopened.call('workbench-save-settings', { subscriptionAutoRefresh: { antigravity: true } }).ok, true);
+    assert.equal(reopened.call('workbench-settings').subscriptionAutoRefresh.antigravity, true);
+    // An unknown engine or a non-boolean value is rejected without writing.
+    assert.equal(reopened.call('workbench-save-settings', { subscriptionAutoRefresh: { gemini: false } }).ok, false);
+    assert.equal(reopened.call('workbench-save-settings', { subscriptionAutoRefresh: { antigravity: 'no' } }).ok, false);
+    assert.equal(reopened.call('workbench-settings').subscriptionAutoRefresh.antigravity, true);
+    reopened.cleanup();
+  } finally { first.cleanup(); }
+});
+
 const WIDTH_EVENT = 'dsh:chat-content-width-changed';
 
 test('conversation width defaults to standard, validates, persists, and survives partial saves', () => {

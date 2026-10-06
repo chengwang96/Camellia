@@ -8,6 +8,8 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
 const { removeTree } = require('./test-fs.cjs');
+const { randomUUID } = require('node:crypto');
+const { removeMigrationWorkDirectory } = require('../src/main/data-directory-fast');
 const { requestDirectoryMigration, completeDirectoryMigration, recoverDirectoryMigration, configureDataDirectory,
   readDirectoryMigrationResult } = require('../src/main/data-directory');
 
@@ -105,6 +107,64 @@ test('rename preserves broken external junctions and retargets internal links ev
   assert.equal(result.migrated, true, JSON.stringify(result));
   assert.equal(path.resolve(fs.readlinkSync(path.join(box.destination, 'packages/node_modules/internal'))), path.join(box.destination, 'attachments'));
   assert.equal(fs.lstatSync(path.join(box.destination, 'packages/node_modules/missing'), { bigint: true }).ino, oldId);
+  clean(box);
+});
+
+test('cleanup removes nested and dangling junction entries without following their targets', context => {
+  const box = fixture(context), work = path.join(box.appData, '.camellia-migration-work-' + randomUUID());
+  const external = path.join(box.appData, 'external');
+  fs.mkdirSync(external);
+  fs.writeFileSync(path.join(external, 'keep.txt'), 'keep external data');
+  fs.mkdirSync(path.join(work, 'original/nested'), { recursive: true });
+  fs.writeFileSync(path.join(work, 'original/0'), 'old metadata');
+  for (const [name, target] of [['live', external], ['missing', path.join(box.appData, 'missing')]]) {
+    fs.symlinkSync(target, path.join(work, 'original/nested', name), process.platform === 'win32' ? 'junction' : 'dir');
+  }
+  removeMigrationWorkDirectory(box.appData, work);
+  assert.equal(fs.existsSync(work), false);
+  assert.equal(fs.readFileSync(path.join(external, 'keep.txt'), 'utf8'), 'keep external data');
+});
+
+test('cleanup refuses an unscoped path or a work directory redirected to live data', context => {
+  const box = fixture(context); seed(box);
+  const before = fs.readFileSync(path.join(box.dataDir, 'metadata.json'));
+  assert.throws(() => removeMigrationWorkDirectory(box.appData, box.dataDir), /Unsafe/);
+  assert.throws(() => removeMigrationWorkDirectory(box.appData, path.join(box.appData, 'nested', '.camellia-migration-work-' + randomUUID())), /Unsafe/);
+  const work = path.join(box.appData, '.camellia-migration-work-' + randomUUID());
+  fs.symlinkSync(box.dataDir, work, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => removeMigrationWorkDirectory(box.appData, work), /replaced/);
+  assert.deepEqual(fs.readFileSync(path.join(box.dataDir, 'metadata.json')), before);
+});
+
+test('silent cleanup failure reports retained backups and keeps the committed journal for startup retry', context => {
+  const box = fixture(context); seed(box);
+  const remove = fs.rmSync;
+  let blocked = true;
+  context.mock.method(fs, 'rmSync', (file, options) => {
+    if (blocked && path.basename(file).startsWith('.camellia-migration-work-')) return;
+    return remove(file, options);
+  });
+  const result = completeDirectoryMigration(box);
+  assert.equal(result.migrated, true);
+  assert.match(result.error, /temporary backups could not be removed/);
+  assert.match(result.cleanupError, /still exists after cleanup/);
+  assert.equal(fs.existsSync(result.leftoverDirectory), true);
+  const journal = JSON.parse(fs.readFileSync(path.join(box.appData, JOURNAL), 'utf8'));
+  assert.equal(journal.status, 'committed');
+  const kill = process.kill;
+  context.mock.method(process, 'kill', (pid, signal) => {
+    if (pid === journal.ownerPid && signal === 0) {
+      const error = new Error('The migration owner exited'); error.code = 'ESRCH'; throw error;
+    }
+    return kill(pid, signal);
+  });
+  assert.throws(() => recoverDirectoryMigration(box.appData), /still exists after cleanup/);
+  assert.equal(fs.existsSync(path.join(box.appData, JOURNAL)), true);
+  blocked = false;
+  const recovered = recoverDirectoryMigration(box.appData);
+  assert.equal(recovered.migrated, true);
+  assert.equal(readDirectoryMigrationResult(box.appData).migrated, true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(box.destination, 'metadata.json'), 'utf8')).path, path.join(box.destination, 'attachments/keep.bin'));
   clean(box);
 });
 

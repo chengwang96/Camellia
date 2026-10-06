@@ -1,45 +1,43 @@
 'use strict';
 
-// Reasoning-effort ladders for API-routed models, where neither the account
-// catalog nor an ACP engine reports the supported levels. The provider's model
-// list does not carry this information, so we infer from the model ID. Unknown
-// models keep the conservative three-level default.
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.CamelliaModelLevels = factory();
 })(typeof window === 'object' ? window : globalThis, function () {
   const DEFAULT_LEVELS = ['low', 'medium', 'high'];
-  const BASE_LEVELS = ['low', 'medium', 'high', 'xhigh'];
-  // Every Codex model exposes its own depth, so the ladder is per model rather
-  // than one wide set: only the newest models add max and ultra, and GPT-5.5
-  // stops at xhigh. Mirrors supported_reasoning_levels in
-  // codex-metadata/models.json; the catalog-sync test keeps the two in step.
-  const MODEL_LADDERS = [
-    ['gpt-6-astra', [...BASE_LEVELS, 'max', 'ultra']],
-    ['gpt-6.1-sol', [...BASE_LEVELS, 'max', 'ultra']],
-    ['gpt-6-sol', [...BASE_LEVELS, 'max', 'ultra']],
-    ['gpt-5.6-sol', [...BASE_LEVELS, 'max', 'ultra']],
-    ['gpt-5.6-terra', [...BASE_LEVELS, 'max', 'ultra']],
-    ['gpt-daybreak-blue-latest', [...BASE_LEVELS, 'max', 'ultra']],
-    ['gpt-daybreak-red-latest', [...BASE_LEVELS, 'max', 'ultra']],
-    ['gpt-6-luna', [...BASE_LEVELS, 'max']],
-    ['gpt-5.6-luna', [...BASE_LEVELS, 'max']],
-    ['codex-auto-review', [...BASE_LEVELS, 'max']],
-    ['gpt-5.5', BASE_LEVELS.slice()],
-  ].sort((a, b) => b[0].length - a[0].length);
-  // Claude Code owns its effort flag, so its ladder is fixed instead of being
-  // inferred from the routed model ID.
-  const CLAUDE_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
-  function levelsFor(model) {
-    const id = String(model || '').toLowerCase();
-    const segment = id.split('/').pop();
-    const known = MODEL_LADDERS.find(([slug]) => segment === slug || segment.startsWith(slug + '-'));
-    return (known ? known[1] : DEFAULT_LEVELS).slice();
+  const LABELS = { off: 'Off', none: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
+  const canonical = model => String(model || '').replace(/:cloud$/, '');
+  function normalizeThinking(thinking) {
+    if (!thinking || !Array.isArray(thinking.values) || thinking.values.length > 32) return undefined;
+    if (!thinking.values.every(value => typeof value === 'boolean' || typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/i.test(value))) return undefined;
+    const values = [...new Set(thinking.values)];
+    return { values, ...(values.includes(thinking.default) ? { default: thinking.default } : {}) };
   }
-  // Engine-aware ladder used by settings surfaces that do not have a composer
-  // session to resolve account reasoning efforts from.
-  function levelsForEngine(engine, model) {
-    return engine === 'claude' ? CLAUDE_LEVELS.slice() : levelsFor(model);
+  function thinkingFor(model, catalog) {
+    if (!catalog) return undefined;
+    if (catalog.thinking) return normalizeThinking(catalog.thinking);
+    if (catalog.enabled === false) return undefined;
+    const id = canonical(model);
+    const reported = normalizeThinking(catalog.modelThinking?.[id]);
+    if (reported) return reported;
+    const metadata = (catalog.providers || []).filter(provider => provider.enabled !== false && provider.keys?.some(key => key.enabled !== false))
+      .flatMap(provider => provider.models || []).filter(entry => canonical(entry.id) === id)
+      .map(entry => normalizeThinking(entry.thinking)).filter(Boolean);
+    if (!metadata.length) return undefined;
+    const values = metadata[0].values.filter(value => metadata.every(thinking => thinking.values.includes(value)));
+    const defaultValue = metadata[0].default;
+    return { values, ...(values.includes(defaultValue) && metadata.every(thinking => thinking.default === defaultValue) ? { default: defaultValue } : {}) };
   }
-  return { levelsFor, levelsForEngine };
+  function levelsFor(model, catalog) {
+    const thinking = thinkingFor(model, catalog);
+    if (!thinking) return DEFAULT_LEVELS.slice();
+    return [...new Set(thinking.values.map(value => value === false ? 'none' : value === true ? 'high' : value))];
+  }
+  function labelFor(level, model, catalog) {
+    const values = thinkingFor(model, catalog)?.values || [];
+    if (level === 'none' && values.includes(false)) return 'Off';
+    if (level === 'high' && values.includes(true) && !values.includes('high')) return 'On';
+    return LABELS[level] || (level ? level[0].toUpperCase() + level.slice(1) : 'Default');
+  }
+  return { normalizeThinking, thinkingFor, levelsFor, labelFor };
 });

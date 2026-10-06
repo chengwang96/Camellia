@@ -38,6 +38,19 @@ test('Antigravity storage preparation uses a no-prompt handshake and validates b
   assert.equal(await session.prepareNativeStorage(), result.conversationId);
 });
 
+test('ACP adapters can translate a discovered boolean control to the native option spelling', async context => {
+  const { session } = fixture(context), requests = [];
+  session.settings.model = 'kimi-k2.6'; session.settings.thinkingBudget = 'none';
+  session.spec.noModes = true; session.spec.thinkingId = 'reasoning_effort'; session.spec.thinkingValue = 'off';
+  session.onSessionId = () => {};
+  session.request = async (method, params) => {
+    requests.push({ method, params });
+    return method === 'session/new' ? { sessionId: '00000000-0000-4000-8000-000000000001' } : { configOptions: [] };
+  };
+  await session.open();
+  assert.equal(requests.find(request => request.params.configId === 'reasoning_effort').params.value, 'off');
+});
+
 test('native preparation refuses a busy, closed or unrelated ACP engine', async t => {
   const { session } = fixture(t); let requests = 0;
   session.sessionId = 'existing'; session.request = async () => { requests++; };

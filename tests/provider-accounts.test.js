@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { queryAccount, accountCapability, fetchModels, verifyModel } = require('../src/api/provider-accounts');
 const { createProviderInsights } = require('../src/api/provider-insights');
-const { normalizeConfig } = require('../src/api/api-router-config');
+const { normalizeConfig, loadConfig, writeConfig } = require('../src/api/api-router-config');
 const response = (body, status = 200) => ({ ok: status === 200, status, json: async () => body });
 const provider = (baseUrl, type = 'custom') => ({ id: 'provider', baseUrl, type, protocol: 'openai', enabled: true, models: [{ id:'model', upstream:'model' }], keys: [{ id:'key-1', key:'private-key-never-publish', enabled:true }] });
 const deepseek = total => ({ balance_infos: [{ currency:'CNY', total_balance:String(total), topped_up_balance:String(total), granted_balance:'0' }] });
@@ -63,6 +63,188 @@ test('model discovery leaves absent or malformed context limits unknown', async 
   });
   for (const model of models.slice(0, 4)) assert.equal(model.maxContext, undefined);
   assert.equal(models[4].maxContext, 1000000);
+});
+
+test('catalog discovery preserves explicit reasoning metadata without guessing from model names', async () => {
+  const entries = [{ id: 'glm-5.3', thinking: { values: ['low', 'high', 'max'], default: 'max' } },
+    { id: 'reported', supported_reasoning_efforts: ['low', 'max'], default_reasoning_effort: 'low' },
+    { id: 'account-format', supportedReasoningEfforts: [{ reasoningEffort: 'ultra' }] },
+    { id: 'codex-format', supported_reasoning_levels: [{ effort: 'high' }, { effort: 'xhigh' }] },
+    { id: 'no-reasoning', supported_reasoning_efforts: [] },
+    { id: 'malformed', thinking: { values: ['low', 2] } }, { id: 'gpt-6-astra' }, null];
+  const calls = [];
+  const models = await fetchModels(provider('https://relay.example/v1', 'ollama-relay'), 'secret', {
+    fetchImpl: async url => { calls.push(url); return response({ data: entries }); },
+  });
+  assert.deepEqual(models[0].thinking, { values: ['low', 'high', 'max'], default: 'max' });
+  assert.deepEqual(models[1].thinking, { values: ['low', 'max'], default: 'low' });
+  assert.deepEqual(models[2].thinking, { values: ['ultra'] });
+  assert.deepEqual(models[3].thinking, { values: ['high', 'xhigh'] });
+  assert.deepEqual(models[4].thinking, { values: [] });
+  assert.equal(models[5].thinking, undefined);
+  assert.equal(models[6].thinking, undefined);
+  assert.equal(calls[0], 'https://relay.example/v1/models');
+  assert.ok(calls.slice(1).every(url => url.startsWith('https://relay.example/v1/models/')));
+  assert.equal(calls.length, 3);
+});
+
+test('DeepSeek effort metadata is read from the live schema, including the documented off control', async () => {
+  const models = await fetchModels(provider('https://api.deepseek.com/v1', 'deepseek'), 'secret', {
+    fetchImpl: async url => {
+      assert.equal(url, 'https://api.deepseek.com/v1/models');
+      return response({ data: [{ id: 'deepseek-flash', effort: { supported_levels: ['low', 'high', 'max'], default_level: 'high' } }] });
+    },
+  });
+  assert.deepEqual(models[0].thinking, { values: ['none', 'low', 'high', 'max'], default: 'high' });
+});
+
+test('other providers use same-host single-model metadata before falling back', async () => {
+  const calls = [];
+  const models = await fetchModels(provider('https://relay.example/v1'), 'private', {
+    fetchImpl: async (url, options) => {
+      calls.push(url);
+      assert.equal(options.method, 'GET');
+      assert.equal(options.headers.Authorization, 'Bearer private');
+      assert.equal(options.redirect, 'error');
+      if (url.endsWith('/models')) return response({ data: [{ id: 'vendor/reported' }, { id: 'unknown' }, { id: 'unavailable' }] });
+      if (url.endsWith('/vendor%2Freported')) return response({ data: { id: 'vendor/reported', max_input_tokens: 128000,
+        capabilities: { effort: { supported_levels: ['high', 'max'], default_level: 'max' } } } });
+      if (url.endsWith('/unknown')) return response({ id: 'different-model', thinking: { values: ['ultra'] } });
+      return response({}, 404);
+    },
+  });
+  assert.equal(calls.length, 4);
+  assert.deepEqual(models[0].thinking, { values: ['high', 'max'], default: 'max' });
+  assert.equal(models[0].maxContext, 128000);
+  assert.equal(models[1].thinking, undefined);
+  assert.equal(models[2].thinking, undefined);
+});
+
+test('missing detail endpoints stop bounded probes without failing the catalog', async () => {
+  const entries = Array.from({ length: 200 }, (_, index) => ({ id: 'model-' + index }));
+  const calls = [];
+  const selected = provider('https://relay.example/v1'); selected.models = [{ id: 'model-199', upstream: 'model-199' }];
+  const models = await fetchModels(selected, 'private', {
+    fetchImpl: async url => { calls.push(url); return url.endsWith('/models') ? response({ data: entries }) : response({}, 404); },
+  });
+  assert.equal(models.length, 200);
+  assert.equal(calls[1], 'https://relay.example/v1/models/model-199');
+  assert.ok(calls.length <= 8);
+  assert.ok(models.every(model => model.thinking === undefined));
+});
+
+test('MiMo boolean controls are sourced only from documented official routes, never similarly named relays', async () => {
+  for (const [baseUrl, thinking] of [['https://api.xiaomimimo.com/v1', true], ['https://token-plan-cn.xiaomimimo.com/v1', true], ['https://relay.example/v1', false]]) {
+    const calls = [];
+    const models = await fetchModels(provider(baseUrl, 'mimo'), 'private', {
+      fetchImpl: async url => {
+        calls.push(url);
+        return url.endsWith('/models') ? response({ data: [{ id: 'mimo-v2.6-pro' }] }) : response({}, 404);
+      },
+    });
+    assert.deepEqual(models[0].thinking, thinking ? { values: [false, true], default: true } : undefined);
+    assert.equal(calls.length, thinking ? 1 : 2);
+    assert.ok(calls.every(url => url.startsWith(baseUrl + '/models')));
+  }
+});
+
+test('Ollama discovery queries native model metadata, preserving defaults and context limits', async () => {
+  const entries = [{ id: 'glm-5.3:cloud' }, { id: 'deepseek-v4.1-flash:cloud' }, { id: 'kimi-k2.6:cloud' },
+    { id: 'no-thinking:cloud' }, { id: 'metadata-missing:cloud' }, { id: 'unavailable:cloud' },
+    { id: 'catalog-only:cloud', thinking: { values: ['custom-depth'], default: 'custom-depth' } }];
+  const metadata = {
+    'glm-5.3:cloud': { thinking: { values: ['low', 'high', 'max'], default: 'max' }, model_info: { 'glm.context_length': 202752 } },
+    'deepseek-v4.1-flash:cloud': { thinking: { values: [false, 'low', 'high', 'max'], default: 'high' } },
+    'kimi-k2.6:cloud': { thinking: { values: [false, true], default: true } },
+    'no-thinking:cloud': { thinking: { values: [false], default: false } },
+    'metadata-missing:cloud': {},
+  };
+  const calls = [];
+  const models = await fetchModels(provider('https://ollama.com/v1', 'ollama'), 'secret', {
+    fetchImpl: async (url, options) => {
+      calls.push(url);
+      assert.equal(options.headers.Authorization, 'Bearer secret');
+      assert.equal(options.redirect, 'error');
+      if (url.endsWith('/v1/models')) return response({ data: entries });
+      assert.equal(url, 'https://ollama.com/api/show');
+      assert.equal(options.method, 'POST');
+      const model = JSON.parse(options.body).model;
+      if (model === 'catalog-only:cloud') throw new Error('network failure');
+      return response(metadata[model] || {}, metadata[model] ? 200 : 404);
+    },
+  });
+  assert.equal(calls.length, 8);
+  assert.equal(models[0].id, 'glm-5.3');
+  assert.deepEqual(models[0].thinking, metadata['glm-5.3:cloud'].thinking);
+  assert.equal(models[0].maxContext, 202752);
+  for (const model of models.slice(1, 4)) assert.deepEqual(model.thinking, metadata[model.upstream].thinking);
+  assert.equal(models[4].thinking, undefined);
+  assert.equal(models[5].thinking, undefined);
+  assert.deepEqual(models[6].thinking, entries[6].thinking);
+});
+
+test('Ollama detail requests stay on the configured host and have bounded concurrency', async () => {
+  const entries = Array.from({ length: 12 }, (_, index) => ({ name: 'model-' + index }));
+  let active = 0, peak = 0;
+  const models = await fetchModels(provider('http://localhost:11434/v1', 'ollama'), 'local-key', {
+    fetchImpl: async (url, options) => {
+      assert.equal(options.headers.Authorization, 'Bearer local-key');
+      if (url.endsWith('/v1/models')) return response({ models: entries });
+      assert.equal(url, 'http://localhost:11434/api/show');
+      active++; peak = Math.max(peak, active);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      active--;
+      return response({ thinking: { values: ['high'] } });
+    },
+  });
+  assert.equal(models.length, 12);
+  assert.equal(peak, 4);
+  assert.ok(models.every(model => model.thinking.values[0] === 'high'));
+});
+
+test('metadata cache survives old writers without following edited routes or replacing newer metadata', context => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-model-cache-'));
+  context.after(() => { assert.equal(path.dirname(root), os.tmpdir()); assert.ok(path.basename(root).startsWith('camellia-model-cache-')); removeTree(root); });
+  const file = path.join(root, 'pool.json');
+  const config = normalizeConfig({ providers: [provider('https://ollama.com/v1', 'ollama')] });
+  const selected = config.providers[0], model = selected.models[0];
+  const thinking = { values: ['low', 'high', 'max'], default: 'max' };
+  const metadata = { version: 1, models: [{ providerId: selected.id, baseUrl: selected.baseUrl, anthropicBaseUrl: selected.anthropicBaseUrl,
+    providerProtocol: selected.protocol, upstream: model.upstream, protocol: model.protocol, thinking }] };
+  const save = () => fs.writeFileSync(file, JSON.stringify(config));
+  save(); fs.writeFileSync(file + '.model-metadata.json', JSON.stringify(metadata));
+  assert.deepEqual(loadConfig(file).providers[0].models[0].thinking, thinking);
+  model.thinking = { values: ['max'] }; save();
+  assert.deepEqual(loadConfig(file).providers[0].models[0].thinking, { values: ['max'] });
+  delete model.thinking;
+  for (const field of ['baseUrl', 'anthropicBaseUrl', 'protocol']) {
+    const original = selected[field]; selected[field] = field === 'protocol' ? 'dual' : 'https://other.example/v1'; save();
+    assert.equal(loadConfig(file).providers[0].models[0].thinking, undefined);
+    selected[field] = original;
+  }
+  for (const field of ['upstream', 'protocol']) {
+    const original = model[field]; model[field] = field === 'protocol' ? 'anthropic' : 'other-model'; save();
+    assert.equal(loadConfig(file).providers[0].models[0].thinking, undefined);
+    model[field] = original;
+  }
+  save(); fs.writeFileSync(file + '.model-metadata.json', 'invalid json');
+  assert.equal(loadConfig(file).providers[0].models[0].thinking, undefined);
+});
+
+test('config writes persist discovered thinking metadata without storing credentials', context => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-model-cache-write-'));
+  context.after(() => { assert.equal(path.dirname(root), os.tmpdir()); assert.ok(path.basename(root).startsWith('camellia-model-cache-write-')); removeTree(root); });
+  const file = path.join(root, 'pool.json');
+  const cfg = normalizeConfig({ providers: [{ ...provider('https://api.deepseek.com/v1', 'deepseek'), anthropicBaseUrl: 'https://api.deepseek.com/anthropic/v1',
+    protocol: 'dual', models: [{ id: 'deepseek-flash', upstream: 'deepseek-flash', protocol: 'auto', thinking: { values: ['none', 'low', 'high', 'max'], default: 'high' } }] }] });
+  writeConfig(file, cfg);
+  const metadataFile = file + '.model-metadata.json';
+  const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+  assert.deepEqual(metadata.models[0].thinking, cfg.providers[0].models[0].thinking);
+  assert.ok(!fs.readFileSync(metadataFile, 'utf8').includes('private-key-never-publish'));
+  delete cfg.providers[0].models[0].thinking;
+  writeConfig(file, cfg);
+  assert.deepEqual(loadConfig(file).providers[0].models[0].thinking, { values: ['none', 'low', 'high', 'max'], default: 'high' });
 });
 
 test('balance history survives reload, coalesces refreshes, preserves last success, and never crosses replacement keys', async t => {

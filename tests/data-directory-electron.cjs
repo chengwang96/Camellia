@@ -69,6 +69,13 @@ async function main() {
     } else {
       const migration = require('../src/main/data-directory').readDirectoryMigrationResult(appData);
       assert.equal(migration.method, 'rename', JSON.stringify(migration));
+      assert.equal(migration.error, null, JSON.stringify(migration));
+      assert.equal(fs.readdirSync(appData).some(name => name.startsWith('.camellia-migration-work-')), false,
+        'Electron must actually remove backups containing junctions to the renamed directory');
+      for (const name of ['internal-attachments', 'missing-internal']) {
+        const target = name === 'internal-attachments' ? 'clipboard-attachments' : 'missing-dependency';
+        assert.equal(path.resolve(fs.readlinkSync(path.join(destination, name))), path.join(destination, target));
+      }
       const { BrowserWindow } = electron;
       const window = new BrowserWindow({ show: false });
       await window.loadFile(path.join(__dirname, '../assets/icon-256.png'));
@@ -98,6 +105,9 @@ async function main() {
   fs.mkdirSync(path.join(legacy, 'conversations'), { recursive: true });
   fs.writeFileSync(path.join(legacy, 'clipboard-attachments/keep.txt'), 'original attachment');
   fs.writeFileSync(path.join(legacy, 'conversations/metadata.json'), JSON.stringify({ attachment: path.join(legacy, 'clipboard-attachments/keep.txt') }));
+  for (const [name, target] of [['internal-attachments', 'clipboard-attachments'], ['missing-internal', 'missing-dependency']]) {
+    fs.symlinkSync(path.join(legacy, target), path.join(legacy, name), process.platform === 'win32' ? 'junction' : 'dir');
+  }
   fs.writeFileSync(path.join(legacy, 'desktop-config.json'), JSON.stringify({ firstRunComplete: true, mode: 'home', port: 0, autoRefreshBalances: false }));
   try {
     for (const phase of [0, 1, 2]) {

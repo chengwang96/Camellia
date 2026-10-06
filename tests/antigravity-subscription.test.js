@@ -6,7 +6,7 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { createHarness } = require('./claude-harness.cjs');
 const { createAntigravity, subscriptionSpawnSpec } = require('../src/engines/antigravity');
-const { subscriptionEnvironment, parseModels, parseGoogleQuota, groupModels, normalizeSelection, effectiveSelection, loginScript, requireGoogleProvider, headlessEnvironment, describeCliFailure } = require('../src/engines/antigravity/subscription');
+const { subscriptionEnvironment, parseModels, parseGoogleQuota, groupModels, normalizeSelection, effectiveSelection, loginScript, requireGoogleProvider, headlessEnvironment, describeCliFailure, runCliWithRetry } = require('../src/engines/antigravity/subscription');
 const { createGoogleAccount } = require('../src/engines/antigravity/subscription');
 const { createRuntimeManager } = require('../src/main/runtime-manager');
 const { installAntigravityCli } = require('../src/main/antigravity-cli-runtime');
@@ -47,6 +47,52 @@ test('Background Google checks stay headless so a stalled credential read cannot
   assert.match(describeCliFailure('Headless auth: no valid auth (keyring unavailable); starting login', '', 3), /sign-in has expired or is invalid/);
   assert.equal(describeCliFailure('', '', 7), 'Antigravity CLI exited (7)');
   assert.equal(describeCliFailure('network down', '', 1), 'network down');
+});
+
+test('A transient background Google check is retried, but one that opened a login page never is', async () => {
+  // A transient failure (dropped connection, proxy hiccup) is retried before it
+  // reaches the account card. The retry passes the original arguments and keeps
+  // the headless environment on every attempt.
+  const calls = [], delays = [];
+  const flaky = async (file, args, options) => {
+    calls.push({ file, args, options });
+    if (calls.length < 3) throw new Error('Unexpected EOF');
+    return 'quota-output';
+  };
+  const output = await runCliWithRetry(flaky, 'official-agy', ['-p', '/quota'], { env: headlessEnvironment({}) }, {
+    attempts: 3, delay: 10, sleep: ms => { delays.push(ms); return Promise.resolve(); } });
+  assert.equal(output, 'quota-output');
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls.map(call => call.args), [['-p', '/quota'], ['-p', '/quota'], ['-p', '/quota']]);
+  for (const call of calls) assert.equal(call.options.env.AGY_CLI_NONINTERACTIVE_HEADLESS, 'true');
+  assert.deepEqual(delays, [10, 20]);
+  // A rejected credential is terminal: the CLI opens its own sign-in page, so
+  // retrying would only open another. This includes the headless translation.
+  for (const message of ['Google sign-in has expired or is invalid. Sign in again and retry.',
+    'Headless auth: no valid auth (keyring unavailable); starting login',
+    'authentication failed or timed out']) {
+    let authCalls = 0;
+    await assert.rejects(runCliWithRetry(async () => { authCalls++; throw new Error(message); },
+      'official-agy', ['models'], {}, { attempts: 3, sleep: () => Promise.resolve() }), /.*/);
+    assert.equal(authCalls, 1, 'A rejected credential must not be retried: ' + message);
+  }
+  // A stalled run may be waiting on the CLI's own sign-in page, so it is not retried.
+  let timeoutCalls = 0;
+  const timeout = new Error('Google account check timed out. Check the network connection and retry.');
+  timeout.timedOut = true;
+  await assert.rejects(runCliWithRetry(async () => { timeoutCalls++; throw timeout; },
+    'official-agy', ['-p', '/quota'], {}, { attempts: 3, sleep: () => Promise.resolve() }), /timed out/);
+  assert.equal(timeoutCalls, 1, 'A stalled run must not be retried');
+  // A profile-picture lookup failure is terminal and must not be retried.
+  let avatarCalls = 0;
+  await assert.rejects(runCliWithRetry(async () => { avatarCalls++; throw new Error('Google account profile picture unavailable.'); },
+    'official-agy', ['models'], {}, { attempts: 3, sleep: () => Promise.resolve() }), /profile picture/);
+  assert.equal(avatarCalls, 1);
+  // The final failure is still surfaced once every attempt is spent.
+  let networkCalls = 0;
+  await assert.rejects(runCliWithRetry(async () => { networkCalls++; throw new Error('network down'); },
+    'official-agy', ['models'], {}, { attempts: 2, sleep: () => Promise.resolve() }), /network down/);
+  assert.equal(networkCalls, 2);
 });
 
 test('Google account model parsing preserves model versions and reasoning variants while removing duplicate rows', () => {
@@ -187,11 +233,11 @@ test('Google quota refresh runs /quota, records history, and keeps the last good
   const okOutput = JSON.stringify({ command: { data: { groups: [
     { name: 'Gemini Models', buckets: [{ id: 'gemini-weekly', window: 'weekly', remaining_fraction: 0.25, reset_time: '2026-10-08T18:47:45Z' }] },
   ] } } });
-  const outputs = [okOutput, null];
-  const account = createGoogleAccount({ home, cliSettingsFile, runtime: () => ({ locate: () => ({ file: 'official-agy' }) }),
+  let online = true;
+  const account = createGoogleAccount({ home, cliSettingsFile, sleep: () => Promise.resolve(), runtime: () => ({ locate: () => ({ file: 'official-agy' }) }),
     environment: () => ({ GEMINI_API_KEY: 'fixture' }), settings: () => ({ proxyUrl: '' }), openLogin: async () => {},
     run: async (file, args, options) => { calls.push({ file, args, options });
-      const output = outputs.shift(); if (output === null) throw new Error('network down'); return output; } });
+      if (!online) throw new Error('network down'); return okOutput; } });
   const first = await account.refreshUsage({ force: true });
   assert.deepEqual(calls[0].args, ['-p', '/quota', '--output-format', 'json']);
   assert.equal(calls[0].options.env.GEMINI_API_KEY, undefined);
@@ -200,13 +246,15 @@ test('Google quota refresh runs /quota, records history, and keeps the last good
   assert.equal(calls[0].options.env.AGY_CLI_NONINTERACTIVE_HEADLESS, 'true');
   assert.deepEqual(first.usage.latest.windows, [{ id: 'gemini-models:gemini-weekly', label: 'Gemini Models · Weekly', usedPercent: 75, resetsAt: '2026-10-08T18:47:45Z' }]);
   assert.equal(first.usage.status, 'ok'); assert.equal(first.usage.history.length, 1);
-  // A failed refresh keeps the previous reading but surfaces the refresh error.
+  // A transient failure is retried before it is recorded; the previous reading
+  // survives and the last attempt's error is surfaced.
+  online = false;
   const second = await account.refreshUsage({ force: true });
   assert.equal(second.usage.status, 'stale'); assert.equal(second.usage.latest.windows[0].usedPercent, 75);
   assert.match(second.usage.error, /network down/);
   const third = await account.refreshUsage({ force: false });
   assert.equal(third.usage.error, second.usage.error, 'A fresh reading suppresses the throttled refresh entirely');
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1 + 3, 'The failed refresh is retried but the throttled refresh issues no call');
 });
 
 test('A failed model refresh keeps the last good Google catalog so the composer never empties', async t => {
@@ -218,7 +266,7 @@ test('A failed model refresh keeps the last good Google catalog so the composer 
     { name: 'Gemini Models', buckets: [{ id: 'weekly', window: 'weekly', remaining_fraction: 0.5 }] },
   ] } } });
   let modelCalls = 0;
-  const account = createGoogleAccount({ home, cliSettingsFile, runtime: () => ({ locate: () => ({ file: 'official-agy' }) }),
+  const account = createGoogleAccount({ home, cliSettingsFile, sleep: () => Promise.resolve(), runtime: () => ({ locate: () => ({ file: 'official-agy' }) }),
     environment: () => ({}), settings: () => ({ proxyUrl: '' }), openLogin: async () => {},
     run: async (file, args) => {
       if (args[0] === 'models') { modelCalls++; if (modelCalls === 1) return okModels; throw new Error('Bad Gateway'); }
@@ -330,6 +378,18 @@ test('Google quota cards, history and targeted/background refresh share the subs
   await h.call('provider-refresh', { subscriptionId: 'antigravity:default' });
   await h.call('provider-refresh', { force: false });
   assert.deepEqual(calls.map(call => call.force), [true, false]);
+  // The per-engine opt-out gates only the background cadence. A manual refresh
+  // (force true) and an explicit engine check still reach the CLI, so turning it
+  // off never strands the quota with no way to update it.
+  assert.equal(h.call('workbench-save-settings', { subscriptionAutoRefresh: { antigravity: false } }).ok, true);
+  calls.length = 0;
+  await h.call('provider-refresh', { force: false });
+  assert.equal(calls.length, 0, 'The disabled background refresh must not start a CLI probe');
+  await h.call('provider-refresh', { subscriptionId: 'antigravity:default' });
+  assert.deepEqual(calls.map(call => call.force), [true]);
+  await h.call('provider-refresh', { force: true });
+  assert.deepEqual(calls.map(call => call.force), [true, true]);
+  assert.equal(h.call('workbench-settings').subscriptionAutoRefresh.antigravity, false);
   h.api.antigravity.handlers['account-refresh-usage'] = actualRefresh;
   // A recently attempted refresh returns the full card without another CLI
   // call; the successful timestamp survives a newer failed attempt.

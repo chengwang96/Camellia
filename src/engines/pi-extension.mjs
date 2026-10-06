@@ -5,6 +5,19 @@ const require = createRequire(import.meta.url);
 const { tools } = require('./goal-tools.js');
 
 export default function extension(pi) {
+  pi.on('before_provider_request', event => {
+    const payload = event.payload;
+    if (!payload || typeof payload !== 'object' || !Object.hasOwn(process.env, 'CAMELLIA_PI_EFFORT')) return;
+    const effort = process.env.CAMELLIA_PI_EFFORT;
+    if (!effort) delete payload.thinking;
+    if (payload.output_config) {
+      delete payload.output_config.effort;
+      if (!Object.keys(payload.output_config).length) delete payload.output_config;
+    }
+    if (effort === 'none' || effort === 'off') payload.thinking = { type: 'disabled' };
+    else if (effort) payload.output_config = { ...payload.output_config, effort };
+    return payload;
+  });
   pi.on('tool_call', async (event, context) => {
     if (event.toolName.startsWith('camellia_') || process.env.CAMELLIA_PI_PERMISSION === 'full') return;
     if (['read', 'grep', 'find', 'ls'].includes(event.toolName)) return;

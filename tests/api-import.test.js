@@ -28,12 +28,14 @@ function fixture(context, options = {}) {
 
 test('API import exports only explicit API fields and skips local account-backed providers', () => {
   const source = provider(); source.subscription = { refreshToken: 'subscription-secret' }; source.keys[0].cookie = 'cookie-secret';
+  source.models[0].thinking = { values: ['low', 'high', 'max'], default: 'max' };
   const result = exportProviders({ providers: [source, { ...provider('local'), baseUrl: 'http://127.0.0.1:1234/v1' }, { ...provider('qclaw'), type: 'qclaw' }], port: 1234, usage: { secret: true } });
   assert.equal(result.skipped, 2);
   assert.equal(result.providers.length, 1);
   assert.equal(JSON.stringify(result).includes('subscription-secret'), false);
   assert.equal(JSON.stringify(result).includes('cookie-secret'), false);
   assert.equal(Object.hasOwn(result, 'port'), false);
+  assert.deepEqual(result.providers[0].models[0].thinking, source.models[0].thinking);
 });
 
 test('explicit GUI synchronization replaces providers and routing state without journaling keys', context => {
@@ -71,7 +73,8 @@ test('API import rejects stale configuration, busy engines and non-allowlisted f
   busy = true; assert.throws(() => service.apply('gui', payload()), /Stop server/); busy = false;
   assert.throws(() => service.apply('gui', { ...payload(), expectedRevision: '0'.repeat(64) }), /changed/);
   assert.throws(() => service.apply('gui', { ...payload(), subscription: 'secret' }), /schema/);
-  for (const change of [entry => { entry.keys[0].cookie = 'secret'; }, entry => { entry.baseUrl = 'file:///secret'; }, entry => { entry.type = 'qclaw'; }, entry => { entry.keys[0].key = 'secret\r\n'; }]) {
+  for (const change of [entry => { entry.keys[0].cookie = 'secret'; }, entry => { entry.baseUrl = 'file:///secret'; }, entry => { entry.type = 'qclaw'; }, entry => { entry.keys[0].key = 'secret\r\n'; },
+    entry => { entry.models[0].thinking = { values: ['high'], token: 'secret' }; }, entry => { entry.models[0].thinking = { values: ['high', {}] }; }]) {
     const request = payload(); change(request.providers[0]);
     assert.throws(() => service.apply('gui', request), /validation failed/);
   }
