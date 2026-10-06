@@ -22,7 +22,7 @@ const { writeJson } = require('../../shared/json-store');
 
 const VERSIONS = Object.freeze({ claude: '2.1.273', dsh: '0.1.5-rc.2', kimi: '2.0.0', pi: '0.73.1' });
 const SUPPORTED_VERSIONS = Object.freeze({
-  claude: Object.freeze([VERSIONS.claude, '2.1.287', '2.1.288', '2.1.289']),
+  claude: Object.freeze([VERSIONS.claude, '2.1.287', '2.1.288', '2.1.289', '2.1.291']),
   dsh: Object.freeze([VERSIONS.dsh, '0.2.0-rc.2']),
   kimi: Object.freeze([VERSIONS.kimi, '2.1.1']), pi: Object.freeze([VERSIONS.pi]),
 });

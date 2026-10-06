@@ -80,6 +80,21 @@ async function wordBlocks(node, context, depth = 0) {
   return result.join('');
 }
 
+function renderDocumentHtml(body) {
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    *{box-sizing:border-box}body{margin:0;padding:20px;background:#e9ebee;color:#202124;font:15px/1.55 Arial,sans-serif}
+    .paper{max-width:850px;min-height:100vh;margin:auto;padding:48px;background:white;box-shadow:0 2px 12px #0001}
+    p{white-space:pre-wrap;margin:0 0 10px;overflow-wrap:anywhere}h1,h2,h3{line-height:1.25}img{max-width:100%;height:auto}
+    table{border-collapse:collapse;background:white}td,th{border:1px solid #cdd2d8;padding:6px 10px;vertical-align:top}td p:last-child{margin:0}
+    .sheet{margin-bottom:24px;overflow:auto;max-height:calc(100vh - 40px)}.sheet td{white-space:pre-wrap;overflow:hidden}.sheet th{background:#f2f4f6;font-weight:400}.sheet thead{position:sticky;top:0;z-index:4;height:32px}.sheet h2{font-size:16px}.sheet table{border-collapse:separate;border-spacing:0}
+    .slide-page{margin:0 auto 24px;max-width:1100px}.slide-page h2{font:13px Arial;color:#525962}.slide{position:relative;overflow:hidden;box-shadow:0 2px 12px #0002;container-type:inline-size}
+    .shape,.group,.picture,.connector,.chart{position:absolute}.shape p{line-height:1.25;margin:0}.group>.shape,.group>.picture,.group>.connector,.group>.chart,.group>.group{position:absolute}
+    .picture{overflow:hidden}.picture img{display:block;width:100%;height:100%;object-fit:contain}.picture.missing{display:flex;align-items:center;justify-content:center;background:#f2f4f6;border:1px dashed #c3c9d0;color:#525962;font:11px Arial;overflow:hidden}
+    .chart{overflow:hidden;background:#ffffff;border:1px solid #e1e4e8;padding:.5cqw;font:11px Arial}.chart strong{display:block;font-size:1.2cqw}.chart table{border-collapse:collapse;width:100%}.chart th,.chart td{border:1px solid #e1e4e8;padding:1px 3px;text-align:right;font-weight:400}.chart th:first-child{text-align:left}
+    @media(max-width:600px){body{padding:12px}.paper{padding:24px}}
+  </style></head><body>${body}</body></html>`;
+}
+
 async function renderOfficeDocument(kind, reader, sections) {
   const { xml, relationships, image } = reader;
   let body = '';
@@ -96,18 +111,7 @@ async function renderOfficeDocument(kind, reader, sections) {
     reader.sheets?.push(...renderedSheets);
     body = renderedSheets.map(sheet => sheet.html).join('');
   }
-  return `<!doctype html><html><head><meta charset="utf-8"><style>
-    *{box-sizing:border-box}body{margin:0;padding:20px;background:#e9ebee;color:#202124;font:15px/1.55 Arial,sans-serif}
-    .paper{max-width:850px;min-height:100vh;margin:auto;padding:48px;background:white;box-shadow:0 2px 12px #0001}
-    p{white-space:pre-wrap;margin:0 0 10px;overflow-wrap:anywhere}h1,h2,h3{line-height:1.25}img{max-width:100%;height:auto}
-    table{border-collapse:collapse;background:white}td,th{border:1px solid #cdd2d8;padding:6px 10px;vertical-align:top}td p:last-child{margin:0}
-    .sheet{margin-bottom:24px;overflow:auto;max-height:calc(100vh - 40px)}.sheet td{white-space:pre-wrap;overflow:hidden}.sheet th{background:#f2f4f6;font-weight:400}.sheet thead{position:sticky;top:0;z-index:4;height:32px}.sheet h2{font-size:16px}.sheet table{border-collapse:separate;border-spacing:0}
-    .slide-page{margin:0 auto 24px;max-width:1100px}.slide-page h2{font:13px Arial;color:#525962}.slide{position:relative;overflow:hidden;box-shadow:0 2px 12px #0002;container-type:inline-size}
-    .shape,.group,.picture,.connector,.chart{position:absolute}.shape p{line-height:1.25;margin:0}.group>.shape,.group>.picture,.group>.connector,.group>.chart,.group>.group{position:absolute}
-    .picture{overflow:hidden}.picture img{display:block;width:100%;height:100%;object-fit:contain}.picture.missing{display:flex;align-items:center;justify-content:center;background:#f2f4f6;border:1px dashed #c3c9d0;color:#525962;font:11px Arial;overflow:hidden}
-    .chart{overflow:hidden;background:#ffffff;border:1px solid #e1e4e8;padding:.5cqw;font:11px Arial}.chart strong{display:block;font-size:1.2cqw}.chart table{border-collapse:collapse;width:100%}.chart th,.chart td{border:1px solid #e1e4e8;padding:1px 3px;text-align:right;font-weight:400}.chart th:first-child{text-align:left}
-    @media(max-width:600px){body{padding:12px}.paper{padding:24px}}
-  </style></head><body>${body}</body></html>`;
+  return renderDocumentHtml(body);
 }
 
-module.exports = { renderOfficeDocument };
+module.exports = { renderOfficeDocument, renderDocumentHtml };

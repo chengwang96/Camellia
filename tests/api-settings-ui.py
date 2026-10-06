@@ -65,7 +65,7 @@ try:
         page.expose_function('testRpc',rpc);page.add_init_script(bridge)
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri());page.wait_for_load_state('networkidle')
         nav_icons=page.locator('.settings-nav nav button > svg.nav-icon')
-        expect(nav_icons).to_have_count(10)
+        expect(nav_icons).to_have_count(11)
         for icon in nav_icons.all():
             expect(icon).to_have_attribute('aria-hidden','true')
             expect(icon).to_have_attribute('focusable','false')
@@ -107,7 +107,9 @@ try:
         assert state['providers'][1]['priority']==1
         assert 'test-command-account' not in json.dumps(state)
         result=rpc('routerRequest','kimi-k3')['result'];assert result['status']==200
-        page.locator('#refresh').click();expect(page.locator('#live')).to_contain_text('Command Code GOAT')
+        page.reload(wait_until='networkidle');expect(page.locator('#live')).to_contain_text('Command Code GOAT')
+        page.locator('[data-view=providers]').click()
+        page.locator('#providers article.provider',has_text='Command Code GOAT').locator('button[data-select]').first.click()
         expect(page.locator('#keyRows')).to_contain_text('1 successful')
         # Reported quota is shown per key, and an exhausted window is called out
         # on the badge because it is what removes the key from rotation.
@@ -162,7 +164,7 @@ try:
         page.reload();page.wait_for_load_state('networkidle')
         page.locator('[data-view=providers]').click()
         expect(page.locator('.provider').first).to_contain_text('Command Code GOAT')
-        page.locator('.provider [data-select]').first.click()
+        page.locator('#providers article.provider').first.locator('button[data-select]').first.click()
         expect(page.locator('#pPriority')).to_have_value('1')
         page.locator('#pPriority').select_option('-1')
         wait_state(page, "state.providers[0].priority === -1")
@@ -235,10 +237,11 @@ try:
         assert rpc('claudeGetSettings')['result']['model'] == 'deepseek-v4-pro'
         claude.reload(); claude.wait_for_load_state('networkidle')
         check_model_menu('deepseek-v4-pro', len(configured['models']))
-        page.locator('#refresh').click();page.wait_for_load_state('networkidle')
+        page.reload(wait_until='networkidle')
         # Bulk import, model discovery and verification exercise real IPC against
         # the loopback provider, including masked saves and usage attribution.
-        page.locator('.provider [data-select]').first.click()
+        page.locator('[data-view=providers]').click()
+        page.locator('#providers article.provider').first.locator('button[data-select]').first.click()
         page.locator('#showImport').click()
         page.locator('#bulkKeys').fill('test-command-account\ntest-command-extra\ntest-command-extra')
         page.locator('#importKeys').click()
@@ -259,7 +262,7 @@ try:
         state=rpc('apiRouterGetState')['result'];extra=state['providers'][0]['keys'][1]['id']
         assert state['usage'][extra]['requests']==0, 'Connection checks are not business usage'
         assert rpc('routerRequest','model-test')['result']['status']==200
-        page.locator('#refresh').click()
+        page.reload(wait_until='networkidle')
         page.locator('[data-view=usage]').click()
         page.locator('#usageModel').select_option('model-test')
         expect(page.locator('#usageRows tr')).to_have_count(1)
@@ -295,7 +298,10 @@ try:
         page.evaluate('s=>window.testEmitInsights(s)',snapshot)
         page.locator('[data-view=usage]').click()
         page.locator('[data-view=providers]').click()
-        # The overview heading, its three actions and the balances all describe
+        expect(page.locator('#editor')).to_be_hidden()
+        expect(page.locator('#providersHeading')).to_be_visible()
+        page.locator('#providers article.provider').first.locator('button[data-select]').first.click()
+        # The overview heading, its action and the balances all describe
         # the whole key pool: they step aside while one provider's settings are
         # open and come back on the list, with balances at the bottom of the page.
         expect(page.locator('#editor')).to_be_visible()
@@ -303,13 +309,12 @@ try:
         expect(page.locator('#balancesSection')).to_be_hidden()
         page.locator('#backProviders').click()
         expect(page.locator('#providersHeading')).to_be_visible()
-        expect(page.locator('#providersHeading #exportConfig')).to_be_visible()
-        expect(page.locator('#providersHeading #importConfig')).to_be_visible()
+        expect(page.locator('#exportConfig, #importConfig')).to_have_count(0)
         expect(page.locator('#providersHeading #addProvider')).to_be_visible()
         expect(page.locator('#balancesSection')).to_be_visible()
         router_bottom=page.locator('.router-options').bounding_box()['y']+page.locator('.router-options').bounding_box()['height']
         assert page.locator('#balancesSection').bounding_box()['y'] > router_bottom
-        page.locator('#providers [data-select]').first.click()
+        page.locator('#providers article.provider').first.locator('button[data-select]').first.click()
         expect(page.locator('#providersHeading')).to_be_hidden()
         expect(page.locator('#balancesSection')).to_be_hidden()
         page.locator('#backProviders').click()
@@ -451,6 +456,7 @@ try:
           const original = window.testCall;
           const state = {running:false, address:null, language:'en', theme:'dark', closeToTray:false, computerName:'Test desktop',
             workspaces:[{id:'workspace',name:'Test workspace'}], pending:[], devices:[]};
+          window.remoteTest = state;
           window.testMobileCalls = [];
           window.testCall = (method, request) => {
             if (method === 'openMobileAccess') {window.testMobileOpened = true; return Promise.resolve({ok:true});}
@@ -462,10 +468,11 @@ try:
             if (action === 'stop') {state.running = false; state.address = null;}
             if (action === 'set-name') state.computerName = payload.name;
             if (action === 'invite') {
-              state.pending = [{id:'phone',name:'Test phone',workspaceIds:['workspace']}];
-              return Promise.resolve({ok:true,result:{code:'test-pairing-code',expiresAt:Date.now()+300000}});
+              state.pending = [];
+              return Promise.resolve({ok:true,result:{code:'test-pairing-code-'+(window.testMobileInvites=(window.testMobileInvites||0)+1),expiresAt:Date.now()+300000}});
             }
-            if (action === 'approve') {state.devices = state.pending; state.pending = [];}
+            if (action === 'approve') state.pending = state.pending.map(device => ({...device,state:'approved'}));
+            if (action === 'reject') state.pending = state.pending.map(device => ({...device,state:'rejected'}));
             if (action === 'revoke') state.devices = [];
             return Promise.resolve({ok:true,result:structuredClone(state)});
           };
@@ -484,7 +491,7 @@ try:
         expect(page.locator('#mobile-toggle')).to_be_disabled()
         expect(page.locator('#mobilePage input[type=checkbox]')).to_have_count(0)
         expect(page.locator('#mobilePage [data-copy=network]')).not_to_be_empty()
-        expect(page.locator('#mobilePage [data-copy=scope]')).not_to_be_empty()
+        expect(page.locator('#mobilePage [data-copy=scope]')).to_have_count(0)
         expect(page.locator('#mobile-retry')).to_be_enabled()
         page.locator('#mobile-openPanel').click()
         assert page.evaluate('window.testMobileOpened') is True
@@ -493,32 +500,45 @@ try:
         page.evaluate("window.testMobileFailure = false; document.querySelector('#mobile-retry').click()")
         expect(page.locator('#mobile-retry')).to_be_hidden()
         expect(page.locator('#mobile-openPanel')).to_be_hidden()
-        expect(page.locator('#mobilePage [data-copy=scope]')).to_contain_text('all current and future conversations')
         expect(page.locator('#mobile-toggle')).to_have_text('Enable mobile access')
         expect(page.locator('#mobile-invite')).to_be_disabled()
         page.locator('#mobile-toggle').click()
         expect(page.locator('#mobile-address')).to_have_text('http://100.80.1.2:43127')
         page.locator('#mobile-invite').click()
-        expect(page.locator('#mobile-code')).to_have_text('test-pairing-code')
+        expect(page.locator('#mobile-code')).to_have_text('test-pairing-code-1')
+        expect(page.locator('#mobile-qr img')).to_have_count(1)
+        expect(page.locator('#mobile-refreshInvite')).to_be_visible()
+        page.locator('#mobile-refreshInvite').click()
+        expect(page.locator('#mobile-code')).to_have_text('test-pairing-code-2')
         expect(page.locator('#mobile-qr img')).to_have_count(1)
         expect(page.locator('#mobile-deviceName')).to_have_value('Test desktop')
         page.fill('#mobile-deviceName','Renamed desktop')
         page.locator('#mobile-saveDeviceName').click()
         expect(page.locator('#mobile-deviceName')).to_have_value('Renamed desktop')
+        page.evaluate("window.remoteTest.pending=[{id:'phone',name:'Test phone',computerName:'Renamed desktop',workspaceIds:['workspace'],state:'pending'}];window.mobileAccessUI.refresh()")
+        expect(page.locator('#mobile-invitation')).to_be_hidden()
+        expect(page.locator('#mobile-pairPending')).to_be_visible()
         page.get_by_role('button', name='Authorize device', exact=True).click()
+        expect(page.locator('#mobile-pairPendingLabel')).to_have_text('Computer approved; waiting for the phone')
+        page.evaluate("window.remoteTest.pending=[];window.remoteTest.devices=[{id:'phone',name:'Test phone',workspaceIds:['workspace'],lastSeenAt:Date.now()}];window.mobileAccessUI.refresh()")
+        expect(page.locator('#mobile-pair-success')).to_be_visible()
+        expect(page.locator('#mobile-invitation')).to_be_hidden()
         expect(page.locator('#mobile-devices .device')).to_have_count(1)
+        expect(page.locator('#mobile-devices .device')).to_contain_text('Last connected:')
+        page.get_by_role('button', name='Pair another device', exact=True).click()
+        expect(page.locator('#mobile-pair-success')).to_be_hidden()
+        expect(page.locator('#mobile-code')).to_have_text('test-pairing-code-3')
         page.get_by_role('button', name='Revoke', exact=True).click()
         expect(page.locator('#mobile-devices .device')).to_have_count(0)
         page.locator('#mobile-toggle').click()
         expect(page.locator('#mobile-invitation')).to_be_hidden()
-        expect(page.locator('#refresh')).to_be_enabled()
         page.evaluate("window.testMobileFailure = 'Mobile access is unavailable'")
-        page.locator('#refresh').click()
+        page.evaluate('window.mobileAccessUI.refresh()')
         expect(page.locator('#mobile-error')).to_have_text('Unable to load mobile access status. Please retry.')
         expect(page.locator('#mobile-toggle')).to_be_disabled()
         expect(page.locator('#mobile-invite')).to_be_disabled()
         page.evaluate('window.testMobileFailure = false')
-        page.locator('#refresh').click()
+        page.evaluate('window.mobileAccessUI.refresh()')
         expect(page.locator('#mobile-toggle')).to_be_enabled()
         expect(page.locator('#mobile-error')).to_be_empty()
         page.locator('.scroll-content').evaluate('element => element.scrollTop = 0')

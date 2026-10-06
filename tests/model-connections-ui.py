@@ -4,14 +4,16 @@ from playwright.sync_api import sync_playwright, expect
 
 repo = Path(__file__).resolve().parents[1]
 bridge = r"""(() => {
-  window.settings = {model:'route-only',connection:'api',permissionMode:'ask'};
+  window.settings = JSON.parse(localStorage.getItem('model-connection-settings') || 'null')
+    || {model:'route-only',connection:'api',permissionMode:'ask'};
   window.savedSettings = [];
   window.accountUnavailable = false;
   window.hiddenModels = {}; window.visibilityReads = 0;
   window.settingsTarget = null;
   const accountState = async () => {
     if (window.accountUnavailable) throw new Error('Account temporarily unavailable');
-    return {ok:true,models:[{id:'account-only',name:'Account model'}, {id:'shared-model',name:'Shared account model'}]};
+    return {ok:true,models:[{id:'account-only',name:'Account model'},
+      {id:'shared-model',name:'Shared account model',supportedReasoningEfforts:['low','high'],serviceTiers:[{id:'fast'}]}]};
   };
   window.dshDesktop = new Proxy({
     sharedConversations: true,
@@ -21,6 +23,7 @@ bridge = r"""(() => {
       if (action === 'save-settings') {
         window.savedSettings.push(payload);
         Object.assign(window.settings,payload);
+        localStorage.setItem('model-connection-settings', JSON.stringify(window.settings));
         return {ok:true,settings:{...window.settings}};
       }
       return {ok:true};
@@ -49,10 +52,42 @@ with sync_playwright() as playwright:
             return page.locator('.dsh-pop').last
 
         menu = model_menu()
-        expect(menu.locator('.pop-opt')).to_have_count(3)
+        expect(menu.locator('.pop-opt')).to_have_count(4)
         expect(menu.locator('.pop-opt', has_text='shared-model')).to_have_count(1)
-        expect(menu.locator('.pop-opt', has_text='Shared account model')).to_have_count(0)
-        menu.locator('.pop-opt', has_text='Account model').click()
+        expect(menu.locator('.pop-opt', has_text='Shared account model')).to_have_count(1)
+        expect(menu.locator('.pop-opt.current')).to_have_count(1)
+        expect(menu.locator('.pop-opt.current')).to_have_attribute('data-connection', 'api')
+
+        # The same ID stays independently selectable from each source. Picking
+        # the subscription copy must switch connection even if the ID is unchanged.
+        menu.locator('[data-model-id="shared-model"][data-connection="api"]').click()
+        page.wait_for_function("settings.connection === 'api' && settings.model === 'shared-model'")
+        menu = model_menu()
+        menu.locator('[data-model-id="shared-model"][data-connection="subscription"]').click()
+        page.wait_for_function("settings.connection === 'subscription' && settings.model === 'shared-model'")
+        expect(page.locator('#modelPillName')).to_have_text('Shared account model')
+        expect(page.locator('#statusLine')).to_contain_text('Model changed: Shared account model')
+        page.wait_for_function("LEVELS.map(level => level.id).join(',') === ',low,high'")
+        if engine == 'codex':
+            expect(page.locator('#fastModeToggle')).to_be_visible()
+        page.reload(wait_until='networkidle')
+        page.wait_for_function('uiReady')
+        expect(page.locator('#modelPillName')).to_have_text('Shared account model')
+        menu = model_menu()
+        expect(menu.locator('.pop-opt.current')).to_have_count(1)
+        expect(menu.locator('.pop-opt.current')).to_have_attribute('data-connection', 'subscription')
+        if engine != 'antigravity':
+            expect(menu.locator('[data-model-id="shared-model"]')).to_have_count(2)
+            menu.locator('[data-model-id="shared-model"][data-connection="api"]').click()
+            page.wait_for_function("settings.connection === 'api' && settings.model === 'shared-model'")
+            expect(page.locator('#modelPillName')).to_have_text('shared-model')
+            expect(page.locator('#statusLine')).to_contain_text('Model changed: shared-model')
+            if engine == 'codex':
+                expect(page.locator('#fastModeToggle')).not_to_be_visible()
+            menu = model_menu()
+            expect(menu.locator('.pop-opt.current')).to_have_count(1)
+            expect(menu.locator('.pop-opt.current')).to_have_attribute('data-connection', 'api')
+        menu.locator('[data-model-id="account-only"][data-connection="subscription"]').click()
         page.wait_for_function("settings.connection === 'subscription' && settings.model === 'account-only'")
         expect(page.locator('#modelPillName')).to_have_text('Account model')
         expect(page.locator('#statusLine')).to_contain_text('Model changed: Account model')
@@ -89,7 +124,7 @@ with sync_playwright() as playwright:
             menu.get_by_text('shared-model', exact=True).click()
             page.wait_for_function("settings.connection === 'api' && settings.model === 'shared-model'")
             menu = model_menu()
-            menu.get_by_text('Account model', exact=True).click()
+            menu.locator('[data-model-id="account-only"][data-connection="subscription"]').click()
             page.wait_for_function("settings.connection === 'subscription' && settings.model === 'account-only'")
             reads = page.evaluate('visibilityReads')
             page.evaluate("engine => { hiddenModels = {}; refreshSettings({engine}); }", engine)
@@ -105,8 +140,8 @@ with sync_playwright() as playwright:
             page.evaluate("settings.connection = 'api'; settings.model = 'route-only'; refreshSettings({engine: 'antigravity'})")
             expect(page.locator('#modelPillName')).to_have_text('route-only')
             menu = model_menu()
-        expect(menu.locator('.pop-opt')).to_have_count(3)
-        expect(menu.locator('.pop-opt', has_text='Shared account model')).to_have_count(0 if engine == 'antigravity' else 1)
+        expect(menu.locator('.pop-opt')).to_have_count(4)
+        expect(menu.locator('.pop-opt', has_text='Shared account model')).to_have_count(1)
         menu.locator('.pop-opt', has_text='route-only').click()
         page.wait_for_function("settings.connection === 'api' && settings.model === 'route-only'")
 
@@ -125,7 +160,7 @@ with sync_playwright() as playwright:
         page.evaluate("accountUnavailable = false; settings.model = 'account-only'; refreshSettings({engine: '" + engine + "'})")
         expect(page.locator('#modelPillName')).to_contain_text('account-only')
         menu = model_menu()
-        menu.locator('.pop-opt', has_text='Account model').click()
+        menu.locator('[data-model-id="account-only"][data-connection="subscription"]').click()
         page.wait_for_function("settings.connection === 'subscription'", timeout=5000)
         assert errors == [], errors
         page.close()

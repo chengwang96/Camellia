@@ -11,6 +11,7 @@ const { recordUsage } = require('./api-usage');
 const { GeminiToolState } = require('./gemini-tool-state');
 const { RequestScopes } = require('./request-scopes');
 const { responsesToChat, ResponsesStream, chatToResponse } = require('./responses-protocol');
+const { routedModelId } = require('../shared/codex-tool-model');
 const { accountCapability, queryAccount } = require('./provider-accounts');
 
 function retryDelay(headers = {}, now = Date.now()) {
@@ -451,7 +452,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     const chunks = []; let size = 0;
     for await (const chunk of req) { size += chunk.length; if (size > 64 * 1024 * 1024) return apiError(res, 413, "Request exceeded the size limit", protocol); chunks.push(chunk); }
     let body, model;
-    try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); model = modelId(body.model); }
+    try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); model = modelId(routedModelId(modelId(body.model))); }
     catch { return apiError(res, 400, "Requests require valid JSON and an explicit model ID", protocol); }
     if (scope && model !== scope.model) return apiError(res, 400, 'Benchmark requests must use the selected model', protocol, 'benchmark_model_mismatch');
     const routes = candidates(model, protocol).filter(route => !scope || (route.provider.id === scope.providerId

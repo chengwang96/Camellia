@@ -21,9 +21,9 @@ function input(value) {
 }
 
 class DiscussionService {
-  constructor({ dataDir, registry, production, getCatalog = () => [], hiddenSubscriptionModels = () => ({}), onEvent = () => {}, onError = () => {}, manager, adapters, platform = process.platform }) {
+  constructor({ dataDir, registry, production, getCatalog = () => [], hiddenSubscriptionModels = () => ({}), onEvent = () => {}, onError = () => {}, assertAvailable = () => {}, manager, adapters, platform = process.platform }) {
     this.onError = onError;
-    this.platform = platform; this.getCatalog = getCatalog; this.hiddenSubscriptionModels = hiddenSubscriptionModels; this.onEvent = onEvent;
+    this.platform = platform; this.getCatalog = getCatalog; this.hiddenSubscriptionModels = hiddenSubscriptionModels; this.onEvent = onEvent; this.assertAvailable = assertAvailable;
     this.root = path.join(dataDir, 'discussions');
     this.assets = new DiscussionAssets(this.root);
     this.manager = manager || new DiscussionManager({ dir: this.root });
@@ -112,6 +112,10 @@ class DiscussionService {
     // Adding a member, explicit verification and sending can check connections.
     // Loading a saved group never starts a check. Keep the user's text
     // uncommitted until every selected connection can actually answer.
+    const assertSelectedAvailable = () => {
+      for (const member of this.manager.get(id).participants.filter(p => participantIds.includes(p.id) && !p.removed)) this.assertAvailable(member.engine);
+    };
+    assertSelectedAvailable();
     if (!this.production || !participantIds.length) return dispatch();
     const pending = { id, participantIds: [...participantIds], cancelled: false };
     const token = randomUUID(); this.pendingStarts.set(token, pending); this.publish(id);
@@ -142,6 +146,7 @@ class DiscussionService {
         if (!this.capability(member).available) await this.production.verify(member);
       }
       if (pending.cancelled) throw new Error('Discussion cancelled');
+      assertSelectedAvailable();
       return dispatch();
     } finally { this.pendingStarts.delete(token); this.publish(id); }
   }
@@ -166,6 +171,7 @@ class DiscussionService {
     if (action === 'verify-binding') {
       const row = (await this.catalog()).find(row => row.id === payload.bindingId);
       if (!row || !this.production) throw new Error('This connection cannot be verified in this version.');
+      this.assertAvailable(row.binding.engine);
       await this.production.verify(row.binding);
       this.publish(null);
       return { bindings: await this.catalog() };
@@ -238,6 +244,7 @@ class DiscussionService {
       const row = (await this.catalog()).find(b => b.id === payload.bindingId);
       authorize();
       if (!row) throw new Error('This model or account is no longer available. Refresh the member list.');
+      this.assertAvailable(row.binding.engine);
       if (row.capability.supported === false) throw new Error(row.capability.detail);
       // Re-read after the asynchronous catalog lookup so concurrent additions
       // cannot both consume the last member slot.
@@ -288,6 +295,7 @@ class DiscussionService {
         if (results.some(r => r.status === 'rejected')) throw new Error('Some activities have not confirmed stopping. Try Stop again.');
       }
     } else if (action === 'resolve-serial') {
+      for (const member of state.participants.filter(p => !p.removed)) this.assertAvailable(member.engine);
       this.scheduler.resolveSerial(state.id, payload.deliveryId, payload.resolution, payload.actionId);
     } else if (action === 'retry') {
       const delivery = state.deliveries.find(d => d.id === payload.deliveryId);

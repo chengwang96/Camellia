@@ -231,6 +231,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
   }
   // pythonSelection is handed to engine launchers so the same interpreter
   // serves every harness; pythonState carries it to the settings page.
-  return { locate, ensure, state, setPath, setPython, pythonState, pythonSelection };
+  return { locate, ensure, state, setPath, setPython, pythonState, pythonSelection,
+    get busy() { return pending.size > 0 || changingPaths.size > 0; } };
 }
 module.exports = { ENGINES, createRuntimeManager, run };

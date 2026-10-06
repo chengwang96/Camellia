@@ -14,11 +14,12 @@ const { loadConfig, normalizeConfig, writeConfig } = require('../src/api/api-rou
 const { createLibraryManager } = require('../src/benchmark/libraries');
 const { BenchmarkRunner } = require('../src/benchmark/runner');
 const { TASKS, SUITES } = require('../src/benchmark/tasks');
+const { defaultDataDirectory } = require('../src/main/data-directory');
 
 async function main() {
   if (!process.argv.includes('--use-configured-api')) throw new Error('Pass --use-configured-api to authorize paid Ollama requests.');
   const appRoot = path.resolve(__dirname, '..');
-  const profile = path.join(process.env.APPDATA || path.join(os.homedir(), 'Library/Application Support'), 'dsh-desktop');
+  const profile = defaultDataDirectory();
   const desktop = JSON.parse(fs.readFileSync(path.join(profile, 'desktop-config.json'), 'utf8'));
   const original = loadConfig(path.join(desktop.dshHome || path.join(os.homedir(), '.dsh'), 'ollama-proxy.json'));
   const model = process.argv.find(arg => arg.startsWith('--model='))?.slice('--model='.length) || 'deepseek-v4.1-flash';

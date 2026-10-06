@@ -10,7 +10,10 @@ const { StringDecoder } = require('node:string_decoder');
 function probePort(host, port) {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
-    server.once('error', err => err.code === 'EADDRINUSE' ? resolve(null) : reject(err));
+    // Windows also reports EACCES for reserved or exclusively occupied ports.
+    // A denied ephemeral bind still signals a host-wide permission problem.
+    server.once('error', err => err.code === 'EADDRINUSE' || err.code === 'EACCES' && port !== 0
+      ? resolve(null) : reject(err));
     server.listen({ host, port, exclusive: true }, () => {
       const selected = server.address().port;
       server.close(err => err ? reject(err) : resolve(selected));
@@ -40,6 +43,7 @@ class BackendProcess {
   constructor({ spawn, log = () => {}, selectPort = pickPort, probe = requestPageStatus, pollMs = 700 }) {
     Object.assign(this, { spawn, log, selectPort, probe, pollMs });
     this.current = null;
+    this.children = new Set();
   }
 
   start(options) {
@@ -62,6 +66,14 @@ class BackendProcess {
       this.log(`spawning node="${options.exe}" args="${args.join(' ')}" DSH_HOME=${options.env.DSH_HOME}`);
       const proc = this.spawn(options.exe, args, { cwd: options.cwd, env: options.env, windowsHide: true });
       run.proc = proc;
+      const child = { proc };
+      child.exited = new Promise(resolve => {
+        const finish = () => { proc.off('exit', finish); proc.off('error', finish); resolve(); };
+        proc.once('exit', finish);
+        proc.once('error', finish);
+      });
+      this.children.add(child);
+      void child.exited.then(() => this.children.delete(child));
       let tail = '';
       for (const name of ['stdout', 'stderr']) {
         const decoder = new StringDecoder('utf8');
@@ -123,6 +135,19 @@ class BackendProcess {
     if (!run) return;
     run.abort.abort();
     try { if (run.proc && !run.proc.killed) run.proc.kill(); } catch { /* already gone */ }
+  }
+
+  async stopAndWait(timeoutMs = 10000) {
+    const children = [...this.children];
+    this.stop();
+    if (!children.length) return;
+    let timer;
+    try {
+      await Promise.race([
+        Promise.all(children.map(child => child.exited)),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('DSH settings backend did not stop before the update')), timeoutMs); }),
+      ]);
+    } finally { clearTimeout(timer); }
   }
 }
 

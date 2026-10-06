@@ -2,6 +2,14 @@ plugins {
     id 'com.android.application'
 }
 
+def releaseSigning = [
+    storeFile: System.getenv('CAMELLIA_ANDROID_KEYSTORE'),
+    storePassword: System.getenv('CAMELLIA_ANDROID_KEYSTORE_PASSWORD'),
+    keyAlias: System.getenv('CAMELLIA_ANDROID_KEY_ALIAS'),
+    keyPassword: System.getenv('CAMELLIA_ANDROID_KEY_PASSWORD'),
+]
+def releaseSigningConfigured = releaseSigning.values().every { it?.trim() }
+
 android {
     namespace 'app.camellia.mobile'
     compileSdk 35
@@ -26,10 +34,31 @@ android {
         language { enableSplit = false }
     }
 
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            release {
+                storeFile file(releaseSigning.storeFile)
+                storePassword releaseSigning.storePassword
+                keyAlias releaseSigning.keyAlias
+                keyPassword releaseSigning.keyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
+            if (releaseSigningConfigured) signingConfig signingConfigs.release
         }
+    }
+}
+
+tasks.matching { it.name == 'preReleaseBuild' }.configureEach {
+    doFirst {
+        if (!releaseSigningConfigured)
+            throw new GradleException('Release signing is required. Set CAMELLIA_ANDROID_KEYSTORE, CAMELLIA_ANDROID_KEYSTORE_PASSWORD, CAMELLIA_ANDROID_KEY_ALIAS, and CAMELLIA_ANDROID_KEY_PASSWORD.')
+        if (!file(releaseSigning.storeFile).isFile())
+            throw new GradleException('Release keystore file does not exist.')
     }
 }
 

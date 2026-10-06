@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'">
+  <title>Camellia</title>
+  <link rel="stylesheet" href="progress.css">
+  <script src="progress.js" defer></script>
+</head>
+<body>
+  <main>
+    <div class="brand">Camellia</div>
+    <h1 id="title">Moving your data</h1>
+    <p id="detail">Preparing the migration…</p>
+    <div class="phase"><strong id="stage"></strong><span id="step"></span></div>
+    <progress id="progress" max="100" aria-label="Migration progress"></progress>
+    <div class="metrics"><span id="count"></span><span id="elapsed"></span></div>
+    <div id="current" class="path"></div>
+    <div class="folders"><div id="source" class="path"></div><div id="destination" class="path"></div></div>
+    <footer><span id="hint"></span><button id="cancel" type="button">Cancel migration</button></footer>
+  </main>
+</body>
+</html>

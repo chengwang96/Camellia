@@ -126,8 +126,147 @@ with sync_playwright() as playwright:
         expect(restored.locator('.turn-body > .md')).to_have_text('Latest restored progress')
         expect(restored.locator('.execution-process .md')).to_have_text('Restored progress')
         expect(restored.locator('.tool-output')).to_have_text('Restored output')
+        page.evaluate("""() => {
+          emit({type:'result',subtype:'success'});
+          emit({type:'conversation:started',prompt:'Tagged reasoning',userSeq:8});
+          for (let index = 0; index < 11; index++) {
+            text(index, '<thinking>Reasoning segment ' + index + '</thinking>' + (index === 0 ? 'Tagged progress' : ''));
+            emit({type:'gui:tool',id:'tagged-' + index,name:'inspect',status:'completed',output:'Tagged output ' + index});
+          }
+          text(11, '<thinking>Final reasoning</thinking>Tagged final answer');
+        }""")
+        tagged = page.locator('.turn').last
+        expect(tagged.locator('.turn-body > .think')).to_have_count(0)
+        expect(tagged.locator('.execution-process')).to_have_count(1)
+        expect(tagged.locator('.think')).to_have_count(1)
+        expect(tagged.locator('.turn-body > .md')).to_have_text('Tagged final answer')
+        tagged.locator('summary').click()
+        tagged.locator('.think-head').click()
+        expect(tagged.locator('.think-body')).to_be_visible()
+        expect(tagged.locator('.think-body')).to_have_text('Final reasoning')
+        expect(tagged.locator('.tool-card')).to_have_count(11)
+        page.evaluate("emit({type:'result',subtype:'success'})")
+        expect(tagged.locator('.execution-process')).not_to_have_attribute('open', '')
+        expect(tagged.locator('.turn-body > .md')).to_have_text('Tagged final answer')
+        page.screenshot(path=str(preview / f'execution-process-tagged-{theme}.png'))
+        page.evaluate("""() => {
+          emit({type:'conversation:started',prompt:'Canonical tagged reasoning',userSeq:9});
+          emit({type:'assistant',message:{content:[
+            {type:'text',text:'<thinking>Canonical first reasoning</thinking>Canonical tagged progress'},
+            {type:'tool_use',id:'canonical-tagged',name:'verify',input:{}},
+            {type:'text',text:'<thinking>Canonical last reasoning</thinking>Canonical tagged answer'}
+          ]}});
+          emit({type:'result',subtype:'success'});
+        }""")
+        rebuilt = page.locator('.turn').last
+        expect(rebuilt.locator('.turn-body > .think')).to_have_count(0)
+        expect(rebuilt.locator('.think')).to_have_count(1)
+        expect(rebuilt.locator('.execution-process .think-body')).to_have_text('Canonical last reasoning')
+        expect(rebuilt.locator('.turn-body > .md')).to_have_text('Canonical tagged answer')
+        page.evaluate("""() => renderHistoryMessages([{role:'assistant',engine:'codex',outputBlocks:[
+          {phase:'commentary',text:'<thinking>Historical first reasoning</thinking>Historical progress'},
+          {phase:'final_answer',text:'<thinking>Historical final reasoning</thinking>Historical answer'}
+        ]}])""")
+        historical = page.locator('.turn').last
+        expect(historical.locator('.turn-body > .think')).to_have_count(0)
+        expect(historical.locator('.think')).to_have_count(1)
+        expect(historical.locator('.execution-process .think-body')).to_have_text('Historical final reasoning')
+        expect(historical.locator('.turn-body > .md')).to_have_text('Historical answer')
+        page.evaluate("""() => renderHistoryMessages([{role:'assistant',engine:'codex',
+          text:'<thinking>Legacy reasoning</thinking>Legacy answer'}])""")
+        legacy = page.locator('.turn').last
+        expect(legacy.locator('.turn-body > .think')).to_have_count(0)
+        expect(legacy.locator('.execution-process .think-body')).to_have_text('Legacy reasoning')
+        expect(legacy.locator('.turn-body > .md')).to_have_text('Legacy answer')
+        page.evaluate("""() => applyLiveRun({sessionId:'shared-fixture',engine:'codex',runId:903,prompt:'Restored tagged run',messages:[],events:[
+          {type:'stream_event',session_id:'shared-fixture',runId:903,event:{type:'content_block_start',index:0,content_block:{type:'text',text:'<thinking>Restored reasoning</thinking>Restored tagged answer'}}},
+          {type:'stream_event',session_id:'shared-fixture',runId:903,event:{type:'content_block_stop',index:0}}
+        ]})""")
+        tagged_restore = page.locator('.turn').last
+        expect(tagged_restore.locator('.turn-body > .think')).to_have_count(0)
+        expect(tagged_restore.locator('.execution-process .think-body')).to_have_text('Restored reasoning')
+        expect(tagged_restore.locator('.turn-body > .md')).to_have_text('Restored tagged answer')
+        page.evaluate("""() => {
+          emit({type:'result',subtype:'success',runId:903});
+          emit({type:'conversation:started',prompt:'Latest native reasoning',userSeq:10});
+          emit({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'thinking',thinking:'First native reasoning'}}});
+        }""")
+        native = page.locator('.turn').last
+        expect(native.locator('.think')).to_have_count(1)
+        expect(native.locator('.think-body')).to_have_text('First native reasoning')
+        native.locator('summary').click()
+        expect(native.locator('.think-body')).to_be_visible()
+        page.evaluate("""() => {
+          emit({type:'gui:tool',id:'native-tool',name:'inspect',status:'completed',output:'Native output'});
+          emit({type:'stream_event',event:{type:'content_block_start',index:1,content_block:{type:'thinking',thinking:'Latest native reasoning'}}});
+        }""")
+        expect(native.locator('.think')).to_have_count(1)
+        expect(native.locator('.think-body')).to_have_text('Latest native reasoning')
+        expect(native.locator('.think-body')).to_be_visible()
+        expect(native.locator('.tool-card')).to_have_count(1)
+        page.evaluate("""() => {
+          emit({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:' old delayed update'}}});
+          emit({type:'stream_event',event:{type:'content_block_stop',index:0}});
+          emit({type:'stream_event',event:{type:'content_block_delta',index:1,delta:{type:'thinking_delta',thinking:' updated'}}});
+        }""")
+        expect(native.locator('.think-body')).to_have_text('Latest native reasoning updated')
+        expect(native.locator('.think')).to_have_class('think open live')
+        page.evaluate("emit({type:'stream_event',event:{type:'content_block_stop',index:1}})")
+        expect(native.locator('.think')).to_have_class('think')
+        page.evaluate("text(2, '<thinking>Older tagged reasoning</thinking><thinking>Latest tagged reasoning</thinking>Mixed answer')")
+        expect(native.locator('.think')).to_have_count(1)
+        expect(native.locator('.think-body')).to_have_text('Latest tagged reasoning')
+        expect(native.locator('.turn-body > .md')).to_have_text('Mixed answer')
+        page.evaluate("""() => {
+          emit({type:'stream_event',event:{type:'content_block_start',index:3,content_block:{type:'thinking',thinking:'Newest native reasoning'}}});
+          emit({type:'stream_event',event:{type:'content_block_stop',index:3}});
+          text(4, 'Native final answer');
+          emit({type:'result',subtype:'success'});
+        }""")
+        expect(native.locator('.think')).to_have_count(1)
+        expect(native.locator('.think-body')).to_have_text('Newest native reasoning')
+        expect(native.locator('.turn-body > .md')).to_have_text('Native final answer')
+        previous_native = page.locator('.turn').nth(page.locator('.turn').count() - 1)
+        page.evaluate("""() => {
+          emit({type:'conversation:started',prompt:'Next reasoning turn',userSeq:11});
+          emit({type:'assistant',message:{content:[
+            {type:'thinking',thinking:'Older canonical native reasoning'},
+            {type:'text',text:'<thinking>Older canonical tagged reasoning</thinking>Next progress'},
+            {type:'tool_use',id:'next-tool',name:'verify',input:{}},
+            {type:'thinking',thinking:'Latest canonical native reasoning'},
+            {type:'text',text:'Next answer'}
+          ]}});
+          emit({type:'result',subtype:'success'});
+        }""")
+        next_turn = page.locator('.turn').last
+        expect(next_turn.locator('.think')).to_have_count(1)
+        expect(next_turn.locator('.think-body')).to_have_text('Latest canonical native reasoning')
+        expect(next_turn.locator('.turn-body > .md')).to_have_text('Next answer')
+        expect(previous_native.locator('.think')).to_have_count(1)
+        expect(previous_native.locator('.think-body')).to_have_text('Newest native reasoning')
+        next_turn.locator('summary').click()
+        next_turn.locator('.think-head').click()
+        expect(next_turn.locator('.think-body')).to_be_visible()
+        next_turn.screenshot(path=str(preview / f'execution-process-latest-{theme}.png'))
+        page.evaluate("""() => {
+          emit({type:'conversation:started',prompt:'Partial tagged reasoning',userSeq:12});
+          emit({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text',text:'<thinking>Previous streamed reasoning</thinking>'}}});
+        }""")
+        partial = page.locator('.turn').last
+        expect(partial.locator('.think-body')).to_have_text('Previous streamed reasoning')
+        page.evaluate("emit({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'<thinking>'}}})")
+        expect(partial.locator('.think')).to_have_count(1)
+        expect(partial.locator('.think-body')).to_be_empty()
+        page.evaluate("emit({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Latest streamed reasoning</thinking>Streamed answer'}}})")
+        expect(partial.locator('.think')).to_have_count(1)
+        expect(partial.locator('.think-body')).to_have_text('Latest streamed reasoning')
+        page.evaluate("""() => {
+          emit({type:'stream_event',event:{type:'content_block_stop',index:0}});
+          emit({type:'result',subtype:'success'});
+        }""")
+        expect(partial.locator('.turn-body > .md')).to_have_text('Streamed answer')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.close()
     browser.close()
     assert not errors, errors
-    print('PASS: live progress, chronological archive, keyboard toggle, tool updates, completion, stop, canonical rebuild, plain replies and localization in light/dark themes')
+    print('PASS: latest-only native/tagged reasoning, live updates, canonical rebuild, history, restoration, tools, completion, stop, plain replies and localization in light/dark themes')

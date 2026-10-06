@@ -73,7 +73,10 @@ async function main() {
     sent++;
     manager.active.get(conversation.id).permissions.set('fixture-approval', { requestId: 'fixture-approval', toolName: 'Test shell', input: { command: 'echo fixture' } });
     return true;
-  }, answerPermission() { answered++; return true; }, interrupt() { stopped++; } });
+  }, answerPermission() { answered++; return true; }, interrupt() {
+    stopped++;
+    manager.capture('codex', { type: 'result', conversationId: conversation.id, runId: this.gen, subtype: 'stopped', result: '' });
+  } });
   const subscribe = gateway.subscribe.bind(gateway);
   let listSubscriptions = 0;
   let addedConversation, listChanges = 0;

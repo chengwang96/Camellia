@@ -143,7 +143,11 @@ async function main() {
   await run(`localStorage.setItem('camellia-chat-draft:new:standalone', JSON.stringify({ attachments: [{path: ${JSON.stringify(draftAttachment)}}] }))`);
   await run("document.querySelector('[data-view=archived]').click()");
   assert.equal(await run("document.querySelector('#archivedPage').hidden"), false);
-  assert.equal(await run("document.querySelector('#storageSection').hidden"), false);
+  assert.equal(await run("document.querySelector('#dataPage').hidden"), true);
+  await run("document.querySelector('[data-view=data]').click()");
+  assert.equal(await run("document.querySelector('#dataPage').hidden"), false);
+  assert.equal(await run("document.querySelector('#archivedPage').hidden"), true);
+  assert.equal(await run("document.querySelector('#pageTitle').textContent"), 'Data & backups');
   assert.equal(await run("document.querySelector('#storageStatus').textContent"), 'No scan yet.');
   assert.equal(await run("document.querySelector('#cleanStorage').disabled"), true);
   await run("document.querySelector('#scanStorage').click()");

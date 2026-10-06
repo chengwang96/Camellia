@@ -83,8 +83,10 @@ function accountExhausted(engine, state) {
 
 function accountSignedIn(engine, state) {
   if (!state) return false;
-  if (engine === 'antigravity') return !state.error && !state.awaitingVerification
-    && (!state.verification || state.verification === 'verified') && Boolean(state.models?.length && state.verifiedAt);
+  // A failed model refresh keeps the last good catalog, so a 'stale-error'
+  // account is still signed in; only a signed-out or never-verified cache is not.
+  if (engine === 'antigravity') return !state.awaitingVerification
+    && ['verified', 'stale-error'].includes(state.verification) && Boolean(state.models?.length && state.verifiedAt);
   return Boolean(state.account);
 }
 
@@ -117,6 +119,7 @@ function accountSummary(engine, account, state = {}) {
   const detail = engine === 'codex' ? { email: state.account?.email || '', plan: state.account?.planType || '' }
     : engine === 'kimi' ? { email: state.account?.name || '', region: state.account?.region || '' } : {};
   return { id: account.id, label: account.label, active: false, signedIn: accountSignedIn(engine, state),
+    ...(engine === 'antigravity' && state.verification === 'stale' ? { stale: true } : {}),
     quotaWindows: engine === 'codex' ? rateLimitWindows(state.rateLimits).map(window => ({ usedPercent: window.usedPercent,
       label: !Number.isFinite(window.windowDurationMins) ? 'Usage' : window.windowDurationMins >= 1440 ? `${Math.round(window.windowDurationMins / 1440)}d` : `${window.windowDurationMins / 60}h`,
       resetsAt: window.resetsAt ? new Date(window.resetsAt * 1000).toISOString() : null })) : (state.usage?.latest?.windows || state.usage?.windows || []).map(window => ({ label: window.label, usedPercent: window.usedPercent, resetsAt: window.resetsAt })),

@@ -44,7 +44,7 @@ public class ComposerConsistencyTest extends InstrumentationTestCase {
         } finally { getInstrumentation().runOnMainSync(remote::finish); idle(); }
         assertEquals("The input, model and send elements must match in both modes", localRow[0], remoteRow[0]);
         assertEquals("Sol · 默认", localRow[1]);
-        assertEquals("The remote button shows the same abbreviation and localised level", "Sol · 进阶", remoteRow[1]);
+        assertEquals("The remote button shows the same abbreviation and localised level", "Sol · 高", remoteRow[1]);
         assertEquals("Idle tool icons must share one colour", localRow[2], remoteRow[2]);
     }
 

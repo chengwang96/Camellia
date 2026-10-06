@@ -39,15 +39,17 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
         <small>${esc(window.resetsAt ? t('Resets') + ' ' + date(window.resetsAt) + (reset ? ' · ' + reset : '') : t('Reset time unavailable'))}</small></div>`;
     }).join('');
     const heading = account.email || account.label || (account.signedIn && engine === 'antigravity' ? t('Google account') : t('Not signed in'));
-    const accountStatus = account.error ? 'error' : account.loginPending ? 'pending' : account.exhausted ? 'exhausted' : account.signedIn ? 'signed-in' : '';
+    const accountStatus = account.error ? 'error' : account.loginPending ? 'pending' : account.exhausted ? 'exhausted' : account.signedIn ? 'signed-in' : account.stale ? 'stale' : '';
     const note = typeof onLabel === 'function' ? account.label || t('No note')
       : account.models ? t('Available account models') + ' · ' + account.models : '';
     const badges = `${account.active ? `<span class="subscription-current">${esc(t('Current'))}</span>` : ''}<span class="subscription-plan${account.plan ? planClass(account.plan) : ''}">${esc(account.plan || (engine === 'codex' ? 'ChatGPT' : engine === 'antigravity' ? 'Google' : 'Kimi'))}</span>`;
-    const sessionActions = `${action('switch', 'Switch account', account.active || !account.signedIn, 'Use this account on the next message')}${engine === 'codex' ? action('wake', 'Wake account', !account.signedIn, 'Send 你好 once and refresh quota. Uses subscription allowance; does not reset an active window.') : ''}${!account.signedIn ? action('login', 'Sign in') : ''}${account.id === 'default' ? action('logout', 'Sign out', !account.signedIn) : action('remove', 'Remove account')}`;
+    const wake = engine === 'codex' || engine === 'kimi'
+      ? action('wake', 'Wake account', !account.signedIn, 'Send 你好 once and refresh quota. Uses subscription allowance; does not reset an active window.') : '';
+    const sessionActions = `${action('switch', 'Switch account', account.active || !account.signedIn, 'Use this account on the next message')}${wake}${!account.signedIn ? action('login', 'Sign in') : ''}${account.id === 'default' ? action('logout', 'Sign out', !account.signedIn) : action('remove', 'Remove account')}`;
     return `<article class="subscription-card${account.active ? ' active' : ''}" data-card-id="${esc(account.id)}">
       <header><strong title="${esc(heading)}">${esc(heading)}</strong><span class="subscription-badges">${badges}</span></header>
       <div class="subscription-identity-meta">
-        <p class="subscription-state ${accountStatus}"><i aria-hidden="true"></i>${esc(account.error || t(account.loginPending ? 'Waiting for sign-in' : account.signedIn ? account.exhausted ? 'Quota exhausted' : 'Signed in' : 'Not signed in'))}</p>
+        <p class="subscription-state ${accountStatus}"><i aria-hidden="true"></i>${esc(account.error || t(account.loginPending ? 'Waiting for sign-in' : account.signedIn ? account.exhausted ? 'Quota exhausted' : 'Signed in' : account.stale ? 'Previous verification expired. Verify again.' : 'Not signed in'))}</p>
         ${note ? `<span class="subscription-note-text${account.label ? '' : ' is-empty'}" title="${esc(note)}">${esc(note)}</span>` : ''}
       </div>
       <div class="subscription-meters">${quotas || `<p class="hint">${esc(t(account.signedIn ? 'Quota information is currently unavailable.' : 'Sign in to view quota'))}</p>`}</div>
@@ -58,7 +60,7 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
       <footer class="subscription-actions">
         <div class="subscription-actions-tools">
           ${typeof onLabel === 'function' ? action('edit', 'Edit note') : ''}
-          <button type="button" data-card-action="refresh" title="${esc(t('Refresh quota'))}" aria-label="${esc(t('Refresh quota'))}" ${!account.signedIn ? 'disabled' : ''}>${icon('refresh')}</button>
+          <button type="button" data-card-action="refresh" title="${esc(t('Refresh quota'))}" aria-label="${esc(t('Refresh quota'))}" ${!account.signedIn && !account.stale ? 'disabled' : ''}>${icon('refresh')}</button>
         </div>
         ${manage ? `<div class="subscription-actions-main">${sessionActions}</div>` : ''}
       </footer>

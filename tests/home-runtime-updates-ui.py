@@ -45,6 +45,11 @@ with sync_playwright() as playwright:
     badge.click()
     assert page.evaluate('calls.settings') == [{'page': 'engines', 'engine': 'claude', 'focus': 'updates'}]
     assert page.evaluate('calls.launches') == []
+    page.evaluate("rows[0].updating = true; runtimeChanged(structuredClone(rows))")
+    expect(page.locator('#enterClaude')).to_be_disabled()
+    expect(badge).to_be_hidden()
+    page.evaluate("rows[0].updating = false; runtimeChanged(structuredClone(rows))")
+    expect(badge).to_be_visible()
     page.locator('#enterClaude').click()
     expect(page.locator('#enterClaude')).to_be_enabled()
     assert page.evaluate('calls.launches') == ['claude']

@@ -7,6 +7,12 @@ code languages. Code copy and wrapping remain available. Unknown languages and
 code blocks over 50,000 characters remain plain code. Raw HTML is escaped; trusted
 TeX commands and external-resource commands are disabled. Mermaid is not included.
 
+Text-based previews read up to 20 MiB (20,971,520 bytes) from disk, including
+Markdown, HTML, source code, logs and structured data. Larger files show the
+available text with a truncation notice; the complete file can be opened with the
+system app. This bounds preview memory and rendering work without changing the
+file or limiting what the conversation engine can read through its own tools.
+
 ## LaTeX code blocks
 
 Chat blocks whose language is `latex`, `tex` or `ltx` get a formula button in the
@@ -27,7 +33,7 @@ citations, fonts and page layout are not produced.
 CSV and TSV files open as tables with a first-row header toggle, case-insensitive
 search and 100-row pages. Quoted delimiters, escaped quotes and multiline fields
 are supported. Parsing warnings are shown without executing cell contents. The
-table preview is limited to 20,000 rows and 200 columns within the existing 2 MiB
+table preview is limited to 20,000 rows and 200 columns within the 20 MiB
 text-read limit; it does not stream the full file from disk.
 
 JSON files open as collapsible trees. Expanding a node loads 100 children at a
@@ -54,6 +60,14 @@ results are taken from the file cache; formulas are never evaluated. Up to 30
 worksheets and the first 300 row positions / 50 columns are previewed, with a
 notice when data lies beyond the limits. Charts, conditional formatting, pivot
 tables and precise print layout remain unsupported.
+
+Legacy `.xls` workbooks use the same worksheet view. Because they are BIFF/OLE2
+binaries rather than ZIP archives, a small in-process reader walks the compound
+file and decodes shared strings, LABEL/LABELSST text, NUMBER, RK/MULRK, BOOLEAN,
+cached FORMULA results, number formats, bold/italic/underline fonts, cell fill
+and alignment, merged ranges, column widths, row heights and frozen panes. The
+same 30 worksheet / 300 row / 50 column limits apply, and unsupported containers
+fall back to the system-app message.
 
 ## Presentation previews
 
@@ -93,7 +107,14 @@ distinguishes it from Codex CLI, which has no visual file preview.
 No LibreOffice installation is required. Mermaid and optional PDF conversion
 remain separate future phases.
 
-Legacy `.doc`, `.ppt` and `.xls` files are OLE compound binaries rather than ZIP
-archives, so they cannot be parsed the way `.docx`/`.pptx`/`.xlsx` are. They are
-still listed as deliverables when a reply produces or links them, and open
-through the system app instead of an inline preview.
+Legacy `.doc` and `.ppt` files are OLE2 compound binaries rather than ZIP
+archives, so they cannot be parsed the way `.docx`/`.pptx` are. Each has a
+dedicated in-process reader instead. Word 97-2003 (`.doc`) decodes the FIB
+header and the CLX piece table, then reads the compressed 8-bit and uncompressed
+UTF-16 text runs, so body paragraphs and table cells render as text and tables;
+bold/italic, images and exact pagination are not reproduced. PowerPoint 97-2003
+(`.ppt`) walks the `PowerPoint Document` record tree, groups the slide
+containers, and lists each slide's readable text; layout, themes and images are
+not reproduced. Both keep the `document` kind, so artifact ordering and the
+remote file list are unchanged, and unsupported containers fall back to the
+system-app message.

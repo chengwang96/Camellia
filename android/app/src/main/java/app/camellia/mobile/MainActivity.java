@@ -978,11 +978,12 @@ public final class MainActivity extends Activity {
         codeInput = input(fields, tr("一次性配对码", "One-time pairing code"), "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
         codeInput.setTag("pairCode"); codeInput.setHint(tr("24 位配对码", "24-character code"));
         codeInput.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(24)});
-        nameInput = input(fields, tr("本机名称", "This phone's name"), credentials.optString("name", MobilePreferences.deviceName(this)), InputType.TYPE_CLASS_TEXT);
+        nameInput = input(fields, tr("本机名称", "This phone's name"), MobilePreferences.deviceName(this), InputType.TYPE_CLASS_TEXT);
         nameInput.setTag("pairName"); nameInput.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(80)});
         if (pairingDraft != null) {
             addressInput.setText(pairingDraft.getString("address", "")); portInput.setText(pairingDraft.getString("port", "43127"));
-            codeInput.setText(pairingDraft.getString("code", "")); nameInput.setText(pairingDraft.getString("name", MobilePreferences.deviceName(this)));
+            codeInput.setText(pairingDraft.getString("code", ""));
+            if (pairingDraft.getBoolean("customName", false)) nameInput.setText(pairingDraft.getString("name", MobilePreferences.deviceName(this)));
         }
         style.note(content, tr("请求发出后，在电脑端确认授权即可连接。", "After sending the request, approve it on your computer to connect."));
         status.setTextSize(13); status.setTextColor(style.secondary); status.setPadding(dp(8), dp(8), dp(8), dp(4));
@@ -999,7 +1000,7 @@ public final class MainActivity extends Activity {
     }
 
     private void addComputer() {
-        persistDraft(); stopNetwork(); credentials = new JSONObject(); pairScreen();
+        persistDraft(); pairingDraft = null; stopNetwork(); credentials = new JSONObject(); pairScreen();
     }
 
     private void showComputerPicker() {
@@ -1047,6 +1048,7 @@ public final class MainActivity extends Activity {
         pairingDraft = new Bundle();
         pairingDraft.putString("address", addressInput.getText().toString()); pairingDraft.putString("port", portInput.getText().toString());
         pairingDraft.putString("name", nameInput.getText().toString()); pairingDraft.putString("code", codeInput.getText().toString());
+        pairingDraft.putBoolean("customName", !nameInput.getText().toString().trim().equals(MobilePreferences.deviceName(this)));
     }
 
     private void setPairingBusy(boolean busy) {

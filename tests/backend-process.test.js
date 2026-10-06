@@ -26,6 +26,41 @@ test('port selection skips a non-HTTP TCP listener and supports an ephemeral por
   await assert.rejects(pickPort({ host: '127.0.0.1', port: 65536 }), /between 0 and 65535/);
 });
 
+test('port selection skips a port denied by the operating system', async t => {
+  const attempted = [];
+  t.mock.method(net, 'createServer', () => {
+    const server = new EventEmitter();
+    let selected;
+    server.listen = ({ port }, ready) => {
+      selected = port; attempted.push(port);
+      queueMicrotask(() => port === 19097
+        ? server.emit('error', Object.assign(new Error('reserved port'), { code: 'EACCES' }))
+        : ready());
+      return server;
+    };
+    server.address = () => ({ port: selected });
+    server.close = done => done();
+    return server;
+  });
+  assert.equal(await pickPort({ host: '127.0.0.1', port: 19097 }), 19098);
+  assert.deepEqual(attempted, [19097, 19098]);
+});
+
+test('port selection preserves denied ephemeral binds and invalid host errors', async t => {
+  let code = 'EACCES';
+  t.mock.method(net, 'createServer', () => {
+    const server = new EventEmitter();
+    server.listen = () => {
+      queueMicrotask(() => server.emit('error', Object.assign(new Error('bind failed'), { code })));
+      return server;
+    };
+    return server;
+  });
+  await assert.rejects(pickPort({ host: '127.0.0.1', port: 0 }), { code: 'EACCES' });
+  code = 'EADDRNOTAVAIL';
+  await assert.rejects(pickPort({ host: 'invalid-host', port: 19097 }), { code });
+});
+
 test('concurrent and repeated starts reuse one process; an old exit cannot clear its replacement', async t => {
   const f = fixture(t);
   const first = f.backend.start(f.options);
@@ -48,6 +83,33 @@ test('stop during port selection cancels startup before any process can spawn', 
   f.backend.stop(); release(19097);
   await assert.rejects(pending, { name: 'AbortError' });
   assert.equal(f.processes.length, 0);
+});
+
+test('stopAndWait waits for the backend to exit before replacing its files', async t => {
+  const f = fixture(t);
+  await f.backend.start(f.options);
+  let completed = false;
+  const stopping = f.backend.stopAndWait(1000).then(() => { completed = true; });
+  await Promise.resolve();
+  assert.equal(f.processes[0].killed, true);
+  assert.equal(completed, false);
+  f.processes[0].emit('exit', 0, 'SIGTERM');
+  await stopping;
+  assert.equal(completed, true);
+});
+
+test('stopAndWait also waits for a failed startup process that is still exiting', async t => {
+  const f = fixture(t, { probe: async () => { throw new Error('probe failed'); } });
+  await assert.rejects(f.backend.start(f.options), /probe failed/);
+  assert.equal(f.backend.current, null);
+  let completed = false;
+  const stopping = f.backend.stopAndWait(1000).then(() => { completed = true; });
+  await Promise.resolve();
+  assert.equal(completed, false);
+  f.processes[0].emit('exit', 0, 'SIGTERM');
+  await stopping;
+  assert.equal(completed, true);
+  assert.equal(f.backend.children.size, 0);
 });
 
 test('timeout kills the failed backend and allows a fresh startup', async t => {

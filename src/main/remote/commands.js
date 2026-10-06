@@ -141,7 +141,7 @@ class RemoteCommands {
         const conversation = this.authorize(deviceId, target.id);
         if (conversation.seq !== target.seq || manager.busy(target.id)) fail(409, 'Conversation changed or busy; refresh before operating');
         let result = { ok: true };
-        if (payload.action === 'delete') result = await manager.workspaces.removeSession(target.id);
+        if (payload.action === 'delete') result = await manager.deleteConversation(target.id);
         else if (payload.action === 'rename') result = await manager.command(conversation.currentEngine, 'rename-session', { id: target.id, title: payload.title.trim() });
         else if (Boolean(manager.workspaces.sessionMeta().pinned[target.id]) !== payload.pinned)
           result = await manager.command(conversation.currentEngine, 'meta-op', { op: 'toggle-pin', sessionId: target.id });

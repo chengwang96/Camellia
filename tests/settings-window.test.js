@@ -16,13 +16,19 @@ test('the settings window is created hidden and centered so it never flashes at 
 });
 
 test('the settings window is not shown before its renderer has painted', () => {
-  const showCalls = [...openSettings.matchAll(/settingsWindow\.show\(\)/g)];
+  const showCalls = [...openSettings.matchAll(/(?:existingSettingsWindow|settingsWindow)\.show\(\)/g)];
   assert.equal(showCalls.length, 2, 'shown only for an existing window and from ready-to-show');
   const existing = openSettings.indexOf('if (settingsWindow && !settingsWindow.isDestroyed()) {');
   const ready = openSettings.indexOf("once('ready-to-show'");
   assert.ok(existing < showCalls[0].index && existing < ready);
   assert.ok(showCalls[1].index > ready, 'the creation path shows the window from ready-to-show only');
   assert.ok(openSettings.indexOf('loadFile') > ready);
+});
+
+test('navigation to an existing settings window waits for its renderer to finish loading', () => {
+  assert.match(openSettings, /const existingSettingsWindow = settingsWindow;/);
+  assert.match(openSettings, /if \(existingSettingsWindow\.webContents\.isLoading\(\)\) existingSettingsWindow\.webContents\.once\('did-finish-load', navigate\);/);
+  assert.match(openSettings, /existingSettingsWindow\.webContents\.send\('dsh:settings-navigate', target\);/);
 });
 
 test('the main window keeps the same hidden-until-ready pattern', () => {

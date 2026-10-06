@@ -1,6 +1,5 @@
 """Model chips and catalog selection persist without restoring preset defaults."""
 import json
-import time
 from pathlib import Path
 import subprocess
 from playwright.sync_api import sync_playwright, expect
@@ -32,17 +31,18 @@ bridge = """(() => {
     ? () => () => {} : async payload => (await window.testRpc(method, payload)).result });
 })();"""
 
-def wait_models(provider_type, expected_ids):
-    """Provider edits save on change; poll the stored state, not the transient toast."""
-    last = None
-    for _ in range(60):
-        state = rpc('apiRouterGetState')['result']
-        provider = next((item for item in state['providers'] if item['type'] == provider_type), None)
-        last = [model['id'] for model in provider['models']] if provider else None
-        if provider and [model['id'] for model in provider['models']] == expected_ids:
-            return provider['models']
-        time.sleep(0.1)
-    raise AssertionError(f'provider {provider_type} never reached {expected_ids}, saw {last}')
+def wait_models(page, provider_type, expected_ids):
+    models = page.evaluate("""async ({ type, ids }) => {
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline) {
+        const state = await window.dshDesktop.apiRouterGetState();
+        const provider = state.providers.find(item => item.type === type);
+        if (provider && JSON.stringify(provider.models.map(model => model.id)) === JSON.stringify(ids)) return provider.models;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      throw new Error('Models were not saved automatically');
+    }""", {'type': provider_type, 'ids': expected_ids})
+    return models
 
 try:
     with sync_playwright() as playwright:
@@ -66,8 +66,7 @@ try:
             page.get_by_role('button', name='Remove model mimo-v2.6-flash', exact=True).click()
             expect(page.locator('#modelChips .model-chip')).to_have_count(1)
             expect(page.locator('#modelChips')).not_to_contain_text('mimo-v2.6-flash')
-            page.locator('#refresh').click()
-            wait_models(provider_type, ['mimo-v2.6-pro'])
+            wait_models(page, provider_type, ['mimo-v2.6-pro'])
             page.locator('#backProviders').click()
 
         page.locator('[data-select]').first.click()
@@ -95,14 +94,11 @@ try:
         page.locator('#applyModels').click()
         expect(page.locator('#modelChips')).not_to_contain_text('mimo-v2.6-flash')
         expect(page.locator('#modelChips')).to_contain_text('manual-model')
-        # Refresh flushes the pending change, so the read below is deterministic.
-        page.locator('#refresh').click()
-        models = wait_models('mimo', ['mimo-v2.6-pro', 'manual-model'])
+        models = wait_models(page, 'mimo', ['mimo-v2.6-pro', 'manual-model'])
         assert models[0]['contextWindow'] == 65536
         page.get_by_role('button', name='Remove model mimo-v2.6-pro', exact=True).click()
         page.get_by_role('button', name='Remove model manual-model', exact=True).click()
-        page.locator('#refresh').click()
-        wait_models('mimo', [])
+        wait_models(page, 'mimo', [])
         assert errors == [], errors
         browser.close()
     print('PASS model removal: chips, catalog, cancellation, search, metadata and persistence')

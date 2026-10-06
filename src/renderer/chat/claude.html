@@ -145,6 +145,7 @@
 
 <!-- Task questions wait for an explicit answer, independently of tool permissions. -->
 <dialog id="questionDialog" class="question-dialog" aria-labelledby="questionTitle" aria-describedby="questionHint"></dialog>
+<dialog id="textChoiceDialog" class="question-dialog" aria-labelledby="textChoiceTitle" aria-describedby="textChoiceHint"></dialog>
 
 <!-- Permission modal (P3): answers can_use_tool control requests -->
 <dialog id="permissionBlockedDialog" class="switch-dialog" aria-labelledby="permissionBlockedTitle">
@@ -284,11 +285,13 @@
 <script src="./html-preview.js"></script>
 <script src="../shared/chat-mode-select.js"></script>
 <script src="../shared/chat-controls.js"></script>
+<script src="../shared/assistant-choice.js"></script>
 <script src="../shared/file-preview-panel.js"></script>
 <script src="../shared/message-markdown.js"></script>
 <script src="../discussions/discussions-rich.js"></script>
 <script src="../discussions/discussions.js"></script>
 <script src="../shared/discussion-surface.js"></script>
+<script src="../../shared/thinking-tags.js"></script>
 <script src="./claude.js"></script>
 </body>
 </html>

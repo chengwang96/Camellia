@@ -66,7 +66,7 @@ window.CamelliaFilePreview = { create({ fileViewer, inputCard, mdRender, setStat
       }
       if (file.truncated) {
         const notice = document.createElement('p'); notice.className = 'file-preview-notice';
-        notice.dataset.i18n = ''; notice.textContent = 'Text preview is limited to the first 2 MB.';
+        notice.dataset.i18n = ''; notice.textContent = 'Text preview is limited to the first 20 MB.';
         body.appendChild(notice);
       }
     } else if (file.kind === 'image') {

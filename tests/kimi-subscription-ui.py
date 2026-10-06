@@ -17,9 +17,11 @@ def rpc(method, payload=None):
         raise RuntimeError(response['error'])
     return response['result']
 
-bridge = """window.camelliaDevices = { onEvent: () => () => {}, onTransfer: () => () => {}, call: async () => ({ok:true,result:{}}) };
+bridge = """window.wakeCalls = 0;
+window.camelliaDevices = { onEvent: () => () => {}, onTransfer: () => () => {}, call: async () => ({ok:true,result:{}}) };
 window.dshDesktop = new Proxy({}, {get: (_, method) => {
   if (method === 'providerRefresh') return payload => { window.lastQuotaRefresh = payload; return window.testRpc('providerInsights'); };
+  if (method === 'kimiAccountWake') return async () => { window.wakeCalls++; const state = await window.testRpc('kimiAccountState'); return {...state, wakeSent:true}; };
   if (method === 'onKimiAccount') return fn => {window.deliverKimiAccount = fn; return () => {};};
   if (method === 'onProviderInsights') return fn => {window.deliverInsights = fn; return () => {};};
   if (method.startsWith('on')) return () => () => {};
@@ -52,6 +54,13 @@ try:
             page.locator('#kimiUsage').click()
             expect(page.locator('#status')).to_contain_text('Account status updated.')
             assert page.evaluate('lastQuotaRefresh') == {'subscriptionId': 'kimi:default'}
+            # The Kimi card offers the same explicit wake action as Codex, so a
+            # user can send one greeting through the subscription on demand.
+            wake = card.locator('[data-card-action=wake]')
+            expect(wake).to_be_enabled()
+            wake.click()
+            expect(page.locator('#status')).to_contain_text('Greeting sent')
+            assert page.evaluate('wakeCalls') == 1
             expect(page.locator('#balanceDetail')).to_have_count(0)
             expect(card.locator('.subscription-meter strong')).to_have_text(['72%', '90%'])
             expect(card).not_to_contain_text('$0')

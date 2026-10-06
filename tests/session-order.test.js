@@ -197,8 +197,8 @@ test('completed agent replies promote their conversation within its current grou
   const { harness, shared, command, workspace } = fixture(context);
   shared.prepare = async () => {};
   const group = workspace('Replies');
-  const first = shared.create('codex', group.id, 'First');
-  const second = shared.create('codex', group.id, 'Second');
+  const first = shared.create('claude', group.id, 'First');
+  const second = shared.create('claude', group.id, 'Second');
   assert.deepEqual((await command('list-sessions')).sessions.filter(session => session.workspaceId === group.id).map(session => session.id), [second.id, first.id]);
   const sent = await harness.call('conversation-command', { engine: 'claude', action: 'send', payload: { sessionId: first.id, prompt: 'Reply to this conversation' } });
   assert.equal(sent.ok, true, sent.error);

@@ -1,6 +1,6 @@
 # Camellia for Android
 
-Camellia's Android client is a native Java/View application for Android 8.0 (API 26) and newer. It has local provider chat and a separate remote-control view for paired desktop conversations. The current debug build is `1.0.0` (`versionCode` 79); the deliverable, when built, is `dist/Camellia-Android-1.0.0-debug.apk`. Debug packages are test builds signed with the development key, not store releases.
+Camellia's Android client is a native Java/View application for Android 8.0 (API 26) and newer. It has local provider chat and a separate remote-control view for paired desktop conversations. The current release is `1.0.0` (`versionCode` 79). The signed release package is `dist/Camellia-Android-1.0.0.apk`; packages ending in `-debug.apk` are development builds.
 
 ## Local chat
 
@@ -33,6 +33,27 @@ The phone stores device tokens and pending command IDs using Android Keystore AE
 When a remote operation has no confirmed receipt, inspect its status and retry with the **same request ID**. A timeout does not prove the host never executed it. An approval is tied to the host instance, conversation/group, run, request ID, and content fingerprint; a stale approval cannot authorize a later run.
 
 ## Build and test
+
+### Signed release APK
+
+On Windows, create a signing key once and build the release APK from the repository root:
+
+```powershell
+.\scripts\create-android-release-key.ps1
+.\scripts\build-android-release.ps1
+```
+
+The build script rebuilds the Tailnet library, runs `assembleRelease`, verifies the APK signature and non-debuggable manifest, and exports the APK and its SHA-256 checksum to `dist/`. Later releases must use the **same signing key**. The key and its Windows user-encrypted password are kept in `%USERPROFILE%\.camellia\android-signing\`, outside the repository. Back up the keystore and its password in a secure place: the encrypted password file can only be opened by the current Windows user. To recover the password for backup, run the following locally and store its output in a password manager:
+
+```powershell
+Get-Content "$env:USERPROFILE\.camellia\android-signing\password.dpapi" -Raw |
+  ConvertTo-SecureString |
+  ForEach-Object { [System.Net.NetworkCredential]::new('', $_).Password }
+```
+
+For a different build machine, provide `CAMELLIA_ANDROID_KEYSTORE`, `CAMELLIA_ANDROID_KEYSTORE_PASSWORD`, `CAMELLIA_ANDROID_KEY_ALIAS`, and `CAMELLIA_ANDROID_KEY_PASSWORD` as environment variables. An installed debug build uses a different signing key and cannot be upgraded in place to the release build; back up its local data before replacing it.
+
+### Debug build and tests
 
 On Windows, prepare the pinned Tailnet JNI dependency before Gradle:
 

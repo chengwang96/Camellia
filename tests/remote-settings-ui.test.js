@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 for (const file of ['settings/api-settings.html', 'remote/remote.html']) {
-  test(`${file} keeps connection details collapsed and pairing warning visible`, () => {
+  test(`${file} keeps connection details collapsed and pairing progress accessible`, () => {
     const html = fs.readFileSync(path.join(__dirname, '../src/renderer', file), 'utf8');
     const help = html.match(/<details class="mobile-help">([\s\S]*?)<\/details>/);
     assert.ok(help);
@@ -15,9 +15,12 @@ for (const file of ['settings/api-settings.html', 'remote/remote.html']) {
     }
     assert.match(help[1], /id="(?:mobile-)?lifetime"/);
     const primary = html.replace(help[0], '');
-    assert.match(primary, /<p[^>]*data-copy="scope"/);
     assert.match(primary, /<button[^>]*data-copy="generate"/);
     assert.match(primary, /id="(?:mobile-)?networkState"[^>]*role="status"/);
+    assert.match(primary, /id="(?:mobile-)?pairPending"[^>]*role="status"[^>]*hidden/);
+    assert.match(primary, /id="(?:mobile-)?pair-success"[^>]*role="status"[^>]*hidden/);
+    assert.match(primary, /data-copy="pairWaiting"/);
+    assert.match(primary, /data-copy="pairSuccess"/);
     assert.doesNotMatch(primary, /data-copy="(?:network|footer|logout)"/);
   });
 }
@@ -37,7 +40,6 @@ test('settings navigation offers CLI devices directly below mobile access', () =
   const script = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.js'), 'utf8');
   assert.match(script, /devices: \["CLI devices"/);
   assert.match(script, /window\.cliDevicesUI\?\.setVisible\(next === 'devices'\)/);
-  assert.match(script, /if \(view === 'devices'\) return window\.cliDevicesUI\?\.refresh\(\)/);
   assert.doesNotMatch(script, /showCliDevices|devicesSurface|openCliDevices\(\)/);
   const messages = fs.readFileSync(path.join(__dirname, '../src/shared/i18n-messages.js'), 'utf8');
   assert.match(messages, /"CLI devices": "CLI 设备"/);

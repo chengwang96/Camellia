@@ -31,10 +31,13 @@ const API_ENV = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GEMINI_BASE_URL',
 function subscriptionEnvironment(env, proxyUrl = '') {
   const next = { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' };
   for (const key of Object.keys(next)) if (API_ENV.includes(key.toUpperCase())) delete next[key];
-  const proxy = env.CAMELLIA_NETWORK_MODE ? env.CAMELLIA_NETWORK_PROXY || '' : proxyUrl || systemProxy();
-  if (proxy) {
+  const managedNetwork = env.CAMELLIA_NETWORK_MODE !== undefined;
+  const proxy = managedNetwork
+    ? (env.CAMELLIA_SUBSCRIPTION_PROXY ?? env.CAMELLIA_NETWORK_PROXY ?? '')
+    : proxyUrl || systemProxy();
+  if (managedNetwork || proxy) {
     for (const key of Object.keys(next)) if (/^(https?_proxy|all_proxy|no_proxy)$/i.test(key)) delete next[key];
-    Object.assign(next, { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, NO_PROXY: 'localhost,127.0.0.1,::1' });
+    Object.assign(next, { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, ALL_PROXY: '', NO_PROXY: proxy ? 'localhost,127.0.0.1,::1' : '*' });
   }
   return next;
 }
@@ -138,10 +141,34 @@ function runCli(file, args, { env, cwd, timeout = 45000 }) {
     proc.once('error', error => { clearTimeout(timer); reject(error); });
     proc.once('close', code => {
       clearTimeout(timer);
-      if (code !== 0) reject(new Error(errors.trim() || output.trim() || `Antigravity CLI exited (${code})`));
+      if (code !== 0) reject(new Error(describeCliFailure(errors, output, code)));
       else resolve(output);
     });
   });
+}
+
+// A headless run that cannot use the stored credential stops instead of
+// opening a browser. Report that as a normal sign-in problem so the account
+// card offers the same "sign in again" guidance as any rejected credential.
+function describeCliFailure(errors, output, code) {
+  const text = (errors || '').trim() || (output || '').trim();
+  if (/headless auth|no valid auth/i.test(text)) return 'Google sign-in has expired or is invalid. Sign in again and retry.';
+  return text || `Antigravity CLI exited (${code})`;
+}
+
+function isProfilePictureFailure(error) {
+  return /profile picture/i.test(String(error || ''));
+}
+
+// Background quota and model checks run print mode with no terminal. Their
+// silent auth reads the OS credential store; when that read stalls the CLI
+// falls back to an interactive sign-in that opens a Google page in the
+// browser. That is wrong for an unattended refresh, so these runs stay
+// headless and fail fast instead, letting the next scheduled attempt succeed
+// without interrupting the user. Only the background calls opt in; the
+// sign-in script still launches the CLI interactively.
+function headlessEnvironment(env) {
+  return { ...env, AGY_CLI_NONINTERACTIVE_HEADLESS: 'true' };
 }
 
 // The official CLI owns the Google credential, so quota is read through its
@@ -172,6 +199,7 @@ function normalizeGoogleQuota(groups) {
   return { balances: [], windows, modelUsage: [] };
 }
 function parseGoogleQuota(output) {
+  if (isProfilePictureFailure(output)) throw new Error('Google account profile picture unavailable.');
   let parsed;
   try { parsed = JSON.parse(String(output).trim()); } catch { throw new Error('The official CLI returned an unreadable quota response.'); }
   const groups = parsed?.command?.data?.groups;
@@ -210,13 +238,22 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
   const writeUsage = patch => { const next = { ...readUsage(), ...patch }; writeJson(usageFile, next); return next; };
   const state = () => {
     const cached = { models: [], verifiedAt: null, error: '', ...readJson(cacheFile, {}) };
+    if (isProfilePictureFailure(cached.error)) cached.error = '';
     const checkedAt = new Date(cached.verifiedAt).getTime();
-    const verification = cached.error ? 'error' : cached.awaitingVerification ? 'pending'
+    // A failed refresh records its error but keeps the last good catalog, so a
+    // signed-in account never degrades into "no models": the composer would lose
+    // its list even though the CLI still knows it. Such a cache reads as an
+    // error above a still-usable model list rather than as an unverified account.
+    const verification = cached.error ? (cached.models.length && Number.isFinite(checkedAt) ? 'stale-error' : 'error') : cached.awaitingVerification ? 'pending'
       : !cached.models.length || !cached.verifiedAt || !Number.isFinite(checkedAt) ? 'unverified'
       : now() - checkedAt >= 24 * 60 * 60 * 1000 ? 'stale' : 'verified';
     // Grouping is idempotent, so a cache written before families existed is
     // upgraded on read instead of waiting for the next manual refresh.
     const usage = readUsage();
+    if (isProfilePictureFailure(usage.error)) {
+      usage.error = null;
+      if (!usage.latest) usage.status = null;
+    }
     return { ...cached, models: groupModels(cached.models), verification, usage: { ...usage, refreshing: Boolean(quotaPending) },
       installed: Boolean(runtime().locate('antigravity', 'subscription')) };
   };
@@ -233,7 +270,7 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
         requireGoogleProvider(cliSettingsFile);
         fs.mkdirSync(home, { recursive: true });
         // The structured command response never starts an agent turn.
-        const output = await run(found.file, ['-p', '/quota', '--output-format', 'json'], { env: subscriptionEnvironment(environment(), settings().proxyUrl), cwd: home });
+        const output = await run(found.file, ['-p', '/quota', '--output-format', 'json'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home });
         const result = parseGoogleQuota(output);
         if (version !== accountVersion) return;
         const latest = { ...result, at: checkedAt }, previous = readUsage();
@@ -243,6 +280,11 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
       } catch (error) {
         if (version !== accountVersion) return;
         const previous = readUsage();
+        if (isProfilePictureFailure(error)) {
+          writeUsage({ status: previous.latest ? 'stale' : null, latest: previous.latest, history: previous.history,
+            checkedAt: previous.checkedAt, error: null });
+          return;
+        }
         // Keep the last successful reading visible; the error explains the failure.
         writeUsage({ status: previous.latest ? 'stale' : 'error', latest: previous.latest, history: previous.history,
           checkedAt, error: error.message || 'Could not load Google quota. Check the connection and retry.' });
@@ -262,12 +304,27 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
       const found = runtime().locate('antigravity', 'subscription');
       if (!found) throw new Error('Download the Antigravity Google subscription runtime first.');
       requireGoogleProvider(cliSettingsFile);
-      const output = await run(found.file, ['models'], { env: subscriptionEnvironment(environment(), settings().proxyUrl), cwd: home });
+      const output = await run(found.file, ['models'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home });
       const models = groupModels(parseModels(output));
-      if (!models.length) throw new Error('The Google account returned no available models.');
+      if (!models.length) {
+        if (isProfilePictureFailure(output)) throw new Error('Google account profile picture unavailable.');
+        throw new Error('The Google account returned no available models.');
+      }
       writeJson(cacheFile, { models, verifiedAt: now(), error: '', awaitingVerification: false });
     } catch (error) {
-      writeJson(cacheFile, { models: [], verifiedAt: null, error: error.message, awaitingVerification: false });
+      // Keep the models and verification time the account already proved. Only a
+      // successful refresh replaces the catalog; a transient network or CLI
+      // failure must not wipe it, or every retry would look identical to a
+      // signed-out account and the saved model would become unselectable.
+      const previous = readJson(cacheFile, {});
+      if (isProfilePictureFailure(error)) {
+        writeJson(cacheFile, { models: previous.models || [], verifiedAt: previous.verifiedAt ?? null,
+          error: '', awaitingVerification: false });
+        onChange();
+        return state();
+      }
+      writeJson(cacheFile, { models: previous.models || [], verifiedAt: previous.verifiedAt ?? null,
+        error: error.message, awaitingVerification: false });
       onChange();
       throw error;
     }
@@ -289,7 +346,9 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
     fs.mkdirSync(home, { recursive: true });
     const file = path.join(home, process.platform === 'win32' ? 'google-sign-in.ps1' : 'google-sign-in.command');
     const env = environment();
-    loginScript(file, { platform: process.platform, exe: found.file, proxyUrl: env.CAMELLIA_NETWORK_MODE ? env.CAMELLIA_NETWORK_PROXY : settings().proxyUrl, networkMode: env.CAMELLIA_NETWORK_MODE });
+    loginScript(file, { platform: process.platform, exe: found.file,
+      proxyUrl: env.CAMELLIA_NETWORK_MODE ? env.CAMELLIA_SUBSCRIPTION_PROXY ?? env.CAMELLIA_NETWORK_PROXY : settings().proxyUrl,
+      networkMode: env.CAMELLIA_NETWORK_MODE });
     await openLogin(file, subscriptionEnvironment(environment(), settings().proxyUrl));
     // A new CLI sign-in can select a different account. Neither saved quota
     // nor an in-flight response from the old sign-in belongs to that account.
@@ -303,4 +362,4 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
   return { state, refresh, refreshUsage, signIn };
 }
 
-module.exports = { createGoogleAccount, subscriptionEnvironment, systemProxy, parseModels, parseGoogleQuota, normalizeGoogleQuota, groupModels, normalizeSelection, effectiveSelection, runCli, requireGoogleProvider, loginScript };
+module.exports = { createGoogleAccount, subscriptionEnvironment, systemProxy, parseModels, parseGoogleQuota, normalizeGoogleQuota, groupModels, normalizeSelection, effectiveSelection, runCli, requireGoogleProvider, loginScript, headlessEnvironment, describeCliFailure, isProfilePictureFailure };

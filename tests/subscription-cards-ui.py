@@ -32,7 +32,7 @@ window.dshDesktop=new Proxy({}, {get:(_,method)=>method.startsWith('on')?fn=>{ac
  if(method==='antigravityAccountState')return window.mockGoogle ||= await window.testRpc(method,args[0]);
  if(method==='antigravityAccountRefreshUsage'){
    mockGoogle.usage.status=window.failGoogleQuota?'stale':'ok';
-   mockGoogle.usage.error=window.failGoogleQuota?'Could not load Google quota. Check the connection and retry.':null;
+   mockGoogle.usage.error=window.failGoogleAvatar?'Google account profile picture unavailable.':window.failGoogleQuota?'Could not load Google quota. Check the connection and retry.':null;
    accountListeners.onAntigravityAccount(mockGoogle);
    return mockGoogle;
  }
@@ -95,10 +95,14 @@ try:
         assert_card_layout(cards)
         google=page.locator('#googleAccountList')
         expect(google.locator('.subscription-card')).to_have_count(1)
+        expect(page.locator('#googleSignIn, #googleRefresh')).to_have_count(0)
+        expect(page.locator('#googleAccountPanel > .account-actions')).to_have_count(0)
         expect(google.locator('.subscription-meter')).to_have_count(4)
         expect(google.locator('.subscription-meter strong')).to_have_text(['100%','99%','40%','0%'])
         expect(google.locator('[data-card-action]')).to_have_count(1)
         expect(google.locator('.subscription-meter.critical')).to_have_count(1)
+        page.locator('.account-shortcuts [data-account-engine=antigravity]').click()
+        expect(google.locator('[data-card-action=refresh]')).to_be_focused()
         google.locator('[data-card-action=refresh]').click()
         expect(page.locator('#status')).to_have_text('Account status updated.')
         assert page.evaluate("calls.filter(c=>c.method==='antigravityAccountRefreshUsage').length") == 1
@@ -107,31 +111,30 @@ try:
         google.locator('[data-card-action=refresh]').click()
         expect(page.locator('#googleQuotaStatus')).to_contain_text('Showing the last successful reading')
         expect(google.locator('.subscription-meter strong')).to_have_text(['100%','99%','40%','0%'])
-        # Raw CLI diagnostics stay available without filling the main notice or
-        # status bar with URLs. Exercise the reported avatar/EOF failure.
+        # Avatar lookup is optional. It must not turn a successful quota reading
+        # into a visible error or a retry toast.
         raw_error = 'error: Eligibility check failed: failed to get profile picture: Get "https://lh3.googleusercontent.com/a/' + 'avatar-id' * 40 + '=s96-c": EOF'
         page.evaluate('error => { mockGoogle.usage.error=error; accountListeners.onAntigravityAccount(mockGoogle); }', raw_error)
         notice=page.locator('#googleQuotaStatus')
         details=page.locator('#googleQuotaErrorDetails')
         raw=page.locator('#googleQuotaErrorRaw')
-        expect(notice).to_contain_text('Could not load the Google account picture.')
-        expect(notice).not_to_contain_text('https://')
-        expect(raw).to_have_text(raw_error)
-        expect(raw).to_be_hidden()
+        expect(notice).to_be_hidden()
+        expect(details).to_be_hidden()
+        expect(raw).to_have_text('')
+        expect(raw).not_to_contain_text('https://')
+        page.evaluate('window.failGoogleAvatar=true')
+        google.locator('[data-card-action=refresh]').click()
+        expect(page.locator('#status')).to_have_text('Account status updated.')
+        expect(notice).to_be_hidden()
+        page.evaluate('window.failGoogleAvatar=false')
         page.evaluate("CamelliaI18n.setLanguage('zh-CN')")
-        expect(notice).to_contain_text('无法获取 Google 账号头像')
-        expect(notice).to_contain_text('当前显示上次成功查询的数据')
-        expect(details.locator('summary')).to_have_text('错误详情')
-        details.locator('summary').click()
-        expect(raw).to_be_visible()
+        expect(notice).to_be_hidden()
+        expect(details).to_be_hidden()
+        expect(raw).to_have_text('')
         for width in [1420,390,320]:
             page.set_viewport_size({'width':width,'height':960})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), ('Google error overflow',width)
         page.set_viewport_size({'width':1420,'height':960})
-        details.locator('summary').click()
-        error_out=repo/'dist/subscription-error-qa'
-        error_out.mkdir(parents=True,exist_ok=True)
-        screenshot_with_shadow(page,page.locator('#googleAccountPanel'),error_out/'google-quota-error-zh.png')
         # Unknown output is inert text inside details, and no stale-data claim
         # appears when there has never been a successful reading.
         page.evaluate("""() => {
@@ -144,6 +147,11 @@ try:
         expect(notice).not_to_contain_text('上次成功')
         expect(raw.locator('img')).to_have_count(0)
         expect(raw).to_be_hidden()
+        details.locator('summary').click()
+        expect(raw).to_be_visible()
+        error_out=repo/'dist/subscription-error-qa'
+        error_out.mkdir(parents=True,exist_ok=True)
+        screenshot_with_shadow(page,page.locator('#googleAccountPanel'),error_out/'google-quota-error-zh.png')
         page.evaluate('mockGoogle.usage.latest=savedGoogleLatest')
         page.evaluate("CamelliaI18n.setLanguage('en')")
         google.locator('[data-card-action=refresh]').click()

@@ -2,14 +2,30 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const CODEX_API_TOOL_PROFILE = 'native-apply-patch-v2';
+const CODEX_API_TOOL_PROFILE = 'native-apply-patch-v3';
 const nativeCatalog = require('./codex-metadata/models.json');
 const fallbackPrompt = fs.readFileSync(path.join(__dirname, 'codex-metadata/fallback-prompt.md'), 'utf8');
 const toolAwareFallbackPrompt = fallbackPrompt.replace(/^## (?:Planning|`update_plan`)\r?\n[\s\S]*?(?=^#{1,2} |$(?![\s\S]))/gm, '');
 
 function nativeModel(model) {
   const suffix = /^[a-zA-Z0-9_-]+\/([^/]+)$/.exec(model)?.[1];
-  return nativeCatalog.models.some(entry => model.startsWith(entry.slug) || suffix?.startsWith(entry.slug));
+  return nativeCatalog.models.find(entry => model.startsWith(entry.slug) || suffix?.startsWith(entry.slug));
+}
+
+function needsApiToolProfile(model) {
+  return Boolean(model) && nativeModel(model)?.tool_mode === 'code_mode_only';
+}
+
+function apiContextWindow(model, budget) {
+  // An accepted prompt establishes a lower bound, not the model's maximum.
+  // Passing that provisional budget to Codex as model_context_window makes
+  // Codex repeatedly compact a healthy thread at the largest input observed
+  // so far. Only explicit route limits may narrow the native model window.
+  const explicit = (budget?.routes || []).filter(route =>
+    ['configured', 'catalog', 'confirmed-upper-bound'].includes(route.source)
+    && Number.isSafeInteger(route.cap) && route.cap > 0);
+  return explicit.length ? Math.min(...explicit.map(route => route.cap))
+    : nativeModel(model)?.context_window || 272000;
 }
 
 function configureApiModel(config, home, model, contextWindow) {
@@ -21,7 +37,7 @@ function configureApiModel(config, home, model, contextWindow) {
     if (managed) delete config.model_catalog_json;
     return;
   }
-  // Match 0.160.0's unknown-model defaults, adding only its native patch tool.
+  // Match 0.160.1's unknown-model defaults, adding only its native patch tool.
   // Without this metadata Codex invokes apply_patch.bat through PowerShell;
   // Windows batch argument parsing truncates valid multiline patches.
   const fallback = {
@@ -40,4 +56,4 @@ function configureApiModel(config, home, model, contextWindow) {
   config.model_catalog_json = target;
 }
 
-module.exports = { configureApiModel, CODEX_API_TOOL_PROFILE };
+module.exports = { configureApiModel, needsApiToolProfile, apiContextWindow, CODEX_API_TOOL_PROFILE };

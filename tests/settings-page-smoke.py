@@ -35,8 +35,18 @@ with sync_playwright() as playwright:
         return () => Promise.resolve({ ...empty });
       } });
     """)
-    page.goto((root / "src/renderer/settings/api-settings.html").as_uri())
+    page.goto((root / "src/renderer/settings/api-settings.html").as_uri() + "?page=models")
     page.wait_for_load_state("networkidle")
+    expect(page.locator('#pageTitle')).to_have_text('Model Settings')
+    page.evaluate("config = null")
+    page.locator('[data-view=models]').click()
+    expect(page.locator('#pageTitle')).to_have_text('Model Settings')
+    page.locator('[data-view=general]').click()
+    expect(page.locator('#pageTitle')).to_have_text('General')
+    page.locator('[data-view=models]').click()
+    expect(page.locator('#pageTitle')).to_have_text('Model Settings')
+    page.locator('[data-view=general]').click()
+    page.evaluate("refresh(true)")
     expect(page.locator('#generalPage #pythonCard')).to_be_visible()
     expect(page.locator('#quickSwitchModels')).to_be_hidden()
     page.locator('[data-view=models]').click()
@@ -89,7 +99,7 @@ with sync_playwright() as playwright:
     # dropped page fails with a useful diff instead of an off-by-one.
     views = page.locator(".settings-nav nav [data-view]").evaluate_all(
         "els => els.map(el => el.dataset.view)")
-    assert views == ["subscriptions", "providers", "usage", "general", "network", "engines",
+    assert views == ["subscriptions", "providers", "usage", "general", "data", "network", "engines",
                      "models", "archived", "mobile", "devices"], views
     for language in ["en", "zh-CN"]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
@@ -146,10 +156,11 @@ with sync_playwright() as playwright:
             for install_visible in [False, True]:
                 page.locator("#installAppUpdate").evaluate("(el, visible) => el.hidden = !visible", install_visible)
                 page.locator("#checkAppUpdate").scroll_into_view_if_needed()
-                row = page.locator(".app-update").bounding_box()
-                actions = page.locator(".app-update-actions").bounding_box()
+                update_row = page.locator(".app-update").filter(has=page.locator("#checkAppUpdate"))
+                row = update_row.bounding_box()
+                actions = update_row.locator(".app-update-actions").bounding_box()
                 assert abs(actions["x"] + actions["width"] - row["x"] - row["width"]) < 2, (language, width)
-                for button in page.locator(".app-update-actions button:visible").all():
+                for button in update_row.locator(".app-update-actions button:visible").all():
                     box = button.bounding_box()
                     assert box["x"] >= row["x"] and box["x"] + box["width"] <= row["x"] + row["width"] + 1
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (language, width)
@@ -157,14 +168,14 @@ with sync_playwright() as playwright:
     page.locator("#installAppUpdate").evaluate("el => el.hidden = true")
     output = root / "dist/engine-settings-qa"
     output.mkdir(parents=True, exist_ok=True)
-    page.locator(".app-update").scroll_into_view_if_needed()
+    page.locator("#checkAppUpdate").scroll_into_view_if_needed()
     page.screenshot(path=str(output / "general-actions.png"))
     page.evaluate("CamelliaI18n.setLanguage('en')")
     page.locator('.settings-nav nav [data-view="devices"]').click()
     expect(page.locator("#devicesPage")).to_be_visible()
 
     # Scoped styles keep settings controls and device controls visually distinct.
-    assert page.evaluate("getComputedStyle(document.getElementById('refresh')).borderRadius") == "18px"
+    assert page.evaluate("getComputedStyle(document.getElementById('checkAppUpdate')).borderRadius") == "18px"
     assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).borderRadius") == "16px"
     assert not errors, errors
     browser.close()

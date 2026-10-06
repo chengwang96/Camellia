@@ -24,6 +24,12 @@ class RemoteAccess {
     const stored = readJson(file, { devices: [] });
     if (!Array.isArray(stored.devices)) throw new Error('Invalid remote device store');
     this.devices = stored.devices;
+    this.lastSeenAt = new Map(this.devices
+      .map(device => [device.id, Number(device.lastSeenAt) || Number(device.createdAt) || 0])
+      .filter(([, timestamp]) => timestamp > 0));
+    this.lastSeenPersistedAt = new Map(this.devices
+      .map(device => [device.id, Number(device.lastSeenAt) || 0])
+      .filter(([, timestamp]) => timestamp > 0));
     if (this.devices.some(device => device.permission !== 'control')) {
       this.save(this.devices.map(device => ({ ...device, permission: 'control' })));
     }
@@ -31,6 +37,15 @@ class RemoteAccess {
     this.invitation = null;
   }
   save(devices) { writeJson(this.file, { devices }); this.devices = devices; }
+  markSeen(id, timestamp) {
+    this.lastSeenAt.set(id, timestamp);
+    const persisted = this.lastSeenPersistedAt.get(id) || 0;
+    if (timestamp - persisted < 60_000) return;
+    try {
+      this.save(this.devices.map(device => device.id === id ? { ...device, lastSeenAt: timestamp } : device));
+      this.lastSeenPersistedAt.set(id, timestamp);
+    } catch { }
+  }
   prune() {
     for (const [id, request] of this.pending) if (request.expiresAt <= this.now()) this.pending.delete(id);
     if (this.invitation?.expiresAt <= this.now()) this.invitation = null;
@@ -66,17 +81,25 @@ class RemoteAccess {
     if (this.devices.length >= 32) fail(409, 'Revoke an existing device before adding another');
     request.state = 'approved';
   }
-  reject(id) { this.pending.delete(id); }
+  reject(id) {
+    const request = this.pending.get(id);
+    if (!request || request.state === 'rejected') return;
+    request.state = 'rejected';
+  }
   claim(id, claim) {
     this.prune();
     const request = this.pending.get(id);
     if (!request || !matches(claim, request.claimDigest)) fail(401, 'Invalid or expired pairing request');
+    if (request.state === 'rejected') fail(401, 'Pairing request was rejected');
     if (request.state === 'pending') return { state: 'pending' };
     if (!request.token) {
       const token = secret();
+      const createdAt = this.now();
       this.save([...this.devices, { id, name: request.name, tokenDigest: hash(token), workspaceIds: request.workspaceIds,
         allWorkspaces: request.allWorkspaces, includeUnassigned: request.includeUnassigned,
-        createdAt: this.now(), permission: 'control' }]);
+        createdAt, lastSeenAt: createdAt, permission: 'control' }]);
+      this.lastSeenAt.set(id, createdAt);
+      this.lastSeenPersistedAt.set(id, createdAt);
       request.token = token;
     }
     return { state: 'approved', deviceId: id, token: request.token, permission: 'control' };
@@ -85,10 +108,12 @@ class RemoteAccess {
     const device = this.devices.find(device => matches(token, device.tokenDigest));
     if (!device) fail(401, 'Device authentication required');
     this.pending.delete(device.id);
+    this.markSeen(device.id, this.now());
     return device;
   }
   revoke(id) {
     this.save(this.devices.filter(device => device.id !== id));
+    this.lastSeenAt.delete(id); this.lastSeenPersistedAt.delete(id);
     this.pending.delete(id);
     this.onRevoke(id);
   }
@@ -106,9 +131,10 @@ class RemoteAccess {
   }
   view() {
     this.prune();
-    return { devices: this.devices.map(({ id, name, workspaceIds, allWorkspaces, includeUnassigned, createdAt, permission }) => ({ id, name, workspaceIds, allWorkspaces, includeUnassigned, createdAt, permission })),
-      pending: [...this.pending.values()].filter(request => request.state === 'pending')
-        .map(({ id, name, computerName, workspaceIds, allWorkspaces, includeUnassigned, expiresAt }) => ({ id, name, computerName, workspaceIds, allWorkspaces, includeUnassigned, expiresAt })) };
+    return { devices: this.devices.map(({ id, name, workspaceIds, allWorkspaces, includeUnassigned, createdAt, permission }) => ({ id, name, workspaceIds, allWorkspaces, includeUnassigned, createdAt, lastSeenAt: this.lastSeenAt.get(id) || createdAt, permission })),
+      pending: [...this.pending.values()].filter(request => (request.state === 'pending' || request.state === 'approved' || request.state === 'rejected')
+        && !this.devices.some(device => device.id === request.id))
+        .map(({ id, name, computerName, workspaceIds, allWorkspaces, includeUnassigned, expiresAt, state }) => ({ id, name, computerName, workspaceIds, allWorkspaces, includeUnassigned, expiresAt, state })) };
   }
   clearPairing() { this.invitation = null; this.pending.clear(); }
 }

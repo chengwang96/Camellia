@@ -62,7 +62,7 @@ function fixture(t) {
 function request(gateway, token, route, payload) {
   return new Promise((resolve, reject) => {
     const source = payload ? JSON.stringify(payload) : null;
-    const req = http.request(gateway.url + route, { method: source ? 'POST' : 'GET', headers: {
+    const req = http.request(gateway.url + route, { method: source ? 'POST' : 'GET', agent: false, headers: {
       Authorization: 'Bearer ' + token, ...(source ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(source) } : {}) } }, response => {
       let value = ''; response.on('data', chunk => value += chunk);
       response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(value) }));

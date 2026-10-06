@@ -31,6 +31,21 @@ with sync_playwright() as playwright:
     }''')
     expect(page.locator('.msg-user')).to_have_count(1)
     expect(page.locator('.failed-send')).to_contain_text('Engine unavailable')
+    page.evaluate('''() => {
+      document.querySelector('.failed-send span').textContent =
+        'Failed to start: ' + 'Compaction summary request limit reached. '.repeat(12);
+    }''')
+    button = page.locator('.failed-send button')
+    expect(button.locator('svg')).to_have_count(1)
+    expect(button).to_have_attribute('aria-label', page.evaluate("window.CamelliaI18n.t('Edit message')"))
+    dimensions = button.evaluate('''element => ({
+      width: element.getBoundingClientRect().width,
+      height: element.getBoundingClientRect().height,
+      scrollWidth: element.scrollWidth,
+      scrollHeight: element.scrollHeight
+    })''')
+    assert dimensions['width'] >= dimensions['scrollWidth'], dimensions
+    assert dimensions['height'] < 40, dimensions
     page.locator('.failed-send button').click()
     expect(page.locator('.message-editor')).to_be_visible()
     expect(page.locator('.msg-user')).to_have_count(1)

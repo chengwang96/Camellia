@@ -32,6 +32,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let contextUsage = null;
   let attachments = [];       // [{ path, name, isImage }]
   let messageQueue = [];
+  let messageQueuePaused = false;
   let remoteMessageQueue = [], remoteQueueVersion = -1;
   const conversationQueues = new Map();
   let drainingQueue = false;
@@ -54,6 +55,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   const permissionQueue = [];
   const seenPermissionBlocks = new Set();
   let pendingQuestion = null, permissionSubmission = null;
+  let textChoice = null, textChoiceTimer = null;
   const questionDrafts = new Map();
   const selfDeletedIds = new Set();
 
@@ -125,11 +127,18 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!sharedChat) return;
     conversationQueues.set(key, queue);
     writeUi('queue:' + key, queue);
+    if (!queue.length && key === draftKey() && queue === messageQueue) setMessageQueuePaused(false);
+  }
+  function setMessageQueuePaused(paused) {
+    messageQueuePaused = Boolean(paused);
+    writeUi('queue-paused:' + draftKey(), messageQueuePaused);
+    renderMessageQueue();
   }
   function restoreMessageQueue() {
     const key = draftKey();
     const saved = conversationQueues.get(key) || readUi('queue:' + key);
     messageQueue = Array.isArray(saved) ? saved : [];
+    messageQueuePaused = messageQueue.length > 0 && readUi('queue-paused:' + key) === true;
     if (context.sessionId) conversationQueues.set(key, messageQueue);
     renderMessageQueue();
   }
@@ -154,6 +163,16 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
+
+  // A replayed turn can hand reasoning back as `<thinking>…</thinking>` text,
+  // which the next model then mimics. Split it out so the answer stays clean
+  // and the reasoning folds into a Reasoning block instead of showing markup.
+  function splitThinking(text) {
+    const api = window.CamelliaThinkingTags;
+    return api ? api.split(text, { latestOnly: true }) : { body: String(text == null ? '' : text), thinking: '' };
+  }
+  // The answer as the reader sees it, without any folded reasoning delimiters.
+  function answerText(text) { return splitThinking(text).body; }
 
   function splitTableRow(line) {
     let value = line.trim();
@@ -686,8 +705,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     return pop;
   }
 
-  function modelLabel(id) {
-    const m = MODELS.find((x) => x.id === id) || accountModels.find((x) => x.id === id);
+  function modelLabel(id, connection = currentConnection) {
+    const subscription = supportsAccounts() && connection === 'subscription';
+    const m = (subscription && accountModels.find((x) => x.id === id))
+      || (!subscription && routeModels.includes(id) && { label: id })
+      || MODELS.find((x) => x.id === id) || accountModels.find((x) => x.id === id);
     return id ? (m?.label || m?.name || m?.displayName || id) : window.CamelliaI18n.t(m?.label || "Default model");
   }
   function levelLabel(id) {
@@ -792,17 +814,20 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       setStatus("Could not save settings: " + error.message);
     }
   }
-  function persistModel(model, quickLevel = '') {
-    // The composer lists account and API models together, so picking a model
-    // that only the other connection offers also selects that connection.
-    // A model both connections offer keeps the current one.
+  function persistModel(model, quickLevel = '', selectedConnection) {
+    // Menu choices carry their connection, including IDs offered by both
+    // sources. ID-only quick-switch defaults retain the active connection
+    // unless only the other source offers the model.
     let connection;
     const canSwitch = supportsAccounts() && model && (sharedChat || !context.sessionId);
     if (canSwitch) {
       const accountOffersModel = visibleAccountModels().some(item => item.id === model);
       const inCurrent = accountSubscription() ? accountOffersModel : routeModels.includes(model);
       const inOther = accountSubscription() ? routeModels.includes(model) : accountOffersModel;
-      if (!inCurrent && inOther) connection = accountSubscription() ? 'api' : 'subscription';
+      const selectedAvailable = selectedConnection === 'subscription' ? accountOffersModel
+        : selectedConnection === 'api' && routeModels.includes(model);
+      if (selectedAvailable && selectedConnection !== currentConnection) connection = selectedConnection;
+      else if (!inCurrent && inOther) connection = accountSubscription() ? 'api' : 'subscription';
     }
     const targetConnection = connection || currentConnection;
     const supportedLevels = !quickLevel ? [] : targetConnection === 'subscription' && supportsAccounts()
@@ -815,7 +840,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     return persistSettings({ model, ...(connection ? { connection } : {}),
       ...(selectedLevel ? { thinkingBudget: selectedLevel }
         : harnessId !== 'claude' && !googleSubscription() ? { thinkingBudget: '' } : {}) },
-      (selectedLevel ? "Model and reasoning level changed: " : "Model changed: ") + modelLabel(model) + " (applies to the next message)")
+      (selectedLevel ? "Model and reasoning level changed: " : "Model changed: ") + modelLabel(model, targetConnection) + " (applies to the next message)")
       .then(() => { if (connection) void loadSettings(); });
   }
   function persistLevel(level) {
@@ -847,12 +872,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       }
       for (const o of section.options) {
         const el = document.createElement('div');
-        el.className = 'pop-opt' + (o.id === currentId ? ' current' : '');
+        const selected = o.id === currentId && (!section.connection || section.connection === currentConnection);
+        el.className = 'pop-opt' + (selected ? ' current' : '');
         el.innerHTML = '<span class="pop-label"></span><span class="pop-marks">' + checkMark() + '</span>';
         el.querySelector('.pop-label').textContent = o.label;
         if (section.options === LEVELS || !o.id) el.querySelector('.pop-label').dataset.i18n = '';
-        el.addEventListener('click', () => { void onPick(o.id); closePops(); });
+        el.addEventListener('click', () => { void onPick(o.id, section.connection); closePops(); });
         if (o.id) el.dataset.modelId = o.id;
+        if (section.connection) el.dataset.connection = section.connection;
         sub.appendChild(el);
       }
     }
@@ -883,14 +910,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!supportsAccounts() || (!sharedChat && context.sessionId)) return [{ title: 'Model · Same-model failover', options: MODELS }];
     // With no account signed in there is only one list, so keep the plain group.
     if (!accountModels.length) return [{ title: 'Model · Same-model failover', options: MODELS }];
-    const account = { title: 'Model · ' + accountName + ' account', options: visibleAccountModels().map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
-    const api = { title: 'Model · Shared API routes', options: routeModels.map(id => ({ id, label: id })) };
+    const account = { title: 'Model · ' + accountName + ' account', connection: 'subscription', options: visibleAccountModels().map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
+    const api = { title: 'Model · Shared API routes', connection: 'api', options: routeModels.map(id => ({ id, label: id })) };
     if (googleSubscription()) return account.options.length ? [account] : [];
     const sections = accountSubscription() ? [account, api] : [api, account];
-    // An ID offered by both connections belongs to the active one, matching
-    // persistModel and the remote picker. Never label an API choice as account usage.
-    const activeIds = new Set(sections[0].options.map(model => model.id));
-    sections[1].options = sections[1].options.filter(model => !activeIds.has(model.id));
+    // Connection is part of a choice's identity: an API route must not hide
+    // the same model offered by the signed-in account.
     return sections.filter(section => section.options.length);
   }
 
@@ -904,7 +929,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       rowModel.innerHTML = "<span data-i18n>Model</span><span class=\"pop-row-value\"></span>" + chevRight();
       rowModel.querySelector('.pop-row-value').textContent = modelLabel(currentModel);
       rowModel.addEventListener('click', () => {
-        openSubMenu(rowModel, modelSections(), currentModel, persistModel, supportsAccounts());
+        openSubMenu(rowModel, modelSections(), currentModel,
+          (model, connection) => persistModel(model, '', connection), supportsAccounts());
       });
       const rowLevel = document.createElement('div');
       rowLevel.className = 'pop-row';
@@ -1140,6 +1166,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       row.append(label, text, edit, steer, remove);
       return row;
     }));
+    if (messageQueuePaused && messageQueue.length) {
+      const resume = document.createElement('button');
+      resume.type = 'button'; resume.className = 'queue-resume';
+      resume.textContent = window.CamelliaI18n.t('Resume queued messages');
+      resume.addEventListener('click', () => { setMessageQueuePaused(false); drainMessageQueue(); });
+      list.appendChild(resume);
+    }
     renderRemoteQueue(list);
   }
 
@@ -1215,7 +1248,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   function drainMessageQueue() {
-    if (drainingQueue || !messageQueue.length || running || sending || loadingSession || conversationActivity || pendingConversationSend() || switchingEngine || editingMessage || goalUI.isActive()) return;
+    if (messageQueuePaused || drainingQueue || !messageQueue.length || running || sending || loadingSession || conversationActivity || pendingConversationSend() || switchingEngine || editingMessage || goalUI.isActive()) return;
     const next = messageQueue[0];
     const queue = messageQueue, key = draftKey();
     const openSeq = sessionOpenSeq;
@@ -1500,7 +1533,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (div.querySelector('.failed-send')) return;
     const controls = document.createElement('div'); controls.className = 'failed-send';
     const error = document.createElement('span'); error.textContent = window.CamelliaI18n.t('Failed to start') + ': ' + attempt.error;
-    const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'Edit message'; edit.dataset.i18n = '';
+    const edit = document.createElement('button'); edit.type = 'button';
+    edit.title = window.CamelliaI18n.t('Edit message'); edit.setAttribute('aria-label', edit.title);
+    edit.dataset.i18nAttrs = 'title aria-label';
+    edit.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m14 5 5 5M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15z"/></svg>';
     edit.onclick = () => {
       if (div.messageData.seq) {
         beginMessageEdit(div);
@@ -1899,10 +1935,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     body.appendChild(el);
   }
 
-  function layoutTurnProcess(finished = false) {
-    const body = turnEl?.querySelector('.turn-body');
+  function layoutTurnProcess(finished = false, body = turnEl?.querySelector('.turn-body')) {
     const entries = body?.processBlocks;
     if (!entries?.length) return;
+    const latestThinking = entries.findLast(el => el.classList.contains('think'));
+    for (const el of entries) {
+      if (el.classList.contains('think') && el !== latestThinking) el.remove();
+    }
     const texts = entries.filter(el => el.classList.contains('md') && (el.textContent.trim() || el.querySelector('.chat-inline-image')));
     const settled = texts.filter(el => el.dataset.phase !== 'commentary');
     let visible = (finished ? settled : texts).slice(-1);
@@ -1915,7 +1954,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!finished && previous?.count === entries.length && previous.visible.length === visible.length
       && previous.visible.every((el, index) => el === visible[index])) return;
     body.processLayout = { count: entries.length, visible };
-    const archived = entries.filter(el => !visible.includes(el));
+    const archived = entries.filter(el => !visible.includes(el) && (!el.classList.contains('think') || el === latestThinking));
     let process = body.querySelector(':scope > .execution-process');
     if (archived.length && !process) {
       process = document.createElement('details');
@@ -1944,15 +1983,41 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     return el;
   }
 
-  function makeThinkBlock() {
+  // A standalone Reasoning box. Streaming adds it to the turn; folded and
+  // historical blocks place it themselves, so the builder stays detached.
+  function buildThinkBlock(statusText, open, live) {
     const el = document.createElement('div');
-    el.className = 'think open live';
+    el.className = 'think' + (open ? ' open' : '') + (live ? ' live' : '');
     el.innerHTML =
-      "<div class=\"think-head\"><span class=\"arrow\">▶</span><span>💭 Reasoning</span><span class=\"think-status\" data-i18n>In progress…</span></div>" +
+      "<div class=\"think-head\"><span class=\"arrow\">▶</span><span>💭 Reasoning</span><span class=\"think-status\" data-i18n></span></div>" +
       '<div class="think-body"></div>';
+    el.querySelector('.think-status').textContent = statusText;
     el.querySelector('.think-head').addEventListener('click', () => el.classList.toggle('open'));
+    return el;
+  }
+
+  function makeThinkBlock() {
+    const el = buildThinkBlock('In progress…', true, true);
     appendTurnBlock(el);
     return el;
+  }
+
+  // Fold reasoning that arrived as text into the chronological process before the answer.
+  function foldThinkingBlock(block, thinking) {
+    const body = String(thinking || '').trim();
+    if (!body) {
+      if (block.thinkEl) block.thinkEl.querySelector('.think-body').textContent = '';
+      return;
+    }
+    if (!block.thinkEl) {
+      const el = buildThinkBlock('Completed', false, false);
+      const entries = turnBody().processBlocks;
+      const index = entries.indexOf(block.el);
+      entries.splice(index, 0, el);
+      block.el.parentNode?.insertBefore(el, block.el);
+      block.thinkEl = el;
+    }
+    block.thinkEl.querySelector('.think-body').textContent = body;
   }
 
   function makeToolCard(name, inputData, id) {
@@ -1986,10 +2051,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let blockRenderFrame = null;
   function renderBlock(b) {
     if (!b.el.isConnected) return;
-    if (b.type === 'text') b.el.artifactText = b.raw;
     if (b.type === 'text') {
+      const { body, thinking } = splitThinking(b.raw);
+      b.body = body;
+      b.el.artifactText = body;
+      foldThinkingBlock(b, thinking);
       const open = openLatexPanels(b.el);
-      b.el.innerHTML = mdRender(b.raw) + (b.stopped ? '' : '<span class="cursor"></span>');
+      b.el.innerHTML = mdRender(body) + (b.stopped ? '' : '<span class="cursor"></span>');
       restoreLatexPanels(b.el, open);
     }
     else if (b.type === 'thinking') b.el.querySelector('.think-body').textContent = b.raw;
@@ -2009,6 +2077,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   function onBlockStart(b, index) {
+    if (textChoiceTimer || (textChoice?.runId === currentRunId && currentRunId != null)) clearTextChoice();
     const was = nearBottom();
     if (b.type === 'text') {
       blocks[index] = { type: 'text', raw: b.text || '', el: makeTextBlock() };
@@ -2034,6 +2103,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (delta.type === 'text_delta' && delta.text && b.type === 'text') {
       b.raw += delta.text;
       queueBlockRender(b);
+      scheduleTextChoice(b, index);
     } else if (delta.type === 'thinking_delta' && delta.thinking && b.type === 'thinking') {
       b.raw += delta.thinking;
       queueBlockRender(b);
@@ -2062,8 +2132,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     if (b.type === 'text') {
       b.stopped = true;
+      clearTimeout(textChoiceTimer);
+      textChoiceTimer = null;
       pendingBlockRenders.delete(b);
       renderBlock(b);
+      if (b.el.dataset.phase === 'final_answer') offerTextChoice(turnEl, answerText(b.raw), true, true, b);
     }
     maybeScroll(was);
   }
@@ -2080,9 +2153,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     pendingTools = {};
     for (const blk of content || []) {
       if (blk.type === 'text' && blk.text) {
+        const { body, thinking } = splitThinking(blk.text);
         const el = makeTextBlock();
-        el.innerHTML = mdRender(blk.text);
-        el.artifactText = blk.text;
+        if (blk.phase) el.dataset.phase = blk.phase;
+        foldThinkingBlock({ el }, thinking);
+        el.innerHTML = mdRender(body);
+        el.artifactText = body;
       } else if (blk.type === 'thinking' && blk.thinking) {
         const el = makeThinkBlock();
         el.classList.remove('open', 'live');
@@ -2374,6 +2450,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!acceptSessionEvents) return;
     if (ev.type === 'conversation:steered') {
       if (currentRunId !== ev.runId) return;
+      clearTextChoice();
       const previousTurn = turnEl;
       const previousStatus = previousTurn?.querySelector('.run-status');
       addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now(), scrollToBottom: true });
@@ -2393,6 +2470,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     if (ev.type === 'conversation:started') {
       if (ev.runId !== currentRunId) {
+        clearTextChoice();
         currentRunId = ev.runId;
         turnEl = null; blocks = {}; pendingTools = {};
         addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now(), scrollToBottom: true });
@@ -2433,7 +2511,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
 
     if (ev.type === 'gui:message-phase') {
       const block = blocks[ev.index];
-      if (block?.type === 'text') { block.el.dataset.phase = ev.phase; layoutTurnProcess(); }
+      if (block?.type === 'text') {
+        block.el.dataset.phase = ev.phase; layoutTurnProcess();
+        if (ev.phase === 'commentary' && textChoice?.sourceBlock === block) clearTextChoice();
+        if (ev.phase === 'final_answer') offerTextChoice(turnEl, answerText(block.raw), true, true, block);
+      }
       return;
     }
     if (ev.type === 'stream_event' && ev.event) {
@@ -2552,6 +2634,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         artifactTools.flatMap(card => window.CamelliaArtifacts.toolRoots(card.inputData)
           .concat(window.CamelliaArtifacts.toolDirectories(card.inputData))));
       setStatus((stopped ? "Stopped · " : ok ? '' : "Error · ") + stats.join(' · '));
+      const completedTurn = turnEl;
       turnEl = null;
       pendingTools = {};
       setRunning(false);
@@ -2559,6 +2642,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       void sidebar.load();
       maybeScroll(true);
       drainMessageQueue();
+      if (ok && !messageQueue.length && !goalUI.isActive()) {
+        const finalText = answerText(ev.outputBlocks?.filter(block => block.phase === 'final_answer').at(-1)?.text || ev.result);
+        if (!offerTextChoice(completedTurn, finalText, true)) clearTextChoice();
+      } else clearTextChoice();
       return;
     }
   }
@@ -2627,6 +2714,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (input.value.trim() || attachments.length) { queueComposerMessage(); return; }
       if (currentRunId || sharedChat) {
         const stopSessionId = context.sessionId, stopRunId = currentRunId, stopOpenSeq = sessionOpenSeq;
+        if (messageQueue.length) setMessageQueuePaused(true);
         setStatus("Stopping…");
         try {
           const pending = pendingConversationSend();
@@ -2643,10 +2731,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     if (editingMessage || !canChangeContext() || (sharedChat && conversationBusy())) return;
     if (sharedChat && context.sessionId && loadedEngine !== harnessId) {
-      const openSeq = sessionOpenSeq, sessionId = context.sessionId;
-      const settings = await window.dshDesktop.workbenchSettings();
-      if (openSeq !== sessionOpenSeq || sessionId !== context.sessionId || loadingSession || sending || switchingEngine || editingMessage || conversationBusy()) return;
-      if (settings.conversations?.warnOnSwitch) { await switchOptions(harnessId); return; }
+      // A conversation keeps its own harness. A stale renderer must reopen it
+      // there instead of turning Send into an implicit harness switch.
+      const opened = await window.dshDesktop.conversationSwitch({ engine: loadedEngine, sessionId: context.sessionId, navigate: true });
+      if (!opened.ok) setStatus(opened.error);
+      return;
     }
     const text = queuedMessage ? queuedMessage.text : input.value.trim();
     if (!queuedMessage && typeof findUI !== 'undefined' && findUI.isDraft()) {
@@ -2698,6 +2787,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       autoResize();
     }
     chat.querySelector('.switch-hint')?.remove();
+    clearTextChoice();
     const userMessage = addUser(text || "[Attachments]", atts, { at: Date.now(), scrollToBottom: true });
     setRunning(true);
     setRunStatus('Working…');
@@ -2963,6 +3053,110 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     { permissionMode: $('selPermission').value }, "Permission mode saved. Applies to the next message."));
 
   // ---------- Task questions and tool permissions ----------
+  function scheduleTextChoice(block, index) {
+    clearTimeout(textChoiceTimer);
+    textChoiceTimer = null;
+    const phase = block.el.dataset.phase;
+    if (!sharedChat || currentRunId == null || pendingQuestion ||
+      (phase !== 'final_answer' && !(harnessId === 'codex' && phase == null))) return;
+    const turn = turnEl, runId = currentRunId;
+    if (!window.CamelliaAssistantChoice.parse(answerText(block.raw))) {
+      if (textChoice?.sourceBlock === block) clearTextChoice();
+      return;
+    }
+    // A final-answer phase may arrive only after Codex finishes the item. A
+    // short quiet period lets a streamed list open while that item is still live.
+    textChoiceTimer = setTimeout(() => {
+      textChoiceTimer = null;
+      const currentPhase = block.el.dataset.phase;
+      if (currentRunId === runId && turnEl === turn && blocks[index] === block &&
+        (currentPhase === 'final_answer' || harnessId === 'codex' && currentPhase == null))
+        offerTextChoice(turn, answerText(block.raw), true, true, block);
+    }, 300);
+  }
+  function clearTextChoice() {
+    clearTimeout(textChoiceTimer);
+    textChoiceTimer = null;
+    const dialog = $('textChoiceDialog');
+    if (dialog.open) dialog.close();
+    dialog.replaceChildren();
+    textChoice?.slot.remove();
+    textChoice = null;
+  }
+  function offerTextChoice(turn, reply, autoOpen = false, live = false, sourceBlock = null) {
+    if (!turn?.isConnected || pendingQuestion || loadedEngine !== harnessId) return false;
+    if (live && (!sharedChat || !context.sessionId || currentRunId == null)) return false;
+    const choice = window.CamelliaAssistantChoice.parse(reply);
+    if (!choice) return false;
+    const choiceKey = JSON.stringify(choice);
+    if (textChoice?.turn === turn && textChoice.choiceKey === choiceKey) {
+      textChoice.runId = live ? currentRunId : null;
+      textChoice.sourceBlock = sourceBlock;
+      return true;
+    }
+    const saved = textChoice ? { selected: textChoice.field.choices.filter(option => option.checked).map(option => option.value),
+      custom: textChoice.field.custom.value } : null;
+    clearTextChoice();
+    const dialog = $('textChoiceDialog');
+    const card = document.createElement('form'); card.className = 'question-card';
+    const header = document.createElement('header'); header.className = 'question-header';
+    const title = document.createElement('h3'); title.id = 'textChoiceTitle'; title.dataset.i18n = ''; title.textContent = 'Choose a reply';
+    const hint = document.createElement('p'); hint.id = 'textChoiceHint'; hint.className = 'question-hint'; hint.dataset.i18n = '';
+    hint.textContent = 'Selecting sends a new message to this conversation.';
+    header.append(title, hint);
+    const fieldList = document.createElement('div'); fieldList.className = 'question-fields';
+    const [field] = window.CamelliaChatControls.questionFields(fieldList, [{ id: 'reply', question: choice.question,
+      options: choice.options.map(label => ({ label })) }], saved ? { saved: { reply: saved } } : {});
+    const status = document.createElement('div'); status.className = 'question-status'; status.setAttribute('role', 'status');
+    const actions = document.createElement('div'); actions.className = 'question-actions';
+    const later = document.createElement('button'); later.type = 'button'; later.className = 'btn-secondary'; later.dataset.i18n = ''; later.textContent = 'Later';
+    later.onclick = () => dialog.close();
+    const submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'btn-primary'; submit.dataset.i18n = ''; submit.textContent = 'Send reply';
+    actions.append(later, submit); card.append(header, fieldList, status, actions);
+    const slot = document.createElement('div'); slot.className = 'question-pending text-choice-pending';
+    const description = document.createElement('div'), label = document.createElement('strong'), preview = document.createElement('p');
+    label.dataset.i18n = ''; label.textContent = 'Choose a reply'; preview.textContent = choice.question;
+    description.append(label, preview);
+    const openButton = document.createElement('button'); openButton.type = 'button'; openButton.className = 'btn-secondary'; openButton.dataset.i18n = ''; openButton.textContent = 'Answer questions';
+    openButton.onclick = () => { if (!dialog.open && !pendingQuestion) dialog.showModal(); };
+    slot.append(description, openButton);
+    turn.insertBefore(slot, turn.querySelector('.run-result'));
+    const state = { slot, turn, field, choiceKey, sourceBlock, sessionId: context.sessionId,
+      openSeq: sessionOpenSeq, runId: live ? currentRunId : null };
+    textChoice = state;
+    card.onsubmit = async event => {
+      event.preventDefault();
+      if (textChoice !== state || context.sessionId !== state.sessionId || sessionOpenSeq !== state.openSeq) return;
+      const answer = field.custom.value.trim() || field.choices.find(option => option.checked)?.value || '';
+      if (!answer) { status.textContent = 'Answer each question before submitting'; status.setAttribute('role', 'alert'); return; }
+      if (state.runId != null && running && currentRunId === state.runId && sharedChat) {
+        if (sending || submit.disabled) return;
+        submit.disabled = true;
+        status.textContent = window.CamelliaI18n.t('Sending answer…'); status.setAttribute('role', 'status');
+        try {
+          const response = await chatApi.steer({ sessionId: state.sessionId, runId: state.runId,
+            prompt: answer, displayText: answer, attachments: [] });
+          if (!response?.ok) throw new Error(response?.error || window.CamelliaI18n.t('The answer was not accepted.'));
+          if (textChoice === state) clearTextChoice();
+        } catch (error) {
+          if (textChoice === state) { status.textContent = error.message; status.setAttribute('role', 'alert'); submit.disabled = false; }
+        }
+        return;
+      }
+      if (conversationBusy() || contextBusy() || sending) {
+        status.textContent = 'Wait for this conversation to finish or stop it first.'; status.setAttribute('role', 'alert'); return;
+      }
+      clearTextChoice();
+      input.value = answer; autoResize();
+      void send();
+    };
+    dialog.replaceChildren(card);
+    if (autoOpen) queueMicrotask(() => {
+      if (textChoice === state && (!running || live && currentRunId === state.runId)
+        && !sending && !loadingSession && !document.querySelector('dialog[open]')) dialog.showModal();
+    });
+    return true;
+  }
   function queuePermission(ev) {
     if (permissionQueue.some(request => request.requestId === ev.requestId && request.runId === ev.runId)) return;
     if (currentPermission === 'full' && !ev.questions?.length) { void autoAllowPermission(ev); return; }
@@ -3024,6 +3218,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     questionDrafts.delete(state.key); pendingQuestion = null;
   }
   function showQuestion(ev) {
+    clearTextChoice();
     $('permMask').classList.remove('visible');
     const was = nearBottom(), key = JSON.stringify([context.sessionId, ev.runId, ev.requestId]);
     const saved = questionDrafts.get(key) || {};
@@ -3039,7 +3234,15 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const hint = document.createElement('p'); hint.className = 'question-hint'; hint.dataset.i18n = '';
     hint.id = 'questionHint'; hint.textContent = 'Choose or write an answer to continue this task. Answering later keeps it waiting.';
     const fieldList = document.createElement('div'); fieldList.className = 'question-fields';
-    header.append(heading, hint); card.append(header, fieldList);
+    // A queued question can outlive the turn that asked it, so name its
+    // conversation. Otherwise a deferred dialog reads as an orphaned form.
+    const origin = document.createElement('p'); origin.className = 'question-context';
+    const originId = ev.session_id || context.sessionId;
+    const originSession = sidebar.sessions.find(entry => entry.id === originId);
+    const headerTitle = $('headerTitle').dataset.titled ? $('headerTitle').textContent : '';
+    const originTitle = originSession?.title || headerTitle || (originId ? 'Session ' + String(originId).slice(0, 8) : '');
+    origin.textContent = originTitle ? window.CamelliaI18n.t('Conversation') + ' · ' + originTitle : '';
+    header.append(heading, origin, hint); card.append(header, fieldList);
     const fields = window.CamelliaChatControls.questionFields(fieldList, ev.questions, { saved,
       changed: fields => questionDrafts.set(key, Object.fromEntries(fields.filter(f => !f.question.isSecret).map(f => [f.question.id, { selected: f.choices.filter(c => c.checked).map(c => c.value), custom: f.custom.value }]))),
     });
@@ -3054,7 +3257,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     card.onsubmit = event => { event.preventDefault(); void answerPermission(true); };
     const slot = document.createElement('div'); slot.className = 'question-pending';
     const description = document.createElement('div'), label = document.createElement('strong'), preview = document.createElement('p');
-    label.dataset.i18n = ''; label.textContent = 'Waiting for your answer'; preview.textContent = ev.questions[0].question;
+    const firstTopic = typeof ev.questions[0].header === 'string' ? ev.questions[0].header.trim() : '';
+    label.dataset.i18n = ''; label.textContent = 'Waiting for your answer';
+    preview.textContent = firstTopic ? firstTopic + ' · ' + ev.questions[0].question : ev.questions[0].question;
     description.append(label, preview);
     const openButton = document.createElement('button'); openButton.type = 'button'; openButton.className = 'btn-secondary'; openButton.dataset.i18n = ''; openButton.textContent = 'Answer questions';
     openButton.onclick = openQuestionDialog; slot.append(description, openButton);
@@ -3232,6 +3437,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     ctxTip?.remove(); ctxTip = null;
     closeSlash();
     cancelMessageEdit();
+    clearTextChoice();
     if ($('questionDialog').open) $('questionDialog').close();
     $('questionDialog').replaceChildren();
     pendingQuestion = null; permissionSubmission = null;
@@ -3242,7 +3448,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if ($('permissionBlockedDialog').open) $('permissionBlockedDialog').close();
     clearRunStatus(); setRunning(false);
     $('handoffStop').hidden = true;
-    messageQueue = []; remoteMessageQueue = []; remoteQueueVersion = -1; renderMessageQueue();
+    messageQueue = []; messageQueuePaused = false; remoteMessageQueue = []; remoteQueueVersion = -1; renderMessageQueue();
   }
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
     canReadReply: () => !discussionVisible && !loadingSession && !restoringRun,
@@ -3387,8 +3593,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         throw new Error(res.error);
       }
       const s = sidebar.sessions.find((entry) => entry.id === id);
-      if (sharedChat && res.activity && res.currentEngine !== harnessId) {
+      if (sharedChat && res.currentEngine && res.currentEngine !== harnessId) {
+        loadedEngine = res.currentEngine;
         writeUi('location', { sessionId: id, workspaceId: res.workspaceId });
+        restoreDraft();
         const opened = await window.dshDesktop.conversationSwitch({ engine: res.currentEngine, sessionId: id, navigate: true });
         if (!opened.ok) throw new Error(opened.error);
         return false;
@@ -3419,6 +3627,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       $('headerTitle').textContent = s ? s.title : "Session " + id.slice(0, 8);
       $('headerTitle').dataset.titled = '1';
       if (!res.live && !await renderHistoryMessages(res.messages)) return false;
+      if (!res.live) {
+        const last = res.messages.findLast(message => ['user', 'assistant'].includes(message.role));
+        if (last?.role === 'assistant' && (!last.runResult || last.runResult.subtype === 'success'))
+          offerTextChoice([...chat.querySelectorAll('.turn')].at(-1),
+            answerText(last.outputBlocks?.filter(block => block.phase === 'final_answer').at(-1)?.text || last.text));
+      }
       if (sharedChat) showFailedSend(readUi('failed-send:' + id));
       if (!chat.childElementCount) chat.innerHTML = "<div class=\"empty-state\"><div class=\"empty-state-desc\" data-i18n>No messages to display. Send a message to continue this session.</div></div>";
       sidebar.render();
@@ -3510,29 +3724,25 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
             div.innerHTML = '<div class="turn-meta">' + (m.engine ? engineAvatar(m.engine) : chatAvatar) + '<span>' + esc(label) + '</span></div><div class="turn-body"><div class="md"></div></div>';
             const runResult = m.runResult;
             const resultOnly = runResult && m.text === runResult.result;
-          if (Array.isArray(m.outputBlocks)) {
             const body = div.querySelector('.turn-body');
             body.innerHTML = '';
-            const processBlocks = m.outputBlocks.filter(block => block.phase !== 'final_answer' && block.text);
-            if (processBlocks.length) {
-              const process = document.createElement('details');
-              process.className = 'execution-process';
-              process.innerHTML = '<summary><span data-i18n>Execution process</span></summary><div class="execution-process-body"></div>';
-              for (const block of processBlocks) {
-                const el = document.createElement('div'); el.className = 'md'; el.innerHTML = mdRender(block.text);
-                process.querySelector('.execution-process-body').appendChild(el);
+            body.processBlocks = [];
+            const outputBlocks = Array.isArray(m.outputBlocks) ? m.outputBlocks : [{ phase: 'final_answer', text: m.text }];
+            for (const block of outputBlocks.filter(block => block.text && (!resultOnly || block.phase !== 'final_answer'))) {
+              const { body: text, thinking } = splitThinking(block.text);
+              if (thinking.trim()) {
+                const think = buildThinkBlock('Completed', false, false);
+                think.querySelector('.think-body').textContent = thinking.trim();
+                body.processBlocks.push(think);
+                body.appendChild(think);
               }
-              body.appendChild(process);
+              const el = document.createElement('div'); el.className = 'md'; el.innerHTML = mdRender(text);
+              el.dataset.phase = block.phase || 'commentary';
+              el.artifactText = text;
+              body.processBlocks.push(el);
+              body.appendChild(el);
             }
-            for (const block of m.outputBlocks.filter(block => !resultOnly && block.phase === 'final_answer' && block.text)) {
-              const el = document.createElement('div'); el.className = 'md'; el.innerHTML = mdRender(block.text);
-              el.artifactText = block.text; body.appendChild(el);
-            }
-          } else {
-            const el = div.querySelector('.md');
-              if (resultOnly) el.remove();
-              else { el.innerHTML = mdRender(m.text); el.artifactText = m.text; }
-          }
+            layoutTurnProcess(true, body);
             if (runResult) div.appendChild(runResultChip(runResult, false,
               m === latestAssistant && latestUser?.seq < m.seq ? m.userSeq || latestUser.seq : null).chip);
             turnFooter(div, m.at, () => turnCopyText(div));
@@ -3661,7 +3871,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const model = accountModels.find(m => m.id === currentModel);
     const efforts = accountSubscription() ? (model?.supportedReasoningEfforts || [])
       .map(e => e.reasoningEffort || e).filter(id => typeof id === 'string') : window.CamelliaModelLevels.levelsFor(currentModel);
-    const labels = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+    const labels = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
     LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' },
       ...efforts.map(id => ({ id, label: labels[id] || id[0].toUpperCase() + id.slice(1) })));
     // The saved level may have been rendered before its model's levels loaded.

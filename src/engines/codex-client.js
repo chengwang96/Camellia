@@ -6,7 +6,10 @@ const path = require('node:path');
 const readline = require('node:readline');
 const { spawn } = require('node:child_process');
 const TOML = require('smol-toml');
-const { configureApiModel } = require('./codex-models');
+const { configureApiModel, needsApiToolProfile } = require('./codex-models');
+const { toolModelId } = require('../shared/codex-tool-model');
+
+const QUESTION_INSTRUCTIONS = 'Camellia can show a choice dialog when you call request_user_input. If you need the user to choose among concrete options before continuing, use that tool instead of ending with a plain-text list of choices. Do not ask when the existing request already authorizes a reasonable action; continue the work. If the tool is unavailable, ask in normal text.';
 
 // The app-server spawns helpers (MCP tool servers, plugin-sync git) that inherit
 // its stdio. Killing only the app-server leaves them running and holding the
@@ -166,9 +169,12 @@ function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscr
   delete config.openai_base_url; delete config.chatgpt_base_url;
   config.cli_auth_credentials_store = 'file';
   config.model_provider = connection === 'api' ? 'camellia' : 'openai';
+  const managedCatalog = path.join(home, 'camellia-api-models.json');
+  const userCatalog = config.model_catalog_json && path.resolve(config.model_catalog_json) !== path.resolve(managedCatalog);
+  const runtimeModel = connection === 'api' && !userCatalog && needsApiToolProfile(model) ? toolModelId(model) : model;
   const environment = codexEnvironment(home, env, proxyUrl, { subscription: connection === 'subscription' });
   environment.PATH = path.join(path.dirname(path.dirname(runtime.file)), 'codex-path') + path.delimiter + (environment.PATH || '');
-  configureApiModel(config, home, connection === 'api' ? model : undefined, contextWindow);
+  configureApiModel(config, home, connection === 'api' ? runtimeModel : undefined, contextWindow);
   if (connection === 'api') {
     config.web_search = 'disabled';
     config.model_providers = { camellia: { name: 'Camellia API routes', base_url: route.baseUrl + '/v1',
@@ -192,8 +198,9 @@ function codexSpawnSpec({ runtime, home, configHome = home, connection = 'subscr
   // Camellia renders task questions as its own dialog, so turn the tool on for
   // chat sessions. Discussions keep it off through their own feature policy.
   if (allowUserQuestions) args.push('-c', 'features.default_mode_request_user_input=true');
-  return { exe: runtime.file, args, cwd, env: environment,
+  return { exe: runtime.file, args, cwd, env: environment, model: runtimeModel,
+    ...(allowUserQuestions ? { developerInstructions: [config.developer_instructions, QUESTION_INSTRUCTIONS].filter(Boolean).join('\n\n') } : {}),
     permissions: { approvalPolicy: config.approval_policy || 'untrusted', sandbox: config.sandbox_mode || 'workspace-write' } };
 }
 
-module.exports = { CodexClient, codexEnvironment, codexSpawnSpec };
+module.exports = { CodexClient, codexEnvironment, codexSpawnSpec, QUESTION_INSTRUCTIONS };

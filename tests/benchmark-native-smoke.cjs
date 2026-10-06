@@ -16,13 +16,14 @@ const { ENGINES, runEngine, isolatedEnvironment } = require('../src/benchmark/en
 const { TASKS, prepareTask, verifyTask } = require('../src/benchmark/tasks');
 const { createLibraryManager } = require('../src/benchmark/libraries');
 const { verifyPythonTask } = require('../src/benchmark/python-verifier');
+const { defaultDataDirectory } = require('../src/main/data-directory');
 
 async function main() {
   const appRoot = path.resolve(__dirname, '..');
   const runtimes = createRuntimeManager({ root: appRoot, installRoot: appRoot, node: () => process.execPath });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-bench-native-'));
   const scientific = process.argv.includes('--science');
-  const library = scientific ? createLibraryManager({ directory: path.join(process.env.APPDATA || path.join(os.homedir(), 'Library/Application Support'), 'dsh-desktop/benchmark-libraries') }) : null;
+  const library = scientific ? createLibraryManager({ directory: path.join(defaultDataDirectory(), 'benchmark-libraries') }) : null;
   const task = scientific ? library.resolve('ds1000-quick').tasks.find(t => t.category === 'Numpy') : TASKS.find(t => t.id === 'reconcile');
   let router;
   const contexts = new Map(), arrived = new Set(), allStarted = Promise.withResolvers(), stopAll = new AbortController();

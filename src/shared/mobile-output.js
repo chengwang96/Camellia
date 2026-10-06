@@ -1,6 +1,7 @@
 'use strict';
 
 const LIMIT = 96 * 1024;
+const thinkingTags = require('./thinking-tags');
 const clip = value => typeof value === 'string' ? value.slice(-LIMIT) : '';
 function printable(value) {
   if (typeof value === 'string') return clip(value);
@@ -71,22 +72,36 @@ function projectOutput(events = [], finished = false) {
       }
     }
   }
-  const texts = entries.filter(entry => entry.type === 'text' && entry.text.trim());
+  // Reasoning can arrive as `<thinking>` text; fold it into its own entry so the
+  // phone shows the answer alone and keeps the reasoning in the process list.
+  const normalized = [];
+  for (const entry of entries) {
+    if (entry.type !== 'text') { normalized.push(entry); continue; }
+    const { body, thinking } = thinkingTags.split(entry.text, { latestOnly: true });
+    if (thinking.trim()) normalized.push({ type: 'thinking', text: clip(thinking) });
+    if (body.trim() || !thinking.trim()) normalized.push({ ...entry, text: body });
+  }
+  const texts = normalized.filter(entry => entry.type === 'text' && entry.text.trim());
   const settled = texts.filter(entry => entry.phase !== 'commentary');
   let visible = (finished ? settled : texts).slice(-1);
   if (finished) {
-    const lastActivity = entries.findLastIndex(entry => entry.type !== 'text');
-    if (lastActivity >= 0) visible = settled.filter(entry => entry.phase === 'final_answer' || entries.indexOf(entry) > lastActivity);
+    const lastActivity = normalized.findLastIndex(entry => entry.type !== 'text');
+    if (lastActivity >= 0) visible = settled.filter(entry => entry.phase === 'final_answer' || normalized.indexOf(entry) > lastActivity);
     else if (settled.some(entry => entry.phase === 'final_answer')) visible = settled.filter(entry => entry.phase === 'final_answer');
   }
-  return { text: visible.map(entry => entry.text).join('\n\n'), process: cleanProcess(entries.filter(entry => !visible.includes(entry))) };
+  return { text: visible.map(entry => entry.text).join('\n\n'), process: cleanProcess(normalized.filter(entry => !visible.includes(entry))) };
 }
 
 function cleanProcess(entries) {
   let budget = LIMIT;
+  let thinkingSeen = false;
   const result = [];
   for (const entry of (Array.isArray(entries) ? entries : []).slice(-120).reverse()) {
     if (!entry || !['text', 'thinking', 'tool', 'plan'].includes(entry.type)) continue;
+    if (entry.type === 'thinking') {
+      if (thinkingSeen) continue;
+      thinkingSeen = true;
+    }
     const body = clip(entry.text), input = clip(entry.input);
     const content = body.slice(-budget); budget -= content.length;
     const command = input.slice(-Math.max(0, budget));

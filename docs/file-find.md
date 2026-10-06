@@ -74,13 +74,12 @@ of their names:
 /find inside: quarterly revenue
 ```
 
-Text and Office documents (`.docx`, `.pptx`, `.xlsx`) are read. Every term must
-appear somewhere in the file, and each hit reports a snippet around the match,
-so the choice can be judged instead of guessed. Media, PDF, legacy
-`.doc`/`.ppt`/`.xls` binaries and unknown formats cannot be read, so they are
-not searched this way. Reading is bounded (about 240 files and 48 MiB of samples
-per search), and files too large to sample are skipped rather than failing the
-search.
+Text and Office documents (`.docx`, `.pptx`, `.xlsx`, `.xls`, `.doc`, `.ppt`)
+are read. Every term must appear somewhere in the file, and each hit reports a
+snippet around the match, so the choice can be judged instead of guessed. Media,
+PDF and unknown formats cannot be read, so they are not searched this way.
+Reading is bounded (about 240 files and 48 MiB of samples per search), and files
+too large to sample are skipped rather than failing the search.
 
 The model gets the same search through the `camellia_find_files` tool, which it
 should prefer over guessing shell commands. Ask in plain language — "Find the

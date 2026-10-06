@@ -46,7 +46,7 @@ function queueHarness(send, overrides = {}) {
   const storage = new Map();
   const state = {
     messageQueue: [{ text: 'First', attachments: [{ name: 'data.csv', path: 'D:/data.csv' }] }, { text: 'Second', attachments: [] }],
-    drainingQueue: false, running: false, sending: false, loadingSession: false,
+    messageQueuePaused: false, drainingQueue: false, running: false, sending: false, loadingSession: false,
     sessionOpenSeq: 1,
     conversationActivity: null, switchingEngine: false, editingMessage: null,
     sharedChat: true, context: { sessionId: 'session' }, conversationQueues: new Map(),

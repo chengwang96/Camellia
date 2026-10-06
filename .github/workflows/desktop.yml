@@ -79,6 +79,10 @@ jobs:
         run: node --test --test-force-exit tests/*.test.js
       - name: Electron smoke test
         run: node tests/electron-smoke.cjs
+      - name: Data directory migration smoke test
+        run: node tests/data-directory-electron.cjs
+      - name: Data directory migration progress window
+        run: node tests/data-directory-progress-electron.cjs
       - name: Native DSH settings
         run: node tests/native-settings-electron.cjs
       - name: Kimi ACP smoke test

@@ -25,8 +25,8 @@ test('validated runtime upgrades stay available and produce distinct evidence; u
   const installed = {};
   production.registry = { get: () => ({}) };
   production.runtimes = () => ({ locate: (engine, connection) => ({ version: installed[engine + ':' + connection] }) });
-  for (const [engine, previous, next] of [['codex', '0.154.0', '0.160.0'], ['claude', '2.1.273', '2.1.287'],
-    ['claude', '2.1.287', '2.1.288'], ['claude', '2.1.288', '2.1.289'], ['dsh', '0.1.5-rc.2', '0.2.0-rc.2'],
+  for (const [engine, previous, next] of [['codex', '0.154.0', '0.160.0'], ['codex', '0.160.0', '0.160.1'], ['claude', '2.1.273', '2.1.287'],
+    ['claude', '2.1.287', '2.1.288'], ['claude', '2.1.288', '2.1.289'], ['claude', '2.1.289', '2.1.291'], ['dsh', '0.1.5-rc.2', '0.2.0-rc.2'],
     ['kimi', '2.0.0', '2.1.1'], ['antigravity', '0.1.17', '0.1.20']]) {
     const binding = { engine, connection: 'api' }, key = engine + ':api';
     installed[key] = previous;

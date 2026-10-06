@@ -13,22 +13,20 @@ const { RemoteCommands } = require('../src/main/remote/commands');
 const { tailscaleAddress, isTailscaleIPv4 } = require('../src/main/remote/tailscale');
 const { SharedConversations, ENGINES } = require('../src/engines/shared-conversations');
 const { removeTree } = require('./test-fs.cjs');
-const restrictedPorts = new Set([1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
-  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179,
-  389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636,
-  989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666,
-  6667, 6668, 6669, 6697, 10080]);
+const { BAD_PORTS } = require('./bad-ports.cjs');
 
 async function flushQueue() { for (let i = 0; i < 6; i++) await new Promise(setImmediate); }
 function queuedRuns(manager, id) {
   const sent = [];
   let gen = 0;
-  manager.drivers.codex.ensure = () => ({ gen: ++gen, sendUserMessage(prompt, attachments) { sent.push({ prompt, attachments }); return true; }, interrupt() {} });
-  return { sent, finish(extra = {}) {
+  const finish = (extra = {}) => {
     const active = manager.active.get(id);
     assert.ok(active, 'Expected an active turn');
     manager.capture('codex', { type: 'result', conversationId: id, runId: active.session?.gen, result: 'Done', subtype: 'success', is_error: false, ...extra });
-  } };
+  };
+  manager.drivers.codex.ensure = () => ({ gen: ++gen, sendUserMessage(prompt, attachments) { sent.push({ prompt, attachments }); return true; },
+    interrupt() { finish({ subtype: 'stopped', result: '' }); } });
+  return { sent, finish };
 }
 
 function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings = null, management = null } = {}) {
@@ -47,7 +45,7 @@ function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings =
   gateway.start = async (host, port, transport) => {
     for (let attempt = 0; attempt < 32; attempt++) {
       const url = await start(host, port, transport);
-      if (port !== 0 || !restrictedPorts.has(gateway.server.address().port)) return url;
+      if (port !== 0 || !BAD_PORTS.has(gateway.server.address().port)) return url;
       await gateway.stop();
     }
     throw new Error('Could not allocate a Fetch-compatible loopback port');
@@ -124,7 +122,8 @@ test('mobile queue supports remove, stop/pause and explicit resume with desktop 
   assert.equal((await execute('queue-remove', { queueId: removed.queueId })).ok, true);
   assert.equal((await execute('queue-remove', { queueId: removed.queueId })).ok, false);
   assert.equal((await execute('stop', { runId: active.runId })).ok, true);
-  runs.finish(); await flushQueue();
+  assert.equal(manager.busy(visible.id), false);
+  await flushQueue();
   assert.equal(runs.sent.length, 1);
   assert.equal(commands.queue.view(visible.id)[0].state, 'paused');
   const resumed = await manager.command('codex', 'remote-queue-resume', { sessionId: visible.id });
@@ -805,16 +804,39 @@ test('legacy read-only and permissionless devices retain tokens and scopes while
   for (const permission of ['read', undefined]) {
     const legacy = { ...access.devices[0], permission };
     fs.writeFileSync(file, JSON.stringify({ devices: [legacy] }));
-    const restored = new RemoteAccess({ file });
+    const restored = new RemoteAccess({ file, now: () => 1000 });
     const device = restored.authenticate(credential.token);
     assert.equal(device.permission, 'control');
     assert.equal(device.id, credential.deviceId);
     assert.deepEqual(device.workspaceIds, ['allowed']);
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).devices, [{ ...legacy, permission: 'control' }]);
-    assert.equal(new RemoteAccess({ file }).authenticate(credential.token).permission, 'control');
+    assert.equal(new RemoteAccess({ file, now: () => 1000 }).authenticate(credential.token).permission, 'control');
     restored.revoke(device.id);
     assert.throws(() => restored.authenticate(credential.token), /authentication/);
   }
+});
+
+test('authenticated device activity is live immediately and persisted at most once a minute', context => {
+  const { root, access, pair, advance } = fixture(context);
+  const credential = pair(), file = path.join(root, 'devices.json');
+  const savedDevice = () => JSON.parse(fs.readFileSync(file, 'utf8')).devices[0];
+  assert.equal(savedDevice().lastSeenAt, 1000);
+  advance(20000);
+  assert.throws(() => access.authenticate('invalid-token'), /authentication/);
+  assert.equal(access.view().devices[0].lastSeenAt, 1000);
+  access.authenticate(credential.token);
+  assert.equal(access.view().devices[0].lastSeenAt, 21000);
+  assert.equal(savedDevice().lastSeenAt, 1000);
+  advance(40000);
+  access.authenticate(credential.token);
+  assert.equal(savedDevice().lastSeenAt, 61000);
+  const restored = new RemoteAccess({ file, now: () => 61000 });
+  assert.equal(restored.view().devices[0].lastSeenAt, 61000);
+  assert.equal(restored.authenticate(credential.token).id, credential.deviceId);
+  assert.deepEqual(savedDevice().workspaceIds, ['allowed']);
+  access.revoke(credential.deviceId);
+  assert.equal(access.lastSeenAt.has(credential.deviceId), false);
+  assert.equal(access.lastSeenPersistedAt.has(credential.deviceId), false);
 });
 
 test('read model isolates workspace scope and strips paths, credentials and native metadata', context => {
@@ -1188,7 +1210,8 @@ test('control operations are scoped, deduplicated, run-bound and retain desktop 
   const credential = pair(); const token = credential.token;
   await gateway.start('127.0.0.1', 0);
   let sent = 0, answered = 0;
-  manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage() { sent++; return true; }, interrupt() {},
+  manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage() { sent++; return true; },
+    interrupt() { manager.capture('codex', { type: 'result', conversationId: visible.id, runId: this.gen, subtype: 'stopped', result: '' }); },
     answerPermission() { answered++; return true; } });
   const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'send', prompt: 'Test instruction', expectedSeq: visible.seq };
   const endpoint = `/v1/conversations/${visible.id}/commands`;
@@ -1215,9 +1238,30 @@ test('control operations are scoped, deduplicated, run-bound and retain desktop 
   const stop = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'stop', runId };
   assert.equal((await send({ ...stop, requestId: require('node:crypto').randomUUID(), runId: runId + 1 })).body.ok, false);
   assert.equal((await send(stop)).body.ok, true); assert.equal(active.cancelled, true);
+  assert.equal(manager.busy(visible.id), false);
   access.revoke(credential.deviceId);
   assert.equal((await send(stop)).status, 401);
   assert.equal(commands.entries.filter(entry => entry.result?.state === 'accepted').length, 1);
+});
+
+test('a slow native stop stays pending until confirmation and duplicate requests interrupt only once', async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token);
+  let interrupted = 0;
+  manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage() { return true; }, interrupt() { interrupted++; } });
+  const run = await manager.send('codex', { sessionId: visible.id, prompt: 'Work until interrupted' });
+  const payload = { requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action: 'stop', runId: run.runId };
+  const execute = () => commands.execute(device, visible.id, payload, gateway.instanceId);
+  assert.equal((await execute()).state, 'pending');
+  assert.equal(manager.busy(visible.id), true);
+  assert.equal(interrupted, 1);
+  const repeated = execute();
+  manager.capture('codex', { type: 'result', conversationId: visible.id, runId: 42, subtype: 'stopped', result: '' });
+  assert.equal((await repeated).ok, true);
+  assert.equal((await execute()).ok, true);
+  assert.equal(manager.busy(visible.id), false);
+  assert.equal(interrupted, 1);
+  assert.equal((await run.done).subtype, 'stopped');
 });
 
 test('ordinary remote questions deliver native answers once and reject stale requests', async context => {

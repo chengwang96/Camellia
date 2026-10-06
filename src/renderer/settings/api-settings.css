@@ -26,11 +26,12 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 .primary { background: var(--dsw-static-deepseek-500); color: #fff; border-color: transparent; }
 .primary:hover { background: var(--dsw-static-deepseek-400); }
 .danger, .error { color: var(--dsw-alias-state-error-primary); }
-.settings-nav { flex: 0 0 192px; background: var(--dsw-specific-sidebar-fill); padding: 28px 12px 20px; display: flex; flex-direction: column; border-right: 1px solid var(--dsw-alias-border-l2); }
+.settings-nav { flex: 0 0 192px; min-height: 0; background: var(--dsw-specific-sidebar-fill); padding: 28px 12px 20px; display: flex; flex-direction: column; border-right: 1px solid var(--dsw-alias-border-l2); }
 .settings-brand { display: flex; align-items: center; gap: 10px; padding: 0 12px 28px; font-weight: 600; }
 .settings-brand small { display: block; font-weight: 400; }
-.settings-nav nav { display: grid; gap: 5px; }
+.settings-nav nav { display: grid; gap: 5px; min-height: 0; overflow-y: auto; }
 .settings-nav nav button { display: flex; align-items: center; gap: 9px; text-align: left; border: 0; border-radius: 10px; padding: 10px 12px; }
+.settings-nav nav [data-view="data"] { white-space: normal; }
 .settings-nav .nav-icon { display: block; width: 18px; height: 18px; flex: 0 0 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; color: var(--dsw-alias-label-secondary); }
 .settings-nav nav button:is(:hover, :focus-visible, .active) .nav-icon { color: var(--dsw-alias-label-primary); }
 .settings-nav nav button.active { background: var(--dsw-specific-sidebar-nav-item-active); font-weight: 600; }
@@ -41,6 +42,10 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 .settings-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #mobilePage .mobile-section { padding: 24px 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
 #mobilePage .mobile-section:first-child { padding-top: 0; }
+#mobilePage .mobile-connection-card, #mobilePage .mobile-pair-card { padding: 20px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-layer-1); margin-bottom: 16px; }
+#mobilePage .mobile-connection-card { border-left: 3px solid var(--dsw-alias-state-success-primary); }
+#mobilePage .mobile-pair-card { border-left: 3px solid var(--dsw-static-deepseek-500); }
+#mobilePage .mobile-section:first-child { padding-top: 20px; }
 #mobilePage .mobile-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
 #mobilePage .mobile-heading h2 { margin-bottom: 0; }
 #mobile-status { color: var(--dsw-alias-label-tertiary); }
@@ -50,7 +55,7 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 #mobilePage .mobile-address, #mobile-code { font: var(--f-code); overflow-wrap: anywhere; }
 #mobilePage #mobile-invitation code { display: block; margin-top: 10px; }
 #mobilePage .mobile-connection-row, #mobilePage .name-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-#mobilePage .mobile-connection-row { margin-top: 12px; }
+#mobilePage .mobile-connection-row { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--dsw-alias-bg-soft); }
 #mobilePage .mobile-address { flex: 1 1 220px; min-width: 0; margin: 0; }
 #mobilePage .name-row input { flex: 1 1 160px; width: auto; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 8px 12px; }
 #mobilePage .mobile-heading > button, #mobilePage .mobile-connection-row > button, #mobilePage .name-row > button { flex: 0 0 auto; white-space: nowrap; }
@@ -58,16 +63,27 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 #mobilePage .mobile-help summary { width: fit-content; cursor: pointer; color: var(--dsw-alias-label-secondary); font: var(--f-xxs-12); }
 #mobilePage .mobile-help summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 4px; }
 #mobile-invitation { margin-top: 16px; padding: 16px; border-radius: 12px; background: var(--dsw-alias-bg-soft); }
-#mobilePage .device { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 12px; padding: 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; }
+#mobilePage .mobile-pair-layout { display: grid; grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); align-items: center; gap: 24px; }
+#mobilePage .mobile-pair-details { min-width: 0; }
+#mobilePage .mobile-pair-details .hint { margin: 8px 0; }
+#mobilePage .mobile-pair-details code { display: block; margin-bottom: 8px; font-size: 16px; }
+#mobilePage .qr { display: grid; place-items: center; min-height: 220px; border-radius: 12px; background: #fff; }
+#mobilePage .qr img, #mobilePage .pairing-qr { width: min(100%, 220px); height: auto; aspect-ratio: 1; }
+#mobilePage .mobile-pair-success { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 14px 16px; border-radius: 12px; background: var(--dsw-alias-state-success-tertiary); color: var(--dsw-alias-label-primary); }
+#mobilePage .mobile-pair-success > div { display: grid; flex: 1; gap: 3px; min-width: 0; }
+#mobilePage .mobile-success-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--dsw-alias-state-success-primary); color: #fff; font-weight: 700; }
+#mobilePage .device { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 12px; padding: 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }
+#mobilePage .device-icon { flex: 0 0 34px; width: 34px; height: 34px; padding: 7px; border-radius: 9px; background: var(--dsw-alias-bg-soft); fill: none; stroke: var(--dsw-alias-label-secondary); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 #mobilePage .name { flex: 1 1 180px; min-width: 0; }
 #mobilePage .device small { display: block; margin-top: 4px; color: var(--dsw-alias-label-tertiary); }
+#mobilePage .device-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 5px; }
 #mobilePage .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 #mobilePage button { white-space: normal; }
 #mobile-error { color: var(--dsw-alias-state-error-primary); }
 .page-head { padding: 30px 32px 22px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .page-head p { font-size: 13px; color: var(--dsw-alias-label-secondary); }
-.page-head > button { margin-top: 4px; }
 .scroll-content { flex: 1; min-height: 0; overflow-y: auto; padding: 0 32px 30px; }
+@media (max-width: 760px) { #mobilePage .mobile-pair-layout { grid-template-columns: minmax(0, 1fr); } #mobilePage .qr { min-height: 0; padding: 10px; } }
 .toolbar, .section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
 .toolbar > :first-child, .section-head > h2 { flex: 1; margin: 0; }
 .toolbar-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
@@ -113,7 +129,10 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 .editor-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
 .editor-heading input { font-size: 20px; font-weight: 600; border-color: transparent; background: transparent; padding-left: 0; }
 .editor-heading label { display: flex; align-items: center; white-space: nowrap; gap: 6px; margin: 0; font-size: 12px; }
-.section { border-top: 1px solid var(--dsw-alias-border-l2); padding-top: 22px; margin-top: 24px; }
+/* One divider convention on the settings pages: the block above owns the rule
+   (see .setting-row, .quick-switch-row, .runtime-card), so a titled section
+   never paints a second top rule directly beneath it. */
+.section { padding-top: 22px; margin-top: 24px; }
 .key-card { border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; margin: 12px 0; padding: 12px 14px; }
 .key-row { display: flex; gap: 8px; align-items: center; }
 .key-row .key-name { width: 118px; flex: 0 0 118px; }
@@ -251,6 +270,12 @@ dialog::backdrop { background: #15203438; }
 dialog > label { margin-top: 20px; font-size: 12px; }
 dialog > select { width: 100%; }
 dialog > button { display: block; margin: 20px 0 0 auto; }
+.import-scope { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; margin: 0; border-bottom: 1px solid var(--dsw-alias-border-l2); font-size: 13px; }
+.import-scope input { margin-top: 2px; }
+.import-scope > span { display: flex; flex-direction: column; gap: 2px; }
+.import-scope .hint { margin: 0; }
+.import-scope:has(input:disabled) { opacity: .55; cursor: default; }
+#importDataError { margin: 12px 0 0; }
 #catalogList { margin-top: 12px; max-height: 45vh; overflow-y: auto; }
 .catalog-option { display: flex; align-items: center; gap: 10px; padding: 10px 4px; margin: 0; border-bottom: 1px solid var(--dsw-alias-border-l2); font-size: 13px; overflow-wrap: anywhere; }
 @media (max-width: 950px) {
@@ -325,7 +350,7 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
 .subscription-card { container-type: inline-size; min-width: 0; display: flex; flex-direction: column; padding: 20px 20px 16px; border: 1px solid var(--subscription-border); border-radius: 20px; background: var(--subscription-surface); box-shadow: var(--subscription-shadow); transition: border-color var(--dt-fast) var(--ds-ease-in-out), box-shadow var(--dt-fast) var(--ds-ease-in-out); }
 .subscription-card.active { border-color: var(--subscription-blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--subscription-blue) 11%, transparent), var(--subscription-shadow); }
 .subscription-card header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; min-height: 28px; }
-.subscription-card header > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "Segoe UI Variable Display", var(--dsw-font-family); font-size: 17px; font-weight: 650; line-height: 26px; letter-spacing: -.2px; }
+.subscription-card header > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "Segoe UI Variable Display", var(--dsw-font-family); font-size: 16px; font-weight: 650; line-height: 24px; letter-spacing: -.2px; }
 .subscription-badges { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .subscription-current, .subscription-plan { max-width: 100%; padding: 3px 10px; border: 1px solid transparent; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
 .subscription-current { color: #fff; background: #0b9655; }
@@ -334,15 +359,16 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
 .subscription-plan.premium { color: light-dark(#724600, #ffe0a0); background: linear-gradient(135deg, light-dark(#fff7dc, #624f30), light-dark(#f7cc72, #785622)); border-color: light-dark(#e7b64c, #967036); box-shadow: inset 0 1px 0 #ffffff70, 0 2px 4px #8f5d1418; }
 .subscription-identity-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-top: 10px; }
 .subscription-meta { min-width: 0; margin-top: 20px; }
-.subscription-card .subscription-note-text { flex: 1 1 90px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--subscription-muted); font-size: 13px; line-height: 20px; }
+.subscription-card .subscription-note-text { flex: 1 1 90px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--subscription-muted); font-size: 12px; line-height: 18px; }
 /* Do not reuse .empty: it is a page-sized placeholder with large padding. */
 .subscription-card .subscription-note-text.is-empty { color: var(--subscription-muted); }
 .subscription-note { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
 .subscription-note input { flex: 1 1 120px; width: auto; }
 .subscription-note button { padding: 4px 9px; }
-.subscription-state { display: flex; align-items: center; gap: 6px; min-width: 0; margin: 0; font-size: 13px; line-height: 20px; color: var(--subscription-muted); overflow-wrap: anywhere; }
+.subscription-state { display: flex; align-items: center; gap: 6px; min-width: 0; margin: 0; font-size: 12px; line-height: 18px; color: var(--subscription-muted); overflow-wrap: anywhere; }
 .subscription-state.signed-in { color: var(--subscription-green); }
 .subscription-state.pending { flex-basis: 100%; color: var(--subscription-gold); }
+.subscription-state.stale { flex-basis: 100%; color: var(--subscription-gold); }
 .subscription-state:is(.error, .exhausted) { flex-basis: 100%; color: var(--subscription-red); }
 .subscription-state i { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: currentColor; }
 .subscription-meters { flex: 1; padding: 22px 0 0; }
@@ -351,14 +377,14 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
 .subscription-meter.critical { --meter-color: var(--subscription-red); --meter-fill: light-dark(#dc4c59, #ff939d); }
 .subscription-meter.unknown { --meter-color: var(--subscription-muted); }
 .subscription-meter + .subscription-meter { margin-top: 16px; }
-.subscription-meter-head { min-width: 0; overflow-wrap: anywhere; color: var(--subscription-muted); font-size: 14px; font-weight: 600; line-height: 20px; }
+.subscription-meter-head { min-width: 0; overflow-wrap: anywhere; color: var(--subscription-muted); font-size: 13px; font-weight: 600; line-height: 18px; }
 .subscription-meter-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 24px; }
 .subscription-meter strong { grid-column: 2; min-width: 3.5ch; text-align: right; color: var(--meter-color); font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .subscription-meter progress { display: block; width: 100%; height: 6px; margin: 0; border: 0; border-radius: 6px; overflow: hidden; appearance: none; background: var(--subscription-tool-bg); }
 .subscription-meter progress::-webkit-progress-bar { background: var(--subscription-tool-bg); }
 .subscription-meter progress::-webkit-progress-value { background: var(--meter-fill); border-radius: 6px; }
 .subscription-meter progress::-moz-progress-bar { background: var(--meter-fill); border-radius: 6px; }
-.subscription-meter small, .subscription-checked { color: var(--subscription-muted); font-size: 13px; line-height: 20px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.subscription-meter small, .subscription-checked { color: var(--subscription-muted); font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .subscription-meter small { display: block; }
 .subscription-card .subscription-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 14px; padding: 14px 0 0; min-height: 0; border-top: 1px solid color-mix(in srgb, var(--subscription-border) 70%, transparent); }
 .subscription-actions-tools, .subscription-actions-main { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }

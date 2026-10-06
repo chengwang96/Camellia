@@ -179,8 +179,10 @@ final class ModelPickerPopup {
         body.addView(row(tr("思考等级", "Thinking level"), selected == null ? tr("未选择模型", "No model selected") : selected.displayName(), "down", false, "thinkingBack", this::models));
         divider(body);
         boolean supported = LocalChatThinking.supported(selected);
-        for (String option : LocalChatThinking.LEVELS) {
+        for (String option : LocalChatThinking.menu(selected)) {
             String description = option.equals("auto") ? tr("遵循模型默认，不额外设置参数", "Use the model’s default settings")
+                : option.equals("off") ? tr("不进行额外思考", "No extra reasoning")
+                : option.equals("low") ? tr("更快、更省，适合简单任务", "Faster and cheaper for simple tasks")
                 : option.equals("medium") ? tr("平衡思考深度与响应速度", "Balance reasoning and response speed")
                 : tr("投入更多思考，可能增加耗时与费用", "More reasoning; may take longer and cost more");
             View choice = row(LocalChatThinking.label(option, chinese), description, null, option.equals(level), "thinkingOption:" + option,

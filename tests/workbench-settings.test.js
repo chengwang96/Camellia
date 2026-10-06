@@ -28,16 +28,61 @@ test('global memory validates a user folder, persists across restart and partial
   } finally { first.cleanup(); }
 });
 
-test('settings separates general, engine and model preferences and starts on General', () => {
+test('settings separates general, data, engine and model preferences and starts on General', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
   const categories = [...html.matchAll(/<button data-view="([^"]+)"/g)].map(match => match[1]);
-  // Network owns the connection settings and sits between General and the
-  // per-engine pages; the general preferences page stays first and active.
-  assert.deepEqual(categories, ['subscriptions', 'providers', 'usage', 'general', 'network',
+  assert.deepEqual(categories, ['subscriptions', 'providers', 'usage', 'general', 'data', 'network',
     'engines', 'models', 'archived', 'mobile', 'devices']);
   assert.match(html, /<button data-view="general" class="active" aria-current="page"/);
   assert.match(html, /<section id="generalPage" class="page">/);
   assert.match(html, /<section id="providersPage" class="page" hidden>/);
+  assert.match(html, /<section id="dataPage" class="page" hidden>/);
+});
+
+test('data directory, transfer and cleanup controls live only on the data page', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.html'), 'utf8');
+  const general = html.slice(html.indexOf('<section id="generalPage"'), html.indexOf('<section id="dataPage"'));
+  const data = html.slice(html.indexOf('<section id="dataPage"'), html.indexOf('<section id="modelsPage"'));
+  const archived = html.slice(html.indexOf('<section id="archivedPage"'), html.indexOf('<section id="devicesPage"'));
+  for (const id of ['dataPath', 'migrateDataDirectory', 'openLogs', 'exportData', 'importData', 'storageSection', 'scanStorage', 'cleanStorage']) {
+    assert.ok(data.includes(`id="${id}"`), id + ' belongs to Data & backups');
+    assert.ok(!general.includes(`id="${id}"`), id + ' does not belong to General');
+    assert.ok(!archived.includes(`id="${id}"`), id + ' does not belong to Archived');
+    assert.equal(html.split(`id="${id}"`).length - 1, 1, id + ' has one control');
+  }
+  for (const id of ['memoryDirectory', 'language', 'theme', 'checkAppUpdate', 'version']) assert.ok(general.includes(`id="${id}"`));
+  assert.match(archived, /id="archivedList"/);
+  assert.match(archived, /id="deleteAllArchived"/);
+});
+
+test('data navigation preserves older storage links and General targets', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.js'), 'utf8');
+  const navigation = source.slice(source.indexOf('function setView('), source.indexOf('function navigateSettings('));
+  const elements = new Map(), scrolled = [];
+  const context = vm.createContext({
+    isDirty: () => false,
+    titles: { general: ['General', ''], data: ['Data & backups', ''], archived: ['Archived', ''] },
+    $: id => {
+      if (!elements.has(id)) elements.set(id, { closest: () => (['storageSection', 'exportData', 'dataPath'].includes(id) ? {} : null),
+        scrollIntoView: () => scrolled.push(id) });
+      return elements.get(id);
+    },
+    document: { querySelectorAll: () => [] },
+    engineUI: { setVisible() {}, pythonPage() {} },
+    window: { mobileAccessUI: { setVisible() {} } },
+    requestAnimationFrame: callback => callback(),
+  });
+  vm.runInContext(navigation, context);
+  for (const [page, focus] of [['data'], ['storage'], ['general', 'exportData'], ['general', 'dataPath']]) {
+    context.setView(page, undefined, focus);
+    assert.equal(context.view, 'data');
+    assert.equal(elements.get('dataPage').hidden, false);
+    assert.equal(elements.get('generalPage').hidden, true);
+    assert.equal(elements.get('archivedPage').hidden, true);
+  }
+  assert.deepEqual(scrolled, ['storageSection', 'exportData', 'dataPath']);
+  context.setView('data', undefined, 'memoryDirectory');
+  assert.deepEqual(scrolled, ['storageSection', 'exportData', 'dataPath']);
 });
 
 test('settings navigation defaults to General and preserves explicit destinations', () => {
@@ -50,11 +95,13 @@ test('settings navigation defaults to General and preserves explicit destination
   context.navigateSettings({});
   context.navigateSettings({ page: 'engines', engine: 'codex', focus: 'account' });
   context.navigateSettings({ page: 'providers' });
+  context.navigateSettings({ page: 'data' });
   assert.deepEqual(calls, [
     ['general', undefined, undefined],
     ['general', undefined, undefined],
     ['engines', 'codex', 'account'],
     ['providers', undefined, undefined],
+    ['data', undefined, undefined],
   ]);
 });
 
@@ -247,6 +294,12 @@ test('quick-switch defaults persist per engine, clear independently, and preserv
   } finally { harness.cleanup(); }
 });
 
+test('settings navigation is available before API router configuration loads', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.js'), 'utf8');
+  assert.match(source, /document\.querySelector\('\.settings-nav nav'\)\.onclick = e => \{ const button = e\.target\.closest\('\[data-view\]'\); if \(button\) setView\(button\.dataset\.view\); \};/);
+  assert.match(source, /navigateSettings\(Object\.fromEntries\(new URLSearchParams\(location\.search\)\)\);\s*void refresh\(true\);/);
+});
+
 test('hidden subscription models persist by provider without changing routes or other preferences', () => {
   const first = createHarness();
   try {
@@ -272,20 +325,24 @@ test('hidden subscription models persist by provider without changing routes or 
 test('settings initialization preserves navigation made while preferences are loading', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/renderer/settings/api-settings.js'), 'utf8');
   const navigation = source.slice(source.indexOf('function setView('), source.indexOf('const engineUI ='));
-  const startup = source.slice(source.indexOf('void refresh(true)'), source.indexOf('// Closing the window'));
-  for (const [initial, chosen, viaIpc] of [['mobile', null, false], ['general', 'mobile', false], ['mobile', 'general', false], ['general', 'mobile', true]]) {
+  const startup = source.slice(source.indexOf('navigateSettings(Object.fromEntries(new URLSearchParams(location.search)))'), source.indexOf('// Closing the window'));
+  for (const [initial, chosen, viaIpc, dirty] of [['mobile', null, false, false], ['general', 'mobile', false, false], ['mobile', 'general', false, false], ['general', 'mobile', true, false], ['general', 'mobile', false, true]]) {
     let finishLoading;
+    let saves = 0;
     const panels = new Map();
     const context = vm.createContext({
-      hasNavigated: false, view: 'general', titles: { general: ['General', ''], mobile: ['Mobile access', ''] },
+      view: 'general', titles: { general: ['General', ''], mobile: ['Mobile access', ''] },
       $: id => { if (!panels.has(id)) panels.set(id, {}); return panels.get(id); },
       document: { querySelectorAll: () => [] },
       engineUI: { setVisible() {}, pythonPage() {} },
       window: { mobileAccessUI: { setVisible() {} } },
+      isDirty: () => dirty,
+      flushSave: async () => { saves++; },
       refresh: () => new Promise(resolve => { finishLoading = resolve; }),
       URLSearchParams, location: { search: '?page=' + initial },
     });
     vm.runInContext(navigation + '\n' + startup, context);
+    assert.equal(context.view, initial);
     if (chosen) {
       if (viaIpc) context.navigateSettings({ page: chosen });
       else context.setView(chosen);
@@ -295,5 +352,6 @@ test('settings initialization preserves navigation made while preferences are lo
     const expected = chosen || initial;
     assert.equal(context.view, expected);
     assert.equal(panels.get(expected + 'Page').hidden, false);
+    assert.equal(saves, dirty ? (chosen ? 2 : 1) : 0);
   }
 });

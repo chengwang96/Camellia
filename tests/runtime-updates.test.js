@@ -134,25 +134,27 @@ test('check flags the subscription CLI as app-managed and update refuses it', as
   await assert.rejects(() => updates.update('antigravity'), /ships with the app/);
 });
 
-test('npm update installs the latest version in place and asks for a restart', async t => {
+test('npm update installs the latest version and restores the harness without restarting Camellia', async t => {
   const root = fixtureRoot(t);
   const dir = npmRuntime(root, 'kimi', '0.43.0');
   const registries = await registryFixture(t, { '@moonshot-ai/kimi-code': '0.43.1' });
   const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere') });
   const calls = [];
   const run = async (exe, args) => {
+    lifecycle.push('install');
     calls.push(args);
     const spec = args.find(arg => arg.startsWith('@moonshot-ai/kimi-code@'));
     const version = spec.slice('@moonshot-ai/kimi-code@'.length);
     fs.writeFileSync(path.join(dir, 'node_modules', '@moonshot-ai', 'kimi-code', 'package.json'),
       JSON.stringify({ name: '@moonshot-ai/kimi-code', version }));
   };
-  let prompt = null;
+  const lifecycle = [];
   const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: '/node', npm: '/npm-cli.js', run,
-    downloadSettings: direct, registries, promptRestart: async (name, from, to) => { prompt = { name, from, to }; return false; } });
+    downloadSettings: direct, registries,
+    beforeInstall: async () => { lifecycle.push('stop'); return async () => { lifecycle.push('restore'); }; } });
   const result = await updates.update('kimi');
-  assert.deepEqual({ ...result }, { ok: true, engine: 'kimi', from: '0.43.0', to: '0.43.1', changed: true, restartRequired: true, restarting: false });
-  assert.deepEqual(prompt, { name: 'Kimi Code', from: '0.43.0', to: '0.43.1' });
+  assert.deepEqual({ ...result }, { ok: true, engine: 'kimi', from: '0.43.0', to: '0.43.1', changed: true, restartRequired: false, restarting: false });
+  assert.deepEqual(lifecycle, ['stop', 'install', 'restore']);
   assert.equal(calls.length, 1);
   const args = calls[0];
   assert.ok(args.includes('install') && args.includes('--save-exact'), `npm install args: ${args.join(' ')}`);
@@ -161,18 +163,78 @@ test('npm update installs the latest version in place and asks for a restart', a
   assert.equal(manager.locate('kimi').version, '0.43.1');
 });
 
-test('update with no newer version changes nothing and skips the restart prompt', async t => {
+test('update with no newer version leaves the running harness alone', async t => {
   const root = fixtureRoot(t);
   npmRuntime(root, 'claude', '2.1.0');
   const registries = await registryFixture(t, { '@anthropic-ai/claude-code': '2.1.0' });
   const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere') });
-  let prompted = false, ran = false;
+  let stopped = false, ran = false;
   const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: '/node', npm: '/npm-cli.js',
-    run: async () => { ran = true; }, downloadSettings: direct, registries, promptRestart: async () => { prompted = true; return false; } });
+    run: async () => { ran = true; }, downloadSettings: direct, registries, beforeInstall: async () => { stopped = true; } });
   const result = await updates.update('claude');
   assert.deepEqual({ ...result }, { ok: true, engine: 'claude', from: '2.1.0', to: '2.1.0', changed: false, restartRequired: false, restarting: false });
   assert.equal(ran, false, 'No installer runs when already up to date');
-  assert.equal(prompted, false);
+  assert.equal(stopped, false);
+});
+
+test('update waits for runtime users to stop before installing', async t => {
+  const root = fixtureRoot(t);
+  const dir = npmRuntime(root, 'claude', '2.1.0');
+  const registries = await registryFixture(t, { '@anthropic-ai/claude-code': '2.2.0' });
+  const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere') });
+  let release, entered;
+  const stopped = new Promise(resolve => { release = resolve; });
+  const stopping = new Promise(resolve => { entered = resolve; });
+  let installed = false;
+  const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: '/node', npm: '/npm-cli.js',
+    downloadSettings: direct, registries,
+    beforeInstall: async () => { entered(); await stopped; },
+    run: async () => {
+      installed = true;
+      fs.writeFileSync(path.join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'package.json'),
+        JSON.stringify({ name: '@anthropic-ai/claude-code', version: '2.2.0' }));
+    } });
+  const pending = updates.update('claude');
+  await stopping;
+  assert.equal(updates.isUpdating('claude'), true);
+  assert.equal(installed, false);
+  release();
+  await pending;
+  assert.equal(installed, true);
+  assert.equal(updates.isUpdating('claude'), false);
+});
+
+test('harness stays unavailable until its previous service has been restored', async t => {
+  const root = fixtureRoot(t);
+  const dir = npmRuntime(root, 'claude', '2.1.0');
+  const registries = await registryFixture(t, { '@anthropic-ai/claude-code': '2.2.0' });
+  const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere') });
+  const restoring = Promise.withResolvers(), finishRestore = Promise.withResolvers();
+  const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: '/node', npm: '/npm-cli.js',
+    downloadSettings: direct, registries,
+    beforeInstall: async () => async () => { restoring.resolve(); await finishRestore.promise; },
+    run: async () => fs.writeFileSync(path.join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'package.json'),
+      JSON.stringify({ name: '@anthropic-ai/claude-code', version: '2.2.0' })) });
+  const pending = updates.update('claude');
+  await restoring.promise;
+  assert.equal(updates.isUpdating('claude'), true);
+  finishRestore.resolve();
+  assert.equal((await pending).restartRequired, false);
+  assert.equal(updates.isUpdating('claude'), false);
+});
+
+test('a failed service restoration reports the update result and releases the updating state', async t => {
+  const root = fixtureRoot(t);
+  const dir = npmRuntime(root, 'claude', '2.1.0');
+  const registries = await registryFixture(t, { '@anthropic-ai/claude-code': '2.2.0' });
+  const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere') });
+  const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: '/node', npm: '/npm-cli.js',
+    downloadSettings: direct, registries,
+    beforeInstall: async () => async () => { throw new Error('startup failed'); },
+    run: async () => fs.writeFileSync(path.join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'package.json'),
+      JSON.stringify({ name: '@anthropic-ai/claude-code', version: '2.2.0' })) });
+  await assert.rejects(updates.update('claude'), /updated to v2\.2\.0, but could not restart: startup failed/);
+  assert.equal(updates.isUpdating('claude'), false);
 });
 
 test('concurrent updates of one engine share a single task', async t => {
@@ -201,12 +263,10 @@ test('antigravity API runtime upgrades its SDK through the bundled installer', a
     calls.push({ exe, args });
     if (args[0] === 'pip' && args[1] === 'compile') fs.writeFileSync(args[args.indexOf('--output-file') + 1], '# lock\n');
   };
-  let prompt = null;
   const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: null, npm: null, run,
-    downloadSettings: direct, registries, promptRestart: async (name, from, to) => { prompt = { name, from, to }; return true; } });
+    downloadSettings: direct, registries });
   const result = await updates.update('antigravity');
-  assert.deepEqual({ ...result }, { ok: true, engine: 'antigravity', from: '0.1.17', to: '0.2.0', changed: true, restartRequired: true, restarting: true });
-  assert.deepEqual(prompt, { name: 'Antigravity', from: '0.1.17', to: '0.2.0' });
+  assert.deepEqual({ ...result }, { ok: true, engine: 'antigravity', from: '0.1.17', to: '0.2.0', changed: true, restartRequired: false, restarting: false });
   const compile = calls.find(call => call.args[0] === 'pip' && call.args[1] === 'compile');
   assert.ok(compile, 'uv pip compile regenerates the lockfile');
   assert.ok(compile.args.includes('--generate-hashes') && compile.args.includes('--universal'));
@@ -221,7 +281,7 @@ test('antigravity API runtime upgrades its SDK through the bundled installer', a
 });
 
 for (const failures of [[], ['kimi'], ['claude'], ['claude', 'kimi']]) {
-  test(`concurrent updates publish persistent state and prompt only after the last settles (failures: ${failures.join(', ') || 'none'})`, async t => {
+  test(`concurrent updates restore each harness and publish state independently (failures: ${failures.join(', ') || 'none'})`, async t => {
     const root = fixtureRoot(t);
     const ids = ['claude', 'kimi'];
     const directories = Object.fromEntries(ids.map(id => [id, npmRuntime(root, id, '1.0.0')]));
@@ -229,9 +289,13 @@ for (const failures of [[], ['kimi'], ['claude'], ['claude', 'kimi']]) {
     const manager = createRuntimeManager({ root, installRoot: path.join(root, 'elsewhere'), discoverLocal: false });
     const gates = Object.fromEntries(ids.map(id => [id, Promise.withResolvers()]));
     const started = Object.fromEntries(ids.map(id => [id, Promise.withResolvers()]));
-    const snapshots = [], prompts = [], calls = [];
+    const snapshots = [], restorations = [], calls = [];
     const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: '/node', npm: '/npm-cli.js',
       downloadSettings: direct, registries, onChange: rows => snapshots.push(rows),
+      beforeInstall: async id => async ({ updated, error }) => {
+        assert.equal(updates.isUpdating(id), true);
+        restorations.push({ id, updated, failed: Boolean(error) });
+      },
       run: async (_exe, args) => {
         const id = ids.find(id => args.includes(`${ENGINES[id].package}@2.0.0`));
         calls.push(id);
@@ -240,11 +304,6 @@ for (const failures of [[], ['kimi'], ['claude'], ['claude', 'kimi']]) {
         if (failures.includes(id)) throw new Error(`${id} installation failed`);
         fs.writeFileSync(path.join(directories[id], 'node_modules', ENGINES[id].package, 'package.json'),
           JSON.stringify({ name: ENGINES[id].package, version: '2.0.0' }));
-      },
-      promptRestart: async (_name, _from, _to, batch) => {
-        assert.equal(updates.state().some(row => row.updating), false);
-        prompts.push(batch);
-        return false;
       } });
     const first = updates.update('claude');
     const second = updates.update('kimi');
@@ -256,20 +315,18 @@ for (const failures of [[], ['kimi'], ['claude'], ['claude', 'kimi']]) {
     gates.claude.resolve();
     const firstResult = await firstSettled;
     assert.equal(firstResult instanceof Error, failures.includes('claude'));
-    assert.equal(prompts.length, 0, 'Never prompt while another installation is running');
+    assert.deepEqual(restorations.map(row => row.id), ['claude']);
     assert.deepEqual(updates.state().filter(row => row.updating).map(row => row.id), ['kimi']);
     gates.kimi.resolve();
     const secondResult = await secondSettled;
     assert.equal(secondResult instanceof Error, failures.includes('kimi'));
-    const successful = ids.filter(id => !failures.includes(id));
-    assert.equal(prompts.length, successful.length ? 1 : 0);
-    if (successful.length) assert.deepEqual(prompts[0].map(row => row.engine), successful);
+    assert.deepEqual(restorations, ids.map(id => ({ id, updated: !failures.includes(id), failed: failures.includes(id) })));
     assert.equal(updates.state().some(row => row.updating), false);
     assert.equal(snapshots.at(-1).some(row => row.updating), false);
     assert.deepEqual(calls.sort(), ids);
     if (!failures.length) {
       await updates.update('kimi');
-      assert.equal(prompts.length, 1, 'Already completed updates must not be prompted again');
+      assert.equal(restorations.length, 2, 'An up-to-date harness is not stopped again');
     }
   });
 }

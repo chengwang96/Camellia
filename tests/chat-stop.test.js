@@ -7,6 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8').replace(/\r\n/g, '\n');
+const queueSource = source.slice(source.indexOf('  function saveMessageQueue('), source.indexOf("  window.addEventListener('beforeunload'"));
 const sendSource = source.slice(source.indexOf('  async function send('), source.indexOf('    if (editingMessage || !canChangeContext()')) + '\n  }';
 const activitySource = source.slice(source.indexOf('  function handleEvent(ev)'), source.indexOf('    if (restoringRun) { eventsDuringRestore.push(ev); return; }\n    if (sharedChat')) + '\n  }';
 
@@ -14,6 +15,8 @@ function harness(cancel, overrides = {}) {
   const state = {
     running: true, sending: false, loadingSession: false, input: { value: '' }, attachments: [], conversationActivity: 'running', currentRunId: 12, sessionOpenSeq: 1,
     context: { sessionId: 'conversation-a' }, sharedChat: true, restoringRun: false,
+    messageQueue: [], messageQueuePaused: false, conversationQueues: new Map(),
+    draftKey: () => state.context.sessionId, writeUi() {}, renderMessageQueue() {},
     pendingConversationSend: () => null,
     statusText: 'Running…', statusLine: { textContent: 'Running…' }, queueComposerMessage: () => false,
     chatApi: { cancel: payload => cancel(state, payload) },
@@ -22,7 +25,7 @@ function harness(cancel, overrides = {}) {
   };
   state.setStatus = text => { state.statusText = text; state.statusLine.textContent = text; };
   vm.createContext(state);
-  vm.runInContext(sendSource + '\n' + activitySource, state);
+  vm.runInContext(queueSource + '\n' + sendSource + '\n' + activitySource, state);
   return state;
 }
 
@@ -117,4 +120,15 @@ test('shared run can be stopped while its history is still loading', async () =>
   await state.send();
   assert.equal(cancelled, true);
   assert.equal(state.statusText, 'Stopping…');
+});
+
+test('stopping pauses queued messages before awaiting the native reply', async () => {
+  const state = harness(ui => {
+    assert.equal(ui.messageQueuePaused, true);
+    assert.equal(ui.messageQueue.length, 1);
+    return { ok: true };
+  }, { messageQueue: [{ text: 'Wait for resume', attachments: [] }] });
+  await state.send();
+  assert.equal(state.messageQueuePaused, true);
+  assert.equal(state.messageQueue.length, 1);
 });
