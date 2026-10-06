@@ -203,6 +203,7 @@ test('a custom path to a managed tree replaces that tree and clears the override
 test('standalone native migration removes only the selected executable and keeps adjacent files', async t => {
   const f = fixture(t, { engine: 'codex', probe: async () => ({ stdout: 'codex 2.0.0' }) });
   const executable = put(path.join(f.root, 'tools', 'codex.exe'), 'standalone native CLI');
+  fs.chmodSync(executable, 0o755);
   const adjacent = put(path.join(f.root, 'tools', 'keep.exe'), 'another program');
   writeJson(f.config, { codex: { file: executable, version: '1.0.0' } });
   assert.equal(f.manager.reinstallPlan('codex').removal.kind, 'native');
@@ -216,6 +217,7 @@ test('standalone native migration through a directory alias removes the executab
   const f = fixture(t, { engine: 'codex', probe: async () => ({ stdout: 'codex 2.0.0' }) });
   const directory = path.join(f.root, 'tools'), alias = path.join(f.root, 'tools-alias');
   const executable = put(path.join(directory, 'codex.exe'), 'standalone native CLI');
+  fs.chmodSync(executable, 0o755);
   const adjacent = put(path.join(directory, 'keep.exe'), 'another program');
   fs.symlinkSync(directory, alias, process.platform === 'win32' ? 'junction' : 'dir');
   writeJson(f.config, { codex: { file: path.join(alias, 'codex.exe'), version: '1.0.0' } });
