@@ -232,6 +232,7 @@ function defaultConfig() {
     chatContentWidth: 'standard', // Conversation column width: standard | wide | full
     computerName: '',       // Display name of this computer, shared with paired phones.
     downloadProxy: { mode: 'direct', url: '' },
+    subscriptionAutoRefresh: {}, // Per-engine opt-out from the background quota cadence.
   };
 }
 
@@ -356,6 +357,14 @@ async function chooseDownloadConnection(engine) {
 
 let runtimeUpdatesService;
 let appUpdatesService;
+const runtimeReinstallPreviews = new Map();
+function assertRuntimeReinstallAllowed(engine) {
+  assertRuntimeAvailable(engine);
+  if (appUpdatesService?.state().installing) throw new Error('Wait for the Camellia update to finish before updating a runtime');
+  if (benchmarkRunner?.pending || discussionService?.active) throw new Error('Stop the benchmark or discussion before updating a runtime');
+  if (engineBusy(engine)) throw new Error('Stop conversations using this engine before updating it');
+  if (engine === 'kimi' && kimiAccount.active) throw new Error('Wait for Kimi account activity to finish before updating it');
+}
 function anyRuntimeUpdating() { return Object.keys(ENGINES).some(engine => runtimeUpdatesService?.isUpdating(engine)); }
 function assertRuntimeAvailable(engine) {
   if (runtimeUpdatesService?.isUpdating(engine)) throw new Error(`${ENGINES[engine]?.name || engine} is updating. Try again when the update finishes.`);
@@ -549,6 +558,14 @@ function accountRefreshMinutes() {
   return ACCOUNT_REFRESH_MINUTES.includes(value) ? value : 15;
 }
 function accountRefreshEnabled() { return loadConfig().autoRefreshBalances !== false; }
+// A per-engine exception to the global cadence. Antigravity's background quota
+// probe makes the official CLI perform its own Google sign-in when the stored
+// credential read is slow, so a user may keep balance refreshes for every other
+// provider while leaving Antigravity alone. The manual refresh button and an
+// explicit engine check never consult this.
+function subscriptionAutoRefreshEnabled(engine) {
+  return loadConfig().subscriptionAutoRefresh?.[engine] !== false;
+}
 
 // The middle conversation column is readable at its standard width; a wider or
 // full-width column helps comparisons, tables and diffs on large screens.
@@ -611,7 +628,11 @@ async function refreshInsights(payload = {}) {
   const codexIds = !payload.apiOnly && !payload.providerId && !payload.keyId
     ? codex.accountState().accounts.filter(account => account.signedIn && !runtimeUpdatesService?.isUpdating('codex') && (!wanted || wanted === 'codex:' + account.id)).map(account => account.id) : [];
   const google = antigravity.handlers['account-state']();
-  const refreshGoogle = !payload.apiOnly && !payload.providerId && !payload.keyId
+  // The timer's background pass sends force:false; a manual refresh and an
+  // explicit engine check send force:true. Only the background pass honors the
+  // per-engine opt-out, so turning it off never strands the quota.
+  const background = payload.force === false;
+  const refreshGoogle = (!background || subscriptionAutoRefreshEnabled('antigravity')) && !payload.apiOnly && !payload.providerId && !payload.keyId
     && !runtimeUpdatesService?.isUpdating('antigravity') && (!wanted || wanted === 'antigravity:default') && google.models?.length && google.verifiedAt && !google.awaitingVerification;
   await Promise.all([
     payload.subscriptionId ? null : insights().refresh(payload),
@@ -756,14 +777,14 @@ function claudeSpawnSpec(settings, opts) {
   // Thinking intensity → --effort (matches DSH 推理等级: low|medium|high|xhigh|max).
   // '' = Default (flag omitted); 'off' goes through MAX_THINKING_TOKENS=0.
   const thinking = settings.thinkingBudget;
-  if (thinking && thinking !== 'off') args.push('--effort', thinking);
+  if (thinking && !['off', 'none'].includes(thinking)) args.push('--effort', thinking);
 
   // Unified routing: the proxy owns upstream credentials for every harness.
   const route = resolveClaudeRoute();
   if (!settings.model) throw new Error("Select a configured model in the composer first");
   const overlayEnv = { ...managedClaudeModelEnv(settings.model),
     ANTHROPIC_BASE_URL: route.baseUrl, ANTHROPIC_AUTH_TOKEN: route.authToken, ANTHROPIC_API_KEY: '' };
-  if (thinking === 'off') overlayEnv.MAX_THINKING_TOKENS = '0';
+  if (['off', 'none'].includes(thinking)) overlayEnv.MAX_THINKING_TOKENS = '0';
   // ~/.claude/settings.json 的 env 块优先级高于进程环境变量（会覆盖上面
   // 的设置）——用 --settings overlay 反压回去（命令行设置 > 用户设置）。
   // 写到 userData 文件而不是内联 JSON，避免密钥出现在命令行里。
@@ -1107,6 +1128,7 @@ const antigravity = createAntigravity({ dataDir: app.getPath('userData'), loadCo
 
 const dshChat = createDshChat({ dataDir: app.getPath('userData'), loadConfig, saveConfig, getRoute: resolveClaudeRoute,
   getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
+  getModelThinking: model => routerConfig.publicState(readOllamaProxyConfig()).modelThinking[model],
   runtime: () => ({ file: detectDshBin() }), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'dsh'),
   onEvent: event => publishChatEvent('dsh', event), log });
 const piChat = createPiChat({ dataDir: app.getPath('userData'), loadConfig, saveConfig, getRoute: resolveClaudeRoute,
@@ -1750,6 +1772,22 @@ if (!gotSingleInstanceLock) {
       if (engine === 'kimi' && kimiAccount.active) throw new Error('Wait for Kimi account activity to finish before updating it');
       return runtimeUpdates().update(engine);
     },
+    'runtime-reinstall-preview': ({ engine }) => {
+      assertRuntimeReinstallAllowed(engine);
+      const plan = runtimes().reinstallPlan(engine);
+      const token = require('node:crypto').randomUUID();
+      runtimeReinstallPreviews.set(engine, { token, plan, expiresAt: Date.now() + 5 * 60 * 1000 });
+      return { ok: true, engine, token, name: ENGINES[engine].name, file: plan.file, destination: plan.destination };
+    },
+    'runtime-reinstall': async ({ engine, token }) => {
+      assertRuntimeReinstallAllowed(engine);
+      const preview = runtimeReinstallPreviews.get(engine);
+      if (!preview || !token || token !== preview.token || Date.now() > preview.expiresAt) {
+        throw new Error('Review the installation paths before reinstalling this CLI');
+      }
+      runtimeReinstallPreviews.delete(engine);
+      return runtimeUpdates().reinstall(engine, preview.plan);
+    },
     'network-settings': async () => ({ ok: true, ...await networkSettings().detect() }),
     'network-test': () => networkSettings().testConnectivity(),
     'network-save-settings': async payload => {
@@ -1824,6 +1862,7 @@ if (!gotSingleInstanceLock) {
   });
   ipcMain.handle('dsh:workbench-settings', () => ({ ok: true, language: normalizeLanguage(loadConfig().language), theme: loadConfig().theme || 'system',
     conversations: conversationPreferences(loadConfig()), autoRefreshBalances: accountRefreshEnabled(), accountRefreshMinutes: accountRefreshMinutes(),
+    subscriptionAutoRefresh: { antigravity: subscriptionAutoRefreshEnabled('antigravity'), codex: subscriptionAutoRefreshEnabled('codex'), kimi: subscriptionAutoRefreshEnabled('kimi') },
     closeToTray: loadConfig().closeToTray === true,
     memoryDirectory: loadConfig().memoryDirectory || '',
     quickSwitchModels: loadConfig().quickSwitchModels || {},
@@ -1887,6 +1926,17 @@ if (!gotSingleInstanceLock) {
           }
           if (ids.length) patch.hiddenSubscriptionModels[engine] = [...new Set(ids)];
           else delete patch.hiddenSubscriptionModels[engine];
+        }
+      }
+      if (payload?.subscriptionAutoRefresh !== undefined) {
+        const engines = payload.subscriptionAutoRefresh;
+        if (!engines || typeof engines !== 'object' || Array.isArray(engines)) throw new Error('Invalid subscription auto-refresh preference');
+        patch.subscriptionAutoRefresh = { ...loadConfig().subscriptionAutoRefresh };
+        for (const [engine, enabled] of Object.entries(engines)) {
+          if (!SUBSCRIPTION_MODEL_ENGINES.includes(engine) || typeof enabled !== 'boolean') throw new Error('Invalid subscription auto-refresh preference');
+          // Only an opt-out is stored, so an untouched engine keeps the default.
+          if (enabled) delete patch.subscriptionAutoRefresh[engine];
+          else patch.subscriptionAutoRefresh[engine] = false;
         }
       }
       saveConfig(patch);

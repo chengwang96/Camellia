@@ -28,14 +28,14 @@ function claudeSpec({ settings, opts, home, route, environment, history, mcpFile
   if (permission !== 'default') args.push('--permission-mode', permission);
   if (!settings.model) throw new Error('Choose a model on this server before sending');
   args.push('--model', settings.model);
-  if (settings.thinkingBudget && settings.thinkingBudget !== 'off') args.push('--effort', settings.thinkingBudget);
+  if (settings.thinkingBudget && !['off', 'none'].includes(settings.thinkingBudget)) args.push('--effort', settings.thinkingBudget);
   const overlay = {};
   if (settings.connection !== 'subscription') {
     Object.assign(overlay, { ANTHROPIC_BASE_URL: route.baseUrl, ANTHROPIC_AUTH_TOKEN: route.authToken, ANTHROPIC_API_KEY: '', ANTHROPIC_MODEL: settings.model,
       ANTHROPIC_DEFAULT_OPUS_MODEL: settings.model, ANTHROPIC_DEFAULT_SONNET_MODEL: settings.model, ANTHROPIC_DEFAULT_HAIKU_MODEL: settings.model,
       ANTHROPIC_SMALL_FAST_MODEL: settings.model, CLAUDE_CODE_SUBAGENT_MODEL: settings.model });
   }
-  if (settings.thinkingBudget === 'off') overlay.MAX_THINKING_TOKENS = '0';
+  if (['off', 'none'].includes(settings.thinkingBudget)) overlay.MAX_THINKING_TOKENS = '0';
   const file = path.join(home, 'overlays', `${opts.conversationId || 'legacy'}.json`);
   writeJson(file, { env: overlay }); args.push('--settings', file);
   return { args, env: { ...env, ...overlay }, cwd: settings.cwd };
@@ -59,6 +59,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
   for (const engine of ['claude', 'codex', 'kimi']) if (!loadConfig()[engine]) saveConfig({ [engine]: { connection: 'api', permissionMode: 'ask' } });
   if (!loadConfig().dshChat) saveConfig({ dshChat: { permissionMode: 'ask', model: '' } });
   const dsh = createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels: models, runtime: () => locate('dsh'), node: () => process.execPath,
+    getModelThinking: model => require('../api/api-router-config').publicState(router()).modelThinking[model],
     environment, onEvent: event => onEvent('dsh', event), log: noLog, nativeConfig: () => native.config('dsh'), nativeRevision: () => native.fingerprint('dsh') });
   const codex = createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels: models, getContextWindow: context,
     createUsageMeter,

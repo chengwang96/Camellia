@@ -32,8 +32,8 @@ test('Gemini discovery, key validation and legacy Ollama migration preserve thei
   const models = await fetchModels(provider, 'fixture-key', { fetchImpl });
   assert.deepEqual(models.map(m => m.id), ['gemini-test', 'gemini-other']);
   assert.equal((await verifyModel(provider, 'fixture-key', models[0], { fetchImpl })).model, 'gemini-test');
-  assert.equal(calls[1].url, provider.baseUrl + '/chat/completions');
-  assert.equal(calls[1].options.headers.Authorization, 'Bearer fixture-key');
+  assert.equal(calls.at(-1).url, provider.baseUrl + '/chat/completions');
+  assert.equal(calls.at(-1).options.headers.Authorization, 'Bearer fixture-key');
   assert.equal(accountCapability(provider).supported, false);
   assert.match(accountCapability(provider).label, /Google AI Studio/);
   const legacy = normalizeConfig({ keys: ['legacy-ollama-key'] });

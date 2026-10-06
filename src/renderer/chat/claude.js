@@ -89,6 +89,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let hiddenSubscriptionModels = {};
   const visibleAccountModels = () => window.CamelliaSubscriptionModels.visibleModels(accountModels, hiddenSubscriptionModels, harnessId);
   let routeModels = [];
+  let routeModelCatalog = {};
   const googleSubscription = () => harnessId === 'antigravity' && currentConnection === 'subscription';
   // A session saved before the Google catalog was grouped still names a single
   // effort row; show it as its base model, which now owns the effort timeline.
@@ -804,10 +805,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const result = await chatApi.saveSettings({ ...patch, ...(sharedChat || ['codex', 'antigravity'].includes(harnessId) ? { sessionId: context.sessionId } : {}) });
       if (!result.ok) throw new Error(result.error);
       if (sessionId !== context.sessionId || engine !== harnessId || openSeq !== sessionOpenSeq) return;
-      if (harnessId !== 'claude' && patch.model !== undefined) LEVELS.splice(1);
+      if (patch.model !== undefined) LEVELS.splice(1);
       applySessionSettings(result.settings);
       updateCtxRing();
-      if (harnessId !== 'claude') applyApiLevels();
+      applyApiLevels();
       setStatus(message);
     } catch (error) {
       $('selPermission').value = currentPermission;
@@ -833,13 +834,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const supportedLevels = !quickLevel ? [] : targetConnection === 'subscription' && supportsAccounts()
       ? (accountModels.find(item => item.id === model)?.supportedReasoningEfforts || [])
         .map(item => item.reasoningEffort || item).filter(id => typeof id === 'string')
-      : harnessId === 'claude' ? LEVELS.map(item => item.id) : window.CamelliaModelLevels.levelsFor(model);
+      : window.CamelliaModelLevels.levelsFor(model, routeModelCatalog);
     const selectedLevel = quickLevel && supportedLevels.includes(quickLevel) ? quickLevel : '';
     // Google base models own their reasoning timeline, so a model change keeps
     // the saved effort (the engine falls back to the family default if unset).
     return persistSettings({ model, ...(connection ? { connection } : {}),
       ...(selectedLevel ? { thinkingBudget: selectedLevel }
-        : harnessId !== 'claude' && !googleSubscription() ? { thinkingBudget: '' } : {}) },
+        : !googleSubscription() ? { thinkingBudget: '' } : {}) },
       (selectedLevel ? "Model and reasoning level changed: " : "Model changed: ") + modelLabel(model, targetConnection) + " (applies to the next message)")
       .then(() => { if (connection) void loadSettings(); });
   }
@@ -2319,7 +2320,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       ? translate('Model maximum (provider catalog): {0} tokens').replace('{0}', fmtTokens(limits.maxContext))
       : translate('Model maximum: unknown'));
     ring.dataset.tip = details.join(' · ');
-    ring.title = ring.dataset.tip;
     if (ctxTip) ctxTip.textContent = ring.dataset.tip;
   }
   $('ctxRing').addEventListener('mouseenter', () => {
@@ -2598,8 +2598,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // it reports no native config options; the model menu owns the levels.
     if (ev.type === 'gui:config' && harnessId !== 'claude' && !googleSubscription()) {
       const thinking = (ev.options || []).find(option => ['thinking', 'reasoning_effort'].includes(option.id));
-      LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' },
-        ...(thinking?.options || []).map(option => ({ id: option.value, label: option.name })));
+      if ((!accountSubscription() && window.CamelliaModelLevels.thinkingFor(currentModel, routeModelCatalog)) || !thinking?.options?.length) applyApiLevels();
+      else LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' },
+        ...thinking.options.map(option => ({ id: option.value, label: option.name })));
       currentLevel = thinking?.currentValue || '';
       renderModelPill();
       return;
@@ -3812,6 +3813,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   // ---------- settings panel ----------
   $('settingsBtn').addEventListener('click', () => { closePops(); void window.dshDesktop.openSettingsWindow(); });
   function applyRouterModels(state) {
+    if (state?.ok === false) return;
+    routeModelCatalog = state || {};
     if (Array.isArray(state?.providers)) modelCtxCaps.clear();
     for (const p of state?.providers || []) {
       if (state.enabled === false || p.enabled === false || (p.keys && !p.keys.some(key => key.enabled))) continue;
@@ -3828,6 +3831,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     updateCtxRing();
     if (Array.isArray(state?.models)) routeModels = state.enabled ? state.models : [];
+    applyApiLevels();
     if (accountSubscription()) return;
     if (!Array.isArray(state?.models)) return;
     const models = state.enabled ? state.models : [];
@@ -3870,10 +3874,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function applyApiLevels() {
     const model = accountModels.find(m => m.id === currentModel);
     const efforts = accountSubscription() ? (model?.supportedReasoningEfforts || [])
-      .map(e => e.reasoningEffort || e).filter(id => typeof id === 'string') : window.CamelliaModelLevels.levelsFor(currentModel);
-    const labels = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
+      .map(e => e.reasoningEffort || e).filter(id => typeof id === 'string') : window.CamelliaModelLevels.levelsFor(currentModel, routeModelCatalog);
     LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' },
-      ...efforts.map(id => ({ id, label: labels[id] || id[0].toUpperCase() + id.slice(1) })));
+      ...efforts.map(id => ({ id, label: window.CamelliaModelLevels.labelFor(id, currentModel, accountSubscription() ? undefined : routeModelCatalog) })));
     // The saved level may have been rendered before its model's levels loaded.
     renderModelPill();
   }
@@ -3909,7 +3912,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         $('modelPill').title = window.CamelliaI18n.t('Model · double-click to switch to your model and reasoning default');
         renderModelPill(); updateCtxRing();
       }
-      if (harnessId !== 'claude') applyApiLevels();
+      applyApiLevels();
     } catch (error) { if (seq === settingsLoadSeq && sessionId === context.sessionId) setStatus("Could not load settings: " + error.message); }
   }
 

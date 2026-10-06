@@ -88,7 +88,7 @@ function renderDocumentHtml(body) {
     table{border-collapse:collapse;background:white}td,th{border:1px solid #cdd2d8;padding:6px 10px;vertical-align:top}td p:last-child{margin:0}
     .sheet{margin-bottom:24px;overflow:auto;max-height:calc(100vh - 40px)}.sheet td{white-space:pre-wrap;overflow:hidden}.sheet th{background:#f2f4f6;font-weight:400}.sheet thead{position:sticky;top:0;z-index:4;height:32px}.sheet h2{font-size:16px}.sheet table{border-collapse:separate;border-spacing:0}
     .slide-page{margin:0 auto 24px;max-width:1100px}.slide-page h2{font:13px Arial;color:#525962}.slide{position:relative;overflow:hidden;box-shadow:0 2px 12px #0002;container-type:inline-size}
-    .shape,.group,.picture,.connector,.chart{position:absolute}.shape p{line-height:1.25;margin:0}.group>.shape,.group>.picture,.group>.connector,.group>.chart,.group>.group{position:absolute}
+    .shape,.group,.picture,.connector,.chart{position:absolute}.shape p,.slide td p{line-height:1.25;margin:0}.group>.shape,.group>.picture,.group>.connector,.group>.chart,.group>.group{position:absolute}
     .picture{overflow:hidden}.picture img{display:block;width:100%;height:100%;object-fit:contain}.picture.missing{display:flex;align-items:center;justify-content:center;background:#f2f4f6;border:1px dashed #c3c9d0;color:#525962;font:11px Arial;overflow:hidden}
     .chart{overflow:hidden;background:#ffffff;border:1px solid #e1e4e8;padding:.5cqw;font:11px Arial}.chart strong{display:block;font-size:1.2cqw}.chart table{border-collapse:collapse;width:100%}.chart th,.chart td{border:1px solid #e1e4e8;padding:1px 3px;text-align:right;font-weight:400}.chart th:first-child{text-align:left}
     @media(max-width:600px){body{padding:12px}.paper{padding:24px}}

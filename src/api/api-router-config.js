@@ -4,6 +4,7 @@ const { readJson, writeJson } = require('../shared/json-store.js');
 const { createHash, randomUUID } = require('node:crypto');
 const { FIELDS, counters, normalizeBreakdown } = require('./api-usage');
 const { discoverQclaw, DEFAULT_BASE_URL } = require('./qclaw-provider');
+const { normalizeThinking, thinkingFor } = require('../shared/model-levels');
 const DEFAULT_PORT = 8788;
 // QClaw answers through an agent runtime, so the prompt also carries that
 // runtime's own instructions and skills. Measured overflow lands near 110k
@@ -157,7 +158,8 @@ function normalizeConfig(raw = {}, previous = null, options = {}) {
       if (contextWindow !== undefined && (!Number.isInteger(contextWindow) || contextWindow < 4096 || contextWindow > 2000000)) throw new Error("Context window must be an integer between 4096 and 2000000");
       const maxContext = Number.isInteger(m.maxContext) && m.maxContext >= 4096 ? m.maxContext : undefined;
       if (contextWindow !== undefined && maxContext && contextWindow > maxContext) throw new Error("Context window exceeds the model's maximum (" + maxContext + ")");
-      return { id: modelId(m.id), upstream, protocol, ...(contextWindow !== undefined ? { contextWindow } : {}), ...(maxContext !== undefined ? { maxContext } : {}) };
+      const thinking = normalizeThinking(m.thinking);
+      return { id: modelId(m.id), upstream, protocol, ...(contextWindow !== undefined ? { contextWindow } : {}), ...(maxContext !== undefined ? { maxContext } : {}), ...(thinking ? { thinking } : {}) };
     });
     if (new Set(models.map(m => m.id)).size !== models.length) throw new Error("A provider cannot contain duplicate entries for the same model");
     const seenKeys = new Set();
@@ -218,10 +220,56 @@ function loadConfig(file) {
     if (recovery.version !== 1 || !Array.isArray(recovery.entries)) throw new Error('Invalid usage recovery file');
     raw.usageArchive = [...(raw.usageArchive || []), ...recovery.entries];
   }
-  return normalizeConfig(raw);
+  const cfg = normalizeConfig(raw);
+  let metadata;
+  try { metadata = readJson(file + '.model-metadata.json', null); } catch {}
+  if (metadata?.version === 1 && Array.isArray(metadata.models)) {
+    for (const provider of cfg.providers) for (const model of provider.models) {
+      if (model.thinking) continue;
+      const cached = metadata.models.find(entry => entry?.providerId === provider.id && entry.baseUrl === provider.baseUrl
+        && entry.anthropicBaseUrl === provider.anthropicBaseUrl && entry.providerProtocol === provider.protocol
+        && entry.upstream === model.upstream && entry.protocol === model.protocol);
+      const thinking = normalizeThinking(cached?.thinking);
+      if (thinking) model.thinking = thinking;
+    }
+  }
+  return cfg;
+}
+function metadataEntry(provider, model) {
+  const thinking = normalizeThinking(model.thinking);
+  return thinking ? { providerId: provider.id, baseUrl: provider.baseUrl, anthropicBaseUrl: provider.anthropicBaseUrl,
+    providerProtocol: provider.protocol, upstream: model.upstream, protocol: model.protocol, thinking } : null;
+}
+function metadataKey(entry) {
+  return [entry.providerId, entry.baseUrl, entry.anthropicBaseUrl, entry.providerProtocol, entry.upstream, entry.protocol].join('\0');
+}
+function writeConfigMetadata(file, cfg) {
+  let cached;
+  try { cached = readJson(file + '.model-metadata.json', null); } catch {}
+  const currentRoutes = new Set((cfg.providers || []).flatMap(provider => (provider.models || []).map(model => metadataKey({
+    providerId: provider.id, baseUrl: provider.baseUrl, anthropicBaseUrl: provider.anthropicBaseUrl,
+    providerProtocol: provider.protocol, upstream: model.upstream, protocol: model.protocol,
+  }))));
+  const entries = new Map();
+  if (cached?.version === 1 && Array.isArray(cached.models)) for (const entry of cached.models) {
+    if (!entry || typeof entry.providerId !== 'string' || typeof entry.baseUrl !== 'string' || typeof entry.anthropicBaseUrl !== 'string'
+      || typeof entry.providerProtocol !== 'string' || typeof entry.upstream !== 'string' || typeof entry.protocol !== 'string') continue;
+    const thinking = normalizeThinking(entry.thinking);
+    if (!thinking) continue;
+    const normalized = { providerId: entry.providerId, baseUrl: entry.baseUrl, anthropicBaseUrl: entry.anthropicBaseUrl,
+      providerProtocol: entry.providerProtocol, upstream: entry.upstream, protocol: entry.protocol, thinking };
+    if (!currentRoutes.has(metadataKey(normalized))) continue;
+    entries.set(metadataKey(normalized), normalized);
+  }
+  for (const provider of cfg.providers || []) for (const model of provider.models || []) {
+    const entry = metadataEntry(provider, model);
+    if (entry) entries.set(metadataKey(entry), entry);
+  }
+  if (entries.size || cached?.version === 1) writeJson(file + '.model-metadata.json', { version: 1, models: [...entries.values()] });
 }
 function writeConfig(file, cfg) {
   writeJson(file, cfg);
+  writeConfigMetadata(file, cfg);
 }
 function hasRoutes(cfg) { return cfg.enabled && cfg.providers.some(p => p.enabled && p.models.length && p.keys.some(k => k.enabled)); }
 // The actual upstream protocol can differ from the client's protocol. Keep
@@ -247,7 +295,8 @@ function modelContextWindow(cfg, id) {
 function publicState(cfg) {
   const providers = cfg.providers.map(p => ({ ...p, models: p.models.map(m => ({ ...m })), keys: p.keys.map(({ key, ...k }) => ({ ...k, maskedKey: maskKey(key) })) }));
   const models = [...new Set(cfg.providers.filter(p => p.enabled && p.keys.some(k => k.enabled)).flatMap(p => p.models.map(m => m.id)))];
-  return { version: 2, enabled: cfg.enabled, port: cfg.port, providers, models, usage: structuredClone(cfg.usage),
+  const modelThinking = Object.fromEntries(models.map(id => [id, thinkingFor(id, cfg)]).filter(([, thinking]) => thinking));
+  return { version: 2, enabled: cfg.enabled, port: cfg.port, providers, models, modelThinking, usage: structuredClone(cfg.usage),
     usageArchive: structuredClone(cfg.usageArchive), active: { ...cfg.active } };
 }
 

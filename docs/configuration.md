@@ -345,6 +345,8 @@ DeepSeek and Moonshot adapters use documented balance APIs. Kimi Code, OpenCode 
 
 Balances refresh automatically every 15 minutes by default; **General → Refresh balances automatically** turns the periodic queries off, and **Balance and quota refresh interval** changes the cadence (5, 15, 30 or 60 minutes) for every provider with an account API. One setting covers all of them, because balances and quota windows are read the same way regardless of provider. Manual refresh is also available. The route pool reads the same reported quota on the same cadence to keep exhausted keys out of rotation; turning the periodic queries off also stops that, leaving only failure-driven cooldowns.
 
+**General → Keep refreshing Google quota in the background** is a per-engine exception. The official Antigravity CLI runs its own Google sign-in when a background quota probe cannot read the stored credential in time, which can open a browser page while the login is still valid. Turning this off leaves every other provider refreshing on the normal cadence while the Google quota updates only from **Subscription accounts → Refresh quota** or an explicit account check.
+
 Charts retain locally observed values for 30 days, starting when observations are collected. They do not reconstruct earlier history. Multiple keys may share an account, so balances are not summed across cards. Cash, credits, and percentages retain their own units. Failed refreshes preserve the last successful value and its timestamp.
 
 ## Workspaces and sessions

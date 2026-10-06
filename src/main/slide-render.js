@@ -498,13 +498,13 @@ function slideTableHtml(table, ctx, frame, rect) {
       if (attr(cell, 'hMerge') === '1' || attr(cell, 'vMerge') === '1') continue;
       const properties = first(cell, 'tcPr');
       const styles = [];
-      const fill = colorOf(first(properties, 'solidFill'), ctx);
+      const fill = colorOf(child(properties, 'solidFill'), ctx);
       if (fill) styles.push(`background:${cssColor(fill)}`);
       const borders = [['lnL', 'left'], ['lnR', 'right'], ['lnT', 'top'], ['lnB', 'bottom']];
       for (const [name, side] of borders) {
         const line = first(properties, name);
         if (!line) continue;
-        const color = colorOf(first(line, 'solidFill'), ctx);
+        const color = colorOf(child(line, 'solidFill'), ctx);
         if (!color) continue;
         styles.push(`border-${side}:1px solid ${cssColor(color)}`);
       }

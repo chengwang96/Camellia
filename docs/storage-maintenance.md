@@ -24,6 +24,12 @@ later phases show their own completion percentage. This is a per-phase bar,
 not an estimate of the whole migration's duration. Its disposable browser
 profile does not open or lock the old or new data directory.
 
+The local progress-window smoke test (`node tests/data-directory-progress-electron.cjs`)
+keeps its simulated migration window hidden. Use `--show-window` for an explicit
+visual check. CI enables visibility with `CAMELLIA_DIRECTORY_PROGRESS_TEST_VISIBLE=1`.
+Both modes use temporary test data and check progress, cancellation and failure
+acknowledgment without opening the user's profile.
+
 The normal sibling-directory migration uses a same-filesystem rename. One
 no-follow inventory finds metadata and absolute internal links. Unchanged
 attachments, browser state, runtime files and caches keep their original file
@@ -53,7 +59,13 @@ with very large metadata histories still need time to scan and rewrite them.
 
 On Windows, the rename strategy retains external directory junctions in place,
 including missing dependency targets. The copy fallback preserves their junction
-type. A failed or incomplete migration stays visible until
+type. Backup cleanup unlinks reparse entries without following their targets
+before recursively removing the transaction directory. This avoids Electron's
+silent incomplete removal of backups with junctions to the renamed old profile.
+Cleanup verifies that the backup directory is absent before deleting the
+transaction record or reporting success. If removal fails, the committed record
+is retained for startup recovery to retry after the migration owner exits.
+A failed or incomplete migration stays visible until
 acknowledged and is recorded in `.camellia-directory-migration-result.json`
 under the application-data parent directory. The last failure remains available
 in settings after restart. If temporary-copy cleanup fails, its location and
