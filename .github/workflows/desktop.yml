@@ -82,6 +82,8 @@ jobs:
       - name: Data directory migration smoke test
         run: node tests/data-directory-electron.cjs
       - name: Data directory migration progress window
+        env:
+          CAMELLIA_DIRECTORY_PROGRESS_TEST_VISIBLE: '1'
         run: node tests/data-directory-progress-electron.cjs
       - name: Native DSH settings
         run: node tests/native-settings-electron.cjs

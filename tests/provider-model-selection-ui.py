@@ -13,7 +13,7 @@ driver = subprocess.Popen(['node', str(repo / 'tests/claude-ui-driver.cjs')],
 def rpc(method, payload=None):
     if method == 'providerModels':
         return {'result': {'ok': True, 'models': [
-            {'id': model, 'upstream': model, 'protocol': 'auto'}
+            {'id': model, 'upstream': model, 'protocol': 'auto', 'thinking': {'values': ['low', 'high', 'max'], 'default': 'max'}}
             for model in ['mimo-v2.6-pro', 'mimo-v2.6-flash']]}}
     driver.stdin.write(json.dumps({'method': method, 'payload': payload}) + '\n')
     driver.stdin.flush()
@@ -96,6 +96,19 @@ try:
         expect(page.locator('#modelChips')).to_contain_text('manual-model')
         models = wait_models(page, 'mimo', ['mimo-v2.6-pro', 'manual-model'])
         assert models[0]['contextWindow'] == 65536
+        assert models[0]['thinking'] == {'values': ['low', 'high', 'max'], 'default': 'max'}
+        page.locator('input[data-model="0"][data-field="upstream"]').fill('different-model')
+        page.locator('input[data-model="0"][data-field="upstream"]').blur()
+        page.wait_for_function("!config.providers.find(provider => provider.type === 'mimo').models[0].thinking")
+        page.locator('input[data-model="0"][data-field="upstream"]').fill('mimo-v2.6-pro')
+        page.locator('input[data-model="0"][data-field="upstream"]').blur()
+        page.locator('#discoverModels').click()
+        page.locator('#modelDialog .dialog-head button').click()
+        page.wait_for_function("config.providers.find(provider => provider.type === 'mimo').models[0].thinking.default === 'max'")
+        page.locator('#connectionAdvanced > summary').click()
+        page.locator('#pUrl').fill('https://relay.example/v1')
+        page.locator('#pUrl').blur()
+        page.wait_for_function("!config.providers.find(provider => provider.type === 'mimo').models[0].thinking")
         page.get_by_role('button', name='Remove model mimo-v2.6-pro', exact=True).click()
         page.get_by_role('button', name='Remove model manual-model', exact=True).click()
         wait_models(page, 'mimo', [])

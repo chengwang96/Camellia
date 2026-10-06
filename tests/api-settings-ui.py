@@ -551,6 +551,16 @@ try:
         assert rpc('workbenchSettings')['result']['theme']=='dark'
         assert rpc('workbenchSettings')['result']['autoRefreshBalances'] is False
         assert rpc('workbenchSettings')['result']['closeToTray'] is True
+        # Antigravity can opt out of the background quota probe on its own, so the
+        # official CLI stops opening its Google sign-in page while every other
+        # provider keeps refreshing.
+        assert page.locator('#antigravityAutoRefresh').is_checked() is True
+        page.locator('#antigravityAutoRefresh').uncheck()
+        expect(page.locator('#status')).to_contain_text('Preferences saved')
+        assert rpc('workbenchSettings')['result']['subscriptionAutoRefresh']['antigravity'] is False
+        assert rpc('workbenchSettings')['result']['autoRefreshBalances'] is False
+        page.reload(wait_until='domcontentloaded');page.locator('[data-view=general]').click()
+        assert page.locator('#antigravityAutoRefresh').is_checked() is False
         page.reload(wait_until='domcontentloaded');page.locator('[data-view=general]').click()
         assert page.locator('#closeToTray').is_checked() is True
         page.locator('#closeToTray').uncheck()

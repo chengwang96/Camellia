@@ -34,7 +34,8 @@ function compareVersions(a, b) {
 
 function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettings = () => undefined, registries = {}, beforeInstall = async () => {}, onChange = () => {}, log = () => {} }) {
   const pending = new Map();
-  const state = (rows = manager.state()) => rows.map(row => ({ ...row, updating: pending.has(row.id) }));
+  const reinstalling = new Set();
+  const state = (rows = manager.state()) => rows.map(row => ({ ...row, updating: pending.has(row.id), reinstalling: reinstalling.has(row.id) }));
   const registryUrls = {
     npm: registries.npm || (pkg => `https://registry.npmjs.org/${pkg}/latest`),
     pypi: registries.pypi || (pkg => `https://pypi.org/pypi/${pkg}/json`),
@@ -74,16 +75,38 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     }
   }
 
-  function update(engine) {
+  function schedule(engine, operation, action) {
     if (!engines[engine]) return Promise.reject(new Error('Unknown engine'));
-    if (pending.has(engine)) return pending.get(engine);
-    const task = Promise.resolve().then(() => perform(engine)).finally(() => {
+    if (pending.has(engine)) return pending.get(engine).operation === operation ? pending.get(engine).task
+      : Promise.reject(new Error('Wait for the runtime update to finish'));
+    if (operation === 'reinstall') reinstalling.add(engine);
+    const task = Promise.resolve().then(action).finally(() => {
       pending.delete(engine);
+      reinstalling.delete(engine);
       onChange(state());
     });
-    pending.set(engine, task);
+    pending.set(engine, { task, operation });
     onChange(state());
     return task;
+  }
+  const update = engine => schedule(engine, 'update', () => perform(engine));
+  function reinstall(engine, expected) {
+    return schedule(engine, 'reinstall', async () => {
+      const plan = expected || manager.reinstallPlan(engine);
+      const restore = await beforeInstall(engine);
+      let result, installError;
+      try {
+        const runtime = await manager.reinstall(engine, plan);
+        result = { ok: true, engine, from: plan.version, to: runtime.version, changed: true, runtime, restartRequired: false, restarting: false };
+      } catch (error) { installError = error; }
+      try { if (typeof restore === 'function') await restore({ updated: Boolean(result), error: installError }); }
+      catch (error) {
+        if (installError) throw new AggregateError([installError, error], `${installError.message}; ${engines[engine].name} could not restart: ${error.message}`);
+        throw new Error(`${engines[engine].name} reinstalled with Camellia, but could not restart: ${error.message}`, { cause: error });
+      }
+      if (installError) throw installError;
+      return result;
+    });
   }
 
   async function perform(engine) {
@@ -134,7 +157,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     if (engine === 'dsh') patchDsh(dir);
   }
 
-  return { check, update, state, isUpdating: engine => pending.has(engine) };
+  return { check, update, reinstall, state, isUpdating: engine => pending.has(engine) };
 }
 
 module.exports = { compareVersions, createRuntimeUpdates };

@@ -261,7 +261,10 @@ function renderEditor() {
   $('pProtocol').value = p.protocol; $('aUrlField').hidden = p.protocol !== 'dual';
   $('backProviders').onclick = () => { void flushSave(); selected = null; renderEditor(); };
   for (const [id, field] of [['pName','name'], ['pUrl','baseUrl'], ['pAUrl','anthropicBaseUrl']]) {
-    $(id).oninput = e => { p[field] = e.target.value; edited(); };
+    $(id).oninput = e => {
+      if (field !== 'name' && p[field] !== e.target.value) for (const model of p.models) delete model.thinking;
+      p[field] = e.target.value; edited();
+    };
     $(id).onblur = () => void flushSave();
   }
   $('pProtocol').onchange = e => { p.protocol = e.target.value; $('aUrlField').hidden = p.protocol !== 'dual'; edited(true); };
@@ -335,16 +338,17 @@ async function discoverModels(p) {
   const button = $('discoverModels'); button.disabled = true; status("Fetching model catalog…");
   try {
     await assertClean();
-    const result = await api.providerModels({ provider: p }); if (!result.ok) throw new Error(result.error);
+    const source = structuredClone(p);
+    const result = await api.providerModels({ provider: source }); if (!result.ok) throw new Error(result.error);
+    if (p.baseUrl !== source.baseUrl || p.anthropicBaseUrl !== source.anthropicBaseUrl || p.type !== source.type || !config.providers.includes(p)) return;
     catalog = result.models; catalogProvider = p.id; catalogSelected = new Set(p.models.map(model => model.id));
-    // Catalogs that report context limits backfill models added earlier, so the
-    // cap is known (and enforced) before a value is typed into the table.
-    let limits = 0;
+    let limits = 0, changed = false;
     for (const m of p.models) {
-      const hit = catalog.find(x => x.id === m.id && x.maxContext);
-      if (hit && m.maxContext !== hit.maxContext) { m.maxContext = hit.maxContext; limits++; }
+      const hit = catalog.find(x => x.upstream.replace(/:cloud$/, '') === m.upstream.replace(/:cloud$/, ''));
+      if (hit?.maxContext && m.maxContext !== hit.maxContext) { m.maxContext = hit.maxContext; limits++; changed = true; }
+      if (hit?.thinking && JSON.stringify(m.thinking) !== JSON.stringify(hit.thinking)) { m.thinking = structuredClone(hit.thinking); changed = true; }
     }
-    if (limits) { edited(); renderModels(); }
+    if (changed) { edited(); renderModels(); }
     $('modelSearch').value = ''; renderCatalog(); $('modelDialog').showModal();
     status(limits
       ? `Found ${catalog.length} models. Context limits updated for ${limits} of your models.`
@@ -547,6 +551,7 @@ function updateEditorField(element) {
   if (!row) return;
   const value = element.type === 'checkbox' ? element.checked : element.value;
   if (row[element.dataset.field] === value) return;
+  if (element.dataset.model !== undefined && ['upstream', 'protocol'].includes(element.dataset.field)) delete row.thinking;
   row[element.dataset.field] = value; edited();
 }
 $('editor').oninput = event => updateEditorField(event.target);
@@ -998,27 +1003,22 @@ window.addEventListener('camellia:language', () => {
   renderSubscriptionModels();
   void renderQuickSwitchModels(modelPreferences, subscriptionModelAccounts);
 });
-const LEVEL_LABELS = { off: 'Off', none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
-const levelLabel = id => LEVEL_LABELS[id] || (id ? id[0].toUpperCase() + id.slice(1) : '');
-// Account models report their own reasoning efforts; routed models fall back to
-// the shared ladder inferred from the model ID.
-function quickSwitchLadder(engine, modelId, account) {
-  const effort = ((account?.models || []).find(model => model.id === modelId)?.supportedReasoningEfforts || [])
-    .map(level => level.reasoningEffort || level).filter(level => typeof level === 'string');
-  return effort.length ? effort : window.CamelliaModelLevels.levelsForEngine(engine, modelId);
+function quickSwitchLadder(engine, modelId, account, router) {
+  const effort = (account?.models || []).find(model => model.id === modelId)?.supportedReasoningEfforts;
+  return Array.isArray(effort) ? effort.map(level => level.reasoningEffort || level).filter(level => typeof level === 'string')
+    : window.CamelliaModelLevels.levelsFor(modelId, router);
 }
-function fillQuickSwitchLevels(select, engine, modelId, saved, account) {
+function fillQuickSwitchLevels(select, engine, modelId, saved, account, router) {
   select.replaceChildren();
   const unset = new Option('Not configured', ''); unset.dataset.i18n = '';
   select.add(unset);
-  const levels = quickSwitchLadder(engine, modelId, account);
-  if (saved && !levels.includes(saved)) levels.push(saved);
+  const levels = quickSwitchLadder(engine, modelId, account, router);
   for (const id of levels) {
-    const option = new Option(levelLabel(id), id);
+    const option = new Option(window.CamelliaModelLevels.labelFor(id, modelId, account?.models?.some(model => model.id === modelId) ? undefined : router), id);
     option.dataset.i18n = '';
     select.add(option);
   }
-  select.value = saved;
+  select.value = levels.includes(saved) ? saved : '';
 }
 async function saveQuickSwitch(patch, select, errorFallback) {
   select.disabled = true;
@@ -1075,7 +1075,7 @@ async function renderQuickSwitchModels(preferences, accountStates = {}) {
     const savedLevel = preferences.quickSwitchLevels?.[engine] || '';
     modelSelect.value = savedModel; modelSelect.dataset.saved = savedModel;
     modelSelect.disabled = false;
-    fillQuickSwitchLevels(levelSelect, engine, savedModel, savedLevel, account);
+    fillQuickSwitchLevels(levelSelect, engine, savedModel, savedLevel, account, router);
     levelSelect.dataset.saved = savedLevel;
     levelSelect.disabled = false;
     modelSelect.addEventListener('change', async () => {
@@ -1088,7 +1088,7 @@ async function renderQuickSwitchModels(preferences, accountStates = {}) {
       modelSelect.dataset.saved = modelSelect.value;
       if (clearing) levelSelect.dataset.saved = '';
       // Otherwise the ladder follows the newly chosen model.
-      fillQuickSwitchLevels(levelSelect, engine, modelSelect.value, levelSelect.dataset.saved, account);
+      fillQuickSwitchLevels(levelSelect, engine, modelSelect.value, levelSelect.dataset.saved, account, router);
       levelSelect.dataset.saved = levelSelect.value;
     });
     levelSelect.addEventListener('change', async () => {
@@ -1124,6 +1124,7 @@ async function saveGeneral() {
   try {
     const result = await api.workbenchSaveSettings({ language: $('language').value, theme: $('theme').value, autoRefreshBalances: $('autoRefreshBalances').checked, closeToTray: $('closeToTray').checked,
       chatContentWidth: $('chatContentWidth').value,
+      subscriptionAutoRefresh: { antigravity: $('antigravityAutoRefresh').checked },
       accountRefreshMinutes: Number($('accountRefreshMinutes').value),
       conversations: { mode: $('conversationMode').value, warnOnSwitch: $('conversationWarn').checked, showOrigin: $('conversationOriginSetting').checked,
         sessionTtlMinutes: Number($('conversationSessionTtl').value), sessionLimit: Number($('conversationSessionLimit').value) } });
@@ -1131,7 +1132,7 @@ async function saveGeneral() {
     window.CamelliaI18n.setLanguage($('language').value); status("Preferences saved");
   } catch (e) { status(e.message, true); }
 }
-for (const id of ['language', 'theme', 'chatContentWidth', 'autoRefreshBalances', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting', 'conversationSessionTtl', 'conversationSessionLimit']) {
+for (const id of ['language', 'theme', 'chatContentWidth', 'autoRefreshBalances', 'antigravityAutoRefresh', 'accountRefreshMinutes', 'closeToTray', 'conversationMode', 'conversationWarn', 'conversationOriginSetting', 'conversationSessionTtl', 'conversationSessionLimit']) {
   $(id).addEventListener('change', saveGeneral);
 }
 // General connection preference: serialized saves preserve the latest choice.
@@ -1267,6 +1268,7 @@ async function refresh(initial = false) {
       if (!preferences.ok) throw new Error(preferences.error);
       $('language').value = preferences.language || 'en';
       $('theme').value = preferences.theme; $('autoRefreshBalances').checked = preferences.autoRefreshBalances; $('closeToTray').checked = !!preferences.closeToTray;
+      $('antigravityAutoRefresh').checked = preferences.subscriptionAutoRefresh?.antigravity !== false;
       $('chatContentWidth').value = preferences.chatContentWidth || 'standard';
       $('memoryDirectory').value = preferences.memoryDirectory || '';
       $('accountRefreshMinutes').value = String(preferences.accountRefreshMinutes || 15);

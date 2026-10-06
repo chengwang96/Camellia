@@ -135,7 +135,14 @@ function runCli(file, args, { env, cwd, timeout = 45000 }) {
   return new Promise((resolve, reject) => {
     const proc = spawn(file, args, { env, cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '', errors = '';
-    const timer = setTimeout(() => { proc.kill(); reject(new Error('Google account check timed out. Check the network connection and retry.')); }, timeout);
+    const timer = setTimeout(() => {
+      proc.kill();
+      const error = new Error('Google account check timed out. Check the network connection and retry.');
+      // A stalled run is the signature of the CLI waiting on its own sign-in
+      // page, so callers must not launch it again.
+      error.timedOut = true;
+      reject(error);
+    }, timeout);
     proc.stdout.on('data', chunk => { output += chunk; });
     proc.stderr.on('data', chunk => { errors = (errors + chunk).slice(-4000); });
     proc.once('error', error => { clearTimeout(timer); reject(error); });
@@ -145,6 +152,31 @@ function runCli(file, args, { env, cwd, timeout = 45000 }) {
       else resolve(output);
     });
   });
+}
+
+// A background check can fail for a transient reason while the Google login is
+// still valid, so it retries a few times before the failure reaches the account
+// card. Two outcomes must never be retried, because the CLI opens its own
+// sign-in page for them and each retry would open another one: a stalled run,
+// and a credential the CLI already rejected. Everything else (a dropped
+// connection, a proxy hiccup) is retried with a short backoff.
+const CLI_ATTEMPTS = 3;
+const CLI_RETRY_DELAY_MS = 1500;
+function retryableCliFailure(error) {
+  if (!error || error.timedOut || isProfilePictureFailure(error)) return false;
+  return !/sign-in has expired|no valid auth|not authenticated|authentication (?:failed|required|failed or timed out)|unauthorized|invalid_grant/i.test(String(error.message || ''));
+}
+async function runCliWithRetry(run, file, args, options, { attempts = CLI_ATTEMPTS, delay = CLI_RETRY_DELAY_MS, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try { return await run(file, args, options); }
+    catch (error) {
+      lastError = error;
+      if (attempt >= attempts || !retryableCliFailure(error)) break;
+      await sleep(delay * attempt);
+    }
+  }
+  throw lastError;
 }
 
 // A headless run that cannot use the stored credential stops instead of
@@ -160,13 +192,12 @@ function isProfilePictureFailure(error) {
   return /profile picture/i.test(String(error || ''));
 }
 
-// Background quota and model checks run print mode with no terminal. Their
-// silent auth reads the OS credential store; when that read stalls the CLI
-// falls back to an interactive sign-in that opens a Google page in the
-// browser. That is wrong for an unattended refresh, so these runs stay
-// headless and fail fast instead, letting the next scheduled attempt succeed
-// without interrupting the user. Only the background calls opt in; the
-// sign-in script still launches the CLI interactively.
+// Background quota and model checks ask the CLI for its non-interactive print
+// mode. The flag is only a hint: the official CLI still opens its own sign-in
+// page when silent auth fails, so this does not by itself suppress the browser.
+// The retry above and the deliberate absence of auto-refresh escalation are what
+// keep an unattended refresh from interrupting the user. The explicit "Sign in"
+// button still launches the CLI interactively.
 function headlessEnvironment(env) {
   return { ...env, AGY_CLI_NONINTERACTIVE_HEADLESS: 'true' };
 }
@@ -229,7 +260,8 @@ function loginScript(file, { platform, exe, proxyUrl = '', networkMode }) {
   fs.writeFileSync(file, (platform === 'win32' ? '\uFEFF' : '') + lines.join('\n') + '\n', { mode: 0o700 });
 }
 
-function createGoogleAccount({ home, cliSettingsFile, runtime, environment, settings, openLogin, run = runCli, now = Date.now, onChange = () => {} }) {
+function createGoogleAccount({ home, cliSettingsFile, runtime, environment, settings, openLogin, run = runCli, now = Date.now, onChange = () => {},
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   const cacheFile = path.join(home, 'google-account.json');
   const usageFile = path.join(home, 'google-quota.json');
   let quotaPending = null;
@@ -270,7 +302,7 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
         requireGoogleProvider(cliSettingsFile);
         fs.mkdirSync(home, { recursive: true });
         // The structured command response never starts an agent turn.
-        const output = await run(found.file, ['-p', '/quota', '--output-format', 'json'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home });
+        const output = await runCliWithRetry(run, found.file, ['-p', '/quota', '--output-format', 'json'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home }, { sleep });
         const result = parseGoogleQuota(output);
         if (version !== accountVersion) return;
         const latest = { ...result, at: checkedAt }, previous = readUsage();
@@ -304,7 +336,7 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
       const found = runtime().locate('antigravity', 'subscription');
       if (!found) throw new Error('Download the Antigravity Google subscription runtime first.');
       requireGoogleProvider(cliSettingsFile);
-      const output = await run(found.file, ['models'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home });
+      const output = await runCliWithRetry(run, found.file, ['models'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home }, { sleep });
       const models = groupModels(parseModels(output));
       if (!models.length) {
         if (isProfilePictureFailure(output)) throw new Error('Google account profile picture unavailable.');
@@ -362,4 +394,4 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
   return { state, refresh, refreshUsage, signIn };
 }
 
-module.exports = { createGoogleAccount, subscriptionEnvironment, systemProxy, parseModels, parseGoogleQuota, normalizeGoogleQuota, groupModels, normalizeSelection, effectiveSelection, runCli, requireGoogleProvider, loginScript, headlessEnvironment, describeCliFailure, isProfilePictureFailure };
+module.exports = { createGoogleAccount, subscriptionEnvironment, systemProxy, parseModels, parseGoogleQuota, normalizeGoogleQuota, groupModels, normalizeSelection, effectiveSelection, runCli, runCliWithRetry, requireGoogleProvider, loginScript, headlessEnvironment, describeCliFailure, isProfilePictureFailure };

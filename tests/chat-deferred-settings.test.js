@@ -22,7 +22,7 @@ function fixture(overrides = {}) {
     visibleAccountModels: () => state.accountModels || [],
     setStatus(text) { state.status = text; },
     $: () => ({ value: '' }),
-    LEVELS: [{}],
+    LEVELS: [{}], routeModelCatalog: {},
     ...overrides,
   };
   vm.createContext(state);
@@ -113,13 +113,28 @@ test('quick switch saves a supported model and reasoning level in one update', a
   assert.equal(saved[1].thinkingBudget, '', 'an unsupported level is not sent to the new model');
 });
 
+test('quick switch uses fetched routed levels and clears an unsupported effort for every API harness', async () => {
+  for (const harnessId of ['codex', 'claude']) {
+    const modelLevels = require('../src/shared/model-levels');
+    const { state, saved } = fixture({ harnessId, currentConnection: 'api', routeModels: ['glm-5.3'], accountModels: [],
+      routeModelCatalog: { modelThinking: { 'glm-5.3': { values: ['low', 'high', 'max'], default: 'max' } } },
+      supportsAccounts: () => false, accountSubscription: () => false, googleSubscription: () => false,
+      modelLabel: id => id, window: { CamelliaModelLevels: modelLevels } });
+    vm.runInContext(extract('  function persistModel(', '  function persistLevel('), state);
+    await state.persistModel('glm-5.3', 'max');
+    assert.equal(saved[0].thinkingBudget, 'max');
+    await state.persistModel('glm-5.3', 'medium');
+    assert.equal(saved[1].thinkingBudget, '');
+  }
+});
+
 function modelMenu(subscription, google = false) {
   const state = {
     supportsAccounts: () => true, sharedChat: true, context: { sessionId: 'conversation-a' },
     accountName: google ? 'Google' : 'Kimi', MODELS: [],
     accountModels: [{ id: 'shared-model', name: 'Shared model' }, { id: 'account-only', name: 'Account model' }],
     visibleAccountModels: () => state.accountModels,
-    routeModels: ['shared-model', 'api-only'],
+    routeModels: ['shared-model', 'api-only'], routeModelCatalog: {},
     accountSubscription: () => subscription, googleSubscription: () => google,
   };
   vm.createContext(state);

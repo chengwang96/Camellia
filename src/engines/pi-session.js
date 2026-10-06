@@ -23,6 +23,7 @@ function piSpec({ runtime, home, sessionId, settings, route, env, goalBridge }) 
   if (settings.instructions) args.push('--append-system-prompt', settings.instructions);
   if (['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(settings.thinkingBudget)) args.push('--thinking', settings.thinkingBudget);
   return { args, env: { ...env, PI_CODING_AGENT_DIR: home, CAMELLIA_PI_PERMISSION: settings.permissionMode,
+    CAMELLIA_PI_EFFORT: settings.thinkingBudget || '',
     CAMELLIA_GOAL_ENDPOINT: '', CAMELLIA_GOAL_TOKEN: '', ...goalBridge?.config.env } };
 }
 

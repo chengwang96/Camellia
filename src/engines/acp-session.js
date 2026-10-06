@@ -129,7 +129,7 @@ class AcpSession extends StreamingSession {
     // workbench selection explicitly, including on forks.
     let config = await this.request('session/set_config_option', { sessionId: this.sessionId, configId: 'model', value: this.spec.modelValue || this.settings.model });
     if (this.settings.thinkingBudget && this.spec.applyThinking !== false) config = await this.request('session/set_config_option', {
-      sessionId: this.sessionId, configId: this.spec.thinkingId || 'thinking', value: this.settings.thinkingBudget });
+      sessionId: this.sessionId, configId: this.spec.thinkingId || 'thinking', value: this.spec.thinkingValue || this.settings.thinkingBudget });
     if (!this.spec.noModes) await this.request('session/set_mode', { sessionId: this.sessionId, modeId: nativeMode(this.spec.modeEngine || 'kimi', this.settings.permissionMode || 'default') });
     this.onSessionId(this.sessionId);
     this.emit({ type: 'gui:config', options: config.configOptions });

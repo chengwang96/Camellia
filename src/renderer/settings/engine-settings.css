@@ -44,6 +44,15 @@
 .runtime-card h2 { margin: 0; flex: 1; }
 .runtime-card p { margin: 10px 0 0; overflow-wrap: anywhere; }
 .runtime-card code { display: block; overflow-wrap: anywhere; margin-top: 8px; }
+.runtime-external-update { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.runtime-external-update button { flex-shrink: 0; }
+.runtime-reinstall-dialog { width: 520px; max-width: calc(100vw - 32px); }
+.runtime-reinstall-paths { margin: 20px 0; padding: 14px 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-soft); }
+.runtime-reinstall-paths > div + div { margin-top: 16px; }
+.runtime-reinstall-paths dt { margin-bottom: 6px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.runtime-reinstall-paths dd { margin: 0; min-width: 0; }
+.runtime-reinstall-paths code { font-family: var(--ds-font-family-code); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.runtime-reinstall-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin: 20px 0 0; }
 .runtime-installation-path { margin-top: 12px; font-size: 12px; }
 .runtime-path { margin: 16px 0 0; padding: 0; border: 0; min-width: 0; }
 .runtime-path label { display: block; margin-bottom: 8px; font-size: 12px; }

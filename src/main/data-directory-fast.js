@@ -121,13 +121,34 @@ function validateJournal(appData, journal, helpers) {
   }
 }
 
+function removeMigrationWorkDirectory(appData, directory) {
+  const root = path.resolve(directory), relative = path.relative(path.resolve(appData), root);
+  if (path.dirname(relative) !== '.' || !/^\.camellia-migration-work-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(relative)) {
+    throw new Error('Unsafe migration cleanup directory; no data was removed');
+  }
+  if (!exists(root)) return;
+  const stat = fs.lstatSync(root);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('The migration cleanup directory was replaced; no data was removed');
+  const unlinkLinks = current => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const file = path.join(current, entry.name), info = fs.lstatSync(file);
+      // After the profile rename, original internal junctions point at the
+      // absent old directory. Electron's recursive rm can silently leave the
+      // whole backup tree behind; unlink reparse entries without following them.
+      if (info.isSymbolicLink()) fs.unlinkSync(file);
+      else if (info.isDirectory()) unlinkLinks(file);
+    }
+  };
+  unlinkLinks(root);
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  if (exists(root)) throw new Error('Migration backup directory still exists after cleanup: ' + root);
+}
+
 function cleanupTransaction(appData, journal, helpers) {
   validateJournal(appData, journal, helpers);
   // The resolved directory must be this transaction's sibling, never a
   // profile or a path from an unchecked journal.
-  if (exists(journal.work)) {
-    fs.rmSync(journal.work, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-  }
+  removeMigrationWorkDirectory(appData, journal.work);
   fs.rmSync(path.join(appData, JOURNAL + '.tmp'), { force: true });
   fs.unlinkSync(path.join(appData, JOURNAL));
 }
@@ -432,4 +453,4 @@ function completeRenameMigration(options, helpers) {
   }
 }
 
-module.exports = { completeRenameMigration, recoverDirectoryMigration };
+module.exports = { completeRenameMigration, recoverDirectoryMigration, removeMigrationWorkDirectory };

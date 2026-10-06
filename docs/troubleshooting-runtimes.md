@@ -28,6 +28,10 @@ The empty folders come from how engines are installed. Camellia runs `npm ci`, w
 
 ## Fix
 
+For a CLI installed outside Camellia, open **Settings → Engine Settings** and click **Use Camellia** next to the original-installer update hint. The in-app confirmation uses the settings theme and shows the current CLI and the managed destination. Camellia prepares its pinned official runtime and verifies its version, uninstalls the original npm package (including npx installations) or standalone native executable, and clears the custom path. Shared npm packages, conversations and account settings are kept. Future version checks and updates use the managed installation; the Antigravity subscription CLI continues to update with Camellia releases. Cancelling makes no changes, and download or verification failures leave the original CLI available.
+
+Managed installations take priority over the bundled runtime after migration. JavaScript files whose npm installation cannot be identified are left intact; select the installed package entry to migrate them.
+
 Camellia builds each runtime in a staging directory and swaps it in only after the install finishes, so an interrupted install no longer empties a runtime that was already working. It reinstalls a missing runtime automatically the next time you start it (`npm start` runs a pre-start check). To reinstall by hand:
 
 ```bash

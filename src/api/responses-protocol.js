@@ -62,7 +62,7 @@ function responsesToChat(body) {
     type: 'function', function: { name: wireName(body.tool_choice) } };
   for (const key of ['temperature', 'top_p', 'parallel_tool_calls']) if (body[key] !== undefined) result[key] = body[key];
   if (body.max_output_tokens) result.max_tokens = body.max_output_tokens;
-  if (body.reasoning?.effort && body.reasoning.effort !== 'none') result.reasoning_effort = body.reasoning.effort;
+  if (body.reasoning?.effort) result.reasoning_effort = body.reasoning.effort;
   if (body.text?.format?.type === 'json_schema') {
     const { type, ...schema } = body.text.format; result.response_format = { type, json_schema: schema };
   }

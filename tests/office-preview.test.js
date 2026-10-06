@@ -81,6 +81,19 @@ test('slides render positioned shapes with scaled text and embedded pictures', a
   assert.match(html, /src="data:image\/png;base64,/);
 });
 
+test('slide table cells keep noFill transparent when borders have solid fills', async t => {
+  const file = archive(t, {
+    'ppt/presentation.xml': '<p:presentation xmlns:p="ppt" xmlns:r="rel"><p:sldSz cx="1000" cy="1000"/><p:sldIdLst><p:sldId r:id="slide"/></p:sldIdLst></p:presentation>',
+    'ppt/_rels/presentation.xml.rels': '<Relationships><Relationship Id="slide" Target="slides/slide1.xml"/></Relationships>',
+    'ppt/slides/slide1.xml': '<p:sld xmlns:p="ppt" xmlns:a="drawing" xmlns:r="rel"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="1" name="Table"/><p:nvPr/></p:nvGraphicFramePr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1000" cy="1000"/></a:xfrm><a:graphic><a:graphicData><a:tbl><a:tblGrid><a:gridCol w="1000"/></a:tblGrid><a:tr h="1000"><a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Transparent</a:t></a:r></a:p></a:txBody><a:tcPr><a:lnL><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:lnL><a:noFill/></a:tcPr></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>',
+  });
+  const { html } = await readOfficePreview(file, 'presentation');
+  assert.match(html, /Transparent/);
+  assert.match(html, /border-left:1px solid #000000/);
+  assert.match(html, /\.shape p,\.slide td p\{line-height:1\.25;margin:0\}/);
+  assert.doesNotMatch(html, /<td style="background:#000000;/);
+});
+
 test('spreadsheet preview renders sheet names, cell formatting and cached formula results', async t => {
   const file = archive(t, {
     'xl/workbook.xml': '<workbook xmlns:r="rel"><sheets><sheet name="Results &amp; costs" r:id="sheet"/></sheets></workbook>',
