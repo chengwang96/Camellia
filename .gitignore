@@ -13,6 +13,7 @@ Thumbs.db
 .vscode/
 
 build/runtime-assets/
+build/node-cache/
 build/benchmark-research/
 build/benchmark-validation/
 
