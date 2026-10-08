@@ -6,7 +6,7 @@ const { DiscussionStore } = require('./store');
 const { bindingFingerprint } = require('./capabilities');
 const { apiProviderRef } = require('./catalog');
 const { nativeStorage: validateStorage, sameStorage } = require('./native-storage');
-const { validateReply, validateIdentityPrompt } = require('./schema');
+const { validateReply, validateIdentityPrompt, replyDigest } = require('./schema');
 const { validateAttachments } = require('./assets');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
@@ -266,14 +266,9 @@ class DiscussionManager {
     });
   }
   partial(id, deliveryId, generation, text) {
-    if (typeof text !== 'string') throw new Error('Invalid partial reply');
-    return this.store.update(id, state => {
-      const { delivery } = this.active(state, deliveryId, generation);
-      if (delivery.status !== 'running') throw new Error('Delivery is not running');
-      // Only adapter-filtered public answer text belongs here, never reasoning
-      // or raw tool events. Partial text is not part of the input transcript.
-      delivery.partialText = text; return delivery;
-    });
+    // Only adapter-filtered public text belongs here. A draft checkpoint never
+    // commits a public message or advances a member's native context coverage.
+    return this.store.partial(id, deliveryId, generation, text);
   }
   stop(id, deliveryId) {
     this.control(id).deliveries.add(deliveryId);
@@ -418,8 +413,10 @@ class DiscussionManager {
     return this.store.update(id, state => {
       const existing = state.deliveries.find(d => d.id === deliveryId);
       if (existing?.generation === generation && existing.settlement) {
-        if (JSON.stringify(existing.settlement) !== JSON.stringify(intent)) throw new Error('Conflicting settlement');
-        return existing.settlement;
+        const settled = existing.settlement.resultId
+          ? { status: 'completed', text: state.messages.find(m => m.id === existing.resultId).text } : existing.settlement;
+        if (JSON.stringify(settled) !== JSON.stringify(intent)) throw new Error('Conflicting settlement');
+        return settled;
       }
       const { delivery } = this.active(state, deliveryId, generation);
       if (intent.status === 'completed') {
@@ -445,6 +442,8 @@ class DiscussionManager {
       const result = append(state, { role: 'assistant', speakerId: participant.id, speakerName: participant.name,
         requestId: delivery.requestId, deliveryId, text });
       delivery.resultId = result.id; delivery.status = 'completed'; delete delivery.phase;
+      delete delivery.partialText;
+      delivery.settlement = { status: 'completed', resultId: result.id, sha256: replyDigest(text) };
       finishTools(delivery);
       participant.session.coveredThroughSeq = delivery.inputThroughSeq;
       participant.session.nativeOwnMessageIds.push(result.id);
@@ -486,6 +485,7 @@ class DiscussionManager {
         return value.id;
       });
     }
+    this.store.maintain();
   }
 }
 

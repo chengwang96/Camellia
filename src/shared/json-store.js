@@ -13,6 +13,22 @@ function readJson(file, fallback) {
   }
 }
 
+// Independent saved records may be quarantined without resetting unrelated
+// conversations. Configuration callers keep using the strict reader above.
+function readRecoverableJson(file, fallback, report = () => {}, valid = () => true) {
+  try {
+    const value = readJson(file, fallback);
+    if (!valid(value)) throw Object.assign(new Error('Invalid saved record structure'), { invalidRecord: true });
+    return value;
+  } catch (error) {
+    if (!(error.cause instanceof SyntaxError) && !error.invalidRecord) throw error;
+    const backupFile = file + '.invalid-' + randomUUID();
+    fs.renameSync(file, backupFile);
+    report(Object.assign(new Error(`Saved data could not be loaded; original retained at ${backupFile}`, { cause: error }), { backupFile }));
+    return fallback;
+  }
+}
+
 // Replace only after a complete write. A failed write/rename leaves the old
 // configuration intact; unique temporary names also avoid writer collisions.
 function writeJson(file, value) {
@@ -24,8 +40,7 @@ function writeJson(file, value) {
 // before reporting failure; anything else is a real error and rethrown.
 const TRANSIENT_RENAME = new Set(['EPERM', 'EACCES', 'EBUSY']);
 function sleepSync(ms) {
-  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
-  catch { const until = Date.now() + ms; while (Date.now() < until); }
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function writeText(file, data) {
@@ -47,4 +62,4 @@ function writeText(file, data) {
   }
 }
 
-module.exports = { readJson, writeJson, writeText };
+module.exports = { readJson, readRecoverableJson, writeJson, writeText };

@@ -36,7 +36,11 @@ final class ChatStyle {
 
     int dockBottomPadding() { return dp(8); }
 
-    void dockStatus(TextView status) { status.setPadding(0, dp(2), 0, dp(2)); }
+    void dockStatus(TextView status) {
+        status.setPadding(0, dp(2), 0, dp(2)); status.setTextSize(11); status.setGravity(Gravity.CENTER);
+        status.setSingleLine(true); status.setLines(1); status.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        status.setAccessibilityLiveRegion(android.view.View.ACCESSIBILITY_LIVE_REGION_POLITE);
+    }
 
     int dockFadeHeight() { return dp(36); }
 
@@ -167,12 +171,16 @@ final class ChatStyle {
         copy.setImageDrawable(new LineIcon("copy", muted)); copy.setTag("copyMessage");
         copy.setPadding(dp(16), dp(16), dp(16), dp(16));
         footer.addView(copy, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        if (at > 0) {
-            TextView time = new TextView(context); time.setTextColor(muted); time.setTextSize(12);
-            time.setTag("messageTimestamp");
-            time.setText(new SimpleDateFormat(chinese ? "M月d日 HH:mm" : "MMM d, HH:mm", chinese ? Locale.CHINA : Locale.ENGLISH).format(new Date(at)));
-            footer.addView(time);
+        wrapper.addView(footer, footerParams); updateMessageTimestamp(wrapper, at, chinese); return wrapper;
+    }
+
+    void updateMessageTimestamp(LinearLayout wrapper, long at, boolean chinese) {
+        LinearLayout footer = wrapper.findViewWithTag("messageFooter");
+        TextView time = wrapper.findViewWithTag("messageTimestamp");
+        if (at <= 0) { if (time != null) footer.removeView(time); return; }
+        if (time == null) {
+            time = new TextView(context); time.setTextColor(muted); time.setTextSize(12); time.setTag("messageTimestamp"); footer.addView(time);
         }
-        wrapper.addView(footer, footerParams); return wrapper;
+        time.setText(new SimpleDateFormat(chinese ? "M月d日 HH:mm" : "MMM d, HH:mm", chinese ? Locale.CHINA : Locale.ENGLISH).format(new Date(at)));
     }
 }

@@ -36,6 +36,32 @@ public class MarkdownTest extends InstrumentationTestCase {
         return getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
     }
 
+    public void testCodeCopyFeedbackRespectsTheAppPreference() {
+        Activity activity = start();
+        String original = MobilePreferences.get(activity, "hapticFeedback");
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
+        try {
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    View rendered = new MarkdownView(activity, Color.BLACK, Color.GRAY, Color.LTGRAY, Color.BLUE).render("```text\ncopied-code\n```");
+                    activity.setContentView(rendered);
+                    View copy = findDescription(rendered.findViewWithTag("markdownCode"), "Copy code", "复制代码");
+                    ClipboardManager clipboard = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+                    for (boolean enabled : new boolean[]{false, true, false}) {
+                        MobilePreferences.set(activity, "hapticFeedback", enabled ? "enabled" : "disabled");
+                        assertTrue(copy.performClick());
+                        assertEquals("copied-code\n", clipboard.getPrimaryClip().getItemAt(0).getText().toString());
+                        assertEquals(enabled, copy.isHapticFeedbackEnabled());
+                    }
+                } catch (Throwable error) { failure.set(error); }
+            });
+            if (failure.get() != null) throw new AssertionError(failure.get());
+        } finally {
+            MobilePreferences.set(activity, "hapticFeedback", original);
+            getInstrumentation().runOnMainSync(activity::finish);
+        }
+    }
+
     public void testNativeFormattingTablesAndCodeCopy() throws Exception {
         Activity activity = start();
         boolean dark = (activity.getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES;
@@ -98,7 +124,7 @@ public class MarkdownTest extends InstrumentationTestCase {
         } finally { getInstrumentation().runOnMainSync(activity::finish); }
     }
 
-    public void testHistoryAndStreamingReplaceWithoutDuplicates() {
+    public void testHistoryAndStreamingReplaceWithoutDuplicates() throws Exception {
         Activity activity = start();
         try {
             getInstrumentation().runOnMainSync(() -> {
@@ -121,11 +147,76 @@ public class MarkdownTest extends InstrumentationTestCase {
                     assertEquals("**History**", clipboard.getPrimaryClip().getItemAt(0).getText().toString());
                     snapshot.put("cursor", 2).put("live", new JSONObject().put("runId", 1).put("text", "## Streaming\n\n| Column |\n| --- |\n| **Value** |"));
                     apply.invoke(activity, snapshot);
-                    assertSame(history, findText(root, "History")); assertNotNull(root.findViewWithTag("markdownTable"));
-                    List<TextView> text = new ArrayList<>(); collect(root, text);
-                    assertEquals(1, text.stream().filter(view -> view.getText().toString().equals("Streaming")).count());
+                    assertSame(history, findText(root, "History"));
                     assertNotNull(root.findViewWithTag("composerBar"));
                 } catch (Exception error) { throw new AssertionError(error); }
+            });
+            long end = android.os.SystemClock.uptimeMillis() + 10000;
+            java.util.concurrent.atomic.AtomicReference<Boolean> ready = new java.util.concurrent.atomic.AtomicReference<>(false);
+            while (android.os.SystemClock.uptimeMillis() < end) {
+                getInstrumentation().runOnMainSync(() -> ready.set(activity.getWindow().getDecorView().findViewWithTag("markdownTable") != null));
+                if (ready.get()) break; Thread.sleep(30);
+            }
+            assertTrue("Streamed table must appear", ready.get());
+            getInstrumentation().runOnMainSync(() -> {
+                List<TextView> text = new ArrayList<>(); collect(activity.getWindow().getDecorView(), text);
+                assertEquals(1, text.stream().filter(view -> view.getText().toString().equals("Streaming")).count());
+            });
+        } finally { getInstrumentation().runOnMainSync(activity::finish); }
+    }
+
+    private void awaitMarkdown(java.util.function.BooleanSupplier condition) throws Exception {
+        long end = android.os.SystemClock.uptimeMillis() + 10000;
+        java.util.concurrent.atomic.AtomicReference<Boolean> ready = new java.util.concurrent.atomic.AtomicReference<>(false);
+        while (android.os.SystemClock.uptimeMillis() < end) {
+            getInstrumentation().runOnMainSync(() -> ready.set(condition.getAsBoolean()));
+            if (ready.get()) return; Thread.sleep(30);
+        }
+        fail("Timed out waiting for remote Markdown");
+    }
+
+    public void testCompletedRemoteReplyKeepsStreamingBlocks() throws Exception {
+        Activity activity = start(); String id = "12345678-1234-1234-1234-123456789abc";
+        String partial = "## Streamed\n\n```java\nline one\n";
+        JSONObject snapshot = new JSONObject().put("instanceId", "handoff-test").put("cursor", 1).put("permission", "read")
+            .put("conversation", new JSONObject().put("id", id).put("seq", 1)).put("nextBefore", JSONObject.NULL)
+            .put("messages", new JSONArray().put(new JSONObject().put("seq", 1).put("role", "user").put("text", "Question")))
+            .put("live", new JSONObject().put("runId", 44).put("userSeq", 1).put("startedAt", 1790056900000L).put("text", partial));
+        java.util.concurrent.atomic.AtomicReference<View> heading = new java.util.concurrent.atomic.AtomicReference<>(), code = new java.util.concurrent.atomic.AtomicReference<>(), wrapper = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<StreamingMarkdownView> body = new java.util.concurrent.atomic.AtomicReference<>();
+        try {
+            getInstrumentation().runOnMainSync(() -> {
+                try {
+                    var conversation = MainActivity.class.getDeclaredField("conversationId"); conversation.setAccessible(true); conversation.set(activity, id);
+                    var detail = MainActivity.class.getDeclaredMethod("detailScreen"); detail.setAccessible(true); detail.invoke(activity);
+                    var apply = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class); apply.setAccessible(true); apply.invoke(activity, snapshot);
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+            awaitMarkdown(() -> {
+                TextView title = findText(activity.getWindow().getDecorView(), "Streamed");
+                return title != null && ((StreamingMarkdownView) title.getParent()).idle();
+            });
+            getInstrumentation().runOnMainSync(() -> {
+                heading.set(findText(activity.getWindow().getDecorView(), "Streamed")); body.set((StreamingMarkdownView) heading.get().getParent()); code.set(body.get().findViewWithTag("markdownCodeText"));
+                try { var views = MainActivity.class.getDeclaredField("renderedMessages"); views.setAccessible(true); wrapper.set((View) ((java.util.Map<?, ?>) views.get(activity)).get("live")); }
+                catch (Exception error) { throw new AssertionError(error); }
+            });
+            String completed = partial + "line two\n```\n\nDone";
+            snapshot.put("cursor", 2).put("live", JSONObject.NULL);
+            snapshot.getJSONObject("conversation").put("seq", 2);
+            snapshot.getJSONArray("messages").put(new JSONObject().put("seq", 2).put("role", "assistant").put("at", 1790057010000L).put("text", completed));
+            getInstrumentation().runOnMainSync(() -> {
+                try { var apply = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class); apply.setAccessible(true); apply.invoke(activity, snapshot); }
+                catch (Exception error) { throw new AssertionError(error); }
+            });
+            awaitMarkdown(() -> body.get().idle());
+            getInstrumentation().runOnMainSync(() -> {
+                assertSame(heading.get(), findText(activity.getWindow().getDecorView(), "Streamed")); assertSame(code.get(), body.get().findViewWithTag("markdownCodeText"));
+                assertEquals("line one\nline two", ((TextView) code.get()).getText().toString()); assertFalse(body.get().hasStreamState());
+                try { var views = MainActivity.class.getDeclaredField("renderedMessages"); views.setAccessible(true); assertSame(wrapper.get(), ((java.util.Map<?, ?>) views.get(activity)).get("message:2")); }
+                catch (Exception error) { throw new AssertionError(error); }
+                wrapper.get().findViewWithTag("copyMessage").performClick();
+                ClipboardManager clipboard = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE); assertEquals(completed, clipboard.getPrimaryClip().getItemAt(0).getText().toString());
             });
         } finally { getInstrumentation().runOnMainSync(activity::finish); }
     }

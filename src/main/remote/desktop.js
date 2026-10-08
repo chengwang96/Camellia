@@ -37,6 +37,9 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager
   });
   const controller = {
     startTrustedDevices: () => service.startTrustedDevices(),
+    attachmentReferences: () => service.attachmentReferences(),
+    attachmentsChanged: () => service.attachmentsChanged(),
+    maintainAttachments: (cleanup, log) => service.maintainAttachments(cleanup, log),
     open() {
       if (window && !window.isDestroyed()) { window.show(); window.focus(); return; }
       const created = new BrowserWindow({ width: 640, height: 760, minWidth: 480, minHeight: 520,

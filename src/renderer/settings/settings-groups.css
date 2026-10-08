@@ -1,0 +1,38 @@
+/* Only visible topic groups own page-wide rules. Component/table/card borders
+   keep their own meaning; a setting row is not a topic boundary. */
+.settings-main .settings-groups > .settings-group { margin: 0; padding: 0; border: 0; }
+.settings-main .settings-group:not(:has(> :not([hidden]):not(:empty))) { display: none; }
+.settings-main .settings-groups > .settings-group:has(> :not([hidden]):not(:empty)) ~ .settings-group:has(> :not([hidden]):not(:empty)) {
+  margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--dsw-alias-border-l2);
+}
+.settings-main .settings-group .setting-row { padding: 16px 0; border-bottom: 0; }
+.settings-main .settings-group .engine-field { padding: 14px 0; border-bottom: 0; }
+.settings-main .settings-group > .setting-row:first-child,
+.settings-main .settings-group > .engine-field:first-child { padding-top: 0; }
+.settings-main .settings-group > .setting-row:last-child,
+.settings-main .settings-group > .engine-field:last-child { padding-bottom: 0; }
+.settings-main .settings-group > .section,
+.settings-main .settings-group > .subscription-account,
+.settings-main .settings-group > .mobile-section,
+.settings-main .settings-group > .connectivity-section,
+.settings-main .settings-group > .subscription-models-section { margin: 0; padding: 0; border-top: 0; border-bottom: 0; }
+.settings-main .settings-group > .router-options,
+.settings-main .settings-group > .balances-section { margin-top: 0; }
+.settings-main .settings-group > .engine-common-title { margin: 0 0 12px; }
+.settings-main #mobilePage .settings-group > .mobile-section:not(.mobile-connection-card):not(.mobile-pair-card) {
+  margin: 0; padding: 0; border: 0;
+}
+.settings-main .settings-group .runtime-card { border-bottom: 0; }
+.settings-main #runtimeCards > .runtime-card:not([hidden]) ~ .runtime-card:not([hidden]) { border-top: 1px solid var(--dsw-alias-border-l2); }
+.settings-main .subscription-cost { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
+/* Lists/tables retain row identity, without a rule after their last entry. */
+.settings-main .quick-switch-row:not(.quick-switch-head) { border-bottom: 0; border-top: 1px solid var(--dsw-alias-border-l2); }
+.settings-main .subscription-model-row { border-top: 0; }
+.settings-main .subscription-model-row ~ .subscription-model-row { border-top: 1px solid var(--dsw-alias-border-l2); }
+.settings-main .route-row { border-bottom: 0; }
+.settings-main .route-row ~ .route-row { border-top: 1px solid var(--dsw-alias-border-l2); }
+.settings-main .cli-devices .server-setting { border-top: 0; }
+.settings-main .cli-devices .server-setting ~ .server-setting { border-top: 1px solid var(--dsw-alias-border-l2); }
+@media (max-width: 700px) {
+  .settings-main .quick-switch-head + .quick-switch-row { border-top: 0; }
+}

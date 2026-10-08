@@ -91,7 +91,7 @@ final class RefreshScrollView extends ScrollView {
         if (armed != ready) {
             armed = ready;
             if (hint != null) hint.accept(armed);
-            if (armed) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+            if (armed) MobileHaptics.perform(this, HapticFeedbackConstants.CLOCK_TICK);
         }
         reveal(96 * density * (1 - (float) Math.exp(-Math.max(0, distance) / (150 * density))));
     }

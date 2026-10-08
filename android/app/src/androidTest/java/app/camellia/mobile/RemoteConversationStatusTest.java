@@ -12,12 +12,15 @@ public class RemoteConversationStatusTest extends InstrumentationTestCase {
     private SharedPreferences preferences;
     private RemoteReplyState replies;
     private JSONObject credentials;
+    private boolean oldEmbedded;
 
     @Override protected void setUp() throws Exception {
         super.setUp();
         var context = getInstrumentation().getTargetContext();
+        EmbeddedNetwork.initialize(context); oldEmbedded = EmbeddedNetwork.enabled(); EmbeddedNetwork.setEnabled(false);
         preferences = context.getSharedPreferences("remote-status-test", 0);
         preferences.edit().clear().commit();
+        EmbeddedNetwork.setEnabled(oldEmbedded);
         replies = new RemoteReplyState(preferences);
         credentials = new JSONObject().put("address", "http://100.64.0.1:43128").put("token", "test");
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));

@@ -4,13 +4,32 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createDataPackage, importDataPackage, inspectDataPackage, readManifest, FORMAT } = require('../src/main/data-migration');
+const { createDataPackage, importDataPackage, inspectDataPackage, readManifest, recoverDataImports, FORMAT } = require('../src/main/data-migration');
+const { Readable } = require('node:stream');
 const { removeTree } = require('./test-fs.cjs');
 
 function scratch() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-migration-'));
   return { root, dataDir: path.join(root, 'app'), home: path.join(root, 'home') };
 }
+
+test('shared plugin snapshots and maintenance state stay out of exports; native context still travels', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    write(path.join(source.dataDir, 'codex/plugin-caches', 'a'.repeat(64), 'plugins/manifest.json'), 'cache');
+    write(path.join(source.dataDir, 'codex/.plugin-cache-operation.json'), '{}');
+    write(path.join(source.dataDir, 'codex/api/conversations/member/.tmp-maintenance/plugins/manifest.json'), 'staged cache');
+    write(path.join(source.dataDir, '.camellia-plugin-cache-maintenance.json'), '{}');
+    write(path.join(source.dataDir, '.camellia-plugin-cache-maintenance-result.json'), '{}');
+    write(path.join(source.dataDir, 'codex/api/conversations/member/sessions/rollout.jsonl'), '{"context":"native"}\n');
+    const file = path.join(source.root, 'profile.zip');
+    const exported = await createDataPackage({ ...source, destination: file });
+    assert.equal(exported.files, 1);
+    await importDataPackage({ ...target, file });
+    assert.equal(fs.readFileSync(path.join(target.dataDir, 'codex/api/conversations/member/sessions/rollout.jsonl'), 'utf8'), '{"context":"native"}\n');
+    assert.equal(fs.existsSync(path.join(target.dataDir, 'codex/plugin-caches')), false);
+  } finally { dispose(source); dispose(target); }
+});
 
 function dispose(box) {
   const resolved = path.resolve(box.root);
@@ -58,6 +77,84 @@ function seedProfile(box) {
   write(path.join(box.dataDir, 'logs', 'dsh-desktop.log'), 'noise');
   write(path.join(box.home, '.dsh', 'cache', 'blob'), 'cache');
 }
+
+test('a profile can be exported and imported again after an overwriting import', async () => {
+  const source = scratch(), middle = scratch(), target = scratch();
+  try {
+    write(path.join(source.dataDir, 'desktop-config.json'), '{"language":"zh-CN"}');
+    write(path.join(middle.dataDir, 'desktop-config.json'), '{"language":"en"}');
+    const first = path.join(source.root, 'first.zip'), second = path.join(middle.root, 'second.zip');
+    await createDataPackage({ ...source, destination: first });
+    const imported = await importDataPackage({ ...middle, file: first });
+    assert.equal(imported.overwritten, 1);
+    assert.equal(fs.readFileSync(path.join(imported.backupDir, 'app', 'desktop-config.json'), 'utf8'), '{"language":"en"}');
+    const exported = await createDataPackage({ ...middle, destination: second });
+    assert.equal(exported.files, 1, 'recovery backups do not travel with the active profile');
+    assert.equal((await importDataPackage({ ...target, file: second })).restored, 1);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8')).language, 'zh-CN');
+    assert.ok(fs.existsSync(imported.backupDir), 'export does not delete the original backup');
+  } finally { dispose(source); dispose(middle); dispose(target); }
+});
+
+test('older packages containing recovery backups import only their active profile', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    const file = path.join(source.root, 'legacy.zip'), config = '{"language":"zh-CN"}', backup = '{"language":"en"}';
+    const manifest = { format: FORMAT, version: 1, source: { appDataDir: source.dataDir, home: source.home },
+      counts: { files: 2, bytes: Buffer.byteLength(config) + Buffer.byteLength(backup) } };
+    await writePart(file, { 'camellia-migration.json': JSON.stringify(manifest), 'app/desktop-config.json': config,
+      'app/migration-backups/previous/app/desktop-config.json': backup });
+    const imported = await importDataPackage({ ...target, file });
+    assert.equal(imported.restored, 1);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8')).language, 'zh-CN');
+    assert.equal(fs.existsSync(path.join(target.dataDir, 'migration-backups', 'previous')), false);
+  } finally { dispose(source); dispose(target); }
+});
+
+for (const damaged of ['manifest', 'file']) test('same-size corruption of the package ' + damaged + ' cannot overwrite a profile', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    const JSZip = require('jszip'), file = path.join(source.root, 'corrupted.zip');
+    const original = '{"language":"en"}', marker = damaged === 'manifest' ? 'MANIFEST_CRC_MARKER_A' : 'FILE_CRC_MARKER_A';
+    write(path.join(source.dataDir, 'desktop-config.json'), JSON.stringify({ language: 'zh-CN', marker: 'FILE_CRC_MARKER_A' }));
+    write(path.join(target.dataDir, 'desktop-config.json'), original);
+    await createDataPackage({ ...source, appVersion: 'MANIFEST_CRC_MARKER_A', destination: file });
+    const zip = await JSZip.loadAsync(fs.readFileSync(file)), buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' });
+    const offset = buffer.indexOf(marker);
+    assert.ok(offset >= 0); assert.equal(buffer.indexOf(marker, offset + 1), -1);
+    buffer[offset + marker.length - 1] = 'B'.charCodeAt(0); fs.writeFileSync(file, buffer);
+    await assert.rejects(JSZip.loadAsync(buffer, { checkCRC32: true }), /CRC32/);
+    await assert.rejects(importDataPackage({ ...target, file }), /damaged|checksum/i);
+    assert.equal(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8'), original);
+    assert.equal(fs.existsSync(path.join(target.dataDir, 'migration-backups')), false);
+  } finally { dispose(source); dispose(target); }
+});
+
+test('malformed selected JSON is rejected before any profile file is overwritten', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    seedProfile(source);
+    write(path.join(source.dataDir, 'desktop-config.json'), '{invalid json');
+    write(path.join(target.dataDir, 'desktop-config.json'), '{"language":"en"}');
+    const file = path.join(source.root, 'invalid-json.zip'); await createDataPackage({ ...source, destination: file });
+    await assert.rejects(importDataPackage({ ...target, file }), /invalid JSON.*app\/desktop-config\.json/i);
+    assert.equal(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8'), '{"language":"en"}');
+    assert.equal(fs.existsSync(path.join(target.home, '.dsh', 'ollama-proxy.json')), false);
+    assert.equal(fs.existsSync(path.join(target.dataDir, 'migration-backups')), false);
+  } finally { dispose(source); dispose(target); }
+});
+
+test('unselected malformed settings do not prevent importing valid API data', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    seedProfile(source); write(path.join(source.dataDir, 'desktop-config.json'), '{invalid json');
+    const file = path.join(source.root, 'api.zip'); await createDataPackage({ ...source, destination: file });
+    const imported = await importDataPackage({ ...target, file, scope: 'api' });
+    assert.ok(imported.restored > 0);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(target.home, '.dsh', 'ollama-proxy.json'), 'utf8')).providers[0].id, 'test');
+    assert.equal(fs.existsSync(path.join(target.dataDir, 'desktop-config.json')), false);
+  } finally { dispose(source); dispose(target); }
+});
 
 test('a data package round-trips, rewrites moved paths and skips caches', async t => {
   const source = scratch();
@@ -174,17 +271,19 @@ test('a split package restores every part and refuses to start when one is missi
     fs.mkdirSync(directory, { recursive: true });
     const first = path.join(directory, 'camellia-data-01.zip');
     const second = path.join(directory, 'camellia-data-02.zip');
+    const configText = JSON.stringify({ dshHome: path.join(source.home, '.dsh'), language: 'zh-CN' });
+    const historyText = '{"seq":1}\n';
     const manifest = {
       format: FORMAT, version: 1, createdAt: new Date(0).toISOString(), appVersion: '1.0.0',
       source: { platform: process.platform, home: source.home, appDataDir: source.dataDir },
-      roots: { app: 'app', home: 'home' }, counts: { files: 2, bytes: 20, skipped: 0 },
+      roots: { app: 'app', home: 'home' }, counts: { files: 2, bytes: Buffer.byteLength(configText) + Buffer.byteLength(historyText), skipped: 0 },
       parts: [{ name: path.basename(first), files: 1 }, { name: path.basename(second), files: 1 }],
     };
     await writePart(first, {
       'camellia-migration.json': JSON.stringify(manifest),
-      'app/desktop-config.json': JSON.stringify({ dshHome: path.join(source.home, '.dsh'), language: 'zh-CN' }),
+      'app/desktop-config.json': configText,
     });
-    await writePart(second, { 'app/conversations/abc.jsonl': '{"seq":1}\n' });
+    await writePart(second, { 'app/conversations/abc.jsonl': historyText });
 
     const imported = await importDataPackage({ file: first, dataDir: target.dataDir, home: target.home, scope: 'all' });
     assert.equal(imported.restored, 2);
@@ -339,4 +438,122 @@ test('native Codex database files travel with conversations rather than settings
     assert.equal(exported.files, 2);
     assert.deepEqual(Object.keys((await inspectDataPackage(destination)).categories), ['conversations']);
   } finally { dispose(source); }
+});
+
+test('a read failure after the export precheck preserves the previous package and closes its streams', async context => {
+  const source = scratch();
+  try {
+    const file = path.join(source.dataDir, 'desktop-config.json'), destination = path.join(source.root, 'export.zip');
+    write(file, '{"language":"zh-CN"}'); write(destination, 'previous package');
+    const read = fs.createReadStream; let input;
+    context.mock.method(fs, 'createReadStream', (name, ...args) => {
+      if (name !== file) return read(name, ...args);
+      input = new Readable({ read() { this.push(Buffer.from('{"language":')); this.destroy(Object.assign(new Error('locked after precheck'), { code: 'EACCES' })); } });
+      return input;
+    });
+    await assert.rejects(createDataPackage({ dataDir: source.dataDir, home: source.home, destination }), /locked while packaging/);
+    assert.equal(fs.readFileSync(destination, 'utf8'), 'previous package');
+    assert.equal(input.destroyed, true);
+    assert.equal(fs.readdirSync(source.root).some(name => name.endsWith('.part')), false);
+  } finally { dispose(source); }
+});
+
+test('a short read cannot masquerade as a complete export', async context => {
+  const source = scratch();
+  try {
+    const file = path.join(source.dataDir, 'desktop-config.json'), destination = path.join(source.root, 'export.zip');
+    write(file, '{"language":"zh-CN"}');
+    const read = fs.createReadStream;
+    context.mock.method(fs, 'createReadStream', (name, ...args) => name === file ? Readable.from(['{}']) : read(name, ...args));
+    await assert.rejects(createDataPackage({ dataDir: source.dataDir, home: source.home, destination }), /changed while packaging/);
+    assert.equal(fs.existsSync(destination), false);
+  } finally { dispose(source); }
+});
+
+test('manifest byte mismatches fail before overwriting the target profile', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    const file = path.join(source.root, 'short.zip');
+    await writePart(file, { 'camellia-migration.json': JSON.stringify({ format: FORMAT, version: 1, source: { appDataDir: source.dataDir, home: source.home }, counts: { files: 1, bytes: 66 } }), 'app/desktop-config.json': '{}' });
+    write(path.join(target.dataDir, 'desktop-config.json'), 'original');
+    await assert.rejects(importDataPackage({ file, dataDir: target.dataDir, home: target.home }), /byte count/);
+    assert.equal(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8'), 'original');
+  } finally { dispose(source); dispose(target); }
+});
+
+test('a later activation failure restores overwritten files and removes newly imported files', async context => {
+  const source = scratch(), target = scratch();
+  try {
+    write(path.join(source.dataDir, 'conversations', 'a-new.json'), '{"new":true}');
+    write(path.join(source.dataDir, 'conversations', 'b-old.json'), '{"value":"new"}');
+    write(path.join(source.dataDir, 'desktop-config.json'), '{"language":"zh-CN"}');
+    write(path.join(target.dataDir, 'conversations', 'b-old.json'), '{"value":"old"}');
+    write(path.join(target.dataDir, 'desktop-config.json'), '{"language":"en"}');
+    const file = path.join(source.root, 'rollback.zip');
+    await createDataPackage({ dataDir: source.dataDir, home: source.home, destination: file });
+    const rename = fs.promises.rename;
+    context.mock.method(fs.promises, 'rename', async (from, to) => {
+      if (String(from).includes('.camellia-import-') && to === path.join(target.dataDir, 'desktop-config.json')) throw Object.assign(new Error('target locked'), { code: 'EBUSY' });
+      return rename(from, to);
+    });
+    await assert.rejects(importDataPackage({ file, dataDir: target.dataDir, home: target.home }), error => {
+      assert.equal(error.rolledBack, true); assert.equal(fs.existsSync(error.backupDir), true); return /original profile was restored/.test(error.message);
+    });
+    assert.equal(fs.existsSync(path.join(target.dataDir, 'conversations', 'a-new.json')), false);
+    assert.equal(fs.readFileSync(path.join(target.dataDir, 'conversations', 'b-old.json'), 'utf8'), '{"value":"old"}');
+    assert.equal(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8'), '{"language":"en"}');
+    assert.deepEqual(recoverDataImports({ dataDir: target.dataDir, home: target.home }), []);
+  } finally { dispose(source); dispose(target); }
+});
+
+test('failed rollback retains a recovery journal and can finish after the file lock clears', async context => {
+  const source = scratch(), target = scratch();
+  try {
+    write(path.join(source.dataDir, 'conversations', 'old.json'), '{"value":"new"}');
+    write(path.join(source.dataDir, 'desktop-config.json'), '{}');
+    write(path.join(target.dataDir, 'conversations', 'old.json'), '{"value":"old"}');
+    const file = path.join(source.root, 'rollback.zip'); await createDataPackage({ dataDir: source.dataDir, home: source.home, destination: file });
+    const rename = fs.promises.rename;
+    context.mock.method(fs.promises, 'rename', async (from, to) => {
+      if (to === path.join(target.dataDir, 'desktop-config.json')) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+      return rename(from, to);
+    });
+    const copy = fs.copyFileSync;
+    context.mock.method(fs, 'copyFileSync', (from, to, ...args) => {
+      if (String(from).includes('migration-backups')) throw Object.assign(new Error('restore locked'), { code: 'EACCES' });
+      return copy(from, to, ...args);
+    });
+    let backupDir;
+    await assert.rejects(importDataPackage({ file, dataDir: target.dataDir, home: target.home }), error => {
+      backupDir = error.backupDir; return error.recoveryRequired && fs.existsSync(path.join(backupDir, 'transaction.jsonl'));
+    });
+    context.mock.restoreAll();
+    const recovered = recoverDataImports({ dataDir: target.dataDir, home: target.home });
+    assert.deepEqual(recovered, [{ backupDir, rolledBack: true }]);
+    assert.equal(fs.readFileSync(path.join(target.dataDir, 'conversations', 'old.json'), 'utf8'), '{"value":"old"}');
+    assert.equal(fs.existsSync(path.join(backupDir, 'transaction.jsonl')), false);
+  } finally { dispose(source); dispose(target); }
+});
+
+test('startup recovery handles a crash between file swaps and preserves later external edits', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    write(path.join(source.dataDir, 'conversations', 'old.json'), '{"value":"new"}');
+    write(path.join(source.dataDir, 'desktop-config.json'), '{}');
+    write(path.join(target.dataDir, 'conversations', 'old.json'), '{"value":"old"}');
+    const file = path.join(source.root, 'crash.zip'); await createDataPackage({ dataDir: source.dataDir, home: source.home, destination: file });
+    const child = require('node:child_process').spawnSync(process.execPath, [path.join(__dirname, 'data-import-crash-fixture.cjs'), file, target.dataDir, target.home], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+    assert.equal(child.status, 23, child.stderr);
+    const imported = path.join(target.dataDir, 'conversations', 'old.json');
+    assert.equal(fs.readFileSync(imported, 'utf8'), '{\n  "value": "new"\n}\n');
+    write(imported, 'external edit');
+    assert.throws(() => recoverDataImports({ dataDir: target.dataDir, home: target.home }), /changed; automatic recovery stopped/);
+    assert.equal(fs.readFileSync(imported, 'utf8'), 'external edit');
+    write(imported, '{\n  "value": "new"\n}\n');
+    const directory = path.join(target.dataDir, 'migration-backups', fs.readdirSync(path.join(target.dataDir, 'migration-backups'))[0]);
+    fs.appendFileSync(path.join(directory, 'transaction.jsonl'), '{"type":');
+    assert.equal(recoverDataImports({ dataDir: target.dataDir, home: target.home })[0].rolledBack, true);
+    assert.equal(fs.readFileSync(imported, 'utf8'), '{"value":"old"}');
+    assert.equal(fs.existsSync(path.join(target.dataDir, 'desktop-config.json')), false);
+  } finally { dispose(source); dispose(target); }
 });

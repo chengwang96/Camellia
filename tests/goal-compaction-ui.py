@@ -86,6 +86,15 @@ with sync_playwright() as p:
             assert page.evaluate('actions.filter(a=>a.action==="goal-resume" || a.action==="goal-start").length') == 0
             assert not errors, errors
             page.screenshot(path=str(preview / f'goal-compaction-{mode}-{theme}.png'), animations='disabled')
+            page.evaluate('''() => {
+              Object.assign(currentGoal, {phase:'blocked', armed:false, storageError:'Could not save goal state: disk full'});
+              receiveGoal({sessionId:context.sessionId, goal:currentGoal, error:currentGoal.storageError});
+            }''')
+            expect(page.locator('#statusLine')).to_have_text('Could not save goal state: disk full')
+            expect(page.locator('#goalChipRow')).to_contain_text('Goal blocked')
+            page.locator('#goalChipRow .goal-chip').first.click()
+            expect(page.locator('.dsh-pop')).to_contain_text('Could not save goal state: disk full')
+            assert not errors, errors
             page.close()
     browser.close()
-print('PASS: five-hour Goal pause acknowledgement, ordinary follow-up, steering, edit/resend, and paused state; light/dark; no model calls')
+print('PASS: five-hour Goal pause acknowledgement, follow-up, steering, edit/resend, and storage error visibility; light/dark; no model calls')

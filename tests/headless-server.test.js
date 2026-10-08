@@ -62,6 +62,22 @@ function harness(context) {
   return { dataDir, host, hosts, network, online, request, driverFactory, networkFactory, failure: () => failure() };
 }
 
+test('server manual attachment cleanup remains available during its own command and retains paused disk queues', async context => {
+  const { host, dataDir } = harness(context), directory = path.join(dataDir, 'remote/device-attachments');
+  fs.mkdirSync(directory, { recursive: true });
+  const retained = path.join(directory, 'a'.repeat(64) + '.txt'), orphan = path.join(directory, 'b'.repeat(64) + '.txt');
+  const old = new Date(Date.now() - 3 * 86400000);
+  for (const file of [retained, orphan]) { fs.writeFileSync(file, 'server-owned bytes'); fs.utimesSync(file, old, old); }
+  fs.writeFileSync(path.join(dataDir, 'remote/message-queue.json'), JSON.stringify([{ state: 'paused', payload: { attachments: [{ path: retained }] } }]));
+  const preview = await host.command('storage-scan');
+  assert.equal(preview.ok, true, preview.error);
+  assert.equal(preview.result.active, false);
+  assert.deepEqual(preview.result.candidates.filter(row => row.category === 'Unused remote attachments').map(row => row.path), [path.relative(dataDir, orphan)]);
+  const result = await host.command('storage-clean', { token: preview.result.token, confirmed: true });
+  assert.equal(result.ok, true, result.error); assert.equal(result.result.files, 1); assert.deepEqual(result.result.errors, []);
+  assert.ok(fs.existsSync(retained)); assert.equal(fs.existsSync(orphan), false);
+});
+
 test('private network key persists, invalid keys fail closed, and locks have ownership', context => {
   const root = directory(context);
   const key = networkKey(root);

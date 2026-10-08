@@ -32,6 +32,9 @@ public final class SettingsActivity extends Activity {
     private AlertDialog dialog;
     private java.util.concurrent.ExecutorService worker;
     private boolean computerBusy;
+    private boolean finishingAfterSave;
+    private TextView storageRetry;
+    private String storageError = "";
 
     @Override protected void attachBaseContext(Context context) { super.attachBaseContext(MobilePreferences.wrap(context)); }
 
@@ -47,14 +50,64 @@ public final class SettingsActivity extends Activity {
         getWindow().setStatusBarColor(settingsStyle.background); getWindow().setNavigationBarColor(settingsStyle.background);
         if ((getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK) != android.content.res.Configuration.UI_MODE_NIGHT_YES)
             getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
-        try { store = new LocalChatStore(this); render(); }
-        catch (Exception error) { shell(tr("设置", "Settings")); failure(error); }
+        loadStore();
+    }
+
+    private void loadStore() {
+        shell(tr("正在读取设置…", "Loading settings…"));
+        LocalChatStore.open(this, null, new LocalChatStore.Callback<>() {
+            public void done(LocalChatStore value) {
+                if (isDestroyed()) return;
+                store = value;
+                try {
+                    render();
+                    if (value.cleanupError != null) failure(value.cleanupError);
+                    if (value.pendingError != null) storageFailure(value.pendingError);
+                }
+                catch (Exception error) { failure(error); }
+            }
+            public void failed(Exception error) {
+                if (isDestroyed()) return;
+                failure(error);
+                TextView retry = text(tr("重新读取", "Read again"), 15, style.accent);
+                retry.setTag("localStorageLoadRetry"); retry.setMinHeight(dp(48));
+                retry.setOnClickListener(view -> loadStore()); content.addView(retry);
+            }
+        });
     }
 
     @Override protected void onSaveInstanceState(Bundle saved) { super.onSaveInstanceState(saved); saved.putString("section", section); }
-    @Override protected void onStop() { pages.finishTransition(); super.onStop(); }
+    @Override protected void onStop() {
+        pages.finishTransition();
+        if (store != null) try { store.flush(stored(value -> {})); } catch (Exception error) { storageFailure(error); }
+        super.onStop();
+    }
     @Override protected void onDestroy() { if (dialog != null) dialog.dismiss(); if (worker != null) worker.shutdownNow(); super.onDestroy(); }
-    @Override public void finish() { super.finish(); PageTransitions.closeActivity(this); }
+    @Override public void finish() {
+        if (store == null || finishingAfterSave) { super.finish(); PageTransitions.closeActivity(this); return; }
+        try { store.flush(stored(value -> { finishingAfterSave = true; finish(); })); }
+        catch (Exception error) { storageFailure(error); }
+    }
+
+    private interface Stored<T> { void run(T value) throws Exception; }
+    private <T> LocalChatStore.Callback<T> stored(Stored<T> action) {
+        return new LocalChatStore.Callback<>() {
+            public void done(T value) {
+                if (isDestroyed()) return;
+                try { action.run(value); } catch (Exception error) { storageFailure(error); }
+            }
+            public void failed(Exception error) { if (!isDestroyed()) storageFailure(error); }
+        };
+    }
+    private void storageFailure(Exception error) {
+        storageError = ErrorDetails.withSummary(tr("设置尚未保存，请重试。", "Settings have not been saved. Retry."), error);
+        if (status != null) status.setText(storageError);
+        if (storageRetry != null) storageRetry.setVisibility(View.VISIBLE);
+    }
+    private void retryStorage() {
+        try { store.flush(stored(value -> { storageError = ""; storageRetry.setVisibility(View.GONE); status.setText(""); })); }
+        catch (Exception error) { storageFailure(error); }
+    }
 
     private String tr(String zh, String en) { return chinese ? zh : en; }
     private int dp(int value) { return style.dp(value); }
@@ -72,6 +125,10 @@ public final class SettingsActivity extends Activity {
         ScrollView scroll = new ScrollView(this); scroll.setVerticalScrollBarEnabled(false);
         content = column(); content.setPadding(0, dp(12), 0, dp(16)); scroll.addView(content); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         status = text("", 13, style.muted); status.setTag("settingsStatus"); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); root.addView(status);
+        storageRetry = text(tr("重试保存", "Retry saving"), 14, settingsStyle.accent);
+        storageRetry.setTag("settingsStorageRetry"); storageRetry.setGravity(Gravity.CENTER); storageRetry.setMinHeight(dp(48));
+        storageRetry.setFocusable(true); storageRetry.setOnClickListener(view -> retryStorage());
+        storageRetry.setVisibility(storageError.isEmpty() ? View.GONE : View.VISIBLE); root.addView(storageRetry);
         pages.show(root, section, 0); root.requestApplyInsets();
     }
     private void failure(Exception error) { status.setText(error.getMessage() == null ? tr("无法保存，请重试。", "Could not save. Try again.") : error.getMessage()); }
@@ -87,6 +144,9 @@ public final class SettingsActivity extends Activity {
         preference(group, "enterMode", tr("键盘回车", "Enter key"),
             new String[]{tr("回车发送，长按换行", "Enter sends; hold for newline"), tr("回车换行，长按发送", "Enter inserts newline; hold to send"), tr("仅点击发送按钮", "Send button only")},
             new String[]{"send", "newline", "button"});
+        settingsStyle.toggle(group, tr("震动效果", "Haptic feedback"), tr("遵循系统触感设置", "Respects system haptic settings"),
+            "preference:hapticFeedback", MobileHaptics.enabled(this), (view, checked) ->
+                MobilePreferences.set(this, "hapticFeedback", checked ? "enabled" : "disabled"));
         settingsStyle.note(content, tr("回车发送模式会向键盘声明发送键，搜狗等输入法可长按发送键换行；部分软键盘（如 Gboard）没有长按换行，可切换为回车换行并点击发送按钮。仅点击发送按钮模式下，回车始终换行。", "Enter-sends mode declares a send key, so keyboards such as Sogou insert a newline while the send key is held. Some keyboards (for example Gboard) have no hold gesture; switch to newline mode and use the send button. In button-only mode, Enter always inserts a newline."));
         settingsStyle.note(content, tr("应用于这台手机上的所有页面，不影响电脑设置。", "Applies throughout this phone. Desktop preferences are unchanged."));
         LinearLayout remote = settingsStyle.group(content, tr("远程控制", "Remote control"));
@@ -130,7 +190,7 @@ public final class SettingsActivity extends Activity {
             LinearLayout card = settingsStyle.group(content, index == 0 ? tr("我的供应商", "My providers") : "");
             settingsStyle.toggle(card, provider.optString("name", provider.optString("id")), provider.optString("baseUrl"), "providerEnabled:" + index,
                 provider.optBoolean("enabled", true), (view, checked) -> {
-                try { JSONObject config = copyConfig(); config.getJSONArray("providers").getJSONObject(selected).put("enabled", checked); store.importConfig(config); provider.put("enabled", checked); }
+                try { JSONObject config = copyConfig(); config.getJSONArray("providers").getJSONObject(selected).put("enabled", checked); store.importConfig(config, stored(result -> {})); }
                 catch (Exception error) { failure(error); view.setOnCheckedChangeListener(null); view.setChecked(provider.optBoolean("enabled", true)); view.setEnabled(false); }
             });
             settingsStyle.action(card, tr("模型与密钥", "Models & keys"), provider.optString("protocol", "openai") + " · " + provider.getJSONArray("models").length() + tr(" 个模型", " models")
@@ -139,7 +199,7 @@ public final class SettingsActivity extends Activity {
                 dialog = new CamelliaDialog.Builder(this).setTitle(tr("移除供应商？", "Remove provider?"))
                     .setMessage(tr("仅删除 API 配置，保留聊天记录。", "Only removes the API configuration. Chats are kept."))
                     .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("移除", "Remove"), (prompt, which) -> {
-                        try { JSONObject config = copyConfig(); config.getJSONArray("providers").remove(selected); store.importConfig(config); providers(); } catch (Exception error) { failure(error); }
+                        try { JSONObject config = copyConfig(); config.getJSONArray("providers").remove(selected); store.importConfig(config, stored(result -> providers())); } catch (Exception error) { failure(error); }
                     }).show();
             });
         }
@@ -214,7 +274,7 @@ public final class SettingsActivity extends Activity {
                 runOnUiThread(() -> {
                     computerBusy = false;
                     if (isFinishing() || isDestroyed()) return;
-                    try { store.importConfig(config); providers(); status.setText(tr("已从「" + name + "」导入 API 配置，聊天记录保留。", "Imported the API configuration from “" + name + "”. Chats are kept.")); }
+                    try { store.importConfig(config, stored(result -> { providers(); status.setText(tr("已从「" + name + "」导入 API 配置，聊天记录保留。", "Imported the API configuration from “" + name + "”. Chats are kept.")); })); }
                     catch (Exception error) { failure(error); }
                 });
             } catch (Exception error) {
@@ -224,7 +284,7 @@ public final class SettingsActivity extends Activity {
     }
 
     private JSONObject copyConfig() throws Exception {
-        JSONObject config = new JSONObject(store.config().toString());
+        JSONObject config = LocalChatRecord.object(store.config());
         if (!config.has("providers")) config.put("providers", new JSONArray());
         config.put("version", 2); if (!config.has("enabled")) config.put("enabled", true); return config;
     }
@@ -311,7 +371,19 @@ public final class SettingsActivity extends Activity {
                     provider.put("models", nextModels);
                     JSONObject config = copyConfig();
                     if (index < 0) config.getJSONArray("providers").put(provider); else config.getJSONArray("providers").put(index, provider);
-                    LocalChatConfig.routes(config); store.importConfig(config); dialog.dismiss(); providers();
+                    LocalChatConfig.routes(config);
+                    AlertDialog savingDialog = dialog;
+                    savingDialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+                    store.importConfig(config, new LocalChatStore.Callback<>() {
+                        public void done(JSONObject value) {
+                            if (isDestroyed()) return;
+                            try { savingDialog.dismiss(); providers(); } catch (Exception error) { failure(error); }
+                        }
+                        public void failed(Exception error) {
+                            if (isDestroyed()) return;
+                            errorLabel.setText(ErrorDetails.describe(error)); savingDialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true); storageFailure(error);
+                        }
+                    });
                 } catch (Exception error) { errorLabel.setText(error.getMessage()); }
             }));
             dialog.setOnDismissListener(closed -> keys.setText(""));
@@ -330,7 +402,20 @@ public final class SettingsActivity extends Activity {
         dialog = new CamelliaDialog.Builder(this).setTitle(tr("粘贴导入", "Paste import")).setView(scroll)
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("替换配置", "Replace configuration"), null).create();
         dialog.setOnShowListener(shown -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
-            try { JSONObject config = LocalChatConfig.parse(source.getText().toString()); store.importConfig(config); dialog.dismiss(); providers(); status.setText(tr("已导入配置", "Configuration imported")); }
+            try {
+                JSONObject config = LocalChatConfig.parse(source.getText().toString()); AlertDialog savingDialog = dialog;
+                savingDialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+                store.importConfig(config, new LocalChatStore.Callback<>() {
+                    public void done(JSONObject value) {
+                        if (isDestroyed()) return;
+                        try { savingDialog.dismiss(); providers(); status.setText(tr("已导入配置", "Configuration imported")); } catch (Exception error) { failure(error); }
+                    }
+                    public void failed(Exception error) {
+                        if (isDestroyed()) return;
+                        errorLabel.setText(ErrorDetails.describe(error)); savingDialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true); storageFailure(error);
+                    }
+                });
+            }
             catch (Exception error) { errorLabel.setText(error.getMessage()); }
         })); dialog.setOnDismissListener(closed -> source.setText(""));
         dialog.show(); dialog.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
@@ -362,13 +447,13 @@ public final class SettingsActivity extends Activity {
             LinearLayout card = settingsStyle.group(content, "");
             settingsStyle.info(card, title.isEmpty() ? tr("新会话", "New chat") : title, tr("本地会话 · 已归档", "Local chat · Archived"));
             settingsStyle.action(card, tr("恢复会话", "Restore chat"), "", "archiveRestore:" + id, false, () -> {
-                try { store.archiveConversation(id, false); archived(); } catch (Exception error) { failure(error); }
+                try { store.archiveConversation(id, false, stored(result -> archived())); } catch (Exception error) { failure(error); }
             });
             settingsStyle.action(card, tr("永久删除", "Delete permanently"), "", "archiveDelete:" + id, true, () -> {
                 dialog = new CamelliaDialog.Builder(this).setTitle(tr("永久删除此会话？", "Permanently delete this chat?"))
                     .setMessage(tr("聊天记录将被删除，无法恢复。", "The chat history will be deleted. This cannot be undone."))
                     .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("删除", "Delete"), (prompt, which) -> {
-                        try { store.deleteConversation(id); archived(); } catch (Exception error) { failure(error); }
+                        store.deleteConversations(java.util.Set.of(id), stored(result -> archived()));
                     }).show();
             });
         }

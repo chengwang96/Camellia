@@ -4,6 +4,15 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class EndpointTest {
+    @Test public void replyReadRouteAllowsOnlyTheExactConversationPath() {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        String base = "/v1/conversations/12345678-1234-1234-1234-123456789abc/read";
+        assertEquals("http://100.64.0.1:43127" + base, endpoint.uri(base).toString());
+        for (String invalid : new String[]{base + "?before=1", base + "?offset=1", base + "/extra", base + "/../commands", "/v1/conversations/not-an-id/read"}) {
+            assertThrows(IllegalArgumentException.class, () -> endpoint.uri(invalid));
+        }
+    }
+
     @Test public void discussionRoutesKeepOpaqueIdsAndBoundedQueries() {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
         String id = "12345678-1234-1234-1234-123456789abc";

@@ -4,6 +4,7 @@ const { createHash } = require('node:crypto');
 const { readJson, writeJson } = require('../../shared/json-store');
 const { fail } = require('./access');
 const { decodeAttachments } = require('./attachments');
+const { AttachmentBatch, hasAttachmentReferences } = require('./attachment-batch');
 const { approval, answer } = require('./approvals');
 const { listArtifacts, openArtifact } = require('./artifacts');
 
@@ -27,6 +28,7 @@ class RemoteDiscussions {
   constructor({ file, getService, access, publish = () => {} }) {
     Object.assign(this, { file, getService, access, publish });
     this.generation = 0;
+    this.pendingAttachments = new Map();
     this.entries = readJson(file, []).slice(-2000).map(entry => entry.state === 'pending'
       ? { ...entry, state: 'interrupted', error: 'The host restarted. Check the discussion before trying again.' } : entry);
     this.save();
@@ -142,6 +144,8 @@ class RemoteDiscussions {
       if (generation !== this.generation) fail(409, 'Remote access stopped before the discussion command could finish');
     };
     const args = { ...parameters, ...(id ? { id } : {}), requestId, actionId: requestId };
+    let batch = null;
+    let committed = false;
     // A slow connection check must not hold an HTTP request open. The client
     // queries this durable receipt; it never sends a fresh command on timeout.
     void Promise.resolve().then(() => {
@@ -149,7 +153,9 @@ class RemoteDiscussions {
       if (action === 'send' && parameters.attachments?.length) {
         if (parameters.attachments.length > 16) fail(400, 'Choose at most 16 discussion attachments');
         const entries = decodeAttachments(parameters.attachments);
-        args.attachments = service.assets.importData(id, entries);
+        batch = new AttachmentBatch(service.assets.root, error => service.onError(error));
+        args.attachments = batch.add(service.assets.importData(id, entries));
+        this.pendingAttachments.set(requestId, args.attachments);
       } else if (action === 'send' && parameters.attachments !== undefined && !Array.isArray(parameters.attachments)) fail(400, 'Invalid attachments');
       if (action === 'permission-response') {
         const permission = service.scheduler.permissions(id).find(p => p.deliveryId === parameters.deliveryId
@@ -159,10 +165,13 @@ class RemoteDiscussions {
       }
       return service.call(action, args, { authorize });
     }).then(result => {
+      committed = true;
       entry.state = 'completed'; entry.groupId = result.group?.id || id;
     }, error => {
       entry.state = 'failed'; entry.error = String(error.message || 'Discussion command failed').slice(0, 1500);
     }).then(() => {
+      if (!committed) batch?.rollback(() => hasAttachmentReferences(service.manager.get(id), batch.files));
+      this.pendingAttachments.delete(requestId);
       try { this.save(); }
       catch {
         entry.state = 'interrupted';

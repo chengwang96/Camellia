@@ -3,205 +3,210 @@ package app.camellia.mobile;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.util.LinkedHashMap;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 
+/** One visible computer, a bounded viewport selection, and memory-only conversation previews. */
 final class RemotePrefetch {
-    private static final int LIMIT = 2 * 1024 * 1024;
-    private final int budget = (int) Math.max(8 * 1024 * 1024, Math.min(32 * 1024 * 1024, Runtime.getRuntime().maxMemory() / 16));
-    private final java.util.concurrent.ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
+    static final int VISIBLE_LIMIT = 4, NEARBY_LIMIT = 2, ENTRY_COUNT = 8;
+    static final int RESPONSE_LIMIT = 1024 * 1024, ENTRY_LIMIT = 1024 * 1024;
+    private final long budget;
+    private final ScheduledThreadPoolExecutor worker = new ScheduledThreadPoolExecutor(1);
     private final LinkedHashMap<String, Entry> entries = new LinkedHashMap<>(8, .75f, true);
-    private final LinkedHashMap<String, Pending> pending = new LinkedHashMap<>();
-    private final LinkedHashMap<String, Long> pages = new LinkedHashMap<>();
+    private final LinkedHashMap<String, Pending> desired = new LinkedHashMap<>(), pending = new LinkedHashMap<>();
     private final Function<String, RemoteApi> clients;
+    private final LongSupplier clock;
     private final long idleDelay;
-    private long lastInteraction = android.os.SystemClock.elapsedRealtime();
+    private long lastInteraction, generation, scheduleToken, size;
     private ScheduledFuture<?> scheduled;
     private RemoteApi active;
-    private long generation;
-    private int size;
+    private Pending activeItem;
+    private boolean cancelling;
 
     private static final class Pending {
-        final JSONObject computer, row;
-        final int offset;
-        final boolean immediate;
-        Pending(JSONObject computer, JSONObject row, int offset, boolean immediate) {
-            this.computer = computer; this.row = row; this.offset = offset; this.immediate = immediate;
+        final String address, token, id, version, key;
+        boolean immediate, attempted;
+        Pending(String address, String token, String id, String version) {
+            this.address = address; this.token = token; this.id = id; this.version = version;
+            key = address + "/" + token + "/" + id;
         }
     }
-
     private static final class Entry {
         final String json, version;
-        final long at = android.os.SystemClock.elapsedRealtime();
-        Entry(String json, String version) { this.json = json; this.version = version; }
+        final long at, bytes;
+        Entry(String key, String json, String version, long at) {
+            this.json = json; this.version = version; this.at = at;
+            bytes = 2L * (key.length() + json.length() + version.length()) + 256;
+        }
     }
 
     RemotePrefetch() { this(RemoteApi::new); }
     RemotePrefetch(Function<String, RemoteApi> clients) { this(clients, 2000); }
-    RemotePrefetch(Function<String, RemoteApi> clients, long idleDelay) { this.clients = clients; this.idleDelay = idleDelay; }
-
-    private String owner(JSONObject computer) { return computer.optString("address") + "/" + computer.optString("token") + "/"; }
-    private String version(JSONObject row) {
-        return row.optLong("seq") + ":" + row.optLong("updatedAt") + ":" + row.optString("activity");
+    RemotePrefetch(Function<String, RemoteApi> clients, long idleDelay) {
+        this(clients, idleDelay, android.os.SystemClock::elapsedRealtime, Runtime.getRuntime().maxMemory());
+    }
+    RemotePrefetch(Function<String, RemoteApi> clients, long idleDelay, LongSupplier clock, long heap) {
+        this.clients = clients; this.idleDelay = idleDelay; this.clock = clock;
+        budget = Math.max(2L * 1024 * 1024, Math.min(8L * 1024 * 1024, heap / 32));
+        lastInteraction = clock.getAsLong(); worker.setRemoveOnCancelPolicy(true);
     }
 
-    synchronized JSONObject get(JSONObject computer, String id) {
-        Entry entry = entries.get(owner(computer) + id);
+    private static String owner(JSONObject computer) { return computer.optString("address") + "/" + computer.optString("token") + "/"; }
+    private static String version(JSONObject row) { return row.optLong("seq") + ":" + row.optLong("updatedAt") + ":" + row.optString("activity"); }
+
+    JSONObject get(JSONObject computer, String id) {
+        Entry entry; synchronized (this) { entry = entries.get(owner(computer) + id); }
         if (entry == null) return null;
-        try { return new JSONObject(entry.json); } catch (Exception ignored) { return null; }
+        try { return new JSONObject(entry.json); } catch (org.json.JSONException error) { return null; }
     }
 
-    synchronized void put(JSONObject computer, JSONObject snapshot) {
+    void put(JSONObject computer, JSONObject snapshot) {
         JSONObject row = snapshot.optJSONObject("conversation");
         if (row == null || !computer.has("token") || snapshot.optJSONArray("messages") == null) return;
+        String key = owner(computer) + row.optString("id");
+        Entry entry = freeze(key, snapshot);
+        synchronized (this) { if (!worker.isShutdown()) install(key, entry); }
+    }
+
+    private Entry freeze(String key, JSONObject snapshot) {
+        JSONObject row = snapshot.optJSONObject("conversation"); JSONArray messages = snapshot.optJSONArray("messages");
+        if (row == null || messages == null) return null;
+        // Skip plainly oversized text before constructing another complete JSON string.
+        long text = 0;
+        for (int index = 0; index < messages.length(); index++) {
+            JSONObject message = messages.optJSONObject(index);
+            if (message != null) text += 2L * message.optString("text").length();
+            if (text > ENTRY_LIMIT) return null;
+        }
         try {
-            String json = new JSONObject().put("conversation", row).put("messages", snapshot.getJSONArray("messages")).toString();
-            if (json.length() > LIMIT) return;
-            String key = owner(computer) + row.optString("id");
-            Entry previous = entries.remove(key);
-            if (previous != null) size -= previous.json.length();
-            entries.put(key, new Entry(json, version(row))); size += json.length();
-            while (size > budget) {
-                var iterator = entries.entrySet().iterator();
-                size -= iterator.next().getValue().json.length(); iterator.remove();
-            }
-        } catch (Exception ignored) { }
+            String json = new JSONObject().put("conversation", row).put("messages", messages).toString();
+            if (json == null || 2L * json.length() > ENTRY_LIMIT) return null;
+            Entry entry = new Entry(key, json, version(row), clock.getAsLong());
+            return entry.bytes <= ENTRY_LIMIT ? entry : null;
+        } catch (org.json.JSONException error) { return null; }
+    }
+
+    private void install(String key, Entry entry) {
+        Entry previous = entries.remove(key); if (previous != null) size -= previous.bytes;
+        if (entry == null) return;
+        entries.put(key, entry); size += entry.bytes;
+        while (entries.size() > ENTRY_COUNT || size > budget) {
+            var iterator = entries.entrySet().iterator(); size -= iterator.next().getValue().bytes; iterator.remove();
+        }
     }
 
     synchronized void remove(JSONObject computer, String id) {
-        String prefix = owner(computer);
-        pending.entrySet().removeIf(entry -> id == null ? entry.getKey().startsWith(prefix) : entry.getKey().equals(prefix + id));
-        if (id == null) pages.keySet().removeIf(key -> key.startsWith(prefix));
+        String prefix = owner(computer), key = id == null ? null : prefix + id;
+        desired.keySet().removeIf(value -> key == null ? value.startsWith(prefix) : value.equals(key));
+        pending.keySet().removeIf(value -> key == null ? value.startsWith(prefix) : value.equals(key));
         var iterator = entries.entrySet().iterator();
         while (iterator.hasNext()) {
             var entry = iterator.next();
-            if (id == null ? entry.getKey().startsWith(prefix) : entry.getKey().equals(prefix + id)) {
-                size -= entry.getValue().json.length(); iterator.remove();
-            }
+            if (key == null ? entry.getKey().startsWith(prefix) : entry.getKey().equals(key)) { size -= entry.getValue().bytes; iterator.remove(); }
         }
+        cancelUnwanted(); resetTimer(); pump();
     }
 
-    synchronized void schedule(JSONObject computer, JSONArray rows) { schedule(computer, rows, -1); }
-
-    synchronized void schedule(JSONObject computer, JSONArray rows, int nextOffset) {
-        schedule(computer, rows, nextOffset, true);
+    /** Replaces the previous viewport; input order is the actual displayed order. Never loads list pages. */
+    synchronized void schedule(JSONObject computer, JSONArray visible, JSONArray nearby) {
+        if (worker.isShutdown()) return;
+        if (!computer.has("token")) { cancel(); return; }
+        var previous = new LinkedHashMap<>(desired); desired.clear(); pending.clear();
+        include(computer, visible, VISIBLE_LIMIT, true, previous);
+        include(computer, nearby, NEARBY_LIMIT, false, previous);
+        for (Pending item : desired.values()) if (!item.attempted && !fresh(item) && item != activeItem) pending.put(item.key, item);
+        cancelUnwanted(); resetTimer(); pump();
     }
 
-    synchronized void scheduleIdle(JSONObject computer, JSONArray rows, int nextOffset) {
-        schedule(computer, rows, nextOffset, false);
-    }
-
-    private void schedule(JSONObject computer, JSONArray rows, int nextOffset, boolean initial) {
-        if (!computer.has("token") || worker.isShutdown()) return;
-        try {
-            JSONObject identity = new JSONObject(computer.toString());
-            enqueue(identity, rows, initial);
-            enqueuePage(identity, nextOffset);
-            if (scheduled != null && pending.values().stream().anyMatch(item -> item.immediate)) { scheduled.cancel(false); scheduled = null; }
-            pump();
-        } catch (Exception ignored) { }
-    }
-
-    private void enqueue(JSONObject identity, JSONArray rows, boolean initial) throws org.json.JSONException {
-        java.util.ArrayList<JSONObject> candidates = new java.util.ArrayList<>();
-        for (int index = 0; index < rows.length(); index++) {
+    private void include(JSONObject computer, JSONArray rows, int limit, boolean immediate, LinkedHashMap<String, Pending> previous) {
+        for (int index = 0; index < Math.min(limit, rows.length()); index++) {
             JSONObject row = rows.optJSONObject(index);
-            if (row != null) candidates.add(row);
+            if (row == null) continue;
+            String id = row.optString("id");
+            if (!id.matches("[a-f0-9-]{36}")) continue;
+            String address = computer.optString("address"), token = computer.optString("token"), key = owner(computer) + id;
+            if (desired.containsKey(key)) continue;
+            String version = version(row); Pending item = previous.get(key);
+            if (item == null || !item.version.equals(version)) item = new Pending(address, token, id, version);
+            else {
+                Entry cached = entries.get(key);
+                if (cached != null && clock.getAsLong() - cached.at >= 60_000) item.attempted = false;
+            }
+            item.immediate = immediate; desired.put(key, item);
         }
-        candidates.sort((first, second) -> Long.compare(second.optLong("updatedAt"), first.optLong("updatedAt")));
-        for (int index = 0; index < candidates.size(); index++) {
-            JSONObject row = candidates.get(index);
-            if (!row.optString("id").matches("[a-f0-9-]{36}") || fresh(identity, row)) continue;
-            String key = owner(identity) + row.optString("id");
-            Pending previous = pending.get(key);
-            pending.put(key, new Pending(identity, new JSONObject(row.toString()), -1, (initial && index < 10) || (previous != null && previous.immediate)));
-        }
     }
 
-    private boolean fresh(JSONObject computer, JSONObject row) {
-        Entry entry = entries.get(owner(computer) + row.optString("id"));
-        return entry != null && entry.version.equals(version(row)) && android.os.SystemClock.elapsedRealtime() - entry.at < 60_000;
+    private boolean fresh(Pending item) {
+        Entry entry = entries.get(item.key);
+        return entry != null && entry.version.equals(item.version) && clock.getAsLong() - entry.at < 60_000;
     }
 
-    private void enqueuePage(JSONObject computer, int offset) {
-        if (offset < 0) return;
-        String key = owner(computer) + "page:" + offset;
-        Long loaded = pages.get(key);
-        if (loaded == null || android.os.SystemClock.elapsedRealtime() - loaded >= 60_000) pending.putIfAbsent(key, new Pending(computer, null, offset, false));
-    }
-
-    synchronized void interaction() {
-        lastInteraction = android.os.SystemClock.elapsedRealtime();
+    synchronized void interaction() { lastInteraction = clock.getAsLong(); resetTimer(); pump(); }
+    private void resetTimer() {
+        scheduleToken++;
         if (scheduled != null) { scheduled.cancel(false); scheduled = null; }
-        pump();
+    }
+    private void cancelUnwanted() {
+        if (active != null && desired.get(activeItem.key) != activeItem && !cancelling) {
+            cancelling = true;
+            RemoteApi previous = active; new Thread(previous::cancel, "camellia-prefetch-cancel").start();
+        }
     }
 
     private void pump() {
         if (active != null || scheduled != null || pending.isEmpty() || worker.isShutdown()) return;
         boolean immediate = pending.values().stream().anyMatch(item -> item.immediate);
-        long delay = immediate ? 0 : Math.max(500, idleDelay - (android.os.SystemClock.elapsedRealtime() - lastInteraction));
-        long ticket = generation;
-        scheduled = worker.schedule(() -> fetchNext(ticket), delay, TimeUnit.MILLISECONDS);
+        long delay = immediate ? 0 : Math.max(1, idleDelay - (clock.getAsLong() - lastInteraction));
+        long token = ++scheduleToken; scheduled = worker.schedule(() -> fetchNext(token), delay, TimeUnit.MILLISECONDS);
     }
 
-    private void fetchNext(long ticket) {
-        Pending selected;
-        RemoteApi client;
+    private void fetchNext(long token) {
+        Pending selected; RemoteApi client; long ticket;
         synchronized (this) {
-            if (ticket != generation) return;
+            if (token != scheduleToken || worker.isShutdown()) return;
             scheduled = null;
             selected = pending.values().stream().filter(item -> item.immediate).findFirst().orElse(null);
             if (selected == null) {
                 if (pending.isEmpty()) return;
-                if (android.os.SystemClock.elapsedRealtime() - lastInteraction < idleDelay) { pump(); return; }
+                if (clock.getAsLong() - lastInteraction < idleDelay) { pump(); return; }
                 selected = pending.values().iterator().next();
             }
-            pending.values().remove(selected);
-            if (selected.row != null && fresh(selected.computer, selected.row)) { pump(); return; }
-            client = clients.apply(selected.computer.optString("address")); active = client;
+            pending.remove(selected.key);
+            if (fresh(selected)) { pump(); return; }
+            client = clients.apply(selected.address); active = client; activeItem = selected; cancelling = false;
+            selected.attempted = true; ticket = generation;
         }
-        JSONObject identity = selected.computer;
-        String id = selected.row == null ? null : selected.row.optString("id");
         try {
-            JSONObject snapshot = client.json(id == null ? "/v1/conversations?offset=" + selected.offset : "/v1/conversations/" + id, identity.optString("token"), null);
+            JSONObject snapshot = client.json("/v1/conversations/" + selected.id, selected.token, null, RESPONSE_LIMIT);
+            JSONObject row = snapshot.optJSONObject("conversation");
+            if (row == null || !selected.id.equals(row.optString("id"))) return;
+            Entry entry = freeze(selected.key, snapshot);
             synchronized (this) {
-                if (ticket != generation) return;
-                if (id == null) {
-                    JSONArray rows = snapshot.optJSONArray("conversations");
-                    if (rows != null) {
-                        pages.put(owner(identity) + "page:" + selected.offset, android.os.SystemClock.elapsedRealtime());
-                        enqueue(identity, rows, false);
-                        int next = snapshot.optInt("nextOffset", -1);
-                        if (next > selected.offset) enqueuePage(identity, next);
-                    }
-                } else if (snapshot.optJSONObject("conversation") != null && id.equals(snapshot.optJSONObject("conversation").optString("id"))) put(identity, snapshot);
+                if (ticket == generation && desired.get(selected.key) == selected) install(selected.key, entry);
             }
-        } catch (Exception error) {
+        } catch (java.io.IOException error) {
             synchronized (this) {
-                if (ticket != generation) return;
-                int status = error instanceof RemoteApi.Failure ? ((RemoteApi.Failure) error).status : 0;
-                if (status == 404 && id != null) remove(identity, id);
-                else {
-                    pending.entrySet().removeIf(entry -> entry.getKey().startsWith(owner(identity)));
-                    if (status == 401 || status == 403) remove(identity, null);
+                if (ticket == generation && desired.get(selected.key) == selected) {
+                    int status = error instanceof RemoteApi.Failure ? ((RemoteApi.Failure) error).status : 0;
+                    if (status == 404) remove(identity(selected), selected.id);
+                    else if (status == 401 || status == 403) remove(identity(selected), null);
                 }
             }
         } finally {
             client.cancel();
-            synchronized (this) { if (active == client) { active = null; pump(); } }
+            synchronized (this) { active = null; activeItem = null; cancelling = false; pump(); }
         }
     }
 
-    synchronized void cancel() {
-        generation++;
-        pending.clear();
-        pages.clear();
-        if (scheduled != null) { scheduled.cancel(false); scheduled = null; }
-        RemoteApi previous = active; active = null;
-        if (previous != null) new Thread(previous::cancel, "camellia-prefetch-cancel").start();
+    private static JSONObject identity(Pending item) {
+        try { return new JSONObject().put("address", item.address).put("token", item.token); }
+        catch (org.json.JSONException error) { throw new IllegalStateException(error); }
     }
-
+    synchronized void cancel() {
+        generation++; desired.clear(); pending.clear(); resetTimer(); cancelUnwanted();
+    }
     synchronized void close() { cancel(); entries.clear(); size = 0; worker.shutdownNow(); }
 }

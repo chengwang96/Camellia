@@ -154,7 +154,8 @@ function sharePluginCache(home, shared) {
     fs.mkdirSync(target, { recursive: true });
     fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
   } catch (error) {
-    if (!['EEXIST', 'EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) throw error;
+    if (error.code === 'EEXIST') { fs.lstatSync(link); return; }
+    throw new Error('Cannot create shared Codex plugin cache: ' + (error.code || error.message), { cause: error });
   }
 }
 

@@ -1,7 +1,7 @@
 'use strict';
 
 function createScheduledTasksUI({ $, context, setStatus }) {
-  const dialog = $('tasksDialog'), toggle = $('tasksToggle'), list = $('tasksList');
+  const dialog = $('tasksDialog'), controls = $('tasksControls'), toggle = $('tasksToggle'), cancel = $('tasksCancel'), list = $('tasksList');
   let sessionId = null, editing = null, pending = false, refreshSequence = 0, toggleSessionId = null;
   const translate = text => window.CamelliaI18n.t(text);
   const call = async (action, payload = {}) => {
@@ -17,12 +17,12 @@ function createScheduledTasksUI({ $, context, setStatus }) {
   async function refresh() {
     const sequence = ++refreshSequence;
     const currentSessionId = context.sessionId;
-    if (toggleSessionId !== currentSessionId) toggle.hidden = true;
+    if (toggleSessionId !== currentSessionId) controls.hidden = true;
     toggleSessionId = currentSessionId;
-    if (!sharedChat || !currentSessionId) { toggle.hidden = true; return; }
+    if (!currentSessionId) { controls.hidden = true; return; }
     const result = await call('list', { sessionId: currentSessionId });
     if (sequence !== refreshSequence || currentSessionId !== context.sessionId) return;
-    toggle.hidden = !result.tasks.some(task => ['scheduled', 'running', 'paused'].includes(task.status));
+    controls.hidden = !result.tasks.some(task => ['scheduled', 'running', 'paused'].includes(task.status));
     if (!dialog.open || sessionId !== currentSessionId) return;
     list.replaceChildren();
     if (!result.tasks.length) list.append(element('p', 'No scheduled tasks in this conversation.', true));
@@ -60,13 +60,12 @@ function createScheduledTasksUI({ $, context, setStatus }) {
   }
   async function perform(operation) {
     if (pending) return;
-    pending = true; $('taskSave').disabled = true; $('tasksError').textContent = '';
+    pending = true; $('taskSave').disabled = cancel.disabled = toggle.disabled = true; $('tasksError').textContent = '';
     try { await operation(); await refresh(); }
-    catch (error) { $('tasksError').textContent = error.message; }
-    finally { pending = false; $('taskSave').disabled = false; }
+    catch (error) { $('tasksError').textContent = error.message; if (!dialog.open) setStatus(error.message); }
+    finally { pending = false; $('taskSave').disabled = cancel.disabled = toggle.disabled = false; }
   }
   async function reveal() {
-    if (!sharedChat) return;
     if (!context.sessionId) { setStatus('Open a conversation before scheduling a task.'); return; }
     sessionId = context.sessionId; resetForm(); $('tasksError').textContent = ''; list.replaceChildren();
     if (!dialog.open) dialog.showModal();
@@ -80,10 +79,19 @@ function createScheduledTasksUI({ $, context, setStatus }) {
       resetForm();
     });
   });
-  toggle.hidden = true;
+  controls.hidden = true;
   toggle.addEventListener('click', () => void reveal());
+  cancel.addEventListener('click', () => {
+    const targetSessionId = context.sessionId;
+    void perform(async () => {
+      await call('cancel-all', { sessionId: targetSessionId });
+      if (context.sessionId === targetSessionId) {
+        resetForm(); setStatus('Scheduled tasks cancelled.'); $('input').focus();
+      }
+    });
+  });
   $('tasksClose').addEventListener('click', () => dialog.close());
-  if (sharedChat) window.dshDesktop.onConversationEvent(event => {
+  window.dshDesktop.onConversationEvent(event => {
     if (event.type !== 'conversation:task') return;
     if (event.session_id === context.sessionId) void refresh().catch(error => { $('tasksError').textContent = error.message; });
     if (event.session_id === context.sessionId && ['complete', 'paused'].includes(event.task.status)) setStatus(event.task.lastResult);

@@ -20,6 +20,18 @@ const labels = {
     hint: '迁移完成前保留原始数据用于恢复。', cleanupHint: '正在切换并校验新目录，此阶段不可取消。', elapsed: '已用时', items: '项', from: '原目录', to: '新目录', close: '关闭' },
 };
 const el = id => document.getElementById(id);
+const pluginLabels = {
+  en: { title: 'Sharing Codex plugin caches', detail: 'Verifying identical plugin contents before sharing them.',
+    scan: 'Finding old plugin caches', 'verify-cache': 'Verifying plugin contents', 'link-cache': 'Switching a cache to shared storage',
+    done: 'Plugin cache maintenance completed', doneDetail: 'Camellia is starting.', error: 'Plugin cache maintenance stopped',
+    cancel: 'Cancel maintenance', hint: 'Completed cache links are kept. You can run maintenance again to continue.',
+    cleanupHint: 'Finishing the current cache switch. This step cannot be canceled.', from: 'Data folder', to: 'Shared snapshots' },
+  'zh-CN': { title: '正在共享 Codex 插件缓存', detail: '校验插件内容，确认相同后共享缓存。',
+    scan: '查找旧插件缓存', 'verify-cache': '校验插件内容', 'link-cache': '切换为共享缓存',
+    done: '插件缓存整理完成', doneDetail: '正在启动 Camellia。', error: '插件缓存整理已停止',
+    cancel: '取消整理', hint: '已完成的缓存链接会保留，再次运行整理可继续。',
+    cleanupHint: '正在完成当前缓存的切换，此步骤不可取消。', from: '数据目录', to: '共享快照目录' },
+};
 let latest = null, cancelling = false;
 const size = bytes => {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -29,12 +41,16 @@ const size = bytes => {
 };
 window.updateMigrationProgress = state => {
   latest = state;
-  const t = labels[state.language] || labels.en;
+  const base = labels[state.language] || labels.en;
+  const t = state.kind === 'plugins' ? { ...base, ...(pluginLabels[state.language] || pluginLabels.en) } : base;
   const complete = ['done', 'error', 'warning'].includes(state.stage);
   document.documentElement.lang = state.language === 'zh-CN' ? 'zh-CN' : 'en';
   el('title').textContent = complete ? t[state.stage] : t.title;
   el('detail').textContent = (state.error || (state.stage === 'done' ? t.doneDetail : t.detail))
     + (state.rollbackError ? '\n' + state.rollbackError : '');
+  if (state.kind === 'plugins' && state.stage === 'done') el('detail').textContent += state.language === 'zh-CN'
+    ? ` 已合并 ${state.duplicates || 0} 份重复缓存，释放 ${size(state.freedBytes)}，跳过 ${state.skipped || 0} 项。`
+    : ` Shared ${state.duplicates || 0} duplicate caches; freed ${size(state.freedBytes)}. Skipped ${state.skipped || 0} items.`;
   el('stage').textContent = cancelling && !complete ? t.cancelling : t[state.stage] || t.scan;
   const activePhases = state.phases || phases;
   el('step').textContent = complete ? '' : (activePhases.indexOf(state.stage) + 1) + ' / ' + activePhases.length;

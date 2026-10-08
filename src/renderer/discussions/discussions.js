@@ -1,6 +1,12 @@
 'use strict';
 
-window.CamelliaDiscussions = { create({ root = document, embedded = false, onChange = () => {}, onRename } = {}) {
+const discussionReferenceSources = new Set();
+window.CamelliaDiscussions = {
+references() {
+  const snapshots = [...discussionReferenceSources].map(read => read());
+  return { references: snapshots.map(snapshot => snapshot.references), active: snapshots.some(snapshot => snapshot.active) };
+},
+create({ root = document, embedded = false, onChange = () => {}, onRename } = {}) {
 const $ = id => root.getElementById(id);
 const body = embedded ? root.querySelector('.discussion-workbench') : document.body;
 const isVisible = () => !embedded || !root.host.hidden;
@@ -26,6 +32,9 @@ const stateLabels = { queued: 'Waiting', preparing: 'Preparing context', context
   failed: 'Response failed', cancelled: 'Stopped', interrupted: 'Interrupted', completed: 'Finished', summary: 'Preparing context', approval: 'Waiting for your input' };
 const rich = window.CamelliaDiscussionRich.create({ root, isVisible, getGroup: () => group, call, mutate: (action, payload) => mutate(action, payload, true),
   getAttachments: () => attachments, setAttachments: value => { attachments = value; }, changed: () => { rememberDraft(); resizeComposer(); }, error });
+const cleanupReferences = () => ({ references: [attachments, [...drafts.values()]], active: sending || rich.uploading || navigating });
+discussionReferenceSources.add(cleanupReferences);
+let cleanupReferenceIdentity = '';
 function node(tag, className, text) { const value = document.createElement(tag); if (className) value.className = className; if (text !== undefined) value.textContent = text; return value; }
 function button(text, action, className = 'btn-secondary') {
   const value = node('button', className, text); value.type = 'button';
@@ -112,6 +121,11 @@ function rememberDraft() {
   if (!group) return true;
   const draft = { text: $('message').value, selected: [...selected], mode: $('replyMode').value, attachments };
   drafts.set(group.id, draft);
+  const identity = group.id + JSON.stringify(attachments.map(file => [file.id, file.path]));
+  if (identity !== cleanupReferenceIdentity) {
+    cleanupReferenceIdentity = identity;
+    void desktop.storageReferencesChanged?.();
+  }
   try { localStorage.setItem(draftPrefix + group.id, JSON.stringify(draft)); return true; }
   catch { error(new Error('Could not save the draft on this computer. Keep this page open until you copy or send it.')); return false; }
 }
@@ -546,7 +560,7 @@ function applyContentWidth(value) {
 try { applyContentWidth(JSON.parse(localStorage.getItem('camellia-chat-content-width'))); } catch { /* use CSS default */ }
 const unsubscribeWidth = desktop.onChatContentWidthChanged?.(applyContentWidth);
 void desktop.workbenchSettings().then(settings => { if (settings?.ok) applyContentWidth(settings.chatContentWidth); }).catch(error);
-window.addEventListener('beforeunload', () => { conversationNavigation?.destroy(); rememberDraft(); unsubscribe?.(); unsubscribeWidth?.(); clearTimeout(refreshTimer); });
+window.addEventListener('beforeunload', () => { discussionReferenceSources.delete(cleanupReferences); conversationNavigation?.destroy(); rememberDraft(); unsubscribe?.(); unsubscribeWidth?.(); clearTimeout(refreshTimer); });
 window.addEventListener('camellia:language', () => { closeGroupMenu(); messageNodes.clear(); render(); if ($('memberDialog').open) renderProviders(); });
 const ready = (async () => {
   await window.CamelliaI18n.ready;

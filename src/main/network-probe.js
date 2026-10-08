@@ -1,6 +1,8 @@
 'use strict';
 
 const { directConnection, proxyConnection } = require('./network-fallback');
+const net = require('node:net');
+const tls = require('node:tls');
 
 const DEFAULT_TIMEOUT = 4000;
 // A handful of routes in flight keeps the test quick without bursting the
@@ -19,7 +21,7 @@ function hostOf(baseUrl) {
   try {
     const url = new URL(String(baseUrl || ''));
     if (!/^https?:$/.test(url.protocol)) return null;
-    return { host: url.hostname, port: Number(url.port) || (url.protocol === 'https:' ? 443 : 80) };
+    return { host: url.hostname.replace(/^\[|\]$/g, ''), port: Number(url.port) || (url.protocol === 'https:' ? 443 : 80), secure: url.protocol === 'https:' };
   } catch { return null; }
 }
 
@@ -52,14 +54,35 @@ function subscriptionTargets(engines = []) {
   });
 }
 
+async function reachable(connect, target, timeout) {
+  let socket;
+  try {
+    socket = await connect();
+    if (target.secure ?? target.port === 443) {
+      await new Promise((resolve, reject) => {
+        socket = tls.connect({ socket, host: target.host, servername: net.isIP(target.host) ? undefined : target.host });
+        const timer = setTimeout(() => {
+          reject(new Error('TLS connection timed out'));
+          socket.destroy();
+        }, timeout);
+        socket.once('secureConnect', () => { clearTimeout(timer); resolve(); });
+        socket.once('error', error => { clearTimeout(timer); reject(error); });
+        socket.once('close', () => { clearTimeout(timer); reject(new Error('TLS connection closed')); });
+      });
+    }
+    return true;
+  } catch { return false; }
+  finally { socket?.destroy(); }
+}
+
 async function probeTarget(target, { proxyUrl = '', timeout = DEFAULT_TIMEOUT } = {}) {
-  const reachable = connect => connect().then(socket => { socket.destroy(); return true; }, () => false);
   const startedAt = Date.now();
   // Direct and proxy routes are independent, so they run together and the
-  // slower of the two no longer doubles the time the whole test takes.
+  // slower of the two no longer doubles the time the whole test takes. HTTPS
+  // must complete TLS: a TCP connection alone can succeed on a blocked route.
   const [direct, proxy] = await Promise.all([
-    reachable(() => directConnection(target.host, target.port, { timeout })),
-    proxyUrl ? reachable(() => proxyConnection(proxyUrl, target.host, target.port, { timeout })) : Promise.resolve(false),
+    reachable(() => directConnection(target.host, target.port, { timeout }), target, timeout),
+    proxyUrl ? reachable(() => proxyConnection(proxyUrl, target.host, target.port, { timeout }), target, timeout) : Promise.resolve(false),
   ]);
   return { ...target, direct, proxy, preferred: direct ? 'direct' : proxy ? 'proxy' : 'none', durationMs: Date.now() - startedAt };
 }

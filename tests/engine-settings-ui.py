@@ -83,11 +83,15 @@ try:
         # Each tab shows only its own installation controls; Python is shared
         # and belongs to General. All engine cards track runtime state updates.
         expect(page.locator('.runtime-card')).to_have_count(1 + len(rpc('runtimeState')['engines']), timeout=30000)
-        expect(page.locator('#runtimeCards')).to_contain_text('Ready')
+        expect(page.locator('#runtimeCards')).to_contain_text('Installed')
         for row in rpc('runtimeState')['engines']:
             page.locator(f'[data-engine={row["id"]}]').click()
             expect(page.locator('#runtimeCards .runtime-card:visible')).to_have_count(1)
-            expect(page.locator(f'[data-install={row["id"]}]')).to_be_visible()
+            expect(page.locator('#runtimeCards .runtime-card:visible [data-runtime-status]')).to_be_visible()
+            if row['status'] == 'ready':
+                expect(page.locator(f'[data-install={row["id"]}]')).to_have_count(0)
+            else:
+                expect(page.locator(f'[data-install={row["id"]}]')).to_be_visible()
         expect(page.locator('#pythonCard')).to_be_hidden()
         page.locator('[data-view=general]').click()
         expect(page.locator('#pythonCard')).to_be_visible()

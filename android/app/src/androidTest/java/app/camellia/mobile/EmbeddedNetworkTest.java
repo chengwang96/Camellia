@@ -44,10 +44,13 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
         var context = getInstrumentation().getTargetContext();
         EmbeddedNetwork.initialize(context);
         boolean previousMode = EmbeddedNetwork.enabled();
-        EmbeddedNetwork.setEnabled(true);
+        EmbeddedNetwork.setEnabled(true).get(10, java.util.concurrent.TimeUnit.SECONDS);
         var routeField = EmbeddedNetwork.class.getDeclaredField("route"); routeField.setAccessible(true);
         var originalRoute = routeField.get(null);
-        EmbeddedNetwork.close();
+        EmbeddedNetwork.close().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        CredentialStore identity = new CredentialStore(context, "tailnet-private");
+        JSONObject before = identity.load();
+        identity.save(new JSONObject(before.toString()).put("lifecycle-retained-fixture", "retained"));
         try {
             NetworkRoute route = new NetworkRoute("wifi", "links");
             getInstrumentation().runOnMainSync(() -> {
@@ -62,12 +65,14 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
             try { first.prepare("GET", "http://100.64.0.1:43127/v1/status", "", ""); fail("Old node remains open"); }
             catch (Exception expected) { assertTrue(expected.getMessage().contains("closed")); }
             assertTrue(new JSONObject(second.status()).has("state"));
+            assertEquals("retained", identity.load().optString("lifecycle-retained-fixture"));
         } finally {
-            EmbeddedNetwork.close();
+            EmbeddedNetwork.close().get(10, java.util.concurrent.TimeUnit.SECONDS);
+            JSONObject after = identity.load(); after.remove("lifecycle-retained-fixture"); identity.save(after);
             getInstrumentation().runOnMainSync(() -> {
                 try { routeField.set(null, originalRoute); } catch (Exception error) { throw new AssertionError(error); }
             });
-            EmbeddedNetwork.setEnabled(previousMode);
+            EmbeddedNetwork.setEnabled(previousMode).get(10, java.util.concurrent.TimeUnit.SECONDS);
         }
     }
 
@@ -75,11 +80,12 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
         var context = getInstrumentation().getTargetContext();
         EmbeddedNetwork.initialize(context);
         boolean previousMode = EmbeddedNetwork.enabled();
-        EmbeddedNetwork.setEnabled(true);
+        EmbeddedNetwork.setEnabled(true).get(10, java.util.concurrent.TimeUnit.SECONDS);
         var routeField = EmbeddedNetwork.class.getDeclaredField("route"); routeField.setAccessible(true);
         var originalRoute = routeField.get(null);
-        var deadlineField = EmbeddedNetwork.class.getDeclaredField("backgroundDeadline"); deadlineField.setAccessible(true);
-        EmbeddedNetwork.close();
+        var lifecycle = lifecycle();
+        var deadlineField = NetworkLifecycle.class.getDeclaredField("backgroundDeadline"); deadlineField.setAccessible(true);
+        EmbeddedNetwork.close().get(10, java.util.concurrent.TimeUnit.SECONDS);
         try {
             var manager = (android.net.ConnectivityManager) context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
             var active = manager.getActiveNetwork();
@@ -94,7 +100,7 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(EmbeddedNetwork::foreground);
             assertSame("A node inside the retention window must be reused", first, EmbeddedNetwork.node());
             EmbeddedNetwork.background();
-            deadlineField.setLong(null, android.os.SystemClock.elapsedRealtime() - 1);
+            deadlineField.setLong(lifecycle, android.os.SystemClock.elapsedRealtime() - 1);
             getInstrumentation().runOnMainSync(EmbeddedNetwork::foreground);
             var second = EmbeddedNetwork.node();
             assertNotSame("A frozen node past the retention window must be rebuilt", first, second);
@@ -102,12 +108,12 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
             catch (Exception expected) { assertTrue(expected.getMessage().contains("closed")); }
             assertSame(second, EmbeddedNetwork.node());
         } finally {
-            EmbeddedNetwork.close();
-            deadlineField.setLong(null, 0);
+            EmbeddedNetwork.close().get(10, java.util.concurrent.TimeUnit.SECONDS);
+            deadlineField.setLong(lifecycle, 0);
             getInstrumentation().runOnMainSync(() -> {
                 try { routeField.set(null, originalRoute); } catch (Exception error) { throw new AssertionError(error); }
             });
-            EmbeddedNetwork.setEnabled(previousMode);
+            EmbeddedNetwork.setEnabled(previousMode).get(10, java.util.concurrent.TimeUnit.SECONDS);
         }
     }
 
@@ -141,7 +147,7 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
         var runner = (android.test.InstrumentationTestRunner) getInstrumentation();
         if (!"true".equals(runner.getArguments().getString("onlineLogin"))) return;
         EmbeddedNetwork.initialize(getInstrumentation().getTargetContext());
-        EmbeddedNetwork.setEnabled(true);
+        EmbeddedNetwork.setEnabled(true).get(10, java.util.concurrent.TimeUnit.SECONDS);
         try {
             var node = EmbeddedNetwork.node(); node.login();
             long deadline = android.os.SystemClock.elapsedRealtime() + 30_000;
@@ -151,7 +157,7 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
                 Thread.sleep(500);
             }
             fail("No official login URL within 30 seconds; verify internet connectivity");
-        } finally { EmbeddedNetwork.close(); }
+        } finally { EmbeddedNetwork.close().get(10, java.util.concurrent.TimeUnit.SECONDS); }
     }
 
     public void testBrowserLoginRestrictsDestination() {
@@ -159,5 +165,41 @@ public class EmbeddedNetworkTest extends InstrumentationTestCase {
         for (String value : new String[]{"http://login.tailscale.com/a", "https://evil.example/a", "https://user@login.tailscale.com/a", "https://login.tailscale.com:443/a", "intent://test"}) {
             assertNull(EmbeddedNetwork.loginUrl(value));
         }
+    }
+
+    public void testModeFutureCompletesAfterPreferenceCommit() throws Exception {
+        var context = getInstrumentation().getTargetContext(); EmbeddedNetwork.initialize(context);
+        boolean previous = EmbeddedNetwork.enabled();
+        try {
+            EmbeddedNetwork.setEnabled(!previous).get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(!previous, context.getSharedPreferences("network-mode", 0).getBoolean("embedded", previous));
+            assertEquals(!previous, EmbeddedNetwork.enabled());
+        } finally { EmbeddedNetwork.setEnabled(previous).get(10, java.util.concurrent.TimeUnit.SECONDS); }
+    }
+
+    public void testForgetClosesNativeNodeBeforeClearingEncryptedIdentity() throws Exception {
+        var context = getInstrumentation().getTargetContext(); EmbeddedNetwork.initialize(context);
+        boolean previous = EmbeddedNetwork.enabled();
+        EmbeddedNetwork.setEnabled(true).get(10, java.util.concurrent.TimeUnit.SECONDS);
+        EmbeddedNetwork.close().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        CredentialStore identity = new CredentialStore(context, "tailnet-private");
+        JSONObject before = identity.load();
+        try {
+            var old = EmbeddedNetwork.node();
+            JSONObject state = identity.load(); state.put("forget-fixture", "identity"); identity.save(state);
+            EmbeddedNetwork.forget().get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(0, identity.load().length());
+            try { old.prepare("GET", "http://100.64.0.1:43127/v1/status", "", ""); fail("Forgotten native node remains open"); }
+            catch (Exception expected) { assertTrue(expected.getMessage().contains("closed")); }
+            assertNotSame(old, EmbeddedNetwork.node());
+        } finally {
+            EmbeddedNetwork.close().get(10, java.util.concurrent.TimeUnit.SECONDS); identity.save(before);
+            EmbeddedNetwork.setEnabled(previous).get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    private NetworkLifecycle<?> lifecycle() throws Exception {
+        var field = EmbeddedNetwork.class.getDeclaredField("lifecycle"); field.setAccessible(true);
+        return (NetworkLifecycle<?>) field.get(null);
     }
 }

@@ -154,6 +154,25 @@ test('auto falls back to the system proxy when a direct connection fails', async
   assert.equal(config.network.mode, 'auto');
   service.close();
 });
+
+test('auto checks provider connectivity on startup and uses the proxy without changing the saved choice', async () => {
+  const config = { network: { mode: 'auto' } };
+  let applied, probes = 0;
+  const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),
+    sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY localhost:7890' }), defaultSession: { setProxy: async () => {} } }),
+    applyEnvironment: env => { applied = env; },
+    createFallback: async () => { throw new Error('A blocked TLS route must skip the direct-first bridge'); },
+    providerTargetsImpl: () => [{ id: 'commandcode', kind: 'provider', host: 'api.commandcode.ai', port: 443, secure: true }],
+    probeImpl: async targets => { probes++; return targets.map(target => ({ ...target, direct: false, proxy: true })); },
+    healthCheckImpl: async () => ({ direct: false, proxy: true }) });
+  await service.initialize();
+  assert.equal(probes, 1);
+  assert.equal(applied.HTTPS_PROXY, 'http://localhost:7890/');
+  assert.equal(service.state().autoFallback, true);
+  assert.equal(service.state().directFirst, false);
+  assert.equal(config.network.mode, 'auto');
+  service.close();
+});
 test('auto takes the direct-first bridge when direct works everywhere', async () => {
   const providerTargetsImpl = () => [{ id: 'api.a.example:443', kind: 'provider', host: 'api.a.example', port: 443, label: 'Provider A', models: [] }];
   let config = {}, applied;

@@ -5,6 +5,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { FIELDS, counters, normalizeBreakdown } = require('./api-usage');
 const { discoverQclaw, DEFAULT_BASE_URL } = require('./qclaw-provider');
 const { normalizeThinking, thinkingFor } = require('../shared/model-levels');
+const { canonicalModelId } = require('../shared/model-names');
 const DEFAULT_PORT = 8788;
 // QClaw answers through an agent runtime, so the prompt also carries that
 // runtime's own instructions and skills. Measured overflow lands near 110k
@@ -20,7 +21,13 @@ const PRESETS = [
   { type: 'deepseek', name: "DeepSeek", baseUrl: 'https://api.deepseek.com/v1', protocol: 'dual',
     anthropicBaseUrl: 'https://api.deepseek.com/anthropic/v1', models: [] },
   { type: 'commandcode', name: 'Command Code GOAT', baseUrl: 'https://api.commandcode.ai/provider/v1', protocol: 'openai',
-    models: ['kimi-k3', 'kimi-k2.6', 'kimi-k2.5'].map(id => ({ id, upstream: 'moonshotai/' + id })) },
+    models: [
+      { id: 'deepseek-v4.1-flash', upstream: 'deepseek/deepseek-v4.1-flash' },
+      { id: 'kimi-k3', upstream: 'moonshotai/Kimi-K3' },
+      { id: 'glm-5.3', upstream: 'zai-org/GLM-5.3' },
+      { id: 'kimi-k2.6', upstream: 'moonshotai/Kimi-K2.6' },
+      { id: 'kimi-k2.5', upstream: 'moonshotai/Kimi-K2.5' },
+    ] },
   { type: 'opencode-go', name: 'OpenCode Go', baseUrl: 'https://opencode.ai/zen/go/v1', protocol: 'dual', models: [] },
   { type: 'opencode', name: 'OpenCode Zen', baseUrl: 'https://opencode.ai/zen/v1', protocol: 'dual', models: [] },
   { type: 'kimi-code', name: 'Kimi Code (API key)', baseUrl: 'https://api.kimi.com/coding/v1', protocol: 'dual', models: [] },
@@ -40,9 +47,11 @@ const PRESETS = [
 ];
 
 function modelId(value) {
-  const id = String(value || '').trim().replace(/:cloud$/, '');
+  const id = String(value || '').trim();
   if (!id || id.length > 200 || /[\s\x00-\x1f]/.test(id) || ['__proto__', 'constructor', 'prototype'].includes(id)) throw new Error("Enter a valid model ID");
-  return id;
+  const canonical = canonicalModelId(id);
+  if (!canonical || ['__proto__', 'constructor', 'prototype'].includes(canonical)) throw new Error("Enter a valid model ID");
+  return canonical;
 }
 function endpoint(value) {
   let url;
@@ -50,6 +59,12 @@ function endpoint(value) {
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if (url.protocol !== 'https:' && !(local && url.protocol === 'http:')) throw new Error("Remote APIs require HTTPS. Local services may use HTTP.");
   if (url.username || url.password || url.search || url.hash) throw new Error("API URLs cannot contain passwords, query parameters, or fragments");
+  // The docs list complete request URLs, but this field stores the base to
+  // which discovery, validation and routing append their own endpoint.
+  if (url.hostname === 'api.commandcode.ai'
+    && /^\/provider\/v1\/(?:chat\/completions|responses|messages(?:\/count_tokens)?|models)\/*$/.test(url.pathname)) {
+    url.pathname = '/provider/v1';
+  }
   return url.href.replace(/\/+$/, '');
 }
 function maskKey(value) { const s = String(value || ''); return s.length > 12 ? s.slice(0, 4) + '…' + s.slice(-4) : '••••••••'; }
@@ -59,20 +74,31 @@ function emptyUsage() { return { ...counters(), lastUsedAt: null, lastError: nul
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const counter = value => Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : 0;
 const timestamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : counter(value) || null;
+function modelBreakdown(value) {
+  const result = {};
+  for (const [name, stats] of Object.entries(normalizeBreakdown(value))) {
+    const id = canonicalModelId(name);
+    if (!id || ['__proto__', 'constructor', 'prototype'].includes(id)) continue;
+    const target = result[id] ||= counters();
+    for (const field of FIELDS) target[field] += stats[field];
+  }
+  return result;
+}
 function normalizeUsage(value) {
   const source = record(value) ? value : {};
   const usage = emptyUsage();
   Object.assign(usage, counters(source));
-  usage.byModel = normalizeBreakdown(source.byModel);
+  usage.byModel = modelBreakdown(source.byModel);
   for (const [day, data] of Object.entries(record(source.daily) ? source.daily : {})) {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(day)) usage.daily[day] = normalizeBreakdown(data);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(day)) usage.daily[day] = modelBreakdown(data);
   }
   usage.lastUsedAt = timestamp(source.lastUsedAt);
   usage.blocked = source.blocked === true;
   if (record(source.lastError)) usage.lastError = { at: timestamp(source.lastError.at), status: counter(source.lastError.status), reason: String(source.lastError.reason || '').slice(0, 200) };
   for (const [id, state] of Object.entries(record(source.models) ? source.models : {})) {
     if (!record(state) || !counter(state.until)) continue;
-    usage.models[modelId(id)] = { until: counter(state.until), reason: String(state.reason || '').slice(0, 200) };
+    const name = modelId(id), until = counter(state.until);
+    if (until > (usage.models[name]?.until || 0)) usage.models[name] = { until, reason: String(state.reason || '').slice(0, 200) };
   }
   return usage;
 }
@@ -104,7 +130,14 @@ function normalizeConfig(raw = {}, previous = null, options = {}) {
   if (raw.keys !== undefined && !Array.isArray(raw.keys)) throw new Error("Legacy keys must be an array");
   const port = Number(raw.port ?? DEFAULT_PORT);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Router port must be between 1024 and 65535");
-  const cfg = { version: 2, enabled: raw.enabled !== false, port, providers: [], usage: {},
+  const routing = raw.routing === undefined ? {} : raw.routing;
+  if (!record(routing)) throw new Error("Invalid API routing settings");
+  const routingOptions = {};
+  for (const field of ['multiKeyConcurrency', 'multiKeyFailover']) {
+    if (routing[field] !== undefined && typeof routing[field] !== 'boolean') throw new Error("API routing switches must be true or false");
+    routingOptions[field] = routing[field] ?? previous?.routing?.[field] ?? true;
+  }
+  const cfg = { version: 2, enabled: raw.enabled !== false, port, routing: routingOptions, providers: [], usage: {},
     usageArchive: normalizeUsageArchive(previous?.usageArchive || raw.usageArchive), active: {} };
   // QClaw rewrites its gateway port and token into its own state file on every
   // start, so a stored endpoint goes stale. Resolve the live one once, and only
@@ -161,7 +194,7 @@ function normalizeConfig(raw = {}, previous = null, options = {}) {
       const thinking = normalizeThinking(m.thinking);
       return { id: modelId(m.id), upstream, protocol, ...(contextWindow !== undefined ? { contextWindow } : {}), ...(maxContext !== undefined ? { maxContext } : {}), ...(thinking ? { thinking } : {}) };
     });
-    if (new Set(models.map(m => m.id)).size !== models.length) throw new Error("A provider cannot contain duplicate entries for the same model");
+    if (new Set(models.map(m => JSON.stringify([m.id, m.upstream, m.protocol]))).size !== models.length) throw new Error("A provider cannot contain duplicate entries for the same model route");
     const seenKeys = new Set();
     const keys = [];
     const keySource = live?.token
@@ -276,27 +309,29 @@ function hasRoutes(cfg) { return cfg.enabled && cfg.providers.some(p => p.enable
 // enumeration shared by routing and capacity evidence so neither guesses it.
 function modelRoutes(cfg, id, protocol) {
   if (!cfg.enabled) return [];
+  id = modelId(id);
   return cfg.providers.filter(provider => provider.enabled).flatMap(provider => {
-    const model = provider.models.find(model => model.id === id);
-    if (!model) return [];
-    const protocols = model.protocol && model.protocol !== 'auto' ? [model.protocol]
-      : provider.protocol === 'dual' ? (protocol ? [protocol === 'responses' ? 'openai' : protocol] : ['openai', 'anthropic']) : [provider.protocol || 'openai'];
-    return provider.keys.filter(key => key.enabled).flatMap(key => protocols.map(protocol => ({ provider, key, model, protocol })));
+    return provider.models.filter(model => modelId(model.id) === id).flatMap(model => {
+      const protocols = model.protocol && model.protocol !== 'auto' ? [model.protocol]
+        : provider.protocol === 'dual' ? (protocol ? [protocol === 'responses' ? 'openai' : protocol] : ['openai', 'anthropic']) : [provider.protocol || 'openai'];
+      return provider.keys.filter(key => key.enabled).flatMap(key => protocols.map(protocol => ({ provider, key, model, protocol })));
+    });
   });
 }
 function modelContextWindow(cfg, id) {
   if (!hasRoutes(cfg)) return undefined;
+  id = modelId(id);
   const limits = cfg.providers.filter(provider => provider.enabled && provider.keys.some(key => key.enabled))
-    .flatMap(provider => provider.models).filter(model => model.id === id)
+    .flatMap(provider => provider.models).filter(model => modelId(model.id) === id)
     .map(model => model.contextWindow || model.maxContext);
   // An unknown fallback route must not inherit another provider's declaration.
   return limits.length && limits.every(limit => Number.isInteger(limit) && limit >= 4096) ? Math.min(...limits) : undefined;
 }
 function publicState(cfg) {
   const providers = cfg.providers.map(p => ({ ...p, models: p.models.map(m => ({ ...m })), keys: p.keys.map(({ key, ...k }) => ({ ...k, maskedKey: maskKey(key) })) }));
-  const models = [...new Set(cfg.providers.filter(p => p.enabled && p.keys.some(k => k.enabled)).flatMap(p => p.models.map(m => m.id)))];
+  const models = [...new Set(cfg.providers.filter(p => p.enabled && p.keys.some(k => k.enabled)).flatMap(p => p.models.map(m => modelId(m.id))))];
   const modelThinking = Object.fromEntries(models.map(id => [id, thinkingFor(id, cfg)]).filter(([, thinking]) => thinking));
-  return { version: 2, enabled: cfg.enabled, port: cfg.port, providers, models, modelThinking, usage: structuredClone(cfg.usage),
+  return { version: 2, enabled: cfg.enabled, port: cfg.port, routing: { ...cfg.routing }, providers, models, modelThinking, usage: structuredClone(cfg.usage),
     usageArchive: structuredClone(cfg.usageArchive), active: { ...cfg.active } };
 }
 

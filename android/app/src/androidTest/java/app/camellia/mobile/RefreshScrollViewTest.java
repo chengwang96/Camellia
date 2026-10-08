@@ -43,6 +43,28 @@ public class RefreshScrollViewTest extends InstrumentationTestCase {
         scroll.dispatchTouchEvent(event); event.recycle();
     }
 
+    public void testHapticPreferenceDoesNotBlockRefreshAndTakesEffectOnExistingView() {
+        String original = MobilePreferences.get(activity, "hapticFeedback");
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
+        getInstrumentation().runOnMainSync(() -> {
+            try {
+                for (boolean enabled : new boolean[]{false, true, false}) {
+                    MobilePreferences.set(activity, "hapticFeedback", enabled ? "enabled" : "disabled");
+                    int before = refreshes.get();
+                    touch(MotionEvent.ACTION_DOWN, 80, 30);
+                    touch(MotionEvent.ACTION_MOVE, 80, 130);
+                    assertEquals(enabled, scroll.isHapticFeedbackEnabled());
+                    assertEquals(before, refreshes.get());
+                    touch(MotionEvent.ACTION_UP, 80, 130);
+                    assertEquals(before + 1, refreshes.get());
+                    scroll.setRefreshing(false);
+                }
+            } catch (Throwable error) { failure.set(error); }
+            finally { MobilePreferences.set(activity, "hapticFeedback", original); }
+        });
+        if (failure.get() != null) throw new AssertionError(failure.get());
+    }
+
     public void testRefreshActionIsDiscoverableAndDoesNotRepeatWhileBusy() {
         java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
         getInstrumentation().runOnMainSync(() -> {

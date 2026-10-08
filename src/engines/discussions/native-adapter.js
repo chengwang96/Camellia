@@ -66,8 +66,9 @@ class NativeActivity {
   }
   emit(type, data = {}) {
     const accepted = this.onEvent({ ...data, ...this.identity, type });
-    // The durable event sink must acknowledge synchronously. Do not dispatch
-    // on a pending promise, or leak its rejection into the driver's event loop.
+    // Acknowledge synchronously: start/control events are durable, while answer
+    // drafts are checkpointed. A pending promise cannot authorize dispatch or
+    // leak its rejection into the driver's event loop.
     if (accepted && typeof accepted.then === 'function') {
       Promise.resolve(accepted).catch(() => {}); return false;
     }

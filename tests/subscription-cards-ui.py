@@ -29,7 +29,34 @@ window.dshDesktop=new Proxy({}, {get:(_,method)=>method.startsWith('on')?fn=>{ac
  if(method==='codexAccountLabel'){mockAccounts.find(a=>a.id===args[0]).label=args[1];return snapshot();}
  if(method==='codexAccountRefresh'||method==='codexAccountWake')return {...snapshot(),wakeSent:method==='codexAccountWake'};
  if(method==='codexAccountRemove'){mockAccounts=mockAccounts.filter(a=>a.id!==args[0]);return snapshot();}
- if(method==='antigravityAccountState')return window.mockGoogle ||= await window.testRpc(method,args[0]);
+ if(method==='antigravityAccountState'){
+   if(!window.mockGoogle){
+     window.mockGoogle=await window.testRpc(method,args[0]);
+     mockGoogle.installed=true; mockGoogle.accounts.forEach(account=>account.installed=true);
+   }
+   return mockGoogle;
+ }
+ if(method==='antigravityAccountLabel'){
+   const result=await window.testRpc(method,{label:args[0]});
+   mockGoogle.accounts[0].label=result.accounts[0].label;
+   accountListeners.onAntigravityAccount(mockGoogle);
+   return mockGoogle;
+ }
+ if(method==='antigravitySignIn'){
+   mockGoogle.verification='pending'; mockGoogle.awaitingVerification=true;
+   Object.assign(mockGoogle.accounts[0],{signedIn:false,stale:false,loginPending:true,error:''});
+   accountListeners.onAntigravityAccount(mockGoogle);
+   return {ok:true,opened:true};
+ }
+ if(method==='antigravityAccountRefresh'){
+   if(window.holdGoogleVerify)await new Promise(resolve=>window.finishGoogleVerify=resolve);
+   mockGoogle.verification=window.failGoogleVerify?'error':'verified';
+   mockGoogle.awaitingVerification=false;
+   const error=window.failGoogleVerify?'Google sign-in has expired or is invalid. Sign in again and retry.':'';
+   Object.assign(mockGoogle.accounts[0],{signedIn:!window.failGoogleVerify,stale:false,loginPending:false,error});
+   accountListeners.onAntigravityAccount(mockGoogle);
+   return error?{ok:false,error}:mockGoogle;
+ }
  if(method==='antigravityAccountRefreshUsage'){
    mockGoogle.usage.status=window.failGoogleQuota?'stale':'ok';
    mockGoogle.usage.error=window.failGoogleAvatar?'Google account profile picture unavailable.':window.failGoogleQuota?'Could not load Google quota. Check the connection and retry.':null;
@@ -99,7 +126,7 @@ try:
         expect(page.locator('#googleAccountPanel > .account-actions')).to_have_count(0)
         expect(google.locator('.subscription-meter')).to_have_count(4)
         expect(google.locator('.subscription-meter strong')).to_have_text(['100%','99%','40%','0%'])
-        expect(google.locator('[data-card-action]')).to_have_count(1)
+        expect(google.locator('[data-card-action]')).to_have_count(4)
         expect(google.locator('.subscription-meter.critical')).to_have_count(1)
         page.locator('.account-shortcuts [data-account-engine=antigravity]').click()
         expect(google.locator('[data-card-action=refresh]')).to_be_focused()
@@ -121,6 +148,42 @@ try:
         expect(notice).to_be_hidden()
         expect(details).to_be_hidden()
         expect(raw).to_have_text('')
+        google.locator('[data-card-action=edit]').click()
+        google.locator('input').fill(' Google  account note ')
+        google.locator('form button[type=submit]').click()
+        expect(page.locator('#status')).to_have_text('Account note saved.')
+        expect(google.locator('.subscription-note-text').first).to_have_text('Google account note')
+        assert rpc('antigravityAccountState')['accounts'][0]['label'] == 'Google account note'
+        page.evaluate("""() => {
+          mockGoogle.verification='stale';
+          Object.assign(mockGoogle.accounts[0],{signedIn:false,stale:true});
+          accountListeners.onAntigravityAccount(mockGoogle);
+        }""")
+        expect(google.locator('.subscription-state')).to_contain_text('Previous verification expired')
+        expect(google.locator('[data-card-action=login]')).to_have_attribute('aria-label','Sign in again')
+        page.locator('.account-shortcuts [data-account-engine=antigravity]').click()
+        expect(google.locator('[data-card-action=verify]')).to_be_focused()
+        page.evaluate('window.holdGoogleVerify=true')
+        google.locator('[data-card-action=verify]').click()
+        expect(google.locator('[data-card-action]:enabled')).to_have_count(0)
+        page.evaluate('window.finishGoogleVerify(); window.holdGoogleVerify=false')
+        expect(google.locator('.subscription-state')).to_have_text('Signed in')
+        google.locator('[data-card-action=login]').click()
+        expect(google.locator('.subscription-state')).to_have_text('Waiting for sign-in')
+        expect(google.locator('[data-card-action=verify]')).to_be_enabled()
+        expect(page.locator('#status')).to_have_text('Waiting for external sign-in. Return here to verify.')
+        page.evaluate('window.failGoogleVerify=true')
+        google.locator('[data-card-action=verify]').click()
+        expect(page.locator('#status')).to_contain_text('Google sign-in has expired')
+        expect(google.locator('[data-card-action=login]')).to_be_enabled()
+        google.locator('[data-card-action=login]').click()
+        page.evaluate('window.failGoogleVerify=false')
+        google.locator('[data-card-action=verify]').click()
+        expect(google.locator('.subscription-state')).to_have_text('Signed in')
+        expect(page.locator('#status')).to_have_text('Account status updated.')
+        expect(google.locator('[data-card-action=switch], [data-card-action=logout], [data-card-action=wake]')).to_have_count(0)
+        assert page.evaluate("calls.filter(c=>c.method==='antigravitySignIn').length") == 2
+        assert page.evaluate("calls.filter(c=>c.method==='antigravityAccountRefresh').length") == 3
         expect(raw).not_to_contain_text('https://')
         page.evaluate('window.failGoogleAvatar=true')
         google.locator('[data-card-action=refresh]').click()
@@ -161,6 +224,10 @@ try:
         expect(page.locator('#googleQuotaStatus')).to_be_hidden()
         expect(details).to_be_hidden()
         expect(raw).to_have_text('')
+        page.evaluate("mockGoogle.usage.error='Google sign-in has expired or is invalid. Sign in again and retry.'; accountListeners.onAntigravityAccount(mockGoogle)")
+        expect(notice).to_contain_text('Google sign-in has expired or is invalid')
+        google.locator('[data-card-action=refresh]').click()
+        expect(notice).to_be_hidden()
         backup=cards.locator('[data-card-id="account-1"]')
         backup.locator('[data-card-action=refresh]').click()
         expect(cards.locator('[data-card-id=default]')).to_have_class('subscription-card active')
@@ -190,7 +257,7 @@ try:
         out=repo/'artifacts';out.mkdir(exist_ok=True)
         screenshot_with_shadow(page, cards, out/'subscription-cards.png')
         page.screenshot(path=str(out/'subscription-page-depth.png'), animations='disabled')
-        expect(page.locator('#googleAccountList [data-card-action=edit]')).to_have_count(0)
+        expect(page.locator('#googleAccountList [data-card-action=edit]')).to_have_count(1)
         expect(google.locator('.subscription-meter-head')).to_have_text(['Gemini · 每周','Gemini · 5 小时','Claude / GPT · 每周','Claude / GPT · 5 小时'])
         screenshot_with_shadow(page, google.locator('.subscription-card'), out/'google-subscription-card.png')
         for language in ['en','zh-CN']:
@@ -266,7 +333,7 @@ try:
         screenshot_with_shadow(page, cards.locator('[data-card-id=default]'), out/'subscription-card-compact.png')
         assert not errors,errors
         browser.close()
-    print('PASS: account actions; Google four-window quota, quota-only refresh and stale recovery; English/Chinese, light/dark, 320-1420px and 100-200% zoom without clipped controls')
+    print('PASS: account actions; Google notes, quota refresh, expired verification, external sign-in and retry; English/Chinese, light/dark, 320-1420px and 100-200% zoom without clipped controls')
 finally:
     driver.terminate()
     driver.wait(timeout=10)

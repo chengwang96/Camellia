@@ -38,12 +38,14 @@ public class ArtifactSheetTest extends InstrumentationTestCase {
     }
 
     public void testTransferLeaseKeepsNetworkAliveUntilReleased() throws Exception {
-        var count = EmbeddedNetwork.class.getDeclaredField("transfers"); count.setAccessible(true);
-        int before = count.getInt(null);
+        EmbeddedNetwork.initialize(getInstrumentation().getTargetContext());
+        var field = EmbeddedNetwork.class.getDeclaredField("lifecycle"); field.setAccessible(true);
+        var lifecycle = (NetworkLifecycle<?>) field.get(null);
+        int before = lifecycle.transfers();
         EmbeddedNetwork.retainTransfer();
-        try { EmbeddedNetwork.background(); assertEquals(before + 1, count.getInt(null)); }
+        try { EmbeddedNetwork.background(); assertEquals(before + 1, lifecycle.transfers()); }
         finally { EmbeddedNetwork.releaseTransfer(); EmbeddedNetwork.foreground(); }
-        assertEquals(before, count.getInt(null));
+        assertEquals(before, lifecycle.transfers());
         assertEquals(25, ArtifactDownloadService.percent(12, 48));
         assertEquals(0, ArtifactDownloadService.percent(0, 0));
         assertEquals(100, ArtifactDownloadService.percent(Long.MAX_VALUE, Long.MAX_VALUE));

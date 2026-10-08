@@ -20,6 +20,7 @@ test('provider targets are grouped per host and skip disabled providers', () => 
   assert.deepEqual(targets.map(target => target.id).sort(), ['api.a.example:443', 'api.b.example:443']);
   const a = targets.find(target => target.id === 'api.a.example:443');
   assert.equal(a.port, 443);
+  assert.equal(a.secure, true);
   assert.deepEqual(a.models.sort(), ['a-1', 'a-2']);
   assert.equal(a.label, 'Provider A');
   // A provider with an Anthropic endpoint is probed once per host, not per key.
@@ -42,6 +43,24 @@ test('a target reports direct and proxy reachability independently', async () =>
   assert.equal(result.proxy, false);
   assert.equal(result.preferred, 'direct');
   origin.closeAllConnections?.(); origin.close();
+});
+
+test('HTTPS reachability rejects a route that accepts TCP but never completes TLS', async t => {
+  const sockets = new Set();
+  const origin = net.createServer(socket => {
+    sockets.add(socket);
+    socket.on('error', () => {});
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('data', () => {}); // TCP succeeds; no TLS ServerHello is returned.
+  });
+  await new Promise(resolve => origin.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const socket of sockets) socket.destroy(); origin.close(); });
+  const target = { id: 't', host: '127.0.0.1', port: origin.address().port, label: 'Local' };
+  const tcp = await probeTarget({ ...target, secure: false }, { timeout: 100 });
+  assert.equal(tcp.direct, true);
+  const https = await probeTarget({ ...target, secure: true }, { timeout: 100 });
+  assert.equal(https.direct, false);
+  assert.equal(https.preferred, 'none');
 });
 
 test('summary counts routes and flags unreachable hosts', () => {

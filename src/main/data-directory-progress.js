@@ -10,12 +10,12 @@ const PREFIX = 'camellia-directory-progress-';
 const CANCEL = 'cancel';
 const PROGRESS = 'progress.json';
 
-function createDirectoryMigrationProgress({ app, appData, dataDir }) {
-  if (!fs.existsSync(path.join(appData, '.camellia-directory-migration.json'))) return null;
+function createDirectoryMigrationProgress({ app, appData, dataDir, kind = 'directory' }) {
+  if (kind === 'directory' && !fs.existsSync(path.join(appData, '.camellia-directory-migration.json'))) return null;
   let directory, child, lastWrite = 0, lastStage = '', finished = false;
   let language = 'en';
   try { language = JSON.parse(fs.readFileSync(path.join(dataDir, 'desktop-config.json'), 'utf8')).language || 'en'; } catch {}
-  const initial = { startedAt: Date.now(), source: dataDir, destination: path.join(appData, 'camellia'), language };
+  const initial = { startedAt: Date.now(), source: dataDir, destination: kind === 'plugins' ? path.join(dataDir, 'codex/plugin-caches') : path.join(appData, 'camellia'), language, kind };
   const write = state => {
     if (!directory) return;
     const file = path.join(directory, PROGRESS), temporary = file + '.tmp';
@@ -49,8 +49,9 @@ function createDirectoryMigrationProgress({ app, appData, dataDir }) {
       if (!stageChanged && !state.phaseComplete && now - lastWrite < 150) return;
       lastWrite = now;
       lastStage = state.stage;
-      if (stageChanged) process.stdout.write('Camellia data migration: ' + state.stage + '\n');
+      if (stageChanged) process.stdout.write((kind === 'plugins' ? 'Camellia plugin cache maintenance: ' : 'Camellia data migration: ') + state.stage + '\n');
       if (state.cancellable && directory && fs.existsSync(path.join(directory, CANCEL))) {
+        if (kind === 'plugins') throw Object.assign(new Error('Plugin cache maintenance canceled; completed cache links are kept. Run maintenance again to continue.'), { code: 'CAMELLIA_CACHE_CANCELLED' });
         throw new Error('Data directory migration canceled; the old folder was kept intact');
       }
       try { write(state); } catch { /* Progress reporting must not damage a migration. */ }
@@ -59,8 +60,9 @@ function createDirectoryMigrationProgress({ app, appData, dataDir }) {
       if (finished) return;
       finished = true;
       const status = result?.error ? (result.migrated ? 'warning' : 'error') : 'done';
-      try { write({ stage: status, error: result?.error || '', rollbackError: result?.rollbackError || '', cancellable: false }); } catch {}
-      process.stdout.write('Camellia data migration: ' + (result?.error || 'completed') + '\n');
+      try { write({ stage: status, error: result?.error || '', rollbackError: result?.rollbackError || '', cancellable: false,
+        duplicates: result?.duplicates, freedBytes: result?.bytes, skipped: result?.skipped?.length }); } catch {}
+      process.stdout.write((kind === 'plugins' ? 'Camellia plugin cache maintenance: ' : 'Camellia data migration: ') + (result?.error || 'completed') + '\n');
       // The helper normally exits itself; this also handles a failed renderer.
       if (child && status === 'done') setTimeout(() => { if (child.exitCode === null) child.kill(); }, 10_000).unref();
     },
