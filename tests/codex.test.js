@@ -595,9 +595,15 @@ test('Codex API metadata adds native patch support without overriding known mode
   codexSpawnSpec(options);
   const read = () => TOML.parse(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'));
   const first = read(), catalog = JSON.parse(fs.readFileSync(first.model_catalog_json, 'utf8'));
+  for (const entry of catalog.models) {
+    assert.equal(typeof entry.base_instructions, 'string', entry.slug + ' requires native base instructions');
+    assert.equal(entry.base_instructions, entry.model_messages.instructions_template);
+    assert.equal(typeof entry.supports_parallel_tool_calls, 'boolean', entry.slug + ' requires native tool capabilities');
+  }
   const model = catalog.models.find(m => m.slug === 'kimi-k3');
   assert.equal(model.apply_patch_tool_type, 'freeform');
   assert.equal(model.shell_type, 'unified_exec');
+  assert.equal(model.supports_parallel_tool_calls, false);
   assert.equal(model.default_reasoning_level, null); assert.equal(first.model_reasoning_effort, undefined);
   const instructions = model.model_messages.instructions_template;
   assert.doesNotMatch(instructions, /update_plan|^## Planning/m);
