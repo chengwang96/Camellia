@@ -7,6 +7,7 @@ const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { npmCandidates } = require('../src/main/runtime-paths');
 const { buildTailnet } = require('./build-tailnet.cjs');
+const { assertNodeVersion } = require('./node-version.cjs');
 
 function packageManifest(source) {
   return { name: source.name, version: source.version, private: true, description: 'Camellia Linux server', license: source.license,
@@ -15,6 +16,7 @@ function packageManifest(source) {
 }
 function packServer({ root = path.resolve(__dirname, '..'), output = path.resolve(root, 'dist') } = {}) {
   if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch)) throw new Error('Build this package natively on Linux x64 or arm64');
+  assertNodeVersion({ root });
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const npm = npmCandidates(process.execPath).find(file => fs.existsSync(file));
   if (!npm) throw new Error('Node.js with npm is required for packaging');
