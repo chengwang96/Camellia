@@ -54,7 +54,7 @@ The entry point is `src/main/main.js`; `src/main/preload.js` exposes the rendere
 
 The per-engine manifests and lockfiles are authoritative. The patched DSH settings and client-modules packages are pinned to `0.2.0-rc.2`; review patch compatibility before changing upstream pins.
 
-`scripts/prepare-runtimes.cjs` prepares explicitly selected development runtimes. `scripts/prepare-package.cjs` copies only Node.js, npm, and the Node license into generated `build/runtime-assets/`; it does not install any harness.
+`scripts/prepare-runtimes.cjs` prepares explicitly selected development runtimes. `scripts/prepare-package.cjs` bundles only the pinned official Node.js distribution, npm, and the Node license into generated `build/runtime-assets/`; it does not install any harness.
 
 Desktop downloads prompt for a connection and pass it through `src/main/download-network.js` to npm, uv, and the Python installer download. Each installation uses its own HTTP dispatcher and child-process environment. Source setup uses the shell's proxy environment variables; it does not read another profile's desktop preferences.
 
@@ -144,7 +144,11 @@ Choose checks for the changed behavior. Layout and resource-path changes should 
 
 ## Packaging
 
-Build on the operating system and architecture you are targeting. The bundle includes the build host's Node.js; the packaging hook rejects mismatched targets. Optional engines download the correct native packages on the user's machine.
+Build on the operating system and architecture you are targeting; the packaging hook rejects mismatched targets. The root [`.node-version`](../.node-version) pins the exact Node.js version used by desktop packages and CI. Both Windows and macOS download that version and the target architecture from the official Node.js distribution, verify its published SHA-256 checksum, and bundle its Node.js, npm and license. Updating the build computer's Node.js does not change the bundled version. macOS never copies a Homebrew executable that depends on libraries outside the application. Optional engines download the correct native packages on the user's machine.
+
+Verified distribution archives are cached in generated `build/node-cache/`, separately by version, platform and architecture. Each build checks the cached archive's SHA-256 before extraction; a valid cache requires no download, and a corrupt cache is downloaded again. Cache archives are excluded from the application bundle. The packaging hook and package verifier run the actual bundled Node.js/SQLite and npm and reject a version that differs from `.node-version`.
+
+To upgrade Node.js deliberately, change only `.node-version`, run the applicable runtime tests, and build and verify both native desktop packages before release. CI reads the same file. The Linux server packager copies the host's Node.js and requires that host version to match this pin. Electron's own embedded Node.js follows the Electron dependency version independently.
 
 On Windows x64:
 
@@ -184,7 +188,7 @@ npm run pack -- --config.directories.output=dist/camellia
 node tests/verify-package.cjs ./dist/camellia/win-unpacked
 ```
 
-Package verification compares bundled sources and download manifests with the checkout, verifies shared Node.js/npm and licenses, and asserts that no harness runtime is bundled. On macOS it also checks Node.js Mach-O architecture. CI runs `tests/runtime-install-smoke.cjs <resources-directory> --all` with an empty application-data directory and no global Node or Python on PATH. This installs each engine separately, verifies that unselected engines remain missing, checks the DSH patches, and runs real Codex/Kimi/Antigravity tool and routing tests using the downloaded runtimes.
+Package verification compares bundled sources and download manifests with the checkout, verifies shared Node.js/npm and licenses, and asserts that no harness runtime is bundled. On macOS it also checks Node.js Mach-O architecture, rejects dependencies on non-system dynamic libraries, and runs the bundled Node.js/SQLite and npm with only system directories on PATH and no Node.js or dynamic-loader overrides. The packaging hook runs the same startup checks before bundling. CI runs `tests/runtime-install-smoke.cjs <resources-directory> --all` with an empty application-data directory and no global Node or Python on PATH. This installs each engine separately, verifies that unselected engines remain missing, checks the DSH patches, and runs real Codex/Kimi/Antigravity tool and routing tests using the downloaded runtimes.
 
 The pinned official Claude installer uses the filename `bin/claude.exe` on every platform, including macOS. The contents are the platform's native executable; keep that filename in CLI test commands.
 
