@@ -10,6 +10,7 @@ const { googleDiscussionSpec, extraTextSpec, kimiCredentialFile, VERSIONS } = re
 const { isolatedEnvironment } = require('../src/benchmark/engines');
 const { removeTree } = require('./test-fs.cjs');
 const { DiscussionProduction } = require('../src/engines/discussions/production');
+const { codexTextSpec } = require('../src/engines/discussions/codex-text-policy');
 
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-text-policy-'));
@@ -19,6 +20,20 @@ function setup(t) {
   return { root, home, cwd, env: isolatedEnvironment(path.join(root, 'profile'), process.execPath), node: process.execPath,
     route: { baseUrl: 'http://127.0.0.1:3333/bench/fixed', authToken: 'proxy-managed' } };
 }
+
+test('Codex discussion catalogs keep text-only instructions in both native schema fields', t => {
+  const input = setup(t);
+  const spec = codexTextSpec({ ...input, runtime: { version: '0.160.1', file: path.join(input.root, 'codex') },
+    model: 'fixture-model', connection: 'api', inherited: input.env });
+  const config = TOML.parse(fs.readFileSync(path.join(input.home, 'config.toml'), 'utf8'));
+  const catalog = JSON.parse(fs.readFileSync(config.model_catalog_json, 'utf8'));
+  assert.ok(catalog.models.some(entry => entry.slug === 'fixture-model'));
+  for (const entry of catalog.models) {
+    assert.equal(entry.base_instructions, spec.discussionInstructions, entry.slug);
+    assert.equal(entry.model_messages.instructions_template, spec.discussionInstructions);
+    assert.equal(entry.apply_patch_tool_type, null);
+  }
+});
 
 test('validated runtime upgrades stay available and produce distinct evidence; unknown versions remain blocked', () => {
   const production = Object.create(DiscussionProduction.prototype);

@@ -28,6 +28,14 @@ function apiContextWindow(model, budget) {
     : nativeModel(model)?.context_window || 272000;
 }
 
+function writeModelCatalog(file, catalog) {
+  // Native CLI versions still require base_instructions when model_messages
+  // is present. Use the same prompt in both fields, including text discussions.
+  const models = catalog.models.map(entry => ({ ...entry,
+    base_instructions: entry.model_messages.instructions_template }));
+  fs.writeFileSync(file, JSON.stringify({ ...catalog, models }));
+}
+
 function configureApiModel(config, home, model, contextWindow) {
   const target = path.join(home, 'camellia-api-models.json');
   const managed = config.model_catalog_json && path.resolve(config.model_catalog_json) === path.resolve(target);
@@ -47,13 +55,14 @@ function configureApiModel(config, home, model, contextWindow) {
     model_messages: { instructions_template: toolAwareFallbackPrompt },
     include_skills_usage_instructions: false, include_plugin_usage_instructions: false, include_apps_usage_instructions: false,
     supports_reasoning_summary_parameter: true, default_reasoning_summary: 'auto',
+    supports_parallel_tool_calls: false,
     support_verbosity: false, apply_patch_tool_type: 'freeform',
     truncation_policy: { mode: 'bytes', limit: 10000 },
     context_window: contextWindow || 272000, max_context_window: contextWindow || 272000, effective_context_window_percent: 95,
     experimental_supported_tools: [], input_modalities: ['text', 'image'],
   };
-  fs.writeFileSync(target, JSON.stringify({ models: [...nativeCatalog.models, fallback] }));
+  writeModelCatalog(target, { models: [...nativeCatalog.models, fallback] });
   config.model_catalog_json = target;
 }
 
-module.exports = { configureApiModel, needsApiToolProfile, apiContextWindow, CODEX_API_TOOL_PROFILE };
+module.exports = { configureApiModel, needsApiToolProfile, apiContextWindow, writeModelCatalog, CODEX_API_TOOL_PROFILE };

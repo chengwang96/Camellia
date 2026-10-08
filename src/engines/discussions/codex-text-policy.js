@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const TOML = require('smol-toml');
 const { codexSpawnSpec } = require('../codex-client');
+const { writeModelCatalog } = require('../codex-models');
 const { isolatedEnvironment } = require('../../benchmark/engines');
 
 const VERSION = '0.154.0';
@@ -42,7 +43,7 @@ function codexTextSpec({ runtime, home, cwd, model, contextWindow, connection, r
     entry.model_messages = { instructions_template: INSTRUCTIONS };
   }
   config.model_catalog_json = path.join(home, 'discussion-models.json');
-  fs.writeFileSync(config.model_catalog_json, JSON.stringify(catalog));
+  writeModelCatalog(config.model_catalog_json, catalog);
   fs.writeFileSync(path.join(home, 'config.toml'), TOML.stringify(config));
   return { ...codexSpawnSpec({ runtime, home, cwd, model, contextWindow, connection, route, env }), discussionInstructions: INSTRUCTIONS };
 }

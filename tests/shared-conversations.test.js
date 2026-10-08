@@ -2273,7 +2273,7 @@ test('new conversations use the default model to generate a title of at most ten
 test('pre-created conversations generate a title only for their first user message', async t => {
   for (const engine of ENGINES) {
     const calls = [];
-    const harness = fixture(t, { generateTitle: async message => { calls.push(message); return ''; } });
+    const harness = fixture(t, { generateTitle: async message => { calls.push(message); return 'Generated'; } });
     const conversation = harness.manager.create(engine);
     await harness.manager.send(engine, { sessionId: conversation.id, prompt: 'First request', displayText: 'Visible request' });
     await harness.flush();
@@ -2284,6 +2284,64 @@ test('pre-created conversations generate a title only for their first user messa
     assert.deepEqual(calls, ['Visible request']);
     harness.finish(engine);
   }
+});
+
+test('unnamed conversations retry naming after restart using the first visible request', async t => {
+  for (const engine of ENGINES) {
+    const calls = [];
+    const harness = fixture(t, { generateTitle: async message => {
+      calls.push(message); return calls.length === 1 ? '' : '恢复命名';
+    } });
+    const first = await harness.manager.send(engine, { prompt: 'Native request', displayText: 'First visible request' });
+    harness.finish(engine);
+    await first.done; await harness.flush();
+    assert.equal(harness.manager.get(first.sessionId).title, 'New session');
+    const manager = harness.restart();
+    const next = await manager.send(engine, { sessionId: first.sessionId, prompt: 'Later request' });
+    await harness.flush();
+    assert.deepEqual(calls, ['First visible request', 'First visible request']);
+    assert.equal(manager.get(first.sessionId).title, '恢复命名');
+    harness.finish(engine); await next.done;
+  }
+});
+
+test('retrying an unnamed first turn generates a title from its revised visible request', async t => {
+  for (const engine of ENGINES) {
+    const calls = [];
+    const harness = fixture(t, { generateTitle: async message => {
+      calls.push(message); return calls.length === 1 ? '' : '重试命名';
+    } });
+    const first = await harness.manager.send(engine, { prompt: 'Original request', displayText: 'Original visible request' });
+    harness.finish(engine, 'error', 'Startup failed');
+    await first.done; await harness.flush();
+    const retry = await harness.manager.send(engine, { sessionId: first.sessionId, editSeq: first.userSeq,
+      prompt: 'Corrected request', displayText: 'Corrected visible request' });
+    await harness.flush();
+    assert.deepEqual(calls, ['Original visible request', 'Corrected visible request']);
+    assert.equal(harness.manager.get(first.sessionId).title, '重试命名');
+    harness.finish(engine); await retry.done;
+  }
+});
+
+test('title generation does not duplicate a pending request and retries after it finishes empty', async t => {
+  const calls = [];
+  let resolveTitle;
+  const harness = fixture(t, { generateTitle: message => {
+    calls.push(message);
+    return calls.length === 1 ? new Promise(resolve => { resolveTitle = resolve; }) : Promise.resolve('恢复命名');
+  } });
+  const first = await harness.manager.send('codex', { prompt: 'First request' });
+  harness.finish('codex'); await first.done;
+  const next = await harness.manager.send('codex', { sessionId: first.sessionId, prompt: 'Second request' });
+  await harness.flush();
+  assert.deepEqual(calls, ['First request']);
+  harness.finish('codex'); await next.done;
+  resolveTitle(''); await harness.flush();
+  const last = await harness.manager.send('codex', { sessionId: first.sessionId, prompt: 'Third request' });
+  await harness.flush();
+  assert.deepEqual(calls, ['First request', 'First request']);
+  assert.equal(harness.manager.get(first.sessionId).title, '恢复命名');
+  harness.finish('codex'); await last.done;
 });
 
 test('automatic titles skip custom names and preserve a rename during generation', async t => {

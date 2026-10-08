@@ -160,6 +160,7 @@ class SharedConversations {
     fs.mkdirSync(dir, { recursive: true });
     this.items = new Map(); this.active = new Map(); this.facades = new Map(); this.switching = new Map(); this.goals = new Map(); this.recovering = new Map(); this.sequence = 0; this.clock = 0;
     this.stopping = new Map(); this.deleting = new Set(); this.stopTimeoutMs = stopTimeoutMs;
+    this.titleRequests = new Set();
     this.onGoal = onGoal;
     this.createGoalBridge = createGoalBridge;
     this.goalBridges = new Map();
@@ -453,15 +454,25 @@ class SharedConversations {
     }
     return { ok: true, replyReadAt };
   }
-  async titleFromFirstMessage(c, prompt) {
+  async titleFromFirstMessage(c) {
+    if (this.titleRequests.has(c.id)) return;
+    this.titleRequests.add(c.id);
     try {
-      const title = shortTitle(await this.generateTitle(String(prompt || ''), c.apiModel));
+      let prompt = '';
+      for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.user })) {
+        if (row.internal) continue;
+        prompt = String(row.displayText ?? row.text ?? '');
+        if (prompt.trim()) break;
+      }
+      if (!prompt.trim()) return;
+      const title = shortTitle(await this.generateTitle(prompt, c.apiModel));
       if (!title || !this.items.has(c.id) || this.workspaces.sessionMeta().titles[c.id]) return;
       const current = this.get(c.id);
       if (current.title !== 'New session') return;
       current.title = title; current.updatedAt = this.stamp(); this.save(current);
       this.onEvent({ type: 'conversation:title', session_id: current.id, title });
     } catch (error) { this.log('conversation title generation failed: ' + error.message); }
+    finally { this.titleRequests.delete(c.id); }
   }
   // Permanent delete: index, append-only log, goal, handoffs and torn backups.
   purge(id) {
@@ -1119,10 +1130,10 @@ class SharedConversations {
       if (!promptFits(prompt, promptCap)) throw new Error('The conversation is still too large after automatic compaction. Compact it manually from the engine menu or start a new conversation. Nothing was sent.');
     }
     assertAvailable();
-    const needsTitle = !internal && !continuation && !edit && c.title === 'New session'
+    // A failed title request can recover on a later send or revision.
+    const needsTitle = !internal && !continuation && c.title === 'New session'
       && !this.workspaces.sessionMeta().titles[c.id]
-      && String(payload.displayText ?? payload.prompt ?? '').trim()
-      && !this.historyInfo(c).userSeq;
+      && String(payload.displayText ?? payload.prompt ?? '').trim();
     const a = continuation || { c, engine, internal, ephemeral, scheduledTaskId, nativeEditEligible: Boolean(nativeEdit) || !edit && !this.context(c, engine), goalContinuation: Boolean(facade), prompt: payload.prompt || '', promptSuffix, attachments: payload.attachments || [], events: [], permissions: new Map(), tools: new Set(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
       nativeEditReplayFromSeq: checkpoint?.replayFromSeq,
       // Only evaluated if the native session turns out to be unavailable: the
@@ -1156,7 +1167,7 @@ class SharedConversations {
       if (!internal && !continuation) this.workspaces.promoteSession(c.id, [...this.items.values()]
         .sort((first, second) => second.updatedAt - first.updatedAt || first.id.localeCompare(second.id)).map(conversation => conversation.id));
       if (needsTitle) {
-        void this.titleFromFirstMessage(c, payload.displayText ?? payload.prompt);
+        void this.titleFromFirstMessage(c);
       }
       this.publishActivity(c.id);
       if (!internal && !continuation) this.onEvent({ type: 'conversation:started', session_id: c.id, engine, runId: a.facade.gen,
