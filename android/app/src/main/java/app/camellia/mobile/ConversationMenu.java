@@ -40,14 +40,14 @@ final class ConversationMenu {
         String[] icons = { "edit", "select", "pin", "archive", "delete" };
         Runnable[] actions = { rename, select, pin, archive, delete };
         for (int index = 0; index < names.length; index++) {
-            TextView row = new TextView(context); row.setText(names[index]); row.setTextSize(18);
+            TextView row = new TextView(context); row.setText(names[index]); row.setTextSize(Palette.TEXT_DIALOG);
             int ink = icons[index].equals("delete") ? new SettingsStyle(context).error : style.ink;
             row.setTextColor(ink); row.setGravity(Gravity.CENTER_VERTICAL);
             row.setPadding(dp(anchor, 16), 0, dp(anchor, 16), 0);
             LineIcon icon = new LineIcon(icons[index], ink); icon.setBounds(0, 0, dp(anchor, 23), dp(anchor, 23));
             row.setCompoundDrawablesRelative(icon, null, null, null); row.setCompoundDrawablePadding(dp(anchor, 14));
             row.setTag("conversationAction:" + icons[index]); row.setFocusable(true);
-            row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), null, style.rounded(Color.WHITE)));
+            row.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), null, style.rounded(Color.WHITE)));
             Runnable action = actions[index]; row.setOnClickListener(view -> { dismiss(); action.run(); });
             rows.addView(row, new LinearLayout.LayoutParams(-1, dp(anchor, 56)));
         }

@@ -98,7 +98,7 @@ final class RemoteSettingsPopup {
     }
     private void heading(String title) {
         android.widget.TextView caption = new android.widget.TextView(context);
-        caption.setText(title); caption.setTextSize(11); caption.setTextColor(muted);
+        caption.setText(title); caption.setTextSize(Palette.TEXT_TINY); caption.setTextColor(muted);
         caption.setPadding(dp(16), dp(10), dp(16), dp(4));
         body.addView(caption);
     }

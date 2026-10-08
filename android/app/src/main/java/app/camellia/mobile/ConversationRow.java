@@ -18,19 +18,19 @@ final class ConversationRow extends LinearLayout {
         super(context);
         setOrientation(HORIZONTAL); setGravity(Gravity.CENTER_VERTICAL);
         setPadding(dp(grouped ? 32 : 2), dp(8), dp(8), dp(8));
-        setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), style.rounded(style.background), style.rounded(Color.WHITE)));
+        setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), style.rounded(style.background), style.rounded(Color.WHITE)));
         setTag(tag); setFocusable(true); setContentDescription(title + (state.isEmpty() ? "" : " · " + state));
         LinearLayout copy = new LinearLayout(context); copy.setOrientation(VERTICAL);
         addView(copy, new LayoutParams(0, -2, 1));
         LinearLayout headline = new LinearLayout(context); headline.setOrientation(HORIZONTAL);
         headline.setGravity(Gravity.CENTER_VERTICAL); headline.setBaselineAligned(false);
         copy.addView(headline, new LayoutParams(-1, -2));
-        TextView name = new TextView(context); name.setText(title); name.setTextSize(16); name.setTextColor(style.ink);
+        TextView name = new TextView(context); name.setText(title); name.setTextSize(Palette.TEXT_ROW); name.setTextColor(style.ink);
         name.setTag("conversationRowTitle");
         name.setSingleLine(true); name.setMinHeight(dp(36)); name.setGravity(Gravity.CENTER_VERTICAL);
         name.setEllipsize(TextUtils.TruncateAt.END); headline.addView(name, new LayoutParams(0, -2, 1));
         if (!state.isEmpty()) {
-            TextView badge = new TextView(context); badge.setText(state); badge.setTextSize(12); badge.setTextColor(style.accent);
+            TextView badge = new TextView(context); badge.setText(state); badge.setTextSize(Palette.TEXT_SMALL); badge.setTextColor(style.accent);
             badge.setTag(stateTag); badge.setMaxWidth(dp(152)); badge.setSingleLine(true); badge.setEllipsize(TextUtils.TruncateAt.END);
             badge.setGravity(Gravity.END | Gravity.CENTER_VERTICAL); badge.setPadding(dp(8), 0, 0, 0);
             headline.addView(badge, new LayoutParams(-2, -2));

@@ -1,0 +1,3 @@
+# Rebuilt from the shared Go source locally and in CI.
+/Frameworks/
+/dist/

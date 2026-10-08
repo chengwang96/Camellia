@@ -1,0 +1,4 @@
+"NSLocalNetworkUsageDescription" = "用于通过内置网络连接你授权的电脑；Camellia 不会连接其它目标。";
+"NSCameraUsageDescription" = "用于扫描电脑上的配对码或拍摄聊天附件。扫码画面不会保存；照片仅在你发送消息时发给所选目标。";
+"NSPhotoLibraryUsageDescription" = "用于选择要发送的聊天图片附件；Camellia 只读取你选中的照片。";
+"NSLocationWhenInUseUsageDescription" = "仅在你同意时，为本次问题获取一次大致位置（约 2 公里精度）并发送给所选电脑或 API 服务商；不做后台定位。";

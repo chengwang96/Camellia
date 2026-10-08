@@ -32,12 +32,14 @@ final class SettingsChoiceDialog extends AlertDialog {
         this.cancelLabel = cancelLabel; this.onSelect = onSelect;
     }
 
-    private int dp(int value) { return Math.round(value * getContext().getResources().getDisplayMetrics().density); }
+    private int dp(int value) { return style.dp(value); }
+    private GradientDrawable rounded(int color, int radius) { return style.round(color, radius); }
 
-    private GradientDrawable rounded(int color, int radius) {
-        GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(radius)); return shape;
-    }
-
+    /**
+     * Without line spacing, like {@link CamelliaDialog}'s own. Every string here
+     * is a single-line option or a single-line button, so the shared helper's
+     * spacing would have nothing to space out.
+     */
     private TextView text(String value, int size, int color) {
         TextView text = new TextView(getContext()); text.setText(value); text.setTextSize(size); text.setTextColor(color);
         return text;
@@ -53,14 +55,14 @@ final class SettingsChoiceDialog extends AlertDialog {
             }
         };
         style.sheetPanel(panel); panel.setTag("settingsChoicePanel");
-        TextView heading = text(title, 21, style.ink); heading.setTag("settingsChoiceTitle");
+        TextView heading = text(title, Palette.TEXT_DISPLAY, style.ink); heading.setTag("settingsChoiceTitle");
         heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         heading.setPadding(dp(8), dp(4), dp(8), dp(18));
         if (android.os.Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
         panel.addView(heading, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout options = new LinearLayout(getContext()); options.setOrientation(LinearLayout.VERTICAL);
-        options.setBackground(rounded(style.card, 20)); options.setClipToOutline(true);
+        options.setBackground(rounded(style.card, Palette.RADIUS_DIALOG_ACTION)); options.setClipToOutline(true);
         for (int index = 0; index < labels.length; index++) {
             final int choice = index;
             if (index > 0) {
@@ -80,12 +82,15 @@ final class SettingsChoiceDialog extends AlertDialog {
                     info.setClassName("android.widget.RadioButton"); info.setCheckable(true); info.setChecked(choice == selected);
                 }
             });
-            TextView label = text(labels[index], 16, style.ink); label.setPadding(0, 0, dp(12), 0);
+            TextView label = text(labels[index], Palette.TEXT_ROW, style.ink); label.setPadding(0, 0, dp(12), 0);
             label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             if (index == selected) label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
             row.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
-            TextView check = text(index == selected ? "✓" : "", 16, style.card); check.setGravity(Gravity.CENTER);
+            TextView check = text(index == selected ? "✓" : "", Palette.TEXT_ROW, style.card); check.setGravity(Gravity.CENTER);
             check.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            // 13 is half of the 26dp below, which is what makes the tick a circle.
+            // It is geometry, not a design token, and tokenising it would mean
+            // inventing a name for "half of that".
             GradientDrawable indicator = rounded(index == selected ? style.ink : Color.TRANSPARENT, 13);
             if (index != selected) indicator.setStroke(dp(1), style.divider);
             check.setBackground(indicator); row.addView(check, new LinearLayout.LayoutParams(dp(26), dp(26)));
@@ -95,10 +100,10 @@ final class SettingsChoiceDialog extends AlertDialog {
         ScrollView scroll = new ScrollView(getContext()); scroll.setFillViewport(false); scroll.addView(options);
         panel.addView(scroll, new LinearLayout.LayoutParams(-1, -2, 1));
 
-        TextView cancel = text(cancelLabel, 16, style.ink); cancel.setGravity(Gravity.CENTER);
+        TextView cancel = text(cancelLabel, Palette.TEXT_ROW, style.ink); cancel.setGravity(Gravity.CENTER);
         cancel.setPadding(dp(16), dp(14), dp(16), dp(14)); cancel.setMinimumHeight(dp(52));
         cancel.setTag("settingsChoiceCancel"); cancel.setFocusable(true);
-        cancel.setBackground(new RippleDrawable(ColorStateList.valueOf(style.divider), rounded(style.card, 20), rounded(Color.WHITE, 20)));
+        cancel.setBackground(new RippleDrawable(ColorStateList.valueOf(style.divider), rounded(style.card, Palette.RADIUS_DIALOG_ACTION), rounded(Color.WHITE, Palette.RADIUS_DIALOG_ACTION)));
         cancel.setAccessibilityDelegate(new View.AccessibilityDelegate() {
             @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
                 super.onInitializeAccessibilityNodeInfo(host, info); info.setClassName("android.widget.Button");

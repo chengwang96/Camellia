@@ -40,7 +40,7 @@ final class ComputerPickerPopup {
         ScrollView scroll = new ScrollView(anchor.getContext()); scroll.setVerticalScrollBarEnabled(false);
         scroll.addView(rows); panel.addView(scroll);
         popup = new PopupWindow(panel, -2, -2, true);
-        GradientDrawable face = new GradientDrawable(); face.setColor(style.background); face.setCornerRadius(dp(26));
+        GradientDrawable face = new GradientDrawable(); face.setColor(style.background); face.setCornerRadius(dp(Palette.RADIUS_GROUP));
         popup.setBackgroundDrawable(face); popup.setElevation(dp(8)); popup.setOutsideTouchable(true);
         popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
         for (Entry entry : entries) {
@@ -85,7 +85,7 @@ final class ComputerPickerPopup {
     private LinearLayout row(LinearLayout parent, String icon, String tag, Runnable action) {
         LinearLayout row = new LinearLayout(parent.getContext()); row.setGravity(Gravity.CENTER_VERTICAL);
         row.setMinimumHeight(dp(56)); row.setPadding(dp(14), dp(12), dp(14), dp(12)); row.setTag(tag); row.setFocusable(true);
-        row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), null, style.rounded(Color.WHITE)));
+        row.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), null, style.rounded(Color.WHITE)));
         row.setOnClickListener(view -> { dismiss(); action.run(); });
         ImageView image = new ImageView(parent.getContext()); image.setImageDrawable(new LineIcon(icon, style.ink));
         image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);

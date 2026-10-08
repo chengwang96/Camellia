@@ -64,6 +64,10 @@ public final class QrScanActivity extends Activity implements TextureView.Surfac
         root.addView(style.header(getString(R.string.qr_scan_title), getString(R.string.qr_scan_cancel), () -> { setResult(RESULT_CANCELED); finish(); }));
 
         FrameLayout viewfinder = new FrameLayout(this); viewfinder.setTag("qrViewfinder");
+        // Deliberately not a palette colour: the viewfinder is a dark well in
+        // both appearances, so that a light page still reads as "look here" and a
+        // QR code always has the same contrast behind it. Following the palette
+        // would flip this to near-white in the light theme and destroy both.
         android.graphics.drawable.GradientDrawable backdrop = style.cardBackground(); backdrop.setColor(0xff0f1115);
         viewfinder.setBackground(backdrop); viewfinder.setClipToOutline(true);
         preview = new TextureView(this); preview.setTag("qrPreview"); preview.setSurfaceTextureListener(this);
@@ -75,7 +79,7 @@ public final class QrScanActivity extends Activity implements TextureView.Surfac
         root.addView(viewfinder, new LinearLayout.LayoutParams(-1, 0, 1));
 
         status = new TextView(this); status.setTag("qrStatus"); status.setText(R.string.qr_scan_hint);
-        status.setTextColor(style.secondary); status.setTextSize(14); status.setGravity(Gravity.CENTER);
+        status.setTextColor(style.secondary); status.setTextSize(Palette.TEXT_BODY); status.setGravity(Gravity.CENTER);
         status.setLineSpacing(dp(3), 1); status.setPadding(dp(12), dp(20), dp(12), 0);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         root.addView(status, new LinearLayout.LayoutParams(-1, -2));

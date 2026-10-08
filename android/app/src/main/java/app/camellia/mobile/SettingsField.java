@@ -30,7 +30,7 @@ final class SettingsField extends LinearLayout {
         input.setHintTextColor(settings.secondary);
         input.setHighlightColor((style.accent & 0x00ffffff) | 0x33000000);
         addView(input, new LayoutParams(-1, -2));
-        feedback = new TextView(getContext()); feedback.setTextSize(13); feedback.setTextColor(errorColor);
+        feedback = new TextView(getContext()); feedback.setTextSize(Palette.TEXT_NOTE); feedback.setTextColor(errorColor);
         feedback.setPadding(style.dp(12), style.dp(8), style.dp(12), style.dp(4));
         feedback.setTag(input.getTag() + "Error"); feedback.setVisibility(GONE);
         feedback.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);

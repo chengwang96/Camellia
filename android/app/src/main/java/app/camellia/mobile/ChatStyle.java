@@ -2,7 +2,6 @@ package app.camellia.mobile;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
-import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
@@ -21,15 +20,16 @@ import java.util.function.Supplier;
 final class ChatStyle {
     final int background, surface, ink, muted, accent;
     private final Context context;
+    private final Palette palette;
 
     ChatStyle(Context context) {
         this.context = context;
-        boolean dark = (context.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
-        background = Color.parseColor(dark ? "#151517" : "#FFFFFF");
-        surface = Color.parseColor(dark ? "#232324" : "#F5F6F7");
-        ink = Color.parseColor(dark ? "#F9FAFB" : "#0F1115");
-        muted = Color.parseColor(dark ? "#ADB2B8" : "#61666B");
-        accent = Color.parseColor(dark ? "#679EFE" : "#4176E6");
+        this.palette = Palette.of(context);
+        background = palette.background;
+        surface = palette.surface;
+        ink = palette.ink;
+        muted = palette.muted;
+        accent = palette.accent;
     }
 
     int dp(int value) { return Math.round(value * context.getResources().getDisplayMetrics().density); }
@@ -59,11 +59,11 @@ final class ChatStyle {
     }
 
     GradientDrawable rounded(int color) {
-        GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(12)); return shape;
+        GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(Palette.RADIUS_CARD)); return shape;
     }
 
     GradientDrawable capsule(int color) {
-        GradientDrawable shape = rounded(color); shape.setCornerRadius(dp(28)); return shape;
+        GradientDrawable shape = rounded(color); shape.setCornerRadius(dp(Palette.RADIUS_CAPSULE)); return shape;
     }
 
     GradientDrawable floatingBar(android.view.View view) {
@@ -75,7 +75,7 @@ final class ChatStyle {
         return shape;
     }
 
-    int floatingBarEdge() { return Color.parseColor(Color.red(background) < 128 ? "#3B3B40" : "#ECEEF1"); }
+    int floatingBarEdge() { return palette.separator; }
 
     ColorStateList enabledColors(int enabled, int disabled) {
         return new ColorStateList(new int[][] {{-android.R.attr.state_enabled}, {}}, new int[] {disabled, enabled});
@@ -84,14 +84,14 @@ final class ChatStyle {
     ImageButton lineButton(String icon, String label, Runnable action) {
         ImageButton button = new ImageButton(context); button.setImageDrawable(new LineIcon(icon, ink));
         button.setContentDescription(label); button.setTooltipText(label); button.setPadding(dp(13), dp(13), dp(13), dp(13));
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), capsule(background), capsule(Color.WHITE)));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), capsule(background), capsule(Color.WHITE)));
         button.setOnClickListener(view -> action.run()); return button;
     }
 
     LinearLayout workspaceHeader(String title, String label, String tag, Runnable action) {
         LinearLayout header = new LinearLayout(context); header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(0, dp(12), 0, 0);
-        TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(14); heading.setTextColor(muted);
+        TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(Palette.TEXT_BODY); heading.setTextColor(muted);
         header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
         ImageButton create = lineButton("add", label, action); create.setTag(tag);
         create.setImageDrawable(new LineIcon("add", muted));
@@ -100,15 +100,14 @@ final class ChatStyle {
     }
 
     ImageButton backButton(String label, Runnable action) {
-        boolean dark = (context.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
         ImageButton button = new ImageButton(context); button.setImageDrawable(new LineIcon("back", ink));
         button.setContentDescription(label); button.setTooltipText(label); button.setTag("pageBack");
         button.setPadding(dp(14), dp(14), dp(14), dp(14)); button.setMinimumWidth(dp(48)); button.setMinimumHeight(dp(48));
         GradientDrawable face = new GradientDrawable(); face.setShape(GradientDrawable.OVAL);
-        face.setColor(Color.parseColor(dark ? "#29292D" : "#FFFFFF"));
-        face.setStroke(1, Color.parseColor(dark ? "#3A3A40" : "#F3F3F5"));
+        face.setColor(palette.raisedFace);
+        face.setStroke(1, palette.raisedEdge);
         GradientDrawable mask = new GradientDrawable(); mask.setShape(GradientDrawable.OVAL); mask.setColor(Color.WHITE);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(dark ? 0x33ffffff : 0x14000000), face, mask));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(palette.backRipple()), face, mask));
         button.setElevation(dp(4));
         if (android.os.Build.VERSION.SDK_INT >= 28) {
             button.setOutlineAmbientShadowColor(0x40000000); button.setOutlineSpotShadowColor(0x50000000);
@@ -124,7 +123,7 @@ final class ChatStyle {
     ImageButton composerAction(String label, int icon, Runnable action) {
         ImageButton button = new ImageButton(context); button.setImageResource(icon);
         button.setContentDescription(label); button.setTooltipText(label); button.setPadding(dp(13), dp(13), dp(13), dp(13));
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33ffffff), capsule(accent), capsule(Color.WHITE)));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_ACCENT_LIGHT), capsule(accent), capsule(Color.WHITE)));
         button.setBackgroundTintList(enabledColors(accent, surface)); button.setImageTintList(enabledColors(Color.WHITE, muted));
         button.setOnClickListener(view -> action.run()); return button;
     }
@@ -145,7 +144,7 @@ final class ChatStyle {
         if (user) block.setBackground(rounded(surface));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(user ? -2 : -1, -2);
         params.gravity = user ? android.view.Gravity.END : android.view.Gravity.START;
-        params.setMargins(user ? dp(44) : 0, dp(6), 0, dp(16)); block.setLayoutParams(params);
+        params.setMargins(user ? dp(Palette.BUBBLE_INSET) : 0, dp(6), 0, dp(16)); block.setLayoutParams(params);
         return block;
     }
 
@@ -179,7 +178,7 @@ final class ChatStyle {
         TextView time = wrapper.findViewWithTag("messageTimestamp");
         if (at <= 0) { if (time != null) footer.removeView(time); return; }
         if (time == null) {
-            time = new TextView(context); time.setTextColor(muted); time.setTextSize(12); time.setTag("messageTimestamp"); footer.addView(time);
+            time = new TextView(context); time.setTextColor(muted); time.setTextSize(Palette.TEXT_SMALL); time.setTag("messageTimestamp"); footer.addView(time);
         }
         time.setText(new SimpleDateFormat(chinese ? "M月d日 HH:mm" : "MMM d, HH:mm", chinese ? Locale.CHINA : Locale.ENGLISH).format(new Date(at)));
     }

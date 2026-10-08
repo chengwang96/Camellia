@@ -171,8 +171,24 @@ public final class MainActivity extends Activity {
     private RemoteEntryGate remoteEntryGate;
     private RemoteEntryGate.State remoteEntryState = RemoteEntryGate.State.CONNECTING;
     private LinearLayout remoteEntryCard;
+    // The settings index's Mobile access row, kept so its state label can be
+    // refreshed when the reader comes back from that page rather than only when
+    // the index is rebuilt.
+    private LinearLayout settingsRowMobileAccess;
+    // The pairing page's Tailscale row, refreshed when that page is shown and
+    // when the network state changes underneath it.
+    private LinearLayout pairNetworkRow;
+    // The Mobile access page's own state line, above its content. `status` is
+    // shared with every screen and filtered per screen, so it cannot be the only
+    // place this page's answer appears.
+    private TextView networkStatusBanner;
     private TextView remoteEntryLabel;
     private View remoteEntryArrow, remoteEntrySpinner, remoteEntryRetry;
+    // The way out of the two states whose label sends the reader to Mobile
+    // access. Held as an AtomicReference because `renderRemoteEntry` is a state
+    // renderer that can run before the button exists, and a plain field would
+    // have to be nulled and re-checked on every screen rebuild.
+    private final java.util.concurrent.atomic.AtomicReference<View> remoteEntryOpen = new java.util.concurrent.atomic.AtomicReference<>();
 
     private String tr(String zh, String en) { return chinese ? zh : en; }
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
@@ -286,7 +302,11 @@ public final class MainActivity extends Activity {
         if (networkScreen) { refreshNetwork(false); return; }
         if (screen.equals("computers")) { refreshComputers(); return; }
         if (screen.equals("home")) { refreshHomeNetwork(); return; }
-        if (screen.equals("settings")) return;
+        // Coming back from Mobile access, which is where the mode is actually
+        // changed. Without this the row kept whatever it said when the index
+        // was built, so toggling Tailscale off and back left it claiming to be
+        // connected.
+        if (screen.equals("settings")) { refreshMobileAccessRow(); return; }
         if (screen.equals("pair")) {
             if (!pendingScannedPairing && credentials.has("claim")) waitForApproval();
             return;
@@ -299,6 +319,10 @@ public final class MainActivity extends Activity {
     private void networkRouteChanged() {
         if (!networkActive()) return;
         if (screen.equals("home")) { refreshHomeNetwork(); return; }
+        // These two report the network state on a row, and a route change flips
+        // it without rebuilding the page.
+        if (screen.equals("settings")) { refreshMobileAccessRow(); return; }
+        if (screen.equals("pair")) { refreshPairNetworkRow(); return; }
         if (!screen.equals("computers") && !screen.equals("list") && !screen.equals("detail")) return;
         artifactDownloads.stop();
         if (!EmbeddedNetwork.online()) {
@@ -444,13 +468,37 @@ public final class MainActivity extends Activity {
     }
 
     private Button button(String label, Runnable action, boolean primary) {
-        Button button = new Button(this); button.setText(label); button.setAllCaps(false); button.setTextSize(14);
+        Button button = new Button(this); button.setText(label); button.setAllCaps(false); button.setTextSize(Palette.TEXT_BODY);
         button.setTextColor(enabledColors(primary ? Color.WHITE : ink, muted));
         button.setBackground(new RippleDrawable(ColorStateList.valueOf((accent & 0x00ffffff) | 0x22000000), capsule(primary ? accent : surface), capsule(Color.WHITE)));
         button.setBackgroundTintList(enabledColors(primary ? accent : surface, surface));
         button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); button.setStateListAnimator(null);
         button.setMinHeight(dp(48)); button.setPadding(dp(14), dp(8), dp(14), dp(8));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(8), 0, dp(8)); button.setLayoutParams(params);
+        button.setOnClickListener(view -> action.run()); return button;
+    }
+
+    /**
+     * The home screen's way out of a state whose label points somewhere else.
+     *
+     * <p>Not {@code button(…, true)}. A filled accent bar in the middle of the
+     * home screen outranks the two cards it sits between, and this page's job is
+     * to offer a choice between ways in — it is not a call to action. The two
+     * cards' own action lines are accent-coloured text with no plate under them,
+     * so this matches them: same colour, same weight, no fill. It is a full-width
+     * row only because the label is a sentence and would otherwise wrap badly.
+     */
+    private Button homeEscape(String label, Runnable action) {
+        Button button = new Button(this); button.setText(label); button.setAllCaps(false);
+        button.setTextSize(Palette.TEXT_INPUT);
+        button.setTextColor(accent);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), null, null));
+        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); button.setStateListAnimator(null);
+        button.setMinHeight(dp(48)); button.setPadding(dp(14), dp(8), dp(14), dp(8));
+        button.setGravity(android.view.Gravity.CENTER);
+        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.TRANSPARENT));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.setMargins(0, dp(2), 0, dp(16)); button.setLayoutParams(params);
         button.setOnClickListener(view -> action.run()); return button;
     }
 
@@ -485,15 +533,15 @@ public final class MainActivity extends Activity {
             header.setClipChildren(false); header.setClipToPadding(false);
             header.addView(chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed), new LinearLayout.LayoutParams(dp(48), dp(48)));
             LinearLayout titles = column(); titles.setPadding(dp(10), 0, 0, 0);
-            TextView pageTitle = text(screen.equals("detail") ? conversationTitle : "Camellia", 19, ink);
+            TextView pageTitle = text(screen.equals("detail") ? conversationTitle : "Camellia", Palette.TEXT_CARD, ink);
             pageTitle.setTag("pageTitle"); pageTitle.setMaxLines(1); pageTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
             pageTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); titles.addView(pageTitle);
             LinearLayout computer = new LinearLayout(this); computer.setGravity(Gravity.CENTER_VERTICAL);
             ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon("computer", muted)); computer.addView(icon, new LinearLayout.LayoutParams(dp(14), dp(14)));
-            TextView name = text(computerName(credentials), 12, muted); name.setTag("headerComputerName"); name.setPadding(dp(6), 0, 0, 0);
+            TextView name = text(computerName(credentials), Palette.TEXT_SMALL, muted); name.setTag("headerComputerName"); name.setPadding(dp(6), 0, 0, 0);
             name.setMaxLines(1); name.setEllipsize(android.text.TextUtils.TruncateAt.END);
             computer.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
-            headerConnection = text("", 12, muted); headerConnection.setTag("headerConnectionState");
+            headerConnection = text("", Palette.TEXT_SMALL, muted); headerConnection.setTag("headerConnectionState");
             headerConnection.setSingleLine(true); headerConnection.setMaxWidth(dp(112)); headerConnection.setEllipsize(android.text.TextUtils.TruncateAt.END);
             headerConnection.setPadding(dp(6), 0, dp(6), 0); headerConnection.setVisibility(View.GONE);
             computer.addView(headerConnection); titles.addView(computer);
@@ -510,7 +558,7 @@ public final class MainActivity extends Activity {
         brand.setClipChildren(false); brand.setClipToPadding(false);
         ImageView logo = new ImageView(this); logo.setImageResource(R.drawable.desktop_logo); logo.setContentDescription("Camellia");
         brand.addView(logo, new LinearLayout.LayoutParams(dp(32), dp(32)));
-        TextView wordmark = text("Camellia", 16, ink); wordmark.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); wordmark.setPadding(dp(10), 0, 0, 0);
+        TextView wordmark = text("Camellia", Palette.TEXT_ROW, ink); wordmark.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); wordmark.setPadding(dp(10), 0, 0, 0);
         brand.addView(wordmark, new LinearLayout.LayoutParams(0, -2, 1));
         root.addView(brand);
         if (!screen.equals("home")) {
@@ -521,9 +569,9 @@ public final class MainActivity extends Activity {
         if (!title.isEmpty()) {
             TextView heading = text(title, 24, ink); heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); root.addView(heading);
         }
-        if (!subtitle.isEmpty()) root.addView(text(subtitle, 12, muted));
+        if (!subtitle.isEmpty()) root.addView(text(subtitle, Palette.TEXT_SMALL, muted));
         }
-        status = text("", 11, muted); status.setTag("connectionStatus"); status.setGravity(Gravity.CENTER); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        status = text("", Palette.TEXT_TINY, muted); status.setTag("connectionStatus"); status.setGravity(Gravity.CENTER); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         status.addTextChangedListener(new android.text.TextWatcher() {
             public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
             public void onTextChanged(CharSequence value, int start, int before, int count) {}
@@ -596,8 +644,8 @@ public final class MainActivity extends Activity {
     }
 
     private EditText input(LinearLayout parent, String label, String value, int type) {
-        parent.addView(text(label, 12, muted));
-        EditText input = new EditText(this); input.setSingleLine(true); input.setTextSize(15); input.setTextColor(ink); input.setHintTextColor(muted);
+        parent.addView(text(label, Palette.TEXT_SMALL, muted));
+        EditText input = new EditText(this); input.setSingleLine(true); input.setTextSize(Palette.TEXT_INPUT); input.setTextColor(ink); input.setHintTextColor(muted);
         input.setInputType(type); input.setText(value); input.setPadding(dp(18), dp(12), dp(18), dp(12)); input.setBackground(capsule(surface));
         input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO); input.setContentDescription(label);
         parent.addView(new SettingsField(input), new LinearLayout.LayoutParams(-1, -2)); return input;
@@ -610,9 +658,9 @@ public final class MainActivity extends Activity {
     private void homeScreen() {
         stopNetwork(); screen = "home"; networkScreen = false; conversationId = null;
         shell("", "");
-        TextView heading = text(tr("开始工作", "Start working"), 28, ink);
+        TextView heading = text(tr("开始工作", "Start working"), Palette.TEXT_HERO, ink);
         heading.setPadding(0, dp(12), 0, dp(6)); content.addView(heading);
-        TextView description = text(tr("选择一种方式，继续你的工作。", "Choose how you want to continue."), 14, muted);
+        TextView description = text(tr("选择一种方式，继续你的工作。", "Choose how you want to continue."), Palette.TEXT_BODY, muted);
         description.setPadding(0, 0, 0, dp(18)); content.addView(description);
         homeCard("phone", tr("本地聊天", "Local chat"), tr("手机直连 API，在本地工作区中继续会话。", "Connect directly to your API. Keep workspaces and chats on this phone."),
             tr("进入本地聊天", "Open local chat"), "localChatEntry", () -> {
@@ -632,12 +680,27 @@ public final class MainActivity extends Activity {
         remoteEntryRetry = button(tr("重试连接", "Retry connection"), this::refreshHomeNetwork, false); remoteEntryRetry.setTag("remoteEntryRetry");
         LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(-1, -2); retryParams.bottomMargin = dp(16);
         content.addView(remoteEntryRetry, retryParams);
+
+        // Shown only for the two states whose label sends the reader to Mobile
+        // access. See `homeEscape` for why it is not a filled button.
+        Button open = homeEscape(tr("前往手机访问", "Open Mobile access"), this::showNetwork);
+        open.setTag("remoteEntryOpen");
+        open.setVisibility(View.GONE);
+        LinearLayout.LayoutParams openParams = new LinearLayout.LayoutParams(-1, -2); openParams.bottomMargin = dp(16);
+        content.addView(open, openParams);
+        remoteEntryOpen.set(open);
         renderRemoteEntry(RemoteEntryGate.State.CONNECTING);
         LinearLayout settings = new LinearLayout(this); settings.setGravity(Gravity.CENTER_VERTICAL); settings.setPadding(dp(18), dp(14), dp(18), dp(14));
-        settings.setBackground(interactive(surface)); settings.setTag("settingsEntry"); settings.setFocusable(true);
+        // The same corner as the two cards above it. It used to take `rounded()`,
+        // which is the 12dp block radius, so on one screen the entry into the
+        // settings read as a squarer, smaller thing than the entries beside it.
+        GradientDrawable settingsFace = new GradientDrawable(); settingsFace.setColor(surface);
+        settingsFace.setCornerRadius(dp(Palette.RADIUS_HOME_CARD));
+        settings.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_HOME_CARD), settingsFace, rounded(Color.WHITE)));
+        settings.setTag("settingsEntry"); settings.setFocusable(true);
         ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon("settings", muted)); settings.addView(icon, new LinearLayout.LayoutParams(dp(24), dp(24)));
         LinearLayout labels = column(); labels.setPadding(dp(14), 0, 0, 0);
-        labels.addView(text(tr("设置", "Settings"), 16, ink)); labels.addView(text(tr("供应商与 Key、通用、已归档、手机访问", "Providers & keys, general, archived, mobile access"), 12, muted));
+        labels.addView(text(tr("设置", "Settings"), Palette.TEXT_ROW, ink)); labels.addView(text(tr("供应商与 Key、通用、已归档、手机访问", "Providers & keys, general, archived, mobile access"), Palette.TEXT_SMALL, muted));
         settings.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
         ImageView settingsArrow = new ImageView(this); settingsArrow.setImageDrawable(new LineIcon("right", muted));
         settingsArrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
@@ -674,22 +737,33 @@ public final class MainActivity extends Activity {
         remoteEntryLabel.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         remoteEntryArrow.setVisibility(ready ? View.VISIBLE : View.GONE);
         remoteEntrySpinner.setVisibility(state == RemoteEntryGate.State.CONNECTING ? View.VISIBLE : View.GONE);
-        remoteEntryRetry.setVisibility(state == RemoteEntryGate.State.FAILED || state == RemoteEntryGate.State.TIMED_OUT || state == RemoteEntryGate.State.OFFLINE ? View.VISIBLE : View.GONE);
+        remoteEntryRetry.setVisibility(state == RemoteEntryGate.State.FAILED || state == RemoteEntryGate.State.OFFLINE ? View.VISIBLE : View.GONE);
+        // SIGN_IN and TIMED_OUT both say the next step is in Mobile access, and
+        // until now neither showed a way there: the card is disabled (so tapping
+        // it does nothing) and the retry button was hidden, which left a page
+        // telling the reader to go somewhere with no way to go.
+        //
+        // TIMED_OUT is not given its own retry next to the shared one — two
+        // buttons reading "Retry connection" on one screen is worse than one
+        // button that goes where the label already pointed. FAILED and OFFLINE
+        // keep the retry, because nothing in their labels suggests a page.
+        View open = remoteEntryOpen.get();
+        if (open != null) open.setVisibility(state == RemoteEntryGate.State.SIGN_IN || state == RemoteEntryGate.State.TIMED_OUT ? View.VISIBLE : View.GONE);
     }
 
     private LinearLayout homeCard(String iconName, String title, String description, String action, String tag, Runnable click) {
         LinearLayout card = column(); card.setPadding(dp(18), dp(16), dp(18), dp(16));
-        boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
-        GradientDrawable outline = rounded(background); outline.setCornerRadius(dp(20)); outline.setStroke(dp(1), Color.parseColor(dark ? "#34363A" : "#E6E8EB"));
-        card.setBackground(new RippleDrawable(ColorStateList.valueOf(0x144176e6), outline, null)); card.setTag(tag); card.setFocusable(true);
+        GradientDrawable outline = rounded(background); outline.setCornerRadius(dp(Palette.RADIUS_HOME_CARD));
+        outline.setStroke(dp(1), Palette.of(this).homeCardEdge());
+        card.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_HOME_CARD), outline, null)); card.setTag(tag); card.setFocusable(true);
         card.setContentDescription(title + ". " + description); card.setOnClickListener(view -> click.run());
         ImageView icon = new ImageView(this); icon.setImageDrawable(new LineIcon(iconName, accent)); icon.setPadding(dp(7), dp(7), dp(7), dp(7)); icon.setBackground(rounded(surface));
         card.addView(icon, new LinearLayout.LayoutParams(dp(36), dp(36)));
-        TextView name = text(title, 19, ink); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setPadding(0, dp(10), 0, dp(4)); card.addView(name);
-        TextView copy = text(description, 13, muted); copy.setPadding(0, 0, 0, 0); copy.setLineSpacing(dp(2), 1); card.addView(copy);
+        TextView name = text(title, Palette.TEXT_CARD, ink); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setPadding(0, dp(10), 0, dp(4)); card.addView(name);
+        TextView copy = text(description, Palette.TEXT_NOTE, muted); copy.setPadding(0, 0, 0, 0); copy.setLineSpacing(dp(2), 1); card.addView(copy);
         LinearLayout footer = new LinearLayout(this); footer.setPadding(0, dp(10), 0, 0);
-        TextView actionLabel = text(action, 15, accent); actionLabel.setTag(tag + "Action");
-        TextView arrow = text("↗", 21, accent); arrow.setTag(tag + "Arrow");
+        TextView actionLabel = text(action, Palette.TEXT_INPUT, accent); actionLabel.setTag(tag + "Action");
+        TextView arrow = text("↗", Palette.TEXT_DISPLAY, accent); arrow.setTag(tag + "Arrow");
         footer.addView(actionLabel, new LinearLayout.LayoutParams(0, -2, 1)); footer.addView(arrow); card.addView(footer);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(16)); content.addView(card, params);
         return card;
@@ -709,18 +783,62 @@ public final class MainActivity extends Activity {
                 startActivity(new android.content.Intent(this, SettingsActivity.class).putExtra("section", section)); PageTransitions.openActivity(this);
             });
         }
-        settingsStyle.row(data, "phone", tr("手机访问", "Mobile access"), "", "settings:network", this::showNetwork);
+        // Mobile access is the one row here that leads somewhere whose state
+        // the reader cannot see from here, so it says which mode it is in. Only
+        // the mode: whether the node is actually up needs a live query, and this
+        // page has no business starting one just to fill in a label.
+        settingsStyle.row(data, "phone", tr("手机访问", "Mobile access"), mobileAccessState(), "settings:network", this::showNetwork);
         settingsStyle.row(data, "settings", tr("本机名称", "This phone name"), MobilePreferences.deviceName(this), "settings:deviceName", this::editDeviceName);
+        settingsRowMobileAccess = (LinearLayout) data.findViewWithTag("settings:network");
         status.setVisibility(View.GONE);
+    }
+
+    /**
+     * Which network mode this phone is in, in the words the Mobile access page
+     * itself uses. Kept to the mode so it is answerable without touching the
+     * node — the alternative would mean the settings index and the pairing page
+     * each started a Tailscale query on every visit.
+     *
+     * <p>One method for both places that show it. They are the same question and
+     * they were the same three lines; two copies is how one of them ends up
+     * disagreeing with the other.
+     */
+    private String mobileAccessState() {
+        if (!EmbeddedNetwork.enabled()) return tr("外部模式", "External");
+        return EmbeddedNetwork.online() ? tr("已连接", "Connected") : tr("未连接", "Not connected");
+    }
+
+    /**
+     * Repaints the Mobile access row's state label in place.
+     *
+     * <p>Only the label. The row is not rebuilt, so this does not cost a layout
+     * pass over the whole page or lose the reader's scroll position, and a
+     * failure to find the row is ignored — it means the page is gone.
+     */
+    private void refreshMobileAccessRow() {
+        if (settingsRowMobileAccess == null || !screen.equals("settings")) return;
+        new SettingsStyle(this).setRowValue(settingsRowMobileAccess, mobileAccessState());
+    }
+
+    /**
+     * Repaints the pairing page's Tailscale row the same way.
+     *
+     * <p>Called from {@link #pairScreen()} rather than from {@code onStart},
+     * because pairing is where a reader arrives when the network is the thing
+     * stopping them — it is the page that has to report it.
+     */
+    private void refreshPairNetworkRow() {
+        if (pairNetworkRow == null || !screen.equals("pair")) return;
+        new SettingsStyle(this).setRowValue(pairNetworkRow, mobileAccessState());
     }
 
     private void editDeviceName() {
         SettingsStyle style = new SettingsStyle(this);
         LinearLayout panel = computerDialogPanel(tr("本机名称", "This phone name"),
             tr("配对时默认提交这个名称，电脑端可以在授权时确认。最多 80 个字符。", "This name is submitted by default when pairing; the computer confirms it when authorizing. Up to 80 characters."), "phone");
-        TextView label = text(tr("设备名称", "Device name"), 12, muted); panel.addView(label);
+        TextView label = text(tr("设备名称", "Device name"), Palette.TEXT_SMALL, muted); panel.addView(label);
         EditText name = new EditText(this); name.setId(View.generateViewId()); label.setLabelFor(name.getId());
-        name.setSingleLine(true); name.setTextSize(16); name.setTextColor(ink); name.setHintTextColor(muted);
+        name.setSingleLine(true); name.setTextSize(Palette.TEXT_ROW); name.setTextColor(ink); name.setHintTextColor(muted);
         name.setText(MobilePreferences.deviceName(this)); name.setContentDescription(tr("设备名称", "Device name"));
         name.setTag("deviceNameInput"); name.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(80)});
@@ -749,16 +867,20 @@ public final class MainActivity extends Activity {
         shell(tr("远程控制", "Remote control"), "");
         root.setClipChildren(false);
         SettingsStyle style = new SettingsStyle(this);
-        TextView introduction = text(tr("选择一台电脑，继续工作。", "Choose a computer to continue."), 15, style.secondary);
+        TextView introduction = text(tr("选择一台电脑，继续工作。", "Choose a computer to continue."), Palette.TEXT_INPUT, style.secondary);
         introduction.setPadding(dp(2), dp(4), dp(2), dp(20)); content.addView(introduction);
         LinearLayout group = style.group(content, tr("我的电脑", "My computers")); group.setTag("computerList");
         status.setVisibility(View.GONE);
         try {
             var computers = store.all();
             if (computers.isEmpty()) {
-                group.addView(new ChatEmptyState(this, chatStyle, "computer", tr("连接你的第一台电脑", "Connect your first computer"),
+                // Outside the card, not inside it. Inside, it shared a surface
+                // with the "Add computer" row below it and read as one more
+                // thing to tap; and the group's own "My computers" heading above
+                // an empty list says nothing the heading did not already say.
+                style.emptyState(content, tr("连接你的第一台电脑", "Connect your first computer"),
                     tr("扫描电脑上的配对二维码，即可在手机继续工作。", "Scan the pairing QR code on your computer to continue working here."),
-                    "", null));
+                    "", null);
             }
             for (JSONObject computer : computers) {
                 computerDivider(group, style); group.addView(computerRow(computer));
@@ -767,11 +889,11 @@ public final class MainActivity extends Activity {
         computerDivider(group, style);
         LinearLayout add = new LinearLayout(this); add.setGravity(Gravity.CENTER_VERTICAL); add.setMinimumHeight(dp(72));
         add.setPadding(dp(18), dp(14), dp(18), dp(14)); add.setTag("addComputer"); add.setFocusable(true);
-        add.setBackground(new RippleDrawable(ColorStateList.valueOf(0x184176e6), null, new android.graphics.drawable.ColorDrawable(Color.WHITE)));
+        add.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_CARD), null, new android.graphics.drawable.ColorDrawable(Color.WHITE)));
         add.setContentDescription(tr("添加电脑", "Add computer")); add.setOnClickListener(view -> addComputer());
         ImageView plus = new ImageView(this); plus.setImageDrawable(new LineIcon("plus", style.ink));
         plus.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); add.addView(plus, new LinearLayout.LayoutParams(dp(32), dp(32)));
-        TextView addLabel = text(tr("添加电脑", "Add computer"), 17, style.ink); addLabel.setPadding(dp(12), 0, 0, 0);
+        TextView addLabel = text(tr("添加电脑", "Add computer"), Palette.TEXT_ROW_STRONG, style.ink); addLabel.setPadding(dp(12), 0, 0, 0);
         addLabel.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); add.addView(addLabel, new LinearLayout.LayoutParams(0, -2, 1));
         group.addView(add, new LinearLayout.LayoutParams(-1, -2));
         if (credentials.has("claim")) content.addView(button(tr("继续配对", "Resume pairing"), () -> { pairScreen(); waitForApproval(); }, false));
@@ -840,14 +962,14 @@ public final class MainActivity extends Activity {
         icon.setPadding(dp(8), dp(8), dp(8), dp(8)); icon.setBackground(rounded(style.card));
         icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         header.addView(icon, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        TextView heading = text(title, 20, ink); heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        TextView heading = text(title, Palette.TEXT_TITLE, ink); heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         heading.setPadding(dp(13), 0, 0, 0);
         if (android.os.Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
         header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
         ImageButton close = chatStyle.lineButton("close", tr("关闭", "Close"), () -> { if (computerDialog != null) computerDialog.dismiss(); });
         close.setImageDrawable(new LineIcon("close", muted)); close.setTag("sheetClose");
         header.addView(close, new LinearLayout.LayoutParams(dp(40), dp(40))); panel.addView(header);
-        TextView subtitle = text(description, 13, muted); subtitle.setPadding(0, dp(10), 0, description.isEmpty() ? dp(10) : dp(16));
+        TextView subtitle = text(description, Palette.TEXT_NOTE, muted); subtitle.setPadding(0, dp(10), 0, description.isEmpty() ? dp(10) : dp(16));
         panel.addView(subtitle);
         return panel;
     }
@@ -873,16 +995,16 @@ public final class MainActivity extends Activity {
     private void renameComputer(JSONObject computer) {
         LinearLayout panel = computerDialogPanel(tr("重命名电脑", "Rename computer"),
             tr("取一个容易辨认的名字，仅在这台手机上显示。", "Choose a familiar name. It only changes on this phone."));
-        TextView label = text(tr("电脑名称", "Computer name"), 12, muted); panel.addView(label);
+        TextView label = text(tr("电脑名称", "Computer name"), Palette.TEXT_SMALL, muted); panel.addView(label);
         EditText name = new EditText(this); name.setTag("computerNameInput"); name.setId(View.generateViewId()); label.setLabelFor(name.getId());
-        name.setSingleLine(true); name.setTextSize(16); name.setTextColor(ink); name.setHintTextColor(muted);
+        name.setSingleLine(true); name.setTextSize(Palette.TEXT_ROW); name.setTextColor(ink); name.setHintTextColor(muted);
         name.setHint(tr("例如：工作电脑", "e.g. Work laptop")); name.setContentDescription(tr("电脑名称", "Computer name"));
         name.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         name.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(80)});
         name.setPadding(dp(16), dp(14), dp(16), dp(14)); name.setMinHeight(dp(54));
         name.setText(computerName(computer)); panel.addView(new SettingsField(name), new LinearLayout.LayoutParams(-1, -2));
-        TextView feedback = text(tr("最多 80 个字符", "Up to 80 characters"), 12, muted);
+        TextView feedback = text(tr("最多 80 个字符", "Up to 80 characters"), Palette.TEXT_SMALL, muted);
         feedback.setTag("renameFeedback"); feedback.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); panel.addView(feedback);
         android.app.Dialog dialog = createComputerDialog(panel, tr("保存", "Save"), tr("取消", "Cancel"));
         showComputerDialog(dialog);
@@ -965,8 +1087,13 @@ public final class MainActivity extends Activity {
         root.setFocusableInTouchMode(true); root.requestFocus();
         SettingsStyle style = new SettingsStyle(this);
         LinearLayout network = style.group(content, "");
+        // The state, not "Sign in / Settings". A row whose value is the name of
+        // the page it opens tells the reader nothing they cannot find out by
+        // going there — and on this page in particular they may not be able to
+        // pair at all until this is sorted, so it has to say so here.
         style.row(network, "shield", tr("Tailscale 网络", "Tailscale network"),
-            tr("登录 / 设置", "Sign in / Settings"), "pairNetwork", this::showNetwork);
+            mobileAccessState(), "pairNetwork", this::showNetwork);
+        pairNetworkRow = (LinearLayout) network.findViewWithTag("pairNetwork");
         style.note(content, tr("手机与电脑需登录同一个 Tailscale 网络。", "Sign into the same Tailscale network on both devices."));
 
         LinearLayout scanner = style.group(content, "");
@@ -975,10 +1102,10 @@ public final class MainActivity extends Activity {
         ImageView scanIcon = new ImageView(this); scanIcon.setImageDrawable(new LineIcon("camera", style.accent));
         scanIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         scanHeading.addView(scanIcon, new LinearLayout.LayoutParams(dp(26), dp(26)));
-        TextView scanTitle = text(tr("扫描电脑二维码", "Scan your computer's QR"), 17, style.ink);
+        TextView scanTitle = text(tr("扫描电脑二维码", "Scan your computer's QR"), Palette.TEXT_ROW_STRONG, style.ink);
         scanTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); scanTitle.setPadding(dp(12), 0, 0, 0);
         scanHeading.addView(scanTitle, new LinearLayout.LayoutParams(0, -2, 1)); scanner.addView(scanHeading);
-        TextView scanHint = text(tr("打开电脑「手机访问」生成二维码。\n扫描后自动发起配对。", "Generate a QR code in desktop Mobile access.\nScanning starts pairing automatically."), 14, style.secondary);
+        TextView scanHint = text(tr("打开电脑「手机访问」生成二维码。\n扫描后自动发起配对。", "Generate a QR code in desktop Mobile access.\nScanning starts pairing automatically."), Palette.TEXT_BODY, style.secondary);
         scanHint.setPadding(0, dp(12), 0, dp(8)); scanner.addView(scanHint);
         scanButton = button(tr("扫描二维码", "Scan QR code"), this::scanPairingCode, false);
         scanButton.setBackgroundTintList(enabledColors(style.divider, style.card));
@@ -1008,7 +1135,7 @@ public final class MainActivity extends Activity {
             if (pairingDraft.getBoolean("customName", false)) nameInput.setText(pairingDraft.getString("name", MobilePreferences.deviceName(this)));
         }
         style.note(content, tr("请求发出后，在电脑端确认授权即可连接。", "After sending the request, approve it on your computer to connect."));
-        status.setTextSize(13); status.setTextColor(style.secondary); status.setPadding(dp(8), dp(8), dp(8), dp(4));
+        status.setTextSize(Palette.TEXT_NOTE); status.setTextColor(style.secondary); status.setPadding(dp(8), dp(8), dp(8), dp(4));
         pairButton = button(tr("请求配对", "Request pairing"), () -> {
             if (credentials.has("claim") && codeInput.getText().toString().trim().isEmpty()) waitForApproval(); else requestPairing();
         }, true);
@@ -1225,7 +1352,7 @@ public final class MainActivity extends Activity {
         root.addView(searchBar, 1, searchParams);
         ImageView searchIcon = new ImageView(this); searchIcon.setImageDrawable(new LineIcon("search", ink)); searchIcon.setPadding(dp(10), dp(10), dp(10), dp(10));
         searchBar.addView(searchIcon, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        searchInput = new EditText(this); searchInput.setSingleLine(true); searchInput.setTextSize(16); searchInput.setTextColor(ink); searchInput.setHintTextColor(muted);
+        searchInput = new EditText(this); searchInput.setSingleLine(true); searchInput.setTextSize(Palette.TEXT_ROW); searchInput.setTextColor(ink); searchInput.setHintTextColor(muted);
         searchInput.setTag("remoteSearchInput"); searchInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
         searchInput.setHint(tr("搜索会话", "Search conversations")); searchInput.setContentDescription(tr("搜索会话", "Search conversations")); searchInput.setBackgroundColor(Color.TRANSPARENT);
         searchInput.setPadding(dp(2), dp(12), dp(8), dp(12)); searchInput.setMinHeight(dp(48));
@@ -2045,9 +2172,10 @@ public final class MainActivity extends Activity {
         scroll.setVerticalScrollBarEnabled(false);
         older = button(tr("加载更早消息", "Load earlier messages"), this::loadOlder, false); older.setEnabled(false);
         older.setVisibility(View.GONE);
-        older.setBackgroundColor(Color.TRANSPARENT); older.setTextSize(12); content.addView(older);
-        remoteEmptyState = new ChatEmptyState(this, chatStyle, "brand", tr("今天想做些什么？", "What would you like to do?"),
-            tr("描述任务，继续电脑上的工作。", "Describe a task to continue on this computer."));
+        older.setBackgroundColor(Color.TRANSPARENT); older.setTextSize(Palette.TEXT_SMALL); content.addView(older);
+        remoteEmptyState = new ChatEmptyState(this, chatStyle, "brand", tr("从这里开始", "Start here"),
+            tr("描述任务，继续电脑上的工作。", "Describe a task to continue on this computer."),
+            tr("输入消息", "Write a message"), this::focusComposer);
         remoteEmptyState.setVisibility(View.GONE); content.addView(remoteEmptyState);
         messages = column(); content.addView(messages);
         approvals = column(); content.addView(approvals); approvalSignature = "";
@@ -2322,7 +2450,7 @@ public final class MainActivity extends Activity {
             JSONArray process = live.optJSONArray("process");
             if (process == null || process.length() == 0) process = pendingProcess;
             addMessage("live", tr("正在回复", "Reply in progress"), live.optString("text"), false, live.optBoolean("textTruncated"), process, true, "turn:" + live.optLong("userSeq", turn), live.optLong("startedAt"), 0);
-            if (live.optInt("pendingApprovals") > 0 && !controlAllowed) pendingMessageViews.add(text(tr("有待处理授权，请回到电脑处理。", "Approval is pending. Respond on the computer."), 13, accent));
+            if (live.optInt("pendingApprovals") > 0 && !controlAllowed) pendingMessageViews.add(text(tr("有待处理授权，请回到电脑处理。", "Approval is pending. Respond on the computer."), Palette.TEXT_NOTE, accent));
         } else if (pendingProcess.length() > 0) {
             retained.add("pendingProcess");
             addMessage("pendingProcess", "", "", false, false, pendingProcess, false, "turn:" + turn, 0, 0);
@@ -2443,7 +2571,7 @@ public final class MainActivity extends Activity {
             : state.equals("accepted") ? tr("电脑已接收，等待同步…", "Accepted; waiting for sync…")
             : state.equals("failed") ? tr("发送失败，内容已恢复到输入框", "Send failed; draft restored")
             : tr("未收到确认：连接失败或超时，点击重试", "Unconfirmed: connection failed or timed out. Tap to retry.");
-        TextView deliveryText = text(label, 12, muted);
+        TextView deliveryText = text(label, Palette.TEXT_SMALL, muted);
         if (state.equals("unconfirmed")) {
             retryMessage = deliveryText;
             retryMessage.setTag("outgoingRetry");
@@ -2485,8 +2613,8 @@ public final class MainActivity extends Activity {
         View existing = renderedMessages.get(key);
         if (existing != null && signature.equals(existing.getTag()) && value.equals(renderedText.get(key))) { pendingMessageViews.add(existing); return; }
         LinearLayout block = chatStyle.messageBlock(user);
-        if (truncated) block.addView(text(tr("内容过长，仅显示末尾片段。", "Long message: showing the final portion."), 12, accent));
-        TextView body = text(value.isEmpty() ? tr("等待输出…", "Waiting for output…") : value, 15, ink);
+        if (truncated) block.addView(text(tr("内容过长，仅显示末尾片段。", "Long message: showing the final portion."), Palette.TEXT_SMALL, accent));
+        TextView body = text(value.isEmpty() ? tr("等待输出…", "Waiting for output…") : value, Palette.TEXT_INPUT, ink);
         body.setTextIsSelectable(true); chatStyle.messageTypography(body); block.addView(body);
         LinearLayout wrapper = value.isEmpty() ? block : chatStyle.messageWithFooter(block, user, () -> value, at, chinese);
         if (editable) {
@@ -2821,7 +2949,7 @@ public final class MainActivity extends Activity {
             boolean permissionsEditable = configurable && remoteSettings.optBoolean("editable");
             permissionButton.setEnabled(permissionsEditable); permissionButton.setAlpha(permissionsEditable ? 1f : .45f);
             permissionButton.setContentDescription(tr("安全级别：", "Safety level: ") + RemoteSettingsPopup.permissionLabel(level, chinese));
-            permissionButton.setImageDrawable(new LineIcon("shield", level.equals("full") ? 0xffc28a35 : ink));
+            permissionButton.setImageDrawable(new LineIcon("shield", level.equals("full") ? Palette.PERMISSION_STRICT : ink));
         }
         String composed = composer == null ? "" : composer.getText().toString().trim();
         // A bare "/find" is a valid request: it lists the files produced most
@@ -2874,7 +3002,7 @@ public final class MainActivity extends Activity {
         if (remoteQueue.length() == 0) return;
         LinearLayout card = automationCard(); queueBar.addView(card);
         LinearLayout heading = new LinearLayout(this); heading.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text(tr("待发送 · ", "Queued · ") + remoteQueue.length(), 13, muted);
+        TextView title = text(tr("待发送 · ", "Queued · ") + remoteQueue.length(), Palette.TEXT_NOTE, muted);
         title.setPadding(dp(12), dp(8), dp(12), dp(8)); heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         boolean paused = false;
         for (int i = 0; i < remoteQueue.length(); i++) {
@@ -2894,13 +3022,13 @@ public final class MainActivity extends Activity {
             String id = entry.optString("id"), state = entry.optString("state");
             LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setTag("remoteQueue:" + id);
             LinearLayout body = column(); body.setPadding(dp(12), dp(6), 0, dp(6));
-            TextView prompt = text((i + 1) + ". " + entry.optString("text"), 14, ink);
+            TextView prompt = text((i + 1) + ". " + entry.optString("text"), Palette.TEXT_BODY, ink);
             prompt.setMaxLines(2); prompt.setEllipsize(android.text.TextUtils.TruncateAt.END); body.addView(prompt);
             String label = state.equals("starting") ? tr("正在发送", "Sending") : state.equals("failed") ? tr("发送失败 · 请检查后继续", "Failed · review before resuming")
                 : state.equals("paused") ? tr("已暂停", "Paused") : tr("等待当前任务结束", "Waiting for the current task");
             JSONArray files = entry.optJSONArray("attachments");
             if (files != null && files.length() > 0) label += tr(" · 附件 ", " · Attachments: ") + files.length();
-            TextView detail = text(label, 12, muted); body.addView(detail);
+            TextView detail = text(label, Palette.TEXT_SMALL, muted); body.addView(detail);
             if (!entry.optString("error").isEmpty()) {
                 body.setOnClickListener(view -> new CamelliaDialog.Builder(this).setTitle(tr("队列已暂停", "Queue paused"))
                     .setMessage(entry.optString("error")).setPositiveButton(tr("知道了", "OK"), null).show());
@@ -2981,6 +3109,12 @@ public final class MainActivity extends Activity {
         return card;
     }
 
+    private void focusComposer() {
+        if (composer == null) return;
+        composer.requestFocus();
+        ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(composer, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+    }
+
     private void renderAutomation(JSONObject snapshot) {
         if (automationBar == null) return;
         automationBar.removeAllViews();
@@ -3002,7 +3136,7 @@ public final class MainActivity extends Activity {
         automationBar.setPadding(0, dp(4), 0, dp(4));
         if (hasGoal) automationBar.addView(automationCard(goal));
         if (taskCount > 0) {
-            TextView heading = text(String.format(tr("定时任务 · %d", "Scheduled · %d"), taskCount), 12, muted);
+            TextView heading = text(String.format(tr("定时任务 · %d", "Scheduled · %d"), taskCount), Palette.TEXT_SMALL, muted);
             heading.setPadding(dp(12), dp(2), dp(12), 0); automationBar.addView(heading);
             for (int index = 0; index < taskCount; index++) {
                 JSONObject task = tasks.optJSONObject(index);
@@ -3021,22 +3155,22 @@ public final class MainActivity extends Activity {
         LinearLayout card = automationCard(); card.setTag("remoteGoal");
         LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL); row.setPadding(dp(12), dp(10), dp(12), dp(10));
-        TextView status = text(label, 13, running ? accent : muted);
+        TextView status = text(label, Palette.TEXT_NOTE, running ? accent : muted);
         status.setTag("remoteGoalState"); status.setSingleLine(true);
         row.addView(status, new LinearLayout.LayoutParams(-2, -2));
-        TextView objective = text(goal.optString("objective", ""), 14, ink);
+        TextView objective = text(goal.optString("objective", ""), Palette.TEXT_BODY, ink);
         objective.setPadding(dp(10), 0, dp(10), 0); objective.setSingleLine(true);
         objective.setEllipsize(android.text.TextUtils.TruncateAt.END); objective.setTag("remoteGoalObjective");
         row.addView(objective, new LinearLayout.LayoutParams(0, -2, 1));
         int rounds = goal.optInt("roundsStarted", 0);
         if (rounds > 0) {
-            TextView count = text(String.valueOf(rounds), 12, muted); count.setPadding(dp(6), 0, dp(6), 0);
+            TextView count = text(String.valueOf(rounds), Palette.TEXT_SMALL, muted); count.setPadding(dp(6), 0, dp(6), 0);
             row.addView(count, new LinearLayout.LayoutParams(-2, -2));
         }
         // Only the live states are actionable; a completed goal's menu is the
         // desktop's job and a blocked one resumes from the same place.
         if (phase.equals("active") || phase.equals("blocked")) {
-            TextView toggle = text(running ? tr("暂停", "Pause") : tr("恢复", "Resume"), 13, ink);
+            TextView toggle = text(running ? tr("暂停", "Pause") : tr("恢复", "Resume"), Palette.TEXT_NOTE, ink);
             toggle.setTag("remoteGoalToggle"); toggle.setMinHeight(dp(40));
             toggle.setGravity(Gravity.CENTER); toggle.setPadding(dp(10), dp(6), dp(10), dp(6));
             toggle.setBackground(interactive(surface)); toggle.setFocusable(true);
@@ -3054,19 +3188,19 @@ public final class MainActivity extends Activity {
         String status = task.optString("status", "");
         String label = status.equals("running") ? tr("检查中", "Checking") : status.equals("paused") ? tr("已暂停", "Paused")
             : status.equals("complete") ? tr("已完成", "Complete") : tr("等待", "Waiting");
-        TextView state = text(label, 12, muted); state.setTag("remoteTaskState"); row.addView(state, new LinearLayout.LayoutParams(-2, -2));
-        TextView instruction = text(task.optString("instruction", ""), 13, ink);
+        TextView state = text(label, Palette.TEXT_SMALL, muted); state.setTag("remoteTaskState"); row.addView(state, new LinearLayout.LayoutParams(-2, -2));
+        TextView instruction = text(task.optString("instruction", ""), Palette.TEXT_NOTE, ink);
         instruction.setPadding(dp(10), 0, dp(10), 0); instruction.setSingleLine(true);
         instruction.setEllipsize(android.text.TextUtils.TruncateAt.END); instruction.setTag("remoteTaskInstruction");
         row.addView(instruction, new LinearLayout.LayoutParams(0, -2, 1));
         int minutes = task.optInt("intervalMinutes", 0);
         if (minutes > 0) {
-            TextView interval = text(tr("每 ", "every ") + minutes + tr(" 分钟", " min"), 12, muted);
+            TextView interval = text(tr("每 ", "every ") + minutes + tr(" 分钟", " min"), Palette.TEXT_SMALL, muted);
             interval.setPadding(dp(6), 0, dp(6), 0); row.addView(interval, new LinearLayout.LayoutParams(-2, -2));
         }
         if (status.equals("running") || status.equals("paused")) {
             boolean pause = status.equals("running");
-            TextView toggle = text(pause ? tr("暂停", "Pause") : tr("恢复", "Resume"), 13, ink);
+            TextView toggle = text(pause ? tr("暂停", "Pause") : tr("恢复", "Resume"), Palette.TEXT_NOTE, ink);
             toggle.setTag("remoteTaskToggle"); toggle.setMinHeight(dp(40));
             toggle.setGravity(Gravity.CENTER); toggle.setPadding(dp(10), dp(6), dp(10), dp(6));
             toggle.setBackground(interactive(surface)); toggle.setFocusable(true);
@@ -3103,10 +3237,10 @@ public final class MainActivity extends Activity {
         if (requests == null) return;
         for (int index = 0; index < requests.length(); index++) {
             JSONObject request = requests.optJSONObject(index); if (request == null) continue;
-            approvals.addView(text(request.optString("toolName"), 17, accent));
-            TextView details = text(request.optString("details"), 13, ink); details.setTypeface(Typeface.MONOSPACE); details.setTextIsSelectable(true); approvals.addView(details);
+            approvals.addView(text(request.optString("toolName"), Palette.TEXT_ROW_STRONG, accent));
+            TextView details = text(request.optString("details"), Palette.TEXT_NOTE, ink); details.setTypeface(Typeface.MONOSPACE); details.setTextIsSelectable(true); approvals.addView(details);
             if (!request.optBoolean("responseSupported", request.optBoolean("actionable"))) {
-                approvals.addView(text(tr("此请求需要电脑处理（问答或内容过长）。", "Handle this request on the computer (questions or oversized details)."), 13, muted)); continue;
+                approvals.addView(text(tr("此请求需要电脑处理（问答或内容过长）。", "Handle this request on the computer (questions or oversized details)."), Palette.TEXT_NOTE, muted)); continue;
             }
             long runId = lastLive.optLong("runId"); String server = instance;
             if (request.optJSONArray("questions") != null && request.optJSONArray("questions").length() > 0) {
@@ -3333,6 +3467,10 @@ public final class MainActivity extends Activity {
         stopNetwork(); networkScreen = true; loginLaunched = false;
         shell(tr("手机访问", "Mobile access"), tr("网络连接 · 仅连接 Camellia，不接管其他 App 流量", "Network connection · Camellia only, no device-wide VPN"));
         SettingsStyle settingsStyle = new SettingsStyle(this);
+        // The page opens on a question — is this phone on the network yet — and
+        // the answer used to arrive in `status`, which sits below three groups
+        // and five rows. This is that answer, at the top, where the reader lands.
+        networkStatusBanner = settingsStyle.statusBanner(content);
         LinearLayout connection = settingsStyle.group(content, "");
         settingsStyle.toggle(connection, tr("内置 Tailscale", "Built-in Tailscale"),
             tr("无需另装应用，仅连接 Camellia，不接管其他应用流量。", "No extra app required. Connects only Camellia, not other apps."), "networkMode", EmbeddedNetwork.enabled(), (button, checked) -> {
@@ -3361,8 +3499,8 @@ public final class MainActivity extends Activity {
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("清除", "Forget"), (dialog, which) -> {
                 stopNetwork(); int ticket = generation;
                 EmbeddedNetwork.forget().whenComplete((ignored, error) -> deliver(ticket, () -> {
-                    if (error == null) setStatusNotice(tr("已清除，请重新登录。", "Identity removed. Sign in again."));
-                    else setStatusNotice(ErrorDetails.withSummary(tr("清除失败，请重试。", "Could not clear identity. Retry."), error));
+                    if (error == null) reportNetwork(tr("已清除，请重新登录。", "Identity removed. Sign in again."));
+                    else reportNetwork(ErrorDetails.withSummary(tr("清除失败，请重试。", "Could not clear identity. Retry."), error));
                 }));
             }).show());
         LinearLayout about = settingsStyle.group(content, tr("关于", "About"));
@@ -3373,7 +3511,7 @@ public final class MainActivity extends Activity {
                     try (var input = getAssets().open(asset)) { while ((count = input.read(buffer)) != -1) bytes.write(buffer, 0, count); }
                     bytes.write('\n');
                 }
-                TextView licenses = text(bytes.toString("UTF-8"), 12, ink); licenses.setTextIsSelectable(true); licenses.setPadding(dp(16), dp(12), dp(16), dp(12));
+                TextView licenses = text(bytes.toString("UTF-8"), Palette.TEXT_SMALL, ink); licenses.setTextIsSelectable(true); licenses.setPadding(dp(16), dp(12), dp(16), dp(12));
                 ScrollView page = new ScrollView(this); page.addView(licenses);
                 new CamelliaDialog.Builder(this).setTitle(tr("开源许可", "Open-source licenses")).setView(page).setPositiveButton(tr("关闭", "Close"), null).show();
             } catch (Exception error) { reportError("无法读取许可文件。", "Could not read licenses.", error); }
@@ -3388,11 +3526,28 @@ public final class MainActivity extends Activity {
         else settingsScreen();
     }
 
+    /**
+     * Publishes this page's state to both places it is shown.
+     *
+     * <p>The bottom `status` line is shared with every other screen and is
+     * filtered per screen by its own text watcher; the banner at the top of this
+     * page is not. Writing to one place and forgetting the other is how the page
+     * ends up saying "Connected" three rows down while the top still reads
+     * whatever the last screen left behind.
+     */
+    private void reportNetwork(String message) {
+        setStatusNotice(message);
+        TextView banner = networkStatusBanner;
+        if (banner == null) return;
+        banner.setText(message);
+        banner.setVisibility(message == null || message.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
     private void refreshNetwork(boolean login) {
         if (!foreground || !networkScreen) return;
-        if (!EmbeddedNetwork.enabled()) { setStatusNotice(tr("外部模式：请自行连接 Tailscale App。", "External mode: connect the Tailscale app separately.")); return; }
+        if (!EmbeddedNetwork.enabled()) { reportNetwork(tr("外部模式：请自行连接 Tailscale App。", "External mode: connect the Tailscale app separately.")); return; }
         int ticket = generation;
-        setStatusNotice(tr("正在检查内置连接…", "Checking embedded connection…"));
+        reportNetwork(tr("正在检查内置连接…", "Checking embedded connection…"));
         networkWorker.submit(() -> {
             try {
                 var node = EmbeddedNetwork.node();
@@ -3401,7 +3556,7 @@ public final class MainActivity extends Activity {
                 deliver(ticket, () -> {
                     if (!networkScreen) return;
                     String phase = state.optString("state");
-                    setStatusNotice(phase.equals("Running") ? tr("已连接，可以返回配对。", "Connected. Return to pairing.") : tr("网络状态：", "Network state: ") + phase);
+                    reportNetwork(phase.equals("Running") ? tr("已连接，可以返回配对。", "Connected. Return to pairing.") : tr("网络状态：", "Network state: ") + phase);
                     String url = EmbeddedNetwork.loginUrl(state.optString("loginUrl"));
                     if (login && url != null && !loginLaunched) {
                         loginLaunched = true;
@@ -3409,7 +3564,7 @@ public final class MainActivity extends Activity {
                         catch (Exception error) { reportError("找不到浏览器，无法打开登录页面。", "No browser available to open the login page.", error); }
                     } else if (login && !phase.equals("Running")) handler.postDelayed(() -> refreshLoginStatus(ticket), 2000);
                 });
-            } catch (Exception error) { deliver(ticket, () -> setStatusNotice(RemoteApi.failureMessage(error, chinese))); }
+            } catch (Exception error) { deliver(ticket, () -> reportNetwork(RemoteApi.failureMessage(error, chinese))); }
         });
     }
 
@@ -3425,9 +3580,9 @@ public final class MainActivity extends Activity {
                         try { startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))); }
                         catch (Exception error) { reportError("无法打开登录浏览器。", "Could not open sign-in browser.", error); }
                     } else if (!state.optString("state").equals("Running")) handler.postDelayed(() -> refreshLoginStatus(ticket), 2000);
-                    else setStatusNotice(tr("已连接，可以返回配对。", "Connected. Return to pairing."));
+                    else reportNetwork(tr("已连接，可以返回配对。", "Connected. Return to pairing."));
                 });
-            } catch (Exception error) { deliver(ticket, () -> setStatusNotice(ErrorDetails.withSummary(tr("登录连接中断，请重试。", "Login connection interrupted. Retry."), error))); }
+            } catch (Exception error) { deliver(ticket, () -> reportNetwork(ErrorDetails.withSummary(tr("登录连接中断，请重试。", "Login connection interrupted. Retry."), error))); }
         });
     }
 }

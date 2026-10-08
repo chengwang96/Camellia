@@ -19,7 +19,7 @@ final class DisclosureHeader extends LinearLayout {
         setFocusable(true);
         title = new TextView(context);
         title.setText(name);
-        title.setTextSize(16);
+        title.setTextSize(Palette.TEXT_ROW);
         title.setTextColor(textColor);
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);

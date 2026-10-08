@@ -12,7 +12,6 @@ import (
 	"net/http/httptrace"
 	"net/netip"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/netmon"
 	"tailscale.com/tsnet"
 )
@@ -104,12 +104,9 @@ func NewNode(directory string, storage Storage) (*Node, error) {
 	if storage == nil || directory == "" {
 		return nil, errors.New("private state directory and encrypted storage are required")
 	}
-	os.Setenv("TS_NO_LOGS_NO_SUPPORT", "true")
-	os.Setenv("TS_LOGS_DIR", directory)
-	os.Setenv("HOME", directory)
-	os.Setenv("TMPDIR", directory)
+	prepareStateDirectory(directory)
 	quiet := func(string, ...any) {}
-	server := &tsnet.Server{Dir: directory, Hostname: "camellia-android", Store: &stateStore{storage: storage}, Logf: quiet, UserLogf: quiet}
+	server := &tsnet.Server{Dir: directory, Hostname: nodeHostname(), Store: &stateStore{storage: storage}, Logf: quiet, UserLogf: quiet}
 	if err := server.Start(); err != nil {
 		server.Close()
 		return nil, fmt.Errorf("embedded network could not start: %w", err)
@@ -135,7 +132,42 @@ func (node *Node) Status() (string, error) {
 	if err != nil {
 		return "", errors.New("cannot read embedded network status")
 	}
-	result, err := json.Marshal(map[string]any{"state": status.BackendState, "loginUrl": status.AuthURL})
+	return statusPayload(status)
+}
+
+// statusPayload serialises the node state for both clients.
+//
+// `state` and `loginUrl` are what the clients act on; the rest is additive
+// diagnostics. The Android parser reads named fields (`optString`) rather than
+// decoding the object as a whole, so extra keys are inert there. They earn
+// their place because "is this phone actually on the tailnet" is the first
+// question asked when a remote call fails, and without them answering it means
+// reading a login URL and inferring.
+//
+// The IP list is built from `make` so an empty result marshals as `[]` rather
+// than `null`: a client reading it should not have to treat "no addresses yet"
+// and "field absent" as different things.
+func statusPayload(status *ipnstate.Status) (string, error) {
+	addresses := make([]string, 0, len(status.TailscaleIPs))
+	for _, address := range status.TailscaleIPs {
+		addresses = append(addresses, address.String())
+	}
+	hostname, tailnet, online := "", "", false
+	if status.Self != nil {
+		hostname = status.Self.HostName
+		online = status.Self.Online
+	}
+	if status.CurrentTailnet != nil {
+		tailnet = status.CurrentTailnet.Name
+	}
+	result, err := json.Marshal(map[string]any{
+		"state":      status.BackendState,
+		"loginUrl":   status.AuthURL,
+		"tailnetIPs": addresses,
+		"hostName":   hostname,
+		"tailnet":    tailnet,
+		"online":     online,
+	})
 	return string(result), err
 }
 
@@ -178,6 +210,7 @@ type Response struct {
 	closed      bool
 	request     *http.Request
 	started     bool
+	finished    bool
 }
 
 func (node *Node) Open(method, target, token, payload string) (*Response, error) {
@@ -328,6 +361,7 @@ func (response *Response) ReadChunk() ([]byte, error) {
 	body, closed := response.body, response.closed
 	response.mu.Unlock()
 	if closed || body == nil {
+		response.markFinished()
 		return nil, nil
 	}
 	buffer := make([]byte, 16*1024)
@@ -339,6 +373,7 @@ func (response *Response) ReadChunk() ([]byte, error) {
 		return buffer[:count], nil
 	}
 	if err == io.EOF {
+		response.markFinished()
 		return nil, nil
 	}
 	if err != nil {
@@ -348,6 +383,31 @@ func (response *Response) ReadChunk() ([]byte, error) {
 		return nil, response.failure(err, false, true)
 	}
 	return nil, nil
+}
+
+func (response *Response) markFinished() {
+	response.mu.Lock()
+	response.finished = true
+	response.mu.Unlock()
+}
+
+// Finished reports whether the body has been read to the end.
+//
+// It exists for the Swift client, and it is not redundant with the empty chunk
+// `ReadChunk` returns at the end of a stream. Both the token and the value of
+// that empty chunk are cut off at the language boundary: gomobile turns a
+// zero-length slice into NULL, and Swift imports `ReadChunk` as returning a
+// non-optional `Data`, so a NULL result arrives as a thrown error rather than as
+// an empty value. Without this the Swift reader cannot separate "the stream
+// ended" from "the read failed", and would report every finished stream as a
+// failure. Java keeps using the empty chunk and does not need this.
+//
+// A read that genuinely failed — a timeout, a closed connection — leaves this
+// false, so the caller re-raises instead of treating it as an end of stream.
+func (response *Response) Finished() bool {
+	response.mu.Lock()
+	defer response.mu.Unlock()
+	return response.finished
 }
 
 func (response *Response) Close() {

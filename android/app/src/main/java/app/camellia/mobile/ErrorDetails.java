@@ -54,7 +54,7 @@ final class ErrorDetails {
             : message;
         TextView details = new TextView(context);
         details.setText(value);
-        details.setTextSize(15);
+        details.setTextSize(Palette.TEXT_INPUT);
         details.setTextIsSelectable(true);
         details.setPadding(dp(context, 20), dp(context, 12), dp(context, 20), dp(context, 12));
         ScrollView panel = new ScrollView(context);

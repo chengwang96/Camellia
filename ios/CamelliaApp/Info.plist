@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh-Hans</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-Hans</string>
+		<string>en</string>
+	</array>
+	<key>CFBundleDisplayName</key>
+	<string>Camellia</string>
+	<key>CFBundleExecutable</key>
+	<string>CamelliaApp</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.camellia.mobile</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Camellia</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.4.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<!--
+	15.0 is the floor, and it is set by the app rather than by the framework:
+	the tailnet framework links cleanly down to 13.0. The app stops at 15.0
+	because its controls use the iOS 15 button styles, and 15.0 comfortably
+	covers the TrollStore range (14.0-15.4.1 and 15.5-16.6.1 alike).
+	-->
+	<key>MinimumOSVersion</key>
+	<string>15.0</string>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon60x60</string>
+			</array>
+		</dict>
+	</dict>
+	<key>CFBundleIcons~ipad</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon76x76</string>
+			</array>
+		</dict>
+	</dict>
+	<!-- The desktop gateway uses HTTP only inside a validated 100.64/10
+	     Tailscale route. External-VPN mode uses URLSession, which ATS would
+	     otherwise block before the system VPN can carry the request. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<!--
+	The embedded node dials out through Go's net/http over tsnet's own socket,
+	which iOS sees as the app using the local network for peer discovery. Without
+	this string the system denies that and the node never finds a path.
+	-->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于通过内置网络连接你授权的电脑；Camellia 不会连接其它目标。</string>
+	<!--
+	Two uses: reading the pairing QR code, and taking a photo for an attachment.
+	Both only happen while their sheet is open; an attachment leaves the device
+	only when the person sends it to a computer or API provider. Without this
+	string the system refuses to start the camera at all, with no error the app
+	can show.
+	-->
+	<key>NSCameraUsageDescription</key>
+	<string>用于扫描电脑上的配对码或拍摄聊天附件。扫码画面不会保存；照片仅在你发送消息时发给所选目标。</string>
+	<!--
+	Reading is done through the system photo picker, which needs no permission
+	of its own, but attaching an image still asks here so that the reason is
+	stated in the system's own words rather than never explained.
+	-->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于选择要发送给电脑的图片，Camellia 只读取你选中的那些。</string>
+	<!--
+	Asked for only when a question looks like it needs where you are, and only
+	after a sheet explains who receives it. One coarse fix per message, no
+	tracking, and no access at all if you decline. Without this string the system
+	refuses to give a location and the app can only say it has none.
+	-->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>仅在你同意时，为本次问题获取一次大致位置（约 2 公里精度）并发送给所选电脑或 API 服务商；不做后台定位。</string>
+</dict>
+</plist>

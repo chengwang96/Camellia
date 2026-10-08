@@ -84,14 +84,32 @@ public class RemoteEntryGateTest extends InstrumentationTestCase {
                         assertTrue(root.findViewWithTag("localChatEntry").isEnabled());
                         assertTrue(root.findViewWithTag("settingsEntry").isEnabled());
                         assertNull(root.findViewWithTag("homeNetworkSettings"));
-                        boolean retryable = state == RemoteEntryGate.State.FAILED || state == RemoteEntryGate.State.TIMED_OUT
+                        // TIMED_OUT used to be retryable. It no longer is: its
+                        // own label already sends the reader to Mobile access, so
+                        // it gets the same button SIGN_IN gets rather than a
+                        // second "Retry connection" on one screen.
+                        boolean retryable = state == RemoteEntryGate.State.FAILED
                             || state == RemoteEntryGate.State.OFFLINE;
                         assertEquals(retryable ? View.VISIBLE : View.GONE, root.findViewWithTag("remoteEntryRetry").getVisibility());
+                        // The two states whose label points at Mobile access must
+                        // offer a way there. Before this existed the page named a
+                        // destination it gave no way to reach.
+                        boolean pointsSomewhere = state == RemoteEntryGate.State.SIGN_IN
+                            || state == RemoteEntryGate.State.TIMED_OUT;
+                        assertEquals(pointsSomewhere ? View.VISIBLE : View.GONE,
+                            root.findViewWithTag("remoteEntryOpen").getVisibility());
                     }
                     render.invoke(activity, RemoteEntryGate.State.READY);
                     assertTrue(root.findViewWithTag("remoteControlEntry").isEnabled());
                     assertEquals(View.GONE, root.findViewWithTag("remoteEntryLoading").getVisibility());
                     render.invoke(activity, RemoteEntryGate.State.SIGN_IN);
+                    // The shortcut this state was missing: one tap to the page
+                    // its own label names, rather than Settings and then Mobile
+                    // access.
+                    root.findViewWithTag("remoteEntryOpen").performClick();
+                    assertEquals("network", screen.get(activity));
+                    activity.onBackPressed(); assertEquals("home", screen.get(activity));
+                    // And the long way still works, for a reader who starts there.
                     root.findViewWithTag("settingsEntry").performClick(); assertEquals("settings", screen.get(activity));
                     root.findViewWithTag("settings:network").performClick(); assertEquals("network", screen.get(activity));
                     activity.onBackPressed(); assertEquals("settings", screen.get(activity));

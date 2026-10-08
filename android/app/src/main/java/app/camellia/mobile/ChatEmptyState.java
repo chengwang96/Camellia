@@ -29,21 +29,21 @@ final class ChatEmptyState extends LinearLayout {
         else { mark.setImageDrawable(new LineIcon(icon, style.muted)); mark.setPadding(style.dp(8), style.dp(8), style.dp(8), style.dp(8)); }
         mark.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         addView(mark, new LayoutParams(style.dp(52), style.dp(52)));
-        TextView heading = new TextView(context); heading.setText(title); heading.setTextColor(style.ink); heading.setTextSize(21);
+        TextView heading = new TextView(context); heading.setText(title); heading.setTextColor(style.ink); heading.setTextSize(Palette.TEXT_DISPLAY);
         heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); heading.setGravity(Gravity.CENTER);
         heading.setPadding(0, style.dp(20), 0, style.dp(8));
         if (android.os.Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
         addView(heading, new LayoutParams(-1, -2));
-        TextView hint = new TextView(context); hint.setText(description); hint.setTextColor(style.muted); hint.setTextSize(14);
+        TextView hint = new TextView(context); hint.setText(description); hint.setTextColor(style.muted); hint.setTextSize(Palette.TEXT_BODY);
         hint.setGravity(Gravity.CENTER); hint.setLineSpacing(style.dp(4), 1); addView(hint, new LayoutParams(-1, -2));
         if (action != null && !actionLabel.isEmpty()) addAction(actionLabel, "emptyStateAction", action);
     }
 
     void addAction(String label, String tag, Runnable action) {
-        TextView button = new TextView(getContext()); button.setText(label); button.setTextColor(style.ink); button.setTextSize(15);
+        TextView button = new TextView(getContext()); button.setText(label); button.setTextColor(style.ink); button.setTextSize(Palette.TEXT_INPUT);
         button.setGravity(Gravity.CENTER); button.setMinHeight(style.dp(48)); button.setPadding(style.dp(20), style.dp(10), style.dp(20), style.dp(10));
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), style.capsule(style.surface), style.capsule(Color.WHITE)));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), style.capsule(style.surface), style.capsule(Color.WHITE)));
         button.setFocusable(true); button.setTag(tag); button.setOnClickListener(view -> action.run());
-        LayoutParams params = new LayoutParams(-2, -2); params.topMargin = style.dp(12); addView(button, params);
+        LayoutParams params = new LayoutParams(-2, -2); params.topMargin = style.dp(20); addView(button, params);
     }
 }

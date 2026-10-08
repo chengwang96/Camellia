@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>CamelliaSmoke</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.camellia.mobile.smoke</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>CamelliaSmoke</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>MinimumOSVersion</key>
+	<string>18.0</string>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<!--
+	No NSAppTransportSecurity exception is declared, and none is needed.
+
+	The design doc anticipated one for the cleartext http://100.x.x.x dial.
+	It is not required, because ATS governs URLSession and NSURLConnection, and
+	nothing here uses them: the embedded node dials through Go's net/http over
+	tsnet's own socket, inside the framework. ATS never sees the request. Adding
+	an exception would widen the app's policy for no gain.
+	-->
+</dict>
+</plist>
