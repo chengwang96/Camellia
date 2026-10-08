@@ -528,7 +528,7 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('#switchMethod').value"), 'markdown');
     await home.webContents.executeJavaScript("document.querySelector('#switchCancel').click()");
     diag('PASS composer alignment: five engines, start pages and active conversations');
-    await home.webContents.executeJavaScript('window.dshDesktop.codexSaveSettings({connection:"api"})');
+    await home.webContents.executeJavaScript('window.dshDesktop.conversationCommand({engine:"codex",action:"save-settings",payload:{connection:"api"}})');
     await home.webContents.executeJavaScript('openHistorySession("switch-fixture-a")');
     await waitWindow("document.body.dataset.harness === 'claude' && typeof uiReady !== 'undefined' && uiReady && !loadingSession && context.sessionId === 'switch-fixture-a'");
     await home.webContents.executeJavaScript(`input.value='Keep this unsent draft'; input.dispatchEvent(new Event('input')); addAttachments([${JSON.stringify(path.join(root, 'notes.md'))}]);`);
