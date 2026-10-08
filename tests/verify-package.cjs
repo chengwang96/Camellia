@@ -5,6 +5,9 @@ const assert = require('node:assert/strict');
 const asar = require('@electron/asar');
 const manifest = require('../package.json');
 const { createRuntimeManager } = require('../src/main/runtime-manager');
+const { verifyMacNode } = require('../scripts/bundle-macos-node.cjs');
+const { verifyNode } = require('../scripts/bundle-node.cjs');
+const { readNodeVersion } = require('../scripts/node-version.cjs');
 
 const root = path.resolve(__dirname, '..');
 const defaultBundle = process.platform === 'darwin' ? 'dist/mac-arm64/' + manifest.build.productName + '.app' : 'dist/win-unpacked';
@@ -29,6 +32,9 @@ const runtimeNode = isMac ? 'runtime/node' : 'runtime/node.exe';
 const runtimeInfo = JSON.parse(fs.readFileSync(path.join(resources, 'runtime/version.json')));
 assert.equal(runtimeInfo.platform, isMac ? 'darwin' : 'win32');
 assert.equal(runtimeInfo.arch, isMac ? 'arm64' : 'x64');
+assert.equal(runtimeInfo.node, readNodeVersion(root), 'Bundled Node must match the project version pin');
+assert.equal(runtimeInfo.source, 'nodejs.org', 'Node must come from the official distribution');
+assert.match(runtimeInfo.sha256, /^[a-f0-9]{64}$/i, 'Official Node archive checksum must be recorded');
 for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'pi']) {
   for (const name of ['package.json', 'package-lock.json']) {
     const file = path.join('runtimes', engine, name);
@@ -72,5 +78,8 @@ if (isMac) {
   const header = fs.readFileSync(path.join(resources, runtimeNode));
   assert.equal(header.readUInt32LE(0), 0xfeedfacf, 'Bundled Node is a Mach-O executable');
   assert.equal(header.readUInt32LE(4), 0x0100000c, 'Bundled Node targets Apple Silicon');
+  verifyMacNode({ node: path.join(resources, runtimeNode), arch: runtimeInfo.arch, version: readNodeVersion(root) });
+} else {
+  verifyNode({ node: path.join(resources, runtimeNode), platform: runtimeInfo.platform, arch: runtimeInfo.arch, version: readNodeVersion(root) });
 }
 console.log('PASS: ' + count + ' source files match; six engine download manifests and shared Node/npm bundled; no harness runtimes included.');
