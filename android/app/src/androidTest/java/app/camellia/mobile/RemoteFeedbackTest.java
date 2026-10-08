@@ -20,6 +20,28 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
     private CredentialStore cacheStorage;
     private RemoteListCache cache;
     private DelayedApi client;
+    private ReplyReadApi readClient;
+    private boolean oldEmbedded;
+
+    private static final class ReplyReadApi extends RemoteApi {
+        final CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        final java.util.List<Long> markers = new java.util.concurrent.CopyOnWriteArrayList<>();
+        volatile IOException failure;
+        volatile long acknowledgement = -1;
+        RemoteApi commands;
+        ReplyReadApi() { super("http://100.64.0.1:43128"); }
+        @Override public JSONObject json(String path, String token, JSONObject payload) throws IOException {
+            new Endpoint("http://100.64.0.1:43128").uri(path);
+            if (!path.endsWith("/read") && commands != null) return commands.json(path, token, payload);
+            if (!path.equals("/v1/conversations/" + ID + "/read")) throw new IOException("Unexpected read route");
+            long at = payload.optLong("lastReplyAt"); markers.add(at); entered.countDown();
+            try { if (!release.await(5, TimeUnit.SECONDS)) throw new IOException("Read test timed out"); }
+            catch (InterruptedException error) { throw new IOException(error); }
+            if (failure != null) throw failure;
+            try { return new JSONObject().put("ok", true).put("replyReadAt", acknowledgement < 0 ? at : acknowledgement); }
+            catch (Exception error) { throw new IOException(error); }
+        }
+    }
 
     private static final class DelayedApi extends RemoteApi {
         final CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
@@ -66,19 +88,22 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
 
     private interface Check { void run() throws Exception; }
     private void ui(Check check) {
-        getInstrumentation().runOnMainSync(() -> { try { check.run(); } catch (Exception error) { throw new AssertionError(error); } });
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        getInstrumentation().runOnMainSync(() -> { try { check.run(); } catch (Throwable error) { failure.set(error); } });
+        if (failure.get() != null) throw new AssertionError(failure.get());
     }
 
     @Override protected void setUp() throws Exception {
         super.setUp();
         var context = getInstrumentation().getTargetContext();
+        EmbeddedNetwork.initialize(context); oldEmbedded = EmbeddedNetwork.enabled(); EmbeddedNetwork.setEnabled(false);
         encrypted = new CredentialStore(context, "remote-feedback-test"); encrypted.clear();
         cacheStorage = new CredentialStore(context, "remote-feedback-cache-test"); cacheStorage.clear();
         cache = new RemoteListCache(cacheStorage);
         activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         ui(() -> {
             invoke("stopNetwork");
-            ((RemoteListCache) field("listCache")).close(); field("listCache", cache);
+            ((RemoteListCache) field("listCache")).flush(); field("listCache", cache);
             field("store", new ComputerStore(encrypted));
             field("credentials", new JSONObject().put("address", "http://100.64.0.1:43128").put("token", "a".repeat(43)));
             field("conversationId", ID); invoke("detailScreen");
@@ -90,11 +115,12 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
 
     @Override protected void tearDown() throws Exception {
         if (client != null) client.release.countDown();
+        if (readClient != null) readClient.release.countDown();
         ui(() -> activity.finish()); getInstrumentation().waitForIdleSync();
         cache.close();
         var writer = RemoteListCache.class.getDeclaredField("writer"); writer.setAccessible(true);
         assertTrue(((ExecutorService) writer.get(cache)).awaitTermination(5, TimeUnit.SECONDS));
-        encrypted.clear(); cacheStorage.clear(); super.tearDown();
+        encrypted.clear(); cacheStorage.clear(); EmbeddedNetwork.setEnabled(oldEmbedded); super.tearDown();
     }
 
     private JSONObject payload() throws Exception {
@@ -131,6 +157,116 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
         return new JSONObject().put("instanceId", "server").put("cursor", 1).put("permission", "control")
             .put("conversation", new JSONObject().put("id", ID).put("seq", 11))
             .put("messages", new JSONArray().put(new JSONObject().put("seq", 11).put("role", "user").put("text", "instant message")));
+    }
+
+    private JSONObject readMarker(long replyAt) throws Exception {
+        return new JSONObject().put("id", ID).put("lastReplyAt", replyAt).put("replyReadAt", 0);
+    }
+
+    private void useReadClient(ReplyReadApi value) {
+        readClient = value;
+        ui(() -> field("api", readClient));
+    }
+
+    private void awaitReads(int count) throws Exception {
+        long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+        while (android.os.SystemClock.uptimeMillis() < deadline) {
+            var done = new java.util.concurrent.atomic.AtomicBoolean();
+            ui(() -> {
+                var active = RemoteReadSync.class.getDeclaredField("active"); active.setAccessible(true);
+                done.set(readClient.markers.size() == count && active.get(field("replyReadSync")) == null);
+            });
+            if (done.get()) return;
+            Thread.sleep(25);
+        }
+        fail("Read markers did not settle: " + readClient.markers);
+    }
+
+    public void testReplyReadDoesNotBlockSubmittingAChatCommand() throws Exception {
+        useReadClient(new ReplyReadApi()); readClient.commands = client;
+        ui(() -> invoke("syncReplyRead", readMarker(100)));
+        assertTrue(readClient.entered.await(2, TimeUnit.SECONDS));
+        client.result = new JSONObject().put("ok", true).put("userSeq", 11);
+        send(); awaitResult();
+        ui(() -> assertEquals("accepted", ((JSONObject) field("outgoingMessage")).getString("delivery")));
+        assertEquals(1, readClient.release.getCount());
+        readClient.release.countDown(); awaitReads(1);
+    }
+
+    public void testReplyReadFailureDoesNotHideAnUnconfirmedSend() throws Exception {
+        useReadClient(new ReplyReadApi()); readClient.commands = client;
+        readClient.failure = new java.net.SocketTimeoutException("fixture read timeout");
+        ui(() -> invoke("syncReplyRead", readMarker(100)));
+        assertTrue(readClient.entered.await(2, TimeUnit.SECONDS));
+        client.failure = new java.net.SocketTimeoutException("fixture send timeout");
+        send(); awaitResult();
+        var notice = new java.util.concurrent.atomic.AtomicReference<String>();
+        ui(() -> notice.set(((TextView) field("status")).getText().toString()));
+        readClient.release.countDown(); awaitReads(1);
+        ui(() -> {
+            assertEquals(notice.get(), ((TextView) field("status")).getText().toString());
+            assertTrue(((JSONObject) field("credentials")).has("pendingCommand"));
+        });
+    }
+
+    public void testReplyReadCoalescesSnapshotsAndSuppressesAlreadyConfirmedMarkers() throws Exception {
+        useReadClient(new ReplyReadApi());
+        ui(() -> invoke("syncReplyRead", readMarker(100)));
+        assertTrue(readClient.entered.await(2, TimeUnit.SECONDS));
+        ui(() -> {
+            for (int i = 0; i < 8; i++) invoke("syncReplyRead", readMarker(100));
+            invoke("syncReplyRead", readMarker(200)); invoke("syncReplyRead", readMarker(300));
+        });
+        assertEquals(java.util.List.of(100L), readClient.markers);
+        readClient.release.countDown(); awaitReads(2);
+        assertEquals(java.util.List.of(100L, 300L), readClient.markers);
+        ui(() -> invoke("syncReplyRead", readMarker(300))); awaitReads(2);
+    }
+
+    public void testReplyReadFailureIsVisibleAndReconnectRetriesTheSameMarker() throws Exception {
+        useReadClient(new ReplyReadApi()); readClient.failure = new java.net.SocketTimeoutException("fixture read timeout");
+        readClient.release.countDown();
+        ui(() -> invoke("syncReplyRead", readMarker(100))); awaitReads(1);
+        ui(() -> {
+            assertTrue(((TextView) field("status")).getText().toString().contains("fixture read timeout"));
+            assertTrue((boolean) field("connected"));
+            for (int i = 0; i < 8; i++) invoke("syncReplyRead", readMarker(100));
+        });
+        awaitReads(1);
+        ui(() -> invoke("stopNetwork"));
+        useReadClient(new ReplyReadApi()); readClient.release.countDown();
+        ui(() -> { field("connected", true); invoke("syncReplyRead", readMarker(100)); }); awaitReads(1);
+        assertEquals(java.util.List.of(100L), readClient.markers);
+        ui(() -> assertFalse(((TextView) field("status")).getText().toString().contains("fixture read timeout")));
+    }
+
+    public void testReplyReadUsesTheServerMarkerAndReportsPermissionErrors() throws Exception {
+        useReadClient(new ReplyReadApi()); readClient.acknowledgement = 50; readClient.release.countDown();
+        ui(() -> invoke("syncReplyRead", readMarker(100))); awaitReads(1);
+        ui(() -> {
+            ((RemoteReadSync) field("replyReadSync")).retry(); invoke("syncReplyRead", readMarker(100));
+        }); awaitReads(2);
+        assertEquals(java.util.List.of(100L, 100L), readClient.markers);
+        readClient.failure = new RemoteApi.Failure(403, "fixture read denied");
+        ui(() -> invoke("syncReplyRead", readMarker(200))); awaitReads(3);
+        ui(() -> {
+            assertTrue(((TextView) field("status")).getText().toString().contains("403"));
+            assertTrue((boolean) field("connected")); assertTrue((boolean) field("controlAllowed"));
+        });
+    }
+
+    public void testReplyReadOldAcknowledgementCannotConfirmAnotherComputer() throws Exception {
+        ReplyReadApi old = new ReplyReadApi(); old.acknowledgement = 1000; useReadClient(old);
+        ui(() -> invoke("syncReplyRead", readMarker(100)));
+        assertTrue(old.entered.await(2, TimeUnit.SECONDS));
+        useReadClient(new ReplyReadApi());
+        ui(() -> {
+            field("credentials", new JSONObject().put("address", "http://100.64.0.2:43128").put("token", "b".repeat(43)));
+            invoke("syncReplyRead", readMarker(100));
+        });
+        old.release.countDown(); readClient.release.countDown(); awaitReads(1);
+        ui(() -> invoke("syncReplyRead", readMarker(200))); awaitReads(2);
+        assertEquals(java.util.List.of(100L, 200L), readClient.markers);
     }
 
     public void testImmediateFeedbackAndSnapshotBeforeAcknowledgement() throws Exception {
@@ -570,11 +706,6 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
         ui(() -> field("listCache", cache));
     }
 
-    private void prefetch(JSONObject computer, JSONObject info, int ticket) throws Exception {
-        var method = MainActivity.class.getDeclaredMethod("prefetchComputerList", RemoteApi.class, JSONObject.class, JSONObject.class, int.class);
-        method.setAccessible(true); method.invoke(activity, client, computer, info, ticket);
-    }
-
     private JSONObject historySnapshot(long sequence, Long before) throws Exception {
         return new JSONObject().put("instanceId", "server").put("cursor", 10).put("permission", "control")
             .put("conversation", new JSONObject().put("id", ID).put("seq", 10))
@@ -665,14 +796,12 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
         });
     }
 
-    public void testComputerPrefetchCachesWorkspacesAndIndependentConversations() throws Exception {
+    public void testSelectedComputerCacheIncludesWorkspacesAndIndependentConversations() throws Exception {
         JSONObject computer = new JSONObject().put("address", "http://100.64.0.2:43128").put("token", "b".repeat(43));
         JSONObject info = new JSONObject().put("workspaces", new JSONArray().put(new JSONObject().put("id", "workspace").put("name", "Cached workspace")))
             .put("includeUnassigned", true);
-        client.result = new JSONObject().put("conversations", new JSONArray().put(new JSONObject().put("id", ID).put("title", "Prefetched independent")))
-            .put("nextOffset", 50);
-        client.release.countDown();
-        ui(() -> prefetch(computer, info, (Integer) field("generation")));
+        ui(() -> cache.put(computer, new JSONArray().put(new JSONObject().put("id", ID).put("title", "Cached independent")), 50,
+            info.getJSONArray("workspaces"), true));
         getInstrumentation().waitForIdleSync();
         ui(() -> {
             assertNull(cache.get((JSONObject) field("credentials")));
@@ -682,21 +811,22 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
             assertEquals("workspace", cached.getJSONArray("workspaces").getJSONObject(0).getString("id"));
             field("credentials", computer); invoke("listScreen");
             assertEquals(1, countText((View) field("content"), "Cached workspace"));
-            assertEquals(1, countText((View) field("content"), "Prefetched independent"));
+            assertEquals(1, countText((View) field("content"), "Cached independent"));
             assertFalse((Boolean) field("canCreate"));
         });
     }
 
-    public void testStalePrefetchDoesNotReplaceCacheAfterLeavingPage() throws Exception {
-        client.result = new JSONObject().put("conversations", new JSONArray());
-        client.release.countDown();
+    public void testStoppingNetworkRetainsTheExistingListCacheAndClearsPrefetch() throws Exception {
         ui(() -> {
             JSONObject computer = (JSONObject) field("credentials");
             cache.put(computer, new JSONArray().put(new JSONObject().put("id", ID)), -1, new JSONArray(), true);
-            prefetch(computer, new JSONObject(), (Integer) field("generation"));
             invoke("stopNetwork");
         });
         getInstrumentation().waitForIdleSync();
-        ui(() -> assertEquals(ID, cache.get((JSONObject) field("credentials")).getJSONArray("conversations").getJSONObject(0).getString("id")));
+        ui(() -> {
+            assertEquals(ID, cache.get((JSONObject) field("credentials")).getJSONArray("conversations").getJSONObject(0).getString("id"));
+            var pending = RemotePrefetch.class.getDeclaredField("pending"); pending.setAccessible(true);
+            assertTrue(((java.util.Map<?, ?>) pending.get(field("prefetch"))).isEmpty());
+        });
     }
 }

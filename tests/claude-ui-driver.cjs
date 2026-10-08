@@ -4,18 +4,24 @@ const http = require('node:http');
 const path = require('node:path');
 const { readJson, writeJson } = require('../src/shared/json-store');
 const { createHarness } = require('./claude-harness.cjs');
-let h = createHarness();
+function createUiHarness(root) {
+  const harness = createHarness(root, { respondToInterrupts: true });
+  // The native CLI is faked by createHarness; skip downloads and title requests
+  // while exercising the real shared-conversation IPC and persistence.
+  harness.api.sharedConversations.prepare = async () => {};
+  harness.api.sharedConversations.generateTitle = async message => String(message).slice(0, 80);
+  return harness;
+}
+let h = createUiHarness();
 const fixtures = { alpha: h.folder('Alpha Project'), beta: h.folder('Beta Project') };
 fixtures.legacy = h.seedSession('legacy-chat', fixtures.alpha, '已有的独立会话');
+const conversation = h.api.sharedConversations.create('claude', null, '已有的独立会话', fixtures.alpha);
+h.api.sharedConversations.append(conversation, { role: 'user', engine: 'claude', text: '已有的独立会话' });
+fixtures.conversationId = conversation.id;
 const methods = {
-  claudeListSessions: 'claude-list-sessions', claudeLoadSession: 'claude-load-session',
-  claudeGetSettings: 'claude-get-settings', claudeSaveSettings: 'claude-save-settings',
-  claudeMetaOp: 'claude-meta-op', claudeSend: 'claude-send', claudeCancel: 'claude-cancel',
-  claudeRenameSession: 'claude-rename-session', claudeArchiveSession: 'claude-archive-session',
-  claudeDeleteSession: 'claude-delete-session',
-  claudeGoalGet: 'claude-goal-get', claudeGoalStart: 'claude-goal-start',
-  claudeGoalPause: 'claude-goal-pause', claudeGoalResume: 'claude-goal-resume',
-  claudeGoalComplete: 'claude-goal-complete', claudeGoalClear: 'claude-goal-clear',
+  discussion: 'discussion', storageReferencesChanged: 'storage-references-changed',
+  pluginCacheMaintain: 'plugin-cache-maintain',
+  conversationCommand: 'conversation-command', conversationSwitch: 'conversation-switch',
   apiRouterGetState: 'api-router-get-state', apiRouterSaveConfig: 'api-router-save-config',
   apiRouterReset: 'api-router-reset', apiRouterRotate: 'api-router-rotate',
   providerInsights: 'provider-insights', providerRefresh: 'provider-refresh', providerModels: 'provider-models', providerVerify: 'provider-verify',
@@ -27,16 +33,12 @@ const methods = {
   subscriptionPreferencesGet: 'subscription-preferences-get', subscriptionPreferencesSave: 'subscription-preferences-save',
   antigravityAccountState: 'antigravity-account-state', antigravityAccountRefresh: 'antigravity-account-refresh', antigravitySignIn: 'antigravity-sign-in',
   antigravityAccountRefreshUsage: 'antigravity-account-refresh-usage',
+  antigravityAccountLabel: 'antigravity-account-label',
   codexAccountState: 'codex-account-state', codexAccountRefresh: 'codex-account-refresh', codexSignIn: 'codex-sign-in',
   kimiAccountState: 'kimi-account-state',
   workbenchSettings: 'workbench-settings', workbenchSaveSettings: 'workbench-save-settings',
   savePastedText: 'save-pasted-text',
 };
-for (const engine of ['codex', 'kimi', 'antigravity']) {
-  for (const action of ['GetLive', 'GetSettings', 'SaveSettings', 'ListSessions', 'LoadSession', 'MetaOp', 'GoalGet']) {
-    methods[engine + action] = engine + '-' + action.replace(/[A-Z]/g, (letter, i) => (i ? '-' : '') + letter.toLowerCase());
-  }
-}
 let testUpstream = null;
 let nativeBackend = null;
 const rl = readline.createInterface({ input: process.stdin });
@@ -45,6 +47,21 @@ rl.on('line', async (line) => {
     const { method, payload } = JSON.parse(line);
     let result;
     if (method === 'fixtures') result = { ...fixtures, userData: h.userData };
+    else if (method === 'seedPluginCacheMaintenance') {
+      const fs = require('node:fs');
+      for (const relative of ['codex/.tmp', 'codex/api/conversations/cache-one/.tmp', 'codex/api/conversations/cache-two/.tmp']) {
+        const directory = path.join(h.userData, relative, 'plugins');
+        fs.mkdirSync(directory, { recursive: true }); fs.writeFileSync(path.join(directory, 'manifest.json'), 'same');
+      }
+      for (const id of ['cache-one', 'cache-two']) fs.writeFileSync(path.join(h.userData, 'codex/api/conversations', id, 'native-context.jsonl'), id);
+      h.app.relaunch = () => { if (payload?.fail) throw new Error('relaunch failed'); };
+      h.app.quit = () => {};
+      result = true;
+    }
+    else if (method === 'finishPluginCacheMaintenance') {
+      result = require('../src/main/plugin-cache-startup').completePluginCacheMaintenance({ dataDir: h.userData, assertOffline() {} });
+      result.nativeContexts = ['cache-one', 'cache-two'].map(id => require('node:fs').readFileSync(path.join(h.userData, 'codex/api/conversations', id, 'native-context.jsonl'), 'utf8'));
+    }
     else if (method === 'configureTestApi') { h.configureApi(); result = true; }
     else if (method === 'seedKimiAccount') {
       const at = new Date().toISOString();
@@ -54,8 +71,8 @@ rl.on('line', async (line) => {
         models: [{ id: 'kimi-code/fixture', name: 'Kimi Coding', isDefault: true, contextWindow: 262144 }], verifiedAt: at, error: null,
         usage: { status: 'ok', checkedAt: at, latest: { ...quota, at }, history: [
           { ...quota, at: new Date(Date.now() - 3600000).toISOString(), windows: quota.windows.map(w => ({ ...w, usedPercent: 5 })) }, { ...quota, at }] } });
-      await h.call('kimi-save-settings', { connection: 'subscription', model: 'kimi-code/fixture' });
-      h = createHarness(h.root); result = true;
+      await h.call('conversation-command', { engine: 'kimi', action: 'save-settings', payload: { connection: 'subscription', model: 'kimi-code/fixture' } });
+      h = createUiHarness(h.root); result = true;
     }
     else if (method === 'seedGoogleAccount') {
       writeJson(path.join(h.userData, 'antigravity/google-account.json'), { models: [
@@ -72,22 +89,33 @@ rl.on('line', async (line) => {
       ];
       writeJson(path.join(h.userData, 'antigravity/google-quota.json'), { status: 'ok', checkedAt: at, error: null,
         latest: { at, balances: [], windows, modelUsage: [] }, history: [{ at, balances: [], windows }] });
-      await h.call('antigravity-save-settings', { connection: 'subscription', model: 'gemini-fixture-high' });
+      await h.call('conversation-command', { engine: 'antigravity', action: 'save-settings', payload: { connection: 'subscription', model: 'gemini-fixture-high' } });
       result = true;
     }
     else if (method === 'pickFile') result = { canceled: false, path: fixtures.alpha };
     else if (method === 'pickAttachments') result = { canceled: false, paths: [path.join(fixtures.alpha, 'image.png'), path.join(fixtures.alpha, 'notes.txt')] };
-    else if (method === 'finishTurn') result = h.finishTurn();
+    else if (method === 'finishTurn') { result = [...h.api.sharedConversations.active.keys()].at(-1); h.finishTurn(); }
+    else if (method === 'seedLongHistory') {
+      const manager = h.api.sharedConversations, fs = require('node:fs');
+      const c = manager.create('claude', null, 'Long indexed history', fixtures.alpha);
+      const count = payload?.count || 10000;
+      fs.writeFileSync(path.join(manager.dir, c.id + '.jsonl'), Array.from({ length: count }, (_, index) => JSON.stringify({
+        seq: index + 1, role: index % 2 ? 'assistant' : 'user', engine: 'claude', text: 'History message ' + index,
+      }) + '\n').join(''));
+      c.seq = count; manager.save(c); result = c.id;
+    }
+    else if (method === 'historyMetrics') result = { ...h.api.sharedConversations.historyStore.metrics, cacheBytes: h.api.sharedConversations.historyStore.used };
     else if (method === 'seedPagedHistory') {
-      const ws = h.call('claude-meta-op', { op: 'create-workspace', name: '分页工作区', path: h.folder('Paged') }).workspace;
-      const configFile = path.join(h.userData, 'desktop-config.json');
-      const config = readJson(configFile);
+      const manager = h.api.sharedConversations;
+      const ws = (await manager.command('claude', 'meta-op', { op: 'create-workspace', name: '分页工作区', path: h.folder('Paged') })).workspace;
+      fixtures.pagedSessions = [];
       for (let i = 0; i < 150; i++) {
-        const id = 'paged-' + i;
-        h.seedSession(id, ws.path, '分页会话 ' + i, Date.now() - i * 1000);
-        config.claudeMeta.sessionWorkspace[id] = i < 75 ? ws.id : null;
+        const conversation = manager.create('claude', i < 75 ? ws.id : null, '分页会话 ' + i);
+        manager.append(conversation, { role: 'user', engine: 'claude', text: '分页会话 ' + i });
+        conversation.updatedAt = Date.now() - i * 1000;
+        manager.save(conversation);
+        fixtures.pagedSessions.push(conversation.id);
       }
-      writeJson(configFile, config);
       result = ws.id;
     }
     else if (method === 'seedSubscriptionUsage') {
@@ -104,7 +132,12 @@ rl.on('line', async (line) => {
     else if (method === 'lastProcess') {
       const proc = h.processes.at(-1);
       result = proc ? { cwd: proc.cwd, args: proc.args, id: proc.sid } : null;
-    } else if (method === 'restart') { const root = h.root; h.api.getSession()?.kill(); h = createHarness(root); result = true; }
+    } else if (method === 'restart') {
+      const root = h.root;
+      h.api.sharedConversations.pauseGoals();
+      for (const session of h.api.claudeSessions.sessions.values()) session.kill();
+      h = createUiHarness(root); result = true;
+    }
     else if (method === 'cleanup') {
       if (nativeBackend) {
         const proc = nativeBackend.current?.proc;
@@ -151,6 +184,12 @@ rl.on('line', async (line) => {
       const state=await h.call('api-router-get-state');
       const response=await fetch(state.url+'/v1/chat/completions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:payload,messages:[{role:'user',content:'Local UI smoke'}]})});
       result={status:response.status,body:await response.json()};
+    }
+    else if (/^(claude|codex|kimi|antigravity)(Get|Save)Settings$/.test(method)) {
+      // Existing UI fixture controls set/read defaults through the current IPC;
+      // they never invoke the retired native-chat renderer channels.
+      const [, engine, action] = method.match(/^(claude|codex|kimi|antigravity)(Get|Save)Settings$/);
+      result = await h.call('conversation-command', { engine, action: action.toLowerCase() + '-settings', payload });
     }
     else result = await h.call(methods[method], payload);
     const events = h.events.splice(0);

@@ -8,6 +8,7 @@ const { spawn } = require('node:child_process');
 const { removeTree } = require('./test-fs.cjs');
 
 async function main() {
+  const plugins = process.argv.includes('--plugins');
   // Local regression runs must not put a simulated migration on the desktop.
   // CI and explicit visual checks still exercise the real window visibility.
   const showWindow = process.argv.includes('--show-window') || process.env.CAMELLIA_DIRECTORY_PROGRESS_TEST_VISIBLE === '1';
@@ -27,12 +28,12 @@ async function main() {
       step:document.getElementById('step').textContent,
       disabled:document.getElementById('cancel').disabled})`);
     const first = await state();
-    assert.equal(first.title, '正在迁移 Camellia 数据');
+    assert.equal(first.title, plugins ? '正在共享 Codex 插件缓存' : '正在迁移 Camellia 数据');
     assert.equal(first.value, null, 'Initial scan must not invent a percentage');
     process.send({ type: 'ready' });
     // This runs in the helper while the owner is blocked on synchronous I/O.
     const deadline = Date.now() + 10_000;
-    while ((await state()).stage !== '复制数据') {
+    while ((await state()).stage !== (plugins ? '校验插件内容' : '复制数据')) {
       if (Date.now() > deadline) throw new Error('The progress window did not update');
       await new Promise(resolve => setTimeout(resolve, 100));
     }
@@ -49,25 +50,26 @@ async function main() {
     assert.equal(fs.readFileSync(path.join(root, 'cancel'), 'utf8'), 'cancel');
     assert.equal((await state()).disabled, true);
     const fast = { startedAt: Date.now(), language: 'zh-CN', source: 'C:/old/dsh-desktop', destination: 'C:/new/camellia',
-      stage: 'move', method: 'rename', cancellable: false, phases: ['inventory', 'prepare', 'verify-prepared', 'move', 'verify-updates', 'activate'],
+      kind: plugins ? 'plugins' : 'directory', stage: plugins ? 'link-cache' : 'move', method: 'rename', cancellable: false,
+      phases: plugins ? ['scan', 'verify-cache', 'link-cache'] : ['inventory', 'prepare', 'verify-prepared', 'move', 'verify-updates', 'activate'],
       processedEntries: 2, totalEntries: 4 };
     fs.writeFileSync(path.join(root, 'progress.json'), JSON.stringify(fast));
     // A canceled window retains its canceling label; phase and progress must
     // still follow the new strategy's independent six-step plan.
     await new Promise(resolve => setTimeout(resolve, 400));
-    assert.equal((await state()).step, '4 / 6');
+    assert.equal((await state()).step, plugins ? '3 / 3' : '4 / 6');
     assert.equal(Number((await state()).value), 50);
     assert.equal((await state()).disabled, true);
     const failed = { startedAt: Date.now(), language: 'zh-CN', source: 'C:/old/dsh-desktop', destination: 'C:/new/camellia',
-      stage: 'error', error: 'EPERM: symlink ' + 'C:/very-long/dependency/path/'.repeat(15), cancellable: false };
+      kind: plugins ? 'plugins' : 'directory', stage: 'error', error: 'EPERM: symlink ' + 'C:/very-long/dependency/path/'.repeat(15), cancellable: false };
     fs.writeFileSync(path.join(root, 'progress.json'), JSON.stringify(failed));
     await new Promise(resolve => setTimeout(resolve, 2100));
     assert.equal(window.isDestroyed(), false, 'A failure must remain available until acknowledged');
-    assert.equal((await state()).title, '迁移已停止');
+    assert.equal((await state()).title, plugins ? '插件缓存整理已停止' : '迁移已停止');
     assert.equal((await state()).disabled, false, 'The error can be dismissed');
     assert.equal(await window.webContents.executeJavaScript("document.getElementById('cancel').getBoundingClientRect().bottom <= innerHeight"), true,
       'Long errors must not push the close button outside the window');
-    console.log('PASS: independent migration window, isolated profile, truthful progress, responsive elapsed time, cancellation and persistent failure');
+    console.log('PASS: independent migration window' + (plugins ? ' for plugin cache maintenance' : '') + ', isolated profile, truthful progress, responsive elapsed time, cancellation and persistent failure');
     app.exit(0);
     return;
   }
@@ -75,12 +77,12 @@ async function main() {
   let child;
   try {
     const state = { startedAt: Date.now(), language: 'zh-CN', source: 'C:/old/dsh-desktop', destination: 'C:/new/camellia',
-      stage: 'scan', processedEntries: 0, processedBytes: 0, cancellable: true };
+      kind: plugins ? 'plugins' : 'directory', stage: 'scan', processedEntries: 0, processedBytes: 0, cancellable: true };
     const write = update => fs.writeFileSync(path.join(root, 'progress.json'), JSON.stringify({ ...state, ...update }));
     write({});
     const env = { ...process.env, CAMELLIA_DIRECTORY_PROGRESS_HIDDEN: showWindow ? '0' : '1' };
     delete env.ELECTRON_RUN_AS_NODE;
-    child = spawn(require('electron'), [__filename, '--camellia-directory-progress', root, ...(showWindow ? ['--show-window'] : [])],
+    child = spawn(require('electron'), [__filename, '--camellia-directory-progress', root, ...(plugins ? ['--plugins'] : []), ...(showWindow ? ['--show-window'] : [])],
       { env, windowsHide: !showWindow, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     let output = '', errors = '';
     child.stdout.on('data', chunk => { output += chunk; });
@@ -93,7 +95,7 @@ async function main() {
         throw new Error('Progress window exited before becoming ready: ' + code + '\n' + output + '\n' + errors);
       })]);
       assert.equal(first.type, 'ready');
-      write({ stage: 'copy', processedEntries: 2, totalEntries: 4, processedBytes: 1024, totalBytes: 2048 });
+      write({ stage: plugins ? 'verify-cache' : 'copy', processedEntries: 2, totalEntries: 4, processedBytes: 1024, totalBytes: 2048 });
       // The helper must keep updating while its owner's event loop is blocked.
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2200);
       assert.equal(fs.readFileSync(path.join(root, 'responsive'), 'utf8'), 'yes');

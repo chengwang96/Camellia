@@ -108,30 +108,43 @@ public class RemoteApi {
     }
 
     public JSONObject json(String path, String token, JSONObject payload) throws IOException {
-        if (EmbeddedNetwork.enabled()) return embeddedJson(path, token, payload);
+        return json(path, token, payload, 8 * 1024 * 1024);
+    }
+
+    JSONObject json(String path, String token, JSONObject payload, int responseLimit) throws IOException {
+        try (AttachmentMaintenance.Lease uploading = context == null ? null : AttachmentMaintenance.protect(context, payload)) {
+        if (EmbeddedNetwork.enabled()) return embeddedJson(path, token, payload, responseLimit);
         HttpURLConnection connection = open(path, token);
         try {
             if (payload != null) {
                 connection.setRequestMethod("POST");
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-                connection.setFixedLengthStreamingMode(AttachmentJson.length(context, payload));
+                AttachmentJson.Body body = AttachmentJson.prepare(context, payload, () -> cancelled);
+                connection.setFixedLengthStreamingMode(body.length);
                 if (cancelled) throw new IOException("Cancelled");
-                try (var output = new java.io.BufferedOutputStream(connection.getOutputStream())) { AttachmentJson.write(context, payload, output); }
+                try (var output = new java.io.BufferedOutputStream(connection.getOutputStream())) { body.writeTo(output); }
             }
             int status = connection.getResponseCode();
             if (status != 200) throw new Failure(status, readFailure(connection));
             if (!String.valueOf(connection.getContentType()).toLowerCase(java.util.Locale.ROOT).startsWith("application/json")) throw new IOException("Unexpected response type");
-            try (InputStream input = connection.getInputStream(); var output = new ByteArrayOutputStream()) {
-                byte[] buffer = new byte[8192];
-                int count;
-                while ((count = input.read(buffer)) != -1) {
-                    if (output.size() + count > 8 * 1024 * 1024) throw new IOException("Response too large");
-                    output.write(buffer, 0, count);
-                }
-                return new JSONObject(output.toString(StandardCharsets.UTF_8.name()));
-            } catch (JSONException error) { throw new IOException("Invalid server JSON", error); }
+            try (InputStream input = connection.getInputStream()) {
+                return readJson(input, responseLimit, () -> cancelled);
+            }
         } finally { release(connection); }
+        }
+    }
+
+    static JSONObject readJson(InputStream input, int limit, java.util.function.BooleanSupplier cancelled) throws IOException {
+        try (var output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192]; int count;
+            while ((count = input.read(buffer)) != -1) {
+                if (cancelled.getAsBoolean() || output.size() + count > limit) throw new IOException("Cancelled or oversized response");
+                output.write(buffer, 0, count);
+            }
+            if (cancelled.getAsBoolean()) throw new IOException("Cancelled");
+            return new JSONObject(output.toString(StandardCharsets.UTF_8.name()));
+        } catch (JSONException error) { throw new IOException("Invalid server JSON", error); }
     }
 
     public void events(String id, String token, SnapshotListener listener) throws IOException {
@@ -177,7 +190,14 @@ public class RemoteApi {
         if (cancelled) throw new IOException("Cancelled");
         if (token != null && !token.matches("[A-Za-z0-9_-]{43}")) throw new IOException("Invalid credential");
         try {
-            tailnet.Response response = EmbeddedNetwork.node().prepare(payload == null ? "GET" : "POST", endpoint.uri(path).toString(), token == null ? "" : token, payload == null ? "" : AttachmentJson.string(context, payload));
+            tailnet.Response response;
+            if (payload == null) response = EmbeddedNetwork.node().prepare("GET", endpoint.uri(path).toString(), token == null ? "" : token, "");
+            else {
+                AttachmentJson.Body body = AttachmentJson.prepare(context, payload, () -> cancelled);
+                AttachmentUpload upload = new AttachmentUpload(body);
+                try { response = EmbeddedNetwork.node().prepareStream("POST", endpoint.uri(path).toString(), token == null ? "" : token, body.length, upload); }
+                catch (Exception error) { upload.close(); throw error; }
+            }
             embeddedResponses.add(response);
             if (cancelled) { release(response); throw new IOException("Cancelled"); }
             try { response.execute(); }
@@ -249,17 +269,12 @@ public class RemoteApi {
         };
     }
 
-    private JSONObject embeddedJson(String path, String token, JSONObject payload) throws IOException {
+    private JSONObject embeddedJson(String path, String token, JSONObject payload, int responseLimit) throws IOException {
         tailnet.Response response = embeddedOpen(path, token, payload);
-        try (InputStream input = input(response); var output = new ByteArrayOutputStream()) {
+        try (InputStream input = input(response)) {
             if (!response.contentType().startsWith("application/json")) throw new IOException("Unexpected content type");
-            byte[] buffer = new byte[8192]; int count;
-            while ((count = input.read(buffer)) != -1) {
-                if (cancelled || output.size() + count > 8 * 1024 * 1024) throw new IOException("Cancelled or oversized response");
-                output.write(buffer, 0, count);
-            }
-            return new JSONObject(output.toString(StandardCharsets.UTF_8.name()));
-        } catch (JSONException error) { throw new IOException("Invalid JSON", error); }
+            return readJson(input, responseLimit, () -> cancelled);
+        }
         finally { release(response); }
     }
 

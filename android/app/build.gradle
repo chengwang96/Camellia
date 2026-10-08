@@ -9,6 +9,9 @@ def releaseSigning = [
     keyPassword: System.getenv('CAMELLIA_ANDROID_KEY_PASSWORD'),
 ]
 def releaseSigningConfigured = releaseSigning.values().every { it?.trim() }
+def sizeBaseline = providers.gradleProperty('camelliaSizeBaseline').map { it.toBoolean() }.getOrElse(false)
+def splitRelease = providers.gradleProperty('camelliaSplitApks').map { it.toBoolean() }.getOrElse(false)
+def releaseSmoke = providers.gradleProperty('camelliaReleaseSmoke').map { it.toBoolean() }.getOrElse(false)
 
 android {
     namespace 'app.camellia.mobile'
@@ -20,9 +23,10 @@ android {
         applicationId 'app.camellia.mobile'
         minSdk 26
         targetSdk 35
-        versionCode 79
+        versionCode 86
         versionName '1.0.0'
         testInstrumentationRunner 'android.test.InstrumentationTestRunner'
+        if (releaseSmoke) testApplicationId 'app.camellia.mobile.release.test'
     }
 
     compileOptions {
@@ -47,9 +51,27 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled !sizeBaseline
+            shrinkResources !sizeBaseline
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             if (releaseSigningConfigured) signingConfig signingConfigs.release
         }
+    }
+
+    packaging { jniLibs { useLegacyPackaging = false } }
+    splits {
+        abi {
+            enable splitRelease
+            reset()
+            include 'arm64-v8a', 'x86_64'
+            universalApk false
+        }
+    }
+    if (releaseSmoke) {
+        testBuildType 'release'
+        sourceSets.androidTest.java.setSrcDirs(['src/releaseTest/java'])
+        sourceSets.androidTest.assets.setSrcDirs(['src/releaseTest/assets'])
+        sourceSets.androidTest.manifest.srcFile('src/releaseTest/AndroidManifest.xml')
     }
 }
 
@@ -75,10 +97,41 @@ dependencies {
 }
 
 def desktopIconResources = layout.buildDirectory.dir('generated/desktopIcon/res')
-def generateDesktopIcon = tasks.register('generateDesktopIcon', Copy) {
-    from(rootProject.file('../assets/icon-1024.png'))
-    into(desktopIconResources.map { it.dir('drawable-nodpi') })
-    rename { 'desktop_logo.png' }
+def generateDesktopIcon = tasks.register('generateDesktopIcon') {
+    def source = rootProject.file('../assets/icon-1024.png')
+    def destination = desktopIconResources.map { it.file('drawable-nodpi/desktop_logo.png') }
+    def pixels = sizeBaseline ? 1024 : 256
+    inputs.file(source)
+    inputs.property('pixels', pixels)
+    outputs.file(destination)
+    doLast {
+        def input = javax.imageio.ImageIO.read(source)
+        def result = new java.awt.image.BufferedImage(pixels, pixels, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+        def graphics = result.createGraphics()
+        try {
+            graphics.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+            graphics.drawImage(input, 0, 0, pixels, pixels, null)
+        } finally { graphics.dispose(); input.flush() }
+        def file = destination.get().asFile
+        file.parentFile.mkdirs()
+        if (!javax.imageio.ImageIO.write(result, 'png', file)) throw new GradleException('Cannot encode Android brand image')
+        result.flush()
+    }
 }
 android.sourceSets.main.res.srcDir(desktopIconResources)
 tasks.named('preBuild').configure { dependsOn(generateDesktopIcon) }
+
+// APK updates can leave unreferenced native-library payloads in an incremental ZIP.
+// Remove only the selected APK output before packaging; compilation and library caches stay reusable.
+['Debug': 'debug', 'Release': 'release', 'DebugAndroidTest': 'androidTest/debug', 'ReleaseAndroidTest': 'androidTest/release'].each { suffix, directory ->
+    def apkDirectory = layout.buildDirectory.dir("outputs/apk/$directory")
+    def fresh = tasks.register("fresh${suffix}Apk", Delete) {
+        delete(apkDirectory)
+        doFirst {
+            def allowed = project.file('build/outputs/apk').canonicalFile.toPath()
+            def target = apkDirectory.get().asFile.canonicalFile.toPath()
+            if (!target.startsWith(allowed) || target == allowed) throw new GradleException('APK output is outside the allowed build directory')
+        }
+    }
+    tasks.matching { it.name == "package$suffix" }.configureEach { dependsOn(fresh) }
+}

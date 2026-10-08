@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider android:name="app.camellia.mobile.release.FixtureProvider"
+            android:authorities="app.camellia.mobile.release.test.fixtures" android:exported="true" />
+    </application>
+</manifest>

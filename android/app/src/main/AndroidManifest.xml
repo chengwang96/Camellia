@@ -24,11 +24,7 @@
             android:name=".CameraFileProvider"
             android:authorities="app.camellia.mobile.camera"
             android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/camera_paths" />
-        </provider>
+            android:grantUriPermissions="true" />
         <activity android:name=".SettingsActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".QrScanActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:theme="@style/AppTheme" />
         <activity android:name=".LocalChatActivity" android:exported="false" android:enableOnBackInvokedCallback="false" tools:ignore="UnusedAttribute" android:windowSoftInputMode="adjustResize" />

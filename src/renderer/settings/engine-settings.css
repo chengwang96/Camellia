@@ -1,5 +1,5 @@
 .nav-divider { border-top: 1px solid var(--dsw-alias-border-l2); margin: 12px; }
-.engine-tabs { display: flex; flex-wrap: wrap; gap: 5px; padding: 4px; border-radius: 12px; background: var(--dsw-specific-sidebar-fill); margin-bottom: 20px; width: fit-content; max-width: 100%; }
+.engine-tabs { display: flex; flex-wrap: wrap; gap: 5px; padding: 4px; border-radius: 12px; background: var(--dsw-specific-sidebar-fill); margin-bottom: 14px; width: fit-content; max-width: 100%; }
 .engine-tabs button { border: 0; border-radius: 9px; padding: 8px 16px; }
 .engine-tabs [aria-selected=true] { background: var(--dsw-alias-bg-base); box-shadow: 0 1px 4px #0000000c; font-weight: 600; }
 .global-notice { padding: 15px 18px; border: 1px solid var(--dsw-alias-border-l2); border-left: 3px solid var(--dsw-static-deepseek-400); border-radius: 10px; margin-bottom: 22px; font-size: 12px; line-height: 1.7; }
@@ -37,13 +37,21 @@
 .download-save { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 16px; padding-top: 14px; }
 .download-save p { flex: 1 1 240px; margin: 0; }
 .download-save button { flex-shrink: 0; }
-.engine-runtime { margin-bottom: 24px; }
+.engine-runtime { margin-bottom: 18px; }
 .engine-runtime .download-save { padding-top: 0; }
 .runtime-card { padding: 21px 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
 .runtime-card > div:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .runtime-card h2 { margin: 0; flex: 1; }
 .runtime-card p { margin: 10px 0 0; overflow-wrap: anywhere; }
 .runtime-card code { display: block; overflow-wrap: anywhere; margin-top: 8px; }
+#runtimeCards .runtime-card { padding: 14px 0; }
+.runtime-summary { display: flex; flex: 1 1 300px; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
+.runtime-summary h2 { flex: 0 1 auto; overflow-wrap: anywhere; }
+.runtime-card .runtime-version, .runtime-card .runtime-update { margin: 0; }
+.runtime-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-width: 0; max-width: 100%; margin-left: auto; }
+.runtime-update { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.runtime-update button { flex-shrink: 0; }
+.runtime-card .runtime-description, .runtime-card .runtime-cleanup-warning { margin-top: 6px; }
 .runtime-external-update { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .runtime-external-update button { flex-shrink: 0; }
 .runtime-reinstall-dialog { width: 520px; max-width: calc(100vw - 32px); }
@@ -59,7 +67,20 @@
 .runtime-path-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .runtime-path-actions input { flex: 1 1 240px; min-width: 0; width: 100%; }
 .runtime-path-actions button { flex-shrink: 0; }
+#runtimeCards .runtime-installation-path { display: flex; align-items: baseline; gap: 12px; margin-top: 10px; }
+#runtimeCards .runtime-installation-path > span { flex-shrink: 0; }
+#runtimeCards .runtime-installation-path code { flex: 1; min-width: 0; margin: 0; font-family: var(--ds-font-family-code); }
+#runtimeCards .runtime-path { margin-top: 12px; }
+#runtimeCards .runtime-path-actions label { flex-shrink: 0; max-width: min(230px, 100%); margin: 0; }
+#runtimeCards .runtime-path-actions input { flex-basis: 180px; }
+#runtimeCards .runtime-path .hint { margin-top: 6px; }
 @media(max-width:850px) { .engine-tabs button { padding: 8px 10px; }.engine-field { gap: 12px; } }
+@media(max-width:700px) {
+  .runtime-summary { flex-basis: 100%; }
+  #runtimeCards .runtime-installation-path { flex-direction: column; align-items: stretch; gap: 4px; }
+  #runtimeCards .runtime-path-actions label { flex-basis: 100%; max-width: none; }
+  #runtimeCards .runtime-path-actions input { flex-basis: 100%; }
+}
 
 .codex-quotas { display: grid; gap: 10px; margin: 16px 0; }
 .codex-quotas p { margin: 0 0 6px; font-size: 12px; }

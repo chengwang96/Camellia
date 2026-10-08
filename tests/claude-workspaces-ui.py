@@ -34,8 +34,8 @@ bridge = r"""
   window.testCall = async (method, payload) => {
     const response = await window.testRpc(method, payload);
     for (const event of response.events || []) {
-      if (event.channel === 'dsh:claude-event') onEvent(event.data);
-      if (event.channel === 'dsh:claude-goal') onGoal(event.data);
+      if (event.channel === 'dsh:conversation-event') onEvent(event.data);
+      if (event.channel === 'dsh:conversation-goal') onGoal(event.data);
       if (event.channel === 'dsh:api-router-state') onRouter(event.data);
     }
     return response.result;
@@ -47,8 +47,9 @@ bridge = r"""
     if (method === 'onLanguageChanged') return () => () => {};
     if (method === 'onArchivedChanged') return () => () => {};
     if (method === 'onHarnessNavigate') return () => () => {};
-    if (method === 'onClaudeEvent') return (fn) => { onEvent = fn; };
-    if (method === 'onClaudeGoal') return (fn) => { onGoal = fn; };
+    if (method === 'onConversationEvent') return (fn) => { onEvent = fn; };
+    if (method === 'onConversationGoal') return (fn) => { onGoal = fn; };
+    if (method === 'onConversationStatus') return () => () => {};
     if (method === 'onApiRouterState') return (fn) => { onRouter = fn; };
     return (payload) => window.testCall(method, payload);
   } });
@@ -68,7 +69,7 @@ try:
         page.goto((repo / 'src/renderer/chat/claude.html').as_uri())
         page.wait_for_load_state('networkidle')
         expect(page.locator('.ws-row.active')).to_have_count(0)
-        expect(page.locator('#independentSessions [data-sid="legacy-chat"]')).to_be_visible()
+        expect(page.locator(f'#independentSessions [data-sid="{fixtures["conversationId"]}"]')).to_be_visible()
 
         # Native folder picker path/name, keyboard submission, and first workspace.
         page.get_by_role('button', name='Add workspace', exact=True).click()
@@ -84,7 +85,7 @@ try:
         expect(page.locator(f'section[data-workspace-id="{alpha}"] #sessionCurrent')).to_be_visible()
         page.locator('#input').fill('Alpha 中的会话')
         page.locator('#send').click()
-        expect(page.locator('#newSessionBtn')).to_be_disabled()
+        expect(page.locator('#newSessionBtn')).to_be_enabled()
         page.wait_for_function('currentRunId !== null')
         assert rpc('lastProcess')['result']['cwd'] == fixtures['alpha']
         grouped_id = page.evaluate("window.testCall('finishTurn')")
@@ -97,22 +98,21 @@ try:
         page.locator('#input').fill('不关联任何工作区的会话')
         page.locator('#send').click()
         page.wait_for_function('currentRunId !== null')
-        assert Path(rpc('lastProcess')['result']['cwd']) == Path(fixtures['userData']) / 'claude-sessions'
+        assert Path(rpc('lastProcess')['result']['cwd']) == Path(fixtures['userData']) / 'conversations' / 'workspace'
         independent_id = page.evaluate("window.testCall('finishTurn')")
         expect(page.locator(f'#independentSessions [data-sid="{independent_id}"]')).to_be_visible()
 
-        # Move the open session in and out via the header picker; resume ID is stable.
+        # Saved conversations retain their original directory; old menus that
+        # reassigned the native working directory are no longer exposed.
         page.locator(f'[data-sid="{independent_id}"]').get_by_role('button', name='Session actions').click()
-        page.get_by_role('menuitem', name='Move to workspace…', exact=True).click()
-        page.get_by_role('menuitem', name='Alpha Project', exact=True).click()
-        expect(page.locator(f'section[data-workspace-id="{alpha}"] [data-sid="{independent_id}"]')).to_be_visible()
-        page.locator('#input').fill('继续在 Alpha 工作')
+        expect(page.get_by_role('menuitem', name='Move to workspace…', exact=True)).to_have_count(0)
+        expect(page.get_by_role('menuitem', name='Move out of workspace', exact=True)).to_have_count(0)
+        page.keyboard.press('Escape')
+        page.locator('#input').fill('继续在原目录工作')
         page.locator('#send').click()
         page.wait_for_function('currentRunId !== null')
-        assert rpc('lastProcess')['result']['cwd'] == fixtures['alpha']
+        assert Path(rpc('lastProcess')['result']['cwd']) == Path(fixtures['userData']) / 'conversations' / 'workspace'
         assert page.evaluate("window.testCall('finishTurn')") == independent_id
-        page.locator(f'[data-sid="{independent_id}"]').get_by_role('button', name='Session actions').click()
-        page.get_by_role('menuitem', name='Move out of workspace', exact=True).click()
         expect(page.locator('.ws-row.active')).to_have_count(0)
         expect(page.locator(f'#independentSessions [data-sid="{independent_id}"]')).to_be_visible()
 
@@ -150,14 +150,13 @@ try:
         grouped = page.locator(f'[data-sid="{grouped_id}"]')
         grouped.get_by_role('button', name='Session actions').click()
         page.get_by_role('menuitem', name='Fork session', exact=True).click()
-        expect(page.locator('#headerTitle')).to_have_text('Alpha 中的会话')
-        page.wait_for_function('pendingForkId !== null')
+        expect(page.locator('#headerTitle')).to_have_text('Fork of Alpha 中的会话')
+        fork_id = page.evaluate('context.sessionId')
+        assert fork_id != grouped_id
         page.locator('#input').fill('保留历史的分叉')
         page.locator('#send').click()
         page.wait_for_function('currentRunId !== null')
-        assert '--fork-session' in rpc('lastProcess')['result']['args']
-        fork_id = page.evaluate("window.testCall('finishTurn')")
-        assert fork_id != grouped_id
+        assert page.evaluate("window.testCall('finishTurn')") == fork_id
         expect(page.locator(f'section[data-workspace-id="{alpha}"] [data-sid="{fork_id}"]')).to_be_visible()
         fork_row = page.locator(f'[data-sid="{fork_id}"]')
         fork_row.get_by_role('button', name='Session actions').click()
@@ -317,7 +316,8 @@ try:
         page.reload()
         expect(section.locator('[data-history]')).to_have_count(0)
         section.locator('.ws-row').click()
-        section.locator('[data-sid="paged-0"]').click()
+        paged_first = rpc('fixtures')['result']['pagedSessions'][0]
+        section.locator(f'[data-sid="{paged_first}"]').click()
         assert 'active' in section.locator('.ws-row').get_attribute('class')
         expect(page.locator('#chat')).to_contain_text('分页会话 0')
 
@@ -328,7 +328,7 @@ try:
         page.locator('#input').fill('整理这份项目')
         page.locator('#input').press('Enter')
         expect(page.locator('#goalChipRow .goal-chip').first).to_contain_text('Goal ·')
-        expect(page.locator('#newSessionBtn')).to_be_disabled()
+        expect(page.locator('#newSessionBtn')).to_be_enabled()
         page.locator('#goalChipRow .goal-chip').first.click()
         page.locator('.dsh-pop .pop-row',has_text='Pause goal').click()
         expect(page.locator('#goalChipRow .goal-chip').first).to_contain_text('Goal paused')
@@ -344,7 +344,7 @@ try:
         expect(page.locator('#goalChipRow')).to_be_hidden()
 
         assert not errors, errors
-        print('PASS: workspaces, keep/archive removal, moves, restart, paginated history, goals, pin/fork/archive, layout, Chinese IME, batched streaming and special paths; no browser errors')
+        print('PASS: shared workspaces, fixed directories, keep/archive removal, restart, paginated history, goals, pin/fork/archive, layout, Chinese IME, batched streaming and special paths; no browser errors')
         browser.close()
 finally:
     try:

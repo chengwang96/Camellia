@@ -115,6 +115,19 @@ public class MobileLayoutRefinementTest extends InstrumentationTestCase {
             assertNull(row.findViewWithTag("conversationFilePreview"));
             assertFalse(row.getContentDescription().toString().contains("移动端设计评审报告.pdf"));
         });
+        ui(() -> {
+            root().findViewWithTag("remoteSearchButton").performClick();
+            ((EditText) root().findViewWithTag("remoteSearchInput")).setText("整理");
+            assertNotNull(root().findViewWithTag("conversation:layout-chat"));
+        });
+        screenshot("layout-conversation-search");
+        ui(() -> {
+            root().findViewWithTag("remoteSearchClose").performClick();
+            assertEquals(View.GONE, root().findViewWithTag("remoteSearchBar").getVisibility());
+            detail();
+            assertNull(root().findViewWithTag("remoteSearchButton"));
+            assertNull(field("searchInput")); assertNull(field("searchBar"));
+        });
     }
 
     public void testConnectionAndWorkStatusStaySeparateWithAStableFooterHeight() throws Exception {

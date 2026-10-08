@@ -87,7 +87,8 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
       },
       conversationModels: (engine, settings) => engines ? engines.models(engine, settings) : config.publicState(routes()).models.map(id => ({ id, name: id, thinking: [] })),
       createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: process.execPath }),
-      onEvent: () => remote?.publish(),
+      onEvent: event => remote?.publish(event),
+      onStatus: status => remote?.publish(status),
     });
     const create = manager.create.bind(manager);
     manager.remoteEngines = supported;
@@ -99,7 +100,10 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
       journalFile: path.join(dataDir, 'remote', 'api-imports.json'), isBusy: () => closing || commandBusy || manager.isBusy() || Boolean(router?.getState().activeRequests),
       reload: () => router?.reload(), publish: () => remote?.publish() });
     const cleanup = new (require('../main/storage-cleanup').StorageCleanup)({ dataDir, conversations: manager,
-      references: async () => ({ active: manager.isBusy(), config: loadConfig() }), isActive: () => manager.isBusy() });
+      histories: Object.values(drivers).map(driver => driver.history).filter(history => history?.root),
+      references: async () => ({ active: manager.isBusy() || Boolean(remote?.attachmentReferences().active), config: loadConfig(),
+        attachments: remote?.attachmentReferences().references || [] }),
+      isActive: () => closing || manager.isBusy() || Boolean(remote?.attachmentReferences().active) });
     const management = require('../main/remote/server-management').createServerManagement({ file: path.join(dataDir, 'remote', 'management.json'),
       command: (action, payload) => host.command(action, payload), publish: () => remote?.publish() });
     remote = createRemoteService({ dataDir, manager, apiImport, management, nativeSettings: {
@@ -113,6 +117,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
         openExternal: async () => { throw new Error('Open the login URL shown by network.state in a trusted browser'); } })),
     });
     const reader = new RemoteReadModel(manager);
+    remote.maintainAttachments(cleanup, undefined, () => commandBusy);
     const host = {
       async startTrustedDevices() {
         if (closing || commandBusy) throw new Error('Camellia is busy or closing');

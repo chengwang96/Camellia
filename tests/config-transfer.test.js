@@ -37,8 +37,8 @@ test('API route configuration exports raw keys and imports back with usage prese
       assert.equal(state.providers[0].models[0].contextWindow, 131072, 'confirmed context windows survive import');
       assert.equal(state.providers[0].models[0].maxContext, 262144, 'model context maxima survive import');
       assert.equal(state.providers[0].keys[0].maskedKey.includes('isolated'), false, 'state stays masked');
-    } finally { second.cleanup(); }
-  } finally { first.cleanup(); }
+    } finally { await second.api.stopRouter(); second.cleanup(); }
+  } finally { await first.api.stopRouter(); first.cleanup(); }
 });
 
 test('import rejects files that are not Camellia route exports', async t => {

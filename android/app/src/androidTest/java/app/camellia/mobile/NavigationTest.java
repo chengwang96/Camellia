@@ -267,10 +267,15 @@ public class NavigationTest extends InstrumentationTestCase {
                     assertNull(findText(root, "Refresh conversations", "刷新会话")); assertNull(findText(root, "Conversations", "会话"));
                     assertNull(findText(root, "Network settings", "网络设置")); assertNull(findText(root, "Forget computer", "移除电脑"));
                     assertNull(findText(root, profile.getString("address"), profile.getString("address")));
-                    assertNotNull(root.findViewWithTag("searchBar")); assertNotNull(root.findViewWithTag("newIndependent"));
-                    assertTrue(root.findViewWithTag("remoteNewWorkspace") instanceof android.widget.ImageButton);
+                    assertNull(root.findViewWithTag("searchBar")); assertNotNull(root.findViewWithTag("remoteSearchButton"));
+                    assertEquals(View.GONE, root.findViewWithTag("remoteSearchBar").getVisibility());
+                    assertNull(root.findViewWithTag("remoteNewWorkspace"));
                     assertNull(root.findViewWithTag("group:"));
                     assertEquals("Research laptop", ((TextView) root.findViewWithTag("headerComputerName")).getText().toString());
+                    var capabilities = MainActivity.class.getDeclaredMethod("updateCapabilities", JSONObject.class); capabilities.setAccessible(true);
+                    capabilities.invoke(activity, new JSONObject().put("permission", "control").put("capabilities", new org.json.JSONArray().put("create").put("create-workspace"))
+                        .put("workspaces", new org.json.JSONArray().put(new JSONObject().put("id", "research").put("name", "Research")))
+                        .put("includeUnassigned", false));
                     JSONObject conversation = new JSONObject().put("id", "12345678-1234-1234-1234-123456789abc").put("title", "Mobile navigation").put("workspaceId", "research").put("workspaceName", "Research");
                     var apply = MainActivity.class.getDeclaredMethod("applyConversationPage", JSONObject.class, boolean.class); apply.setAccessible(true);
                     apply.invoke(activity, new JSONObject().put("conversations", new org.json.JSONArray().put(conversation)), false);
@@ -278,6 +283,7 @@ public class NavigationTest extends InstrumentationTestCase {
                     assertNotNull(root.findViewWithTag("remoteNewWorkspace"));
                     assertNull(root.findViewWithTag("group:"));
                     JSONObject independent = new JSONObject().put("id", "22345678-1234-1234-1234-123456789abc").put("title", "Independent").put("workspaceId", JSONObject.NULL);
+                    var independentScope = MainActivity.class.getDeclaredField("allowIndependent"); independentScope.setAccessible(true); independentScope.set(activity, true);
                     apply.invoke(activity, new JSONObject().put("conversations", new org.json.JSONArray().put(conversation).put(independent)), false);
                     assertNotNull(root.findViewWithTag("group:"));
                     assertTrue(root.findViewWithTag("newStandalone") instanceof android.widget.ImageButton);
@@ -316,7 +322,7 @@ public class NavigationTest extends InstrumentationTestCase {
                     invoke(activity, "stopNetwork");
                     var failure = MainActivity.class.getDeclaredMethod("showFailure", Exception.class, boolean.class);
                     failure.setAccessible(true); failure.invoke(activity, new java.io.IOException(), true);
-                    assertSingleLineFooter(activity, "searchBar");
+                    assertSingleLineFooter(activity, null);
                     invoke(activity, "detailScreen"); invoke(activity, "stopNetwork");
                     failure.invoke(activity, new java.io.IOException(), true);
                     assertSingleLineFooter(activity, "composerBar");
@@ -328,10 +334,12 @@ public class NavigationTest extends InstrumentationTestCase {
     private void assertSingleLineFooter(Activity activity, String barTag) {
         TextView status = activity.getWindow().getDecorView().findViewWithTag("connectionStatus");
         LinearLayout parent = (LinearLayout) status.getParent();
-        LinearLayout bar = parent.findViewWithTag(barTag);
+        LinearLayout bar = barTag == null ? null : parent.findViewWithTag(barTag);
         assertEquals(parent.getChildCount() - 1, parent.indexOfChild(status));
-        assertEquals(parent.indexOfChild(bar) + 1, parent.indexOfChild(status));
-        assertFalse(bar.getClipChildren()); assertFalse(bar.getClipToPadding());
+        if (barTag != null) {
+            assertEquals(parent.indexOfChild(bar) + 1, parent.indexOfChild(status));
+            assertFalse(bar.getClipChildren()); assertFalse(bar.getClipToPadding());
+        } else assertNull(parent.findViewWithTag("searchBarDock"));
         assertEquals(android.text.TextUtils.TruncateAt.END, status.getEllipsize());
         String[] messages = {
             status.getText().toString(),
@@ -341,7 +349,7 @@ public class NavigationTest extends InstrumentationTestCase {
         float density = activity.getResources().getDisplayMetrics().density;
         assertEquals(Math.round(2 * density), status.getPaddingTop());
         assertEquals(Math.round(2 * density), status.getPaddingBottom());
-        View page = (View) parent.getParent().getParent();
+        View page = barTag == null ? parent : (View) parent.getParent().getParent();
         android.view.WindowInsets original = page.getRootWindowInsets();
         assertNotNull(original);
         for (int bottom : new int[] {0, Math.round(24 * density), Math.round(280 * density)}) {
@@ -356,9 +364,9 @@ public class NavigationTest extends InstrumentationTestCase {
                     View.MeasureSpec.makeMeasureSpec((int) (640 * density), View.MeasureSpec.EXACTLY));
                 parent.layout(0, 0, parent.getMeasuredWidth(), parent.getMeasuredHeight());
                 assertEquals(1, status.getLineCount());
-                assertTrue(status.getTop() - bar.getBottom() >= Math.round(8 * density));
+                if (bar != null) assertTrue(status.getTop() - bar.getBottom() >= Math.round(8 * density));
                 assertTrue(status.getBottom() <= parent.getHeight() - parent.getPaddingBottom());
-                assertTrue(bar.getHeight() >= (int) (48 * density));
+                if (bar != null) assertTrue(bar.getHeight() >= (int) (48 * density));
                 assertEquals(message, status.getText().toString());
             }
         }
@@ -396,21 +404,14 @@ public class NavigationTest extends InstrumentationTestCase {
             getInstrumentation().waitForIdleSync();
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
-                ViewGroup bar = root.findViewWithTag("searchBar"); View status = root.findViewWithTag("connectionStatus");
-                View fade = root.findViewWithTag("searchBarFade"); assertNotNull(fade);
-                float density = activity.getResources().getDisplayMetrics().density;
-                assertEquals(Math.round(36 * density), fade.getHeight());
-                assertTrue(fade.getBackground() instanceof android.graphics.drawable.GradientDrawable);
-                assertTrue(((View) fade.getParent()).getLayoutParams() instanceof android.widget.FrameLayout.LayoutParams);
-                assertEquals(android.view.Gravity.BOTTOM, ((android.widget.FrameLayout.LayoutParams) ((View) fade.getParent()).getLayoutParams()).gravity);
-                View search = bar.getChildAt(0); assertEquals(Math.round(4 * density), search.getElevation(), 0f);
-                assertEquals(Math.round(1 * density), search.getTranslationZ(), 0f);
-                assertTrue("Status must leave room below the search shadow", status.getTop() - bar.getBottom() >= Math.round(8 * density));
-                assertFalse("Search shadow must not be clipped", bar.getClipChildren());
-                assertFalse("Page must allow nested shadows outside the search bar bounds", ((ViewGroup) bar.getParent()).getClipChildren());
-                assertFalse(((ViewGroup) bar.getParent()).getClipToPadding());
-                assertFalse(bar.getClipToPadding());
-                assertTrue(bar.getHeight() >= Math.round(48 * density));
+                View search = root.findViewWithTag("remoteSearchBar");
+                View status = root.findViewWithTag("connectionStatus");
+                assertEquals(View.GONE, search.getVisibility());
+                assertSame(status.getParent(), search.getParent());
+                assertNull(root.findViewWithTag("searchBarDock"));
+                assertNull(root.findViewWithTag("searchBarFade"));
+                assertTrue(root.findViewWithTag("remoteSearchButton").getHeight() >= new ChatStyle(activity).dp(48));
+                assertSingleLineFooter(activity, null);
             });
             android.graphics.Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot(); assertNotNull(screenshot);
             try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalCacheDir(), "list-footer.png"))) {

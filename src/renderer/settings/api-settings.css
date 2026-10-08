@@ -1,5 +1,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+/* Wait for saved UI language before painting the source-language labels. */
+html[data-i18n-pending] body { visibility: hidden; }
 body { margin: 0; height: 100vh; display: flex; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font: var(--f-s-14); }
 button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; min-height: 34px; padding: 6px 14px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px; background: transparent; white-space: nowrap; }

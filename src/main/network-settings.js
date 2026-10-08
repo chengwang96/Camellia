@@ -1,6 +1,6 @@
 'use strict';
 
-const { providerTargets, subscriptionTargets, probeTargets, summarize } = require('./network-probe');
+const { providerTargets, subscriptionTargets, probeTargets, probeTarget: probeConnection, summarize } = require('./network-probe');
 
 const PROXY_KEYS = /^(https?|all|no)_proxy$|^npm_config_(proxy|https?_proxy|noproxy)$/i;
 function detectedProxy(result) {
@@ -46,22 +46,17 @@ function subscriptionEnvironment(source) {
 }
 // A proxy that accepts connections but cannot reach the internet leaves every
 // request hanging. Probing over raw TCP tells a working proxy apart from a
-// stale one without paying for an application request.
+// stale one without paying for an application request. HTTPS probes also
+// complete TLS, because an accepted TCP connection can still be unusable.
 function probeTarget(url) {
   const parsed = new URL(url);
-  return { host: parsed.hostname, port: Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80) };
+  return { host: parsed.hostname.replace(/^\[|\]$/g, ''), port: Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80), secure: parsed.protocol === 'https:' };
 }
 // The probe reuses the release/update endpoint the app already depends on, so
 // "healthy" matches something the user actually needs, and a machine that must
 // route everything through a proxy is never mistaken for a broken one.
 async function healthCheck(proxyUrl, { url = 'https://api.github.com', timeout = 5000 } = {}) {
-  const { host, port } = probeTarget(url);
-  const reachable = connect => connect().then(socket => { socket.destroy(); return true; }, () => false);
-  // Direct connectivity is the precondition for "prefer direct" to help at
-  // all: if a direct connection also fails, switching modes changes nothing.
-  const direct = await reachable(() => require('./network-fallback').directConnection(host, port, { timeout }));
-  if (!direct) return { direct, proxy: false };
-  const proxy = await reachable(() => require('./network-fallback').proxyConnection(proxyUrl, host, port, { timeout }));
+  const { direct, proxy } = await probeConnection(probeTarget(url), { proxyUrl, timeout });
   return { direct, proxy };
 }
 function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironment, onHealthChange = () => {}, probeUrl = 'https://chatgpt.com',
@@ -133,11 +128,10 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
     // Keep the user's choice ("auto") for persistence even when the resolved
     // transport for this run is the proxy.
     const requested = nextMode;
-    // Only an explicit save re-tests connectivity. Startup and the health
-    // monitor reuse the stored choice: the direct-first bridge already falls
-    // back per connection, so honoring it costs nothing and avoids probing on
-    // every launch.
-    if (nextMode === 'auto' && persist) {
+    // Check auto at startup as well as on an explicit save. The bridge only
+    // retries TCP establishment; a route that accepts TCP but stalls TLS
+    // needs the working system proxy before model requests are sent.
+    if (nextMode === 'auto' && (persist || probe)) {
       // Automatic mode tests connectivity for real and only takes the
       // direct-first bridge when direct connections work; otherwise it stays on
       // the proxy, so a machine that needs the proxy is never cut off.

@@ -3,8 +3,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
-const { readJson, writeJson } = require('../shared/json-store');
+const { readRecoverableJson, writeJson } = require('../shared/json-store');
 const { translate } = require('../shared/i18n');
+const { canonicalModelId } = require('../shared/model-names');
 const { validSessionId } = require('./claude-history');
 const { createSessionWorkspaces } = require('./session-workspaces');
 const { ClaudeGoal, verifyPrompt, verifySignal } = require('./claude-goal');
@@ -22,6 +23,7 @@ const { buildHistoryIndex, searchHistory: matchHistory } = require('../main/conv
 const { previewKind } = require('../main/file-preview');
 const { subscriptionFailure, availableAccount } = require('./subscription-recovery');
 const { memoryInstructions } = require('./global-memory');
+const { ConversationHistory, FLAGS: HISTORY_FLAGS } = require('./conversation-history');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
 
@@ -117,6 +119,12 @@ function nativeEditCheckpoint(segment, edit) {
   return { lastTurnId: saved.lastTurnId, replayFromSeq };
 }
 const recoveryAdvice = 'The original history is retained. Try manual compaction, switch to a larger-context model, or continue in a new conversation. Split oversized messages or attachments. Files and external actions have not been rolled back.';
+const storageFailure = error => Boolean(error?.persistence || ['ENOSPC', 'EIO', 'EACCES', 'EPERM', 'EROFS', 'EBUSY'].includes(error?.code)
+  || error?.cause && storageFailure(error.cause));
+const summaryFallbackAllowed = error => !storageFailure(error)
+  && !subscriptionFailure({ is_error: true, result: error.message }) && !/\b403\b/.test(error.message)
+  && (error.overflow || error.emptySummary
+  || error.name === 'TimeoutError' || /(?:summary|summarizer|compaction|compacted context|budget).*(?:too large|too deep|empty|limit reached|budget exhausted|does not fit|timed out|timeout|shortening attempts|split the history)/i.test(error.message));
 // Compaction failures already carry the advice, so appending it again at the
 // recovery boundary printed the same paragraph twice in the transcript.
 const withRecoveryAdvice = message => String(message).includes(recoveryAdvice) ? String(message) : String(message) + '\n' + recoveryAdvice;
@@ -156,7 +164,10 @@ class SharedConversations {
     this.createGoalBridge = createGoalBridge;
     this.goalBridges = new Map();
     this.controlStarts = new Map();
+    this.recoveryWarnings = [];
+    const onLoadError = error => this.recordLoadError(error);
     this.tasks = new ScheduledTasks({ file: path.join(dir, 'tasks', 'state.json'), log,
+      onLoadError,
       busy: task => this.busy(task.sessionId),
       interrupt: task => {
         const active = this.active.get(task.sessionId), recovery = this.recovering.get(task.sessionId);
@@ -173,17 +184,26 @@ class SharedConversations {
       },
       onChange: task => this.onEvent({ type: 'conversation:task', session_id: task.sessionId, engine: task.engine, task }),
     });
+    this.historyStore = new ConversationHistory(dir, { onCacheError: error => this.log('History index: ' + error.message) });
     for (const name of fs.readdirSync(dir).filter(name => name.endsWith('.json'))) {
-      const item = readJson(path.join(dir, name), null);
-      if (!item || !validSessionId(item.id) || !ENGINES.includes(item.origin)) continue;
-      for (const entry of item.controlSends || []) {
-        if (!['starting', 'running'].includes(entry.state)) continue;
-        entry.state = 'interrupted'; entry.error = 'Application restarted before this request completed';
-        item.interrupted = true;
-        writeJson(this.file(item.id), item);
-      }
-      if (item.pending) { item.interrupted = true; item.pending = null; writeJson(this.file(item.id), item); }
-      item.seq = this.rows(item).reduce((seq, r) => Math.max(seq, r.seq || 0), item.seq || 0);
+      let item;
+      try { item = readRecoverableJson(path.join(dir, name), null, onLoadError, value => value === null
+        || validSessionId(value?.id) && name === value.id + '.json' && ENGINES.includes(value.origin)); }
+      catch (error) { onLoadError(error); continue; }
+      if (!item) continue;
+      try {
+        let changed = false;
+        for (const entry of item.controlSends || []) {
+          if (!['starting', 'running'].includes(entry.state)) continue;
+          entry.state = 'interrupted'; entry.error = 'Application restarted before this request completed';
+          item.interrupted = true;
+          changed = true;
+        }
+        if (item.pending) { item.interrupted = true; item.pending = null; changed = true; }
+        if (changed) writeJson(this.file(item.id), item);
+        const history = this.historyInfo(item);
+        item.seq = Math.max(history.maxSeq, item.seq || 0);
+      } catch (error) { onLoadError(error); continue; }
       this.clock = Math.max(this.clock, item.updatedAt || 0);
       this.items.set(item.id, item);
     }
@@ -203,12 +223,18 @@ class SharedConversations {
       } });
     // Goals are persisted beside their conversation, and never resume on load.
     for (const c of this.items.values()) this.goalFor(c.id);
-    const oldGoal = readJson(path.join(dir, 'goal-state'), null);
-    if (oldGoal?.sessionId && this.items.has(oldGoal.sessionId)) {
-      const goal = this.goalFor(oldGoal.sessionId);
-      if (!goal.goal) { writeJson(goal.file(), oldGoal); goal.load(); }
-      fs.unlinkSync(path.join(dir, 'goal-state'));
-    }
+    try {
+      const oldGoal = readRecoverableJson(path.join(dir, 'goal-state'), null, onLoadError);
+      if (oldGoal?.sessionId && this.items.has(oldGoal.sessionId)) {
+        const goal = this.goalFor(oldGoal.sessionId);
+        if (!goal.goal) { writeJson(goal.file(), oldGoal); goal.load(); }
+        fs.unlinkSync(path.join(dir, 'goal-state'));
+      }
+    } catch (error) { onLoadError(error); }
+  }
+  recordLoadError(error) {
+    this.recoveryWarnings.push({ error: error.message, backupFile: error.backupFile });
+    this.log('Saved data recovery: ' + error.message);
   }
   goalFor(id) {
     this.get(id);
@@ -239,8 +265,10 @@ class SharedConversations {
         return facade;
       }, resolveWorkspace: payload => payload.workspaceId || this.get(id).workspaceId || null,
       verifyCompletion: (claim, options) => this.verifyCompletion(id, claim, options),
-      onChange: value => {
-        this.onGoal({ sessionId: id, goal: value });
+      onLoadError: error => this.recordLoadError(error),
+      onChange: (value, error) => {
+        this.onGoal({ sessionId: id, goal: value, ...(error ? { error } : {}) });
+        if (error) this.onStatus({ sessionId: id, text: error });
         this.publishActivity(id);
       }, log: this.log });
     goal.load(); this.goals.set(id, goal); return goal;
@@ -255,12 +283,15 @@ class SharedConversations {
   }
   publishActivity(id) {
     const c = this.get(id);
+    const engine = this.active.get(id)?.engine || this.recovering.get(id)?.engine || c.currentEngine;
+    this.drivers[engine]?.sessions?.touch({ conversationId: id });
     this.onEvent({ type: 'conversation:activity', session_id: id, engine: c.currentEngine, activity: this.activity(id) });
     this.remoteQueue?.schedule(id);
   }
   pauseGoals() { for (const goal of this.goals.values()) { if (goal.armed) goal.setPhase('paused'); else goal.cancelTimer(); } }
 
   closeGoalTools() {
+    this.historyStore.close();
     this.remoteQueue?.close();
     this.tasks.close();
     this.goalToolsClosed = true;
@@ -297,10 +328,9 @@ class SharedConversations {
         if (active.createdGoal === driver.goal && driver.armed && driver.goal?.objective === args.objective.trim() && (driver.goal.criterion || '') === (args.criterion || '').trim()) return { ok: true, goal: driver.view() };
         if (active.createdGoal) throw new Error('This turn already created a goal');
         active.facade.interrupt ||= () => { void this.cancel({ sessionId: id, runId: active.facade.gen }); };
-        const result = driver.start({ objective: args.objective, criterion: args.criterion, sessionId: id, workspaceId: active.c.workspaceId }, { adoptSession: active.facade });
+        const result = driver.start({ objective: args.objective, criterion: args.criterion, sessionId: id, workspaceId: active.c.workspaceId, engine: active.engine }, { adoptSession: active.facade });
         if (result.ok) {
           active.createdGoal = driver.goal;
-          driver.touch({ engine: active.engine });
           result.goal = driver.view();
         }
         return result;
@@ -401,7 +431,12 @@ class SharedConversations {
   file(id) { if (!validSessionId(id)) throw new Error('Invalid conversation'); return path.join(this.dir, id + '.json'); }
   get(id) { const c = this.items.get(id); if (!c) throw new Error('Conversation not found'); return c; }
   head(id) { const c = this.get(id); return { title: c.title, summary: '', cwd: c.cwd }; }
-  save(c) { if (c.updatedAt > this.clock) this.clock = c.updatedAt; writeJson(this.file(c.id), c); this.items.set(c.id, c); }
+  save(c) {
+    if (c.updatedAt > this.clock) this.clock = c.updatedAt;
+    try { writeJson(this.file(c.id), c); }
+    catch (error) { error.persistence = true; throw error; }
+    this.items.set(c.id, c);
+  }
   // Session lists order by "most recently updated", but wall-clock milliseconds
   // are not unique: two conversations touched in the same millisecond would be
   // ordered by their random IDs instead. Every update takes a strictly
@@ -444,6 +479,7 @@ class SharedConversations {
     const rm = file => { try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; } };
     rm(this.file(id));
     rm(path.join(this.dir, id + '.jsonl'));
+    this.historyStore.remove(id);
     for (const name of fs.readdirSync(this.dir)) if (name.startsWith(id + '.jsonl.torn-')) rm(path.join(this.dir, name));
     rm(path.join(this.dir, 'goals', id + '.json'));
     for (const file of files) rm(file);
@@ -459,35 +495,28 @@ class SharedConversations {
       .filter(file => path.dirname(file) === directory));
   }
   rawRows(c) {
-    try {
-      const file = path.join(this.dir, c.id + '.jsonl'), text = fs.readFileSync(file, 'utf8');
-      const lines = text.split('\n'), rows = [];
-      for (let i = 0; i < lines.length; i++) {
-        if (!lines[i]) continue;
-        try { rows.push(JSON.parse(lines[i])); }
-        catch (error) {
-          if (i !== lines.length - 1) throw new Error('Conversation history is damaged: ' + c.id);
-          // Preserve the torn tail for inspection before repairing an interrupted append.
-          fs.copyFileSync(file, file + '.torn-' + Date.now());
-          fs.writeFileSync(file, lines.slice(0, i).join('\n') + '\n'); c.interrupted = true;
-        }
-      }
-      return rows;
-    }
-    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-  }
-  rows(c) {
     const rows = [];
-    for (const original of this.rawRows(c)) {
-      // Superseded attempts remain in the append-only log, but never re-enter
-      // the visible transcript or any engine's conversation context.
-      const { previousAttempt, ...row } = original;
-      if (row.role !== 'revision') { rows.push(row); continue; }
-      const index = rows.findIndex(r => r.role === 'user' && r.seq === row.replacesSeq);
-      if (index < 0) throw new Error('Conversation revision target is missing: ' + c.id);
-      rows.splice(index, rows.length - index, { ...row, role: 'user' });
-    }
+    const scanned = this.historyStore.scan(c.id, row => rows.push(row));
+    if (scanned.repaired) c.interrupted = true;
     return rows;
+  }
+  historyInfo(c) {
+    const history = this.historyStore.ensure(c.id);
+    if (history.repaired) c.interrupted = true;
+    return history;
+  }
+  rows(c, options) { this.historyInfo(c); return this.historyStore.rows(c.id, options); }
+  historyPage(c, options = {}) {
+    const history = this.historyInfo(c);
+    const page = this.historyStore.page(c.id, { ...options, mask: options.remote ? HISTORY_FLAGS.remote : HISTORY_FLAGS.visible });
+    return { ...page, version: history.generation };
+  }
+  *historyRows(c, options) { this.historyInfo(c); yield* this.historyStore.iterate(c.id, options); }
+  latestPreviewRows(c) {
+    return this.historyRows(c, { mask: HISTORY_FLAGS.preview, reverse: true });
+  }
+  remoteHistoryRows(c, before) {
+    return this.historyRows(c, { mask: HISTORY_FLAGS.remote, reverse: true, before });
   }
   // The files this conversation, or any earlier one, actually wrote. Camellia
   // already recorded both the paths and the words used around each turn, so the
@@ -557,11 +586,11 @@ class SharedConversations {
     this.onEvent({ type: 'conversation:transcript', session_id: id, engine: c.currentEngine, origin, ...(userSeq === undefined ? {} : { userSeq }), seq: row.seq });
     return { ok: true, sessionId: id, ...(userSeq === undefined ? {} : { userSeq }), seq: row.seq, query, count: files.length, roots, files };
   }
-  messages(c) { return this.rows(c).filter(r => ['user', 'assistant', 'notice'].includes(r.role) && !r.internal)
+  messages(c) { return this.rows(c, { mask: HISTORY_FLAGS.visible })
     .map(r => legacyRecoveryError(r) ? { ...r, runResult: { subtype: 'error', is_error: true, result: r.text } } : r); }
   append(c, row) {
     const entry = { ...row, seq: ++c.seq, at: Date.now() };
-    fs.appendFileSync(path.join(this.dir, c.id + '.jsonl'), JSON.stringify(entry) + '\n');
+    this.historyStore.append(c.id, entry);
     return entry;
   }
   // Replace the logical history wholesale (manual sync from the source app).
@@ -570,6 +599,7 @@ class SharedConversations {
     const file = path.join(this.dir, c.id + '.jsonl');
     if (fs.existsSync(file) && fs.statSync(file).size) fs.copyFileSync(file, file + '.pre-sync');
     fs.writeFileSync(file, '');
+    this.historyStore.remove(c.id);
     c.seq = 0;
     for (const [engine, segment] of Object.entries(c.segments)) (c.retiredSegments ||= []).push({ engine, ...segment });
     c.segments = {};
@@ -595,7 +625,6 @@ class SharedConversations {
     if (this.busy(source.id)) throw new Error('Wait for this conversation to finish before forking it');
     const meta = this.workspaces.sessionMeta();
     if (meta.archived[source.id]) throw new Error('Restore this conversation before forking it');
-    const rows = this.rows(source).filter(row => !row.internal);
     const baseTitle = String(title || '').trim() || translate('Fork of {0}', this.loadConfig().language)
       .replace('{0}', () => meta.titles[source.id] || source.title);
     const titles = new Set([...this.items.values()].map(item => meta.titles[item.id] || item.title));
@@ -608,7 +637,7 @@ class SharedConversations {
     // A fork starts a fresh native session, but it keeps the parked sessions of
     // each binding so switching models there also returns to its own thread.
     conversation.modelSessions = JSON.parse(JSON.stringify(source.modelSessions || {}));
-    for (const row of rows) this.append(conversation, row);
+    for (const row of this.historyRows(source, { mask: HISTORY_FLAGS.public })) this.append(conversation, row);
     this.save(conversation);
     return conversation;
   }
@@ -621,19 +650,25 @@ class SharedConversations {
         imported: Boolean(conversation.importThreadId), activity: this.activity(s.id), lastReplyAt: conversation.lastReplyAt || 0, replyReadAt: conversation.replyReadAt || 0 };
     }) };
   }
-  load(engine, id) {
+  load(engine, id, pageOptions) {
     const c = this.get(id), prefs = preferences(this.loadConfig());
     // Archived conversations stay archived: reloads and stale locations must
     // not resurrect them.
     if (this.workspaces.sessionMeta().archived[id]) return { ok: false, error: 'This conversation is archived. Restore it from Settings → Archived first.' };
-    const messages = this.messages(c);
+    const active = this.recovering.get(id) || this.active.get(id);
+    const page = pageOptions && this.historyPage(c, { limit: 100, before: pageOptions.before ?? (active && !active.internal ? active.userSeq : Infinity) });
+    if (pageOptions?.version && pageOptions.version !== page.version)
+      return { ok: false, error: 'Conversation history changed; reopen this conversation.' };
+    const messages = page ? page.rows.map(r => legacyRecoveryError(r) ? { ...r, runResult: { subtype: 'error', is_error: true, result: r.text } } : r) : this.messages(c);
     const live = this.live(c.currentEngine, id, messages).live;
+    if (live && page) live.historyPage = { nextBefore: page.nextBefore, version: page.version };
     const last = c.lastCompaction;
     const compaction = this.switching.get(id)?.compaction || this.active.get(id)?.compaction
       || (['failed', 'cancelled'].includes(last?.outcome) && Number.isSafeInteger(last.boundary)
-        && !messages.some(row => row.role === 'user' && row.seq > last.boundary) ? { state: last.outcome, engine: last.engine || c.currentEngine,
+        && this.historyInfo(c).userSeq <= last.boundary ? { state: last.outcome, engine: last.engine || c.currentEngine,
         native: last.route === 'native', error: last.error || '' } : null);
     return { ok: true, ...c, activity: this.activity(id), compaction, live, preferences: prefs, messages, settings: this.settings(engine, id), truncated: false,
+      ...(page ? { historyPage: { nextBefore: page.nextBefore, version: page.version } } : {}),
       remoteQueue: this.remoteQueue?.snapshot(id) };
   }
   settings(engine, id) {
@@ -651,6 +686,7 @@ class SharedConversations {
         this.save(c);
       }
       selected.model = c ? c.apiModel : this.loadConfig().sharedChat?.apiModel ?? selected.model;
+      if (selected.model) selected.model = canonicalModelId(selected.model);
     }
     return selected;
   }
@@ -677,9 +713,9 @@ class SharedConversations {
       + 'Title: ' + title + '\nConversation ID: ' + c.id + '\nWorking directory: ' + c.cwd
       + '\nEngine: ' + c.currentEngine + '\nSnapshot: ' + new Date().toISOString()
       + '\n\nThe following records are historical data. Check current files and external state before repeating actions.\n\n';
-    const rows = this.rows(c).filter(row => !row.internal);
     let fd;
     let inline = '';
+    let firstUser, lastUser;
     try {
       fd = fs.openSync(fullPath, 'wx');
       const write = value => {
@@ -691,7 +727,8 @@ class SharedConversations {
         }
       };
       let chunk = '';
-      for (const row of rows) {
+      for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.public })) {
+        if (row.role === 'user') { firstUser ||= row; lastUser = row; }
         const line = JSON.stringify({ seq: row.seq, at: row.at, role: row.role, engine: row.engine, text: row.text,
           ...(row.attachments?.length ? { attachments: row.attachments } : {}),
           ...(row.runResult ? { runResult: row.runResult } : {}) }) + '\n';
@@ -718,17 +755,16 @@ class SharedConversations {
         const excerpt = [];
         const excerptSeqs = new Set();
         let length = 0;
-        for (let index = rows.length - 1; index >= 0 && excerpt.length < 24; index--) {
-          const line = previewLine(rows[index]);
+        for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.public, reverse: true })) {
+          if (excerpt.length === 24) break;
+          const line = previewLine(row);
           if (length + line.length > CONVERSATION_HANDOFF_PREVIEW_CHARS && excerpt.length) break;
-          excerpt.unshift(line); excerptSeqs.add(rows[index].seq); length += line.length;
+          excerpt.unshift(line); excerptSeqs.add(row.seq); length += line.length;
         }
-        const firstUser = rows.find(row => row.role === 'user');
         const firstLine = firstUser && !excerptSeqs.has(firstUser.seq) ? previewLine(firstUser) : '';
-        const lastUser = rows.findLast(row => row.role === 'user');
         const lastLine = lastUser && lastUser.seq !== firstUser?.seq
           && !excerptSeqs.has(lastUser.seq) ? previewLine(lastUser) : '';
-        const latestSummary = rows.findLast(row => row.role === 'notice' && row.file && fs.existsSync(row.file));
+        const latestSummary = this.historyStore.summary(c.id);
         const summary = latestSummary ? fs.readFileSync(latestSummary.file, 'utf8').slice(0, 12000) : '';
         body = 'This handoff is bounded so a large source conversation does not fill the new model context.\n'
           + 'Full transcript (JSONL): ' + fullPath + '\n'
@@ -807,12 +843,12 @@ class SharedConversations {
   context(c, engine, beforeSeq) {
     const segment = c.segments[engine];
     const resetProfile = segment && !segment.isolated && ['codex', 'kimi', 'dsh'].includes(engine) && this.settings(engine, c.id).connection !== 'subscription';
-    const history = this.rows(c).filter(r => !r.internal && (beforeSeq === undefined || r.seq < beforeSeq));
     if (segment?.compactFile && !segment.nativeId && !fs.existsSync(segment.compactFile))
-      return this.compactionContext(c, history);
-    const latest = history.findLast(row => row.role === 'notice' && row.file && fs.existsSync(row.file));
+      return this.compactionContext(c, this.rows(c, { before: beforeSeq, mask: HISTORY_FLAGS.public }));
+    const latest = this.historyStore.summary(c.id, beforeSeq);
     if (latest && (!segment || resetProfile || (segment.cursor || 0) < latest.seq))
-      return fs.readFileSync(latest.file, 'utf8') + '\n\n' + this.formatContext(c, history.filter(row => row.seq > latest.seq));
+      return fs.readFileSync(latest.file, 'utf8') + '\n\n' + this.formatContext(c,
+        this.rows(c, { after: latest.seq, before: beforeSeq, mask: HISTORY_FLAGS.public }));
     // Prompt-cache-friendly order: a stable, shared preface (the compact file)
     // leads, so switching between models that share that prefix reuses it; the
     // model-specific parts follow, oldest first. The compact file only leads
@@ -825,8 +861,7 @@ class SharedConversations {
       ? fs.readFileSync(segment.compactFile, 'utf8') + '\n\n' : '';
     const bridge = !resetProfile && segment?.bridgeFile && fs.existsSync(segment.bridgeFile) ? fs.readFileSync(segment.bridgeFile, 'utf8') + '\n\n' : '';
     const base = resetProfile ? 0 : segment?.bridgeToSeq ? Math.max(segment.cursor || 0, segment.bridgeToSeq) : segment?.cursor || 0;
-    const rows = history.filter(r => r.seq > base && !r.internal
-      && (beforeSeq === undefined || r.seq < beforeSeq));
+    const rows = this.rows(c, { after: base, before: beforeSeq, mask: HISTORY_FLAGS.public });
     return compacted + bridge + this.formatContext(c, rows);
   }
   compactionContext(c, history = this.rows(c)) {
@@ -959,7 +994,7 @@ class SharedConversations {
       if (parked && Date.now() - (parked.lastUsedAt || 0) <= preferences(this.loadConfig()).sessionTtlMinutes * 60000) {
         const binding = this.switchBinding(c, engine, settings);
         if (binding.restored && (binding.segment.cursor || 0) < c.seq) {
-          const bridged = this.rows(c).filter(row => !row.internal && row.seq > (binding.segment.cursor || 0));
+          const bridged = this.rows(c, { after: binding.segment.cursor || 0, mask: HISTORY_FLAGS.public });
           if (bridged.length) await this.bridgeContext(c, engine, binding.segment, bridged);
         }
       }
@@ -1010,7 +1045,7 @@ class SharedConversations {
       const binding = this.switchBinding(c, engine, settings);
       oldSegment = binding.segment || null;
       if (binding.restored && oldSegment?.nativeId && (oldSegment.cursor || 0) < c.seq) {
-        const bridged = this.rows(c).filter(row => !row.internal && row.seq > (oldSegment.cursor || 0));
+        const bridged = this.rows(c, { after: oldSegment.cursor || 0, mask: HISTORY_FLAGS.public });
         if (bridged.length) await this.bridgeContext(c, engine, oldSegment, bridged);
       }
     }
@@ -1029,6 +1064,8 @@ class SharedConversations {
       this.switching.set(c.id, operation); this.publishActivity(c.id);
       try {
         await this.prepare(engine, settings);
+        const closing = this.drivers[engine].sessions?.pendingRelease({ conversationId: c.id });
+        if (closing) await closing;
         if (!operation.cancelled) {
           const session = this.drivers[engine].ensure({ conversationId: c.id, sessionId: oldSegment.nativeId, workspaceId: null, cwd: c.cwd, settings });
           operation.session = { interrupt: () => { void session.kill(); } };
@@ -1085,7 +1122,7 @@ class SharedConversations {
     const needsTitle = !internal && !continuation && !edit && c.title === 'New session'
       && !this.workspaces.sessionMeta().titles[c.id]
       && String(payload.displayText ?? payload.prompt ?? '').trim()
-      && !this.rows(c).some(row => row.role === 'user' && !row.internal);
+      && !this.historyInfo(c).userSeq;
     const a = continuation || { c, engine, internal, ephemeral, scheduledTaskId, nativeEditEligible: Boolean(nativeEdit) || !edit && !this.context(c, engine), goalContinuation: Boolean(facade), prompt: payload.prompt || '', promptSuffix, attachments: payload.attachments || [], events: [], permissions: new Map(), tools: new Set(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
       nativeEditReplayFromSeq: checkpoint?.replayFromSeq,
       // Only evaluated if the native session turns out to be unavailable: the
@@ -1143,9 +1180,14 @@ class SharedConversations {
         a.goalRunToken = randomUUID();
         prompt = goalToolInstructions + '\nCamellia goal run token for this turn: ' + a.goalRunToken + '\n\n' + prompt;
       }
+      const closing = this.drivers[engine].sessions?.pendingRelease({ conversationId: c.id });
+      if (closing) {
+        await closing;
+        this.assertAvailable(engine);
+      }
       if (controlStart?.cancelled) a.cancelled = true;
-      if (a.cancelled) {
-        this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: c.id });
+      if (a.cancelled || a.finished) {
+        if (!a.finished) this.capture(engine, { type: 'result', subtype: 'stopped', result: '', conversationId: c.id });
         return { ok: true, runId: a.facade.gen, sessionId: c.id, userSeq: a.userSeq, done: a.done };
       }
       controlStart?.validate?.();
@@ -1171,6 +1213,36 @@ class SharedConversations {
     const a = event.conversationId ? this.active.get(event.conversationId)
       : [...this.active.values()].find(run => run.engine === engine && run.session?.gen === event.runId);
     if (!a || a.engine !== engine || (a.session ? event.runId !== a.session.gen : event.runId != null)) return false;
+    try { return this.captureRun(a, engine, event); }
+    catch (error) { this.failCapturedRun(a, error, event.type === 'result'); return true; }
+  }
+  failCapturedRun(a, error, terminal) {
+    const { c, engine } = a;
+    const message = 'Could not save or process the response: ' + error.message;
+    const result = { type: 'result', subtype: 'error', is_error: true, result: message,
+      session_id: c.id, engine, runId: a.facade.gen, userSeq: a.userSeq, eventSeq: ++a.eventSeq };
+    c.pending = null; c.interrupted = true;
+    a.cancelled = true; a.finished = true; a.facade.running = false;
+    if (this.active.get(c.id) === a) this.active.delete(c.id);
+    if (this.recovering.get(c.id) === a) this.recovering.delete(c.id);
+    // Complete bookkeeping before any observer or shutdown callback runs.
+    a.resolve(result);
+    this.log(message);
+    if (!terminal && a.session?.running) {
+      try { Promise.resolve(a.session.kill ? a.session.kill() : a.session.interrupt()).catch(failure => this.log('Response shutdown failed: ' + failure.message)); }
+      catch (failure) { this.log('Response shutdown failed: ' + failure.message); }
+    }
+    if (!a.internal) {
+      try { this.remoteQueue?.pause(c.id); }
+      catch (failure) { this.log('Could not save paused message queue: ' + failure.message); }
+      this.goals.get(c.id)?.block('storage-error', message);
+      this.onEvent(result);
+    }
+    this.onStatus({ sessionId: c.id, text: message });
+    this.publishActivity(c.id);
+    this.onEvent({ type: 'conversation:turn-end', session_id: c.id, engine });
+  }
+  captureRun(a, engine, event) {
     if (['gui:tool', 'gui:permission', 'gui:plan'].includes(event.type)
         || event.type === 'assistant' && event.message?.content?.length
         || event.type === 'stream_event' && (event.event?.type === 'content_block_delta'
@@ -1287,10 +1359,15 @@ class SharedConversations {
       return true;
     }
     if (event.session_id && !a.ephemeral) {
-      c.segments[engine] ||= { cursor: a.priorCursor };
-      if (c.segments[engine].nativeId !== event.session_id) delete c.segments[engine].contextUsage;
-      Object.assign(c.segments[engine], { nativeId: event.session_id, isolated: true,
-        contextSettings: a.contextSettings, bindingKey: this.bindingKey(engine, a.contextSettings || {}), lastUsedAt: Date.now() }); this.save(c);
+      const segment = c.segments[engine] ||= { cursor: a.priorCursor };
+      const bindingKey = this.bindingKey(engine, a.contextSettings || {});
+      const changed = segment.nativeId !== event.session_id || segment.bindingKey !== bindingKey || !segment.isolated;
+      if (segment.nativeId !== event.session_id) delete segment.contextUsage;
+      Object.assign(segment, { nativeId: event.session_id, isolated: true,
+        contextSettings: a.contextSettings, bindingKey, lastUsedAt: Date.now() });
+      // Deltas repeat the same binding. Persist a new binding immediately;
+      // the ordinary turn-completion save retains its latest usage timestamp.
+      if (changed || event.type === 'system' && event.subtype === 'init') this.save(c);
       if (event.type === 'system' && event.subtype === 'init' && !a.internal && a.nativeEditEligible && event.editBaseTurnId) {
         c.segments[engine].editCheckpoint = { userSeq: a.userSeq, lastTurnId: event.editBaseTurnId,
           ...(a.nativeEditReplayFromSeq !== undefined ? { replayFromSeq: a.nativeEditReplayFromSeq } : {}) };
@@ -1345,7 +1422,7 @@ class SharedConversations {
         && prevDelta?.type === delta.type && typeof delta[key] === 'string' && typeof prevDelta[key] === 'string') {
         prevDelta[key] += delta[key]; prev.eventSeq = out.eventSeq;
       } else a.events.push(structuredClone(out));
-      this.onEvent(out);
+      if (event.type !== 'result') this.onEvent(out);
     } else if (event.type === 'gui:permission') this.onEvent({ ...out, handoff: true });
     if (event.type === 'result') {
       const output = Array.isArray(event.outputBlocks) ? { outputBlocks: event.outputBlocks } : {};
@@ -1383,6 +1460,7 @@ class SharedConversations {
       this.save(c);
       if (!a.internal && !c.interrupted) this.workspaces.promoteSession(c.id, [...this.items.values()]
         .sort((first, second) => second.updatedAt - first.updatedAt || first.id.localeCompare(second.id)).map(conversation => conversation.id));
+      if (!a.internal) this.onEvent(out);
       a.facade.running = false; this.active.delete(c.id);
       if (!a.internal && c.interrupted) this.remoteQueue?.pause(c.id);
       a.finished = true;
@@ -1725,11 +1803,7 @@ class SharedConversations {
     } finally { this.switching.delete(id); status(''); this.publishActivity(id); }
   }
   estimateTokens(c) {
-    const rows = this.rows(c).filter(r => !r.internal && contextRow(r));
-    const compacted = rows.findLast(r => r.role === 'notice' && r.file && fs.existsSync(r.file));
-    let tokens = compacted ? contextTokens(fs.readFileSync(compacted.file, 'utf8')) : 0;
-    for (const row of rows) if (row.seq > (compacted?.seq || 0)) tokens += contextTokens(row.text) + 200 / 3;
-    return tokens;
+    return this.historyStore.estimate(c.id);
   }
   routeContextBudget(engine, settings, protocol = ['claude', 'dsh', 'pi'].includes(engine) ? 'anthropic' : 'openai') {
     if (settings.connection === 'subscription') return null;
@@ -1991,6 +2065,17 @@ class SharedConversations {
     if (destination) this.validateEngine(targetEngine);
     if (!c.seq) return { ok: false, error: 'Nothing to compact yet' };
     const startedAt = Date.now();
+    // Read history and choose the route before allocating runtime state. An
+    // unreadable history must not leave a busy slot or an orphan deadline.
+    const sourceRows = (history || this.rows(c)).filter(row => !row.internal && contextRow(row));
+    const boundary = sourceRows.at(-1)?.seq || 0;
+    const diagnostics = { boundary, automatic, route: 'pending', requests: 0, retries: 0, chunks: [] };
+    const segment = c.segments[engine];
+    let routeReason = history ? 'edited-history' : portable || destination ? 'portable-requested'
+      : !this.drivers[engine].nativeCompaction ? 'manual-native-unavailable'
+        : segment?.nativeCompactionUnsupported ? 'native-unsupported'
+          : !this.usesNativeCompaction(c, engine, pinnedSettings || this.settings(engine, id)) ? 'native-session-ineligible'
+            : !recovery && sourceRows.some(row => row.seq > segment.cursor) ? 'unsynchronized-history' : 'native-eligible';
     const switching = { target: engine, cancelled: false };
     let rejectStop, stopped = false;
     const stopPromise = new Promise((_, reject) => { rejectStop = reject; });
@@ -2007,17 +2092,7 @@ class SharedConversations {
       switching.stop(error);
     }, manualFallback ? MANUAL_COMPACTION_ATTEMPT_MS : MAX_COMPACTION_MS);
     deadlineTimer.unref?.();
-    this.switching.set(id, switching); this.publishActivity(id);
-    const sourceRows = (history || this.rows(c)).filter(row => !row.internal && contextRow(row));
-    const boundary = sourceRows.at(-1)?.seq || 0;
-    const diagnostics = { boundary, automatic, route: 'pending', requests: 0, retries: 0, chunks: [] };
     let portableAttempted = false;
-    const segment = c.segments[engine];
-    let routeReason = history ? 'edited-history' : portable || destination ? 'portable-requested'
-      : !this.drivers[engine].nativeCompaction ? 'manual-native-unavailable'
-        : segment?.nativeCompactionUnsupported ? 'native-unsupported'
-          : !this.usesNativeCompaction(c, engine, pinnedSettings || this.settings(engine, id)) ? 'native-session-ineligible'
-            : !recovery && sourceRows.some(row => row.seq > segment.cursor) ? 'unsynchronized-history' : 'native-eligible';
     let completed = false;
     let failureMessage = '';
     const status = (text, compaction) => {
@@ -2025,29 +2100,50 @@ class SharedConversations {
       switching.compaction = compaction || null;
       this.onStatus({ sessionId: id, text, ...(compaction ? { compaction } : {}) });
     };
+    const appendNotice = notice => {
+      // The binding is already committed. A missing display notice must not
+      // turn a successful context switch into another paid summary attempt.
+      try { fs.appendFileSync(path.join(this.dir, c.id + '.jsonl'), JSON.stringify(notice) + '\n'); }
+      catch (error) { this.log('Could not save compaction notice: ' + error.message); }
+    };
     const savePortable = (markdown, fallback = null) => {
       status('Saving compacted context…', { state: 'running', stage: 'saving', ...(fallback ? { fallback: true } : {}) });
       const saveStartedAt = Date.now();
-      const file = path.join(this.dir, 'handoffs', randomUUID() + '.md'); fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, markdown, { flag: 'wx' });
+      const file = path.join(this.dir, 'handoffs', randomUUID() + '.md');
       const previousSegment = c.segments[targetEngine] && { ...c.segments[targetEngine] };
-      if (switching.cancelled) {
-        fs.unlinkSync(file);
-        throw new Error('Compaction canceled; the original conversation is retained.');
-      }
-      if (previousSegment) (c.retiredSegments ||= []).push({ engine: targetEngine, ...previousSegment });
+      const previousRetired = c.retiredSegments?.slice(), previousRecovery = c.compactionRecovery;
+      const previousSeq = c.seq, previousUpdatedAt = c.updatedAt;
       const durationMs = Date.now() - startedAt;
       const details = fallback ? { fallback: true, omittedRows: fallback.omittedRows, truncatedRows: fallback.truncatedRows } : {};
-      const notice = this.append(c, { role: 'notice', engine,
+      const notice = { role: 'notice', engine,
         text: fallback ? 'Context compacted: older context omitted'
           : automatic ? 'Context compacted automatically' : 'Context compacted: summary saved', file,
-        compaction: { ...(trigger || {}), durationMs, ...details } });
-      c.segments[targetEngine] = { cursor: c.seq, isolated: true, compactFile: file,
-        ...(previousSegment?.nativeCompactionUnsupported ? { nativeCompactionUnsupported: true } : {}) };
-      delete c.compactionRecovery;
-      c.updatedAt = this.stamp(); this.save(c);
+        compaction: { ...(trigger || {}), durationMs, ...details }, seq: c.seq + 1, at: Date.now() };
+      try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, markdown, { flag: 'wx', flush: true });
+        if (switching.cancelled) throw new Error('Compaction canceled; the original conversation is retained.');
+        if (previousSegment) (c.retiredSegments ||= []).push({ engine: targetEngine, ...previousSegment });
+        c.seq = notice.seq;
+        c.segments[targetEngine] = { cursor: notice.seq, isolated: true, compactFile: file,
+          ...(previousSegment?.nativeCompactionUnsupported ? { nativeCompactionUnsupported: true } : {}) };
+        delete c.compactionRecovery;
+        c.updatedAt = this.stamp();
+        this.save(c);
+      }
+      catch (error) {
+        if (previousSegment) c.segments[targetEngine] = previousSegment;
+        else delete c.segments[targetEngine];
+        if (previousRetired) c.retiredSegments = previousRetired; else delete c.retiredSegments;
+        if (previousRecovery) c.compactionRecovery = previousRecovery; else delete c.compactionRecovery;
+        c.seq = previousSeq; c.updatedAt = previousUpdatedAt;
+        try { fs.unlinkSync(file); }
+        catch (cleanupError) { if (cleanupError.code !== 'ENOENT') this.log('Could not remove unused compaction summary: ' + cleanupError.message); }
+        throw error;
+      }
       completed = true;
       diagnostics.saveMs = Date.now() - saveStartedAt;
+      appendNotice(notice);
       status('', { state: 'completed', seq: notice.seq, durationMs, ...details });
       return { ok: true, sessionId: id, file, durationMs, ...details };
     };
@@ -2071,6 +2167,7 @@ class SharedConversations {
       return savePortable(fallback.markdown, fallback);
     };
     try {
+      this.switching.set(id, switching); this.publishActivity(id);
       status('Compacting context before continuing the task…', { state: 'running', native: routeReason === 'native-eligible' });
       if (localOnly) return saveLocalFallback('provider overflow after summarized recovery');
       await withLimit(this.prepare(engine, pinnedSettings || this.settings(engine, id)));
@@ -2079,6 +2176,11 @@ class SharedConversations {
       if (automatic) this.log('context compaction: ' + JSON.stringify({ sessionId: id, engine, ...trigger }));
       if (routeReason === 'native-eligible') {
         diagnostics.route = 'native';
+        const closing = this.drivers[engine].sessions?.pendingRelease({ conversationId: id });
+        if (closing) {
+          await withLimit(closing);
+          if (switching.cancelled) throw new Error('Compaction canceled');
+        }
         const segment = c.segments[engine];
         const session = this.drivers[engine].ensure({ conversationId: id, sessionId: segment.nativeId, workspaceId: null,
           cwd: c.cwd, settings: pinnedSettings || this.settings(engine, id), goalBridge: this.goalBridges.get(id) });
@@ -2091,16 +2193,23 @@ class SharedConversations {
             onProgress: () => status('Compacting context…', { state: 'running', native: true }) }));
           diagnostics.nativeMs = Date.now() - nativeStartedAt;
           if (switching.cancelled || recovery?.cancelled) throw new Error('Compaction canceled');
-          delete segment.contextUsage;
           const durationMs = Date.now() - startedAt;
-          const notice = this.append(c, { role: 'notice', engine, text: 'Context compacted',
-            compaction: { ...trigger, native: true, durationMs } });
-          segment.cursor = c.seq; c.updatedAt = this.stamp(); this.save(c);
+          const notice = { role: 'notice', engine, text: 'Context compacted',
+            compaction: { ...trigger, native: true, durationMs }, seq: c.seq + 1, at: Date.now() };
+          const previousSegment = { ...segment }, previousSeq = c.seq, previousUpdatedAt = c.updatedAt;
+          try {
+            delete segment.contextUsage;
+            c.seq = notice.seq; segment.cursor = notice.seq; c.pending = null; c.updatedAt = this.stamp(); this.save(c);
+          } catch (error) {
+            c.segments[engine] = previousSegment; c.seq = previousSeq; c.updatedAt = previousUpdatedAt; throw error;
+          }
           completed = true;
+          appendNotice(notice);
           status('', { state: 'completed', seq: notice.seq, native: true, durationMs });
           return { ok: true, sessionId: id, native: true, durationMs };
         } catch (error) {
           if (switching.timedOut) throw switching.timedOut;
+          if (storageFailure(error)) throw error;
           const lostNative = !switching.cancelled && !recovery?.cancelled && this.nativeSessionLost(engine, error);
           if (lostNative) {
             const lost = this.forgetNativeSession(c, engine);
@@ -2119,7 +2228,8 @@ class SharedConversations {
           this.log('native compaction unavailable, timed out, or over context limit; using portable summary: ' + engine);
         } finally {
           switching.session = null;
-          c.pending = null; this.save(c);
+          c.pending = null;
+          if (!completed) this.save(c);
         }
       }
       status('Asking the engine to summarize the conversation…', { state: 'running' });
@@ -2146,7 +2256,11 @@ class SharedConversations {
         inputCharLimit(targetEngine) ? Math.floor(inputCharLimit(targetEngine) * 0.8) : Infinity) : Infinity;
       if (maxSummaryChars < 512) throw new Error('The target context has no room for a summary and the new message. ' + recoveryAdvice);
       if (destination) budget = Math.min(budget, Math.floor(cap * 0.6));
-      const compacted = sourceRows.findLast(row => row.role === 'notice' && row.file && fs.existsSync(row.file));
+      let compacted = sourceRows.findLast(row => row.role === 'notice' && row.file && fs.existsSync(row.file));
+      // The committed index remains authoritative if a display notice could
+      // not be appended after saving the portable binding.
+      if (!history && segment?.compactFile && segment.cursor > (compacted?.seq || 0) && fs.existsSync(segment.compactFile))
+        compacted = { file: segment.compactFile, seq: segment.cursor };
       const previous = compacted && fs.existsSync(compacted.file) ? fs.readFileSync(compacted.file, 'utf8') : '';
       const plan = planCompaction(sourceRows.filter(row => row.seq > (compacted?.seq || 0)), budget);
       if (destination && plan.recent.length) { plan.units.push(plan.recent); plan.recent = []; plan.recentChars = 0; }
@@ -2205,7 +2319,9 @@ class SharedConversations {
       return savePortable(markdown);
     } catch (error) {
       if (switching.timedOut) error = switching.timedOut;
-      if ((manualFallback || automatic && portableAttempted) && !switching.cancelled && !recovery?.cancelled && !history) {
+      const manualLocalFallback = manualFallback && !storageFailure(error)
+        && !subscriptionFailure({ is_error: true, result: error.message }) && !/\b403\b/.test(error.message);
+      if ((manualLocalFallback || automatic && portableAttempted && summaryFallbackAllowed(error)) && !switching.cancelled && !recovery?.cancelled && !history) {
         try { return saveLocalFallback(error.message); }
         catch (fallbackError) { error = fallbackError; }
       }
@@ -2218,11 +2334,14 @@ class SharedConversations {
       diagnostics.totalMs = Date.now() - startedAt;
       diagnostics.outcome = completed ? 'completed' : switching.cancelled || recovery?.cancelled ? 'cancelled' : 'failed';
       c.lastCompaction = { ...diagnostics, engine, error: failureMessage };
-      this.save(c);
-      this.log('context compaction metrics: ' + JSON.stringify({ sessionId: id, engine, ...diagnostics }));
-      this.switching.delete(id);
-      status('', completed ? undefined : { state: switching.cancelled || recovery?.cancelled ? 'cancelled' : 'failed', native: diagnostics.route === 'native', error: failureMessage });
-      this.publishActivity(id);
+      try { this.save(c); }
+      catch (error) { this.log('Could not save compaction diagnostics: ' + error.message); }
+      finally {
+        this.log('context compaction metrics: ' + JSON.stringify({ sessionId: id, engine, ...diagnostics }));
+        this.switching.delete(id);
+        status('', completed ? undefined : { state: switching.cancelled || recovery?.cancelled ? 'cancelled' : 'failed', native: diagnostics.route === 'native', error: failureMessage });
+        this.publishActivity(id);
+      }
     }
   }
   summaryCheckpoint({ c, engine, settings, units, budget, boundary, maxSummaryChars, diagnostics }) {
@@ -2365,7 +2484,7 @@ class SharedConversations {
       c.pending = null; this.save(c);
     }
   }
-  async command(engine, action, payload) {
+  async command(engine, action, payload, { historyPage } = {}) {
     this.validateEngine(engine);
     if (['send', 'goal-start', 'goal-resume', 'compact', 'find', 'task-resume'].includes(action)) this.assertAvailable(engine);
     switch (action) {
@@ -2384,7 +2503,7 @@ class SharedConversations {
       case 'discard-conversation-attachment': return this.discardConversationAttachment(payload?.path);
       case 'save-settings': return this.saveSettings(engine, payload || {});
       case 'list-sessions': return this.list(engine, payload);
-      case 'load-session': return this.load(engine, payload);
+      case 'load-session': return this.load(engine, payload, historyPage);
       case 'mark-reply-read': return this.markReplyRead(payload.id, payload.at);
       case 'fork-session': return { ok: true, sessionId: this.fork(engine, payload).id };
       case 'rename-session': return this.workspaces.renameSession(payload.id, payload.title);
@@ -2428,6 +2547,13 @@ class SharedConversations {
         return { ok };
       }
       case 'task-list': return { ok: true, tasks: payload?.sessionId ? this.tasks.list(payload.sessionId) : [] };
+      case 'task-cancel-all': {
+        const conversation = this.get(payload.sessionId);
+        for (const task of this.tasks.list(conversation.id)) {
+          if (['scheduled', 'running', 'paused'].includes(task.status)) this.tasks.action(task.id, conversation.id, 'cancel');
+        }
+        return { ok: true, tasks: this.tasks.list(conversation.id) };
+      }
       case 'task-create': {
         const conversation = this.get(payload.sessionId);
         this.assertTaskEngine(conversation.currentEngine, conversation.id);
@@ -2452,8 +2578,8 @@ class SharedConversations {
         if (!id) id = this.create(engine, payload.workspaceId, payload.objective.slice(0, 80)).id;
         if (!payload.sessionId && payload.fastMode !== undefined) this.saveSettings(engine, { sessionId: id, fastMode: payload.fastMode });
         if (this.get(id).currentEngine !== engine) await this.switchEngine(id, engine);
-        const goal = this.goalFor(id), result = goal.start({ ...payload, sessionId: id });
-        if (result.ok) { goal.goal.engine = engine; goal.publish(); result.goal = goal.view(); result.sessionId = id; }
+        const goal = this.goalFor(id), result = goal.start({ ...payload, sessionId: id, engine });
+        if (result.ok) result.sessionId = id;
         return result;
       }
       case 'goal-pause': {

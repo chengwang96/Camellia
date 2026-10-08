@@ -127,6 +127,58 @@ test('chat renders inline and display math while leaving prices and code literal
   assert.match(html, /<span class="katex-mathml">/);
 });
 
+test('chat renders the reported bracket-delimited loss formula as display math', () => {
+  const formula = String.raw`\[
+L_{\mathrm{total}}
+=L_{\mathrm{harm}}
++\lambda_1L_{\mathrm{anat}}
++\lambda_2L_{\mathrm{les}}
++\lambda_3L_{\mathrm{latent}}
++\lambda_4L_{\mathrm{edge}}
++\lambda_5L_{\mathrm{tex}}
+\]`;
+  const html = chatRenderer()('算法 2 又加入六项损失：\n\n' + formula + '\n\n它们分别约束：');
+  assert.equal((html.match(/class="katex-display"/g) || []).length, 1);
+  assert.match(html, /<math[^>]*display="block">/);
+  assert.match(html, /<annotation encoding="application\/x-tex">\s*L_\{\\mathrm\{total\}\}/);
+  assert.doesNotMatch(html, /katex-error|<ul|<blockquote|<hr/);
+  assert.match(html, /^算法 2 又加入六项损失：\n\n<section>/);
+  assert.match(html, /<\/section>\n\n它们分别约束：$/);
+});
+
+test('chat supports both math delimiter styles together and protects bracket formula contents', () => {
+  const render = chatRenderer();
+  const html = render(String.raw`行内 $x^2$ 与 \(y_1\)。
+
+\[
+- a \\ - b
+> c
+---
+\]
+
+$$z^2$$`);
+  assert.equal((html.match(/class="katex"/g) || []).length, 4);
+  assert.equal((html.match(/class="katex-display"/g) || []).length, 2);
+  assert.doesNotMatch(html, /<ul|<blockquote|<hr/);
+});
+
+test('bracket formula examples in code stay literal and incomplete streamed formulas wait for their close', () => {
+  const render = chatRenderer();
+  const formula = String.raw`\[x^2\]`;
+  const examples = render('`' + formula + '`\n\n```tex\n' + formula + '\n```\n\n    ' + formula);
+  assert.doesNotMatch(examples, /katex|\x01/);
+  assert.match(examples, /<code class="md-inline">\\\[x\^2\\\]<\/code>/);
+  assert.equal((examples.match(/<pre><code>\\\[x\^2\\\]\n?<\/code><\/pre>/g) || []).length, 2);
+  assert.doesNotMatch(render(String.raw`\\[x^2\\]`), /katex/);
+  const partial = String.raw`公式：\[
+\frac{a}{b}`;
+  assert.doesNotMatch(render(partial), /katex/);
+  assert.match(render(partial), /\\frac\{a\}\{b\}/);
+  const complete = render(partial + '\n\\]');
+  assert.equal((complete.match(/class="katex-display"/g) || []).length, 1);
+  assert.doesNotMatch(complete, /katex-error/);
+});
+
 test('chat math keeps unsupported TeX commands inert instead of executing them', () => {
   const html = chatRenderer()('$\\href{javascript:alert(1)}{bad}$');
   assert.doesNotMatch(html, /<a\b/);

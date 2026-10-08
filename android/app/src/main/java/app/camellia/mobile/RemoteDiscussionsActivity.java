@@ -11,6 +11,7 @@ import android.text.InputFilter;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ImageView;
@@ -23,6 +24,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -32,25 +34,35 @@ import java.util.concurrent.Executors;
 public final class RemoteDiscussionsActivity extends Activity {
     @Override protected void attachBaseContext(android.content.Context context) { super.attachBaseContext(MobilePreferences.wrap(context)); }
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Handler viewHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService reads = Executors.newFixedThreadPool(2);
     private final ExecutorService events = Executors.newSingleThreadExecutor();
     private final LinkedHashSet<String> selected = new LinkedHashSet<>();
-    private final TreeMap<Long, JSONObject> messages = new TreeMap<>();
-    private final LinkedHashMap<String, JSONObject> deliveries = new LinkedHashMap<>();
-    private final LinkedHashMap<String, JSONObject> requests = new LinkedHashMap<>();
+    private final DiscussionHistory history = new DiscussionHistory();
+    private final TreeMap<Long, JSONObject> messages = history.messages;
+    private final LinkedHashMap<String, JSONObject> deliveries = history.deliveries;
+    private final LinkedHashMap<String, JSONObject> requests = history.requests;
     private final LinkedHashMap<String, JSONObject> groups = new LinkedHashMap<>();
     private final java.util.Set<String> polling = new java.util.HashSet<>();
     private final java.util.Set<String> uncertain = new java.util.HashSet<>();
     private ChatStyle style;
     private SettingsStyle settingsStyle;
     private MarkdownView markdown;
+    private final java.util.LinkedHashMap<String, DiscussionRow> messageRows = new java.util.LinkedHashMap<>();
+    private String rosterSignature = "";
+    private View olderMessages;
+    private TextView historyNotice;
+    private ViewTreeObserver.OnPreDrawListener historyScrollPending;
+    private ScrollView historyScrollOwner;
     private CredentialStore stateStore;
     private JSONObject state = new JSONObject(), profile = new JSONObject(), credentials = new JSONObject(), group;
     private JSONObject pending = new JSONObject(), drafts = new JSONObject();
     private String address, profileKey, groupId, instance = "", mode = "parallel", lastError = "";
     private long cursor = -1, nextBefore = -1;
     private int generation, nextOffset = -1;
-    private boolean chinese, foreground, connected, restoring;
+    private long pageRequest;
+    private boolean pageLoading;
+    private boolean chinese, foreground, connected, restoring, stateReady;
     private RemoteApi api;
     private LinearLayout root, content, roster, toolbar, pendingBar;
     private ScrollView scroll;
@@ -69,6 +81,7 @@ public final class RemoteDiscussionsActivity extends Activity {
     private String pickerGroup, approvalKey = "";
     private java.io.File cameraFile;
     private ArtifactDownloads downloads;
+    private AttachmentMaintenance.Lease composerAttachments, stateAttachments;
     private AlertDialog approvalDialog;
 
     private String tr(String zh, String en) { return chinese ? zh : en; }
@@ -106,6 +119,7 @@ public final class RemoteDiscussionsActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved); EmbeddedNetwork.initialize(getApplicationContext());
+        composerAttachments = AttachmentMaintenance.protect(this); stateAttachments = AttachmentMaintenance.protect(this);
         chinese = getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
         style = new ChatStyle(this); settingsStyle = new SettingsStyle(this);
         markdown = new MarkdownView(this, style.ink, style.muted, style.surface, style.accent);
@@ -113,64 +127,90 @@ public final class RemoteDiscussionsActivity extends Activity {
         downloads = new ArtifactDownloads(this, saved);
         if (saved != null) { pickerGroup = saved.getString("pickerGroup"); if (saved.containsKey("cameraFile")) cameraFile = new java.io.File(saved.getString("cameraFile")); }
         address = getIntent().getStringExtra("address");
+        groupId = saved != null ? saved.getString("groupId") : getIntent().getStringExtra("groupId");
         try {
             for (JSONObject computer : new ComputerStore(new CredentialStore(this)).all())
                 if (computer.optString("address").equals(address)) credentials = computer;
             if (!credentials.has("token")) throw new IllegalStateException(tr("请先配对电脑。", "Pair with the computer first."));
             new Endpoint(address);
             profileKey = address + "#" + credentials.optString("deviceId");
-            state = stateStore.load(); profile = state.optJSONObject(profileKey); if (profile == null) profile = new JSONObject();
-            drafts = profile.optJSONObject("drafts"); if (drafts == null) drafts = new JSONObject();
-            pending = profile.optJSONObject("pending"); if (pending == null) pending = new JSONObject();
+            state = stateStore.load(); profile = state.has(profileKey) ? state.getJSONObject(profileKey) : new JSONObject();
+            stateAttachments.replace(profile);
+            drafts = profile.has("drafts") ? profile.getJSONObject("drafts") : new JSONObject();
+            pending = profile.has("pending") ? profile.getJSONObject("pending") : new JSONObject();
             uncertain.addAll(keys(pending));
-            groupId = saved != null ? saved.getString("groupId") : getIntent().getStringExtra("groupId");
+            stateReady = true;
             restoreDraft();
-        } catch (Exception error) { lastError = error.getMessage(); }
+        } catch (Exception error) { stateLoadError(error); return; }
         shell();
     }
     @Override protected void onStart() {
         super.onStart(); foreground = true; EmbeddedNetwork.foreground();
+        AttachmentMaintenance.foreground(this);
+        if (!stateReady) return;
         EmbeddedNetwork.setNetworkListener(() -> handler.post(() -> { if (foreground) connect(); })); connect();
+    }
+    @Override public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        if (focused) notifyApprovalRequests();
     }
     @Override protected void onStop() {
         saveDraft(); foreground = false; disconnect();
         EmbeddedNetwork.setNetworkListener(null); EmbeddedNetwork.background();
         if (dialog != null) dialog.dismiss(); super.onStop();
     }
-    @Override protected void onDestroy() { disconnect(); if (workStatus != null) workStatus.close(); downloads.close(); if (approvalDialog != null) approvalDialog.dismiss(); reads.shutdownNow(); events.shutdownNow(); super.onDestroy(); }
+    @Override protected void onDestroy() { disconnect(); releasePageViews(); history.clear(); group = null; if (composerAttachments != null) composerAttachments.close(); if (stateAttachments != null) stateAttachments.close(); downloads.close(); reads.shutdownNow(); events.shutdownNow(); super.onDestroy(); }
     @Override protected void onSaveInstanceState(Bundle saved) {
         saveDraft(); saved.putString("groupId", groupId); saved.putString("pickerGroup", pickerGroup);
         if (cameraFile != null) saved.putString("cameraFile", cameraFile.getAbsolutePath()); downloads.save(saved); super.onSaveInstanceState(saved);
     }
     @Override public void onBackPressed() { if (groupId == null || getIntent().getBooleanExtra("fromNavigation", false)) finish(); else openGroup(null); }
 
+    private void stateLoadError(Exception error) {
+        stateReady = false;
+        root = column(); root.setTag("discussionStateLoadError"); root.setBackgroundColor(style.background);
+        root.setGravity(Gravity.CENTER_VERTICAL); root.setPadding(dp(24), dp(24), dp(24), dp(24));
+        root.addView(text(tr("群聊数据无法读取", "Discussion data unavailable"), 20, style.ink));
+        TextView details = text(ErrorDetails.withSummary(tr("无法读取或解密本地群聊数据，原数据已保留。", "Could not read or decrypt local discussion data. Stored data has been preserved."), error), 14, style.muted);
+        details.setPadding(0, dp(16), 0, dp(20)); root.addView(details);
+        root.addView(button(tr("重新读取", "Read again"), "discussionStateRetry", this::recreate));
+        root.addView(button(tr("返回", "Back"), "discussionStateBack", this::finish));
+        setContentView(root);
+    }
+
     private boolean persist() {
-        if (profileKey == null) return false;
-        try { profile.put("drafts", drafts).put("pending", pending); state.put(profileKey, profile); stateStore.save(state); return true; }
+        if (!stateReady || profileKey == null) return false;
+        try {
+            profile.put("drafts", drafts).put("pending", pending); stateAttachments.replace(profile);
+            JSONObject latest = stateStore.load(); latest.put(profileKey, profile);
+            stateStore.save(latest); state = latest; return true;
+        }
         catch (Exception error) { showError(error.getMessage()); return false; }
     }
     private void saveDraft() {
-        if (groupId == null || composer == null) return;
+        if (!stateReady || groupId == null || composer == null) return;
         try { drafts.put(groupId, object("text", composer.input.getText().toString(), "selected", new JSONArray(selected), "mode", mode, "attachments", ChatAttachments.remote(images, documents))); persist(); }
         catch (Exception error) { showError(error.getMessage()); }
     }
     private void restoreDraft() {
         selected.clear(); images.clear(); documents.clear(); mode = "parallel";
+        composerAttachments.replace();
         JSONObject draft = groupId == null ? null : drafts.optJSONObject(groupId);
         if (draft == null) return;
         try { ChatAttachments.restore(draft, images, documents); } catch (Exception error) { showError(error.getMessage()); }
+        composerAttachments.replace(images, documents);
         mode = draft.optString("mode", "parallel");
         JSONArray ids = draft.optJSONArray("selected"); if (ids != null) for (int i = 0; i < ids.length(); i++) selected.add(ids.optString(i));
     }
     private void openGroup(String id) {
+        if (!stateReady) { finish(); return; }
         if (approvalDialog != null) { approvalDialog.dismiss(); approvalDialog = null; } downloads.stop();
         saveDraft(); disconnect(); groupId = id; group = null; cursor = -1; nextBefore = -1; lastError = ""; reconnecting = false;
-        messages.clear(); deliveries.clear(); requests.clear(); restoreDraft(); shell(); connect();
+        history.clear(); restoreDraft(); shell(); connect();
     }
 
     private void shell() {
-        if (workStatus != null) { workStatus.close(); workStatus = null; }
-        composer = null; memberPanel = null;
+        releasePageViews(); rosterSignature = "";
         root = column(); root.setPadding(dp(18), dp(10), dp(18), dp(8)); root.setBackgroundColor(style.background); root.setClipToPadding(false);
         getWindow().setStatusBarColor(style.background); getWindow().setNavigationBarColor(style.background);
         if (android.os.Build.VERSION.SDK_INT >= 27) getWindow().getDecorView().setSystemUiVisibility(android.graphics.Color.red(style.background) < 128 ? 0
@@ -243,11 +283,11 @@ public final class RemoteDiscussionsActivity extends Activity {
         if (workStatus != null) workStatus.error(lastError, false);
     }
     private void disconnect() {
-        generation++; connected = false; if (api != null) api.cancel(); api = null;
+        generation++; pageRequest++; pageLoading = false; connected = false; if (api != null) api.cancel(); api = null;
         handler.removeCallbacksAndMessages(null); polling.clear(); controls();
     }
     private void connect() {
-        if (!foreground || !credentials.has("token")) return;
+        if (!stateReady || !foreground || !credentials.has("token")) return;
         connectionBlocked = false; disconnect(); int ticket = generation; String target = groupId;
         RemoteApi client = new RemoteApi(this, address); api = client;
         reads.execute(() -> {
@@ -290,7 +330,7 @@ public final class RemoteDiscussionsActivity extends Activity {
         String nextInstance = snapshot.optString("instanceId"); long nextCursor = snapshot.optLong("cursor", -1);
         if (older && !nextInstance.equals(instance)) return;
         if (!older && nextInstance.equals(instance) && nextCursor < cursor) return;
-        if (!older) { if (!instance.equals(nextInstance)) { messages.clear(); deliveries.clear(); requests.clear(); } instance = nextInstance; cursor = nextCursor; }
+        if (!older) { if (!instance.equals(nextInstance)) { disposeMessageRows(); history.clear(); group = null; nextBefore = -1; } instance = nextInstance; cursor = nextCursor; }
         if (snapshot.optBoolean("deleted") && groupId != null && groupId.equals(snapshot.optString("id"))) { openGroup(null); return; }
         if (groupId == null) {
             if (!older) groups.clear();
@@ -298,18 +338,17 @@ public final class RemoteDiscussionsActivity extends Activity {
             nextOffset = snapshot.optInt("nextOffset", -1); renderGroups();
         } else {
             JSONObject next = snapshot.optJSONObject("group"); if (next == null || !groupId.equals(next.optString("id"))) return;
-            if (!older) group = next;
-            boolean approvalPending = false;
-            for (JSONObject request : rows(next.optJSONArray("pendingApprovals")))
-                if (approvalToken(request).equals(approvalKey)) approvalPending = true;
-            if (approvalDialog != null && !approvalPending) { approvalDialog.dismiss(); approvalDialog = null; }
-            for (JSONObject message : rows(next.optJSONArray("messages"))) messages.put(message.optLong("seq"), message);
-            for (JSONObject delivery : rows(next.optJSONArray("deliveries"))) deliveries.put(delivery.optString("id"), delivery);
-            for (JSONObject request : rows(next.optJSONArray("requests"))) requests.put(request.optString("id"), request);
-            if (older || messages.size() <= rows(next.optJSONArray("messages")).size()) nextBefore = snapshot.optLong("nextBefore", -1);
-            int height = content.getHeight(), y = scroll.getScrollY();
-            renderGroup();
-            if (older) scroll.post(() -> scroll.scrollTo(0, y + Math.max(0, content.getHeight() - height)));
+            HistoryPosition position = historyPosition(older);
+            if (!older) {
+                boolean approvalPending = false;
+                for (JSONObject request : rows(next.optJSONArray("pendingApprovals")))
+                    if (approvalToken(request).equals(approvalKey)) approvalPending = true;
+                if (approvalDialog != null && !approvalPending) { approvalDialog.dismiss(); approvalDialog = null; }
+            }
+            history.merge(next, older); group = history.group;
+            if (history.limited()) nextBefore = -1;
+            else if (older || messages.size() <= rows(next.optJSONArray("messages")).size()) nextBefore = snapshot.optLong("nextBefore", -1);
+            renderGroup(position);
         }
         controls();
     }
@@ -333,18 +372,33 @@ public final class RemoteDiscussionsActivity extends Activity {
         if (nextOffset >= 0) content.addView(button(tr("加载更多", "Load more"), "discussionMoreGroups", () -> readPage("/v1/discussions?offset=" + nextOffset)));
     }
     private void readPage(String path) {
-        if (!connected || api == null) return;
-        int ticket = generation; RemoteApi client = api;
-        reads.execute(() -> { try { JSONObject page = client.json(path, credentials.optString("token"), null); deliver(ticket, () -> apply(page, true)); }
-            catch (Exception error) { deliver(ticket, () -> showError(RemoteApi.failureMessage(error, chinese))); } });
+        if (!connected || api == null || pageLoading || groupId != null && history.limited()) return;
+        int ticket = generation; RemoteApi client = api; long pageTicket = ++pageRequest;
+        pageLoading = true; controls();
+        reads.execute(() -> { try {
+            JSONObject page = client.json(path, credentials.optString("token"), null);
+            deliver(ticket, () -> { if (pageTicket != pageRequest) return; pageLoading = false; apply(page, true); controls(); });
+        } catch (Exception error) {
+            deliver(ticket, () -> { if (pageTicket != pageRequest) return; pageLoading = false; showError(RemoteApi.failureMessage(error, chinese)); controls(); });
+        } });
     }
     private JSONObject member(String id) {
         if (group != null) for (JSONObject p : rows(group.optJSONArray("participants"))) if (id.equals(p.optString("id"))) return p;
         return null;
     }
     private void renderGroup() {
+        renderGroup(historyPosition(false));
+    }
+    private void renderGroup(HistoryPosition position) {
         title.setText(group.optString("title")); membersButton.setText(String.format(java.util.Locale.getDefault(), tr("成员 %d / 4", "Members %d / 4"), liveMembers().size()));
-        roster.removeAllViews(); java.util.Set<String> live = new java.util.HashSet<>();
+        java.util.Set<String> live = new java.util.HashSet<>();
+        for (JSONObject participant : liveMembers()) live.add(participant.optString("id"));
+        selected.retainAll(live);
+        JSONArray rosterKey = new JSONArray();
+        for (JSONObject participant : liveMembers()) rosterKey.put(new JSONArray().put(participant.optString("id")).put(participant.optString("name")).put(selected.contains(participant.optString("id"))));
+        String signature = rosterKey.toString();
+        if (!signature.equals(rosterSignature)) {
+        rosterSignature = signature; roster.removeAllViews();
         TextView choose = text(tr("选择回答者", "Respondents"), 12, style.muted); choose.setPadding(dp(8), 0, dp(8), 0); roster.addView(choose);
         for (JSONObject p : liveMembers()) {
             String id = p.optString("id"); live.add(id);
@@ -355,46 +409,123 @@ public final class RemoteDiscussionsActivity extends Activity {
             chip.setContentDescription((selected.contains(id) ? tr("已选择：", "Selected: ") : tr("选择回答者：", "Select respondent: ")) + p.optString("name"));
             LinearLayout.LayoutParams spacing = new LinearLayout.LayoutParams(-2, dp(40)); spacing.setMargins(dp(4), 0, dp(4), dp(4)); roster.addView(chip, spacing);
         }
-        selected.retainAll(live);
-        boolean bottom = content.getHeight() - scroll.getHeight() - scroll.getScrollY() < dp(100);
-        int oldY = scroll.getScrollY();
-        content.removeAllViews(); content.setGravity(messages.isEmpty() ? Gravity.CENTER : Gravity.TOP);
-        if (messages.isEmpty()) {
-            TextView hint = text(tr("选择回答者，开始讨论", "Choose respondents to begin"), 20, style.ink); hint.setGravity(Gravity.CENTER); content.addView(hint);
-            if (liveMembers().isEmpty()) content.addView(button(tr("添加成员", "Add member"), "discussionEmptyAdd", this::loadCatalog));
         }
-        if (nextBefore > 0) content.addView(button(tr("加载更早消息", "Load earlier messages"), "discussionOlder", () -> readPage("/v1/discussions/" + groupId + "?before=" + nextBefore)));
+        List<View> desired = new ArrayList<>(); java.util.Set<String> retained = new java.util.HashSet<>();
+        content.setGravity(messages.isEmpty() ? Gravity.CENTER : Gravity.TOP);
+        if (messages.isEmpty()) {
+            TextView hint = text(tr("选择回答者，开始讨论", "Choose respondents to begin"), 20, style.ink); hint.setGravity(Gravity.CENTER); desired.add(hint);
+            if (liveMembers().isEmpty()) desired.add(button(tr("添加成员", "Add member"), "discussionEmptyAdd", this::loadCatalog));
+        }
+        if (history.limited()) {
+            if (historyNotice == null) {
+                historyNotice = text(tr("已达到手机历史显示上限，完整历史可在电脑查看。", "Phone history display limit reached. Full history is available on the computer."), 12, style.muted);
+                historyNotice.setTag("discussionHistoryLimit"); historyNotice.setPadding(dp(4), dp(8), dp(4), dp(12));
+            }
+            desired.add(historyNotice);
+        } else if (nextBefore > 0) {
+            if (olderMessages == null) olderMessages = button(tr("加载更早消息", "Load earlier messages"), "discussionOlder", () -> readPage("/v1/discussions/" + groupId + "?before=" + nextBefore));
+            desired.add(olderMessages);
+        }
         java.util.Set<String> completed = new java.util.HashSet<>();
+        java.util.Set<String> shownDeliveries = new java.util.HashSet<>();
         for (JSONObject message : messages.values()) if (message.has("deliveryId")) completed.add(message.optString("deliveryId"));
         for (JSONObject message : messages.values()) {
             boolean user = message.optString("role").equals("user");
-            addMessage(message.optString("speakerId"), message.optString("speakerName", tr("你", "You")), message.optString("text"), user);
-            for (JSONObject attachment : rows(message.optJSONArray("attachments"))) content.addView(button(attachment.optString("name"), "discussionFile:" + attachment.optString("id"), this::showFiles));
-            if (!user) { JSONObject delivery = deliveries.get(message.optString("deliveryId")); if (delivery != null) renderTools(content, delivery); }
-            if (user) for (JSONObject d : deliveries.values()) if (d.optString("requestId").equals(message.optString("requestId")) && !completed.contains(d.optString("id")) && d.optString("serialResolution").isEmpty()) addDelivery(d);
+            String key = "message:" + message.optLong("seq"); retained.add(key);
+            DiscussionRow row = row(key, user, message.optString("deliveryId"));
+            updateRow(row, message.optString("speakerId"), message.optString("speakerName", tr("你", "You")), message.optString("text"), false);
+            String files = String.valueOf(message.optJSONArray("attachments"));
+            if (!files.equals(row.filesSignature)) {
+                row.filesSignature = files; row.files.removeAllViews();
+                for (JSONObject attachment : rows(message.optJSONArray("attachments"))) row.files.addView(button(attachment.optString("name"), "discussionFile:" + attachment.optString("id"), this::showFiles));
+            }
+            updateRowTools(row, user ? null : deliveries.get(message.optString("deliveryId"))); desired.add(row.outer);
+            if (user) for (JSONObject d : deliveries.values()) if (d.optString("requestId").equals(message.optString("requestId")) && !completed.contains(d.optString("id")) && d.optString("serialResolution").isEmpty()) {
+                String deliveryKey = "delivery:" + d.optString("id"); retained.add(deliveryKey);
+                DiscussionRow delivery = row(deliveryKey, false, ""); updateDelivery(delivery, d); desired.add(delivery.outer);
+                shownDeliveries.add(d.optString("id"));
+            }
         }
-        scroll.post(() -> { if (bottom) scroll.fullScroll(View.FOCUS_DOWN); else scroll.scrollTo(0, oldY); });
+        // The host includes current work even when its initiating message is
+        // outside this page. Keep its stop/approval/serial controls accessible.
+        for (JSONObject delivery : deliveries.values()) {
+            String id = delivery.optString("id");
+            if (!history.protectedDelivery(id) || shownDeliveries.contains(id) || completed.contains(id)) continue;
+            String key = "delivery:" + id; retained.add(key);
+            DiscussionRow row = row(key, false, ""); updateDelivery(row, delivery); desired.add(row.outer);
+        }
+        java.util.Iterator<java.util.Map.Entry<String, DiscussionRow>> iterator = messageRows.entrySet().iterator();
+        while (iterator.hasNext()) {
+            java.util.Map.Entry<String, DiscussionRow> entry = iterator.next();
+            if (retained.contains(entry.getKey())) continue;
+            if (entry.getValue().body != null) entry.getValue().body.dispose(); iterator.remove();
+        }
+        MessageViews.reconcile(content, desired);
+        restoreHistoryPosition(position);
         if (memberPanel != null) renderMembers(); controls();
-    }
-    private void addMessage(String speaker, String name, String value, boolean user) {
-        LinearLayout block = style.messageBlock(user);
-        if (!user) block.addView(speaker(speaker, name));
-        if (!value.isEmpty()) {
-            if (user) { TextView body = text(value, 16, style.ink); body.setTextIsSelectable(true); style.messageTypography(body); block.addView(body); }
-            else block.addView(markdown.render(value));
-        }
-        content.addView(style.messageWithFooter(block, user, () -> value, 0, chinese));
+        viewHandler.post(this::notifyApprovalRequests);
     }
     private View speaker(String id, String name) {
-        JSONObject member = member(id); TextView label = button("●  " + name, "discussionSpeaker:" + id, () -> { if (member != null && !member.optBoolean("removed")) editIdentity(member); });
+        TextView label = button("●  " + name, "discussionSpeaker:" + id, () -> { JSONObject current = member(id); if (current != null && !current.optBoolean("removed")) editIdentity(current); });
         label.setGravity(Gravity.START | Gravity.CENTER_VERTICAL); label.setTextColor(style.muted); label.setBackgroundColor(android.graphics.Color.TRANSPARENT);
         label.setPadding(0, 0, 0, dp(6)); return label;
     }
-    private void addDelivery(JSONObject delivery) {
+
+    private static final class HistoryPosition {
+        ScrollView owner;
+        View anchor;
+        long seq = -1;
+        int offset, y;
+        boolean bottom;
+    }
+    private HistoryPosition historyPosition(boolean older) {
+        HistoryPosition position = new HistoryPosition(); position.owner = scroll; position.y = scroll.getScrollY();
+        position.bottom = !older && content.getHeight() - scroll.getHeight() - position.y < dp(100);
+        for (int i = 0; i < content.getChildCount(); i++) {
+            View child = content.getChildAt(i); Object tag = child.getTag();
+            if (!(tag instanceof String) || !((String) tag).startsWith("discussionRow:")) continue;
+            if (content.getTop() + child.getBottom() <= position.y) continue;
+            position.anchor = child; position.offset = content.getTop() + child.getTop() - position.y;
+            String key = ((String) tag).substring("discussionRow:".length());
+            if (key.startsWith("message:")) position.seq = Long.parseLong(key.substring("message:".length()));
+            break;
+        }
+        return position;
+    }
+    private void clearHistoryScroll() {
+        if (historyScrollPending != null && historyScrollOwner.getViewTreeObserver().isAlive())
+            historyScrollOwner.getViewTreeObserver().removeOnPreDrawListener(historyScrollPending);
+        historyScrollPending = null; historyScrollOwner = null;
+    }
+    private void restoreHistoryPosition(HistoryPosition position) {
+        clearHistoryScroll(); historyScrollOwner = position.owner;
+        historyScrollPending = () -> {
+            if (position.owner != scroll || isFinishing()) { clearHistoryScroll(); return true; }
+            if (scroll.isLayoutRequested() || content.isLayoutRequested()) return true;
+            clearHistoryScroll();
+            if (position.bottom) scroll.scrollTo(0, content.getHeight());
+            else {
+                View anchor = position.anchor;
+                if (anchor != null && anchor.getParent() != content && position.seq >= 0) {
+                    Map.Entry<Long, JSONObject> nearest = messages.ceilingEntry(position.seq);
+                    DiscussionRow row = nearest == null ? null : messageRows.get("message:" + nearest.getKey());
+                    anchor = row == null ? null : row.outer;
+                }
+                scroll.scrollTo(0, anchor != null && anchor.getParent() == content
+                    ? content.getTop() + anchor.getTop() - position.offset : position.y);
+            }
+            return true;
+        };
+        position.owner.getViewTreeObserver().addOnPreDrawListener(historyScrollPending); position.owner.invalidate();
+    }
+    private void updateDelivery(DiscussionRow row, JSONObject delivery) {
+        String deliveryId = delivery.optString("id");
         JSONObject participant = member(delivery.optString("participantId"));
-        LinearLayout block = style.messageBlock(false); block.addView(speaker(delivery.optString("participantId"), participant == null ? "Agent" : participant.optString("name")));
         String state = delivery.optString("status"), phase = delivery.optString("phase"), value = delivery.optString("partialText");
-        if (!value.isEmpty()) block.addView(markdown.render(value));
+        long run = delivery.optLong("runId");
+        if (row.run != run) { row.body.restart(); row.run = run; }
+        updateRow(row, delivery.optString("participantId"), participant == null ? "Agent" : participant.optString("name"), value, true);
+        row.body.update(value, !List.of("queued", "preparing", "running", "stopping").contains(state));
         String label = switch (state) {
             case "queued" -> tr("等待回复", "Queued"); case "preparing" -> tr("正在准备…", "Preparing…");
             case "stopping" -> tr("正在停止…", "Stopping…"); case "failed" -> tr("回复失败", "Reply failed");
@@ -402,17 +533,91 @@ public final class RemoteDiscussionsActivity extends Activity {
             case "running" -> phase.equals("approval") ? tr("等待审批或回答问题", "Waiting for approval or answers") : tr("正在回复…", "Replying…");
             default -> state;
         };
-        TextView note = text(label, 13, style.muted); note.setTag("discussionDelivery:" + delivery.optString("id")); block.addView(note);
-        renderTools(block, delivery);
-        String reason = delivery.optString("reason"); if (!reason.isEmpty()) { TextView detail = text(reason, 13, settingsStyle.error); detail.setTextIsSelectable(true); block.addView(detail); }
+        row.note.setText(label); row.note.setTag("discussionDelivery:" + delivery.optString("id")); row.note.setVisibility(View.VISIBLE);
+        updateRowTools(row, delivery);
+        String reason = delivery.optString("reason"); JSONObject request = requests.get(delivery.optString("requestId"));
+        String actions = state + "\u0000" + reason + "\u0000" + (request == null ? "" : request.optString("mode"));
+        if (!actions.equals(row.actionsSignature)) {
+        row.actionsSignature = actions; LinearLayout block = row.actions; block.removeAllViews(); block.setVisibility(View.VISIBLE);
+        if (!reason.isEmpty()) { TextView detail = text(reason, 13, settingsStyle.error); detail.setTextIsSelectable(true); block.addView(detail); }
         if (List.of("failed", "cancelled", "interrupted").contains(state)) {
-            block.addView(button(tr("重试", "Retry"), "discussionRetry:" + delivery.optString("id"), () -> submit("retry", groupId, object("deliveryId", delivery.optString("id")))));
-            JSONObject request = requests.get(delivery.optString("requestId"));
-            if (request != null && request.optString("mode").equals("serial")) block.addView(button(tr("跳过", "Skip"), "discussionSkip:" + delivery.optString("id"),
-                () -> submit("resolve-serial", groupId, object("deliveryId", delivery.optString("id"), "resolution", "skip"))));
-        } else if (List.of("queued", "preparing", "running").contains(state)) block.addView(button(tr("停止", "Stop"), "discussionStop:" + delivery.optString("id"),
-            () -> submit("stop", groupId, object("deliveryId", delivery.optString("id")))));
-        content.addView(block);
+            block.addView(button(tr("重试", "Retry"), "discussionRetry:" + deliveryId, () -> submit("retry", groupId, object("deliveryId", deliveryId))));
+            if (request != null && request.optString("mode").equals("serial")) block.addView(button(tr("跳过", "Skip"), "discussionSkip:" + deliveryId,
+                () -> submit("resolve-serial", groupId, object("deliveryId", deliveryId, "resolution", "skip"))));
+        } else if (List.of("queued", "preparing", "running").contains(state)) block.addView(button(tr("停止", "Stop"), "discussionStop:" + deliveryId,
+            () -> submit("stop", groupId, object("deliveryId", deliveryId))));
+        }
+    }
+
+    private static final class DiscussionRow {
+        LinearLayout outer, block, wrapper, files, tools, actions;
+        StreamingMarkdownView body;
+        TextView text, note;
+        View speaker;
+        String identity = "", value = "", filesSignature = "", toolsSignature = "", actionsSignature = "";
+        boolean user;
+        long run;
+    }
+    private DiscussionRow row(String key, boolean user, String deliveryId) {
+        DiscussionRow row = messageRows.get(key);
+        if (row == null && !deliveryId.isEmpty()) row = messageRows.remove("delivery:" + deliveryId);
+        if (row != null) { row.outer.setTag("discussionRow:" + key); messageRows.put(key, row); return row; }
+        row = new DiscussionRow(); row.user = user; row.outer = column(); row.block = style.messageBlock(user);
+        if (user) { row.text = text("", 16, style.ink); row.text.setTextIsSelectable(true); style.messageTypography(row.text); row.block.addView(row.text); }
+        else {
+            ScrollView target = scroll;
+            row.body = new StreamingMarkdownView(this, markdown, new MarkdownScrollAnchor(target, () -> scroll == target && groupId != null)); row.block.addView(row.body);
+        }
+        row.note = text("", 13, style.muted); row.note.setVisibility(View.GONE); row.block.addView(row.note);
+        row.actions = column(); row.actions.setVisibility(View.GONE); row.block.addView(row.actions);
+        DiscussionRow owner = row; row.wrapper = style.messageWithFooter(row.block, user, () -> owner.value, 0, chinese); row.outer.addView(row.wrapper);
+        row.files = column(); row.outer.addView(row.files); row.tools = column(); row.outer.addView(row.tools);
+        row.outer.setTag("discussionRow:" + key); messageRows.put(key, row); return row;
+    }
+    private void updateRow(DiscussionRow row, String speakerId, String name, String value, boolean delivery) {
+        String identity = speakerId + "\u0000" + name;
+        if (!row.user && !identity.equals(row.identity)) {
+            if (row.speaker != null) row.block.removeView(row.speaker);
+            row.identity = identity; row.speaker = speaker(speakerId, name); row.block.addView(row.speaker, 0);
+        }
+        boolean first = row.body != null && row.body.source().isEmpty() && row.body.idle() && !row.body.hasStreamState();
+        row.value = value;
+        if (row.user) { if (!android.text.TextUtils.equals(row.text.getText(), value)) row.text.setText(value); }
+        else {
+            if (!delivery) { if (first) row.body.history(value); else row.body.update(value, true); }
+            row.body.setVisibility(value.isEmpty() ? View.GONE : View.VISIBLE);
+        }
+        row.wrapper.findViewWithTag("messageFooter").setVisibility(!delivery && !value.isEmpty() ? View.VISIBLE : View.GONE);
+        LinearLayout.LayoutParams spacing = (LinearLayout.LayoutParams) row.wrapper.getLayoutParams(); spacing.bottomMargin = delivery ? dp(18) : 0; row.wrapper.setLayoutParams(spacing);
+        if (!delivery) {
+            row.note.setVisibility(View.GONE); row.note.setTag(null); row.actions.setVisibility(View.GONE);
+            row.actions.removeAllViews(); row.actionsSignature = "";
+        }
+        if (delivery && row.tools.getParent() != row.block) {
+            row.outer.removeView(row.tools); row.block.addView(row.tools, row.block.indexOfChild(row.actions));
+        } else if (!delivery && row.tools.getParent() != row.outer) { row.block.removeView(row.tools); row.outer.addView(row.tools); }
+    }
+    private void updateRowTools(DiscussionRow row, JSONObject delivery) {
+        String signature = delivery == null ? "" : String.valueOf(delivery.optJSONArray("tools")) + delivery.optBoolean("toolsTruncated")
+            + delivery.optString("status") + String.valueOf(group.optJSONArray("pendingApprovals"));
+        if (signature.equals(row.toolsSignature)) return;
+        row.toolsSignature = signature; row.tools.removeAllViews(); if (delivery != null) renderTools(row.tools, delivery);
+    }
+    private void disposeMessageRows() {
+        for (DiscussionRow row : messageRows.values()) if (row.body != null) row.body.dispose(); messageRows.clear();
+    }
+
+    private void releasePageViews() {
+        viewHandler.removeCallbacksAndMessages(null); handler.removeCallbacks(saveDraftLater);
+        clearHistoryScroll(); disposeMessageRows();
+        if (workStatus != null) { workStatus.close(); workStatus = null; }
+        if (dialog != null) { dialog.dismiss(); dialog = null; }
+        if (approvalDialog != null) { approvalDialog.dismiss(); approvalDialog = null; }
+        approvalKey = ""; composer = null; memberPanel = null;
+        roster = null; membersButton = null; attachmentTray = null; attachmentStrip = null;
+        olderMessages = null; historyNotice = null;
+        root = null; content = null; scroll = null; toolbar = null; pendingBar = null;
+        title = null; status = null; headerConnection = null;
     }
     private List<JSONObject> liveMembers() {
         List<JSONObject> result = new ArrayList<>(); if (group != null) for (JSONObject p : rows(group.optJSONArray("participants"))) if (!p.optBoolean("removed")) result.add(p); return result;
@@ -422,6 +627,9 @@ public final class RemoteDiscussionsActivity extends Activity {
         JSONObject p = member(id); return p != null && (p.optBoolean("verifying") || p.optBoolean("removalPending"));
     }
     private void controls() {
+        if (olderMessages != null) olderMessages.setEnabled(connected && !pageLoading && !history.limited());
+        View moreGroups = content == null ? null : content.findViewWithTag("discussionMoreGroups");
+        if (moreGroups != null) moreGroups.setEnabled(connected && !pageLoading);
         if (headerConnection != null) headerConnection.setText(connected ? tr("已连接", "Connected")
             : connectionBlocked || !EmbeddedNetwork.online() ? tr("离线", "Offline") : reconnecting ? tr("正在重连", "Reconnecting") : tr("正在连接", "Connecting"));
         if (workStatus != null) {
@@ -491,6 +699,12 @@ public final class RemoteDiscussionsActivity extends Activity {
     private String approvalToken(JSONObject request) {
         return groupId + ":" + instance + ":" + request.optString("deliveryId") + ":" + request.optString("runId") + ":" + request.optString("fingerprint");
     }
+    private void notifyApprovalRequests() {
+        if (!foreground || !connected || groupId == null || group == null) return;
+        String scope = new JSONArray().put(address).put(credentials.optString("deviceId"))
+            .put(instance).put("discussion").put(groupId).toString();
+        MobileHaptics.pendingRequests(this, content, scope, group.optJSONArray("pendingApprovals"));
+    }
     private void review(JSONObject request) {
         if (!rich || !request.optBoolean("responseSupported")) { showError(tr("请更新主机，或在电脑查看此请求。", "Update the host or review this request on the computer.")); return; }
         String target = groupId, server = instance; JSONObject p = member(request.optString("participantId")); approvalKey = approvalToken(request);
@@ -504,10 +718,11 @@ public final class RemoteDiscussionsActivity extends Activity {
     }
     private void showFiles() { if (rich && groupId != null) downloads.showDiscussion(address, credentials.optString("token"), groupId); }
     private void renderAttachments() {
+        composerAttachments.replace(images, documents);
         if (attachmentTray == null) return;
         attachmentStrip.setVisibility(images.isEmpty() && documents.isEmpty() ? View.GONE : View.VISIBLE);
-        ChatImageTray.fill(this, attachmentTray, images, style.surface, chinese, index -> { if (pending.length() == 0) { AttachmentStore.remove(this, images.remove(index)); renderAttachments(); saveDraft(); controls(); } });
-        ChatDocumentTray.append(this, attachmentTray, documents, chinese, index -> { if (pending.length() == 0) { ChatAttachments.discard(this, List.of(), List.of(documents.remove(index))); renderAttachments(); saveDraft(); controls(); } });
+        ChatImageTray.fill(this, attachmentTray, images, style.surface, chinese, index -> { if (pending.length() == 0) { images.remove(index); renderAttachments(); saveDraft(); controls(); } });
+        ChatDocumentTray.append(this, attachmentTray, documents, chinese, index -> { if (pending.length() == 0) { documents.remove(index); renderAttachments(); saveDraft(); controls(); } });
     }
     private void attachmentMenu() {
         if (groupId == null) return;
@@ -557,7 +772,8 @@ public final class RemoteDiscussionsActivity extends Activity {
         String target = pickerGroup; loadingAttachments = true; controls();
         reads.execute(() -> {
             List<String> nextImages = new ArrayList<>(); List<JSONObject> nextDocuments = new ArrayList<>();
-            try {
+            AttachmentMaintenance.Lease imported = AttachmentMaintenance.protect(this);
+            try (AttachmentMaintenance.Import scope = imported.captureImports()) {
                 if (uris.size() > 16) throw new IllegalArgumentException(tr("最多 16 个附件", "Up to 16 attachments"));
                 for (android.net.Uri uri : uris) {
                     String type = getContentResolver().getType(uri);
@@ -571,9 +787,9 @@ public final class RemoteDiscussionsActivity extends Activity {
                         if (allImages.size() + allDocuments.size() > 16) throw new IllegalArgumentException(tr("最多 16 个附件", "Up to 16 attachments"));
                         ChatAttachments.validate(this, allImages, allDocuments, true); images.addAll(nextImages); documents.addAll(nextDocuments); renderAttachments(); saveDraft();
                     } catch (Exception error) { ChatAttachments.discard(this, nextImages, nextDocuments); showError(error.getMessage()); }
-                    finally { loadingAttachments = false; controls(); }
+                    finally { imported.close(); loadingAttachments = false; controls(); }
                 });
-            } catch (Exception error) { ChatAttachments.discard(this, nextImages, nextDocuments); runOnUiThread(() -> { loadingAttachments = false; if (!isDestroyed()) { showError(error.getMessage()); controls(); } }); }
+            } catch (Exception error) { ChatAttachments.discard(this, nextImages, nextDocuments); imported.close(); runOnUiThread(() -> { loadingAttachments = false; if (!isDestroyed()) { showError(error.getMessage()); controls(); } }); }
             finally { if (request == 813 && photo != null) photo.delete(); }
         });
     }
@@ -678,7 +894,7 @@ public final class RemoteDiscussionsActivity extends Activity {
     }
 
     private void submit(String action, String id, JSONObject parameters) {
-        if (!connected || api == null || (!action.equals("stop") && !action.equals("cancel-member-verification") && pending.length() > 0)) return;
+        if (!stateReady || !connected || api == null || (!action.equals("stop") && !action.equals("cancel-member-verification") && pending.length() > 0)) return;
         String requestId = UUID.randomUUID().toString();
         JSONObject command = object("requestId", requestId, "instanceId", instance, "action", action, "parameters", parameters);
         try {
@@ -726,25 +942,43 @@ public final class RemoteDiscussionsActivity extends Activity {
         if (result.optString("state").equals("pending")) {
             int ticket = generation; handler.postDelayed(() -> { if (foreground && ticket == generation) poll(requestId, false); }, 1000); controls(); return;
         }
-        pending.remove(requestId);
-        if (result.optString("state").equals("completed")) {
-            lastError = ""; workStatus.clear();
-            String action = command.optString("action"), target = command.optString("id");
-            if (action.equals("send")) {
-                String sent = command.optJSONObject("parameters").optString("text"); JSONObject draft = drafts.optJSONObject(target);
-                JSONArray sentFiles = command.optJSONObject("parameters").optJSONArray("attachments");
+        if (!result.optString("state").equals("completed") && !result.optString("state").equals("failed")) {
+            uncertain.add(requestId);
+            showError(tr("操作结果尚未确认，请核对后重试同一请求。", "The result is unconfirmed. Inspect it and retry the same request."));
+            controls(); return;
+        }
+        boolean completed = result.optString("state").equals("completed");
+        String action = command.optString("action"), target = command.optString("id"), sent = "";
+        JSONArray sentFiles = null;
+        boolean clearFiles = false, deletedCurrent = completed && action.equals("delete") && target.equals(groupId);
+        try {
+            JSONObject nextPending = new JSONObject(pending.toString()), nextDrafts = new JSONObject(drafts.toString());
+            nextPending.remove(requestId);
+            if (completed && action.equals("send")) {
+                sent = command.getJSONObject("parameters").optString("text");
+                sentFiles = command.getJSONObject("parameters").optJSONArray("attachments");
+                JSONObject draft = nextDrafts.optJSONObject(target);
                 if (sentFiles != null && draft != null && sentFiles.toString().equals(String.valueOf(draft.optJSONArray("attachments")))) {
-                    draft.remove("attachments");
-                    if (target.equals(groupId)) { ChatAttachments.discard(this, images, documents); images.clear(); documents.clear(); renderAttachments(); }
+                    draft.remove("attachments"); clearFiles = true;
                 }
-                if (draft != null && draft.optString("text").equals(sent)) { try { draft.put("text", ""); } catch (Exception ignored) {} }
-                if (target.equals(groupId) && composer != null && composer.input.getText().toString().equals(sent)) composer.input.setText("");
+                if (draft != null && draft.optString("text").equals(sent)) draft.put("text", "");
             }
-            persist();
+            if (completed && action.equals("delete")) nextDrafts.remove(target);
+            JSONObject nextState = stateStore.load(), nextProfile = new JSONObject(profile.toString());
+            nextProfile.put("pending", nextPending).put("drafts", nextDrafts); nextState.put(profileKey, nextProfile);
+            stateStore.save(nextState);
+            state = nextState; profile = nextProfile; pending = nextPending; drafts = nextDrafts; stateAttachments.replace(profile);
+        } catch (Exception error) { uncertain.add(requestId); showError(error.getMessage()); controls(); return; }
+        if (completed) {
+            lastError = ""; workStatus.clear();
+            if (action.equals("send") && target.equals(groupId)) {
+                if (clearFiles && AttachmentStore.references(sentFiles).equals(AttachmentStore.references(List.of(images, documents)))) { images.clear(); documents.clear(); renderAttachments(); }
+                if (composer != null && composer.input.getText().toString().equals(sent)) composer.input.setText("");
+            }
+            if (deletedCurrent) { groupId = null; images.clear(); documents.clear(); composerAttachments.replace(); if (getIntent().getBooleanExtra("fromNavigation", false)) finish(); else openGroup(null); return; }
             if (action.equals("create")) { openGroup(result.optString("groupId")); return; }
-            if (action.equals("delete") && target.equals(groupId)) { if (getIntent().getBooleanExtra("fromNavigation", false)) finish(); else openGroup(null); return; }
             workStatus.notice(tr("操作已完成", "Action completed"));
-        } else { persist(); showError(result.optString("error", tr("操作失败", "Action failed"))); }
+        } else showError(result.optString("error", tr("操作失败", "Action failed")));
         controls();
     }
 }

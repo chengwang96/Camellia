@@ -10,6 +10,7 @@ const { DiscussionStore, readDiscussionRecords, validateDiscussion } = require('
 const { DiscussionManager } = require('../src/engines/discussions/manager');
 const { LIMITS } = require('../src/engines/discussions/schema');
 const { writeJson } = require('../src/shared/json-store');
+const { logicalBytes } = require('../src/engines/discussions/payloads');
 const { removeTree } = require('./test-fs.cjs');
 
 function setup(t, options = {}) {
@@ -140,11 +141,12 @@ test('persisted input cannot reuse a native generation containing a future publi
   assert.throws(() => h.store.read(h.id), /native future context/);
 });
 
-test('reads and writes share the exact pretty UTF-8 byte bound and preserve the old snapshot on overflow', t => {
+test('reads and writes share the decoded UTF-8 byte bound and preserve the old snapshot on overflow', t => {
   const h = setup(t), expected = h.store.read(h.id); expected.title = '中\\\n'.repeat(120); expected.revision++;
   const limit = bytes(expected), store = new DiscussionStore({ dir: h.dir, maxRecordBytes: limit });
   store.update(h.id, state => { state.title = expected.title; });
-  assert.equal(fs.statSync(store.file(h.id)).size, limit); assert.deepEqual(store.read(h.id), expected); assert.deepEqual(store.list(), [expected]);
+  assert.equal(logicalBytes(JSON.parse(fs.readFileSync(store.file(h.id), 'utf8'))), limit);
+  assert.deepEqual(store.read(h.id), expected); assert.deepEqual(store.list(), [expected]);
   assert.throws(() => store.update(h.id, state => { state.title += '中'; }), /byte limit/);
   assert.deepEqual(store.read(h.id), expected);
   const smaller = new DiscussionStore({ dir: h.dir, maxRecordBytes: limit - 1 });

@@ -4,6 +4,8 @@ const path = require('node:path');
 const { bindingFingerprint } = require('./capabilities');
 const { nativeStorage, storageKey, sameStorage } = require('./native-storage');
 const { validateAttachments } = require('./assets');
+const { createHash } = require('node:crypto');
+const replyDigest = text => createHash('sha256').update(JSON.stringify(text)).digest('hex');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
@@ -214,14 +216,21 @@ function validateDiscussion(state, id) {
     if (d.settlement !== undefined) {
       const s = d.settlement;
       check(s && ['completed', 'failed', 'cancelled'].includes(s.status), 'settlement status');
-      shape(s, ['status', ...(s.status === 'completed' ? ['text'] : [])]);
-      if (s.status === 'completed') { validateReply(s.text); check(d.nativeId && d.inputPlan && d.partialText === s.text, 'settlement answer'); }
+      if (s.status === 'completed' && s.resultId !== undefined) {
+        shape(s, ['status', 'resultId', 'sha256']);
+        const result = messages.get(s.resultId);
+        check(d.status === 'completed' && s.resultId === d.resultId && d.partialText === undefined
+          && result && typeof s.sha256 === 'string' && /^[0-9a-f]{64}$/.test(s.sha256) && s.sha256 === replyDigest(result.text), 'settlement answer');
+      } else {
+        shape(s, ['status', ...(s.status === 'completed' ? ['text'] : [])]);
+        if (s.status === 'completed') { validateReply(s.text); check(d.nativeId && d.inputPlan && d.partialText === s.text, 'settlement answer'); }
+      }
       if (['completed', 'failed', 'cancelled'].includes(d.status)) check(s.status === d.status, 'settlement outcome');
     }
     if (d.status === 'completed') {
       const result = messages.get(d.resultId);
       check(result?.deliveryId === d.id && result.seq > d.inputThroughSeq
-        && (d.settlement === undefined || d.settlement.text === result.text), 'completed reply');
+        && (d.settlement === undefined || d.settlement.resultId === result.id || d.settlement.text === result.text), 'completed reply');
     } else check(d.resultId === null, 'uncommitted reply');
     if (d.serialResolution !== undefined) {
       check(r.mode === 'serial' && ['failed', 'cancelled', 'interrupted'].includes(d.status)
@@ -272,4 +281,4 @@ function admissionBytes(state) {
   return reserve;
 }
 
-module.exports = { UUID, LIMITS, validateDiscussion, validateReply, validateIdentityPrompt, admissionBytes, capacityError };
+module.exports = { UUID, LIMITS, validateDiscussion, validateReply, validateIdentityPrompt, admissionBytes, capacityError, replyDigest };

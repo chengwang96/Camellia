@@ -92,10 +92,15 @@
               </select>
             </span>
             <span class="input-spacer"></span>
-            <button class="goal-toggle" id="tasksToggle" title="Scheduled tasks" data-i18n-attrs="title" hidden>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-              <span data-i18n>Tasks</span>
-            </button>
+            <span class="tasks-controls" id="tasksControls" hidden>
+              <button class="goal-toggle" id="tasksToggle" type="button" title="Scheduled tasks" aria-haspopup="dialog" aria-controls="tasksDialog" data-i18n-attrs="title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                <span data-i18n>Tasks</span>
+              </button>
+              <button class="goal-toggle tasks-cancel" id="tasksCancel" type="button" title="Cancel this conversation's scheduled tasks" aria-label="Cancel this conversation's scheduled tasks" data-i18n-attrs="title aria-label">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+              </button>
+            </span>
             <button class="goal-toggle" id="goalToggle" title="Goal mode" aria-pressed="false" hidden data-i18n-attrs="title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
               <span data-i18n>Goal</span>
@@ -260,6 +265,7 @@
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../discussions/discussions-i18n.js"></script>
 <script src="../../shared/i18n.js"></script>
+<script src="../../shared/model-names.js"></script>
 <script src="../../shared/model-levels.js"></script>
 <script src="../../shared/subscription-models.js"></script>
 <script src="../../shared/codex-speed.js"></script>
@@ -292,6 +298,7 @@
 <script src="../discussions/discussions.js"></script>
 <script src="../shared/discussion-surface.js"></script>
 <script src="../../shared/thinking-tags.js"></script>
+<script src="./streaming-markdown.js"></script>
 <script src="./claude.js"></script>
 </body>
 </html>

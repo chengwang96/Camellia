@@ -14,7 +14,7 @@ const { pythonEnvironment, globalPythonEnvironment, SUPPORTED_SDK_VERSIONS } = r
 const { downloadSettings } = require('../main/download-network');
 const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider, effectiveSelection } = require('./antigravity/subscription');
 const { valid } = require('./permission-levels');
-const { accountSummary, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts');
+const { accountSummary, accountsFor, normalizeLabel, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
 const { SUPPORTED_CLI_VERSIONS } = require('../main/antigravity-cli-runtime');
 
@@ -65,7 +65,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
   function accountState() {
     const value = account.state();
     return { ok: true, ...value, activeId: DEFAULT_ACCOUNT_ID,
-      accounts: [{ ...accountSummary('antigravity', { id: DEFAULT_ACCOUNT_ID, label: '' }, value), active: true }] };
+      accounts: [{ ...accountSummary('antigravity', accountsFor(loadConfig(), 'antigravity')[0], value), active: true }] };
   }
   const standaloneCwd = value => value.cwd || path.join(dataDir, 'antigravity-sessions');
   const workspaces = createSessionWorkspaces({ history, loadConfig, saveConfig, metaKey: 'antigravityMeta', settingsKey: 'antigravity',
@@ -159,6 +159,15 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     // The official CLI keeps one global Google credential, so there is exactly
     // one account to report; the shape matches the multi-account engines.
     'account-state': accountState,
+    'account-label': payload => {
+      const config = loadConfig();
+      const accounts = accountsFor(config, 'antigravity').map(item => item.id === DEFAULT_ACCOUNT_ID
+        ? { ...item, label: normalizeLabel(payload?.label) } : item);
+      saveConfig({ subscriptionAccounts: { ...config.subscriptionAccounts, antigravity: accounts } });
+      const state = accountState();
+      onAccount(state);
+      return state;
+    },
     'account-refresh': async () => {
       const state = await account.refresh();
       if (!settings().subscriptionModel) saveConfig({ antigravity: { ...loadConfig().antigravity, subscriptionModel: state.models[0].id,

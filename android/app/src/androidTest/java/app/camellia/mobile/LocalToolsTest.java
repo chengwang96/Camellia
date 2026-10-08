@@ -139,18 +139,18 @@ public class LocalToolsTest extends InstrumentationTestCase {
         assertEquals("https://example.com/page", LocalWebTools.publicUrl("https://example.com/page#fragment").toString());
         LocalWebTools executor = new LocalWebTools();
         try { executor.execute("web_fetch", new JSONObject().put("url", "https://127.0.0.1")); fail("Loopback request allowed"); } catch (java.io.IOException expected) {} finally { executor.cancel(); }
-        CredentialStore encrypted = new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private"); encrypted.clear();
+        LocalChatFixture.clear(getInstrumentation().getTargetContext());
         try {
-            LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+            LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
             String id = store.createConversation("", "route").getString("id");
             assertFalse(store.conversation(id).optBoolean("webTools"));
-            var stateField = LocalChatStore.class.getDeclaredField("state"); stateField.setAccessible(true);
+            var stateField = LocalChatFixture.class.getDeclaredField("state"); stateField.setAccessible(true);
             ((JSONObject) stateField.get(store)).put("webSearchKey", "legacy-secret");
             store.configureTools(id, true);
-            LocalChatStore restored = new LocalChatStore(getInstrumentation().getTargetContext());
+            LocalChatFixture restored = new LocalChatFixture(getInstrumentation().getTargetContext());
             assertTrue(restored.conversation(id).getBoolean("webTools"));
             assertFalse(((JSONObject) stateField.get(restored)).has("webSearchKey"));
-        } finally { encrypted.clear(); }
+        } finally { LocalChatFixture.clear(getInstrumentation().getTargetContext()); }
     }
 
     public void testKeylessSearchResultParsingFiltersUnsafeLinks() throws Exception {
@@ -190,18 +190,18 @@ public class LocalToolsTest extends InstrumentationTestCase {
     }
 
     public void testToolSettingsAreOptInAndKeyless() throws Exception {
-        CredentialStore encrypted = new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private"); encrypted.clear();
+        LocalChatFixture.clear(getInstrumentation().getTargetContext());
         android.app.Activity activity = null;
         try {
-            LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+            LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
             String id = store.createConversation("", "route").getString("id");
-            activity = getInstrumentation().startActivitySync(new android.content.Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+            activity = LocalChatFixture.start(getInstrumentation(), new android.content.Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
             android.app.Activity selected = activity;
-            getInstrumentation().waitForIdleSync();
+            LocalChatFixture.idle(getInstrumentation());
             getInstrumentation().runOnMainSync(() -> selected.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
-            getInstrumentation().waitForIdleSync();
+            LocalChatFixture.idle(getInstrumentation());
             getInstrumentation().runOnMainSync(() -> selected.getWindow().getDecorView().findViewWithTag("localTools").performClick());
-            getInstrumentation().waitForIdleSync();
+            LocalChatFixture.idle(getInstrumentation());
             var field = LocalChatActivity.class.getDeclaredField("dialog"); field.setAccessible(true);
             android.app.AlertDialog dialog = (android.app.AlertDialog) field.get(activity);
             getInstrumentation().runOnMainSync(() -> {
@@ -210,18 +210,18 @@ public class LocalToolsTest extends InstrumentationTestCase {
                 assertNull(dialog.findViewById(android.R.id.content).findViewWithTag("localToolsKey"));
                 dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
             });
-            store = new LocalChatStore(getInstrumentation().getTargetContext());
+            store = new LocalChatFixture(getInstrumentation().getTargetContext());
             assertTrue(store.conversation(id).getBoolean("webTools"));
         } finally {
             if (activity != null) {
                 android.app.Activity selected = activity; getInstrumentation().runOnMainSync(selected::finish);
                 long deadline = android.os.SystemClock.uptimeMillis() + 5000;
                 while (!selected.isDestroyed() && android.os.SystemClock.uptimeMillis() < deadline) {
-                    getInstrumentation().waitForIdleSync(); Thread.sleep(25);
+                    LocalChatFixture.idle(getInstrumentation()); Thread.sleep(25);
                 }
                 assertTrue("Activity must stop saving before test storage is cleared", selected.isDestroyed());
             }
-            encrypted.clear();
+            LocalChatFixture.clear(getInstrumentation().getTargetContext());
         }
     }
 }

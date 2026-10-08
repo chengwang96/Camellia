@@ -3,8 +3,6 @@ package app.camellia.mobile;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.text.TextUtils;
-import android.view.Gravity;
 import android.view.View;
 import android.widget.TextView;
 
@@ -21,9 +19,7 @@ final class ChatStatusLine {
     ChatStatusLine(TextView view, ChatStyle style, boolean chinese) {
         this.view = view; this.chinese = chinese; muted = style.muted;
         error = new SettingsStyle(view.getContext()).error;
-        style.dockStatus(view); view.setTextSize(11); view.setGravity(Gravity.CENTER);
-        view.setSingleLine(true); view.setLines(1); view.setEllipsize(TextUtils.TruncateAt.END);
-        view.setVisibility(View.VISIBLE); view.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        style.dockStatus(view); view.setVisibility(View.VISIBLE);
         view.setOnClickListener(v -> {
             String details = state.text(SystemClock.uptimeMillis());
             if (retry != null) {

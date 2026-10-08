@@ -85,6 +85,30 @@ test('Antigravity settings and standalone/workspace histories are isolated and e
   assert.equal((await h.call('antigravity-load-session', '../desktop-config')).ok, false);
 });
 
+test('Google account notes persist through IPC without changing CLI login, quota or other account preferences', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  await h.call('codex-account-label', { id: 'default', label: 'ChatGPT note' });
+  await h.call('subscription-preferences-save', { engine: 'antigravity', preferences: { useG1Credits: true } });
+  const cache = path.join(h.userData, 'antigravity/google-account.json');
+  const quota = path.join(h.userData, 'antigravity/google-quota.json');
+  fs.mkdirSync(path.dirname(cache), { recursive: true });
+  fs.writeFileSync(cache, JSON.stringify({ models: [{ id: 'google-test' }], verifiedAt: Date.now() }));
+  fs.writeFileSync(quota, JSON.stringify({ latest: { windows: [{ label: 'Weekly', usedPercent: 20 }] } }));
+  const previousCache = fs.readFileSync(cache), previousQuota = fs.readFileSync(quota);
+  const result = await h.call('antigravity-account-label', { label: '  Work\n Google  ' });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.accounts.length, 1);
+  assert.equal(result.accounts[0].label, 'Work Google');
+  assert.equal(result.accounts[0].signedIn, true);
+  assert.deepEqual(fs.readFileSync(cache), previousCache);
+  assert.deepEqual(fs.readFileSync(quota), previousQuota);
+  assert.equal((await h.call('codex-account-state')).accounts[0].label, 'ChatGPT note');
+  assert.equal((await h.call('subscription-preferences-get', { engine: 'antigravity' })).preferences.useG1Credits, true);
+  const reopened = createHarness(h.root);
+  assert.equal((await reopened.call('antigravity-account-state')).accounts[0].label, 'Work Google');
+  assert.equal((await reopened.call('antigravity-account-label', { label: 'x'.repeat(100) })).accounts[0].label.length, 60);
+});
+
 test('Antigravity model selections land in the slot of the chosen connection', async t => {
   const h = createHarness(); t.after(() => h.cleanup());
   assert.equal((await h.call('antigravity-save-settings', { connection: 'subscription', model: 'account-model' })).ok, true);

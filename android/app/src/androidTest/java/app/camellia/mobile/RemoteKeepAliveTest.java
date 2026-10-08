@@ -156,6 +156,7 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
     }
 
     public void testForegroundServiceOwnsBoundedWakeLockAndStopsAtDeadline() throws Exception {
+        var lease = new java.util.concurrent.atomic.AtomicReference<android.os.PowerManager.WakeLock>();
         ui(() -> { prepareRemote(); invoke("onPause"); invoke("onStop"); });
         getInstrumentation().waitForIdleSync();
         ui(() -> {
@@ -164,6 +165,7 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
             assertNotNull(service);
             var wakeField = RemoteKeepAliveService.class.getDeclaredField("wake"); wakeField.setAccessible(true);
             var wake = (android.os.PowerManager.WakeLock) wakeField.get(service);
+            lease.set(wake);
             assertNotNull(wake); assertTrue(wake.isHeld());
             assertTrue(RemoteKeepAliveService.active());
             long original = deadline();
@@ -174,10 +176,21 @@ public class RemoteKeepAliveTest extends InstrumentationTestCase {
             assertFalse(RemoteKeepAliveService.active());
             assertNull(field("api"));
         });
-        getInstrumentation().waitForIdleSync();
+        // stopSelf() completes through the system service manager; an idle main looper is not its completion signal.
+        long stopDeadline = android.os.SystemClock.elapsedRealtime() + 5000;
+        while (android.os.SystemClock.elapsedRealtime() < stopDeadline) {
+            var stopped = new java.util.concurrent.atomic.AtomicBoolean();
+            ui(() -> {
+                var running = RemoteKeepAliveService.class.getDeclaredField("running"); running.setAccessible(true);
+                stopped.set(running.get(null) == null);
+            });
+            if (stopped.get()) break;
+            Thread.sleep(25);
+        }
         ui(() -> {
             var running = RemoteKeepAliveService.class.getDeclaredField("running"); running.setAccessible(true);
             assertNull(running.get(null));
+            assertFalse("The destroyed service must release its wake lock", lease.get().isHeld());
         });
     }
 
