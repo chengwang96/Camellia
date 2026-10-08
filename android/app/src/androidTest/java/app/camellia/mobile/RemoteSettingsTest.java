@@ -17,7 +17,7 @@ public class RemoteSettingsTest extends InstrumentationTestCase {
     private static Object field(Object target, String name) throws Exception {
         var field = target.getClass().getDeclaredField(name); field.setAccessible(true); return field.get(target);
     }
-    public void testRemoteSearchHasNoOuterFrame() throws Exception {
+    public void testRemoteSearchOpensFromHeaderWithoutABottomDock() throws Exception {
         Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             getInstrumentation().waitForIdleSync();
@@ -26,16 +26,19 @@ public class RemoteSettingsTest extends InstrumentationTestCase {
                     field(activity, "credentials", new JSONObject());
                     var list = MainActivity.class.getDeclaredMethod("listScreen"); list.setAccessible(true); list.invoke(activity);
                     View root = activity.getWindow().getDecorView();
-                    LinearLayout bar = root.findViewWithTag("searchBar");
-                    assertNull("The search row must not draw a second frame behind the search pill", bar.getBackground());
-                    assertEquals(0f, bar.getElevation(), 0f); assertEquals(0f, bar.getTranslationZ(), 0f);
-                    View pill = bar.getChildAt(0);
+                    LinearLayout bar = root.findViewWithTag("remoteSearchBar");
+                    assertEquals(View.GONE, bar.getVisibility());
+                    assertNull(root.findViewWithTag("searchBarDock"));
+                    assertNull(root.findViewWithTag("searchBarFade"));
+                    root.findViewWithTag("remoteSearchButton").performClick();
+                    assertEquals(View.VISIBLE, bar.getVisibility());
                     ChatStyle style = new ChatStyle(activity);
-                    assertNotNull(pill.getBackground());
-                    assertEquals(style.dp(4), pill.getElevation(), 0f); assertEquals(style.dp(1), pill.getTranslationZ(), 0f);
-                    assertNotNull(root.findViewWithTag("searchBarDock").getBackground());
-                    assertNotNull(root.findViewWithTag("searchBarFade").getBackground());
-                    assertNotNull(root.findViewWithTag("newIndependent").getBackground());
+                    assertNotNull(bar.getBackground());
+                    assertEquals(style.dp(4), bar.getElevation(), 0f); assertEquals(style.dp(1), bar.getTranslationZ(), 0f);
+                    assertTrue(root.findViewWithTag("remoteSearchInput").hasFocus());
+                    root.findViewWithTag("remoteSearchClose").performClick();
+                    assertEquals(View.GONE, bar.getVisibility());
+                    assertFalse(root.findViewWithTag("remoteSearchInput").hasFocus());
                 } catch (Exception error) { throw new AssertionError(error); }
             });
         } finally {

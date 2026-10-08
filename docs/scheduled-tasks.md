@@ -2,6 +2,8 @@
 
 Open an existing shared conversation and click **Tasks** beside the composer, or use `/tasks`. Describe an already-running experiment, its log/checkpoint paths, completion evidence, and any permitted recovery. Configure the interval, maximum checks, lifetime and allowed recovery attempts. The default is every 10 minutes, up to 24 checks over 24 hours, with no automatic recovery.
 
+The **×** beside **Tasks** cancels all unfinished scheduled tasks in the current conversation, including paused tasks, and removes the composer control. To cancel just one task, click **Tasks** and use that task's **Cancel task** button. Cancellation stops a scheduled model check that is currently running and prevents later checks; it leaves the separately running experiment and saved task history in place.
+
 A model can create a task from a natural-language request such as `The training run has started; could you check its logs every ten minutes?` No command prefix, fixed wording or first-line placement is required. The model interprets intent and asks a natural-language clarification if needed. Creating a task does not itself launch or detach an experiment.
 
 Goal requests likewise accept natural language, for example `Set a goal to finish and verify this task` or a goal request later in a multiline message. The harness/model decides whether the user is actually requesting automation rather than discussing, quoting or negating it. The backend checks that `user_request` comes from the current user message; this is a provenance check, not a semantic authorization classifier. Current-turn tokens, automatic-turn restrictions, scheduling bounds, recovery authorization and independent Goal completion verification still apply.

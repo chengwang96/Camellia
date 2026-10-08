@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="markdown_code_content" type="id" />
+    <item name="markdown_cell_fingerprint" type="id" />
+    <item name="markdown_nested_session" type="id" />
+</resources>

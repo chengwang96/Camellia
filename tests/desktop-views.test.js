@@ -7,10 +7,12 @@ const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { createDesktopViews } = require('../src/main/desktop-views');
 
-test('extracted desktop pages escape input and all generated scripts compile', () => {
+test('the desktop error page escapes input and its generated scripts compile', () => {
   const injected = '<img src=x onerror="alert(1)">';
-  const views = createDesktopViews({ appName: injected, isDark: () => false });
-  for (const html of [views.welcomeHtml(), views.errorHtml(new Error(injected))]) {
+  for (const dark of [false, true]) {
+    const views = createDesktopViews({ appName: injected, isDark: () => dark });
+    const html = views.errorHtml(new Error(injected));
+    assert.match(html, new RegExp('data-theme="' + (dark ? 'dark' : 'light') + '"'));
     assert.ok(!html.includes(injected));
     assert.match(html, /&lt;img/);
     for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new vm.Script(match[1]));
@@ -25,7 +27,7 @@ test('preload event subscriptions expose payloads and removable listeners, not E
     require: () => ({ contextBridge: { exposeInMainWorld: (_name, api) => { bridge = api; } }, ipcRenderer: ipc, webUtils: {} }),
     window: { addEventListener() {} },
   });
-  for (const [method, channel] of [['onClaudeEvent', 'dsh:claude-event'], ['onClaudeGoal', 'dsh:claude-goal'], ['onApiRouterState', 'dsh:api-router-state'], ['onProviderInsights', 'dsh:provider-insights']]) {
+  for (const [method, channel] of [['onConversationEvent', 'dsh:conversation-event'], ['onConversationGoal', 'dsh:conversation-goal'], ['onApiRouterState', 'dsh:api-router-state'], ['onProviderInsights', 'dsh:provider-insights']]) {
     const values = [];
     const unsubscribe = bridge[method](value => values.push(value));
     assert.equal(typeof unsubscribe, 'function');

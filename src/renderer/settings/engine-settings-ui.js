@@ -102,7 +102,9 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     if (!$('subscriptionsPage').hidden && ['codex', 'kimi', 'antigravity'].includes(focus)) {
       const panel = $((focus === 'antigravity' ? 'google' : focus) + 'AccountPanel');
       panel.scrollIntoView({ block: 'start' });
-      const target = focus === 'antigravity' ? panel.querySelector('[data-card-action="refresh"]') || $('googleUseCredits') : $(focus + 'SignIn');
+      const target = focus === 'antigravity' ? panel.querySelector(googleAccount?.verification === 'verified'
+        ? '[data-card-action="refresh"]:not(:disabled)' : '[data-card-action="verify"]:not(:disabled)')
+        || panel.querySelector('[data-card-action="login"]:not(:disabled)') || $('googleUseCredits') : $(focus + 'SignIn');
       if (!target.disabled) target.focus({ preventScroll: true });
     }
   }
@@ -114,9 +116,13 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function renderGoogleAccountList() {
     window.renderSubscriptionCards({ container: $('googleAccountList'),
-      state: googleAccount && { ...googleAccount, accounts: googleAccount.accounts?.filter(account => account.signedIn || account.stale) },
+      state: googleAccount,
       engine: 'antigravity', manage: false,
-      busy: accountBusy || googleAccount?.usage?.refreshing, onRefresh: () => void refreshGoogleUsage() });
+      busy: accountBusy || googleAccount?.usage?.refreshing,
+      onRefresh: () => void googleAccountAction(() => api.antigravityAccountRefreshUsage()),
+      onVerify: () => void googleAccountAction(() => api.antigravityAccountRefresh()),
+      onSignIn: () => void googleAccountAction(() => api.antigravitySignIn(), 'Waiting for external sign-in. Return here to verify.'),
+      onLabel: (_, label) => void googleAccountAction(() => api.antigravityAccountLabel(label), 'Account note saved.') });
   }
   async function accountAction(call, apply) {
     if (codexBusy || kimiBusy || accountBusy) return;
@@ -211,7 +217,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     // CLI diagnostics can contain URLs, JSON and terminal output. Keep them in
     // the disclosure and use stable, translatable messages for the main notice.
     const raw = String(error || '');
-    if (/\b(invalid_grant|unauthenticated|unauthorized)\b|(?:token|credentials?|session).*(?:expired|invalid)/i.test(raw)) return t('Google sign-in has expired or is invalid. Sign in again and retry.');
+    if (/\b(invalid_grant|unauthenticated|unauthorized)\b|sign-in has expired|headless auth|no valid auth|(?:token|credentials?|session).*(?:expired|invalid)/i.test(raw)) return t('Google sign-in has expired or is invalid. Sign in again and retry.');
     if (/\b(EOF|ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT)\b|timed?\s*out|network|connection|fetch failed/i.test(raw)) return t('Could not connect to Google. Check your network or proxy settings and retry.');
     return t('Could not refresh Google quota. Try again later or expand the error details.');
   }
@@ -365,7 +371,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       const key = row.id + ':' + mode;
       const saved = row.paths?.[mode] || (row.mode === mode ? row.customPath : '') || '';
       const label = row.id === 'antigravity' ? 'Antigravity CLI executable (Google subscription)' : ['dsh', 'kimi', 'pi'].includes(row.id) ? 'Local JavaScript entry file' : 'Local executable';
-      return `<fieldset class="runtime-path" data-runtime="${row.id}" data-mode="${mode}" ${runtimePathBusy || row.status === 'installing' || isRuntimeUpdating(row.id) ? 'disabled' : ''}><label for="runtime-path-${row.id}-${mode}" data-i18n>${label}</label><div class="runtime-path-actions"><input id="runtime-path-${row.id}-${mode}" type="text" data-runtime-path="${key}" value="${esc(runtimePathDrafts.get(key) ?? saved)}" placeholder="${esc(t('Automatic detection'))}" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" data-i18n>Choose a local executable or paste its full path. Saving runs it to check its version. Clear to use automatic detection.</p></fieldset>`;
+      return `<fieldset class="runtime-path" data-runtime="${row.id}" data-mode="${mode}" ${runtimePathBusy || row.status === 'installing' || isRuntimeUpdating(row.id) ? 'disabled' : ''}><div class="runtime-path-actions"><label for="runtime-path-${row.id}-${mode}" data-i18n>${label}</label><input id="runtime-path-${row.id}-${mode}" type="text" data-runtime-path="${key}" value="${esc(runtimePathDrafts.get(key) ?? saved)}" placeholder="Automatic detection" data-i18n-attrs="placeholder" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" data-i18n>Choose a local executable or paste its full path. Saving runs it to check its version. Clear to use automatic detection.</p></fieldset>`;
     }).join('');
   }
   function renderPython(python) {
@@ -386,30 +392,31 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       ? t('This interpreter cannot import google.antigravity. Antigravity API mode needs the SDK; other engines and the benchmark verifier work without it.')
       : t('Choose any Python 3 installation; Camellia never edits it or installs packages.');
   }
-  function updateInfoLine(id) {
-    if (isRuntimeReinstalling(id)) return `<p class="hint"><button data-reinstall="${id}" data-i18n disabled>Reinstalling…</button></p>`;
-    if (isRuntimeUpdating(id)) return `<p class="hint"><button data-update="${id}" data-i18n disabled>Updating…</button></p>`;
-    const row = runtimeRows.find(row => row.id === id);
-    if (row?.external) return `<p class="hint runtime-external-update"><span data-i18n>Update this CLI using its original installer</span>${api.runtimeReinstall ? ` <button data-reinstall="${id}" data-i18n ${runtimePathBusy ? 'disabled' : ''}>Use Camellia</button>` : ''}</p>`;
+  function runtimeStatusControls(row) {
+    const id = row.id;
+    if (isRuntimeReinstalling(id)) return `<p class="hint runtime-update"><button data-runtime-status data-reinstall="${id}" data-i18n disabled>Reinstalling…</button></p>`;
+    if (isRuntimeUpdating(id)) return `<p class="hint runtime-update"><button data-runtime-status data-update="${id}" data-i18n disabled>Updating…</button></p>`;
+    if (row.status === 'installing') return `<button data-runtime-status data-install="${id}" data-i18n disabled>Downloading…</button>`;
+    if (row.status !== 'ready') return `${row.status === 'error' ? '<span data-runtime-status data-i18n class="badge bad">Download failed</span>' : ''}<button ${row.status === 'error' ? '' : 'data-runtime-status'} data-install="${id}" data-i18n>${row.status === 'error' ? 'Retry download' : 'Download'}</button>`;
+    if (row.external) return `<p class="hint runtime-update runtime-external-update"><span data-runtime-status data-i18n>Update this CLI using its original installer</span>${api.runtimeReinstall ? ` <button data-reinstall="${id}" data-i18n ${runtimePathBusy ? 'disabled' : ''}>Use Camellia</button>` : ''}</p>`;
     const info = runtimeUpdateInfo[id];
-    if (!info) return '';
-    if (!info.checkable) return `<p class="hint" data-i18n>${info.external ? 'Update this CLI using its original installer' : 'Updates ship with the app'}</p>`;
-    if (info.error) return `<p class="hint"><span data-i18n>Update check failed</span> · ${esc(info.error)}</p>`;
-    if (!info.installed) return '';
-    if (info.updateAvailable && info.latest !== runtimeRows.find(row => row.id === id)?.version) return `<p class="hint"><span data-i18n>v${esc(info.latest)} is available</span> <button data-update="${id}" data-i18n ${runtimeUpdatesBusy ? 'disabled' : ''}>Update</button></p>`;
-    return `<p class="hint" data-i18n>Up to date</p>`;
+    if (!info) return '<span data-runtime-status data-i18n class="badge good">Installed</span>';
+    if (!info.checkable) return `<p data-runtime-status class="hint runtime-update" data-i18n>${info.external ? 'Update this CLI using its original installer' : 'Updates ship with the app'}</p>`;
+    if (info.error) return `<p data-runtime-status class="hint runtime-update"><span data-i18n>Update check failed</span> · ${esc(info.error)}</p>`;
+    if (!info.installed) return '<span data-runtime-status data-i18n class="badge good">Installed</span>';
+    if (info.updateAvailable && info.latest !== row.version) return `<p class="hint runtime-update"><span data-runtime-status data-i18n class="badge">v${esc(info.latest)} is available</span> <button data-update="${id}" data-i18n ${runtimeUpdatesBusy ? 'disabled' : ''}>Update</button></p>`;
+    return '<span data-runtime-status data-i18n class="badge good">Up to date</span>';
   }
   function renderRuntimes(rows) {
     runtimeRows = rows;
     $('runtimeCards').innerHTML = rows.map(row => {
-      const updating = isRuntimeUpdating(row.id), reinstalling = isRuntimeReinstalling(row.id);
-      const badge = reinstalling ? 'Reinstalling…' : updating ? 'Updating…' : ({ ready: 'Ready', installing: 'Downloading', missing: 'Not downloaded', error: 'Download failed' })[row.status];
-      const description = row.status === 'ready' ? `v${esc(row.version)} · <span data-i18n>${esc(row.source)}</span>`
+      const ready = row.status === 'ready';
+      const description = ready ? `v${esc(row.version)} · <span data-i18n>${esc(row.source)}</span>`
         : esc(row.message || (row.id === 'antigravity' ? row.mode === 'subscription'
           ? 'Downloads the official CLI for Google sign-in. No Python environment is needed.'
           : 'Downloads the official SDK and its own Python environment. Other engines stay uninstalled.'
           : 'Download this engine when you need it. Other engines stay uninstalled.'));
-      return `<article class="runtime-card"><div><h2>${esc(row.name)}${row.id === 'antigravity' ? ` · ${row.mode === 'subscription' ? 'Google subscription' : 'API'}` : ''}</h2><span data-i18n class="badge ${!updating && row.status === 'ready' ? 'good' : !updating && row.status === 'error' ? 'bad' : ''}">${badge}</span><button data-i18n data-install="${row.id}" ${updating || row.status === 'ready' || row.status === 'installing' ? 'disabled' : ''}>${row.status === 'error' ? 'Retry download' : row.status === 'ready' ? 'Installed' : row.status === 'installing' ? 'Downloading…' : 'Download'}</button></div><p class="hint" ${row.status === 'ready' ? '' : 'data-i18n'}>${description}</p>${updateInfoLine(row.id)}${row.file ? `<div class="runtime-installation-path"><span data-i18n>Installation path</span><code>${esc(row.file)}</code></div>` : ''}</article>`;
+      return `<article class="runtime-card"><div class="runtime-header"><div class="runtime-summary"><h2>${esc(row.name)}${row.id === 'antigravity' ? ` · ${row.mode === 'subscription' ? 'Google subscription' : 'API'}` : ''}</h2>${ready ? `<p class="hint runtime-version">${description}</p>` : ''}</div><div class="runtime-actions">${runtimeStatusControls(row)}</div></div>${ready ? '' : `<p class="hint runtime-description" data-i18n>${description}</p>`}${row.warning ? `<p class="hint runtime-cleanup-warning">${esc(row.warning)}</p>` : ''}${row.file ? `<div class="runtime-installation-path"><span data-i18n>Installation path</span><code>${esc(row.file)}</code></div>` : ''}</article>`;
     }).join('');
     renderRuntimePaths();
     showSelectedRuntime();
@@ -491,18 +498,22 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   };
   api.onKimiAccount(account => { kimiAccount = account; renderKimiAccount(); });
   api.onAntigravityAccount?.(account => { googleAccount = account; renderConnection(); });
-  async function refreshGoogleUsage() {
+  async function googleAccountAction(call, message = 'Account status updated.') {
+    if (accountBusy || googleAccount?.usage?.refreshing) return;
     accountBusy = true; renderConnection();
     try {
       await flushLoginPreferences('antigravity');
-      const result = await api.antigravityAccountRefreshUsage();
+      const result = await call();
       if (!result.ok) throw new Error(result.error);
       if (!result.canceled) {
         await loadAccount();
-        if (googleAccount.usage?.error && !isGoogleAvatarFailure(googleAccount.usage.error)) status(googleQuotaMessage(googleAccount.usage.error), true);
-        else status('Account status updated.');
+        if (message === 'Account status updated.' && googleAccount.usage?.error && !isGoogleAvatarFailure(googleAccount.usage.error)) status(googleQuotaMessage(googleAccount.usage.error), true);
+        else status(message);
       }
-    } catch (error) { status(error.message, true); await loadAccount(); }
+    } catch (error) {
+      status(error.message, true);
+      try { await loadAccount(); } catch { /* Keep the last visible account when IPC is unavailable. */ }
+    }
     finally { accountBusy = false; renderConnection(); }
   }
   $('engineSource').oninput = e => { current().files.find(file => file.id === documentId).text = e.target.value; changed(); };
@@ -588,7 +599,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
           await runtimePage();
         }
         await checkRuntimeUpdates();
-        if (reinstall) status('Reinstalled with Camellia. Future updates are managed here.');
+        if (reinstall) status(t('Reinstalled with Camellia. Future updates are managed here.') + (result.runtime?.warning ? '\n' + result.runtime.warning : ''));
         else if (result.changed) {
           const name = (runtimeRows.find(row => row.id === result.engine) || {}).name || result.engine;
           status(`Updated ${name} to v${result.to}`);

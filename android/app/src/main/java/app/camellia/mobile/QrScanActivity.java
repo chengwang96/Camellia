@@ -156,14 +156,20 @@ public final class QrScanActivity extends Activity implements TextureView.Surfac
         if (data == null || source == null || source != camera || delivered) return;
         String text = QrDecoder.decodeYuv(data, previewWidth, previewHeight);
         source.addCallbackBuffer(data);
-        if (text == null) return;
+        acceptDecoded(text);
+    }
+
+    boolean acceptDecoded(String text) {
+        if (text == null || delivered || !resumed) return false;
         try {
             PairingPayload payload = PairingPayload.parse(text);
             delivered = true;
+            MobileHaptics.success(status);
             setResult(RESULT_OK, new android.content.Intent().putExtra(EXTRA_TEXT, text)
                 .putExtra(EXTRA_ADDRESS, payload.address).putExtra(EXTRA_CODE, payload.code));
             finish();
-        } catch (IllegalArgumentException error) { status.setText(R.string.qr_scan_unrecognized); }
+            return true;
+        } catch (IllegalArgumentException error) { status.setText(R.string.qr_scan_unrecognized); return false; }
     }
 
     @Override protected void onPause() {

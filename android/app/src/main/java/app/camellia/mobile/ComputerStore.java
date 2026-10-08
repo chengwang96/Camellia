@@ -57,9 +57,15 @@ final class ComputerStore {
     void remove(String address) throws Exception {
         JSONObject saved = store.load();
         JSONObject profiles = profiles(saved);
+        CredentialStore discussions = new CredentialStore(store.context, "remote-discussions-private");
+        JSONObject discussionState = discussions.load();
+        List<String> removed = new ArrayList<>();
+        var keys = discussionState.keys();
+        while (keys.hasNext()) { String key = keys.next(); if (key.startsWith(address + "#")) removed.add(key); }
         profiles.remove(address);
         if (address.equals(saved.optString("address"))) saved = new JSONObject();
         saved.put("computers", profiles);
         store.save(saved);
+        if (!removed.isEmpty()) { for (String key : removed) discussionState.remove(key); discussions.save(discussionState); }
     }
 }

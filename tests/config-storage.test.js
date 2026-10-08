@@ -83,13 +83,16 @@ test('API state snapshots cannot mutate live model mappings or usage; saved coun
   assert.equal('key' in state.providers[0].keys[0], false);
 });
 
-test('custom DSH_HOME is used for credential writes and settings validation rejects an invalid port', t => {
+test('custom DSH_HOME is preserved and settings validation rejects an invalid port', t => {
   const h = createHarness(); t.after(() => h.cleanup());
   const home = h.folder('custom-home');
   assert.equal(h.call('save-settings', { dshHome: home, port: 0 }).ok, true);
-  assert.equal(h.call('save-credentials', { provider: 'deepseek', apiKey: 'local-test' }).ok, true);
-  assert.ok(fs.existsSync(path.join(home, '.credentials.yaml')));
+  assert.equal(h.call('get-settings').dshHome, home);
+  const credentialsFile = path.join(home, '.credentials.yaml');
+  const credentials = 'DEEPSEEK_API_KEY: existing-local-key\n';
+  fs.writeFileSync(credentialsFile, credentials);
   assert.equal(fs.existsSync(path.join(h.home, '.dsh', '.credentials.yaml')), false);
   assert.equal(h.call('save-settings', { port: 65536 }).ok, false);
   assert.equal(readJson(path.join(h.userData, 'desktop-config.json')).port, 0);
+  assert.equal(fs.readFileSync(credentialsFile, 'utf8'), credentials);
 });

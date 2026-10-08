@@ -50,6 +50,21 @@ function crashAt(box, crash) {
   return JSON.parse(fs.readFileSync(path.join(box.appData, JOURNAL), 'utf8'));
 }
 
+test('committed recovery treats a locked request marker as pending cleanup instead of startup failure', context => {
+  const box = fixture(context); seed(box); crashAt(box, 'committed');
+  const remove = fs.rmSync;
+  const locked = context.mock.method(fs, 'rmSync', (file, ...args) => {
+    if (file === path.join(box.appData, REQUEST)) throw Object.assign(new Error('request marker is locked'), { code: 'EPERM' });
+    return remove(file, ...args);
+  });
+  const result = recoverDirectoryMigration(box.appData);
+  assert.equal(result.migrated, true); assert.equal(result.recovered, true);
+  assert.match(result.cleanupError, /request marker is locked/);
+  assert.ok(fs.existsSync(path.join(box.appData, JOURNAL)));
+  assert.ok(fs.existsSync(path.join(box.destination, 'metadata.json')));
+  locked.mock.restore(); recoverDirectoryMigration(box.appData); clean(box);
+});
+
 test('rename preserves opaque files, inode identity, hard links and unchanged metadata without copying or opening them', context => {
   const box = fixture(context);
   seed(box);
@@ -158,7 +173,12 @@ test('silent cleanup failure reports retained backups and keeps the committed jo
     }
     return kill(pid, signal);
   });
-  assert.throws(() => recoverDirectoryMigration(box.appData), /still exists after cleanup/);
+  const pendingCleanup = recoverDirectoryMigration(box.appData);
+  assert.equal(pendingCleanup.migrated, true);
+  assert.match(pendingCleanup.cleanupError, /still exists after cleanup/);
+  const paths = { appData: box.appData, userData: box.destination, sessionData: box.destination };
+  assert.equal(configureDataDirectory({ getName: () => 'camellia', getPath: name => paths[name], setPath: (name, value) => { paths[name] = value; } }), true);
+  assert.equal(paths.userData, box.destination);
   assert.equal(fs.existsSync(path.join(box.appData, JOURNAL)), true);
   blocked = false;
   const recovered = recoverDirectoryMigration(box.appData);

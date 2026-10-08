@@ -113,6 +113,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     const connection = createDownloadConnection(options);
     const source = path.join(root, 'runtimes', engine);
     const dir = path.join(installRoot, 'runtimes', engine);
+    let cleanupWarning;
     const update = value => report(engine, mode, value);
     update({ status: 'installing', message: engine === 'antigravity' ? `Preparing the official Antigravity ${mode === 'subscription' ? 'CLI' : 'SDK'}…` : "Preparing runtime from the official npm package…" });
     try {
@@ -141,25 +142,36 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
         const args = [npm, 'ci', '--prefix', installDir, '--no-audit', '--no-fund'];
         if (engine === 'kimi') args.push('--omit=optional', '--ignore-scripts');
         await runCommand(node, args, { cwd: installDir, env: { ...connection.env, PATH: path.dirname(node) + path.delimiter + process.env.PATH } });
+        if (engine === 'dsh') patchDsh(staging);
+        if (!locateIn(staging, engine, mode)) throw new Error('Installation did not produce an executable. Please retry.');
         // Keep the previous tree until the swap succeeds, then drop it.
         const backup = path.join(installRoot, 'runtimes', `.${engine}.old-${randomUUID()}`);
-        let moved = false;
+        let moved = false, activated = false;
         try {
           if (fs.existsSync(dir)) { fs.renameSync(dir, backup); moved = true; }
           fs.renameSync(staging, dir);
+          activated = true;
         } catch (error) {
-          if (moved && !fs.existsSync(dir)) { try { fs.renameSync(backup, dir); } catch { /* leave the backup for inspection */ } }
+          if (moved && !fs.existsSync(dir)) {
+            try { fs.renameSync(backup, dir); moved = false; }
+            catch (rollbackError) {
+              throw Object.assign(new AggregateError([error, rollbackError], `${error.message}; the previous runtime could not be restored. Backup retained at ${backup}: ${rollbackError.message}`), { backupDir: backup });
+            }
+          }
           throw error;
         } finally {
-          if (moved) fs.rmSync(backup, { recursive: true, force: true });
+          if (moved && activated) {
+            try { fs.rmSync(backup, { recursive: true, force: true }); }
+            catch (error) { cleanupWarning = 'Installed; previous runtime cleanup is pending: ' + error.message; }
+          }
         }
       } finally {
-        fs.rmSync(staging, { recursive: true, force: true });
+        try { fs.rmSync(staging, { recursive: true, force: true }); }
+        catch (error) { cleanupWarning = 'Runtime temporary cleanup is pending: ' + error.message; }
       }
-      if (engine === 'dsh') patchDsh(dir);
       const found = locate(engine);
       if (!found) throw new Error("Installation did not produce an executable. Please retry.");
-      update({ status: 'ready', message: "Ready" });
+      update({ status: 'ready', message: cleanupWarning || 'Ready', ...(cleanupWarning ? { warning: cleanupWarning } : {}) });
       return found;
     } catch (e) { update({ status: 'error', message: e.message }); throw e; }
     finally { await connection.close(); }
@@ -206,6 +218,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
       const staging = path.join(installRoot, 'runtimes', `.${engine}.staging-${randomUUID()}`);
       const backup = path.join(installRoot, 'runtimes', `.${engine}.old-${randomUUID()}`);
       let moved = false, activated = false, committed = false, pathSaved = false, previousPath;
+      let installedRuntime, failure;
       report(engine, plan.mode, { status: 'installing', message: 'Reinstalling with Camellia…' });
       try {
         fs.mkdirSync(staging, { recursive: true });
@@ -241,6 +254,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
         }
         const found = locate(engine, plan.mode);
         if (!found || found.external || path.resolve(found.dir) !== path.resolve(installRoot, 'runtimes', engine)) throw new Error('Could not activate the Camellia-managed runtime');
+        installedRuntime = found;
         try {
           await removeRuntime(plan.removal, { node, npm, run: runCommand,
             env: { ...connection.env, PATH: (node ? path.dirname(node) + path.delimiter : '') + (env.PATH || env.Path || '') } });
@@ -263,17 +277,34 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
         progress.delete(key); onChange(state());
         return found;
       } catch (error) {
+        failure = error;
         if (!committed) {
-          if (pathSaved) saveCustomPaths({ ...customPaths(), [engine]: previousPath });
-          if (activated) fs.rmSync(dir, { recursive: true, force: true });
-          if (moved) { fs.renameSync(backup, dir); moved = false; }
-          report(engine, plan.mode, { status: 'error', message: error.message });
+          try {
+            if (pathSaved) saveCustomPaths({ ...customPaths(), [engine]: previousPath });
+            if (activated) fs.rmSync(dir, { recursive: true, force: true });
+            if (moved) { fs.renameSync(backup, dir); moved = false; }
+          } catch (rollbackError) {
+            failure = Object.assign(new AggregateError([error, rollbackError], `${error.message}; runtime rollback failed${moved ? '. Backup retained at ' + backup : ''}: ${rollbackError.message}`),
+              moved ? { backupDir: backup } : {});
+          }
+          report(engine, plan.mode, { status: 'error', message: failure.message });
         } else { progress.delete(key); onChange(state()); }
-        throw error;
+        throw failure;
       } finally {
-        fs.rmSync(staging, { recursive: true, force: true });
-        if (moved && committed) fs.rmSync(backup, { recursive: true, force: true });
-        await connection.close();
+        const warnings = [];
+        for (const file of [staging, ...(moved && committed ? [backup] : [])]) {
+          try { fs.rmSync(file, { recursive: true, force: true }); }
+          catch (error) { warnings.push('Cleanup pending at ' + file + ': ' + error.message); }
+        }
+        try { await connection.close(); }
+        catch (error) { warnings.push('Download connection cleanup failed: ' + error.message); }
+        if (warnings.length) {
+          const warning = warnings.join('; ');
+          if (committed) installedRuntime.warning = warning;
+          if (failure) { failure.cleanupWarning = warning; failure.message += '; ' + warning; }
+          report(engine, plan.mode, { status: committed ? 'ready' : 'error', message: failure?.message || 'Ready. ' + warning,
+            ...(committed ? { warning } : {}) });
+        }
       }
     }).finally(() => pending.delete(key));
     pending.set(key, task);

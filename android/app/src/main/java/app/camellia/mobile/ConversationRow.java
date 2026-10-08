@@ -36,7 +36,7 @@ final class ConversationRow extends LinearLayout {
             headline.addView(badge, new LayoutParams(-2, -2));
         }
         setOnClickListener(view -> open.run());
-        setOnLongClickListener(view -> { actions.run(); return true; });
+        MobileHaptics.setOnLongClickListener(this, view -> { actions.run(); return true; });
     }
 
     void selection(boolean active, boolean selected) {

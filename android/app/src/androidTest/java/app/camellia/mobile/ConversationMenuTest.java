@@ -26,9 +26,10 @@ public class ConversationMenuTest extends InstrumentationTestCase {
         getInstrumentation().sendStatus(0, progress);
     }
     private void ui(Check check) {
+        LocalChatFixture.idle(getInstrumentation());
         java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
         getInstrumentation().runOnMainSync(() -> { try { check.run(); } catch (Throwable error) { failure.set(error); } });
-        getInstrumentation().waitForIdleSync();
+        LocalChatFixture.idle(getInstrumentation());
         if (failure.get() != null) throw new AssertionError(failure.get());
     }
 
@@ -48,24 +49,24 @@ public class ConversationMenuTest extends InstrumentationTestCase {
             ui(() -> activity.finish());
             long deadline = android.os.SystemClock.uptimeMillis() + 5000;
             while (!activity.isDestroyed() && android.os.SystemClock.uptimeMillis() < deadline) {
-                getInstrumentation().waitForIdleSync(); Thread.sleep(25);
+                LocalChatFixture.idle(getInstrumentation()); Thread.sleep(25);
             }
             assertTrue("Activity must release storage and network listeners before the next test", activity.isDestroyed());
         }
-        if (encrypted != null) encrypted.clear();
+        if (encrypted != null) LocalChatFixture.clear(getInstrumentation().getTargetContext());
         super.tearDown();
     }
 
     public void testLocalLongPressGlassRenamePinAndMultiSelection() throws Exception {
         stage("initialize encrypted fixture");
-        encrypted = new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private"); encrypted.clear();
-        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        encrypted = new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private"); LocalChatFixture.clear(getInstrumentation().getTargetContext());
+        LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
         JSONObject first = store.createConversation("", "missing-route"), second = store.createConversation("", "missing-route"),
             third = store.createConversation("", "missing-route");
         first.put("title", "First chat"); second.put("title", "Second chat"); third.put("title", "Third chat"); store.save();
         String id = first.getString("id"), other = second.getString("id"), thirdId = third.getString("id");
         stage("launch local conversation list");
-        activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         stage("open long-press menu");
         ui(() -> {
             View row = root().findViewWithTag("localConversation:" + id);
@@ -86,13 +87,13 @@ public class ConversationMenuTest extends InstrumentationTestCase {
         stage("archive conversation");
         ui(() -> root().findViewWithTag("localConversation:" + thirdId).performLongClick());
         ui(() -> menu().panel.findViewWithTag("conversationAction:archive").performClick());
-        assertTrue(new LocalChatStore(activity).conversation(thirdId).getBoolean("archived"));
+        assertTrue(new LocalChatFixture(activity).conversation(thirdId).getBoolean("archived"));
         ui(() -> assertNull(root().findViewWithTag("localConversation:" + thirdId)));
         stage("pin conversation");
         ui(() -> root().findViewWithTag("localConversation:" + id).performLongClick());
         ui(() -> menu().panel.findViewWithTag("conversationAction:pin").performClick());
-        assertTrue(new LocalChatStore(activity).conversation(id).getBoolean("pinned"));
-        assertEquals(id, new LocalChatStore(activity).orderedConversations("").get(0).getString("id"));
+        assertTrue(new LocalChatFixture(activity).conversation(id).getBoolean("pinned"));
+        assertEquals(id, new LocalChatFixture(activity).orderedConversations("").get(0).getString("id"));
         stage("rename conversation");
         ui(() -> root().findViewWithTag("localConversation:" + id).performLongClick());
         ui(() -> menu().panel.findViewWithTag("conversationAction:edit").performClick());
@@ -101,7 +102,7 @@ public class ConversationMenuTest extends InstrumentationTestCase {
             ((EditText) dialog.findViewById(android.R.id.content).findViewWithTag("localRename")).setText("New title");
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
         });
-        assertEquals("New title", new LocalChatStore(activity).conversation(id).getString("title"));
+        assertEquals("New title", new LocalChatFixture(activity).conversation(id).getString("title"));
         stage("select and delete conversations");
         ui(() -> root().findViewWithTag("localConversation:" + id).performLongClick());
         ui(() -> menu().panel.findViewWithTag("conversationAction:select").performClick());
@@ -112,15 +113,39 @@ public class ConversationMenuTest extends InstrumentationTestCase {
         ui(() -> root().findViewWithTag("selectionDelete").performClick());
         ui(() -> ((AlertDialog) field("dialog")).getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
         stage("verify cancelled deletion");
-        assertNotNull(new LocalChatStore(activity).conversation(id));
+        assertNotNull(new LocalChatFixture(activity).conversation(id));
         ui(() -> root().findViewWithTag("selectionDelete").performClick());
         ui(() -> ((AlertDialog) field("dialog")).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
         stage("verify confirmed deletion");
-        assertNull(new LocalChatStore(activity).conversation(id)); assertNull(new LocalChatStore(activity).conversation(other));
+        assertNull(new LocalChatFixture(activity).conversation(id)); assertNull(new LocalChatFixture(activity).conversation(other));
+    }
+
+    public void testLocalLongPressKeepsOrderAndWorkspace() throws Exception {
+        encrypted = new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private"); LocalChatFixture.clear(getInstrumentation().getTargetContext());
+        LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
+        String workspace = store.createWorkspace("Source").getString("id");
+        String target = store.createWorkspace("Target").getString("id");
+        JSONObject first = store.createConversation(workspace, "route"), second = store.createConversation(workspace, "route");
+        String firstId = first.getString("id"), secondId = second.getString("id");
+        first.put("title", "First").put("updatedAt", 20); second.put("title", "Second").put("updatedAt", 10); store.save();
+        activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        ui(() -> {
+            View row = root().findViewWithTag("localConversation:" + firstId);
+            assertTrue(row.performLongClick());
+            assertEquals(1f, row.getAlpha(), .01f); assertEquals(0f, row.getTranslationY(), .01f);
+            assertNotNull(menu().panel.findViewWithTag("conversationAction:select")); menu().dismiss();
+        });
+        store = new LocalChatFixture(getInstrumentation().getTargetContext());
+        assertEquals(firstId, store.orderedConversations(workspace).get(0).getString("id"));
+        assertEquals(secondId, store.orderedConversations(workspace).get(1).getString("id"));
+        ui(() -> root().findViewWithTag("localGroup:" + target).performClick());
+        store = new LocalChatFixture(getInstrumentation().getTargetContext());
+        assertEquals(workspace, store.conversation(firstId).getString("workspaceId"));
+        ui(() -> assertNotNull(root().findViewWithTag("localConversation:" + firstId)));
     }
 
     public void testRemoteRowHasLongPressMenuAndMultiSelectWithoutOpeningChat() throws Exception {
-        activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         JSONObject conversation = new JSONObject().put("id", "12345678-1234-1234-1234-123456789abc").put("title", "Remote chat").put("seq", 1);
         ui(() -> {
             var stop = MainActivity.class.getDeclaredMethod("stopNetwork"); stop.setAccessible(true); stop.invoke(activity);

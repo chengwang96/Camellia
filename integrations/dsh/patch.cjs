@@ -15,7 +15,32 @@ module.exports = function patchDsh(runtimeDir) {
   if (source.split(register).length !== 2 || !source.includes(marker)) throw new Error("The DSH settings extension entry point changed");
   const component = fs.readFileSync(path.join(__dirname, 'settings-root.js'), 'utf8');
   const injection = `\nconst WorkbenchSettingsRoot = (() => { const module = { exports: {} };\n${component}\nreturn module.exports; })();\n`;
-  fs.writeFileSync(file, source.replace(register, register.replace('SettingsRoot', 'WorkbenchSettingsRoot')).replace(marker, injection + marker));
+  const generalComponent = 'function GeneralSection({ renderSlot }) {';
+  const generalRegistration = 'id: "general",';
+  if (source.split(generalComponent).length !== 2 || source.split(generalRegistration).length !== 2) throw new Error('The DSH General settings entry point changed');
+  // Subscribe to the public slot ledger so additional plugin controls retain
+  // their own stores, handlers and ordering, including after a plugin reload.
+  const generalItems = `inject: (() => {
+      let version = -1, entries = [];
+      return () => ({ hooks: { generalItems: {
+        getSnapshot: () => {
+          const next = ctx.slots.getVersion("settings.general.item");
+          if (next !== version) {
+            version = next;
+            entries = ctx.slots.entries("settings.general.item").map(e => ({ id: e.options.id, order: e.options.order ?? 0 })).sort((a, b) => a.order - b.order);
+          }
+          return entries;
+        },
+        subscribe: listener => ctx.slots.subscribe("settings.general.item", listener)
+      } } });
+    })(),`;
+  fs.writeFileSync(file, source.replace(register, register.replace('SettingsRoot', 'WorkbenchSettingsRoot'))
+    .replace(generalComponent, `function GeneralSection({ renderSlot, useGeneralItems }) {
+      if (window.dshDesktop?.settingsEmbedded === true || window.name === 'workbench-settings' || new URLSearchParams(location.search).has('workbench-settings')) {
+        return require('react').createElement(WorkbenchSettingsRoot.General, { renderSlot, useGeneralItems });
+      }`)
+    .replace(generalRegistration, generalRegistration + '\n' + generalItems)
+    .replace(marker, injection + marker));
 
   const modules = path.join(runtimeDir, 'node_modules/@deepseek-ai/dsh-client-modules');
   if (JSON.parse(fs.readFileSync(path.join(modules, 'package.json'))).version !== version) throw new Error("The DSH frontend optimization does not support this version");

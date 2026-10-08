@@ -76,11 +76,10 @@ test('right-click and more on a new session open its action menu', () => {
   assert.deepEqual(menus[1], ['session', button, item, null, undefined]);
 });
 
-function actionFixture({ busy = false, fixedCwd = false } = {}) {
+function actionFixture({ busy = false } = {}) {
   const menus = [], picked = [];
   const context = {
     contextBusy: () => busy,
-    chatProfile: { fixedCwd },
     canFork: () => true,
     openActionMenu: (anchor, actions, position) => menus.push({ anchor, actions, position }),
     openWorkspacePicker: (...args) => picked.push(args),
@@ -91,17 +90,15 @@ function actionFixture({ busy = false, fixedCwd = false } = {}) {
 }
 
 test('new session actions defer workspace selection and hide saved-session operations', () => {
-  for (const fixedCwd of [false, true]) {
-    const { context, menus, picked } = actionFixture({ fixedCwd });
-    const anchor = element();
-    context.openSessionActions(anchor, element(), null);
-    assert.equal(menus[0].anchor, anchor);
-    assert.deepEqual(Array.from(menus[0].actions, action => action.label), ['Change workspace…']);
-    assert.equal(menus[0].actions[0].disabled, false);
-    assert.deepEqual(picked, []);
-    menus[0].actions[0].run();
-    assert.deepEqual(picked, [[anchor, null, undefined]]);
-  }
+  const { context, menus, picked } = actionFixture();
+  const anchor = element();
+  context.openSessionActions(anchor, element(), null);
+  assert.equal(menus[0].anchor, anchor);
+  assert.deepEqual(Array.from(menus[0].actions, action => action.label), ['Change workspace…']);
+  assert.equal(menus[0].actions[0].disabled, false);
+  assert.deepEqual(picked, []);
+  menus[0].actions[0].run();
+  assert.deepEqual(picked, [[anchor, undefined]]);
 });
 
 test('new session workspace action is disabled while context is busy', () => {
@@ -111,28 +108,22 @@ test('new session workspace action is disabled while context is busy', () => {
 });
 
 test('right-click position is preserved when opening a workspace picker', () => {
-  for (const session of [null, { id: 'saved', workspaceId: 'workspace' }]) {
-    const { context, menus, picked } = actionFixture();
-    const anchor = element();
-    const position = { x: 42, y: 240 };
-    context.openSessionActions(anchor, element(), session, position);
-    assert.equal(menus[0].position, position);
-    menus[0].actions.find(action => action.label.endsWith('workspace…')).run();
-    assert.deepEqual(picked, [[anchor, session, position]]);
-  }
+  const { context, menus, picked } = actionFixture();
+  const anchor = element();
+  const position = { x: 42, y: 240 };
+  context.openSessionActions(anchor, element(), null, position);
+  assert.equal(menus[0].position, position);
+  menus[0].actions.find(action => action.label.endsWith('workspace…')).run();
+  assert.deepEqual(picked, [[anchor, position]]);
 });
 
 test('saved session actions retain their existing operations and directory restrictions', () => {
-  for (const fixedCwd of [false, true]) {
-    const { context, menus } = actionFixture({ fixedCwd });
-    context.openSessionActions(element(), element(), { id: 'saved', workspaceId: 'workspace' });
-    assert.deepEqual(Array.from(menus[0].actions, action => action.label), [
-      'Rename', 'Pin session',
-      ...(!fixedCwd ? ['Move to workspace…', 'Move out of workspace'] : []),
-      'Fork session', 'Archive session', 'Delete conversation',
-    ]);
-    assert.equal(menus[0].actions.find(action => action.label === 'Delete conversation').danger, true);
-  }
+  const { context, menus } = actionFixture();
+  context.openSessionActions(element(), element(), { id: 'saved', workspaceId: 'workspace' });
+  assert.deepEqual(Array.from(menus[0].actions, action => action.label), [
+    'Rename', 'Pin session', 'Fork session', 'Archive session', 'Delete conversation',
+  ]);
+  assert.equal(menus[0].actions.find(action => action.label === 'Delete conversation').danger, true);
 });
 
 test('right-click on the more button opens the session menu once', () => {

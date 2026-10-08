@@ -7,6 +7,11 @@ import android.view.TextureView;
 import android.view.View;
 
 public class QrScannerTest extends InstrumentationTestCase {
+    private static final class FeedbackText extends android.widget.TextView {
+        int feedbacks;
+        FeedbackText(android.content.Context context) { super(context); }
+        @Override public boolean performHapticFeedback(int feedback) { feedbacks++; return true; }
+    }
     private QrScanActivity scanner;
     private String previousLanguage, previousTheme;
     private interface Check { void run() throws Exception; }
@@ -55,6 +60,30 @@ public class QrScannerTest extends InstrumentationTestCase {
         MobilePreferences.set(getInstrumentation().getTargetContext(), "theme", previousTheme);
         super.tearDown();
     }
+
+    private void checkScanFeedback(boolean enabled) {
+        String original = MobilePreferences.get(scanner, "hapticFeedback");
+        try {
+            ui(() -> {
+                MobilePreferences.set(scanner, "hapticFeedback", enabled ? "enabled" : "disabled");
+                FeedbackText feedback = new FeedbackText(scanner);
+                var status = QrScanActivity.class.getDeclaredField("status"); status.setAccessible(true); status.set(scanner, feedback);
+                assertFalse(scanner.acceptDecoded(null));
+                assertFalse(scanner.acceptDecoded("https://example.com/not-a-pairing-code"));
+                assertEquals(0, feedback.feedbacks);
+                String valid = new org.json.JSONObject().put("type", "camellia-pair").put("v", 1)
+                    .put("address", "http://100.64.0.1:43128").put("code", "0123456789abcdef01234567").toString();
+                assertTrue(scanner.acceptDecoded(valid));
+                assertEquals(enabled ? 1 : 0, feedback.feedbacks);
+                assertFalse(scanner.acceptDecoded(valid));
+                assertEquals(enabled ? 1 : 0, feedback.feedbacks);
+                assertEquals(true, field("delivered"));
+            });
+        } finally { MobilePreferences.set(scanner, "hapticFeedback", original); }
+    }
+
+    public void testOnlyTheFirstValidPairingCodeTriggersFeedback() { checkScanFeedback(true); }
+    public void testSuccessfulScanIsQuietWhenFeedbackIsDisabled() { checkScanFeedback(false); }
 
     public void testPreviewKeepsSensorAspectAndChromeOutsideCamera() throws Exception {
         ui(() -> {

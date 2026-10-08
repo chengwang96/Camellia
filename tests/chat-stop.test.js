@@ -9,7 +9,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8').replace(/\r\n/g, '\n');
 const queueSource = source.slice(source.indexOf('  function saveMessageQueue('), source.indexOf("  window.addEventListener('beforeunload'"));
 const sendSource = source.slice(source.indexOf('  async function send('), source.indexOf('    if (editingMessage || !canChangeContext()')) + '\n  }';
-const activitySource = source.slice(source.indexOf('  function handleEvent(ev)'), source.indexOf('    if (restoringRun) { eventsDuringRestore.push(ev); return; }\n    if (sharedChat')) + '\n  }';
+const activitySource = source.slice(source.indexOf('  function handleEvent(ev)'), source.indexOf('    if (restoringRun) { eventsDuringRestore.push(ev); return; }\n    if (ev.session_id')) + '\n  }';
 
 function harness(cancel, overrides = {}) {
   const state = {
@@ -104,8 +104,8 @@ test('unrelated activity does not clear the current stop status', async () => {
   assert.equal(state.statusLine.textContent, 'Stopping…');
 });
 
-test('legacy stop still uses the run ID and accepts an empty IPC reply', async () => {
-  const state = harness((_ui, payload) => { assert.equal(payload, 12); }, { sharedChat: false });
+test('stop includes its conversation and run ID and accepts an empty IPC reply', async () => {
+  const state = harness((_ui, payload) => { assert.equal(payload.sessionId, 'conversation-a'); assert.equal(payload.runId, 12); });
   await state.send();
   assert.equal(state.statusLine.textContent, 'Stopping…');
 });

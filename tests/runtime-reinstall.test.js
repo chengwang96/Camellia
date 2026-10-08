@@ -64,6 +64,98 @@ function fixture(t, { automatic = false, engine = 'kimi', ...extra } = {}) {
   return { root, distribution, managed, prefix, original, unrelated, config, calls, settings, manager, engine };
 }
 
+test('initial installation retains the original backup when activation and rollback both fail', async context => {
+  const f = fixture(context, { discoverLocal: false, customPaths: () => ({}) });
+  const directory = path.join(f.managed, 'runtimes', 'kimi'); put(path.join(directory, 'old-install.txt'), 'retain me');
+  const rename = fs.renameSync;
+  context.mock.method(fs, 'renameSync', (from, to) => {
+    if (to === directory && path.basename(from).startsWith('.kimi.')) throw Object.assign(new Error('locked runtime'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  await assert.rejects(f.manager.ensure('kimi'), error => {
+    assert.match(error.message, /previous runtime could not be restored/);
+    assert.equal(fs.readFileSync(path.join(error.backupDir, 'old-install.txt'), 'utf8'), 'retain me'); return true;
+  });
+  assert.equal(fs.existsSync(directory), false);
+});
+
+test('initial installation restores the original tree when only activation fails', async context => {
+  const f = fixture(context, { discoverLocal: false, customPaths: () => ({}) });
+  const directory = path.join(f.managed, 'runtimes', 'kimi'); put(path.join(directory, 'old-install.txt'), 'retain me');
+  const rename = fs.renameSync;
+  context.mock.method(fs, 'renameSync', (from, to) => {
+    if (to === directory && path.basename(from).startsWith('.kimi.staging-')) throw Object.assign(new Error('locked activation'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  await assert.rejects(f.manager.ensure('kimi'), /locked activation/);
+  assert.equal(fs.readFileSync(path.join(directory, 'old-install.txt'), 'utf8'), 'retain me');
+});
+
+test('reinstall returns a usable runtime and closes its connection when old backup cleanup fails', async context => {
+  const f = fixture(context), directory = path.join(f.managed, 'runtimes', 'kimi');
+  npmTree(directory, 'kimi', '1.5.0');
+  const { Agent } = require('undici'), destroy = Agent.prototype.destroy, rm = fs.rmSync;
+  const closed = new Set();
+  context.mock.method(Agent.prototype, 'destroy', function (...args) { closed.add(this); return destroy.apply(this, args); });
+  context.mock.method(fs, 'rmSync', (file, ...args) => {
+    if (path.dirname(String(file)) === path.dirname(directory) && path.basename(String(file)).startsWith('.kimi.old-'))
+      throw Object.assign(new Error('old runtime locked'), { code: 'EBUSY' });
+    return rm(file, ...args);
+  });
+  const runtime = await f.manager.reinstall('kimi');
+  assert.equal(runtime.version, '2.0.0'); assert.equal(fs.existsSync(runtime.file), true);
+  assert.match(runtime.warning, /old runtime locked/); assert.equal(closed.size, 1); assert.equal(f.manager.busy, false);
+  assert.equal(f.manager.locate('kimi').version, '2.0.0'); assert.equal(fs.existsSync(f.original), false);
+  assert.match(f.manager.state().find(row => row.id === 'kimi').message, /old runtime locked/);
+  const backup = fs.readdirSync(path.dirname(directory)).find(name => name.startsWith('.kimi.old-'));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(path.dirname(directory), backup, 'node_modules', ENGINES.kimi.package, 'package.json'), 'utf8')).version, '1.5.0');
+});
+
+test('staging cleanup failure preserves the original installation error and still closes the connection', async context => {
+  const f = fixture(context, { runCommand: async () => { throw new Error('npm download failed'); } });
+  const { Agent } = require('undici'), destroy = Agent.prototype.destroy, rm = fs.rmSync;
+  const closed = new Set();
+  context.mock.method(Agent.prototype, 'destroy', function (...args) { closed.add(this); return destroy.apply(this, args); });
+  context.mock.method(fs, 'rmSync', (file, ...args) => {
+    if (String(file).startsWith(path.join(f.managed, 'runtimes', '.kimi.staging-')))
+      throw Object.assign(new Error('staging cleanup locked'), { code: 'EACCES' });
+    return rm(file, ...args);
+  });
+  await assert.rejects(f.manager.reinstall('kimi'), error => {
+    assert.match(error.message, /npm download failed/); assert.match(error.message, /staging cleanup locked/); return true;
+  });
+  assert.equal(closed.size, 1); assert.equal(fs.existsSync(f.original), true); assert.equal(f.manager.busy, false);
+});
+
+test('connection shutdown failure does not invalidate a verified reinstalled runtime', async context => {
+  const f = fixture(context), { Agent } = require('undici'), destroy = Agent.prototype.destroy;
+  context.mock.method(Agent.prototype, 'destroy', function (...args) {
+    const result = destroy.apply(this, args);
+    if (args.some(arg => typeof arg === 'function')) return result;
+    return Promise.resolve(result).then(() => { throw new Error('connection close failed'); });
+  });
+  const runtime = await f.manager.reinstall('kimi');
+  assert.equal(runtime.version, '2.0.0'); assert.equal(fs.existsSync(runtime.file), true);
+  assert.match(runtime.warning, /connection close failed/); assert.equal(f.manager.busy, false);
+});
+
+test('failed reinstall activation and rollback retain the old managed tree and both errors', async context => {
+  const f = fixture(context), directory = path.join(f.managed, 'runtimes', 'kimi'), rename = fs.renameSync;
+  npmTree(directory, 'kimi', '1.5.0');
+  context.mock.method(fs, 'renameSync', (from, to) => {
+    if (to === directory && path.basename(from).startsWith('.kimi.staging-')) throw new Error('activation locked');
+    if (to === directory && path.basename(from).startsWith('.kimi.old-')) throw new Error('rollback locked');
+    return rename(from, to);
+  });
+  await assert.rejects(f.manager.reinstall('kimi'), error => {
+    assert.ok(error instanceof AggregateError); assert.match(error.message, /activation locked.*rollback locked/);
+    assert.equal(error.errors.length, 2);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(error.backupDir, 'node_modules', ENGINES.kimi.package, 'package.json'), 'utf8')).version, '1.5.0');
+    return true;
+  });
+  assert.equal(fs.existsSync(f.original), true); assert.equal(f.manager.busy, false);
+});
+
 test('reinstall removes an npx package with real npm, clears its override and persists the managed selection', async t => {
   const npm = npmCandidates(process.execPath).find(file => fs.existsSync(file));
   assert.ok(npm, 'The Node installation includes npm');

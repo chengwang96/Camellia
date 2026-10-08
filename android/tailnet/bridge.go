@@ -192,22 +192,17 @@ func (node *Node) Open(method, target, token, payload string) (*Response, error)
 }
 
 func (node *Node) Prepare(method, target, token, payload string) (*Response, error) {
+	return node.prepare(method, target, token, strings.NewReader(payload), -1)
+}
+
+func (node *Node) prepare(method, target, token string, payload io.Reader, length int64) (*Response, error) {
 	if err := validateTarget(method, target); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	response := &Response{cancel: cancel, node: node}
-	node.mu.Lock()
-	if node.closed {
-		node.mu.Unlock()
-		cancel()
-		return nil, errors.New("embedded network closed")
-	}
-	node.requests[response] = cancel
-	node.mu.Unlock()
-	request, err := http.NewRequestWithContext(ctx, method, target, strings.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, method, target, payload)
 	if err != nil {
-		response.Close()
+		cancel()
 		return nil, err
 	}
 	if token != "" {
@@ -216,7 +211,21 @@ func (node *Node) Prepare(method, target, token, payload string) (*Response, err
 	if method == "POST" {
 		request.Header.Set("Content-Type", "application/json; charset=utf-8")
 	}
-	response.request = request
+	if length >= 0 {
+		request.ContentLength = length
+		if length == 0 {
+			request.Body = http.NoBody
+		}
+	}
+	response := &Response{cancel: cancel, node: node, request: request}
+	node.mu.Lock()
+	if node.closed {
+		node.mu.Unlock()
+		cancel()
+		return nil, errors.New("embedded network closed")
+	}
+	node.requests[response] = cancel
+	node.mu.Unlock()
 	return response, nil
 }
 
@@ -348,11 +357,15 @@ func (response *Response) Close() {
 		return
 	}
 	response.closed = true
-	response.cancel()
-	if response.body != nil {
-		response.body.Close()
-	}
+	body, request := response.body, response.request
 	response.mu.Unlock()
+	response.cancel()
+	if request != nil && request.Body != nil {
+		request.Body.Close()
+	}
+	if body != nil {
+		body.Close()
+	}
 	response.node.mu.Lock()
 	delete(response.node.requests, response)
 	response.node.mu.Unlock()
@@ -365,10 +378,18 @@ func (node *Node) Close() {
 		return
 	}
 	node.closed = true
-	for _, cancel := range node.requests {
-		cancel()
+	requests := make([]*Response, 0, len(node.requests))
+	for response := range node.requests {
+		requests = append(requests, response)
 	}
 	node.mu.Unlock()
-	node.transport.CloseIdleConnections()
-	node.server.Close()
+	for _, response := range requests {
+		response.Close()
+	}
+	if node.transport != nil {
+		node.transport.CloseIdleConnections()
+	}
+	if node.server != nil {
+		node.server.Close()
+	}
 }

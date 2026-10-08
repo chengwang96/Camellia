@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const YAML = require('yaml');
 const { createHarness } = require('./claude-harness.cjs');
-const { configureProvider, readCredential, syncPoolProvider, cleanupLegacyRoute, dshLaunchArgs } = require('../src/engines/dsh-config');
+const { readCredential, syncPoolProvider, cleanupLegacyRoute, dshLaunchArgs } = require('../src/engines/dsh-config');
 
 function setup(t, source = '') {
   const h = createHarness(); t.after(() => h.cleanup());
@@ -13,7 +13,6 @@ function setup(t, source = '') {
   fs.writeFileSync(file, source);
   return { home, file, read: () => YAML.parse(fs.readFileSync(file, 'utf8'), { merge: true }) };
 }
-const credentials = { providerId: 'deepseek', apiKeyEnv: 'DEEPSEEK_API_KEY', apiKey: 'true', model: 'default-model' };
 
 test('managed launches configure models before DSH 0.2 boots without rewriting legacy user data', t => {
   const h = setup(t, '# existing configuration\npermission: {defaultPreset: read-only}\n');
@@ -31,43 +30,50 @@ test('managed launches configure models before DSH 0.2 boots without rewriting l
   assert.deepEqual(h.read(), config);
 });
 
-test('credential edits preserve comments, flow maps, custom provider fields and the selected model', t => {
+test('pool updates preserve comments, flow maps, custom provider fields and the selected model', t => {
   const h = setup(t, `# personal settings
 agent-default-model: {provider: deepseek, model: chosen-model, reasoningEffort: high} # choice
 llm-pi-ai:
     providers:
-        deepseek: {baseURL: 'https://example.test/v1', models: [{id: custom}], apiKeyEnv: OLD} # route
+        api-pool: {custom: retained} # route
+        deepseek: {baseURL: 'https://example.test/v1', models: [{id: custom}], apiKeyEnv: OLD}
 permission: {defaultPreset: custom}
 other: {providers: {deepseek: {apiKeyEnv: LEAVE_ALONE}}}
 `);
-  configureProvider(h.home, credentials);
+  syncPoolProvider(h.file, { active: true, port: 19999, models: ['fixture'], hasOllama: false });
   const next = h.read();
   assert.deepEqual(next['agent-default-model'], { provider: 'deepseek', model: 'chosen-model', reasoningEffort: 'high' });
-  assert.deepEqual(next['llm-pi-ai'].providers.deepseek, { baseURL: 'https://example.test/v1', models: [{ id: 'custom' }], apiKeyEnv: 'DEEPSEEK_API_KEY' });
+  assert.deepEqual(next['llm-pi-ai'].providers.deepseek, { baseURL: 'https://example.test/v1', models: [{ id: 'custom' }], apiKeyEnv: 'OLD' });
+  assert.equal(next['llm-pi-ai'].providers['api-pool'].custom, 'retained');
   assert.equal(next.other.providers.deepseek.apiKeyEnv, 'LEAVE_ALONE');
   assert.equal(next.permission.defaultPreset, 'custom');
   assert.match(fs.readFileSync(h.file, 'utf8'), /# personal settings/);
   assert.match(fs.readFileSync(h.file, 'utf8'), /# choice/);
   assert.match(fs.readFileSync(h.file, 'utf8'), /# route/);
-  assert.equal(readCredential(h.home, 'DEEPSEEK_API_KEY'), 'true');
-  const key = 'quoted "key": # 中文\\line\nsecond';
-  configureProvider(h.home, { ...credentials, apiKey: key });
-  assert.equal(readCredential(h.home, 'DEEPSEEK_API_KEY'), key);
-  configureProvider(h.home, { ...credentials, apiKey: '' });
+});
+
+test('existing credentials remain readable without a desktop credential writer', t => {
+  const h = setup(t);
+  const file = path.join(h.home, '.credentials.yaml');
   assert.equal(readCredential(h.home, 'DEEPSEEK_API_KEY'), '');
+  const key = 'quoted "key": # 中文\\line\nsecond';
+  fs.writeFileSync(file, YAML.stringify({ DEEPSEEK_API_KEY: key, OTHER_KEY: 'true' }));
+  assert.equal(readCredential(h.home, 'DEEPSEEK_API_KEY'), key);
+  assert.equal(readCredential(h.home, 'OTHER_KEY'), 'true');
+  assert.equal(readCredential(h.home, 'MISSING_KEY'), '');
 });
 
 test('alias and merge updates affect only the selected provider branch', t => {
-  const h = setup(t, `defaults: &defaults {apiKeyEnv: ORIGINAL, baseURL: 'https://example.test/v1', models: [{id: shared}]}
-providers: &providers {deepseek: *defaults, sibling: *defaults}
+  const h = setup(t, `defaults: &defaults {apiKeyEnv: ORIGINAL, custom: retained}
+providers: &providers {api-pool: *defaults, sibling: *defaults}
 llm-pi-ai: {providers: *providers}
 `);
-  configureProvider(h.home, credentials);
+  syncPoolProvider(h.file, { active: true, port: 19999, models: ['fixture'], hasOllama: false });
   const next = h.read();
-  assert.equal(next['llm-pi-ai'].providers.deepseek.apiKeyEnv, 'DEEPSEEK_API_KEY');
-  assert.equal(next['llm-pi-ai'].providers.deepseek.baseURL, next.defaults.baseURL);
+  assert.equal(next['llm-pi-ai'].providers['api-pool'].apiKeyEnv, 'DSH_API_ROUTER_KEY');
+  assert.equal(next['llm-pi-ai'].providers['api-pool'].custom, next.defaults.custom);
   assert.equal(next['llm-pi-ai'].providers.sibling.apiKeyEnv, 'ORIGINAL');
-  assert.equal(next.providers.deepseek.apiKeyEnv, 'ORIGINAL');
+  assert.equal(next.providers['api-pool'].apiKeyEnv, 'ORIGINAL');
   assert.match(fs.readFileSync(h.file, 'utf8'), /&defaults/);
 });
 
@@ -86,12 +92,12 @@ llm-pi-ai: {providers: {opencode-go: *old, api-pool: {custom: retained}}}
   assert.equal(cleanupLegacyRoute(h.file), false);
 });
 
-test('invalid settings stop credential updates without replacing either file or exposing its contents', t => {
+test('invalid settings stop pool updates without replacing user files or exposing their contents', t => {
   const broken = 'apiKey: "do-not-display-this-secret';
   const h = setup(t, broken);
   const file = path.join(h.home, '.credentials.yaml');
   fs.writeFileSync(file, 'DEEPSEEK_API_KEY: original\n');
-  assert.throws(() => configureProvider(h.home, credentials), err => /YAML/.test(err.message) && !err.message.includes('do-not-display'));
+  assert.throws(() => syncPoolProvider(h.file, { active: true, port: 19999, models: ['fixture'], hasOllama: false }), err => /YAML/.test(err.message) && !err.message.includes('do-not-display'));
   assert.equal(fs.readFileSync(h.file, 'utf8'), broken);
   assert.equal(readCredential(h.home, 'DEEPSEEK_API_KEY'), 'original');
 });
