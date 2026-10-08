@@ -100,7 +100,7 @@ test('the primary cache is reused and native conversation, account and group con
   assert.equal(result.duplicates, 2);
   assert.equal(result.readBytes, 12);
   for (const id of ['one', 'two']) {
-    assert.equal(fs.realpathSync(h.cache(id)), primary);
+    assert.equal(fs.realpathSync(h.cache(id)), fs.realpathSync(primary));
     for (const file of ['sessions/member.jsonl', 'state_5.sqlite', 'auth.json']) assert.equal(fs.readFileSync(path.join(h.cache(id), '..', file), 'utf8'), id + ':' + file);
   }
 });
@@ -216,7 +216,7 @@ test('the primary-cache target is recovered after an abrupt duplicate link', con
   const child = spawnSync(process.execPath, [path.join(__dirname, 'plugin-cache-crash-fixture.cjs'), h.root, 'linked'], { encoding: 'utf8', windowsHide: true });
   assert.equal(child.status, 73, child.stderr);
   recoverPluginCacheOperation(h.root);
-  assert.equal(fs.realpathSync(h.cache('one')), primary);
+  assert.equal(fs.realpathSync(h.cache('one')), fs.realpathSync(primary));
   assert.equal(fs.existsSync(h.cache('one') + '-maintenance'), false);
 });
 
