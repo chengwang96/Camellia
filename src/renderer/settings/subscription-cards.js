@@ -1,5 +1,5 @@
 'use strict';
-window.renderSubscriptionCards = ({ container, state, busy, engine, manage = true, onSelect, onRemove, onLabel, onRefresh, onWake, onSignIn }) => {
+window.renderSubscriptionCards = ({ container, state, busy, engine, manage = true, onSelect, onRemove, onLabel, onRefresh, onVerify, onWake, onSignIn }) => {
   container.setAttribute('role', 'group');
   const t = text => window.CamelliaI18n.t(text);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -7,6 +7,7 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
     switch: '<path d="M4 7h15m-4-4 4 4-4 4M20 17H5m4-4-4 4 4 4"/>',
     edit: '<path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z"/>',
     refresh: '<path d="M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 14 6M4 12a8 8 0 0 0 14 6"/>',
+    verify: '<path d="m12 3 8 4v5c0 5-8 9-8 9s-8-4-8-9V7z"/><path d="m8 12 3 3 5-6"/>',
     wake: '<path d="m13 2-9 12h7l-1 8 10-12h-7z"/>',
     remove: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
     logout: '<path d="M9 4H4v16h5m6-13 5 5-5 5m-7-5h12"/>',
@@ -45,12 +46,17 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
     const badges = `${account.active ? `<span class="subscription-current">${esc(t('Current'))}</span>` : ''}<span class="subscription-plan${account.plan ? planClass(account.plan) : ''}">${esc(account.plan || (engine === 'codex' ? 'ChatGPT' : engine === 'antigravity' ? 'Google' : 'Kimi'))}</span>`;
     const wake = engine === 'codex' || engine === 'kimi'
       ? action('wake', 'Wake account', !account.signedIn, 'Send 你好 once and refresh quota. Uses subscription allowance; does not reset an active window.') : '';
-    const sessionActions = `${action('switch', 'Switch account', account.active || !account.signedIn, 'Use this account on the next message')}${wake}${!account.signedIn ? action('login', 'Sign in') : ''}${account.id === 'default' ? action('logout', 'Sign out', !account.signedIn) : action('remove', 'Remove account')}`;
+    const signIn = typeof onSignIn === 'function' && (!manage || !account.signedIn)
+      ? action('login', engine === 'antigravity' ? account.stale || account.error ? 'Sign in again' : 'Sign in with Google' : 'Sign in') : '';
+    const verify = typeof onVerify === 'function'
+      ? action('verify', 'Verify sign-in', account.installed === false || state?.installed === false, 'Verify sign-in and refresh account models') : '';
+    const sessionActions = `${manage ? action('switch', 'Switch account', account.active || !account.signedIn, 'Use this account on the next message') + wake : ''}${verify}${signIn}${manage ? account.id === 'default' ? action('logout', 'Sign out', !account.signedIn) : action('remove', 'Remove account') : ''}`;
     return `<article class="subscription-card${account.active ? ' active' : ''}" data-card-id="${esc(account.id)}">
       <header><strong title="${esc(heading)}">${esc(heading)}</strong><span class="subscription-badges">${badges}</span></header>
       <div class="subscription-identity-meta">
         <p class="subscription-state ${accountStatus}"><i aria-hidden="true"></i>${esc(account.error || t(account.loginPending ? 'Waiting for sign-in' : account.signedIn ? account.exhausted ? 'Quota exhausted' : 'Signed in' : account.stale ? 'Previous verification expired. Verify again.' : 'Not signed in'))}</p>
         ${note ? `<span class="subscription-note-text${account.label ? '' : ' is-empty'}" title="${esc(note)}">${esc(note)}</span>` : ''}
+        ${engine === 'antigravity' && typeof onLabel === 'function' && account.models ? `<span class="subscription-note-text">${esc(t('Available account models'))} · ${esc(account.models)}</span>` : ''}
       </div>
       <div class="subscription-meters">${quotas || `<p class="hint">${esc(t(account.signedIn ? 'Quota information is currently unavailable.' : 'Sign in to view quota'))}</p>`}</div>
       <form class="subscription-note" hidden><input maxlength="60" data-account-label="${esc(account.id)}" aria-label="${esc(t('Account label'))}" value="${esc(account.label)}"><button type="submit">${esc(t('Save'))}</button><button type="button" data-note-cancel>${esc(t('Cancel'))}</button></form>
@@ -62,18 +68,21 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
           ${typeof onLabel === 'function' ? action('edit', 'Edit note') : ''}
           <button type="button" data-card-action="refresh" title="${esc(t('Refresh quota'))}" aria-label="${esc(t('Refresh quota'))}" ${!account.signedIn && !account.stale ? 'disabled' : ''}>${icon('refresh')}</button>
         </div>
-        ${manage ? `<div class="subscription-actions-main">${sessionActions}</div>` : ''}
+        ${sessionActions ? `<div class="subscription-actions-main">${sessionActions}</div>` : ''}
       </footer>
     </article>`;
   }).join('') || `<p class="hint">${esc(t('No accounts yet.'))}</p>`;
   container.querySelectorAll('.subscription-card').forEach(card => {
     const id = card.dataset.cardId, form = card.querySelector('form'), input = form.querySelector('input');
-    for (const control of card.querySelectorAll('button, input')) control.disabled ||= busy || Boolean(state?.accounts?.some(a => a.loginPending));
+    // Google sign-in completes in an external CLI. Its verification button must
+    // remain available while waiting for the user to return from that CLI.
+    for (const control of card.querySelectorAll('button, input')) control.disabled ||= busy || manage && Boolean(state?.accounts?.some(a => a.loginPending));
     card.querySelectorAll('[data-card-action]').forEach(button => { button.onclick = () => {
       switch (button.dataset.cardAction) {
         case 'switch': return onSelect(id);
         case 'edit': form.hidden = false; input.focus(); input.select(); return;
         case 'refresh': return onRefresh(id);
+        case 'verify': return onVerify(id);
         case 'wake': return onWake(id);
         case 'login': return onSignIn(id);
         case 'logout': case 'remove':

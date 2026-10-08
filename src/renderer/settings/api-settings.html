@@ -1,11 +1,12 @@
 <!doctype html>
-<html lang="en"><head>
+<html lang="en" data-i18n-pending><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
 <title data-i18n>Settings — Camellia</title>
 <link rel="stylesheet" href="../shared/ui-theme.css"><link rel="stylesheet" href="../shared/network-notice.css"><link rel="stylesheet" href="./api-settings.css"><link rel="stylesheet" href="../devices/devices.css">
 <link rel="stylesheet" href="./engine-settings.css">
 <link rel="stylesheet" href="../shared/engine-brand.css">
+<link rel="stylesheet" href="./settings-groups.css">
 </head><body>
 <aside class="settings-nav">
   <div class="settings-brand"><img src="../../../assets/icon-256.png" alt="Camellia cat" width="36" height="36"><span>Camellia<small data-i18n>Settings</small></span></div>
@@ -89,9 +90,10 @@
       <div class="setting-row app-update" id="dataDirectorySection"><div><h2 data-i18n>Local data</h2><p class="hint" id="dataPath"></p><p class="hint" id="dataDirectoryStatus" role="status" aria-live="polite" hidden></p></div><div class="app-update-actions"><button id="migrateDataDirectory" hidden data-i18n>Move to camellia folder</button><button id="openLogs" data-i18n>View logs</button></div></div>
       <div class="setting-row app-update" id="dataMigrationSection"><div><h2 data-i18n>Move to another installation</h2><p class="hint" id="dataMigrationStatus" role="status" aria-live="polite" data-i18n>Choose API configuration, application settings or conversation history to transfer.</p><progress id="dataMigrationProgress" max="100" hidden></progress></div><div class="app-update-actions"><button id="exportData" data-i18n>Export data</button><button id="importData" data-i18n>Import data</button><button id="importDataAgain" hidden data-i18n>Import another package</button></div></div>
       <div class="section" id="storageSection">
+        <div class="setting-row app-update"><div><h2 data-i18n>Codex plugin caches</h2><p class="hint" id="pluginCacheStatus" role="status" aria-live="polite" data-i18n>Restart to share identical cached plugins and free space. Conversation history and account data are kept.</p></div><div class="app-update-actions"><button id="maintainPluginCaches" data-i18n>Deduplicate and restart</button></div></div>
         <h2 data-i18n>Space cleanup</h2>
-        <div class="toolbar"><p class="hint" data-i18n>Nothing runs in the background.</p><button id="scanStorage" class="primary" data-i18n>Scan for unused files</button></div>
-        <p class="hint" data-i18n>Protects active, archived and forked conversations, saved drafts, and files modified within 24 hours. Workspace files, original imports and shared native engine histories are excluded. Deleted conversations' dedicated engine directories may be cleaned.</p>
+        <div class="toolbar"><p class="hint" data-i18n>Unused remote attachments, group attachment copies and expired import backups are cleaned when idle.</p><button id="scanStorage" class="primary" data-i18n>Scan for unused files</button></div>
+        <p class="hint" data-i18n>Protects active, archived and forked conversations, saved drafts, recent attachment copies and the newest import backup. Workspace files, exported packages and shared native engine histories are excluded. Deleted conversations' dedicated engine directories may be cleaned.</p>
         <p id="storageStatus" role="status" aria-live="polite" data-i18n>No scan yet.</p>
         <div id="storageSummary"></div>
         <details id="storageDetails" hidden><summary data-i18n>Review candidate paths</summary><p class="hint" data-i18n>Paths are relative to the Camellia data folder. Actual recovered disk space may differ.</p><div id="storageFiles"></div></details>
@@ -99,6 +101,12 @@
       </div>
     </section>
     <section id="modelsPage" class="page" hidden>
+      <section class="section" aria-labelledby="multiKeyRoutingTitle">
+        <h2 id="multiKeyRoutingTitle" data-i18n>API key routing</h2>
+        <p class="hint" data-i18n>Applies to all API models. Changes save automatically and apply to new requests.</p>
+        <div class="setting-row"><div><h2 data-i18n>Multi-key concurrency</h2><p class="hint" id="multiKeyConcurrencyHint" data-i18n>Share concurrent requests for the same model across keys and providers at the same priority. When off, requests stay on the current key.</p></div><input id="multiKeyConcurrency" type="checkbox" role="switch" disabled aria-label="Multi-key concurrency" aria-describedby="multiKeyConcurrencyHint" data-i18n-attrs="aria-label"></div>
+        <div class="setting-row"><div><h2 data-i18n>Automatic key failover</h2><p class="hint" id="multiKeyFailoverHint" data-i18n>Retry with another key for the same model when a route fails or becomes unavailable. When off, an unavailable selected key needs a manual switch or reset.</p></div><input id="multiKeyFailover" type="checkbox" role="switch" disabled aria-label="Automatic key failover" aria-describedby="multiKeyFailoverHint" data-i18n-attrs="aria-label"></div>
+      </section>
       <section class="subscription-models-section" aria-labelledby="subscriptionModelsTitle">
         <h2 id="subscriptionModelsTitle" data-i18n>Subscription models</h2>
         <p class="hint" data-i18n>Choose which account models appear in model menus. Hidden models stay available to existing conversations. This preference applies to all accounts of the same subscription.</p>
@@ -194,7 +202,7 @@
             <p id="googleQuotaStatus" class="hint error" role="alert" hidden></p>
             <details id="googleQuotaErrorDetails" class="account-error-details" hidden><summary data-i18n>Error details</summary><pre id="googleQuotaErrorRaw" translate="no"></pre></details>
             <div id="googleAccountList" class="account-list" role="radiogroup" aria-label="Google accounts" data-i18n-attrs="aria-label"></div>
-            <p class="hint" data-i18n>Sign-in opens the official CLI and your browser; return here and refresh. To switch accounts, use <code>/logout</code> in that terminal.</p>
+            <p class="hint" data-i18n>Sign-in opens the official CLI and your browser; return here and verify. To switch accounts, use <code>/logout</code> in that terminal.</p>
             <p class="hint" data-i18n>Google sign-in is shared with the official CLI. Gemini and Claude/GPT have separate weekly and 5-hour limits.</p>
           </div>
         </div>
@@ -232,10 +240,12 @@
         <button id="confirmImportData" class="primary" data-i18n>Import selected data</button>
       </dialog>
 <script src="../../shared/qr.js"></script>
+<script src="../../shared/model-names.js"></script>
 <script src="../../shared/model-levels.js"></script>
 <script src="../../shared/subscription-models.js"></script>
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>
 <script src="./settings-charts.js"></script><script src="./subscription-cards.js"></script><script src="./engine-settings-ui.js"></script><script src="../remote/remote.js"></script><script src="../devices/devices-view.js"></script><script src="../devices/connections.js"></script><script src="../shared/network-notice.js"></script><script src="./api-settings.js"></script>
+<script src="./settings-groups.js"></script>
 </body></html>

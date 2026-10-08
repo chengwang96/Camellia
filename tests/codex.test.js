@@ -553,6 +553,17 @@ test('per-conversation Codex homes share one plugin cache instead of copying it'
   assert.equal(fs.lstatSync(path.join(third, '.tmp')).isSymbolicLink(), false);
 });
 
+test('a failed shared cache mount stops a new Codex home instead of silently duplicating plugins', t => {
+  const root = temporary(t), home = path.join(root, 'api/conversations/new');
+  const original = fs.symlinkSync;
+  fs.symlinkSync = () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); };
+  try {
+    assert.throws(() => codexSpawnSpec({ runtime: { file: path.join(root, 'native/bin/codex') }, home,
+      connection: 'api', route: { baseUrl: 'http://127.0.0.1:8788' }, sharedPluginCache: path.join(root, '.tmp') }), /Cannot create shared Codex plugin cache: EACCES/);
+  } finally { fs.symlinkSync = original; }
+  assert.equal(fs.existsSync(path.join(home, '.tmp')), false);
+});
+
 test('Codex task questions keep waiting under full permissions and preserve multiple answers', () => {
   const events = [], writes = [];
   const session = new CodexSession({ gen: 7, opts: {}, settings: { permissionMode: 'full' }, onEvent: event => events.push(event) });

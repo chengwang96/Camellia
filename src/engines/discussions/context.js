@@ -41,9 +41,10 @@ function prepareTextInput(state, delivery, signal, capability = {}) {
   }
   // A conservative byte estimate includes every input/output kept in this native
   // generation. Native hidden/system overhead is reserved separately.
+  const messagesById = new Map(state.messages.map(m => [m.id, m]));
   const nativeUsed = state.deliveries.filter(d => d.id !== delivery.id && d.runtimeId === delivery.runtimeId
     && d.status === 'completed').reduce((total, d) => total + estimateTokens(d.inputPlan?.prompt || '')
-      + estimateTokens(state.messages.find(m => m.id === d.resultId)?.text || '')
+      + estimateTokens(messagesById.get(d.resultId)?.text || '')
       + (d.inputPlan?.attachments || []).filter(a => a.isImage).length * 4096, 0);
   const reserve = Math.min(8192, Math.max(512, Math.ceil(limit * 0.2)));
   const attachments = [...new Map(history.flatMap(m => m.attachments || []).map(a => [a.id, a])).values()];

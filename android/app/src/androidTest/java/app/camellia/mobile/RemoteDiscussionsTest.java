@@ -52,7 +52,7 @@ public class RemoteDiscussionsTest extends InstrumentationTestCase {
         oldCredentials = credentials.load(); oldState = state.load(); state.save(new JSONObject());
     }
     @Override protected void tearDown() throws Exception {
-        if (activity != null) { ui(() -> activity.finish()); getInstrumentation().waitForIdleSync(); }
+        if (activity != null) { ui(() -> activity.finish()); waitFor(() -> activity.isDestroyed()); getInstrumentation().waitForIdleSync(); }
         credentials.save(oldCredentials); state.save(oldState); EmbeddedNetwork.setEnabled(oldEmbedded);
         MobilePreferences.set(getInstrumentation().getTargetContext(), "theme", oldTheme); MobilePreferences.set(getInstrumentation().getTargetContext(), "language", oldLanguage); super.tearDown();
     }
@@ -77,6 +77,224 @@ public class RemoteDiscussionsTest extends InstrumentationTestCase {
             invoke("shell", new Class<?>[0]); invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, snapshot(10, "Initial title", "Initial reply"), false);
         });
     }
+
+    private static boolean markdownIdle(View view) {
+        if (view instanceof StreamingMarkdownView && !((StreamingMarkdownView) view).idle()) return false;
+        if (view instanceof android.view.ViewGroup) for (int i = 0; i < ((android.view.ViewGroup) view).getChildCount(); i++)
+            if (!markdownIdle(((android.view.ViewGroup) view).getChildAt(i))) return false;
+        return true;
+    }
+    private static TextView renderedText(View view, String value) {
+        if (view instanceof TextView && ((TextView) view).getText().toString().equals(value)) return (TextView) view;
+        if (view instanceof android.view.ViewGroup) for (int i = 0; i < ((android.view.ViewGroup) view).getChildCount(); i++) {
+            TextView found = renderedText(((android.view.ViewGroup) view).getChildAt(i), value); if (found != null) return found;
+        }
+        return null;
+    }
+    private JSONObject historySnapshot(long cursor, int first, int count) throws Exception {
+        JSONObject result = snapshot(cursor, "History window", ""); JSONObject group = result.getJSONObject("group");
+        JSONArray messages = new JSONArray(), deliveries = new JSONArray(), requests = new JSONArray();
+        for (int request = first; request < first + count; request++) {
+            String id = "history-request-" + request, delivery = "history-delivery-" + request;
+            messages.put(new JSONObject().put("seq", 2L * request - 1).put("role", "user").put("requestId", id).put("text", "Question " + request));
+            messages.put(new JSONObject().put("seq", 2L * request).put("role", "assistant").put("requestId", id).put("deliveryId", delivery)
+                .put("speakerId", memberId).put("speakerName", "Scientist").put("text", "Answer " + request));
+            deliveries.put(new JSONObject().put("id", delivery).put("requestId", id).put("participantId", memberId).put("status", "completed").put("partialText", ""));
+            requests.put(new JSONObject().put("id", id).put("mode", "parallel"));
+        }
+        group.put("messages", messages).put("deliveries", deliveries).put("requests", requests);
+        return result.put("instanceId", "history-instance").put("nextBefore", first > 1 ? 2L * first - 1 : JSONObject.NULL);
+    }
+    public void testHistoryWindowEvictsViewsAndPreservesReadingPosition() throws Exception {
+        offlineFixture();
+        ui(() -> invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, historySnapshot(100, 151, 150), false));
+        waitFor(() -> view("discussionRow:message:350").getHeight() > 0);
+        AtomicReference<View> anchor = new AtomicReference<>(), removed = new AtomicReference<>(); AtomicReference<Integer> offset = new AtomicReference<>();
+        ui(() -> {
+            anchor.set(view("discussionRow:message:350")); android.widget.ScrollView scroll = (android.widget.ScrollView) field(activity, "scroll");
+            scroll.scrollTo(0, anchor.get().getTop() + 8); offset.set(anchor.get().getTop() - scroll.getScrollY());
+            invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, historySnapshot(99, 1, 150), true);
+        });
+        waitFor(() -> anchor.get().getTop() - ((android.widget.ScrollView) field(activity, "scroll")).getScrollY() == offset.get());
+        ui(() -> {
+            assertSame(anchor.get(), view("discussionRow:message:350")); assertNotNull(view("discussionHistoryLimit")); assertNull(view("discussionOlder"));
+            removed.set(view("discussionRow:message:2"));
+            invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, historySnapshot(101, 301, 20), false);
+        });
+        waitFor(() -> anchor.get().getTop() - ((android.widget.ScrollView) field(activity, "scroll")).getScrollY() == offset.get());
+        ui(() -> {
+            DiscussionHistory history = (DiscussionHistory) field(activity, "history");
+            assertEquals(600, history.messages.size()); assertEquals(Long.valueOf(41), history.messages.firstKey());
+            assertEquals(300, history.requests.size()); assertEquals(300, history.deliveries.size()); assertTrue(history.historyBytes() <= DiscussionHistory.MAX_BYTES);
+            assertEquals(600, ((java.util.Map<?, ?>) field(activity, "messageRows")).size()); assertNull(view("discussionRow:message:2")); assertNull(removed.get().getParent());
+            StreamingMarkdownView oldBody = removed.get().findViewWithTag("markdown"); assertEquals("", oldBody.source()); assertFalse(oldBody.hasStreamState());
+            assertSame(anchor.get(), view("discussionRow:message:350")); assertFalse(((JSONObject) field(activity, "group")).has("messages"));
+            JSONObject restarted = historySnapshot(1, 10, 1).put("instanceId", "restarted-host"); invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, restarted, false);
+            assertEquals(2, history.messages.size()); assertFalse(history.limited()); assertNull(view("discussionHistoryLimit"));
+            invoke("openGroup", new Class<?>[] {String.class}, (Object) null); assertEquals(0, history.estimatedBytes()); assertTrue(history.messages.isEmpty());
+            assertEquals(0, ((java.util.Map<?, ?>) field(activity, "messageRows")).size());
+        });
+    }
+
+    public void testToolHeavyHistoryTrimsRecordsAndPreservesCurrentControls() throws Exception {
+        offlineFixture(); JSONObject next = historySnapshot(100, 1, 20); JSONObject group = next.getJSONObject("group");
+        for (int i = 0; i < 20; i++) group.getJSONArray("deliveries").getJSONObject(i).put("tools", new JSONArray().put(new JSONObject()
+            .put("id", "tool-" + i).put("name", "Fixture tool").put("status", "completed").put("inputText", "input").put("output", "x".repeat(150000))));
+        for (int i = 0; i < 2; i++) {
+            String request = "current-request-" + i, delivery = "current-delivery-" + i;
+            // Current work can precede the host's latest message page. Its
+            // controls must remain visible even without the initiating message.
+            if (i > 0) group.getJSONArray("messages").put(new JSONObject().put("seq", 41 + i).put("role", "user").put("requestId", request).put("text", "Current question " + i));
+            group.getJSONArray("requests").put(new JSONObject().put("id", request).put("mode", "serial"));
+            group.getJSONArray("deliveries").put(new JSONObject().put("id", delivery).put("requestId", request).put("participantId", memberId)
+                .put("status", i == 0 ? "running" : "failed").put("phase", i == 0 ? "approval" : "").put("partialText", "Current answer " + i));
+        }
+        group.put("active", true).put("pendingApprovals", new JSONArray().put(new JSONObject().put("deliveryId", "current-delivery-0").put("requestId", "approval")));
+        ui(() -> { field(activity, "rich", true); invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, next, false); });
+        waitFor(() -> markdownIdle(activity.getWindow().getDecorView()));
+        ui(() -> {
+            DiscussionHistory history = (DiscussionHistory) field(activity, "history"); assertTrue(history.limited()); assertTrue(history.historyBytes() <= DiscussionHistory.MAX_BYTES);
+            assertTrue(history.messages.size() < 42); assertFalse(history.requests.containsKey("history-request-1")); assertFalse(history.deliveries.containsKey("history-delivery-1"));
+            assertNotNull(view("discussionStop:current-delivery-0")); assertNotNull(view("discussionApproval:approval")); assertNotNull(view("discussionRetry:current-delivery-1")); assertNotNull(view("discussionSkip:current-delivery-1"));
+            int size = history.messages.size(); long bytes = history.estimatedBytes();
+            next.put("cursor", 101); invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, next, false);
+            assertEquals(size, history.messages.size()); assertEquals(bytes, history.estimatedBytes());
+            JSONObject retained = (JSONObject) field(activity, "group"); assertFalse(retained.has("messages")); assertFalse(retained.has("requests")); assertEquals(1, retained.getJSONArray("deliveries").length());
+        });
+    }
+
+    public void testOnlyOneHistoryPageRunsAndSwitchingGroupsDiscardsItsResult() throws Exception {
+        offlineFixture(); JSONObject latest = historySnapshot(100, 10, 1), earlier = historySnapshot(99, 9, 1);
+        java.util.concurrent.CountDownLatch started = new java.util.concurrent.CountDownLatch(1), release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger(), finished = new java.util.concurrent.atomic.AtomicInteger();
+        RemoteApi client = new RemoteApi("http://100.64.0.1:43129") {
+            @Override public JSONObject json(String path, String token, JSONObject payload) throws java.io.IOException {
+                calls.incrementAndGet(); started.countDown();
+                try { if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) throw new java.io.IOException("Fixture was not released"); return earlier; }
+                catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new java.io.IOException(error); }
+                finally { finished.incrementAndGet(); }
+            }
+        };
+        try {
+            ui(() -> {
+                invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, latest, false);
+                field(activity, "api", client); field(activity, "connected", true); field(activity, "foreground", true); invoke("controls", new Class<?>[0]);
+                view("discussionOlder").performClick();
+                invoke("readPage", new Class<?>[] {String.class}, "/v1/discussions/" + groupId + "?before=19");
+                assertFalse(view("discussionOlder").isEnabled()); assertTrue((boolean) field(activity, "pageLoading"));
+            });
+            assertTrue(started.await(3, java.util.concurrent.TimeUnit.SECONDS)); assertEquals(1, calls.get());
+            ui(() -> {
+                field(activity, "foreground", false); String nextGroup = "00000000-0000-0000-0000-000000000004";
+                invoke("openGroup", new Class<?>[] {String.class}, nextGroup);
+                JSONObject fresh = historySnapshot(1, 30, 1).put("instanceId", "new-host"); fresh.getJSONObject("group").put("id", nextGroup).put("title", "New group");
+                invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, fresh, false); field(activity, "foreground", true);
+            });
+            release.countDown(); waitFor(() -> finished.get() == 1); getInstrumentation().waitForIdleSync();
+            ui(() -> {
+                DiscussionHistory history = (DiscussionHistory) field(activity, "history"); assertEquals(2, history.messages.size()); assertEquals(Long.valueOf(59), history.messages.firstKey());
+                assertEquals("New group", ((TextView) view("discussionTitle")).getText().toString()); assertFalse((boolean) field(activity, "pageLoading"));
+            });
+        } finally { release.countDown(); }
+    }
+    public void testParallelStreamingKeepsHistoryRosterAndCompletionViews() throws Exception {
+        offlineFixture(); String secondId = "00000000-0000-0000-0000-000000000003";
+        JSONObject next = snapshot(20, "Parallel", "## History"); JSONObject group = next.getJSONObject("group");
+        group.getJSONArray("participants").put(new JSONObject(group.getJSONArray("participants").getJSONObject(0).toString()).put("id", secondId).put("name", "Reviewer"));
+        group.getJSONArray("messages").put(new JSONObject().put("seq", 2).put("role", "user").put("requestId", "request").put("text", "Question"));
+        String alpha = "**Alpha**\n\n```java\nline one\n", beta = "## Beta\n\nFirst";
+        JSONObject first = new JSONObject().put("id", "alpha").put("requestId", "request").put("participantId", memberId).put("runId", 1).put("status", "running").put("partialText", alpha);
+        JSONObject second = new JSONObject().put("id", "beta").put("requestId", "request").put("participantId", secondId).put("runId", 1).put("status", "running").put("partialText", beta);
+        group.put("deliveries", new JSONArray().put(first).put(second)).put("requests", new JSONArray().put(new JSONObject().put("id", "request").put("mode", "parallel")));
+        ui(() -> invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, next, false));
+        waitFor(() -> markdownIdle(activity.getWindow().getDecorView()) && renderedText(activity.getWindow().getDecorView(), "Alpha") != null);
+        AtomicReference<View> history = new AtomicReference<>(), chip = new AtomicReference<>(), code = new AtomicReference<>(), betaHeading = new AtomicReference<>();
+        ui(() -> { history.set(renderedText(activity.getWindow().getDecorView(), "History")); chip.set(view("discussionSelect:" + memberId)); code.set(view("markdownCodeText")); betaHeading.set(renderedText(activity.getWindow().getDecorView(), "Beta")); });
+        first.put("partialText", alpha + "line two\n"); second.put("partialText", beta + "\n\nSecond"); next.put("cursor", 21);
+        ui(() -> invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, next, false)); waitFor(() -> markdownIdle(activity.getWindow().getDecorView()));
+        ui(() -> { assertSame(history.get(), renderedText(activity.getWindow().getDecorView(), "History")); assertSame(chip.get(), view("discussionSelect:" + memberId)); assertSame(code.get(), view("markdownCodeText")); assertSame(betaHeading.get(), renderedText(activity.getWindow().getDecorView(), "Beta")); });
+        String completed = alpha + "line two\n```\n";
+        first.put("status", "completed").put("partialText", ""); next.put("cursor", 22);
+        group.getJSONArray("messages").put(new JSONObject().put("seq", 3).put("role", "assistant").put("speakerId", memberId).put("speakerName", "Scientist").put("deliveryId", "alpha").put("text", completed));
+        ui(() -> invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, next, false)); waitFor(() -> markdownIdle(activity.getWindow().getDecorView()));
+        ui(() -> { assertSame(code.get(), view("markdownCodeText")); assertEquals("line one\nline two", ((TextView) code.get()).getText().toString()); assertSame(chip.get(), view("discussionSelect:" + memberId)); assertNull(view("discussionStop:alpha")); });
+        second.put("runId", 2).put("partialText", "## Restarted"); next.put("cursor", 23);
+        ui(() -> invoke("apply", new Class<?>[] {JSONObject.class, boolean.class}, next, false)); waitFor(() -> markdownIdle(activity.getWindow().getDecorView()));
+        ui(() -> { assertNotNull(renderedText(activity.getWindow().getDecorView(), "Restarted")); assertNull(renderedText(activity.getWindow().getDecorView(), "Beta")); assertSame(history.get(), renderedText(activity.getWindow().getDecorView(), "History")); });
+        ui(() -> invoke("openGroup", new Class<?>[] {String.class}, (Object) null));
+        ui(() -> assertEquals(0, ((java.util.Map<?, ?>) field(activity, "messageRows")).size()));
+    }
+    public void testUnreadableStateSurvivesSavingRecreationAndSuccessfulRetry() throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        assertTrue(android.os.Build.HARDWARE.equals("ranchu") || android.os.Build.HARDWARE.equals("goldfish"));
+        JSONObject computer = new JSONObject().put("address", "http://100.64.0.1:43129").put("token", "a".repeat(43)).put("deviceId", "fixture-device");
+        String key = computer.getString("address") + "#fixture-device";
+        String requestId = UUID.randomUUID().toString();
+        JSONObject stored = new JSONObject().put(key, new JSONObject()
+            .put("drafts", new JSONObject().put(groupId, new JSONObject().put("text", "Keep the group draft")))
+            .put("pending", new JSONObject().put(requestId, new JSONObject().put("requestId", requestId).put("action", "send"))))
+            .put("another-computer", new JSONObject().put("drafts", new JSONObject().put("other", "Keep other data")));
+        state.save(stored);
+        var preferences = context.getSharedPreferences("remote-discussions-private", 0);
+        String original = preferences.getString("credential", null);
+        JSONObject envelope = new JSONObject(original);
+        byte[] damaged = android.util.Base64.decode(envelope.getString("data"), android.util.Base64.NO_WRAP); damaged[0] ^= 1;
+        String unreadable = envelope.put("data", android.util.Base64.encodeToString(damaged, android.util.Base64.NO_WRAP)).toString();
+        assertTrue(preferences.edit().putString("credential", unreadable).commit());
+        start(computer);
+        ui(() -> {
+            assertNotNull(view("discussionStateLoadError")); assertNull(view("discussionCreate"));
+            assertFalse((boolean) field(activity, "stateReady")); assertNull(field(activity, "api"));
+            var save = RemoteDiscussionsActivity.class.getDeclaredMethod("persist"); save.setAccessible(true);
+            assertEquals(false, save.invoke(activity));
+            invoke("submit", new Class<?>[]{String.class, String.class, JSONObject.class}, "create", null, new JSONObject().put("title", "Must not overwrite"));
+        });
+        assertEquals(unreadable, preferences.getString("credential", null));
+        recreateFromError();
+        assertEquals(unreadable, preferences.getString("credential", null));
+        ui(() -> assertNotNull(view("discussionStateLoadError")));
+        assertTrue(preferences.edit().putString("credential", original).commit());
+        recreateFromError();
+        ui(() -> {
+            invoke("disconnect", new Class<?>[0]);
+            assertTrue((boolean) field(activity, "stateReady"));
+            assertEquals("Keep the group draft", ((JSONObject) field(activity, "drafts")).getJSONObject(groupId).getString("text"));
+            assertEquals(requestId, ((JSONObject) field(activity, "pending")).getJSONObject(requestId).getString("requestId"));
+            assertEquals(stored.toString(), ((JSONObject) field(activity, "state")).toString());
+        });
+        assertEquals(original, preferences.getString("credential", null));
+    }
+
+    private void recreateFromError() throws Exception {
+        var monitor = getInstrumentation().addMonitor(RemoteDiscussionsActivity.class.getName(), null, false);
+        try {
+            ui(() -> view("discussionStateRetry").performClick());
+            Activity next = getInstrumentation().waitForMonitorWithTimeout(monitor, 6000);
+            assertNotNull("Retry must reopen the discussion with a fresh state read", next);
+            activity = (RemoteDiscussionsActivity) next; getInstrumentation().waitForIdleSync();
+        } finally { getInstrumentation().removeMonitor(monitor); }
+    }
+
+    public void testFirstUseWithoutStoredDiscussionStateStillInitializes() throws Exception {
+        state.clear();
+        start(new JSONObject().put("address", "http://100.64.0.1:43129").put("token", "a".repeat(43)).put("deviceId", "fixture-device"));
+        ui(() -> {
+            invoke("disconnect", new Class<?>[0]);
+            assertTrue((boolean) field(activity, "stateReady")); assertNull(view("discussionStateLoadError"));
+            assertNotNull(view("discussionCreate"));
+        });
+    }
+
+    public void testMalformedProfileIsNotReplacedWithAnEmptyDraft() throws Exception {
+        state.save(new JSONObject().put("http://100.64.0.1:43129#fixture-device", new JSONObject().put("drafts", "invalid draft object")));
+        var preferences = getInstrumentation().getTargetContext().getSharedPreferences("remote-discussions-private", 0);
+        String original = preferences.getString("credential", null);
+        start(new JSONObject().put("address", "http://100.64.0.1:43129").put("token", "a".repeat(43)).put("deviceId", "fixture-device"));
+        ui(() -> { assertNotNull(view("discussionStateLoadError")); activity.onBackPressed(); });
+        getInstrumentation().waitForIdleSync();
+        assertEquals(original, preferences.getString("credential", null));
+    }
+
     public void testStreamRefreshPreservesDraftSelectionAndComposerAndRejectsStaleSnapshot() throws Exception {
         offlineFixture();
         ui(() -> {
@@ -171,7 +389,7 @@ public class RemoteDiscussionsTest extends InstrumentationTestCase {
             ((ChatComposer) field(activity, "composer")).model.performClick(); dialogView("settingsChoice:1").performClick();
             ((EditText) view("discussionComposer")).setText("Discuss the design"); view("discussionSend").performClick();
         });
-        waitFor(() -> ((JSONObject) field(activity, "group")).getJSONArray("messages").length() == 3 && ((EditText) view("discussionComposer")).length() == 0);
+        waitFor(() -> ((java.util.Map<?, ?>) field(activity, "messages")).size() == 3 && ((EditText) view("discussionComposer")).length() == 0);
         AtomicReference<View> composer = new AtomicReference<>();
         ui(() -> { composer.set(view("discussionComposer")); ((EditText) composer.get()).setText("Keep this draft"); ((EditText) composer.get()).setSelection(4); });
         operation(client, token, "rename", id, new JSONObject().put("title", "Synced from desktop"));
@@ -215,7 +433,7 @@ public class RemoteDiscussionsTest extends InstrumentationTestCase {
         });
         screenshot("discussion-questions.png");
         ui(() -> ((AlertDialog) field(activity, "approvalDialog")).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
-        waitFor(() -> ((JSONObject) field(activity, "group")).getJSONArray("messages").length() == 5 && ((JSONObject) field(activity, "pending")).length() == 0);
+        waitFor(() -> ((java.util.Map<?, ?>) field(activity, "messages")).size() == 5 && ((JSONObject) field(activity, "pending")).length() == 0);
         ui(() -> { assertTrue(((java.util.List<?>) field(activity, "images")).isEmpty()); assertTrue(((java.util.List<?>) field(activity, "documents")).isEmpty()); });
         JSONArray artifacts = client.json("/v1/discussions/" + id + "/artifacts", token, null).getJSONArray("artifacts");
         JSONObject artifact = null; for (int i = 0; i < artifacts.length(); i++) if (artifacts.getJSONObject(i).optString("name").equals("mobile-result.txt")) artifact = artifacts.getJSONObject(i);

@@ -18,20 +18,18 @@ import java.util.List;
 // button in the tools row, the same 88 dp tiles, and a message that may consist
 // of images alone.
 public class LocalImageComposerTest extends InstrumentationTestCase {
-    private CredentialStore encrypted;
 
     @Override protected void setUp() throws Exception {
         super.setUp();
-        encrypted = new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private");
-        encrypted.clear();
+        LocalChatFixture.clear(getInstrumentation().getTargetContext());
         MobilePreferences.set(getInstrumentation().getTargetContext(), "language", "zh-CN");
     }
 
-    @Override protected void tearDown() throws Exception { encrypted.clear(); super.tearDown(); }
+    @Override protected void tearDown() throws Exception { LocalChatFixture.clear(getInstrumentation().getTargetContext()); super.tearDown(); }
 
     public void testLocalComposerAttachesImagesAndRendersThem() throws Throwable {
         Context context = getInstrumentation().getTargetContext();
-        LocalChatStore store = new LocalChatStore(context);
+        LocalChatFixture store = new LocalChatFixture(context);
         JSONObject provider = new JSONObject().put("id", "example").put("name", "Example").put("protocol", "openai")
             .put("baseUrl", "https://example.com/v1").put("keys", new JSONArray().put(new JSONObject().put("key", "test-key")))
             .put("models", new JSONArray().put(new JSONObject().put("id", "gpt-5.6-sol").put("upstream", "gpt-5.6-sol")));
@@ -40,7 +38,7 @@ public class LocalImageComposerTest extends InstrumentationTestCase {
         String routeId = LocalChatConfig.routes(store.config()).get(0).id;
         JSONObject conversation = store.createConversation("", routeId);
         String id = conversation.getString("id");
-        LocalChatActivity activity = (LocalChatActivity) getInstrumentation().startActivitySync(new Intent(context, LocalChatActivity.class)
+        LocalChatActivity activity = (LocalChatActivity) LocalChatFixture.start(getInstrumentation(), new Intent(context, LocalChatActivity.class)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             idle();
@@ -105,7 +103,6 @@ public class LocalImageComposerTest extends InstrumentationTestCase {
                     JSONObject stored = activityStore.conversation(id);
                     stored.getJSONArray("messages").put(new JSONObject().put("role", "user").put("content", "看这张图")
                         .put("images", new JSONArray().put(encoded)).put("at", System.currentTimeMillis()));
-                    activityStore.save();
                     invoke(activity, "renderMessages");
                 } catch (Exception error) { throw new AssertionError(error); }
             });
@@ -124,7 +121,7 @@ public class LocalImageComposerTest extends InstrumentationTestCase {
             getInstrumentation().runOnMainSync(activity::finish);
             long deadline = android.os.SystemClock.uptimeMillis() + 5000;
             while (!activity.isDestroyed() && android.os.SystemClock.uptimeMillis() < deadline) {
-                getInstrumentation().waitForIdleSync(); Thread.sleep(25);
+                LocalChatFixture.idle(getInstrumentation()); Thread.sleep(25);
             }
             assertTrue("Activity must stop saving before test storage is cleared", activity.isDestroyed());
         }
@@ -181,6 +178,7 @@ public class LocalImageComposerTest extends InstrumentationTestCase {
     }
 
     private void ui(Runnable action) throws Throwable {
+        LocalChatFixture.idle(getInstrumentation());
         Throwable[] failure = new Throwable[1];
         getInstrumentation().runOnMainSync(() -> { try { action.run(); } catch (Throwable error) { failure[0] = error; } });
         idle(); if (failure[0] != null) throw failure[0];

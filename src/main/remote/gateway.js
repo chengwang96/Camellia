@@ -304,19 +304,25 @@ class RemoteGateway {
     const payload = { ...snapshot, ...this.stamp() };
     stream.blocked = !stream.response.write(`id: ${this.instanceId}:${this.sequence}\nevent: snapshot\ndata: ${JSON.stringify(payload)}\n\n`);
   }
-  publish() {
+  publish(update) {
     this.sequence++;
-    for (const stream of this.streams) stream.dirty = true;
+    const id = update?.session_id || update?.sessionId || update?.discussionId;
+    for (const stream of this.streams) if (!id || !stream.id || stream.id === id) stream.dirty = true;
     this.scheduleFlush();
   }
   scheduleFlush() {
     if (this.flushTimer || !this.streams.size) return;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
+      const snapshots = new Map();
       for (const stream of this.streams) {
         if (!stream.dirty || stream.blocked) continue;
         stream.dirty = false;
-        try { this.writeSnapshot(stream, this.streamSnapshot(stream)); }
+        try {
+          const key = JSON.stringify([stream.device.id, stream.kind, stream.id]);
+          if (!snapshots.has(key)) snapshots.set(key, this.streamSnapshot(stream));
+          this.writeSnapshot(stream, snapshots.get(key));
+        }
         catch { stream.response.end(); }
       }
     }, 250);

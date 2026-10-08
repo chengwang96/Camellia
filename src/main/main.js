@@ -44,9 +44,10 @@ const { createPiChat } = require('../engines/pi-session');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
 const { saveClipboardImage, savePastedText } = require('./clipboard-attachments');
 const { StorageCleanup } = require('./storage-cleanup');
-const { createDataPackage, importDataPackage, inspectDataPackage, resolveKinds: normalizeMigrationScope } = require('./data-migration');
+const { createDataPackage, importDataPackage, inspectDataPackage, recoverDataImports, resolveKinds: normalizeMigrationScope } = require('./data-migration');
 const { configureDataDirectory, migrationStatus: dataDirectoryStatus, requestDirectoryMigration, cancelDirectoryMigration, readDirectoryMigrationResult } = require('./data-directory');
 const { migrateDataDirectory } = require('./data-directory-progress');
+const { pluginCacheMaintenanceStatus, requestPluginCacheMaintenance, cancelPluginCacheMaintenance, completePluginCacheMaintenance } = require('./plugin-cache-startup');
 const { IdleSessionReaper } = require('../engines/idle-session-reaper');
 const { attachInputContextMenu } = require('./input-context-menu');
 const { attachImageContextMenu } = require('./image-context-menu');
@@ -123,6 +124,7 @@ const appDataDirectory = (() => { try { return app.getPath('appData'); } catch {
 app.setName(APP_NAME);
 let gotSingleInstanceLock = app.requestSingleInstanceLock();
 const managedBrowserDirectory = app.getPath('sessionData') === app.getPath('userData');
+if (gotSingleInstanceLock) recoverDataImports({ dataDir: app.getPath('userData'), home: os.homedir() });
 function lockDataDirectory(directory) {
   app.releaseSingleInstanceLock();
   if (managedBrowserDirectory) app.setPath('sessionData', directory);
@@ -138,6 +140,8 @@ const directoryMigration = managedDataDirectory && gotSingleInstanceLock
     resume: state => lockDataDirectory(state.source) }) : null;
 if (directoryMigration?.recoveryRequired) throw new Error('Data directory recovery is required: ' + directoryMigration.rollbackError);
 const lastDirectoryMigration = directoryMigration || (managedDataDirectory ? readDirectoryMigrationResult(appDataDirectory) : null);
+const pluginCacheMaintenance = gotSingleInstanceLock ? completePluginCacheMaintenance({ app, dataDir: app.getPath('userData') }) : null;
+if (pluginCacheMaintenance?.recoveryRequired) throw new Error('Plugin cache recovery is required: ' + pluginCacheMaintenance.error);
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -145,19 +149,17 @@ const lastDirectoryMigration = directoryMigration || (managedDataDirectory ? rea
 function logDir() {
   return path.join(app.getPath('userData'), 'logs');
 }
-function logPath() {
-  return path.join(logDir(), 'dsh-desktop.log');
+let logWriter = null;
+function getLogWriter() {
+  if (!logWriter) {
+    logWriter = new (require('./rotating-log').RotatingLog)({ directory: logDir(), io: fs });
+    logWriter.write(`=== ${APP_NAME} desktop start ===`);
+  }
+  return logWriter;
 }
-let logStream = null;
 function log(message) {
   try {
-    if (!logStream) {
-      fs.mkdirSync(logDir(), { recursive: true });
-      logStream = fs.createWriteStream(logPath(), { flags: 'a' });
-      logStream.on('error', () => { logStream = null; });
-      logStream.write(`\n=== ${APP_NAME} desktop start ${new Date().toISOString()} ===\n`);
-    }
-    logStream.write(`[${new Date().toISOString()}] ${message}\n`);
+    getLogWriter().write(message);
   } catch (_err) {
     // Never let logging break startup.
   }
@@ -176,14 +178,13 @@ function describe(value) {
   }
 }
 function logFatal(message) {
-  // app.exit does not wait for the ordinary log stream to flush.
-  const line = `[${new Date().toISOString()}] ${message}\n`;
+  // A separate synchronous file survives app.exit without racing the stream.
   try {
-    fs.mkdirSync(logDir(), { recursive: true });
-    fs.appendFileSync(logPath(), line);
+    if (getLogWriter().fatal(message)) return;
   } catch {
-    try { process.stderr?.write(line); } catch { /* Reporting cannot replace the original failure. */ }
+    // Continue to stderr when creating the writer or writing its file fails.
   }
+  try { process.stderr?.write(`[${new Date().toISOString()}] ${message}\n`); } catch { /* Reporting cannot replace the original failure. */ }
 }
 function installCrashHandlers() {
   process.on('uncaughtException', error => {
@@ -224,7 +225,6 @@ function defaultConfig() {
     host: '127.0.0.1',
     port: DEFAULT_PORT,
     dshHome: DSH_HOME,      // pass through as DSH_HOME env to the backend
-    firstRunComplete: false, // set true after onboarding
     closeToTray: false,     // close button hides to the tray; the model router keeps serving other apps
     mode: 'dsh',            // Last selected agent; startup always opens the home panel.
     claude: {},             // Claude Code GUI settings
@@ -1182,10 +1182,10 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
   }),
   createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: detectNode() }),
   drivers: {
-    claude: { history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
-    kimi: { history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, subscriptionAccounts: () => kimiAccount.state(), ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
-    codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, subscriptionAccounts: () => codex.accountState(), ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
-    antigravity: { history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, nativeAutoCompaction: true },
+    claude: { sessions: claudeSessions, history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
+    kimi: { sessions: kimiSessions, history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, subscriptionAccounts: () => kimiAccount.state(), ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
+    codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, subscriptionAccounts: () => codex.accountState(), ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
+    antigravity: { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, nativeAutoCompaction: true },
     dsh: dshChat,
     pi: piChat,
   },
@@ -1227,42 +1227,6 @@ const cliDevices = require('./remote/devices-desktop').createDevicesDesktop({ ap
   authorizedSender: webContents => Boolean(mainWindow && !mainWindow.isDestroyed() && webContents === mainWindow.webContents),
   networkFactory: sharedDesktopNetwork.factory,
   loadConfig, apiSource: readOllamaProxyConfig });
-
-// Write the credentials key -> env var mapping and the model/provider settings.
-// The harness resolves `llm-pi-ai.providers.<id>.apiKeyEnv` to the env var in
-// .credentials.yaml. DeepSeek is the only first-class provider now.
-function applyCredentials(provider, apiKey) {
-  const home = loadConfig().dshHome || DSH_HOME;
-
-  let envKey;
-  let settingsProviderId;
-  if (String(provider || '').toLowerCase() === 'deepseek' || !provider) {
-    envKey = 'DEEPSEEK_API_KEY';
-    settingsProviderId = 'deepseek';
-  } else {
-    // Unknown provider: generic pi-ai compatible endpoint keyed by env var.
-    envKey = String(provider).toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY';
-    settingsProviderId = String(provider).toLowerCase().replace(/[^a-z0-9-]/g, '-');
-  }
-
-  const trimmed = apiKey ? apiKey.trim() : '';
-  const mask = trimmed ? (trimmed.startsWith('sk-') ? `${trimmed.slice(0, 7)}…${trimmed.slice(-4)}` : '****') : '(empty)';
-  log(`Writing credential env ${envKey} (${mask}) and provider settings to DSH_HOME=${loadConfig().dshHome || DSH_HOME}`);
-
-  const model = settingsProviderId === 'deepseek' ? (process.env.DSH_DEFAULT_MODEL || 'deepseek-chat') : 'deepseek-v4-pro';
-  dshConfig.configureProvider(home, { providerId: settingsProviderId, apiKeyEnv: envKey, apiKey: trimmed, model });
-
-  return { envKey, settingsProviderId };
-}
-
-function isFirstRun() {
-  const config = loadConfig();
-  if (config.firstRunComplete) return false;
-  if (routerConfig.hasRoutes(readOllamaProxyConfig())) return false;
-  // Also treat "credentials already present" as non-first-run so the app is
-  // usable without re-entering keys on a fresh userData.
-  return !fs.existsSync(path.join(loadConfig().dshHome || DSH_HOME, '.credentials.yaml'));
-}
 
 // ---------------------------------------------------------------------------
 // dsh detection
@@ -1364,11 +1328,10 @@ async function startBackend() {
 // ---------------------------------------------------------------------------
 // Chat runs on per-engine ACP/CLI sessions, not on the lazy `dsh web` backend
 // above, so the About dialog reports the live session state instead.
-// A native process per conversation is only ever stopped when that conversation
-// is deleted, so a long-running window accumulates one backend each and never
-// returns the memory. After the configured session retention elapses the process
-// is stopped; the transcript stays on disk and the engine restarts from it on the
-// next message. The minute-long sweep is the granularity of that setting.
+// Each conversation can retain one process per engine between messages. The
+// configured retention starts when work finishes; once the process is idle for
+// that long it is stopped, preserving the transcript and stored native context
+// for the next message. The minute-long sweep is the granularity of this setting.
 const IDLE_SESSION_SWEEP_MS = 60 * 1000;
 function engineStatusText() {
   const pools = [
@@ -1398,8 +1361,8 @@ let settingsWindow = null;
 let settingsCloseReady = false, settingsFlush = null, settingsQuitPending = false;
 let nativeSettingsView = null;
 let nativeSettingsLoad = null;
-const { welcomeHtml, errorHtml } = require('./desktop-views.js').createDesktopViews({
-  appName: APP_NAME, dshHome: DSH_HOME, defaultPort: DEFAULT_PORT, loadConfig, detectRuntime,
+const { errorHtml } = require('./desktop-views.js').createDesktopViews({
+  appName: APP_NAME,
   isDark: () => nativeTheme.shouldUseDarkColors,
 });
 
@@ -1532,22 +1495,6 @@ if (!gotSingleInstanceLock) {
   app.on('web-contents-created', (_event, contents) => {
     attachInputContextMenu(contents, { Menu, uiText });
     attachImageContextMenu(contents, { Menu, dialog, BrowserWindow, uiText });
-  });
-
-  ipcMain.handle('dsh:save-credentials', (_event, payload) => {
-    try {
-      const { provider, apiKey } = payload || {};
-      const result = applyCredentials(provider || 'deepseek', apiKey || '');
-      return { ok: true, ...result };
-    } catch (err) {
-      log(`save-credentials failed: ${err && err.message}`);
-      return { ok: false, error: String(err && err.message || err) };
-    }
-  });
-
-  ipcMain.handle('dsh:finish-onboarding', () => {
-    saveConfig({ firstRunComplete: true });
-    return switchMode('dsh');
   });
 
   ipcMain.handle('dsh:get-state', () => {
@@ -1870,6 +1817,7 @@ if (!gotSingleInstanceLock) {
     hiddenSubscriptionModels: loadConfig().hiddenSubscriptionModels || {},
     chatContentWidth: normalizeChatContentWidth(loadConfig().chatContentWidth),
     computerName: computerName(), dataPath: app.getPath('userData'), version: app.getVersion(),
+    pluginCacheMaintenance: pluginCacheMaintenanceStatus(app.getPath('userData')),
     dataDirectory: { ...dataDirectoryStatus({ appData: appDataDirectory, dataDir: app.getPath('userData') }),
       ...(!managedDataDirectory ? { legacy: false, canMigrate: false } : {}), migrationError: lastDirectoryMigration?.error || null } }));
   ipcMain.handle('dsh:workbench-save-settings', (_event, payload) => {
@@ -2151,10 +2099,13 @@ if (!gotSingleInstanceLock) {
     page: path.join(RENDERER_ROOT, 'discussions/discussions.html'), chatPage: path.join(RENDERER_ROOT, 'chat/claude.html'),
     navigate: query => switchMode('discussions', null, query), getWindow: () => mainWindow });
   ipcMain.handle('dsh:switch-mode', (_event, mode) => navigateMode(mode));
-  ipcMain.handle('dsh:conversation-command', async (_event, { engine, action, payload }) => {
-    try { return await sharedConversations.command(engine, action, payload); }
+  ipcMain.handle('dsh:conversation-command', async (_event, { engine, action, payload, historyPage }) => {
+    try { return await sharedConversations.command(engine, action, payload, { historyPage }); }
     catch (error) { return { ok: false, error: error.message }; }
-    finally { remoteDesktop?.publish(); }
+    finally {
+      if (!['list-sessions', 'load-session', 'get-live', 'get-settings', 'goal-get', 'task-list', 'list-attachable-conversations'].includes(action))
+        remoteDesktop?.publish();
+    }
   });
   ipcMain.handle('dsh:conversation-switch', async (_event, payload) => {
     try {
@@ -2185,20 +2136,23 @@ if (!gotSingleInstanceLock) {
     onRelease: ids => log('Stopped idle engine processes for: ' + ids.join(', ')),
   });
 
-  const cleanupActivity = () => sharedConversations.isBusy() || goalDriver.armed || kimiGoalDriver.armed || codex.goal.armed || antigravity.goal.armed
+  const cleanupActivity = () => appQuitting || dataDirectoryRestart || discussionService?.active || remoteDesktop?.attachmentReferences().active
+    || sharedConversations.isBusy() || goalDriver.armed || kimiGoalDriver.armed || codex.goal.armed || antigravity.goal.armed
     || sessionPools().some(pool => pool.running);
+  const storageActivity = () => migrationBusy || cleanupActivity();
   const storageCleanup = new StorageCleanup({
     dataDir: app.getPath('userData'), conversations: sharedConversations,
-    isActive: cleanupActivity,
+    isActive: storageActivity,
     histories: [claudeHistory, kimiHistory, codex.history, antigravity.history, dshChat.history, piChat.history],
     liveOwners: () => sessionPools()
       .flatMap(pool => [...pool.sessions.entries()].filter(([, session]) => !session.dead).map(([id]) => id)),
     references: async () => {
-      let active = Boolean(cleanupActivity());
+      let active = Boolean(storageActivity());
       const contents = require('electron').webContents.getAllWebContents().filter(contents => {
         const url = contents.getURL().split('?')[0];
         return url === pathToFileURL(path.join(RENDERER_ROOT, 'settings/api-settings.html')).href
-          || url === pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href;
+          || url === pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href
+          || url === pathToFileURL(path.join(RENDERER_ROOT, 'discussions/discussions.html')).href;
       });
       if (!contents.length) throw new Error('Could not verify saved drafts; cleanup was stopped');
       const references = await Promise.all(contents.map(async contents => {
@@ -2210,13 +2164,18 @@ if (!gotSingleInstanceLock) {
                 const saved = [];
                 for (let index = 0; index < localStorage.length; index++) {
                   const key = localStorage.key(index);
-                  if (key.startsWith('camellia-chat-draft:')) saved.push(JSON.parse(localStorage.getItem(key)));
+                  if (key.startsWith('camellia-chat-draft:') || key.startsWith('camellia-chat-queue:') || key.startsWith('camellia:discussion:draft:')) saved.push(JSON.parse(localStorage.getItem(key)));
                 }
                 let active = false;
-                if (document.getElementById('attachRow')) {
+                if (document.getElementById('attachRow') && !document.body.classList.contains('discussion-workbench')) {
                   if (loadingSession || switchingEngine || !uiReady) throw new Error('Could not verify saved drafts; cleanup was stopped');
                   active = sending;
-                  saved.push(attachments, messageQueue);
+                  saved.push(attachments, messageQueue, [...conversationQueues.values()]);
+                }
+                if (window.CamelliaDiscussions) {
+                  const discussions = window.CamelliaDiscussions.references();
+                  saved.push(discussions.references);
+                  active ||= discussions.active;
                 }
                 return { ok: true, references: saved, active };
               } catch (error) { return { ok: false, error: error.message }; }
@@ -2228,16 +2187,19 @@ if (!gotSingleInstanceLock) {
           return result.references;
         } finally { clearTimeout(timer); }
       }));
-      active ||= Boolean(cleanupActivity());
-      return { references, active };
+      active ||= Boolean(storageActivity());
+      const remote = remoteDesktop?.attachmentReferences();
+      return { references: [references, remote?.references || []], active: active || Boolean(remote?.active) };
     },
   });
+  remoteDesktop?.maintainAttachments(storageCleanup, log);
+  ipcMain.handle('dsh:storage-references-changed', () => { remoteDesktop?.attachmentsChanged(); });
   ipcMain.handle('dsh:storage-scan', async () => {
     try { return { ok: true, ...await storageCleanup.scan() }; }
     catch (error) { return { ok: false, error: error.message }; }
   });
   ipcMain.handle('dsh:storage-clean', async (_event, payload) => {
-    try { return { ok: true, ...await storageCleanup.clean(payload?.token) }; }
+    try { const result = await storageCleanup.clean(payload?.token); remoteDesktop?.attachmentsChanged(); return { ok: true, ...result }; }
     catch (error) { return { ok: false, error: error.message }; }
   });
   // Move a profile between installs, folders or computers. Both directions are
@@ -2245,6 +2207,7 @@ if (!gotSingleInstanceLock) {
   // settings page can show a real bar instead of a frozen button.
   let migrationBusy = false;
   let dataDirectoryRestart = false;
+  let pluginCacheRestart = false;
   const migrationHome = os.homedir();
   const migrationProgress = state => {
     for (const window of [settingsWindow, mainWindow]) if (window && !window.isDestroyed()) window.webContents.send('dsh:data-migration-progress', state);
@@ -2278,6 +2241,27 @@ if (!gotSingleInstanceLock) {
       return { ok: false, error: error.message };
     }
   });
+  ipcMain.handle('dsh:plugin-cache-maintain', async () => {
+    if (migrationBusy) return { ok: false, error: uiText('A data transfer is already running') };
+    migrationBusy = true;
+    let requested = false;
+    try {
+      assertMigrationIdle();
+      if (!await flushSettingsWindow()) throw new Error('Save your settings before moving your data');
+      assertMigrationIdle();
+      requestPluginCacheMaintenance(app.getPath('userData'));
+      requested = true;
+      pluginCacheRestart = true;
+      dataDirectoryRestart = true;
+      app.relaunch();
+      app.quit();
+      return { ok: true, restarting: true };
+    } catch (error) {
+      if (requested) cancelPluginCacheMaintenance(app.getPath('userData'));
+      pluginCacheRestart = false; dataDirectoryRestart = false; migrationBusy = false;
+      return { ok: false, error: error.message };
+    }
+  });
   ipcMain.handle('dsh:data-export', async (_event, payload) => {
     if (migrationBusy) throw new Error('A data transfer is already running');
     migrationBusy = true;
@@ -2294,7 +2278,7 @@ if (!gotSingleInstanceLock) {
         destination: result.filePath, scope, onProgress: migrationProgress });
       return { ok: true, file: result.filePath, ...summary };
     } catch (error) { log('data export failed: ' + error.message); return { ok: false, error: error.message }; }
-    finally { migrationBusy = false; migrationProgress({ phase: 'done' }); }
+    finally { migrationBusy = false; migrationProgress({ phase: 'done' }); remoteDesktop?.attachmentsChanged(); }
   });
   ipcMain.handle('dsh:data-import', async (_event, payload) => {
     if (migrationBusy) throw new Error('A data transfer is already running');
@@ -2318,8 +2302,9 @@ if (!gotSingleInstanceLock) {
       migrationProgress({ phase: 'import', bytes: 0, totalBytes: 0 });
       const summary = await importDataPackage({ file, scope, dataDir: app.getPath('userData'), home: migrationHome, onProgress: migrationProgress });
       return { ok: true, ...summary };
-    } catch (error) { log('data import failed: ' + error.message); return { ok: false, error: error.message }; }
-    finally { migrationBusy = false; migrationProgress({ phase: 'done' }); }
+    } catch (error) { log('data import failed: ' + error.message); return { ok: false, error: error.message,
+      ...(error.backupDir ? { backupDir: error.backupDir, rolledBack: error.rolledBack, recoveryRequired: error.recoveryRequired === true } : {}) }; }
+    finally { migrationBusy = false; migrationProgress({ phase: 'done' }); remoteDesktop?.attachmentsChanged(); }
   });
   const archivedSources = () => ({
     claude: claudeWorkspaces, kimi: kimiWorkspaces, codex: codex.workspaces,
@@ -2632,6 +2617,12 @@ if (!gotSingleInstanceLock) {
     codex.goal.load();
     createMainWindow();
     setupTray();
+    if (sharedConversations.recoveryWarnings.length) {
+      void dialog.showMessageBox(mainWindow, { type: 'warning', title: 'Saved data recovery',
+        message: 'Some saved records could not be loaded. Other conversations remain available.',
+        detail: sharedConversations.recoveryWarnings.map(warning => warning.error).join('\n\n'), buttons: ['OK'] })
+        .catch(error => log('Could not show data recovery warning:', error.message));
+    }
     idleSessionReaper.start();
     void refreshAccountBalances();
     switchMode('home');
@@ -2661,7 +2652,7 @@ if (!gotSingleInstanceLock) {
     app.quit();
   });
 
-  let kimiClosing = false, directoryClosing = false, directoryCloseReady = false;
+  let kimiClosing = false, directoryClosing = false, directoryCloseReady = false, logClosing = false, logCloseReady = false;
   app.on('before-quit', event => {
     if (settingsWindow && !settingsWindow.isDestroyed() && !settingsCloseReady) {
       event.preventDefault();
@@ -2694,6 +2685,9 @@ if (!gotSingleInstanceLock) {
         discussionService?.shutdown(), claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), piChat.shutdown(),
         dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown(), benchmarkRunner?.shutdown()]).then(results => {
         if (results.some(result => result.status === 'rejected')) {
+          if (pluginCacheRestart) {
+            try { cancelPluginCacheMaintenance(app.getPath('userData')); } catch (error) { log('Cancel plugin cache maintenance: ' + error.message); }
+          }
           try { cancelDirectoryMigration(appDataDirectory); } catch (error) { log('Cancel directory migration: ' + error.message); }
           log('Data directory migration canceled because a background process did not stop');
         }
@@ -2710,6 +2704,13 @@ if (!gotSingleInstanceLock) {
     }
     stopBackend();
     stopOllamaProxyHandle();
+    if (logWriter && !logCloseReady) {
+      event.preventDefault();
+      if (!logClosing) {
+        logClosing = true;
+        void logWriter.close().finally(() => { logCloseReady = true; app.quit(); });
+      }
+    }
   });
 
   app.on('will-quit', () => {
@@ -2779,16 +2780,9 @@ if (!gotSingleInstanceLock) {
       log(`switch mode failed: ${err && err.stack || err}`);
       if (['claude', 'codex', 'kimi', 'antigravity', 'pi'].includes(next)) openSettingsWindow({ page: 'engines', engine: next });
       if (next === 'dsh' && currentMode === 'dsh' && mainWindow && !mainWindow.isDestroyed()) {
-        await mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(errorHtml(err, backendUrl)));
+        await mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(errorHtml(err)));
       }
     }
-  }
-
-  function showCredentials() {
-    currentMode = 'setup';
-    mainWindow.setTitle(APP_NAME);
-    setMenu();
-    return mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(welcomeHtml(loadConfig())));
   }
 
   function setMenu() {

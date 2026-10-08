@@ -209,8 +209,15 @@ function recoverDirectoryMigration(appData, helpers) {
   if (journal.status === 'committed') {
     if (!sameIdentity(journal.destination, journal.root)) throw new Error('The migrated directory changed; recovery stopped');
   } else rollbackTransaction(appData, journal, helpers);
-  helpers.cancelDirectoryMigration(appData);
-  cleanupTransaction(appData, journal, helpers);
+  try {
+    helpers.cancelDirectoryMigration(appData);
+    cleanupTransaction(appData, journal, helpers);
+  }
+  catch (error) {
+    if (journal.status !== 'committed') throw error;
+    return { recovered: true, migrated: true, method: 'rename',
+      error: 'Data moved and verified; temporary backups could not be removed', cleanupError: error.message, leftoverDirectory: journal.work };
+  }
   return { recovered: true, migrated: journal.status === 'committed', method: 'rename' };
 }
 

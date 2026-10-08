@@ -23,14 +23,14 @@ function harness({ beforeSave = async () => {}, insights = async () => ({ ok: tr
   const sandbox = { structuredClone, console, module: { exports: {} },
     setTimeout: () => 1, clearTimeout() {},
     document: { getElementById: element, querySelector: () => null },
-    window: { CamelliaI18n: { locale: 'en-US' }, dshDesktop: {
+    window: { CamelliaI18n: { locale: 'en-US' }, CamelliaModelNames: require('../src/shared/model-names'), dshDesktop: {
       apiRouterSaveConfig: async snapshot => {
         snapshots.push(structuredClone(snapshot));
         await beforeSave(snapshot, snapshots.length);
         stored = normalizeConfig(snapshot, stored);
         return { ok: true, state: publicState(stored) };
       }, providerInsights: insights,
-    } }, showLive() {}, updateKeyStats() {}, renderRoutes() {}, renderProviders() {}, renderKeys() {} };
+    } }, showLive() {}, updateKeyStats() {}, renderRoutes() {}, renderProviders() {}, renderKeys() {}, renderModelChips() {} };
   vm.runInNewContext(source.slice(0, source.indexOf('function setView(')) + `
     module.exports = { initialize(state) { live = structuredClone(state); config = structuredClone(state); rememberSavedModels(); },
       get config() { return config; }, get dirty() { return isDirty(); }, draftComplete, edited, flushSave, assertClean };
@@ -52,6 +52,28 @@ test('blank key and model rows do not block provider edits or enter the saved co
   assert.equal(state.stored.providers[0].models.length, 1);
   assert.equal(draft.keys.length, 2);
   assert.equal(draft.models.length, 2);
+  assert.equal(state.autosave.dirty, false);
+});
+
+test('routing switch edits save together with provider drafts and survive an in-flight save', async () => {
+  let release, started;
+  const pending = new Promise(resolve => { release = resolve; });
+  const began = new Promise(resolve => { started = resolve; });
+  const state = harness({ beforeSave: async (_snapshot, count) => {
+    if (count === 1) { started(); await pending; }
+  } });
+  state.autosave.config.providers[0].models.push({ id: 'unfinished', upstream: '' });
+  state.autosave.config.routing.multiKeyConcurrency = false;
+  state.autosave.edited();
+  const save = state.autosave.flushSave();
+  await began;
+  state.autosave.config.routing.multiKeyFailover = false;
+  state.autosave.edited();
+  release(); await save;
+  assert.equal(state.snapshots.length, 2);
+  assert.deepEqual(state.stored.routing, { multiKeyConcurrency: false, multiKeyFailover: false });
+  assert.equal(state.stored.providers[0].models.length, 1);
+  assert.equal(state.autosave.config.providers[0].models.length, 2);
   assert.equal(state.autosave.dirty, false);
 });
 
@@ -206,4 +228,17 @@ test('an insights error does not turn a completed API save into a persistence fa
   assert.equal(state.autosave.dirty, false);
   await state.autosave.assertClean();
   assert.equal(state.status.textContent, 'Account status unavailable');
+});
+
+test('owner-prefixed model drafts retain their saved mapping through incomplete edits', async () => {
+  const state = harness(), draft = state.autosave.config.providers[0];
+  draft.models[0].id = 'openai/openai/GPT-6-Astra';
+  draft.models[0].upstream = 'provider-specific-gpt';
+  state.autosave.edited();
+  await state.autosave.flushSave();
+  draft.models[0].upstream = '';
+  state.autosave.edited();
+  await state.autosave.flushSave();
+  assert.equal(state.stored.providers[0].models[0].id, 'gpt-6-astra');
+  assert.equal(state.stored.providers[0].models[0].upstream, 'provider-specific-gpt');
 });

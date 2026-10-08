@@ -5,6 +5,32 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHarness } = require('./claude-harness.cjs');
 
+test('plugin cache IPC schedules one offline restart and exposes the saved result in preferences', async () => {
+  const h = createHarness();
+  let relaunches = 0, quits = 0;
+  h.app.relaunch = () => relaunches++; h.app.quit = () => quits++;
+  try {
+    assert.equal((await h.call('plugin-cache-maintain')).ok, true);
+    assert.equal(relaunches, 1); assert.equal(quits, 1);
+    const { completePluginCacheMaintenance } = require('../src/main/plugin-cache-startup');
+    const result = completePluginCacheMaintenance({ dataDir: h.userData, assertOffline() {} });
+    assert.equal(result.error, undefined);
+    const preferences = await h.call('workbench-settings');
+    assert.equal(preferences.pluginCacheMaintenance.pending, false);
+    assert.equal(preferences.pluginCacheMaintenance.result.finishedAt, result.finishedAt);
+  } finally { h.cleanup(); }
+});
+
+test('a failed relaunch clears the cache request rather than triggering unexpected later maintenance', async () => {
+  const h = createHarness();
+  h.app.relaunch = () => { throw new Error('relaunch failed'); };
+  try {
+    const result = await h.call('plugin-cache-maintain');
+    assert.equal(result.ok, false); assert.equal(result.error, 'relaunch failed');
+    assert.equal((await h.call('workbench-settings')).pluginCacheMaintenance.pending, false);
+  } finally { h.cleanup(); }
+});
+
 test('the settings handlers export and re-import a profile package', async t => {
   const source = createHarness();
   const target = createHarness();

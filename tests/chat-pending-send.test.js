@@ -134,8 +134,8 @@ test('returning during pending compaction cannot dispatch a duplicate and can st
   assert.equal(state.conversationBusy(), false);
 });
 
-test('new and legacy sessions retain their identity-assignment lock', async () => {
-  for (const overrides of [{ sharedChat: false }, { context: { sessionId: null } }, { pendingForkId: 'source' }]) {
+test('new and forked sessions retain their identity-assignment lock', async () => {
+  for (const overrides of [{ context: { sessionId: null } }, { pendingForkId: 'source' }]) {
     const harness = fixture(), { state } = harness;
     Object.assign(state, overrides);
     const sending = state.send();

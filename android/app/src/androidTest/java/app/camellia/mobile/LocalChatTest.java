@@ -16,24 +16,23 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class LocalChatTest extends InstrumentationTestCase {
-    private CredentialStore encrypted;
 
     @Override protected void setUp() throws Exception {
         super.setUp();
-        encrypted = new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private"); encrypted.clear();
+        LocalChatFixture.clear(getInstrumentation().getTargetContext());
     }
 
-    @Override protected void tearDown() throws Exception { encrypted.clear(); super.tearDown(); }
+    @Override protected void tearDown() throws Exception { LocalChatFixture.clear(getInstrumentation().getTargetContext()); super.tearDown(); }
 
     public void testEditingDraftSurvivesReopeningAndCanBeCancelled() throws Throwable {
-        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
         store.importConfig(LocalChatConfig.parse(bundle("https://example.com/v1", "openai").toString()));
         JSONObject conversation = store.createConversation("", LocalChatConfig.routes(store.config()).get(0).id);
         String id = conversation.getString("id");
         conversation.getJSONArray("messages").put(new JSONObject().put("role", "user").put("content", "Original"))
             .put(new JSONObject().put("role", "assistant").put("content", "Reply"));
         store.save();
-        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
             ui(() -> {
@@ -43,7 +42,7 @@ public class LocalChatTest extends InstrumentationTestCase {
                 assertEquals(View.VISIBLE, root.findViewWithTag("composerEditBanner").getVisibility());
                 activity.onBackPressed();
             });
-            assertEquals(0, LocalChatDraft.editIndex(new LocalChatStore(activity).conversation(id)));
+            assertEquals(0, LocalChatDraft.editIndex(new LocalChatFixture(activity).conversation(id)));
             ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
             ui(() -> {
                 View root = activity.getWindow().getDecorView();
@@ -58,7 +57,7 @@ public class LocalChatTest extends InstrumentationTestCase {
                 assertFalse(root.findViewWithTag("localSend").isEnabled());
                 activity.onBackPressed();
             });
-            assertEquals(0, LocalChatDraft.editIndex(new LocalChatStore(activity).conversation(id)));
+            assertEquals(0, LocalChatDraft.editIndex(new LocalChatFixture(activity).conversation(id)));
             ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
             ui(() -> {
                 View root = activity.getWindow().getDecorView();
@@ -68,7 +67,7 @@ public class LocalChatTest extends InstrumentationTestCase {
                 root.findViewWithTag("composerCancelEdit").performClick();
                 activity.onBackPressed();
             });
-            JSONObject saved = new LocalChatStore(activity).conversation(id);
+            JSONObject saved = new LocalChatFixture(activity).conversation(id);
             assertFalse(saved.has("draftEditIndex"));
             assertEquals("Original", saved.getJSONArray("messages").getJSONObject(0).getString("content"));
         } finally { ui(activity::finish); }
@@ -88,7 +87,7 @@ public class LocalChatTest extends InstrumentationTestCase {
 
     public void testRemovedImageStaysRemovedAfterReopeningAndSendingEdit() throws Throwable {
         try (MockApi api = new MockApi(200, "text/event-stream", "data: [DONE]\n\n")) {
-            LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+            LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
             store.importConfig(LocalChatConfig.parse(bundle(api.url(), "openai").toString()));
             JSONObject conversation = store.createConversation("", LocalChatConfig.routes(store.config()).get(0).id);
             String id = conversation.getString("id");
@@ -99,7 +98,7 @@ public class LocalChatTest extends InstrumentationTestCase {
             conversation.getJSONArray("messages").put(new JSONObject().put("role", "user").put("content", "Original")
                 .put("images", new JSONArray().put(image))).put(new JSONObject().put("role", "assistant").put("content", "Old reply"));
             store.save();
-            Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class)
+            Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             try {
                 ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
@@ -123,7 +122,7 @@ public class LocalChatTest extends InstrumentationTestCase {
                 assertNotNull("The edited message must reach the loopback API", api.request.get());
                 assertTrue(api.request.get().contains("Edited without image"));
                 assertFalse(api.request.get().contains("image_url"));
-                JSONObject sent = new LocalChatStore(activity).conversation(id).getJSONArray("messages").getJSONObject(0);
+                JSONObject sent = new LocalChatFixture(activity).conversation(id).getJSONArray("messages").getJSONObject(0);
                 assertFalse(sent.has("images"));
                 assertEquals("Edited without image", sent.getString("content"));
             } finally { finishActivity(activity); }
@@ -146,22 +145,27 @@ public class LocalChatTest extends InstrumentationTestCase {
     }
 
     public void testRunningReplyUsesMarkdownWithoutRebuildingProcess() throws Throwable {
-        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        java.util.concurrent.atomic.AtomicReference<View> blockRef = new java.util.concurrent.atomic.AtomicReference<>(), processRef = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<StreamingMarkdownView> bodyRef = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<JSONObject> replyRef = new java.util.concurrent.atomic.AtomicReference<>();
+        LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
         JSONObject conversation = store.createConversation("", "missing-route");
         String id = conversation.getString("id");
         conversation.getJSONArray("messages").put(new JSONObject().put("role", "assistant").put("content", "")); store.save();
-        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
             ui(() -> {
                 try {
                 var storeField = LocalChatActivity.class.getDeclaredField("store"); storeField.setAccessible(true);
                 JSONObject reply = ((LocalChatStore) storeField.get(activity)).conversation(id).getJSONArray("messages").getJSONObject(0);
+                replyRef.set(reply);
                 var replyField = LocalChatActivity.class.getDeclaredField("runningReply"); replyField.setAccessible(true); replyField.set(activity, reply);
                 var runningField = LocalChatActivity.class.getDeclaredField("runningId"); runningField.setAccessible(true); runningField.set(activity, id);
                 var latestField = LocalChatActivity.class.getDeclaredField("latest"); latestField.setAccessible(true); latestField.set(activity, "**Streaming**");
                 var render = LocalChatActivity.class.getDeclaredMethod("renderMessages"); render.setAccessible(true); render.invoke(activity);
                 View block = activity.getWindow().getDecorView().findViewWithTag("localMessage:0");
+                blockRef.set(block); processRef.set(((android.view.ViewGroup) block).getChildAt(0)); bodyRef.set(block.findViewWithTag("markdown"));
                 assertNotNull(block.findViewWithTag("markdown"));
                 latestField.set(activity, "**Streaming**\n\n- More output");
                 var update = LocalChatActivity.class.getDeclaredMethod("renderLiveBody"); update.setAccessible(true); update.invoke(activity);
@@ -169,6 +173,25 @@ public class LocalChatTest extends InstrumentationTestCase {
                 assertNotNull(block.findViewWithTag("markdown"));
                 } catch (Exception error) { throw new AssertionError(error); }
             });
+            long end = android.os.SystemClock.uptimeMillis() + 10000;
+            java.util.concurrent.atomic.AtomicReference<Boolean> ready = new java.util.concurrent.atomic.AtomicReference<>(false);
+            while (android.os.SystemClock.uptimeMillis() < end) { ui(() -> ready.set(bodyRef.get().idle())); if (ready.get()) break; Thread.sleep(30); }
+            assertTrue(ready.get());
+            java.util.concurrent.atomic.AtomicReference<View> text = new java.util.concurrent.atomic.AtomicReference<>();
+            ui(() -> {
+                text.set(bodyRef.get().getChildAt(0)); assertEquals("Streaming", ((android.widget.TextView) text.get()).getText().toString());
+                try {
+                    replyRef.get().put("content", "**Streaming**\n\n- More output");
+                    var replyField = LocalChatActivity.class.getDeclaredField("runningReply"); replyField.setAccessible(true); replyField.set(activity, null);
+                    var runningField = LocalChatActivity.class.getDeclaredField("runningId"); runningField.setAccessible(true); runningField.set(activity, null);
+                    var render = LocalChatActivity.class.getDeclaredMethod("renderMessages"); render.setAccessible(true); render.invoke(activity);
+                    assertSame(blockRef.get(), activity.getWindow().getDecorView().findViewWithTag("localMessage:0"));
+                    assertSame(processRef.get(), ((android.view.ViewGroup) blockRef.get()).getChildAt(0)); assertSame(bodyRef.get(), blockRef.get().findViewWithTag("markdown"));
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+            ready.set(false); end = android.os.SystemClock.uptimeMillis() + 10000;
+            while (android.os.SystemClock.uptimeMillis() < end) { ui(() -> ready.set(bodyRef.get().idle())); if (ready.get()) break; Thread.sleep(30); }
+            assertTrue(ready.get()); ui(() -> { assertSame(text.get(), bodyRef.get().getChildAt(0)); assertFalse(bodyRef.get().hasStreamState()); });
         } finally { ui(activity::finish); }
     }
 
@@ -185,11 +208,11 @@ public class LocalChatTest extends InstrumentationTestCase {
         JSONObject config = LocalChatConfig.parse("\ufeff" + exported);
         LocalChatConfig.Route route = LocalChatConfig.routes(config).get(0);
         assertEquals("https://example.com/v1", route.baseUrl); assertEquals("openai", route.protocol); assertEquals("upstream-model", route.model);
-        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext()); store.importConfig(config);
+        LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext()); store.importConfig(config);
         JSONObject workspace = store.createWorkspace("Research");
         JSONObject conversation = store.createConversation(workspace.getString("id"), route.id);
         conversation.put("draft", "Draft stays here"); store.save();
-        LocalChatStore restored = new LocalChatStore(getInstrumentation().getTargetContext());
+        LocalChatFixture restored = new LocalChatFixture(getInstrumentation().getTargetContext());
         assertEquals("Draft stays here", restored.conversation(conversation.getString("id")).getString("draft"));
         assertEquals("test-secret", LocalChatConfig.routes(restored.config()).get(0).key);
         String stored = getInstrumentation().getTargetContext().getSharedPreferences("local-chat-private", 0).getString("credential", "");
@@ -204,7 +227,7 @@ public class LocalChatTest extends InstrumentationTestCase {
         exported.getJSONObject("config").getJSONArray("providers").getJSONObject(0).put("enabled", false);
         assertTrue(LocalChatConfig.routes(LocalChatConfig.parse(exported.toString())).isEmpty());
         assertEquals("test-secret", LocalChatConfig.routes(restored.config()).get(0).key);
-        restored.deleteConversation(conversation.getString("id")); assertEquals(0, new LocalChatStore(getInstrumentation().getTargetContext()).conversations().length());
+        restored.deleteConversation(conversation.getString("id")); assertEquals(0, new LocalChatFixture(getInstrumentation().getTargetContext()).conversations().length());
     }
 
     public void testProtocolsMappingDisabledKeysAndHistory() throws Exception {
@@ -287,17 +310,17 @@ public class LocalChatTest extends InstrumentationTestCase {
     }
 
     public void testLocalStatusOpensSharedErrorDetails() throws Throwable {
-        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class)
+        Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
-            getInstrumentation().waitForIdleSync();
+            LocalChatFixture.idle(getInstrumentation());
             ui(() -> {
                 View status = activity.getWindow().getDecorView().findViewWithTag("localStatus");
                 assertNotNull(status);
                 assertTrue(status.hasOnClickListeners());
                 status.performClick();
             });
-            getInstrumentation().waitForIdleSync();
+            LocalChatFixture.idle(getInstrumentation());
             getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
         } finally {
             finishActivity(activity);
@@ -423,12 +446,13 @@ public class LocalChatTest extends InstrumentationTestCase {
         catch (java.io.IOException expected) { assertEquals("Cancelled", expected.getMessage()); }
     }
 
-    private void ui(Runnable action) throws Throwable { runTestOnUiThread(action); getInstrumentation().waitForIdleSync(); }
+    private void ui(Runnable action) throws Throwable {
+        LocalChatFixture.idle(getInstrumentation()); runTestOnUiThread(action); LocalChatFixture.idle(getInstrumentation()); }
     private void finishActivity(Activity activity) throws Exception {
         getInstrumentation().runOnMainSync(activity::finish);
         long deadline = System.currentTimeMillis() + 5000;
         while (!activity.isDestroyed() && System.currentTimeMillis() < deadline) {
-            getInstrumentation().waitForIdleSync(); Thread.sleep(25);
+            LocalChatFixture.idle(getInstrumentation()); Thread.sleep(25);
         }
         assertTrue("Activity must stop saving before test storage is cleared", activity.isDestroyed());
     }
@@ -501,11 +525,11 @@ public class LocalChatTest extends InstrumentationTestCase {
             models.getJSONObject(0).put("id", "kimi-k3");
             models.put(new JSONObject().put("id", "deepseek-v4-pro").put("upstream", "another-model"));
             models.put(new JSONObject().put("id", "claude-sonnet-4.6").put("upstream", "claude-sonnet-4-6").put("protocol", "anthropic"));
-            LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext()); store.importConfig(LocalChatConfig.parse(exported.toString()));
-            Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext()); store.importConfig(LocalChatConfig.parse(exported.toString()));
+            Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             try {
                 ui(() -> activity.getWindow().getDecorView().findViewWithTag("localNewStandalone").performClick());
-                String id = new LocalChatStore(getInstrumentation().getTargetContext()).conversations().getJSONObject(0).getString("id");
+                String id = new LocalChatFixture(getInstrumentation().getTargetContext()).conversations().getJSONObject(0).getString("id");
                 ui(() -> {
                     View root = activity.getWindow().getDecorView(); View model = root.findViewWithTag("localModel"), back = root.findViewWithTag("localBack");
                     assertSame(root.findViewWithTag("localComposerBar"), model.getParent().getParent());
@@ -519,7 +543,7 @@ public class LocalChatTest extends InstrumentationTestCase {
                 ui(() -> picker(activity).findViewWithTag("thinkingSettings").performClick());
                 screenshot(activity, "thinking-picker");
                 ui(() -> picker(activity).findViewWithTag("thinkingOption:high").performClick());
-                assertEquals("high", new LocalChatStore(getInstrumentation().getTargetContext()).conversation(id).getString("thinking"));
+                assertEquals("high", new LocalChatFixture(getInstrumentation().getTargetContext()).conversation(id).getString("thinking"));
                 screenshot(activity, "model-pill");
                 ui(() -> activity.onBackPressed());
                 ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
@@ -533,13 +557,13 @@ public class LocalChatTest extends InstrumentationTestCase {
                 while (System.currentTimeMillis() < deadline && api.request.get() == null) Thread.sleep(50);
                 assertNotNull(api.request.get()); assertTrue(api.request.get().contains("\"reasoning_effort\":\"high\""));
                 while (System.currentTimeMillis() < deadline) {
-                    JSONObject reply = new LocalChatStore(getInstrumentation().getTargetContext()).conversation(id).getJSONArray("messages").getJSONObject(1);
+                    JSONObject reply = new LocalChatFixture(getInstrumentation().getTargetContext()).conversation(id).getJSONArray("messages").getJSONObject(1);
                     if (reply.optString("state").equals("complete")) break;
                     Thread.sleep(50);
                 }
                 ui(() -> activity.getWindow().getDecorView().findViewWithTag("localModel").performClick());
                 ui(() -> picker(activity).findViewWithTag("modelOption:test-provider/deepseek-v4-pro").performClick());
-                JSONObject changed = new LocalChatStore(getInstrumentation().getTargetContext()).conversation(id);
+                JSONObject changed = new LocalChatFixture(getInstrumentation().getTargetContext()).conversation(id);
                 assertEquals("test-provider/deepseek-v4-pro", changed.getString("routeId")); assertEquals("auto", changed.getString("thinking"));
                 ui(() -> activity.getWindow().getDecorView().findViewWithTag("localModel").performClick());
                 ui(() -> picker(activity).findViewWithTag("thinkingSettings").performClick());
@@ -556,7 +580,7 @@ public class LocalChatTest extends InstrumentationTestCase {
     }
 
     public void testHomeEntryBeforeComputers() throws Throwable {
-        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             ui(() -> {
                 View entry = activity.getWindow().getDecorView().findViewWithTag("localChatEntry"); assertNotNull(entry);
@@ -583,9 +607,9 @@ public class LocalChatTest extends InstrumentationTestCase {
                         socket.getOutputStream().flush(); release.await(10, java.util.concurrent.TimeUnit.SECONDS);
                     } catch (Exception ignored) {}
                 }); upstream.start();
-                LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+                LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
                 store.importConfig(LocalChatConfig.parse(bundle("http://127.0.0.1:" + server.getLocalPort() + "/v1", "openai").toString()));
-                Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
                 try {
                     ui(() -> activity.getWindow().getDecorView().findViewWithTag("localNewStandalone").performClick());
                     ui(() -> { View root = activity.getWindow().getDecorView(); ((EditText) root.findViewWithTag("localComposer")).setText("Hello"); root.findViewWithTag("localSend").performClick(); });
@@ -602,7 +626,7 @@ public class LocalChatTest extends InstrumentationTestCase {
                     if (background) {
                         getInstrumentation().runOnMainSync(() -> getInstrumentation().callActivityOnStop(activity));
                     } else ui(() -> activity.getWindow().getDecorView().findViewWithTag("localStop").performClick());
-                    JSONArray conversations = new LocalChatStore(getInstrumentation().getTargetContext()).conversations();
+                    JSONArray conversations = new LocalChatFixture(getInstrumentation().getTargetContext()).conversations();
                     JSONObject reply = conversations.getJSONObject(conversations.length() - 1).getJSONArray("messages").getJSONObject(1);
                     assertEquals("Keep this partial", reply.getString("content")); assertEquals(background ? "interrupted" : "stopped", reply.getString("state"));
                 } finally { release.countDown(); server.close(); upstream.join(5000); finishActivity(activity); }
@@ -612,7 +636,7 @@ public class LocalChatTest extends InstrumentationTestCase {
 
     public void testPasteImportWorkspaceAndChatUi() throws Throwable {
         try (MockApi api = new MockApi(200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"Local reply\"}}]}\n\ndata: [DONE]\n\n")) {
-            Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             try {
                 ui(() -> {
                     View root;
@@ -638,52 +662,58 @@ public class LocalChatTest extends InstrumentationTestCase {
                             AlertDialog importDialog = (AlertDialog) field.get(settings);
                             EditText input = importDialog.getWindow().getDecorView().findViewWithTag("providerImportText");
                             input.setText("broken"); importDialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); assertTrue(importDialog.isShowing());
-                            input.setText(exported); importDialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); assertFalse(importDialog.isShowing());
+                            input.setText(exported); importDialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+                        } catch (Exception error) { throw new AssertionError(error); }
+                    });
+                    ui(() -> {
+                        try {
+                            var field = SettingsActivity.class.getDeclaredField("dialog"); field.setAccessible(true);
+                            assertFalse(((AlertDialog) field.get(settings)).isShowing());
                         } catch (Exception error) { throw new AssertionError(error); }
                     });
                 } finally { finishActivity(settings); }
-                getInstrumentation().waitForIdleSync();
+                LocalChatFixture.idle(getInstrumentation());
                 ui(() -> activity.getWindow().getDecorView().findViewWithTag("localNewWorkspace").performClick());
                 ui(() -> {
                     AlertDialog workspace = dialog(activity); ((EditText) workspace.getWindow().getDecorView().findViewWithTag("localWorkspaceName")).setText("Phone research");
                     workspace.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
                 });
-                String workspaceId = new LocalChatStore(getInstrumentation().getTargetContext()).workspaces().getJSONObject(0).getString("id");
+                String workspaceId = new LocalChatFixture(getInstrumentation().getTargetContext()).workspaces().getJSONObject(0).getString("id");
                 ui(() -> activity.getWindow().getDecorView().findViewWithTag("localAdd:" + workspaceId).performClick());
                 ui(() -> {
                     View root = activity.getWindow().getDecorView(); ((EditText) root.findViewWithTag("localComposer")).setText("Hello"); root.findViewWithTag("localSend").performClick();
                 });
                 long deadline = System.currentTimeMillis() + 5000;
                 while (System.currentTimeMillis() < deadline) {
-                    getInstrumentation().waitForIdleSync();
-                    JSONArray messages = new LocalChatStore(getInstrumentation().getTargetContext()).conversations().getJSONObject(0).getJSONArray("messages");
+                    LocalChatFixture.idle(getInstrumentation());
+                    JSONArray messages = new LocalChatFixture(getInstrumentation().getTargetContext()).conversations().getJSONObject(0).getJSONArray("messages");
                     if (messages.length() == 2 && messages.getJSONObject(1).optString("state").equals("complete")) break;
                     Thread.sleep(50);
                 }
-                JSONObject conversation = new LocalChatStore(getInstrumentation().getTargetContext()).conversations().getJSONObject(0);
+                JSONObject conversation = new LocalChatFixture(getInstrumentation().getTargetContext()).conversations().getJSONObject(0);
                 assertEquals("Local reply", conversation.getJSONArray("messages").getJSONObject(1).getString("content"));
                 assertEquals(workspaceId, conversation.getString("workspaceId"));
                 ui(() -> { ((EditText) activity.getWindow().getDecorView().findViewWithTag("localComposer")).setText("Draft"); activity.onBackPressed(); });
-                assertEquals("Draft", new LocalChatStore(getInstrumentation().getTargetContext()).conversation(conversation.getString("id")).getString("draft"));
+                assertEquals("Draft", new LocalChatFixture(getInstrumentation().getTargetContext()).conversation(conversation.getString("id")).getString("draft"));
                 ui(() -> activity.getWindow().getDecorView().findViewWithTag("localNewStandalone").performClick());
-                assertEquals("", new LocalChatStore(getInstrumentation().getTargetContext()).conversations().getJSONObject(1).getString("workspaceId"));
+                assertEquals("", new LocalChatFixture(getInstrumentation().getTargetContext()).conversations().getJSONObject(1).getString("workspaceId"));
             } finally { finishActivity(activity); }
         }
     }
 
     public void testInterruptedReplyRecovery() throws Exception {
-        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
         JSONObject conversation = store.createConversation("", "missing-route");
         conversation.getJSONArray("messages").put(new JSONObject().put("role", "assistant").put("content", "Partial persisted text").put("state", "running")); store.save();
-        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
-            JSONObject recovered = new LocalChatStore(getInstrumentation().getTargetContext()).conversation(conversation.getString("id")).getJSONArray("messages").getJSONObject(0);
+            JSONObject recovered = new LocalChatFixture(getInstrumentation().getTargetContext()).conversation(conversation.getString("id")).getJSONArray("messages").getJSONObject(0);
             assertEquals("interrupted", recovered.getString("state")); assertEquals("Partial persisted text", recovered.getString("content"));
         } finally { finishActivity(activity); }
     }
 
     public void testTapLastUserMessageEntersEditMode() throws Throwable {
-        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
         JSONObject conversation = store.createConversation("", "missing-route");
         conversation.getJSONArray("messages")
             .put(new JSONObject().put("role", "user").put("content", "First question").put("at", 1))
@@ -691,7 +721,7 @@ public class LocalChatTest extends InstrumentationTestCase {
             .put(new JSONObject().put("role", "user").put("content", "Latest question").put("at", 2))
             .put(new JSONObject().put("role", "assistant").put("content", "Latest answer").put("state", "complete").put("at", 2));
         store.save();
-        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + conversation.optString("id")).performClick());
             ui(() -> activity.getWindow().getDecorView().findViewWithTag("localMessage:2").performClick());

@@ -16,7 +16,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let conversationActivity = null;
   let currentRunId = null;
   let acceptSessionEvents = false;
-  let restoringRun = sharedChat || harnessId !== 'claude';
+  let restoringRun = true;
   let switchingEngine = false;
   let conversationPrefs = { mode: 'direct', warnOnSwitch: false, showOrigin: false };
   let loadedEngine = harnessId;
@@ -97,25 +97,34 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     || model.modelIds && Object.values(model.modelIds).includes(id)) || null;
   let uiReady = false, sending = false, settingsLoadSeq = 0;
   const pendingConversationSends = new Map();
-  function pendingConversationSend() { return sharedChat && pendingConversationSends.get(context.sessionId); }
+  function pendingConversationSend() { return pendingConversationSends.get(context.sessionId); }
   const uiPrefix = 'camellia-chat-';
+  const cleanupReferenceIdentities = { draft: '', queue: '' };
   const draftKey = (id = context.sessionId, workspace = context.workspaceId) => id || 'new:' + (workspace || 'standalone');
   function readUi(key) {
     try { return JSON.parse(localStorage.getItem(uiPrefix + key)); } catch { return null; }
   }
   function writeUi(key, value) {
+    const kind = key.startsWith('draft:') ? 'draft' : key.startsWith('queue:') ? 'queue' : null;
+    if (kind) {
+      const files = kind === 'draft' ? value.attachments || [] : value.flatMap(entry => entry.attachments || []);
+      const identity = key + JSON.stringify(files.map(file => [file.path, file.fullPath]));
+      if (cleanupReferenceIdentities[kind] !== identity) {
+        cleanupReferenceIdentities[kind] = identity;
+        void window.dshDesktop.storageReferencesChanged?.();
+      }
+    }
     try { localStorage.setItem(uiPrefix + key, JSON.stringify(value)); }
     catch { setStatus('Could not save the draft on this computer. Keep this page open until you copy or send it.'); }
   }
   function saveDraft() {
     if (discussionVisible) return;
-    if (!sharedChat || !uiReady || loadingSession || (sending && !pendingConversationSend())) return;
+    if (!uiReady || loadingSession || (sending && !pendingConversationSend())) return;
     writeUi('draft:' + draftKey(), { text: input.value, attachments, pendingForkId,
       codexFastMode: harnessId === 'codex' ? currentFastMode : readUi('draft:' + draftKey())?.codexFastMode === true });
     writeUi('location', { sessionId: context.sessionId, workspaceId: context.workspaceId });
   }
   function restoreDraft() {
-    if (!sharedChat) return;
     const saved = readUi('draft:' + draftKey());
     input.value = typeof saved?.text === 'string' ? saved.text : '';
     attachments = Array.isArray(saved?.attachments) ? saved.attachments : [];
@@ -125,7 +134,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     renderAttachments(); autoResize(); updateSendEnabled();
   }
   function saveMessageQueue(key = draftKey(), queue = messageQueue) {
-    if (!sharedChat) return;
     conversationQueues.set(key, queue);
     writeUi('queue:' + key, queue);
     if (!queue.length && key === draftKey() && queue === messageQueue) setMessageQueuePaused(false);
@@ -342,7 +350,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const panel = block.querySelector('.md-latex-panel');
     const body = panel.querySelector('.md-latex-body');
     const notice = panel.querySelector('.md-latex-notice');
-    const result = window.CamelliaLatexPreview.render(latexBlockText(block));
+    const source = latexBlockText(block).slice(0, 20001);
+    const language = window.CamelliaI18n.language;
+    if (panel.previewSource === source && panel.previewLanguage === language) return;
+    const result = window.CamelliaLatexPreview.render(source);
+    if (result.katex) { panel.previewSource = source; panel.previewLanguage = language; }
     notice.hidden = true; notice.textContent = '';
     if (!result.katex) {
       panel.dataset.state = 'error';
@@ -377,21 +389,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     panel.dataset.state = result.ok ? 'ready' : 'error';
     body.replaceChildren(...nodes);
   }
-  // Streaming replaces a block's markup on every delta; an open preview follows
-  // the growing formula instead of snapping shut mid-stream.
-  function openLatexPanels(el) {
-    return [...el.querySelectorAll('.md-code-block')]
-      .map((block, index) => block.querySelector('.md-latex-panel:not([hidden])') ? index : -1)
-      .filter(index => index >= 0);
-  }
-  function restoreLatexPanels(el, indices) {
-    const blocks = [...el.querySelectorAll('.md-code-block')];
-    for (const index of indices) {
-      if (!blocks[index]) continue;
-      renderLatexPanel(blocks[index]);
-      blocks[index].querySelector('.md-latex-panel').hidden = false;
-      blocks[index].querySelector('.md-code-latex')?.setAttribute('aria-expanded', 'true');
-    }
+  function updateStreamingLatex(block) {
+    if (block.querySelector('.md-latex-panel:not([hidden])')) renderLatexPanel(block);
   }
   document.addEventListener('click', event => {
     const button = event.target.closest('.md-code-latex');
@@ -480,8 +479,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     });
     // Protect whole display-math blocks before block rules run, so a formula
     // line that starts with "-", ">" or "---" is not read as a list or quote.
-    text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_m, math) => {
-      tokens.push({ t: 'math', raw: '$$' + math + '$$' });
+    text = text.replace(/\$\$([\s\S]*?)\$\$|(?<!\\)\\\[([\s\S]*?)\\\]/g, (raw, dollars, brackets, offset) => {
+      // Indented code is collected below; keep bracket examples there literal.
+      if (brackets !== undefined && indentCodeWidth(text.slice(text.lastIndexOf('\n', offset - 1) + 1, offset + 1))) return raw;
+      // The inline parser recognizes $$ display math; \[ is a block-only rule.
+      tokens.push({ t: 'math', raw: '$$' + (dollars ?? brackets) + '$$' });
       return SENT + (tokens.length - 1) + SENT;
     });
     const lines = text.split('\n');
@@ -799,10 +801,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // they may be saved while the current turn runs. Everything else needs the
     // conversation to be idle.
     const deferred = patch.model !== undefined || patch.thinkingBudget !== undefined || patch.fastMode !== undefined;
-    if (sharedChat && conversationBusy() && !deferred) return;
+    if (conversationBusy() && !deferred) return;
     const sessionId = context.sessionId, engine = harnessId, openSeq = sessionOpenSeq;
     try {
-      const result = await chatApi.saveSettings({ ...patch, ...(sharedChat || ['codex', 'antigravity'].includes(harnessId) ? { sessionId: context.sessionId } : {}) });
+      const result = await chatApi.saveSettings({ ...patch, sessionId: context.sessionId });
       if (!result.ok) throw new Error(result.error);
       if (sessionId !== context.sessionId || engine !== harnessId || openSeq !== sessionOpenSeq) return;
       if (patch.model !== undefined) LEVELS.splice(1);
@@ -820,7 +822,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // sources. ID-only quick-switch defaults retain the active connection
     // unless only the other source offers the model.
     let connection;
-    const canSwitch = supportsAccounts() && model && (sharedChat || !context.sessionId);
+    const canSwitch = supportsAccounts() && model;
     if (canSwitch) {
       const accountOffersModel = visibleAccountModels().some(item => item.id === model);
       const inCurrent = accountSubscription() ? accountOffersModel : routeModels.includes(model);
@@ -908,7 +910,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function modelSections() {
     // Engines with subscriptions list account and API models together, so the
     // composer itself chooses the connection; a session cannot switch engines.
-    if (!supportsAccounts() || (!sharedChat && context.sessionId)) return [{ title: 'Model · Same-model failover', options: MODELS }];
+    if (!supportsAccounts()) return [{ title: 'Model · Same-model failover', options: MODELS }];
     // With no account signed in there is only one list, so keep the plain group.
     if (!accountModels.length) return [{ title: 'Model · Same-model failover', options: MODELS }];
     const account = { title: 'Model · ' + accountName + ' account', connection: 'subscription', options: visibleAccountModels().map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
@@ -1157,7 +1159,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       steer.title = window.CamelliaI18n.t('Send instruction now');
       steer.setAttribute('aria-label', steer.title);
       steer.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4h16M12 20V9m-5 5 5-5 5 5"/></svg>';
-      steer.disabled = !sharedChat || !running || !currentRunId || sending || loadingSession || switchingEngine || Boolean(editingMessage) || Boolean(pendingConversationSend()) || drainingQueue;
+      steer.disabled = !running || !currentRunId || sending || loadingSession || switchingEngine || Boolean(editingMessage) || Boolean(pendingConversationSend()) || drainingQueue;
       steer.addEventListener('click', () => void steerQueuedMessage(message));
       const remove = document.createElement('button');
       remove.type = 'button'; remove.className = 'queue-remove'; remove.title = 'Remove from queue';
@@ -1509,14 +1511,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       div.appendChild(chips);
     }
     const actions = messageActions(meta.at, () => div.messageData.text);
-    if (sharedChat) {
-      const edit = document.createElement('button');
-      edit.type = 'button'; edit.className = 'message-edit'; edit.title = 'Edit message'; edit.setAttribute('aria-label', 'Edit message'); edit.hidden = true;
-      edit.dataset.i18nAttrs = 'title aria-label';
-      edit.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m14 5 5 5M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15z"/></svg>';
-      edit.onclick = () => beginMessageEdit(div);
-      actions.appendChild(edit);
-    }
+    const edit = document.createElement('button');
+    edit.type = 'button'; edit.className = 'message-edit'; edit.title = 'Edit message'; edit.setAttribute('aria-label', 'Edit message'); edit.hidden = true;
+    edit.dataset.i18nAttrs = 'title aria-label';
+    edit.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m14 5 5 5M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15z"/></svg>';
+    edit.onclick = () => beginMessageEdit(div);
+    actions.appendChild(edit);
     div.appendChild(actions);
     chat.appendChild(div);
     if (!meta.history) updateMessageActions();
@@ -1555,7 +1555,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
 
   function updateMessageActions() {
     const users = [...chat.querySelectorAll('.msg-user')];
-    const editable = sharedChat && context.sessionId && !conversationBusy() && !loadingSession && !sending && !switchingEngine;
+    const editable = context.sessionId && !conversationBusy() && !loadingSession && !sending && !switchingEngine;
     for (const div of users) {
       const button = div.querySelector('.message-edit');
       if (button) button.hidden = !editable || div !== users.at(-1) || !div.messageData.seq || Boolean(editingMessage);
@@ -1576,7 +1576,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }, true);
 
   function beginMessageEdit(div) {
-    if (!sharedChat || conversationBusy() || contextBusy() || !div.messageData.seq || div !== [...chat.querySelectorAll('.msg-user')].at(-1)) return;
+    if (conversationBusy() || contextBusy() || !div.messageData.seq || div !== [...chat.querySelectorAll('.msg-user')].at(-1)) return;
     cancelMessageEdit();
     const form = document.createElement('form'); form.className = 'message-editor';
     const textarea = document.createElement('textarea'); textarea.setAttribute('aria-label', 'Edit message'); textarea.value = div.messageData.text;
@@ -1744,7 +1744,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const cwd = sidebar.sessions.find(session => session.id === sessionId)?.cwd
       || sidebar.workspaces.find(workspace => workspace.id === context.workspaceId)?.path || '';
     try {
-      const result = await window.dshDesktop.resolveArtifacts({ sessionId: sharedChat ? sessionId : null, cwd,
+      const result = await window.dshDesktop.resolveArtifacts({ sessionId, cwd,
         paths: files ? files.map(file => file.path) : paths, text, roots });
       if (!turn.isConnected || !result.ok || !result.files.length) return;
       const was = nearBottom();
@@ -1933,17 +1933,24 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function appendTurnBlock(el) {
     const body = turnBody();
     (body.processBlocks ||= []).push(el);
+    body.processRevision = (body.processRevision || 0) + 1;
     body.appendChild(el);
   }
 
   function layoutTurnProcess(finished = false, body = turnEl?.querySelector('.turn-body')) {
     const entries = body?.processBlocks;
     if (!entries?.length) return;
+    const previous = body.processLayout;
+    if (previous?.revision === (body.processRevision || 0) && previous.finished === finished) return;
     const latestThinking = entries.findLast(el => el.classList.contains('think'));
     for (const el of entries) {
       if (el.classList.contains('think') && el !== latestThinking) el.remove();
     }
-    const texts = entries.filter(el => el.classList.contains('md') && (el.textContent.trim() || el.querySelector('.chat-inline-image')));
+    const texts = entries.filter(el => {
+      if (!el.classList.contains('md')) return false;
+      el.markdownHasContent ??= !!(el.textContent.trim() || el.querySelector('.chat-inline-image'));
+      return el.markdownHasContent;
+    });
     const settled = texts.filter(el => el.dataset.phase !== 'commentary');
     let visible = (finished ? settled : texts).slice(-1);
     if (finished) {
@@ -1951,10 +1958,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (lastActivity >= 0) visible = settled.filter(el => el.dataset.phase === 'final_answer' || entries.indexOf(el) > lastActivity);
       else if (settled.some(el => el.dataset.phase === 'final_answer')) visible = settled.filter(el => el.dataset.phase === 'final_answer');
     }
-    const previous = body.processLayout;
-    if (!finished && previous?.count === entries.length && previous.visible.length === visible.length
-      && previous.visible.every((el, index) => el === visible[index])) return;
-    body.processLayout = { count: entries.length, visible };
+    body.processLayout = { revision: body.processRevision || 0, finished, visible };
     const archived = entries.filter(el => !visible.includes(el) && (!el.classList.contains('think') || el === latestThinking));
     let process = body.querySelector(':scope > .execution-process');
     if (archived.length && !process) {
@@ -1974,7 +1978,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (finished) process.open = false;
       process.hidden = !archived.length;
     }
-    for (const el of visible) body.appendChild(el);
+    for (const el of visible) if (el !== body.lastElementChild) body.appendChild(el);
   }
 
   function makeTextBlock() {
@@ -2015,15 +2019,24 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const entries = turnBody().processBlocks;
       const index = entries.indexOf(block.el);
       entries.splice(index, 0, el);
+      const turn = turnBody();
+      turn.processRevision = (turn.processRevision || 0) + 1;
       block.el.parentNode?.insertBefore(el, block.el);
       block.thinkEl = el;
+      block.el.foldedThinkEl = el;
+    } else if (!turnBody().processBlocks.includes(block.thinkEl)) {
+      const turn = turnBody(), entries = turn.processBlocks;
+      entries.splice(entries.indexOf(block.el), 0, block.thinkEl);
+      turn.processRevision = (turn.processRevision || 0) + 1;
     }
-    block.thinkEl.querySelector('.think-body').textContent = body;
+    const text = block.thinkEl.querySelector('.think-body');
+    if (text.textContent !== body) text.textContent = body;
   }
 
   function makeToolCard(name, inputData, id) {
     const card = window.CamelliaChatControls.makeToolCard(name, inputData, openFilePreview);
-    appendTurnBlock(card.el); layoutTurnProcess();
+    appendTurnBlock(card.el);
+    if (!turnBody().rebuilding) layoutTurnProcess();
     if (id) pendingTools[id] = card;
     return card;
   }
@@ -2032,6 +2045,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     flushBlockRenders();
     for (const key of Object.keys(blocks)) {
       const b = blocks[key];
+      if (b.type === 'text') { b.stopped = true; renderBlock(b); }
       if (b.type === 'thinking' && b.el.classList.contains('live')) {
         b.el.classList.remove('live');
         const st = b.el.querySelector('.think-status');
@@ -2050,23 +2064,67 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   // ---------- streaming ----------
   const pendingBlockRenders = new Set();
   let blockRenderFrame = null;
-  function renderBlock(b) {
-    if (!b.el.isConnected) return;
-    if (b.type === 'text') {
-      const { body, thinking } = splitThinking(b.raw);
-      b.body = body;
-      b.el.artifactText = body;
-      foldThinkingBlock(b, thinking);
-      const open = openLatexPanels(b.el);
-      b.el.innerHTML = mdRender(body) + (b.stopped ? '' : '<span class="cursor"></span>');
-      restoreLatexPanels(b.el, open);
+  let blockRenderTimer = null;
+  function appendStreamingText(b, delta) {
+    if (!b.thinkingStream) {
+      b.thinkingStream = window.CamelliaThinkingTags.createStream({ latestOnly: true });
+      b.thinkingStream.append(b.raw.slice(0, b.raw.length - delta.length));
+      b.resetMarkdown = true;
     }
-    else if (b.type === 'thinking') b.el.querySelector('.think-body').textContent = b.raw;
+    b.textState = b.thinkingStream.append(delta, b.raw);
+    b.body = b.textState.body;
+    if (b.textState.bodyDelta === null) { b.resetMarkdown = true; b.pendingBody = ''; }
+    else b.pendingBody += b.textState.bodyDelta;
+  }
+  function renderBlock(b) {
+    if (!b.el.isConnected) {
+      b.markdown?.dispose(); b.markdown = null;
+      b.thinkingStream?.dispose(); b.thinkingStream = null;
+      return;
+    }
+    if (b.type === 'text') {
+      if (b.stopped && b.thinkingStream) {
+        b.textState = b.thinkingStream.finish();
+        b.thinkingStream.dispose(); b.thinkingStream = null;
+      }
+      const { body, thinking } = b.textState;
+      b.body = body;
+      foldThinkingBlock(b, thinking);
+      if (!(b.stopped && b.el.markdownFinal && b.el.artifactText === body)) {
+        if (b.resetMarkdown) { b.markdown?.dispose(); b.markdown = null; }
+        if (!b.markdown) {
+          b.markdown = window.CamelliaStreamingMarkdown.create(b.el, {
+            render: mdRender, codeBlock: renderCodeBlock, onCodeChange: updateStreamingLatex,
+          });
+          b.markdown.append(body, body);
+        } else b.markdown.append(b.pendingBody, body);
+        const previousContent = b.el.markdownHasContent;
+        if (b.stopped) {
+          b.markdown.finish(body); b.markdown = null;
+          b.el.markdownHasContent = !!(b.el.textContent.trim() || b.el.querySelector('.chat-inline-image'));
+        } else {
+          b.markdown.flush(); b.el.markdownHasContent = b.markdown.hasContent;
+        }
+        if (previousContent !== b.el.markdownHasContent) {
+          const turn = turnBody(); turn.processRevision = (turn.processRevision || 0) + 1;
+        }
+        b.el.artifactText = body;
+        b.el.markdownFinal = !!b.stopped;
+      }
+      b.pendingBody = ''; b.resetMarkdown = false;
+    }
+    else if (b.type === 'thinking') {
+      const body = b.el.querySelector('.think-body');
+      if (!body.firstChild) body.appendChild(document.createTextNode(''));
+      body.firstChild.appendData(b.raw.slice(b.thinkingRendered || 0));
+      b.thinkingRendered = b.raw.length;
+    }
     layoutTurnProcess();
   }
   function flushBlockRenders() {
     if (blockRenderFrame !== null) cancelAnimationFrame(blockRenderFrame);
     blockRenderFrame = null;
+    clearTimeout(blockRenderTimer); blockRenderTimer = null;
     const was = nearBottom();
     for (const b of pendingBlockRenders) renderBlock(b);
     pendingBlockRenders.clear();
@@ -2074,14 +2132,21 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   function queueBlockRender(b) {
     pendingBlockRenders.add(b);
-    if (blockRenderFrame === null) blockRenderFrame = requestAnimationFrame(flushBlockRenders);
+    if (blockRenderTimer === null && blockRenderFrame === null) {
+      blockRenderTimer = setTimeout(() => {
+        blockRenderTimer = null;
+        blockRenderFrame = requestAnimationFrame(flushBlockRenders);
+      }, 50);
+    }
   }
 
   function onBlockStart(b, index) {
     if (textChoiceTimer || (textChoice?.runId === currentRunId && currentRunId != null)) clearTextChoice();
     const was = nearBottom();
     if (b.type === 'text') {
-      blocks[index] = { type: 'text', raw: b.text || '', el: makeTextBlock() };
+      blocks[index] = { type: 'text', raw: b.text || '', el: makeTextBlock(), pendingBody: '',
+        thinkingStream: window.CamelliaThinkingTags.createStream({ latestOnly: true }) };
+      appendStreamingText(blocks[index], b.text || '');
       if (b.phase) blocks[index].el.dataset.phase = b.phase;
       queueBlockRender(blocks[index]);
     } else if (b.type === 'thinking') {
@@ -2103,6 +2168,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!b) return;
     if (delta.type === 'text_delta' && delta.text && b.type === 'text') {
       b.raw += delta.text;
+      appendStreamingText(b, delta.text);
       queueBlockRender(b);
       scheduleTextChoice(b, index);
     } else if (delta.type === 'thinking_delta' && delta.thinking && b.type === 'thinking') {
@@ -2117,6 +2183,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const b = blocks[index];
     if (!b) return;
     const was = nearBottom();
+    pendingBlockRenders.delete(b);
+    if (!pendingBlockRenders.size) {
+      clearTimeout(blockRenderTimer); blockRenderTimer = null;
+      if (blockRenderFrame !== null) cancelAnimationFrame(blockRenderFrame);
+      blockRenderFrame = null;
+    }
+    if (b.type === 'thinking') renderBlock(b);
     // A finished thinking segment settles immediately instead of spinning
     // "In progress…" until the turn ends.
     if (b.type === 'thinking' && b.el.classList.contains('live')) {
@@ -2135,33 +2208,50 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       b.stopped = true;
       clearTimeout(textChoiceTimer);
       textChoiceTimer = null;
-      pendingBlockRenders.delete(b);
       renderBlock(b);
-      if (b.el.dataset.phase === 'final_answer') offerTextChoice(turnEl, answerText(b.raw), true, true, b);
+      if (b.el.dataset.phase === 'final_answer') offerTextChoice(turnEl, b.body, true, true, b);
     }
     maybeScroll(was);
   }
 
   function rebuildTurn(content) {
-    // Canonical assistant message: rebuild cleanly (dedupes streaming partials).
+    // Reconcile the canonical message with completed streaming blocks. Identical
+    // text keeps its DOM and user controls, including repeated terminal events.
     finalizeStreamBlocks();
     const was = nearBottom();
     const body = turnBody();
     const processOpen = body.querySelector('.execution-process')?.open;
-    body.innerHTML = '';
+    const oldEntries = body.processBlocks || [];
+    const oldTexts = oldEntries.filter(el => el.classList.contains('md'));
+    const folded = new Set(oldTexts.map(el => el.foldedThinkEl).filter(Boolean));
+    const oldThinking = oldEntries.filter(el => el.classList.contains('think') && !folded.has(el));
+    const reused = new Set();
     body.processBlocks = [];
     body.processLayout = null;
+    body.processRevision = (body.processRevision || 0) + 1;
+    body.rebuilding = true;
     pendingTools = {};
     for (const blk of content || []) {
       if (blk.type === 'text' && blk.text) {
-        const { body, thinking } = splitThinking(blk.text);
-        const el = makeTextBlock();
-        if (blk.phase) el.dataset.phase = blk.phase;
-        foldThinkingBlock({ el }, thinking);
-        el.innerHTML = mdRender(body);
-        el.artifactText = body;
+        const exact = oldTexts.find(el => !reused.has(el) && el.artifactText === blk.text);
+        const { body: text, thinking } = exact ? { body: blk.text, thinking: '' } : splitThinking(blk.text);
+        const el = exact || oldTexts.find(el => !reused.has(el)) || makeTextBlock();
+        reused.add(el);
+        if (!body.processBlocks.includes(el)) body.processBlocks.push(el);
+        if (blk.phase) el.dataset.phase = blk.phase; else delete el.dataset.phase;
+        foldThinkingBlock({ el, thinkEl: el.foldedThinkEl }, thinking);
+        if (thinking && el.foldedThinkEl) reused.add(el.foldedThinkEl);
+        else delete el.foldedThinkEl;
+        if (!el.markdownFinal || el.artifactText !== text) {
+          window.CamelliaStreamingMarkdown.reconcile(el, mdRender(text), updateStreamingLatex);
+          el.artifactText = text;
+          el.markdownFinal = true;
+          el.markdownHasContent = !!(el.textContent.trim() || el.querySelector('.chat-inline-image'));
+        }
       } else if (blk.type === 'thinking' && blk.thinking) {
-        const el = makeThinkBlock();
+        const el = oldThinking.find(el => !reused.has(el) && el.querySelector('.think-body').textContent === blk.thinking) || makeThinkBlock();
+        reused.add(el);
+        if (!body.processBlocks.includes(el)) body.processBlocks.push(el);
         el.classList.remove('open', 'live');
         el.querySelector('.think-status').textContent = "Completed";
         el.querySelector('.think-body').textContent = blk.thinking;
@@ -2170,6 +2260,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         makeToolCard(blk.name, blk.input, blk.id);
       }
     }
+    body.rebuilding = false;
+    for (const el of oldEntries) if (!reused.has(el)) el.remove();
     layoutTurnProcess();
     if (processOpen && body.querySelector('.execution-process')) body.querySelector('.execution-process').open = true;
     maybeScroll(was);
@@ -2366,7 +2458,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     label.textContent = (stopped ? '■ Stopped' : ok ? '✓ Done' : '✗ ' + (ev.result || errLabel))
       + (stats.length ? ' · ' + stats.slice(0, 3).join(' · ') : '');
     chip.append(label);
-    if (!ok && !stopped && sharedChat && Number.isSafeInteger(retrySeq)) {
+    if (!ok && !stopped && Number.isSafeInteger(retrySeq)) {
       const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'run-retry';
       retry.textContent = window.CamelliaI18n.t('Retry turn');
       retry.title = window.CamelliaI18n.t('Restart this turn from the saved history');
@@ -2402,8 +2494,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   // ---------- event handling ----------
   function handleEvent(ev) {
     if (!ev) return;
-    if (sharedChat && ['conversation:workspaces', 'conversation:read'].includes(ev.type)) { void sidebar.load(); return; }
-    if (sharedChat && ev.type === 'conversation:activity') {
+    if (['conversation:workspaces', 'conversation:read'].includes(ev.type)) { void sidebar.load(); return; }
+    if (ev.type === 'conversation:activity') {
       void sidebar.load();
       if (restoringRun) { eventsDuringRestore.push(ev); return; }
       if (ev.session_id === context.sessionId) {
@@ -2416,7 +2508,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     // A /find answered on this computer (or by the paired phone) appends rows
     // without an engine stream, so the open transcript reloads in place.
-    if (sharedChat && ev.type === 'conversation:transcript') {
+    if (ev.type === 'conversation:transcript') {
       void sidebar.load();
       if (restoringRun) { eventsDuringRestore.push(ev); return; }
       // The window that issued the search already reloaded; only a search
@@ -2426,9 +2518,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       return;
     }
     if (restoringRun) { eventsDuringRestore.push(ev); return; }
-    if (sharedChat && ev.session_id !== context.sessionId) return;
-    if (sharedChat && ev.type === 'conversation:remote-queue') { applyRemoteQueue(ev); return; }
-    if (sharedChat && ev.type === 'conversation:approval-resolved') {
+    if (ev.session_id !== context.sessionId) return;
+    if (ev.type === 'conversation:remote-queue') { applyRemoteQueue(ev); return; }
+    if (ev.type === 'conversation:approval-resolved') {
       const index = permissionQueue.findIndex(request => request.requestId === ev.requestId && request.runId === ev.runId);
       if (index >= 0) {
         permissionQueue.splice(index, 1);
@@ -2442,7 +2534,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       }
       return;
     }
-    if (sharedChat && ev.type === 'conversation:started') acceptSessionEvents = true;
+    if (ev.type === 'conversation:started') acceptSessionEvents = true;
     if (ev.engine && ev.engine !== turnEngine) { turnEngine = ev.engine; applyTurnMeta(); }
     if (ev.handoff && ev.type === 'gui:permission') {
       queuePermission(ev); return;
@@ -2512,9 +2604,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (ev.type === 'gui:message-phase') {
       const block = blocks[ev.index];
       if (block?.type === 'text') {
-        block.el.dataset.phase = ev.phase; layoutTurnProcess();
+        block.el.dataset.phase = ev.phase;
+        const body = turnBody(); body.processRevision = (body.processRevision || 0) + 1;
+        layoutTurnProcess();
         if (ev.phase === 'commentary' && textChoice?.sourceBlock === block) clearTextChoice();
-        if (ev.phase === 'final_answer') offerTextChoice(turnEl, answerText(block.raw), true, true, block);
+        if (ev.phase === 'final_answer') offerTextChoice(turnEl, block.body, true, true, block);
       }
       return;
     }
@@ -2678,14 +2772,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       sendBtn.title = active ? 'Queue message' : 'Send';
       sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
     }
-    sendBtn.disabled = (loadingSession && !(sharedChat && active && !hasMessage)) || (sending && !(pendingConversationSend() && active && !hasMessage)) || (Boolean(pendingConversationSend()) && hasMessage) || (Boolean(editingMessage) && !(pendingConversationSend() && active && !hasMessage)) || (sharedChat && !active && goalUI.isActive()) || (!active && !hasMessage);
+    sendBtn.disabled = (loadingSession && !(active && !hasMessage)) || (sending && !(pendingConversationSend() && active && !hasMessage)) || (Boolean(pendingConversationSend()) && hasMessage) || (Boolean(editingMessage) && !(pendingConversationSend() && active && !hasMessage)) || (!active && goalUI.isActive()) || (!active && !hasMessage);
     renderMessageQueue();
   }
 
   async function steerQueuedMessage(message) {
     if (!messageQueue.includes(message) || !running || !currentRunId || drainingQueue || sending || loadingSession || switchingEngine || editingMessage || pendingConversationSend()) return;
     const text = message.text, atts = message.attachments.slice();
-    if (!sharedChat) { setStatus('This engine connection does not support immediate instructions. Your message has been retained.'); return; }
     if (goalUI.isDraft() || typeof findUI !== 'undefined' && findUI.isDraft()) { setStatus('Finish this command before sending instructions.'); return; }
     const sessionId = context.sessionId, runId = currentRunId, openSeq = sessionOpenSeq;
     sending = true; updateSendEnabled();
@@ -2708,30 +2801,28 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   async function send(queuedMessage = null) {
-    if ((loadingSession && !(sharedChat && (running || conversationActivity || pendingConversationSend()) && !queuedMessage && !input.value.trim() && !attachments.length)) || (sending && !(pendingConversationSend() && !queuedMessage && !input.value.trim() && !attachments.length))) return;
+    if ((loadingSession && !((running || conversationActivity || pendingConversationSend()) && !queuedMessage && !input.value.trim() && !attachments.length)) || (sending && !(pendingConversationSend() && !queuedMessage && !input.value.trim() && !attachments.length))) return;
     const active = running || Boolean(conversationActivity) || Boolean(pendingConversationSend());
     if (active && !queuedMessage) {
       if ((input.value.trim() || attachments.length) && (pendingConversationSend() || editingMessage || switchingEngine)) return;
       if (input.value.trim() || attachments.length) { queueComposerMessage(); return; }
-      if (currentRunId || sharedChat) {
-        const stopSessionId = context.sessionId, stopRunId = currentRunId, stopOpenSeq = sessionOpenSeq;
-        if (messageQueue.length) setMessageQueuePaused(true);
-        setStatus("Stopping…");
-        try {
-          const pending = pendingConversationSend();
-          if (pending && !pending.dispatched) { pending.cancelled = true; return; }
-          const result = await chatApi.cancel(sharedChat ? { sessionId: stopSessionId, ...(running && !pending ? { runId: stopRunId } : {}) } : stopRunId);
-          if (result?.ok === false) throw new Error(result.error || 'Could not stop the response');
-        } catch (error) {
-          if (context.sessionId === stopSessionId && currentRunId === stopRunId && sessionOpenSeq === stopOpenSeq && statusText === 'Stopping…') {
-            setStatus(error.message || 'Could not stop the response');
-          }
+      const stopSessionId = context.sessionId, stopRunId = currentRunId, stopOpenSeq = sessionOpenSeq;
+      if (messageQueue.length) setMessageQueuePaused(true);
+      setStatus("Stopping…");
+      try {
+        const pending = pendingConversationSend();
+        if (pending && !pending.dispatched) { pending.cancelled = true; return; }
+        const result = await chatApi.cancel({ sessionId: stopSessionId, ...(running && !pending ? { runId: stopRunId } : {}) });
+        if (result?.ok === false) throw new Error(result.error || 'Could not stop the response');
+      } catch (error) {
+        if (context.sessionId === stopSessionId && currentRunId === stopRunId && sessionOpenSeq === stopOpenSeq && statusText === 'Stopping…') {
+          setStatus(error.message || 'Could not stop the response');
         }
       }
       return;
     }
-    if (editingMessage || !canChangeContext() || (sharedChat && conversationBusy())) return;
-    if (sharedChat && context.sessionId && loadedEngine !== harnessId) {
+    if (editingMessage || !canChangeContext() || conversationBusy()) return;
+    if (context.sessionId && loadedEngine !== harnessId) {
       // A conversation keeps its own harness. A stale renderer must reopen it
       // there instead of turning Send into an implicit harness switch.
       const opened = await window.dshDesktop.conversationSwitch({ engine: loadedEngine, sessionId: context.sessionId, navigate: true });
@@ -2767,7 +2858,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     saveDraft();
     const sentDraftKey = draftKey();
-    if (sharedChat && context.sessionId) {
+    if (context.sessionId) {
       writeUi('failed-send:' + context.sessionId, null);
       chat.querySelectorAll('.failed-send').forEach(row => {
         const message = row.closest('.msg-user');
@@ -2776,11 +2867,11 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     const sendContext = { sessionId: context.sessionId || null, workspaceId: context.workspaceId,
       fork: Boolean(pendingForkId), openSeq: sessionOpenSeq, dispatched: false, cancelled: false, fastMode: currentFastMode };
-    if (sharedChat && sendContext.sessionId && !sendContext.fork) pendingConversationSends.set(sendContext.sessionId, sendContext);
+    if (sendContext.sessionId && !sendContext.fork) pendingConversationSends.set(sendContext.sessionId, sendContext);
     sending = true;
     turnEngine = harnessId;
     followRunOutput = true;
-    if (sharedChat) restoringRun = true;
+    restoringRun = true;
     if (!queuedMessage) {
       input.value = '';
       attachments = [];
@@ -2813,7 +2904,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       });
     } catch (err) { res = { ok: false, error: err.message }; }
     if (pendingConversationSends.get(sendContext.sessionId) === sendContext) pendingConversationSends.delete(sendContext.sessionId);
-    if (sharedChat && sendContext.openSeq !== sessionOpenSeq) {
+    if (sendContext.openSeq !== sessionOpenSeq) {
       void sidebar.load();
       if (!res.ok && !queuedMessage && sendContext.sessionId && sendContext.dispatched) {
         writeUi('failed-send:' + sendContext.sessionId, { text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
@@ -2844,7 +2935,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // queued behind it even if the engine has not emitted an event yet.
     updateConversationControls();
     if (!res.ok) {
-      if (sharedChat && sendContext.sessionId && sendContext.dispatched && !queuedMessage) {
+      if (sendContext.sessionId && sendContext.dispatched && !queuedMessage) {
         writeUi('failed-send:' + sendContext.sessionId, { text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
         showFailedSend({ text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at }, userMessage);
       } else if (!queuedMessage && !input.value && !attachments.length) { input.value = text; attachments = atts; renderAttachments(); autoResize(); }
@@ -2870,12 +2961,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (res.sessionId) context.sessionId = res.sessionId;
     userMessage.messageData.seq = res.userSeq;
     loadedEngine = harnessId;
-    if (sharedChat) {
-      restoringRun = false;
-      for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
-      updateSendEnabled(); void sidebar.load();
-    }
-    if (sharedChat || harnessId === 'codex') writeUi('draft:' + sentDraftKey, {});
+    restoringRun = false;
+    for (const event of eventsDuringRestore.splice(0)) handleEvent(event);
+    updateSendEnabled(); void sidebar.load();
+    writeUi('draft:' + sentDraftKey, {});
     saveDraft();
     return true;
   }
@@ -2899,8 +2988,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     { id: 'find', label: '/find', desc: 'Find files on this computer and download them',
       icon: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4.2-4.2"/>',
       run: () => findUI.reveal() },
-    ...(sharedChat ? [{ id: 'tasks', label: '/tasks', desc: 'Schedule periodic experiment checks',
-      icon: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', run: () => void tasksUI.reveal() }] : []),
+    { id: 'tasks', label: '/tasks', desc: 'Schedule periodic experiment checks',
+      icon: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', run: () => void tasksUI.reveal() },
     { id: 'usage', label: '/usage', desc: 'Show request and token usage through the local router',
       icon: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
       run: () => void showUsageCard() },
@@ -2974,7 +3063,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     } catch (error) { body.textContent = error.message; }
   }
   async function compactConversation() {
-    if (!sharedChat || !context.sessionId) { setStatus('Start a conversation first, then compact it.'); return; }
+    if (!context.sessionId) { setStatus('Start a conversation first, then compact it.'); return; }
     if (conversationBusy()) { setStatus('Available when this conversation stops working'); return; }
     try {
       const res = await window.dshDesktop.conversationCommand({ engine: harnessId, action: 'compact', payload: { sessionId: context.sessionId } });
@@ -3058,13 +3147,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     clearTimeout(textChoiceTimer);
     textChoiceTimer = null;
     const phase = block.el.dataset.phase;
-    if (!sharedChat || currentRunId == null || pendingQuestion ||
+    if (currentRunId == null || pendingQuestion ||
       (phase !== 'final_answer' && !(harnessId === 'codex' && phase == null))) return;
     const turn = turnEl, runId = currentRunId;
-    if (!window.CamelliaAssistantChoice.parse(answerText(block.raw))) {
-      if (textChoice?.sourceBlock === block) clearTextChoice();
-      return;
-    }
     // A final-answer phase may arrive only after Codex finishes the item. A
     // short quiet period lets a streamed list open while that item is still live.
     textChoiceTimer = setTimeout(() => {
@@ -3072,7 +3157,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const currentPhase = block.el.dataset.phase;
       if (currentRunId === runId && turnEl === turn && blocks[index] === block &&
         (currentPhase === 'final_answer' || harnessId === 'codex' && currentPhase == null))
-        offerTextChoice(turn, answerText(block.raw), true, true, block);
+        if (!offerTextChoice(turn, block.body, true, true, block) && textChoice?.sourceBlock === block) clearTextChoice();
     }, 300);
   }
   function clearTextChoice() {
@@ -3086,7 +3171,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   function offerTextChoice(turn, reply, autoOpen = false, live = false, sourceBlock = null) {
     if (!turn?.isConnected || pendingQuestion || loadedEngine !== harnessId) return false;
-    if (live && (!sharedChat || !context.sessionId || currentRunId == null)) return false;
+    if (live && (!context.sessionId || currentRunId == null)) return false;
     const choice = window.CamelliaAssistantChoice.parse(reply);
     if (!choice) return false;
     const choiceKey = JSON.stringify(choice);
@@ -3130,7 +3215,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (textChoice !== state || context.sessionId !== state.sessionId || sessionOpenSeq !== state.openSeq) return;
       const answer = field.custom.value.trim() || field.choices.find(option => option.checked)?.value || '';
       if (!answer) { status.textContent = 'Answer each question before submitting'; status.setAttribute('role', 'alert'); return; }
-      if (state.runId != null && running && currentRunId === state.runId && sharedChat) {
+      if (state.runId != null && running && currentRunId === state.runId) {
         if (sending || submit.disabled) return;
         submit.disabled = true;
         status.textContent = window.CamelliaI18n.t('Sending answer…'); status.setAttribute('role', 'status');
@@ -3273,7 +3358,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   async function autoAllowPermission(ev) {
     if (ev.questions?.length) return;
     const payload = { requestId: ev.requestId, allow: true };
-    if (sharedChat) Object.assign(payload, { sessionId: context.sessionId, runId: ev.runId });
+    Object.assign(payload, { sessionId: context.sessionId, runId: ev.runId });
     try { await chatApi.controlRespond(payload); } catch { /* the request may already be gone */ }
   }
   function showPermissionDialog(ev) {
@@ -3326,10 +3411,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     try {
       result = await chatApi.controlRespond({ requestId: answered, allow, optionId, input,
         ...(question && !allow ? { message: 'The user skipped these questions without selecting an answer. Continue from the existing request; no option has been confirmed.' } : {}),
-        ...(sharedChat ? { sessionId, runId } : {}) });
+        sessionId, runId });
     } catch (error) { result = { ok: false, error: error.message }; }
     if (permissionSubmission === submission) permissionSubmission = null;
-    if (sharedChat && (context.sessionId !== sessionId || permissionQueue[0]?.runId !== runId)) return;
+    if (context.sessionId !== sessionId || permissionQueue[0]?.runId !== runId) return;
     if (permRequestId !== answered) return;
     if (!result?.ok) {
       const error = result?.error || 'This request is no longer active';
@@ -3346,7 +3431,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   $('permAllow').addEventListener('click', () => void answerPermission(true));
   $('permDeny').addEventListener('click', () => void answerPermission(false));
-  $('permLater').hidden = !sharedChat;
+  $('permLater').hidden = false;
   $('permLater').onclick = () => $('permMask').classList.remove('visible');
 
   // ---------- P3: prompt suggestion ----------
@@ -3406,23 +3491,23 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   function conversationBusy() { return running || Boolean(conversationActivity) || Boolean(pendingConversationSend()) || goalUI.isActive(); }
   function contextBusy() {
-    return (loadingSession && !(sharedChat && historyOpening)) || switchingEngine || (sending && !pendingConversationSend()) || (!sharedChat && (running || goalUI.isActive()));
+    return (loadingSession && !historyOpening) || switchingEngine || (sending && !pendingConversationSend());
   }
   function canChangeContext() {
     if (!contextBusy()) return true;
-    setStatus(sharedChat ? 'Please wait for the conversation to open.' : 'Stop the current response or pause the goal before switching sessions or workspaces');
+    setStatus('Please wait for the conversation to open.');
     return false;
   }
   function updateConversationControls() {
-    const locked = sharedChat && (conversationBusy() || loadingSession || switchingEngine || sending);
+    const locked = conversationBusy() || loadingSession || switchingEngine || sending;
     // Changing the model or reasoning level is queued the same way a message is:
     // it applies to the next message, not the running turn, so it stays usable
     // while a response runs. Switching harness, and the session-level settings
     // that restart the engine process, still wait for the turn to stop.
-    $('engineSwitch').disabled = !sharedChat || locked;
+    $('engineSwitch').disabled = locked;
     $('engineSwitch').title = locked ? 'Available when this conversation stops working' : 'Switch chat mode';
     $('handoffBtn').disabled = locked;
-    $('modelPill').disabled = sharedChat && (loadingSession || switchingEngine || sending);
+    $('modelPill').disabled = loadingSession || switchingEngine || sending;
     renderFastMode();
     $('selPermission').disabled = locked;
     updateSendEnabled();
@@ -3454,13 +3539,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   const sidebar = createClaudeSidebar({ $, context, contextBusy, canChangeContext, setStatus,
     canReadReply: () => !discussionVisible && !loadingSession && !restoringRun,
     getDiscussionId: () => discussionVisible ? discussionSurface?.groupId : null, discussionVisible: () => discussionVisible, discussionOpening: () => discussionOpening,
-    newSession, openHistorySession, openDiscussions, forkSession, canFork: s => sharedChat || harnessId !== 'antigravity' || !s.id.startsWith('agy-'), openActionMenu, closePops,
+    newSession, openHistorySession, openDiscussions, forkSession, openActionMenu, closePops,
     noteLocalDelete: (id) => {
       for (const key of Object.keys(localStorage)) if (key.startsWith('camellia-chat-') && key.endsWith(':' + id)) localStorage.removeItem(key);
       selfDeletedIds.add(id);
       setTimeout(() => selfDeletedIds.delete(id), 5000);
     } });
-  const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && canChangeContext() && (!sharedChat || !running), openHistorySession, setStatus,
+  const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && canChangeContext() && !running, openHistorySession, setStatus,
     acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); queueMicrotask(drainMessageQueue); }, openActionMenu, closePops });
 
   // /find turns the composer into a file search box: type what you want, and
@@ -3531,41 +3616,34 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   const tasksUI = createScheduledTasksUI({ $, context, setStatus });
   async function forkSession(s) {
     if (!await openHistorySession(s.id)) return;
-    if (sharedChat && conversationBusy()) { setStatus('Wait for this conversation to finish before forking it'); return; }
-    if (sharedChat) {
-      loadingSession = true;
-      input.disabled = true;
+    if (conversationBusy()) { setStatus('Wait for this conversation to finish before forking it'); return; }
+    loadingSession = true;
+    input.disabled = true;
+    updateConversationControls();
+    updateSendEnabled();
+    sidebar.updateLabel();
+    try {
+      await window.CamelliaI18n.ready;
+      const title = window.CamelliaI18n.t('Fork of {0}').replace('{0}', () => s.title);
+      const res = await chatApi.forkSession({ sessionId: s.id, title });
+      if (!res.ok) throw new Error(res.error);
+      pendingForkId = null;
+      const workspace = sidebar.workspaces.find(entry => entry.id === context.workspaceId);
+      if (workspace?.collapsed) await chatApi.metaOp({ op: 'toggle-collapse', workspaceId: workspace.id });
+      await sidebar.load();
+      loadingSession = false;
+      if (await openHistorySession(res.sessionId)) {
+        setStatus('Session forked. Use Rename in its sidebar menu to change its name.');
+        input.focus();
+      }
+    } catch (err) { setStatus('Could not fork session: ' + err.message); }
+    finally {
+      loadingSession = false;
+      input.disabled = false;
       updateConversationControls();
       updateSendEnabled();
       sidebar.updateLabel();
-      try {
-        await window.CamelliaI18n.ready;
-        const title = window.CamelliaI18n.t('Fork of {0}').replace('{0}', () => s.title);
-        const res = await chatApi.forkSession({ sessionId: s.id, title });
-        if (!res.ok) throw new Error(res.error);
-        pendingForkId = null;
-        const workspace = sidebar.workspaces.find(entry => entry.id === context.workspaceId);
-        if (workspace?.collapsed) await chatApi.metaOp({ op: 'toggle-collapse', workspaceId: workspace.id });
-        await sidebar.load();
-        loadingSession = false;
-        if (await openHistorySession(res.sessionId)) {
-          setStatus('Session forked. Use Rename in its sidebar menu to change its name.');
-          input.focus();
-        }
-      } catch (err) { setStatus('Could not fork session: ' + err.message); }
-      finally {
-        loadingSession = false;
-        input.disabled = false;
-        updateConversationControls();
-        updateSendEnabled();
-        sidebar.updateLabel();
-      }
-      return;
     }
-
-    pendingForkId = s.id;
-    setStatus("The next message will fork this session and keep its workspace");
-    input.focus();
   }
   async function openHistorySession(id) {
     if (!canChangeContext()) return false;
@@ -3575,7 +3653,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     resetConversationView();
     loadingSession = true; input.disabled = true;
     historyOpening = true;
-    restoringRun = sharedChat;
+    restoringRun = true;
     context.sessionId = id;
     context.workspaceId = sidebar.sessions.find(entry => entry.id === id)?.workspaceId || null;
     conversationActivity = sidebar.sessions.find(entry => entry.id === id)?.activity || null;
@@ -3594,7 +3672,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         throw new Error(res.error);
       }
       const s = sidebar.sessions.find((entry) => entry.id === id);
-      if (sharedChat && res.currentEngine && res.currentEngine !== harnessId) {
+      if (res.currentEngine && res.currentEngine !== harnessId) {
         loadedEngine = res.currentEngine;
         writeUi('location', { sessionId: id, workspaceId: res.workspaceId });
         restoreDraft();
@@ -3627,31 +3705,29 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       chat.innerHTML = '';
       $('headerTitle').textContent = s ? s.title : "Session " + id.slice(0, 8);
       $('headerTitle').dataset.titled = '1';
-      if (!res.live && !await renderHistoryMessages(res.messages)) return false;
+      if (!res.live && !await renderHistoryMessages(res.messages, res.historyPage)) return false;
       if (!res.live) {
         const last = res.messages.findLast(message => ['user', 'assistant'].includes(message.role));
         if (last?.role === 'assistant' && (!last.runResult || last.runResult.subtype === 'success'))
           offerTextChoice([...chat.querySelectorAll('.turn')].at(-1),
             answerText(last.outputBlocks?.filter(block => block.phase === 'final_answer').at(-1)?.text || last.text));
       }
-      if (sharedChat) showFailedSend(readUi('failed-send:' + id));
+      showFailedSend(readUi('failed-send:' + id));
       if (!chat.childElementCount) chat.innerHTML = "<div class=\"empty-state\"><div class=\"empty-state-desc\" data-i18n>No messages to display. Send a message to continue this session.</div></div>";
       sidebar.render();
       restoreDraft();
       setStatus(res.interrupted ? 'The last turn was interrupted. Review its result before continuing.' : res.truncated ? "Showing the latest 200 messages. Continuation uses the full history." : "History loaded. Your next message continues this session.");
-      if (sharedChat) {
-        if (!await applyLiveRun(res.live)) return false;
-        if (seq !== sessionOpenSeq) return false;
-        const lastSeq = res.live?.eventSeq || 0;
-        const liveRun = res.live?.runId;
-        restoringRun = false;
-        for (const event of eventsDuringRestore.splice(0)) if (event.type === 'conversation:activity' || event.runId !== liveRun || event.eventSeq > lastSeq) handleEvent(event);
-        const pending = pendingConversationSend();
-        if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id,
-          text: pending?.phase || (res.compaction?.state === 'running' ? 'Compacting context…' : ''), compaction: res.compaction });
-        void goalUI.refresh();
-      }
-      if (sharedChat && res.lastReplyAt) sidebar.markReplyRead(id, res.lastReplyAt);
+      if (!await applyLiveRun(res.live)) return false;
+      if (seq !== sessionOpenSeq) return false;
+      const lastSeq = res.live?.eventSeq || 0;
+      const liveRun = res.live?.runId;
+      restoringRun = false;
+      for (const event of eventsDuringRestore.splice(0)) if (event.type === 'conversation:activity' || event.runId !== liveRun || event.eventSeq > lastSeq) handleEvent(event);
+      const pending = pendingConversationSend();
+      if (pending?.phase || res.compaction) handleConversationStatus({ sessionId: id,
+        text: pending?.phase || (res.compaction?.state === 'running' ? 'Compacting context…' : ''), compaction: res.compaction });
+      void goalUI.refresh();
+      if (res.lastReplyAt) sidebar.markReplyRead(id, res.lastReplyAt);
       scrollToLatest();
       return true;
     } catch (err) { if (seq === sessionOpenSeq && !/archived/i.test(err.message)) setStatus("Could not load: " + err.message); return false; }
@@ -3660,7 +3736,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
   }
 
-  async function renderHistoryMessages(messages) {
+  async function renderHistoryMessages(messages, pagination) {
       const openSeq = sessionOpenSeq;
       const latest = messages.findLast(message => message.role === 'assistant'
         && (contextTokens(message.lastCallUsage) > 0 || contextTokens(message.usage) > 0));
@@ -3672,7 +3748,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       updateCtxRing();
       const pageSize = 100;
       let start = Math.max(0, messages.length - pageSize);
-      if (start) {
+      if (start || pagination?.nextBefore != null) {
         const earlier = document.createElement('button');
         earlier.type = 'button'; earlier.className = 'history-earlier';
         earlier.textContent = window.CamelliaI18n.t('Load earlier messages');
@@ -3681,13 +3757,22 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
           earlier.disabled = true;
           const anchor = earlier.nextSibling;
           const top = anchor?.getBoundingClientRect().top;
-          const end = start;
-          start = Math.max(0, start - pageSize);
-          if (!await paint(messages.slice(start, end), anchor) || openSeq !== sessionOpenSeq) return;
-          if (!start) earlier.remove();
-          else earlier.disabled = false;
-          if (anchor) chatScroll.scrollTop += anchor.getBoundingClientRect().top - top;
-          updateMessageActions();
+          try {
+            let rows;
+            if (start) {
+              const end = start; start = Math.max(0, start - pageSize); rows = messages.slice(start, end);
+            } else {
+              const response = await chatApi.loadSession(context.sessionId, { before: pagination.nextBefore, version: pagination.version });
+              if (openSeq !== sessionOpenSeq) return;
+              if (!response.ok) throw new Error(response.error);
+              rows = response.messages; pagination = response.historyPage;
+            }
+            if (!await paint(rows, anchor) || openSeq !== sessionOpenSeq) return;
+            if (!start && pagination?.nextBefore == null) earlier.remove();
+            if (anchor) chatScroll.scrollTop += anchor.getBoundingClientRect().top - top;
+            updateMessageActions();
+          } catch (error) { if (openSeq === sessionOpenSeq) setStatus(error.message); }
+          finally { if (openSeq === sessionOpenSeq) earlier.disabled = false; }
         };
       }
       if (!await paint(messages.slice(start)) || openSeq !== sessionOpenSeq) return false;
@@ -3757,7 +3842,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
 
   function updateSwitchHint() {
     chat.querySelector('.switch-hint')?.remove();
-    if (!sharedChat || !context.sessionId || !loadedEngine || loadedEngine === harnessId) return;
+    if (!context.sessionId || !loadedEngine || loadedEngine === harnessId) return;
     const hint = document.createElement('div');
     hint.className = 'switch-hint';
     const mode = conversationPrefs.mode === 'markdown' ? 'Automatic Markdown handoff' : 'Continue directly';
@@ -3776,7 +3861,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (live.engine) turnEngine = live.engine;
     followRunOutput = true;
     chat.innerHTML = '';
-    if (!await renderHistoryMessages(live.messages)) return false;
+    if (!await renderHistoryMessages(live.messages, live.historyPage)) return false;
     addUser(live.displayText ?? live.prompt, live.attachments || [], { seq: live.userSeq, at: live.startedAt });
     setRunning(true);
     runStartedAt = live.startedAt || Date.now();
@@ -3795,21 +3880,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     return true;
   }
-  async function restoreLiveRun() {
-    let lastSeq = 0;
-    try {
-      const { live } = await chatApi.getLive();
-      if (!live) return;
-      context.sessionId = live.sessionId; context.workspaceId = live.workspaceId;
-      await loadSettings();
-      await applyLiveRun(live); lastSeq = live.eventSeq;
-    } catch (error) { setStatus('Could not restore the active run: ' + error.message); }
-    finally {
-      restoringRun = false;
-      for (const event of eventsDuringRestore.splice(0)) if (event.eventSeq > lastSeq) handleEvent(event);
-    }
-  }
-
   // ---------- settings panel ----------
   $('settingsBtn').addEventListener('click', () => { closePops(); void window.dshDesktop.openSettingsWindow(); });
   function applyRouterModels(state) {
@@ -3936,8 +4006,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   void (async () => {
     input.disabled = true;
     await sidebar.load();
-    if (!sharedChat && harnessId !== 'claude') await restoreLiveRun();
-    const previous = sharedChat ? readUi('location') : null;
+    const previous = readUi('location');
     const navigation = new URLSearchParams(location.search), newDraft = navigation.get('new') === '1';
     const id = newDraft ? null : navigation.get('conversation') || previous?.sessionId;
     if (!running) {
@@ -3960,8 +4029,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   window.dshDesktop.onApiRouterState(applyRouterModels);
 
   window.CamelliaChatModeSelect.populate($('engineSwitch'), harnessId);
-  $('engineSwitch').disabled = !sharedChat;
-  $('handoffBtn').hidden = !sharedChat;
+  $('engineSwitch').disabled = false;
+  $('handoffBtn').hidden = false;
   async function switchConversation(target, mode) {
     if (switchingEngine || conversationBusy() || sending || loadingSession) { setStatus('Available when this conversation stops working'); return; }
     switchingEngine = true; $('engineSwitch').disabled = true; $('handoffBtn').disabled = true; $('handoffStop').hidden = false; input.disabled = true;
@@ -4064,5 +4133,5 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   $('handoffBtn').onclick = () => void switchOptions(harnessId, true);
   $('switchCancel').onclick = () => $('switchDialog').close();
   $('switchConfirm').onclick = () => { $('switchDialog').close(); void switchConversation($('switchTarget').value, $('switchMethod').value); };
-  $('handoffStop').onclick = () => void chatApi.cancel(sharedChat ? { sessionId: context.sessionId } : currentRunId);
-  if (sharedChat) window.dshDesktop.onConversationStatus(handleConversationStatus);
+  $('handoffStop').onclick = () => void chatApi.cancel({ sessionId: context.sessionId });
+  window.dshDesktop.onConversationStatus(handleConversationStatus);

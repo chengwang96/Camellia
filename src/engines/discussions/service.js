@@ -26,7 +26,7 @@ class DiscussionService {
     this.platform = platform; this.getCatalog = getCatalog; this.hiddenSubscriptionModels = hiddenSubscriptionModels; this.onEvent = onEvent; this.assertAvailable = assertAvailable;
     this.root = path.join(dataDir, 'discussions');
     this.assets = new DiscussionAssets(this.root);
-    this.manager = manager || new DiscussionManager({ dir: this.root });
+    this.manager = manager || new DiscussionManager({ dir: this.root, onError });
     this.registry = registry; this.production = production; this.adapters = adapters || {};
     this.pendingStarts = new Map();
     this.memberChecks = new Map();
@@ -316,7 +316,8 @@ class DiscussionService {
     for (const pending of this.pendingStarts.values()) pending.cancelled = true;
     await this.production?.shutdown();
     await Promise.allSettled([...this.memberChecks.values()].map(check => check.promise));
-    return this.scheduler.drainSuspension(token);
+    try { return await this.scheduler.drainSuspension(token); }
+    finally { try { this.manager.store.close(); } catch (error) { this.manager.store.report(error); } }
   }
 }
 

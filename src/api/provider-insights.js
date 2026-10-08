@@ -3,6 +3,7 @@
 const { createHash } = require('node:crypto');
 const { readJson, writeJson } = require('../shared/json-store');
 const accounts = require('./provider-accounts');
+const { modelId } = require('./api-router-config');
 
 const fingerprint = (provider, key) => createHash('sha256').update(JSON.stringify([provider.baseUrl, provider.anthropicBaseUrl, key.key])).digest('hex');
 function createProviderInsights({ file, getConfig, onChange = () => {}, now = () => Date.now(), fetchImpl, getRefreshIntervalMs = () => 15 * 60000 } = {}) {
@@ -78,7 +79,8 @@ function createProviderInsights({ file, getConfig, onChange = () => {}, now = ()
   }
   async function verify({ providerId, keyId, model }) {
     const { provider, key } = find(providerId, keyId);
-    const selected = provider.models.find(m => m.id === model);
+    model = modelId(model);
+    const selected = provider.models.find(m => modelId(m.id) === model);
     if (!selected) throw new Error("Choose a configured model to validate");
     const entry = entryFor(provider, key);
     let verification;

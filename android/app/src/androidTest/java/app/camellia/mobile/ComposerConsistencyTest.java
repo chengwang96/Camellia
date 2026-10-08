@@ -16,16 +16,14 @@ import org.json.JSONObject;
 // inside the input row must stay interchangeable: same order, same sizes, the
 // same icon colour while idle and the same "model · thinking level" wording.
 public class ComposerConsistencyTest extends InstrumentationTestCase {
-    private CredentialStore encrypted;
 
     @Override protected void setUp() throws Exception {
         super.setUp();
-        encrypted = new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private");
-        encrypted.clear();
+        LocalChatFixture.clear(getInstrumentation().getTargetContext());
         MobilePreferences.set(getInstrumentation().getTargetContext(), "language", "zh-CN");
     }
 
-    @Override protected void tearDown() throws Exception { encrypted.clear(); super.tearDown(); }
+    @Override protected void tearDown() throws Exception { LocalChatFixture.clear(getInstrumentation().getTargetContext()); super.tearDown(); }
 
     public void testBothModesRenderTheSameComposerElements() throws Exception {
         Activity local = localConversation();
@@ -46,11 +44,12 @@ public class ComposerConsistencyTest extends InstrumentationTestCase {
         assertEquals("Sol · 默认", localRow[1]);
         assertEquals("The remote button shows the same abbreviation and localised level", "Sol · 高", remoteRow[1]);
         assertEquals("Idle tool icons must share one colour", localRow[2], remoteRow[2]);
+        assertEquals("The composer and status footer must align in both modes", localRow[3], remoteRow[3]);
     }
 
-    // Returns [trailing element signature, model label, idle tool icon colour].
+    // Returns [trailing elements, model label, tool colour, composer/footer geometry].
     private String[] describe(Activity activity, String barTag, String modelTag, String toolTag) throws Exception {
-        String[] result = new String[3];
+        String[] result = new String[4];
         getInstrumentation().runOnMainSync(() -> {
             View root = activity.getWindow().getDecorView();
             ViewGroup tools = (ViewGroup) root.findViewWithTag("composerTools");
@@ -74,6 +73,26 @@ public class ComposerConsistencyTest extends InstrumentationTestCase {
             assertEquals("The model label must hug the chevron and send button", android.view.Gravity.RIGHT,
                 ((TextView) root.findViewWithTag(modelTag)).getGravity() & android.view.Gravity.HORIZONTAL_GRAVITY_MASK);
             assertTrue("The composer bar must stay the shared floating bar", root.findViewWithTag(barTag) != null);
+            View bar = root.findViewWithTag(barTag);
+            TextView status = root.findViewWithTag(activity instanceof LocalChatActivity ? "localStatus" : "connectionStatus");
+            assertEquals(View.VISIBLE, status.getVisibility()); assertEquals("就绪", status.getText().toString());
+            assertEquals(1, status.getLineCount());
+            result[3] = bar.getHeight() + ":" + bar.getBottom() + ":" + status.getTop() + ":" + status.getHeight() + ":" + status.getBaseline();
+            int height = status.getHeight();
+            for (String value : new String[] {"正在回复…", "正在编辑上一条消息 · 发送后将重新生成后续回复", "网络连接失败，请稍后重试。"}) {
+                status.setText(value);
+                status.measure(View.MeasureSpec.makeMeasureSpec(status.getWidth(), View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+                assertEquals("Status changes must not move the composer", height, status.getMeasuredHeight());
+                assertEquals(View.VISIBLE, status.getVisibility());
+            }
+            if (activity instanceof LocalChatActivity) {
+                try {
+                    java.lang.reflect.Field sending = LocalChatActivity.class.getDeclaredField("sendPending"); sending.setAccessible(true);
+                    sending.set(activity, true); invoke(activity, "updateControls"); assertEquals("正在发送…", status.getText().toString());
+                    sending.set(activity, false); invoke(activity, "updateControls"); assertEquals("就绪", status.getText().toString());
+                    assertEquals(View.VISIBLE, status.getVisibility());
+                } catch (Exception error) { throw new AssertionError(error); }
+            }
         });
         return result;
     }
@@ -81,7 +100,7 @@ public class ComposerConsistencyTest extends InstrumentationTestCase {
     private int dp(Activity activity, int value) { return Math.round(value * activity.getResources().getDisplayMetrics().density); }
 
     private Activity localConversation() throws Exception {
-        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
         JSONObject provider = new JSONObject().put("id", "example").put("name", "Example").put("protocol", "openai")
             .put("baseUrl", "https://example.com/v1").put("keys", new JSONArray().put(new JSONObject().put("key", "test-key")))
             .put("models", new JSONArray().put(new JSONObject().put("id", "gpt-5.6-sol").put("upstream", "gpt-5.6-sol")));
@@ -94,7 +113,7 @@ public class ComposerConsistencyTest extends InstrumentationTestCase {
         conversation.put("title", "Composer comparison");
         conversation.getJSONArray("messages").put(new JSONObject().put("role", "user").put("at", 1790056800000L).put("content", "Hello"));
         store.save();
-        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class)
+        Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         idle();
         String row = "localConversation:" + conversation.optString("id");
@@ -108,7 +127,7 @@ public class ComposerConsistencyTest extends InstrumentationTestCase {
     }
 
     private Activity remoteConversation() throws Exception {
-        MainActivity activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class)
+        MainActivity activity = (MainActivity) LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), MainActivity.class)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         idle();
         getInstrumentation().runOnMainSync(() -> {
@@ -147,6 +166,7 @@ public class ComposerConsistencyTest extends InstrumentationTestCase {
     // A remote conversation keeps fetching in the background, so an unbounded
     // waitForIdleSync can block until the process is killed; this is bounded.
     private void idle() {
+        LocalChatFixture.idle(getInstrumentation());
         try { getInstrumentation().getUiAutomation().waitForIdle(200, 3000); }
         catch (Exception ignored) { }
     }

@@ -34,7 +34,7 @@ public class ExecutionProcessTest extends InstrumentationTestCase {
                     snapshot.put("cursor", 3).put("live", JSONObject.NULL); apply.invoke(activity, snapshot);
                     View body = root.findViewWithTag("processBody:" + key); assertEquals(View.GONE, body.getVisibility());
                     android.view.ViewGroup block = (android.view.ViewGroup) body.getParent().getParent();
-                    assertTrue(block.getChildCount() >= 2); assertEquals(View.VISIBLE, block.getChildAt(1).getVisibility());
+                    assertTrue(block.getChildCount() >= 2); assertEquals(View.VISIBLE, block.findViewWithTag("markdown").getVisibility());
                 } catch (Exception error) { throw new AssertionError(error); }
             });
         } finally { getInstrumentation().runOnMainSync(activity::finish); }
