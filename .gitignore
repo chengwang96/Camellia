@@ -14,6 +14,7 @@ Thumbs.db
 
 build/runtime-assets/
 build/node-cache/
+build/node-distributions/
 build/benchmark-research/
 build/benchmark-validation/
 

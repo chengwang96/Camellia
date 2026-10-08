@@ -84,9 +84,9 @@ final class ArtifactDownloads {
                         if (file == null) continue;
                         ArtifactSheet sheet = dialog;
                         LinearLayout row = sheet.style.group(rows, ""); row.setPadding(style.dp(16), style.dp(16), style.dp(16), style.dp(14));
-                        TextView type = sheet.text(file.optString("extension") + "  ·  " + android.text.format.Formatter.formatFileSize(activity, file.optLong("size")), 12, sheet.style.secondary);
+                        TextView type = sheet.text(file.optString("extension") + "  ·  " + android.text.format.Formatter.formatFileSize(activity, file.optLong("size")), Palette.TEXT_SMALL, sheet.style.secondary);
                         row.addView(type);
-                        TextView name = sheet.text(file.optString("name"), 17, sheet.style.ink); name.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
+                        TextView name = sheet.text(file.optString("name"), Palette.TEXT_ROW_STRONG, sheet.style.ink); name.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
                         name.setMaxLines(2); name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE); name.setPadding(0, style.dp(8), 0, style.dp(16)); row.addView(name);
                         TextView download = sheet.action(tr("下载到手机", "Save to phone"), true, () -> choose(file, address, conversation));
                         download.setContentDescription(file.optString("name") + " · " + download.getText());
@@ -194,13 +194,13 @@ final class ArtifactDownloads {
         dialog = new ArtifactSheet(activity, tr("下载到手机", "Save to phone"), tr("离开此页面，下载也不会中断。", "Leave this page without interrupting your download."));
         ArtifactSheet sheet = dialog;
         LinearLayout card = sheet.style.group(sheet.content, ""); card.setPadding(style.dp(20), style.dp(22), style.dp(20), style.dp(22));
-        TextView filename = sheet.text(initial.name, 18, sheet.style.ink); filename.setMaxLines(3); filename.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        TextView filename = sheet.text(initial.name, Palette.TEXT_DIALOG, sheet.style.ink); filename.setMaxLines(3); filename.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
         filename.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)); card.addView(filename);
         TextView percentage = sheet.text("0%", 44, sheet.style.ink); percentage.setPadding(0, style.dp(24), 0, style.dp(12)); percentage.setTag("downloadPercent"); card.addView(percentage);
         android.widget.ProgressBar bar = sheet.style.progressBar(); bar.setTag("downloadProgress");
         card.addView(bar, new LinearLayout.LayoutParams(-1, style.dp(6)));
-        TextView bytes = sheet.text("", 13, sheet.style.secondary); bytes.setPadding(0, style.dp(12), 0, 0); card.addView(bytes);
-        TextView detail = sheet.text("", 14, sheet.style.secondary); detail.setPadding(style.dp(16), style.dp(8), style.dp(16), style.dp(18)); sheet.content.addView(detail);
+        TextView bytes = sheet.text("", Palette.TEXT_NOTE, sheet.style.secondary); bytes.setPadding(0, style.dp(12), 0, 0); card.addView(bytes);
+        TextView detail = sheet.text("", Palette.TEXT_BODY, sheet.style.secondary); detail.setPadding(style.dp(16), style.dp(8), style.dp(16), style.dp(18)); sheet.content.addView(detail);
         TextView background = sheet.action(tr("在后台继续", "Continue in background"), true, sheet::dismiss); sheet.actions.addView(background);
         TextView cancel = sheet.action(tr("取消下载", "Cancel download"), false, () -> ArtifactDownloadService.cancel(activity));
         LinearLayout.LayoutParams space = new LinearLayout.LayoutParams(-1, -2); space.topMargin = style.dp(10); sheet.actions.addView(cancel, space);

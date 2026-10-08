@@ -385,6 +385,17 @@ public class SettingsTest extends InstrumentationTestCase {
                 assertNotNull(root.findViewWithTag("settings:providers")); assertNotNull(root.findViewWithTag("settings:general")); assertNotNull(root.findViewWithTag("settings:archived"));
                 root.findViewWithTag("settings:network").performClick();
                 home.onBackPressed(); assertNotNull(root.findViewWithTag("settings:network"));
+                // The Mobile access row is the only row here that leads somewhere
+                // whose state cannot be seen from this page, so it has to say what
+                // state that is — and it has to still say it after a round trip
+                // through that page, since that is where the mode gets changed.
+                View row = root.findViewWithTag("settings:network");
+                View value = row.findViewWithTag("settingsRowValue");
+                assertNotNull("the Mobile access row must show its state", value);
+                CharSequence shown = ((TextView) value).getText();
+                CharSequence spoken = row.getContentDescription();
+                assertTrue("the spoken label must carry the state too: " + spoken,
+                    spoken != null && spoken.toString().contains(shown.toString()));
                 home.onBackPressed(); assertNotNull(root.findViewWithTag("localChatEntry"));
             });
         } finally { ui(home::finish); }
@@ -479,7 +490,16 @@ public class SettingsTest extends InstrumentationTestCase {
                     android.widget.Switch toggle = root(network).findViewWithTag("networkMode"); assertFalse(toggle.isChecked());
                     assertNotNull(root(network).findViewWithTag("networkLogin")); assertNotNull(root(network).findViewWithTag("networkForget"));
                     assertNotNull(root(network).findViewWithTag("networkLicenses"));
+                    // This page opens on a question — is the phone on the network
+                    // yet — and the answer belongs at the top of the page, not in
+                    // the shared status line five rows down. In external mode
+                    // `refreshNetwork` answers immediately, so it is on screen.
+                    TextView banner = (TextView) root(network).findViewWithTag("settingsStatusBanner");
+                    assertNotNull("the Mobile access page needs its own state line", banner);
+                    assertEquals(View.VISIBLE, banner.getVisibility());
+                    assertTrue("it must say something: " + banner.getText(), banner.getText().length() > 0);
                     root(network).findViewWithTag("networkRefresh").performClick(); assertFalse(EmbeddedNetwork.enabled());
+                    assertEquals("refreshing keeps the answer on screen", View.VISIBLE, banner.getVisibility());
                 });
                 capture(network, "settings-network-cards-" + theme);
             } finally { ui(network::finish); }

@@ -44,13 +44,17 @@ async function main() {
     command(['install', '-r', path.resolve('android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk')]);
     command(['shell', 'pm', 'grant', 'app.camellia.mobile', 'android.permission.CAMERA']);
     const result = await new Promise((resolve, reject) => {
-      const child = spawn(adb, ['-s', serial, 'shell', 'am', 'instrument', '-w', '-e', 'class', 'app.camellia.mobile.PairingFlowTest,app.camellia.mobile.QrScannerTest',
+      const child = spawn(adb, ['-s', serial, 'shell', 'am', 'instrument', '-w', '-r', '-e', 'class', 'app.camellia.mobile.PairingFlowTest,app.camellia.mobile.QrScannerTest',
         '-e', 'pairingIntegration', 'true', 'app.camellia.mobile.test/android.test.InstrumentationTestRunner'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      let output = '';
+      let output = '', timedOut = false;
       child.stdout.on('data', data => { output += data; process.stdout.write(data); }); child.stderr.on('data', data => { output += data; process.stderr.write(data); });
-      const timeout = setTimeout(() => child.kill(), 90000);
-      child.on('error', reject); child.on('exit', code => { clearTimeout(timeout); resolve({ code, output }); });
+      // Both suites cold-launch activities and reopen the emulator camera.
+      // Successful CI runs already approach 90 seconds; allow runner variance.
+      const timeout = setTimeout(() => { timedOut = true; child.kill(); }, 180000);
+      child.on('error', error => { clearTimeout(timeout); reject(error); });
+      child.on('close', code => { clearTimeout(timeout); resolve({ code, output, timedOut }); });
     });
+    assert.equal(result.timedOut, false, 'Android pairing/scanner instrumentation timed out after 180 seconds\n' + result.output);
     assert.equal(result.code, 0, result.output); assert.match(result.output, /OK \(\d+ tests\)/);
     assert.equal(counts.get('Pairing scan fixture'), 1, 'Returning from the scanner must submit exactly once');
     assert.equal(counts.get('Pairing retry fixture'), 2, 'Only the explicit retry may submit again');

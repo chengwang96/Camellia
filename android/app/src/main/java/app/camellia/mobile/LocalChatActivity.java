@@ -219,23 +219,23 @@ public final class LocalChatActivity extends Activity {
     }
     private Button button(String label, String tag, Runnable action) {
         Button button = new Button(this); button.setText(label); button.setTag(tag); button.setAllCaps(false);
-        button.setTextSize(14); button.setTextColor(new ColorStateList(new int[][] { {-android.R.attr.state_enabled}, {} }, new int[] {muted, ink}));
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), chatStyle.capsule(surface), chatStyle.capsule(Color.WHITE)));
+        button.setTextSize(Palette.TEXT_BODY); button.setTextColor(new ColorStateList(new int[][] { {-android.R.attr.state_enabled}, {} }, new int[] {muted, ink}));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), chatStyle.capsule(surface), chatStyle.capsule(Color.WHITE)));
         button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         button.setPadding(dp(14), dp(8), dp(14), dp(8)); button.setMinHeight(dp(48)); button.setStateListAnimator(null);
         button.setOnClickListener(view -> action.run()); return button;
     }
     private TextView dialogAction(String label, String tag, boolean primary, Runnable action) {
-        TextView view = text(label, 15, primary ? Color.WHITE : ink); view.setTag(tag); view.setGravity(Gravity.CENTER);
+        TextView view = text(label, Palette.TEXT_INPUT, primary ? Color.WHITE : ink); view.setTag(tag); view.setGravity(Gravity.CENTER);
         view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); view.setMinHeight(dp(48));
-        view.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), chatStyle.capsule(primary ? accent : new SettingsStyle(this).card), chatStyle.capsule(Color.WHITE)));
+        view.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), chatStyle.capsule(primary ? accent : new SettingsStyle(this).card), chatStyle.capsule(Color.WHITE)));
         view.setOnClickListener(clicked -> action.run()); return view;
     }
     private void showStyledDialog(LinearLayout panel) {
         dialog = new CamelliaDialog.Builder(this).setView(panel).create(); dialog.show();
     }
     private EditText input(String hint, String tag) {
-        EditText input = tag.equals("localComposer") ? new ComposerInput(this) : new EditText(this); input.setHint(hint); input.setTag(tag); input.setTextSize(15);
+        EditText input = tag.equals("localComposer") ? new ComposerInput(this) : new EditText(this); input.setHint(hint); input.setTag(tag); input.setTextSize(Palette.TEXT_INPUT);
         input.setTextColor(ink); input.setHintTextColor(muted); input.setBackground(chatStyle.capsule(surface));
         input.setContentDescription(hint); input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         input.setPadding(dp(14), dp(12), dp(14), dp(12)); input.setMinHeight(dp(48)); return input;
@@ -259,20 +259,20 @@ public final class LocalChatActivity extends Activity {
         ImageButton back = chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed); back.setTag("localBack");
         header.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
         LinearLayout titles = column(); titles.setPadding(dp(10), 0, 0, 0);
-        TextView heading = text(title, 19, ink); heading.setSingleLine(true); heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        TextView heading = text(title, Palette.TEXT_CARD, ink); heading.setSingleLine(true); heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
         if (conversationId != null) heading.setTag("localChatTitle");
         heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); titles.addView(heading);
         LinearLayout device = new LinearLayout(this); device.setGravity(Gravity.CENTER_VERTICAL);
         ImageView phone = new ImageView(this); phone.setImageDrawable(new LineIcon("phone", muted));
         device.addView(phone, new LinearLayout.LayoutParams(dp(14), dp(14)));
-        TextView subtitle = text(tr("本机 · 手机直连 API", "On this phone · Direct API"), 12, muted);
+        TextView subtitle = text(tr("本机 · 手机直连 API", "On this phone · Direct API"), Palette.TEXT_SMALL, muted);
         subtitle.setPadding(dp(6), 0, 0, 0); subtitle.setSingleLine(true); subtitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
         device.addView(subtitle); titles.addView(device);
         header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1)); root.addView(header);
         scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
         content = column(); content.setPadding(0, 0, 0, dp(16)); scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-        status = text("", 11, muted); status.setTag("localStatus"); status.setGravity(Gravity.CENTER);
+        status = text("", Palette.TEXT_TINY, muted); status.setTag("localStatus"); status.setGravity(Gravity.CENTER);
         status.setSingleLine(true); status.setMinLines(1); status.setEllipsize(android.text.TextUtils.TruncateAt.END);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); root.addView(status, new LinearLayout.LayoutParams(-1, -2));
         storageRetry = button(tr("重试保存", "Retry saving"), "localStorageRetry", this::retryStorage);
@@ -330,6 +330,13 @@ public final class LocalChatActivity extends Activity {
         conversationId = null; shell(tr("本机聊天", "Local chat"));
         status.setText(tr("本机模式 · 聊天记录仅保存在此设备", "Local mode · Chat history stays on this device"));
         root.setClipChildren(false);
+        boolean unconfigured = false;
+        try { unconfigured = LocalChatConfig.routes(store.config()).isEmpty(); } catch (Exception error) { failure(error); }
+        if (unconfigured) {
+            new SettingsStyle(this).blockedState(content, tr("还没有可用的模型", "No model yet"),
+                tr("先添加一个供应商和 API Key，聊天才能开始。配置只保存在这台手机上。", "Add a provider and API key first — chats cannot start without one. The configuration stays on this phone."),
+                tr("前往供应商与 Key", "Open providers"), this::providerSettings);
+        }
         LinearLayout groups = column(); groups.setTag("localGroups"); content.addView(groups);
         renderGroups(groups);
         LinearLayout bottom = bottomBar("localSearchBar"); bottom.setElevation(0); bottom.setPadding(0, dp(6), 0, dp(6));
@@ -338,7 +345,7 @@ public final class LocalChatActivity extends Activity {
         ImageView searchIcon = new ImageView(this); searchIcon.setImageDrawable(new LineIcon("search", ink)); searchIcon.setPadding(dp(10), dp(10), dp(10), dp(10));
         searchPill.addView(searchIcon, new LinearLayout.LayoutParams(dp(44), dp(44)));
         EditText search = input(tr("搜索本机会话", "Search local chats"), "localSearch"); search.setSingleLine(true); search.setText(query);
-        search.setTextSize(16); search.setBackgroundColor(Color.TRANSPARENT); search.setPadding(dp(2), dp(12), dp(8), dp(12));
+        search.setTextSize(Palette.TEXT_ROW); search.setBackgroundColor(Color.TRANSPARENT); search.setPadding(dp(2), dp(12), dp(8), dp(12));
         searchPill.addView(search, new LinearLayout.LayoutParams(0, -2, 1));
         ImageButton create = chatStyle.lineButton("new", tr("新建独立会话", "New standalone chat"), () -> createConversation(""));
         create.setTag("localNewStandalone"); create.setElevation(dp(2)); bottom.addView(create, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -355,6 +362,8 @@ public final class LocalChatActivity extends Activity {
         int position = scroll.getScrollY();
         groups.removeAllViews();
         JSONArray workspaces = store.workspaces();
+        boolean configured = false;
+        try { configured = !LocalChatConfig.routes(store.config()).isEmpty(); } catch (Exception error) { failure(error); }
         boolean hasConversations = false, matches = false;
         String term = query.toLowerCase(java.util.Locale.ROOT);
         JSONArray conversations = store.conversations();
@@ -365,7 +374,7 @@ public final class LocalChatActivity extends Activity {
                 if (!query.isEmpty() && title(conversation).toLowerCase(java.util.Locale.ROOT).contains(term)) matches = true;
             }
         }
-        if (query.isEmpty() && workspaces.length() == 0 && !hasConversations) {
+        if (configured && query.isEmpty() && workspaces.length() == 0 && !hasConversations) {
             ChatEmptyState welcome = new ChatEmptyState(this, chatStyle, "brand", tr("开始第一段对话", "Start your first conversation"),
                 tr("新建独立会话直接开始，或创建工作区整理会话。", "Start a standalone chat, or create a workspace to organize your conversations."));
             welcome.addAction(tr("新建独立会话", "New standalone chat"), "localEmptyNewStandalone", () -> createConversation(""));
@@ -388,10 +397,7 @@ public final class LocalChatActivity extends Activity {
             actions.addView(cancel, new LinearLayout.LayoutParams(0, -2, 1));
             actions.addView(delete, new LinearLayout.LayoutParams(0, -2, 1)); groups.addView(actions);
         }
-        try { if (LocalChatConfig.routes(store.config()).isEmpty()) groups.addView(text(tr("先在「供应商与 Key」填写 API 配置，或粘贴导入。", "Add a provider and API key, or paste an export."), 14, muted)); }
-        catch (Exception error) { failure(error); }
-        groups.addView(chatStyle.workspaceHeader(workspaces.length() == 0 ? tr("新建工作区", "New workspace") : tr("工作区", "Workspaces"),
-            tr("新建工作区", "New workspace"), "localNewWorkspace", () -> nameDialog(null)));
+        groups.addView(chatStyle.workspaceHeader(tr("工作区", "Workspaces"), tr("新建工作区", "New workspace"), "localNewWorkspace", () -> nameDialog(null)));
         for (int index = 0; index < workspaces.length(); index++) {
             JSONObject workspace = workspaces.optJSONObject(index);
             if (workspace != null) group(groups, workspace.optString("id"), workspace.optString("name"), workspace);
@@ -433,7 +439,7 @@ public final class LocalChatActivity extends Activity {
         }
         DisclosureHeader label = new DisclosureHeader(this, name, workspace == null ? muted : ink, muted, collapsed.contains(id));
         label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); label.setPadding(0, dp(8), dp(4), dp(8));
-        label.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), shape(background), shape(Color.WHITE)));
+        label.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), shape(background), shape(Color.WHITE)));
         label.setTag("localGroup:" + id);
         label.setContentDescription(name + " · " + (collapsed.contains(id) ? tr("展开", "Expand") : tr("折叠", "Collapse")));
         label.setOnClickListener(view -> { if (!collapsed.add(id)) collapsed.remove(id); renderGroups(parent); });
@@ -461,7 +467,7 @@ public final class LocalChatActivity extends Activity {
             row.selection(selectingConversations, selectedConversations.contains(selectedId)); group.addView(row);
         }
         if (entries.isEmpty()) {
-            TextView empty = text(tr("暂无会话", "No conversations yet"), 13, muted);
+            TextView empty = text(tr("暂无会话", "No conversations yet"), Palette.TEXT_NOTE, muted);
             empty.setPadding(dp(id.isEmpty() ? 2 : 32), dp(8), dp(8), dp(8)); group.addView(empty);
         }
     }
@@ -549,10 +555,10 @@ public final class LocalChatActivity extends Activity {
         // The sheet already paints the dialog surface; a second background here
         // would draw a card inside the panel and read as a box in a box.
         LinearLayout panel = column();
-        TextView heading = text(tr("删除本机会话？", "Delete this local chat?"), 21, ink);
+        TextView heading = text(tr("删除本机会话？", "Delete this local chat?"), Palette.TEXT_DISPLAY, ink);
         heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         heading.setPadding(dp(8), dp(2), dp(8), 0); panel.addView(heading);
-        TextView message = text(tr("聊天记录将永久删除，此操作无法撤销。", "The chat history will be permanently deleted. This cannot be undone."), 14, muted);
+        TextView message = text(tr("聊天记录将永久删除，此操作无法撤销。", "The chat history will be permanently deleted. This cannot be undone."), Palette.TEXT_BODY, muted);
         message.setPadding(dp(8), dp(8), dp(8), dp(18)); panel.addView(message);
         LinearLayout actions = new LinearLayout(this);
         TextView cancel = dialogAction(tr("取消", "Cancel"), "localDeleteCancel", false, () -> dialog.dismiss());
@@ -792,8 +798,8 @@ public final class LocalChatActivity extends Activity {
         if (runningId != null || conversationId == null) return;
         JSONObject conversation = store.conversation(conversationId);
         LinearLayout panel = column(); panel.setPadding(dp(20), dp(18), dp(20), dp(10)); panel.setBackgroundColor(background);
-        TextView heading = text(tr("联网功能", "Web access"), 20, ink); heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); panel.addView(heading);
-        TextView note = text(tr("使用 Bing 和百度搜索，并读取公开网页", "Search with Bing and Baidu, and read public pages"), 14, muted);
+        TextView heading = text(tr("联网功能", "Web access"), Palette.TEXT_TITLE, ink); heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); panel.addView(heading);
+        TextView note = text(tr("使用 Bing 和百度搜索，并读取公开网页", "Search with Bing and Baidu, and read public pages"), Palette.TEXT_BODY, muted);
         note.setPadding(0, dp(8), 0, dp(14)); panel.addView(note);
         LinearLayout card = column(); card.setPadding(dp(18), dp(4), dp(18), dp(4)); card.setBackground(chatStyle.rounded(surface));
         SettingsStyle settings = new SettingsStyle(this);
@@ -877,11 +883,11 @@ public final class LocalChatActivity extends Activity {
             }
             if (!user) {
                 ScrollView target = scroll;
-                binding.waiting = text(tr("等待输出…", "Waiting for output…"), 15, ink); block.addView(binding.waiting);
+                binding.waiting = text(tr("等待输出…", "Waiting for output…"), Palette.TEXT_INPUT, ink); block.addView(binding.waiting);
                 binding.body = new StreamingMarkdownView(this, markdown, new MarkdownScrollAnchor(target, () -> scroll == target && conversationId != null));
                 block.addView(binding.body);
                 if (message == runningReply) binding.body.update(latest, false); else binding.body.history(message.optString("content"));
-                binding.notice = text("", 12, muted); block.addView(binding.notice);
+                binding.notice = text("", Palette.TEXT_SMALL, muted); block.addView(binding.notice);
                 updateMessage(binding, message);
             } else {
                 JSONArray images = message.optJSONArray("images");
@@ -901,7 +907,7 @@ public final class LocalChatActivity extends Activity {
                     ChatDocumentTray.append(this, files, attached, chinese, null); block.addView(files);
                 }
                 if (!message.optString("content").isEmpty()) {
-                    TextView body = text(message.optString("content"), 15, ink); body.setTextIsSelectable(true); chatStyle.messageTypography(body); block.addView(body);
+                    TextView body = text(message.optString("content"), Palette.TEXT_INPUT, ink); body.setTextIsSelectable(true); chatStyle.messageTypography(body); block.addView(body);
                 }
                 if (index == latestUser) {
                     int messageIndex = index;
@@ -911,7 +917,7 @@ public final class LocalChatActivity extends Activity {
                     block.setContentDescription(tr("点击编辑上一条消息", "Tap to edit previous message"));
                 }
             }
-            if (user && !message.optString("notice").isEmpty()) block.addView(text(message.optString("notice"), 12, muted));
+            if (user && !message.optString("notice").isEmpty()) block.addView(text(message.optString("notice"), Palette.TEXT_SMALL, muted));
             binding.wrapper = chatStyle.messageWithFooter(block, user,
                 () -> message == runningReply ? latest : message.optString("content"), message.optLong("at"), chinese);
             messageBindings.put(message, binding); desired.add(binding.wrapper);

@@ -645,6 +645,18 @@ public class LocalChatTest extends InstrumentationTestCase {
                     assertTrue(root.getPaddingLeft() >= Math.round(18 * activity.getResources().getDisplayMetrics().density));
                     assertTrue(root.getPaddingRight() >= Math.round(18 * activity.getResources().getDisplayMetrics().density));
                 });
+                // With no model configured the page must say so and offer the way
+                // to fix it — and must still render the list, because "New
+                // conversation" is the route to that settings page rather than a
+                // control that can only fail. An earlier version returned early
+                // and removed it, which broke this very flow.
+                ui(() -> {
+                    View decor = activity.getWindow().getDecorView();
+                    assertNotNull("the page must report the missing model", decor.findViewWithTag("settingsBlockedState"));
+                    assertNotNull("and must offer the way to fix it", decor.findViewWithTag("settingsBlockedAction"));
+                    assertNotNull("the list stays: the new-chat button is the route to the fix",
+                        decor.findViewWithTag("localNewStandalone"));
+                });
                 var monitor = getInstrumentation().addMonitor(SettingsActivity.class.getName(), null, false);
                 ui(() -> {
                     View root = activity.getWindow().getDecorView(); assertNull(root.findViewWithTag("localConfig"));

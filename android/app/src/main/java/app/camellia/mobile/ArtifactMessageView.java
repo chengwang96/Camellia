@@ -43,7 +43,7 @@ final class ArtifactMessageView extends LinearLayout {
             overflow.setVisibility(GONE); overflow.setTag("artifactOverflow");
             addView(overflow, new LinearLayout.LayoutParams(-1, -2));
             divider(this);
-            TextView more = text("", 13, style.muted); more.setTag("artifactShowMore");
+            TextView more = text("", Palette.TEXT_NOTE, style.muted); more.setTag("artifactShowMore");
             more.setPadding(style.dp(14), style.dp(12), style.dp(14), style.dp(12));
             more.setMinHeight(style.dp(48)); more.setGravity(Gravity.CENTER_VERTICAL);
             String label = chinese ? "显示另外 " + (files.size() - VISIBLE_LIMIT) + " 个文件" : "Show " + (files.size() - VISIBLE_LIMIT) + " more files";
@@ -66,7 +66,7 @@ final class ArtifactMessageView extends LinearLayout {
     }
 
     private RippleDrawable ripple() {
-        return new RippleDrawable(ColorStateList.valueOf(0x224176e6), null, shape(Color.WHITE, 8, false));
+        return new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), null, shape(Color.WHITE, 8, false));
     }
 
     private TextView text(String value, int size, int color) {
@@ -95,14 +95,14 @@ final class ArtifactMessageView extends LinearLayout {
         LinearLayout info = new LinearLayout(getContext()); info.setOrientation(VERTICAL);
         LinearLayout.LayoutParams infoParams = new LinearLayout.LayoutParams(0, -2, 1); infoParams.setMarginStart(style.dp(10));
         file.addView(info, infoParams);
-        TextView title = text(name, 15, style.ink); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        TextView title = text(name, Palette.TEXT_INPUT, style.ink); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         title.setSingleLine(true); title.setEllipsize(TextUtils.TruncateAt.MIDDLE); title.setTag("artifactName:" + name);
         info.addView(title);
-        TextView meta = text(category(kind) + " · " + extension, 12, style.muted); meta.setPadding(0, style.dp(4), 0, 0);
+        TextView meta = text(category(kind) + " · " + extension, Palette.TEXT_SMALL, style.muted); meta.setPadding(0, style.dp(4), 0, 0);
         meta.setSingleLine(true); meta.setEllipsize(TextUtils.TruncateAt.END); info.addView(meta);
-        TextView action = text(tr("查看", "View"), 13, style.ink); action.setGravity(Gravity.CENTER);
+        TextView action = text(tr("查看", "View"), Palette.TEXT_NOTE, style.ink); action.setGravity(Gravity.CENTER);
         action.setMinHeight(style.dp(48)); action.setPadding(style.dp(10), style.dp(8), style.dp(10), style.dp(8));
-        action.setBackground(new RippleDrawable(ColorStateList.valueOf(0x224176e6), shape(Color.TRANSPARENT, 9, true), shape(Color.WHITE, 9, false)));
+        action.setBackground(new RippleDrawable(ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), shape(Color.TRANSPARENT, 9, true), shape(Color.WHITE, 9, false)));
         action.setTag("artifactAction:" + name); action.setFocusable(true);
         action.setContentDescription(tr("查看会话产物：", "View conversation files: ") + name);
         action.setOnClickListener(view -> open.run());

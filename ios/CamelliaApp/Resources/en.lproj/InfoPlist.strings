@@ -1,0 +1,4 @@
+"NSLocalNetworkUsageDescription" = "Connects to computers you authorize through the built-in network. Camellia does not connect to other targets.";
+"NSCameraUsageDescription" = "Scans pairing codes or takes photos for chat attachments. Scanning images are not saved; photos are sent to the selected recipient only when you send a message.";
+"NSPhotoLibraryUsageDescription" = "Lets you choose images to send as chat attachments. Camellia reads only the photos you select.";
+"NSLocationWhenInUseUsageDescription" = "With your consent, gets one approximate location (about 2 km precision) for this question and sends it to the selected computer or API provider. No background tracking.";

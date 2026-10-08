@@ -81,7 +81,13 @@ public class ComputerSelectionTest extends InstrumentationTestCase {
         ui(() -> { encrypted.clear(); field("credentials", new JSONObject()); invoke("computersScreen"); });
         getInstrumentation().waitForIdleSync(); screenshot("computer-selection-empty");
         ui(() -> {
-            assertNotNull(root().findViewWithTag("chatEmptyState"));
+            View empty = root().findViewWithTag("settingsEmptyState");
+            assertNotNull(empty);
+            // Outside the card, not inside it. Sharing a surface with the "Add
+            // computer" row below made the empty state read as one more thing to
+            // tap, which is the opposite of what it is.
+            assertNull("the empty state must not sit inside the computer card",
+                root().findViewWithTag("computerList").findViewById(empty.getId()));
             assertEquals(1, exactTextCount(root(), "添加电脑"));
             root().findViewWithTag("addComputer").performClick(); assertEquals("pair", field("screen"));
         });

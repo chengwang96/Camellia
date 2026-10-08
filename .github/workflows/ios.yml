@@ -1,0 +1,119 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - 'android/tailnet/**'
+      - 'android/app/src/main/java/**'
+      - 'android/app/src/main/assets/third-party-notices.txt'
+      - 'android/app/src/main/assets/markdown-notices.txt'
+      - 'assets/icon-1024.png'
+      - 'package.json'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    paths:
+      - 'ios/**'
+      - 'android/tailnet/**'
+      - 'android/app/src/main/java/**'
+      - 'android/app/src/main/assets/third-party-notices.txt'
+      - 'android/app/src/main/assets/markdown-notices.txt'
+      - 'assets/icon-1024.png'
+      - 'package.json'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: iOS / arm64
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Available on the macos-15 arm64 image; keep the compiler reproducible.
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      GOTOOLCHAIN: local
+      # Standard arm64 runners have 7 GB of RAM; bound Go compilation memory.
+      GOMAXPROCS: '2'
+      GOFLAGS: -p=2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: android/tailnet/go.mod
+          cache-dependency-path: android/tailnet/go.sum
+      - name: Verify toolchain and scripts
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          swiftc --version
+          go version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphonesimulator --show-sdk-path
+          for script in ios/*.sh; do
+            bash -n "$script"
+          done
+      - name: Generate iOS localizations
+        run: swift ios/tools/generate-localizations.swift "$PWD"
+      - name: Protocol and local chat checks
+        timeout-minutes: 10
+        run: bash ios/check-protocol.sh
+      - name: External HTTP transport checks
+        timeout-minutes: 5
+        run: bash ios/check-external-http.sh
+      - name: Shared embedded network tests
+        timeout-minutes: 10
+        working-directory: android/tailnet
+        run: go test -count=1 -timeout=5m ./...
+      - name: Build embedded iOS network framework
+        timeout-minutes: 20
+        run: bash ios/build-tailnet-ios.sh
+      - name: Check both apps for iOS 15 compatibility
+        timeout-minutes: 10
+        run: bash ios/check-client.sh
+      - name: Composer simulator regression
+        timeout-minutes: 10
+        run: |
+          CAMELLIA_COMPOSER_UDID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          for runtime in sorted(devices, reverse=True):
+              if "SimRuntime.iOS-" not in runtime:
+                  continue
+              for device in devices[runtime]:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      print(device["udid"])
+                      raise SystemExit(0)
+          raise SystemExit("No available iPhone simulator")
+          ')"
+          test -n "$CAMELLIA_COMPOSER_UDID"
+          export CAMELLIA_COMPOSER_UDID
+          trap 'xcrun simctl shutdown "$CAMELLIA_COMPOSER_UDID" >/dev/null 2>&1 || true' EXIT
+          xcrun simctl bootstatus "$CAMELLIA_COMPOSER_UDID" -b
+          bash ios/check-composer.sh
+      - name: Build unsigned iOS apps
+        timeout-minutes: 15
+        run: |
+          bash ios/build-ipa.sh client
+          bash ios/build-ipa.sh diagnostics
+      - name: Upload unsigned IPA artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: Camellia-ios-arm64-unsigned
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          path: |
+            ios/dist/*.ipa
+            ios/dist/SHA256-*.txt
+            ios/Frameworks/tailnet-ios-version.json

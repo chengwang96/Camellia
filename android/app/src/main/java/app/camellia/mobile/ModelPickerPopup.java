@@ -155,14 +155,14 @@ final class ModelPickerPopup {
             return;
         }
         LinearLayout body = column();
-        TextView caption = text(tr("选择模型", "Choose a model"), 11, muted); caption.setPadding(dp(16), dp(2), dp(16), dp(10)); body.addView(caption);
+        TextView caption = text(tr("选择模型", "Choose a model"), Palette.TEXT_TINY, muted); caption.setPadding(dp(16), dp(2), dp(16), dp(10)); body.addView(caption);
         for (LocalChatConfig.Route route : routes) {
             String host = URI.create(route.baseUrl).getHost();
             body.addView(row(route.displayName(), route.providerName() + " · " + host, null,
                 selected != null && route.id.equals(selected.id), "modelOption:" + route.id, () -> { dismiss(); listener.onModel(route); }));
         }
         if (routes.isEmpty()) {
-            TextView empty = text(tr("导入 API 配置后，即可选择模型。", "Import API configuration to choose a model."), 14, muted);
+            TextView empty = text(tr("导入 API 配置后，即可选择模型。", "Import API configuration to choose a model."), Palette.TEXT_BODY, muted);
             empty.setPadding(dp(16), dp(12), dp(16), dp(16)); body.addView(empty);
         }
         divider(body);

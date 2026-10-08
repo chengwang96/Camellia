@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	This file is a record, not part of the .ipa.
+
+	The .ipa built by build-ipa.sh is unsigned on purpose: it is the input to
+	TrollStore, which installs without checking a signature at all, and to
+	Sideloadly / SideStore, which re-sign with the installer's own Apple ID and
+	replace this dictionary wholesale while doing so.
+
+	Signing it here instead would break the install. A restricted entitlement
+	without a provisioning profile is refused, which was measured on the
+	simulator: a bundle ad-hoc signed with `application-identifier` is denied by
+	SBMainWorkspace, while the same bundle unsigned launches.
+
+	What is listed is what a build signed by Xcode is granted for free, and what
+	`AppStores` probes for before it decides between the Keychain and the file
+	fallback:
+
+	  * `application-identifier` — the check the Keychain makes on every call.
+	    Its value is the signing team's prefix plus the bundle ID, which is why
+	    no literal is written here.
+	  * `keychain-access-groups` — the group the node's Keychain item lives in.
+	-->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>app.camellia.mobile.diagnostics</string>
+	</array>
+</dict>
+</plist>

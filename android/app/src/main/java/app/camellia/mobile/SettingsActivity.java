@@ -124,8 +124,8 @@ public final class SettingsActivity extends Activity {
         root.addView(settingsStyle.header(title, tr("返回", "Back"), this::finish));
         ScrollView scroll = new ScrollView(this); scroll.setVerticalScrollBarEnabled(false);
         content = column(); content.setPadding(0, dp(12), 0, dp(16)); scroll.addView(content); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-        status = text("", 13, style.muted); status.setTag("settingsStatus"); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); root.addView(status);
-        storageRetry = text(tr("重试保存", "Retry saving"), 14, settingsStyle.accent);
+        status = text("", Palette.TEXT_NOTE, style.muted); status.setTag("settingsStatus"); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); root.addView(status);
+        storageRetry = text(tr("重试保存", "Retry saving"), Palette.TEXT_BODY, settingsStyle.accent);
         storageRetry.setTag("settingsStorageRetry"); storageRetry.setGravity(Gravity.CENTER); storageRetry.setMinHeight(dp(48));
         storageRetry.setFocusable(true); storageRetry.setOnClickListener(view -> retryStorage());
         storageRetry.setVisibility(storageError.isEmpty() ? View.GONE : View.VISIBLE); root.addView(storageRetry);
@@ -147,8 +147,12 @@ public final class SettingsActivity extends Activity {
         settingsStyle.toggle(group, tr("震动效果", "Haptic feedback"), tr("遵循系统触感设置", "Respects system haptic settings"),
             "preference:hapticFeedback", MobileHaptics.enabled(this), (view, checked) ->
                 MobilePreferences.set(this, "hapticFeedback", checked ? "enabled" : "disabled"));
-        settingsStyle.note(content, tr("回车发送模式会向键盘声明发送键，搜狗等输入法可长按发送键换行；部分软键盘（如 Gboard）没有长按换行，可切换为回车换行并点击发送按钮。仅点击发送按钮模式下，回车始终换行。", "Enter-sends mode declares a send key, so keyboards such as Sogou insert a newline while the send key is held. Some keyboards (for example Gboard) have no hold gesture; switch to newline mode and use the send button. In button-only mode, Enter always inserts a newline."));
-        settingsStyle.note(content, tr("应用于这台手机上的所有页面，不影响电脑设置。", "Applies throughout this phone. Desktop preferences are unchanged."));
+        // Only what the three labels cannot say. The labels already name each
+        // mode; repeating them here made this the longest text on the page and
+        // pushed everything else down. What they cannot say is which keyboards
+        // actually have the hold gesture.
+        settingsStyle.note(content, tr("回车发送模式会向键盘声明发送键：搜狗等输入法可长按发送键换行，而 Gboard 等没有长按手势的键盘需要改用回车换行并点击发送按钮。", "Enter-sends mode declares a send key. Keyboards such as Sogou insert a newline while it is held; keyboards without a hold gesture, such as Gboard, need newline mode and the send button."));
+        settingsStyle.note(content, tr("以上设置仅作用于这台手机。", "These settings apply to this phone only."));
         LinearLayout remote = settingsStyle.group(content, tr("远程控制", "Remote control"));
         settingsStyle.toggle(remote, tr("短暂离开时保持连接", "Keep connection while away"),
             tr("后台最多保持 5 分钟，短暂切换应用后可直接继续。", "Keep the connection for up to 5 minutes in the background so you can return quickly."),
@@ -160,12 +164,19 @@ public final class SettingsActivity extends Activity {
                     requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 73);
                 }
             });
-        settingsStyle.note(content, tr("默认关闭。仅已配对远程电脑时生效；未添加电脑不会启动后台服务。到时自动断开，返回应用后重新连接。保持期间会显示通知，可能增加耗电；系统仍可能提前结束后台运行。", "Off by default. Only takes effect with a paired remote computer; no background service runs without one. Disconnects automatically at the limit and reconnects when you return. A notification is shown while active. May use more battery; Android may end background activity earlier."));
+        // The toggle's own description already says what it does and when it is
+        // useful. This is the consequence of turning it on, which the switch
+        // cannot show — and it leads with "off by default", which the switch
+        // state already says.
+        settingsStyle.note(content, tr("保持期间会显示通知，可能增加耗电；到时自动断开，返回应用后重新连接，系统也可能提前结束后台运行。", "A notification is shown while active, which may use more battery. The connection drops at the limit and reconnects when you return; Android may also end background activity earlier."));
     }
     private void preference(LinearLayout group, String key, String title, String[] labels, String[] values) {
         int selected = java.util.Arrays.asList(values).indexOf(MobilePreferences.get(this, key));
         final int current = Math.max(0, selected);
-        settingsStyle.row(group, key.equals("theme") ? "appearance" : key.equals("enterMode") ? "settings" : "language", title, labels[current], "preference:" + key, () -> {
+        // The choice goes on a second line, not in the narrow right-hand column:
+        // these labels are sentences ("Enter sends; hold for newline"), and a
+        // 100dp single-line slot truncated them to "Enter sends; h…".
+        settingsStyle.preference(group, key.equals("theme") ? "appearance" : key.equals("enterMode") ? "settings" : "language", title, labels[current], "preference:" + key, () -> {
             dialog = new SettingsChoiceDialog(this, title, labels, current, tr("取消", "Cancel"), which -> {
                 MobilePreferences.set(this, key, values[which]); recreate();
             });
@@ -181,9 +192,13 @@ public final class SettingsActivity extends Activity {
             "Used by local chat. Configuration is encrypted on this phone. Importing or reading from a computer replaces the API configuration; chats are kept."));
         JSONArray providers = store.config().optJSONArray("providers");
         if (providers == null || providers.length() == 0) {
-            LinearLayout empty = settingsStyle.group(content, tr("我的供应商", "My providers"));
-            settingsStyle.info(empty, tr("暂无供应商", "No providers yet"), tr("手动添加，粘贴导出的配置，或从已连接的电脑导入。",
-                "Add one manually, paste an export, or import from a paired computer."));
+            // No card, no chevron, and no group heading above it: this reports a
+            // state, and a card with a heading and an arrow reads as a fifth
+            // thing to tap. The group's own label said "My providers" and the
+            // heading said "No providers yet" — the same fact twice.
+            settingsStyle.emptyState(content, tr("暂无供应商", "No providers yet"),
+                tr("手动添加、粘贴导入，或从已连接的电脑读取。", "Add one manually, paste an export, or import from a paired computer."),
+                tr("添加供应商", "Add provider"), () -> editProvider(-1));
         }
         for (int index = 0; providers != null && index < providers.length(); index++) {
             final int selected = index; JSONObject provider = providers.getJSONObject(index);
@@ -289,8 +304,8 @@ public final class SettingsActivity extends Activity {
         config.put("version", 2); if (!config.has("enabled")) config.put("enabled", true); return config;
     }
     private EditText field(LinearLayout form, String label, String tag, String value, boolean secret, boolean multiline) {
-        TextView caption = text(label, 13, settingsStyle.secondary); caption.setPadding(dp(2), dp(16), dp(2), dp(8)); form.addView(caption);
-        EditText field = new EditText(this); field.setTextColor(style.ink); field.setTextSize(15); field.setTag(tag);
+        TextView caption = text(label, Palette.TEXT_NOTE, settingsStyle.secondary); caption.setPadding(dp(2), dp(16), dp(2), dp(8)); form.addView(caption);
+        EditText field = new EditText(this); field.setTextColor(style.ink); field.setTextSize(Palette.TEXT_INPUT); field.setTag(tag);
         field.setInputType(InputType.TYPE_CLASS_TEXT | (secret ? InputType.TYPE_TEXT_VARIATION_PASSWORD : InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
             | (multiline ? InputType.TYPE_TEXT_FLAG_MULTI_LINE : 0));
         field.setSingleLine(!multiline); field.setMinLines(multiline ? 3 : 1); field.setMaxLines(multiline ? 6 : 1);
@@ -304,10 +319,10 @@ public final class SettingsActivity extends Activity {
             LinearLayout form = column(); form.setPadding(0, 0, 0, dp(8));
             EditText name = field(form, tr("供应商名称", "Provider name"), "providerName", original.optString("name"), false, false);
             EditText endpoint = field(form, "Endpoint", "providerEndpoint", original.optString("baseUrl", "https://"), false, false);
-            form.addView(text(tr("API 协议", "API protocol"), 13, style.muted));
+            form.addView(text(tr("API 协议", "API protocol"), Palette.TEXT_NOTE, style.muted));
             String[] protocols = {"openai", "anthropic", "dual"}, protocolLabels = {"OpenAI", "Anthropic", "Dual"};
             int[] selectedProtocol = {Math.max(0, java.util.Arrays.asList(protocols).indexOf(original.optString("protocol", "openai")))};
-            TextView protocol = text(protocolLabels[selectedProtocol[0]] + "  ›", 16, style.ink); protocol.setTag("providerProtocol");
+            TextView protocol = text(protocolLabels[selectedProtocol[0]] + "  ›", Palette.TEXT_ROW, style.ink); protocol.setTag("providerProtocol");
             protocol.setPadding(dp(16), dp(14), dp(16), dp(14)); protocol.setMinHeight(dp(52));
             protocol.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(settingsStyle.divider),
                 settingsStyle.fieldBackground(settingsStyle.fieldBorder), settingsStyle.fieldBackground(settingsStyle.fieldBorder)));
@@ -338,7 +353,7 @@ public final class SettingsActivity extends Activity {
                 modelLines.append(model.getString("id")); if (!model.getString("id").equals(model.getString("upstream"))) modelLines.append('=').append(model.getString("upstream"));
             }
             EditText modelInput = field(form, tr("模型（每行一个 ID，或 别名=上游模型）", "Models (one ID or alias=upstream per line)"), "providerModels", modelLines.toString(), false, true);
-            TextView errorLabel = text("", 13, settingsStyle.error); errorLabel.setTag("providerError");
+            TextView errorLabel = text("", Palette.TEXT_NOTE, settingsStyle.error); errorLabel.setTag("providerError");
             errorLabel.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); form.addView(errorLabel);
             ScrollView scroll = new ScrollView(this); scroll.addView(form);
             dialog = new CamelliaDialog.Builder(this).setTitle(index < 0 ? tr("添加供应商", "Add provider") : tr("编辑供应商", "Edit provider"))
@@ -393,10 +408,10 @@ public final class SettingsActivity extends Activity {
 
     private void importConfig() {
         LinearLayout form = column(); form.setPadding(0, 0, 0, dp(8));
-        form.addView(text(tr("粘贴完整的 Camellia v2 配置。导入会替换供应商与密钥，不删除会话。", "Paste a complete Camellia v2 export. Replaces providers and keys, not chats."), 14, style.muted));
+        form.addView(text(tr("粘贴完整的 Camellia v2 配置。导入会替换供应商与密钥，不删除会话。", "Paste a complete Camellia v2 export. Replaces providers and keys, not chats."), Palette.TEXT_BODY, style.muted));
         EditText source = field(form, "JSON", "providerImportText", "", false, true);
         source.setSaveEnabled(false); source.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(LocalChatConfig.MAX_IMPORT + 1)});
-        TextView errorLabel = text("", 13, settingsStyle.error); errorLabel.setTag("providerImportError");
+        TextView errorLabel = text("", Palette.TEXT_NOTE, settingsStyle.error); errorLabel.setTag("providerImportError");
         errorLabel.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); form.addView(errorLabel);
         ScrollView scroll = new ScrollView(this); scroll.addView(form);
         dialog = new CamelliaDialog.Builder(this).setTitle(tr("粘贴导入", "Paste import")).setView(scroll)
@@ -457,7 +472,7 @@ public final class SettingsActivity extends Activity {
                     }).show();
             });
         }
-        if (count == 0) settingsStyle.info(settingsStyle.group(content, ""), tr("暂无已归档会话", "No archived chats"),
-            tr("在本地聊天列表长按会话，即可将它归档到这里。", "Long-press a chat in the local list to archive it here."));
+        if (count == 0) settingsStyle.emptyState(content, tr("暂无已归档会话", "No archived chats"),
+            tr("在本地聊天列表长按会话，即可将它归档到这里。", "Long-press a chat in the local list to archive it here."), "", null);
     }
 }

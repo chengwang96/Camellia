@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>Camellia 诊断</string>
+	<key>CFBundleExecutable</key>
+	<string>CamelliaTestApp</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.camellia.mobile.diagnostics</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Camellia Diagnostics</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.4.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<!--
+	15.0 is the floor, and it is set by the app rather than by the framework:
+	the tailnet framework links cleanly down to 13.0. The app stops at 15.0
+	because its controls use the iOS 15 button styles, and 15.0 comfortably
+	covers the TrollStore range (14.0-15.4.1 and 15.5-16.6.1 alike).
+	-->
+	<key>MinimumOSVersion</key>
+	<string>15.0</string>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon60x60</string>
+			</array>
+		</dict>
+	</dict>
+	<key>CFBundleIcons~ipad</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon76x76</string>
+			</array>
+		</dict>
+	</dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<!--
+	The embedded node dials out through Go's net/http over tsnet's own socket,
+	which iOS sees as the app using the local network for peer discovery. Without
+	this string the system denies that and the node never finds a path.
+	-->
+	<!--
+	Only the pairing QR code is read, and only while the scan sheet is open.
+	Without this string the system refuses to start the camera at all, with no
+	error the app can show.
+	-->
+	<key>NSCameraUsageDescription</key>
+	<string>用于扫描电脑端显示的配对二维码，图像不会保存或上传。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于与你自己电脑所在网络内的设备建立直连，Camellia 不会连接其它目标。</string>
+</dict>
+</plist>

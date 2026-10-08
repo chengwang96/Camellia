@@ -32,7 +32,7 @@ final class PopupSurface extends FrameLayout {
         super(context);
         this.color = color;
         GradientDrawable shape = new GradientDrawable(); shape.setColor(color);
-        shape.setCornerRadius(dp(26)); setBackground(shape); setClipToOutline(true);
+        shape.setCornerRadius(dp(Palette.RADIUS_GROUP)); setBackground(shape); setClipToOutline(true);
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
@@ -75,7 +75,7 @@ final class PopupSurface extends FrameLayout {
         GradientDrawable edge = new GradientDrawable(); edge.setColor(Color.TRANSPARENT);
         // A white rim disappeared on the white page, so the glass outline vanished
         // with it. Use a faint neutral hairline in the light theme.
-        edge.setCornerRadius(dp(26)); edge.setStroke(dp(1), dark ? 0x18ffffff : 0x1a000000);
+        edge.setCornerRadius(dp(Palette.RADIUS_GROUP)); edge.setStroke(dp(1), dark ? 0x18ffffff : 0x1a000000);
         setForeground(edge);
         refreshBackdrop();
         sourceObserver = source.getViewTreeObserver();

@@ -30,14 +30,14 @@ final class ChatComposer {
         editing.setTag("composerEditBanner");
         TextView label = new TextView(context);
         label.setText(chinese ? "正在编辑上一条消息" : "Editing previous message");
-        label.setTextColor(style.muted); label.setTextSize(12); label.setPadding(dp(12), 0, 0, 0);
+        label.setTextColor(style.muted); label.setTextSize(Palette.TEXT_SMALL); label.setPadding(dp(12), 0, 0, 0);
         label.setSingleLine(true); label.setEllipsize(TextUtils.TruncateAt.END);
         editing.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
         cancelEdit = style.lineButton("close", chinese ? "取消编辑" : "Cancel editing", onCancelEdit);
         cancelEdit.setTag("composerCancelEdit");
         editing.addView(cancelEdit, new LinearLayout.LayoutParams(dp(48), dp(48)));
         editing.setVisibility(View.GONE); bar.addView(editing);
-        input = new ComposerInput(context); input.setTextColor(style.ink); input.setTextSize(16);
+        input = new ComposerInput(context); input.setTextColor(style.ink); input.setTextSize(Palette.TEXT_ROW);
         input.setMaxLines(4); input.setMinHeight(dp(48)); input.setVerticalScrollBarEnabled(false);
         input.setHint(hint); input.setHintTextColor(style.muted);
         input.setContentDescription(chinese ? "消息输入框" : "Message input");
@@ -49,13 +49,13 @@ final class ChatComposer {
         bar.addView(input, new LinearLayout.LayoutParams(-1, -2));
         tools = new LinearLayout(context); tools.setGravity(Gravity.CENTER_VERTICAL); tools.setTag("composerTools");
         bar.addView(tools, new LinearLayout.LayoutParams(-1, -2));
-        model = new TextView(context); model.setTextColor(style.ink); model.setTextSize(14);
+        model = new TextView(context); model.setTextColor(style.ink); model.setTextSize(Palette.TEXT_BODY);
         model.setGravity(Gravity.CENTER_VERTICAL | Gravity.END); model.setSingleLine(true); model.setEllipsize(TextUtils.TruncateAt.END);
         LineIcon chevron = new LineIcon("down", style.muted); chevron.setBounds(0, 0, dp(14), dp(14));
         model.setCompoundDrawablesRelative(null, null, chevron, null); model.setCompoundDrawablePadding(dp(4));
         model.setPadding(dp(10), 0, dp(10), 0); model.setFocusable(true);
         model.setBackground(new android.graphics.drawable.RippleDrawable(
-            android.content.res.ColorStateList.valueOf(0x224176e6), style.capsule(style.background), style.capsule(Color.WHITE)));
+            android.content.res.ColorStateList.valueOf(Palette.RIPPLE_ON_PAGE), style.capsule(style.background), style.capsule(Color.WHITE)));
         model.setOnClickListener(view -> onModel.run());
         tools.addView(model, new LinearLayout.LayoutParams(0, dp(48), 1));
         send = style.composerAction(chinese ? "发送" : "Send", R.drawable.ic_send, onSend);

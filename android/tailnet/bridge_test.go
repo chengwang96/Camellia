@@ -2,16 +2,19 @@ package tailnet
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptrace"
+	"net/netip"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
 )
 
 func TestConnectionFailureCodesAreSafeAndSpecific(t *testing.T) {
@@ -222,5 +225,148 @@ func TestTargetsStayInsideTailnet(t *testing.T) {
 	}
 	if err := validateTarget("DELETE", "http://100.80.1.2:80/v1/status"); err == nil {
 		t.Fatal("accepted unsupported method")
+	}
+}
+
+// A stream that ends cleanly must be distinguishable from a read that failed.
+//
+// The empty chunk `ReadChunk` returns does not survive the language boundary:
+// gomobile turns a zero-length slice into NULL, and Swift imports the method as
+// returning a non-optional Data, so the end of a stream arrives there as a
+// thrown error. Finished() is what tells the two apart.
+func TestFinishedSeparatesEndOfStreamFromFailure(t *testing.T) {
+	node := testNode(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("snapshot")),
+			Request:    request,
+		}, nil
+	})
+	response, err := node.Prepare("GET", "http://100.80.1.2:43127/v1/status", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Close()
+	if err := response.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	chunk, err := response.ReadChunk()
+	if err != nil || string(chunk) != "snapshot" {
+		t.Fatalf("expected the body, got %q and %v", chunk, err)
+	}
+	if response.Finished() {
+		t.Fatal("a stream that still holds data reported itself finished")
+	}
+
+	chunk, err = response.ReadChunk()
+	if err != nil || len(chunk) != 0 {
+		t.Fatalf("expected an empty chunk at the end of the stream, got %q and %v", chunk, err)
+	}
+	if !response.Finished() {
+		t.Fatal("the end of the stream went unreported; Swift would read it as a failure")
+	}
+}
+
+// A read that really failed must leave Finished false, so the Swift reader
+// re-raises it instead of treating it as an end of stream.
+func TestFailureDoesNotLookLikeEndOfStream(t *testing.T) {
+	node := testNode(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(errorReader{}),
+			Request:    request,
+		}, nil
+	})
+	response, err := node.Prepare("GET", "http://100.80.1.2:43127/v1/status", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Close()
+	if err := response.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if chunk, err := response.ReadChunk(); err == nil || len(chunk) != 0 {
+		t.Fatalf("expected a classified failure, got %q and %v", chunk, err)
+	}
+	if response.Finished() {
+		t.Fatal("a failed read reported itself as an end of stream")
+	}
+}
+
+// A response that was never executed has nothing to read, and Swift meets the
+// same thrown error there as at a real end of stream.
+func TestUnexecutedResponseIsFinished(t *testing.T) {
+	node := testNode(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: http.NoBody, Request: request}, nil
+	})
+	response, err := node.Prepare("GET", "http://100.80.1.2:43127/v1/status", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Close()
+	if chunk, err := response.ReadChunk(); err != nil || len(chunk) != 0 {
+		t.Fatalf("expected nothing to read, got %q and %v", chunk, err)
+	}
+	if !response.Finished() {
+		t.Fatal("an unexecuted response did not report itself finished")
+	}
+}
+
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) { return 0, syscall.ECONNRESET }
+
+func TestStatusPayloadKeepsTheContractBothClientsRead(t *testing.T) {
+	// The two fields the clients act on must keep their exact names and types;
+	// Android reads them by name and a rename would silently blank the sign-in
+	// gate rather than fail a build.
+	payload, err := statusPayload(&ipnstate.Status{
+		BackendState:   "NeedsLogin",
+		AuthURL:        "https://login.tailscale.com/a/abc",
+		TailscaleIPs:   []netip.Addr{netip.MustParseAddr("100.88.1.2"), netip.MustParseAddr("fd7a::1")},
+		Self:           &ipnstate.PeerStatus{HostName: "camellia-ios", Online: true},
+		CurrentTailnet: &ipnstate.TailnetStatus{Name: "example.ts.net"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatalf("the payload is not JSON: %v", err)
+	}
+	if decoded["state"] != "NeedsLogin" {
+		t.Fatalf("state changed: %v", decoded["state"])
+	}
+	if decoded["loginUrl"] != "https://login.tailscale.com/a/abc" {
+		t.Fatalf("loginUrl changed: %v", decoded["loginUrl"])
+	}
+	if decoded["hostName"] != "camellia-ios" || decoded["online"] != true {
+		t.Fatalf("self node missing from the payload: %v", decoded)
+	}
+	if decoded["tailnet"] != "example.ts.net" {
+		t.Fatalf("tailnet name missing: %v", decoded["tailnet"])
+	}
+	addresses, ok := decoded["tailnetIPs"].([]any)
+	if !ok || len(addresses) != 2 || addresses[0] != "100.88.1.2" {
+		t.Fatalf("addresses wrong: %v", decoded["tailnetIPs"])
+	}
+}
+
+func TestStatusPayloadMarshalsAnEmptyAddressListAsAnArray(t *testing.T) {
+	// Before first sign-in there are no addresses. `[]` and `null` both mean
+	// "none", but only one of them lets the client decode without special-casing
+	// a missing field, so the shape is pinned here.
+	payload, err := statusPayload(&ipnstate.Status{BackendState: "NeedsLogin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, `"tailnetIPs":[]`) {
+		t.Fatalf("an empty address list did not marshal as []: %s", payload)
+	}
+	if !strings.Contains(payload, `"online":false`) || !strings.Contains(payload, `"hostName":""`) {
+		t.Fatalf("a node with no self entry produced an unexpected payload: %s", payload)
 	}
 }

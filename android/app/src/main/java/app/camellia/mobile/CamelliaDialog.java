@@ -27,16 +27,24 @@ final class CamelliaDialog extends AlertDialog {
         if (options.cancelListener != null) setOnCancelListener(options.cancelListener);
     }
 
-    private int dp(int value) { return Math.round(value * getContext().getResources().getDisplayMetrics().density); }
-    private GradientDrawable rounded(int color, int radius) {
-        GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(radius)); return shape;
-    }
+    private int dp(int value) { return style.dp(value); }
+    private GradientDrawable rounded(int color, int radius) { return style.round(color, radius); }
     private LinearLayout column() {
         LinearLayout column = new LinearLayout(getContext()); column.setOrientation(LinearLayout.VERTICAL); return column;
     }
+
+    /**
+     * Deliberately without line spacing, unlike {@link SettingsStyle#label}.
+     *
+     * <p>This class's title and button labels are single lines, and its message
+     * is the one multi-line block here. Switching it to the shared helper would
+     * change how every existing dialog's message is drawn, which is a visual
+     * decision rather than a de-duplication — so the copies of `dp` and
+     * `rounded` went away and this one stayed.
+     */
     private TextView text(CharSequence value, int size, int color) {
         TextView view = new TextView(getContext()); view.setText(value); view.setTextSize(size); view.setTextColor(color);
-        view.setLineSpacing(dp(3), 1); return view;
+        return view;
     }
 
     @Override protected void onCreate(Bundle saved) {
@@ -45,13 +53,13 @@ final class CamelliaDialog extends AlertDialog {
         ScrollView scroll = new ScrollView(getContext()); scroll.setFillViewport(false);
         LinearLayout body = column(); body.setTag("camelliaDialogBody"); scroll.addView(body);
         if (options.title != null && options.title.length() > 0) {
-            TextView title = text(options.title, 21, style.ink); title.setTag("camelliaDialogTitle");
+            TextView title = text(options.title, Palette.TEXT_DISPLAY, style.ink); title.setTag("camelliaDialogTitle");
             title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); title.setPadding(dp(8), dp(4), dp(8), dp(18));
             if (android.os.Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
             body.addView(title);
         }
         if (options.message != null) {
-            TextView message = text(options.message, 15, style.secondary); message.setId(android.R.id.message);
+            TextView message = text(options.message, Palette.TEXT_INPUT, style.secondary); message.setId(android.R.id.message);
             message.setPadding(dp(16), dp(16), dp(16), dp(16)); message.setBackground(style.cardBackground());
             message.setTextIsSelectable(true); body.addView(message);
         }
@@ -83,11 +91,13 @@ final class CamelliaDialog extends AlertDialog {
 
     private void addButton(LinearLayout parent, int which, int id, CharSequence label, DialogInterface.OnClickListener listener, boolean primary) {
         if (label == null) return;
-        Button button = new Button(getContext()); button.setId(id); button.setText(label); button.setAllCaps(false); button.setTextSize(16);
+        Button button = new Button(getContext()); button.setId(id); button.setText(label); button.setAllCaps(false); button.setTextSize(Palette.TEXT_ROW);
         button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); button.setTextColor(primary ? style.card : style.ink);
         button.setPadding(dp(14), dp(12), dp(14), dp(12)); button.setMinHeight(dp(52)); button.setMinimumHeight(dp(52));
         button.setStateListAnimator(null); button.setElevation(0);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(style.divider), rounded(primary ? style.ink : style.card, 20), rounded(Color.WHITE, 20)));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(style.divider),
+            rounded(primary ? style.ink : style.card, Palette.RADIUS_DIALOG_ACTION),
+            rounded(Color.WHITE, Palette.RADIUS_DIALOG_ACTION)));
         button.setOnClickListener(view -> { if (listener != null) listener.onClick(this, which); dismiss(); });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); if (parent.getChildCount() > 0) params.topMargin = dp(8);
         parent.addView(button, params); buttons.put(which, button);

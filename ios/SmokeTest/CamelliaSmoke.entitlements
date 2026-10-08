@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	The Keychain on iOS refuses every request from a process that carries no
+	`application-identifier`, answering errSecMissingEntitlement (-34018). The
+	smoke test builds a bare bundle, so it has to be signed with the same
+	entitlement Xcode would otherwise add on its own, or the node cannot reach
+	its own state store and never starts.
+
+	This is also the answer to whether a shipping build needs anything extra: it
+	does not. Xcode grants `application-identifier` and a matching
+	`keychain-access-groups` entry to every signed app, for a free Apple ID
+	account as much as a paid one. Only an unsigned harness has to say so.
+	-->
+	<key>application-identifier</key>
+	<string>app.camellia.mobile.smoke</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>app.camellia.mobile.smoke</string>
+	</array>
+</dict>
+</plist>

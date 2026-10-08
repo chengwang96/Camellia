@@ -20,17 +20,20 @@ final class ChatChoiceRow extends LinearLayout {
         super(context);
         setGravity(Gravity.CENTER_VERTICAL); setPadding(dp(16), dp(14), dp(14), dp(14)); setMinimumHeight(dp(64));
         setTag(tag); setFocusable(true); setSelected(selected);
-        GradientDrawable mask = new GradientDrawable(); mask.setColor(Color.WHITE); mask.setCornerRadius(dp(18));
+        GradientDrawable mask = new GradientDrawable(); mask.setColor(Color.WHITE); mask.setCornerRadius(dp(Palette.RADIUS_FIELD));
         setBackground(new RippleDrawable(ColorStateList.valueOf((accent & 0xffffff) | 0x18000000), null, mask));
+        // The ripple is 0x18 alpha, the same one `SettingsStyle` uses on a card
+        // row — derived from `accent` rather than a fixed colour because this row
+        // is also used over the darker popups, where the fixed one reads wrong.
         LinearLayout words = new LinearLayout(context); words.setOrientation(VERTICAL);
-        TextView name = label(title, 17, ink); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        TextView name = label(title, Palette.TEXT_ROW_STRONG, ink); name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         name.setMaxLines(2); words.addView(name);
         if (!description.isEmpty()) {
-            TextView detail = label(description, 12, muted); detail.setMaxLines(3); detail.setPadding(0, dp(5), 0, 0); words.addView(detail);
+            TextView detail = label(description, Palette.TEXT_SMALL, muted); detail.setMaxLines(3); detail.setPadding(0, dp(5), 0, 0); words.addView(detail);
         }
         addView(words, new LayoutParams(0, -2, 1));
         if (selected) {
-            TextView check = label("✓", 22, accent); check.setGravity(Gravity.CENTER);
+            TextView check = label("✓", Palette.TEXT_TICK, accent); check.setGravity(Gravity.CENTER);
             check.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); addView(check, new LayoutParams(dp(32), dp(32)));
         } else if (icon != null) {
             ImageView arrow = new ImageView(context); arrow.setImageDrawable(new LineIcon(icon, muted));

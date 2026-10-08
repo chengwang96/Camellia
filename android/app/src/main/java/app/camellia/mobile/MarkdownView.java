@@ -240,7 +240,7 @@ final class MarkdownView {
     }
 
     private GradientDrawable background(int color, boolean border) {
-        GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(8));
+        GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(Palette.RADIUS_CODE));
         if (border) shape.setStroke(dp(1), (muted & 0x00ffffff) | 0x44000000); return shape;
     }
 
@@ -346,7 +346,7 @@ final class MarkdownView {
 
     private Button copy(Supplier<String> value) {
         Button button = new Button(context); button.setAllCaps(false); button.setText(tr("复制", "Copy"));
-        button.setTextSize(12); button.setTextColor(accent); button.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        button.setTextSize(Palette.TEXT_SMALL); button.setTextColor(accent); button.setBackgroundColor(android.graphics.Color.TRANSPARENT);
         button.setMinHeight(dp(48)); button.setContentDescription(tr("复制代码", "Copy code"));
         button.setOnClickListener(view -> {
             ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
