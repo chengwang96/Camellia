@@ -24,12 +24,12 @@ public final class MobileAttachmentsTest extends InstrumentationTestCase {
     @Override protected void setUp() throws Exception {
         super.setUp(); context = getInstrumentation().getTargetContext();
         MobilePreferences.set(context, "language", "zh-CN");
-        new CredentialStore(context, "local-chat-private").clear();
+        LocalChatFixture.clear(context);
     }
     @Override protected void tearDown() throws Exception {
         for (String reference : references) AttachmentStore.remove(context, reference);
         for (File file : fixtures) file.delete();
-        new CredentialStore(context, "local-chat-private").clear(); super.tearDown();
+        LocalChatFixture.clear(context); super.tearDown();
     }
 
     public void testUnifiedCountAndOnlyRemoteAggregateBudget() throws Exception {
@@ -53,13 +53,13 @@ public final class MobileAttachmentsTest extends InstrumentationTestCase {
         assertEquals("中文 notes\nsecond line", new String(AttachmentStore.read(context, text.getString("text")), StandardCharsets.UTF_8));
         JSONObject word = read("notes.docx", zip(Map.of("word/document.xml", "<document><p><t>First</t></p><p><t>第二段</t></p></document>")));
         assertEquals("First\n第二段\n", new String(AttachmentStore.read(context, word.getString("text")), StandardCharsets.UTF_8));
-        String sheet = ChatDocument.officeText("xlsx", zip(Map.of("xl/sharedStrings.xml", "<sst><si><t>Revenue</t></si></sst>",
+        String sheet = ChatDocument.officeText(context, "xlsx", zip(Map.of("xl/sharedStrings.xml", "<sst><si><t>Revenue</t></si></sst>",
             "xl/worksheets/sheet1.xml", "<worksheet><row><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\"><v>42</v></c></row></worksheet>")));
         assertTrue(sheet, sheet.contains("A1=Revenue\tB1=42"));
-        String slides = ChatDocument.officeText("pptx", zip(Map.of("ppt/slides/slide10.xml", "<slide><p><t>Tenth</t></p></slide>",
+        String slides = ChatDocument.officeText(context, "pptx", zip(Map.of("ppt/slides/slide10.xml", "<slide><p><t>Tenth</t></p></slide>",
             "ppt/slides/slide2.xml", "<slide><p><t>Second</t></p></slide>")));
         assertTrue(slides.indexOf("Second") < slides.indexOf("Tenth"));
-        try { ChatDocument.officeText("docx", zip(Map.of("word/document.xml", "<!DOCTYPE x [<!ENTITY x SYSTEM 'file:///private'>]><p><t>&x;</t></p>"))); fail(); }
+        try { ChatDocument.officeText(context, "docx", zip(Map.of("word/document.xml", "<!DOCTYPE x [<!ENTITY x SYSTEM 'file:///private'>]><p><t>&x;</t></p>"))); fail(); }
         catch (IOException expected) { assertTrue(expected.getMessage().contains("DTD")); }
         try { read("old.doc", new byte[]{1, 2, 3}); fail(); } catch (IOException expected) { assertTrue(expected.getMessage().contains("DOCX")); }
     }
@@ -75,7 +75,7 @@ public final class MobileAttachmentsTest extends InstrumentationTestCase {
         }
         ChatAttachments.validateRemote(context, Collections.emptyList(), documents, true, true, true);
         JSONObject payload = new JSONObject().put("attachments", ChatAttachments.remote(Collections.emptyList(), documents));
-        JSONArray sent = new JSONObject(AttachmentJson.string(context, payload)).getJSONArray("attachments");
+        JSONArray sent = new JSONObject(snapshot(payload)).getJSONArray("attachments");
         assertEquals(documents.size(), sent.length());
         for (int index = 0; index < sent.length(); index++) {
             JSONObject file = sent.getJSONObject(index);
@@ -131,7 +131,7 @@ public final class MobileAttachmentsTest extends InstrumentationTestCase {
             LocalChatConfig.Route route = new LocalChatConfig.Route("fixture", "Fixture", "fixture-model", protocol, "https://example.com/v1", "fixture-key");
             JSONObject body = LocalChatClient.request(route, new JSONArray().put(user));
             assertTrue("Persisted requests retain small references", body.toString().length() < 10000);
-            String encoded = AttachmentJson.string(context, new JSONObject(body.toString()));
+            String encoded = snapshot(new JSONObject(body.toString()));
             assertFalse(encoded.contains("camellia-blob:")); assertFalse(encoded.contains("camellia-text:"));
             assertEquals(encoded.getBytes(StandardCharsets.UTF_8).length, AttachmentJson.length(context, body));
             JSONArray parts = new JSONObject(encoded).getJSONArray("messages").getJSONObject(0).getJSONArray("content");
@@ -141,9 +141,9 @@ public final class MobileAttachmentsTest extends InstrumentationTestCase {
             assertTrue(Arrays.equals(pdfBytes, android.util.Base64.decode(data, android.util.Base64.NO_WRAP)));
             assertEquals("quoted \"中文\"\nnotes", parts.getJSONObject(15).getString("text"));
         }
-        LocalChatStore store = new LocalChatStore(context); JSONObject conversation = store.createConversation("", "fixture");
+        LocalChatFixture store = new LocalChatFixture(context); JSONObject conversation = store.createConversation("", "fixture");
         conversation.getJSONArray("messages").put(user); store.save();
-        assertEquals(12, new LocalChatStore(context).conversation(conversation.getString("id")).getJSONArray("messages").getJSONObject(0).getJSONArray("images").length());
+        assertEquals(12, new LocalChatFixture(context).conversation(conversation.getString("id")).getJSONArray("messages").getJSONObject(0).getJSONArray("images").length());
     }
 
     public void testDraftAndFailedRemotePayloadPreserveMixedAttachments() throws Exception {
@@ -162,12 +162,12 @@ public final class MobileAttachmentsTest extends InstrumentationTestCase {
     }
 
     public void testLocalPickerAcceptsDocumentsBesideTwelveImagesAndRejectsOverflow() throws Throwable {
-        LocalChatStore store = new LocalChatStore(context);
+        LocalChatFixture store = new LocalChatFixture(context);
         JSONObject provider = new JSONObject().put("id", "fixture").put("name", "Fixture").put("protocol", "openai").put("baseUrl", "https://example.com/v1")
             .put("keys", new JSONArray().put(new JSONObject().put("key", "fixture-key"))).put("models", new JSONArray().put(new JSONObject().put("id", "fixture-model").put("upstream", "fixture-model")));
         store.importConfig(new JSONObject().put("providers", new JSONArray().put(provider)));
         String id = store.createConversation("", LocalChatConfig.routes(store.config()).get(0).id).getString("id");
-        LocalChatActivity activity = (LocalChatActivity) getInstrumentation().startActivitySync(new Intent(context, LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        LocalChatActivity activity = (LocalChatActivity) LocalChatFixture.start(getInstrumentation(), new Intent(context, LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         File document = fixture("mixed.txt", "read this document".getBytes(StandardCharsets.UTF_8));
         try {
             ui(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + id).performClick());
@@ -196,7 +196,7 @@ public final class MobileAttachmentsTest extends InstrumentationTestCase {
         CredentialStore remote = new CredentialStore(context); remote.clear();
         EmbeddedNetwork.initialize(context); EmbeddedNetwork.setEnabled(false);
         String id = "12345678-1234-1234-1234-123456789abc", address = "http://100.80.1.2:43127";
-        MainActivity activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        MainActivity activity = (MainActivity) LocalChatFixture.start(getInstrumentation(), new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         File document = fixture("remote-notes.txt", "remote document".getBytes(StandardCharsets.UTF_8));
         String image = blob(new byte[]{(byte) 255, (byte) 216, (byte) 255, (byte) 217});
         try {
@@ -243,7 +243,7 @@ public final class MobileAttachmentsTest extends InstrumentationTestCase {
     public void testOlderFileCapableDesktopCanPickAndSendPdfAndWord() throws Throwable {
         CredentialStore remote = new CredentialStore(context); remote.clear();
         EmbeddedNetwork.initialize(context); EmbeddedNetwork.setEnabled(false);
-        MainActivity activity = (MainActivity) getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        MainActivity activity = (MainActivity) LocalChatFixture.start(getInstrumentation(), new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         byte[] pdfBytes = "%PDF-1.7\n%%EOF\n".getBytes(StandardCharsets.UTF_8), wordBytes = new byte[]{(byte) 0xd0, (byte) 0xcf, 17, (byte) 0xe0};
         File pdf = fixture("review.pdf", pdfBytes), word = fixture("legacy.doc", wordBytes);
         Intent[] picker = {null};
@@ -288,7 +288,7 @@ public final class MobileAttachmentsTest extends InstrumentationTestCase {
                     JSONObject pending = ((JSONObject) field(activity, "credentials")).getJSONObject("pendingCommand");
                     JSONObject payload = pending.getJSONObject("payload");
                     assertFalse(payload.has("image")); assertFalse(payload.has("images"));
-                    JSONArray sent = new JSONObject(AttachmentJson.string(context, payload)).getJSONArray("attachments");
+                    JSONArray sent = new JSONObject(snapshot(payload)).getJSONArray("attachments");
                     assertEquals(2, sent.length()); assertEquals("review.pdf", sent.getJSONObject(0).getString("name"));
                     assertEquals("legacy.doc", sent.getJSONObject(1).getString("name"));
                     assertTrue(Arrays.equals(pdfBytes, android.util.Base64.decode(sent.getJSONObject(0).getString("data"), android.util.Base64.NO_WRAP)));
@@ -303,6 +303,10 @@ public final class MobileAttachmentsTest extends InstrumentationTestCase {
     }
     private void invoke(Object object, String name) throws Exception {
         var method = object.getClass().getDeclaredMethod(name); method.setAccessible(true); method.invoke(object);
+    }
+    private String snapshot(JSONObject body) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream(); AttachmentJson.write(context, body, output);
+        return output.toString(StandardCharsets.UTF_8.name());
     }
     private String blob(byte[] bytes) throws Exception { String reference = AttachmentStore.save(context, bytes); references.add(reference); return reference; }
     private JSONObject read(String name, byte[] bytes) throws Exception {
@@ -325,6 +329,7 @@ public final class MobileAttachmentsTest extends InstrumentationTestCase {
         catch (Exception error) { throw new AssertionError(error); }
     }
     private void ui(Runnable runnable) throws Throwable {
+        LocalChatFixture.idle(getInstrumentation());
         Throwable[] failure = new Throwable[1]; getInstrumentation().runOnMainSync(() -> { try { runnable.run(); } catch (Throwable error) { failure[0] = error; } });
         if (failure[0] != null) throw failure[0];
     }

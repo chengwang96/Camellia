@@ -229,16 +229,30 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     if (!cfg.enabled) return null;
     const currentRoutes = candidates(model, protocol);
     const eligible = remaining.filter(route => {
-      const current = currentRoutes.find(r => r.provider.id === route.provider.id && r.key.id === route.key.id);
-      return current && current.key.key === route.key.key && current.model.upstream === route.model.upstream
+      const current = currentRoutes.find(r => r.provider.id === route.provider.id && r.key.id === route.key.id
+        && r.model.upstream === route.model.upstream && r.protocol === route.protocol);
+      const unchanged = current && current.key.key === route.key.key && current.model.upstream === route.model.upstream
         && current.protocol === route.protocol && current.provider.baseUrl === route.provider.baseUrl
-        && current.provider.anthropicBaseUrl === route.provider.anthropicBaseUrl && available(route, model);
+        && current.provider.anthropicBaseUrl === route.provider.anthropicBaseUrl;
+      // Keep the original object's identity: the retry loop removes this exact
+      // object from its remaining candidates after reserving the request.
+      if (unchanged) Object.assign(route, current);
+      return unchanged;
     });
-    // Retain provider preference/priority and idle-key affinity. Only spread
-    // overlapping requests across keys of that same provider; never spill to a
-    // different provider merely because it is idle (it may have different billing).
-    return eligible.reduce((best, route) => route.provider.id === best.provider.id
-      && keyLoad(route.provider, route.key) < keyLoad(best.provider, best.key) ? route : best, eligible[0]);
+    const preferred = eligible.find(route => route.key.id === cfg.active[model]) || eligible.reduce((best, route) =>
+      route.provider.priority > best.provider.priority ? route : best, eligible[0]);
+    const selectable = cfg.routing.multiKeyFailover ? eligible.filter(route => available(route, model))
+      : eligible.filter(route => cfg.routing.multiKeyConcurrency
+        ? route.provider.priority === preferred.provider.priority : route.key.id === preferred.key.id);
+    // Spread overlapping requests across all keys at the highest available
+    // priority. Equal loads keep the active route/provider order; a busy high
+    // priority route still takes precedence over an idle lower priority route.
+    const selected = selectable.reduce((best, route) => route.provider.priority > best.provider.priority
+      || cfg.routing.multiKeyConcurrency && route.provider.priority === best.provider.priority && keyLoad(route.provider, route.key) < keyLoad(best.provider, best.key)
+      ? route : best, selectable[0]);
+    // With failover off, health does not silently replace the selected key.
+    // Concurrency can still distribute new requests, but each gets one attempt.
+    return selected && available(selected, model) ? selected : null;
   }
   function failed(route, model, status, kind, headers = {}, tokens = {}, trackUsage = true) {
     const usage = usageFor(route);
@@ -528,6 +542,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       // rejected credential or model instead of retrying the same way.
       if (auxiliary) auxiliaryFailure = { status: result.status, kind: result.kind };
       if (result.committed) return; // Never replay a partially delivered answer/tool call.
+      if (!cfg.routing.multiKeyFailover) break;
     }
     if (auxiliary && auxiliaryFailure) {
       const status = Number.isInteger(auxiliaryFailure.status) && auxiliaryFailure.status >= 400 && auxiliaryFailure.status < 600 ? auxiliaryFailure.status : 503;
@@ -539,7 +554,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     const headers = waits.length ? { 'retry-after': String(Math.ceil(Math.min(...waits) / 1000)) }
       : outOfQuota.length ? { 'retry-after': String(Math.ceil(quotaIntervalMs / 1000)) } : {};
     apiError(res, attempts.length && attempts.every(a => a.endsWith(reasonText.protocol)) ? 400 : 503,
-      `Model "${model}" has no available routes. The model was not changed. ${attempts.join('; ') || "Wait for quota to recover, or check the key and reset its cooldown in settings."}`, protocol, 'model_routes_exhausted', headers);
+      `Model "${model}" has no available routes. The model was not changed. ${attempts.join('; ') || "Wait for quota to recover, or check the key and reset its cooldown in settings."}${cfg.routing.multiKeyFailover ? '' : ' Automatic key failover is disabled. Switch the route or reset the key in settings.'}`, protocol, 'model_routes_exhausted', headers);
   }
   const server = http.createServer((req, res) => { handle(req, res).catch(() => { if (!res.headersSent) apiError(res, 500, "Router configuration or request processing failed. Check API route settings.", req.url.includes('messages') ? 'anthropic' : 'openai'); else res.destroy(); }); });
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
@@ -584,8 +599,11 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   }
   function rotate(model) {
     const id = modelId(model);
-    const routes = candidates(id, 'openai').filter(route => available(route, id));
-    const next = routes.slice(1).find(route => route.provider.priority === routes[0].provider.priority);
+    const all = candidates(id, 'openai');
+    const routes = all.filter(route => available(route, id));
+    const preferred = all.find(route => route.key.id === cfg.active[id]) || all[0];
+    const next = !cfg.routing.multiKeyFailover && routes[0]?.key.id !== preferred?.key.id ? routes[0]
+      : routes.slice(1).find(route => route.provider.priority === routes[0].provider.priority);
     if (!next) throw new Error("No other route with the same priority is available for this model");
     cfg.active[id] = next.key.id; changed(); return getState();
   }
@@ -602,8 +620,10 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     refreshDisk();
     if (!running || stopped || !cfg.enabled) throw new Error('Enable the API route pool before running a benchmark');
     const model = modelId(options.model);
-    const route = candidates(model, 'openai').find(r => r.provider.id === options.providerId
+    const matching = candidates(model, 'openai').filter(r => r.provider.id === options.providerId
       && (!options.keyId || r.key.id === options.keyId) && available(r, model));
+    const route = options.routeFingerprint ? matching.find(route => routeFingerprint(route) === options.routeFingerprint) : matching[0];
+    if (!route && matching.length && options.routeFingerprint) throw new Error('The provider route changed; start a new benchmark');
     if (!route) throw new Error('This model has no available key on the selected provider');
     const fingerprint = routeFingerprint(route);
     if (options.routeFingerprint && options.routeFingerprint !== fingerprint) throw new Error('The provider route changed; start a new benchmark');

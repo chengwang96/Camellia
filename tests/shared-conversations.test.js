@@ -35,6 +35,196 @@ function fixture(t, overrides = {}) {
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
 
+for (const nativeId of [true, false]) test('failed response persistence clears runtime state with native ID ' + nativeId, async t => {
+  const status = [], h = fixture(t, { onStatus: event => status.push(event) });
+  const run = await h.manager.send('codex', { prompt: 'Remember this request' });
+  const a = h.manager.active.get(run.sessionId), file = h.manager.file(run.sessionId);
+  const goal = h.manager.goalFor(run.sessionId);
+  assert.equal(goal.start({ objective: 'Finish', engine: 'codex' }, { adoptSession: a.facade }).ok, true);
+  const write = fs.writeFileSync;
+  const denied = t.mock.method(fs, 'writeFileSync', (target, ...args) => {
+    if (String(target).startsWith(file + '.')) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    return write(target, ...args);
+  });
+  a.session.running = false;
+  assert.equal(h.manager.capture('codex', { type: 'result', subtype: 'success', result: 'Verified response', runId: a.session.gen,
+    ...(nativeId ? { session_id: a.session.sessionId } : {}) }), true);
+  const result = await run.done;
+  assert.equal(result.is_error, true); assert.match(result.result, /disk full/);
+  assert.equal(h.manager.active.size, 0); assert.equal(h.manager.busy(run.sessionId), false);
+  assert.equal(a.facade.running, false); assert.equal(a.finished, true); assert.equal(a.c.pending, null);
+  assert.equal(goal.armed, false); assert.equal(goal.goal.phase, 'blocked');
+  assert.equal(h.events.filter(event => event.type === 'result' && event.subtype === 'success').length, 0);
+  assert.equal(h.events.filter(event => event.type === 'conversation:turn-end').length, 1);
+  assert.match(status.at(-1).text, /disk full/);
+  denied.mock.restore();
+});
+
+test('failed streaming persistence shuts down its native process and completes the shared turn', async t => {
+  const h = fixture(t), run = await h.manager.send('claude', { prompt: 'Remember this request' });
+  const a = h.manager.active.get(run.sessionId); let killed = 0;
+  a.session.kill = () => { killed++; a.session.running = false; a.session.dead = true; };
+  const write = fs.writeFileSync;
+  const denied = t.mock.method(fs, 'writeFileSync', (file, ...args) => {
+    if (String(file).startsWith(h.manager.file(run.sessionId) + '.')) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    return write(file, ...args);
+  });
+  assert.equal(h.manager.capture('claude', { type: 'gui:usage', runId: a.session.gen, usage: { input_tokens: 123 } }), true);
+  assert.equal((await run.done).is_error, true); assert.equal(killed, 1);
+  assert.equal(h.manager.busy(run.sessionId), false); assert.equal(a.facade.running, false);
+  denied.mock.restore();
+});
+
+test('a shared disk failure still delivers its terminal error when pausing the remote queue also fails', async t => {
+  const h = fixture(t), run = await h.manager.send('codex', { prompt: 'Current work' });
+  const { RemoteMessageQueue } = require('../src/main/remote/message-queue');
+  const queue = new RemoteMessageQueue({ file: path.join(h.root, 'queue.json'), manager: h.manager, authorize() {}, send: async () => { throw new Error('Must not send'); } });
+  h.manager.remoteQueue = queue; queue.add('phone', run.sessionId, { prompt: 'Next work' });
+  const write = fs.writeFileSync;
+  const denied = t.mock.method(fs, 'writeFileSync', (file, ...args) => {
+    if (String(file).startsWith(h.root + path.sep)) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    return write(file, ...args);
+  });
+  h.finish('codex');
+  assert.equal((await run.done).is_error, true); await h.flush();
+  assert.equal(queue.view(run.sessionId)[0].state, 'paused');
+  assert.equal(h.events.filter(event => event.type === 'result' && event.is_error).length, 1);
+  assert.equal(h.events.filter(event => event.type === 'conversation:turn-end').length, 1);
+  assert.equal(h.manager.busy(run.sessionId), false); assert.equal(h.sent.length, 1);
+  denied.mock.restore(); queue.close();
+});
+
+test('startup isolates corrupt conversation, goal and task records while retaining their bytes', t => {
+  const h = fixture(t), good = h.manager.create('codex', null, 'Healthy history');
+  h.manager.append(good, { role: 'user', text: 'Retain the healthy conversation' }); h.manager.save(good);
+  const bad = h.manager.create('claude', null, 'Broken history'), damaged = '{"retain":"original';
+  fs.writeFileSync(h.manager.file(bad.id), damaged);
+  fs.mkdirSync(path.join(h.root, 'goals'), { recursive: true });
+  fs.writeFileSync(path.join(h.root, 'goals', good.id + '.json'), damaged);
+  fs.writeFileSync(path.join(h.root, 'tasks', 'state.json'), '{}');
+  const restarted = h.restart();
+  assert.equal(restarted.items.size, 1); assert.equal(restarted.get(good.id).title, 'Healthy history');
+  assert.equal(restarted.messages(restarted.get(good.id))[0].text, 'Retain the healthy conversation');
+  assert.equal(restarted.recoveryWarnings.length, 3); assert.equal(restarted.tasks.list().length, 0);
+  for (const warning of restarted.recoveryWarnings) {
+    assert.ok(fs.existsSync(warning.backupFile));
+    assert.ok([damaged, '{}'].includes(fs.readFileSync(warning.backupFile, 'utf8')));
+  }
+});
+
+test('failed compaction persistence releases switching state and keeps the previous context binding', async t => {
+  const h = fixture(t, { summarize: { available: () => true, run: async () => ({ text: 'Summary' }) } });
+  const c = h.manager.create('kimi'); h.manager.append(c, { role: 'user', text: 'ORIGINAL_CONTEXT' }); h.manager.save(c);
+  const segment = { nativeId: 'keep-native', cursor: 0 }; c.segments.kimi = segment;
+  const write = fs.writeFileSync;
+  const denied = t.mock.method(fs, 'writeFileSync', (file, ...args) => {
+    if (String(file).startsWith(h.manager.file(c.id) + '.')) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    return write(file, ...args);
+  });
+  await assert.rejects(h.manager.compact(c.id, { portable: true, automatic: true }), /disk full/);
+  assert.equal(h.manager.switching.size, 0); assert.equal(h.manager.busy(c.id), false);
+  assert.deepEqual(c.segments.kimi, segment); assert.match(h.manager.context(c, 'kimi'), /ORIGINAL_CONTEXT/);
+  denied.mock.restore();
+});
+
+test('unreadable history never reserves a compaction slot or leaves its deadline running', async t => {
+  const h = fixture(t), c = h.manager.create('kimi');
+  h.manager.append(c, { role: 'user', text: 'Keep this history' }); h.manager.save(c);
+  const read = fs.openSync, setTimer = global.setTimeout, timers = [];
+  t.after(() => timers.forEach(clearTimeout));
+  t.mock.method(global, 'setTimeout', (...args) => { const timer = setTimer(...args); timers.push(timer); return timer; });
+  t.mock.method(fs, 'openSync', (file, ...args) => {
+    if (file === path.join(h.root, c.id + '.jsonl')) throw Object.assign(new Error('history temporarily unreadable'), { code: 'EIO' });
+    return read(file, ...args);
+  });
+  await assert.rejects(h.manager.compact(c.id), /history temporarily unreadable/);
+  assert.equal(h.manager.switching.size, 0); assert.equal(h.manager.busy(c.id), false);
+  assert.equal(timers.length, 0);
+});
+
+test('a failed compacted binding leaves no success notice or unused summary', async t => {
+  const h = fixture(t, { summarize: { available: () => true, run: async () => ({ text: 'Summary' }) } });
+  const c = h.manager.create('kimi'); h.manager.append(c, { role: 'user', text: 'ORIGINAL_CONTEXT' });
+  c.segments.kimi = { nativeId: 'keep-native', cursor: 0 }; h.manager.save(c);
+  const rows = h.manager.rows(c), segment = structuredClone(c.segments.kimi), seq = c.seq, write = fs.writeFileSync;
+  const denied = t.mock.method(fs, 'writeFileSync', (file, data, ...args) => {
+    if (String(file).startsWith(h.manager.file(c.id) + '.') && JSON.parse(data).segments.kimi?.compactFile)
+      throw Object.assign(new Error('binding disk full'), { code: 'ENOSPC' });
+    return write(file, data, ...args);
+  });
+  await assert.rejects(h.manager.compact(c.id, { portable: true }), /binding disk full/);
+  denied.mock.restore();
+  assert.deepEqual(h.manager.rows(c), rows); assert.deepEqual(c.segments.kimi, segment); assert.equal(c.seq, seq);
+  assert.deepEqual(fs.readdirSync(path.join(h.root, 'handoffs')), []);
+  assert.equal(h.manager.busy(c.id), false);
+  const restored = h.restart().get(c.id); assert.deepEqual(restored.segments.kimi, segment);
+});
+
+test('diagnostic persistence cannot turn a committed compaction into a failed operation', async t => {
+  const statuses = [], logs = [], h = fixture(t, { onStatus: event => statuses.push(event), log: text => logs.push(text),
+    summarize: { available: () => true, run: async () => ({ text: 'COMMITTED_SUMMARY' }) } });
+  const c = h.manager.create('kimi'); h.manager.append(c, { role: 'user', text: 'Original task' }); h.manager.save(c);
+  const write = fs.writeFileSync;
+  const denied = t.mock.method(fs, 'writeFileSync', (file, data, ...args) => {
+    if (String(file).startsWith(h.manager.file(c.id) + '.') && JSON.parse(data).lastCompaction?.outcome === 'completed')
+      throw Object.assign(new Error('diagnostic disk full'), { code: 'ENOSPC' });
+    return write(file, data, ...args);
+  });
+  const result = await h.manager.compact(c.id, { portable: true }); denied.mock.restore();
+  assert.equal(result.ok, true); assert.equal(h.manager.busy(c.id), false);
+  assert.equal(statuses.filter(event => event.compaction?.state === 'failed').length, 0);
+  assert.ok(logs.some(text => /diagnostic disk full/.test(text)));
+  const restarted = h.restart(); assert.match(restarted.context(restarted.get(c.id), 'kimi'), /COMMITTED_SUMMARY/);
+});
+
+test('a committed summary survives a missing notice and is reused by the next compaction', async t => {
+  const calls = [], h = fixture(t, { summarize: { available: () => true, run: async options => {
+    calls.push(options); return { text: 'COMMITTED_SUMMARY' };
+  } } });
+  const c = h.manager.create('kimi'); h.manager.append(c, { role: 'user', text: 'Original task' }); h.manager.save(c);
+  const append = fs.appendFileSync;
+  const denied = t.mock.method(fs, 'appendFileSync', (file, data, ...args) => {
+    if (file === path.join(h.root, c.id + '.jsonl') && JSON.parse(data).role === 'notice')
+      throw Object.assign(new Error('notice write failed'), { code: 'EIO' });
+    return append(file, data, ...args);
+  });
+  const result = await h.manager.compact(c.id, { portable: true }); denied.mock.restore();
+  assert.equal(result.ok, true); assert.equal(h.manager.rows(c).filter(row => row.role === 'notice').length, 0);
+  assert.match(h.manager.context(c, 'kimi'), /COMMITTED_SUMMARY/);
+  const restarted = h.restart(), restored = restarted.get(c.id);
+  assert.match(restarted.context(restored, 'kimi'), /COMMITTED_SUMMARY/);
+  restarted.append(restored, { role: 'user', text: 'New task' });
+  calls.length = 0; await restarted.compact(restored.id, { portable: true });
+  assert.ok(calls.some(call => call.user.includes('COMMITTED_SUMMARY')));
+});
+
+test('unchanged streaming native bindings avoid per-delta writes and persist at turn completion', async t => {
+  const h = fixture(t), run = await h.manager.send('claude', { prompt: 'Stream an answer' });
+  const a = h.manager.active.get(run.sessionId), file = h.manager.file(run.sessionId), write = fs.writeFileSync;
+  let writes = 0;
+  const count = t.mock.method(fs, 'writeFileSync', (target, ...args) => {
+    if (String(target).startsWith(file + '.')) writes++;
+    return write(target, ...args);
+  });
+  for (let i = 0; i < 100; i++) h.manager.capture('claude', { type: 'stream_event', runId: a.session.gen,
+    session_id: a.session.sessionId, event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'x' } } });
+  assert.equal(writes, 0); count.mock.restore(); h.finish('claude');
+  assert.equal((await run.done).subtype, 'success');
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(saved.segments.claude.nativeId, a.session.sessionId); assert.ok(saved.segments.claude.lastUsedAt);
+});
+
+for (const message of ['HTTP 401: Authentication failed', 'HTTP 429: quota exceeded',
+  'Compaction failed: HTTP 429: usage limit reached', 'HTTP 403: permission denied', 'Provider unavailable'])
+  test('automatic compaction retains full context after ' + message, async t => {
+    const h = fixture(t, { summarize: { available: () => true, run: async () => { throw new Error(message); } } });
+    const c = h.manager.create('kimi'); h.manager.append(c, { role: 'user', text: 'ORIGINAL_CONTEXT_' + 'x'.repeat(30000) }); h.manager.save(c);
+    const rows = h.manager.rows(c), segments = structuredClone(c.segments);
+    await assert.rejects(h.manager.compact(c.id, { portable: true, automatic: true }), /original history is retained/i);
+    assert.deepEqual(h.manager.rows(c), rows); assert.deepEqual(c.segments, segments);
+    assert.equal(h.manager.busy(c.id), false); assert.notEqual(c.lastCompaction.route, 'local-fallback');
+  });
+
 test('a runtime update blocks that harness while other conversations stay available', async t => {
   let updating = true;
   const h = fixture(t, { assertAvailable: engine => {
@@ -106,6 +296,33 @@ async function nativeFixture(context, compact) {
   const conversation = harness.manager.get(run.sessionId);
   return { ...harness, conversation };
 }
+
+test('failed native compaction persistence does not append a success notice or advance its cursor', async context => {
+  const h = await nativeFixture(context, async () => ({ ok: true })), c = h.conversation;
+  const rows = h.manager.rows(c), seq = c.seq, cursor = c.segments.codex.cursor, write = fs.writeFileSync;
+  const denied = context.mock.method(fs, 'writeFileSync', (file, data, ...args) => {
+    if (String(file).startsWith(h.manager.file(c.id) + '.') && JSON.parse(data).segments.codex.cursor > cursor)
+      throw Object.assign(new Error('native binding disk full'), { code: 'ENOSPC' });
+    return write(file, data, ...args);
+  });
+  await assert.rejects(h.manager.compact(c.id), /native binding disk full/); denied.mock.restore();
+  assert.deepEqual(h.manager.rows(c), rows); assert.equal(c.seq, seq); assert.equal(c.segments.codex.cursor, cursor);
+  assert.equal(h.manager.busy(c.id), false); assert.equal(h.sent.length, 1);
+});
+
+test('native compaction stays completed when its diagnostic record cannot be written', async context => {
+  const h = await nativeFixture(context, async () => ({ ok: true })), c = h.conversation, write = fs.writeFileSync;
+  const denied = context.mock.method(fs, 'writeFileSync', (file, data, ...args) => {
+    if (String(file).startsWith(h.manager.file(c.id) + '.') && JSON.parse(data).lastCompaction?.outcome === 'completed')
+      throw Object.assign(new Error('native diagnostic disk full'), { code: 'ENOSPC' });
+    return write(file, data, ...args);
+  });
+  const result = await h.manager.compact(c.id); denied.mock.restore();
+  assert.equal(result.ok, true); assert.equal(result.native, true); assert.equal(h.manager.busy(c.id), false);
+  const saved = JSON.parse(fs.readFileSync(h.manager.file(c.id), 'utf8'));
+  assert.equal(saved.pending, null); assert.equal(saved.segments.codex.cursor, c.seq);
+  assert.equal(h.manager.rows(c).filter(row => row.role === 'notice' && row.compaction?.native).length, 1);
+});
 
 function subscriptionFixture(t, engine = 'codex') {
   const h = fixture(t), bindings = new Map();
@@ -1731,6 +1948,39 @@ test('tasks defer to Goal, reject unsupported engines and pause with conversatio
   await assert.rejects(unsupported.manager.command('codex', 'task-create', { sessionId: conversation.id, instruction: 'Check' }), /tool support/);
 });
 
+test('composer cancellation ends all unfinished tasks only in its conversation', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  t.after(() => h.manager.closeGoalTools());
+  const conversation = h.manager.create('codex'), other = h.manager.create('claude');
+  const create = async (id, instruction) => (await h.manager.command('codex', 'task-create', { sessionId: id, instruction })).task;
+  const running = await create(conversation.id, 'Check running experiment');
+  const waiting = await create(conversation.id, 'Check waiting experiment');
+  const paused = await create(conversation.id, 'Check paused experiment');
+  const ended = await create(conversation.id, 'Already cancelled');
+  const independent = await create(other.id, 'Other conversation');
+  await h.manager.command('codex', 'task-pause', { sessionId: conversation.id, id: paused.id });
+  await h.manager.command('codex', 'task-cancel', { sessionId: conversation.id, id: ended.id });
+  const oldHistory = h.manager.tasks.get(ended.id, conversation.id).history;
+  h.manager.tasks.get(running.id, conversation.id).nextRunAt = Date.now() - 1;
+  await h.manager.tasks.tick(); await h.flush();
+  assert.equal(h.manager.tasks.get(running.id, conversation.id).status, 'running');
+  assert.equal(h.sent.length, 1);
+  const result = await h.manager.command('codex', 'task-cancel-all', { sessionId: conversation.id });
+  await h.flush();
+  assert.equal(result.ok, true); assert.equal(result.tasks.length, 4);
+  for (const task of [running, waiting, paused]) {
+    const saved = h.manager.tasks.get(task.id, conversation.id);
+    assert.equal(saved.status, 'cancelled'); assert.equal(saved.nextRunAt, null);
+  }
+  assert.equal(h.manager.active.has(conversation.id), false);
+  assert.equal(h.manager.tasks.get(independent.id, other.id).status, 'scheduled');
+  assert.deepEqual(h.manager.tasks.get(ended.id, conversation.id).history, oldHistory);
+  const stored = JSON.parse(fs.readFileSync(h.manager.tasks.file, 'utf8'));
+  assert.equal(stored.filter(task => task.sessionId === conversation.id && task.status === 'cancelled').length, 4);
+  assert.equal((await h.manager.command('codex', 'task-cancel-all', { sessionId: conversation.id })).ok, true);
+  await h.manager.tasks.tick(); await h.flush(); assert.equal(h.sent.length, 1);
+});
+
 test('task cancellation during preparation cannot send a late check', async t => {
   let release, hold = false;
   const harness = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }),
@@ -2533,6 +2783,18 @@ test('a conversation keeps its API model across all engines, other conversations
   assert.equal(manager.settings('kimi').model, 'api-model-c', 'The last explicit choice is the new-session default');
   await manager.send('codex', { sessionId: first.sessionId, fork: true, prompt: 'Branch this work' });
   assert.equal(f.sent.at(-1).opts.settings.model, 'api-model-c'); f.finish('codex');
+});
+
+test('legacy API model names normalize across engines while subscription model IDs stay exact', async t => {
+  const f = fixture(t), alias = 'openai/openai/GPT-6-Astra';
+  f.manager.saveSettings('claude', { model: alias });
+  const first = await f.manager.send('claude', { prompt: 'Use the configured API route' }); f.finish('claude');
+  for (const engine of ENGINES) assert.equal(f.manager.settings(engine, first.sessionId).model, 'gpt-6-astra');
+  assert.equal(f.restart().settings('claude', first.sessionId).model, 'gpt-6-astra');
+  f.drivers.codex.settings = () => ({ connection: 'subscription', model: alias });
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, connection: 'subscription', model: alias });
+  assert.equal(f.manager.settings('codex', first.sessionId).model, alias);
+  assert.equal(f.manager.settings('claude', first.sessionId).model, 'gpt-6-astra');
 });
 
 test('account models and per-engine permissions are retained without copying them to another engine', async t => {
@@ -3355,7 +3617,7 @@ test('overflow moves an over-budget recent tail into summarization instead of lo
   assert.equal(conversation.lastCompaction.retries, 1);
 });
 
-test('manual compaction remains available after automatic overflow recovery uses a local handoff', async t => {
+test('manual compaction remains available after automatic summary timeout uses a local handoff', async t => {
   const f = fixture(t);
   const first = await f.manager.send('kimi', { prompt: 'Remember UNIQUE_EARLY_CONTEXT' });
   f.finish('kimi', 'success', 'Early work complete');
@@ -3367,7 +3629,7 @@ test('manual compaction remains available after automatic overflow recovery uses
   const automatic = f.sent.at(-1);
   assert.equal(automatic.opts.sessionId, null);
   assert.match(automatic.prompt, /UNIQUE_EARLY_CONTEXT/);
-  f.finish('kimi', 'error', 'Compaction interrupted');
+  f.finish('kimi', 'error', 'Compaction timed out');
   await f.flush();
   assert.equal(f.manager.get(first.sessionId).lastCompaction.route, 'local-fallback');
   assert.match(f.sent.at(-1).prompt, /Continue the unfinished user task/);
@@ -3516,25 +3778,24 @@ test('stopping a later summary chunk discards partial compaction and the pending
   assert.equal(f.manager.busy(conversation.id), false);
 });
 
-test('failed pre-send summary uses a bounded local handoff before sending the task', async t => {
+test('failed pre-send summary retains history and reports failure before sending the task', async t => {
   const f = fixture(t, { modelContextWindow: () => 20000 });
   const conversation = f.manager.create('dsh', null, 'Failed summary');
   f.manager.append(conversation, { role: 'tool', text: 'x'.repeat(52000) });
   const pending = f.manager.send('dsh', { sessionId: conversation.id, prompt: 'Do not run' });
+  const rejected = assert.rejects(pending, /Provider unavailable/);
   await f.flush();
   f.finish('dsh', 'error', 'Provider unavailable');
-  const run = await pending;
-  assert.equal(f.sent.length, 2);
-  assert.match(f.sent.at(-1).prompt, /Do not run/);
-  assert.ok(f.sent.at(-1).prompt.length < 20000);
-  f.finish('dsh'); await run.done;
+  await rejected;
+  assert.equal(f.sent.length, 1);
   assert.equal(f.manager.busy(conversation.id), false);
-  assert.equal(f.manager.messages(conversation).some(row => row.role === 'user'), true);
-  assert.equal(f.manager.messages(conversation).some(row => row.file), true);
+  assert.equal(f.manager.messages(conversation).some(row => row.role === 'user'), false);
+  assert.equal(f.manager.messages(conversation).some(row => row.file), false);
   const restarted = f.restart(), restored = restarted.load('dsh', conversation.id);
-  assert.equal(restored.compaction, null);
-  assert.equal(restored.messages.some(row => row.role === 'user'), true);
-  assert.equal(restarted.get(conversation.id).lastCompaction.route, 'local-fallback');
+  assert.equal(restored.messages.some(row => row.role === 'user'), false);
+  assert.notEqual(restarted.get(conversation.id).lastCompaction.route, 'local-fallback');
+  assert.equal(restarted.get(conversation.id).lastCompaction.outcome, 'failed');
+  assert.equal(restarted.rows(restarted.get(conversation.id))[0].text, 'x'.repeat(52000));
 });
 
 test('a conversation under its window cap sends without pre-compaction', async t => {
@@ -4229,22 +4490,20 @@ for (const mode of ['failure', 'cancel']) test(`Claude too-few-messages fallback
   if (automatic) {
     if (mode === 'cancel') assert.equal((await pending).subtype, 'stopped');
     else {
-      await harness.flush();
-      assert.equal(conversation.lastCompaction.route, 'local-fallback');
-      assert.match(harness.sent.at(-1).prompt, /Continue the unfinished user task/);
-      harness.finish('claude', 'success', 'Recovered after local handoff');
-      assert.equal((await pending).result, 'Recovered after local handoff');
+      const failed = await pending;
+      assert.equal(failed.is_error, true); assert.match(failed.result, /Provider unavailable/);
+      assert.notEqual(conversation.lastCompaction.route, 'local-fallback');
     }
   } else await rejected;
   await harness.flush();
-  assert.equal(harness.sent.length, automatic && mode === 'failure' ? 3 : 2);
-  if (!automatic || mode === 'cancel') assert.equal(JSON.stringify(conversation.segments), snapshot);
+  assert.equal(harness.sent.length, 2);
+  assert.equal(JSON.stringify(conversation.segments), snapshot);
   assert.equal(manager.busy(conversation.id), false);
   assert.equal(conversation.pending, null);
-  assert.equal(manager.rows(conversation).filter(row => row.file).length, automatic && mode === 'failure' ? 1 : 0);
+  assert.equal(manager.rows(conversation).filter(row => row.file).length, 0);
   assert.equal(manager.rows(conversation).filter(row => row.role === 'user').length, 1);
   const restored = harness.restart();
-  if (!automatic || mode === 'cancel') assert.equal(JSON.stringify(restored.get(conversation.id).segments), snapshot);
+  assert.equal(JSON.stringify(restored.get(conversation.id).segments), snapshot);
   assert.ok(restored.rows(restored.get(conversation.id)).some(row => row.text === 'FILE_ALREADY_WRITTEN'));
 });
 
@@ -4316,17 +4575,17 @@ test('stopping automatic compaction preserves history and never resumes the task
   assert.equal(f.manager.messages(f.manager.get(run.sessionId)).filter(row => row.file).length, 0);
 });
 
-test('summary failure uses local context and resumes the original task once', async t => {
+test('summary failure ends the original task once and preserves its context', async t => {
   const f = fixture(t), run = await f.manager.send('dsh', { prompt: 'Original task' });
   f.finish('dsh', 'error', 'too many tokens');
   await f.flush();
   f.finish('dsh', 'error', 'Provider unavailable');
   await f.flush();
-  assert.equal(f.manager.get(run.sessionId).lastCompaction.route, 'local-fallback');
-  assert.match(f.sent.at(-1).prompt, /Continue the unfinished user task/);
-  f.finish('dsh', 'success', 'Completed after fallback');
-  assert.equal((await run.done).result, 'Completed after fallback');
-  assert.equal(f.sent.length, 3);
+  assert.notEqual(f.manager.get(run.sessionId).lastCompaction.route, 'local-fallback');
+  assert.match(f.manager.context(f.manager.get(run.sessionId), 'dsh'), /Original task/);
+  assert.match((await run.done).result, /Provider unavailable/);
+  assert.equal(f.sent.length, 2);
+  assert.equal(f.events.filter(event => event.type === 'result').length, 1);
   assert.equal(f.manager.busy(run.sessionId), false);
 });
 
@@ -4465,7 +4724,7 @@ test('retrying a failed turn revises it without replaying the failed result', as
   await retried.done;
 });
 
-test('a rejected summary credential does not prevent a bounded local recovery', async context => {
+test('a rejected summary credential reports an error and preserves the original context', async context => {
   const harness = fixture(context, { summarize: { available: () => true,
     run: async () => { throw new Error('HTTP 401: the credential was rejected.'); } } });
   const manager = harness.manager, conversation = manager.create('kimi');
@@ -4473,11 +4732,11 @@ test('a rejected summary credential does not prevent a bounded local recovery', 
   const run = await manager.send('kimi', { sessionId: conversation.id, prompt: 'Continue' });
   harness.finish('kimi', 'error', 'context_length_exceeded');
   await harness.flush();
-  assert.equal(conversation.lastCompaction.route, 'local-fallback');
-  harness.finish('kimi', 'success', 'Recovered');
+  assert.notEqual(conversation.lastCompaction.route, 'local-fallback');
   const result = await run.done;
-  assert.equal(result.result, 'Recovered');
-  assert.match(conversation.lastCompaction.fallbackReason, /credential was rejected/);
+  assert.equal(result.is_error, true); assert.match(result.result, /credential was rejected/);
+  assert.equal(harness.sent.length, 1);
+  assert.match(manager.context(conversation, 'kimi'), /Task/);
 });
 
 test('a router summary that returns no text once still compacts on the widened retry', async context => {
@@ -4564,7 +4823,7 @@ test('pausing a goal during pre-send compaction never sends the goal request', a
   assert.equal(f.manager.busy(sessionId), false);
 });
 
-test('summary failure before a goal round uses local context and starts its task', async t => {
+test('summary failure before a goal round blocks the goal and retains the original history', async t => {
   const f = fixture(t, { modelContextWindow: () => 20000 });
   const { sessionId } = await f.manager.command('claude', 'goal-start', { objective: 'Finish' });
   f.goal.cancelTimer();
@@ -4572,11 +4831,11 @@ test('summary failure before a goal round uses local context and starts its task
   f.goal.drive(); await f.flush();
   f.finish('claude', 'error', 'Summary unavailable');
   await f.flush();
-  assert.equal(f.sent.length, 2);
-  assert.equal(f.manager.get(sessionId).lastCompaction.route, 'local-fallback');
-  assert.match(f.sent.at(-1).prompt, /<goal:complete>/);
-  f.finish('claude', 'success', 'Progress');
-  assert.equal(f.goal.goal.phase, 'active');
+  assert.equal(f.sent.length, 1);
+  assert.notEqual(f.manager.get(sessionId).lastCompaction.route, 'local-fallback');
+  assert.equal(f.goal.goal.phase, 'blocked'); assert.equal(f.goal.armed, false);
+  assert.equal(f.manager.busy(sessionId), false);
+  assert.equal(f.manager.rows(f.manager.get(sessionId))[0].text, 'x'.repeat(52000));
 });
 
 test('continuation setup failure finishes once and releases the conversation', async t => {
@@ -4981,9 +5240,9 @@ for (const source of ENGINES) for (const changeHarness of [false, true]) for (co
   });
 }
 
-test('a failed destination summary uses a bounded local handoff on the short target', async context => {
+test('a timed-out destination summary uses a bounded local handoff on the short target', async context => {
   const harness = fixture(context, { modelContextWindow: model => model === 'short' ? 8000 : 200000,
-    summarize: { available: () => true, run: async () => { throw new Error('Summary unavailable'); } } });
+    summarize: { available: () => true, run: async () => { throw Object.assign(new Error('Summary timed out'), { name: 'TimeoutError' }); } } });
   const manager = harness.manager;
   const first = await manager.send('codex', { prompt: 'Task' });
   harness.finish('codex', 'success', 'HISTORY_' + 'x'.repeat(60000)); await first.done;

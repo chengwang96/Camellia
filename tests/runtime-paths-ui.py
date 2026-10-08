@@ -88,7 +88,8 @@ try:
         field = page.locator('.runtime-path[data-runtime="dsh"]')
         page.evaluate('rows => {rows.find(row => row.id === "dsh").status = "missing"; window.runtimeListeners.forEach(callback => callback(rows));}', rpc('runtimeState')['engines'])
         page.locator('[data-install=dsh]').click()
-        expect(page.locator('[data-install=dsh]')).to_have_text('Installed')
+        expect(page.locator('.runtime-card:visible [data-runtime-status]')).to_have_text('Installed')
+        expect(page.locator('[data-install=dsh]')).to_have_count(0)
         assert ('runtimeEnsure', {'engine': 'dsh'}) in runtime_calls
         page.locator('#checkRuntimeUpdates').click()
         expect(page.locator('[data-update=dsh]')).to_be_visible()

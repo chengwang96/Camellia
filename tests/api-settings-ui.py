@@ -20,10 +20,10 @@ bridge=r"""(() => {
   window.testEmitRouter=data=>onRouter(data);
   window.testCall=async(method,payload)=>{
     const r=await window.testRpc(method,payload);
-    for(const e of r.events||[]){if(e.channel==='dsh:api-router-state')onRouter(e.data);if(e.channel==='dsh:claude-event')onEvent(e.data);if(e.channel==='dsh:claude-goal')onGoal(e.data);if(e.channel==='dsh:provider-insights')onInsights(e.data);}
+    for(const e of r.events||[]){if(e.channel==='dsh:api-router-state')onRouter(e.data);if(e.channel==='dsh:conversation-event')onEvent(e.data);if(e.channel==='dsh:conversation-goal')onGoal(e.data);if(e.channel==='dsh:provider-insights')onInsights(e.data);}
     return r.result;
   };
-  window.dshDesktop=new Proxy({},{get:(_,m)=>m.startsWith('on')&&!['onApiRouterState','onClaudeEvent','onClaudeGoal','onProviderInsights'].includes(m)?()=>()=>{}:m==='onApiRouterState'?f=>onRouter=f:m==='onClaudeEvent'?f=>onEvent=f:m==='onClaudeGoal'?f=>onGoal=f:m==='onProviderInsights'?f=>onInsights=f:m==='remoteControl'?(action,payload)=>window.testCall(m,{action,payload}):p=>window.testCall(m,p)});
+  window.dshDesktop=new Proxy({},{get:(_,m)=>m.startsWith('on')&&!['onApiRouterState','onConversationEvent','onConversationGoal','onProviderInsights'].includes(m)?()=>()=>{}:m==='onApiRouterState'?f=>onRouter=f:m==='onConversationEvent'?f=>onEvent=f:m==='onConversationGoal'?f=>onGoal=f:m==='onProviderInsights'?f=>onInsights=f:['remoteControl','discussion'].includes(m)?(action,payload)=>window.testCall(m,{action,payload}):p=>window.testCall(m,p)});
 })();"""
 def assert_back_button_spacing(page):
     button=page.locator('#backProviders')
@@ -199,7 +199,7 @@ try:
         # Legacy :cloud IDs and the router's canonical ID represent one model.
         legacy_model = 'deepseek-v4.1-flash:cloud'
         canonical_model = 'deepseek-v4.1-flash'
-        rpc('claudeSaveSettings', {'model': legacy_model})
+        rpc('conversationCommand', {'engine': 'claude', 'action': 'save-settings', 'payload': {'model': legacy_model}})
         claude.reload(); claude.wait_for_load_state('networkidle')
 
         def check_model_menu(label, count):
@@ -212,7 +212,7 @@ try:
 
         configured = rpc('apiRouterGetState')['result']
         check_model_menu(canonical_model, len(configured['models']))
-        assert rpc('claudeGetSettings')['result']['model'] == legacy_model
+        assert rpc('conversationCommand', {'engine': 'claude', 'action': 'get-settings'})['result']['model'] == canonical_model
         # Repeated router updates keep one checked entry and never change model.
         for _ in range(2):
             claude.evaluate("state => window.testCall('apiRouterSaveConfig', state)", configured)
@@ -234,7 +234,7 @@ try:
         claude.locator('.dsh-pop .pop-row').first.click()
         claude.locator('.pop-opt').filter(has_text='deepseek-v4-pro').click()
         expect(claude.locator('#statusLine')).to_contain_text('Model changed: deepseek-v4-pro')
-        assert rpc('claudeGetSettings')['result']['model'] == 'deepseek-v4-pro'
+        assert rpc('conversationCommand', {'engine': 'claude', 'action': 'get-settings'})['result']['model'] == 'deepseek-v4-pro'
         claude.reload(); claude.wait_for_load_state('networkidle')
         check_model_menu('deepseek-v4-pro', len(configured['models']))
         page.reload(wait_until='networkidle')

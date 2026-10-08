@@ -24,10 +24,10 @@ final class LocalChatDraft {
 
     static JSONArray images(JSONObject conversation) throws JSONException {
         JSONArray saved = conversation.optJSONArray("draftImages");
-        if (saved != null) return new JSONArray(saved.toString());
+        if (saved != null) return (JSONArray) LocalChatRecord.copy(saved);
         int target = editIndex(conversation);
         JSONArray original = target < 0 ? null : conversation.getJSONArray("messages").getJSONObject(target).optJSONArray("images");
-        return original == null ? new JSONArray() : new JSONArray(original.toString());
+        return original == null ? new JSONArray() : (JSONArray) LocalChatRecord.copy(original);
     }
 
     static void save(JSONObject conversation, String text, int editIndex, java.util.List<String> images) throws JSONException {
@@ -37,10 +37,10 @@ final class LocalChatDraft {
 
     static JSONArray documents(JSONObject conversation) throws JSONException {
         JSONArray saved = conversation.optJSONArray("draftDocuments");
-        if (saved != null) return new JSONArray(saved.toString());
+        if (saved != null) return (JSONArray) LocalChatRecord.copy(saved);
         int target = editIndex(conversation);
         JSONArray original = target < 0 ? null : conversation.getJSONArray("messages").getJSONObject(target).optJSONArray("documents");
-        return original == null ? new JSONArray() : new JSONArray(original.toString());
+        return original == null ? new JSONArray() : (JSONArray) LocalChatRecord.copy(original);
     }
 
     static void save(JSONObject conversation, String text, int editIndex, java.util.List<String> images, java.util.List<JSONObject> documents) throws JSONException {

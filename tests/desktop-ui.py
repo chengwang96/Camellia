@@ -36,7 +36,7 @@ def wait_for(check, message='Timed out waiting for the automatic save'):
 
 bridge = """(() => {
   const listeners = {};
-  const channels = {'dsh:claude-event': 'onClaudeEvent', 'dsh:claude-goal': 'onClaudeGoal', 'dsh:api-router-state': 'onApiRouterState', 'dsh:provider-insights': 'onProviderInsights'};
+  const channels = {'dsh:conversation-event': 'onConversationEvent', 'dsh:conversation-goal': 'onConversationGoal', 'dsh:conversation-status': 'onConversationStatus', 'dsh:api-router-state': 'onApiRouterState', 'dsh:provider-insights': 'onProviderInsights'};
   window.dshDesktop = new Proxy({}, { get: (_, method) => method.startsWith('on')
     ? fn => { listeners[method] = fn; }
     : async payload => {
@@ -166,6 +166,7 @@ try:
         expect(agy.locator('#statusLine')).to_contain_text('Permission mode saved')
         assert rpc('antigravityGetSettings')['result']['permissionMode'] == 'auto'
         agy.locator('#attachBtn').click()
+        agy.locator('.attach-option').filter(has_text='Files').click()
         expect(agy.locator('#statusLine')).to_contain_text('Use Claude or Kimi for images')
         expect(agy.locator('.attchip')).to_have_count(1)
         expect(agy.locator('.attchip-name')).to_have_text('notes.txt')
@@ -229,7 +230,7 @@ try:
         permission.get_by_role('option', name='Ask before acting', exact=True).click()
         expect(permission).to_have_value('ask')
         expect(page.locator('#statusLine')).to_contain_text('Permission mode saved')
-        assert rpc('claudeGetSettings')['result']['permissionMode'] == 'ask'
+        assert rpc('conversationCommand', {'engine': 'claude', 'action': 'get-settings'})['result']['permissionMode'] == 'ask'
         page.reload()
         expect(page.locator('#selPermission')).to_have_value('ask')
         # Keyboard changes persist too; Escape dismisses without changing selection.
@@ -305,7 +306,7 @@ try:
         page.locator('#input').fill('持续完成目标并验证结果')
         page.locator('#input').press('Enter')
         expect(page.locator('#goalChipRow .goal-chip').first).to_contain_text('Goal ·')
-        assert 'maxRounds' not in rpc('claudeGoalGet')['result']['goal']
+        assert 'maxRounds' not in page.evaluate("dshDesktop.conversationCommand({engine:'claude',action:'goal-get',payload:{sessionId:context.sessionId}})")['goal']
         page.locator('#goalChipRow .goal-chip').first.click()
         page.locator('.dsh-pop .pop-row',has_text='Pause goal').click()
         page.locator('#goalChipRow .goal-chip').first.click()
@@ -394,10 +395,8 @@ try:
           const { createDesktopViews } = require('./src/main/desktop-views');
           const pages = {};
           for (const dark of [false, true]) {
-            const v = createDesktopViews({ appName: 'Camellia', dshHome: 'D:/DSH',
-              loadConfig: () => ({}), isDark: () => dark, detectRuntime: () => ({}) });
+            const v = createDesktopViews({ appName: 'Camellia', isDark: () => dark });
             const theme = dark ? 'dark' : 'light';
-            pages['welcome-' + theme] = v.welcomeHtml({});
             pages['error-' + theme] = v.errorHtml(new Error('Test backend failed to start'));
           }
           process.stdout.write(JSON.stringify(pages));

@@ -1,12 +1,11 @@
 'use strict';
 
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.CamelliaModelLevels = factory();
-})(typeof window === 'object' ? window : globalThis, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./model-names'));
+  else root.CamelliaModelLevels = factory(root.CamelliaModelNames);
+})(typeof window === 'object' ? window : globalThis, function ({ canonicalModelId: canonical }) {
   const DEFAULT_LEVELS = ['low', 'medium', 'high'];
   const LABELS = { off: 'Off', none: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
-  const canonical = model => String(model || '').replace(/:cloud$/, '');
   function normalizeThinking(thinking) {
     if (!thinking || !Array.isArray(thinking.values) || thinking.values.length > 32) return undefined;
     if (!thinking.values.every(value => typeof value === 'boolean' || typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/i.test(value))) return undefined;

@@ -9,6 +9,7 @@ driver = subprocess.Popen(['node', str(repo / 'tests/claude-ui-driver.cjs')], st
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
 external = True
 reinstalling = False
+cleanup_warning = ''
 calls = []
 previews = []
 original = r'C:\CLI\npm-cache\_npx\cached-cli\node_modules\@moonshot-ai\kimi-code\dist\main.mjs'
@@ -16,7 +17,7 @@ managed = r'C:\Camellia\runtimes\kimi\node_modules\@moonshot-ai\kimi-code\dist\m
 
 
 def rpc(method, payload=None):
-    global external, reinstalling
+    global external, reinstalling, cleanup_warning
     if method == 'runtimeReinstallPreview':
         previews.append(payload)
         return {'ok': True, 'engine': 'kimi', 'name': 'Kimi Code', 'token': f'preview-{len(previews)}',
@@ -28,7 +29,8 @@ def rpc(method, payload=None):
         if payload.get('fail'):
             return {'ok': False, 'error': 'Fixture reinstall failed'}
         external = False
-        return {'ok': True, 'engine': 'kimi', 'changed': True, 'to': '2.0.0'}
+        cleanup_warning = payload.get('warning', '')
+        return {'ok': True, 'engine': 'kimi', 'changed': True, 'to': '2.0.0', 'runtime': {'warning': cleanup_warning}}
     if method == 'testBeginReinstall':
         calls.append(payload)
         reinstalling = True
@@ -47,7 +49,7 @@ def rpc(method, payload=None):
         row.update(status='ready', external=external, updating=reinstalling, reinstalling=reinstalling,
                    version='1.0.0' if external else '2.0.0', file=original if external else managed,
                    source='Custom local path' if external else 'Installed by Camellia',
-                   customPath=original if external else '', paths={'api': original if external else ''})
+                   customPath=original if external else '', paths={'api': original if external else ''}, warning=cleanup_warning)
     return result
 
 
@@ -188,6 +190,25 @@ try:
         expect(button).to_have_count(0)
         expect(path_input).to_have_value('')
         assert calls == [{'engine': 'kimi', 'token': 'preview-4'}, {'engine': 'kimi', 'token': 'preview-6'}], calls
+        external = True
+        page.evaluate('redrawRuntimes()')
+        expect(button).to_be_visible()
+        button.click()
+        expect(dialog).to_be_visible()
+        confirm.click()
+        page.wait_for_function('() => !!window.reinstallResolver')
+        warning = 'Cleanup pending at C:\\Camellia\\runtimes\\.kimi.old-fixture: locked <img src=x onerror=alert(1)>'
+        page.evaluate('warning => finishReinstall({warning})', warning)
+        expect(button).to_have_count(0)
+        expect(page.locator('.runtime-cleanup-warning:visible')).to_have_text(warning)
+        expect(page.locator('.runtime-cleanup-warning img')).to_have_count(0)
+        expect(page.locator('#status')).to_contain_text(warning)
+        expect(page.locator('.runtime-card:visible [data-runtime-status]')).to_have_count(1)
+        expect(page.locator('.runtime-card:visible [data-runtime-status]')).to_have_text('v2.1.0 is available')
+        expect(page.locator('[data-update=kimi]')).to_be_enabled()
+        expect(page.locator('[data-install=kimi]')).to_have_count(0)
+        page.reload(wait_until='networkidle')
+        expect(page.locator('.runtime-cleanup-warning:visible')).to_have_text(warning)
         assert not errors, errors
         browser.close()
         print('Runtime reinstall UI: themed light/dark dialog, long paths, responsive layout, Escape/close/cancel, confirmation, failure, busy state and managed updates passed')

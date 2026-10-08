@@ -4,17 +4,14 @@ import android.content.Context;
 import android.net.Uri;
 import android.provider.OpenableColumns;
 import org.json.JSONObject;
-import org.xmlpull.v1.XmlPullParser;
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.charset.*;
 import java.util.*;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 /** Modern Office documents are read as text locally; PDFs retain their native document input. */
 final class ChatDocument {
-    private static final int MAX_TEXT = 2_000_000, MAX_EXPANDED = 32 * 1024 * 1024;
+    private static final int MAX_TEXT = OfficeDocument.MAX_TEXT;
     private static final Set<String> TEXT = new HashSet<>(Arrays.asList("txt", "md", "markdown", "csv", "tsv", "json", "xml", "yaml", "yml", "log", "html", "htm"));
     // Remote chat sends the original bytes to the computer, which can use its
     // document tools. Local chat can only extract the modern Office formats.
@@ -46,15 +43,15 @@ final class ChatDocument {
         String text = null;
         if (extension.equals("pdf")) {
             if (bytes.length < 5 || !new String(bytes, 0, 5, StandardCharsets.US_ASCII).equals("%PDF-")) throw new IOException("PDF 文件无效 / Invalid PDF");
-        } else if (local) text = TEXT.contains(extension) ? decodeText(bytes) : officeText(extension, bytes);
-        if (text != null && text.trim().isEmpty()) throw new IOException("未读到文档文字，请转换为 PDF / No document text found; convert it to PDF");
+        } else if (local) text = TEXT.contains(extension) ? decodeText(bytes) : officeText(context, extension, bytes);
+        if (text != null && blankText(text)) throw new IOException("未读到文档文字，请转换为 PDF / No document text found; convert it to PDF");
         if (text != null && text.length() > MAX_TEXT) throw new IOException("文档文字过多，请拆分文件 / Too much document text; split the file");
         String reference = AttachmentStore.save(context, bytes), textReference = null;
         try {
             JSONObject document = new JSONObject().put("name", name).put("data", reference).put("size", bytes.length)
                 .put("mimeType", extension.equals("pdf") ? "application/pdf" : "text/plain").put("isImage", false);
             if (text != null) {
-                textReference = AttachmentStore.save(context, text.getBytes(StandardCharsets.UTF_8)).replace(AttachmentStore.PREFIX, AttachmentStore.TEXT_PREFIX);
+                textReference = AttachmentStore.saveText(context, text);
                 document.put("text", textReference);
             }
             return document;
@@ -94,83 +91,15 @@ final class ChatDocument {
         return text;
     }
 
-    static String officeText(String extension, byte[] bytes) throws Exception {
-        Map<String, byte[]> entries = new HashMap<>(); int total = 0, count = 0;
-        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
-            ZipEntry entry;
-            while ((entry = zip.getNextEntry()) != null) {
-                if (++count > 4096) throw new IOException("Office 文件过于复杂 / Office document has too many entries");
-                byte[] data = bounded(zip, MAX_EXPANDED - total); total += data.length;
-                String name = entry.getName();
-                if (name.equals("word/document.xml") || name.equals("xl/sharedStrings.xml") || name.matches("xl/worksheets/sheet[0-9]+\\.xml") || name.matches("ppt/slides/slide[0-9]+\\.xml")) entries.put(name, data);
-            }
+    private static boolean blankText(String text) {
+        for (int index = 0; index < text.length(); index++) if (text.charAt(index) > ' ') return false;
+        return true;
+    }
+
+    static String officeText(Context context, String extension, byte[] bytes) throws Exception {
+        File directory = new File(context.getCacheDir(), OfficeImports.DIRECTORY);
+        try (OfficeImports.Staged staged = OfficeImports.stage(directory, new ByteArrayInputStream(bytes))) {
+            return OfficeDocument.read(staged.file, extension);
         }
-        StringBuilder output = new StringBuilder();
-        if (extension.equals("docx")) appendXml(output, required(entries, "word/document.xml"));
-        else if (extension.equals("pptx")) {
-            for (String name : numbered(entries, "ppt/slides/slide")) { append(output, "\n[" + name + "]\n"); appendXml(output, entries.get(name)); }
-        } else if (extension.equals("xlsx")) {
-            List<String> strings = new ArrayList<>();
-            if (entries.containsKey("xl/sharedStrings.xml")) {
-                XmlPullParser parser = xml(entries.get("xl/sharedStrings.xml")); StringBuilder current = null;
-                while (parser.next() != XmlPullParser.END_DOCUMENT) {
-                    if (parser.getEventType() == XmlPullParser.START_TAG && parser.getName().equals("si")) current = new StringBuilder();
-                    else if (parser.getEventType() == XmlPullParser.START_TAG && parser.getName().equals("t") && current != null) append(current, parser.nextText());
-                    else if (parser.getEventType() == XmlPullParser.END_TAG && parser.getName().equals("si")) { strings.add(current.toString()); current = null; }
-                }
-            }
-            for (String name : numbered(entries, "xl/worksheets/sheet")) {
-                append(output, "\n[" + name + "]\n");
-                XmlPullParser parser = xml(entries.get(name)); String type = "";
-                while (parser.next() != XmlPullParser.END_DOCUMENT) {
-                    if (parser.getEventType() == XmlPullParser.START_TAG && parser.getName().equals("c")) {
-                        type = parser.getAttributeValue(null, "t"); String cell = parser.getAttributeValue(null, "r");
-                        if (cell != null) append(output, cell + "=");
-                    } else if (parser.getEventType() == XmlPullParser.START_TAG && (parser.getName().equals("v") || parser.getName().equals("t"))) {
-                        String value = parser.nextText();
-                        if ("s".equals(type)) {
-                            int index = Integer.parseInt(value);
-                            if (index < 0 || index >= strings.size()) throw new IOException("Invalid spreadsheet shared string");
-                            value = strings.get(index);
-                        }
-                        append(output, value);
-                    } else if (parser.getEventType() == XmlPullParser.END_TAG && parser.getName().equals("c")) append(output, "\t");
-                    else if (parser.getEventType() == XmlPullParser.END_TAG && parser.getName().equals("row")) append(output, "\n");
-                }
-            }
-        }
-        if (output.toString().trim().isEmpty()) throw new IOException("Office 文档无可读取的文字 / No readable Office document text");
-        return output.toString();
-    }
-
-    private static byte[] required(Map<String, byte[]> entries, String name) throws IOException {
-        byte[] value = entries.get(name); if (value == null) throw new IOException("Office 文件无效 / Invalid Office document"); return value;
-    }
-
-    private static List<String> numbered(Map<String, byte[]> entries, String prefix) {
-        ArrayList<String> names = new ArrayList<>(); for (String name : entries.keySet()) if (name.startsWith(prefix)) names.add(name);
-        names.sort(Comparator.comparingInt(name -> Integer.parseInt(name.substring(prefix.length(), name.length() - 4)))); return names;
-    }
-
-    private static XmlPullParser xml(byte[] bytes) throws Exception {
-        // Reject DTDs before parsing; documents must never resolve external entities.
-        if (new String(bytes, StandardCharsets.UTF_8).toUpperCase(Locale.ROOT).contains("<!DOCTYPE")) throw new IOException("Document DTD is not supported");
-        XmlPullParser parser = android.util.Xml.newPullParser();
-        parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true);
-        parser.setInput(new ByteArrayInputStream(bytes), null); return parser;
-    }
-
-    private static void appendXml(StringBuilder output, byte[] bytes) throws Exception {
-        XmlPullParser parser = xml(bytes);
-        while (parser.next() != XmlPullParser.END_DOCUMENT) {
-            if (parser.getEventType() == XmlPullParser.START_TAG && parser.getName().equals("t")) append(output, parser.nextText());
-            else if (parser.getEventType() == XmlPullParser.START_TAG && parser.getName().equals("tab")) append(output, "\t");
-            else if (parser.getEventType() == XmlPullParser.END_TAG && (parser.getName().equals("p") || parser.getName().equals("br"))) append(output, "\n");
-        }
-    }
-
-    private static void append(StringBuilder output, String value) throws IOException {
-        if (output.length() + value.length() > MAX_TEXT) throw new IOException("文档文字过多，请拆分 / Too much document text; split the file");
-        output.append(value);
     }
 }

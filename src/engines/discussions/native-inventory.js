@@ -78,7 +78,9 @@ class InventoryScan {
     return readJson(file, null);
   }
   conversations(dir) {
-    return this.entries(dir).filter(name => /\.json$/i.test(name)).map(name => {
+    const names = this.entries(dir);
+    if (names.some(name => name.includes('.json.invalid-'))) throw new Error('Invalid conversation ownership index: retained record requires recovery');
+    return names.filter(name => /\.json$/i.test(name)).map(name => {
       const record = conversationRecord(this.json(path.join(dir, name)));
       if (!sameStoredId(record.id, name.slice(0, -5))) throw new Error('Conversation ownership filename mismatch');
       return record;

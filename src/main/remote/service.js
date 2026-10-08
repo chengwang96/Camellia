@@ -10,14 +10,21 @@ const { RemoteCommands } = require('./commands');
 function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, getDiscussions = null,
   preferences = () => ({}), setComputerName = () => '' }) {
   let gateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
-  let startupChecked = false, monitor = null;
+  let startupChecked = false, monitor = null, attachmentMaintenance = null;
+  const attachmentReferences = () => ({
+    references: [gateway?.commands?.queue.entries || [], ...(gateway?.commands?.pendingAttachments.values() || []),
+      ...(gateway?.discussions?.pendingAttachments.values() || [])],
+    active: Boolean(gateway?.commands?.pendingAttachments.size || gateway?.discussions?.pendingAttachments.size),
+  });
   const reader = new RemoteReadModel(manager);
   function initialize() {
     if (gateway) return;
     access = new RemoteAccess({ file: path.join(dataDir, 'remote', 'devices.json'), onRevoke: id => gateway.revoke(id) });
-    const commands = new RemoteCommands({ file: path.join(dataDir, 'remote', 'commands.json'), reader, access, publish: () => gateway.publish() });
+    const commands = new RemoteCommands({ file: path.join(dataDir, 'remote', 'commands.json'), reader, access,
+      publish: () => { gateway.publish(); attachmentMaintenance?.markDirty(); } });
     const discussions = getDiscussions ? new (require('./discussions').RemoteDiscussions)({
-      file: path.join(dataDir, 'remote', 'discussion-commands.json'), getService: getDiscussions, access, publish: () => gateway?.publish() }) : null;
+      file: path.join(dataDir, 'remote', 'discussion-commands.json'), getService: getDiscussions, access,
+      publish: () => { gateway?.publish(); attachmentMaintenance?.markDirty(); } }) : null;
     gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, discussions });
     try { network = networkFactory({ onFailure: () => { enabled = false; void gateway.stop(); } }); }
     catch (error) { gateway = null; access = null; throw error; }
@@ -127,9 +134,29 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
         await startAccess(false);
       } finally { busy = false; }
     },
-    publish(update) { reader.observeCompaction(update); gateway?.publish(); },
+    attachmentReferences,
+    attachmentsChanged() { attachmentMaintenance?.markDirty(); },
+    maintainAttachments(cleanup, log, isBlocked = () => false) {
+      if (attachmentMaintenance || closed) return;
+      const { StorageCleanup } = require('../storage-cleanup');
+      const { AttachmentMaintenance } = require('../attachment-maintenance');
+      // An independent cleaner preserves a user's manual preview while an idle
+      // pass checks the same reference sources and active upload leases.
+      const backgroundCleanup = new StorageCleanup({ ...cleanup,
+        isActive: () => closed || busy || isBlocked() || cleanup.isActive() || attachmentReferences().active,
+        references: async () => {
+          const saved = await cleanup.references(), remote = attachmentReferences();
+          return { references: [saved, remote.references], active: Boolean(saved?.active || remote.active) };
+        } });
+      attachmentMaintenance = new AttachmentMaintenance({ log, cleanup: backgroundCleanup, sweep: () => backgroundCleanup.sweepRetention() });
+    },
+    publish(update) {
+      reader.observeCompaction(update); gateway?.publish(update);
+      if (!update || update.type?.startsWith('conversation:')) attachmentMaintenance?.markDirty();
+    },
     async close() {
       closed = true; enabled = false; clearTimeout(monitor);
+      await attachmentMaintenance?.close();
       try { await network?.stop(); }
       finally { await gateway?.stop(); }
     },

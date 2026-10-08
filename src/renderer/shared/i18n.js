@@ -62,6 +62,10 @@ window.CamelliaI18n = (() => {
   window.dshDesktop.onLanguageChanged(setLanguage);
   const ready = window.dshDesktop.workbenchSettings().then(preferences => {
     if (preferences.ok) setLanguage(preferences.language);
+  }).catch(() => {
+    // Keep the default language usable when preferences cannot be read.
+  }).finally(() => {
+    document.documentElement.removeAttribute('data-i18n-pending');
   });
   return { ready, setLanguage, observe, t: text => translate(text, language),
     get language() { return language; }, get locale() { return language === 'en' ? 'en-US' : 'zh-CN'; } };

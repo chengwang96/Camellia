@@ -152,7 +152,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         encrypted.clear();
         new ComputerStore(encrypted).save(new JSONObject().put("address", "http://100.64.0.1:43128")
             .put("token", credential.getString("token")).put("deviceId", credential.getString("deviceId")));
-        MainActivity activity = (MainActivity) getInstrumentation().startActivitySync(new android.content.Intent(
+        MainActivity activity = (MainActivity) LocalChatFixture.start(getInstrumentation(), new android.content.Intent(
             getInstrumentation().getTargetContext(), MainActivity.class).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             getInstrumentation().runOnMainSync(() -> {
@@ -217,8 +217,8 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         CredentialStore remote = new CredentialStore(context);
         remote.clear();
         new ComputerStore(remote).save(new JSONObject().put("address", "http://100.64.0.1:43128").put("token", token));
-        new CredentialStore(context, "local-chat-private").clear();
-        android.app.Activity settings = getInstrumentation().startActivitySync(new android.content.Intent(context, SettingsActivity.class)
+        LocalChatFixture.clear(context);
+        android.app.Activity settings = LocalChatFixture.start(getInstrumentation(), new android.content.Intent(context, SettingsActivity.class)
             .putExtra("section", "providers").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             getInstrumentation().runOnMainSync(() -> settings.getWindow().getDecorView().findViewWithTag("providerImportComputer").performClick());
@@ -232,13 +232,13 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
                     assertTrue("The confirmation must name the source computer",
                         ((android.widget.TextView) decor.findViewById(android.R.id.message)).getText().toString().contains("100.64.0.1:43128"));
                     assertTrue("Nothing may be read before the confirmation",
-                        LocalChatConfig.routes(new LocalChatStore(context).config()).isEmpty());
+                        LocalChatConfig.routes(new LocalChatFixture(context).config()).isEmpty());
                     confirm.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
                 } catch (Exception error) { throw new AssertionError(error); }
             });
             long deadline = android.os.SystemClock.elapsedRealtime() + 15_000;
-            while (LocalChatConfig.routes(new LocalChatStore(context).config()).isEmpty() && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(50);
-            java.util.List<LocalChatConfig.Route> imported = LocalChatConfig.routes(new LocalChatStore(context).config());
+            while (LocalChatConfig.routes(new LocalChatFixture(context).config()).isEmpty() && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(50);
+            java.util.List<LocalChatConfig.Route> imported = LocalChatConfig.routes(new LocalChatFixture(context).config());
             assertEquals(1, imported.size());
             assertEquals("fixture-secret", imported.get(0).key);
             long statusDeadline = android.os.SystemClock.elapsedRealtime() + 5_000;
@@ -256,7 +256,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         } finally {
             getInstrumentation().runOnMainSync(settings::finish);
             getInstrumentation().waitForIdleSync();
-            new CredentialStore(context, "local-chat-private").clear();
+            LocalChatFixture.clear(context);
             remote.clear();
         }
     }
@@ -270,7 +270,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         var context = getInstrumentation().getTargetContext();
         java.io.File directory = new java.io.File(context.getCacheDir(), "camera"); directory.mkdirs();
         java.io.File file = java.io.File.createTempFile("background-artifact-", ".pdf", directory);
-        MainActivity activity = (MainActivity) getInstrumentation().startActivitySync(new android.content.Intent(context, MainActivity.class)
+        MainActivity activity = (MainActivity) LocalChatFixture.start(getInstrumentation(), new android.content.Intent(context, MainActivity.class)
             .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             JSONObject selected = new JSONObject(artifact.toString()).put("address", "http://100.64.0.1:43128").put("conversation", conversation);
@@ -303,7 +303,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
             try (var input = new java.io.FileInputStream(file)) {
                 for (int index = 0; index < 192 * 1024; index++) assertEquals(index % 251, input.read());
             }
-            MainActivity cancelActivity = (MainActivity) getInstrumentation().startActivitySync(new android.content.Intent(context, MainActivity.class)
+            MainActivity cancelActivity = (MainActivity) LocalChatFixture.start(getInstrumentation(), new android.content.Intent(context, MainActivity.class)
                 .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
             try {
                 getInstrumentation().runOnMainSync(() -> {
@@ -326,7 +326,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         CredentialStore encrypted = new CredentialStore(getInstrumentation().getTargetContext());
         new ComputerStore(encrypted).save(new JSONObject().put("address", "http://100.64.0.1:43128")
             .put("token", credential.getString("token")).put("deviceId", credential.getString("deviceId")));
-        MainActivity activity = (MainActivity) getInstrumentation().startActivitySync(new android.content.Intent(
+        MainActivity activity = (MainActivity) LocalChatFixture.start(getInstrumentation(), new android.content.Intent(
             getInstrumentation().getTargetContext(), MainActivity.class).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             getInstrumentation().runOnMainSync(() -> {
@@ -355,7 +355,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         encrypted.clear();
         new ComputerStore(encrypted).save(new JSONObject().put("address", address)
             .put("token", credential.getString("token")).put("deviceId", credential.getString("deviceId")));
-        MainActivity activity = (MainActivity) getInstrumentation().startActivitySync(new android.content.Intent(
+        MainActivity activity = (MainActivity) LocalChatFixture.start(getInstrumentation(), new android.content.Intent(
             getInstrumentation().getTargetContext(), MainActivity.class).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             getInstrumentation().waitForIdleSync();

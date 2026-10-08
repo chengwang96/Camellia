@@ -55,18 +55,11 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     clearTimeout(discussionTimer); discussionTimer = setTimeout(loadDiscussions, 100);
   });
   window.addEventListener('beforeunload', () => { unsubscribeDiscussions?.(); clearTimeout(discussionTimer); });
-  const replyReadKey = id => 'reply-read:' + id;
-  function replyReadAt(id) {
-    const value = Number(localStorage.getItem('camellia-chat-' + replyReadKey(id)));
-    return Number.isFinite(value) ? value : 0;
-  }
   function markReplyRead(id, at = Date.now()) {
     if (!id) return;
-    if (sharedChat) {
-      void window.dshDesktop.conversationCommand({ engine: harnessId, action: 'mark-reply-read', payload: { id, at } })
-        .then(result => { if (!result.ok) throw new Error(result.error); })
-        .catch(error => setStatus('Could not mark reply read: ' + error.message));
-    } else localStorage.setItem('camellia-chat-' + replyReadKey(id), String(Math.max(at, replyReadAt(id))));
+    void window.dshDesktop.conversationCommand({ engine: harnessId, action: 'mark-reply-read', payload: { id, at } })
+      .then(result => { if (!result.ok) throw new Error(result.error); })
+      .catch(error => setStatus('Could not mark reply read: ' + error.message));
     const session = sessionHistory.find(entry => entry.id === id);
     if (session) session.unread = false;
     $('sessionList').querySelectorAll('[data-sid]').forEach(item => {
@@ -103,11 +96,11 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       if (seq !== historyLoadSeq) return false;
       if (!res.ok) throw new Error(res.error);
       sessionHistory = res.sessions.map(session => ({ ...session,
-        unread: session.id !== context.sessionId && session.lastReplyAt > (sharedChat ? session.replyReadAt || 0 : replyReadAt(session.id)) }));
+        unread: session.id !== context.sessionId && session.lastReplyAt > (session.replyReadAt || 0) }));
       workspaces = res.workspaces;
       pagination = res.pagination;
       const active = sessionHistory.find((s) => s.id === context.sessionId);
-      if (sharedChat && active && canReadReply() && active.lastReplyAt > (active.replyReadAt || 0)) markReplyRead(active.id, active.lastReplyAt);
+      if (active && canReadReply() && active.lastReplyAt > (active.replyReadAt || 0)) markReplyRead(active.id, active.lastReplyAt);
       if (active) context.workspaceId = active.workspaceId || null;
       if (context.workspaceId && !workspaces.some((w) => w.id === context.workspaceId)) context.workspaceId = null;
       renderSessionSidebar();
@@ -519,7 +512,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
   function openSessionActions(anchor, item, s, position) {
     if (!s) {
       openActionMenu(anchor, [
-        { label: "Change workspace…", disabled: contextBusy(), run: () => openWorkspacePicker(anchor, null, position) },
+        { label: "Change workspace…", disabled: contextBusy(), run: () => openWorkspacePicker(anchor, position) },
       ], position);
       return;
     }
@@ -528,37 +521,23 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       { label: s.pinned ? "Unpin" : "Pin session", run: async () => {
         if (await runMetaOp({ op: 'toggle-pin', sessionId: s.id })) await loadSessionHistory();
       } },
-      ...(!chatProfile.fixedCwd ? [{ label: "Move to workspace…", disabled: contextBusy(), run: () => openWorkspacePicker(anchor, s, position) }] : []),
-      ...(s.workspaceId && !chatProfile.fixedCwd ? [{ label: "Move out of workspace", disabled: contextBusy(), run: () => void assignWorkspace(s, null) }] : []),
       ...(canFork(s) ? [{ label: "Fork session", disabled: contextBusy(), run: () => void forkSession(s) }] : []),
       ...(s.imported ? [{ label: "Sync from Codex desktop", run: () => openSyncDialog(s) }] : []),
       { label: "Archive session", disabled: contextBusy(), run: () => void archiveSession(s) },
       { label: "Delete conversation", danger: true, disabled: contextBusy(), run: () => confirmDeleteSession(s) },
     ], position);
   }
-  function openWorkspacePicker(anchor, s, position) {
-    if (s && chatProfile.fixedCwd) {
-      openActionMenu(anchor, [
-        { label: "This session's directory was set when it was created", disabled: true },
-        { label: "New standalone session", disabled: contextBusy(), run: () => void newSession(null) },
-        ...workspaces.map(ws => ({ label: "New session in " + ws.name, title: ws.path, disabled: contextBusy(), run: () => void newSession(ws.id) })),
-      ], position);
-      return;
-    }
-    const selected = s ? s.workspaceId : context.workspaceId;
+  function openWorkspacePicker(anchor, position) {
+    const selected = context.workspaceId;
     openActionMenu(anchor, [
-      { label: "No workspace · Standalone session", current: !selected, disabled: contextBusy(), run: () => void assignWorkspace(s, null) },
-      ...workspaces.map((ws) => ({ label: ws.name, title: ws.path, localize: false, current: selected === ws.id, disabled: contextBusy(), run: () => void assignWorkspace(s, ws.id) })),
+      { label: "No workspace · Standalone session", current: !selected, disabled: contextBusy(), run: () => void assignWorkspace(null) },
+      ...workspaces.map((ws) => ({ label: ws.name, title: ws.path, localize: false, current: selected === ws.id, disabled: contextBusy(), run: () => void assignWorkspace(ws.id) })),
       { label: "Add workspace…", run: () => openWorkspaceDialog() },
     ], position);
   }
-  async function assignWorkspace(s, workspaceId) {
+  async function assignWorkspace(workspaceId) {
     if (!canChangeContext()) return;
-    if (s) {
-      if ((s.workspaceId || null) === workspaceId) return;
-      if (!await runMetaOp({ op: 'assign-session', sessionId: s.id, workspaceId })) return;
-    }
-    if (!s || s.id === context.sessionId) context.workspaceId = workspaceId;
+    context.workspaceId = workspaceId;
     const ws = workspaces.find((w) => w.id === workspaceId);
     if (ws && ws.collapsed) await runMetaOp({ op: 'toggle-collapse', workspaceId });
     await loadSessionHistory();

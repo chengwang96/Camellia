@@ -81,7 +81,7 @@ async function main() {
       child.on('error', reject); child.on('exit', code => { clearTimeout(timer); resolve({ code, output }); });
     });
     console.log(result.output);
-    assert.equal(result.code, 0); assert.match(result.output, /OK \(4 tests\)/);
+    assert.equal(result.code, 0); assert.match(result.output, /OK \(11 tests\)/);
     assert.equal(calls.length, 3); assert.match(calls[0].prompt, /You are a scientist/); assert.doesNotMatch(calls[1].prompt, /You are a scientist/); assert.equal(richAnswers.length, 1);
     assert.equal(droppedReply, true, 'Creation acknowledgement was deliberately lost and recovered by receipt lookup');
     assert.equal(service.list().length, 0);

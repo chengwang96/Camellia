@@ -5,6 +5,7 @@ const fmt = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { maximum
 const compact = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { maximumFractionDigits: 1, notation: 'compact' }).format(value || 0);
 const when = value => value ? new Date(value).toLocaleString(window.CamelliaI18n.locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : "Not queried yet";
 const uid = () => crypto.randomUUID();
+const routingId = window.CamelliaModelNames.canonicalModelId;
 const maskKey = value => { const s = String(value || ''); return s.length > 12 ? s.slice(0, 4) + '…' + s.slice(-4) : '••••••••'; };
 const keyName = (key, index = 0) => key.name || key.maskedKey || `Key ${index + 1}`;
 const mark = type => ({ gemini: 'G', ollama: 'O', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC', qclaw: 'Q' }[type] || 'API');
@@ -19,7 +20,7 @@ const titles = {
   mobile: ["Mobile access", "Connect your phone through Tailscale."],
   devices: ["CLI devices", "Manage server connections and default harnesses. Open a server from Home to work."],
   engines: ["Engine Settings", "Manage engine installation, updates, permissions, instructions and tools."],
-  models: ["Model Settings", "Choose visible subscription models, quick-switch defaults and model sessions."],
+  models: ["Model Settings", "Manage API key routing, visible subscription models, quick-switch defaults and model sessions."],
 };
 let config, live, presets = [], insight = { providers: {}, keys: {} }, selected = null, view = 'general';
 let balanceKey = null, usageData = [];
@@ -78,7 +79,7 @@ function modelReferences() {
   return config.providers.flatMap(provider => provider.models.map(model => {
     const id = String(model.id || '').trim(), upstream = String(model.upstream || '').trim();
     const stored = savedModels.get(model), complete = id && upstream;
-    return { providerId: provider.id, model, id: complete ? id.replace(/:cloud$/, '') : stored?.id,
+    return { providerId: provider.id, model, id: complete ? routingId(id) : stored?.id,
       upstream: complete ? upstream : stored?.upstream };
   }));
 }
@@ -116,7 +117,7 @@ async function saveProviders(explicit) {
       else warning = warning || data.error;
     } while (isDirty());
     if (current()?.type === 'qclaw') renderKeys();
-    showLive(); updateKeyStats(); renderRoutes(); renderProviders();
+    showLive(); updateKeyStats(); renderRoutes(); renderProviders(); renderModelChips();
     if (warning) status(warning, true);
     else if (draftComplete()) status("Saved. All engines share these connections.");
     else if (explicit) status("Complete the API URL, key or model fields to finish saving.", true);
@@ -129,6 +130,14 @@ function syncMaskedKeys(snapshot) {
   let changed = false;
   for (const p of config.providers) {
     const stored = (live.providers || []).find(item => item.id === p.id); if (!stored) continue;
+    const submittedProvider = snapshot?.providers.find(item => item.id === p.id);
+    for (const [field, inputId] of [['baseUrl', 'pUrl'], ['anthropicBaseUrl', 'pAUrl']]) {
+      // Only mirror a normalized URL if it still matches the submitted edit.
+      // A newer edit typed during the save must keep its value.
+      if (!submittedProvider || p[field] !== submittedProvider[field] || p[field] === stored[field]) continue;
+      p[field] = stored[field];
+      if (selected === p.id && $(inputId)) $(inputId).value = stored[field] || '';
+    }
     if (p.type === 'qclaw') {
       if (JSON.stringify(p.keys) !== JSON.stringify(stored.keys)) changed = true;
       p.keys = structuredClone(stored.keys); p.baseUrl = stored.baseUrl;
@@ -241,15 +250,14 @@ function renderEditor() {
   $('editor').innerHTML = `<button class="back" id="backProviders" data-i18n>← All providers</button>
     <div class="editor-heading"><span class="provider-mark">${mark(p.type)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name" data-i18n-attrs="aria-label"><label><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}>Enabled</label></div>
     <label for="pPriority" data-i18n>API priority</label><select id="pPriority"><option value="-1" data-i18n>Low</option><option value="0" data-i18n>Default</option><option value="1" data-i18n>High</option></select>
-    <p class="hint" data-i18n>Routes are tried in order: High, Default, Low. Unavailable routes are skipped. Equal priorities retain the current route, then follow provider and key order. Next route switches only within the highest available priority.</p>
+    <p class="hint" data-i18n>Routes follow High, Default, Low priority. Configure multi-key concurrency and automatic key failover in Model Settings. Next route manually switches among available keys at the highest available priority.</p>
     ${p.type.startsWith('mimo-token-plan-') ? '<p class="hint" data-i18n>Use your Token Plan tp- key and the region shown in your console. Coding use only. Do not add a pay-as-you-go route for the same model unless you want paid fallback. Check remaining Credits in the MiMo console.</p>' : ''}
     ${p.type === 'mimo' ? '<p class="hint" data-i18n>Use a regular MiMo API key, not a Token Plan tp- key. Requests are billed to your API balance. Adding this provider alongside Token Plan for the same model allows paid fallback.</p>' : ''}
-    ${p.type === 'qclaw' ? '<p class="hint" data-i18n>QClaw chooses its local gateway port at start time and rotates its token, so Camellia reads both from QClaw state file on every request. Start QClaw first; there is no key or URL to fill in here.</p>' : ''}
     <div class="section-head"><h2 data-i18n>${p.type === 'qclaw' ? 'Connection' : 'API Key'}</h2><button id="showImport" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Import keys</button><button id="addKey" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>+ Add key</button></div>
     <p class="hint" ${p.type === 'qclaw' ? 'hidden' : ''} data-i18n>Keys are tried in order. Leave a key blank to keep it. Use labels to identify accounts.</p><div id="keyRows"></div>
     <div id="keyImport" class="key-import" hidden><label for="bulkKeys" data-i18n>One key per line</label><textarea id="bulkKeys" placeholder="Paste API keys" spellcheck="false" data-i18n-attrs="placeholder"></textarea><button id="importKeys" data-i18n>Add to key pool</button><p class="hint" data-i18n>Duplicate keys for this provider are merged on save.</p></div>
-    <div class="section"><div class="section-head"><h2 data-i18n>Model</h2><button id="discoverModels" data-i18n>Fetch models</button></div><div id="modelChips" class="model-chips"></div>
-      <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Routes switch only within the same model ID. Keep versions and aliases such as latest and chat separate.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Canonical model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th data-i18n>Context</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><button id="addModel" data-i18n>+ Add model</button></details>
+    <div class="section"><div class="section-head"><h2 data-i18n>Model</h2><button id="mapModels" data-i18n>Map model aliases</button><button id="discoverModels" data-i18n>Fetch models</button></div><div id="modelChips" class="model-chips"></div>
+      <details class="advanced" id="modelAdvanced"><summary data-i18n>Manual models and mappings</summary><p class="hint" data-i18n>Recognized owner prefixes and letter case are normalized automatically. For other aliases of the same model, choose the same routing model ID. Upstream IDs are sent unchanged. Keep versions, dates, variants and moving aliases separate. Mappings save automatically.</p><div class="table-scroll"><table class="model-table"><thead><tr><th data-i18n>Routing model ID</th><th data-i18n>Upstream model ID</th><th data-i18n>Protocol</th><th data-i18n>Context</th><th></th></tr></thead><tbody id="modelRows"></tbody></table></div><datalist id="routingModelIds"></datalist><button id="addModel" data-i18n>+ Add model</button></details>
       <div class="row verify-row" style="margin-top:18px"><label data-i18n>Validation model<select id="verifyModel" aria-label="Validation model" data-i18n-attrs="aria-label"></select></label><button id="verifyNow" data-verify-now data-i18n>Validate</button></div><p class="hint" data-i18n>Validate sends a short model request and may incur a charge. Fetching the catalog only checks catalog access.</p>
     </div>
     <details class="advanced section" id="connectionAdvanced" ${p.type === 'custom' ? 'open' : ''}><summary data-i18n>Advanced connection settings</summary><div class="grid">
@@ -284,6 +292,7 @@ function renderEditor() {
     $('bulkKeys').value = ''; $('keyImport').hidden = true; edited(true); renderKeys(); status(`Added ${keys.length} keys.`);
   };
   $('addModel').onclick = () => { p.models.push({ id: '', upstream: '', protocol: 'auto' }); edited(); renderModels(); };
+  $('mapModels').onclick = () => { $('modelAdvanced').open = true; $('modelRows').querySelector('[data-field="id"]')?.focus(); };
   $('discoverModels').onclick = () => discoverModels(p);
   $('deleteProvider').onclick = () => { config.providers = config.providers.filter(x => x.id !== p.id); selected = null; edited(true); renderEditor(); };
   renderKeys(); renderModels(); renderRoutes();
@@ -319,19 +328,39 @@ function updateKeyStats() {
     note.textContent = `${fmt(u.requests)} successful · Input ${fmt(u.inputTokens)} / Output ${fmt(u.outputTokens)} tokens · Failed ${fmt(u.failures)}` + (v ? ` · Last validated ${v.model} ${when(v.at)}${v.error ? ' · ' + v.error : ''}` : '') + (cooldown ? ' · ' + cooldown : '') + (u.lastError ? ' · ' + u.lastError.reason : '') + quotaNote;
   }
 }
+function routeKeySummary(id) {
+  const keys = (live.providers || []).filter(provider => provider.enabled !== false && provider.models.some(model => routingId(model.id) === id))
+    .flatMap(provider => provider.keys.filter(key => key.enabled !== false));
+  const available = live.enabled === false ? 0 : keys.filter(key => !live.usage?.[key.id]?.blocked && !(live.usage?.[key.id]?.models?.[id]?.until > Date.now())
+    && !(live.quotaCheck?.enabled !== false && !live.quota?.[key.id]?.stale && live.quota?.[key.id]?.exhausted)).length;
+  return `Available keys: ${available} / ${keys.length}`;
+}
+function renderModelChips() {
+  const p = current(); if (!p) return;
+  const groups = new Map();
+  for (const model of p.models) if (model.id) {
+    const id = routingId(model.id);
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(model.upstream);
+  }
+  $('modelChips').innerHTML = [...groups].map(([id, upstreams]) => `<span class="model-chip" title="${esc(upstreams.join('\n'))}"><span>${esc(id)} <small data-i18n>${esc(routeKeySummary(id))}</small></span><button type="button" data-remove-model-group="${esc(id)}" aria-label="Remove model ${esc(id)}" data-i18n-attrs="aria-label">×</button></span>`).join('') || "<p class=\"hint\" data-i18n>Fetch the provider catalog and choose models, or add them manually.</p>";
+}
 function renderModels() {
   const p = current(); if (!p) return;
-  $('modelChips').innerHTML = p.models.map((m, index) => m.id ? `<span class="model-chip"><span>${esc(m.id)}</span><button type="button" data-remove-model="${index}" aria-label="Remove model ${esc(m.id)}" data-i18n-attrs="aria-label">×</button></span>` : '').join('') || "<p class=\"hint\" data-i18n>Fetch the provider catalog and choose models, or add them manually.</p>";
+  renderModelChips();
   $('modelRows').innerHTML = p.models.map((m,i) => `<tr><td><input data-model="${i}" data-field="id" value="${esc(m.id)}" aria-label="Canonical model ID ${i+1}" spellcheck="false" data-i18n-attrs="aria-label"></td><td><input data-model="${i}" data-field="upstream" value="${esc(m.upstream)}" aria-label="Upstream model ID ${i+1}" spellcheck="false" data-i18n-attrs="aria-label"></td><td><select data-model="${i}" data-field="protocol" aria-label="Model protocol ${i+1}" data-i18n-attrs="aria-label"><option value="auto" data-i18n>Default</option><option value="openai" data-i18n>OpenAI</option><option value="anthropic" data-i18n>Anthropic</option></select></td><td><input type="number" min="4096" max="${m.maxContext || 2000000}" step="1024" data-model="${i}" data-field="contextWindow" value="${m.contextWindow || ''}" placeholder="${m.maxContext ? '\u2264 ' + m.maxContext : 'Auto'}" aria-label="Context window ${i+1}" data-i18n-attrs="aria-label" style="width:96px"></td><td><button data-remove-model="${i}" aria-label="Remove model ${i+1}" data-i18n-attrs="aria-label">×</button></td></tr>`).join('');
   document.querySelectorAll('[data-model][data-field=protocol]').forEach(el => { el.value = p.models[Number(el.dataset.model)].protocol || 'auto'; });
-  fillSelect($('verifyModel'), p.models.filter(m => m.id).map(m => [m.id, m.id]), "Select model", false);
+  const ids = [...new Set(config.providers.flatMap(provider => provider.models.map(model => routingId(model.id))).filter(Boolean))];
+  $('routingModelIds').innerHTML = ids.map(id => `<option value="${esc(id)}"></option>`).join('');
+  $('modelRows').querySelectorAll('[data-field="id"]').forEach(input => input.setAttribute('list', 'routingModelIds'));
+  fillSelect($('verifyModel'), [...new Set(p.models.filter(m => m.id).map(m => routingId(m.id)))].map(id => [id, id]), "Select model", false);
 }
 function renderRoutes() {
   const p = current(); if (!p) return;
-  $('routeRows').innerHTML = (live.models || []).filter(id => p.models.some(m => m.id === id)).map(id => {
+  $('routeRows').innerHTML = (live.models || []).filter(id => p.models.some(m => routingId(m.id) === id)).map(id => {
     const active = (live.providers || []).find(p => p.keys.some(k => k.id === live.active?.[id]));
     const key = active?.keys.find(k => k.id === live.active?.[id]);
-    return `<div class="route-row"><span>${esc(id)}<br><small>${active ? esc(active.name + ' · ' + keyName(key)) : "Use priority order"}</small></span><button data-rotate="${esc(id)}" data-i18n>Next route</button><button data-reset-model="${esc(id)}" data-i18n>Reset priority</button></div>`;
+    return `<div class="route-row"><span>${esc(id)}<br><small><span data-i18n>${esc(routeKeySummary(id))}</span> · ${active ? esc(active.name + ' · ' + keyName(key)) : '<span data-i18n>Use priority order</span>'}</small></span><button data-rotate="${esc(id)}" data-i18n>Next route</button><button data-reset-model="${esc(id)}" data-i18n>Reset priority</button></div>`;
   }).join('') || "<p class=\"hint\" data-i18n>Add models and keys to see available routes.</p>";
 }
 async function discoverModels(p) {
@@ -341,7 +370,7 @@ async function discoverModels(p) {
     const source = structuredClone(p);
     const result = await api.providerModels({ provider: source }); if (!result.ok) throw new Error(result.error);
     if (p.baseUrl !== source.baseUrl || p.anthropicBaseUrl !== source.anthropicBaseUrl || p.type !== source.type || !config.providers.includes(p)) return;
-    catalog = result.models; catalogProvider = p.id; catalogSelected = new Set(p.models.map(model => model.id));
+    catalog = result.models; catalogProvider = p.id; catalogSelected = new Set(p.models.map(model => model.upstream));
     let limits = 0, changed = false;
     for (const m of p.models) {
       const hit = catalog.find(x => x.upstream.replace(/:cloud$/, '') === m.upstream.replace(/:cloud$/, ''));
@@ -357,9 +386,9 @@ async function discoverModels(p) {
 }
 function renderCatalog() {
   const query = $('modelSearch').value.trim().toLowerCase(), p = config.providers.find(p => p.id === catalogProvider);
-  $('catalogList').innerHTML = catalog.filter(m => m.id.toLowerCase().includes(query)).map((m) => {
-    const existing = p?.models.some(x => x.id === m.id);
-    return `<label class="catalog-option"><input type="checkbox" data-catalog="${esc(m.id)}" ${catalogSelected.has(m.id) ? 'checked' : ''}>${esc(m.id)}${m.maxContext ? `<small class="hint">· ${Math.round(m.maxContext / 1024)}K ctx</small>` : ''}${existing ? "<small data-i18n>Added</small>" : ''}</label>`;
+  $('catalogList').innerHTML = catalog.filter(m => [m.id, m.upstream].some(name => name.toLowerCase().includes(query))).map((m) => {
+    const existing = p?.models.some(x => x.upstream === m.upstream);
+    return `<label class="catalog-option"><input type="checkbox" data-catalog="${esc(m.upstream)}" ${catalogSelected.has(m.upstream) ? 'checked' : ''}>${esc(m.id)}${m.id !== m.upstream ? `<small class="hint">← ${esc(m.upstream)}</small>` : ''}${m.maxContext ? `<small class="hint">· ${Math.round(m.maxContext / 1024)}K ctx</small>` : ''}${existing ? "<small data-i18n>Added</small>" : ''}</label>`;
   }).join('') || "<p class=\"hint\" data-i18n>No matching models</p>";
 }
 
@@ -561,6 +590,11 @@ $('editor').onchange = e => {
   const el = e.target, p = current();
   if (!p) return;
   updateEditorField(el);
+  if (el.dataset.model !== undefined && el.dataset.field === 'id' && el.value.trim()) {
+    const id = routingId(el.value);
+    if (id !== p.models[Number(el.dataset.model)].id) { el.value = id; p.models[Number(el.dataset.model)].id = id; edited(); }
+    renderModelChips();
+  }
   if (el.dataset.model !== undefined && el.dataset.field === 'contextWindow') {
     const model = p.models[Number(el.dataset.model)], raw = String(el.value).trim();
     const value = Number(raw);
@@ -580,6 +614,7 @@ $('editor').addEventListener('focusout', event => {
 $('editor').onclick = async e => {
   const button = e.target.closest('button'), p = current(); if (!button || !p) return;
   const d = button.dataset;
+  if (d.removeModelGroup !== undefined) { p.models = p.models.filter(model => routingId(model.id) !== d.removeModelGroup); edited(true); renderModels(); renderRoutes(); }
   if (d.removeModel !== undefined) { p.models.splice(Number(d.removeModel),1); edited(true); renderModels(); renderRoutes(); }
   if (d.removeKey !== undefined) { p.keys.splice(Number(d.removeKey),1); edited(true); renderKeys(); }
   if (d.upKey !== undefined || d.downKey !== undefined) { const i = Number(d.upKey ?? d.downKey), j = d.upKey !== undefined ? i-1 : i+1; [p.keys[i], p.keys[j]] = [p.keys[j], p.keys[i]]; edited(true); renderKeys(); }
@@ -617,7 +652,7 @@ $('editor').onclick = async e => {
       await assertClean();
       const result = d.rotate ? await api.apiRouterRotate(d.rotate) : await api.apiRouterReset({ model: d.resetModel, keyId: d.resetKey });
       if (!result.ok) throw new Error(result.error);
-      live = { ...live, ...result.state }; showLive(); updateKeyStats(); renderRoutes(); status(d.rotate ? "Switched to the next available route for the same model" : "Route checks reset. Usage history retained.");
+      live = { ...live, ...result.state }; showLive(); updateKeyStats(); renderRoutes(); renderModelChips(); status(d.rotate ? "Switched to the next available route for the same model" : "Route checks reset. Usage history retained.");
     }
   } catch (e) { status(e.message, true); } finally { if (d.verify || d.verifyNow !== undefined) button.disabled = false; }
 };
@@ -651,9 +686,9 @@ $('catalogList').onchange = e => { const id = e.target.dataset.catalog; if (id) 
 $('applyModels').onclick = () => {
   const p = config.providers.find(p => p.id === catalogProvider);
   if (p) {
-    const catalogIds = new Set(catalog.map(model => model.id));
-    p.models = p.models.filter(model => !catalogIds.has(model.id) || catalogSelected.has(model.id));
-    for (const model of catalog) if (catalogSelected.has(model.id) && !p.models.some(existing => existing.id === model.id)) p.models.push(model);
+    const catalogIds = new Set(catalog.map(model => model.upstream));
+    p.models = p.models.filter(model => !catalogIds.has(model.upstream) || catalogSelected.has(model.upstream));
+    for (const model of catalog) if (catalogSelected.has(model.upstream) && !p.models.some(existing => existing.upstream === model.upstream)) p.models.push(structuredClone(model));
     edited(true);
     if (selected === p.id) { renderModels(); renderRoutes(); }
   }
@@ -696,6 +731,7 @@ function dataMigrationControls() {
   $('importDataAgain').hidden = !dataMigrationPackage;
   $('importDataAgain').disabled = dataMigrationBusy;
   $('migrateDataDirectory').disabled = dataMigrationBusy || !dataDirectory?.canMigrate;
+  $('maintainPluginCaches').disabled = dataMigrationBusy || !api.pluginCacheMaintain;
 }
 function renderDataDirectory(state) {
   dataDirectory = state;
@@ -767,13 +803,13 @@ const importData = async file => {
       result = await api.dataImport(selectedFile, scope);
     }
     if (result.canceled) $('dataMigrationStatus').textContent = migrationIdle();
-    else if (!result.ok) throw new Error(result.error);
+    else if (!result.ok) throw new Error(result.error + (result.recoveryRequired && result.backupDir ? '\nBackup directory: ' + result.backupDir : ''));
     else {
       const scope = scopeLabel(result.scope);
       const note = window.CamelliaI18n.t('Imported {0} files ({1}) · {2}. Restart Camellia to use the restored data.')
         .replace('{0}', () => fmt(result.restored)).replace('{1}', () => migrationBytes(result.bytes)).replace('{2}', () => scope);
       const backup = result.backupDir ? ' ' + window.CamelliaI18n.t('Previous files were backed up; review them only if something looks wrong.') : '';
-      $('dataMigrationStatus').textContent = note + backup;
+      $('dataMigrationStatus').textContent = note + backup + (result.warning ? '\n' + result.warning : '');
       dataMigrationPackage = selectedFile || true;
     }
   } catch (error) { $('dataMigrationStatus').textContent = error.message; $('dataMigrationStatus').classList.add('error'); }
@@ -985,7 +1021,22 @@ async function saveSubscriptionModelVisibility(engine, modelId, visible) {
   finally { visibilitySaving = false; renderSubscriptionModels(); }
 }
 
+function renderRoutingSettings() {
+  for (const field of ['multiKeyConcurrency', 'multiKeyFailover']) {
+    $(field).checked = config?.routing?.[field] !== false;
+    $(field).disabled = !config;
+  }
+}
+for (const field of ['multiKeyConcurrency', 'multiKeyFailover']) {
+  $(field).addEventListener('change', () => {
+    config.routing ||= {};
+    config.routing[field] = $(field).checked;
+    edited();
+    void flushSave();
+  });
+}
 async function renderModelSettings(preferences) {
+  renderRoutingSettings();
   const seq = ++modelSettingsSeq;
   const [loaded, ...accounts] = await Promise.all([
     preferences || api.workbenchSettings(),
@@ -1254,6 +1305,7 @@ async function refresh(initial = false) {
     if (details.ok) insight = details;
     if (initial || !isDirty()) {
       config = structuredClone(live); $('enabled').checked = config.enabled; $('port').value = config.port;
+      renderRoutingSettings();
       rememberSavedModels();
       const selectedPreset = $('preset').value;
       $('preset').innerHTML = presets.map(p => `<option value="${p.type}">${esc(p.name)}</option>`).join('');
@@ -1278,15 +1330,42 @@ async function refresh(initial = false) {
       $('conversationSessionLimit').value = String(preferences.conversations?.sessionLimit ?? 4);
       $('dataPath').textContent = preferences.dataPath; $('version').textContent = 'v' + preferences.version;
       renderDataDirectory(preferences.dataDirectory);
+      renderPluginCacheMaintenance(preferences.pluginCacheMaintenance);
       await renderModelSettings(preferences);
     }
   } catch (e) { status(e.message, true); }
 }
 let storagePreview = null, storageBusy = false;
+let pluginCacheState = null;
+function renderPluginCacheMaintenance(state) {
+  pluginCacheState = state;
+  const result = state?.result;
+  const t = window.CamelliaI18n.t;
+  $('pluginCacheStatus').classList.toggle('error', Boolean(result?.error));
+  $('pluginCacheStatus').textContent = result?.error ? t(result.error) : result
+    ? t('Shared {0} duplicate caches; freed {1}. Skipped {2} items.').replace('{0}', () => fmt(result.duplicates || 0)).replace('{1}', () => migrationBytes(result.bytes || 0)).replace('{2}', () => fmt(result.skipped?.length || 0))
+    : t('Restart to share identical cached plugins and free space. Conversation history and account data are kept.');
+}
+$('maintainPluginCaches').onclick = async () => {
+  if (dataMigrationBusy || storageBusy) return;
+  dataMigrationBusy = true; dataMigrationControls(); storageControls();
+  try {
+    await assertClean();
+    const result = await api.pluginCacheMaintain();
+    if (!result.ok) throw new Error(result.error);
+    $('pluginCacheStatus').classList.remove('error');
+    $('pluginCacheStatus').textContent = window.CamelliaI18n.t('Restarting to deduplicate Codex plugin caches…');
+  } catch (error) {
+    $('pluginCacheStatus').textContent = window.CamelliaI18n.t(error.message);
+    $('pluginCacheStatus').classList.add('error');
+    dataMigrationBusy = false; dataMigrationControls(); storageControls();
+  }
+};
 const storageBytes = bytes => bytes < 1024 ? fmt(bytes) + ' B' : bytes < 1024 ** 2 ? fmt(bytes / 1024) + ' KiB' : bytes < 1024 ** 3 ? fmt(bytes / 1024 ** 2) + ' MiB' : fmt(bytes / 1024 ** 3) + ' GiB';
 function storageControls() {
-  $('scanStorage').disabled = storageBusy;
-  $('cleanStorage').disabled = storageBusy || !storagePreview?.candidates.length;
+  $('scanStorage').disabled = storageBusy || dataMigrationBusy;
+  $('cleanStorage').disabled = storageBusy || dataMigrationBusy || !storagePreview?.candidates.length;
+  $('maintainPluginCaches').disabled = storageBusy || dataMigrationBusy || !api.pluginCacheMaintain;
 }
 function storageEstimate(preview) {
   const count = preview.candidates.reduce((total, entry) => total + entry.count, 0);
@@ -1309,9 +1388,15 @@ $('scanStorage').onclick = async () => {
       group.count += entry.count; group.bytes += entry.bytes; groups.set(entry.category, group);
     }
     $('storageSummary').innerHTML = [...groups].map(([category, group]) => `<div class="setting-row"><h2 data-i18n>${esc(category)}</h2><span>${esc(fmt(group.count))} · ${esc(storageBytes(group.bytes))}</span></div>`).join('');
+    if (result.backups) {
+      const summary = window.CamelliaI18n.t('{0} backups · {1} stored · {2} reclaimable')
+        .replace('{0}', () => fmt(result.backups.count)).replace('{1}', () => storageBytes(result.backups.bytes))
+        .replace('{2}', () => storageBytes(result.backups.reclaimableBytes));
+      $('storageSummary').insertAdjacentHTML('afterbegin', `<div class="setting-row"><h2 data-i18n>Import backups</h2><span>${esc(summary)}</span></div>`);
+    }
     if (result.active) {
       const notice = document.createElement('p');
-      notice.textContent = window.CamelliaI18n.t('Conversations are running. Pasted attachments and handoffs/summaries are protected; scan again when idle to include them.');
+      notice.textContent = window.CamelliaI18n.t('Conversations are running. Attachments, import backups and handoffs/summaries are protected; scan again when idle to include them.');
       $('storageSummary').append(notice);
     }
     if (result.skipped) {
@@ -1448,6 +1533,10 @@ $('confirmDeleteAllArchived').onclick = async () => {
 };
 api.onApiRouterState(state => {
   if (!live) return; live = { ...live, ...state }; showLive(); updateKeyStats();
+  if (!saving && !isDirty() && config && state.routing) {
+    config.routing = structuredClone(state.routing); renderRoutingSettings();
+  }
+  renderRoutes(); renderModelChips();
   if (!saving && !isDirty() && syncMaskedKeys() && current()?.type === 'qclaw') renderKeys();
   if (view === 'usage') { fillUsageFilters(); renderUsage(); }
   if (!isDirty() && !current()) renderProviders();
@@ -1487,6 +1576,7 @@ window.addEventListener('camellia:language', () => {
   // explicit re-render to leave the previous language.
   if (lastNetworkValue) renderNetworkSettings(lastNetworkValue);
   if (dataDirectory && !dataMigrationBusy) renderDataDirectory(dataDirectory);
+  if (!dataMigrationBusy) renderPluginCacheMaintenance(pluginCacheState);
   if (!live) return;
   if (view === 'usage') { fillUsageFilters(); renderUsage(); }
   if (view === 'providers' || view === 'subscriptions') renderBalances();

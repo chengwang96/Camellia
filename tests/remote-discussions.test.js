@@ -71,6 +71,28 @@ function request(gateway, token, route, payload) {
   });
 }
 
+test('failed remote group verification rolls back new copies, while committed group references survive a lost acknowledgement', async t => {
+  const h = fixture(t), id = (await h.execute('create')).groupId;
+  await h.execute('add-member', id, { bindingId: bindingFingerprint(h.binding), name: 'Member' });
+  const original = h.service.call.bind(h.service), files = [];
+  h.service.call = async (action, parameters, options) => {
+    if (action !== 'send') return original(action, parameters, options);
+    files.push(parameters.attachments[0].path);
+    assert.equal(h.remote.pendingAttachments.size, 1);
+    if (files.length === 2) h.service.manager.enqueue(id, { requestId: parameters.requestId, text: parameters.text, attachments: parameters.attachments });
+    throw new Error(files.length === 1 ? 'Connection verification failed' : 'Lost acknowledgement');
+  };
+  const parameters = { text: 'Read attachment', attachments: [{ name: 'notes.txt', isImage: false, data: Buffer.from('group-owned bytes').toString('base64') }] };
+  const first = h.submit('send', id, parameters);
+  assert.equal((await h.finish(first.payload.requestId)).state, 'failed');
+  assert.equal(fs.existsSync(files[0]), false); assert.equal(fs.existsSync(path.dirname(files[0])), false);
+  assert.equal(h.remote.pendingAttachments.size, 0);
+  const second = h.submit('send', id, parameters);
+  assert.equal((await h.finish(second.payload.requestId)).state, 'failed');
+  assert.equal(fs.readFileSync(files[1], 'utf8'), 'group-owned bytes'); assert.equal(h.remote.pendingAttachments.size, 0);
+  assert.equal(h.service.manager.get(id).messages[0].attachments[0].path, files[1]);
+});
+
 test('remote attachments, questions, approval races and artifact downloads use the original host run', async t => {
   const h = fixture(t); let respond, aborted;
   h.adapter.evidence = value => ({ kind: 'real', reference: 'synthetic-rich-test-only', bindingFingerprint: bindingFingerprint(value), runtimeVersion: 'test', policyVersion: 'test', mode: 'native-tools', supportsImages: true,

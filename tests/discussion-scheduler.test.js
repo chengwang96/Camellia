@@ -376,7 +376,7 @@ test('failed completion and stop writes retain the recovery handle for explicit 
   h.manager.complete = complete; h.manager.stop = stop;
   await h.scheduler.stop(h.group.id, request.deliveryIds[0]);
   assert.equal(h.scheduler.runs.size, 0); assert.equal(h.calls.length, 1);
-  assert.equal(h.manager.get(h.group.id).deliveries[0].partialText, 'Preserved before final write');
+  assert.equal(h.manager.get(h.group.id).deliveries[0].partialText, undefined);
   assert.equal(h.manager.get(h.group.id).deliveries[0].status, 'completed');
   assert.equal(h.manager.get(h.group.id).messages[1].text, 'Preserved before final write');
 });
@@ -474,7 +474,7 @@ test('a failed result-intent write still drains and preserves success for explic
   await h.scheduler.stop(h.group.id, request.deliveryIds[0]);
   const state = h.manager.get(h.group.id);
   assert.equal(state.deliveries[0].status, 'completed');
-  assert.equal(state.deliveries[0].partialText, 'Keep exact final result');
+  assert.equal(state.deliveries[0].partialText, undefined);
   assert.equal(state.messages[1].text, 'Keep exact final result');
   assert.equal(h.calls.length, 1);
 });

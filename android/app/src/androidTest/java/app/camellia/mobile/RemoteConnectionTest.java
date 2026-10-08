@@ -186,13 +186,14 @@ public class RemoteConnectionTest extends InstrumentationTestCase {
     }
 
     public void testBackgroundGraceAndForegroundCancellation() throws Exception {
-        var deadline = EmbeddedNetwork.class.getDeclaredField("backgroundDeadline"); deadline.setAccessible(true);
+        var field = EmbeddedNetwork.class.getDeclaredField("lifecycle"); field.setAccessible(true);
+        var lifecycle = (NetworkLifecycle<?>) field.get(null);
         ui(() -> {
             EmbeddedNetwork.background();
-            long remaining = deadline.getLong(null) - android.os.SystemClock.elapsedRealtime();
+            long remaining = lifecycle.backgroundDeadline() - android.os.SystemClock.elapsedRealtime();
             assertTrue(remaining > 290_000 && remaining <= 300_000);
             EmbeddedNetwork.foreground();
-            assertEquals(0L, deadline.getLong(null));
+            assertEquals(0L, lifecycle.backgroundDeadline());
         });
     }
 

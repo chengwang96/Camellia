@@ -104,7 +104,8 @@ async function main() {
   fs.mkdirSync(path.join(legacy, 'clipboard-attachments'), { recursive: true });
   fs.mkdirSync(path.join(legacy, 'conversations'), { recursive: true });
   fs.writeFileSync(path.join(legacy, 'clipboard-attachments/keep.txt'), 'original attachment');
-  fs.writeFileSync(path.join(legacy, 'conversations/metadata.json'), JSON.stringify({ attachment: path.join(legacy, 'clipboard-attachments/keep.txt') }));
+  fs.writeFileSync(path.join(legacy, 'conversations/metadata.json'), JSON.stringify({ id: 'metadata', origin: 'codex', segments: [],
+    attachment: path.join(legacy, 'clipboard-attachments/keep.txt') }));
   for (const [name, target] of [['internal-attachments', 'clipboard-attachments'], ['missing-internal', 'missing-dependency']]) {
     fs.symlinkSync(path.join(legacy, target), path.join(legacy, name), process.platform === 'win32' ? 'junction' : 'dir');
   }
