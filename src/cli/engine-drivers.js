@@ -80,7 +80,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     return current && !current.dead && !opts.fork && current.opts.goalBridge === opts.goalBridge && current.sessionId === (opts.sessionId || null)
       && JSON.stringify(current.settings) === JSON.stringify(settings) ? current : null;
   }
-  const kimi = { history: kimiHistory, settings: kimiSettings, nativeCompaction: true, nativeAutoCompaction: true,
+  const kimi = { sessions: kimiPool, history: kimiHistory, settings: kimiSettings, nativeCompaction: true, nativeAutoCompaction: true,
     saveSettings(patch) { saveConfig({ kimi: updateKimiConnectionSettings(loadConfig(), patch) }); return kimiSettings(patch.sessionId); },
     ensure(opts) {
       kimiPool.assertAccess(opts);
@@ -102,7 +102,7 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     },
     async shutdown() { await kimiPool.shutdown(); await kimiAccount.shutdown(); },
   };
-  const claude = { history: claudeHistory, nativeCompaction: true, nativeAutoCompaction: true,
+  const claude = { sessions: claudePool, history: claudeHistory, nativeCompaction: true, nativeAutoCompaction: true,
     settings() { const saved = loadConfig().claude || {}; return { permissionMode: 'ask', connection: 'api', ...saved, model: saved[`${saved.connection || 'api'}Model`] || saved.model || '' }; },
     saveSettings(patch) {
       const next = { ...loadConfig().claude };
@@ -145,9 +145,9 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
   const pi = require('../engines/pi-session').createPiChat({ dataDir, loadConfig, saveConfig, getRoute, getModels: models,
     runtime: () => locate('pi'), node: () => process.execPath, environment, onEvent: event => onEvent('pi', event), log: noLog,
     instructions: () => native.config('pi', 'instructions'), nativeRevision: () => native.fingerprint('pi') });
-  const drivers = { dsh, pi, codex: { history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession,
+  const drivers = { dsh, pi, codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession,
     subscriptionAccounts: () => codex.accountState(), nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
-  drivers.antigravity = { history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
+  drivers.antigravity = { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
     ensure: antigravity.ensureSession, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
   require('../engines/discussions/native-access').installDiscussionGuards({ dataDir, drivers: {
     codex, antigravity, dsh, pi,

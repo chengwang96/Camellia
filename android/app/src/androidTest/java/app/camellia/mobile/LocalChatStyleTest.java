@@ -15,16 +15,15 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class LocalChatStyleTest extends InstrumentationTestCase {
-    private CredentialStore encrypted;
 
     @Override protected void setUp() throws Exception {
-        super.setUp(); encrypted = new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private"); encrypted.clear();
+        super.setUp(); LocalChatFixture.clear(getInstrumentation().getTargetContext());
     }
 
-    @Override protected void tearDown() throws Exception { encrypted.clear(); super.tearDown(); }
+    @Override protected void tearDown() throws Exception { LocalChatFixture.clear(getInstrumentation().getTargetContext()); super.tearDown(); }
 
     public void testWorkspaceAndDetailShareRemoteDesign() throws Exception {
-        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
         JSONObject provider = new JSONObject().put("id", "example").put("name", "Example").put("protocol", "openai")
             .put("baseUrl", "https://example.com/v1").put("keys", new JSONArray().put(new JSONObject().put("key", "test-key")))
             .put("models", new JSONArray().put(new JSONObject().put("id", "test-model").put("upstream", "test-model")));
@@ -40,9 +39,9 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
             .put(new JSONObject().put("role", "assistant").put("at", 1790056860000L).put("content", "明白，不加热重载——开发版现在就保持原样跑着，你手动控制重启时机，正在进行的会话也不会被打断。\n\n当前状态确认一下：\n\n- 开发版 `npm run dev` 正在后台运行，窗口已打开\n- 本机安装的 Camellia 已彻底卸载，开始菜单无残留\n- 新打好的安装包还在 `dist` 里，以后想装回正式版随时双击即可\n\n祝用得顺手，有别的需要随时叫我。")
                 .put("process", new JSONArray().put(new JSONObject().put("type", "thinking").put("text", "Compare the reported results with the baseline before summarizing."))));
         store.createConversation("", routeId).put("title", "Plan the next release"); store.save();
-        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
-            getInstrumentation().waitForIdleSync();
+            LocalChatFixture.idle(getInstrumentation());
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
                 View group = root.findViewWithTag("localGroup:" + workspaceId);
@@ -75,7 +74,7 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
             });
             screenshot(activity, "local-workspaces-unified");
             getInstrumentation().runOnMainSync(() -> activity.getWindow().getDecorView().findViewWithTag("localConversation:" + conversationId).performClick());
-            getInstrumentation().waitForIdleSync();
+            LocalChatFixture.idle(getInstrumentation());
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
                 EditText composer = root.findViewWithTag("localComposer");
@@ -98,7 +97,9 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
                 View bar = root.findViewWithTag("localComposerBar"), status = root.findViewWithTag("localStatus");
                 assertDockInsets(bar, status);
                 assertFalse(((ViewGroup) bar.getParent()).getClipToPadding());
-                assertEquals("An idle chat does not need a blank status footer", View.GONE, status.getVisibility());
+                assertEquals("Local chat keeps the same status footer as remote control", View.VISIBLE, status.getVisibility());
+                boolean chinese = activity.getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
+                assertEquals(chinese ? "就绪" : "Ready", ((TextView) status).getText().toString());
                 ViewGroup user = root.findViewWithTag("localMessage:0"), assistant = root.findViewWithTag("localMessage:1");
                 assertNotNull(user.getBackground()); assertNull(assistant.getBackground());
                 assertEquals(dp(14), user.getPaddingLeft());
@@ -124,7 +125,7 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
                 root.findViewWithTag("processToggle:" + conversationId + ":1").performClick();
                 composer.setText("First line\nSecond line\nThird line");
             });
-            getInstrumentation().waitForIdleSync();
+            LocalChatFixture.idle(getInstrumentation());
             screenshot(activity, "local-conversation-unified");
             getInstrumentation().runOnMainSync(() -> {
                 View root = activity.getWindow().getDecorView();
@@ -132,15 +133,16 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
                 assertTrue(composer.getHeight() > dp(48)); assertTrue(composer.getBottom() <= ((View) send.getParent()).getTop());
                 activity.onBackPressed();
             });
-            assertEquals("First line\nSecond line\nThird line", new LocalChatStore(getInstrumentation().getTargetContext()).conversation(conversationId).getString("draft"));
-        } finally { getInstrumentation().runOnMainSync(activity::finish); getInstrumentation().waitForIdleSync(); }
+            assertEquals("First line\nSecond line\nThird line", new LocalChatFixture(getInstrumentation().getTargetContext()).conversation(conversationId).getString("draft"));
+        } finally { getInstrumentation().runOnMainSync(activity::finish); LocalChatFixture.idle(getInstrumentation()); }
     }
 
     private void assertDockInsets(View bar, View status) {
         assertEquals(dp(2), status.getPaddingTop()); assertEquals(dp(2), status.getPaddingBottom());
         assertEquals(dp(8), ((LinearLayout.LayoutParams) bar.getLayoutParams()).bottomMargin);
         View parent = (View) bar.getParent();
-        android.widget.ScrollView scroll = (android.widget.ScrollView) ((ViewGroup) parent.getParent()).getChildAt(0);
+        ViewGroup viewport = (ViewGroup) ((ViewGroup) parent.getParent()).getChildAt(0);
+        android.widget.ScrollView scroll = (android.widget.ScrollView) viewport.getChildAt(0);
         assertEquals("Scrollable content must reserve the complete dock height", parent.getHeight() + dp(16), scroll.getChildAt(0).getPaddingBottom());
         View fade = ((ViewGroup) parent).getChildAt(0);
         assertEquals(bar.getTag() + "Fade", fade.getTag()); assertEquals(dp(36), fade.getHeight());
@@ -240,7 +242,7 @@ public class LocalChatStyleTest extends InstrumentationTestCase {
     }
 
     private void screenshot(Activity activity, String name) throws Exception {
-        getInstrumentation().waitForIdleSync(); getInstrumentation().getUiAutomation().waitForIdle(300, 3000);
+        LocalChatFixture.idle(getInstrumentation()); getInstrumentation().getUiAutomation().waitForIdle(300, 3000);
         Bitmap image = getInstrumentation().getUiAutomation().takeScreenshot(); assertNotNull(image);
         try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalCacheDir(), name + ".png"))) { image.compress(Bitmap.CompressFormat.PNG, 100, output); }
         finally { image.recycle(); }

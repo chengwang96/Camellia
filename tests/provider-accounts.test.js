@@ -54,6 +54,25 @@ test('model discovery deduplicates exact model aliases without merging versions;
   await assert.rejects(verifyModel(p,'secret',models[0],{fetchImpl:async()=>response({data:[]})}),/valid model response/);
 });
 
+test('Command Code complete endpoint URLs use one base for discovery and validation', async () => {
+  for (const suffix of ['/chat/completions', '/responses', '/messages', '/models/']) {
+    const p = provider('https://api.commandcode.ai/provider/v1' + suffix, 'commandcode');
+    const calls = [];
+    const options = { fetchImpl: async (url, init) => {
+      calls.push([url, init.method]);
+      if (init.method === 'GET') return response({ data: [{ id: 'deepseek/deepseek-v4.1-flash', thinking: { values: [false, true], default: true } }] });
+      assert.equal(JSON.parse(init.body).model, 'deepseek/deepseek-v4.1-flash');
+      return response({ choices: [{ message: { content: 'OK' } }] });
+    } };
+    const models = await fetchModels(p, 'secret', options);
+    await verifyModel(p, 'secret', models[0], options);
+    assert.deepEqual(calls, [
+      ['https://api.commandcode.ai/provider/v1/models', 'GET'],
+      ['https://api.commandcode.ai/provider/v1/chat/completions', 'POST'],
+    ]);
+  }
+});
+
 test('model discovery leaves absent or malformed context limits unknown', async () => {
   const entries = [{ id: 'missing' }, { id: 'negative', context_length: -10000 },
     { id: 'fraction', context_length: 128000.5 }, { id: 'infinite', context_length: 'Infinity' },
@@ -63,6 +82,17 @@ test('model discovery leaves absent or malformed context limits unknown', async 
   });
   for (const model of models.slice(0, 4)) assert.equal(model.maxContext, undefined);
   assert.equal(models[4].maxContext, 1000000);
+});
+
+test('catalog discovery normalizes relay names without discarding distinct upstream aliases', async () => {
+  const upstreams = ['openai/openai/gpt-6-astra', 'gpt-6-astra', 'moonshotai/Kimi-K3', 'zai-org/GLM-5.3',
+    'deepseek-flash', 'deepseek-v4.1-flash', 'private/GPT-6-Astra'];
+  const models = await fetchModels(provider('https://relay.example/v1'), 'fixture', {
+    fetchImpl: async () => response({ data: [...upstreams, upstreams[0]].map(id => ({ id, thinking: { values: [] } })) }),
+  });
+  assert.deepEqual(models.map(model => model.upstream), upstreams);
+  assert.deepEqual(models.map(model => model.id), ['gpt-6-astra', 'gpt-6-astra', 'kimi-k3', 'glm-5.3',
+    'deepseek-flash', 'deepseek-v4.1-flash', 'private/GPT-6-Astra']);
 });
 
 test('catalog discovery preserves explicit reasoning metadata without guessing from model names', async () => {

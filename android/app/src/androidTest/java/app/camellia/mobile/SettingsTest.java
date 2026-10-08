@@ -12,6 +12,43 @@ import android.widget.TextView;
 import org.json.JSONObject;
 
 public class SettingsTest extends InstrumentationTestCase {
+    public void testHapticPreferencePersistsAndUpdatesExistingConversationRows() throws Throwable {
+        Context context = getInstrumentation().getTargetContext();
+        assertTrue(MobileHaptics.enabled(context));
+        Activity activity = launch("general");
+        try {
+            ui(() -> {
+                android.widget.Switch toggle = root(activity).findViewWithTag("preference:hapticFeedback");
+                assertNotNull(toggle); assertTrue(toggle.isChecked());
+                java.util.concurrent.atomic.AtomicInteger menus = new java.util.concurrent.atomic.AtomicInteger();
+                ConversationRow row = new ConversationRow(activity, new ChatStyle(activity), false, "Test", "",
+                    "testConversation", "testState", () -> {}, menus::incrementAndGet);
+                toggle.performClick();
+                assertFalse(MobileHaptics.enabled(context));
+                assertTrue(row.performLongClick()); assertFalse(row.isHapticFeedbackEnabled());
+                assertEquals(1, menus.get());
+                ((View) toggle.getParent()).performClick();
+                assertTrue(MobileHaptics.enabled(context));
+                assertTrue(row.performLongClick()); assertTrue(row.isHapticFeedbackEnabled());
+                assertEquals(2, menus.get());
+                toggle.performClick();
+            });
+        } finally { ui(activity::finish); }
+        Activity reopened = launch("general");
+        try {
+            ui(() -> {
+                android.widget.Switch toggle = root(reopened).findViewWithTag("preference:hapticFeedback");
+                assertFalse(toggle.isChecked()); assertFalse(MobileHaptics.enabled(reopened));
+                ConversationRow row = new ConversationRow(reopened, new ChatStyle(reopened), false, "Test", "",
+                    "testConversation", "testState", () -> {}, () -> {});
+                assertFalse(row.isHapticFeedbackEnabled());
+                toggle.performClick();
+                assertTrue(row.performLongClick()); assertTrue(row.isHapticFeedbackEnabled());
+                assertTrue(MobileHaptics.enabled(context));
+            });
+        } finally { ui(reopened::finish); }
+    }
+
     public void testEnterPreferenceOffersThreeModes() throws Throwable {
         Activity activity = launch("general");
         try {
@@ -74,12 +111,12 @@ public class SettingsTest extends InstrumentationTestCase {
 
     @Override protected void setUp() throws Exception {
         super.setUp();
-        new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private").clear();
+        LocalChatFixture.clear(getInstrumentation().getTargetContext());
         getInstrumentation().getTargetContext().getSharedPreferences("mobile-preferences", 0).edit().clear().commit();
     }
 
     @Override protected void tearDown() throws Exception {
-        new CredentialStore(getInstrumentation().getTargetContext(), "local-chat-private").clear();
+        LocalChatFixture.clear(getInstrumentation().getTargetContext());
         getInstrumentation().getTargetContext().getSharedPreferences("mobile-preferences", 0).edit().clear().commit();
         super.tearDown();
     }
@@ -97,9 +134,9 @@ public class SettingsTest extends InstrumentationTestCase {
                 assertEquals("•••••••••••\n•••••••••••••", keyInput.getTransformationMethod().getTransformation(keyInput.getText(), keyInput).toString());
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); assertTrue(dialog.isShowing());
                 field(form, "providerEndpoint", "https://example.com/v1"); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
-                assertFalse(dialog.isShowing());
             });
-            LocalChatStore store = new LocalChatStore(activity);
+            ui(() -> assertFalse(dialog(activity).isShowing()));
+            LocalChatFixture store = new LocalChatFixture(activity);
             assertEquals(2, LocalChatConfig.routes(store.config()).size());
             assertEquals("test-secret", LocalChatConfig.routes(store.config()).get(0).key);
             assertEquals("upstream-model", LocalChatConfig.routes(store.config()).get(0).model);
@@ -107,18 +144,19 @@ public class SettingsTest extends InstrumentationTestCase {
                 android.widget.Switch enabled = root(activity).findViewWithTag("providerEnabled:0");
                 assertTrue(enabled.isChecked()); enabled.setChecked(false);
             });
-            assertTrue(LocalChatConfig.routes(new LocalChatStore(activity).config()).isEmpty());
+            assertTrue(LocalChatConfig.routes(new LocalChatFixture(activity).config()).isEmpty());
             ui(() -> ((android.widget.Switch) root(activity).findViewWithTag("providerEnabled:0")).setChecked(true));
-            assertEquals(2, LocalChatConfig.routes(new LocalChatStore(activity).config()).size());
+            assertEquals(2, LocalChatConfig.routes(new LocalChatFixture(activity).config()).size());
             String providerId = store.config().getJSONArray("providers").getJSONObject(0).getString("id");
             ui(() -> root(activity).findViewWithTag("providerEdit:0").performClick());
             ui(() -> {
                 AlertDialog dialog = dialog(activity); View form = dialog.getWindow().getDecorView();
                 assertEquals(0, dialog.getWindow().getAttributes().flags & android.view.WindowManager.LayoutParams.FLAG_SECURE);
                 assertEquals("", ((EditText) form.findViewWithTag("providerKeys")).getText().toString());
-                field(form, "providerName", "Edited API"); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); assertFalse(dialog.isShowing());
+                field(form, "providerName", "Edited API"); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
             });
-            store = new LocalChatStore(activity);
+            ui(() -> assertFalse(dialog(activity).isShowing()));
+            store = new LocalChatFixture(activity);
             assertEquals(providerId, store.config().getJSONArray("providers").getJSONObject(0).getString("id"));
             assertEquals(2, store.config().getJSONArray("providers").getJSONObject(0).getJSONArray("keys").length());
             ui(() -> root(activity).findViewWithTag("providerEdit:0").performClick());
@@ -127,14 +165,14 @@ public class SettingsTest extends InstrumentationTestCase {
                 ((android.widget.Switch) edit.getWindow().getDecorView().findViewWithTag("providerKeyEnabled:0")).setChecked(false);
                 edit.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
             });
-            assertEquals("test-secret", LocalChatConfig.routes(new LocalChatStore(activity).config()).get(0).key);
+            assertEquals("test-secret", LocalChatConfig.routes(new LocalChatFixture(activity).config()).get(0).key);
             ui(() -> root(activity).findViewWithTag("providerEdit:0").performClick());
             ui(() -> {
                 AlertDialog edit = dialog(activity);
                 ((android.widget.Switch) edit.getWindow().getDecorView().findViewWithTag("providerKeyEnabled:0")).setChecked(false);
                 edit.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
             });
-            assertEquals("second-secret", LocalChatConfig.routes(new LocalChatStore(activity).config()).get(0).key);
+            assertEquals("second-secret", LocalChatConfig.routes(new LocalChatFixture(activity).config()).get(0).key);
             ui(() -> root(activity).findViewWithTag("providerEdit:0").performClick());
             ui(() -> {
                 AlertDialog edit = dialog(activity);
@@ -142,7 +180,7 @@ public class SettingsTest extends InstrumentationTestCase {
                 assertFalse(first.isChecked()); first.setChecked(true);
                 edit.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
             });
-            assertEquals("test-secret", LocalChatConfig.routes(new LocalChatStore(activity).config()).get(0).key);
+            assertEquals("test-secret", LocalChatConfig.routes(new LocalChatFixture(activity).config()).get(0).key);
             String[] copied = new String[1];
             ui(() -> root(activity).findViewWithTag("providerExport").performClick());
             ui(() -> dialog(activity).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
@@ -157,9 +195,10 @@ public class SettingsTest extends InstrumentationTestCase {
             ui(() -> {
                 AlertDialog dialog = dialog(activity); View form = dialog.getWindow().getDecorView();
                 field(form, "providerImportText", "bad json"); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); assertTrue(dialog.isShowing());
-                field(form, "providerImportText", copied[0]); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); assertFalse(dialog.isShowing());
+                field(form, "providerImportText", copied[0]); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
             });
-            assertEquals("Edited API", new LocalChatStore(activity).config().getJSONArray("providers").getJSONObject(0).getString("name"));
+            ui(() -> assertFalse(dialog(activity).isShowing()));
+            assertEquals("Edited API", new LocalChatFixture(activity).config().getJSONArray("providers").getJSONObject(0).getString("name"));
             ui(() -> ((ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(android.content.ClipData.newPlainText("", "")));
         } finally { ui(activity::finish); }
     }
@@ -217,7 +256,7 @@ public class SettingsTest extends InstrumentationTestCase {
                 row.performClick();
                 assertEquals("请先在主界面连接并配对此电脑。", ((android.widget.TextView) root(unpaired).findViewWithTag("settingsStatus")).getText().toString());
             });
-            assertTrue(LocalChatConfig.routes(new LocalChatStore(context).config()).isEmpty());
+            assertTrue(LocalChatConfig.routes(new LocalChatFixture(context).config()).isEmpty());
         } finally { ui(unpaired::finish); }
         new ComputerStore(remote).save(new JSONObject().put("address", "http://100.64.0.1:9").put("token", "a".repeat(43)).put("computerName", "测试电脑"));
         Activity paired = launch("providers");
@@ -258,7 +297,7 @@ public class SettingsTest extends InstrumentationTestCase {
             .put("baseUrl", "https://example.com/v1")
             .put("keys", new org.json.JSONArray().put(new JSONObject().put("key", "phone-secret")))
             .put("models", new org.json.JSONArray().put(new JSONObject().put("id", "phone-model").put("upstream", "phone-model")));
-        new LocalChatStore(context).importConfig(new JSONObject().put("providers", new org.json.JSONArray().put(provider)));
+        new LocalChatFixture(context).importConfig(new JSONObject().put("providers", new org.json.JSONArray().put(provider)));
         Activity activity = launch("providers");
         try {
             ui(() -> assertEquals("从已配对的电脑中选择要读取的一台", rowDetail(activity, "providerImportComputer")));
@@ -286,40 +325,40 @@ public class SettingsTest extends InstrumentationTestCase {
                 confirm.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
                 assertFalse(confirm.isShowing());
             });
-            java.util.List<LocalChatConfig.Route> routes = LocalChatConfig.routes(new LocalChatStore(context).config());
+            java.util.List<LocalChatConfig.Route> routes = LocalChatConfig.routes(new LocalChatFixture(context).config());
             assertEquals("Cancelling must keep the phone configuration", 1, routes.size());
             assertEquals("phone-secret", routes.get(0).key);
         } finally { ui(activity::finish); remote.clear(); }
     }
 
     public void testArchiveHiddenRestoreAndDelete() throws Throwable {
-        LocalChatStore store = new LocalChatStore(getInstrumentation().getTargetContext());
+        LocalChatFixture store = new LocalChatFixture(getInstrumentation().getTargetContext());
         JSONObject conversation = store.createConversation("", "missing/model"); String id = conversation.getString("id");
         conversation.put("title", "Archived research"); conversation.put("draft", "Keep this draft"); store.save();
-        Activity local = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        Activity local = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), LocalChatActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             ui(() -> root(local).findViewWithTag("localConversation:" + id).performLongClick());
             ui(() -> {
                 conversationMenu(local).panel.findViewWithTag("conversationAction:archive").performClick();
-                assertNull(root(local).findViewWithTag("localConversation:" + id));
             });
+            ui(() -> assertNull(root(local).findViewWithTag("localConversation:" + id)));
         } finally { ui(local::finish); }
-        assertTrue(new LocalChatStore(getInstrumentation().getTargetContext()).conversation(id).getBoolean("archived"));
+        assertTrue(new LocalChatFixture(getInstrumentation().getTargetContext()).conversation(id).getBoolean("archived"));
         Activity archived = launch("archived");
         try {
             ui(() -> root(archived).findViewWithTag("archiveRestore:" + id).performClick());
-            LocalChatStore restored = new LocalChatStore(archived); assertFalse(restored.conversation(id).getBoolean("archived"));
+            LocalChatFixture restored = new LocalChatFixture(archived); assertFalse(restored.conversation(id).getBoolean("archived"));
             assertEquals("Keep this draft", restored.conversation(id).getString("draft"));
         } finally { ui(archived::finish); }
-        LocalChatStore next = new LocalChatStore(getInstrumentation().getTargetContext()); next.archiveConversation(id, true);
+        LocalChatFixture next = new LocalChatFixture(getInstrumentation().getTargetContext()); next.archiveConversation(id, true);
         Activity deletion = launch("archived");
         try {
             ui(() -> root(deletion).findViewWithTag("archiveDelete:" + id).performClick());
             ui(() -> dialog(deletion).getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
-            assertNotNull(new LocalChatStore(deletion).conversation(id));
+            assertNotNull(new LocalChatFixture(deletion).conversation(id));
             ui(() -> root(deletion).findViewWithTag("archiveDelete:" + id).performClick());
             ui(() -> dialog(deletion).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
-            assertNull(new LocalChatStore(deletion).conversation(id));
+            assertNull(new LocalChatFixture(deletion).conversation(id));
         } finally { ui(deletion::finish); }
     }
 
@@ -338,7 +377,7 @@ public class SettingsTest extends InstrumentationTestCase {
                 dialog(general).dismiss();
             });
         } finally { ui(general::finish); }
-        Activity home = getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        Activity home = LocalChatFixture.start(getInstrumentation(), new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             ui(() -> {
                 View root = root(home); assertNotNull(root.findViewWithTag("localChatEntry")); assertNotNull(root.findViewWithTag("remoteControlEntry"));
@@ -358,10 +397,10 @@ public class SettingsTest extends InstrumentationTestCase {
     public void testHomeVisualLayout() throws Throwable {
         Context context = getInstrumentation().getTargetContext();
         MobilePreferences.set(context, "language", "zh-CN"); MobilePreferences.set(context, "theme", "light");
-        Activity home = getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        Activity home = LocalChatFixture.start(getInstrumentation(), new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         try {
             android.os.SystemClock.sleep(800);
-            getInstrumentation().waitForIdleSync();
+            LocalChatFixture.idle(getInstrumentation());
             android.graphics.Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
             try (var output = new java.io.FileOutputStream(new java.io.File(home.getExternalCacheDir(), "mobile-home-light.png"))) {
                 screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
@@ -370,9 +409,9 @@ public class SettingsTest extends InstrumentationTestCase {
     }
 
     private Activity launch(String section) {
-        Activity activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), SettingsActivity.class)
+        Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(getInstrumentation().getTargetContext(), SettingsActivity.class)
             .putExtra("section", section).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        getInstrumentation().waitForIdleSync(); return activity;
+        LocalChatFixture.idle(getInstrumentation()); return activity;
     }
 
     public void testGroupedSettingsLayoutInBothThemes() throws Throwable {
@@ -380,7 +419,7 @@ public class SettingsTest extends InstrumentationTestCase {
         MobilePreferences.set(context, "language", "zh-CN");
         for (String theme : new String[]{"light", "dark"}) {
             MobilePreferences.set(context, "theme", theme);
-            Activity activity = getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            Activity activity = LocalChatFixture.start(getInstrumentation(), new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             try {
                 ui(() -> root(activity).findViewWithTag("settingsEntry").performClick());
                 android.os.SystemClock.sleep(800);
@@ -416,7 +455,7 @@ public class SettingsTest extends InstrumentationTestCase {
             .put("protocol", "openai").put("baseUrl", "https://example.com/v1")
             .put("keys", new org.json.JSONArray().put(new JSONObject().put("key", "visual-test-key")))
             .put("models", new org.json.JSONArray().put(new JSONObject().put("id", "chat-model").put("upstream", "chat-model")));
-        new LocalChatStore(context).importConfig(new JSONObject().put("providers", new org.json.JSONArray().put(provider)));
+        new LocalChatFixture(context).importConfig(new JSONObject().put("providers", new org.json.JSONArray().put(provider)));
         for (String theme : new String[]{"light", "dark"}) {
             MobilePreferences.set(context, "theme", theme);
             Activity providers = launch("providers");
@@ -433,7 +472,7 @@ public class SettingsTest extends InstrumentationTestCase {
                 capture(providers, "settings-providers-cards-" + theme);
             } finally { ui(providers::finish); }
             EmbeddedNetwork.initialize(context); EmbeddedNetwork.setEnabled(false);
-            Activity network = getInstrumentation().startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            Activity network = LocalChatFixture.start(getInstrumentation(), new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             try {
                 ui(() -> { root(network).findViewWithTag("settingsEntry").performClick(); root(network).findViewWithTag("settings:network").performClick(); });
                 ui(() -> {
@@ -448,7 +487,7 @@ public class SettingsTest extends InstrumentationTestCase {
     }
 
     private void capture(Activity activity, String name) throws Exception {
-        android.os.SystemClock.sleep(800); getInstrumentation().waitForIdleSync();
+        android.os.SystemClock.sleep(800); LocalChatFixture.idle(getInstrumentation());
         android.graphics.Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
         try (var output = new java.io.FileOutputStream(new java.io.File(activity.getExternalCacheDir(), name + ".png"))) {
             screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
@@ -474,8 +513,9 @@ public class SettingsTest extends InstrumentationTestCase {
         } catch (Exception error) { throw new AssertionError(error); }
     }
     private void ui(Runnable action) throws Throwable {
+        LocalChatFixture.idle(getInstrumentation());
         Throwable[] failure = new Throwable[1];
         getInstrumentation().runOnMainSync(() -> { try { action.run(); } catch (Throwable error) { failure[0] = error; } });
-        getInstrumentation().waitForIdleSync(); if (failure[0] != null) throw failure[0];
+        LocalChatFixture.idle(getInstrumentation()); if (failure[0] != null) throw failure[0];
     }
 }

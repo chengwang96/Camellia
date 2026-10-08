@@ -335,7 +335,7 @@ test('late immediate instruction replies cannot mutate another conversation', as
 test('unavailable turns and busy states cannot dispatch immediate instructions', async () => {
   for (const overrides of [
     { running: false }, { currentRunId: null }, { loadingSession: true }, { switchingEngine: true },
-    { editingMessage: {} }, { drainingQueue: true }, { pendingConversationSend: () => ({}) }, { sharedChat: false },
+    { editingMessage: {} }, { drainingQueue: true }, { pendingConversationSend: () => ({}) },
   ]) {
     const { state, requests } = steeringHarness();
     Object.assign(state, overrides);

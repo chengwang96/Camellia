@@ -2,6 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
 const { ClaudeGoal, verifySignal } = require('../src/engines/claude-goal');
 const { createHarness } = require('./claude-harness.cjs');
 
@@ -239,4 +240,73 @@ test('verify verdicts ignore fenced or quoted markers', () => {
   assert.equal(verifySignal('> <verify:pass>'), null);
   assert.deepEqual(verifySignal('Checked.\n<verify:fail> tests missing'), { type: 'fail', reason: 'tests missing' });
   assert.deepEqual(verifySignal('<verify:pass> all green'), { type: 'pass', reason: 'all green' });
+});
+
+function denyGoalWrites(t, h) {
+  const write = fs.writeFileSync;
+  return t.mock.method(fs, 'writeFileSync', (file, ...args) => {
+    if (String(file).startsWith(h.options.file() + '.')) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    return write(file, ...args);
+  });
+}
+
+test('a goal that cannot be saved never starts or reports success', t => {
+  const changes = [], h = setup(t, { onChange: (goal, error) => changes.push({ goal, error }) });
+  const write = denyGoalWrites(t, h);
+  const result = h.goal.start({ objective: 'Finish' });
+  assert.equal(result.ok, false); assert.match(result.error, /disk full/);
+  assert.equal(h.goal.view(), null); assert.equal(h.goal.armed, false);
+  assert.equal(h.timers.size, 0); assert.equal(h.prompts.length, 0);
+  assert.match(changes.at(-1).error, /Could not save goal/);
+  write.mock.restore();
+  assert.equal(h.goal.start({ objective: 'Try again' }).ok, true);
+});
+
+test('failure to persist a continuation stops before sending another model request', t => {
+  const h = setup(t); h.goal.start({ objective: 'Finish' });
+  const original = fs.readFileSync(h.options.file(), 'utf8'), write = denyGoalWrites(t, h);
+  h.tick();
+  assert.equal(h.prompts.length, 0); assert.equal(h.timers.size, 0);
+  assert.equal(h.goal.view().phase, 'blocked'); assert.equal(h.goal.view().blockedReason.code, 'storage-error');
+  assert.equal(h.goal.view().roundsStarted, 0);
+  assert.equal(fs.readFileSync(h.options.file(), 'utf8'), original);
+  write.mock.restore();
+});
+
+for (const action of ['setPhase', 'clear']) test('failed goal ' + action + ' keeps the saved record and still stops its owned turn', t => {
+  const h = setup(t); h.goal.start({ objective: 'Finish' }); h.tick();
+  const original = fs.readFileSync(h.options.file(), 'utf8');
+  const write = denyGoalWrites(t, h), unlink = fs.unlinkSync;
+  const exists = fs.existsSync;
+  const hidden = t.mock.method(fs, 'existsSync', file => file === h.options.file() ? false : exists(file));
+  const remove = t.mock.method(fs, 'unlinkSync', (file, ...args) => {
+    if (file === h.options.file()) throw Object.assign(new Error('cannot remove goal'), { code: 'EACCES' });
+    return unlink(file, ...args);
+  });
+  const result = action === 'clear' ? h.goal.clear() : h.goal.setPhase('complete');
+  assert.equal(result.ok, false); assert.ok(result.error);
+  assert.equal(h.goal.armed, false); assert.equal(h.timers.size, 0); assert.equal(h.interrupts(), 1);
+  assert.notEqual(h.goal.view().phase, 'complete');
+  assert.equal(fs.readFileSync(h.options.file(), 'utf8'), original);
+  h.result({ result: '<goal:complete>' }); assert.equal(h.timers.size, 0);
+  write.mock.restore(); remove.mock.restore(); hidden.mock.restore();
+  assert.equal(h.goal.clear().ok, true);
+});
+
+test('verifier transport failure retries verification without rerunning the completed work', async t => {
+  let checks = 0;
+  const h = setup(t, { verifyCompletion: async () => ++checks === 1 ? { error: 'Temporary network failure' } : { pass: true, reason: 'Verified files' } });
+  h.goal.start({ objective: 'Finish' }); h.tick(); h.result({ result: '<goal:complete> Done' });
+  await h.settle(); h.tick(); await h.settle();
+  assert.equal(checks, 2); assert.equal(h.prompts.length, 1);
+  assert.equal(h.goal.view().phase, 'complete');
+});
+
+test('a corrupt goal is retained separately and does not prevent a new goal', t => {
+  const warnings = [], h = setup(t, { onLoadError: error => warnings.push(error) });
+  const damaged = '{"objective":"keep this'; fs.writeFileSync(h.options.file(), damaged);
+  h.goal.load();
+  assert.equal(h.goal.view(), null); assert.equal(warnings.length, 1);
+  assert.equal(fs.readFileSync(warnings[0].backupFile, 'utf8'), damaged);
+  assert.equal(h.goal.start({ objective: 'New work' }).ok, true);
 });

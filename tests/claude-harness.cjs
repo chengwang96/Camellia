@@ -11,7 +11,7 @@ const { EventEmitter } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const mainDir = path.resolve(__dirname, '../src/main');
 
-function createHarness(existingRoot) {
+function createHarness(existingRoot, { respondToInterrupts = false } = {}) {
   const root = existingRoot || fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-workspaces-'));
   const userData = path.join(root, 'app');
   const home = path.join(root, 'home');
@@ -26,6 +26,7 @@ function createHarness(existingRoot) {
     message: async () => ({ response: 0 }),
   };
   const electron = {
+    BrowserWindow: { getAllWindows: () => [] },
     session: {
       fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY 127.0.0.1:18899' }),
       defaultSession: { setProxy: async () => {} },
@@ -42,11 +43,20 @@ function createHarness(existingRoot) {
   mockProcess.on = processEvents.on.bind(processEvents);
   mockProcess.env = { ...process.env, DSH_HOME: path.join(home, '.dsh'), APPDATA: home, LOCALAPPDATA: home, CLAUDE_CONFIG_DIR: '' };
   const mockFs = Object.create(fs);
-  mockFs.createWriteStream = () => Object.assign(new EventEmitter(), { write() {}, end() {} });
+  mockFs.createWriteStream = () => {
+    const stream = new EventEmitter();
+    return Object.assign(stream, { write(_data, done) { done?.(); }, end() { stream.closed = true; stream.emit('close'); } });
+  };
   function spawn(exe, args, options) {
     const proc = new EventEmitter();
     Object.assign(proc, { exe, args, cwd: options.cwd, stdout: new EventEmitter(), stderr: new EventEmitter(), messages: [], killed: false });
-    proc.stdin = Object.assign(new EventEmitter(), { writable: true, write: (line) => proc.messages.push(JSON.parse(line)) });
+    proc.stdin = Object.assign(new EventEmitter(), { writable: true, write: (line) => {
+      const message = JSON.parse(line);
+      proc.messages.push(message);
+      if (respondToInterrupts && message.type === 'control_request' && message.request?.subtype === 'interrupt') {
+        queueMicrotask(() => proc.stdout.emit('data', JSON.stringify({ type: 'result', subtype: 'stopped', is_error: true, result: 'Interrupted' }) + '\n'));
+      }
+    } });
     proc.kill = () => { proc.killed = true; };
     processes.push(proc);
     return proc;
@@ -115,6 +125,6 @@ function createHarness(existingRoot) {
     if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith('dsh-workspaces-')) throw new Error('Unsafe test cleanup path');
     removeTree(resolved);
   }
-  return { root, userData, home, call, folder, configureApi, seedSession, finishTurn, processes, events, api, cleanup, dialogBehavior };
+  return { root, userData, home, call, folder, configureApi, seedSession, finishTurn, processes, events, api, cleanup, dialogBehavior, app: electron.app };
 }
 module.exports = { createHarness };

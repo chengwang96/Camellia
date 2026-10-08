@@ -46,13 +46,13 @@ function message(row) {
     ...(process.length ? { process } : {}), ...(attachedFiles.length ? { attachedFiles } : {}) };
 }
 
-function mobileGoal(goal, rows) {
+function mobileGoal(goal, rows, info) {
   if (!goal) return null;
   const completedAt = goal.phase === 'complete' ? Number(goal.verified?.at || goal.updatedAt || 0) : 0;
   // The saved goal remains available on the computer. Its completion belongs
   // to the finished work, not every later turn (including after reconnecting).
   const datedCompletion = Number.isFinite(completedAt) && completedAt > 0;
-  if (datedCompletion && rows.some(row => row.role === 'user' && row.at > completedAt)) return null;
+  if (datedCompletion && (info ? info.userAt > completedAt : rows.some(row => row.role === 'user' && row.at > completedAt))) return null;
   return { ...(goal.id ? { id: String(goal.id).slice(0, 100) } : {}),
     objective: String(goal.objective || '').slice(0, 2000), phase: goal.phase, roundsStarted: goal.roundsStarted, armed: goal.armed,
     ...(datedCompletion ? { completedAt } : {}) };
@@ -72,18 +72,18 @@ class RemoteReadModel {
     value.afterSeq = previous?.value.state === 'running' ? previous.value.afterSeq : conversation.seq;
     this.compactions.set(conversation, { value, observedSeq: conversation.seq });
   }
-  currentCompaction(conversation, active, transcript) {
+  currentCompaction(conversation, active, transcript, info) {
     const saved = this.compactions.get(conversation);
     const last = conversation.lastCompaction;
     const current = compactionView(this.manager.switching?.get(conversation.id)?.compaction || active?.compaction
       || (['failed', 'cancelled'].includes(last?.outcome) && Number.isSafeInteger(last.boundary)
-        && !transcript.some(row => row.role === 'user' && row.seq > last.boundary)
+        && !(info ? info.userSeq > last.boundary : transcript.some(row => row.role === 'user' && row.seq > last.boundary))
         ? { state: last.outcome, engine: last.engine || conversation.currentEngine,
         native: last.route === 'native' } : null));
     if (current) return { ...current, afterSeq: saved?.value.state === 'running' ? saved.value.afterSeq : conversation.seq };
     // A missing running state is not evidence of success. Terminal events survive
     // stream coalescing, but a later user turn retires this transient indicator.
-    if (!saved || saved.value.state === 'running' || transcript.some(row => row.role === 'user' && row.seq > saved.observedSeq)) return null;
+    if (!saved || saved.value.state === 'running' || (info ? info.userSeq > saved.observedSeq : transcript.some(row => row.role === 'user' && row.seq > saved.observedSeq))) return null;
     return saved.value;
   }
   workspaces() {
@@ -109,11 +109,14 @@ class RemoteReadModel {
       nextOffset: entries.length > offset + 100 ? offset + 100 : null };
   }
   filePreview(conversation) {
+    const source = this.manager.historyInfo?.(conversation)?.source;
     const previous = this.previewCache.get(conversation);
-    if (previous && previous.seq === conversation.seq && previous.updatedAt === conversation.updatedAt) return previous.value;
-    const rows = this.manager.rows ? this.manager.rows(conversation) : this.manager.messages(conversation);
-    const value = latestFilePreview(rows);
-    this.previewCache.set(conversation, { seq: conversation.seq, updatedAt: conversation.updatedAt, value });
+    if (previous && previous.seq === conversation.seq && previous.updatedAt === conversation.updatedAt && previous.source === source) return previous.value;
+    let value = null;
+    if (this.manager.latestPreviewRows) {
+      for (const row of this.manager.latestPreviewRows(conversation)) { value = latestFilePreview([row]); if (value) break; }
+    } else value = latestFilePreview(this.manager.rows ? this.manager.rows(conversation) : this.manager.messages(conversation));
+    this.previewCache.set(conversation, { seq: conversation.seq, updatedAt: conversation.updatedAt, source, value });
     return value;
   }
   summary(conversation, meta = this.manager.workspaces.sessionMeta(), includePreview = false) {
@@ -152,17 +155,24 @@ class RemoteReadModel {
   }
   snapshot(device, id, before) {
     const conversation = this.conversation(device, id);
-    const transcript = (this.manager.rows ? this.manager.rows(conversation) : this.manager.messages(conversation))
+    const info = this.manager.remoteHistoryRows && this.manager.historyInfo(conversation);
+    const transcript = info ? [] : (this.manager.rows ? this.manager.rows(conversation) : this.manager.messages(conversation))
       .filter(row => !row.internal && ['user', 'assistant', 'notice', 'tool'].includes(row.role));
     const rows = transcript.filter(row => before === undefined || row.seq < before);
-    const messages = [];
-    let size = 0;
-    for (const row of rows.slice(-200).reverse()) {
-      const selected = message(row);
-      size += selected.text.length + JSON.stringify(selected.process || []).length;
-      if (messages.length && size > 1024 * 1024) break;
-      messages.unshift(selected);
-    }
+    const build = () => {
+      const messages = []; let size = 0, older = false;
+      const source = info ? this.manager.remoteHistoryRows(conversation, before) : rows.slice(-200).reverse();
+      for (const row of source) {
+        if (messages.length === 200) { older = true; break; }
+        const selected = message(row);
+        size += selected.text.length + JSON.stringify(selected.process || []).length;
+        if (messages.length && size > 1024 * 1024) { older = true; break; }
+        messages.unshift(selected);
+      }
+      return { messages, nextBefore: older || !info && rows.length > messages.length ? messages[0]?.seq ?? null : null };
+    };
+    const saved = info ? this.manager.historyStore.projection(id, 'remote:' + (before ?? 'latest'), build) : build();
+    const { messages, nextBefore } = saved;
     const active = this.manager.recovering.get(id) || this.manager.active.get(id);
     const output = active?.events?.length ? projectOutput(active.events) : null;
     const live = !before && active && !active.internal ? { runId: active.facade.gen, eventSeq: active.eventSeq,
@@ -172,16 +182,16 @@ class RemoteReadModel {
     const goal = this.manager.goalFor?.(id)?.view();
     const selected = active?.settings || this.manager.settings(conversation.currentEngine, id);
     const pressure = this.manager.contextPressure?.(conversation, conversation.currentEngine, selected, active);
-    const compaction = before === undefined ? this.currentCompaction(conversation, active, transcript) : null;
+    const compaction = before === undefined ? this.currentCompaction(conversation, active, transcript, info) : null;
     return { conversation: this.summary(conversation), messages, live, permission: device.permission,
       compaction,
       ...(pressure ? { context: { used: Math.max(0, Math.round(pressure.used)), cap: pressure.cap, source: pressure.source,
         compacting: compaction?.state === 'running', compactionState: compaction?.state || '' } } : {}),
       ...(this.manager.remoteQueue ? this.manager.remoteQueue.snapshot(id) : {}),
-      automation: { goal: mobileGoal(goal, transcript),
+      automation: { goal: mobileGoal(goal, transcript, info),
         tasks: (this.manager.tasks?.list(id) || []).map(task => ({ id: task.id, instruction: String(task.instruction || '').slice(0, 500), status: task.status, state: task.state, intervalMinutes: task.intervalMinutes, lastResult: String(task.lastResult || '').slice(0, 600) })) },
       ...(device.permission === 'control' ? { settings: settingsView(this.manager, conversation) } : {}),
-      nextBefore: rows.length > messages.length ? messages[0]?.seq ?? null : null };
+      nextBefore };
   }
 }
 

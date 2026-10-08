@@ -102,13 +102,14 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
       { label: goalState.objective, localize: false, disabled: true },
     ];
     if (goalState.criterion) items.push({ label: 'Criterion: ' + goalState.criterion, localize: false, disabled: true });
+    if (goalState.storageError) items.push({ label: goalState.storageError, localize: false, disabled: true });
     if (goalState.lastVerify && phase === 'active') items.push({ label: 'Verifier: ' + goalState.lastVerify, localize: false, disabled: true });
     if (phase === 'blocked' && goalState.blockedReason) items.push({ label: goalState.blockedReason.message || goalState.blockedReason.code || '', localize: false, disabled: true });
     if (goalState.verified) items.push({ label: 'Verified: ' + goalState.verified.evidence, localize: false, disabled: true });
-    if (active()) items.push({ label: 'Pause goal', run: () => updateGoal(() => chatApi.goalPause(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal paused. Stopping the current response…') });
+    if (active()) items.push({ label: 'Pause goal', run: () => updateGoal(() => chatApi.goalPause({ sessionId: context.sessionId }), 'Goal paused. Stopping the current response…') });
     if (['paused', 'blocked'].includes(phase)) items.push({ label: 'Resume goal', run: resumeGoal });
-    if (phase !== 'complete') items.push({ label: 'Mark complete', run: () => updateGoal(() => chatApi.goalComplete(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal marked complete.') });
-    items.push({ label: 'Remove goal', run: () => updateGoal(() => chatApi.goalClear(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal removed. Automatic work has stopped.') });
+    if (phase !== 'complete') items.push({ label: 'Mark complete', run: () => updateGoal(() => chatApi.goalComplete({ sessionId: context.sessionId }), 'Goal marked complete.') });
+    items.push({ label: 'Remove goal', run: () => updateGoal(() => chatApi.goalClear({ sessionId: context.sessionId }), 'Goal removed. Automatic work has stopped.') });
     openActionMenu(anchor, items);
   }
 
@@ -117,7 +118,7 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
     if (goalState.sessionId && !await openHistorySession(goalState.sessionId)) return;
     if (!goalState.sessionId) context.workspaceId = goalState.workspaceId || null;
     acceptEvents();
-    await updateGoal(() => chatApi.goalResume(sharedChat ? { sessionId: context.sessionId } : undefined), 'Goal resumed. Continuing automatically…');
+    await updateGoal(() => chatApi.goalResume({ sessionId: context.sessionId }), 'Goal resumed. Continuing automatically…');
   }
 
   function receiveGoal(goal) {
@@ -128,7 +129,7 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
   async function refreshGoal() {
     const sessionId = context.sessionId;
     try {
-      const res = await chatApi.goalGet(sharedChat ? { sessionId } : undefined);
+      const res = await chatApi.goalGet({ sessionId });
       if (sessionId !== context.sessionId) return;
       if (res?.ok) receiveGoal(res.goal);
       else setStatus(res?.error || 'Could not load the goal');
@@ -143,7 +144,7 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
       const res = await action();
       if (!res?.ok) throw new Error(res?.error || 'Could not update the goal');
       if (sessionId !== context.sessionId) return false;
-      if (sharedChat && res.sessionId) context.sessionId = res.sessionId;
+      if (res.sessionId) context.sessionId = res.sessionId;
       receiveGoal(res.goal);
       if (message) setStatus(message);
       return true;
@@ -165,9 +166,9 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
     else setDraft(!draft);
   });
   chatApi.onGoal(event => {
-    if (!sharedChat) return receiveGoal(event);
     if (event?.sessionId !== context.sessionId) return;
     receiveGoal(Object.prototype.hasOwnProperty.call(event, 'goal') ? event.goal : event);
+    if (event.error) setStatus(event.error);
   });
 
   document.addEventListener('keydown', (event) => {

@@ -60,11 +60,13 @@ test('disk and memory ownership form a union of ordinary current, parked and ret
   assert.throws(() => h.ownership.reserve({ ...h.add(), runtimeId: ordinary.id }), /another.*owner/);
 });
 
-test('an invalid disk index silently omitted by ordinary loading still blocks discussion admission', t => {
+test('an invalid disk index isolated by ordinary loading still blocks discussion admission', t => {
   const h = setup(t), id = randomUUID();
   h.write(path.join(h.root, 'conversations', id + '.json'), { id, origin: 'unknown', currentEngine: 'codex', segments: {} });
   const ordinary = new SharedConversations({ dir: path.join(h.root, 'conversations'), drivers: h.drivers, loadConfig: () => ({}), saveConfig() {} });
   assert.equal(ordinary.items.size, 0);
+  assert.equal(ordinary.recoveryWarnings.length, 1);
+  assert.ok(fs.existsSync(ordinary.recoveryWarnings[0].backupFile));
   assert.throws(() => h.ownership.reserve(h.add()), /Invalid conversation ownership index/);
   assert.equal(h.ownership.active.size, 0);
 });

@@ -12,6 +12,26 @@ function openWorkbench(page = 'engines') {
   if (window.dshDesktop) window.dshDesktop.openSettingsWindow(target);
   else parent.postMessage({ type: 'workbench:settings', ...target }, '*');
 }
+const generalTopics = {
+  permission: 'permissions', language: 'appearance', appearance: 'appearance', 'font-size': 'appearance',
+  'transcript-view': 'work-display', 'developer-tools': 'work-display', 'performance-usage': 'work-display',
+  shortcuts: 'input', 'composer-enter': 'input', 'link-opening': 'input',
+  'session-log-deepseek': 'diagnostics', 'current-version': 'application-version',
+};
+function EmbeddedGeneral({ renderSlot, useGeneralItems }) {
+  const entries = useGeneralItems(s => s);
+  const groups = new Map();
+  for (const entry of entries) {
+    // Keep new plugin settings visible until their topic is explicitly assigned.
+    const topic = generalTopics[entry.id] || 'plugin:' + entry.id;
+    if (!groups.has(topic)) groups.set(topic, []);
+    groups.get(topic).push(entry);
+  }
+  return h('div', { className: 'workbench-native-general' }, ...[...groups].map(([topic, items]) =>
+    h('section', { key: topic, className: 'workbench-native-general-group', 'data-native-settings-group': topic },
+      ...items.map(item => h('div', { key: item.id, className: 'workbench-native-general-item', 'data-native-field': item.id },
+        renderSlot('settings.general.item', {}, { only: item.id }))))));
+}
 function EmbeddedSettings({ useSections, renderSlot }) {
   const rows = useSections(s => s).filter(row => row.id !== 'models');
   const [selected, select] = React.useState('general');
@@ -34,6 +54,12 @@ function EmbeddedSettings({ useSections, renderSlot }) {
       .workbench-native-nav button {display:block;width:100%;border:0;border-radius:10px;background:transparent;color:inherit;font:inherit;text-align:left;padding:9px 12px;margin-bottom:4px;cursor:pointer}
       .workbench-native-nav button:hover,.workbench-native-nav [aria-current=true] {background:var(--dsw-specific-sidebar-nav-item-active,#eef0f3)}
       .workbench-native-content {flex:1;min-width:0;padding:20px 24px;overflow:auto}
+      .workbench-native-general-group {margin:0;padding:0;border:0}
+      .workbench-native-general-group:not(:has(.workbench-native-general-item > [data-slot] > :not([hidden]):not(:empty))) {display:none}
+      .workbench-native-general-group:has(.workbench-native-general-item > [data-slot] > :not([hidden]):not(:empty)) ~ .workbench-native-general-group:has(.workbench-native-general-item > [data-slot] > :not([hidden]):not(:empty)) {margin-top:22px;padding-top:22px;border-top:1px solid var(--dsw-alias-border-l2,#eceef1)}
+      .workbench-native-general-item > [data-slot] > * {border-bottom:0}
+      .workbench-native-general-item:first-child > [data-slot] > * {padding-top:0}
+      .workbench-native-general-item:last-child > [data-slot] > * {padding-bottom:0}
       .workbench-native-settings button:focus-visible {outline:2px solid #749bd4;outline-offset:2px}
       @media(max-width:650px){.workbench-native-nav{flex-basis:128px;padding:10px 6px}.workbench-native-content{padding:16px}}
     `),
@@ -49,3 +75,4 @@ module.exports = function WorkbenchSettingsRoot(props) {
     style: { width: '100%', padding: '10px 8px', border: 0, borderRadius: 12, background: 'transparent', color: 'inherit', font: 'inherit', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 } },
     props.renderSlot('settings.trigger', { wide: props.wide }));
 };
+module.exports.General = EmbeddedGeneral;

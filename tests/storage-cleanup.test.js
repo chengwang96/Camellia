@@ -42,6 +42,204 @@ function setup(context) {
     budget: value => { cleaner.maxVisited = value; }, restoreBudget: () => { cleaner.maxVisited = maxVisited; } };
 }
 
+function remoteAttachment(h, folder = 'device-attachments') {
+  return h.write(`remote/${folder}/${randomUUID().replaceAll('-', '').repeat(2)}.${folder === 'mobile-images' ? 'jpg' : 'txt'}`, 'remote bytes');
+}
+
+test('space preview includes only owned remote and group attachments and shows reclaimed bytes', async t => {
+  const h = setup(t), remote = remoteAttachment(h), legacy = remoteAttachment(h, 'mobile-images');
+  const group = randomUUID(), asset = randomUUID(), grouped = h.write(`discussions/assets/${group}/${asset}/notes.txt`, 'group bytes');
+  const unknown = h.write('remote/device-attachments/user-file.txt');
+  const unknownGroup = h.write(`discussions/assets/${group}/user-folder/keep.txt`);
+  h.advance(PROTECTION_MS * 2);
+  const preview = await h.cleaner.scan();
+  assert.equal(preview.candidates.filter(entry => entry.category === 'Unused remote attachments').length, 2);
+  assert.equal(preview.candidates.filter(entry => entry.category === 'Unused discussion attachments').length, 1);
+  const result = await h.cleaner.clean(preview.token);
+  assert.equal(result.files, 3); assert.equal(result.bytes, 35); assert.deepEqual(result.errors, []);
+  for (const file of [remote, legacy, grouped]) assert.equal(fs.existsSync(file), false);
+  for (const file of [unknown, unknownGroup]) assert.ok(fs.existsSync(file));
+});
+
+test('remote attachments retain paused and failed disk queues, archive, fork, native and draft references', async t => {
+  const h = setup(t), retained = Array.from({ length: 7 }, () => remoteAttachment(h)), orphan = remoteAttachment(h);
+  h.write('remote/message-queue.json', JSON.stringify(retained.slice(0, 2).map((file, i) => ({ state: i ? 'failed' : 'paused', payload: { attachments: [{ path: file }] } }))));
+  h.conversation('archived', { archived: true }, [{ role: 'user', attachments: [{ path: retained[2] }] }]);
+  h.conversation('fork', {}, [{ role: 'user', attachments: [{ path: retained[3] }] }]);
+  const native = path.join(h.histories[0].root, 'workspace', 'history.jsonl');
+  fs.mkdirSync(path.dirname(native), { recursive: true }); fs.writeFileSync(native, JSON.stringify({ text: retained[4] }) + '\n');
+  h.refs([{ draft: { attachments: [{ path: retained[5] }] } }, { pending: [{ path: retained[6] }] }]);
+  const result = await h.cleaner.sweepAttachments();
+  assert.equal(result.files, 1); assert.deepEqual(result.errors, []);
+  assert.equal(fs.existsSync(orphan), false);
+  for (const file of retained) assert.ok(fs.existsSync(file));
+  assert.ok(fs.existsSync(native));
+});
+
+test('automatic cleanup only removes attachment copies and leaves other eligible storage for manual review', async t => {
+  const h = setup(t), remote = remoteAttachment(h), clipboard = h.attachment(), history = h.write('conversations/orphan.jsonl');
+  const preview = await h.cleaner.scan(), token = preview.token;
+  assert.equal((await h.cleaner.sweepAttachments()).files, 1);
+  assert.equal(h.cleaner.preview.token, token);
+  assert.equal(fs.existsSync(remote), false);
+  assert.ok(fs.existsSync(clipboard)); assert.ok(fs.existsSync(history));
+  assert.equal((await h.cleaner.clean(token)).files, 2);
+});
+
+test('no old remote files avoids reading history; file age schedules a single later sweep', async t => {
+  const h = setup(t);
+  h.write('conversations/broken.json', '{torn');
+  assert.equal((await h.cleaner.sweepAttachments()).files, 0);
+  const remote = remoteAttachment(h);
+  fs.utimesSync(remote, new Date(), new Date());
+  const first = await h.cleaner.sweepAttachments();
+  assert.equal(first.files, 0); assert.ok(first.nextSweepAt > Date.now());
+  h.advance(PROTECTION_MS + 1000);
+  await assert.rejects(h.cleaner.sweepAttachments(), /JSON/);
+  assert.ok(fs.existsSync(remote));
+});
+
+test('active sends defer cleanup before querying drafts or reading history', async t => {
+  const h = setup(t), remote = remoteAttachment(h);
+  h.cleaner.isActive = () => true;
+  h.cleaner.references = async () => { throw new Error('Should not read active drafts'); };
+  assert.equal((await h.cleaner.sweepAttachments()).deferred, true);
+  assert.ok(fs.existsSync(remote));
+});
+
+test('decoded large group messages and frozen native inputs retain attachment references stored only in payload files', async t => {
+  const h = setup(t), manager = new DiscussionManager({ dir: path.join(h.dataDir, 'discussions') });
+  const group = manager.create({ cwd: h.root });
+  const member = manager.addMember(group.id, { name: 'Member', engine: 'codex', connection: 'api', model: 'fixture' });
+  const messageFile = remoteAttachment(h), inputFile = remoteAttachment(h), orphan = remoteAttachment(h);
+  const request = manager.enqueue(group.id, { requestId: 'stored-text', text: 'x'.repeat(17000) + messageFile, participantIds: [member.id] });
+  const delivery = manager.prepare(group.id, request.deliveryIds[0]);
+  manager.saveInput(group.id, delivery.id, delivery.generation, { prompt: 'y'.repeat(17000) + inputFile, inputThroughSeq: delivery.inputThroughSeq });
+  const raw = fs.readFileSync(manager.store.file(group.id), 'utf8');
+  assert.equal(raw.includes(path.basename(messageFile)), false); assert.equal(raw.includes(path.basename(inputFile)), false);
+  assert.equal((await h.cleaner.sweepAttachments()).files, 1);
+  for (const file of [messageFile, inputFile]) assert.ok(fs.existsSync(file));
+  assert.equal(fs.existsSync(orphan), false);
+});
+
+test('a group draft retains its copied asset after reload even without a posted message', async t => {
+  const h = setup(t), group = randomUUID(), asset = randomUUID();
+  const file = h.write(`discussions/assets/${group}/${asset}/photo.jpg`), orphan = h.write(`discussions/assets/${group}/${randomUUID()}/notes.txt`);
+  h.advance(PROTECTION_MS * 2);
+  h.refs([{ savedDraft: JSON.stringify({ attachments: [{ id: asset, path: file }] }) }]);
+  assert.equal((await h.cleaner.sweepAttachments()).files, 1);
+  assert.ok(fs.existsSync(file)); assert.equal(fs.existsSync(orphan), false);
+});
+
+test('queue changes during verification stop an automatic sweep before deleting files', async t => {
+  const h = setup(t), remote = remoteAttachment(h), queue = h.write('remote/message-queue.json', '[]');
+  const verify = h.cleaner.verify.bind(h.cleaner);
+  h.cleaner.verify = records => {
+    if (records.some(record => record.file === queue)) fs.writeFileSync(queue, JSON.stringify([{ payload: { attachments: [{ path: remote }] } }]));
+    verify(records);
+  };
+  await assert.rejects(h.cleaner.sweepAttachments(), /changed/);
+  assert.ok(fs.existsSync(remote));
+});
+
+test('mutating a live draft array during manual revalidation cannot authorize removal', async t => {
+  const h = setup(t), remote = remoteAttachment(h), refs = [];
+  h.refs(refs);
+  const preview = await h.cleaner.scan(), inventory = h.cleaner.inventory.bind(h.cleaner);
+  h.cleaner.inventory = async (...args) => {
+    const result = await inventory(...args); refs.push({ attachments: [{ path: remote }] }); return result;
+  };
+  await assert.rejects(h.cleaner.clean(preview.token), /changed/);
+  assert.ok(fs.existsSync(remote));
+});
+
+test('hardlinked remote files are excluded from cleanup', async t => {
+  const h = setup(t), remote = remoteAttachment(h), external = path.join(h.root, 'external.txt');
+  fs.linkSync(remote, external);
+  assert.equal((await h.cleaner.sweepAttachments()).files, 0);
+  assert.ok(fs.existsSync(remote)); assert.ok(fs.existsSync(external));
+});
+
+test('only unreferenced old Codex snapshots are eligible; archived homes keep their cache links', async context => {
+  const h = setup(context), used = 'a'.repeat(64), unused = 'b'.repeat(64);
+  h.write(`codex/plugin-caches/${used}/plugins/manifest.json`, 'used');
+  h.write(`codex/plugin-caches/${unused}/plugins/manifest.json`, 'unused');
+  const link = path.join(h.dataDir, 'codex/api/conversations/archived/.tmp');
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(path.join(h.dataDir, 'codex/plugin-caches', used), link, process.platform === 'win32' ? 'junction' : 'dir');
+  h.conversations.items.set('archived', { id: 'archived', archived: true });
+  h.advance(PROTECTION_MS * 2);
+  const preview = await h.cleaner.scan(), caches = preview.candidates.filter(entry => entry.category === 'Unused Codex plugin caches');
+  assert.deepEqual(caches.map(entry => entry.path), [path.join('codex/plugin-caches', unused)]);
+  const result = await h.cleaner.clean(preview.token);
+  assert.equal(result.errors.length, 0);
+  assert.ok(fs.existsSync(path.join(h.dataDir, 'codex/plugin-caches', used)));
+  assert.equal(fs.existsSync(path.join(h.dataDir, 'codex/plugin-caches', unused)), false);
+  assert.ok(fs.existsSync(link));
+});
+
+test('a cache newly referenced after preview is retained on confirmation', async context => {
+  const h = setup(context), digest = 'c'.repeat(64);
+  const file = h.write(`codex/plugin-caches/${digest}/plugins/manifest.json`, 'keep');
+  h.write('codex/api/conversations/owner/session.json', '{}');
+  h.conversations.items.set('owner', { id: 'owner' });
+  h.advance(PROTECTION_MS * 2);
+  const preview = await h.cleaner.scan();
+  assert.ok(preview.candidates.some(entry => entry.category === 'Unused Codex plugin caches'));
+  fs.symlinkSync(path.join(h.dataDir, 'codex/plugin-caches', digest), path.join(h.dataDir, 'codex/api/conversations/owner/.tmp'), process.platform === 'win32' ? 'junction' : 'dir');
+  await h.cleaner.clean(preview.token);
+  assert.ok(fs.existsSync(file));
+});
+
+test('a changed cache link during inventory invalidates the scan before deletion', async context => {
+  const h = setup(context), first = 'd'.repeat(64), second = 'e'.repeat(64);
+  for (const digest of [first, second]) h.write(`codex/plugin-caches/${digest}/plugins/manifest.json`, 'keep');
+  const link = path.join(h.dataDir, 'codex/api/conversations/owner/.tmp');
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(path.join(h.dataDir, 'codex/plugin-caches', first), link, process.platform === 'win32' ? 'junction' : 'dir');
+  h.advance(PROTECTION_MS * 2);
+  const verify = h.cleaner.verify.bind(h.cleaner);
+  h.cleaner.verify = records => {
+    fs.unlinkSync(link);
+    fs.symlinkSync(path.join(h.dataDir, 'codex/plugin-caches', second), link, process.platform === 'win32' ? 'junction' : 'dir');
+    verify(records);
+  };
+  await assert.rejects(h.cleaner.scan(), /changed|change/);
+  assert.ok(fs.existsSync(path.join(h.dataDir, 'codex/plugin-caches', first)));
+});
+
+test('plugin caches are protected while responses run or maintenance is interrupted', async context => {
+  const h = setup(context), digest = 'f'.repeat(64);
+  h.write(`codex/plugin-caches/${digest}/plugins/manifest.json`, 'keep'); h.advance(PROTECTION_MS * 2);
+  h.cleaner.isActive = () => true;
+  assert.equal((await h.cleaner.scan()).candidates.some(entry => entry.category === 'Unused Codex plugin caches'), false);
+  h.cleaner.isActive = () => false;
+  h.write('codex/.plugin-cache-operation.json', '{}');
+  assert.equal((await h.cleaner.scan()).candidates.some(entry => entry.category === 'Unused Codex plugin caches'), false);
+});
+
+test('enumerating a large orphan plugin snapshot allows the settings event loop to run', async context => {
+  const h = setup(context), digest = '9'.repeat(64);
+  for (let index = 0; index < 512; index++) h.write(`codex/plugin-caches/${digest}/plugins/file-${index}.txt`, 'cache');
+  h.advance(PROTECTION_MS * 2);
+  let enumerating = false, ticks = 0;
+  const stat = h.cleaner.safeStat.bind(h.cleaner);
+  h.cleaner.safeStat = (file, root) => { if (file.includes(digest)) enumerating = true; return stat(file, root); };
+  const timer = setInterval(() => { if (enumerating) ticks++; }, 1);
+  try {
+    const preview = await h.cleaner.scan();
+    assert.ok(preview.candidates.some(entry => entry.category === 'Unused Codex plugin caches'));
+    assert.ok(ticks > 0, 'The scanner must yield while walking cache files');
+  } finally { clearInterval(timer); }
+});
+
+for (const directory of ['conversations', 'conversations/goals', 'conversations/tasks'])
+  test('cleanup retains references when a quarantined record exists in ' + directory, async context => {
+    const h = setup(context), attachment = h.attachment('original reference'), backup = h.write(directory + '/state.json.invalid-' + randomUUID(), '{broken data');
+    await assert.rejects(h.cleaner.scan(), /Saved data requires recovery/);
+    assert.ok(fs.existsSync(attachment)); assert.ok(fs.existsSync(backup));
+  });
+
 test('manual preview is read-only; confirmation removes only approved old managed files', async context => {
   const harness = setup(context);
   const attachment = harness.attachment('12345');

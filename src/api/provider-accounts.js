@@ -151,7 +151,6 @@ function catalogModel(provider, entry) {
   const upstream = typeof entry === 'string' ? entry : entry?.id || entry?.name || entry?.model;
   if (typeof upstream !== 'string' || !upstream.trim()) return null;
   let id = upstream;
-  if (provider.type === 'commandcode') id = id.replace(/^(moonshotai|deepseek|z-ai|anthropic)\//, '');
   try { id = modelId(id); } catch { return null; }
   const wire = typeof entry === 'object' && entry !== null ? entry.api || entry.protocol : '';
   const protocol = /anthropic|messages/i.test(wire) || (provider.type === 'commandcode' && /claude/.test(id)) ? 'anthropic' : 'auto';
@@ -192,8 +191,8 @@ async function fetchModels(provider, key, options = {}) {
   for (const entry of data.data || data.models) {
     const model = catalogModel(provider, entry);
     if (!model) continue;
-    const existing = unique.get(model.id);
-    if (!existing) unique.set(model.id, model);
+    const existing = unique.get(model.upstream);
+    if (!existing) unique.set(model.upstream, model);
     else if (existing.upstream === model.upstream) {
       if (!existing.thinking && model.thinking) existing.thinking = model.thinking;
       if (!existing.maxContext && model.maxContext) existing.maxContext = model.maxContext;

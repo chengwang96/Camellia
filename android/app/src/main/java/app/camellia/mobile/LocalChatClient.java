@@ -108,6 +108,7 @@ final class LocalChatClient {
     }
 
     private String attempt(LocalChatConfig.Route route, JSONObject body, Listener listener, int keyIndex) throws Exception {
+        try (AttachmentMaintenance.Lease uploading = context == null ? null : AttachmentMaintenance.protect(context, body)) {
         if (cancelled) throw new IOException("Cancelled");
         HttpURLConnection current = (HttpURLConnection) new URL(route.baseUrl
             + (route.protocol.equals("anthropic") ? "/messages" : "/chat/completions")).openConnection();
@@ -125,9 +126,10 @@ final class LocalChatClient {
             if (route.protocol.equals("anthropic")) {
                 current.setRequestProperty("x-api-key", key); current.setRequestProperty("anthropic-version", "2023-06-01");
             }
-            current.setFixedLengthStreamingMode(AttachmentJson.length(context, body));
+            AttachmentJson.Body encoded = AttachmentJson.prepare(context, body, this::isCancelled);
+            current.setFixedLengthStreamingMode(encoded.length);
             if (cancelled) throw new IOException("Cancelled");
-            try (var output = new java.io.BufferedOutputStream(current.getOutputStream())) { AttachmentJson.write(context, body, output); }
+            try (var output = new java.io.BufferedOutputStream(current.getOutputStream())) { encoded.writeTo(output); }
             int code = current.getResponseCode();
             if (code < 200 || code >= 300) {
                 String error = readError(current);
@@ -170,6 +172,7 @@ final class LocalChatClient {
                 listener.onText(text); return text;
             }
         } finally { connection = null; current.disconnect(); }
+        }
     }
 
     private String readError(HttpURLConnection current) {

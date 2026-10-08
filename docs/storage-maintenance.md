@@ -5,10 +5,37 @@
 New Codex API conversation homes link `.tmp` to `<app-data>/codex/.tmp`.
 Subscription homes remain account-isolated. Existing directories and links are
 not replaced during launch: another native process may still be using them.
+Failure to create a new API home's shared cache link is reported before its
+native client starts, instead of silently creating another full cache copy.
 Do not delete SQLite databases, WAL files, sessions, skills or whole homes as
 cache cleanup.
 
-For existing plugin snapshots, exit Camellia and all Codex processes, then run:
+The desktop entry point is **Settings → Data & backups → Codex plugin caches →
+Deduplicate and restart**. Camellia flushes settings, stops its native processes
+and starts the requested maintenance before creating new engine clients. A
+separate progress window shows chunked verification and cache switches. Native
+Codex app-server processes still running outside Camellia block the pass; the
+result remains visible in settings. Completed and canceled requests are consumed,
+so subsequent ordinary launches do not repeat the scan. Cancellation retains
+completed links and their reported savings; running maintenance again continues
+with the remaining real directories.
+
+`plugins.sha` groups candidates but never authorizes deletion. Actual tree
+contents are checked, shared trees are read once per pass, and metadata is
+rechecked before a duplicate is replaced. Each switch has an atomic operation
+record: startup restores an unlinked original or finishes committed duplicate
+cleanup after an interruption. Different contents keep separate shared copies.
+Git scratch folders, unfinished plugin clones and other unknown entries are
+reported and retained. Member sessions, SQLite files and credentials stay in
+their own native homes.
+
+Unreferenced content-addressed plugin snapshots join the normal space-cleanup
+preview. All API homes protect their cache targets, including archived homes;
+changed links invalidate verification. Active responses and unfinished maintenance
+protect snapshots. Plugin caches and maintenance records are excluded from data
+exports.
+
+For command-line maintenance, exit Camellia and all Codex processes, then run:
 
 ```powershell
 node scripts/maintain-plugin-cache.cjs "$env:APPDATA\camellia"
@@ -86,8 +113,9 @@ present. Keep those applications closed throughout maintenance. Only API homes
 are considered. Byte-identical snapshots share a content-addressed directory;
 different snapshots remain distinct. Unknown top-level files, nested links and
 hard links are retained and reported. No history or credentials are migrated.
-If interrupted, a `.tmp-maintenance` directory is retained for inspection rather
-than automatically discarded. Future Codex updates may change a shared snapshot;
+Interruptions with an operation record are recovered before native clients start.
+A legacy `.tmp-maintenance` directory without a matching record is retained for
+inspection. Future Codex updates may change a shared snapshot;
 do not assume its directory name remains a current content hash.
 
 DSH's `profiles/node_modules` contains native dependency junctions, not full
@@ -112,7 +140,107 @@ rescan; finish active turns before cleaning. Preview inventories expire after
 30 minutes and release their in-memory file lists. Automated diagnostics can
 pass an AbortSignal to StorageCleanup; cancellation does not authorize deletion.
 
+Remote upload copies in `remote/device-attachments` and legacy `remote/mobile-images`,
+plus copied discussion assets in `discussions/assets/<group>/<asset>`, participate
+in the same preview with their own file counts and sizes. Only Camellia's owned
+hash/UUID paths are eligible; external attachments, unknown paths, links and
+hard links are retained. Existing and newly created files have a 24-hour
+protection window. Deleting a phone connection alone does not release attachments.
+
+Reference verification includes retained shared and native history, archives,
+forks, paused/failed remote queues, saved and in-memory renderer drafts, active
+upload leases, and decoded discussion messages and frozen inputs. Large group
+text stored in separate immutable payload files is decoded and verified too.
+Each member's native context remains intact. Changed or unreadable reference
+data stops deletion; manual confirmation collects references again.
+
+Desktop and CLI hosts coalesce changes into an idle maintenance pass after
+30 seconds, including one startup pass for old leftovers. Recent files schedule
+a wake when their protection expires. Renderer drafts and local queues notify
+the host when their attachment paths change; ordinary typing does not notify it.
+An empty/recent-only inventory avoids reading history, and successful passes
+do not create a periodic full-history
+scan. Uploads never synchronously start a cleanup scan. Background cleanup has
+its own inventory, preserves manual previews, and aborts at the next scanner
+yield during shutdown. It reclaims attachment copies and eligible completed
+import backups; other cleanup categories still require manual confirmation.
+A stable unreadable reference is
+logged and waits for another change, restart or manual inspection.
+
+A send rejected before committing its user row or queue entry rolls back only
+the copies created by that request. A lost acknowledgement, durable queue write
+or committed discussion row retains its files for reference-based cleanup.
+Uncertain commitment and rollback failures retain files and report the error;
+the idle pass can reclaim leftovers once their references and age allow it.
+
+Focused tests cover rollback, queued/history/native references, payload-only
+group paths, changed-file protection, idle scheduling and shutdown. Run
+`python tests/attachment-cleanup-ui.py` for isolated Electron verification of
+embedded and standalone group drafts and the actual cleanup IPC.
+
 ## Other retention
+
+Diagnostic output in `logs/dsh-desktop.log` rotates on the first write of a new
+UTC day or before a write would exceed 10 MiB. Each stream keeps at most five
+historical segments, each no older than 14 days. Oversized historical segments
+from older releases are also eligible; rotation never reads an old log into
+memory. Unknown log names, links and hard links are excluded. Manual space
+cleanup uses the same historical-file eligibility and excludes active logs.
+
+The pending write queue is capped at 1 MiB, with one outstanding write and a
+64 KiB maximum entry. Queue overflow records a dropped-entry count; oversized
+entries are truncated. Shutdown drains accepted entries and closes the stream;
+size/day rotation closes the old handle before rename on Windows. Fatal errors
+are written synchronously to `dsh-desktop-fatal.log`, independently of the
+ordinary stream, with 256 KiB segments and the same history count/age limits.
+Chat/native JSONL, SQLite/WAL and transaction/launch journals are saved data,
+not diagnostic logs, and this policy never truncates them.
+
+Completed overwrite-import backups under `migration-backups` keep at most three
+recovery points, for 30 days and a target total of 2 GiB. Any limit makes an
+older point eligible, while the newest completed point is always retained even
+when it exceeds the size target. Pending transactions and unresolved recovery
+remain protected and can make the total exceed that target. Completion writes
+a durable `retention.json` ownership manifest before removing the import
+journal. A backed-up group manifest gets private copies of its referenced
+immutable text even when those files were not overwritten, before live payload
+maintenance can prune them. Checksums use bounded reads; interrupted copies keep
+the journal for startup recovery. Changed size/modification time or additional
+files invalidate automatic deletion; an
+interrupted deletion may retry the remaining manifest-owned files.
+
+The startup/idle pass inventories backup metadata before reading any history.
+It then deletes eligible completed backups and verifies remaining references
+before considering attachment copies. A retained backup protects shared and
+native owners, decoded group messages/frozen inputs, and attachment paths until
+its files are actually removed. Legacy immutable group text may remain in the
+live discussion folder; that payload is verified as a reference source too.
+Unverifiable backup trees stop reference-based cleanup.
+
+Settings space previews report backup count, occupied bytes and reclaimable
+bytes. Legacy backups without a completion record are only offered for manual
+confirmation after a 24-hour protection window. Pending/corrupt manifests,
+quarantined original records and
+unknown trees stay protected. User-exported ZIP files and the single
+`.workbench.bak` configuration originals remain user managed. No live-profile
+cleanup is implied by source tests or this retention policy.
+
+`tests/backup-retention.test.js` and `tests/rotating-log.test.js` cover retention,
+recovery evidence, independent group payloads, reference release, bounded logging
+and Windows handle closure. `python tests/retention-ui.py` verifies the English
+and Chinese summaries, manual confirmation and automatic idle pruning with an
+isolated Electron profile.
+
+Idle native-process retention uses a monotonic in-memory clock for each session
+instance. Shared task lifecycle events refresh activity; task completion starts
+a full idle window, including after long runs, interruptions and compaction.
+Running work, pending permissions, recovery and armed goals remain protected.
+Pool lookups and history reads do not refresh activity. Replacements start their
+own window, and sweep bookkeeping drops handles no longer held by any pool.
+If a new turn arrives during idle teardown, it waits for shutdown before resuming
+the stored native context. Discussion resources remain under their verified
+owner's release policy. Idle retention stops processes without deleting chats
+or members' native histories.
 
 Completed streaming turns release their replay buffers, and Codex releases its
 output-item indexes. Deleting a shared conversation releases idle native sessions

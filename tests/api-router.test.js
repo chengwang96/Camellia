@@ -164,6 +164,25 @@ test('MiMo pay-as-you-go preset uses ordinary API endpoints and current coding m
   assert.ok(!JSON.stringify(publicState(config)).includes('mimo-test-api-key'));
 });
 
+test('Command Code GOAT uses current case-sensitive upstream IDs and normalizes pasted request endpoints', () => {
+  const preset = PRESETS.find(entry => entry.type === 'commandcode');
+  assert.deepEqual(preset.models.map(model => model.upstream), [
+    'deepseek/deepseek-v4.1-flash', 'moonshotai/Kimi-K3', 'zai-org/GLM-5.3',
+    'moonshotai/Kimi-K2.6', 'moonshotai/Kimi-K2.5',
+  ]);
+  for (const suffix of ['', '/chat/completions/', '/responses', '/messages', '/messages/count_tokens', '/models']) {
+    const config = normalizeConfig({ providers: [{ ...preset, baseUrl: preset.baseUrl + suffix,
+      anthropicBaseUrl: preset.baseUrl + '/messages', keys: [{ key: 'command-test' }] }] });
+    assert.equal(config.providers[0].baseUrl, preset.baseUrl);
+    assert.equal(config.providers[0].anthropicBaseUrl, preset.baseUrl);
+    const roundtrip = normalizeConfig(publicState(config), config);
+    assert.equal(roundtrip.providers[0].baseUrl, preset.baseUrl);
+    assert.equal(roundtrip.providers[0].keys[0].key, 'command-test');
+  }
+  const custom = normalizeConfig({ providers: [provider('custom', 'https://relay.example/provider/v1/messages')] });
+  assert.equal(custom.providers[0].baseUrl, 'https://relay.example/provider/v1/messages');
+});
+
 for (const [type, key] of [['mimo-token-plan-cn', 'tp-test-subscription'], ['mimo', 'mimo-test-api-key']]) {
 test(`${type} routes OpenAI and Anthropic requests to distinct paths with provider auth`, async t => {
   const preset = PRESETS.find(entry => entry.type === type);
@@ -551,26 +570,170 @@ async function waitForRouting(predicate) {
   }
 }
 
-test('eight concurrent requests balance keys within the preferred provider and release all reservations', async t => {
+test('routing switches default on, validate booleans and preserve omitted preferences', () => {
+  const original = normalizeConfig({ providers: [provider('pool', 'http://127.0.0.1:19099')] });
+  assert.deepEqual(original.routing, { multiKeyConcurrency: true, multiKeyFailover: true });
+  assert.deepEqual(normalizeConfig({ keys: ['legacy-secret'] }).routing, original.routing);
+  for (const multiKeyConcurrency of [true, false]) for (const multiKeyFailover of [true, false]) {
+    const routing = { multiKeyConcurrency, multiKeyFailover };
+    const config = normalizeConfig({ ...original, routing });
+    assert.deepEqual(normalizeConfig(publicState(config), config).routing, routing);
+    const omitted = publicState(config); delete omitted.routing;
+    assert.deepEqual(normalizeConfig(omitted, config).routing, routing);
+    assert.deepEqual(normalizeConfig({ ...omitted, routing: { multiKeyConcurrency: !multiKeyConcurrency } }, config).routing,
+      { multiKeyConcurrency: !multiKeyConcurrency, multiKeyFailover });
+  }
+  for (const routing of [null, [], false, 'invalid']) assert.throws(() => normalizeConfig({ ...original, routing }), /routing settings/);
+  for (const field of ['multiKeyConcurrency', 'multiKeyFailover']) for (const value of [null, 0, 1, 'false', [], {}]) {
+    assert.throws(() => normalizeConfig({ ...original, routing: { [field]: value } }), /true or false/);
+  }
+});
+
+test('all four routing switch combinations independently control distribution and failover', async t => {
+  for (const multiKeyConcurrency of [true, false]) for (const multiKeyFailover of [true, false]) {
+    await t.test(`concurrency=${multiKeyConcurrency}, failover=${multiKeyFailover}`, async t => {
+      const held = []; let mode = 'hold';
+      const f = await fixture(t, (request, response) => {
+        if (mode === 'hold') return held.push({ request, response });
+        return request.headers.authorization === 'Bearer first-secret'
+          ? reply(response, 401, { error: 'invalid key' }) : reply(response, 200, completion(request.body.model));
+      }, url => [provider('first', url + '/first', ['first-secret']), provider('peer', url + '/peer', ['peer-secret'])], { timeoutMs: 5000 });
+      f.router.updateConfig({ ...f.router.getState(), routing: { multiKeyConcurrency, multiKeyFailover } });
+      assert.deepEqual(loadConfig(f.file).routing, { multiKeyConcurrency, multiKeyFailover });
+      const pending = Array.from({ length: 5 }, () => f.post({}).then(response => response.json()));
+      await waitForRouting(() => held.length === 5);
+      assert.deepEqual(f.router.getState().keyActiveRequests,
+        { 'first-key-0': multiKeyConcurrency ? 3 : 5, 'peer-key-0': multiKeyConcurrency ? 2 : 0 });
+      for (const { request, response } of held) reply(response, 200, completion(request.body.model));
+      await Promise.all(pending);
+      assert.ok(Object.values(f.router.getState().keyActiveRequests).every(count => count === 0));
+
+      f.router.reset('kimi-k3'); mode = 'fail'; f.requests.length = 0;
+      const response = await f.post({});
+      assert.equal(response.status, multiKeyFailover ? 200 : 503);
+      assert.deepEqual(f.requests.map(request => request.headers.authorization),
+        multiKeyFailover ? ['Bearer first-secret', 'Bearer peer-secret'] : ['Bearer first-secret']);
+      if (!multiKeyFailover) {
+        assert.match((await response.json()).error.message, /failover is disabled/);
+        assert.equal((await f.post({})).status, 503, 'known blocked key is not replaced on the next request');
+        assert.equal(f.requests.length, 1);
+        f.router.rotate('kimi-k3');
+        assert.equal((await f.post({})).status, 200, 'manual rotation still selects the only healthy key');
+        assert.equal(f.requests.at(-1).headers.authorization, 'Bearer peer-secret');
+      }
+      assert.ok(Object.values(f.router.getState().keyActiveRequests).every(count => count === 0));
+    });
+  }
+});
+
+test('routing switches update during active requests without dropping them', async t => {
+  const held = [];
+  const f = await fixture(t, (request, response) => held.push({ request, response }),
+    url => [provider('pool', url, ['one', 'two'])], { timeoutMs: 5000 });
+  f.router.updateConfig({ ...f.router.getState(), routing: { multiKeyConcurrency: false, multiKeyFailover: true } });
+  const first = f.post({});
+  await waitForRouting(() => held.length === 1);
+  f.router.updateConfig({ ...f.router.getState(), routing: { multiKeyConcurrency: true, multiKeyFailover: false } });
+  const second = f.post({});
+  await waitForRouting(() => held.length === 2);
+  assert.deepEqual(held.map(item => item.request.headers.authorization), ['Bearer one', 'Bearer two']);
+  reply(held[0].response, 429, { error: 'rate limited' });
+  reply(held[1].response, 200, completion(held[1].request.body.model));
+  assert.equal((await first).status, 503); assert.equal((await second).status, 200);
+  assert.equal(f.requests.length, 2, 'disabled failover does not replay the failed request');
+  assert.equal(f.router.getState().activeRequests, 0);
+});
+
+test('manual switching can recover a lower-priority key with failover disabled and scopes stay pinned', async t => {
+  const f = await fixture(t, (request, response) => request.headers.authorization === 'Bearer bad'
+    ? reply(response, 429, { error: 'rate limited' }) : reply(response, 200, completion(request.body.model)), url => [
+      { ...provider('high', url + '/high', ['bad']), priority: 1 },
+      provider('low', url + '/low', ['good', 'pinned']),
+    ]);
+  f.router.updateConfig({ ...f.router.getState(), routing: { multiKeyConcurrency: false, multiKeyFailover: false } });
+  assert.equal((await f.post({})).status, 503);
+  f.router.rotate('kimi-k3');
+  assert.equal((await f.post({})).status, 200);
+  assert.equal(f.requests.at(-1).headers.authorization, 'Bearer good');
+  const scoped = f.router.createScope({ model: 'kimi-k3', providerId: 'low', keyId: 'low-key-1' });
+  for (const multiKeyConcurrency of [true, false]) for (const multiKeyFailover of [true, false]) {
+    f.router.updateConfig({ ...f.router.getState(), routing: { multiKeyConcurrency, multiKeyFailover } });
+    assert.equal((await f.post({}, scoped.path + '/v1/chat/completions')).status, 200);
+    assert.equal(f.requests.at(-1).headers.authorization, 'Bearer pinned');
+  }
+  await scoped.close();
+});
+
+test('eight concurrent requests balance all same-priority provider keys and release all reservations', async t => {
   const held = [];
   const f = await fixture(t, (r, res) => held.push({ r, res }), url => {
     const pool = provider('pool', url + '/pool', ['account-a', 'account-b', 'disabled']);
     pool.keys[2].enabled = false;
-    return [{ ...provider('low', url + '/low'), priority: -1 }, pool, provider('peer', url + '/peer')];
+    return [{ ...provider('low', url + '/low'), priority: -1 }, pool,
+      provider('peer', url + '/peer', ['peer-account'], [mapping('moonshotai/Kimi-K3', 'moonshotai/Kimi-K3')])];
   }, { timeoutMs: 5000 });
   const pending = Array.from({ length: 8 }, () => f.post({}).then(async res => { assert.equal(res.status, 200); return res.json(); }));
   await waitForRouting(() => held.length === 8);
   assert.deepEqual(f.router.getState().keyActiveRequests, {
-    'low-key-0': 0, 'pool-key-0': 4, 'pool-key-1': 4, 'pool-key-2': 0, 'peer-key-0': 0,
+    'low-key-0': 0, 'pool-key-0': 3, 'pool-key-1': 3, 'pool-key-2': 0, 'peer-key-0': 2,
   });
-  assert.ok(f.requests.every(r => r.url === '/pool/chat/completions'));
-  assert.equal(f.requests.filter(r => r.headers.authorization === 'Bearer account-a').length, 4);
-  assert.equal(f.requests.filter(r => r.headers.authorization === 'Bearer account-b').length, 4);
+  assert.ok(f.requests.every(r => ['/pool/chat/completions', '/peer/chat/completions'].includes(r.url)));
+  assert.equal(f.requests.filter(r => r.headers.authorization === 'Bearer account-a').length, 3);
+  assert.equal(f.requests.filter(r => r.headers.authorization === 'Bearer account-b').length, 3);
   for (const { r, res } of held) reply(res, 200, completion(r.body.model));
   await Promise.all(pending);
   assert.ok(Object.values(f.router.getState().keyActiveRequests).every(n => n === 0));
-  assert.equal(f.router.getState().usage['pool-key-0'].requests, 4);
-  assert.equal(f.router.getState().usage['pool-key-1'].requests, 4);
+  assert.equal(f.router.getState().usage['pool-key-0'].requests, 3);
+  assert.equal(f.router.getState().usage['pool-key-1'].requests, 3);
+  assert.equal(f.router.getState().usage['peer-key-0'].requests, 2);
+});
+
+test('prefixed legacy names fail over to the same canonical model and keep each upstream spelling', async t => {
+  const model = 'gpt-6-astra', alias = 'openai/openai/gpt-6-astra';
+  const harness = await fixture(t, (request, response) => request.url.startsWith('/relay')
+    ? reply(response, 429, { error: 'rate limit' }, { 'retry-after': '120' })
+    : reply(response, 200, completion(request.body.model)), url => [
+      provider('relay', url + '/relay', ['relay-key'], [mapping(alias, 'openai/openai/GPT-6-Astra')]),
+      provider('direct', url + '/direct', ['direct-key'], [mapping(model, model)]),
+      provider('other', url + '/other', ['other-key'], [mapping('gpt-6-sol', 'gpt-6-sol')]),
+    ]);
+  assert.equal((await harness.post({ model: alias })).status, 200);
+  assert.equal((await harness.post({ model: 'OpenAI/GPT-6-Astra' })).status, 200);
+  assert.deepEqual(harness.requests.map(request => request.body.model), ['openai/openai/GPT-6-Astra', model, model]);
+  assert.deepEqual(harness.router.getState().models, [model, 'gpt-6-sol']);
+  assert.ok(harness.router.getState().usage['relay-key-0'].models[model].until > Date.now());
+  assert.equal(harness.router.getState().usage['direct-key-0'].byModel[model].requests, 2);
+  harness.router.reset(alias);
+  assert.deepEqual(harness.router.getState().usage['relay-key-0'].models, {});
+  assert.equal((await harness.post({ model: 'unknown/' + model })).status, 404);
+  assert.equal(harness.requests.length, 3);
+});
+
+test('busy high-priority keys retain priority over idle lower-priority providers', async t => {
+  const held = [];
+  const harness = await fixture(t, (request, response) => held.push({ request, response }), url => [
+    { ...provider('high', url + '/high', ['high-one', 'high-two']), priority: 1 },
+    provider('default', url + '/default'), { ...provider('low', url + '/low'), priority: -1 },
+  ], { timeoutMs: 5000 });
+  const pending = Array.from({ length: 5 }, () => harness.post({}));
+  await waitForRouting(() => held.length === 5);
+  assert.deepEqual(harness.router.getState().keyActiveRequests,
+    { 'high-key-0': 3, 'high-key-1': 2, 'default-key-0': 0, 'low-key-0': 0 });
+  for (const { request, response } of held) reply(response, 200, completion(request.body.model));
+  assert.ok((await Promise.all(pending)).every(response => response.status === 200));
+  assert.ok(Object.values(harness.router.getState().keyActiveRequests).every(load => load === 0));
+});
+
+test('provider scopes can pin either upstream alias of a shared routing model', async t => {
+  const harness = await fixture(t, (request, response) => reply(response, 200, completion(request.body.model)), url => [
+    provider('relay', url, ['one'], [mapping('openai/gpt-6-astra', 'openai/gpt-6-astra'), mapping('gpt-6-astra', 'gpt-6-astra')]),
+  ]);
+  const selected = harness.router.getState().providers[0];
+  const account = JSON.parse(require('../src/engines/discussions/catalog').apiAccountRef(selected, selected.models[1]));
+  const scope = harness.router.createScope({ model: 'openai/gpt-6-astra', providerId: selected.id, routeFingerprint: account.route });
+  assert.equal((await harness.post({ model: 'gpt-6-astra' }, scope.path + '/v1/chat/completions')).status, 200);
+  assert.equal(harness.requests[0].body.model, 'gpt-6-astra');
+  await scope.close();
 });
 
 test('stream reservations span models and client protocols, release on cancel, and keep idle affinity', async t => {

@@ -73,11 +73,7 @@ final class ChatAttachments {
     }
 
     static void discard(Context context, List<String> images, List<JSONObject> documents) {
-        for (String image : images) AttachmentStore.remove(context, image);
-        for (JSONObject document : documents) {
-            AttachmentStore.remove(context, document.optString("data"));
-            AttachmentStore.remove(context, document.optString("text"));
-        }
+        AttachmentMaintenance.release(context, images, documents);
     }
 
     static void restore(JSONObject payload, List<String> images, List<JSONObject> documents) throws Exception {

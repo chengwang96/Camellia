@@ -62,25 +62,6 @@ function readCredential(home, name) {
   return String(readDocument(path.join(home, '.credentials.yaml')).toJS()[name] ?? '');
 }
 
-function configureProvider(home, { providerId, apiKeyEnv, apiKey, model }) {
-  const settingsFile = path.join(home, 'settings.yaml');
-  const credentialsFile = path.join(home, '.credentials.yaml');
-  const settings = readDocument(settingsFile);
-  const credentials = readDocument(credentialsFile);
-  const previous = settings.toJS()['agent-default-model'];
-  const selection = mapAt(settings, ['agent-default-model']);
-  selection.set('provider', providerId);
-  selection.set('model', previous?.provider === providerId && previous.model ? previous.model : model);
-  mapAt(settings, ['llm-pi-ai', 'providers', providerId]).set('apiKeyEnv', apiKeyEnv);
-  if (!settings.has('permission')) settings.set('permission', settings.createNode({ defaultPreset: 'danger-full-access' }));
-  if (apiKey) credentials.set(apiKeyEnv, apiKey);
-  else credentials.delete(apiKeyEnv);
-  // Parse and serialize both documents before replacing either file.
-  const settingsText = String(settings), credentialsText = String(credentials);
-  writeText(credentialsFile, credentialsText);
-  writeText(settingsFile, settingsText);
-}
-
 function syncPoolProvider(file, { active, port, models, hasOllama }) {
   const doc = readDocument(file);
   const providers = doc.toJS()['llm-pi-ai']?.providers;
@@ -123,4 +104,4 @@ function cleanupLegacyRoute(file) {
   return true;
 }
 
-module.exports = { configureProvider, readCredential, syncPoolProvider, cleanupLegacyRoute, dshLaunchArgs };
+module.exports = { readCredential, syncPoolProvider, cleanupLegacyRoute, dshLaunchArgs };

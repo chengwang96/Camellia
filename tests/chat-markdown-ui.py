@@ -13,13 +13,15 @@ bridge_node = next(node for node in fixture_module.body if isinstance(node, ast.
 document = repo / 'docs/configuration.md'
 code = repo / 'src/renderer/chat/markdown-links.js'
 doc_path = document.as_posix()
+doc_line = next(index for index, line in enumerate(document.read_text(encoding='utf-8').splitlines(), 1)
+                if line == '### Several accounts of one provider')
 code_path = code.as_posix()
 text = ('- **额度用尽时**：新会话会优先选择其他已登录且仍有额度的账号。\n\n'
         '所以，你可以先把 A、B 两个账号分别登录好，以后按需选择账号并新建会话。\n\n'
-        f'对应说明：[多账号管理]({doc_path}:62)。\n\n'
-        '[网页说明](https://example.com/guide_(v2)) · [相对路径](docs/configuration.md:62)\n\n'
+        f'对应说明：[多账号管理]({doc_path}:{doc_line})。\n\n'
+        f'[网页说明](https://example.com/guide_(v2)) · [相对路径](docs/configuration.md:{doc_line})\n\n'
         f'[源代码]({code_path}:60)\n\n'
-        f'代码示例：`[多账号管理]({doc_path}:62)`')
+        f'代码示例：`[多账号管理]({doc_path}:{doc_line})`')
 fixture['cwd'] = repo.as_posix()
 fixture['messages'][-1]['text'] = text
 files = {file.as_posix(): {'path': file.as_posix(), 'name': file.name, 'extension': file.suffix[1:].upper(),
@@ -54,8 +56,8 @@ with sync_playwright() as playwright:
         link = page.locator('#chat').get_by_role('link', name='多账号管理', exact=True)
         expect(link).to_have_count(1)
         expect(link).to_have_attribute('data-chat-file', doc_path)
-        expect(link).to_have_attribute('data-chat-line', '62')
-        expect(page.locator('#chat .md-inline')).to_have_text(f'[多账号管理]({doc_path}:62)')
+        expect(link).to_have_attribute('data-chat-line', str(doc_line))
+        expect(page.locator('#chat .md-inline')).to_have_text(f'[多账号管理]({doc_path}:{doc_line})')
         assert page.evaluate('previewRequests') == []
         page.screenshot(path=str(screenshots / f'chat-markdown-links-{theme}.png'), animations='disabled')
 
@@ -64,8 +66,8 @@ with sync_playwright() as playwright:
         page.keyboard.press('Enter')
         expect(page.locator('#fileViewer')).to_be_visible()
         expect(page.locator('#fileViewerTitle')).to_have_text('configuration.md')
-        expect(page.locator('#fileViewerMeta')).to_contain_text(doc_path + ':62')
-        expect(page.locator('.file-preview-markdown h3[data-preview-line="62"]')).to_be_in_viewport()
+        expect(page.locator('#fileViewerMeta')).to_contain_text(f'{doc_path}:{doc_line}')
+        expect(page.locator(f'.file-preview-markdown h3[data-preview-line="{doc_line}"]')).to_be_in_viewport()
         assert page.evaluate('previewRequests') == [doc_path]
         assert page.url == original_url
         page.screenshot(path=str(screenshots / f'chat-markdown-preview-{theme}.png'), animations='disabled')
@@ -89,7 +91,7 @@ with sync_playwright() as playwright:
         popup.close()
 
         # A partial link becomes clickable when the final streaming chunk arrives.
-        partial = f'[流式文档]({doc_path}:62'
+        partial = f'[流式文档]({doc_path}:{doc_line}'
         page.evaluate('text => { onBlockStart({type:"text",text}, 0); flushBlockRenders(); }', partial)
         expect(page.locator('#chat').get_by_role('link', name='流式文档', exact=True)).to_have_count(0)
         page.evaluate('onBlockDelta({type:"text_delta",text:")"}, 0); onBlockStop(0)')

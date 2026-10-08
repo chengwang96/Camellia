@@ -1,24 +1,28 @@
 'use strict';
 
 const fs = require('node:fs');
-const { readJson, writeJson } = require('../shared/json-store');
+const { readRecoverableJson, writeJson } = require('../shared/json-store');
 
 // One driver owns its saved goal, continuation timer and in-flight turn.
 // Loading a saved goal never grants permission to continue automatically.
 class ClaudeGoal {
-  constructor({ file, getSession, ensureSession, resolveWorkspace, onChange, log, setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now, verifyCompletion }) {
-    Object.assign(this, { file, getSession, ensureSession, resolveWorkspace, onChange, log, setTimer, clearTimer, now, verifyCompletion });
+  constructor({ file, getSession, ensureSession, resolveWorkspace, onChange, log, onLoadError = () => {}, setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now, verifyCompletion }) {
+    Object.assign(this, { file, getSession, ensureSession, resolveWorkspace, onChange, log, onLoadError, setTimer, clearTimer, now, verifyCompletion });
     this.goal = null;
     this.armed = false;
     this.timer = null;
     this.owner = null;
     this.verification = null;
+    this.storageError = null;
+    this.loadError = null;
   }
 
   load() {
+    this.cancelTimer(); this.owner = null; this.storageError = null;
     this.cancelVerification();
+    this.loadError = null; this.goal = null;
     try {
-      const saved = readJson(this.file(), null);
+      const saved = readRecoverableJson(this.file(), null, this.onLoadError, value => value === null || typeof value?.objective === 'string');
       if (saved && typeof saved.objective === 'string') {
         this.goal = saved;
         if (saved.phase === 'active') {
@@ -27,23 +31,46 @@ class ClaudeGoal {
         }
       }
     }
-    catch (err) { this.log(`goal: load failed: ${err.message}`); }
+    catch (err) { this.loadError = err; this.onLoadError(err); this.log(`goal: load failed: ${err.message}`); }
     this.armed = false;
   }
 
-  view() { return this.goal ? { ...this.goal, armed: this.armed } : null; }
+  view() { return this.goal ? { ...this.goal, armed: this.armed, ...(this.storageError ? { storageError: this.storageError.message } : {}) } : null; }
 
   publish() {
     try {
+      if (this.loadError) throw this.loadError;
       if (this.goal) writeJson(this.file(), this.goal);
-      else if (fs.existsSync(this.file())) fs.unlinkSync(this.file());
-    } catch (err) { this.log(`goal: persist failed: ${err.message}`); }
+      else {
+        try { fs.unlinkSync(this.file()); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+    } catch (err) {
+      this.storageError = new Error('Could not save goal state: ' + err.message, { cause: err });
+      this.log(this.storageError.message); return false;
+    }
+    this.storageError = null;
     this.onChange(this.view());
+    return true;
+  }
+
+  storageFailure() {
+    const session = this.ownedSession();
+    this.armed = false; this.owner = null; this.cancelTimer(); this.cancelVerification();
+    if (this.goal?.phase === 'active') Object.assign(this.goal, this.stoppedClock(), { phase: 'blocked', verifying: null,
+      blockedReason: { code: 'storage-error', message: this.storageError.message } });
+    this.onChange(this.view(), this.storageError.message);
+    this.interrupt(session);
+    return { ok: false, goal: this.view(), error: this.storageError.message };
   }
 
   touch(patch) {
+    const previous = { ...this.goal };
     Object.assign(this.goal, patch, { updatedAt: this.now() });
-    this.publish();
+    if (!this.publish()) {
+      for (const key of Object.keys(this.goal)) delete this.goal[key];
+      Object.assign(this.goal, previous); this.storageFailure(); return false;
+    }
+    return true;
   }
 
   cancelTimer() {
@@ -57,9 +84,9 @@ class ClaudeGoal {
     verification?.abort();
   }
 
-  schedule(delay) {
+  schedule(delay, action = () => this.drive()) {
     this.cancelTimer();
-    this.timer = this.setTimer(() => this.drive(), delay);
+    if (this.armed && this.goal?.phase === 'active') this.timer = this.setTimer(action, delay);
   }
 
   start(payload, { adoptSession } = {}) {
@@ -69,6 +96,7 @@ class ClaudeGoal {
     if (!objective) return { ok: false, error: "Goal cannot be empty" };
     if (this.goal && this.goal.phase !== 'complete') return { ok: false, error: "An unfinished goal already exists. Complete or clear it first." };
     this.cancelVerification();
+    const previous = this.goal;
     this.goal = {
       id: 'goal-' + this.now().toString(36), objective, phase: 'active',
       criterion: String(payload.criterion || '').trim() || null,
@@ -78,10 +106,11 @@ class ClaudeGoal {
       blockerStreak: 0, lastBlocker: null,
       verifyStreak: 0, lastVerify: null, verifying: null, verified: null,
       sessionId: payload.sessionId || null, workspaceId: this.resolveWorkspace(payload),
+      ...(payload.engine ? { engine: payload.engine } : {}),
     };
     this.armed = true;
     this.owner = adoptSession ? { goalId: this.goal.id, gen: adoptSession.gen } : null;
-    this.publish();
+    if (!this.publish()) { this.goal = previous; this.owner = null; return this.storageFailure(); }
     if (!adoptSession) this.schedule(100);
     return { ok: true, goal: this.view() };
   }
@@ -92,9 +121,9 @@ class ClaudeGoal {
     this.armed = false;
     this.cancelTimer();
     this.cancelVerification();
-    this.touch({ ...this.stoppedClock(), phase, blockedReason: null, verifying: null });
-    this.interrupt(session);
-    return { ok: true, goal: this.view() };
+    const saved = this.touch({ ...this.stoppedClock(), phase, blockedReason: null, verifying: null });
+    if (saved) this.interrupt(session);
+    return { ok: saved, goal: this.view(), ...(!saved ? { error: this.storageError.message } : {}) };
   }
 
   resume() {
@@ -104,21 +133,24 @@ class ClaudeGoal {
     if (this.armed) return { ok: true, goal: this.view() };
     this.cancelVerification();
     this.armed = true;
-    this.touch({ phase: 'active', activeSince: this.now(), blockedReason: null, errorStreak: 0, lastErrorSubtype: null, blockerStreak: 0, lastBlocker: null, verifyStreak: 0, lastVerify: null, verifying: null });
+    if (!this.touch({ phase: 'active', activeSince: this.now(), blockedReason: null, errorStreak: 0, lastErrorSubtype: null, blockerStreak: 0, lastBlocker: null, verifyStreak: 0, lastVerify: null, verifying: null }))
+      return { ok: false, goal: this.view(), error: this.storageError.message };
     this.schedule(100);
     return { ok: true, goal: this.view() };
   }
 
   clear() {
     const session = this.ownedSession();
+    const previous = this.goal;
     this.goal = null;
     this.owner = null;
     this.armed = false;
     this.cancelTimer();
     this.cancelVerification();
-    this.publish();
+    const saved = this.publish();
+    if (!saved) { this.goal = previous; this.storageFailure(); }
     this.interrupt(session);
-    return { ok: true, goal: null };
+    return { ok: saved, goal: this.view(), ...(!saved ? { error: this.storageError.message } : {}) };
   }
 
   detachWorkspace(id) {
@@ -153,7 +185,7 @@ class ClaudeGoal {
     let session;
     try { session = this.ensureSession({ sessionId: this.goal.sessionId, workspaceId: this.goal.workspaceId }); }
     catch (err) { this.block('workspace-unavailable', err.message); return; }
-    this.touch({ roundsStarted: this.goal.roundsStarted + 1 });
+    if (!this.touch({ roundsStarted: this.goal.roundsStarted + 1 })) return;
     this.owner = { goalId: this.goal.id, gen: session.gen };
     try {
       if (session.sendUserMessage(goalPrompt(this.goal))) this.rememberSession(session);
@@ -205,30 +237,30 @@ class ClaudeGoal {
     const goal = this.goal;
     const verification = new AbortController();
     this.verification = verification;
-    this.touch({ verifying: { at: this.now(), report: String(report || '').slice(0, 4000) } });
+    if (!this.touch({ verifying: { at: this.now(), report: String(report || '').slice(0, 4000) } })) return;
     let verdict;
     try { verdict = await this.verifyCompletion({ objective: goal.objective, criterion: goal.criterion || '', report }, { signal: verification.signal }); }
     catch (error) { verdict = { error: error.message }; }
     if (this.verification !== verification || this.goal !== goal || this.goal.phase !== 'active' || !this.armed) return;
     this.verification = null;
-    this.touch({ verifying: null });
+    if (!this.touch({ verifying: null })) return;
     if (verdict.pass === true) {
-      this.touch({ verifyStreak: 0, lastVerify: null, verified: { at: this.now(), evidence: verdict.reason || '' } });
+      if (!this.touch({ verifyStreak: 0, lastVerify: null, verified: { at: this.now(), evidence: verdict.reason || '' } })) return;
       this.setPhase('complete');
       return;
     }
     if (verdict.pass === false) {
       const streak = (this.goal.verifyStreak || 0) + 1;
-      this.touch({ verifyStreak: streak, lastVerify: verdict.reason || 'The verifier found the goal incomplete', errorStreak: 0, lastErrorSubtype: null });
+      if (!this.touch({ verifyStreak: streak, lastVerify: verdict.reason || 'The verifier found the goal incomplete', errorStreak: 0, lastErrorSubtype: null })) return;
       if (streak >= 3) { this.block('verification-failed', this.goal.lastVerify); return; }
       this.schedule(1200);
       return;
     }
     // The verifier itself failed to run; treat it as a transient execution error.
     const streak = (this.goal.errorStreak || 0) + 1;
-    this.touch({ errorStreak: streak, lastErrorSubtype: 'verification-error' });
+    if (!this.touch({ errorStreak: streak, lastErrorSubtype: 'verification-error' })) return;
     if (streak >= 3) { this.block('repeated-errors', 'Verification could not run 3 times in a row. ' + (verdict.error || '')); return; }
-    this.schedule(1200 * streak);
+    this.schedule(1200 * streak, () => { void this.verify(report); });
   }
 }
 
