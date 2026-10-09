@@ -6,6 +6,7 @@ const { randomUUID, createHash } = require('node:crypto');
 const { readRecoverableJson, writeJson } = require('../shared/json-store');
 const { translate } = require('../shared/i18n');
 const { canonicalModelId } = require('../shared/model-names');
+const { shortTitle, messageTitle } = require('../shared/conversation-title');
 const { validSessionId } = require('./claude-history');
 const { createSessionWorkspaces } = require('./session-workspaces');
 const { ClaudeGoal, verifyPrompt, verifySignal } = require('./claude-goal');
@@ -87,7 +88,6 @@ const preferences = config => ({ mode: config.conversations?.mode === 'markdown'
 const textOf = content => typeof content === 'string' ? content : (content || []).filter(p => p.type === 'text').map(p => p.text).join('\n');
 const legacyRecoveryError = row => row.role === 'assistant' && !row.runResult && /^Context recovery failed: /u.test(String(row.text || ''));
 const contextRow = row => !legacyRecoveryError(row) && !(row.runResult && (!row.text || row.text === row.runResult.result));
-const shortTitle = value => [...String(value || '').replace(/^[\s"'`#*-]+|[\s"'`#*-.。！!？?：:]+$/gu, '').replace(/\s+/g, ' ').trim()].slice(0, 10).join('');
 // A native engine can lose the session it recorded for a conversation: Codex
 // refuses to resume a thread whose rollout file was removed or never persisted.
 // The logical transcript is unaffected, so the turn is revised or continued
@@ -457,25 +457,59 @@ class SharedConversations {
     }
     return { ok: true, replyReadAt };
   }
+  firstTitleMessage(c) {
+    for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.user })) {
+      if (row.internal) continue;
+      const prompt = String(row.displayText ?? row.text ?? '');
+      if (prompt.trim()) return prompt;
+      const names = (row.attachments || []).map(item => String(item.name || path.basename(item.path || ''))).filter(Boolean);
+      if (names.length) return names.join(', ');
+    }
+    return '';
+  }
+  needsTitle(c) {
+    return (c.title === 'New session' || c.titleSource === 'message')
+      && !this.workspaces.sessionMeta().titles[c.id];
+  }
   async titleFromFirstMessage(c) {
-    if (this.titleRequests.has(c.id)) return;
-    this.titleRequests.add(c.id);
+    let prompt = '', requested = false;
     try {
-      let prompt = '';
-      for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.user })) {
-        if (row.internal) continue;
-        prompt = String(row.displayText ?? row.text ?? '');
-        if (prompt.trim()) break;
-      }
+      if (!this.items.has(c.id) || !this.needsTitle(c)) return;
+      prompt = this.firstTitleMessage(c);
       if (!prompt.trim()) return;
+      const provisional = messageTitle(prompt);
+      // Persist before network I/O so desktop and remote lists show a name even
+      // while the first request is pending, offline, or using a subscription.
+      if (provisional && c.title !== provisional) {
+        const previous = { title: c.title, titleSource: c.titleSource, updatedAt: c.updatedAt };
+        c.title = provisional; c.titleSource = 'message'; c.updatedAt = this.stamp();
+        try { this.save(c); }
+        catch (error) { Object.assign(c, previous); throw error; }
+        this.onEvent({ type: 'conversation:title', session_id: c.id, title: provisional });
+      }
+      if (this.titleRequests.has(c.id)) return;
+      this.titleRequests.add(c.id); requested = true;
       const title = shortTitle(await this.generateTitle(prompt, c.apiModel));
-      if (!title || !this.items.has(c.id) || this.workspaces.sessionMeta().titles[c.id]) return;
+      if (!title || !this.items.has(c.id)) return;
       const current = this.get(c.id);
-      if (current.title !== 'New session') return;
-      current.title = title; current.updatedAt = this.stamp(); this.save(current);
+      if (!this.needsTitle(current) || this.firstTitleMessage(current) !== prompt) return;
+      const previous = { title: current.title, titleSource: current.titleSource, updatedAt: current.updatedAt };
+      current.title = title; current.titleSource = 'model'; current.updatedAt = this.stamp();
+      try { this.save(current); }
+      catch (error) { Object.assign(current, previous); throw error; }
       this.onEvent({ type: 'conversation:title', session_id: current.id, title });
     } catch (error) { this.log('conversation title generation failed: ' + error.message); }
-    finally { this.titleRequests.delete(c.id); }
+    finally {
+      if (requested) {
+        this.titleRequests.delete(c.id);
+        try {
+          const current = this.items.get(c.id);
+          // A revision made during the request needs its own title, never the
+          // late result for the superseded message. Normal sends do not duplicate it.
+          if (current && this.needsTitle(current) && this.firstTitleMessage(current) !== prompt) void this.titleFromFirstMessage(current);
+        } catch (error) { this.log('conversation title retry failed: ' + error.message); }
+      }
+    }
   }
   // Permanent delete: index, append-only log, goal, handoffs and torn backups.
   purge(id) {
@@ -1144,9 +1178,8 @@ class SharedConversations {
     }
     assertAvailable();
     // A failed title request can recover on a later send or revision.
-    const needsTitle = !internal && !continuation && c.title === 'New session'
-      && !this.workspaces.sessionMeta().titles[c.id]
-      && String(payload.displayText ?? payload.prompt ?? '').trim();
+    const needsTitle = !internal && !continuation && this.needsTitle(c)
+      && (String(payload.displayText ?? payload.prompt ?? '').trim() || payload.attachments?.length);
     const a = continuation || { c, engine, internal, ephemeral, scheduledTaskId, nativeEditEligible: Boolean(nativeEdit) || !edit && !this.context(c, engine), goalContinuation: Boolean(facade), prompt: payload.prompt || '', promptSuffix, attachments: payload.attachments || [], events: [], permissions: new Map(), tools: new Set(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
       nativeEditReplayFromSeq: checkpoint?.replayFromSeq,
       // Only evaluated if the native session turns out to be unavailable: the

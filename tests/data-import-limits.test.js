@@ -68,8 +68,9 @@ test('selection skips corrupted history and legacy backups without opening their
   assert.equal(imported.restored, 1); assert.equal(imported.available, 3);
   for (const entry of excluded) assert.equal(opened.some(start => start >= entry.offsetToLocalFileHeader
     && start < entry.offsetToLocalFileHeader + 30 + entry.path.length + entry.compressedSize), false);
-  assert.equal(progress.at(-1).bytes, Buffer.byteLength(config));
-  assert.equal(progress.at(-1).totalBytes, Buffer.byteLength(config));
+  const extraction = progress.filter(event => event.phase === 'import').at(-1);
+  assert.equal(extraction.bytes, Buffer.byteLength(config));
+  assert.equal(extraction.totalBytes, Buffer.byteLength(config));
   assert.equal(fs.existsSync(path.join(box.dataDir, 'conversations')), false);
   await assert.rejects(importDataPackage({ ...box, scope: 'conversations' }), /checksum/);
 });

@@ -37,6 +37,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
             }
         } finally { downloaded.delete(); }
         verifyBackgroundDownload(artifact, id, token);
+        verifyDefaultDirectoryDownload(artifact, id, token);
         AtomicInteger lists = new AtomicInteger();
         IOException complete = new IOException("List synchronization verified");
         try {
@@ -324,6 +325,83 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         } finally {
             getInstrumentation().runOnMainSync(activity::finish);
             ArtifactDownloadService.cancel(context); file.delete();
+        }
+    }
+
+    private void verifyDefaultDirectoryDownload(JSONObject artifact, String conversation, String token) throws Exception {
+        var context = getInstrumentation().getTargetContext();
+        DownloadDirectoryFixture.authorize(getInstrumentation());
+        java.util.List<android.net.Uri> savedFiles = new java.util.ArrayList<>();
+        java.util.Set<android.net.Uri> original = new java.util.HashSet<>(DownloadDirectoryFixture.files(context));
+        android.app.Activity activity = null;
+        ArtifactDownloads downloads = null;
+        final int[] pickers = {0};
+        android.app.Instrumentation.ActivityMonitor monitor = new android.app.Instrumentation.ActivityMonitor() {
+            @Override public android.app.Instrumentation.ActivityResult onStartActivity(android.content.Intent intent) {
+                if (!android.content.Intent.ACTION_CREATE_DOCUMENT.equals(intent.getAction())) return null;
+                pickers[0]++; return new android.app.Instrumentation.ActivityResult(android.app.Activity.RESULT_CANCELED, null);
+            }
+        };
+        getInstrumentation().addMonitor(monitor);
+        try {
+            for (int attempt = 0; attempt < 3; attempt++) {
+                activity = getInstrumentation().startActivitySync(new android.content.Intent(context, PopupTestActivity.class)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+                android.app.Activity currentActivity = activity;
+                ArtifactDownloads currentDownloads = new ArtifactDownloads(activity, null); downloads = currentDownloads;
+                getInstrumentation().runOnMainSync(() -> {
+                    try {
+                        var choose = ArtifactDownloads.class.getDeclaredMethod("choose", JSONObject.class, String.class, String.class, String.class);
+                        choose.setAccessible(true); choose.invoke(currentDownloads, artifact, "http://100.64.0.1:43128", token, conversation);
+                    } catch (Exception error) { throw new AssertionError(error); }
+                });
+                assertTrue("Default-directory selection must start the download directly", ArtifactDownloadService.snapshot().active());
+                assertEquals("Repeated downloads must never open a destination picker", 0, pickers[0]);
+                getInstrumentation().runOnMainSync(() -> { currentDownloads.close(); currentActivity.finish(); });
+                getInstrumentation().waitForIdleSync();
+                if (attempt == 2) {
+                    DownloadDirectory.clear(context);
+                    assertTrue("Clearing the setting must retain the grant until the active download ends",
+                        DownloadDirectory.hasPermission(context, DownloadDirectoryFixture.TREE));
+                    Thread.sleep(250); ArtifactDownloadService.cancel(context);
+                }
+                long deadline = android.os.SystemClock.elapsedRealtime() + 10_000;
+                while (ArtifactDownloadService.snapshot().active() && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(50);
+                if (attempt == 2) {
+                    assertEquals("cancelled", ArtifactDownloadService.snapshot().phase);
+                    assertFalse("A cleared directory grant must be released after cancellation",
+                        DownloadDirectory.hasPermission(context, DownloadDirectoryFixture.TREE));
+                    // Regain access to verify saved files and the removal of the cancelled partial file.
+                    DownloadDirectoryFixture.authorize(getInstrumentation());
+                } else {
+                    assertEquals(ArtifactDownloadService.snapshot().detail, "complete", ArtifactDownloadService.snapshot().phase);
+                    assertTrue("Finishing a download must preserve the default folder's grant",
+                        DownloadDirectory.hasPermission(context, DownloadDirectoryFixture.TREE));
+                    java.util.List<android.net.Uri> files = DownloadDirectoryFixture.files(context);
+                    files.removeAll(original); files.removeAll(savedFiles);
+                    assertEquals("Each download must create a separate file", 1, files.size());
+                    savedFiles.add(files.get(0));
+                    try (var input = context.getContentResolver().openInputStream(files.get(0))) {
+                        for (int index = 0; index < 192 * 1024; index++) assertEquals(index % 251, input.read());
+                        assertEquals(-1, input.read());
+                    }
+                }
+                activity = null; downloads = null;
+            }
+            java.util.Set<android.net.Uri> remaining = new java.util.HashSet<>(DownloadDirectoryFixture.files(context));
+            remaining.removeAll(original);
+            assertEquals(new java.util.HashSet<>(savedFiles), remaining);
+            try (var cursor = context.getContentResolver().query(savedFiles.get(1),
+                    new String[]{android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null)) {
+                assertTrue(cursor.moveToFirst()); assertEquals("手机产物 (1).pdf", cursor.getString(0));
+            }
+        } finally {
+            getInstrumentation().removeMonitor(monitor);
+            android.app.Activity lastActivity = activity; ArtifactDownloads lastDownloads = downloads;
+            getInstrumentation().runOnMainSync(() -> { if (lastDownloads != null) lastDownloads.close(); if (lastActivity != null) lastActivity.finish(); });
+            ArtifactDownloadService.cancel(context);
+            for (android.net.Uri file : savedFiles) android.provider.DocumentsContract.deleteDocument(context.getContentResolver(), file);
+            DownloadDirectory.clear(context);
         }
     }
 

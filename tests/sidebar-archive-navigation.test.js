@@ -129,6 +129,62 @@ test('archiving a conversation other than the open one keeps the current one', a
   assert.deepEqual(state.status, ['Session archived']);
 });
 
+test('a phone archive refreshes the desktop and opens the next conversation without another archive request', async () => {
+  const sessions = [workspace('first'), workspace('second'), workspace('third')];
+  const { context, state } = fixture({ sessions, sessionId: 's-second', pages: [[sessions[0], sessions[2]]] });
+  await context.archivedChanged('s-second', true);
+  assert.deepEqual(state.archived, []);
+  assert.deepEqual(state.sessions.map(entry => entry.id), ['s-first', 's-third']);
+  assert.deepEqual(state.opened, ['s-third']);
+  assert.deepEqual(state.created, []);
+});
+
+test('a phone archive of the only workspace conversation opens a draft in that workspace', async () => {
+  const sessions = [workspace('only'), { id: 'elsewhere', workspaceId: 'other' }];
+  const { context, state } = fixture({ sessions, sessionId: 's-only', pages: [[sessions[1]]] });
+  await context.archivedChanged('s-only', true);
+  assert.deepEqual(state.opened, []);
+  assert.deepEqual(state.created, ['ws']);
+});
+
+test('phone archives of other conversations and restores only refresh the list', async () => {
+  const sessions = [workspace('open-row'), workspace('other')];
+  const { context, state } = fixture({ sessions, sessionId: 's-open-row', pages: [[sessions[0]], sessions] });
+  await context.archivedChanged('s-other', true);
+  assert.deepEqual(state.sessions.map(entry => entry.id), ['s-open-row']);
+  await context.archivedChanged('s-other', false);
+  assert.deepEqual(state.sessions.map(entry => entry.id), ['s-open-row', 's-other']);
+  assert.equal(context.context.sessionId, 's-open-row');
+  assert.deepEqual(state.archived, []);
+  assert.deepEqual(state.opened, []);
+  assert.deepEqual(state.created, []);
+});
+
+test('a phone archive at the end of a loaded page opens the next page before the previous conversation', async () => {
+  const sessions = [workspace('previous'), workspace('open')];
+  const older = workspace('older');
+  const { context, state } = fixture({ sessions, sessionId: 's-open', pages: [[sessions[0], older]],
+    pagination: { ws: { loaded: 2, hasMore: true } } });
+  await context.archivedChanged('s-open', true);
+  assert.deepEqual(state.limits[0], { ws: 62 });
+  assert.deepEqual(state.opened, ['s-older']);
+  assert.deepEqual(state.created, []);
+});
+
+test('a phone archive cannot override navigation while the list is refreshing', async () => {
+  const sessions = [workspace('open'), workspace('neighbor')];
+  const { context, state } = fixture({ sessions, sessionId: 's-open' });
+  context.loadSessionHistory = async () => {
+    context.context.sessionId = 'somewhere-else';
+    context.sessionHistory = [sessions[1]];
+    return true;
+  };
+  await context.archivedChanged('s-open', true);
+  assert.equal(context.context.sessionId, 'somewhere-else');
+  assert.deepEqual(state.opened, []);
+  assert.deepEqual(state.created, []);
+});
+
 test('a neighbor that is gone, archived elsewhere, or unreadable falls back to the new-session page', async () => {
   const sessions = [workspace('first'), workspace('second')];
   const gone = fixture({ sessions, sessionId: 's-first', pages: [[]] });

@@ -2303,6 +2303,7 @@ public final class MainActivity extends Activity {
             catch (Exception ignored) { outgoingMessage = null; }
         }
         shell(conversationTitle, tr("电脑执行 · 手机查看", "Runs on your computer · Read on your phone"));
+        root.setClipChildren(false);
         scroll.setVerticalScrollBarEnabled(false);
         older = button(tr("加载更早消息", "Load earlier messages"), this::loadOlder, false); older.setEnabled(false);
         older.setVisibility(View.GONE);

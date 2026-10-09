@@ -36,8 +36,10 @@ const AUXILIARY_HEADER = 'x-camellia-aux';
 // rejected request is retried with a smaller body, transient trouble is
 // retried as-is, and a rejected credential moves on to the next model.
 function titleErrorKind(status) {
-  if (status === 400 || status === 404 || status === 422) return 'rejected';
+  if (status === 400 || status === 422) return 'rejected';
+  if (status === 404) return 'unavailable';
   if (status === 401 || status === 403) return 'auth';
+  if (status === 429) return 'limited';
   return 'transient';
 }
 
@@ -50,19 +52,68 @@ class TitleRequestError extends Error {
 }
 
 // Ordered candidates: the conversation's model first, then the workbench
-// default, then other models that currently have an enabled route. Only
-// models the router can actually reach are considered when the pool knows its
-// routes, so a removed or disabled model costs no attempt. The cap keeps the
-// whole feature to a few small requests that no longer outlive the first turn.
-function titleCandidates(preferred, { fallback, router } = {}) {
-  if (!router || router.enabled === false) return [];
-  const routable = new Set((router.providers || [])
-    .filter(provider => provider?.enabled !== false && (provider.keys || []).some(key => key?.enabled !== false))
-    .flatMap(provider => (provider.models || []).map(model => model?.id))
-    .filter(Boolean));
-  const ordered = [...new Set([preferred, fallback, ...routable]
+// default, then other models with an available route. Provider diversity takes
+// precedence over a second model in the same pool. Removed, disabled and
+// known unhealthy routes cost no attempt; the cap bounds background traffic.
+function titleCandidates(preferred, { fallback, router, state, now = Date.now() } = {}) {
+  if (!router || router.enabled === false || state?.running === false) return [];
+  const usage = state?.usage || router.usage || {};
+  const routable = new Map();
+  for (const provider of router.providers || []) {
+    if (!provider || provider.enabled === false) continue;
+    for (const model of provider.models || []) {
+      const id = String(model?.id || '').trim();
+      if (!id || !(provider.keys || []).some(key => key && key.enabled !== false && !usage[key.id]?.blocked
+        && !(usage[key.id]?.models?.[id]?.until > now) && !state?.quota?.[key.id]?.exhausted)) continue;
+      if (!routable.has(id)) routable.set(id, new Set());
+      routable.get(id).add(provider);
+    }
+  }
+  const ordered = [...new Set([preferred, fallback, ...routable.keys()]
     .map(value => String(value || '').trim()).filter(Boolean))];
-  return (routable.size ? ordered.filter(id => routable.has(id)) : ordered).slice(0, MAX_TITLE_MODELS);
+  const available = ordered.filter(id => routable.has(id)), selected = [], covered = new Set();
+  const add = id => { selected.push(id); for (const provider of routable.get(id)) covered.add(provider); };
+  if (available.length) add(available[0]);
+  // Spending every fallback on one exhausted provider prevented the healthy
+  // providers later in settings from ever receiving a naming request.
+  for (const id of available.slice(1)) {
+    if (selected.length >= MAX_TITLE_MODELS) break;
+    if ([...routable.get(id)].some(provider => !covered.has(provider))) add(id);
+  }
+  for (const id of available) {
+    if (selected.length >= MAX_TITLE_MODELS) break;
+    if (!selected.includes(id)) add(id);
+  }
+  return selected;
+}
+
+// Kept outside Electron so tests and live probes use the production request.
+function createTitleRequester({ getRoute, fetchImpl = fetch, timeoutMs = REQUEST_TIMEOUT_MS }) {
+  return async ({ model, message, minimal }) => {
+    const route = getRoute();
+    const body = { model, stream: false, messages: [
+      { role: 'system', content: minimal ? MINIMAL_INSTRUCTION : TITLE_INSTRUCTION },
+      { role: 'user', content: JSON.stringify(String(message || '').slice(0, minimal ? 600 : MAX_MESSAGE_CHARS)) },
+    ] };
+    if (!minimal) body.max_tokens = MAX_OUTPUT_TOKENS;
+    const response = await fetchImpl(route.baseUrl + '/v1/chat/completions', {
+      method: 'POST', signal: AbortSignal.timeout(timeoutMs),
+      headers: { Authorization: `Bearer ${route.authToken}`, 'Content-Type': 'application/json', [AUXILIARY_HEADER]: 'title' },
+      body: JSON.stringify(body),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      let detail = text;
+      try { detail = JSON.parse(text)?.error?.message || text; } catch {}
+      throw new TitleRequestError(titleErrorKind(response.status), `HTTP ${response.status}: ${String(detail).slice(0, 200)}`);
+    }
+    let data;
+    try { data = JSON.parse(text); } catch { throw new TitleRequestError('transient', 'The title response was not valid JSON'); }
+    const choice = data?.choices?.[0], content = choice?.message?.content;
+    return { text: typeof content === 'string' ? content : Array.isArray(content)
+      ? content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text).join('') : '',
+    truncated: choice?.finish_reason === 'length' };
+  };
 }
 
 function createConversationTitles({ candidates, request, normalize = value => String(value || '').trim(),
@@ -90,8 +141,8 @@ function createConversationTitles({ candidates, request, normalize = value => St
           break;
         } catch (error) {
           const kind = error?.kind || 'transient';
-          if (kind === 'auth') {
-            log(`conversation title: ${candidate} rejected the credential, trying another model`);
+          if (['auth', 'limited', 'unavailable'].includes(kind)) {
+            log(`conversation title: ${candidate} unavailable (${error.message}), trying another model`);
             break;
           }
           if (attempt + 1 >= ATTEMPTS_PER_MODEL) {
@@ -108,5 +159,5 @@ function createConversationTitles({ candidates, request, normalize = value => St
   return { generate };
 }
 
-module.exports = { createConversationTitles, titleCandidates, titleErrorKind, TitleRequestError,
+module.exports = { createConversationTitles, createTitleRequester, titleCandidates, titleErrorKind, TitleRequestError,
   TITLE_INSTRUCTION, MINIMAL_INSTRUCTION, AUXILIARY_HEADER, MAX_MESSAGE_CHARS, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS, MAX_TITLE_MODELS };

@@ -272,6 +272,8 @@ dialog::backdrop { background: #15203438; }
 dialog > label { margin-top: 20px; font-size: 12px; }
 dialog > select { width: 100%; }
 dialog > button { display: block; margin: 20px 0 0 auto; }
+.subscription-confirm-account { margin: 0 0 8px; font-weight: 600; overflow-wrap: anywhere; }
+.subscription-confirm-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin: 20px 0 0; }
 .import-scope { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; margin: 0; border-bottom: 1px solid var(--dsw-alias-border-l2); font-size: 13px; }
 .import-scope input { margin-top: 2px; }
 .import-scope > span { display: flex; flex-direction: column; gap: 2px; }
@@ -322,7 +324,7 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
 .balance-card > small { display: block; margin-top: 4px; }
 
 /* Raised account cards on the shared settings background. */
-#subscriptionsPage, .subscription-card {
+#subscriptionsPage, .subscription-card, #codexResetDialog {
   --subscription-ink: light-dark(#1b2940, #edf3ff);
   --subscription-muted: light-dark(#596b84, #b7c6db);
   --subscription-blue: light-dark(#416bfa, #97b9ff);
@@ -364,6 +366,36 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
 .subscription-card .subscription-note-text { flex: 1 1 90px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--subscription-muted); font-size: 12px; line-height: 18px; }
 /* Do not reuse .empty: it is a page-sized placeholder with large padding. */
 .subscription-card .subscription-note-text.is-empty { color: var(--subscription-muted); }
+.subscription-reset { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid color-mix(in srgb, var(--subscription-blue) 30%, var(--subscription-border)); border-radius: 999px; background: color-mix(in srgb, var(--subscription-blue) 7%, var(--subscription-surface)); color: var(--subscription-blue); font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.subscription-reset svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.subscription-reset:hover:not(:disabled) { background: color-mix(in srgb, var(--subscription-blue) 15%, var(--subscription-surface)); }
+.subscription-reset:disabled { opacity: .45; }
+#codexResetDialog { width: 500px; background: var(--subscription-surface); border-color: var(--subscription-border); }
+#codexResetDialog .hint { color: var(--subscription-muted); line-height: 1.6; }
+#codexResetDialog .hint.error { color: var(--subscription-red); }
+.codex-reset-account { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 22px; padding: 12px 14px; border-radius: 12px; background: var(--subscription-tool-bg); font-size: 13px; }
+.codex-reset-account > span { color: var(--subscription-muted); }
+.codex-reset-account strong { min-width: 0; overflow-wrap: anywhere; }
+.codex-reset-count { margin: 22px 0 8px; font-size: 18px; font-weight: 650; }
+.codex-reset-expiry { display: inline-block; margin: 0 0 18px; padding: 5px 10px; border-radius: 8px; color: var(--subscription-gold); background: color-mix(in srgb, var(--subscription-gold) 9%, transparent); font-size: 12px; font-variant-numeric: tabular-nums; }
+.codex-reset-details { border: 1px solid var(--subscription-border); border-radius: 14px; padding: 14px; }
+.codex-reset-details h3 { margin: 0 0 10px; color: var(--subscription-muted); font-size: 12px; }
+.codex-reset-details ul { padding: 0; margin: 0; list-style: none; max-height: 240px; overflow-y: auto; }
+.codex-reset-details li { display: flex; align-items: center; gap: 12px; padding: 10px 0; }
+.codex-reset-details li + li { border-top: 1px solid var(--subscription-border); }
+.codex-reset-credit-status { flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; background: var(--subscription-tool-bg); color: var(--subscription-muted); font-size: 11px; }
+.codex-reset-details li.selected .codex-reset-credit-status { background: color-mix(in srgb, var(--subscription-green) 12%, transparent); color: var(--subscription-green); }
+.codex-reset-details dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1; gap: 12px; min-width: 0; margin: 0; font-size: 12px; }
+.codex-reset-details dt { color: var(--subscription-muted); margin: 0 0 4px; }
+.codex-reset-details dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; line-height: 1.5; }
+.codex-reset-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.codex-reset-actions button { min-height: 38px; }
+#codexResetMessage:empty { display: none; }
+@media (max-width: 480px) {
+  #codexResetDialog { padding: 20px; }
+  .codex-reset-details dl { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .codex-reset-actions button.primary { flex: 1; }
+}
 .subscription-note { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
 .subscription-note input { flex: 1 1 120px; width: auto; }
 .subscription-note button { padding: 4px 9px; }

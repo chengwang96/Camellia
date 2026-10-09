@@ -781,6 +781,7 @@ $('exportData').onclick = async () => {
     if (result.canceled) $('dataMigrationStatus').textContent = migrationIdle();
     else if (!result.ok) throw new Error(result.error);
     else {
+      $('dataMigrationProgress').value = 100;
       const parts = Array.isArray(result.parts) ? result.parts : [result.file];
       const baseName = String(parts[0] || '').split(/[\\/]/).pop();
       const where = parts.length > 1
@@ -819,6 +820,7 @@ const importData = async file => {
     if (result.canceled) $('dataMigrationStatus').textContent = migrationIdle();
     else if (!result.ok) throw new Error(result.error + (result.recoveryRequired && result.backupDir ? '\nBackup directory: ' + result.backupDir : ''));
     else {
+      $('dataMigrationProgress').value = 100;
       const scope = scopeLabel(result.scope);
       const note = window.CamelliaI18n.t('Imported {0} files ({1}) · {2}. Restart Camellia to use the restored data.')
         .replace('{0}', () => fmt(result.restored)).replace('{1}', () => migrationBytes(result.bytes)).replace('{2}', () => scope);
@@ -898,15 +900,14 @@ $('importDataAgain').onclick = () => importData(typeof dataMigrationPackage === 
 api.onDataMigrationProgress(state => {
   // Ignore any progress event that arrives after the call already finished, so
   // a late percentage cannot overwrite the final result text.
-  if (!state || !dataMigrationActive) return;
+  if (!state || !dataMigrationActive || !Number.isFinite(state.percent)) return;
   const bar = $('dataMigrationProgress');
-  if (typeof state.bytes === 'number' && typeof state.totalBytes === 'number' && state.totalBytes > 0) {
-    bar.value = Math.min(100, Math.round(state.bytes / state.totalBytes * 100));
-    $('dataMigrationStatus').textContent = (state.phase === 'snapshot' ? window.CamelliaI18n.t('Preparing the data package…') : state.phase === 'import'
-      ? window.CamelliaI18n.t('Importing data…') : window.CamelliaI18n.t('Exporting data…')) + ' ' + bar.value + '%';
-  } else if (state.files && state.totalFiles) {
-    bar.value = Math.min(100, Math.round(state.files / state.totalFiles * 100));
-  }
+  // Percentages cover every phase and archive part. The IPC "done" event also
+  // runs on failure; only the successful operation result may set 100%.
+  bar.value = Math.max(bar.value, Math.min(99, Math.floor(state.percent)));
+  $('dataMigrationStatus').textContent = (state.phase === 'snapshot' ? window.CamelliaI18n.t('Preparing the data package…')
+    : ['import', 'rewrite', 'apply'].includes(state.phase) ? window.CamelliaI18n.t('Importing data…')
+      : window.CamelliaI18n.t('Exporting data…')) + ' ' + bar.value + '%';
 });
 
 // Application updates: checking is read-only; installing replaces this
@@ -1470,6 +1471,7 @@ function archivedDeleteProgress({ processed, total }) {
   $('archivedDeleteProgress').value = processed;
 }
 api.onArchivedDeleteProgress(archivedDeleteProgress);
+api.onArchivedChanged?.(() => { if (view === 'archived') void renderArchived(); });
 function setArchivedDeleting(busy) {
   archivedDeleting = busy;
   $('archivedDeleteActivity').hidden = !busy;

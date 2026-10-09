@@ -11,7 +11,7 @@ const { EventEmitter } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const mainDir = path.resolve(__dirname, '../src/main');
 
-function createHarness(existingRoot, { respondToInterrupts = false } = {}) {
+function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleCredentials = async () => {} } = {}) {
   const root = existingRoot || fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-workspaces-'));
   const userData = path.join(root, 'app');
   const home = path.join(root, 'home');
@@ -67,6 +67,10 @@ function createHarness(existingRoot, { respondToInterrupts = false } = {}) {
       if (name === 'node:child_process') return { spawn, spawnSync: () => ({ status: 0, stdout: '' }) };
       if (name === 'node:os') return { ...os, homedir: () => home };
       if (name === 'node:fs') return mockFs;
+      if (name === '../engines/antigravity' || name === '../engines/antigravity.js') {
+        const antigravity = require('../src/engines/antigravity.js');
+        return { ...antigravity, createAntigravity: options => antigravity.createAntigravity({ ...options, clearCredentials: clearGoogleCredentials }) };
+      }
       if (name.startsWith('.')) return require(path.resolve(mainDir, name));
       return require(name);
     },
@@ -76,7 +80,7 @@ function createHarness(existingRoot, { respondToInterrupts = false } = {}) {
     clearTimeout: (id) => timers.delete(id),
   };
   const source = fs.readFileSync(path.join(__dirname, '..', 'src/main/main.js'), 'utf8');
-  vm.runInNewContext(source + '\nmodule.exports = { subscriptionUsage, claudeSessionMeta, resolveClaudeSessionContext, claudeGoalDrive: () => goalDriver.drive(), syncOllamaBaseUrl, resolveClaudeRoute, claudeSpawnSpec, stopRouter: stopOllamaProxyHandle, getSession: () => claudeSessions.legacy, sharedConversations, claudeSessions, kimiSessions, codex, antigravity, dshChat, setWindow: (w) => { mainWindow = w; } };', sandbox, { filename: 'src/main/main.js' });
+  vm.runInNewContext(source + '\nmodule.exports = { subscriptionUsage, claudeSessionMeta, resolveClaudeSessionContext, claudeGoalDrive: () => goalDriver.drive(), syncOllamaBaseUrl, resolveClaudeRoute, claudeSpawnSpec, stopRouter: stopOllamaProxyHandle, getSession: () => claudeSessions.legacy, sharedConversations, claudeSessions, kimiSessions, codex, antigravity, dshChat, setWindow: (w) => { mainWindow = w; }, setSettingsWindow: (w) => { settingsWindow = w; } };', sandbox, { filename: 'src/main/main.js' });
   const api = sandbox.module.exports;
   api.setWindow({ isDestroyed: () => false, webContents: { send: (channel, data) => events.push({ channel, data }) } });
   function call(channel, payload, event = null) {

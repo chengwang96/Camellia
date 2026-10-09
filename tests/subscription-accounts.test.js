@@ -73,7 +73,7 @@ test('account summaries expose sign-in, quota and identity per account', () => {
   const summaries = accounts.accountSummaries({ engine: 'codex', accounts: list, activeId: 'default',
     states: { default: { account: { email: 'a@b.c', planType: 'plus' }, models: [{ id: 'm' }], rateLimits: { primary: { usedPercent: 100 } } } } });
   assert.deepEqual(summaries, [{ id: 'default', label: '', active: true, signedIn: true, exhausted: true, installed: true,
-    quotaWindows: [{ label: 'Usage', usedPercent: 100, resetsAt: null }], verifiedAt: null, loginPending: false, error: '', models: 1, email: 'a@b.c', plan: 'plus' }]);
+    quotaWindows: [{ label: 'Usage', usedPercent: 100, resetsAt: null }], verifiedAt: null, loginPending: false, error: '', models: 1, email: 'a@b.c', plan: 'plus', rateLimitResetCredits: null }]);
 });
 
 test('a conversation keeps its account; only a new conversation fails over to available quota', () => {

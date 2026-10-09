@@ -88,16 +88,22 @@ final class ArtifactDownloads {
                         row.addView(type);
                         TextView name = sheet.text(file.optString("name"), Palette.TEXT_ROW_STRONG, sheet.style.ink); name.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
                         name.setMaxLines(2); name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE); name.setPadding(0, style.dp(8), 0, style.dp(16)); row.addView(name);
-                        TextView download = sheet.action(tr("下载到手机", "Save to phone"), true, () -> choose(file, address, conversation));
+                        TextView download = sheet.action(tr("下载到手机", "Save to phone"), true, () -> choose(file, address, token, conversation));
                         download.setContentDescription(file.optString("name") + " · " + download.getText());
                         row.addView(download);
+                        if (DownloadDirectory.selected(activity) != null) {
+                            TextView saveAs = sheet.action(tr("另存为…", "Save as…"), false, () -> choose(file, address, token, conversation, true));
+                            saveAs.setTag("artifactSaveAs:" + file.optString("id")); row.addView(saveAs);
+                        }
                         if (java.util.Arrays.asList("png", "jpg", "jpeg", "webp", "gif", ".png", ".jpg", ".jpeg", ".webp", ".gif").contains(file.optString("extension").toLowerCase(java.util.Locale.ROOT)) && file.optLong("size") <= 32L * 1024 * 1024) {
                             TextView preview = sheet.action(tr("查看图片", "View image"), false, () -> preview(request, token, conversation, file, ticket, status));
                             preview.setTag("artifactPreview:" + file.optString("id")); row.addView(preview);
                         }
                     }
                     status.setText(rows.getChildCount() == 0 ? tr("未找到可下载文件。只显示此会话引用且仍存在的产物（含在其他目录中生成的文件）；若刚生成，请关闭后重新打开，或更新并重启电脑端。", "No downloadable files found. Only files this conversation referenced and that still exist are shown, including ones produced in another directory. Reopen this panel after generation, or update and restart the desktop.")
-                        : tr("选择保存位置后可切换应用或锁屏，下载会继续。", "Choose a save location, then switch apps or lock your phone. Downloads continue."));
+                        : DownloadDirectory.selected(activity) != null
+                            ? tr("保存到：", "Save to: ") + DownloadDirectory.label(activity)
+                            : tr("选择保存位置后可切换应用或锁屏，下载会继续。", "Choose a save location, then switch apps or lock your phone. Downloads continue."));
                     long next = result.optLong("nextOffset", -1);
                     more.setText(tr("加载更多", "Load more"));
                     more.setVisibility(next >= 0 ? View.VISIBLE : View.GONE); more.setEnabled(true);
@@ -116,17 +122,21 @@ final class ArtifactDownloads {
         });
     }
 
-    private void choose(JSONObject file, String address, String conversation) {
+    private void choose(JSONObject file, String address, String token, String conversation) { choose(file, address, token, conversation, false); }
+
+    private void choose(JSONObject file, String address, String token, String conversation, boolean askLocation) {
         if (ArtifactDownloadService.snapshot().active()) { showProgress(); return; }
         try {
-            if (!notificationAsked && android.os.Build.VERSION.SDK_INT >= 33 && activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                notificationAsked = true;
-                activity.requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 705);
-                toast(tr("请设置通知权限后再次点击下载；拒绝通知也可下载。", "Set notification permission, then tap download again; downloads also work without notifications."));
+            Uri directory = askLocation ? null : DownloadDirectory.selected(activity);
+            if (directory != null && DownloadDirectory.hasPermission(activity, directory)) {
+                JSONObject selected = new JSONObject(file.toString()).put("address", address).put("conversation", conversation).put("discussion", discussion);
+                try { ArtifactDownloadService.startInDirectory(activity, selected, token, directory); showProgress(); }
+                catch (Exception error) { toast(tr("无法启动下载，可能已有任务或系统限制，请重试。", "Cannot start download. Another task or a system restriction may be active. Retry.")); }
                 return;
             }
+            if (directory != null) toast(tr("下载目录权限已失效，请重新设置。本次请选择保存位置。", "Folder access has expired. Choose a save location and set the default folder again."));
             pending = new JSONObject(file.toString()).put("address", address).put("conversation", conversation).put("discussion", discussion);
-            String name = file.getString("name").replaceAll("[\\\\/\\p{Cntrl}]", "_");
+            String name = DownloadDirectory.filename(file.getString("name"));
             Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
                 .setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE, name);
             activity.startActivityForResult(intent, SAVE_REQUEST);
@@ -155,8 +165,6 @@ final class ArtifactDownloads {
         try { ArtifactDownloadService.start(activity, file, token, destination); showProgress(); }
         catch (Exception error) { cleanup(destination); toast(tr("无法启动下载，可能已有任务或系统限制，请重试。", "Cannot start download. Another task or a system restriction may be active. Retry.")); }
     }
-
-    private boolean notificationAsked;
 
     private void preview(RemoteApi request, String token, String conversation, JSONObject file, int ticket, TextView status) {
         status.setText(tr("正在读取图片…", "Loading image…"));
@@ -200,7 +208,10 @@ final class ArtifactDownloads {
         android.widget.ProgressBar bar = sheet.style.progressBar(); bar.setTag("downloadProgress");
         card.addView(bar, new LinearLayout.LayoutParams(-1, style.dp(6)));
         TextView bytes = sheet.text("", Palette.TEXT_NOTE, sheet.style.secondary); bytes.setPadding(0, style.dp(12), 0, 0); card.addView(bytes);
-        TextView detail = sheet.text("", Palette.TEXT_BODY, sheet.style.secondary); detail.setPadding(style.dp(16), style.dp(8), style.dp(16), style.dp(18)); sheet.content.addView(detail);
+        TextView detail = sheet.text("", Palette.TEXT_BODY, sheet.style.secondary); detail.setTag("downloadDetail");
+        detail.setPadding(style.dp(16), style.dp(8), style.dp(16), style.dp(18)); sheet.content.addView(detail);
+        TextView notifications = sheet.action(tr("开启下载通知", "Enable download notifications"), false, this::notificationSettings);
+        notifications.setTag("downloadNotificationSettings"); notifications.setVisibility(View.GONE); sheet.content.addView(notifications);
         TextView background = sheet.action(tr("在后台继续", "Continue in background"), true, sheet::dismiss); sheet.actions.addView(background);
         TextView cancel = sheet.action(tr("取消下载", "Cancel download"), false, () -> ArtifactDownloadService.cancel(activity));
         LinearLayout.LayoutParams space = new LinearLayout.LayoutParams(-1, -2); space.topMargin = style.dp(10); sheet.actions.addView(cancel, space);
@@ -212,12 +223,23 @@ final class ArtifactDownloads {
                 int percent = ArtifactDownloadService.percent(state.received, state.total);
                 percentage.setText(state.phase.equals("complete") ? "100%" : percent + "%"); bar.setProgress(percent);
                 bytes.setText(android.text.format.Formatter.formatFileSize(activity, state.received) + " / " + android.text.format.Formatter.formatFileSize(activity, state.total));
-                detail.setText(state.active() ? tr("可切换应用或锁屏。通知栏可查看进度；网络中断需重新下载。", "Switch apps or lock your phone. Track progress in notifications; a network interruption requires downloading again.") : state.detail);
+                boolean notificationsEnabled = activity.getSystemService(android.app.NotificationManager.class).areNotificationsEnabled();
+                detail.setText(state.active() ? (notificationsEnabled
+                    ? tr("可切换应用或锁屏。通知栏可查看进度；网络中断需重新下载。", "Switch apps or lock your phone. Track progress in notifications; a network interruption requires downloading again.")
+                    : tr("可切换应用或锁屏；网络中断需重新下载。", "Switch apps or lock your phone; a network interruption requires downloading again.")) : state.detail);
+                notifications.setVisibility(state.active() && !notificationsEnabled ? View.VISIBLE : View.GONE);
                 background.setText(state.active() ? tr("在后台继续", "Continue in background") : tr("完成", "Done"));
                 cancel.setVisibility(state.active() ? View.VISIBLE : View.GONE);
                 handler.postDelayed(this, 500);
             }
         });
+    }
+
+    private void notificationSettings() {
+        try {
+            activity.startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, activity.getPackageName()));
+        } catch (Exception error) { toast(tr("无法打开通知设置。", "Cannot open notification settings.")); }
     }
 
     private void cleanup(Uri destination) {

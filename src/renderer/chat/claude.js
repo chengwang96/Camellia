@@ -2505,6 +2505,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (ev.session_id === context.sessionId) workPanel.update(ev.tasks);
       return;
     }
+    if (ev.type === 'conversation:archived') {
+      void sidebar.archivedChanged(ev.session_id, ev.archived !== false);
+      return;
+    }
     if (['conversation:workspaces', 'conversation:read'].includes(ev.type)) { void sidebar.load(); return; }
     if (ev.type === 'conversation:activity') {
       void sidebar.load();
@@ -2526,6 +2530,15 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       // started elsewhere (for example on the phone) needs this reload.
       if (ev.origin === 'desktop') return;
       if (ev.session_id === context.sessionId && !loadingSession && !sending && !running) void openHistorySession(ev.session_id);
+      return;
+    }
+    if (ev.type === 'conversation:title') {
+      if (restoringRun) { eventsDuringRestore.push(ev); return; }
+      void sidebar.load();
+      if (ev.session_id === context.sessionId) {
+        $('headerTitle').textContent = ev.title;
+        $('headerTitle').dataset.titled = '1';
+      }
       return;
     }
     if (restoringRun) { eventsDuringRestore.push(ev); return; }
@@ -2580,12 +2593,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         followRunOutput = true;
         setRunning(true);
       }
-      return;
-    }
-    if (ev.type === 'conversation:title') {
-      $('headerTitle').textContent = ev.title;
-      $('headerTitle').dataset.titled = '1';
-      void sidebar.load();
       return;
     }
     if (currentRunId != null && ev.runId != null && currentRunId !== ev.runId) return;

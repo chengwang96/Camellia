@@ -257,7 +257,7 @@ class RemoteCommands {
       if (!Number.isSafeInteger(payload.expectedSeq) || payload.expectedSeq !== conversation.seq) fail(409, 'Conversation changed; refresh before archiving');
       const result = await manager.command(conversation.currentEngine, 'archive-session', { id: conversationId, archived: payload.action === 'archive' });
       if (!result.ok) fail(409, result.error);
-      manager.onEvent({ type: 'conversation:archived', session_id: conversationId, engine: conversation.currentEngine });
+      manager.onEvent({ type: 'conversation:archived', session_id: conversationId, engine: conversation.currentEngine, archived: payload.action === 'archive' });
       return { ok: true, state: 'accepted' };
     }
     if (payload.action === 'move') {

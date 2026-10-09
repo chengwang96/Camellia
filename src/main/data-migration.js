@@ -68,6 +68,22 @@ const MAX_REWRITE_BYTES = 8 * 1024 * 1024;
 // charge includes fixed overhead and UTF-16 path copies, not archive payloads.
 const MAX_IMPORT_INDEX_BYTES = 64 * 1024 * 1024;
 
+// Each phase owns a range of the whole operation. Keep 100% for the successful
+// result, after archive finalization or transaction commit and staging cleanup.
+function createProgressReporter(onProgress, ranges) {
+  if (!onProgress) return undefined;
+  let percent = 0;
+  return state => {
+    const [start, end] = ranges[state.phase];
+    const total = state.totalBytes ?? state.totalFiles;
+    const processed = state.bytes ?? state.files;
+    const fraction = state.phaseComplete ? 1 : Number.isFinite(total) && total > 0 && Number.isFinite(processed)
+      ? Math.max(0, Math.min(1, processed / total)) : 0;
+    percent = Math.max(percent, Math.min(99, Math.floor(start + (end - start) * fraction)));
+    onProgress({ ...state, percent });
+  };
+}
+
 // Every entry is one of three kinds, so an import can bring back API
 // credentials, application settings, conversation history, or any combination.
 // Conversation data is recognised first so an account or engine folder that
@@ -326,11 +342,11 @@ function fileStream(file, onBytes, expectedBytes, relative) {
 
 // Write to a sibling temporary file and rename on success, so an interrupted
 // export never leaves a half-written package under the name the user chose.
-async function writeZip({ files, destination, manifest, onProgress }) {
+async function writeZip({ files, destination, manifest, onProgress, byteOffset = 0, totalBytes }) {
   const zip = new JSZip();
   const inputs = [];
-  let processed = 0;
-  const total = files.reduce((sum, file) => sum + file.size, 0);
+  let processed = byteOffset;
+  const total = totalBytes ?? files.reduce((sum, file) => sum + file.size, 0);
   const bump = bytes => {
     processed += bytes;
     if (onProgress) onProgress({ phase: 'export', bytes: processed, totalBytes: total });
@@ -357,6 +373,7 @@ async function writeZip({ files, destination, manifest, onProgress }) {
 
 async function createDataPackage({ dataDir, home, appVersion, destination, scope = 'all', onProgress }) {
   if (!path.isAbsolute(destination)) throw new Error('Choose a destination file for the package');
+  onProgress = createProgressReporter(onProgress, { snapshot: [0, 30], export: [30, 99] });
   const kinds = normalizeKinds(scope);
   const collected = await collectAll({ dataDir, home });
   const files = collected.files.filter(file => kinds.includes(file.category));
@@ -374,8 +391,11 @@ async function createDataPackage({ dataDir, home, appVersion, destination, scope
   const lockedFiles = locked.slice(0, 20).map(file => file.rel);
   const staging = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'camellia-export-'));
   try {
+    const snapshotBytes = usable.reduce((sum, file) => sum + file.size, 0);
+    onProgress?.({ phase: 'snapshot', bytes: 0, totalBytes: snapshotBytes });
     const snapshots = await snapshotExportFiles({ files: usable, directory: staging, onProgress });
     await stripExportAccountMetadata(snapshots);
+    onProgress?.({ phase: 'snapshot', bytes: snapshotBytes, totalBytes: snapshotBytes, phaseComplete: true });
     const oversizedSnapshot = snapshots.find(file => file.size >= MAX_ENTRY_BYTES);
     if (oversizedSnapshot) throw new Error(`A single file is too large to package: ${oversizedSnapshot.rel}`);
     const parts = partitionFiles(snapshots, MAX_PART_BYTES, MAX_PART_ENTRIES);
@@ -400,11 +420,15 @@ async function createDataPackage({ dataDir, home, appVersion, destination, scope
       // anywhere; import resolves them next to whichever part was selected.
       parts: parts.map((entries, index) => ({ name: path.basename(names[index]), files: entries.length })),
     };
-    let written = 0;
+    let written = 0, packaged = 0;
+    onProgress?.({ phase: 'export', bytes: 0, totalBytes: manifest.counts.bytes });
     for (let index = 0; index < parts.length; index++) {
-      await writeZip({ files: parts[index], destination: names[index], manifest, onProgress });
+      await writeZip({ files: parts[index], destination: names[index], manifest, onProgress,
+        byteOffset: packaged, totalBytes: manifest.counts.bytes });
+      packaged += parts[index].reduce((sum, file) => sum + file.size, 0);
       written += (await fs.promises.stat(names[index])).size;
     }
+    onProgress?.({ phase: 'export', bytes: packaged, totalBytes: manifest.counts.bytes, phaseComplete: true });
     return { files: snapshots.length, bytes: written, sourceBytes: bytes, skipped, categories, scope: kinds, locked: locked.length,
       lockedFiles, parts: names, split: names.length > 1 };
   } catch (error) {
@@ -617,9 +641,10 @@ function targetPath(rel, dataDir, home) {
 // Rewrite only the files an import actually wrote, and only the ones that can
 // carry absolute paths, so settings and API files are corrected without walking
 // the untouched conversation catalog.
-async function rewriteImportedTree({ dataDir, home, targets, mappings }) {
-  const rewritten = [];
-  for (const rel of [...targets]) {
+async function rewriteImportedTree({ dataDir, home, targets, mappings, onProgress }) {
+  const rewritten = [], originals = [...targets];
+  for (const [index, rel] of originals.entries()) {
+    if (index % 200 === 0) onProgress?.({ phase: 'rewrite', files: index, totalFiles: originals.length });
     await yieldLoop();
     const discussion = rel.match(/^app\/discussions\/([0-9a-f-]{36})\.json$/i);
     if (discussion) {
@@ -663,6 +688,7 @@ async function rewriteImportedTree({ dataDir, home, targets, mappings }) {
 
 async function applyPackage({ staging, targets, transaction, onProgress }) {
   const summary = { restored: 0, overwritten: 0, bytes: 0 };
+  onProgress?.({ phase: 'apply', files: 0, totalFiles: targets.length });
   for (const rel of targets) {
     await yieldLoop();
     const source = path.join(staging, ...rel.split('/'));
@@ -670,13 +696,16 @@ async function applyPackage({ staging, targets, transaction, onProgress }) {
     summary.overwritten += Number(result.overwritten);
     summary.bytes += result.bytes;
     summary.restored += 1;
-    if (onProgress && summary.restored % 200 === 0) onProgress({ phase: 'apply', files: summary.restored, totalFiles: targets.length });
+    if (onProgress && (summary.restored % 200 === 0 || summary.restored === targets.length)) {
+      onProgress({ phase: 'apply', files: summary.restored, totalFiles: targets.length });
+    }
   }
   return summary;
 }
 
 async function importDataPackage({ file, dataDir, home, scope = 'all', onProgress }) {
   if (!file || !fs.existsSync(file)) throw new Error('Choose a Camellia data package to import');
+  onProgress = createProgressReporter(onProgress, { import: [0, 70], rewrite: [70, 80], apply: [80, 99] });
   const kinds = normalizeKinds(scope);
   recoverDataImports({ dataDir, home });
   const { manifest, categories, plans, expected, available } = await inspectPackage(file, kinds);
@@ -690,19 +719,22 @@ async function importDataPackage({ file, dataDir, home, scope = 'all', onProgres
   try {
     // Every part's metadata is checked first. Only selected active files are
     // decompressed, and all of those pass size/CRC checks before any overwrite.
+    onProgress?.({ phase: 'import', bytes: 0, totalBytes: expected.totalBytes });
     const selected = await extractPackage({ plans, staging, onProgress, expected });
     if (!selected.length) {
       throw new Error('The package has no data for the selected categories');
     }
+    onProgress?.({ phase: 'import', bytes: expected.totalBytes, totalBytes: expected.totalBytes, phaseComplete: true });
     const mappings = [
       [manifest.source.appDataDir, dataDir],
       [manifest.source.home, home],
     ].filter(([from, to]) => from && to && from !== to);
     // Correct paths in staging before any profile file is replaced.
-    const rewritten = await rewriteImportedTree({ dataDir: path.join(staging, APP_ROOT), home: path.join(staging, HOME_ROOT), targets: selected, mappings });
+    const rewritten = await rewriteImportedTree({ dataDir: path.join(staging, APP_ROOT), home: path.join(staging, HOME_ROOT), targets: selected, mappings, onProgress });
     for (const relative of await preserveLocalAccountMetadata({ targets: selected, staging, dataDir, home })) {
       if (!rewritten.includes(relative)) rewritten.push(relative);
     }
+    onProgress?.({ phase: 'rewrite', files: selected.length, totalFiles: selected.length, phaseComplete: true });
     transaction = new ImportTransaction({ dataDir, home, backupDir, homeEntries: [...HOME_DIRS, ...HOME_FILES] });
     const summary = await applyPackage({ staging, targets: selected, transaction, onProgress });
     const warning = transaction.commit();

@@ -2351,7 +2351,8 @@ test('unnamed conversations retry naming after restart using the first visible r
     const first = await harness.manager.send(engine, { prompt: 'Native request', displayText: 'First visible request' });
     harness.finish(engine);
     await first.done; await harness.flush();
-    assert.equal(harness.manager.get(first.sessionId).title, 'New session');
+    assert.equal(harness.manager.get(first.sessionId).title, 'First visi');
+    assert.equal(harness.manager.get(first.sessionId).titleSource, 'message');
     const manager = harness.restart();
     const next = await manager.send(engine, { sessionId: first.sessionId, prompt: 'Later request' });
     await harness.flush();
@@ -2418,12 +2419,103 @@ test('automatic titles skip custom names and preserve a rename during generation
   const pending = harness.manager.create('codex');
   await harness.manager.send('codex', { sessionId: pending.id, prompt: 'Pending request' });
   await harness.manager.command('codex', 'rename-session', { id: pending.id, title: 'Keep this name' });
+  const titleEvents = harness.events.filter(event => event.type === 'conversation:title').length;
   resolveTitle('Generated');
   await harness.flush();
   assert.deepEqual(calls, ['Pending request']);
   assert.equal(harness.manager.workspaces.sessionMeta().titles[pending.id], 'Keep this name');
-  assert.equal(harness.events.filter(event => event.type === 'conversation:title').length, 0);
+  assert.equal(harness.events.filter(event => event.type === 'conversation:title').length, titleEvents);
   harness.finish('codex');
+});
+
+test('all engines persist a visible provisional title when naming is empty or fails', async t => {
+  for (const engine of ENGINES) for (const fails of [false, true]) {
+    const harness = fixture(t, { generateTitle: async () => { if (fails) throw new Error('Router is offline'); return ''; } });
+    const run = await harness.manager.send(engine, { prompt: 'Hidden harness context', displayText: '请帮我修复远程会话命名失败' });
+    await harness.flush();
+    const conversation = harness.manager.get(run.sessionId);
+    assert.equal(conversation.title, '修复远程会话命名失败');
+    assert.equal(conversation.titleSource, 'message');
+    assert.equal(JSON.parse(fs.readFileSync(harness.manager.file(run.sessionId))).title, conversation.title);
+    assert.ok(harness.events.some(event => event.type === 'conversation:title' && event.title === conversation.title));
+    harness.finish(engine); await run.done;
+  }
+});
+
+test('a slow title request never delays sending and can improve the provisional title', async t => {
+  let resolveTitle;
+  const harness = fixture(t, { generateTitle: () => new Promise(resolve => { resolveTitle = resolve; }) });
+  const run = await harness.manager.send('codex', { prompt: 'First request about naming' });
+  assert.equal(harness.sent.length, 1);
+  assert.equal(harness.manager.get(run.sessionId).title, 'First requ');
+  resolveTitle('模型生成标题'); await harness.flush();
+  assert.equal(harness.manager.get(run.sessionId).title, '模型生成标题');
+  assert.equal(harness.manager.get(run.sessionId).titleSource, 'model');
+  harness.finish('codex'); await run.done;
+});
+
+test('attachment-only first turns name the visible file without exposing its path or hidden prompt', async t => {
+  for (const engine of ENGINES) {
+    const calls = [], harness = fixture(t, { generateTitle: async message => { calls.push(message); return ''; } });
+    const run = await harness.manager.send(engine, { prompt: 'Hidden extracted document contents', displayText: '',
+      attachments: [{ path: path.join(harness.root, 'private', 'report.pdf'), name: 'report.pdf' }] });
+    await harness.flush();
+    assert.deepEqual(calls, ['report.pdf']);
+    assert.equal(harness.manager.get(run.sessionId).title, 'report.pdf');
+    assert.equal(harness.manager.get(run.sessionId).titleSource, 'message');
+    harness.finish(engine); await run.done;
+  }
+});
+
+test('a revision during naming discards the old result and names the revised visible request', async t => {
+  let resolveTitle;
+  const calls = [], harness = fixture(t, { generateTitle: message => {
+    calls.push(message); return calls.length === 1 ? new Promise(resolve => { resolveTitle = resolve; }) : Promise.resolve('改后标题');
+  } });
+  const first = await harness.manager.send('codex', { prompt: 'Original request' });
+  harness.finish('codex'); await first.done;
+  const revision = await harness.manager.send('codex', { sessionId: first.sessionId, editSeq: first.userSeq,
+    prompt: 'Corrected request', displayText: 'Updated visible topic' });
+  assert.equal(harness.manager.get(first.sessionId).title, 'Updated vi');
+  assert.deepEqual(calls, ['Original request']);
+  resolveTitle('过时标题'); await harness.flush();
+  assert.deepEqual(calls, ['Original request', 'Updated visible topic']);
+  assert.equal(harness.manager.get(first.sessionId).title, '改后标题');
+  assert.equal(harness.events.some(event => event.type === 'conversation:title' && event.title === '过时标题'), false);
+  harness.finish('codex'); await revision.done;
+});
+
+test('a late title does not recreate a deleted conversation', async t => {
+  let resolveTitle;
+  const harness = fixture(t, { generateTitle: () => new Promise(resolve => { resolveTitle = resolve; }) });
+  const run = await harness.manager.send('codex', { prompt: 'Temporary request' });
+  harness.finish('codex'); await run.done;
+  await harness.manager.deleteConversation(run.sessionId);
+  resolveTitle('Deleted title'); await harness.flush();
+  assert.equal(harness.manager.items.has(run.sessionId), false);
+  assert.equal(fs.existsSync(harness.manager.file(run.sessionId)), false);
+  assert.equal(harness.events.some(event => event.type === 'conversation:title' && event.title === 'Deleted ti'), false);
+});
+
+test('a title persistence failure retains the provisional name and can retry later', async t => {
+  let resolveTitle;
+  const harness = fixture(t, { generateTitle: () => new Promise(resolve => { resolveTitle = resolve; }) });
+  const run = await harness.manager.send('codex', { prompt: 'Visible request' });
+  const save = harness.manager.save.bind(harness.manager);
+  const denied = t.mock.method(harness.manager, 'save', c => {
+    if (c.titleSource === 'model') throw new Error('disk full');
+    return save(c);
+  });
+  resolveTitle('生成标题'); await harness.flush();
+  assert.equal(harness.manager.get(run.sessionId).title, 'Visible re');
+  assert.equal(harness.manager.get(run.sessionId).titleSource, 'message');
+  assert.equal(harness.manager.titleRequests.size, 0);
+  assert.equal(harness.events.some(event => event.type === 'conversation:title' && event.title === '生成标题'), false);
+  denied.mock.restore(); harness.finish('codex'); await run.done;
+  const next = await harness.manager.send('codex', { sessionId: run.sessionId, prompt: 'Next request' });
+  resolveTitle('恢复命名'); await harness.flush();
+  assert.equal(harness.manager.get(run.sessionId).title, '恢复命名');
+  harness.finish('codex'); await next.done;
 });
 
 test('all five engines restart the last turn without its old reply or tool context, preserving earlier turns', async t => {
