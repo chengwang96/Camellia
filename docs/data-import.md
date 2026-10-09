@@ -33,6 +33,13 @@ failure tears down the whole pipeline, including its file handles.
 Progress totals refer to selected active bytes. An excluded history file does
 not contribute to extraction progress or temporary disk use.
 
+The settings progress bar combines preparation and archive writing for export,
+and extraction, metadata validation and activation for import. Export byte
+counts accumulate across every archive part. Phase and part changes never
+reset the overall percentage; pending work is capped at 99%. Only a successful
+operation result sets 100%, after finalization and staging cleanup. Failures,
+cancellations and the IPC completion notification do not claim success.
+
 ## Resource limits
 
 | Resource | Import bound |

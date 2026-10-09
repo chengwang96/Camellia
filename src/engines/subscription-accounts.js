@@ -116,7 +116,8 @@ function boundAccountId({ engine, accounts, states, activeId, preferId, autoSwit
 }
 
 function accountSummary(engine, account, state = {}) {
-  const detail = engine === 'codex' ? { email: state.account?.email || '', plan: state.account?.planType || '' }
+  const detail = engine === 'codex' ? { email: state.account?.email || '', plan: state.account?.planType || '',
+    rateLimitResetCredits: state.rateLimitResetCredits || null }
     : engine === 'kimi' ? { email: state.account?.name || '', region: state.account?.region || '' } : {};
   return { id: account.id, label: account.label, active: false, signedIn: accountSignedIn(engine, state),
     ...(engine === 'antigravity' && state.verification === 'stale' ? { stale: true } : {}),

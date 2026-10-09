@@ -8,9 +8,13 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   const current = () => drafts.get(engine);
   function changed() { current().dirty = true; $('saveEngine').disabled = false; $('reloadEngine').textContent = "Discard and reload"; $('engineSaveHint').textContent = "You have unsaved changes"; if (['codex', 'kimi', 'antigravity'].includes(engine)) renderConnection(); }
   let googleAccount = null, accountBusy = false;
+  let googleSigningOut = false, googleActionVersion = 0;
   let codexAccount = null, codexBusy = false;
   let kimiAccount = null, kimiBusy = false;
   const t = text => window.CamelliaI18n.t(text);
+  const codexReset = window.createCodexResetUI({ api, status,
+    onState: result => { codexAccount = result; renderCodexAccount(); },
+    onBusy: busy => { codexBusy = busy; renderCodexAccount(); } });
   const loginPreferences = new Map(), loginDrafts = new Map();
   let accountsLoaded = false;
   for (const [id, prefix, title] of [['codex', 'codex', 'ChatGPT account · Codex'], ['kimi', 'kimi', 'Kimi account · Kimi Code'], ['antigravity', 'google', 'Google account · Antigravity']]) {
@@ -119,9 +123,11 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       state: googleAccount,
       engine: 'antigravity', manage: false,
       busy: accountBusy || googleAccount?.usage?.refreshing,
+      signOutBusy: googleSigningOut || googleAccount?.signingOut,
       onRefresh: () => void googleAccountAction(() => api.antigravityAccountRefreshUsage()),
       onVerify: () => void googleAccountAction(() => api.antigravityAccountRefresh()),
       onSignIn: () => void googleAccountAction(() => api.antigravitySignIn(), 'Waiting for external sign-in. Return here to verify.'),
+      onSignOut: () => void googleSignOut(),
       onLabel: (_, label) => void googleAccountAction(() => api.antigravityAccountLabel(label), 'Account note saved.') });
   }
   async function accountAction(call, apply) {
@@ -203,6 +209,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     renderAccountList({ containerId: 'codexAccountList', state: codexAccount && { ...codexAccount, accounts: codexAccount.accounts?.filter(account => account.signedIn) },
       busy: codexBusy,
       onRefresh: id => accountAction(() => api.codexAccountRefresh(id), result => { codexAccount = result; }),
+      onReset: id => { if (!codexBusy && !kimiBusy && !accountBusy) void codexReset.open(id); },
       onWake: id => accountAction(() => api.codexAccountWake(id), result => { codexAccount = result; status(t(result.warning || 'Greeting sent. Quota refreshed; reset time follows the provider.')); }),
       onSignIn: id => accountAction(async () => { const selected = await api.codexAccountSelect(id); if (!selected.ok) throw new Error(selected.error); await flushLoginPreferences('codex'); return api.codexSignIn(); }, result => { codexAccount = result; }),
       onSelect: id => accountAction(() => api.codexAccountSelect(id), result => { codexAccount = result; renderCodexAccount(); }),
@@ -227,7 +234,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     renderKimiAccount();
     const preferences = accountPreferences('antigravity');
     $('googleUseCredits').checked = preferences.useG1Credits === true;
-    $('googleAccountStatus').textContent = accountBusy ? 'Connecting to Google…' : googleAccount?.verification === 'pending' ? 'Waiting for external sign-in. Return here to verify.'
+    $('googleAccountStatus').textContent = googleSigningOut || googleAccount?.signingOut ? 'Signing out of Google…' : accountBusy ? 'Connecting to Google…' : googleAccount?.verification === 'pending' ? 'Waiting for external sign-in. Return here to verify.'
       : googleAccount?.verification === 'stale-error' ? t('The last model refresh failed. Showing the previous model list; refresh the account to update it.')
       : googleAccount?.verification === 'unverified' || googleAccount?.verification === 'error' || !googleAccount?.installed
         ? t('Sign in or refresh an existing CLI sign-in. The required runtime is downloaded on demand.') : '';
@@ -244,8 +251,9 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     // single account and its two limit groups without account-selection actions.
     renderGoogleAccountList();
   }
-  async function loadAccount() {
+  async function loadAccount(version = googleActionVersion) {
     const result = await api.antigravityAccountState();
+    if (version !== googleActionVersion) return;
     if (!result.ok) throw new Error(result.error);
     googleAccount = result; renderConnection();
   }
@@ -499,22 +507,41 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   api.onKimiAccount(account => { kimiAccount = account; renderKimiAccount(); });
   api.onAntigravityAccount?.(account => { googleAccount = account; renderConnection(); });
   async function googleAccountAction(call, message = 'Account status updated.') {
-    if (accountBusy || googleAccount?.usage?.refreshing) return;
+    if (accountBusy || googleSigningOut || googleAccount?.signingOut || googleAccount?.usage?.refreshing) return;
+    const version = ++googleActionVersion;
     accountBusy = true; renderConnection();
     try {
       await flushLoginPreferences('antigravity');
+      if (version !== googleActionVersion) return;
       const result = await call();
+      if (version !== googleActionVersion) return;
       if (!result.ok) throw new Error(result.error);
       if (!result.canceled) {
-        await loadAccount();
+        await loadAccount(version);
+        if (version !== googleActionVersion) return;
         if (message === 'Account status updated.' && googleAccount.usage?.error && !isGoogleAvatarFailure(googleAccount.usage.error)) status(googleQuotaMessage(googleAccount.usage.error), true);
         else status(message);
       }
     } catch (error) {
+      if (version !== googleActionVersion) return;
       status(error.message, true);
-      try { await loadAccount(); } catch { /* Keep the last visible account when IPC is unavailable. */ }
+      try { await loadAccount(version); } catch { /* Keep the last visible account when IPC is unavailable. */ }
     }
-    finally { accountBusy = false; renderConnection(); }
+    finally { if (version === googleActionVersion) { accountBusy = false; renderConnection(); } }
+  }
+  async function googleSignOut() {
+    if (googleSigningOut || googleAccount?.signingOut) return;
+    ++googleActionVersion;
+    googleSigningOut = true; accountBusy = true; renderConnection();
+    try {
+      const result = await api.antigravitySignOut();
+      if (!result.ok) throw new Error(result.error);
+      googleAccount = result;
+      status('Signed out of Google.');
+    } catch (error) {
+      status(error.message, true);
+      try { await loadAccount(); } catch { /* Keep the current account state if IPC is unavailable. */ }
+    } finally { googleSigningOut = false; accountBusy = false; renderConnection(); }
   }
   $('engineSource').oninput = e => { current().files.find(file => file.id === documentId).text = e.target.value; changed(); };
   $('engineDocument').onchange = e => { documentId = e.target.value; renderDocument(); };

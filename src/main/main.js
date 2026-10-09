@@ -59,8 +59,7 @@ const { readOfficePreview } = require('./office-preview');
 const { isOleWorkbook, readXlsPreview } = require('./xls-preview');
 const { isWordDocument, readDocPreview } = require('./doc-preview');
 const { isLegacyPresentation, readPptPreview } = require('./ppt-preview');
-const { createConversationTitles, titleCandidates, titleErrorKind, TitleRequestError,
-  TITLE_INSTRUCTION, MINIMAL_INSTRUCTION, AUXILIARY_HEADER, MAX_MESSAGE_CHARS, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } = require('./conversation-title.js');
+const { createConversationTitles, createTitleRequester, titleCandidates } = require('./conversation-title.js');
 let sharedConversations = null;
 let discussionBoundary = null;
 let discussionService = null;
@@ -838,40 +837,13 @@ function resolveClaudeRoute() {
 }
 // Marked as auxiliary so the router counts it apart from agent requests, and
 // so a title request never shares the per-model cooldown of real work.
-async function requestConversationTitle({ model, message, minimal }) {
-  const route = resolveClaudeRoute();
-  const instruction = minimal ? MINIMAL_INSTRUCTION : TITLE_INSTRUCTION;
-  // The retry drops the legacy cap because some providers reject it outright.
-  const body = { model, stream: false, messages: [
-    { role: 'system', content: instruction },
-    { role: 'user', content: JSON.stringify(String(message || '').slice(0, minimal ? 600 : MAX_MESSAGE_CHARS)) },
-  ] };
-  if (!minimal) body.max_tokens = MAX_OUTPUT_TOKENS;
-  const response = await fetch(route.baseUrl + '/v1/chat/completions', {
-    method: 'POST', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    headers: { Authorization: `Bearer ${route.authToken}`, 'Content-Type': 'application/json', [AUXILIARY_HEADER]: 'title' },
-    body: JSON.stringify(body),
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    let detail = text;
-    try { detail = JSON.parse(text)?.error?.message || text; } catch {}
-    throw new TitleRequestError(titleErrorKind(response.status),
-      `HTTP ${response.status}: ${String(detail).slice(0, 200)}`);
-  }
-  let data;
-  try { data = JSON.parse(text); } catch { throw new TitleRequestError('transient', 'The title response was not valid JSON'); }
-  const choice = data?.choices?.[0];
-  // Reasoning models can stop on the output cap before writing any text; the
-  // retry layer needs that fact so a truncated answer is retried without the
-  // cap instead of being treated as a model that cannot write titles.
-  return { text: choice?.message?.content || '', truncated: choice?.finish_reason === 'length' };
-}
+const requestConversationTitle = createTitleRequester({ getRoute: resolveClaudeRoute });
 
 const conversationTitles = createConversationTitles({
   candidates: model => {
     try {
-      return titleCandidates(model, { fallback: loadConfig().sharedChat?.apiModel, router: readOllamaProxyConfig() });
+      return titleCandidates(model, { fallback: loadConfig().sharedChat?.apiModel, router: readOllamaProxyConfig(),
+        state: ollamaProxyHandle?.getState() });
     } catch (error) { log(`conversation title: cannot read API routes (${error.message})`); return []; }
   },
   request: requestConversationTitle,
@@ -1211,6 +1183,9 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
       for (const pool of sessionPools()) {
         void pool.release({ conversationId: event.session_id }).catch(error => log('Conversation release failed: ' + error.message));
       }
+    }
+    if (event.type === 'conversation:archived' && settingsWindow && !settingsWindow.isDestroyed()) {
+      settingsWindow.webContents.send('dsh:archived-changed', { source: 'shared', id: event.session_id, action: event.archived === false ? 'restore' : 'archive' });
     }
     if (event.type === 'conversation:settings') {
       for (const window of BrowserWindow.getAllWindows()) {
@@ -2097,7 +2072,8 @@ if (!gotSingleInstanceLock) {
   for (const [engine, instance] of Object.entries({ codex, antigravity })) for (const [name, handler] of Object.entries(instance.handlers)) ipcMain.handle('dsh:' + engine + '-' + name, async (_event, payload) => {
     try {
       if (['send', 'goal-start', 'goal-resume', 'account-state', 'account-refresh', 'account-refresh-usage',
-        'account-wake', 'account-add', 'account-remove', 'sign-in', 'sign-out'].includes(name)) assertRuntimeAvailable(engine);
+        'account-wake', 'account-add', 'account-remove', 'account-reset-preview', 'account-reset-consume', 'sign-in', 'sign-out'].includes(name)
+        && !(engine === 'antigravity' && name === 'sign-out')) assertRuntimeAvailable(engine);
       const result = await handler(payload);
       if (name === 'account-refresh' && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:engine-settings-changed', { engine });
       return result;

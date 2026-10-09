@@ -17,7 +17,7 @@ public class ModelPickerStyleTest extends InstrumentationTestCase {
 
     @Override protected void setUp() throws Exception {
         super.setUp();
-        activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), MainActivity.class)
+        activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), PopupTestActivity.class)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         getInstrumentation().waitForIdleSync();
     }
@@ -40,10 +40,11 @@ public class ModelPickerStyleTest extends InstrumentationTestCase {
             fixture.setOrientation(android.widget.LinearLayout.VERTICAL);
             fixture.setPadding(40, 40, 40, 40); fixture.setBackgroundColor(dark ? 0xff151517 : 0xffffffff);
             android.widget.Button anchor = new android.widget.Button(activity);
-            anchor.setText("GPT · 默认"); anchor.setTag("pickerTestAnchor"); fixture.addView(anchor);
+            anchor.setText("GPT · 默认"); anchor.setTag("pickerTestAnchor");
             android.widget.TextView content = new android.widget.TextView(activity);
             content.setText("Camellia\n\n今天想一起做点什么？"); content.setTextColor(0xff4176e6);
-            content.setTextSize(28); content.setPadding(30, 160, 30, 0); fixture.addView(content);
+            content.setTextSize(28); content.setPadding(30, 160, 30, 0); content.setTag("pickerTestContent");
+            fixture.addView(content, new android.widget.LinearLayout.LayoutParams(-1, 0, 1)); fixture.addView(anchor);
             activity.setContentView(fixture);
         });
         getInstrumentation().waitForIdleSync();
@@ -158,7 +159,7 @@ public class ModelPickerStyleTest extends InstrumentationTestCase {
         getInstrumentation().runOnMainSync(() -> {
             android.widget.LinearLayout page = (android.widget.LinearLayout)
                 activity.getWindow().getDecorView().findViewWithTag("pickerTestAnchor").getParent();
-            android.widget.TextView text = (android.widget.TextView) page.getChildAt(1);
+            android.widget.TextView text = page.findViewWithTag("pickerTestContent");
             text.setTextColor(0xff191a1c); text.setTextSize(17); text.setPadding(0, 60, 0, 0);
             text.setText(("这是聊天正文，菜单打开后，背景轮廓仍然可见。\n\n"
                 + "当前任务已完成，你可以继续查看结果，或切换模型。\n\n").repeat(6));

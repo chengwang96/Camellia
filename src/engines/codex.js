@@ -14,6 +14,7 @@ const { modelId } = require('../api/api-router-config');
 const { fastTier } = require('../shared/codex-speed');
 const { downloadSettings } = require('../main/download-network');
 const accountOptions = require('./subscription-accounts');
+const { quotaPatch, createResetCredits } = require('./codex-reset-credits');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
 
 function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = () => [], getContextWindow = () => undefined, runtimes, environment = () => process.env,
@@ -164,7 +165,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     const value = await client.request('account/read', { refreshToken: true });
     if (value.account?.type !== 'chatgpt') {
       if (pendingAccount?.id === id) pendingAccount = null;
-      publishAccount(id, { account: null, models: [], rateLimits: null, error: null, verifiedAt: new Date().toISOString() });
+      publishAccount(id, { account: null, models: [], rateLimits: null, rateLimitResetCredits: null, error: null, verifiedAt: new Date().toISOString() });
       return accountState(id);
     }
     if (pendingAccount?.id === id) publishAccount(id, { account: value.account, error: null });
@@ -179,13 +180,22 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       cursor = page.nextCursor;
     } while (cursor);
     // Quota errors do not invalidate a successful sign-in or hide usable models.
-    let rateLimits = null, quotaError = null;
-    try { const result = await client.request('account/rateLimits/read', {}); rateLimits = result.rateLimitsByLimitId || (result.rateLimits ? { codex: result.rateLimits } : null); }
+    let quota = { rateLimits: null, rateLimitResetCredits: null }, quotaError = null;
+    try { quota = quotaPatch(await client.request('account/rateLimits/read', {})); }
     catch (error) { quotaError = error.message; }
-    publishAccount(id, { account: value.account, models, rateLimits, quotaError, error: null, verifiedAt: new Date().toISOString() });
+    publishAccount(id, { account: value.account, models, ...quota, quotaError, error: null, verifiedAt: new Date().toISOString() });
     // Store the account default even when API is selected for new sessions.
     if (!settings().subscriptionModel && models.length) saveConfig({ codex: { ...loadConfig().codex, subscriptionModel: (models.find(m => m.isDefault) || models[0]).id } });
     return accountState(id);
+  }
+  function resetService(payload) {
+    const id = String(payload?.id || '');
+    if (!accountList().some(account => account.id === id)) throw new Error('Unknown Codex account');
+    const entry = accountEntry(id);
+    if (!entry.state.account || entry.loginId || entry.removing) throw new Error('Sign in to this ChatGPT account first');
+    if (!entry.resetCredits) entry.resetCredits = createResetCredits({ file: path.join(entry.home, 'rate-limit-reset-request.json'),
+      getClient: () => getAccountClient(id), publish: patch => publishAccount(id, patch) });
+    return entry.resetCredits;
   }
   const standaloneCwd = value => value.cwd || path.join(dataDir, 'codex-sessions');
   const workspaces = createSessionWorkspaces({ history, loadConfig, saveConfig, metaKey: 'codexMeta', settingsKey: 'codex',
@@ -269,6 +279,14 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       if (!accountList().some(account => account.id === id)) throw new Error('Unknown Codex account');
       await refreshAccount(id); return { ok: true, ...accountState() };
     },
+    'account-reset-preview': async payload => {
+      const preview = await resetService(payload).preview();
+      return { ok: true, ...accountState(), preview };
+    },
+    'account-reset-consume': async payload => {
+      const result = await resetService(payload).consume(payload);
+      return { ok: true, ...accountState(), ...result };
+    },
     'account-wake': async payload => {
       const id = String(payload?.id || '');
       if (!accountList().some(account => account.id === id)) throw new Error('Unknown Codex account');
@@ -325,6 +343,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     },
     'account-remove': async payload => {
       const id = String(payload?.id || '');
+      if (accountEntries.get(id)?.resetCredits?.busy) throw new Error('Wait for the reset request to finish');
       if (wakingAccounts.has(id)) throw new Error('Wait for the account wake request to finish');
       const accounts = accountList();
       if (!accounts.some(account => account.id === id)) throw new Error('Unknown Codex account');
@@ -338,7 +357,8 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       if (id === accountOptions.DEFAULT_ACCOUNT_ID) {
         // The default account keeps its home so the legacy sign-in slot survives.
         value.removing = false;
-        publishAccount(id, { account: null, models: [], rateLimits: null, error: null });
+        value.resetCredits?.invalidate();
+        publishAccount(id, { account: null, models: [], rateLimits: null, rateLimitResetCredits: null, error: null });
       } else {
         const dir = accountHome(id);
         try {
@@ -361,10 +381,12 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       return { ok: true, ...accountState() };
     },
     'sign-in': async () => {
+      if ([...accountEntries.values()].some(entry => entry.resetCredits?.busy)) throw new Error('Wait for the reset request to finish');
       if (wakingAccounts.size) throw new Error('Wait for the account wake request to finish');
       if (sessions.running || isBusy()) throw new Error('Stop the Codex response before changing accounts');
       await runtimes().ensure('codex');
       const value = accountEntry();
+      value.resetCredits?.invalidate();
       const client = await getAccountClient(value.id);
       if (value.loginId) await client.request('account/login/cancel', { loginId: value.loginId });
       const result = await client.request('account/login/start', { type: 'chatgpt' });
@@ -380,12 +402,14 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
       onAccount(accountState()); return { ok: true, ...accountState() };
     },
     'sign-out': async () => {
+      if ([...accountEntries.values()].some(entry => entry.resetCredits?.busy)) throw new Error('Wait for the reset request to finish');
       if (wakingAccounts.size) throw new Error('Wait for the account wake request to finish');
       if (sessions.running || goal.armed || isBusy()) throw new Error('Stop the Codex response or goal before signing out');
       const value = accountEntry();
       await sessions.shutdown();
       await (await getAccountClient(value.id)).request('account/logout', {}); value.loginId = null;
-      publishAccount(value.id, { account: null, models: [], rateLimits: null, error: null }); return { ok: true, ...accountState() };
+      value.resetCredits?.invalidate();
+      publishAccount(value.id, { account: null, models: [], rateLimits: null, rateLimitResetCredits: null, error: null }); return { ok: true, ...accountState() };
     },
     'send': async payload => {
       if (sessions.legacy?.running) throw new Error('Wait for the response to finish or stop it before sending another message');

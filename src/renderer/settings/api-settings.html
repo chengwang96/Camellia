@@ -202,7 +202,7 @@
             <p id="googleQuotaStatus" class="hint error" role="alert" hidden></p>
             <details id="googleQuotaErrorDetails" class="account-error-details" hidden><summary data-i18n>Error details</summary><pre id="googleQuotaErrorRaw" translate="no"></pre></details>
             <div id="googleAccountList" class="account-list" role="radiogroup" aria-label="Google accounts" data-i18n-attrs="aria-label"></div>
-            <p class="hint" data-i18n>Sign-in opens the official CLI and your browser; return here and verify. To switch accounts, use <code>/logout</code> in that terminal.</p>
+            <p class="hint" data-i18n>Sign-in opens the official CLI and your browser; return here and verify. Sign-out also clears the official CLI login.</p>
             <p class="hint" data-i18n>Google sign-in is shared with the official CLI. Gemini and Claude/GPT have separate weekly and 5-hour limits.</p>
           </div>
         </div>
@@ -217,6 +217,22 @@
 </div>
 <dialog id="addDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Add API provider</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><p class="hint" data-i18n>Connect with an API key. Choose a service to fill in its API address.</p><label for="preset" data-i18n>Provider</label><select id="preset"></select><div id="presetAccount" class="preset-account" hidden><p id="presetAccountHint" class="hint"></p><button id="openPresetAccount"></button></div><button id="confirmAdd" class="primary" data-i18n>Add API provider</button></dialog>
 <dialog id="modelDialog"><form method="dialog" class="dialog-head"><h2 data-i18n>Select model</h2><button aria-label="Close" data-i18n-attrs="aria-label">×</button></form><input id="modelSearch" placeholder="Search models" aria-label="Search models" data-i18n-attrs="aria-label placeholder"><div id="catalogList"></div><button id="applyModels" class="primary" data-i18n>Apply model selection</button></dialog>
+<dialog id="subscriptionAccountDialog" role="alertdialog" aria-labelledby="subscriptionAccountTitle" aria-describedby="subscriptionAccountIdentity subscriptionAccountDescription">
+  <form method="dialog" class="dialog-head"><h2 id="subscriptionAccountTitle" data-i18n>Sign out</h2><button value="cancel" aria-label="Close" data-i18n-attrs="aria-label">×</button></form>
+  <p id="subscriptionAccountIdentity" class="subscription-confirm-account" translate="no"></p>
+  <p id="subscriptionAccountDescription" class="hint" data-i18n>Sign out of this account?</p>
+  <form method="dialog" class="subscription-confirm-actions"><button value="cancel" autofocus data-i18n>Cancel</button><button id="confirmSubscriptionAccount" value="confirm" class="danger" data-i18n>Sign out</button></form>
+</dialog>
+<dialog id="codexResetDialog" aria-labelledby="codexResetTitle" aria-describedby="codexResetDescription">
+  <div class="dialog-head"><h2 id="codexResetTitle" data-i18n>Reset Codex usage?</h2><button type="button" id="closeCodexReset" aria-label="Close" data-i18n-attrs="aria-label">×</button></div>
+  <p id="codexResetDescription" class="hint" data-i18n>This uses one official reset credit for this account. Confirm before continuing.</p>
+  <div class="codex-reset-account"><span data-i18n>ChatGPT account</span><strong id="codexResetEmail"></strong></div>
+  <p id="codexResetCount" class="codex-reset-count"></p><p id="codexResetExpiry" class="codex-reset-expiry" hidden></p>
+  <section id="codexResetDetails" class="codex-reset-details" hidden><h3 data-i18n>Reset credit details</h3><ul id="codexResetCredits"></ul></section>
+  <p id="codexResetDetailHint" class="hint" hidden></p>
+  <p id="codexResetMessage" class="hint" role="status" aria-live="polite"></p>
+  <div class="codex-reset-actions"><button type="button" id="cancelCodexReset" autofocus data-i18n>Cancel</button><button type="button" id="confirmCodexReset" class="primary" disabled data-i18n>Confirm and use one credit</button></div>
+</dialog>
 <dialog id="runtimeReinstallDialog" class="runtime-reinstall-dialog" aria-labelledby="runtimeReinstallTitle" aria-describedby="runtimeReinstallDescription">
   <form method="dialog" class="dialog-head"><h2 id="runtimeReinstallTitle" data-i18n>Reinstall with Camellia</h2><button value="cancel" aria-label="Close" data-i18n-attrs="aria-label">×</button></form>
   <p id="runtimeReinstallDescription" class="hint" data-i18n>Camellia will remove the current CLI, reinstall it and manage future updates.</p>
@@ -247,6 +263,6 @@
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>
-<script src="./settings-charts.js"></script><script src="./subscription-cards.js"></script><script src="./engine-settings-ui.js"></script><script src="../remote/remote.js"></script><script src="../devices/devices-view.js"></script><script src="../devices/connections.js"></script><script src="../shared/network-notice.js"></script><script src="./api-settings.js"></script>
+<script src="./settings-charts.js"></script><script src="./subscription-cards.js"></script><script src="./codex-reset-ui.js"></script><script src="./engine-settings-ui.js"></script><script src="../remote/remote.js"></script><script src="../devices/devices-view.js"></script><script src="../devices/connections.js"></script><script src="../shared/network-notice.js"></script><script src="./api-settings.js"></script>
 <script src="./settings-groups.js"></script>
 </body></html>

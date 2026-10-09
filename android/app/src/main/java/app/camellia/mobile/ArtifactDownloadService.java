@@ -37,29 +37,44 @@ public final class ArtifactDownloadService extends Service {
     private static final class Job {
         final String name, address, token, path;
         final long size;
-        final Uri destination;
+        final Uri directory;
+        Uri destination;
         volatile boolean cancelled;
-        Job(JSONObject file, String token, Uri destination) throws Exception {
+        Job(JSONObject file, String token, Uri target, boolean inDirectory) throws Exception {
             name = file.getString("name"); address = file.getString("address"); this.token = token;
             path = "/v1/" + (file.optBoolean("discussion") ? "discussions/" : "conversations/") + file.getString("conversation") + "/artifacts/" + file.getString("id");
             new Endpoint(address).uri(path);
             size = file.getLong("size");
-            if (size < 0 || !token.matches("[A-Za-z0-9_-]{43}") || !"content".equals(destination.getScheme())) throw new IOException("Invalid download");
-            this.destination = destination;
+            if (size < 0 || !token.matches("[A-Za-z0-9_-]{43}") || target == null || !"content".equals(target.getScheme())
+                    || (inDirectory && !android.provider.DocumentsContract.isTreeUri(target))) throw new IOException("Invalid download");
+            directory = inDirectory ? target : null;
+            destination = inDirectory ? null : target;
         }
     }
 
     static State snapshot() { return state; }
 
     static void start(Context context, JSONObject file, String token, Uri destination) throws Exception {
-        Job next = new Job(file, token, destination);
+        start(context, file, token, destination, false);
+    }
+
+    static void startInDirectory(Context context, JSONObject file, String token, Uri directory) throws Exception {
+        start(context, file, token, directory, true);
+    }
+
+    static boolean usesDirectory(Uri directory) {
+        synchronized (LOCK) { return current != null && directory.equals(current.directory); }
+    }
+
+    private static void start(Context context, JSONObject file, String token, Uri target, boolean inDirectory) throws Exception {
+        Job next = new Job(file, token, target, inDirectory);
         synchronized (LOCK) {
             if (current != null) throw new IOException("A download is already running");
             current = next;
             state = new State(next.name, next.address, 0, next.size, "running", "");
             try {
                 Intent intent = new Intent(context, ArtifactDownloadService.class).addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                intent.setClipData(android.content.ClipData.newRawUri("download", destination));
+                intent.setClipData(android.content.ClipData.newRawUri("download", target));
                 context.startForegroundService(intent);
             }
             catch (Exception error) { current = null; state = new State(next.name, next.address, 0, next.size, "failed", ""); throw error; }
@@ -122,7 +137,11 @@ public final class ArtifactDownloadService extends Service {
 
     private void download() {
         String phase = "complete", detail = tr("已保存到所选位置，可在文件管理器查看。", "Saved to your chosen location. Open your file manager to view it.");
+        boolean creating = job.directory != null;
         try {
+            if (job.cancelled) throw new IOException("Cancelled");
+            if (creating) job.destination = DownloadDirectory.createFile(this, job.directory, job.name);
+            creating = false;
             if (job.cancelled) throw new IOException("Cancelled");
             try (var output = getContentResolver().openOutputStream(job.destination, "wt")) {
                 if (output == null) throw new IOException("Cannot open destination");
@@ -135,13 +154,15 @@ public final class ArtifactDownloadService extends Service {
         } catch (Exception error) {
             phase = job.cancelled ? "cancelled" : "failed";
             detail = job.cancelled ? tr("下载已取消。", "Download cancelled.")
+                : creating ? tr("无法写入默认下载目录。请在设置中重新选择，或使用「另存为」。", "Cannot write to the default folder. Choose it again in Settings or use Save as.")
                 : RemoteApi.failureMessage(error, tr("zh", "en").equals("zh")) + tr(" 请重新下载；也请检查保存位置的空间和权限。", " Download again; also check storage space and permissions.");
-            if (!cleanup(job.destination)) detail += tr(" 未完成文件可能仍在保存位置，请手动删除。", " A partial file may remain; delete it manually.");
+            if (job.destination != null && !cleanup(job.destination)) detail += tr(" 未完成文件可能仍在保存位置，请手动删除。", " A partial file may remain; delete it manually.");
         } finally { if (client != null) client.cancel(); }
         finish(phase, detail);
     }
 
     private boolean cleanup(Uri destination) {
+        if (destination == null) return true;
         try { return android.provider.DocumentsContract.deleteDocument(getContentResolver(), destination); }
         catch (Exception ignored) { return false; }
     }
@@ -153,7 +174,7 @@ public final class ArtifactDownloadService extends Service {
             synchronized (LOCK) { if (current == job) current = null; }
             stopForeground(STOP_FOREGROUND_REMOVE);
             getSystemService(NotificationManager.class).notify(NOTICE, notification(state));
-            try { getContentResolver().releasePersistableUriPermission(job.destination, Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION); }
+            try { if (job.directory == null) getContentResolver().releasePersistableUriPermission(job.destination, Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION); }
             catch (SecurityException ignored) { }
             releaseResources(); stopSelf();
         });
@@ -162,6 +183,7 @@ public final class ArtifactDownloadService extends Service {
     private void releaseResources() {
         if (wake != null && wake.isHeld()) wake.release();
         if (retained) { retained = false; EmbeddedNetwork.releaseTransfer(); }
+        if (job != null && job.directory != null) DownloadDirectory.releaseUnused(this, job.directory);
     }
 
     @Override public void onTimeout(int startId, int foregroundServiceType) { cancel(this); }

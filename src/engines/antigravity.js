@@ -12,7 +12,7 @@ const { readJson } = require('../shared/json-store');
 const { modelId } = require('../api/api-router-config');
 const { pythonEnvironment, globalPythonEnvironment, SUPPORTED_SDK_VERSIONS } = require('../main/python-runtime');
 const { downloadSettings } = require('../main/download-network');
-const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider, effectiveSelection } = require('./antigravity/subscription');
+const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider, effectiveSelection, stopCli } = require('./antigravity/subscription');
 const { valid } = require('./permission-levels');
 const { accountSummary, accountsFor, normalizeLabel, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
@@ -46,7 +46,7 @@ function subscriptionSpawnSpec({ runtime, home, env, proxyUrl, model = '', effor
 }
 const sessionConnection = id => id.startsWith('agy-') ? 'subscription' : 'api';
 
-function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConfig, saveConfig, getRoute, getModels, runtimes, environment = () => process.env, python = () => null, onEvent, onGoal, onAccount = () => {}, createUsageMeter = () => null, isBusy = () => false, log }) {
+function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConfig, saveConfig, getRoute, getModels, runtimes, environment = () => process.env, python = () => null, onEvent, onGoal, onAccount = () => {}, createUsageMeter = () => null, isBusy = () => false, clearCredentials, log }) {
   const sessions = new SessionPool();
   let generation = 0;
   const home = path.join(dataDir, 'antigravity');
@@ -60,7 +60,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     }
     return value;
   }
-  const account = createGoogleAccount({ home, cliSettingsFile, runtime: runtimes, environment, settings, openLogin,
+  const account = createGoogleAccount({ home, cliSettingsFile, runtime: runtimes, environment, settings, openLogin, clearCredentials,
     onChange: () => onAccount(accountState()) });
   function accountState() {
     const value = account.state();
@@ -170,7 +170,7 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     },
     'account-refresh': async () => {
       const state = await account.refresh();
-      if (!settings().subscriptionModel) saveConfig({ antigravity: { ...loadConfig().antigravity, subscriptionModel: state.models[0].id,
+      if (state.models.length && !state.signedOut && !state.signingOut && !settings().subscriptionModel) saveConfig({ antigravity: { ...loadConfig().antigravity, subscriptionModel: state.models[0].id,
         ...(settings().connection === 'subscription' ? { model: state.models[0].id } : {}) } });
       return accountState();
     },
@@ -179,6 +179,17 @@ function createAntigravity({ dataDir, cliSettingsFile, node, openLogin, loadConf
     'sign-in': async () => {
       if (sessions.running || isBusy()) throw new Error('Stop Antigravity conversations before changing accounts');
       return { ok: true, ...await account.signIn() };
+    },
+    'sign-out': async () => {
+      const request = account.signOut();
+      if (goal.armed && sessions.legacy?.settings?.connection === 'subscription') goal.setPhase('paused');
+      for (const session of sessions.sessions.values()) if (session.settings?.connection === 'subscription' && !session.dead) {
+        session.cancelled = true;
+        if (session.proc) stopCli(session.proc);
+        session.kill();
+      }
+      await request;
+      return accountState();
     },
     'rename-session': payload => workspaces.renameSession(payload.id, payload.title),
     'archive-session': payload => workspaces.archiveSession(payload.id, payload.archived !== false),

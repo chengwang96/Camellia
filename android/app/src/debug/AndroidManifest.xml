@@ -2,5 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <activity android:name=".MarkdownTestActivity" android:exported="false" />
+        <activity android:name=".PopupTestActivity" android:exported="false" android:configChanges="uiMode" />
     </application>
 </manifest>

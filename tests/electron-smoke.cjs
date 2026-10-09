@@ -21,6 +21,13 @@ async function main() {
       focus() {}
     } });
     const Module = require('node:module'), loadModule = Module._load;
+    const antigravityModule = require('../src/engines/antigravity');
+    const googleCredentialClears = [];
+    const antigravityTest = { ...antigravityModule, createAntigravity: options => antigravityModule.createAntigravity({ ...options,
+      clearCredentials: async spec => {
+        assert.ok(path.resolve(spec.cliSettingsFile).startsWith(path.resolve(process.env.DSH_ELECTRON_SMOKE_ROOT) + path.sep));
+        googleCredentialClears.push(spec.cliSettingsFile);
+      } }) };
     const kimiAccountModule = require('../src/engines/kimi-account');
     const kimiLoginProcesses = [], kimiRpcCalls = [];
     let kimiAccountHome;
@@ -49,6 +56,7 @@ async function main() {
     Module._load = function (id, ...args) {
       if (id === 'electron') return testElectron;
       if (id === '../engines/kimi-account.js') return kimiAccountTest;
+      if (id === '../engines/antigravity' || id === '../engines/antigravity.js') return antigravityTest;
       return loadModule.call(this, id, ...args);
     };
     const { app, BrowserWindow, Menu, ipcMain } = testElectron;
@@ -396,8 +404,16 @@ async function main() {
     await engineSettings.webContents.executeJavaScript("document.querySelector('#kimiAccountList [data-card-id=default] [data-card-action=switch]').click()");
     await waitWindow("document.querySelector('#kimiAccountList [data-card-id=default]').classList.contains('active')");
     assert.equal(await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState().then(state => state.activeId)'), 'default');
-    await engineSettings.webContents.executeJavaScript(`window.confirm = message => { window.accountRemovalConfirmation = message; return true; }; document.querySelector('#kimiAccountList [data-card-id="${twoAccounts.activeId}"] [data-card-action=remove]').click()`);
-    assert.match(await engineSettings.webContents.executeJavaScript('window.accountRemovalConfirmation'), /Remove this account/);
+    await engineSettings.webContents.executeJavaScript(`window.confirm = () => { throw new Error('Unexpected native account confirmation'); }; document.querySelector('#kimiAccountList [data-card-id="${twoAccounts.activeId}"] [data-card-action=remove]').click()`);
+    await waitWindow("document.querySelector('#subscriptionAccountDialog').open");
+    assert.match(await engineSettings.webContents.executeJavaScript("document.querySelector('#subscriptionAccountDescription').textContent"), /Remove this account/);
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#subscriptionAccountDialog [autofocus]').click()");
+    await waitWindow("!document.querySelector('#subscriptionAccountDialog').open");
+    assert.equal(await engineSettings.webContents.executeJavaScript('window.dshDesktop.kimiAccountState().then(state => state.accounts.length)'), 2);
+    assert.equal(fs.existsSync(secondKimiHome), true);
+    await engineSettings.webContents.executeJavaScript(`document.querySelector('#kimiAccountList [data-card-id="${twoAccounts.activeId}"] [data-card-action=remove]').click()`);
+    await waitWindow("document.querySelector('#subscriptionAccountDialog').open");
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#confirmSubscriptionAccount').click()");
     await waitWindow("document.querySelectorAll('#kimiAccountList .subscription-card').length === 1");
     await waitWindow("window.dshDesktop.kimiAccountState().then(state => state.accounts.length === 1)");
     assert.equal(fs.existsSync(secondKimiHome), false);
@@ -482,6 +498,23 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript('typeof chatApi.onEvent(() => {})'), 'function');
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'subscriptions',engine:'antigravity'})");
     await waitWindow("document.querySelector('#subscriptionsPage') && !document.querySelector('#subscriptionsPage').hidden");
+    assert.equal(await engineSettings.webContents.executeJavaScript('typeof window.dshDesktop.antigravitySignOut'), 'function');
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#googleAccountList [data-card-action=logout]').click()");
+    await waitWindow("document.querySelector('#subscriptionAccountDialog').open");
+    assert.match(await engineSettings.webContents.executeJavaScript("document.querySelector('#subscriptionAccountDescription').textContent"), /shared with the official CLI/);
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#subscriptionAccountDialog [autofocus]').click()");
+    assert.equal(googleCredentialClears.length, 0);
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#googleAccountList [data-card-action=logout]').click()");
+    await waitWindow("document.querySelector('#subscriptionAccountDialog').open");
+    await engineSettings.webContents.executeJavaScript("document.querySelector('#confirmSubscriptionAccount').click()");
+    await waitWindow("document.querySelector('#status')?.textContent === 'Signed out of Google.'");
+    assert.equal(googleCredentialClears.length, 1);
+    const signedOutGoogle = await engineSettings.webContents.executeJavaScript('window.dshDesktop.antigravityAccountState()');
+    assert.equal(signedOutGoogle.signedOut, true);
+    assert.deepEqual(signedOutGoogle.models, []);
+    assert.equal(signedOutGoogle.usage.latest, null);
+    assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#googleAccountList [data-card-action=logout]').disabled"), false);
+    diag('PASS Antigravity sign-out: real sandboxed preload and IPC, no runtime/auth prerequisite, canceled confirmation and isolated credential cleanup');
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'engines',engine:'antigravity'})");
     await waitWindow("document.querySelector('[data-field=instructions]')");
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('[data-engine=antigravity]').getAttribute('aria-selected')"), 'true');

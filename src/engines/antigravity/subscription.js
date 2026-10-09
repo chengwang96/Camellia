@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const { readJson, writeJson } = require('../../shared/json-store');
+const { setTimeout: delay } = require('node:timers/promises');
+const { clearGoogleCredentials } = require('./credentials');
 
 // A blank proxy setting means "use the Windows system proxy", so Google
 // sign-in also works on networks where oauth2.googleapis.com is unreachable
@@ -131,12 +133,33 @@ function effectiveSelection(models, model, thinking) {
   return value;
 }
 
-function runCli(file, args, { env, cwd, timeout = 45000 }) {
+function abortable(promise, signal) {
+  if (!signal) return Promise.resolve(promise);
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+
+function stopCli(proc) {
+  if (process.platform === 'win32' && proc.pid) {
+    try { execFileSync('taskkill.exe', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true, timeout: 5000, stdio: 'ignore' }); return; }
+    catch { /* The process may already have exited. */ }
+  }
+  proc.kill();
+}
+
+function runCli(file, args, { env, cwd, timeout = 45000, signal }) {
+  signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const proc = spawn(file, args, { env, cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '', errors = '';
+    const abort = () => { clearTimeout(timer); stopCli(proc); reject(signal.reason); };
+    signal?.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(() => {
-      proc.kill();
+      stopCli(proc);
       const error = new Error('Google account check timed out. Check the network connection and retry.');
       // A stalled run is the signature of the CLI waiting on its own sign-in
       // page, so callers must not launch it again.
@@ -145,9 +168,10 @@ function runCli(file, args, { env, cwd, timeout = 45000 }) {
     }, timeout);
     proc.stdout.on('data', chunk => { output += chunk; });
     proc.stderr.on('data', chunk => { errors = (errors + chunk).slice(-4000); });
-    proc.once('error', error => { clearTimeout(timer); reject(error); });
+    proc.once('error', error => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(error); });
     proc.once('close', code => {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
       if (code !== 0) reject(new Error(describeCliFailure(errors, output, code)));
       else resolve(output);
     });
@@ -166,14 +190,18 @@ function retryableCliFailure(error) {
   if (!error || error.timedOut || isProfilePictureFailure(error)) return false;
   return !/sign-in has expired|no valid auth|not authenticated|authentication (?:failed|required|failed or timed out)|unauthorized|invalid_grant/i.test(String(error.message || ''));
 }
-async function runCliWithRetry(run, file, args, options, { attempts = CLI_ATTEMPTS, delay = CLI_RETRY_DELAY_MS, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+async function runCliWithRetry(run, file, args, options, { attempts = CLI_ATTEMPTS, delay: retryDelay = CLI_RETRY_DELAY_MS,
+  sleep = (ms, signal) => delay(ms, undefined, { signal }) } = {}) {
+  const signal = options.signal;
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    try { return await run(file, args, options); }
+    signal?.throwIfAborted();
+    try { return await abortable(run(file, args, options), signal); }
     catch (error) {
+      signal?.throwIfAborted();
       lastError = error;
       if (attempt >= attempts || !retryableCliFailure(error)) break;
-      await sleep(delay * attempt);
+      await abortable(sleep(retryDelay * attempt, signal), signal);
     }
   }
   throw lastError;
@@ -261,11 +289,23 @@ function loginScript(file, { platform, exe, proxyUrl = '', networkMode }) {
 }
 
 function createGoogleAccount({ home, cliSettingsFile, runtime, environment, settings, openLogin, run = runCli, now = Date.now, onChange = () => {},
-  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+  sleep = (ms, signal) => delay(ms, undefined, { signal }), clearCredentials = clearGoogleCredentials }) {
   const cacheFile = path.join(home, 'google-account.json');
   const usageFile = path.join(home, 'google-quota.json');
   let quotaPending = null;
+  let signOutPending = null;
   let accountVersion = 0;
+  const checks = new Set();
+  function invalidateChecks() {
+    accountVersion++;
+    for (const controller of checks) controller.abort(new DOMException('Google account operation canceled', 'AbortError'));
+    checks.clear();
+    quotaPending = null;
+  }
+  function clearLocalAccount(awaitingVerification = false) {
+    writeJson(usageFile, { latest: null, history: [], checkedAt: null, status: null, error: null });
+    writeJson(cacheFile, { models: [], verifiedAt: null, error: '', awaitingVerification, signedOut: !awaitingVerification });
+  }
   const readUsage = () => readJson(usageFile, { latest: null, history: [], checkedAt: null, status: null, error: null });
   const writeUsage = patch => { const next = { ...readUsage(), ...patch }; writeJson(usageFile, next); return next; };
   const state = () => {
@@ -286,14 +326,17 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
       usage.error = null;
       if (!usage.latest) usage.status = null;
     }
-    return { ...cached, models: groupModels(cached.models), verification, usage: { ...usage, refreshing: Boolean(quotaPending) },
+    return { ...cached, models: groupModels(cached.models), verification, signingOut: Boolean(signOutPending), usage: { ...usage, refreshing: Boolean(quotaPending) },
       installed: Boolean(runtime().locate('antigravity', 'subscription')) };
   };
   async function refreshUsage({ force = true } = {}) {
+    if (signOutPending || !force && readJson(cacheFile, {}).signedOut) return state();
     if (quotaPending) { await quotaPending; return state(); }
     // The CLI reloads quota on its own, so a very recent reading is reused.
     if (!force && readUsage().checkedAt && now() - Date.parse(readUsage().checkedAt) < 3 * 60000) return state();
     const version = accountVersion;
+    const controller = new AbortController();
+    checks.add(controller);
     const request = Promise.resolve().then(async () => {
       const checkedAt = new Date(now()).toISOString();
       try {
@@ -302,7 +345,8 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
         requireGoogleProvider(cliSettingsFile);
         fs.mkdirSync(home, { recursive: true });
         // The structured command response never starts an agent turn.
-        const output = await runCliWithRetry(run, found.file, ['-p', '/quota', '--output-format', 'json'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home }, { sleep });
+        controller.signal.throwIfAborted();
+        const output = await runCliWithRetry(run, found.file, ['-p', '/quota', '--output-format', 'json'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home, signal: controller.signal }, { sleep });
         const result = parseGoogleQuota(output);
         if (version !== accountVersion) return;
         const latest = { ...result, at: checkedAt }, previous = readUsage();
@@ -325,25 +369,31 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
     quotaPending = request;
     onChange();
     try { await request; } finally {
+      checks.delete(controller);
       if (quotaPending === request) quotaPending = null;
       onChange();
     }
     return state();
   }
   async function refresh() {
+    if (signOutPending) return state();
+    const version = accountVersion, controller = new AbortController();
+    checks.add(controller);
     fs.mkdirSync(home, { recursive: true });
     try {
       const found = runtime().locate('antigravity', 'subscription');
       if (!found) throw new Error('Download the Antigravity Google subscription runtime first.');
       requireGoogleProvider(cliSettingsFile);
-      const output = await runCliWithRetry(run, found.file, ['models'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home }, { sleep });
+      const output = await runCliWithRetry(run, found.file, ['models'], { env: headlessEnvironment(subscriptionEnvironment(environment(), settings().proxyUrl)), cwd: home, signal: controller.signal }, { sleep });
+      if (version !== accountVersion) return state();
       const models = groupModels(parseModels(output));
       if (!models.length) {
         if (isProfilePictureFailure(output)) throw new Error('Google account profile picture unavailable.');
         throw new Error('The Google account returned no available models.');
       }
-      writeJson(cacheFile, { models, verifiedAt: now(), error: '', awaitingVerification: false });
+      writeJson(cacheFile, { models, verifiedAt: now(), error: '', awaitingVerification: false, signedOut: false });
     } catch (error) {
+      if (version !== accountVersion) return state();
       // Keep the models and verification time the account already proved. Only a
       // successful refresh replaces the catalog; a transient network or CLI
       // failure must not wipe it, or every retry would look identical to a
@@ -351,14 +401,16 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
       const previous = readJson(cacheFile, {});
       if (isProfilePictureFailure(error)) {
         writeJson(cacheFile, { models: previous.models || [], verifiedAt: previous.verifiedAt ?? null,
-          error: '', awaitingVerification: false });
+          error: '', awaitingVerification: false, signedOut: previous.signedOut === true });
         onChange();
         return state();
       }
       writeJson(cacheFile, { models: previous.models || [], verifiedAt: previous.verifiedAt ?? null,
-        error: error.message, awaitingVerification: false });
+        error: error.message, awaitingVerification: false, signedOut: previous.signedOut === true });
       onChange();
       throw error;
+    } finally {
+      checks.delete(controller);
     }
     // Models and quota come from the same sign-in; a successful check also
     // refreshes the two limit groups shown on the account.
@@ -366,32 +418,55 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
     return state();
   }
   async function signIn() {
-    const found = await runtime().ensure('antigravity', 'subscription');
-    const config = readJson(cliSettingsFile, {});
-    // Returning the CLI to its default provider enables its official Google
-    // sign-in. Preserve all other preferences, including the user's credit choice.
-    if (config.modelProvider) {
-      if (!fs.existsSync(cliSettingsFile + '.workbench.bak')) fs.copyFileSync(cliSettingsFile, cliSettingsFile + '.workbench.bak');
-      delete config.modelProvider;
-      writeJson(cliSettingsFile, config);
-    }
-    fs.mkdirSync(home, { recursive: true });
-    const file = path.join(home, process.platform === 'win32' ? 'google-sign-in.ps1' : 'google-sign-in.command');
-    const env = environment();
-    loginScript(file, { platform: process.platform, exe: found.file,
-      proxyUrl: env.CAMELLIA_NETWORK_MODE ? env.CAMELLIA_SUBSCRIPTION_PROXY ?? env.CAMELLIA_NETWORK_PROXY : settings().proxyUrl,
-      networkMode: env.CAMELLIA_NETWORK_MODE });
-    await openLogin(file, subscriptionEnvironment(environment(), settings().proxyUrl));
-    // A new CLI sign-in can select a different account. Neither saved quota
-    // nor an in-flight response from the old sign-in belongs to that account.
-    accountVersion++;
-    quotaPending = null;
-    writeUsage({ latest: null, history: [], checkedAt: null, status: null, error: null });
-    writeJson(cacheFile, { models: [], verifiedAt: null, error: '', awaitingVerification: true });
-    onChange();
-    return { opened: true };
+    if (signOutPending) return { canceled: true };
+    invalidateChecks();
+    const version = accountVersion, controller = new AbortController();
+    checks.add(controller);
+    try {
+      const found = await abortable(runtime().ensure('antigravity', 'subscription'), controller.signal);
+      controller.signal.throwIfAborted();
+      const config = readJson(cliSettingsFile, {});
+      // Returning the CLI to its default provider enables its official Google
+      // sign-in. Preserve all other preferences, including the user's credit choice.
+      if (config.modelProvider) {
+        if (!fs.existsSync(cliSettingsFile + '.workbench.bak')) fs.copyFileSync(cliSettingsFile, cliSettingsFile + '.workbench.bak');
+        delete config.modelProvider;
+        writeJson(cliSettingsFile, config);
+      }
+      fs.mkdirSync(home, { recursive: true });
+      const file = path.join(home, process.platform === 'win32' ? 'google-sign-in.ps1' : 'google-sign-in.command');
+      const env = environment();
+      loginScript(file, { platform: process.platform, exe: found.file,
+        proxyUrl: env.CAMELLIA_NETWORK_MODE ? env.CAMELLIA_SUBSCRIPTION_PROXY ?? env.CAMELLIA_NETWORK_PROXY : settings().proxyUrl,
+        networkMode: env.CAMELLIA_NETWORK_MODE });
+      await abortable(openLogin(file, subscriptionEnvironment(environment(), settings().proxyUrl)), controller.signal);
+      // A new CLI sign-in can select a different account. Neither saved quota
+      // nor an in-flight response from the old sign-in belongs to that account.
+      if (version !== accountVersion) return { canceled: true };
+      clearLocalAccount(true);
+      onChange();
+      return { opened: true };
+    } catch (error) {
+      if (version !== accountVersion) return { canceled: true };
+      throw error;
+    } finally { checks.delete(controller); }
   }
-  return { state, refresh, refreshUsage, signIn };
+  async function signOut() {
+    if (signOutPending) { await signOutPending; return state(); }
+    invalidateChecks();
+    clearLocalAccount();
+    // Never launch the CLI or wait for network/authentication to log out.
+    const request = Promise.resolve().then(() => clearCredentials({ cliSettingsFile, env: environment() }));
+    signOutPending = request;
+    onChange();
+    try { await request; }
+    catch (error) {
+      writeJson(cacheFile, { models: [], verifiedAt: null, error: error.message, awaitingVerification: false, signedOut: true });
+      throw error;
+    } finally { signOutPending = null; onChange(); }
+    return state();
+  }
+  return { state, refresh, refreshUsage, signIn, signOut };
 }
 
-module.exports = { createGoogleAccount, subscriptionEnvironment, systemProxy, parseModels, parseGoogleQuota, normalizeGoogleQuota, groupModels, normalizeSelection, effectiveSelection, runCli, runCliWithRetry, requireGoogleProvider, loginScript, headlessEnvironment, describeCliFailure, isProfilePictureFailure };
+module.exports = { createGoogleAccount, subscriptionEnvironment, systemProxy, parseModels, parseGoogleQuota, normalizeGoogleQuota, groupModels, normalizeSelection, effectiveSelection, runCli, runCliWithRetry, stopCli, requireGoogleProvider, loginScript, headlessEnvironment, describeCliFailure, isProfilePictureFailure };

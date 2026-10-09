@@ -115,6 +115,35 @@ test('deleting an archived shared conversation releases its idle engine process'
   assert.equal(shared.items.has(c.id), false);
 });
 
+test('phone archive and restore notify the desktop conversation and open Archived settings', async t => {
+  const { randomUUID } = require('node:crypto');
+  const { RemoteAccess } = require('../src/main/remote/access');
+  const { RemoteCommands } = require('../src/main/remote/commands');
+  const { RemoteReadModel } = require('../src/main/remote/read-model');
+  const h = setup(t), manager = h.api.sharedConversations;
+  const settingsEvents = [];
+  h.api.setSettingsWindow({ isDestroyed: () => false, webContents: { send: (channel, data) => settingsEvents.push({ channel, data }) } });
+  const conversation = manager.create('claude', null, 'Phone archive');
+  const access = new RemoteAccess({ file: path.join(h.root, 'remote-devices.json') });
+  const invitation = access.invite([], { allWorkspaces: true });
+  const pairing = access.request({ code: invitation.code, name: 'Android' });
+  access.approve(pairing.id);
+  const credential = access.claim(pairing.id, pairing.claim), device = access.authenticate(credential.token);
+  const commands = new RemoteCommands({ file: path.join(h.root, 'remote-commands.json'), access, reader: new RemoteReadModel(manager) });
+  for (const action of ['archive', 'restore']) {
+    const result = await commands.execute(device, null, { requestId: randomUUID(), instanceId: 'archive-test',
+      action, conversationId: conversation.id, expectedSeq: conversation.seq }, 'archive-test');
+    assert.equal(result.ok, true, result.error);
+    assert.equal((await archivedList(h)).some(entry => entry.id === conversation.id), action === 'archive');
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(settingsEvents)), [
+    { channel: 'dsh:archived-changed', data: { source: 'shared', id: conversation.id, action: 'archive' } },
+    { channel: 'dsh:archived-changed', data: { source: 'shared', id: conversation.id, action: 'restore' } },
+  ]);
+  assert.deepEqual(h.events.filter(event => event.channel === 'dsh:conversation-event' && event.data.type === 'conversation:archived')
+    .map(event => event.data.archived), [true, false]);
+});
+
 test('unknown sources and actions are rejected', async (t) => {
   const h = setup(t);
   assert.equal((await h.call('archived-session-action', { source: 'nowhere', id: 'x', action: 'delete' })).ok, false);

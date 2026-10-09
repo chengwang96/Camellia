@@ -662,9 +662,28 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     const page = pagination[key];
     if (loadMore && page?.hasMore) {
       limits[key] = page.loaded + 60;
-      if (await loadSessionHistory()) return adjacentSession(session, false);
+      if (await loadSessionHistory()) {
+        if (sessionHistory.some(entry => entry.id === session.id)) return adjacentSession(session, false);
+        // A phone may have removed the current row before this page loads.
+        // The first newly loaded row follows it in this workspace.
+        const known = new Set(section.map(entry => entry.id));
+        return sessionHistory.find(entry => sidebarGroupKey(entry) === key && !known.has(entry.id)) || section[index - 1] || null;
+      }
     }
     return section[index - 1] || null;
+  }
+  async function archivedChanged(id, archived) {
+    if (!archived || context.sessionId !== id) { await loadSessionHistory(); return; }
+    try {
+      const session = sessionHistory.find(entry => entry.id === id) || { id, workspaceId: context.workspaceId };
+      const neighbor = await adjacentSession(session);
+      await loadSessionHistory();
+      // A list refresh must not undo navigation made while it was in flight.
+      if (context.sessionId !== id) return;
+      if (neighbor && sessionHistory.some(entry => entry.id === neighbor.id)) await openHistorySession(neighbor.id);
+      if (context.sessionId !== neighbor?.id) await newSession(session.workspaceId || null);
+      setStatus('Session archived');
+    } catch (error) { setStatus(error.message); }
   }
   async function archiveSession(s) {
     if (!canChangeContext()) return;
@@ -897,7 +916,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
   window.addEventListener('camellia:language', updateWorkspaceLabel);
   return {
     load: loadSessionHistory, render: renderSessionSidebar, updateLabel: updateWorkspaceLabel, metaOp: runMetaOp,
-    markReplyRead, renameDiscussion,
+    markReplyRead, renameDiscussion, archivedChanged,
     openCurrentActions: anchor => {
       const session = sessionHistory.find(item => item.id === context.sessionId);
       const item = [...sessionList.querySelectorAll('.session-item')].find(item => item.dataset.sid === context.sessionId);

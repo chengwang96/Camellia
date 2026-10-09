@@ -1,5 +1,38 @@
 'use strict';
-window.renderSubscriptionCards = ({ container, state, busy, engine, manage = true, onSelect, onRemove, onLabel, onRefresh, onVerify, onWake, onSignIn }) => {
+function confirmSubscriptionAccountRemoval(id, account, engine) {
+  const dialog = document.getElementById('subscriptionAccountDialog');
+  if (dialog.open) return Promise.resolve(false);
+  const signingOut = id === 'default', label = signingOut ? 'Sign out' : 'Remove account';
+  dialog.querySelector('#subscriptionAccountTitle').textContent = label;
+  dialog.querySelector('#subscriptionAccountDescription').textContent = engine === 'antigravity'
+    ? 'Sign out of the Google account shared with the official CLI?' : signingOut
+      ? 'Sign out of this account?' : 'Remove this account and its local login data?';
+  const identity = dialog.querySelector('#subscriptionAccountIdentity');
+  identity.textContent = account?.email || account?.label || '';
+  identity.hidden = !identity.textContent;
+  dialog.querySelector('#confirmSubscriptionAccount').textContent = label;
+  dialog.returnValue = '';
+  return new Promise(resolve => {
+    const finish = confirmed => {
+      dialog.removeEventListener('submit', submit);
+      dialog.removeEventListener('cancel', cancel);
+      dialog.removeEventListener('close', close);
+      if (dialog.open) dialog.close(confirmed ? 'confirm' : 'cancel');
+      resolve(confirmed);
+    };
+    // Handle the choice directly: hidden Electron windows can defer close
+    // events until their next frame.
+    const submit = event => { event.preventDefault(); finish(event.submitter?.value === 'confirm'); };
+    const cancel = event => { event.preventDefault(); finish(false); };
+    const close = () => { if (!dialog.open) finish(dialog.returnValue === 'confirm'); };
+    dialog.addEventListener('submit', submit);
+    dialog.addEventListener('cancel', cancel);
+    dialog.addEventListener('close', close);
+    dialog.showModal();
+  });
+}
+
+window.renderSubscriptionCards = ({ container, state, busy, engine, manage = true, onSelect, onRemove, onLabel, onRefresh, onVerify, onWake, onSignIn, onSignOut, signOutBusy = false, onReset }) => {
   container.setAttribute('role', 'group');
   const t = text => window.CamelliaI18n.t(text);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -50,12 +83,18 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
       ? action('login', engine === 'antigravity' ? account.stale || account.error ? 'Sign in again' : 'Sign in with Google' : 'Sign in') : '';
     const verify = typeof onVerify === 'function'
       ? action('verify', 'Verify sign-in', account.installed === false || state?.installed === false, 'Verify sign-in and refresh account models') : '';
-    const sessionActions = `${manage ? action('switch', 'Switch account', account.active || !account.signedIn, 'Use this account on the next message') + wake : ''}${verify}${signIn}${manage ? account.id === 'default' ? action('logout', 'Sign out', !account.signedIn) : action('remove', 'Remove account') : ''}`;
+    const logout = typeof onSignOut === 'function' ? action('logout', 'Sign out', signOutBusy)
+      : manage ? account.id === 'default' ? action('logout', 'Sign out', !account.signedIn) : action('remove', 'Remove account') : '';
+    const sessionActions = `${manage ? action('switch', 'Switch account', account.active || !account.signedIn, 'Use this account on the next message') + wake : ''}${verify}${signIn}${logout}`;
+    const resetCount = account.rateLimitResetCredits?.availableCount;
+    const reset = engine === 'codex' && typeof onReset === 'function' && account.signedIn
+      ? `<button type="button" class="subscription-reset" data-card-action="reset" title="${esc(t('Use an official reset credit'))}" aria-label="${esc(t('Use an official reset credit'))}" ${resetCount === 0 ? 'disabled' : ''}>${icon('refresh')}<span>${esc(t('Reset credits'))}${Number.isSafeInteger(resetCount) ? ' · ' + resetCount : ''}</span></button>` : '';
     return `<article class="subscription-card${account.active ? ' active' : ''}" data-card-id="${esc(account.id)}">
       <header><strong title="${esc(heading)}">${esc(heading)}</strong><span class="subscription-badges">${badges}</span></header>
       <div class="subscription-identity-meta">
         <p class="subscription-state ${accountStatus}"><i aria-hidden="true"></i>${esc(account.error || t(account.loginPending ? 'Waiting for sign-in' : account.signedIn ? account.exhausted ? 'Quota exhausted' : 'Signed in' : account.stale ? 'Previous verification expired. Verify again.' : 'Not signed in'))}</p>
         ${note ? `<span class="subscription-note-text${account.label ? '' : ' is-empty'}" title="${esc(note)}">${esc(note)}</span>` : ''}
+        ${reset}
         ${engine === 'antigravity' && typeof onLabel === 'function' && account.models ? `<span class="subscription-note-text">${esc(t('Available account models'))} · ${esc(account.models)}</span>` : ''}
       </div>
       <div class="subscription-meters">${quotas || `<p class="hint">${esc(t(account.signedIn ? 'Quota information is currently unavailable.' : 'Sign in to view quota'))}</p>`}</div>
@@ -76,17 +115,23 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
     const id = card.dataset.cardId, form = card.querySelector('form'), input = form.querySelector('input');
     // Google sign-in completes in an external CLI. Its verification button must
     // remain available while waiting for the user to return from that CLI.
-    for (const control of card.querySelectorAll('button, input')) control.disabled ||= busy || manage && Boolean(state?.accounts?.some(a => a.loginPending));
-    card.querySelectorAll('[data-card-action]').forEach(button => { button.onclick = () => {
+    for (const control of card.querySelectorAll('button, input')) {
+      const prioritySignOut = typeof onSignOut === 'function' && control.dataset.cardAction === 'logout';
+      control.disabled ||= prioritySignOut ? signOutBusy : busy || manage && Boolean(state?.accounts?.some(a => a.loginPending));
+    }
+    card.querySelectorAll('[data-card-action]').forEach(button => { button.onclick = async () => {
       switch (button.dataset.cardAction) {
         case 'switch': return onSelect(id);
         case 'edit': form.hidden = false; input.focus(); input.select(); return;
         case 'refresh': return onRefresh(id);
         case 'verify': return onVerify(id);
         case 'wake': return onWake(id);
+        case 'reset': return onReset(id);
         case 'login': return onSignIn(id);
         case 'logout': case 'remove':
-          if (window.confirm(t(id === 'default' ? 'Sign out of this account?' : 'Remove this account and its local login data?'))) return onRemove(id);
+          if (await confirmSubscriptionAccountRemoval(id, state?.accounts?.find(account => account.id === id), engine)) {
+            return typeof onSignOut === 'function' ? onSignOut(id) : onRemove(id);
+          }
       }
     }; });
     form.onsubmit = event => { event.preventDefault(); form.hidden = true; void onLabel(id, input.value); };

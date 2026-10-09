@@ -10,11 +10,16 @@ window.storageCalls = [];
 window.previewCategories = {api:{files:3,bytes:1200}, settings:{files:0,bytes:0}};
 window.directoryState = {legacy:true,canMigrate:true,source:'C:/Users/Test/AppData/Roaming/dsh-desktop',destination:'C:/Users/Test/AppData/Roaming/camellia'};
 const empty = {ok:true,providers:[],config:{providers:[],usage:{},active:{}},models:[],engines:[],state:{}};
+const waitForTransfer = async () => {
+  if (window.holdTransfer) await new Promise(resolve => { window.finishTransfer = resolve; });
+};
 window.dshDesktop = new Proxy({}, {get: (_target, name) => {
+  if (name === 'onDataMigrationProgress') return callback => { window.migrationProgress = callback; return () => {}; };
   if (String(name).startsWith('on')) return () => () => {};
   if (name === 'workbenchSettings') return async () => ({...empty,language:'en',theme:'light',dataPath:window.directoryState.source,version:'1.0.0',dataDirectory:window.directoryState});
   if (name === 'dataExport') return async scope => {
     transferCalls.push({type:'export',scope});
+    await waitForTransfer();
     return window.exportResult || {ok:true,files:3,bytes:1200,file:'C:/exports/camellia.zip',scope};
   };
   if (name === 'dataImport') return async (file, scope) => {
@@ -22,7 +27,8 @@ window.dshDesktop = new Proxy({}, {get: (_target, name) => {
     if (!scope) return Object.values(previewCategories).some(category => category.files > 0)
       ? {ok:true,needsSelection:true,file:'C:/exports/camellia.zip',categories:previewCategories}
       : {ok:false,error:'The package has no Camellia data to import'};
-    return {ok:true,restored:3,bytes:1200,scope};
+    await waitForTransfer();
+    return window.importResult || {ok:true,restored:3,bytes:1200,scope};
   };
   if (name === 'dataDirectoryMigrate') return async () => {
     transferCalls.push({type:'directory'});
@@ -133,6 +139,54 @@ with sync_playwright() as playwright:
     assert page.evaluate("transferCalls.length") == previous + 1
     assert page.evaluate("transferCalls.at(-1).scope === undefined")
     page.evaluate("previewCategories = {api:{files:3,bytes:1200},settings:{files:5,bytes:2048},conversations:{files:10,bytes:5120}}")
+
+    # Hold the operation open while the real renderer processes phase updates.
+    # Raw phase-local 100% must never fill the overall bar before the result.
+    for language in ["en", "zh-CN"]:
+        page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
+        for operation in ["export", "import"]:
+            for outcome in ["success", "failure", "cancel"]:
+                page.evaluate("""({operation, outcome}) => {
+                    holdTransfer = true; finishTransfer = null;
+                    const result = outcome === 'failure' ? {ok:false,error:'Transfer failed'}
+                        : outcome === 'cancel' ? {ok:true,canceled:true} : null;
+                    exportResult = operation === 'export' ? result : null;
+                    importResult = operation === 'import' ? result : null;
+                }""", {"operation": operation, "outcome": outcome})
+                page.locator("#exportData" if operation == "export" else "#importData").click()
+                expect(page.locator("#dataMigrationProgress")).to_have_attribute("value", "0")
+                page.locator("#confirmImportData").click()
+                page.wait_for_function("typeof finishTransfer === 'function'")
+                expect(page.locator("#dataMigrationProgress")).to_be_visible()
+                events = [
+                    {"phase": "snapshot", "bytes": 1200, "totalBytes": 1200, "percent": 30},
+                    {"phase": "export", "bytes": 600, "totalBytes": 1200, "percent": 64},
+                    {"phase": "export", "bytes": 1200, "totalBytes": 1200, "percent": 99},
+                ] if operation == "export" else [
+                    {"phase": "import", "bytes": 1200, "totalBytes": 1200, "percent": 70},
+                    {"phase": "rewrite", "files": 3, "totalFiles": 3, "percent": 80},
+                    {"phase": "apply", "files": 200, "totalFiles": 400, "percent": 89},
+                    {"phase": "apply", "files": 400, "totalFiles": 400, "percent": 99},
+                ]
+                previous = 0
+                for event in events:
+                    page.evaluate("state => migrationProgress(state)", event)
+                    value = page.locator("#dataMigrationProgress").evaluate("bar => bar.value")
+                    assert previous <= value < 100, (operation, outcome, event, value)
+                    previous = value
+                expected_status = ("Exporting data…" if operation == "export" else "Importing data…") if language == "en" else (
+                    "正在导出数据…" if operation == "export" else "正在导入数据…")
+                expect(page.locator("#dataMigrationStatus")).to_have_text(expected_status + " 99%")
+                page.evaluate("migrationProgress({phase:'done'}); migrationProgress({phase:'apply',percent:40})")
+                expect(page.locator("#dataMigrationProgress")).to_have_attribute("value", "99")
+                page.evaluate("finishTransfer(); holdTransfer = false")
+                expect(page.locator("#exportData")).to_be_enabled()
+                expect(page.locator("#dataMigrationProgress")).to_be_hidden()
+                expect(page.locator("#dataMigrationProgress")).to_have_attribute("value", "100" if outcome == "success" else "99")
+                final_status = page.locator("#dataMigrationStatus").text_content()
+                page.evaluate("migrationProgress({phase:'export',bytes:1200,totalBytes:1200,percent:99})")
+                expect(page.locator("#dataMigrationStatus")).to_have_text(final_status)
+    page.evaluate("exportResult = null; importResult = null")
 
     for language in ["en", "zh-CN"]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
@@ -260,4 +314,4 @@ with sync_playwright() as playwright:
         expect(page.locator("#dataPage")).to_be_visible()
     assert errors == [], errors
     browser.close()
-    print("PASS: transfer categories without subscriptions, empty packages, cancellation, data page navigation, manual cleanup, directory states and bilingual responsive layout")
+    print("PASS: monotonic transfer progress, success-only completion, failure/cancellation/reset/late events, transfer categories without subscriptions, empty packages, data page navigation, manual cleanup, directory states and bilingual responsive layout")

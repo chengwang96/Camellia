@@ -177,6 +177,62 @@ public class ReleaseSmokeTest extends InstrumentationTestCase {
         click(activity, "networkRefresh");
         await("Refreshing native network failed", () -> ((TextView) tag(activity, "connectionStatus")).getText().toString().startsWith("Network state:"));
     }
+
+    public void testSeedDefaultDownloadDirectory() throws Exception {
+        assertTrue("Use a disposable emulator", android.os.Build.HARDWARE.equals("ranchu") || android.os.Build.HARDWARE.equals("goldfish"));
+        try (var descriptor = getInstrumentation().getUiAutomation().executeShellCommand("mkdir -p /sdcard/Download/CamelliaDirectoryTest");
+             var input = new java.io.FileInputStream(descriptor.getFileDescriptor())) { while (input.read() != -1) {} }
+        Uri directory = defaultDownloadTree();
+        Activity activity = open("MainActivity");
+        ui(() -> activity.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            .putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, android.provider.DocumentsContract.buildDocumentUri(directory.getAuthority(), "primary:Download/CamelliaDirectoryTest")), 706));
+        clickSystemButton("Use this folder"); clickSystemButton("Allow");
+        await("Folder picker did not return", activity::hasWindowFocus);
+        context().getContentResolver().takePersistableUriPermission(directory, Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        assertTrue(context().getSharedPreferences("mobile-preferences", 0).edit()
+            .putString("downloadDirectoryUri", directory.toString()).putString("downloadDirectoryLabel", "Download/CamelliaDirectoryTest").commit());
+        assertTrue(hasDirectoryGrant(directory));
+    }
+
+    public void testDefaultDownloadDirectorySurvivesUpgrade() throws Exception {
+        Uri directory = defaultDownloadTree();
+        assertEquals(directory.toString(), context().getSharedPreferences("mobile-preferences", 0).getString("downloadDirectoryUri", ""));
+        assertTrue("Upgrade must preserve the directory's read/write grant", hasDirectoryGrant(directory));
+        Activity settings = getInstrumentation().startActivitySync(new Intent().setClassName(context(), "app.camellia.mobile.SettingsActivity")
+            .putExtra("section", "general").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); activities.add(settings);
+        await("The signed release must show the saved download directory", () -> tag(settings, "preference:downloadDirectory") != null);
+        ui(() -> assertTrue(tag(settings, "preference:downloadDirectory").getContentDescription().toString().contains("Download/CamelliaDirectoryTest")));
+        Uri parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(directory, android.provider.DocumentsContract.getTreeDocumentId(directory));
+        Uri file = android.provider.DocumentsContract.createDocument(context().getContentResolver(), parent, "text/plain", "upgrade-grant.txt");
+        assertNotNull(file);
+        try {
+            try (var output = context().getContentResolver().openOutputStream(file, "wt")) { output.write("upgrade retained access".getBytes(StandardCharsets.UTF_8)); }
+            try (var input = context().getContentResolver().openInputStream(file)) { assertEquals("upgrade retained access", new String(input.readAllBytes(), StandardCharsets.UTF_8)); }
+        } finally { android.provider.DocumentsContract.deleteDocument(context().getContentResolver(), file); }
+    }
+
+    private Uri defaultDownloadTree() {
+        return android.provider.DocumentsContract.buildTreeDocumentUri("com.android.externalstorage.documents", "primary:Download/CamelliaDirectoryTest");
+    }
+    private boolean hasDirectoryGrant(Uri directory) {
+        for (android.content.UriPermission grant : context().getContentResolver().getPersistedUriPermissions())
+            if (directory.equals(grant.getUri()) && grant.isReadPermission() && grant.isWritePermission()) return true;
+        return false;
+    }
+    private void clickSystemButton(String text) throws Exception {
+        long deadline = android.os.SystemClock.elapsedRealtime() + 10_000;
+        do {
+            AccessibilityNodeInfo root = getInstrumentation().getUiAutomation().getRootInActiveWindow();
+            if (root != null) for (AccessibilityNodeInfo node : root.findAccessibilityNodeInfosByText(text)) {
+                if (!text.equalsIgnoreCase(String.valueOf(node.getText())) || !node.isEnabled()) continue;
+                while (node != null && !node.isClickable()) node = node.getParent();
+                if (node != null && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return;
+            }
+            Thread.sleep(50);
+        } while (android.os.SystemClock.elapsedRealtime() < deadline);
+        fail("Missing folder-picker button: " + text);
+    }
     public void testOfficeImportInMinifiedRelease() throws Exception {
         Activity activity = conversation();
         IntentFilter filter = new IntentFilter(Intent.ACTION_GET_CONTENT); filter.addCategory(Intent.CATEGORY_OPENABLE); filter.addDataType("*/*");

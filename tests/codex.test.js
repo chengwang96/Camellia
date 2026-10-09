@@ -575,8 +575,8 @@ test('Codex gives every ChatGPT account its own home and switches to the one wit
   assert.equal(engine.accountState('account-1').home, second);
   assert.equal(engine.accountState('account-1').account.email, 'backup@example.com');
   assert.deepEqual(engine.accountState().accounts, [
-    { id: 'default', label: '', active: true, signedIn: true, exhausted: true, installed: false, loginPending: false, error: '', models: 1, email: 'primary@example.com', plan: '', verifiedAt: null, quotaWindows: [{ label: 'Usage', usedPercent: 100, resetsAt: null }] },
-    { id: 'account-1', label: 'Backup', active: false, signedIn: true, exhausted: false, installed: false, loginPending: false, error: '', models: 1, email: 'backup@example.com', plan: '', verifiedAt: null, quotaWindows: [{ label: 'Usage', usedPercent: 20, resetsAt: null }] },
+    { id: 'default', label: '', active: true, signedIn: true, exhausted: true, installed: false, loginPending: false, error: '', models: 1, email: 'primary@example.com', plan: '', rateLimitResetCredits: null, verifiedAt: null, quotaWindows: [{ label: 'Usage', usedPercent: 100, resetsAt: null }] },
+    { id: 'account-1', label: 'Backup', active: false, signedIn: true, exhausted: false, installed: false, loginPending: false, error: '', models: 1, email: 'backup@example.com', plan: '', rateLimitResetCredits: null, verifiedAt: null, quotaWindows: [{ label: 'Usage', usedPercent: 20, resetsAt: null }] },
   ]);
   // A conversation that already ran on an account reports that account, so the
   // composer lists the right models and the thread is resumed in its home.

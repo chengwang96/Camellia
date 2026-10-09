@@ -28,7 +28,11 @@ window.dshDesktop=new Proxy({}, {get:(_,method)=>method.startsWith('on')?fn=>{ac
  if(method==='codexAccountSelect'){mockAccounts.forEach(a=>a.active=a.id===args[0]);return snapshot();}
  if(method==='codexAccountLabel'){mockAccounts.find(a=>a.id===args[0]).label=args[1];return snapshot();}
  if(method==='codexAccountRefresh'||method==='codexAccountWake')return {...snapshot(),wakeSent:method==='codexAccountWake'};
- if(method==='codexAccountRemove'){mockAccounts=mockAccounts.filter(a=>a.id!==args[0]);return snapshot();}
+ if(method==='codexAccountRemove'){
+   if(args[0]==='default')mockAccounts.find(a=>a.id==='default').signedIn=false;
+   else mockAccounts=mockAccounts.filter(a=>a.id!==args[0]);
+   return snapshot();
+ }
  if(method==='antigravityAccountState'){
    if(!window.mockGoogle){
      window.mockGoogle=await window.testRpc(method,args[0]);
@@ -49,7 +53,9 @@ window.dshDesktop=new Proxy({}, {get:(_,method)=>method.startsWith('on')?fn=>{ac
    return {ok:true,opened:true};
  }
  if(method==='antigravityAccountRefresh'){
+   const version=window.mockGoogleVersion||0;
    if(window.holdGoogleVerify)await new Promise(resolve=>window.finishGoogleVerify=resolve);
+   if(version!==(window.mockGoogleVersion||0))return {ok:true,canceled:true};
    mockGoogle.verification=window.failGoogleVerify?'error':'verified';
    mockGoogle.awaitingVerification=false;
    const error=window.failGoogleVerify?'Google sign-in has expired or is invalid. Sign in again and retry.':'';
@@ -58,8 +64,23 @@ window.dshDesktop=new Proxy({}, {get:(_,method)=>method.startsWith('on')?fn=>{ac
    return error?{ok:false,error}:mockGoogle;
  }
  if(method==='antigravityAccountRefreshUsage'){
+   const version=window.mockGoogleVersion||0;
+   if(window.holdGoogleQuota){mockGoogle.usage.refreshing=true;accountListeners.onAntigravityAccount(mockGoogle);await new Promise(resolve=>window.finishGoogleQuota=resolve);}
+   if(version!==(window.mockGoogleVersion||0))return {ok:true,canceled:true};
+   mockGoogle.usage.refreshing=false;
    mockGoogle.usage.status=window.failGoogleQuota?'stale':'ok';
    mockGoogle.usage.error=window.failGoogleAvatar?'Google account profile picture unavailable.':window.failGoogleQuota?'Could not load Google quota. Check the connection and retry.':null;
+   accountListeners.onAntigravityAccount(mockGoogle);
+   return mockGoogle;
+ }
+ if(method==='antigravitySignOut'){
+   window.mockGoogleVersion=(window.mockGoogleVersion||0)+1;
+   Object.assign(mockGoogle,{models:[],verifiedAt:null,error:'',awaitingVerification:false,verification:'unverified',signedOut:true,signingOut:true});
+   Object.assign(mockGoogle.usage,{latest:null,history:[],error:null,status:null,refreshing:false});
+   Object.assign(mockGoogle.accounts[0],{signedIn:false,stale:false,loginPending:false,error:'',quotaWindows:[],models:0,verifiedAt:null});
+   accountListeners.onAntigravityAccount(mockGoogle);
+   if(window.holdGoogleSignOut)await new Promise(resolve=>window.finishGoogleSignOut=resolve);
+   mockGoogle.signingOut=false;
    accountListeners.onAntigravityAccount(mockGoogle);
    return mockGoogle;
  }
@@ -115,6 +136,7 @@ try:
         browser=playwright.chromium.launch(headless=True)
         page=browser.new_page(viewport={'width':1420,'height':960})
         errors=[]; page.on('pageerror',lambda error:errors.append(str(error)))
+        page.on('dialog',lambda dialog:(errors.append('Unexpected native dialog: '+dialog.message),dialog.dismiss()))
         page.expose_function('testRpc',rpc); page.add_init_script(bridge)
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri()+'?page=subscriptions',wait_until='networkidle')
         cards=page.locator('#codexAccountList')
@@ -126,7 +148,7 @@ try:
         expect(page.locator('#googleAccountPanel > .account-actions')).to_have_count(0)
         expect(google.locator('.subscription-meter')).to_have_count(4)
         expect(google.locator('.subscription-meter strong')).to_have_text(['100%','99%','40%','0%'])
-        expect(google.locator('[data-card-action]')).to_have_count(4)
+        expect(google.locator('[data-card-action]')).to_have_count(5)
         expect(google.locator('.subscription-meter.critical')).to_have_count(1)
         page.locator('.account-shortcuts [data-account-engine=antigravity]').click()
         expect(google.locator('[data-card-action=refresh]')).to_be_focused()
@@ -165,7 +187,8 @@ try:
         expect(google.locator('[data-card-action=verify]')).to_be_focused()
         page.evaluate('window.holdGoogleVerify=true')
         google.locator('[data-card-action=verify]').click()
-        expect(google.locator('[data-card-action]:enabled')).to_have_count(0)
+        expect(google.locator('[data-card-action]:enabled')).to_have_count(1)
+        expect(google.locator('[data-card-action=logout]')).to_be_enabled()
         page.evaluate('window.finishGoogleVerify(); window.holdGoogleVerify=false')
         expect(google.locator('.subscription-state')).to_have_text('Signed in')
         google.locator('[data-card-action=login]').click()
@@ -181,7 +204,8 @@ try:
         google.locator('[data-card-action=verify]').click()
         expect(google.locator('.subscription-state')).to_have_text('Signed in')
         expect(page.locator('#status')).to_have_text('Account status updated.')
-        expect(google.locator('[data-card-action=switch], [data-card-action=logout], [data-card-action=wake]')).to_have_count(0)
+        expect(google.locator('[data-card-action=switch], [data-card-action=wake]')).to_have_count(0)
+        expect(google.locator('[data-card-action=logout]')).to_be_enabled()
         assert page.evaluate("calls.filter(c=>c.method==='antigravitySignIn').length") == 2
         assert page.evaluate("calls.filter(c=>c.method==='antigravityAccountRefresh').length") == 3
         expect(raw).not_to_contain_text('https://')
@@ -228,6 +252,51 @@ try:
         expect(notice).to_contain_text('Google sign-in has expired or is invalid')
         google.locator('[data-card-action=refresh]').click()
         expect(notice).to_be_hidden()
+        # Expiry and a background refresh never lock the priority sign-out.
+        page.evaluate("""() => {
+          window.googleSignOutPreview=structuredClone(mockGoogle);
+          mockGoogle.verification='error';mockGoogle.error='Google sign-in has expired or is invalid. Sign in again and retry.';
+          mockGoogle.usage.refreshing=true;
+          Object.assign(mockGoogle.accounts[0],{signedIn:false,stale:true,error:mockGoogle.error});
+          accountListeners.onAntigravityAccount(mockGoogle);
+        }""")
+        google.locator('[data-card-action=logout]').click()
+        google_confirmation=page.locator('#subscriptionAccountDialog')
+        expect(google_confirmation.locator('#subscriptionAccountDescription')).to_have_text('Sign out of the Google account shared with the official CLI?')
+        google_confirmation.locator('[autofocus]').click()
+        assert not page.evaluate("calls.filter(c=>c.method==='antigravitySignOut').length")
+        expect(google.locator('[data-card-action=logout]')).to_be_enabled()
+        page.evaluate('window.holdGoogleSignOut=true')
+        google.locator('[data-card-action=logout]').click()
+        signout_out=repo/'dist/subscription-signout-qa';signout_out.mkdir(parents=True,exist_ok=True)
+        page.screenshot(path=str(signout_out/'antigravity-expired-signout.png'),animations='disabled')
+        google_confirmation.locator('#confirmSubscriptionAccount').click()
+        expect(google.locator('[data-card-action]:enabled')).to_have_count(0)
+        expect(page.locator('#googleAccountStatus')).to_have_text('Signing out of Google…')
+        page.evaluate('window.finishGoogleSignOut();window.holdGoogleSignOut=false')
+        expect(page.locator('#status')).to_have_text('Signed out of Google.')
+        expect(google.locator('.subscription-state')).to_have_text('Not signed in')
+        expect(google.locator('.subscription-meter')).to_have_count(0)
+        expect(google.locator('[data-card-action=logout]')).to_be_enabled()
+        # Both foreground checks can be preempted. Late replies cannot replace
+        # the sign-out status or enable another authentication operation.
+        for action,hold,finish in [('verify','holdGoogleVerify','finishGoogleVerify'),('refresh','holdGoogleQuota','finishGoogleQuota')]:
+            page.evaluate("""hold => {
+              mockGoogle=structuredClone(googleSignOutPreview);
+              accountListeners.onAntigravityAccount(mockGoogle);window[hold]=true;
+            }""",hold)
+            google.locator(f'[data-card-action={action}]').click()
+            expect(google.locator('[data-card-action=logout]')).to_be_enabled()
+            google.locator('[data-card-action=logout]').click()
+            google_confirmation.locator('#confirmSubscriptionAccount').click()
+            expect(page.locator('#status')).to_have_text('Signed out of Google.')
+            page.evaluate('options=>{window[options.finish]();window[options.hold]=false}',{'finish':finish,'hold':hold})
+            expect(google.locator('.subscription-state')).to_have_text('Not signed in')
+            expect(page.locator('#status')).to_have_text('Signed out of Google.')
+            expect(google.locator('[data-card-action=verify]')).to_be_enabled()
+            expect(google.locator('[data-card-action=logout]')).to_be_enabled()
+        assert page.evaluate("calls.filter(c=>c.method==='antigravitySignOut').length")==3
+        page.evaluate('mockGoogle=structuredClone(googleSignOutPreview);accountListeners.onAntigravityAccount(mockGoogle)')
         backup=cards.locator('[data-card-id="account-1"]')
         backup.locator('[data-card-action=refresh]').click()
         expect(cards.locator('[data-card-id=default]')).to_have_class('subscription-card active')
@@ -247,9 +316,62 @@ try:
         expect(backup).to_have_class('subscription-card active')
         assert page.evaluate("calls.filter(c=>c.method==='codexAccountWake').length") == 1
         assert page.evaluate("calls.find(c=>c.method==='codexAccountWake').args[0]") == 'account-1'
-        page.on('dialog',lambda dialog:dialog.accept())
+        confirmation=page.locator('#subscriptionAccountDialog')
+        sign_out=cards.locator('[data-card-id=default] [data-card-action=logout]')
+        removal_calls=lambda:page.evaluate("calls.filter(c=>c.method==='codexAccountRemove')")
+        sign_out.click()
+        expect(confirmation).to_be_visible()
+        expect(confirmation.locator('h2')).to_have_text('Sign out')
+        expect(confirmation.locator('#subscriptionAccountIdentity')).to_have_text('work@example.com')
+        expect(confirmation.locator('#subscriptionAccountDescription')).to_have_text('Sign out of this account?')
+        expect(confirmation.locator('[autofocus]')).to_be_focused()
+        assert not removal_calls()
+        page.keyboard.press('Enter')
+        expect(confirmation).to_be_hidden()
+        expect(sign_out).to_be_focused()
+        sign_out.click()
+        page.keyboard.press('Escape')
+        expect(confirmation).to_be_hidden()
+        sign_out.click()
+        confirmation.locator('.dialog-head button').click()
+        expect(confirmation).to_be_hidden()
+        assert not removal_calls()
+        sign_out.click()
+        confirmation.locator('#confirmSubscriptionAccount').click()
+        expect(confirmation).to_be_hidden()
+        expect(cards.locator('[data-card-id=default]')).to_have_count(0)
+        assert not page.evaluate("mockAccounts.find(a=>a.id==='default').signedIn")
+        assert [call['args'][0] for call in removal_calls()]==['default']
+        page.evaluate("mockAccounts.find(a=>a.id==='default').signedIn=true; accountListeners.onCodexAccount(accountSnapshot())")
+        # A previous confirmation must not turn Escape into approval on reuse.
         cards.locator('[data-card-id="account-2"] [data-card-action=remove]').click()
+        expect(confirmation.locator('h2')).to_have_text('Remove account')
+        page.keyboard.press('Escape')
+        expect(confirmation).to_be_hidden()
+        assert len(removal_calls())==1
+        cards.locator('[data-card-id="account-2"] [data-card-action=remove]').click()
+        expect(confirmation.locator('#subscriptionAccountDescription')).to_have_text('Remove this account and its local login data?')
+        confirmation.locator('#confirmSubscriptionAccount').click()
         expect(cards.locator('.subscription-card')).to_have_count(2)
+        assert [call['args'][0] for call in removal_calls()]==['default','account-2']
+        dialog_out=repo/'dist/subscription-confirm-qa';dialog_out.mkdir(parents=True,exist_ok=True)
+        original_email=page.evaluate("mockAccounts.find(a=>a.id==='default').email")
+        for language,theme,width in [('en','light',1420),('zh-CN','dark',1420),('zh-CN','light',320)]:
+            page.evaluate("settings=>{CamelliaI18n.setLanguage(settings.language);document.documentElement.dataset.theme=settings.theme}",{'language':language,'theme':theme})
+            page.set_viewport_size({'width':width,'height':960})
+            if width==320:
+                page.evaluate("mockAccounts.find(a=>a.id==='default').email='account-owner-with-a-long-email-address@example.test';accountListeners.onCodexAccount(accountSnapshot())")
+            sign_out.click()
+            expect(confirmation.locator('h2')).to_have_text('Sign out' if language=='en' else '退出登录')
+            assert confirmation.evaluate('el=>el.scrollWidth<=el.clientWidth')
+            bounds=confirmation.bounding_box()
+            assert bounds['x']>=0 and bounds['x']+bounds['width']<=width
+            page.screenshot(path=str(dialog_out/f'sign-out-{language}-{theme}-{width}.png'),animations='disabled')
+            confirmation.locator('[autofocus]').click()
+            expect(confirmation).to_be_hidden()
+        assert len(removal_calls())==2
+        page.set_viewport_size({'width':1420,'height':960})
+        page.evaluate('email=>{mockAccounts.find(a=>a.id==="default").email=email;document.documentElement.dataset.theme="light"}',original_email)
         # Reload restores the illustrative fixtures for the preview.
         page.reload(wait_until='networkidle')
         page.evaluate("CamelliaI18n.setLanguage('zh-CN')")
@@ -333,7 +455,7 @@ try:
         screenshot_with_shadow(page, cards.locator('[data-card-id=default]'), out/'subscription-card-compact.png')
         assert not errors,errors
         browser.close()
-    print('PASS: account actions; Google notes, quota refresh, expired verification, external sign-in and retry; English/Chinese, light/dark, 320-1420px and 100-200% zoom without clipped controls')
+    print('PASS: account actions; app confirmation for sign-out/removal, Cancel/Enter/Escape/close; Google priority sign-out during expiry and pending verification/quota, late replies, notes and retry; English/Chinese, light/dark, 320-1420px and 100-200% zoom without clipped controls')
 finally:
     driver.terminate()
     driver.wait(timeout=10)

@@ -127,6 +127,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   onCodexAccount: callback => subscribe('dsh:codex-account', callback),
   codexAccountState: payload => ipcRenderer.invoke('dsh:codex-account-state', payload),
   codexAccountRefresh: id => ipcRenderer.invoke('dsh:codex-account-refresh', { id }),
+  codexAccountResetPreview: id => ipcRenderer.invoke('dsh:codex-account-reset-preview', { id }),
+  codexAccountResetConsume: payload => ipcRenderer.invoke('dsh:codex-account-reset-consume', payload),
   codexAccountWake: id => ipcRenderer.invoke('dsh:codex-account-wake', { id }),
   codexSignIn: () => ipcRenderer.invoke('dsh:codex-sign-in'),
   codexAccountSelect: id => ipcRenderer.invoke('dsh:codex-account-select', { id }),
@@ -153,6 +155,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   antigravityAccountLabel: label => ipcRenderer.invoke('dsh:antigravity-account-label', { label }),
   onAntigravityAccount: callback => subscribe('dsh:antigravity-account', callback),
   antigravitySignIn: () => ipcRenderer.invoke('dsh:antigravity-sign-in'),
+  antigravitySignOut: () => ipcRenderer.invoke('dsh:antigravity-sign-out'),
 });
 
 // Ctrl + mouse wheel zoom (zoom by font/page size from any page).

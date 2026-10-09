@@ -259,6 +259,9 @@ test('completion record failure leaves a committed journal for recovery without 
 });
 
 test('a crash after the completion marker leaves a protected journal until the recovery pass finishes', async t => {
+  // Keep completion records on the fixture's clock even when CI writes are slow.
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now);
   const h = setup(t), dir = h.backup(1, { 'app/empty.txt': '' }, null); fs.unlinkSync(path.join(dir, 'app/empty.txt'));
   const source = h.write('source.txt', 'new'); h.write('desktop-config.json', 'old');
   const options = { dataDir: h.dataDir, home: h.home, homeEntries: [], backupDir: dir };

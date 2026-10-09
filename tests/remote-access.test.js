@@ -33,9 +33,10 @@ function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings =
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-remote-'));
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
   let clock = 1000, config = { sharedMeta: { workspaces: [{ id: 'allowed', name: 'Allowed', path: root }, { id: 'private', name: 'Private', path: root }] } }, gateway, reader;
+  const events = [];
   const drivers = Object.fromEntries(ENGINES.map(engine => [engine, { settings: () => ({ model: 'test', apiKey: 'must-not-leak' }), ensure() { throw new Error('Read-only access must not start engines'); } }]));
   const manager = new SharedConversations({ dir: path.join(root, 'conversations'), loadConfig: () => config, saveConfig: patch => { config = { ...config, ...patch }; }, drivers,
-    onEvent: event => { reader?.observeCompaction(event); gateway?.publish(); },
+    onEvent: event => { events.push(event); reader?.observeCompaction(event); gateway?.publish(); },
     onStatus: status => { reader?.observeCompaction(status); gateway?.publish(); } });
   const access = new RemoteAccess({ file: path.join(root, 'devices.json'), now: () => clock, onRevoke: id => gateway?.revoke(id) });
   reader = new RemoteReadModel(manager);
@@ -62,7 +63,7 @@ function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings =
     access.approve(request.id);
     return access.claim(request.id, request.claim);
   }
-  return { root, manager, access, reader, gateway, commands, visible, hidden, unassigned, pair, advance: amount => { clock += amount; } };
+  return { root, manager, access, reader, gateway, commands, visible, hidden, unassigned, pair, events, advance: amount => { clock += amount; } };
 }
 
 async function request(gateway, endpoint, { token, method = 'GET', payload, headers = {} } = {}) {
@@ -1423,6 +1424,64 @@ test('mobile create then send generates a title visible in snapshots and lists',
   assert.equal(list.body.conversations.find(item => item.id === conversation.id).title, 'Remote tit');
 });
 
+for (const workspaceId of ['allowed', null]) test('mobile new conversation keeps a readable title while the API is offline in workspace ' + workspaceId, async context => {
+  const { gateway, manager, access, pair } = fixture(context);
+  const credential = pair(), token = credential.token;
+  access.setScope(credential.deviceId, ['allowed'], { includeUnassigned: true });
+  manager.generateTitle = async () => { throw new Error('API router is offline'); };
+  manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage() { return true; }, interrupt() {} });
+  await gateway.start('127.0.0.1', 0);
+  const created = await request(gateway, '/v1/commands', { token, method: 'POST', payload: {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'create', workspaceId, engine: 'codex',
+  } });
+  assert.equal(created.body.ok, true);
+  const id = created.body.conversation.id;
+  const sent = await request(gateway, `/v1/conversations/${id}/commands`, { token, method: 'POST', payload: {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', expectedSeq: created.body.conversation.seq, prompt: '请帮我修复远程会话命名失败',
+  } });
+  assert.equal(sent.body.ok, true);
+  await flushQueue();
+  const snapshot = await request(gateway, `/v1/conversations/${id}`, { token });
+  const list = await request(gateway, '/v1/conversations', { token });
+  assert.equal(snapshot.body.conversation.title, '修复远程会话命名失败');
+  assert.equal(list.body.conversations.find(item => item.id === id).title, snapshot.body.conversation.title);
+  assert.equal(JSON.parse(fs.readFileSync(manager.file(id))).title, snapshot.body.conversation.title);
+  assert.equal(manager.get(id).titleSource, 'message');
+});
+
+test('mobile event streams show a provisional title and then the background model title', async context => {
+  const { gateway, manager, pair } = fixture(context), { token } = pair();
+  let resolveTitle;
+  manager.generateTitle = () => new Promise(resolve => { resolveTitle = resolve; });
+  manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage() { return true; }, interrupt() {} });
+  await gateway.start('127.0.0.1', 0);
+  const created = await request(gateway, '/v1/commands', { token, method: 'POST', payload: {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'create', workspaceId: 'allowed', engine: 'codex',
+  } });
+  assert.equal(created.body.ok, true);
+  const id = created.body.conversation.id, events = await stream(gateway, id, token);
+  context.after(() => events.close());
+  assert.equal((await events.next()).conversation.title, 'New session');
+  const sent = await request(gateway, `/v1/conversations/${id}/commands`, { token, method: 'POST', payload: {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId,
+    action: 'send', expectedSeq: created.body.conversation.seq, prompt: 'First visible request',
+  } });
+  assert.equal(sent.body.ok, true);
+  assert.equal((await events.next()).conversation.title, 'First visi');
+  resolveTitle('远程命名修复');
+  // The send also publishes activity snapshots; drain them until the title
+  // changes, with a finite read deadline so a missing update fails the test.
+  const deadline = setTimeout(() => events.close(), 3000);
+  try {
+    let snapshot;
+    do { snapshot = await events.next(); } while (snapshot && snapshot.conversation.title !== '远程命名修复');
+    assert.equal(snapshot?.conversation.title, '远程命名修复');
+  } finally { clearTimeout(deadline); events.close(); }
+});
+
 test('mobile resend rewrites the latest user message through editSeq', async context => {
   const { gateway, manager, pair, visible } = fixture(context);
   const { token } = pair();
@@ -1529,7 +1588,7 @@ test('mobile moves enforce both workspace scopes, persist order, update list ver
 });
 
 test('mobile archive hides the conversation, deduplicates and rejects stale state', async context => {
-  const { gateway, manager, access, reader, visible, pair } = fixture(context);
+  const { gateway, manager, access, reader, visible, pair, events } = fixture(context);
   const credential = pair(), token = credential.token;
   await gateway.start('127.0.0.1', 0);
   const device = access.devices.find(item => item.id === credential.deviceId);
@@ -1543,6 +1602,7 @@ test('mobile archive hides the conversation, deduplicates and rejects stale stat
   device.permission = 'control';
   assert.equal((await send(archive({ expectedSeq: visible.seq + 1 }))).body.ok, false);
   assert.equal(manager.workspaces.sessionMeta().archived[visible.id], undefined);
+  assert.equal(events.some(event => event.type === 'conversation:archived'), false);
   const payload = archive();
   const archived = await send(payload);
   assert.equal(archived.body.ok, true);
@@ -1550,6 +1610,9 @@ test('mobile archive hides the conversation, deduplicates and rejects stale stat
   assert.ok(manager.workspaces.sessionMeta().archived[visible.id] > 0);
   assert.equal(reader.list(device).conversations.some(conversation => conversation.id === visible.id), false);
   assert.notEqual(reader.listSnapshot(device).listVersion, before);
+  assert.deepEqual(events.filter(event => event.type === 'conversation:archived'), [
+    { type: 'conversation:archived', session_id: visible.id, engine: 'codex', archived: true },
+  ]);
 });
 
 test('mobile conversation actions rename, pin and delete with scoped deduplicated requests', async context => {
@@ -1675,7 +1738,7 @@ test('batch deletion supports 100 targets through the HTTP command limit', async
 });
 
 test('archived listing and restore obey workspace scopes and reject stale sequences', async context => {
-  const { gateway, manager, visible, hidden, pair } = fixture(context);
+  const { gateway, manager, visible, hidden, pair, events } = fixture(context);
   const credential = pair(); await gateway.start('127.0.0.1', 0);
   await manager.command('codex', 'archive-session', { id: visible.id, archived: true });
   await manager.command('kimi', 'archive-session', { id: hidden.id, archived: true });
@@ -1690,6 +1753,9 @@ test('archived listing and restore obey workspace scopes and reject stale sequen
   assert.equal((await send(payload)).body.ok, true);
   assert.equal((await request(gateway, `/v1/conversations/${visible.id}`, { token: credential.token })).status, 200);
   assert.equal((await request(gateway, '/v1/archived', { token: credential.token })).body.conversations.length, 0);
+  assert.deepEqual(events.filter(event => event.type === 'conversation:archived'), [
+    { type: 'conversation:archived', session_id: visible.id, engine: 'codex', archived: false },
+  ]);
 });
 
 test('desktop attachments are scoped, bounded and deduplicated without accepting client filesystem paths', async context => {

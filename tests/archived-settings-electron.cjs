@@ -107,10 +107,14 @@ async function main() {
   assert.equal(fs.existsSync(sharedLog), false);
   assert.ok(!JSON.parse(fs.readFileSync(path.join(userData, 'desktop-config.json'), 'utf8')).sharedMeta?.archived?.[sharedId]);
 
-  // With nothing left archived, Delete all stays disabled; re-archive and clear everything.
+  // A remote archive saves metadata and notifies the already-open settings page.
+  // Keep the same window to verify that the event refreshes its list in place.
   assert.equal(await run("document.querySelector('#deleteAllArchived').disabled"), true, 'delete-all disabled when empty');
-  await run(`window.dshDesktop.claudeArchiveSession(${JSON.stringify({ id: legacyId, archived: true })})`);
-  await homeWindow.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({ page: 'archived' })");
+  const configFile = path.join(userData, 'desktop-config.json');
+  const savedConfig = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+  savedConfig.claudeMeta.archived[legacyId] = Date.now();
+  fs.writeFileSync(configFile, JSON.stringify(savedConfig));
+  settings.webContents.send('dsh:archived-changed', { source: 'claude', id: legacyId, action: 'archive' });
   await wait(async () => (await run("document.querySelectorAll('#archivedList .archived-row').length")) === 1, 're-archived row appears');
   assert.equal(await run("document.querySelector('#deleteAllArchived').disabled"), false, 'delete-all enabled with rows');
   await run("document.querySelector('#deleteAllArchived').click()");
@@ -189,7 +193,7 @@ async function main() {
   for (const file of [queuedAttachment, draftAttachment, orphanAttachment]) assert.ok(fs.existsSync(file));
   await run("document.querySelector('#scanStorage').click()");
   await wait(() => run("!document.querySelector('#scanStorage').disabled"), 'scan during sending');
-  assert.match(await run("document.querySelector('#storageSummary').textContent"), /会话正在工作/);
+  assert.match(await run("document.querySelector('#storageSummary').textContent"), /对话正在运行/);
   await homeWindow.webContents.executeJavaScript('sending = false');
   const idleScan = await run('window.dshDesktop.storageScan()');
   assert.equal(idleScan.ok, true);
@@ -206,7 +210,6 @@ async function main() {
   assert.equal(await run("document.querySelector('#mobile-error').textContent"), '');
   assert.equal(await run("document.querySelector('#mobile-toggle').textContent"), '开启手机访问');
   assert.equal(await run("document.querySelector('#mobile-invite').disabled"), true);
-  assert.match(await run("document.querySelector('#mobilePage [data-copy=scope]').textContent"), /全部现有及未来会话/);
   assert.equal(await run("document.querySelectorAll('#mobilePage input[type=checkbox]').length"), 0);
   assert.equal(await run("document.querySelector('#mobile-openPanel').hidden"), true);
   assert.equal(BrowserWindow.getAllWindows().some(window => window.webContents.getURL().endsWith('/remote/remote.html')), false);
