@@ -153,12 +153,14 @@ public class RemoteConnectionTest extends InstrumentationTestCase {
 
     private void verifySnapshot(long cursor, String instance, int expectedRequests) throws Exception {
         CountDownLatch handled = new CountDownLatch(1);
+        CountDownLatch refreshed = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         AtomicInteger requests = new AtomicInteger();
         JSONObject snapshot = new JSONObject().put("cursor", cursor).put("instanceId", instance);
         RemoteApi client = new RemoteApi("http://100.64.0.1:43128") {
             @Override public JSONObject json(String path, String token, JSONObject payload) throws IOException {
                 requests.incrementAndGet();
+                refreshed.countDown();
                 try { return new JSONObject().put("protocol", 1).put("instanceId", instance).put("cursor", cursor); }
                 catch (Exception error) { throw new IOException(error); }
             }
@@ -179,6 +181,14 @@ public class RemoteConnectionTest extends InstrumentationTestCase {
                 method.setAccessible(true); method.invoke(activity, client, generation.getInt(activity), 0);
             });
             assertTrue("Snapshot not handled", handled.await(3, TimeUnit.SECONDS));
+            if (expectedRequests > 0) {
+                assertTrue("Changed snapshot not refreshed", refreshed.await(3, TimeUnit.SECONDS));
+            } else {
+                ui(() -> {
+                    var refresh = MainActivity.class.getDeclaredField("listRefreshBusy"); refresh.setAccessible(true);
+                    assertFalse("Matching initial snapshot queued a refresh", refresh.getBoolean(activity));
+                });
+            }
             assertEquals(expectedRequests, requests.get());
         } finally {
             ui(() -> invoke("stopNetwork")); release.countDown();

@@ -1306,16 +1306,32 @@ test('default fork prefixes follow the configured language without renaming exis
   assert.equal(manager.fork('codex', { sessionId: source.id, title: 'Custom title' }).title, 'Custom title');
 });
 
-test('sidebar fork rejects busy, archived and missing sources without creating conversations', async context => {
+test('sidebar fork excludes the entire live turn and leaves the source running', async context => {
   const harness = fixture(context), manager = harness.manager;
-  const run = await manager.send('claude', { prompt: 'Working' });
-  await assert.rejects(manager.command('claude', 'fork-session', { sessionId: run.sessionId }), /finish before forking/);
+  const source = manager.create('claude', null, 'Live source');
+  manager.append(source, { role: 'user', text: 'Completed request' });
+  manager.append(source, { role: 'assistant', text: 'Completed answer' });
+  const run = await manager.send('claude', { sessionId: source.id, prompt: 'Working' });
+  manager.append(source, { role: 'tool', text: 'Live tool' });
+  manager.append(source, { role: 'user', text: 'Steering', steered: true });
+  manager.append(source, { role: 'assistant', text: 'Partial answer' });
+  source.modelSessions = { live: { nativeId: 'unsafe-live-thread' } };
+  const result = await manager.command('claude', 'fork-session', { sessionId: run.sessionId });
+  const fork = manager.get(result.sessionId);
+  assert.deepEqual(manager.messages(fork).map(row => row.text), ['Completed request', 'Completed answer']);
+  assert.deepEqual(fork.modelSessions, {});
+  assert.equal(manager.active.has(source.id), true);
+  // The same boundary applies while the original turn recovers its context.
+  const active = manager.active.get(source.id);
+  manager.recovering.set(source.id, active); manager.active.delete(source.id);
+  assert.deepEqual(manager.messages(manager.fork('claude', { sessionId: source.id })).map(row => row.text), ['Completed request', 'Completed answer']);
+  manager.recovering.delete(source.id); manager.active.set(source.id, active);
   harness.finish('claude');
   await run.done;
   await manager.command('claude', 'archive-session', { id: run.sessionId });
   await assert.rejects(manager.command('claude', 'fork-session', { sessionId: run.sessionId }), /Restore/);
   await assert.rejects(manager.command('claude', 'fork-session', { sessionId: 'missing' }), /not found/);
-  assert.equal(manager.items.size, 1);
+  assert.equal(manager.items.size, 3);
 });
 
 test('sidebar fork copies revised history without discarded turns', async context => {
@@ -1418,7 +1434,7 @@ for (const engine of ENGINES) test(engine + ' conversation tools create, fork, c
   assert.equal(child.cwd, manager.get(parent.sessionId).cwd);
   assert.equal(child.workspaceId, manager.get(parent.sessionId).workspaceId);
   assert.deepEqual(child.segments, {});
-  assert.deepEqual(manager.messages(child).map(row => row.text), ['First request', 'Answer from ' + engine, 'Delegate the next task']);
+  assert.deepEqual(manager.messages(child).map(row => row.text), ['First request', 'Answer from ' + engine]);
   assert.equal(manager.settings(engine, child.id).contextWindow, 64000);
   assert.equal(manager.settings(engine, child.id).permissionMode, 'default');
   assert.equal(manager.settings(engine, parent.sessionId).model, 'fixture');
@@ -1672,7 +1688,7 @@ test('cancelling a child during MCP bridge startup prevents native dispatch', as
   assert.equal(manager.busy(child.id), false);
 });
 
-test('fork uses revised visible history rather than superseded requests and responses', async context => {
+test('tool-created fork excludes the whole current revised turn and superseded history', async context => {
   const harness = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
   context.after(() => harness.manager.closeGoalTools());
   const manager = harness.manager;
@@ -1682,7 +1698,47 @@ test('fork uses revised visible history rather than superseded requests and resp
   const token = manager.active.get(revised.sessionId).goalRunToken;
   const fork = manager.callGoalTool(revised.sessionId, 'camellia_conversation_fork', { run_token: token, request_id: 'fork', title: 'Revised snapshot' });
   assert.equal(fork.ok, true);
-  assert.deepEqual(manager.messages(manager.get(fork.conversation.id)).map(row => row.text), ['Revised request']);
+  assert.deepEqual(manager.messages(manager.get(fork.conversation.id)).map(row => row.text), []);
+});
+
+test('managed children show actual work and scope reply, approval and stop to the child', async context => {
+  const h = fixture(context, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  context.after(() => h.manager.closeGoalTools());
+  const manager = h.manager, parent = await manager.send('kimi', { prompt: 'Delegate the report review' });
+  const parentActive = manager.active.get(parent.sessionId);
+  const call = (operation, args) => manager.callGoalTool(parent.sessionId, 'camellia_conversation_' + operation,
+    { run_token: parentActive.goalRunToken, ...args });
+  const child = manager.get(call('fork', { request_id: 'reviewer', title: 'Reviewer' }).conversation.id);
+  let task = manager.subagentView(parent.sessionId)[0];
+  assert.equal(task.userSeq, parent.userSeq); assert.equal(task.status, 'ready');
+  assert.deepEqual(task.history, []); assert.equal(task.canReply, true);
+  call('send', { request_id: 'work', conversation_id: child.id, prompt: 'Review all figures' });
+  await h.flush();
+  const childActive = manager.active.get(child.id);
+  manager.capture('kimi', { type: 'stream_event', conversationId: child.id, runId: childActive.session.gen,
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Reading figure captions' } } });
+  assert.match(manager.subagentView(parent.sessionId)[0].progress, /Reading figure captions/);
+  manager.capture('kimi', { type: 'gui:permission', conversationId: child.id, runId: childActive.session.gen,
+    requestId: 'review-approval', toolName: 'Read file', input: { path: 'figures.pdf' } });
+  task = manager.subagentView(parent.sessionId)[0];
+  assert.equal(task.status, 'waiting'); assert.equal(task.approvals[0].subagentId, task.id);
+  await manager.subagentCommand(parent.sessionId, { taskId: task.id, engine: task.engine, operation: 'approve',
+    expectedTurnId: task.turnId, approvalId: 'review-approval', fingerprint: task.approvals[0].fingerprint, allow: true });
+  assert.equal(childActive.session.permissions[0], 'review-approval'); assert.equal(parentActive.session.permissions, undefined);
+  await manager.subagentCommand(parent.sessionId, { taskId: task.id, engine: task.engine, operation: 'stop', expectedTurnId: task.turnId });
+  await h.flush();
+  assert.equal(manager.subagentView(parent.sessionId)[0].status, 'stopped'); assert.equal(manager.active.get(parent.sessionId), parentActive);
+  task = manager.subagentView(parent.sessionId)[0];
+  await assert.rejects(manager.subagentCommand(parent.sessionId, { taskId: task.id, engine: task.engine,
+    operation: 'reply', expectedTurnId: 'stale', prompt: 'Retry' }), /changed/);
+  await manager.subagentCommand(parent.sessionId, { taskId: task.id, engine: task.engine,
+    operation: 'reply', expectedTurnId: task.turnId, prompt: 'Check the legend too' });
+  assert.match(h.sent.at(-1).prompt, /Check the legend too/); assert.equal(manager.active.get(parent.sessionId), parentActive);
+  const final = manager.active.get(child.id);
+  h.finish('kimi', 'success', 'The legend is correct', final.session); await final.done;
+  task = manager.subagentView(parent.sessionId)[0];
+  assert.equal(task.status, 'completed'); assert.match(task.result, /legend is correct/);
+  assert.ok(h.events.some(event => event.type === 'gui:subagent' && event.session_id === parent.sessionId));
 });
 
 test('child sends survive pre-compaction and overflow recovery without duplicate dispatch', async context => {

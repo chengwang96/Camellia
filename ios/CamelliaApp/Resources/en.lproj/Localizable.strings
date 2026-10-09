@@ -1,4 +1,5 @@
 // Generated from Android tr() calls and en-overrides.strings.
+"分叉会话" = "Fork conversation";
 "\n\n不会自动再次定位。接收方可能保存位置，回答及后续会话上下文也可能包含它。" = "\n\nNo automatic future location access. The recipient may retain the location, and answers or later conversation context may include it.";
 "\n[图片]" = "\n[Image]";
 " · 停止回复后可切换连接" = " · Stop the reply to change connection";

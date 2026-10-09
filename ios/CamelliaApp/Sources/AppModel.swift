@@ -1965,7 +1965,9 @@ final class AppModel: ObservableObject {
                     let command = JSONObject(dictionary: body)
                     switch slot {
                     case .list:
-                        computer.pendingCreate = command
+                        var journal = body
+                        if let conversationId { journal["moveSessionId"] = conversationId }
+                        computer.pendingCreate = JSONObject(dictionary: journal)
                     case .detail:
                         var wrapper: [String: Any] = [
                             "conversationId": conversationId ?? "",
@@ -2126,7 +2128,7 @@ final class AppModel: ObservableObject {
         payload.removeValue(forKey: "action")
         payload.removeValue(forKey: "requestId")
         var target: String?
-        if action == "move" {
+        if action == "move" || action == "fork" {
             target = payload.removeValue(forKey: "moveSessionId") as? String
         }
         let taskId = UUID()
@@ -2144,7 +2146,7 @@ final class AppModel: ObservableObject {
                     self.forgetPrefetched(ids)
                 }
                 self.refreshList()
-                if action == "create", let conversation = value.conversation {
+                if (action == "create" || action == "fork"), let conversation = value.conversation {
                     if !self.conversations.contains(where: { $0.id == conversation.id }) {
                         self.conversations.append(conversation)
                     }
@@ -2866,6 +2868,15 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - Queue and automation
+    func subtaskCommand(_ task: RemoteSubtask, operation: String, extra: [String: Any] = [:]) {
+        guard canDrive, !commandBusy, !hasPendingDetailOperation,
+              let id = openId, let session,
+              transcript.subagents.contains(where: { $0.id == task.id && $0.engine == task.engine }) else { return }
+        var payload = task.command(operation: operation, instanceId: transcript.instanceId)
+        for (key, value) in extra { payload[key] = value }
+        deliver(session: session, action: "subagent-command", conversationId: id, payload: payload,
+                outcome: { [weak self] in self?.report($0) })
+    }
 
     /// Whether the composer should offer to enqueue rather than to send now.
     ///
@@ -2998,6 +3009,17 @@ final class AppModel: ObservableObject {
             case .refused, .unconfirmed, .transportUnconfirmed:
                 self.report(result)
             }
+        }
+    }
+    func forkConversation(_ conversation: RemoteConversation) {
+        guard !commandBusy, !hasPendingListOperation, access.canCreate,
+              access.capabilities.contains(.fork), let session else { return }
+        deliver(session: session, action: "fork", conversationId: conversation.id,
+                payload: ["instanceId": listInstanceId, "expectedSeq": conversation.seq], pendingSlot: .list) { [weak self] result in
+            guard let self else { return }
+            if case .accepted(let value) = result, let fork = value.conversation {
+                self.conversations.append(fork); self.createdConversationId = fork.id; self.refreshList()
+            } else { self.report(result) }
         }
     }
 

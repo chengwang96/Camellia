@@ -54,6 +54,19 @@ final class ComputerStore {
         store.save(saved);
     }
 
+    // A late receipt may belong to an inactive computer. Update its profile
+    // without selecting it or reviving credentials that the user removed.
+    boolean saveProfile(JSONObject value) throws Exception {
+        JSONObject saved = store.load(), profiles = profiles(saved);
+        String address = value.optString("address");
+        JSONObject previous = profiles.optJSONObject(address);
+        if (previous == null || !previous.optString("token").equals(value.optString("token"))) return false;
+        JSONObject current = new JSONObject(value.toString()); current.remove("computers");
+        profiles.put(address, current);
+        if (address.equals(saved.optString("address"))) saved = new JSONObject(current.toString());
+        saved.put("computers", profiles); store.save(saved); return true;
+    }
+
     void remove(String address) throws Exception {
         JSONObject saved = store.load();
         JSONObject profiles = profiles(saved);

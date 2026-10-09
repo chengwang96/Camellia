@@ -265,7 +265,11 @@ test('headless local socket handles commands without a second data writer', asyn
 test('headless shutdown waits for an in-flight local command before releasing the lock', async context => {
   const { host, dataDir, network } = harness(context);
   let resume;
-  network.start = () => new Promise(resolve => { resume = resolve; });
+  const startNetwork = network.start.bind(network);
+  network.start = async () => {
+    await new Promise(resolve => { resume = resolve; });
+    await startNetwork();
+  };
   const starting = host.command('start');
   const stopping = host.close();
   assert.equal(fs.existsSync(path.join(dataDir, 'server.lock')), true);
@@ -299,7 +303,7 @@ test('trusted-device restoration reuses authorization but never invokes interact
   assert.equal(starts, 1);
 });
 
-test('trusted-device startup failure keeps the local console available for manual retry', async context => {
+test('trusted-device startup failure keeps networking enabled and the local console available for retry', async context => {
   const { host, dataDir, driverFactory, networkFactory, hosts, network } = harness(context);
   await host.close();
   fs.writeFileSync(path.join(dataDir, 'remote', 'devices.json'), JSON.stringify({ devices: [{ id: 'trusted', name: 'GUI', tokenDigest: 'a'.repeat(64), permission: 'control', allWorkspaces: true, workspaceIds: [] }] }));
@@ -308,7 +312,7 @@ test('trusted-device startup failure keeps the local console available for manua
   await assert.rejects(reopened.startTrustedDevices(), /Helper missing/);
   const state = await reopened.command('settings');
   assert.equal(state.ok, true);
-  assert.equal(state.result.enabled, false);
+  assert.equal(state.result.enabled, true);
   assert.equal(state.result.network.state, 'Error');
   network.start = async () => { network.snapshot = { state: 'NeedsLogin' }; };
   assert.equal((await reopened.command('start')).ok, true);

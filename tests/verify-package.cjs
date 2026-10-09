@@ -30,6 +30,16 @@ for (const file of fs.globSync(manifest.build.files.filter(file => file !== 'pac
 assert.ok(!asar.listPackage(archive).some(file => /^\\?tests[\\/]/.test(file)), 'Tests must not be packaged');
 const runtimeNode = isMac ? 'runtime/node' : 'runtime/node.exe';
 const runtimeInfo = JSON.parse(fs.readFileSync(path.join(resources, 'runtime/version.json')));
+if (isMac) {
+  const jobHelper = path.join(resources, 'runtime/camellia-discussion-job');
+  assert.ok(fs.statSync(jobHelper).mode & 0o111, 'Missing executable macOS discussion supervisor');
+  const jobInfo = JSON.parse(fs.readFileSync(path.join(resources, 'runtime/discussion-job-version.json')));
+  assert.deepEqual(jobInfo, { protocol: 1, platform: 'darwin', arch: 'arm64' });
+  const jobHeader = fs.readFileSync(jobHelper);
+  assert.equal(jobHeader.readUInt32LE(0), 0xfeedfacf, 'Discussion helper is a Mach-O executable');
+  assert.equal(jobHeader.readUInt32LE(4), 0x0100000c, 'Discussion helper targets Apple Silicon');
+  assert.match(fs.readFileSync(path.join(resources, 'runtime/DISCUSSION-JOB-NOTICES.txt'), 'utf8'), /Go runtime and standard library:/);
+}
 assert.equal(runtimeInfo.platform, isMac ? 'darwin' : 'win32');
 assert.equal(runtimeInfo.arch, isMac ? 'arm64' : 'x64');
 assert.equal(runtimeInfo.node, readNodeVersion(root), 'Bundled Node must match the project version pin');

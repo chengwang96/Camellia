@@ -20,6 +20,42 @@ function fixture(t, opts = {}) {
   t.after(() => session.kill());
   return { session, proc, writes, events, results, timers, spawns };
 }
+test('Claude reports native background task progress and its actual terminal state', t => {
+  const f = fixture(t);
+  for (const row of [
+    { subtype: 'task_started', task_id: 'task-child', description: 'Inspect the files' },
+    { subtype: 'task_progress', task_id: 'task-child', description: 'Inspect the files', summary: 'Found the test' },
+    { subtype: 'task_notification', task_id: 'task-child', status: 'failed', summary: 'Test failed' },
+  ]) f.session.emitLine(JSON.stringify({ type: 'system', ...row }));
+  const tasks = f.events.filter(event => event.type === 'gui:subagent').map(event => event.task);
+  assert.equal(tasks[0].status, 'running'); assert.equal(tasks[1].progress, 'Found the test');
+  assert.equal(tasks[2].status, 'failed'); assert.equal(tasks[2].canStop, false);
+});
+
+test('Claude routes child approvals and stop requests without interrupting the parent', async t => {
+  const f = fixture(t); f.session.sendUserMessage('Parent work');
+  f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 'child', task_type: 'local_agent', tool_use_id: 'spawn-tool', description: 'Inspect files' }));
+  f.session.emitLine(JSON.stringify({ type: 'assistant', parent_tool_use_id: 'spawn-tool', message: { content: [{ type: 'text', text: 'Child progress' }] } }));
+  assert.equal(f.events.filter(event => event.type === 'assistant').length, 0);
+  assert.equal(f.session.children.get('child').progress, 'Child progress');
+  f.session.onControlRequest({ request_id: 'child-request', request: { subtype: 'can_use_tool', agent_id: 'child', tool_name: 'Bash', input: { command: 'git status' } } });
+  assert.equal(f.events.filter(event => event.type === 'gui:permission').length, 0);
+  assert.equal(f.session.children.get('child').status, 'waiting');
+  f.session.complete({ subtype: 'success', result: 'Parent result' });
+  assert.equal(f.session.permissions.has('child-request'), true);
+  await f.session.controlChild('child', { operation: 'approve', approvalId: 'child-request', response: { allow: true } });
+  assert.equal(f.writes.at(-1).response.request_id, 'child-request');
+  const stopped = f.session.controlChild('child', { operation: 'stop', expectedTurnId: f.session.children.get('child').turnId });
+  const request = f.writes.at(-1);
+  assert.deepEqual(request.request, { subtype: 'stop_task', task_id: 'child' });
+  f.session.emitLine(JSON.stringify({ type: 'control_response', response: { request_id: request.request_id, subtype: 'success', response: {} } }));
+  await stopped; assert.equal(f.session.children.get('child').status, 'running', 'receipt does not invent a terminal state');
+  f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_updated', task_id: 'child', patch: { status: 'stopped' } }));
+  assert.equal(f.session.children.get('child').status, 'stopped'); assert.equal(f.session.children.get('child').canStop, false);
+  assert.equal(f.session.cancelled, false);
+  f.session.emitLine(JSON.stringify({ type: 'system', subtype: 'task_started', task_id: 'shell', task_type: 'local_bash' }));
+  assert.equal(f.session.children.has('shell'), false, 'background shells are not presented as agents');
+});
 
 test('image input failure leaves Claude idle and the next valid image send retains its actual bytes', context => {
   const fs = require('node:fs'), os = require('node:os');

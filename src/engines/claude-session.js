@@ -23,6 +23,9 @@ class ClaudeSession {
     this.stderrDecoder = new StringDecoder('utf8');
     this.controlSeq = 0;
     this.permissions = new Map();
+    this.children = new Map();
+    this.childTools = new Map();
+    this.childControls = new Map();
   }
 
   start() {
@@ -57,6 +60,8 @@ class ClaudeSession {
       this.drain(true);
       const stderr = this.stderrDecoder.end().trimEnd();
       if (stderr) this.log(`[claude stderr] ${stderr}`);
+      for (const [id, task] of this.children) this.childUpdate(id, { canReply: false, canStop: false, approvals: [],
+        ...(['starting', 'running', 'waiting'].includes(task.status) ? { status: 'unavailable' } : {}) });
       if (this.running) this.complete({ type: 'result', is_error: true,
         subtype: code === null ? 'stopped' : 'exit_' + code,
         result: code === null ? `Stopped (signal ${signal || ''})` : `Claude exited before returning a result (exit code ${code})` });
@@ -95,7 +100,7 @@ class ClaudeSession {
     this.running = false;
     this.clearWatchdog();
     this.clearTimer(this.cancelTimer); this.cancelTimer = null;
-    this.permissions.clear();
+    for (const [id, request] of this.permissions) if (!request.subagentId) this.permissions.delete(id);
     this.rememberSession(obj.session_id);
     const errorText = Array.isArray(obj.errors) ? obj.errors.filter(e => typeof e === 'string').join('\n') : '';
     const result = { ...obj, result: obj.result || (obj.is_error ? errorText : '') || '', session_id: this.sessionId,
@@ -126,7 +131,15 @@ class ClaudeSession {
     try { obj = JSON.parse(line); } catch { return; }
     if (!obj || typeof obj !== 'object') return;
     if (obj.type === 'control_request') { this.onControlRequest(obj); return; }
-    if (obj.type === 'control_response') return;
+    if (obj.type === 'control_response') {
+      const response = obj.response, pending = this.childControls.get(response?.request_id);
+      if (pending) {
+        this.childControls.delete(response.request_id); this.clearTimer(pending.timer);
+        if (response.subtype === 'success') pending.resolve();
+        else pending.reject(new Error(response.error || 'The subtask operation failed'));
+      }
+      return;
+    }
     if (obj.type === 'system' && obj.subtype === 'init') {
       this.initialized = true;
       this.clearWatchdog();
@@ -138,6 +151,32 @@ class ClaudeSession {
       else this.sendChannel({ type: 'gui:compaction', state: 'completed' });
     }
     if (this.compaction) return;
+    if (obj.type === 'system' && ['task_started', 'task_progress', 'task_notification', 'task_updated'].includes(obj.subtype) && obj.task_id) {
+      if (obj.task_type && !['local_agent', 'remote_agent', 'local_workflow', 'in_process_teammate'].includes(obj.task_type)) return;
+      if (obj.subtype !== 'task_started' && !this.children.has(obj.task_id)) return;
+      if (obj.tool_use_id) this.childTools.set(obj.tool_use_id, obj.task_id);
+      const native = obj.patch || obj;
+      const status = ({ pending: 'starting', running: 'running', completed: 'completed', failed: 'failed', stopped: 'stopped' }[native.status]) || this.children.get(obj.task_id)?.status || 'running';
+      this.childUpdate(obj.task_id, {
+        ...(obj.parent_task_id ? { parentId: obj.parent_task_id } : {}),
+        ...(obj.subtype === 'task_started' ? { turnId: obj.run_id || 'child-start-' + ++this.controlSeq } : {}),
+        title: obj.description || undefined, goal: obj.subtype === 'task_started' ? obj.description : undefined,
+        progress: obj.summary || obj.description || undefined,
+        status, ...(status === 'completed' ? { result: obj.summary || undefined } : {}),
+        canReply: false, canStop: ['starting', 'running', 'waiting'].includes(status),
+        history: [...(this.children.get(obj.task_id)?.history || []), { type: obj.subtype, text: obj.summary || obj.description || native.status || '' }],
+        ...(!['starting', 'running', 'waiting'].includes(status) ? { approvals: [] } : {}),
+      });
+      return;
+    }
+    if (obj.parent_tool_use_id || obj.agent_id) {
+      const id = obj.agent_id || this.childTools.get(obj.parent_tool_use_id);
+      if (id && this.children.has(id)) {
+        const text = obj.message?.content?.filter(block => block.type === 'text').map(block => block.text).join('\n') || obj.event?.delta?.text;
+        if (text) this.childUpdate(id, { progress: text, history: [...(this.children.get(id).history || []), { type: obj.type, text }] });
+      }
+      return;
+    }
     this.sendChannel(obj);
   }
 
@@ -148,17 +187,22 @@ class ClaudeSession {
       this.clearWatchdog();
       this.answer(msg.request_id, {});
     } else if (req.subtype === 'can_use_tool') {
-      if (!this.running || this.cancelled || this.compaction) {
+      const childId = typeof req.agent_id === 'string' ? req.agent_id : null;
+      if ((!childId && (!this.running || this.cancelled || this.compaction)) || this.dead) {
         this.answer(msg.request_id, { behavior: 'deny', message: 'This response was stopped or is no longer active.' });
         return;
       }
       const input = req.input || {};
       const questions = req.tool_name === 'AskUserQuestion' && Array.isArray(input.questions)
         ? input.questions.map((question, index) => ({ ...question, id: 'claude-question-' + index })) : undefined;
-      this.permissions.set(msg.request_id, { input, questions });
-      this.sendChannel({ type: 'gui:permission', requestId: msg.request_id, toolName: req.tool_name || '',
+      this.permissions.set(msg.request_id, { input, questions, subagentId: childId });
+      const event = { type: 'gui:permission', requestId: msg.request_id, toolName: req.tool_name || '',
         input, ...(questions?.length ? { questions } : {}), permissionSuggestions: req.permission_suggestions || null,
-        reason: req.decision_reason || req.blocked_path && ('Protected path: ' + req.blocked_path) || '', permissionMode: this.settings.permissionMode });
+        reason: req.decision_reason || req.blocked_path && ('Protected path: ' + req.blocked_path) || '', permissionMode: this.settings.permissionMode };
+      if (childId) this.childUpdate(childId, { status: 'waiting', canReply: false, canStop: true,
+        ...(!this.children.has(childId) ? { turnId: 'child-start-' + ++this.controlSeq } : {}),
+        approvals: [...(this.children.get(childId)?.approvals || []), { ...event, subagentId: childId }] });
+      else this.sendChannel(event);
     } else {
       this.log(`claude: control_request subtype=${req.subtype} → auto-success`);
       this.answer(msg.request_id, {});
@@ -182,7 +226,7 @@ class ClaudeSession {
 
   answerPermission(requestId, allow, input, message) {
     if (!this.permissions.has(requestId)) return false;
-    const { input: originalInput, questions } = this.permissions.get(requestId);
+    const { input: originalInput, questions, subagentId } = this.permissions.get(requestId);
     let updatedInput = input ?? originalInput;
     if (allow && questions?.length) {
       const answers = Object.fromEntries(questions.map(question => {
@@ -196,6 +240,10 @@ class ClaudeSession {
       updatedInput = { ...originalInput, answers };
     }
     this.permissions.delete(requestId);
+    if (subagentId) {
+      const approvals = (this.children.get(subagentId)?.approvals || []).filter(event => event.requestId !== requestId);
+      this.childUpdate(subagentId, { status: approvals.length ? 'waiting' : 'running', approvals });
+    }
     return this.answer(requestId, allow
       ? { behavior: 'allow', updatedInput }
       : { behavior: 'deny', message: message || "The user denied this action in the desktop interface" });
@@ -221,7 +269,7 @@ class ClaudeSession {
   interrupt() {
     if (!this.running || this.cancelled) return false;
     this.cancelled = true;
-    for (const requestId of this.permissions.keys()) this.answerPermission(requestId, false, undefined, 'The user stopped this response.');
+    for (const [requestId, request] of this.permissions) if (!request.subagentId) this.answerPermission(requestId, false, undefined, 'The user stopped this response.');
     const sent = this.write({ type: 'control_request', request_id: `gui-interrupt-${++this.controlSeq}`, request: { subtype: 'interrupt' } });
     if (this.running) this.cancelTimer = this.setTimer(() => {
       if (!this.running) return;
@@ -252,12 +300,39 @@ class ClaudeSession {
 
   clearWatchdog() { this.clearTimer(this.watchdog); this.watchdog = null; }
 
+  childUpdate(id, update) {
+    const task = require('../shared/subagents').mergeTask(this.children.get(id), { ...update, id }, { engine: 'claude' });
+    if (!task) return;
+    this.children.set(id, task); this.sendChannel({ type: 'gui:subagent', task });
+  }
+
+  async controlChild(id, { operation, approvalId, response, expectedTurnId }) {
+    const task = this.children.get(id);
+    if (!task || this.dead) throw new Error('This subtask is no longer connected');
+    if (operation === 'approve') {
+      if (this.permissions.get(approvalId)?.subagentId !== id || !this.answerPermission(approvalId, response.allow, response.input)) throw new Error('The subtask request changed');
+      return;
+    }
+    if (task.turnId !== expectedTurnId) throw new Error('The subtask changed; refresh before responding');
+    if (operation !== 'stop' || !task.canStop) throw new Error('This subtask does not support that action');
+    const requestId = 'gui-child-' + ++this.controlSeq;
+    await new Promise((resolve, reject) => {
+      const timer = this.setTimer(() => { this.childControls.delete(requestId); reject(new Error('The subtask stop was not confirmed')); }, 12000);
+      timer?.unref?.(); this.childControls.set(requestId, { resolve, reject, timer });
+      if (!this.write({ type: 'control_request', request_id: requestId, request: { subtype: 'stop_task', task_id: id } })) {
+        this.childControls.delete(requestId); this.clearTimer(timer); reject(new Error('Claude input channel is closed'));
+      }
+    });
+  }
+
   kill() {
     if (this.compaction) this.complete({ type: 'result', subtype: 'stopped', is_error: true, result: 'Claude process stopped during compaction' });
     this.dead = true;
     this.closed = true;
     this.running = false;
     this.permissions.clear();
+    for (const pending of this.childControls.values()) { this.clearTimer(pending.timer); pending.reject(new Error('The subtask is no longer connected')); }
+    this.childControls.clear();
     this.stdoutBuf = '';
     this.clearWatchdog();
     this.clearTimer(this.cancelTimer); this.cancelTimer = null;

@@ -12,6 +12,7 @@ Start with the [English README](../README.md) or [Simplified Chinese README](../
 | [Linux server preview](linux-server-preview.md) | Headless host, one-terminal pairing, systemd user service, package, and checks. |
 | [Linux acceptance record](linux-server-acceptance.md) | Tested artifact and remaining live host acceptance. |
 | [Conversation control](conversation-tools.md) | Child conversations and device-wide read-only history tools. |
+| [Conversation work panel](conversation-work-panel.md) | Desktop subtasks/artifacts, mobile child pages, active forks, and engine limits. |
 | [Scheduled checks](scheduled-tasks.md) | Natural-language scheduling, recovery, and task scope. |
 | [File finding](file-find.md) | `/find`, recent files, name/content search, and phone downloads. |
 | [Artifact previews](artifact-previews.md) | File cards and desktop preview behavior. |

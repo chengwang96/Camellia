@@ -41,10 +41,12 @@ class RemoteGateway {
     } else if (!this.validateHost(host)) throw new Error('Remote access must bind to the local Tailscale IPv4 address');
     this.transport = transport;
     this.instanceId = randomUUID();
+    this.commands?.trimJournal(true);
     this.sequence = 0;
-    const server = http.createServer({ maxHeaderSize: 8192, requestTimeout: 10_000, headersTimeout: 10_000 }, (request, response) => {
+    const server = http.createServer({ maxHeaderSize: 8192, requestTimeout: 120_000, headersTimeout: 10_000 }, (request, response) => {
       void this.handle(request, response).catch(error => {
         if (response.headersSent || response.destroyed) { response.destroy(); return; }
+        if (error.status === 429) response.setHeader('Retry-After', '60');
         this.json(response, error.status || 500, { error: error.status ? error.message : 'Remote request failed' });
       });
     });
@@ -74,10 +76,18 @@ class RemoteGateway {
     response.end(JSON.stringify(payload));
   }
   stamp() { return { instanceId: this.instanceId, cursor: this.sequence }; }
-  throttle(request, pairing) {
+  commandReply(device, id, result) {
+    let current;
+    if (id) {
+      try { current = { ...this.reader.snapshot(device, id, undefined, null), ...this.stamp() }; }
+      catch (error) { if (![403, 404].includes(error.status)) throw error; }
+    }
+    return { ...result, ...this.stamp(), ...(current ? { current } : {}) };
+  }
+  throttle(request, pairing, control = false) {
     const now = Date.now();
     for (const [key, entry] of this.rate) if (entry.until <= now) this.rate.delete(key);
-    const key = `${this.transport ? request.headers['x-camellia-peer'] : request.socket.remoteAddress}:${pairing ? 'pair' : 'read'}`;
+    const key = `${this.transport ? request.headers['x-camellia-peer'] : request.socket.remoteAddress}:${pairing ? 'pair' : control ? 'control' : 'read'}`;
     const entry = this.rate.get(key) || { until: now + 60_000, count: 0 };
     if (!this.rate.has(key) && this.rate.size >= 1024) fail(429, 'Too many clients');
     this.rate.set(key, entry);
@@ -93,7 +103,7 @@ class RemoteGateway {
     const url = new URL(request.url, this.url);
     if (url.origin !== this.url) fail(400, 'Invalid request target');
     const pairing = url.pathname === '/v1/pair/request' || url.pathname === '/v1/pair/claim';
-    this.throttle(request, pairing);
+    this.throttle(request, pairing, !pairing && (request.method === 'POST' || /^\/v1\/(?:discussions\/)?commands\//.test(url.pathname)));
     if (pairing) {
       if (request.method !== 'POST' || url.search) fail(405, 'POST required');
       const payload = await body(request);
@@ -105,6 +115,13 @@ class RemoteGateway {
     const authorization = request.headers.authorization || '';
     if (!/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization)) fail(401, 'Device authentication required');
     const device = this.access.authenticate(authorization.slice(7));
+    const receipt = /^\/v1\/commands\/([a-f0-9-]{36})$/.exec(url.pathname);
+    if (receipt && request.method === 'GET' && !url.search && this.commands) {
+      const result = this.commands.receipt(device, receipt[1]);
+      const entry = this.commands.entries.find(item => item.key === device.id + ':' + receipt[1]);
+      this.json(response, 200, this.commandReply(device, entry.conversationId, result));
+      return;
+    }
     if (this.discussions && /^\/v1\/discussions(?:\/|$)/.test(url.pathname)) {
       await this.handleDiscussions(request, response, url, device);
       return;
@@ -159,14 +176,14 @@ class RemoteGateway {
     }
     if (url.pathname === '/v1/commands' && request.method === 'POST' && !url.search && this.commands) {
       if (device.permission !== 'control') fail(403, 'Control permission required');
-      this.json(response, 200, await this.commands.execute(device, null, await body(request, 32 * 1024), this.instanceId));
+      this.json(response, 200, { ...await this.commands.execute(device, null, await body(request, 32 * 1024), this.instanceId), ...this.stamp() });
       return;
     }
     const command = /^\/v1\/conversations\/([a-f0-9-]{36})\/commands$/.exec(url.pathname);
     if (command && request.method === 'POST' && !url.search && this.commands) {
       if (device.permission !== 'control') fail(403, 'Control permission required');
       const payload = await body(request, MAX_REQUEST);
-      this.json(response, 200, await this.commands.execute(device, command[1], payload, this.instanceId));
+      this.json(response, 200, this.commandReply(device, command[1], await this.commands.execute(device, command[1], payload, this.instanceId)));
       return;
     }
     // Reading the desktop API route configuration hands the device every raw
@@ -187,19 +204,23 @@ class RemoteGateway {
       else await this.download(response, device, artifact[1], artifact[2]);
       return;
     }
-    for (const key of url.searchParams.keys()) if (!['before', 'offset'].includes(key)) fail(400, 'Unsupported query parameter');
+    const incremental = /\/events$/.test(url.pathname) && url.searchParams.get('incremental') === '1';
+    for (const key of url.searchParams.keys()) if (!['before', 'offset'].includes(key) && !(key === 'incremental' && incremental)
+      && !(url.pathname === '/v1/conversations' && ['limit', 'query'].includes(key))) fail(400, 'Unsupported query parameter');
     if (url.pathname === '/v1/status') {
       this.json(response, 200, { ...this.connectionInfo(device), ...this.stamp() });
     } else if (url.pathname === '/v1/archived') {
       this.json(response, 200, { ...this.reader.archived(device, number(url.searchParams.get('offset'), 0)), ...this.stamp() });
     } else if (url.pathname === '/v1/conversations') {
-      this.json(response, 200, { ...this.connectionInfo(device), ...this.reader.list(device, number(url.searchParams.get('offset'), 0)), ...this.discussionNavigation(device), ...this.stamp() });
+      const limit = number(url.searchParams.get('limit'), 100), query = (url.searchParams.get('query') || '').trim().toLowerCase();
+      if (limit < 1 || limit > 1000 || query.length > 200) fail(400, 'Invalid list range or query');
+      this.json(response, 200, { ...this.connectionInfo(device), ...this.reader.list(device, number(url.searchParams.get('offset'), 0), limit, query), ...this.discussionNavigation(device), ...this.stamp() });
     } else if (url.pathname === '/v1/conversations/events') {
       this.subscribe(response, device, null);
     } else {
       const match = /^\/v1\/conversations\/([a-f0-9-]{36})(\/events)?$/.exec(url.pathname);
       if (!match) fail(404, 'Endpoint not found');
-      if (match[2]) this.subscribe(response, device, match[1]);
+      if (match[2]) this.subscribe(response, device, match[1], 'conversations', incremental);
       else this.json(response, 200, { ...this.reader.snapshot(device, match[1], number(url.searchParams.get('before'), undefined)), ...this.stamp() });
     }
   }
@@ -212,8 +233,10 @@ class RemoteGateway {
     if (this.nativeSettings && fullControl) capabilities.push('native-settings');
     if (this.management && fullControl) capabilities.push('server-management');
     if (this.discussions && fullControl) capabilities.push('discussions', 'discussion-rich');
-    if (this.commands) capabilities.push('interactive-approvals', 'next-turn-settings');
+    if (this.commands) capabilities.push('interactive-approvals', 'next-turn-settings', 'subagents');
     if (this.commands) capabilities.push('fork', 'switch-engine', 'compact', 'find', 'resend', 'automation-control', 'message-queue');
+    if (this.commands) capabilities.push('command-receipts', 'stop-start', 'incremental-snapshots');
+    capabilities.push('list-query');
     return { protocol: 1, permission: device.permission, capabilities,
       engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine)),
       workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
@@ -275,21 +298,21 @@ class RemoteGateway {
     const snapshot = this.discussions.list(device);
     return { discussionGroups: snapshot.groups, discussionsNextOffset: snapshot.nextOffset, discussionVersion: snapshot.listVersion };
   }
-  streamSnapshot({ device, id, kind }) {
+  streamSnapshot({ device, id, kind, incremental, historyVersion }) {
     if (kind === 'discussions') {
       if (!id) return this.discussions.list(device);
       try { return this.discussions.snapshot(device, id); }
       catch (error) { if (error.status === 404) return { deleted: true, id }; throw error; }
     }
-    if (id) return this.reader.snapshot(device, id);
+    if (id) return this.reader.snapshot(device, id, undefined, incremental ? historyVersion : undefined);
     const snapshot = this.reader.listSnapshot(device), discussions = this.discussionNavigation(device);
     return { ...snapshot, listVersion: snapshot.listVersion + (discussions.discussionVersion ? ':' + discussions.discussionVersion : '') };
   }
-  subscribe(response, device, id, kind = 'conversations') {
+  subscribe(response, device, id, kind = 'conversations', incremental = false) {
     if (this.streams.size >= 16 || [...this.streams].filter(stream => stream.device.id === device.id).length >= 4) fail(429, 'Too many event streams');
     const snapshot = this.streamSnapshot({ device, id, kind });
     response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
-    const stream = { response, device, id, kind, dirty: false, blocked: false };
+    const stream = { response, device, id, kind, incremental, dirty: false, blocked: false };
     this.streams.add(stream);
     response.on('close', () => this.streams.delete(stream));
     response.on('drain', () => {
@@ -301,10 +324,15 @@ class RemoteGateway {
   writeSnapshot(stream, snapshot) {
     if (!stream.id && stream.listVersion === snapshot.listVersion) return;
     stream.listVersion = snapshot.listVersion;
+    if (snapshot.messages) stream.historyVersion = snapshot.historyVersion;
     const payload = { ...snapshot, ...this.stamp() };
     stream.blocked = !stream.response.write(`id: ${this.instanceId}:${this.sequence}\nevent: snapshot\ndata: ${JSON.stringify(payload)}\n\n`);
   }
   publish(update) {
+    if (this.commands?.trimJournal()) {
+      this.instanceId = randomUUID();
+      for (const stream of this.streams) { delete stream.historyVersion; delete stream.listVersion; stream.dirty = true; }
+    }
     this.sequence++;
     const id = update?.session_id || update?.sessionId || update?.discussionId;
     for (const stream of this.streams) if (!id || !stream.id || stream.id === id) stream.dirty = true;
@@ -319,7 +347,7 @@ class RemoteGateway {
         if (!stream.dirty || stream.blocked) continue;
         stream.dirty = false;
         try {
-          const key = JSON.stringify([stream.device.id, stream.kind, stream.id]);
+          const key = JSON.stringify([stream.device.id, stream.kind, stream.id, stream.incremental, stream.historyVersion]);
           if (!snapshots.has(key)) snapshots.set(key, this.streamSnapshot(stream));
           this.writeSnapshot(stream, snapshots.get(key));
         }

@@ -287,6 +287,78 @@ test('remote automation controls are scoped, explicit and cannot create tasks th
   const invalid = await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: { ...payload, action: 'task-control', taskId: 'anything', operation: 'create', requestId: require('node:crypto').randomUUID() } });
   assert.equal(invalid.body.ok, false);
 });
+test('remote live fork tolerates tool updates inside the same turn but excludes that whole turn', async context => {
+  const { gateway, pair, visible, manager } = fixture(context), { token } = pair();
+  await gateway.start('127.0.0.1', 0); const runs = queuedRuns(manager, visible.id);
+  const stable = manager.messages(visible).map(row => row.text);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Live request' }); const expectedSeq = visible.seq;
+  manager.append(visible, { role: 'tool', text: 'Live tool output' });
+  const result = await request(gateway, `/v1/conversations/${visible.id}/commands`, { token, method: 'POST', payload: {
+    action: 'fork', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, expectedSeq } });
+  assert.equal(result.body.ok, true);
+  assert.deepEqual(manager.messages(manager.get(result.body.conversation.id)).map(row => row.text), stable);
+  assert.equal(manager.active.has(visible.id), true); runs.finish();
+});
+test('remote child controls are scoped, persisted and withheld from read-only snapshots', async context => {
+  const { manager, pair, access, reader, commands, gateway, visible, hidden } = fixture(context);
+  const { token } = pair(), device = access.authenticate(token); const requests = [];
+  await gateway.start('127.0.0.1', 0); const runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Parent work' });
+  const active = manager.active.get(visible.id);
+  active.session.children = new Map([['child', {}]]);
+  active.session.controlChild = async (id, payload) => requests.push({ id, payload });
+  manager.capture('codex', { type: 'gui:subagent', conversationId: visible.id, runId: active.session.gen,
+    task: { id: 'child', title: 'Inspect files', goal: 'Find the regression', status: 'running', canStop: true, turnId: 'child-turn' } });
+  const snapshot = reader.snapshot(device, visible.id);
+  assert.equal(snapshot.subagents[0].userSeq, active.userSeq); assert.equal(snapshot.subagents[0].canStop, true);
+  const payload = { action: 'subagent-command', operation: 'stop', taskId: 'child', engine: 'codex', expectedTurnId: 'child-turn', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
+  assert.equal((await commands.execute(device, visible.id, payload, gateway.instanceId)).ok, true);
+  assert.equal(requests[0].id, 'child'); assert.equal(manager.active.has(visible.id), true);
+  assert.equal(reader.snapshot({ ...device, permission: 'read' }, visible.id).subagents[0].canStop, false);
+  await assert.rejects(commands.execute(device, hidden.id, { ...payload, requestId: require('node:crypto').randomUUID() }, gateway.instanceId), /not found/);
+  runs.finish(); assert.equal(manager.get(visible.id).subagents[0].status, 'running');
+  assert.equal(manager.load('codex', visible.id).subagents[0].id, 'child');
+  active.session.children.set('grandchild', {});
+  manager.capture('codex', { type: 'gui:subagent', conversationId: visible.id, runId: active.session.gen,
+    task: { id: 'grandchild', parentId: 'child', status: 'running' } });
+  assert.equal(manager.get(visible.id).subagents.find(task => task.id === 'grandchild').userSeq, active.userSeq,
+    'a nested child started after the parent result stays attached to the initiating turn');
+});
+
+test('many child tasks keep their identities and attention counts in a bounded mobile snapshot', context => {
+  const { manager, visible, pair, access, reader } = fixture(context);
+  const device = access.authenticate(pair().token);
+  visible.subagents = Array.from({ length: 128 }, (_, i) => ({ id: 'child-' + i, engine: 'codex', userSeq: 1,
+    title: 'Review ' + i, status: 'completed', goal: '测'.repeat(16000), result: '试'.repeat(16000),
+    history: Array.from({ length: 40 }, () => ({ type: 'commandExecution', text: '数'.repeat(1800) })) }));
+  const tasks = reader.snapshot(device, visible.id).subagents;
+  assert.equal(tasks.length, 128);
+  assert.ok(Buffer.byteLength(JSON.stringify(tasks)) < 520 * 1024);
+  assert.equal(tasks.at(-1).id, 'child-127'); assert.equal(tasks[0].detailsTruncated, true);
+});
+
+test('mobile clients receive child state in full and incremental snapshots with fresh permissions', context => {
+  const { manager, visible, pair, access, reader, gateway } = fixture(context);
+  const device = access.authenticate(pair().token);
+  const child = { id: 'child', engine: 'codex', userSeq: 1, title: 'Review', status: 'waiting', turnId: 'child-turn',
+    canReply: true, canStop: true, history: [], artifacts: [{ path: 'private-child-file' }],
+    approvals: [{ requestId: 'child-approval', fingerprint: 'child-fingerprint', responseSupported: true }] };
+  context.mock.method(manager, 'subagentView', () => [child]);
+  const full = reader.snapshot(device, visible.id);
+  const delta = reader.snapshot(device, visible.id, undefined, full.historyVersion);
+  assert.ok(Array.isArray(full.messages), 'clients that do not request incremental updates receive full history');
+  assert.equal(delta.messages, undefined); assert.equal(delta.subagents[0].status, 'waiting');
+  assert.equal(delta.subagents[0].approvals[0].fingerprint, 'child-fingerprint');
+  assert.equal(delta.subagents[0].artifacts, undefined, 'raw child file paths never enter mobile snapshots');
+  child.status = 'running'; child.approvals = [];
+  assert.equal(reader.snapshot(device, visible.id, undefined, full.historyVersion).subagents[0].status, 'running');
+  child.approvals = [{ requestId: 'child-approval', fingerprint: 'child-fingerprint' }];
+  const read = reader.snapshot({ ...device, permission: 'read' }, visible.id, undefined, full.historyVersion);
+  assert.equal(read.permission, 'read'); assert.equal(read.subagents[0].pendingApprovals, 1);
+  assert.deepEqual(read.subagents[0].approvals, []); assert.equal(read.subagents[0].canReply, false); assert.equal(read.subagents[0].canStop, false);
+  const oldClient = gateway.streamSnapshot({ device, id: visible.id, kind: 'conversations', incremental: false, historyVersion: full.historyVersion });
+  assert.ok(Array.isArray(oldClient.messages), 'legacy SSE clients keep complete transcript frames');
+});
 
 test('completed goal notices end with the next user turn without clearing the saved goal', context => {
   const { manager, visible, pair, access, reader } = fixture(context);
@@ -1752,7 +1824,11 @@ test('slow mobile startup acknowledges pending requests without repeating or los
     release();
     const accepted = await operation;
     assert.equal(accepted.ok, true);
-    assert.deepEqual((await send()).body, accepted);
+    const receipt = (await send()).body;
+    const { current, instanceId, cursor, ...recorded } = receipt;
+    assert.deepEqual(recorded, accepted);
+    assert.equal(current.conversation.id, visible.id);
+    assert.equal(instanceId, gateway.instanceId);
     const reopened = new RemoteCommands({ file: commands.file, access, reader: commands.reader, publish() {} });
     assert.deepEqual(await reopened.execute(access.authenticate(credential.token), visible.id, payload, gateway.instanceId), accepted);
     assert.equal(starts, 1);
@@ -1867,4 +1943,137 @@ test('a phone can search the computer for files and download the result', async 
   assert.deepEqual(listedRecent.files.map(file => file.name), ['会议纪要-a1.md']);
   const recentRow = manager.rows(manager.get(visible.id)).filter(row => row.role === 'assistant' && !row.internal).at(-1);
   assert.match(recentRow.text, /most recently|最近编辑/);
+});
+
+test('receipt GET queries a pending send without uploading it again and remains device scoped', async context => {
+  const { gateway, commands, manager, visible, pair, access } = fixture(context);
+  const phone = pair(), other = pair(); await gateway.start('127.0.0.1', 0);
+  let release, entered, starts = 0; const preparing = new Promise(resolve => entered = resolve);
+  manager.prepare = () => { entered(); return new Promise(resolve => release = resolve); };
+  manager.drivers.codex.ensure = () => ({ gen: 91, sendUserMessage() { starts++; return true; } });
+  const payload = { action: 'send', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, expectedSeq: visible.seq, prompt: 'once' };
+  const sending = request(gateway, `/v1/conversations/${visible.id}/commands`, { token: phone.token, method: 'POST', payload });
+  try {
+    await preparing; assert.equal((await sending).body.state, 'pending');
+    const endpoint = '/v1/commands/' + payload.requestId;
+    assert.equal((await request(gateway, endpoint, { token: phone.token })).body.state, 'pending');
+    assert.equal((await request(gateway, endpoint, { token: other.token })).status, 404);
+    assert.equal(commands.entries.length, 1); release();
+    await commands.pending.get(phone.deviceId + ':' + payload.requestId);
+    assert.equal((await request(gateway, endpoint, { token: phone.token })).body.ok, true);
+    assert.equal(starts, 1);
+    access.devices.find(item => item.id === phone.deviceId).permission = 'read';
+    assert.equal((await request(gateway, endpoint, { token: phone.token })).status, 403);
+  } finally { release?.(); }
+});
+
+test('configure receipts include current settings for the next immediate action', async context => {
+  const { gateway, manager, reader, visible, pair, access } = fixture(context);
+  const phone = pair(), device = access.authenticate(phone.token); await gateway.start('127.0.0.1', 0);
+  manager.drivers.codex.saveSettings = patch => patch;
+  manager.conversationModels = () => [{ id: 'test', thinking: ['high'] }, { id: 'second', thinking: ['low'] }];
+  const old = reader.snapshot(device, visible.id).settings;
+  const command = (settings, version) => request(gateway, `/v1/conversations/${visible.id}/commands`, { token: phone.token, method: 'POST',
+    payload: { action: 'configure', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, expectedSettings: version, settings } });
+  const first = await command({ model: 'second' }, old.version);
+  assert.equal(first.body.ok, true); assert.equal(first.body.current.settings.model, 'second');
+  assert.notEqual(first.body.current.settings.version, old.version);
+  assert.equal(first.body.current.messages, undefined);
+  const second = await command({ thinking: 'low' }, first.body.current.settings.version);
+  assert.equal(second.body.ok, true); assert.equal(second.body.current.settings.thinking, 'low');
+});
+
+test('managed child visibility and controls follow the child workspace authorization', async context => {
+  const { manager, reader, access, pair, gateway, commands, visible, hidden } = fixture(context);
+  const credential = pair(), device = access.authenticate(credential.token);
+  hidden.controlParentId = visible.id; hidden.controlUserSeq = 1; hidden.controlHistoryBoundary = 0;
+  manager.append(hidden, { role: 'user', text: 'Private child request' });
+  manager.save(hidden);
+  assert.deepEqual(reader.snapshot(device, visible.id).subagents, []);
+  const task = manager.subagentView(visible.id)[0];
+  await assert.rejects(commands.execute(device, visible.id, { action: 'subagent-command', operation: 'reply',
+    taskId: task.id, engine: task.engine, expectedTurnId: task.turnId, prompt: 'Do not dispatch',
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId }, gateway.instanceId), /not found/i);
+  await manager.workspaces.metaOp({ op: 'move-session', sessionId: hidden.id, group: 'allowed' });
+  assert.equal(reader.snapshot(device, visible.id).subagents[0].id, task.id);
+});
+
+test('incremental snapshots omit stable history and send replacements after history changes', async context => {
+  const { gateway, manager, reader, visible, pair, access } = fixture(context);
+  const device = access.authenticate(pair().token);
+  const first = reader.snapshot(device, visible.id);
+  manager.active.set(visible.id, { facade: { gen: 7 }, eventSeq: 1, text: 'streaming', assistant: [], permissions: new Map() });
+  const delta = reader.snapshot(device, visible.id, undefined, first.historyVersion);
+  assert.equal(delta.messages, undefined); assert.equal(delta.nextBefore, undefined);
+  assert.equal(delta.live.text, 'streaming'); assert.equal(delta.historyVersion, first.historyVersion);
+  manager.append(visible, { role: 'assistant', text: 'finished' });
+  const changed = reader.snapshot(device, visible.id, undefined, first.historyVersion);
+  assert.notEqual(changed.historyVersion, first.historyVersion); assert.ok(changed.messages.some(row => row.text === 'finished'));
+  assert.ok(reader.snapshot(device, visible.id).messages, 'legacy snapshots remain complete');
+  const frames = [];
+  const stream = { device, id: visible.id, kind: 'conversations', incremental: true, response: { write: value => { frames.push(value); return true; } } };
+  gateway.instanceId = require('node:crypto').randomUUID();
+  gateway.writeSnapshot(stream, gateway.streamSnapshot(stream));
+  gateway.writeSnapshot(stream, gateway.streamSnapshot(stream));
+  assert.ok(JSON.parse(frames[0].split('data: ')[1]).messages);
+  assert.equal(JSON.parse(frames[1].split('data: ')[1]).messages, undefined);
+});
+
+test('startup can be cancelled by its own ID without cancelling a later startup', async context => {
+  const { manager, gateway, reader, commands, visible, pair, access } = fixture(context);
+  const device = access.authenticate(pair().token); await gateway.start('127.0.0.1', 0);
+  let release, entered, starts = 0; const preparing = new Promise(resolve => entered = resolve);
+  manager.usesNativeCompaction = () => false;
+  manager.contextPressure = () => ({ cap: 1000000, used: 900000, source: 'estimate' });
+  manager.compact = () => { entered(); return new Promise(resolve => release = () => { manager.contextPressure = () => ({ cap: 1000000, used: 0, source: 'estimate' }); resolve(); }); };
+  manager.drivers.codex.ensure = () => ({ gen: 92, sendUserMessage() { starts++; return true; }, interrupt() {} });
+  try {
+    await commands.execute(device, visible.id, { action: 'send', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, expectedSeq: visible.seq, prompt: 'startup', queue: true }, gateway.instanceId);
+    await preparing; const snapshot = reader.snapshot(device, visible.id);
+    assert.equal(snapshot.live, null); assert.ok(snapshot.preparation.startId);
+    const stop = startId => commands.execute(device, visible.id, { action: 'stop-start', requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, startId }, gateway.instanceId);
+    assert.equal((await stop(snapshot.preparation.startId)).ok, true);
+    release(); await flushQueue(); assert.equal(starts, 0);
+    const later = { startId: require('node:crypto').randomUUID(), cancelled: false }; manager.controlStarts.set(visible.id, later);
+    assert.equal((await stop(snapshot.preparation.startId)).state, 'failed'); assert.equal(later.cancelled, false);
+    manager.controlStarts.delete(visible.id);
+  } finally { release?.(); await flushQueue(); }
+});
+
+test('read rate limits do not starve command receipt checks', async context => {
+  const { gateway, commands, visible, pair } = fixture(context);
+  const phone = pair(); await gateway.start('127.0.0.1', 0);
+  const id = require('node:crypto').randomUUID();
+  commands.entries.push({ key: phone.deviceId + ':' + id, at: Date.now(), conversationId: visible.id, scopes: { [visible.id]: 'allowed' }, result: { ok: true } });
+  gateway.rate.set('127.0.0.1:read', { until: Date.now() + 60_000, count: 300 });
+  const read = await fetch(gateway.url + '/v1/status', { headers: { Authorization: 'Bearer ' + phone.token } });
+  assert.equal(read.status, 429); assert.equal(read.headers.get('retry-after'), '60');
+  assert.equal((await request(gateway, '/v1/commands/' + id, { token: phone.token })).status, 200);
+});
+
+test('journal rollover bounds retained receipts and rejects expired requests instead of replaying', async context => {
+  const { gateway, commands, visible, hidden, pair, access } = fixture(context);
+  const device = access.authenticate(pair().token); await gateway.start('127.0.0.1', 0);
+  const oldInstance = gateway.instanceId;
+  const payload = { action: 'configure', requestId: require('node:crypto').randomUUID(), instanceId: oldInstance, settings: {} };
+  commands.entries = Array.from({ length: 4001 }, (_, index) => ({ key: device.id + ':' + (index ? require('node:crypto').randomUUID() : payload.requestId), at: Date.now(), result: { ok: true } }));
+  const otherStream = { id: hidden.id, historyVersion: 'cached', dirty: false, response: { destroy() {} } };
+  gateway.streams.add(otherStream);
+  gateway.publish({ sessionId: visible.id });
+  assert.equal(commands.entries.length, 2000); assert.notEqual(gateway.instanceId, oldInstance);
+  assert.equal(otherStream.dirty, true); assert.equal(otherStream.historyVersion, undefined);
+  await assert.rejects(commands.execute(device, visible.id, payload, gateway.instanceId), /Server restarted/);
+  assert.equal(JSON.parse(fs.readFileSync(commands.file)).length, 2000);
+});
+
+test('server-side list queries page matching authorized titles and enforce a bounded range', async context => {
+  const { gateway, manager, visible, hidden, pair, access } = fixture(context);
+  const phone = pair(); await gateway.start('127.0.0.1', 0);
+  visible.title = 'Search fixture'; hidden.title = 'Search private';
+  Object.assign(access.devices.find(item => item.id === phone.deviceId), { allWorkspaces: false, workspaceIds: ['allowed'], includeUnassigned: false });
+  const result = await request(gateway, '/v1/conversations?limit=1000&query=search', { token: phone.token });
+  assert.equal(result.status, 200); assert.equal(result.body.query, 'search');
+  assert.deepEqual(result.body.conversations.map(item => item.id), [visible.id]);
+  assert.equal((await request(gateway, '/v1/conversations?limit=1001', { token: phone.token })).status, 400);
+  assert.equal((await request(gateway, '/v1/conversations?limit=0', { token: phone.token })).status, 400);
 });

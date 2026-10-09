@@ -14,6 +14,7 @@ function approval(event) {
   const supported = details.length <= 32000 && questions.length <= 12 && JSON.stringify(questions).length <= 48000
     && (!event.options?.length || options.length > 0);
   return { requestId: event.requestId, fingerprint: fingerprint(event), toolName: String(event.toolName || 'Tool approval'),
+    ...(event.subagentId ? { subagentId: event.subagentId } : {}),
     details: details.slice(0, 32000), reason: String(event.reason || '').slice(0, 4000),
     actionable: !questions.length && supported, responseSupported: supported,
     questions: supported ? questions.map(q => ({ ...pick(q, ['id', 'header', 'question', 'multiSelect', 'isSecret']),

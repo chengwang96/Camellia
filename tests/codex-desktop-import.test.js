@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { SharedConversations } = require('../src/engines/shared-conversations');
-const { listDesktopSessions, readRolloutMessages, importDesktopSessions, syncDesktopSession, desktopStatePath } = require('../src/main/codex-desktop-import');
+const { listDesktopSessions, listDesktopImportCandidates, readRolloutMessages, importDesktopSessions, syncDesktopSession, desktopStatePath } = require('../src/main/codex-desktop-import');
 
 function stateFixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-desktop-import-test-'));
@@ -228,7 +228,7 @@ test('workspace lookup matches by real path so symlinked project roots still reu
   assert.equal(shared.workspaces.sessionMeta().workspaces.length, 1);
 });
 
-test('manual sync overwrites the Camellia copy, retires segments and updates the title', async t => {
+test('manual sync appends new messages, preserves local turns and native cursors, and is idempotent', async t => {
   const { root, file, db, close } = stateFixture(t);
   const rollout = writeRollout(root, 's.jsonl', [responseItem('user', 'old question'), responseItem('assistant', 'old answer')]);
   addThread(db, { id: 'sync-1', name: 'before rename', rollout });
@@ -236,20 +236,197 @@ test('manual sync overwrites the Camellia copy, retires segments and updates the
   const result = await importDesktopSessions(shared, file, ['sync-1']);
   const record = shared.get(result.imported[0].id);
   shared.append(record, { role: 'user', engine: 'codex', text: 'local only turn', displayText: 'local only turn', attachments: [] });
-  record.segments = { codex: { native: 'abc' } };
+  record.segments = { codex: { nativeId: 'abc', cursor: record.seq } };
   shared.save(record);
   writeRollout(root, 's.jsonl', [responseItem('user', 'old question'), responseItem('assistant', 'old answer'), responseItem('user', 'new question'), responseItem('assistant', 'new answer')]);
   db.prepare('UPDATE threads SET name = ? WHERE id = ?').run('after rename', 'sync-1');
   close();
   const synced = await syncDesktopSession(shared, file, record.id);
   assert.equal(synced.messages, 4);
+  assert.equal(synced.addedMessages, 2);
   assert.equal(synced.title, 'after rename');
   const after = shared.get(record.id);
   assert.deepEqual(shared.messages(after).map(m => m.role + ':' + m.text),
-    ['user:old question', 'assistant:old answer', 'user:new question', 'assistant:new answer']);
-  assert.deepEqual(after.segments, {});
-  assert.equal(after.retiredSegments.length, 1);
-  assert.ok(fs.existsSync(path.join(root, 'conversations', record.id + '.jsonl.pre-sync')));
+    ['user:old question', 'assistant:old answer', 'user:local only turn', 'user:new question', 'assistant:new answer']);
+  assert.deepEqual(after.segments, { codex: { nativeId: 'abc', cursor: 3 } });
+  assert.equal(after.retiredSegments, undefined);
+  assert.equal(fs.existsSync(path.join(root, 'conversations', record.id + '.jsonl.pre-sync')), false);
+  const updatedAt = after.updatedAt;
+  assert.equal((await syncDesktopSession(shared, file, record.id)).addedMessages, 0);
+  assert.equal(after.updatedAt, updatedAt);
+  assert.equal(after.seq, 5);
+});
+
+test('the import list offers changed imports and re-importing updates the same conversation', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'question'), responseItem('assistant', 'answer')];
+  const rollout = writeRollout(root, 'update.jsonl', original);
+  addThread(db, { id: 'update', name: 'Update me', rollout });
+  close();
+  const shared = sharedFixture(root);
+  assert.equal(listDesktopImportCandidates(shared, file)[0].action, 'import');
+  const first = await importDesktopSessions(shared, file, ['update']);
+  const conversation = shared.get(first.imported[0].id);
+  assert.equal(conversation.codexDesktopSync.messageCount, 2);
+  assert.deepEqual(shared.messages(conversation).map(row => row.codexDesktopSource.index), [0, 1]);
+  assert.equal(listDesktopImportCandidates(shared, file).length, 0);
+  writeRollout(root, 'update.jsonl', [...original, responseItem('user', 'more'), responseItem('assistant', 'new answer')]);
+  const candidates = listDesktopImportCandidates(shared, file);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].action, 'update');
+  assert.equal(candidates[0].conversationId, conversation.id);
+  const updated = await importDesktopSessions(shared, file, ['update']);
+  assert.deepEqual(updated.imported, []);
+  assert.deepEqual(updated.skipped, []);
+  assert.equal(updated.updated[0].id, conversation.id);
+  assert.equal(updated.updated[0].addedMessages, 2);
+  assert.equal(shared.items.size, 1);
+  assert.equal(shared.messages(conversation).length, 4);
+  assert.equal(listDesktopImportCandidates(shared, file).length, 0);
+  assert.equal((await importDesktopSessions(shared, file, ['update'])).updated[0].addedMessages, 0);
+  assert.equal(shared.messages(conversation).length, 4);
+});
+
+test('legacy imports gain a persistent cursor while keeping their Camellia continuation', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'old question'), responseItem('assistant', 'old answer')];
+  const rollout = writeRollout(root, 'legacy.jsonl', [...original, responseItem('user', 'new question'), responseItem('assistant', 'new answer')]);
+  addThread(db, { id: 'legacy', name: 'Legacy import', rollout });
+  close();
+  const shared = sharedFixture(root);
+  const conversation = shared.create('codex', null, 'Legacy import');
+  conversation.importedFrom = 'codex-desktop'; conversation.importThreadId = 'legacy';
+  for (const row of [['user', 'old question'], ['assistant', 'old answer'], ['user', 'local question'], ['assistant', 'local answer']])
+    shared.append(conversation, { role: row[0], engine: 'codex', text: row[1], displayText: row[1], attachments: [] });
+  shared.save(conversation);
+  assert.equal(listDesktopImportCandidates(shared, file)[0].action, 'update');
+  assert.equal((await syncDesktopSession(shared, file, conversation.id)).addedMessages, 2);
+  assert.deepEqual(shared.messages(conversation).map(row => row.text),
+    ['old question', 'old answer', 'local question', 'local answer', 'new question', 'new answer']);
+  const reopened = sharedFixture(root);
+  assert.equal((await syncDesktopSession(reopened, file, conversation.id)).addedMessages, 0);
+  assert.equal(reopened.messages(reopened.get(conversation.id)).length, 6);
+  assert.equal(listDesktopImportCandidates(reopened, file).length, 0);
+});
+
+test('identical text in a later source turn is appended once rather than deduplicated globally', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'again'), responseItem('assistant', 'same answer')];
+  const rollout = writeRollout(root, 'repeat.jsonl', original);
+  addThread(db, { id: 'repeat', name: 'Repeated prompts', rollout });
+  close();
+  const shared = sharedFixture(root);
+  const result = await importDesktopSessions(shared, file, ['repeat']);
+  const id = result.imported[0].id;
+  writeRollout(root, 'repeat.jsonl', [...original, responseItem('user', 'again', '2026-09-17T10:00:00Z'), responseItem('assistant', 'same answer', '2026-09-17T10:01:00Z')]);
+  assert.equal((await syncDesktopSession(shared, file, id)).addedMessages, 2);
+  assert.equal((await syncDesktopSession(shared, file, id)).addedMessages, 0);
+  assert.equal(shared.messages(shared.get(id)).length, 4);
+});
+
+test('rewritten or truncated source prefixes leave Camellia history and the checkpoint untouched', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'original'), responseItem('assistant', 'original answer')];
+  const rollout = writeRollout(root, 'rewrite.jsonl', original);
+  addThread(db, { id: 'rewrite', name: 'Original history', rollout });
+  close();
+  const shared = sharedFixture(root);
+  const result = await importDesktopSessions(shared, file, ['rewrite']);
+  const conversation = shared.get(result.imported[0].id);
+  const before = fs.readFileSync(path.join(root, 'conversations', conversation.id + '.jsonl'), 'utf8');
+  const saved = JSON.stringify(conversation);
+  for (const changed of [[responseItem('user', 'rewritten'), original[1]], [original[0]]]) {
+    writeRollout(root, 'rewrite.jsonl', changed);
+    await assert.rejects(syncDesktopSession(shared, file, conversation.id), /history changed before the last import/);
+    assert.equal(fs.readFileSync(path.join(root, 'conversations', conversation.id + '.jsonl'), 'utf8'), before);
+    assert.equal(JSON.stringify(conversation), saved);
+  }
+});
+
+test('overlapping imports and syncs cannot duplicate a source thread', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'original')];
+  const rollout = writeRollout(root, 'concurrent.jsonl', original);
+  addThread(db, { id: 'concurrent', name: 'Concurrent import', rollout });
+  close();
+  const shared = sharedFixture(root);
+  const imports = await Promise.all([importDesktopSessions(shared, file, ['concurrent']), importDesktopSessions(shared, file, ['concurrent'])]);
+  assert.equal(imports.reduce((n, result) => n + result.imported.length, 0), 1);
+  assert.equal(imports.reduce((n, result) => n + result.skipped.length, 0), 1);
+  assert.equal(shared.items.size, 1);
+  const conversation = [...shared.items.values()][0];
+  writeRollout(root, 'concurrent.jsonl', [...original, responseItem('assistant', 'new reply')]);
+  const syncs = await Promise.allSettled([syncDesktopSession(shared, file, conversation.id), syncDesktopSession(shared, file, conversation.id)]);
+  assert.equal(syncs.filter(result => result.status === 'fulfilled').length, 1);
+  assert.match(syncs.find(result => result.status === 'rejected').reason.message, /already being imported or synced/);
+  assert.equal(shared.messages(conversation).length, 2);
+});
+
+test('sync rejects busy or concurrently changed conversations and can be retried safely', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'original')];
+  const rollout = writeRollout(root, 'busy.jsonl', original);
+  addThread(db, { id: 'busy', name: 'Busy import', rollout });
+  close();
+  const shared = sharedFixture(root);
+  const result = await importDesktopSessions(shared, file, ['busy']);
+  const conversation = shared.get(result.imported[0].id);
+  writeRollout(root, 'busy.jsonl', [...original, responseItem('assistant', 'new reply')]);
+  shared.active.set(conversation.id, {});
+  await assert.rejects(syncDesktopSession(shared, file, conversation.id), /before syncing/);
+  shared.active.delete(conversation.id);
+  const syncing = syncDesktopSession(shared, file, conversation.id);
+  shared.append(conversation, { role: 'user', engine: 'codex', text: 'local continuation' });
+  await assert.rejects(syncing, /Conversation changed while syncing/);
+  assert.deepEqual(shared.messages(conversation).map(row => row.text), ['original', 'local continuation']);
+  assert.equal((await syncDesktopSession(shared, file, conversation.id)).addedMessages, 1);
+});
+
+test('a partially written update resumes after restart without duplicating persisted messages', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'original')];
+  const rollout = writeRollout(root, 'partial.jsonl', original);
+  addThread(db, { id: 'partial', name: 'Partial update', rollout });
+  close();
+  const shared = sharedFixture(root);
+  const result = await importDesktopSessions(shared, file, ['partial']);
+  const id = result.imported[0].id;
+  writeRollout(root, 'partial.jsonl', [...original, responseItem('assistant', 'first new reply'), responseItem('user', 'second new message')]);
+  const append = shared.append.bind(shared);
+  let writes = 0;
+  shared.append = (...args) => { if (++writes === 2) throw new Error('disk full'); return append(...args); };
+  await assert.rejects(syncDesktopSession(shared, file, id), /disk full/);
+  const reopened = sharedFixture(root);
+  assert.equal((await syncDesktopSession(reopened, file, id)).addedMessages, 1);
+  assert.deepEqual(reopened.messages(reopened.get(id)).map(row => row.text), ['original', 'first new reply', 'second new message']);
+  assert.equal((await syncDesktopSession(reopened, file, id)).addedMessages, 0);
+});
+
+test('desktop IPC lists changed imports and updates them in place', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'IPC original')];
+  const rollout = writeRollout(root, 'ipc.jsonl', original);
+  addThread(db, { id: 'ipc', name: 'IPC import', rollout });
+  close();
+  const mod = require('../src/main/codex-desktop-import');
+  const statePath = mod.desktopStatePath;
+  mod.desktopStatePath = () => file;
+  t.after(() => { mod.desktopStatePath = statePath; });
+  const { createHarness } = require('./claude-harness.cjs');
+  const harness = createHarness();
+  t.after(() => harness.cleanup());
+  assert.equal((await harness.call('codex-desktop-sessions')).sessions[0].action, 'import');
+  const first = await harness.call('codex-desktop-import', { ids: ['ipc'] });
+  const id = first.imported[0].id;
+  assert.equal((await harness.call('codex-desktop-sessions')).sessions.length, 0);
+  writeRollout(root, 'ipc.jsonl', [...original, responseItem('assistant', 'IPC new reply')]);
+  assert.equal((await harness.call('codex-desktop-sessions')).sessions[0].conversationId, id);
+  const updated = await harness.call('codex-desktop-import', { ids: ['ipc'] });
+  assert.equal(updated.ok, true);
+  assert.equal(updated.imported.length, 0);
+  assert.equal(updated.updated[0].id, id);
+  assert.equal(updated.updated[0].addedMessages, 1);
+  assert.equal((await harness.call('codex-desktop-sync', { id })).addedMessages, 0);
 });
 
 test('sync rejects conversations that were not imported from the desktop app', async t => {

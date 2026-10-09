@@ -12,7 +12,7 @@ const { isolatedEnvironment } = require('../../benchmark/engines');
 const { readAntigravityNativeInventory } = require('./antigravity-history-inventory');
 const { ClaudeHistory } = require('../claude-history');
 const { accountHome } = require('../subscription-accounts');
-const { prepareWindowsJob, recoverWindowsJob } = require('./windows-job');
+const { processJobs, SUPPORTED_PLATFORMS } = require('./process-jobs');
 const { WindowsJobJournal } = require('./windows-job-journal');
 const { bindingFingerprint } = require('./capabilities');
 const { readCodexNativeHistories } = require('./codex-history-inventory');
@@ -32,16 +32,19 @@ function managedDir(root, ...parts) {
 }
 
 // Production policies: managed native homes, exact model/account/route, and
-// Windows Job stop confirmation. Verification runs two tiny real turns in a
+// Platform-native stop confirmation. Verification runs two tiny real turns in a
 // disposable member session before admitting that exact binding for this app
 // process. Restarting never automatically sends a verification or user prompt.
 class DiscussionProduction {
-  constructor({ dataDir, registry, codex, antigravity, runtimes, getRouter, getCatalog, refreshKimi, getNativeConfig = () => ({}), log = () => {}, node = () => process.execPath, environment = () => process.env }) {
+  constructor({ dataDir, registry, codex, antigravity, runtimes, getRouter, getCatalog, refreshKimi, getNativeConfig = () => ({}), log = () => {}, node = () => process.execPath, environment = () => process.env, platform = process.platform }) {
     Object.assign(this, { dataDir, registry, codex, antigravity, runtimes, getRouter, getCatalog, refreshKimi, log, node, environment });
     this.getNativeConfig = getNativeConfig;
+    this.platform = platform;
+    this.jobs = SUPPORTED_PLATFORMS.includes(platform) ? processJobs(platform) : null;
     this.root = path.join(dataDir, 'discussions'); this.activities = new Map(); this.checks = new Map(); this.closing = false;
-    this.journal = new WindowsJobJournal({ dir: path.join(this.root, 'windows-jobs') });
-    this.checkJournal = new WindowsJobJournal({ dir: path.join(this.root, 'verification-jobs') });
+    const Journal = this.jobs?.Journal || WindowsJobJournal;
+    this.journal = new Journal({ dir: path.join(this.root, this.jobs?.directory || 'windows-jobs') });
+    this.checkJournal = new Journal({ dir: path.join(this.root, 'verification-jobs') });
     this.extraDrivers = extraDiscussionDrivers({ root: this.root, runtimes, registry });
   }
   nativeHomes(engine = 'codex') {
@@ -131,7 +134,7 @@ class DiscussionProduction {
       && this.runtimes().locate(binding.engine, binding.connection)?.version === this.expectedVersion(binding);
   }
   refresh() {
-    if (process.platform !== 'win32') return;
+    if (!SUPPORTED_PLATFORMS.includes(this.platform || process.platform)) return;
     for (const [engine, driver] of Object.entries({ codex: this.codex, antigravity: this.antigravity, ...this.extraDrivers })) {
       const info = this.runtimeInfo({ engine });
       if (!driver || this.registry.get(engine)) continue;
@@ -142,8 +145,10 @@ class DiscussionProduction {
     }
   }
   reason(binding) {
-    if (this.runtimes().locate(binding.engine, binding.connection)?.version !== this.expectedVersion(binding))
-      return 'Install the supported harness runtime in Settings, then refresh models.';
+    const runtime = this.runtimes().locate(binding.engine, binding.connection);
+    if (!runtime) return 'No harness runtime was found. Install it or set its executable path in Settings, then refresh models.';
+    if (runtime.version !== this.expectedVersion(binding))
+      return 'The installed harness runtime version is not supported for discussions. Update Camellia or select a supported executable in Settings, then refresh models.';
     return VERIFY_NOTICE;
   }
   async current(profile) {
@@ -204,7 +209,7 @@ class DiscussionProduction {
           routeFingerprint: account.route, maxRequests: verification ? 6 : 100, maxTokens: Math.max(4096, profile.contextWindow * (verification ? 2 : 16)) });
         if (!record.route) throw new Error('Enable the configured API route before verifying this connection.');
       }
-      record.job = await prepareWindowsJob({ identity, journal: verification ? this.checkJournal : this.journal, signal });
+      record.job = await this.jobs.prepare({ identity, journal: verification ? this.checkJournal : this.journal, signal });
       if (this.closing || signal?.aborted) throw new Error('Discussion cancelled');
       const settings = { model: profile.model, connection: profile.connection,
         permissionMode: profile.engine === 'codex' || profile.engine === 'antigravity' && profile.connection === 'api' ? 'plan' : 'ask', thinkingBudget: profile.thinking || '',
@@ -257,13 +262,13 @@ class DiscussionProduction {
   }
   async confirmStopped({ identity }) {
     const record = this.activities.get(identity.deliveryId);
-    if (!record) return recoverWindowsJob({ identity, journal: this.journal });
+    if (!record) return this.jobs.recover({ identity, journal: this.journal });
     try { await record.preparation; } catch { /* partial preparation must drain */ }
     let proof;
     if (record.job) proof = await record.job.stop();
     else {
       const journal = record.verification ? this.checkJournal : this.journal;
-      proof = fs.existsSync(journal.paths(identity).recordFile) ? await recoverWindowsJob({ identity, journal }) : { ...identity, stopped: true };
+      proof = fs.existsSync(journal.paths(identity).recordFile) ? await this.jobs.recover({ identity, journal }) : { ...identity, stopped: true };
     }
     await record.route?.close();
     if (record.profile?.connection === 'subscription' && record.profile.engine === 'codex' && record.home) fs.rmSync(path.join(record.home, 'auth.json'), { force: true });

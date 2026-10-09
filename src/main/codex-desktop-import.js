@@ -8,11 +8,31 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const readline = require('node:readline');
+const { createHash } = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const MAX_LISTED_SESSIONS = 1000;
 const MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
 const MAX_MESSAGE_COUNT = 100000;
+const importsInProgress = new WeakMap();
+
+async function withImportLock(shared, threadId, action) {
+  let pending = importsInProgress.get(shared);
+  if (!pending) importsInProgress.set(shared, pending = new Set());
+  if (pending.has(threadId)) throw new Error('This Codex session is already being imported or synced. Try again when it finishes.');
+  pending.add(threadId);
+  try { return await action(); } finally { pending.delete(threadId); }
+}
+
+const messageHash = message => createHash('sha256').update(JSON.stringify([message.role, message.text])).digest('hex');
+const prefixHash = hashes => createHash('sha256').update(hashes.map(hash => hash + '\n').join('')).digest('hex');
+const checkpoint = (session, messageCount, hash) => ({ version: 1, messageCount, prefixHash: hash,
+  rolloutBytes: session.rolloutBytes, rolloutModifiedAt: session.rolloutModifiedAt,
+  updatedAt: session.updatedAt, title: session.title });
+
+function importedConversation(shared, threadId) {
+  return [...shared.items.values()].find(conversation => conversation.importThreadId === threadId);
+}
 
 function desktopStatePath(homeDir = os.homedir()) {
   return path.join(homeDir, '.codex', 'state_5.sqlite');
@@ -104,23 +124,40 @@ function listDesktopSessions(stateFile, { excludeIds = new Set(), maxSessions = 
       const title = cleanTitle(r.name);
       if (!title) return [];
       const rolloutPath = cleanPath(r.rollout_path);
-      let rolloutBytes = null;
+      let rolloutBytes = null, rolloutModifiedAt = null;
       try {
         const stat = fs.statSync(rolloutPath);
-        if (stat.isFile()) { fs.accessSync(rolloutPath, fs.constants.R_OK); rolloutBytes = stat.size; }
+        if (stat.isFile()) { fs.accessSync(rolloutPath, fs.constants.R_OK); rolloutBytes = stat.size; rolloutModifiedAt = stat.mtimeMs; }
       } catch {}
       return [{
         id: r.id, title: title.slice(0, 60),
         cwd: cleanPath(r.cwd || ''), createdAt: r.createdAt, updatedAt: r.updatedAt,
         source: r.source, rolloutPath,
         project: projectForRow(r, projectsByPath, desktop),
-        rolloutBytes,
+        rolloutBytes, rolloutModifiedAt,
         importable: rolloutBytes !== null,
       }];
     });
     Object.defineProperty(sessions, 'truncated', { value: truncated, enumerable: false });
     return sessions;
   });
+}
+
+// An imported thread stays available when its source changes. Old imports have
+// no checkpoint, so offer one update to establish it without replacing history.
+function listDesktopImportCandidates(shared, stateFile) {
+  const sessions = listDesktopSessions(stateFile);
+  const candidates = sessions.flatMap(session => {
+    const conversation = importedConversation(shared, session.id);
+    if (!conversation) return [{ ...session, action: 'import' }];
+    const saved = conversation.codexDesktopSync;
+    if (saved?.version === 1 && saved.rolloutBytes === session.rolloutBytes
+        && saved.rolloutModifiedAt === session.rolloutModifiedAt
+        && saved.updatedAt === session.updatedAt && saved.title === session.title) return [];
+    return [{ ...session, action: 'update', conversationId: conversation.id }];
+  });
+  Object.defineProperty(candidates, 'truncated', { value: sessions.truncated, enumerable: false });
+  return candidates;
 }
 
 // Rollout JSONL keeps both response_item and event_msg copies of a turn; the
@@ -193,65 +230,117 @@ function resolveWorkspace(shared, project) {
 async function importDesktopSessions(shared, stateFile, ids, log = () => {}) {
   const sessions = listDesktopSessions(stateFile);
   const selected = sessions.filter(s => ids.includes(s.id));
-  const imported = [], skipped = [];
+  const imported = [], updated = [], skipped = [];
   for (const session of selected) {
     let conversation = null;
     try {
-      const workspaceId = resolveWorkspace(shared, session.project);
-      const cwd = workspaceId ? undefined : session.cwd && fs.existsSync(session.cwd) ? session.cwd : undefined;
-      conversation = shared.create('codex', workspaceId, session.title, cwd);
-      conversation.importedFrom = 'codex-desktop';
-      conversation.importThreadId = session.id;
-      conversation.createdAt = session.createdAt || Date.now();
-      conversation.updatedAt = session.updatedAt || conversation.createdAt;
-      let count = 0;
-      await readRolloutMessages(session.rolloutPath, message => {
-        shared.append(conversation, { role: message.role, engine: 'codex', text: message.text, displayText: message.text, attachments: [] });
-        count++;
+      await withImportLock(shared, session.id, async () => {
+        const existing = importedConversation(shared, session.id);
+        if (existing) {
+          updated.push({ ...await syncDesktopConversation(shared, stateFile, existing.id, session), threadId: session.id });
+          return;
+        }
+        const workspaceId = resolveWorkspace(shared, session.project);
+        const cwd = workspaceId ? undefined : session.cwd && fs.existsSync(session.cwd) ? session.cwd : undefined;
+        conversation = shared.create('codex', workspaceId, session.title, cwd);
+        conversation.importedFrom = 'codex-desktop';
+        conversation.importThreadId = session.id;
+        conversation.createdAt = session.createdAt || Date.now();
+        conversation.updatedAt = session.updatedAt || conversation.createdAt;
+        let count = 0;
+        const hash = createHash('sha256');
+        await readRolloutMessages(session.rolloutPath, message => {
+          const fingerprint = messageHash(message);
+          hash.update(fingerprint + '\n');
+          shared.append(conversation, { role: message.role, engine: 'codex', text: message.text, displayText: message.text, attachments: [],
+            codexDesktopSource: { threadId: session.id, index: count++, hash: fingerprint } });
+        });
+        conversation.codexDesktopSync = checkpoint(session, count, hash.digest('hex'));
+        shared.save(conversation);
+        imported.push({ id: conversation.id, threadId: session.id, title: conversation.title, messages: count });
       });
-      shared.save(conversation);
-      imported.push({ id: conversation.id, threadId: session.id, title: conversation.title, messages: count });
     } catch (error) {
       if (conversation) shared.purge(conversation.id);
       log('codex desktop import failed for ' + session.id + ': ' + error.message);
       skipped.push({ threadId: session.id, error: error.message });
     }
   }
-  return { imported, skipped };
+  return { imported, updated, skipped };
 }
 
 
-// Re-read the desktop rollout and overwrite the Camellia copy. Callers must
-// confirm with the user first: this replaces Camellia-side history.
 async function syncDesktopSession(shared, stateFile, conversationId) {
   const c = shared.get(conversationId);
   if (!c?.importThreadId) throw new Error('This conversation was not imported from the Codex desktop app');
-  const session = listDesktopSessions(stateFile, {}).find(s => s.id === c.importThreadId)
+  return withImportLock(shared, c.importThreadId, () => syncDesktopConversation(shared, stateFile, conversationId));
+}
+
+// Validate the last source prefix before appending. Source indexes on copied
+// rows also prevent duplicates if the history write succeeded but saving the
+// checkpoint failed. Native cursors and Camellia-only turns remain intact.
+async function syncDesktopConversation(shared, stateFile, conversationId, listedSession) {
+  const c = shared.get(conversationId);
+  if (shared.busy(c.id)) throw new Error('Wait for this conversation to finish or stop it before syncing.');
+  const rows = shared.rows(c);
+  const seq = c.seq;
+  const session = listedSession || listDesktopSessions(stateFile).find(s => s.id === c.importThreadId)
     || withSnapshot(stateFile, db => {
       const r = db.prepare(`SELECT t.id, t.name, t.title, t.first_user_message, t.preview, t.cwd, t.source, t.rollout_path,
+          COALESCE(t.updated_at_ms, t.updated_at * 1000) AS updatedAt,
           p.id AS projectId, p.name AS projectName, r.path AS projectPath FROM threads t
           LEFT JOIN projects p ON p.id = t.project_id LEFT JOIN project_roots r ON r.project_id = t.project_id AND r.position = 0
           WHERE t.id = ?`).get(c.importThreadId);
-      return r ? { id: r.id, title: cleanTitle(r.name) || cleanTitle(r.title) || cleanTitle(r.first_user_message || r.preview),
+      const stat = r && fs.statSync(cleanPath(r.rollout_path));
+      return r ? { id: r.id, title: (cleanTitle(r.name) || cleanTitle(r.title) || cleanTitle(r.first_user_message || r.preview)).slice(0, 60),
+        updatedAt: r.updatedAt, rolloutBytes: stat.size, rolloutModifiedAt: stat.mtimeMs,
         project: r.projectId ? { id: r.projectId, name: r.projectName || '', path: cleanPath(r.projectPath || '') } : null,
         rolloutPath: cleanPath(r.rollout_path) } : null;
     });
   if (!session) throw new Error('The session no longer exists in the Codex desktop app');
   const messages = await readRolloutMessages(session.rolloutPath);
+  if (shared.items.get(c.id) !== c || c.seq !== seq || shared.busy(c.id))
+    throw new Error('Conversation changed while syncing. Try again when it is idle.');
+  const hashes = messages.map(messageHash);
+  const saved = c.codexDesktopSync;
   let count = 0;
-  shared.resetHistory(c);
-  for (const message of messages) {
-    shared.append(c, { role: message.role, engine: 'codex', text: message.text, displayText: message.text, attachments: [] });
+  if (saved) {
+    if (saved.version !== 1 || !Number.isSafeInteger(saved.messageCount) || saved.messageCount < 0
+        || saved.messageCount > messages.length || prefixHash(hashes.slice(0, saved.messageCount)) !== saved.prefixHash)
+      throw new Error('Codex history changed before the last import. Incremental sync stopped; Camellia history was kept.');
+    count = saved.messageCount;
+  } else {
+    // Legacy imports copied only role/text and had no source cursor. Their
+    // common leading messages establish the initial cursor; a local suffix is
+    // preserved, and all subsequent updates use the durable source checkpoint.
+    const history = rows.filter(row => !row.internal && ['user', 'assistant'].includes(row.role));
+    while (count < history.length && count < messages.length
+        && history[count].role === messages[count].role && history[count].text === messages[count].text) count++;
+    if (history.length && !count)
+      throw new Error('The original imported messages no longer match Codex. Incremental sync stopped; Camellia history was kept.');
+  }
+  const copied = new Map(rows.filter(row => row.codexDesktopSource?.threadId === c.importThreadId)
+    .map(row => [row.codexDesktopSource.index, row.codexDesktopSource.hash]));
+  while (copied.has(count)) {
+    if (copied.get(count) !== hashes[count])
+      throw new Error('Codex history changed during the last sync. Camellia history was kept.');
     count++;
   }
-  if (session.title) c.title = session.title.slice(0, 80);
+  const addedMessages = messages.length - count;
+  for (let index = count; index < messages.length; index++) {
+    const message = messages[index];
+    shared.append(c, { role: message.role, engine: 'codex', text: message.text, displayText: message.text, attachments: [],
+      codexDesktopSource: { threadId: c.importThreadId, index, hash: hashes[index] } });
+  }
+  const titleChanged = Boolean(session.title && (!saved || saved.title !== session.title));
+  if (titleChanged) c.title = session.title.slice(0, 80);
   const workspaceId = resolveWorkspace(shared, session.project);
   if (workspaceId && c.workspaceId !== workspaceId) { c.workspaceId = workspaceId; shared.workspaces.recordContext(c.id, workspaceId, c.cwd); }
-  c.updatedAt = shared.stamp();
+  c.codexDesktopSync = checkpoint(session, messages.length, prefixHash(hashes));
+  if (addedMessages || titleChanged) c.updatedAt = shared.stamp();
   shared.save(c);
-  return { id: c.id, title: c.title, messages: count };
+  return { id: c.id, title: c.title, messages: messages.length, addedMessages };
 }
 
-module.exports = { desktopStatePath, listDesktopSessions, readRolloutMessages, importDesktopSessions, syncDesktopSession, resolveWorkspace,
+module.exports = { desktopStatePath, listDesktopSessions, listDesktopImportCandidates, readRolloutMessages, importDesktopSessions, syncDesktopSession, resolveWorkspace,
   MAX_LISTED_SESSIONS, MAX_MESSAGE_BYTES, MAX_MESSAGE_COUNT };
 

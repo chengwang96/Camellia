@@ -76,6 +76,14 @@ Run `npm run setup:antigravity:subscription` and `npm run test:antigravity:subsc
 
 See [DSH integration](../integrations/dsh/README.md) and [Kimi runtime](../runtimes/kimi/README.md) for implementation details.
 
+## Agent discussions on desktop
+
+Discussions run on Windows and macOS. Windows uses the native Job Object helper; macOS uses `integrations/discussion-job`, a Go helper built with the standard library. On a Mac source checkout, run `npm run build:discussions` before starting discussions. Desktop packaging builds and includes this helper automatically, using the same Go toolchain required for the embedded network helper.
+
+The macOS helper launches a separate process session for each activity and tracks its process group and descendants using a private inherited marker. CLI stdin/stdout/stderr remain byte streams; separate control and evidence pipes are closed on engine execution. Stopping, root exit, or loss of the application control pipe drains observed descendants before acknowledging completion. After supervisor loss, an independent recovery helper seals the launch journal and checks native ownership before stopping any remaining processes. Windows and macOS launch journals both retain their runtime ownership and cleanup protection.
+
+The desktop CI builds the helper before running `discussion-unix-job.test.js` on macOS, then exercises real Codex discussion verification, multiple members, continuation, parallel replies, and stop against a loopback API fixture. After packaging, it reruns the lifecycle tests with the helper copied into the application bundle. These checks use temporary profiles and no paid model calls. Unix lifecycle tests can also run on Linux with a Linux helper; that does not enable discussions in the Linux server or replace macOS validation.
+
 ## Testing
 
 Run the default suite after routing, session, settings, or process-lifecycle changes:

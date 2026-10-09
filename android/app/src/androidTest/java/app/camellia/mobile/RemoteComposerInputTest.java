@@ -102,7 +102,7 @@ public class RemoteComposerInputTest extends InstrumentationTestCase {
                         field(activity, "controlAllowed", !guard.equals("readonly"));
                         field(activity, "lastLive", guard.equals("running") ? new JSONObject() : null);
                         field(activity, "commandBusy", guard.equals("busy"));
-                        if (guard.equals("pending")) credentials.put("pendingCommand", new JSONObject());
+                        if (guard.equals("pending")) credentials.put("pendingCommand", new JSONObject().put("conversationId", "12345678-1234-1234-1234-123456789abc").put("payload", new JSONObject().put("action", "send")));
                         refresh(activity); sends[0] = 0;
                         assertFalse(guard, send.isEnabled());
                         String draft = input.getText().toString();

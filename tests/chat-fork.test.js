@@ -18,6 +18,7 @@ function fixture(overrides = {}) {
     input: { disabled: false, focus() { calls.push('focus'); } },
     window: { CamelliaI18n: { ready: Promise.resolve(), t: text => translate(text, 'zh-CN') } },
     conversationBusy: () => false,
+    canChangeContext: () => true,
     updateConversationControls() {}, updateSendEnabled() {},
     sidebar: {
       workspaces: [{ id: 'workspace', collapsed: true }],
@@ -44,7 +45,7 @@ function fixture(overrides = {}) {
 test('fork click creates, lists and opens a named branch without waiting for a message', async () => {
   const { state, calls } = fixture();
   await state.forkSession({ id: 'source', title: 'Research' });
-  assert.deepEqual(calls, [['open', 'source'], ['fork', 'source', '分叉 · Research'], ['expand', 'workspace'], 'list', ['open', 'fork'], 'focus']);
+  assert.deepEqual(calls, [['fork', 'source', '分叉 · Research'], ['expand', 'workspace'], 'list', ['open', 'fork'], 'focus']);
   assert.equal(state.context.sessionId, 'fork');
   assert.equal(state.pendingForkId, null);
   assert.equal(state.loadingSession, false);
@@ -56,7 +57,7 @@ test('failed fork keeps the original session and unlocks the composer', async ()
   for (const forkSession of [async () => ({ ok: false, error: 'Fork failed' }), async () => { throw new Error('Fork failed'); }]) {
     const { state, calls } = fixture({ chatApi: { forkSession } });
     await state.forkSession({ id: 'source', title: 'Research' });
-    assert.deepEqual(calls, [['open', 'source']]);
+    assert.deepEqual(calls, []);
     assert.equal(state.context.sessionId, 'source');
     assert.equal(state.pendingForkId, null);
     assert.equal(state.loadingSession, false);
@@ -81,9 +82,14 @@ test('fork prefixes use the loaded language and follow subsequent language chang
   assert.deepEqual(calls.find(call => call[0] === 'fork'), ['fork', 'source', 'Fork of Research $&']);
 });
 
-test('busy source cannot be forked from the sidebar', async () => {
+test('a running source can be forked without opening or stopping it first', async () => {
   const { state, calls } = fixture({ conversationBusy: () => true });
   await state.forkSession({ id: 'source', title: 'Research' });
-  assert.deepEqual(calls, [['open', 'source']]);
-  assert.match(state.status, /finish before forking/);
+  assert.equal(calls.some(call => call[0] === 'fork'), true);
+  assert.deepEqual(calls.filter(call => call[0] === 'open'), [['open', 'fork']]);
+});
+test('fork waits for a pending context operation without changing the current conversation', async () => {
+  const { state, calls } = fixture({ canChangeContext: () => false });
+  await state.forkSession({ id: 'source', title: 'Research' });
+  assert.deepEqual(calls, []); assert.equal(state.context.sessionId, 'source');
 });

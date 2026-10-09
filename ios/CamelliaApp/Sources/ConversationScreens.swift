@@ -542,7 +542,9 @@ struct ConversationListView: View {
                                         model.notice = .init(text: "这台电脑未开放归档，请更新电脑端并授予控制权限。",
                                                              serious: false)
                                     }
-                                }, delete: { prompt = .delete([conversation.id]) })
+                                }, delete: { prompt = .delete([conversation.id]) },
+                                fork: model.access.canCreate && model.access.capabilities.contains(.fork)
+                                    ? { model.forkConversation(conversation) } : nil)
             .disabled(!model.access.canManageConversations || model.commandBusy || model.hasPendingListOperation)
     }
 
@@ -1042,6 +1044,9 @@ struct ConversationDetailView: View {
     /// Set on open and on send, where Android scrolls to the end outright
     /// rather than only from the bottom. Cleared by the first follow.
     @State private var pendingFollow = true
+    @State private var showsSubtaskPage = false
+    @State private var subtaskTurn: Int64 = 0
+    @State private var selectedSubtask: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1049,6 +1054,15 @@ struct ConversationDetailView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         olderControl()
+                        ForEach(model.transcript.earlierSubtaskTurns, id: \.self) { turn in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(model.usesChinese ? "更早轮次的子任务" : "Subtasks from an earlier turn")
+                                    .font(.caption).foregroundColor(Palette.muted)
+                                SubtaskTurnCard(tasks: model.transcript.subagents.filter { $0.userSeq == turn }) { id in
+                                    selectedSubtask = id; subtaskTurn = turn; showsSubtaskPage = true
+                                }.environmentObject(model)
+                            }.id("earlier-subtasks:\(turn)")
+                        }
                         if showsEmptyState {
                             EmptyConversationView(onWrite: { model.focusComposer() })
                                 .id("empty")
@@ -1059,6 +1073,14 @@ struct ConversationDetailView: View {
                                         onEdit: { model.beginEdit(row.id) },
                                         onOpenArtifacts: { showArtifacts = true })
                                 .id(row.id)
+                            if row.message.role == .user {
+                                let tasks = model.transcript.subagents.filter { $0.userSeq == row.id }
+                                if !tasks.isEmpty {
+                                    SubtaskTurnCard(tasks: tasks) { id in
+                                        selectedSubtask = id; subtaskTurn = row.id; showsSubtaskPage = true
+                                    }.environmentObject(model)
+                                }
+                            }
                         }
                         if let live = model.transcript.live {
                             LiveView(live: live, process: model.transcript.liveProcess).id("live")
@@ -1221,6 +1243,9 @@ struct ConversationDetailView: View {
             .onChanged { _ in model.userInteracted() })
         .navigationBarTitleDisplayMode(.inline)
         // The system's own back chevron is replaced by Android's raised disc —
+        .background(NavigationLink(destination: SubtaskDetailPage(userSeq: subtaskTurn, selectedID: selectedSubtask)
+            .id("\(model.transcript.instanceId):\(subtaskTurn):\(selectedSubtask ?? "list")").environmentObject(model),
+            isActive: $showsSubtaskPage) { EmptyView() }.hidden())
         // one `shell()` branch builds the list's header and this one's alike, and
         // the system's blue arrow is a different colour, size and shape from the
         // button every other chat page in the pair carries.
@@ -1297,14 +1322,16 @@ struct ConversationDetailView: View {
                 onCancel: { model.cancelLocation() })
         }
         .onAppear {
-            pendingFollow = true
-            model.open(conversation.id)
+            if model.openId != conversation.id {
+                pendingFollow = true
+                model.open(conversation.id)
+            }
         }
         .onDisappear {
             showAttachPanel = false
             showComputerPicker = false
             remotePopup = nil
-            model.close()
+            if !showsSubtaskPage { model.close() }
         }
     }
 
@@ -1366,6 +1393,7 @@ struct ConversationDetailView: View {
     /// move was asked for outright, which is opening the conversation and
     /// sending a message, the two places Android scrolls unconditionally.
     private func followIfNeeded(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard !showsSubtaskPage else { return }
         guard let target = bottomId else { return }
         guard pendingFollow || follow.isAtBottom else { return }
         pendingFollow = false

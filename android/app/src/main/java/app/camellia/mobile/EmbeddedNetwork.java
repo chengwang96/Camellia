@@ -106,9 +106,20 @@ public final class EmbeddedNetwork {
     }
 
     public static Node node() throws IOException {
+        return node(() -> false);
+    }
+
+    static Node node(java.util.function.BooleanSupplier cancelled) throws IOException {
         if (Looper.myLooper() == Looper.getMainLooper()) throw new IOException("Embedded network initialization requires a background thread");
         if (lifecycle == null) throw new IOException("Embedded network is disabled");
-        try { return lifecycle.node().get(); }
+        try {
+            var initializing = lifecycle.node();
+            while (!cancelled.getAsBoolean()) {
+                try { return initializing.get(250, java.util.concurrent.TimeUnit.MILLISECONDS); }
+                catch (java.util.concurrent.TimeoutException waiting) { }
+            }
+            throw new IOException("Cancelled");
+        }
         catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new IOException("Cancelled", error); }
         catch (ExecutionException error) {
             if (error.getCause() instanceof IOException failure) throw failure;

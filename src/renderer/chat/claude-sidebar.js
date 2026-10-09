@@ -742,7 +742,9 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     if (s.project) label.dataset.project = s.project.id;
     const box = document.createElement('input'); box.type = 'checkbox'; box.value = s.id; box.checked = s.importable; box.disabled = !s.importable;
     const text = document.createElement('span');
-    text.textContent = s.title + (s.importable ? '' : ' ' + window.CamelliaI18n.t('(history file missing or unreadable)'));
+    text.textContent = s.title
+      + (s.action === 'update' ? ' ' + window.CamelliaI18n.t('(update imported session)') : '')
+      + (s.importable ? '' : ' ' + window.CamelliaI18n.t('(history file missing or unreadable)'));
     label.append(box, text);
     return label;
   }
@@ -817,7 +819,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     try {
       const res = await window.dshDesktop.codexDesktopSessions();
       if (!res?.ok) throw new Error(res?.error || 'Could not read the Codex desktop state');
-      if (!res.sessions.length) { $('importAll').checked = false; list.innerHTML = '<p class="hint" data-i18n>No local Codex sessions to import.</p>'; return; }
+      if (!res.sessions.length) { $('importAll').checked = false; list.innerHTML = '<p class="hint" data-i18n>No new or changed local Codex sessions.</p>'; return; }
       const all = $('importAll'); all.disabled = false; all.checked = true; all.indeterminate = false;
       $('importConfirm').disabled = false;
       const nodes = groupedImportNodes(res.sessions);
@@ -838,9 +840,11 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     try {
       const res = await window.dshDesktop.codexDesktopImport(ids);
       if (!res?.ok) throw new Error(res?.error || 'Import failed');
-      importableCount = Math.max(0, importableCount - (res.imported?.length || 0));
+      const imported = res.imported?.length || 0, updated = res.updated?.length || 0;
+      importableCount = Math.max(0, importableCount - imported - updated);
       const skipped = res.skipped?.length || 0;
-      setStatus(skipped ? 'Imported ' + (res.imported?.length || 0) + ' sessions \u00b7 ' + skipped + ' skipped' : 'Imported ' + (res.imported?.length || 0) + ' sessions');
+      setStatus('Imported ' + imported + ' sessions \u00b7 updated ' + updated + ' \u00b7 ' + skipped + ' skipped');
+      if (res.updated?.some(session => session.id === context.sessionId)) await openHistorySession(context.sessionId);
       await loadSessionHistory();
     } catch (error) { setStatus(error.message); }
   };
@@ -885,7 +889,8 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       if (!res?.ok) throw new Error(res?.error || 'Sync failed');
       if (target.id === context.sessionId) await openHistorySession(target.id);
       await loadSessionHistory();
-      setStatus('Synced from Codex desktop \u00b7 ' + (res.messages || 0) + ' messages');
+      const added = res.addedMessages ?? res.messages ?? 0;
+      setStatus(added ? 'Added ' + added + ' new messages from Codex desktop' : 'Codex session is already up to date');
     } catch (error) { setStatus(error.message); }
   };
 
@@ -893,6 +898,11 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
   return {
     load: loadSessionHistory, render: renderSessionSidebar, updateLabel: updateWorkspaceLabel, metaOp: runMetaOp,
     markReplyRead, renameDiscussion,
+    openCurrentActions: anchor => {
+      const session = sessionHistory.find(item => item.id === context.sessionId);
+      const item = [...sessionList.querySelectorAll('.session-item')].find(item => item.dataset.sid === context.sessionId);
+      if (session && item) openSessionActions(anchor, item, session);
+    },
     get sessions() { return sessionHistory; }, get workspaces() { return workspaces; },
   };
 }

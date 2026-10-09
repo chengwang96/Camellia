@@ -1,7 +1,13 @@
 'use strict';
 
-const catalog = require('./subscription-prices.json');
-const catalogInfo = { source: catalog.source, checkedAt: catalog.checkedAt, basis: 'standard-text-api', currency: 'USD' };
+const bundled = require('./subscription-prices.json');
+let catalog = bundled;
+const catalogInfo = { source: catalog.source, checkedAt: catalog.checkedAt, basis: 'standard-text-api', currency: 'USD', origin: 'bundled', refreshing: false };
+function installCatalog(value, origin = 'cache') {
+  if (!require('./subscription-price-catalog').validCatalog(value)) throw new Error('Invalid price catalog');
+  catalog = { ...value, models: { ...bundled.models, ...value.models } };
+  Object.assign(catalogInfo, { source: value.source, checkedAt: value.checkedAt, origin });
+}
 
 function priceFor(model) {
   // Only explicit, stable aliases. Unknown routing/auto aliases remain unpriced.
@@ -23,4 +29,4 @@ function estimateTokens(model, sample) {
     + cacheRead * (rates.cacheRead || 0) + cacheWrite * (rates.cacheWrite || 0)) / 1e6;
 }
 
-module.exports = { estimateTokens, priceFor, catalogInfo };
+module.exports = { estimateTokens, priceFor, catalogInfo, installCatalog };

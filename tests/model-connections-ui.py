@@ -4,14 +4,19 @@ from playwright.sync_api import sync_playwright, expect
 
 repo = Path(__file__).resolve().parents[1]
 bridge = r"""(() => {
+  const query = new URLSearchParams(location.search);
   window.settings = JSON.parse(localStorage.getItem('model-connection-settings') || 'null')
-    || {model:'route-only',connection:'api',permissionMode:'ask'};
+    || {model:query.has('fresh') ? '' : 'route-only',connection:query.has('fresh') ? 'subscription' : 'api',permissionMode:'ask'};
   window.savedSettings = [];
-  window.accountUnavailable = false;
+  window.accountUnavailable = query.get('account') === 'failed';
+  window.accountSignedOut = query.get('account') === 'signed-out';
+  window.routerModels = JSON.parse(localStorage.getItem('model-connection-routes') || 'null')
+    || (query.has('noRoutes') ? [] : ['route-only','shared-model']);
   window.hiddenModels = {}; window.visibilityReads = 0;
   window.settingsTarget = null;
   const accountState = async () => {
     if (window.accountUnavailable) throw new Error('Account temporarily unavailable');
+    if (window.accountSignedOut) return {ok:true,account:null,models:[],installed:true};
     return {ok:true,models:[{id:'account-only',name:'Account model'},
       {id:'shared-model',name:'Shared account model',supportedReasoningEfforts:['low','high'],serviceTiers:[{id:'fast'}]}]};
   };
@@ -28,7 +33,8 @@ bridge = r"""(() => {
       }
       return {ok:true};
     },
-    apiRouterGetState: async () => ({enabled:true,models:['route-only','shared-model'],providers:[]}),
+    apiRouterGetState: async () => ({enabled:true,models:window.routerModels,providers:[]}),
+    onApiRouterState: fn => {window.refreshRoutes = fn;},
     workbenchSettings: async () => { window.visibilityReads++; return {ok:true,hiddenSubscriptionModels:window.hiddenModels}; },
     openSettingsWindow: async target => { window.settingsTarget = target; return {ok:true}; },
     codexAccountState: accountState, kimiAccountState: accountState, antigravityAccountState: accountState,
@@ -164,5 +170,33 @@ with sync_playwright() as playwright:
         page.wait_for_function("settings.connection === 'subscription'", timeout=5000)
         assert errors == [], errors
         page.close()
+    # A fresh installation can have subscription selected before API routes
+    # exist. Signing in must not be needed to discover and pick those routes.
+    for account, late_routes in [('signed-out', False), ('signed-out', True), ('failed', False)]:
+        page = browser.new_page(viewport={'width':1160,'height':820})
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.add_init_script(bridge)
+        query = f'?harness=codex&fresh=1&account={account}' + ('&noRoutes=1' if late_routes else '')
+        page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + query, wait_until='networkidle')
+        page.wait_for_function('uiReady')
+        if late_routes:
+            expect(page.locator('#modelPillName')).to_contain_text('Connect ChatGPT')
+            page.evaluate("routerModels = ['route-only','shared-model']; localStorage.setItem('model-connection-routes', JSON.stringify(routerModels)); refreshRoutes({enabled:true,models:routerModels,providers:[]});")
+        expect(page.locator('#modelPillName')).not_to_contain_text('Connect ChatGPT')
+        page.locator('#modelPill').click()
+        page.locator('.pop-row').filter(has_text='Model').first.click()
+        menu = page.locator('.dsh-pop').last
+        expect(menu.locator('.pop-opt[data-connection="api"]')).to_have_count(2)
+        expect(menu).not_to_contain_text('Connect ChatGPT')
+        menu.locator('[data-model-id="route-only"][data-connection="api"]').click()
+        page.wait_for_function("settings.connection === 'api' && settings.model === 'route-only'")
+        assert page.evaluate("savedSettings.some(p => p.connection === 'api' && p.model === 'route-only')")
+        page.reload(wait_until='networkidle')
+        page.wait_for_function('uiReady')
+        expect(page.locator('#modelPillName')).to_have_text('route-only')
+        assert page.evaluate("settings.connection === 'api'")
+        assert errors == [], errors
+        page.close()
     browser.close()
-print('PASS account/API model switching, duplicate IDs, labels and account failure isolation')
+print('PASS account/API model switching, duplicate IDs, labels, signed-out fresh installs, live API route updates and account failure isolation')

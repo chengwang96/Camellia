@@ -45,6 +45,9 @@ public final class RemoteDiscussionsActivity extends Activity {
     private final LinkedHashMap<String, JSONObject> groups = new LinkedHashMap<>();
     private final java.util.Set<String> polling = new java.util.HashSet<>();
     private final java.util.Set<String> uncertain = new java.util.HashSet<>();
+    private final java.util.Map<String, Integer> pollAttempts = new java.util.HashMap<>();
+    private final java.util.Set<String> scheduledPolls = new java.util.HashSet<>();
+    private final java.util.Set<String> missingReceipts = new java.util.HashSet<>();
     private ChatStyle style;
     private SettingsStyle settingsStyle;
     private MarkdownView markdown;
@@ -284,7 +287,7 @@ public final class RemoteDiscussionsActivity extends Activity {
     }
     private void disconnect() {
         generation++; pageRequest++; pageLoading = false; connected = false; if (api != null) api.cancel(); api = null;
-        handler.removeCallbacksAndMessages(null); polling.clear(); controls();
+        handler.removeCallbacksAndMessages(null); polling.clear(); scheduledPolls.clear(); pollAttempts.clear(); controls();
     }
     private void connect() {
         if (!stateReady || !foreground || !credentials.has("token")) return;
@@ -314,10 +317,11 @@ public final class RemoteDiscussionsActivity extends Activity {
         });
     }
     private void connectionError(Exception error) {
-        boolean retry = !(error instanceof RemoteApi.Failure) || ((RemoteApi.Failure) error).status >= 500;
+        boolean limited = error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429;
+        boolean retry = limited || !(error instanceof RemoteApi.Failure) || ((RemoteApi.Failure) error).status >= 500;
         connectionBlocked = !retry;
         connected = false; reconnecting = true; controls(); workStatus.error(RemoteApi.failureMessage(error, chinese), true);
-        if (retry) handler.postDelayed(this::connect, 3000);
+        if (retry) handler.postDelayed(this::connect, limited ? 60_000 : 3000);
     }
     private void deliver(int ticket, Runnable action) { handler.post(() -> { if (foreground && ticket == generation && !isFinishing()) action.run(); }); }
     private static List<String> keys(JSONObject value) { List<String> result = new ArrayList<>(); value.keys().forEachRemaining(result::add); return result; }
@@ -635,7 +639,7 @@ public final class RemoteDiscussionsActivity extends Activity {
         if (workStatus != null) {
             if (connected) workStatus.reconnected();
             String value = !connected ? tr("等待同步会话…", "Waiting for conversation sync…")
-                : pending.length() > 0 ? tr("操作待确认…", "Awaiting action confirmation…") : RemoteWorkStatus.discussion(group, chinese);
+                : hasPendingFor(groupId) ? tr("操作待确认…", "Awaiting action confirmation…") : RemoteWorkStatus.discussion(group, chinese);
             if (value.isEmpty()) value = loadingAttachments ? tr("正在读取附件…", "Loading attachments…")
                 : composer != null && selected.isEmpty() ? tr("未选择回答者：仅保存记录", "No respondents selected: saves a note") : tr("就绪", "Ready");
             workStatus.work(value);
@@ -643,7 +647,7 @@ public final class RemoteDiscussionsActivity extends Activity {
         if (toolbar != null) for (int i = 0; i < toolbar.getChildCount(); i++) toolbar.getChildAt(i).setEnabled(connected);
         if (composer != null) {
             boolean active = group != null && (group.optBoolean("active") || group.optBoolean("verifying"));
-            composer.send.setEnabled(connected && !loadingAttachments && pending.length() == 0 && (composer.input.length() > 0 || !images.isEmpty() || !documents.isEmpty()));
+            composer.send.setEnabled(connected && !loadingAttachments && !hasPendingFor(groupId) && (composer.input.length() > 0 || !images.isEmpty() || !documents.isEmpty()));
             composer.stop.setVisibility(active ? View.VISIBLE : View.GONE); composer.stop.setEnabled(connected && active);
             composer.send.setVisibility(View.VISIBLE);
             composer.model.setText(mode.equals("serial") ? tr("依次回答", "Sequential replies") : tr("并行回答", "Parallel replies"));
@@ -654,7 +658,7 @@ public final class RemoteDiscussionsActivity extends Activity {
             for (String id : keys(pending)) {
                 if (!uncertain.contains(id)) continue;
                 TextView check = button(tr("操作待确认 · 查询 / 重试", "Unconfirmed action · check / retry"), "discussionPending:" + id, () -> poll(id, true));
-                check.setEnabled(connected && !polling.contains(id)); pendingBar.addView(check);
+                check.setEnabled(!polling.contains(id)); pendingBar.addView(check);
             }
         }
     }
@@ -894,7 +898,7 @@ public final class RemoteDiscussionsActivity extends Activity {
     }
 
     private void submit(String action, String id, JSONObject parameters) {
-        if (!stateReady || !connected || api == null || (!action.equals("stop") && !action.equals("cancel-member-verification") && pending.length() > 0)) return;
+        if (!stateReady || !connected || api == null || (!action.equals("stop") && !action.equals("cancel-member-verification") && hasPendingFor(id))) return;
         String requestId = UUID.randomUUID().toString();
         JSONObject command = object("requestId", requestId, "instanceId", instance, "action", action, "parameters", parameters);
         try {
@@ -913,34 +917,67 @@ public final class RemoteDiscussionsActivity extends Activity {
             catch (Exception error) { deliver(ticket, () -> {
                 polling.remove(requestId); uncertain.add(requestId);
                 if (error instanceof RemoteApi.Failure && List.of(400, 403, 409, 413).contains(((RemoteApi.Failure) error).status)) { pending.remove(requestId); persist(); }
+                else schedulePoll(requestId, error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000 : 2000);
                 showError(RemoteApi.failureMessage(error, chinese)); controls();
             }); }
         });
     }
     private void poll(String requestId, boolean offerRetry) {
-        JSONObject command = pending.optJSONObject(requestId); if (command == null || api == null || polling.contains(requestId)) return;
+        JSONObject command = pending.optJSONObject(requestId); if (command == null || polling.contains(requestId)) return;
+        if (offerRetry && uncertain.contains(requestId)) {
+            dialog = new CamelliaDialog.Builder(this).setTitle(tr("核对未确认操作", "Check unconfirmed action"))
+                .setMessage(tr("操作可能已经执行。解除待确认仅清除手机记录，不会取消电脑操作。", "The action may have executed. Resolving clears only the phone's pending record; it does not cancel desktop work."))
+                .setPositiveButton(missingReceipts.contains(requestId) ? tr("重试原请求", "Retry original request") : tr("继续查询", "Check again"),
+                    (d, w) -> { if (missingReceipts.contains(requestId)) sendCommand(requestId); else poll(requestId, false); })
+                .setNeutralButton(tr("已核对，解除待确认", "Checked; resolve"), (d, w) -> { pending.remove(requestId); uncertain.remove(requestId); persist(); controls(); })
+                .setNegativeButton(tr("暂不处理", "Later"), null).show(); return;
+        }
+        if (api == null || !connected) return;
         int ticket = generation; RemoteApi client = api; polling.add(requestId); controls();
         reads.execute(() -> {
             try { JSONObject result = client.json("/v1/discussions/commands/" + requestId, credentials.optString("token"), null); deliver(ticket, () -> receipt(command, result)); }
             catch (Exception error) { deliver(ticket, () -> {
                 polling.remove(requestId);
+                uncertain.add(requestId);
                 if (error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 404) {
+                    missingReceipts.add(requestId);
                     uncertain.add(requestId);
                     showError(tr("主机未找到这次操作的回执。可以重试原操作，不会创建新的请求。", "No receipt was found. You can retry the original operation with the same request ID."));
                     if (offerRetry) dialog = new CamelliaDialog.Builder(this).setTitle(tr("重试未确认的操作？", "Retry the unconfirmed operation?"))
                         .setMessage(lastError).setPositiveButton(tr("重试", "Retry"), (d, w) -> sendCommand(requestId))
-                        .setNegativeButton(tr("暂不处理", "Later"), null).setNeutralButton(tr("取消此操作", "Discard operation"), (d, w) -> { pending.remove(requestId); persist(); controls(); }).show();
-                } else showError(RemoteApi.failureMessage(error, chinese));
+                        .setNegativeButton(tr("暂不处理", "Later"), null).setNeutralButton(tr("已核对，解除待确认", "Checked; resolve"), (d, w) -> { pending.remove(requestId); persist(); controls(); }).show();
+                } else {
+                    showError(RemoteApi.failureMessage(error, chinese));
+                    int code = error instanceof RemoteApi.Failure ? ((RemoteApi.Failure) error).status : 0;
+                    if (code == 0 || code == 429 || code >= 500) {
+                        int attempt = pollAttempts.getOrDefault(requestId, 0); pollAttempts.put(requestId, Math.min(5, attempt + 1));
+                        schedulePoll(requestId, code == 429 ? 60_000 : Math.min(30_000, 2000L << attempt));
+                    }
+                }
                 controls();
             }); }
         });
     }
+    private boolean hasPendingFor(String target) {
+        for (String id : keys(pending)) {
+            JSONObject command = pending.optJSONObject(id);
+            if (command != null && java.util.Objects.equals(target, command.has("id") ? command.optString("id") : null)) return true;
+        }
+        return false;
+    }
+    private void schedulePoll(String requestId, long delay) {
+        if (!scheduledPolls.add(requestId)) return;
+        int ticket = generation;
+        handler.postDelayed(() -> { scheduledPolls.remove(requestId); if (foreground && ticket == generation) poll(requestId, false); }, delay);
+    }
     private void receipt(JSONObject command, JSONObject result) {
         String requestId = command.optString("requestId"); polling.remove(requestId);
+        missingReceipts.remove(requestId);
+        pollAttempts.remove(requestId);
         uncertain.remove(requestId);
         if (!pending.has(requestId)) return;
         if (result.optString("state").equals("pending")) {
-            int ticket = generation; handler.postDelayed(() -> { if (foreground && ticket == generation) poll(requestId, false); }, 1000); controls(); return;
+            schedulePoll(requestId, 1000); controls(); return;
         }
         if (!result.optString("state").equals("completed") && !result.optString("state").equals("failed")) {
             uncertain.add(requestId);

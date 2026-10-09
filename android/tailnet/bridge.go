@@ -263,7 +263,11 @@ func (node *Node) prepare(method, target, token string, payload io.Reader, lengt
 }
 
 func (response *Response) Execute() error {
-	return response.execute(30 * time.Second)
+	timeout := 30 * time.Second
+	if response.request.Method == http.MethodPost && response.request.ContentLength > 64*1024 {
+		timeout = 120 * time.Second
+	}
+	return response.execute(timeout)
 }
 
 func connectionError(err error, cancelled, timedOut, connected bool, state string) error {

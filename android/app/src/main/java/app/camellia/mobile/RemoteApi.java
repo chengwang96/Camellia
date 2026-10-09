@@ -46,6 +46,8 @@ public class RemoteApi {
     private final android.content.Context context;
     private final Set<HttpURLConnection> connections = ConcurrentHashMap.newKeySet();
     private volatile boolean cancelled;
+    private boolean incremental;
+    void incremental(boolean enabled) { incremental = enabled; }
     private final Set<tailnet.Response> embeddedResponses = ConcurrentHashMap.newKeySet();
 
     public RemoteApi(String address) { this(null, address); }
@@ -148,7 +150,7 @@ public class RemoteApi {
     }
 
     public void events(String id, String token, SnapshotListener listener) throws IOException {
-        eventsAt("/v1/conversations/" + id + "/events", token, listener);
+        eventsAt("/v1/conversations/" + id + "/events" + (incremental ? "?incremental=1" : ""), token, listener);
     }
 
     public void listEvents(String token, SnapshotListener listener) throws IOException {
@@ -190,12 +192,13 @@ public class RemoteApi {
         if (cancelled) throw new IOException("Cancelled");
         if (token != null && !token.matches("[A-Za-z0-9_-]{43}")) throw new IOException("Invalid credential");
         try {
+            tailnet.Node node = EmbeddedNetwork.node(() -> cancelled || Thread.currentThread().isInterrupted());
             tailnet.Response response;
-            if (payload == null) response = EmbeddedNetwork.node().prepare("GET", endpoint.uri(path).toString(), token == null ? "" : token, "");
+            if (payload == null) response = node.prepare("GET", endpoint.uri(path).toString(), token == null ? "" : token, "");
             else {
                 AttachmentJson.Body body = AttachmentJson.prepare(context, payload, () -> cancelled);
                 AttachmentUpload upload = new AttachmentUpload(body);
-                try { response = EmbeddedNetwork.node().prepareStream("POST", endpoint.uri(path).toString(), token == null ? "" : token, body.length, upload); }
+                try { response = node.prepareStream("POST", endpoint.uri(path).toString(), token == null ? "" : token, body.length, upload); }
                 catch (Exception error) { upload.close(); throw error; }
             }
             embeddedResponses.add(response);

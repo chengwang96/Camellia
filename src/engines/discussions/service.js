@@ -165,7 +165,7 @@ class DiscussionService {
   async call(action, payload = {}, { authorize = () => {} } = {}) {
     input(payload);
     authorize();
-    if (this.platform !== 'win32') throw new Error('Agent discussions are currently available on Windows desktop.');
+    if (!['win32', 'darwin'].includes(this.platform)) throw new Error('Agent discussions are currently available on Windows and macOS desktop.');
     if (action === 'catalog') return { bindings: await this.catalog() };
     if (action === 'cancel-verification') { this.production?.cancel(payload.bindingId); return {}; }
     if (action === 'verify-binding') {

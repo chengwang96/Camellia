@@ -391,8 +391,8 @@ do {
     transcript.hideMessagesAfterAccessFailure()
     check(transcript.messages.isEmpty && transcript.pendingProcess.isEmpty,
           "a terminal access loss removes cached messages and tool rows")
-    check(transcript.live == nil && !transcript.hasOlder && transcript.connected,
-          "a refused one-shot request clears content without disconnecting a live stream")
+    check(transcript.live == nil && !transcript.hasOlder && !transcript.connected && transcript.permission == nil,
+          "a refused one-shot request clears content and withdraws control until a fresh snapshot")
     transcript.suspend()
     check(!transcript.connected, "a terminal stream failure withdraws control separately")
 }
@@ -472,8 +472,8 @@ do {
 
 do {
     // Android applies permission and settings before checking for a messages
-    // array, but leaves the rendered history, live reply, queue and automation
-    // alone if that array is absent. An explicit empty array is different.
+    // array. Omitted state retains its last value, while an explicit queue
+    // revision or live/automation value applies without a history page.
     let transcript = RemoteTranscript()
     _ = transcript.apply(remoteSnapshot(
         "{\"instanceId\":\"A\",\"cursor\":1,\"permission\":\"control\",\"settings\":{\"version\":\"s1\",\"editable\":true},"
@@ -488,7 +488,7 @@ do {
     checkEqual(transcript.nextBefore, 3, "a partial snapshot retains the paging cursor")
     checkEqual(transcript.permission, .read, "a partial snapshot still revokes control")
     checkEqual(transcript.settings?.editable, nil, "a missing settings object revokes the stale edit option")
-    checkEqual(transcript.queue.map(\.id), ["q1"], "a partial snapshot does not replace the rendered queue")
+    checkEqual(transcript.queue.map(\.id), ["q1"], "an unversioned partial queue cannot replace a newer revision")
     checkEqual(transcript.automation?.goal?.id, "g1", "a partial snapshot does not replace the rendered goal")
     check(transcript.live != nil, "a partial snapshot does not replace the rendered live reply")
 
@@ -5859,6 +5859,7 @@ do {
         ["live": ["runId": 2, "text": "new run", "userSeq": 1, "startedAt": 1]],
         ["live": ["runId": 1, "text": "approval", "userSeq": 1, "startedAt": 1, "pendingApprovals": 1]],
         ["conversation": ["id": uuid, "seq": 1, "title": "renamed"]], ["nextBefore": 1],
+        ["subagents": [["id": "child", "engine": "codex", "status": "waiting", "pendingApprovals": 1]]],
     ]
     for change in critical {
         check(!SnapshotCoalescer.replaceable(coalescedFrame(2, change), after: original), "a critical detail transition cannot replace an earlier snapshot")
@@ -5897,11 +5898,14 @@ do {
     let worker = Task.detached {
         coalescer.offer(coalescedFrame(1))
         coalescer.offer(coalescedFrame(2))
-        coalescer.offer(coalescedFrame(3, ["messages": NSNull(), "live": NSNull(), "permission": "read"]))
+        var partial = coalescedJSON(3, ["messages": NSNull(), "permission": "read"])
+        // An omitted live field retains text; explicit null completes the run.
+        partial.removeValue(forKey: "live")
+        coalescer.offer(RemoteSnapshot(JSONObject(dictionary: partial)))
         return coalescer.offer(coalescedFrame(4, ["live": NSNull(), "permission": "read"]))
     }
     check(await pump(seconds: 3) { transcript.cursor == 4 }, "partial and final frames are delivered in order")
-    check(await worker.value && observedPartial, "an incomplete permission frame retains the preceding pending live text and history")
+    check(await worker.value && observedPartial, "a permission-only frame retains the preceding pending live text and history")
     coalescer.cancel()
 }
 do {
@@ -5950,6 +5954,72 @@ do {
     let delivered = events.count
     try await Task.sleep(nanoseconds: 200_000_000)
     checkEqual(events.count, delivered, "invalidated detail sessions produce no late snapshot or state callbacks")
+}
+
+// MARK: - Child tasks and active-turn fork capability
+do {
+    let task: [String: Any] = ["id": "child-1", "engine": "codex", "userSeq": 7, "title": "Review the report",
+        "goal": "Check the result", "status": "waiting", "turnId": "child-turn", "canReply": true,
+        "pendingApprovals": 1, "approvals": [["requestId": "request-1", "fingerprint": "fingerprint-1",
+            "toolName": "Question", "responseSupported": true, "questions": [["id": "format", "question": "Which format?"]]]]]
+    let transcript = RemoteTranscript()
+    _ = transcript.apply(RemoteSnapshot(JSONObject(dictionary: ["instanceId": "desktop-1", "cursor": 1, "subagents": [task]])))
+    checkEqual(transcript.subagents.count, 1, "child metadata applies without a transcript page")
+    check(transcript.subagents[0].needsAttention, "child approvals remain visible in collapsed cards")
+    let command = transcript.subagents[0].command(operation: "reply", instanceId: "desktop-1")
+    checkEqual(command["taskId"] as? String, "child-1", "a child reply keeps its own task identity")
+    checkEqual(command["expectedTurnId"] as? String, "child-turn", "a child command carries its current turn")
+    checkEqual(transcript.subagents[0].approvals[0].fingerprint, "fingerprint-1", "child approvals retain the server fingerprint")
+    _ = transcript.apply(RemoteSnapshot(JSONObject(dictionary: ["instanceId": "desktop-1", "cursor": 2])))
+    checkEqual(transcript.subagents.count, 1, "omitted child metadata does not erase the last snapshot")
+    transcript.hideMessagesAfterAccessFailure()
+    check(transcript.subagents.isEmpty, "loss of access clears child content with the transcript")
+    _ = transcript.apply(RemoteSnapshot(JSONObject(dictionary: ["instanceId": "desktop-1", "cursor": 3, "subagents": [task]])))
+    _ = transcript.apply(RemoteSnapshot(JSONObject(dictionary: ["instanceId": "desktop-2", "cursor": 0])))
+    check(transcript.subagents.isEmpty, "a desktop restart cannot reuse the previous child's controls")
+    let capabilities = RemoteCapabilities(["fork"])
+    check(capabilities.allows(.fork, permission: .control), "fork is advertised as a control operation")
+    check(!capabilities.allows(.fork, permission: .read), "read-only devices cannot fork")
+}
+
+// MARK: - Incremental mobile compatibility
+do {
+    let transcript = RemoteTranscript()
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"A\",\"cursor\":1,\"permission\":\"control\",\"messages\":[{\"seq\":1,\"role\":\"user\",\"text\":\"parent\"}],\"live\":{\"runId\":1,\"text\":\"old\"},\"queue\":[{\"id\":\"q1\",\"text\":\"old\"}],\"queueVersion\":2}"))
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"A\",\"cursor\":2,\"permission\":\"control\",\"live\":{\"runId\":1,\"text\":\"updated\",\"pendingApprovals\":1},\"queue\":[],\"queueVersion\":3,\"automation\":{\"goal\":{\"id\":\"goal\",\"phase\":\"active\",\"armed\":true}}}"))
+    checkEqual(transcript.messages.count, 1, "incremental state does not erase unchanged history")
+    checkEqual(transcript.live?.text, "updated", "incremental live output continues to update")
+    checkEqual(transcript.live?.pendingApprovals, 1, "incremental approval attention reaches the phone")
+    check(transcript.queue.isEmpty && transcript.queueVersion == 3, "incremental queue removal applies its newer revision")
+    checkEqual(transcript.automation?.goal?.id, "goal", "incremental goal metadata applies without history")
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"A\",\"cursor\":3,\"live\":null,\"automation\":null}"))
+    check(transcript.live == nil && transcript.automation == nil, "explicit null state clears a completed run and goal")
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"A\",\"cursor\":4,\"live\":{\"runId\":2},\"queue\":[{\"id\":\"q2\"}],\"queueVersion\":4}"))
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"B\",\"cursor\":0,\"permission\":\"read\"}"))
+    check(transcript.live == nil && transcript.queue.isEmpty && !transcript.canQueue && transcript.nextBefore == nil,
+          "a new desktop instance cannot inherit old live controls or queue metadata")
+}
+do {
+    let task: [String: Any] = ["id": "shared-id", "engine": "codex", "userSeq": 1, "status": "waiting"]
+    var other = task; other["engine"] = "claude"
+    check(RemoteSubtask(JSONObject(dictionary: task)).identity != RemoteSubtask(JSONObject(dictionary: other)).identity,
+          "children with the same native ID retain separate engine identities")
+    let transcript = RemoteTranscript()
+    _ = transcript.apply(RemoteSnapshot(JSONObject(dictionary: ["instanceId": "A", "cursor": 1,
+        "messages": [["seq": 20, "role": "user", "text": "later"]], "subagents": [task, other]])))
+    checkEqual(transcript.earlierSubtaskTurns, [1], "waiting children remain reachable outside the loaded history page")
+    transcript.mergeOlder(remoteSnapshot("{\"messages\":[{\"seq\":1,\"role\":\"user\",\"text\":\"parent\"}]}"))
+    check(transcript.earlierSubtaskTurns.isEmpty, "loading the initiating turn removes its duplicate earlier-turn card")
+    let first = coalescedFrame(1, ["subagents": [task]])
+    var updated = task; updated["status"] = "running"
+    check(!SnapshotCoalescer.replaceable(coalescedFrame(2, ["subagents": [updated]]), after: first),
+          "a child attention transition is delivered before subsequent progress")
+    let cache = RemotePrefetch(budget: .init(bytes: 1024, perSnapshot: 1024))
+    var large = task; large["result"] = String(repeating: "x", count: 2048)
+    cache.store(address: "computer", token: "test", snapshot: RemoteSnapshot(JSONObject(dictionary: [
+        "conversation": ["id": "parent"], "messages": [], "subagents": [large]])))
+    check(cache.cached(address: "computer", token: "test", id: "parent") == nil,
+          "child output counts toward the mobile snapshot cache budget")
 }
 
 // MARK: - Report

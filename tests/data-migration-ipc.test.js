@@ -31,11 +31,13 @@ test('a failed relaunch clears the cache request rather than triggering unexpect
   } finally { h.cleanup(); }
 });
 
-test('the settings handlers export and re-import a profile package', async t => {
+test('the settings handlers export and re-import the selected profile categories', async t => {
   const source = createHarness();
   const target = createHarness();
   try {
     source.configureApi();
+    fs.mkdirSync(path.join(source.userData, 'conversations'), { recursive: true });
+    fs.writeFileSync(path.join(source.userData, 'conversations', 'transfer.jsonl'), '{"role":"user"}\n');
     const packageFile = path.join(source.root, 'camellia-data-package.zip');
     source.dialogBehavior.save = async () => ({ canceled: false, filePath: packageFile });
     const exported = await source.call('data-export');
@@ -45,13 +47,14 @@ test('the settings handlers export and re-import a profile package', async t => 
     assert.equal(exported.files > 0, true);
 
     // The first call only reads the package and reports its categories; no
-    // dialog is shown, so the settings page can offer a real multi-select.
+    // dialog is shown until the settings page selects the categories.
     const preview = await target.call('data-import', { file: packageFile });
     assert.equal(preview.ok, true);
     assert.equal(preview.needsSelection, true);
-    assert.deepEqual(preview.categories, exported.categories);
+    assert.deepEqual(JSON.parse(JSON.stringify(preview.categories)), exported.categories);
     assert.equal(preview.categories.api.files > 0, true);
     assert.equal(preview.categories.settings.files > 0, true);
+    assert.equal(preview.categories.conversations.files > 0, true);
     assert.equal(preview.file, packageFile);
     // The second call imports the selected categories.
     const imported = await target.call('data-import', { file: packageFile, scope: ['api', 'settings', 'conversations'] });
@@ -79,6 +82,100 @@ test('a dismissed dialog changes nothing', async t => {
     assert.equal(imported.ok, true); assert.equal(imported.canceled, true);
     assert.equal(fs.existsSync(missing), false);
   } finally { h.cleanup(); }
+});
+
+test('API export leaves subscription clients and their native files untouched', async () => {
+  const harness = createHarness();
+  try {
+    harness.configureApi();
+    const wal = path.join(harness.userData, 'codex', 'subscription', 'state_5.sqlite-wal');
+    fs.mkdirSync(path.dirname(wal), { recursive: true });
+    fs.writeFileSync(wal, 'temporary WAL');
+    fs.writeFileSync(path.join(harness.userData, 'desktop-config.json'), '{}');
+    const proc = new (require('node:events').EventEmitter)();
+    proc.exitCode = null; proc.signalCode = null;
+    let stopped = false;
+    harness.api.codex.sessions.set({ conversationId: 'idle-export' }, {
+      client: { proc }, running: false,
+      shutdown() {
+        setTimeout(() => { fs.unlinkSync(wal); stopped = true; proc.exitCode = 0; proc.emit('exit', 0); }, 50);
+      },
+    });
+    const destination = path.join(harness.root, 'export.zip');
+    harness.dialogBehavior.save = async () => ({ canceled: false, filePath: destination });
+    const result = await harness.call('data-export', { scope: ['api'] });
+    assert.equal(stopped, false);
+    assert.equal(result.ok, true, result.error);
+    const zip = await require('jszip').loadAsync(fs.readFileSync(destination));
+    assert.equal(zip.file('app/desktop-config.json'), null);
+    assert.ok(zip.file('home/.dsh/ollama-proxy.json'));
+    assert.equal(zip.file('app/codex/subscription/state_5.sqlite-wal'), null);
+    assert.equal(fs.readFileSync(wal, 'utf8'), 'temporary WAL');
+  } finally { harness.cleanup(); }
+});
+
+test('conversation exports wait for native API writers to exit before collecting files', async () => {
+  const harness = createHarness();
+  try {
+    harness.configureApi();
+    const wal = path.join(harness.userData, 'codex/api/state_5.sqlite-wal');
+    fs.mkdirSync(path.dirname(wal), { recursive: true });
+    fs.writeFileSync(wal, 'temporary WAL');
+    const proc = new (require('node:events').EventEmitter)();
+    proc.exitCode = null; proc.signalCode = null;
+    let stopped = false;
+    harness.api.codex.sessions.set({ conversationId: 'idle-history-export' }, {
+      client: { proc }, running: false,
+      shutdown() {
+        setTimeout(() => { fs.unlinkSync(wal); stopped = true; proc.exitCode = 0; proc.emit('exit', 0); }, 50);
+      },
+    });
+    const destination = path.join(harness.root, 'history-export.zip');
+    harness.dialogBehavior.save = async () => ({ canceled: false, filePath: destination });
+    const result = await harness.call('data-export');
+    assert.equal(result.ok, true, result.error);
+    assert.equal(stopped, true);
+    assert.equal(fs.existsSync(wal), false);
+    const zip = await require('jszip').loadAsync(fs.readFileSync(destination));
+    assert.equal(zip.file('app/codex/api/state_5.sqlite-wal'), null);
+    assert.ok(zip.file('app/desktop-config.json'));
+  } finally { harness.cleanup(); }
+});
+
+test('canceling or refusing a busy export leaves engine processes running', async context => {
+  const harness = createHarness();
+  try {
+    let shutdowns = 0;
+    context.mock.method(harness.api.codex, 'shutdown', async () => { shutdowns++; });
+    assert.equal((await harness.call('data-export')).canceled, true);
+    context.mock.method(harness.api.sharedConversations, 'isBusy', () => true);
+    const result = await harness.call('data-export');
+    assert.equal(result.ok, false);
+    assert.match(result.error, /Stop the current response/);
+    assert.equal(shutdowns, 0);
+  } finally { harness.cleanup(); }
+});
+
+test('a pending export blocks new goals and account clients until it finishes', async context => {
+  const harness = createHarness();
+  let release, pending;
+  try {
+    harness.configureApi();
+    const closing = new Promise(resolve => { release = resolve; });
+    let started;
+    const entered = new Promise(resolve => { started = resolve; });
+    harness.dialogBehavior.save = async () => { started(); await closing; return { canceled: false, filePath: path.join(harness.root, 'export.zip') }; };
+    pending = harness.call('data-export');
+    await entered;
+    for (const channel of ['claude-goal-start', 'codex-account-refresh']) {
+      const result = await harness.call(channel, {});
+      assert.equal(result.ok, false);
+      assert.match(result.error, /Wait for the data transfer/);
+    }
+    release();
+    assert.equal((await pending).ok, true);
+    assert.equal((await harness.call('codex-account-state')).ok, true);
+  } finally { release?.(); await pending; harness.cleanup(); }
 });
 
 test('a damaged package returns an error before category selection or restoration', async () => {
@@ -115,7 +212,7 @@ test('opening the scope preview writes nothing', async t => {
   } finally { source.cleanup(); target.cleanup(); }
 });
 
-test('choosing settings only restores settings and skips API keys and conversations', async t => {
+test('settings-only import restores preferences and leaves APIs and conversations alone', async t => {
   const source = createHarness();
   const target = createHarness();
   try {
@@ -124,9 +221,8 @@ test('choosing settings only restores settings and skips API keys and conversati
     source.dialogBehavior.save = async () => ({ canceled: false, filePath: packageFile });
     await source.call('data-export');
     const imported = await target.call('data-import', { file: packageFile, scope: ['settings'] });
-    assert.equal(imported.ok, true);
+    assert.equal(imported.ok, true, imported.error);
     assert.deepEqual(imported.scope, ['settings']);
-    // API keys are not part of the settings category.
     assert.equal(fs.existsSync(path.join(target.home, '.dsh', 'ollama-proxy.json')), false);
     const conversations = path.join(target.userData, 'conversations');
     const restored = fs.existsSync(conversations) ? fs.readdirSync(conversations) : [];
@@ -163,6 +259,73 @@ test('empty export selection is rejected without a save dialog', async () => {
     assert.equal(exported.ok, false);
     assert.match(exported.error, /Choose at least one category/);
     assert.equal(dialogs, 0);
+  } finally { harness.cleanup(); }
+});
+
+test('subscription data cannot be selected as a fourth export category', async () => {
+  const harness = createHarness();
+  try {
+    let dialogs = 0;
+    harness.dialogBehavior.save = async () => { dialogs++; return { canceled: true }; };
+    for (const scope of [['subscriptions'], ['api', 'subscriptions']]) {
+      const exported = await harness.call('data-export', { scope });
+      assert.equal(exported.ok, false);
+      assert.match(exported.error, /Choose at least one category/);
+    }
+    assert.equal(dialogs, 0);
+  } finally { harness.cleanup(); }
+});
+
+test('legacy complete-profile packages restore all categories while preserving local subscription accounts', async () => {
+  const harness = createHarness();
+  try {
+    const JSZip = require('jszip'), zip = new JSZip();
+    const route = '{"providers":[{"id":"transferred","keys":[{"key":"api-secret"}]}]}';
+    const entries = { 'home/.dsh/ollama-proxy.json': route,
+      'app/desktop-config.json': '{"language":"zh-CN","subscriptionAccounts":{"codex":[{"id":"source"}]}}',
+      'app/subscription-accounts/codex/account-1/auth.json': '{"tokens":"source subscription"}',
+      'app/conversations/history.jsonl': '{"role":"user"}\n' };
+    zip.file('camellia-migration.json', JSON.stringify({ format: 'camellia-data', version: 1,
+      source: { appDataDir: path.join(harness.root, 'old-data'), home: path.join(harness.root, 'old-home') },
+      counts: { files: Object.keys(entries).length, bytes: Object.values(entries).reduce((sum, text) => sum + Buffer.byteLength(text), 0) } }));
+    for (const [name, text] of Object.entries(entries)) zip.file(name, text, { createFolders: false });
+    const file = path.join(harness.root, 'legacy.zip');
+    fs.writeFileSync(file, await zip.generateAsync({ type: 'nodebuffer' }));
+    const configFile = path.join(harness.userData, 'desktop-config.json');
+    const currentConfig = '{"language":"en","subscriptionAccounts":{"codex":[{"id":"target"}]}}';
+    fs.writeFileSync(configFile, currentConfig);
+    const authFile = path.join(harness.userData, 'subscription-accounts/codex/account-1/auth.json');
+    fs.mkdirSync(path.dirname(authFile), { recursive: true });
+    fs.writeFileSync(authFile, '{"tokens":"target subscription"}');
+    const preview = await harness.call('data-import', { file });
+    assert.equal(preview.ok, true);
+    assert.deepEqual(Object.keys(preview.categories).sort(), ['api', 'conversations', 'settings']);
+    assert.equal(preview.categories.api.files, 1);
+    const imported = await harness.call('data-import', { file, scope: 'all' });
+    assert.equal(imported.ok, true, imported.error);
+    assert.deepEqual(imported.scope, ['api', 'settings', 'conversations']);
+    assert.equal(imported.restored, 3);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(harness.home, '.dsh/ollama-proxy.json'), 'utf8')), JSON.parse(route));
+    assert.deepEqual(JSON.parse(fs.readFileSync(configFile, 'utf8')), { language: 'zh-CN', subscriptionAccounts: { codex: [{ id: 'target' }] } });
+    assert.equal(fs.readFileSync(authFile, 'utf8'), '{"tokens":"target subscription"}');
+    assert.equal(fs.readFileSync(path.join(harness.userData, 'conversations/history.jsonl'), 'utf8'), entries['app/conversations/history.jsonl']);
+  } finally { harness.cleanup(); }
+});
+
+test('a subscription-only legacy package is refused before import confirmation', async () => {
+  const harness = createHarness();
+  try {
+    const zip = new (require('jszip'))(), text = '{"tokens":"subscription"}';
+    zip.file('camellia-migration.json', JSON.stringify({ format: 'camellia-data', version: 1,
+      source: { appDataDir: harness.userData, home: harness.home }, counts: { files: 1, bytes: Buffer.byteLength(text) } }));
+    zip.file('app/codex/subscription/auth.json', text, { createFolders: false });
+    const file = path.join(harness.root, 'subscription-only.zip');
+    fs.writeFileSync(file, await zip.generateAsync({ type: 'nodebuffer' }));
+    const preview = await harness.call('data-import', { file });
+    assert.equal(preview.ok, false);
+    assert.match(preview.error, /no Camellia data/);
+    assert.equal(preview.needsSelection, undefined);
+    assert.equal(fs.existsSync(path.join(harness.userData, 'codex/subscription/auth.json')), false);
   } finally { harness.cleanup(); }
 });
 

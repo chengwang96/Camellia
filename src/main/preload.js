@@ -78,6 +78,7 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   // Shared API pool (only masked credentials leave the main process).
   openApiSettingsWindow: () => ipcRenderer.invoke('dsh:open-api-settings-window'),
   apiRouterGetState: () => ipcRenderer.invoke('dsh:api-router-get-state'),
+  subscriptionPricesRefresh: () => ipcRenderer.invoke('dsh:subscription-prices-refresh'),
   apiRouterSaveConfig: (payload) => ipcRenderer.invoke('dsh:api-router-save-config', payload),
   apiRouterRotate: (model) => ipcRenderer.invoke('dsh:api-router-rotate', model),
   apiRouterReset: (payload) => ipcRenderer.invoke('dsh:api-router-reset', payload),

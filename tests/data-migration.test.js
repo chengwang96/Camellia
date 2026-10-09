@@ -78,6 +78,144 @@ function seedProfile(box) {
   write(path.join(box.home, '.dsh', 'cache', 'blob'), 'cache');
 }
 
+const subscriptionFiles = [
+  'app/subscription-accounts/codex/account-1/auth.json',
+  'app/subscription-accounts/codex/account-1/sessions/rollout.jsonl',
+  'app/subscription-accounts/kimi/account-1/config.toml',
+  'app/kimi-subscription/credentials/kimi-code.json',
+  'app/kimi-subscription/sessions/native.jsonl',
+  'app/codex/subscription/auth.json',
+  'app/codex/subscription/state_5.sqlite',
+  'app/codex/subscription/sessions/rollout.jsonl',
+  'app/codex/account-state.json',
+  'app/subscription-usage.json',
+  'app/discussions/native/member/auth.json',
+  'home/.claude/.credentials.json',
+  'home/.gemini/oauth_creds.json',
+  'home/.gemini/antigravity-cli/credentials/google-oauth.json',
+  'home/.gemini/antigravity-cli/google-account.json',
+  'home/.gemini/antigravity-cli/google-quota.json',
+  'home/.kimi-code/credentials/kimi-code.json',
+  'home/.kimi-code/.credentials.yaml',
+];
+
+test('subscription credentials, state and account homes never enter an export', async () => {
+  const source = scratch();
+  try {
+    seedProfile(source);
+    write(path.join(source.home, '.dsh/.credentials.yaml'), 'provider: api-key\n');
+    for (const relative of subscriptionFiles) write(path.join(source.root, relative), 'device-local account');
+    for (const scope of ['all', 'api', 'settings', 'conversations']) {
+      const destination = path.join(source.root, scope + '.zip');
+      const exported = await createDataPackage({ ...source, destination, scope });
+      const zip = await require('jszip').loadAsync(fs.readFileSync(destination));
+      for (const relative of subscriptionFiles) {
+        assert.equal(zip.file(relative), null, scope + ': ' + relative);
+        assert.equal(fs.readFileSync(path.join(source.root, relative), 'utf8'), 'device-local account');
+      }
+      if (scope === 'all' || scope === 'api') {
+        assert.equal(await zip.file('home/.dsh/.credentials.yaml').async('string'), 'provider: api-key\n');
+        assert.ok(exported.categories.api.files > 0);
+      }
+    }
+  } finally { dispose(source); }
+});
+
+test('legacy subscription entries are counted but never offered or restored', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    const file = path.join(source.root, 'legacy-accounts.zip');
+    const entries = { 'home/.dsh/ollama-proxy.json': '{"providers":[]}' };
+    for (const relative of subscriptionFiles) {
+      entries[relative] = 'source account';
+      write(path.join(target.root, relative), 'target account');
+    }
+    const manifest = { format: FORMAT, version: 1, source: { appDataDir: source.dataDir, home: source.home },
+      counts: { files: Object.keys(entries).length, bytes: Object.values(entries).reduce((sum, value) => sum + Buffer.byteLength(value), 0) },
+      categories: { api: { files: 999, bytes: 999 } } };
+    await writePart(file, { 'camellia-migration.json': JSON.stringify(manifest), ...entries });
+    assert.deepEqual((await inspectDataPackage(file)).categories, { api: { files: 1, bytes: Buffer.byteLength(entries['home/.dsh/ollama-proxy.json']) } });
+    const imported = await importDataPackage({ ...target, file, scope: 'all' });
+    assert.equal(imported.restored, 1);
+    assert.equal(imported.overwritten, 0);
+    assert.equal(imported.backupDir, null);
+    for (const relative of subscriptionFiles) assert.equal(fs.readFileSync(path.join(target.root, relative), 'utf8'), 'target account');
+  } finally { dispose(source); dispose(target); }
+});
+
+const sourceAccountMetadata = {
+  subscriptionAccounts: { codex: [{ id: 'source-account', label: 'Source subscription' }] },
+  subscriptionActive: { codex: 'source-account' },
+  codexSessionAccounts: { sourceSession: 'source-account' },
+  kimiSessionAccounts: { sourceSession: 'source-account' },
+};
+
+test('mixed preference documents export settings without source subscription identities', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    seedProfile(source);
+    const config = { language: 'zh-CN', ...sourceAccountMetadata };
+    const claude = { mcpServers: { portable: {} }, oauthAccount: { emailAddress: 'source@example.invalid' } };
+    write(path.join(source.dataDir, 'desktop-config.json'), JSON.stringify(config));
+    write(path.join(source.home, '.claude.json'), JSON.stringify(claude));
+    const destination = path.join(source.root, 'preferences.zip');
+    await createDataPackage({ ...source, destination });
+    const zip = await require('jszip').loadAsync(fs.readFileSync(destination), { checkCRC32: true });
+    assert.deepEqual(JSON.parse(await zip.file('app/desktop-config.json').async('string')), { language: 'zh-CN' });
+    assert.deepEqual(JSON.parse(await zip.file('home/.claude.json').async('string')), { mcpServers: { portable: {} } });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(source.dataDir, 'desktop-config.json'), 'utf8')), config);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(source.home, '.claude.json'), 'utf8')), claude);
+    const local = { subscriptionAccounts: { codex: [{ id: 'target-account' }] } };
+    const localClaude = { oauthAccount: { emailAddress: 'target@example.invalid' } };
+    write(path.join(target.dataDir, 'desktop-config.json'), JSON.stringify({ language: 'en', ...local }));
+    write(path.join(target.home, '.claude.json'), JSON.stringify({ mcpServers: {}, ...localClaude }));
+    await importDataPackage({ ...target, file: destination, scope: 'settings' });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8')), { language: 'zh-CN', ...local });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target.home, '.claude.json'), 'utf8')), { mcpServers: { portable: {} }, ...localClaude });
+  } finally { dispose(source); dispose(target); }
+});
+
+for (const hasLocalAccounts of [false, true]) test('legacy mixed settings preserve local account identity: ' + hasLocalAccounts, async () => {
+  const source = scratch(), target = scratch();
+  try {
+    const file = path.join(source.root, 'legacy-preferences.zip');
+    const entries = {
+      'app/desktop-config.json': JSON.stringify({ language: 'zh-CN', ...sourceAccountMetadata }),
+      'home/.claude.json': JSON.stringify({ mcpServers: { imported: {} }, oauthAccount: { emailAddress: 'source@example.invalid' } }),
+    };
+    const local = hasLocalAccounts ? {
+      subscriptionAccounts: { codex: [{ id: 'target-account', label: source.home }] },
+      subscriptionActive: { codex: 'target-account' },
+      codexSessionAccounts: { targetSession: 'target-account' },
+      kimiSessionAccounts: { targetSession: 'target-account' },
+    } : {};
+    const localClaude = hasLocalAccounts ? { oauthAccount: { emailAddress: 'target@example.invalid', localPath: source.home } } : {};
+    write(path.join(target.dataDir, 'desktop-config.json'), JSON.stringify({ language: 'en', ...local }));
+    write(path.join(target.home, '.claude.json'), JSON.stringify({ mcpServers: {}, ...localClaude }));
+    const manifest = { format: FORMAT, version: 1, source: { appDataDir: source.dataDir, home: source.home },
+      counts: { files: 2, bytes: Object.values(entries).reduce((sum, text) => sum + Buffer.byteLength(text), 0) } };
+    await writePart(file, { 'camellia-migration.json': JSON.stringify(manifest), ...entries });
+    await importDataPackage({ ...target, file, scope: 'settings' });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8')), { language: 'zh-CN', ...local });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target.home, '.claude.json'), 'utf8')), { mcpServers: { imported: {} }, ...localClaude });
+  } finally { dispose(source); dispose(target); }
+});
+
+test('unreadable local account metadata prevents overwrites before any import activation', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    seedProfile(source);
+    const file = path.join(source.root, 'profile.zip');
+    await createDataPackage({ ...source, destination: file });
+    const current = '{"subscriptionAccounts":';
+    write(path.join(target.dataDir, 'desktop-config.json'), current);
+    await assert.rejects(importDataPackage({ ...target, file }), /current subscription account settings could not be preserved/);
+    assert.equal(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8'), current);
+    assert.equal(fs.existsSync(path.join(target.home, '.dsh/ollama-proxy.json')), false);
+    assert.equal(fs.existsSync(path.join(target.dataDir, 'migration-backups')), false);
+  } finally { dispose(source); dispose(target); }
+});
+
 test('a profile can be exported and imported again after an overwriting import', async () => {
   const source = scratch(), middle = scratch(), target = scratch();
   try {
@@ -130,14 +268,15 @@ for (const damaged of ['manifest', 'file']) test('same-size corruption of the pa
   } finally { dispose(source); dispose(target); }
 });
 
-test('malformed selected JSON is rejected before any profile file is overwritten', async () => {
+test('malformed selected account metadata is rejected without exporting it', async () => {
   const source = scratch(), target = scratch();
   try {
     seedProfile(source);
     write(path.join(source.dataDir, 'desktop-config.json'), '{invalid json');
     write(path.join(target.dataDir, 'desktop-config.json'), '{"language":"en"}');
-    const file = path.join(source.root, 'invalid-json.zip'); await createDataPackage({ ...source, destination: file });
-    await assert.rejects(importDataPackage({ ...target, file }), /invalid JSON.*app\/desktop-config\.json/i);
+    const file = path.join(source.root, 'invalid-json.zip');
+    await assert.rejects(createDataPackage({ ...source, destination: file }), /invalid JSON.*app\/desktop-config\.json/i);
+    assert.equal(fs.existsSync(file), false);
     assert.equal(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8'), '{"language":"en"}');
     assert.equal(fs.existsSync(path.join(target.home, '.dsh', 'ollama-proxy.json')), false);
     assert.equal(fs.existsSync(path.join(target.dataDir, 'migration-backups')), false);
@@ -147,8 +286,12 @@ test('malformed selected JSON is rejected before any profile file is overwritten
 test('unselected malformed settings do not prevent importing valid API data', async () => {
   const source = scratch(), target = scratch();
   try {
-    seedProfile(source); write(path.join(source.dataDir, 'desktop-config.json'), '{invalid json');
-    const file = path.join(source.root, 'api.zip'); await createDataPackage({ ...source, destination: file });
+    const file = path.join(source.root, 'api.zip');
+    const entries = { 'app/desktop-config.json': '{invalid json',
+      'home/.dsh/ollama-proxy.json': '{"providers":[{"id":"test"}]}' };
+    const manifest = { format: FORMAT, version: 1, source: { appDataDir: source.dataDir, home: source.home },
+      counts: { files: 2, bytes: Object.values(entries).reduce((sum, text) => sum + Buffer.byteLength(text), 0) } };
+    await writePart(file, { 'camellia-migration.json': JSON.stringify(manifest), ...entries });
     const imported = await importDataPackage({ ...target, file, scope: 'api' });
     assert.ok(imported.restored > 0);
     assert.equal(JSON.parse(fs.readFileSync(path.join(target.home, '.dsh', 'ollama-proxy.json'), 'utf8')).providers[0].id, 'test');
@@ -440,20 +583,171 @@ test('native Codex database files travel with conversations rather than settings
   } finally { dispose(source); }
 });
 
+test('export snapshots WAL transactions before the live database checkpoints and changes', async () => {
+  const source = scratch(), target = scratch();
+  let database;
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const file = path.join(source.dataDir, 'codex', 'api', 'state_5.sqlite');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    database = new DatabaseSync(file);
+    database.exec("PRAGMA journal_mode=WAL; CREATE TABLE threads(id TEXT); INSERT INTO threads VALUES ('saved');");
+    const destination = path.join(source.root, 'export.zip');
+    let changed = false;
+    const exported = await createDataPackage({ ...source, destination, onProgress(state) {
+      if (state.phase === 'export' && !changed) {
+        changed = true;
+        database.exec("INSERT INTO threads VALUES ('later');"); database.close(); database = null;
+      }
+    } });
+    assert.equal(changed, true);
+    assert.equal(exported.files, 1, 'the backed-up database contains its committed WAL data');
+    const zip = await require('jszip').loadAsync(fs.readFileSync(destination));
+    assert.equal(zip.file('app/codex/api/state_5.sqlite-wal'), null);
+    assert.equal(zip.file('app/codex/api/state_5.sqlite-shm'), null);
+    await importDataPackage({ ...target, file: destination });
+    const restored = new DatabaseSync(path.join(target.dataDir, 'codex', 'api', 'state_5.sqlite'), { readOnly: true });
+    try {
+      assert.deepEqual(restored.prepare('SELECT id FROM threads').all().map(row => row.id), ['saved']);
+      assert.equal(restored.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+    } finally { restored.close(); }
+  } finally { database?.close(); dispose(source); dispose(target); }
+});
+
+test('metadata changed or removed during compression does not alter its export snapshot', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    const file = path.join(source.dataDir, 'desktop-config.json');
+    const catalog = path.join(source.dataDir, 'codex', 'api', 'cache', 'remote_plugin_catalog', 'catalog.json');
+    write(file, '{"language":"en"}'); write(catalog, '{"plugins":[]}');
+    let changed = false;
+    const destination = path.join(source.root, 'export.zip');
+    await createDataPackage({ ...source, destination, onProgress(state) {
+      if (state.phase === 'export' && !changed) {
+        changed = true; write(file, '{"language":"zh-CN","updated":true}'); fs.unlinkSync(catalog);
+      }
+    } });
+    assert.equal(changed, true);
+    await importDataPackage({ ...target, file: destination });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8')), { language: 'en' });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target.dataDir, 'codex', 'api', 'cache', 'remote_plugin_catalog', 'catalog.json'), 'utf8')), { plugins: [] });
+  } finally { dispose(source); dispose(target); }
+});
+
+test('runtime locks and browser caches stay out of exports while databases and WALs travel', async () => {
+  const source = scratch();
+  try {
+    const kept = ['app/codex/api/state_5.sqlite', 'app/codex/api/state_5.sqlite-wal',
+      'home/.dsh/conversation_summaries.db', 'home/.dsh/conversation_summaries.db-wal'];
+    const omitted = ['app/codex/api/.sqlite-maintenance.lock',
+      'app/codex/api/thread-writer-locks/session.lock',
+      'app/subscription-accounts/codex/account/.sqlite-maintenance.lock',
+      'app/codex/api/state_5.sqlite-shm', 'home/.dsh/.sqlite-maintenance.lock',
+      'home/.dsh/conversation_summaries.db-shm', 'app/GPUPersistentCache/cache.db', 'app/DIPS-wal', 'app/SharedStorage-wal'];
+    for (const relative of kept) write(path.join(source.root, relative), 'persistent data');
+    for (const relative of omitted) write(path.join(source.root, relative), 'runtime state');
+    const destination = path.join(source.root, 'export.zip');
+    const exported = await createDataPackage({ ...source, destination });
+    const zip = await require('jszip').loadAsync(fs.readFileSync(destination));
+    assert.equal(exported.files, kept.length);
+    assert.equal(exported.locked, 0);
+    for (const relative of kept) assert.ok(zip.file(relative), relative);
+    for (const relative of omitted) assert.equal(zip.file(relative), null, relative);
+  } finally { dispose(source); }
+});
+
+test('a readable handle with a byte-range lock is reported before packaging', async context => {
+  const source = scratch();
+  try {
+    const file = path.join(source.dataDir, 'conversations', 'locked.jsonl');
+    write(file, '{"seq":1}\n');
+    write(path.join(source.dataDir, 'desktop-config.json'), '{}');
+    const open = fs.promises.open;
+    context.mock.method(fs.promises, 'open', async (name, ...args) => {
+      const handle = await open(name, ...args);
+      return name === file ? {
+        read: async () => { throw Object.assign(new Error('byte-range locked'), { code: 'EBUSY' }); },
+        close: () => handle.close(),
+      } : handle;
+    });
+    const destination = path.join(source.root, 'export.zip');
+    const exported = await createDataPackage({ ...source, destination });
+    assert.equal(exported.files, 1);
+    assert.equal(exported.locked, 1);
+    assert.deepEqual(exported.lockedFiles, ['app/conversations/locked.jsonl']);
+    const { manifest } = await readManifest(destination);
+    assert.equal(manifest.counts.locked, 1);
+    assert.deepEqual(manifest.lockedFiles, exported.lockedFiles);
+    assert.equal((await inspectDataPackage(destination)).categories.settings.files, 1);
+  } finally { dispose(source); }
+});
+
+test('Windows maintenance byte-range locks cannot abort an export', { skip: process.platform !== 'win32' }, async () => {
+  const source = scratch();
+  let child, exited;
+  try {
+    const file = path.join(source.dataDir, 'codex', 'api', '.sqlite-maintenance.lock');
+    write(file, '');
+    write(path.join(source.dataDir, 'desktop-config.json'), '{}');
+    const script = "$stream = [System.IO.File]::Open($env:CAMELLIA_TEST_LOCK, 'Open', 'ReadWrite', 'ReadWrite'); "
+      + "try { $stream.Lock(0, 1); [Console]::Out.WriteLine('locked'); [Console]::In.ReadLine() | Out-Null } "
+      + "finally { $stream.Unlock(0, 1); $stream.Dispose() }";
+    child = require('node:child_process').spawn('powershell.exe', ['-NoProfile', '-Command', script], {
+      env: { ...process.env, CAMELLIA_TEST_LOCK: file }, windowsHide: true, stdio: 'pipe',
+    });
+    exited = new Promise(resolve => child.once('close', resolve));
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timed out waiting for the test file lock')), 10000);
+      const finish = callback => value => { clearTimeout(timeout); callback(value); };
+      child.stdout.once('data', finish(resolve));
+      child.once('error', finish(reject));
+      child.once('exit', finish(() => reject(new Error('Test lock process exited before readiness'))));
+    });
+    const handle = await fs.promises.open(file, 'r');
+    try { await assert.rejects(handle.read(Buffer.alloc(64 * 1024), 0, 64 * 1024, 0), { code: 'EBUSY' }); }
+    finally { await handle.close(); }
+    const exported = await createDataPackage({ ...source, destination: path.join(source.root, 'export.zip') });
+    assert.equal(exported.files, 1);
+    assert.equal(exported.locked, 0);
+  } finally {
+    if (child) { child.stdin.end('\n'); const timeout = setTimeout(() => child.kill(), 5000); await exited; clearTimeout(timeout); }
+    dispose(source);
+  }
+});
+
 test('a read failure after the export precheck preserves the previous package and closes its streams', async context => {
   const source = scratch();
   try {
     const file = path.join(source.dataDir, 'desktop-config.json'), destination = path.join(source.root, 'export.zip');
     write(file, '{"language":"zh-CN"}'); write(destination, 'previous package');
-    const read = fs.createReadStream; let input;
+    const read = fs.createReadStream, copy = fs.promises.copyFile; let input, snapshot;
+    context.mock.method(fs.promises, 'copyFile', async (from, to, ...args) => {
+      if (from === file) snapshot = to;
+      return copy(from, to, ...args);
+    });
     context.mock.method(fs, 'createReadStream', (name, ...args) => {
-      if (name !== file) return read(name, ...args);
+      if (name !== snapshot) return read(name, ...args);
       input = new Readable({ read() { this.push(Buffer.from('{"language":')); this.destroy(Object.assign(new Error('locked after precheck'), { code: 'EACCES' })); } });
       return input;
     });
-    await assert.rejects(createDataPackage({ dataDir: source.dataDir, home: source.home, destination }), /locked while packaging/);
+    await assert.rejects(createDataPackage({ dataDir: source.dataDir, home: source.home, destination }), /locked while packaging.*app\/desktop-config\.json/);
     assert.equal(fs.readFileSync(destination, 'utf8'), 'previous package');
     assert.equal(input.destroyed, true);
+    assert.equal(fs.existsSync(path.dirname(snapshot)), false, 'temporary export copies were removed');
+    assert.equal(fs.readdirSync(source.root).some(name => name.endsWith('.part')), false);
+  } finally { dispose(source); }
+});
+
+test('a locked destination is not reported as a locked profile file', async context => {
+  const source = scratch();
+  try {
+    write(path.join(source.dataDir, 'desktop-config.json'), '{}');
+    const destination = path.join(source.root, 'export.zip');
+    write(destination, 'previous package');
+    const error = Object.assign(new Error('destination locked'), { code: 'EPERM' });
+    context.mock.method(fs.promises, 'rename', async () => { throw error; });
+    await assert.rejects(createDataPackage({ ...source, destination }), actual => actual === error);
+    assert.equal(fs.readFileSync(destination, 'utf8'), 'previous package');
     assert.equal(fs.readdirSync(source.root).some(name => name.endsWith('.part')), false);
   } finally { dispose(source); }
 });
@@ -463,8 +757,12 @@ test('a short read cannot masquerade as a complete export', async context => {
   try {
     const file = path.join(source.dataDir, 'desktop-config.json'), destination = path.join(source.root, 'export.zip');
     write(file, '{"language":"zh-CN"}');
-    const read = fs.createReadStream;
-    context.mock.method(fs, 'createReadStream', (name, ...args) => name === file ? Readable.from(['{}']) : read(name, ...args));
+    const read = fs.createReadStream, copy = fs.promises.copyFile; let snapshot;
+    context.mock.method(fs.promises, 'copyFile', async (from, to, ...args) => {
+      if (from === file) snapshot = to;
+      return copy(from, to, ...args);
+    });
+    context.mock.method(fs, 'createReadStream', (name, ...args) => name === snapshot ? Readable.from(['{}']) : read(name, ...args));
     await assert.rejects(createDataPackage({ dataDir: source.dataDir, home: source.home, destination }), /changed while packaging/);
     assert.equal(fs.existsSync(destination), false);
   } finally { dispose(source); }

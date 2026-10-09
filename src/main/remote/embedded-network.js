@@ -32,6 +32,14 @@ function storageKey(directory, safeStorage) {
   return key;
 }
 
+function promoteHelper(executable) {
+  const staged = executable + '.pending';
+  // A running Windows helper cannot be replaced. A source-build update can
+  // stage it until the next start, after the previous helper has exited.
+  if (fs.existsSync(staged)) fs.renameSync(staged, executable);
+  return executable;
+}
+
 class EmbeddedNetwork {
   constructor({ app, safeStorage, directory, executable, keyProvider, hostname, openExternal, onFailure = () => {}, spawnProcess = spawn }) {
     if (hostname !== undefined && (typeof hostname !== 'string' || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(hostname))) throw new Error('Invalid Tailscale hostname');
@@ -44,8 +52,8 @@ class EmbeddedNetwork {
   async start() {
     if (this.child) return;
     const directory = this.directory || path.join(this.app.getPath('userData'), 'remote', 'tailnet');
-    const executable = this.executable || path.join(this.app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.resolve(__dirname, '../../../build/runtime-assets'),
-      process.platform === 'win32' ? 'camellia-tailnet.exe' : 'camellia-tailnet');
+    const executable = this.executable || promoteHelper(path.join(this.app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.resolve(__dirname, '../../../build/runtime-assets'),
+      process.platform === 'win32' ? 'camellia-tailnet.exe' : 'camellia-tailnet'));
     if (!fs.existsSync(executable)) throw new Error('Embedded network helper is missing. Reinstall Camellia; source builds must run npm run build:tailnet.');
     const key = this.keyProvider ? this.keyProvider(directory) : storageKey(directory, this.safeStorage);
     if (typeof key !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(key) || Buffer.from(key, 'base64').length !== 32) throw new Error('Invalid embedded network storage key');
@@ -165,4 +173,4 @@ class EmbeddedNetwork {
   }
 }
 
-module.exports = { EmbeddedNetwork, loginURL, storageKey };
+module.exports = { EmbeddedNetwork, loginURL, storageKey, promoteHelper };

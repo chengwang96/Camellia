@@ -4,6 +4,7 @@
 // uses one configured ChatGPT account for a few small real text requests. Only
 // auth/account metadata are copied into a temporary app data directory; the
 // original app settings and chat records are never modified.
+// --runtime-root <app-data> selects installed binaries without using its accounts.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -26,13 +27,17 @@ async function main() {
   const online = process.argv.includes('--online'), source = online ? process.argv[process.argv.indexOf('--online') + 1] : null;
   const onlineApi = process.argv.includes('--online-api') ? process.argv[process.argv.indexOf('--online-api') + 1] : null;
   const engine = process.argv.includes('--engine') ? process.argv[process.argv.indexOf('--engine') + 1] : 'codex';
+  const runtimeRoot = process.argv.includes('--runtime-root') ? process.argv[process.argv.indexOf('--runtime-root') + 1] : null;
   const toolCheck = process.argv.includes('--tools');
   const imageFile = process.argv.includes('--image') ? process.argv[process.argv.indexOf('--image') + 1] : null;
   assert.ok(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine));
+  if (process.argv.includes('--runtime-root')) assert.ok(runtimeRoot && path.isAbsolute(runtimeRoot), 'Pass the runtime installation root explicitly');
   if (onlineApi) assert.ok(path.isAbsolute(onlineApi));
   if (online) assert.ok(source && path.isAbsolute(source), 'Pass the existing app data directory explicitly');
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-production-'));
-  const runtime = createRuntimeManager({ root: path.resolve(__dirname, '..'), installRoot: path.resolve(__dirname, '..') });
+  // macOS exposes the temporary directory through /var, a system symlink.
+  // Use its real path before the native ownership inventory checks ancestors.
+  const dataDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'discussion-production-'));
+  const runtime = createRuntimeManager({ root: path.resolve(__dirname, '..'), installRoot: runtimeRoot || path.resolve(__dirname, '..') });
   let router, server, service, production, boundary, remoteGateway, config = {}, requests = 0, holdVerification = false;
   const faults = [], logs = [];
   let approvals = 0;
@@ -88,6 +93,7 @@ async function main() {
     const provider = routerConfig.providers[0];
     profile = { engine, connection: 'api', model: provider.models[0].id, accountRef: apiAccountRef(provider, provider.models[0]), thinking: '', contextWindow: provider.models[0].contextWindow || 262144 };
   }
+  console.log('Using installed runtime:', engine, runtime.locate(engine, profile.connection)?.version);
   const codex = createCodex({ dataDir, loadConfig: () => config, saveConfig: patch => Object.assign(config, patch), getModels: () => [profile.model],
     getRoute: () => ({ baseUrl: router?.url }), runtimes: () => runtime, onEvent: event => boundary?.registry.capture('codex', event), onGoal() {}, log: line => logs.push(line) });
   const antigravity = createAntigravity({ dataDir, cliSettingsFile: path.join(dataDir, 'google/settings.json'), node: () => process.execPath,
@@ -259,7 +265,7 @@ async function main() {
     assert.equal(service.scheduler.runs.size, 0); assert.equal(codex.sessions.sessions.size, 0);
     assert.equal(antigravity.sessions.sessions.size, 0);
     assert.ok(!service.manager.get(group.id).deliveries.some(d => ['preparing', 'running', 'stopping'].includes(d.status)));
-    console.log('PASS stop: Windows Job drained, native pool released, terminal state saved');
+    console.log('PASS stop: native processes drained, native pool released, terminal state saved');
     console.log(JSON.stringify({ online: online || Boolean(onlineApi), engine, model: profile.model, dataDir, messages: second.messages.length, localRequests: requests, faults }));
   } catch (error) { error.message += '\nTest data: ' + dataDir + '\n' + logs.slice(-15).join('\n'); throw error;
   } finally {

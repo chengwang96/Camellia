@@ -24,6 +24,10 @@ bridge = r"""(() => {
     group.verifying=false; emit({discussionId:group.id});
   };
   window.resetConnection=()=>{member.capability={...pending};};
+  window.failRuntime=detail=>{
+    member.capability=binding.capability={available:false,canVerify:false,supported:false,detail};
+    emit({discussionId:group.id});
+  };
   window.finishSend=()=>{
     group.verifying=false; member.capability={available:true}; group.revision++;
     group.messages=[{id:'user-one',role:'user',text:sent.text},{id:'reply-one',role:'assistant',speakerId:member.id,speakerName:member.name,text:'[UI fixture] Answer received.'}];
@@ -162,6 +166,25 @@ with sync_playwright() as p:
     expect(page.locator('#connection')).to_have_value('api')
     expect(page.locator('#binding')).to_have_value('claude-provider-2')
     page.close()
+    for detail, expected in [
+        ('No harness runtime was found. Install it or set its executable path in Settings, then refresh models.', '未找到此 Harness 的运行时'),
+        ('The installed harness runtime version is not supported for discussions. Update Camellia or select a supported executable in Settings, then refresh models.', '已安装此 Harness 的运行时，但当前讨论功能尚不支持其版本'),
+    ]:
+        page = browser.new_page(viewport={'width':1200,'height':900})
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.add_init_script(bridge)
+        page.goto((repo / 'src/renderer/discussions/discussions.html').as_uri(), wait_until='networkidle')
+        page.evaluate('failRuntime', detail)
+        page.locator('#membersToggle').click()
+        expect(page.locator('#membersPanel')).to_contain_text(expected)
+        expect(page.locator('#membersPanel').get_by_role('button', name='验证连接', exact=True)).not_to_be_visible()
+        page.locator('#membersPanel [data-close="membersPanel"]').click()
+        page.locator('#addMember').click()
+        expect(page.locator('#bindingStatus')).to_contain_text(expected)
+        expect(page.locator('#saveMember')).to_be_disabled()
+        expect(page.locator('#verifyBinding')).to_be_hidden()
+        assert page.evaluate("calls.filter(x=>x==='verify-member'||x==='verify-binding'||x==='add-member').length") == 0
+        page.close()
     for outcome in ['success', 'failed', 'cancelled']:
         page = browser.new_page(viewport={'width':1200,'height':900})
         page.on('pageerror', lambda error: errors.append(str(error)))

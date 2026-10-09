@@ -166,7 +166,7 @@ final class Palette {
 
     // ── Status colours ─────────────────────────────────────────────────────
     /** A computer row's presence dot when it is reachable. */
-    static final int ONLINE = 0x27B56D;
+    static final int ONLINE = 0xFF27B56D;
     /** A permission level's highlight, where a stricter one is worth marking. */
     static final int PERMISSION_STRICT = 0xC28A35;
 

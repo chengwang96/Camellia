@@ -22,6 +22,7 @@ exports.default = async context => {
   await bundleNode({ root, target, platform, arch, version });
   const node = path.join(target, platform === 'win32' ? 'node.exe' : 'node');
   if (platform === 'darwin') {
+    require('./build-discussion-helper.cjs').buildDiscussionHelper({ root, platform, arch });
     verifyMacNode({ node, arch, version });
   } else {
     verifyNode({ node, platform, arch, version });

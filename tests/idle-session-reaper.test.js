@@ -51,6 +51,14 @@ test('start and stop control a single self-unrefing interval', () => {
   h.reaper.stop();
   assert.equal(h.reaper.timer, null);
 });
+test('an independent child keeps its native process alive after the parent turn finishes', async () => {
+  const h = harness(), child = { status: 'running' };
+  h.add('parent', { running: false, children: new Map([['child', child]]), shutdown: async () => {} });
+  h.advance(1000); assert.deepEqual(await h.reaper.sweep(), []);
+  child.status = 'waiting'; h.advance(1000); assert.deepEqual(await h.reaper.sweep(), []);
+  child.status = 'completed'; assert.deepEqual(await h.reaper.sweep(), []);
+  h.advance(101); assert.deepEqual(await h.reaper.sweep(), ['parent']);
+});
 
 test('a function timeout tracks the live retention setting between sweeps', async () => {
   let now = 5000, minutes = 30;

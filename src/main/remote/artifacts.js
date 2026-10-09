@@ -26,12 +26,19 @@ function files(reader, device, conversationId) {
       continue;
     }
     if (row.internal || row.role !== 'assistant') continue;
-    turns.push({ row, roots: turn ? [...turn.roots] : [] });
+    turns.push({ row, roots: turn ? [...turn.roots] : [], cwd: conversation.cwd });
   }
-  for (const { row, roots } of turns.reverse()) {
+  for (const task of reader.manager.subagentView?.(conversationId) || conversation.subagents || []) {
+    if (task.managedConversationId && (!reader.manager.items.has(task.managedConversationId)
+      || !reader.allowed(device, reader.manager.items.get(task.managedConversationId)))) continue;
+    if (task.status === 'completed') turns.push({ row: { seq: task.userSeq, text: task.result,
+      artifacts: task.artifacts, subagentId: task.id, source: task.title }, roots: [], cwd: task.cwd || conversation.cwd,
+      managedConversationId: task.managedConversationId });
+  }
+  for (const { row, roots, cwd, managedConversationId } of turns.reverse()) {
     const paths = Array.isArray(row.artifacts) ? row.artifacts.map(file => file?.path).filter(file => typeof file === 'string') : [];
     const text = Array.isArray(row.outputBlocks) ? row.outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text || '').join('\n') : row.text;
-    for (const file of resolveArtifacts({ paths, text, cwd: conversation.cwd, roots })) {
+    for (const file of resolveArtifacts({ paths, text, cwd, roots })) {
       try {
         const canonical = fs.realpathSync.native(file.path);
         const key = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
@@ -39,7 +46,8 @@ function files(reader, device, conversationId) {
         const stat = fs.statSync(canonical);
         if (!stat.isFile()) continue;
         result.set(key, { id: identity(conversation, canonical, stat), name: file.name, kind: file.kind,
-          extension: file.extension, size: stat.size, modifiedAt: stat.mtimeMs, seq: row.seq, canonical });
+          extension: file.extension, size: stat.size, modifiedAt: stat.mtimeMs, seq: row.seq, canonical,
+          source: row.source || 'Main conversation', managedConversationId, ...(row.subagentId ? { subagentId: row.subagentId } : {}) });
       } catch {}
     }
   }
@@ -48,7 +56,7 @@ function files(reader, device, conversationId) {
 
 function listArtifacts(reader, device, conversationId, offset = 0) {
   const entries = files(reader, device, conversationId);
-  return { artifacts: entries.slice(offset, offset + 100).map(({ canonical, ...file }) => file),
+  return { artifacts: entries.slice(offset, offset + 100).map(({ canonical, managedConversationId, ...file }) => file),
     nextOffset: entries.length > offset + 100 ? offset + 100 : null };
 }
 
@@ -61,6 +69,7 @@ async function openArtifact(reader, device, conversationId, id) {
     const stat = await handle.stat();
     const canonical = await fs.promises.realpath(file.canonical);
     const conversation = reader.conversation(device, conversationId);
+    if (file.managedConversationId) reader.conversation(device, file.managedConversationId);
     if (!stat.isFile() || identity(conversation, canonical, stat) !== id) fail(404, 'Artifact changed; refresh the list');
     return { ...file, handle };
   } catch (error) {

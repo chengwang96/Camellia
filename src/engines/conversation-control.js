@@ -146,15 +146,10 @@ function callConversationTool(manager, parentId, name, args, active) {
     }
     if (children.length >= 8) throw new Error('Child conversation limit reached (8); ask the user to remove unused children');
     const selected = configured(manager, parent, args);
-    const child = manager.create(parent.currentEngine, parent.workspaceId, args.title.trim(), parent.cwd);
-    Object.assign(child, { controlParentId: parentId, controlRequestId: args.request_id, controlFingerprint: fingerprint });
-    if (operation === 'fork') {
-      const cutoff = active.userSeq || parent.seq + 1;
-      for (const row of manager.rows(parent).filter(row => !row.internal && row.seq <= cutoff && ['user', 'assistant', 'notice'].includes(row.role))) {
-        const { seq, at, ...content } = row;
-        manager.append(child, content);
-      }
-    }
+    const child = operation === 'fork' ? manager.fork(parent.currentEngine, { sessionId: parent.id, title: args.title.trim() })
+      : manager.create(parent.currentEngine, parent.workspaceId, args.title.trim(), parent.cwd);
+    Object.assign(child, { controlParentId: parentId, controlRequestId: args.request_id, controlFingerprint: fingerprint,
+      controlUserSeq: active.userSeq, controlHistoryBoundary: child.seq });
     saveSettings(manager, child, selected);
     return { ok: true, conversation: view(manager, child), shared_workspace: true };
   }

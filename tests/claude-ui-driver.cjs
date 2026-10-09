@@ -23,6 +23,7 @@ const methods = {
   pluginCacheMaintain: 'plugin-cache-maintain',
   conversationCommand: 'conversation-command', conversationSwitch: 'conversation-switch',
   apiRouterGetState: 'api-router-get-state', apiRouterSaveConfig: 'api-router-save-config',
+  subscriptionPricesRefresh: 'subscription-prices-refresh',
   apiRouterReset: 'api-router-reset', apiRouterRotate: 'api-router-rotate',
   providerInsights: 'provider-insights', providerRefresh: 'provider-refresh', providerModels: 'provider-models', providerVerify: 'provider-verify',
   engineSettingsGet: 'engine-settings-get', engineSettingsSave: 'engine-settings-save', runtimeState: 'runtime-state', runtimeEnsure: 'runtime-ensure',

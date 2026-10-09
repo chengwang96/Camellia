@@ -2,6 +2,7 @@
 
 // Move Camellia between installations, folders or computers without losing
 // conversations, goals, scheduled tasks, settings or engine native history.
+// Subscription accounts stay device-local in every transfer category.
 //
 // The package is a plain ZIP so it can be inspected without Camellia. Only the
 // manifest and a bounded file index are held in memory; file contents are
@@ -19,6 +20,7 @@ const { randomUUID } = require('node:crypto');
 const JSZip = require('jszip');
 const { openArchive, entryMetadata, readEntry } = require('./data-import-archive');
 const { ImportTransaction, recoverDataImports: recoverImports } = require('./data-import-transaction');
+const { snapshotExportFiles } = require('./data-export-snapshot');
 
 const FORMAT = 'camellia-data';
 const VERSION = 1;
@@ -35,7 +37,7 @@ const HOME_FILES = ['.claude.json'];
 // rebuilt automatically or are a fraction of the transfer in size.
 const APP_SKIP_TOP = new Set([
   'runtimes', 'logs', 'benchmark-libraries', 'migration-backups',
-  'Cache', 'Code Cache', 'GPUCache', 'GPUShaderCache', 'GrShaderCache', 'ShaderCache',
+  'Cache', 'Code Cache', 'GPUCache', 'GPUPersistentCache', 'GPUShaderCache', 'GrShaderCache', 'ShaderCache',
   'DawnGraphiteCache', 'DawnWebGPUCache', 'blob_storage', 'Local Storage', 'Session Storage',
   'Network', 'Shared Dictionary', 'DIPS', 'SharedStorage', 'lockfile', 'Preferences', 'Local State',
 ]);
@@ -78,13 +80,76 @@ const CONVERSATION_BASENAMES = [/^session_index\.jsonl$/, /^history\.jsonl$/, /^
   /^(?:state|thread_history|goals)_\d+\.sqlite(?:-(?:wal|shm|journal))?$/, /^conversation_summaries\.db$/, /^workspace\.json$/];
 const CONVERSATION_PATHS = [/(^|\/)claude-profiles\/[^/]+\.settings\.json$/,
   /(^|\/)discussions\//, /(^|\/)antigravity-backup\//];
-// Provider routes and keys, account credentials, quota and usage derived from
-// them. These are the parts a user may want to keep separate from UI settings.
-const API_PATHS = [/(^|\/)ollama-proxy\.json/, /(^|\/)opencode-proxy\.json/, /(^|\/)\.credentials\.yaml$/,
-  /(^|\/)provider-insights\.json$/, /(^|\/)context-capacity\.json$/, /(^|\/)subscription-usage\.json$/,
-  /(^|\/)subscription-accounts\//, /(^|\/)kimi-subscription\//, /(^|\/)credentials\//,
-  /(^|\/)(server\.token|account-state\.json|auth\.json|models_cache\.json|google-account\.json|google-quota\.json)$/];
+// Subscription logins and their native homes stay on the original device in
+// every scope. Apply the same policy to old packages before classification so
+// credentials cannot enter through settings or conversation history either.
+const SUBSCRIPTION_PATHS = [/(^|\/)(?:subscription-accounts|kimi-subscription|credentials)(?:\/|$)/i,
+  /^app\/codex\/subscription(?:\/|$)/i,
+  /^home\/\.kimi-code\/\.credentials\.yaml$/i,
+  /(^|\/)(?:\.credentials\.json|auth\.json|account-state\.json|subscription-usage\.json|google-account\.json|google-quota\.json|oauth_creds\.json|mcp-oauth-tokens(?:-v\d+)?\.json)$/i];
+const isSubscriptionData = relative => SUBSCRIPTION_PATHS.some(pattern => pattern.test(relative));
+// API routes, provider keys and their balance/model metadata.
+const API_PATHS = [/(^|\/)(?:ollama-proxy|opencode-proxy)\.json$/, /(^|\/)\.credentials\.yaml$/,
+  /(^|\/)(?:provider-insights|context-capacity)\.json$/, /(^|\/)server\.token$/];
 const KINDS = ['api', 'settings', 'conversations'];
+// These documents mix portable preferences with device-local account identity.
+// Strip source identities on export and keep the destination's identities on
+// import, including when the source is an older, unfiltered package.
+const ACCOUNT_METADATA_KEYS = new Map([
+  ['app/desktop-config.json', ['subscriptionAccounts', 'subscriptionActive', 'kimiSessionAccounts', 'codexSessionAccounts']],
+  ['home/.claude.json', ['oauthAccount']],
+]);
+
+async function readAccountConfig(file, relative) {
+  const stat = await fs.promises.stat(file);
+  if (stat.size > MAX_REWRITE_BYTES) throw new Error('The package configuration is too large to validate: ' + relative);
+  let value;
+  try { value = JSON.parse((await fs.promises.readFile(file, 'utf8')).replace(/^\uFEFF/, '')); }
+  catch (error) {
+    if (error.code) throw error;
+    throw new Error('The package contains invalid JSON: ' + relative);
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('The package contains invalid JSON: ' + relative);
+  return value;
+}
+
+async function stripExportAccountMetadata(files) {
+  for (const file of files) {
+    const keys = ACCOUNT_METADATA_KEYS.get(file.rel.toLowerCase());
+    if (!keys) continue;
+    const value = await readAccountConfig(file.abs, file.rel);
+    if (!keys.some(key => Object.hasOwn(value, key))) continue;
+    for (const key of keys) delete value[key];
+    const text = JSON.stringify(value, null, 2) + '\n';
+    await fs.promises.writeFile(file.abs, text);
+    file.size = Buffer.byteLength(text);
+  }
+}
+
+async function preserveLocalAccountMetadata({ targets, staging, dataDir, home }) {
+  const changed = [];
+  for (const relative of targets) {
+    const keys = ACCOUNT_METADATA_KEYS.get(relative.toLowerCase());
+    if (!keys) continue;
+    const file = path.join(staging, ...relative.split('/'));
+    const value = await readAccountConfig(file, relative);
+    let current = {};
+    try { current = await readAccountConfig(targetPath(relative, dataDir, home), relative); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw new Error('The current subscription account settings could not be preserved: ' + relative);
+    }
+    for (const key of keys) {
+      delete value[key];
+      if (Object.hasOwn(current, key)) value[key] = current[key];
+    }
+    const text = JSON.stringify(value, null, 2) + '\n';
+    if (text !== await fs.promises.readFile(file, 'utf8')) {
+      await fs.promises.writeFile(file, text);
+      changed.push(relative);
+    }
+  }
+  return changed;
+}
 
 function classify(relative) {
   if (CONVERSATION_PATHS.some(pattern => pattern.test(relative))) return 'conversations';
@@ -127,11 +192,22 @@ function hasShallowSegment(relative, set, depth) {
   return relative.split('/').some((part, index) => index < depth && set.has(part));
 }
 
+function skipRuntimeFile(relative) {
+  const name = relative.split('/').pop();
+  // Codex holds a Windows byte-range lock on this empty maintenance sentinel.
+  // SQLite's shared-memory index also contains locks, but no database content:
+  // it is rebuilt from the database and WAL, which must both remain in scope.
+  return name === '.sqlite-maintenance.lock' || /(?:^|\/)thread-writer-locks(?:\/|$)/.test(relative)
+    || /\.(?:sqlite3?|db)-shm$/i.test(name);
+}
+
 function skipApp(relative) {
   if (relative.startsWith('.torn-') || relative.includes('/.torn-')) return true;
+  if (skipRuntimeFile(relative)) return true;
   if (hasSegment(relative, APP_SKIP_ANY)) return true;
   const top = relative.includes('/') ? relative.slice(0, relative.indexOf('/')) : relative;
   if (APP_SKIP_TOP.has(top)) return true;
+  if (/^(?:DIPS|SharedStorage)-(?:wal|shm|journal)$/.test(top)) return true;
   if (top.startsWith('Singleton')) return true;
   if (top.startsWith('declarative_performance_observer.db')) return true;
   if (top.startsWith('camellia-data-') && top.endsWith('.zip')) return true;
@@ -140,6 +216,7 @@ function skipApp(relative) {
 
 function skipHome(relative) {
   if (relative.startsWith('.torn-') || relative.includes('/.torn-')) return true;
+  if (skipRuntimeFile(relative)) return true;
   if (hasSegment(relative, HOME_SKIP_ANY)) return true;
   return hasShallowSegment(relative, HOME_SKIP_SHALLOW, 3);
 }
@@ -160,7 +237,7 @@ async function collect(root, rootKind, skip, files, state, prefix = '') {
     // Junctions (DSH dependency links) and any other reparse point must not be
     // followed: they can leave the tree or point back into it.
     if (stat.isSymbolicLink() || entry.isSymbolicLink()) { state.skipped += 1; continue; }
-    if (skip(relative)) { state.skipped += 1; continue; }
+    if (isSubscriptionData(rootKind + '/' + relative) || skip(relative)) { state.skipped += 1; continue; }
     if (stat.isDirectory()) { await collect(absolute, rootKind, skip, files, state, relative); continue; }
     if (!stat.isFile()) { state.skipped += 1; continue; }
     if (state.files % 1000 === 0) await yieldLoop();
@@ -206,10 +283,16 @@ function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 // read then fails with EBUSY. Retry briefly, then report the file as skipped so
 // one locked history file cannot abort the whole export. Re-export after
 // closing that engine to capture it.
-async function readable(file) {
+async function readable(file, probe) {
   for (let attempt = 0; ; attempt++) {
     let handle;
-    try { handle = await fs.promises.open(file, 'r'); return true; }
+    try {
+      handle = await fs.promises.open(file, 'r');
+      // Opening succeeds for byte-range locks on Windows; the read detects
+      // them, including locks on an empty file beyond its current EOF.
+      await handle.read(probe, 0, probe.length, 0);
+      return true;
+    }
     catch (error) {
       if (!TRANSIENT_READ.has(error.code) || attempt >= 4) return false;
       await delay(120 * (attempt + 1));
@@ -217,8 +300,9 @@ async function readable(file) {
   }
 }
 
-function fileStream(file, onBytes, expectedBytes) {
+function fileStream(file, onBytes, expectedBytes, relative) {
   let bytes = 0;
+  const fail = error => { error.profileFile = relative; outer.destroy(error); };
   const outer = new Readable({
     read() {
       // A later read means the consumer drained the buffer, so resume a source
@@ -226,14 +310,14 @@ function fileStream(file, onBytes, expectedBytes) {
       if (this.inner) { this.inner.resume(); return; }
       let inner;
       try { inner = fs.createReadStream(file); }
-      catch (error) { outer.destroy(error); return; }
+      catch (error) { fail(error); return; }
       this.inner = inner;
       inner.on('data', chunk => { bytes += chunk.length; onBytes(chunk.length); if (!outer.push(chunk)) inner.pause(); });
       inner.on('end', () => {
-        if (bytes !== expectedBytes) outer.destroy(new Error('A profile file changed while packaging; export again: ' + file));
+        if (bytes !== expectedBytes) outer.destroy(new Error('A profile file changed while packaging; export again: ' + relative));
         else outer.push(null);
       });
-      inner.on('error', error => outer.destroy(error));
+      inner.on('error', fail);
     },
     destroy(error, callback) { try { this.inner?.destroy(); } catch { /* ignore */ } callback(error); },
   });
@@ -255,7 +339,7 @@ async function writeZip({ files, destination, manifest, onProgress }) {
   zip.file(MANIFEST, JSON.stringify(manifest, null, 2));
   for (const file of files) {
     // A fixed timestamp keeps repeat exports of unchanged data byte-identical.
-    const input = fileStream(file.abs, bump, file.size); inputs.push(input);
+    const input = fileStream(file.abs, bump, file.size, file.rel); inputs.push(input);
     zip.file(file.rel, input, { date: new Date(0) });
   }
   const temporary = destination + '.' + randomUUID().slice(0, 8) + '.part';
@@ -284,43 +368,51 @@ async function createDataPackage({ dataDir, home, appVersion, destination, scope
   // Keep only entries that can be opened now, so a file held by a running
   // engine is reported instead of aborting the export.
   const usable = [], locked = [];
-  for (const file of files) (await readable(file.abs) ? usable : locked).push(file);
+  const probe = Buffer.alloc(64 * 1024);
+  for (const file of files) (await readable(file.abs, probe) ? usable : locked).push(file);
   if (!usable.length) throw new Error('No profile files could be read; close running engines and try again');
-  const parts = partitionFiles(usable, MAX_PART_BYTES, MAX_PART_ENTRIES);
-  const names = partNames(destination, parts.length);
-  // Per-kind totals let the import dialog tell the user what a scope holds
-  // before they commit to overwriting anything.
-  const categories = usable.reduce((totals, file) => {
-    totals[file.category] = totals[file.category] || { files: 0, bytes: 0 };
-    totals[file.category].files += 1;
-    totals[file.category].bytes += file.size;
-    return totals;
-  }, {});
-  const manifest = {
-    format: FORMAT, version: VERSION,
-    createdAt: new Date().toISOString(), appVersion: appVersion || null,
-    source: { platform: process.platform, home, appDataDir: dataDir },
-    roots: { app: APP_ROOT, home: HOME_ROOT },
-    counts: { files: usable.length, bytes: usable.reduce((sum, file) => sum + file.size, 0), skipped },
-    categories,
-    // Part names are stored as base names so the manifest survives being copied
-    // anywhere; import resolves them next to whichever part was selected.
-    parts: parts.map((entries, index) => ({ name: path.basename(names[index]), files: entries.length })),
-  };
-  let written = 0;
-  for (let index = 0; index < parts.length; index++) {
-    try {
+  const lockedFiles = locked.slice(0, 20).map(file => file.rel);
+  const staging = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'camellia-export-'));
+  try {
+    const snapshots = await snapshotExportFiles({ files: usable, directory: staging, onProgress });
+    await stripExportAccountMetadata(snapshots);
+    const oversizedSnapshot = snapshots.find(file => file.size >= MAX_ENTRY_BYTES);
+    if (oversizedSnapshot) throw new Error(`A single file is too large to package: ${oversizedSnapshot.rel}`);
+    const parts = partitionFiles(snapshots, MAX_PART_BYTES, MAX_PART_ENTRIES);
+    const names = partNames(destination, parts.length);
+    // Per-kind totals let the import dialog tell the user what a scope holds
+    // before they commit to overwriting anything.
+    const categories = snapshots.reduce((totals, file) => {
+      totals[file.category] = totals[file.category] || { files: 0, bytes: 0 };
+      totals[file.category].files += 1;
+      totals[file.category].bytes += file.size;
+      return totals;
+    }, {});
+    const manifest = {
+      format: FORMAT, version: VERSION,
+      createdAt: new Date().toISOString(), appVersion: appVersion || null,
+      source: { platform: process.platform, home, appDataDir: dataDir },
+      roots: { app: APP_ROOT, home: HOME_ROOT },
+      counts: { files: snapshots.length, bytes: snapshots.reduce((sum, file) => sum + file.size, 0), skipped, locked: locked.length },
+      lockedFiles,
+      categories,
+      // Part names are stored as base names so the manifest survives being copied
+      // anywhere; import resolves them next to whichever part was selected.
+      parts: parts.map((entries, index) => ({ name: path.basename(names[index]), files: entries.length })),
+    };
+    let written = 0;
+    for (let index = 0; index < parts.length; index++) {
       await writeZip({ files: parts[index], destination: names[index], manifest, onProgress });
-    } catch (error) {
-      if (TRANSIENT_READ.has(error.code)) {
-        throw new Error('A profile file was locked while packaging; close running engines and export again');
-      }
-      throw error;
+      written += (await fs.promises.stat(names[index])).size;
     }
-    written += (await fs.promises.stat(names[index])).size;
-  }
-  return { files: usable.length, bytes: written, sourceBytes: bytes, skipped, categories, scope: kinds, locked: locked.length,
-    lockedFiles: locked.slice(0, 20).map(file => file.rel), parts: names, split: names.length > 1 };
+    return { files: snapshots.length, bytes: written, sourceBytes: bytes, skipped, categories, scope: kinds, locked: locked.length,
+      lockedFiles, parts: names, split: names.length > 1 };
+  } catch (error) {
+    if (TRANSIENT_READ.has(error.code) && error.profileFile) {
+      throw new Error('A profile file was locked while packaging; close running engines and export again: ' + error.profileFile);
+    }
+    throw error;
+  } finally { await fs.promises.rm(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 }
 
 // Group files into archives that stay inside the single-archive limits. Order
@@ -421,9 +513,9 @@ async function inspectPackage(file, kinds = null) {
       if (indexBytes > MAX_IMPORT_INDEX_BYTES) throw new Error('The package file index exceeds the import memory limit');
       entries.add(rel);
       bytes += entry.uncompressedSize;
-      // Count old recovery backups for legacy manifest consistency, but do not
-      // offer or decompress them as active profile data.
-      if (/^app\/migration-backups(?:\/|$)/i.test(rel)) continue;
+      // Count excluded legacy entries for manifest consistency, but do not
+      // offer, decompress or restore account data and recovery backups.
+      if (isSubscriptionData(rel) || /^app\/migration-backups(?:\/|$)/i.test(rel)) continue;
       const kind = classify(rel);
       categories[kind] ||= { files: 0, bytes: 0 };
       categories[kind].files += 1;
@@ -608,6 +700,9 @@ async function importDataPackage({ file, dataDir, home, scope = 'all', onProgres
     ].filter(([from, to]) => from && to && from !== to);
     // Correct paths in staging before any profile file is replaced.
     const rewritten = await rewriteImportedTree({ dataDir: path.join(staging, APP_ROOT), home: path.join(staging, HOME_ROOT), targets: selected, mappings });
+    for (const relative of await preserveLocalAccountMetadata({ targets: selected, staging, dataDir, home })) {
+      if (!rewritten.includes(relative)) rewritten.push(relative);
+    }
     transaction = new ImportTransaction({ dataDir, home, backupDir, homeEntries: [...HOME_DIRS, ...HOME_FILES] });
     const summary = await applyPackage({ staging, targets: selected, transaction, onProgress });
     const warning = transaction.commit();

@@ -81,14 +81,13 @@ test('automatic startup retries a connecting network without the healthy monitor
   assert.equal(calls.listen, 1);
 });
 
-test('automatic startup failures are closed and can be retried manually', async context => {
+test('automatic startup failures keep the enabled preference and can be retried manually', async context => {
   const { controller, command, network, calls } = startupHarness(context, [trustedPhone()]);
   const start = network.start;
   network.start = async () => { throw new Error('Secure storage locked'); };
   await assert.rejects(controller.startTrustedDevices(), /Secure storage locked/);
   const state = (await command('state')).result;
-  assert.equal(state.enabled, false); assert.equal(state.running, false); assert.equal(state.network.state, 'Error');
-  assert.equal(calls.stop, 1);
+  assert.equal(state.enabled, true); assert.equal(state.running, false); assert.equal(state.network.state, 'Error');
   network.start = start;
   assert.equal((await command('start')).result.running, true);
 });
@@ -205,7 +204,7 @@ test('desktop control is disabled by default and accepts only remote-access and 
   failure();
   const disconnected = await command(event, { action: 'state' });
   assert.equal(disconnected.result.running, false);
-  assert.equal(disconnected.result.enabled, false);
+  assert.equal(disconnected.result.enabled, true);
   assert.equal((await command(event, { action: 'stop' })).ok, true);
   await command(event, { action: 'start' });
   network.snapshot = { state: 'Running', address: '100.80.1.2' };
@@ -215,7 +214,7 @@ test('desktop control is disabled by default and accepts only remote-access and 
   assert.equal(failedListen.error, 'listener failed');
   const afterFailure = await command(event, { action: 'state' });
   assert.equal(afterFailure.result.running, false);
-  assert.equal(afterFailure.result.enabled, false);
+  assert.equal(afterFailure.result.enabled, true);
   assert.equal((await command(event, { action: 'logout' })).ok, true);
   assert.equal(network.snapshot.state, 'Stopped');
   await controller.close();
@@ -255,4 +254,27 @@ test('desktop scope authorization always grants current and future workspaces wi
   assert.equal(stored.allWorkspaces, true);
   assert.equal(stored.includeUnassigned, true);
   assert.equal(stored.permission, 'control');
+});
+
+test('a transient network state and an address change recover without reenabling manually', async context => {
+  const { controller, command, network, calls } = startupHarness(context, [trustedPhone()]);
+  await controller.startTrustedDevices(); assert.equal(calls.listen, 1);
+  network.snapshot = { state: 'Starting', address: null };
+  let state = (await command('state')).result;
+  assert.equal(state.enabled, true); assert.equal(state.running, false);
+  network.snapshot = { state: 'Running', address: '100.80.1.2' };
+  assert.equal((await command('state')).result.running, true); assert.equal(calls.listen, 2);
+  network.snapshot = { state: 'Running', address: '100.80.1.3' };
+  state = (await command('state')).result;
+  assert.equal(state.address, 'http://100.80.1.3:43127'); assert.equal(calls.listen, 3);
+  await command('stop'); await new Promise(resolve => setTimeout(resolve, 400));
+  assert.equal((await command('state')).result.enabled, false); assert.equal(calls.listen, 3);
+});
+
+test('manual stop during slow startup never opens a listener after startup finishes', async context => {
+  const { controller, command, network, calls } = startupHarness(context, [trustedPhone()]);
+  let release; network.start = () => new Promise(resolve => release = resolve);
+  const starting = controller.startTrustedDevices();
+  assert.equal((await command('stop')).ok, true); release(); await starting;
+  assert.equal(calls.listen, 0); assert.equal((await command('state')).result.enabled, false);
 });

@@ -38,19 +38,21 @@ public struct RemoteCapabilities: OptionSet, Sendable {
     public static let multiImage = Self(rawValue: 1 << 6)
     public static let attachments = Self(rawValue: 1 << 7)
     public static let expandedAttachments = Self(rawValue: 1 << 8)
+    public static let fork = Self(rawValue: 1 << 9)
 
     /// The five that additionally require `permission == "control"`.
     ///
     /// `conversation-actions` belongs here as much as the other four: Android
     /// gates it on control in the same breath, and leaving it out would offer
     /// rename, pin and delete to a device the desktop only lets read.
-    public static let needsControl: Self = [.create, .createWorkspace, .move, .archive, .conversationActions]
+    public static let needsControl: Self = [.create, .createWorkspace, .move, .archive, .conversationActions, .fork]
 
     public init(_ names: [String]) {
         var value = Self()
         for name in names {
             switch name {
             case "create": value.insert(.create)
+            case "fork": value.insert(.fork)
             case "create-workspace": value.insert(.createWorkspace)
             case "move": value.insert(.move)
             case "archive": value.insert(.archive)
@@ -635,16 +637,19 @@ public struct RemoteArtifactPage: Sendable {
 /// messages array does not replace the visible transcript; Android makes the
 /// same distinction in `MainActivity.applySnapshot`.
 public struct RemoteSnapshot: Sendable {
+    public let subagents: [RemoteSubtask]?
     public let conversation: RemoteConversation?
     /// The device's current permission, carried on every detail snapshot.
     public let permission: RemotePermission?
-    /// Android only replaces rendered detail state when `messages` is an
+    /// Android only replaces rendered history when `messages` is an
     /// array. Missing, null and wrong-typed fields are not empty pages.
     public let hasMessages: Bool
     public let messages: [RemoteMessage]
     public let live: RemoteLive?
+    public let hasLive: Bool
     public let settings: RemoteSettings?
     public let automation: RemoteAutomation?
+    public let hasAutomation: Bool
     public let queue: [RemoteQueueEntry]
     public let queueVersion: Int64
     /// Whether this desktop understands queued sends at all.
@@ -674,13 +679,16 @@ public struct RemoteSnapshot: Sendable {
 
     public init(_ json: JSONObject) {
         olderAvailable = !json.has("nextBefore") || !json.isNull("nextBefore")
+        subagents = json.has("subagents") ? json.objects("subagents").map(RemoteSubtask.init) : nil
         conversation = json.object("conversation").map(RemoteConversation.init)
         permission = RemotePermission(rawValue: json.text("permission"))
         hasMessages = json.raw["messages"] is [Any]
         messages = json.objects("messages").map(RemoteMessage.init)
         live = json.object("live").map(RemoteLive.init)
+        hasLive = json.has("live")
         settings = json.object("settings").map(RemoteSettings.init)
         automation = json.object("automation").map(RemoteAutomation.init)
+        hasAutomation = json.has("automation")
         queue = json.objects("queue").map(RemoteQueueEntry.init)
         queueVersion = json.long("queueVersion", fallback: -1)
         canQueue = json.has("queue")

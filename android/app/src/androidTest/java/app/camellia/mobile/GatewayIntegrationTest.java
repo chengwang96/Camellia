@@ -18,6 +18,8 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         assertEquals("control", client.json("/v1/status", token, null).getString("permission"));
         JSONObject conversation = client.json("/v1/conversations", token, null).getJSONArray("conversations").getJSONObject(0);
         String id = conversation.getString("id");
+        JSONObject searched = client.json("/v1/conversations?offset=0&limit=100&query=android+integration", token, null);
+        assertEquals(id, searched.getJSONArray("conversations").getJSONObject(0).getString("id"));
         JSONObject artifact = client.json("/v1/conversations/" + id + "/artifacts", token, null).getJSONArray("artifacts").getJSONObject(0);
         assertEquals("手机产物.pdf", artifact.getString("name"));
         assertFalse(artifact.has("path"));
@@ -58,6 +60,8 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         JSONObject created = client.json("/v1/commands", token, create);
         assertTrue(created.getBoolean("ok"));
         assertEquals(created.getJSONObject("conversation").getString("id"), client.json("/v1/commands", token, create).getJSONObject("conversation").getString("id"));
+        JSONObject receipt = client.json("/v1/commands/" + create.getString("requestId"), token, null);
+        assertEquals(created.getJSONObject("conversation").getString("id"), receipt.getJSONObject("conversation").getString("id"));
         verifyConversationActions(client, token, info.getString("instanceId"), workspace, created.getJSONObject("conversation").getString("id"));
         verifyAutomationAndSearch(client, token, info.getString("instanceId"), id);
         verifyApiKeyImport(client, token);
@@ -80,6 +84,7 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
         assertTrue(client.json(endpoint, token, respond).getBoolean("ok"));
         assertTrue(client.json(endpoint, token, operation("stop", server).put("runId", accepted.getLong("runId"))).getBoolean("ok"));
         AtomicInteger received = new AtomicInteger();
+        client.incremental(true);
         client.events(id, token, event -> {
             assertEquals(id, event.optJSONObject("conversation").optString("id"));
             received.incrementAndGet();

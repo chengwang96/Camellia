@@ -5,10 +5,23 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { loginURL, storageKey, EmbeddedNetwork } = require('../src/main/remote/embedded-network');
+const { loginURL, storageKey, EmbeddedNetwork, promoteHelper } = require('../src/main/remote/embedded-network');
 const { EventEmitter } = require('node:events');
 const { PassThrough, Writable } = require('node:stream');
 const { removeTree } = require('./test-fs.cjs');
+
+test('a staged network helper replaces the previous binary and consumes its staging file', context => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'tailnet-update-'));
+  context.after(() => removeTree(directory));
+  const executable = path.join(directory, 'camellia-tailnet.exe');
+  fs.writeFileSync(executable, 'previous helper');
+  fs.writeFileSync(executable + '.pending', 'updated helper');
+  assert.equal(promoteHelper(executable), executable);
+  assert.equal(fs.readFileSync(executable, 'utf8'), 'updated helper');
+  assert.equal(fs.existsSync(executable + '.pending'), false);
+  assert.equal(promoteHelper(executable), executable);
+  assert.equal(fs.readFileSync(executable, 'utf8'), 'updated helper');
+});
 
 test('embedded network only opens official HTTPS login links', () => {
   assert.equal(loginURL('https://login.tailscale.com/a/example'), 'https://login.tailscale.com/a/example');

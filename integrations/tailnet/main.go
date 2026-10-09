@@ -137,20 +137,24 @@ func (service *helper) execute(request command) (any, error) {
 		service.disconnectAll()
 		return nil, client.Logout(ctx)
 	case "listen":
-		if service.proxy != nil {
-			return nil, errors.New("already listening")
-		}
 		handler, err := proxyHandler(request.Target, request.Token)
 		if err != nil {
 			return nil, err
+		}
+		if service.proxy != nil {
+			if err := service.proxy.Close(); err != nil {
+				return nil, err
+			}
+			service.proxy = nil
 		}
 		listener, err := service.node.Listen("tcp", ":43127")
 		if err != nil {
 			return nil, err
 		}
-		service.proxy = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192}
+		proxy := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192}
+		service.proxy = proxy
 		go func() {
-			if err := service.proxy.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := proxy.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				os.Exit(1)
 			}
 		}()

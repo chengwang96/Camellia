@@ -35,6 +35,9 @@ final class LineIcon extends Drawable {
                 path.moveTo(7, 3); path.lineTo(17, 3); path.moveTo(9, 3); path.lineTo(9, 9);
                 path.lineTo(5, 14); path.lineTo(19, 14); path.lineTo(15, 9); path.lineTo(15, 3);
                 path.moveTo(12, 14); path.lineTo(12, 22); canvas.drawPath(path, paint); break;
+            case "branch":
+                canvas.drawCircle(6, 4, 2, paint); canvas.drawCircle(6, 20, 2, paint); canvas.drawCircle(18, 4, 2, paint);
+                path.moveTo(6, 6); path.lineTo(6, 18); path.moveTo(18, 6); path.lineTo(18, 9); path.quadTo(18, 13, 6, 13); canvas.drawPath(path, paint); break;
             case "delete":
                 path.moveTo(3, 6); path.lineTo(21, 6); path.moveTo(9, 3); path.lineTo(15, 3);
                 path.moveTo(6, 6); path.lineTo(7, 21); path.lineTo(17, 21); path.lineTo(18, 6);
