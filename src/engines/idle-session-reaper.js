@@ -26,7 +26,8 @@ class IdleSessionReaper {
     }
     const changed = record.activity !== activity;
     if (changed) { record.activity = activity; record.at = activity.at; }
-    if (session.running || this.isBlocked(id)) { record.busy = true; return false; }
+    const activeChild = [...(session.children?.values() || [])].some(task => ['starting', 'running', 'waiting'].includes(task.status));
+    if (session.running || activeChild || this.isBlocked(id)) { record.busy = true; return false; }
     // A busy-to-idle transition without a lifecycle notification still earns a
     // full idle window. Notified completions retain their precise event time.
     if (record.busy && !changed) record.at = this.now();

@@ -2,6 +2,7 @@
 
 // The installed runtime talks only to a local model fixture. This observes the
 // actual tool surface; it is not evidence of a working ChatGPT subscription.
+// --runtime-root <app-data> selects installed binaries without using its accounts.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -13,7 +14,9 @@ const { codexTextSpec } = require('../src/engines/discussions/codex-text-policy'
 const assert = require('node:assert/strict');
 
 async function main() {
-  const runtime = createRuntimeManager({ root: path.resolve(__dirname, '..'), installRoot: path.resolve(__dirname, '..') }).locate('codex');
+  const runtimeRoot = process.argv.includes('--runtime-root') ? process.argv[process.argv.indexOf('--runtime-root') + 1] : null;
+  if (process.argv.includes('--runtime-root')) assert.ok(runtimeRoot && path.isAbsolute(runtimeRoot), 'Pass the runtime installation root explicitly');
+  const runtime = createRuntimeManager({ root: path.resolve(__dirname, '..'), installRoot: runtimeRoot || path.resolve(__dirname, '..') }).locate('codex');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-discussion-codex-'));
   const home = path.join(root, 'codex'), cwd = path.join(root, 'work'); fs.mkdirSync(cwd);
   const requests = [], logs = []; let client, resolveTurn, rejectTurn;
@@ -49,7 +52,7 @@ async function main() {
     assert.ok(requests.length); assert.ok(requests.every(request => !request.tools?.length), 'Production policy must expose no tools');
     assert.equal(fs.existsSync(path.join(cwd, 'forbidden.txt')), false, 'Unadvertised patch calls must not execute');
     if (process.argv.includes('--force-tool')) assert.match(JSON.stringify(requests.slice(1)), /unsupported|unknown|unrecognized/i);
-    console.log(JSON.stringify({ root, requests: requests.length, tools: requests.map(r => r.tools), logs: logs.slice(-4) }, null, 2));
+    console.log(JSON.stringify({ version: runtime.version, root, requests: requests.length, tools: requests.map(r => r.tools), logs: logs.slice(-4) }, null, 2));
   } finally { await client?.shutdown(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

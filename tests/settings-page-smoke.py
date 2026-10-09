@@ -17,7 +17,10 @@ with sync_playwright() as playwright:
           if (patch.hiddenSubscriptionModels) Object.assign(window.hiddenModels, patch.hiddenSubscriptionModels);
           window.savedPreferences = patch; return {ok:true};
         };
-        if (name === 'apiRouterGetState') return async () => ({...empty, enabled:true, models:['model-a','model-b']});
+        if (name === 'apiRouterGetState') return async () => {
+          const state = {...empty, enabled:true, models:['model-a','model-b']};
+          return window.deferRouter ? new Promise(resolve => window.pendingRouters.push(() => resolve(state))) : state;
+        };
         if (name === 'workbenchSettings') return async () => ({ ...empty, version: '0.3.0', dataPath: '/test-profile/camellia', language: 'en', theme: 'system', hiddenSubscriptionModels: window.hiddenModels });
         if (name === 'codexAccountState') return async payload => payload?.id === 'other'
           ? {ok:true, models:[{id:'gpt-other',name:'GPT Other'}]}
@@ -93,6 +96,26 @@ with sync_playwright() as playwright:
     page.locator('#quickSwitch-codex').select_option('')
     page.wait_for_function("savedPreferences.quickSwitchModels?.codex === ''")
     expect(page.locator('#quickSwitchLevel-codex')).to_have_value('')
+
+    # Concurrent refreshes can finish out of order. Only the latest preferences
+    # may replace the table, with one header and one pair of menus per engine.
+    page.evaluate("""() => {
+      window.deferRouter = true; window.pendingRouters = []; window.quickRenderTasks = [];
+      for (const model of ['model-b', 'model-b', 'model-a']) {
+        quickRenderTasks.push(renderQuickSwitchModels({ ...modelPreferences,
+          quickSwitchModels: { ...modelPreferences.quickSwitchModels, codex: model } }, subscriptionModelAccounts));
+      }
+    }""")
+    assert page.evaluate('pendingRouters.length') == 3
+    page.evaluate('pendingRouters[2]()')
+    expect(page.locator('#quickSwitch-codex')).to_have_value('model-a')
+    page.evaluate('() => { pendingRouters[0](); pendingRouters[1](); }')
+    page.evaluate('Promise.all(quickRenderTasks)')
+    expect(page.locator('#quickSwitchModels .quick-switch-head')).to_have_count(1)
+    expect(page.locator('#quickSwitchModels .quick-switch-model')).to_have_count(6)
+    expect(page.locator('#quickSwitchModels .quick-switch-level')).to_have_count(6)
+    expect(page.locator('#quickSwitch-codex')).to_have_value('model-a')
+    page.evaluate('async () => { deferRouter = false; await renderQuickSwitchModels(modelPreferences, subscriptionModelAccounts); }')
 
     # Every settings script must load: a name collision here used to break the whole panel.
     # Compare the rendered categories rather than a bare count so a renamed or

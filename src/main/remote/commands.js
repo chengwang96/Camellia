@@ -1,6 +1,6 @@
 'use strict';
 
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { readJson, writeJson } = require('../../shared/json-store');
 const { fail } = require('./access');
 const fs = require('node:fs');
@@ -32,6 +32,33 @@ class RemoteCommands {
     reader.manager.remoteQueue = this.queue;
   }
   save() { writeJson(this.file, this.entries); }
+  // A gateway must change its instance ID when pruning: expired requests keep
+  // their old instance ID and cannot be dispatched again after losing a receipt.
+  trimJournal(starting = false) {
+    if (this.pending.size) return false;
+    const cutoff = Date.now() - 30 * 86400_000;
+    if (this.entries.length <= (starting ? 2000 : 4000) && !this.entries.some(entry => entry.at < cutoff)) return false;
+    const previous = this.entries;
+    this.entries = previous.filter(entry => !(entry.at < cutoff)).slice(-2000);
+    try { this.save(); } catch (error) { this.entries = previous; throw error; }
+    return true;
+  }
+  receipt(device, requestId) {
+    const current = this.access.devices.find(item => item.id === device.id);
+    if (!current || current.permission !== 'control') fail(403, 'Control permission required');
+    const key = device.id + ':' + requestId;
+    const entry = this.entries.find(item => item.key === key);
+    if (!entry) fail(404, 'Command receipt not found');
+    if (['create-workspace', 'delete-workspace', 'rename-workspace'].includes(entry.action) && !current.allWorkspaces) fail(403, 'Full-device control permission required');
+    if (!entry.scopes && !current.allWorkspaces) fail(404, 'Legacy receipt requires the original command');
+    for (const workspace of Object.values(entry.scopes || {})) {
+      if (!(current.allWorkspaces || (workspace ? current.workspaceIds.includes(workspace) : current.includeUnassigned))) fail(403, 'Conversation scope changed');
+    }
+    const result = this.pending.has(key) ? { ok: false, state: 'pending' }
+      : entry.result || { ok: false, state: 'unknown', error: 'Previous request outcome is uncertain; inspect the conversation. It will not be repeated.' };
+    return entry.conversationId && ['send', 'queue-remove', 'queue-resume'].includes(entry.action)
+      ? { ...result, ...this.queue.snapshot(entry.conversationId) } : result;
+  }
   async acknowledgement(operation) {
     let timer;
     try {
@@ -73,7 +100,7 @@ class RemoteCommands {
     const managing = ['rename', 'pin', 'delete'].includes(action);
     const validTarget = managing ? id === null : ['archive', 'restore'].includes(action) ? id === null && typeof payload.conversationId === 'string'
       : ['create', 'create-workspace', 'delete-workspace', 'rename-workspace'].includes(action) ? id === null : id !== null;
-    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'resend', 'stop', 'approve', 'create', 'create-workspace', 'delete-workspace', 'rename-workspace', 'configure', 'move', 'archive', 'restore', 'rename', 'pin', 'delete', 'fork', 'switch-engine', 'compact', 'find', 'goal-control', 'task-control', 'queue-remove', 'queue-resume'].includes(action) || !validTarget) fail(400, 'Invalid command');
+    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'resend', 'stop', 'stop-start', 'approve', 'create', 'create-workspace', 'delete-workspace', 'rename-workspace', 'configure', 'move', 'archive', 'restore', 'rename', 'pin', 'delete', 'fork', 'switch-engine', 'compact', 'find', 'goal-control', 'task-control', 'queue-remove', 'queue-resume', 'subagent-command'].includes(action) || !validTarget) fail(400, 'Invalid command');
     const fields = ['requestId', 'action', 'instanceId', ...(action === 'move' ? ['workspaceId', 'targetSessionId', 'placement'] : action === 'archive' ? ['conversationId', 'expectedSeq'] : action === 'create-workspace' ? ['name', 'path'] : action === 'configure' ? ['settings', 'expectedSettings'] : action === 'create' ? ['workspaceId', 'engine'] : action === 'send' || action === 'resend' ? ['prompt', 'expectedSeq', ...(payload.editSeq === undefined ? [] : ['editSeq']), ...(payload.image === undefined ? [] : ['image']), ...(payload.images === undefined ? [] : ['images'])] : action === 'stop' ? ['runId'] : ['runId', 'approvalId', 'fingerprint', 'allow'])];
     if (managing) fields.splice(3, fields.length - 3, 'targets', ...(action === 'rename' ? ['title'] : action === 'pin' ? ['pinned'] : []));
     if (action === 'delete-workspace') fields.splice(3, fields.length - 3, 'workspaceId', 'expectedName');
@@ -81,10 +108,12 @@ class RemoteCommands {
     if (action === 'restore') fields.splice(3, fields.length - 3, 'conversationId', 'expectedSeq');
     if (['fork', 'compact', 'switch-engine', 'find'].includes(action)) fields.splice(3, fields.length - 3, 'expectedSeq', ...(action === 'switch-engine' ? ['engine'] : []), ...(action === 'find' ? ['query'] : []));
     if (['goal-control', 'task-control'].includes(action)) fields.splice(3, fields.length - 3, 'operation', ...(action === 'task-control' ? ['taskId'] : []));
+    if (action === 'subagent-command') fields.splice(3, fields.length - 3, 'taskId', 'engine', 'operation', 'expectedTurnId', 'prompt', 'approvalId', 'fingerprint', 'allow', 'input', 'optionId');
     if (['send', 'resend'].includes(action) && payload.attachments !== undefined) fields.push('attachments');
     if (action === 'approve') fields.push('input', 'optionId');
     if (action === 'send' && payload.queue !== undefined) fields.push('queue');
     if (action === 'queue-remove' || action === 'queue-resume') fields.splice(3, fields.length - 3, ...(action === 'queue-remove' ? ['queueId'] : []));
+    if (action === 'stop-start') fields.splice(3, fields.length - 3, 'startId');
     if (Object.keys(payload).some(key => !fields.includes(key))) fail(400, 'Unsupported command field');
     if (managing) {
       if (!Array.isArray(payload.targets) || !payload.targets.length || payload.targets.length > 100
@@ -104,6 +133,10 @@ class RemoteCommands {
     else if (action === 'create' && id === null) this.authorizeCreate(device.id, payload.workspaceId);
     else if (['archive', 'restore'].includes(action) && id === null) this.authorizeArchive(device.id, payload.conversationId);
     else this.authorize(device.id, id);
+    if (action === 'subagent-command') {
+      const task = this.reader.manager.subagentView?.(id).find(task => task.id === payload.taskId && task.engine === payload.engine);
+      if (task?.managedConversationId) this.authorize(device.id, task.managedConversationId);
+    }
     const fingerprint = digest([id, ...fields.map(field => payload[field])]);
     const receipt = result => id && (payload.queue === true || action === 'queue-remove' || action === 'queue-resume')
       ? { ...result, ...this.queue.snapshot(id) } : result;
@@ -116,8 +149,12 @@ class RemoteCommands {
     }
     if (payload.instanceId !== instanceId) fail(409, 'Server restarted; refresh before operating');
     if (this.entries.length >= 10_000) fail(409, 'Remote command journal is full; use the desktop');
-    const entry = { key, fingerprint, at: Date.now() };
+    const entry = { key, fingerprint, at: Date.now(), conversationId: id, action, scopes: {} };
     if (managing) entry.scopes = Object.fromEntries(payload.targets.map(target => [target.id, this.reader.summary(this.authorize(device.id, target.id)).workspaceId]));
+    else if (id) entry.scopes[id] = this.reader.summary(this.authorize(device.id, id)).workspaceId;
+    else if (['archive', 'restore'].includes(action)) entry.scopes[payload.conversationId] = this.reader.summary(this.authorizeArchive(device.id, payload.conversationId)).workspaceId;
+    else if (action === 'create') entry.scopes.create = payload.workspaceId;
+    if (action === 'move') entry.scopes.destination = payload.workspaceId;
     this.entries.push(entry);
     try { this.save(); } catch (error) { this.entries.pop(); throw error; }
     const operation = this.perform(device.id, id, payload).then(result => {
@@ -180,6 +217,12 @@ class RemoteCommands {
     }
     const conversationId = ['archive', 'restore'].includes(payload.action) ? payload.conversationId : id;
     const conversation = payload.action === 'restore' ? this.authorizeArchive(deviceId, conversationId) : this.authorize(deviceId, conversationId), manager = this.reader.manager;
+    if (payload.action === 'subagent-command') {
+      if (!['reply', 'stop', 'approve'].includes(payload.operation)) fail(400, 'Unsupported subtask action');
+      const task = manager.subagentView(id).find(task => task.id === payload.taskId && task.engine === payload.engine);
+      if (task?.managedConversationId) this.authorize(deviceId, task.managedConversationId);
+      return { ...await manager.subagentCommand(id, payload), state: 'accepted' };
+    }
     if (['goal-control', 'task-control'].includes(payload.action)) {
       const task = payload.action === 'task-control';
       if (!(task ? ['pause', 'resume', 'cancel'] : ['pause', 'resume', 'clear']).includes(payload.operation)) fail(400, 'Unsupported control operation');
@@ -189,7 +232,11 @@ class RemoteCommands {
       return { ok: true, state: 'accepted' };
     }
     if (['fork', 'switch-engine', 'compact', 'find'].includes(payload.action)) {
-      if (conversation.seq !== payload.expectedSeq || manager.busy(id)) fail(409, 'Conversation changed or busy');
+      const boundary = payload.action === 'fork' ? manager.forkBoundary(id) : Infinity;
+      const currentTurn = Number.isFinite(boundary) && Number.isSafeInteger(payload.expectedSeq)
+        && payload.expectedSeq >= boundary - 1 && payload.expectedSeq <= conversation.seq;
+      if (payload.action === 'fork' ? conversation.seq !== payload.expectedSeq && !currentTurn
+        : conversation.seq !== payload.expectedSeq || manager.busy(id)) fail(409, 'Conversation changed or busy');
       if (payload.action === 'find') {
         // An empty query is meaningful: it lists the files recent conversations
         // wrote, which is what a phone user wants when they cannot name a file.
@@ -312,6 +359,13 @@ class RemoteCommands {
         this.pendingAttachments.delete(payload.requestId);
       }
     }
+    if (payload.action === 'stop-start') {
+      const reservation = manager.controlStarts.get(id);
+      if (!reservation || typeof payload.startId !== 'string' || reservation.startId !== payload.startId || reservation.cancelled) fail(409, 'This startup is no longer active');
+      await manager.stopConversation(id);
+      manager.publishActivity(id);
+      return { ok: true, state: 'accepted' };
+    }
     const active = manager.recovering.get(id) || manager.active.get(id);
     if (!Number.isSafeInteger(payload.runId) || !active || active.facade.gen !== payload.runId || active.cancelled) fail(409, 'This run is no longer active');
     if (payload.action === 'stop') return manager.cancel({ sessionId: id, runId: payload.runId });
@@ -326,7 +380,7 @@ class RemoteCommands {
   async sendPrepared(deviceId, id, payload) {
     const conversation = this.authorize(deviceId, id), manager = this.reader.manager;
     if (manager.busy(id)) fail(409, 'Conversation is busy');
-    const reservation = { cancelled: false, validate: () => this.authorize(deviceId, id) };
+    const reservation = { startId: randomUUID(), cancelled: false, validate: () => this.authorize(deviceId, id) };
     manager.controlStarts.set(id, reservation);
     this.reservations.set(id, { deviceId, reservation });
     try {

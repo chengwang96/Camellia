@@ -52,6 +52,9 @@ jobs:
         run: go test ./...
       - name: Build embedded network helper
         run: npm run build:tailnet
+      - name: Build macOS discussion supervisor
+        if: matrix.platform == 'macos'
+        run: node scripts/build-discussion-helper.cjs
       - name: Embedded network native smoke test
         run: node tests/embedded-network-electron.cjs
       - name: Prepare engines used by integration tests
@@ -91,6 +94,8 @@ jobs:
         run: npm run test:kimi
       - name: Codex app-server smoke test
         run: npm run test:codex
+      - name: Native discussion workflow
+        run: node tests/discussion-production-smoke.cjs --engine codex
       - name: Antigravity SDK smoke test
         run: npm run test:antigravity
       - name: Antigravity subscription CLI smoke test
@@ -115,6 +120,10 @@ jobs:
         run: npm run ${{ matrix.command }} -- --publish never
       - name: Verify lightweight package and download manifests
         run: node tests/verify-package.cjs "${{ matrix.bundle }}"
+      - name: Verify packaged macOS discussion supervision
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: CAMELLIA_DISCUSSION_HELPER="$PWD/${{ matrix.bundle }}/Contents/Resources/runtime/camellia-discussion-job" node --test tests/discussion-unix-job.test.js
       - name: Verify optional engine downloads with bundled installer tools
         shell: bash
         run: |

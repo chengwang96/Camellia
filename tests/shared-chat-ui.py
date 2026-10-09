@@ -1178,9 +1178,10 @@ with sync_playwright() as p:
     page = browser.new_page(viewport={'width':1200,'height':820})
     page.on('pageerror',lambda e:errors.append(str(e)))
     page.add_init_script(bridge.replace("apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),",
-        "apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),codexDesktopSessions:async()=>({ok:true,sessions:[{id:'a',title:'Alpha chat',importable:true,project:{id:'p1',name:'ARDS',path:'D:/ards'}},{id:'b',title:'Beta chat',importable:true,project:{id:'p1',name:'ARDS',path:'D:/ards'}},{id:'c',title:'Loose chat',importable:true}]}),codexDesktopImport:async()=>({ok:true,imported:[],skipped:[]}),"))
+        "apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),codexDesktopSessions:async()=>{window.importScans=(window.importScans||0)+1;return {ok:true,sessions:[{id:'a',title:'Alpha chat',importable:true,project:{id:'p1',name:'ARDS',path:'D:/ards'}},{id:'b',title:'Beta chat',action:'update',importable:true,project:{id:'p1',name:'ARDS',path:'D:/ards'}},{id:'c',title:'Loose chat',importable:true}]};},codexDesktopImport:async ids=>{window.importedIds=ids;return {ok:true,imported:[{id:'new-import'}],updated:[{id:'shared-fixture',addedMessages:2}],skipped:[]};},"))
     page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude',wait_until='networkidle')
     page.wait_for_function('uiReady')
+    page.locator('[data-sid="shared-fixture"]').click()
     page.locator('#importBtn').click()
     expect(page.locator('#importMask')).to_be_visible()
     heads = page.locator('#importList .import-project')
@@ -1198,6 +1199,8 @@ with sync_playwright() as p:
     expect(group.locator('.import-project-sessions')).to_be_visible()
     rows = page.locator('#importList .import-row input[type=checkbox]')
     expect(rows).to_have_count(3)
+    expect(page.locator('#importList')).to_contain_text('Beta chat (update imported session)')
+    expect(page.locator('#importConfirm')).to_have_text('Import / update selected')
     expect(page.locator('#importAll')).to_be_checked()
     head_box = heads.nth(0).locator('input')
     head_box.uncheck()
@@ -1212,6 +1215,20 @@ with sync_playwright() as p:
     expect(rows.nth(0)).to_be_checked(); expect(rows.nth(1)).to_be_checked(); expect(rows.nth(2)).to_be_checked()
     page.locator('#importAll').click()
     expect(rows.nth(0)).not_to_be_checked(); expect(rows.nth(1)).not_to_be_checked(); expect(rows.nth(2)).not_to_be_checked()
+    page.evaluate("""() => {
+      const command = window.dshDesktop.conversationCommand;
+      window.dshDesktop.conversationCommand = async args => {
+        if (args.action === 'load-session') window.updatedOpenCount = (window.updatedOpenCount || 0) + 1;
+        return command(args);
+      };
+    }""")
+    page.locator('#importAll').check()
+    page.locator('#importConfirm').click()
+    expect(page.locator('#importMask')).to_be_hidden()
+    page.wait_for_function('window.updatedOpenCount > 0')
+    assert page.evaluate('window.importedIds') == ['a', 'b', 'c']
+    page.locator('#importBtn').click()
+    page.wait_for_function('window.importScans === 2')
     page.locator('#importCancel').click()
     expect(page.locator('#importMask')).to_be_hidden()
     page.evaluate("""() => {
@@ -1244,7 +1261,7 @@ with sync_playwright() as p:
       ]});
     }""")
     page.locator('#importBtn').click()
-    expect(page.locator('.import-all')).to_contain_text('Select all importable sessions')
+    expect(page.locator('.import-all')).to_contain_text('Select all available sessions')
     expect(page.locator('#importAll')).to_be_checked()
     expect(page.locator('#importList input[value="large"]')).to_be_checked()
     expect(page.locator('#importList input[value="missing"]')).to_be_disabled()
@@ -1269,13 +1286,14 @@ with sync_playwright() as p:
     page.on('pageerror',lambda e:errors.append(str(e)))
     page.add_init_script(bridge.replace("id:'another-session',title:'Another task'","id:'another-session',title:'Another task',imported:true")
         .replace("apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),",
-        "apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),codexDesktopSessions:async()=>({ok:true,sessions:[]}),codexDesktopSync:async id=>{window.synced=id;return {ok:true,id,messages:7};},"))
+        "apiRouterGetState:async()=>({enabled:true,models:['fixture-model']}),codexDesktopSessions:async()=>({ok:true,sessions:[]}),codexDesktopSync:async id=>{window.synced=id;return {ok:true,id,messages:7,addedMessages:2};},"))
     page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=claude',wait_until='networkidle')
     page.wait_for_function('uiReady')
     page.locator('[data-sid="another-session"] .session-more').click()
     page.locator('.dsh-pop .pop-row',has_text='Sync from Codex desktop').click()
     expect(page.locator('#syncMask')).to_be_visible()
     expect(page.locator('#syncTitle')).to_contain_text('Another task')
+    expect(page.locator('#syncMask')).to_contain_text('Existing Camellia messages are kept.')
     page.locator('#syncCancel').click()
     expect(page.locator('#syncMask')).to_be_hidden()
     assert page.evaluate('window.synced||null') is None

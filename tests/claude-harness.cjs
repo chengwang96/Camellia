@@ -71,7 +71,7 @@ function createHarness(existingRoot, { respondToInterrupts = false } = {}) {
       return require(name);
     },
     module: { exports: {} }, __dirname: mainDir,
-    process: mockProcess, Buffer, URL, console,
+    process: mockProcess, Buffer, URL, AbortSignal, console,
     setTimeout: (fn) => { timers.set(++timerId, fn); return timerId; },
     clearTimeout: (id) => timers.delete(id),
   };

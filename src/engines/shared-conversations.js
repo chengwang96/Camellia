@@ -16,6 +16,7 @@ const { contextOverflow, contextTokenLimit } = require('../shared/context-overfl
 const { resolveArtifacts } = require('../main/turn-artifacts');
 const { ScheduledTasks, taskPrompt } = require('./scheduled-tasks');
 const { callConversationTool } = require('./conversation-control');
+const managedSubagents = require('./subagent-conversations');
 const { planCompaction } = require('./compaction-plan');
 const { runSummaryPipeline, DEFAULT_MAX_REQUESTS, MAX_CACHED_SUMMARIES } = require('./compaction-summary');
 const { searchFiles, searchContents } = require('../main/file-search');
@@ -157,6 +158,7 @@ const reportedContextLimit = text => {
 class SharedConversations {
   constructor({ dir, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, assertAvailable = () => {}, generateTitle = async () => '', summarize, log = () => {}, modelContextWindow = () => undefined, contextRoute = () => '', contextCapacity, conversationModels = () => [], createGoalBridge, stopTimeoutMs = 12000 }) {
     Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, assertAvailable, generateTitle, summarize, log, modelContextWindow, contextRoute, contextCapacity, conversationModels });
+    this.subagentSessions = new Map();
     fs.mkdirSync(dir, { recursive: true });
     this.items = new Map(); this.active = new Map(); this.facades = new Map(); this.switching = new Map(); this.goals = new Map(); this.recovering = new Map(); this.sequence = 0; this.clock = 0;
     this.stopping = new Map(); this.deleting = new Set(); this.stopTimeoutMs = stopTimeoutMs;
@@ -288,6 +290,7 @@ class SharedConversations {
     this.drivers[engine]?.sessions?.touch({ conversationId: id });
     this.onEvent({ type: 'conversation:activity', session_id: id, engine: c.currentEngine, activity: this.activity(id) });
     this.remoteQueue?.schedule(id);
+    managedSubagents.notify(this, id);
   }
   pauseGoals() { for (const goal of this.goals.values()) { if (goal.armed) goal.setPhase('paused'); else goal.cancelTimer(); } }
 
@@ -630,10 +633,15 @@ class SharedConversations {
     return c;
   }
   validateEngine(engine) { if (!ENGINES.includes(engine)) throw new Error('Unknown engine'); }
+  forkBoundary(id) {
+    const run = this.active.get(id) || this.recovering.get(id);
+    return Number.isSafeInteger(run?.userSeq) ? run.userSeq : Infinity;
+  }
   fork(engine, { sessionId, title } = {}) {
     this.validateEngine(engine);
     const source = this.get(sessionId);
-    if (this.busy(source.id)) throw new Error('Wait for this conversation to finish before forking it');
+    if (this.deleting.has(source.id)) throw new Error('This conversation is being deleted');
+    const boundary = this.forkBoundary(source.id);
     const meta = this.workspaces.sessionMeta();
     if (meta.archived[source.id]) throw new Error('Restore this conversation before forking it');
     const baseTitle = String(title || '').trim() || translate('Fork of {0}', this.loadConfig().language)
@@ -647,8 +655,13 @@ class SharedConversations {
     if (source.hasGlobalMemory) conversation.hasGlobalMemory = true;
     // A fork starts a fresh native session, but it keeps the parked sessions of
     // each binding so switching models there also returns to its own thread.
-    conversation.modelSessions = JSON.parse(JSON.stringify(source.modelSessions || {}));
-    for (const row of this.historyRows(source, { mask: HISTORY_FLAGS.public })) this.append(conversation, row);
+    // A native binding may already contain the live prompt, steering or tool
+    // output. An active fork replays its completed transcript into fresh threads.
+    conversation.modelSessions = Number.isFinite(boundary) ? {} : JSON.parse(JSON.stringify(source.modelSessions || {}));
+    const sequences = new Map();
+    for (const row of this.historyRows(source, { mask: HISTORY_FLAGS.public, before: boundary })) sequences.set(row.seq, this.append(conversation, row).seq);
+    conversation.subagents = require('../shared/subagents').forkTasks(source.subagents, boundary)
+      .filter(task => sequences.has(task.userSeq)).map(task => ({ ...task, userSeq: sequences.get(task.userSeq) }));
     this.save(conversation);
     return conversation;
   }
@@ -678,7 +691,7 @@ class SharedConversations {
       || (['failed', 'cancelled'].includes(last?.outcome) && Number.isSafeInteger(last.boundary)
         && this.historyInfo(c).userSeq <= last.boundary ? { state: last.outcome, engine: last.engine || c.currentEngine,
         native: last.route === 'native', error: last.error || '' } : null);
-    return { ok: true, ...c, activity: this.activity(id), compaction, live, preferences: prefs, messages, settings: this.settings(engine, id), truncated: false,
+    return { ok: true, ...c, subagents: this.subagentView(id), activity: this.activity(id), compaction, live, preferences: prefs, messages, settings: this.settings(engine, id), truncated: false,
       ...(page ? { historyPage: { nextBefore: page.nextBefore, version: page.version } } : {}),
       remoteQueue: this.remoteQueue?.snapshot(id) };
   }
@@ -1223,9 +1236,48 @@ class SharedConversations {
     // Native generations are engine-local, so both engine and run must match.
     const a = event.conversationId ? this.active.get(event.conversationId)
       : [...this.active.values()].find(run => run.engine === engine && run.session?.gen === event.runId);
+    if (event.type === 'gui:subagent' && event.conversationId) {
+      const c = this.items.get(event.conversationId);
+      const session = a?.engine === engine && a.session?.gen === event.runId ? a.session : this.subagentSessions.get(c?.id + ':' + engine);
+      if (!c || !session || session.gen !== event.runId) return false;
+      this.subagentSessions.set(c.id + ':' + engine, session);
+      const old = (c.subagents || []).find(task => task.id === event.task?.id && task.engine === engine);
+      if (a?.internal && !old) return false;
+      if (a?.session === session && Number.isSafeInteger(a.userSeq)) session.subagentUserSeq = a.userSeq;
+      const parent = (c.subagents || []).find(task => task.id === event.task?.parentId && task.engine === engine);
+      const task = require('../shared/subagents').mergeTask(old, event.task, { engine,
+        userSeq: parent?.userSeq ?? (a?.session === session ? a.userSeq : session.subagentUserSeq) });
+      if (!task || !Number.isSafeInteger(task.userSeq)) return false;
+      const previous = c.subagents;
+      c.subagents = [...(previous || []).filter(row => row.id !== task.id || row.engine !== engine), task].slice(-128);
+      try { this.save(c); }
+      catch (error) { c.subagents = previous; this.log('Could not save subtask status: ' + error.message); return false; }
+      this.onEvent({ type: 'gui:subagent', session_id: c.id, engine, tasks: this.subagentView(c.id) });
+      return true;
+    }
     if (!a || a.engine !== engine || (a.session ? event.runId !== a.session.gen : event.runId != null)) return false;
     try { return this.captureRun(a, engine, event); }
     catch (error) { this.failCapturedRun(a, error, event.type === 'result'); return true; }
+  }
+  subagentView(id) {
+    return (this.get(id).subagents || []).map(task => {
+      const session = this.subagentSessions.get(id + ':' + task.engine);
+      const connected = !session?.dead && session?.children?.has(task.id);
+      return { ...task, connected: Boolean(connected), canReply: Boolean(connected && task.canReply), canStop: Boolean(connected && task.canStop),
+        approvals: connected ? (task.approvals || []).map(require('../main/remote/approvals').approval) : [],
+        ...(!connected && ['starting', 'running', 'waiting'].includes(task.status) ? { status: 'unavailable' } : {}) };
+    }).concat(managedSubagents.view(this, id));
+  }
+  async subagentCommand(id, payload) {
+    const task = this.subagentView(id).find(task => task.id === payload.taskId && task.engine === payload.engine);
+    if (task?.managedConversationId) return managedSubagents.command(this, id, task, payload);
+    const session = task && this.subagentSessions.get(id + ':' + task.engine);
+    if (!task?.connected || !session?.controlChild) throw new Error('This subtask is no longer connected');
+    const raw = (this.get(id).subagents || []).find(row => row.id === task.id && row.engine === task.engine);
+    const response = payload.operation === 'approve' ? require('../main/remote/approvals').answer(
+      raw.approvals?.find(event => event.requestId === payload.approvalId) || {}, payload) : undefined;
+    await session.controlChild(task.id, { ...payload, response });
+    return { ok: true };
   }
   failCapturedRun(a, error, terminal) {
     const { c, engine } = a;
@@ -1433,7 +1485,7 @@ class SharedConversations {
         && prevDelta?.type === delta.type && typeof delta[key] === 'string' && typeof prevDelta[key] === 'string') {
         prevDelta[key] += delta[key]; prev.eventSeq = out.eventSeq;
       } else a.events.push(structuredClone(out));
-      if (event.type !== 'result') this.onEvent(out);
+      if (event.type !== 'result') { this.onEvent(out); managedSubagents.notify(this, c.id); }
     } else if (event.type === 'gui:permission') this.onEvent({ ...out, handoff: true });
     if (event.type === 'result') {
       const output = Array.isArray(event.outputBlocks) ? { outputBlocks: event.outputBlocks } : {};
@@ -2499,6 +2551,7 @@ class SharedConversations {
     this.validateEngine(engine);
     if (['send', 'goal-start', 'goal-resume', 'compact', 'find', 'task-resume'].includes(action)) this.assertAvailable(engine);
     switch (action) {
+      case 'subagent-command': return this.subagentCommand(payload.sessionId, payload);
       case 'remote-queue-remove': return this.remoteQueue?.remove(payload.sessionId, payload.queueId) || { ok: false, error: 'Remote queue unavailable' };
       case 'remote-queue-resume': return this.remoteQueue?.resume(payload.sessionId) || { ok: false, error: 'Remote queue unavailable' };
       case 'send': {

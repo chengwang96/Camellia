@@ -9,6 +9,7 @@ const { randomUUID } = require('node:crypto');
 const { StorageCleanup, PROTECTION_MS } = require('../src/main/storage-cleanup');
 const { DiscussionManager } = require('../src/engines/discussions/manager');
 const { WindowsJobJournal } = require('../src/engines/discussions/windows-job-journal');
+const { UnixJobJournal } = require('../src/engines/discussions/unix-job');
 
 function setup(context) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-storage-test-'));
@@ -323,17 +324,21 @@ test('discussion snapshots retain removed and retired histories, summaries and a
   assert.equal(fs.existsSync(orphan), false);
 });
 
-test('append-only launch records, locks and seals remain protected even without a discussion snapshot', async context => {
-  const h = setup(context), journal = new WindowsJobJournal({ dir: path.join(h.dataDir, 'discussions/windows-jobs') });
+for (const [directory, Journal] of [['windows-jobs', WindowsJobJournal], ['unix-jobs', UnixJobJournal]]) {
+test(`${directory} launch records, locks and seals remain protected even without a discussion snapshot`, async context => {
+  const h = setup(context), journal = new Journal({ dir: path.join(h.dataDir, 'discussions', directory) });
   const identity = { runtimeId: randomUUID(), deliveryId: randomUUID(), generation: 1 };
   const record = journal.reserve(identity); fs.writeFileSync(record.sealFile, 'sealed\n');
+  if (record.stateFile) fs.writeFileSync(record.stateFile, '{"version":1}');
   const native = h.write(`codex/api/conversations/${identity.runtimeId}/state.txt`), orphan = h.attachment();
   h.advance(PROTECTION_MS * 2);
   const preview = await h.cleaner.scan(); assert.equal(preview.candidates.length, 1);
   assert.equal((await h.cleaner.clean(preview.token)).files, 1);
   for (const file of [native, record.lockFile, record.sealFile, journal.paths(identity).recordFile]) assert.ok(fs.existsSync(file));
+  if (record.stateFile) assert.ok(fs.existsSync(record.stateFile));
   assert.equal(fs.existsSync(orphan), false);
 });
+}
 
 test('discussion storage identities retain native assets after their bridge is retired and removed', async context => {
   const h = setup(context), manager = new DiscussionManager({ dir: path.join(h.dataDir, 'discussions') });

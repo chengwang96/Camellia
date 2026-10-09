@@ -13,7 +13,7 @@ const { pathToFileURL } = require('node:url');
 const { removeTree } = require('./test-fs.cjs');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function setup(t, enabled = true) {
+function setup(t, enabled = true, platform = 'win32') {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-service-'));
   t.after(() => removeTree(dataDir));
   const binding = { engine: 'codex', connection: 'subscription', model: 'test-model', accountRef: 'test-account', thinking: '', contextWindow: 32000 };
@@ -33,7 +33,7 @@ function setup(t, enabled = true) {
       async stop() { return { ...identity, stopped: true, released: true }; }, cancel() {},
     }; },
   };
-  const options = { dataDir, platform: 'win32', getCatalog: () => [{ binding, label: 'Test model' }], adapters: enabled ? { codex: adapter } : {} };
+  const options = { dataDir, platform, getCatalog: () => [{ binding, label: 'Test model' }], adapters: enabled ? { codex: adapter } : {} };
   const service = new DiscussionService(options);
   return { service, options, binding, calls };
 }
@@ -43,6 +43,21 @@ async function createMembers(service, count = 2) {
   for (let i = 0; i < count; i++) await service.call('add-member', { id: group.id, bindingId: bindings[0].id, name: 'Member ' + i });
   return (await service.call('load', { id: group.id })).group;
 }
+
+test('macOS admits the complete discussion workflow and preserves replies after restart', async t => {
+  const h = setup(t, true, 'darwin'), group = await createMembers(h.service);
+  await h.service.call('send', { id:group.id, requestId:'mac-first', text:'Mac discussion', participantIds:group.participants.map(p => p.id), mode:'serial' });
+  for (let i = 0; i < 10 && h.service.active; i++) await tick();
+  assert.equal(h.calls.length, 2);
+  const restored = new DiscussionService(h.options);
+  const record = (await restored.call('load', { id:group.id })).group;
+  assert.equal(record.participants.length, 2);
+  assert.equal(record.messages.filter(row => row.role === 'assistant').length, 2);
+  await restored.call('stop', { id:group.id });
+  await restored.shutdown(); await h.service.shutdown();
+  const other = setup(t, true, 'linux');
+  await assert.rejects(other.service.call('list'), /Windows and macOS/);
+});
 
 test('an updating member cannot be started while discussion history stays readable', async t => {
   const h = setup(t);

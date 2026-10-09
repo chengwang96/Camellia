@@ -44,9 +44,19 @@ The `next-turn-settings` capability allows a model, thinking-level, or supported
 
 Command results are persisted by request ID. A retry must use the **same** ID and parameters; `pending` means the action is still being prepared, while `unknown` or `interrupted` after a crash must be reconciled before the user chooses another action. HTTP 200 alone does not mean an engine turn completed. A reconnect replaces the current snapshot instead of appending it. `instanceId` changes when the gateway restarts, so old cursors and unconfirmed controls must not be treated as current. The client does not automatically resend a timed-out send, stop, or approval.
 
+### Forks and subtasks
+
+The `fork` capability allows `action: "fork"` with `expectedSeq`. During a running or recovering turn, a snapshot from the current turn remains valid as tool rows arrive, and the fork excludes that entire turn. An idle fork requires the exact stored sequence. The response identifies the new conversation; the source keeps running.
+
+Gateways advertising `subagents` include a bounded `subagents` array in conversation snapshots, even when an unchanged `historyVersion` lets them omit `messages`. A task carries its engine, task ID, initiating `userSeq`, actual status and `turnId`, goal/progress/result, recent history, pending approval count and supported actions. Large details are shortened with `detailsTruncated`; task identities and attention counts remain available. Read-only devices receive status and attention counts without actionable approvals or controls. A tool-created child's workspace must also be authorized to expose its details, artifacts or commands.
+
+`action: "subagent-command"` carries `taskId`, `engine`, `operation` (`reply`, `stop`, or `approve`) and `expectedTurnId`. A reply also carries `prompt`; an approval carries `approvalId`, the original request `fingerprint`, `allow` and, when required, `input` or `optionId`. The server checks the child again before dispatch and routes the response to that child's original engine request. Parent approvals and parent input are separate. Controls are hidden when the engine or child no longer supports them. Native Claude tasks expose approval and stop; direct replies are unavailable in its current stdio protocol.
+
+Android and iOS use a turn card and a separate child page, with no desktop floating panel. Returning keeps the parent transcript, draft and reading position. See [Conversation work panel](conversation-work-panel.md) for display behavior and validation limits.
+
 ### Agent discussions (beta)
 
-A Windows desktop that advertises `discussions` and `discussion-rich` exposes discussion groups to an all-access control device. The ordinary conversation list may include `discussionGroups`, `discussionsNextOffset`, and `discussionVersion`; older capable gateways provide `/v1/discussions`. Restricted devices and Linux servers do not gain discussion access from this capability.
+A Windows or macOS desktop that advertises `discussions` and `discussion-rich` exposes discussion groups to an all-access control device. The ordinary conversation list may include `discussionGroups`, `discussionsNextOffset`, and `discussionVersion`; older capable gateways provide `/v1/discussions`. Restricted devices and Linux servers do not gain discussion access from this capability.
 
 | Method | Path | Purpose |
 | --- | --- | --- |

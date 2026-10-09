@@ -284,6 +284,7 @@ final class SettingsStyle {
             row.addView(icon, new LinearLayout.LayoutParams(dp(23), dp(23)));
         }
         LinearLayout labels = new LinearLayout(context); labels.setOrientation(LinearLayout.VERTICAL);
+        labels.setPaddingRelative(iconName != null ? dp(13) : 0, 0, 0, 0);
         TextView heading = new TextView(context); heading.setText(title); heading.setTextColor(ink);
         heading.setTextSize(Palette.TEXT_ROW_STRONG); heading.setTag(ROW_TITLE);
         labels.addView(heading);

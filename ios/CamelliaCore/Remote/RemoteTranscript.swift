@@ -83,6 +83,14 @@ public final class RemoteTranscript {
     public private(set) var conversation: RemoteConversation?
     public private(set) var permission: RemotePermission?
     public private(set) var live: RemoteLive?
+    public private(set) var subagents: [RemoteSubtask] = []
+    /// Keep actionable children reachable when their initiating turn is outside
+    /// the loaded history page. Loading that turn restores its normal card.
+    public var earlierSubtaskTurns: [Int64] {
+        let loaded = Set(history.values.filter { $0.role == .user }.map(\.seq))
+        return Set(subagents.filter { !loaded.contains($0.userSeq) && ($0.active || $0.needsAttention || $0.canReply) }
+            .map(\.userSeq)).sorted()
+    }
     public private(set) var settings: RemoteSettings?
     public private(set) var automation: RemoteAutomation?
     public private(set) var queue: [RemoteQueueEntry] = []
@@ -118,8 +126,15 @@ public final class RemoteTranscript {
             // A different instance means the desktop restarted or moved: cached
             // rows belong to a session that no longer exists.
             history.removeAll()
+            subagents = []
             historyLimited = false
+            nextBefore = nil
             queueVersion = -1
+            queue = []
+            canQueue = false
+            live = nil
+            automation = nil
+            showsGoal = false
             goalVisibility.reset()
         }
         instanceId = server
@@ -129,22 +144,24 @@ public final class RemoteTranscript {
         conversation = snapshot.conversation ?? conversation
         permission = snapshot.permission
         settings = snapshot.settings
-
-        // Android applies the connection, permission and settings fields even
-        // on an incomplete snapshot, then leaves the displayed detail alone.
-        // In particular, missing `messages` is not an empty history page.
-        guard snapshot.hasMessages else { return true }
+        if let tasks = snapshot.subagents { subagents = tasks }
 
         // The queue only ever moves forward. `canQueue` is the field's presence,
         // so a desktop without the feature keeps `queue` empty and the composer
         // never offers to enqueue.
-        canQueue = snapshot.canQueue
+        if snapshot.canQueue || snapshot.hasMessages { canQueue = snapshot.canQueue }
         if snapshot.canQueue, snapshot.queueVersion >= queueVersion {
             queue = snapshot.queue
             queueVersion = snapshot.queueVersion
-        } else if !snapshot.canQueue {
+        } else if snapshot.hasMessages && !snapshot.canQueue {
             queue = []
         }
+
+        // Incremental snapshots omit unchanged history, while live state,
+        // approvals, child tasks and queue revisions continue to change.
+        if snapshot.hasLive || snapshot.hasMessages { live = snapshot.live }
+        if snapshot.hasAutomation || snapshot.hasMessages { automation = snapshot.automation }
+        guard snapshot.hasMessages else { refreshGoalVisibility(); return true }
 
         let first = snapshot.messages.first?.seq ?? 0
         merge(snapshot.messages, first: first, olderAvailable: snapshot.olderAvailable)
@@ -155,8 +172,6 @@ public final class RemoteTranscript {
             nextBefore = snapshot.nextBefore
         }
         trim()
-        live = snapshot.live
-        automation = snapshot.automation
         // After the merge, because the goal's completion is measured against the
         // newest user turn the phone now knows about.
         refreshGoalVisibility()
@@ -173,6 +188,7 @@ public final class RemoteTranscript {
         conversation = nil
         permission = nil
         live = nil
+        subagents = []
         settings = nil
         automation = nil
         queue = []
@@ -191,14 +207,21 @@ public final class RemoteTranscript {
 
     /// Android removes the message views when a detail request ends in 403 or
     /// 404. A normal reconnect is different: it keeps history via `suspend()`.
-    /// Clear only displayed message content here, leaving the conversation,
-    /// queue metadata and stream connection state alone. `suspend()` withdraws
-    /// control separately when the stream itself has failed.
+    /// Withdraw controls and cached child/queue content until a fresh authorized
+    /// snapshot arrives; a refused one-shot request can precede stream closure.
     public func hideMessagesAfterAccessFailure() {
         history.removeAll()
+        subagents = []
         historyLimited = false
         nextBefore = nil
         live = nil
+        permission = nil
+        connected = false
+        queue = []
+        canQueue = false
+        settings = nil
+        automation = nil
+        showsGoal = false
         goalVisibility.reset()
     }
 

@@ -9,6 +9,23 @@ const { latestFilePreview } = require('./conversation-preview');
 const { MAX_COUNT: MAX_ATTACHMENTS } = require('./attachments');
 
 const TEXT_LIMIT = 256 * 1024;
+function boundedSubtasks(tasks) {
+  const budget = Math.floor(512 * 1024 / Math.max(1, tasks.length));
+  return tasks.map(task => {
+    const value = { ...task, history: [...(task.history || [])], approvals: [...(task.approvals || [])] };
+    while (Buffer.byteLength(JSON.stringify(value)) > budget) {
+      value.detailsTruncated = true;
+      if (value.history.length) value.history.shift();
+      else if (value.approvals.length) value.approvals.pop();
+      else {
+        const key = ['goal', 'progress', 'result'].sort((a, b) => (value[b]?.length || 0) - (value[a]?.length || 0))[0];
+        if (!value[key]?.length) break;
+        value[key] = value[key].slice(-Math.floor(value[key].length / 2));
+      }
+    }
+    return value;
+  });
+}
 function text(value) {
   const source = typeof value === 'string' ? value : '';
   return { text: source.slice(-TEXT_LIMIT), textTruncated: source.length > TEXT_LIMIT };
@@ -127,9 +144,10 @@ class RemoteReadModel {
       updatedAt: conversation.updatedAt, seq: conversation.seq, lastReplyAt: conversation.lastReplyAt || 0, replyReadAt: conversation.replyReadAt || 0,
       activity: this.manager.activity(conversation.id), ...(filePreview ? { filePreview } : {}) };
   }
-  list(device, offset = 0) {
+  list(device, offset = 0, limit = 100, query = '') {
     const meta = this.manager.workspaces.sessionMeta();
-    const conversations = [...this.manager.items.values()].filter(conversation => this.allowed(device, conversation, meta))
+    const conversations = [...this.manager.items.values()].filter(conversation => this.allowed(device, conversation, meta)
+      && (!query || String(meta.titles[conversation.id] || conversation.title).toLowerCase().includes(query)))
       .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
     for (const [group, order] of Object.entries(meta.sessionOrder)) {
       const ranks = new Map(order.map((id, index) => [id, index]));
@@ -138,8 +156,8 @@ class RemoteReadModel {
       slots.forEach((slot, index) => { conversations[slot] = sorted[index]; });
     }
     conversations.sort((left, right) => Number(Boolean(meta.pinned[right.id])) - Number(Boolean(meta.pinned[left.id])));
-    return { conversations: conversations.slice(offset, offset + 100).map(conversation => this.summary(conversation, meta, true)),
-      nextOffset: conversations.length > offset + 100 ? offset + 100 : null };
+    return { conversations: conversations.slice(offset, offset + limit).map(conversation => this.summary(conversation, meta, true)),
+      query, nextOffset: conversations.length > offset + limit ? offset + limit : null };
   }
   listSnapshot(device) {
     const meta = this.manager.workspaces.sessionMeta();
@@ -153,12 +171,15 @@ class RemoteReadModel {
     }
     return { listVersion: hash.digest('hex') };
   }
-  snapshot(device, id, before) {
+  snapshot(device, id, before, previousHistoryVersion) {
     const conversation = this.conversation(device, id);
     const info = this.manager.remoteHistoryRows && this.manager.historyInfo(conversation);
     const transcript = info ? [] : (this.manager.rows ? this.manager.rows(conversation) : this.manager.messages(conversation))
       .filter(row => !row.internal && ['user', 'assistant', 'notice', 'tool'].includes(row.role));
     const rows = transcript.filter(row => before === undefined || row.seq < before);
+    const historyVersion = createHash('sha256').update(JSON.stringify(info
+      ? [info.generation, info.source] : transcript)).digest('hex');
+    const unchanged = before === undefined && (previousHistoryVersion === null || previousHistoryVersion === historyVersion);
     const build = () => {
       const messages = []; let size = 0, older = false;
       const source = info ? this.manager.remoteHistoryRows(conversation, before) : rows.slice(-200).reverse();
@@ -171,7 +192,7 @@ class RemoteReadModel {
       }
       return { messages, nextBefore: older || !info && rows.length > messages.length ? messages[0]?.seq ?? null : null };
     };
-    const saved = info ? this.manager.historyStore.projection(id, 'remote:' + (before ?? 'latest'), build) : build();
+    const saved = unchanged ? {} : info ? this.manager.historyStore.projection(id, 'remote:' + (before ?? 'latest'), build) : build();
     const { messages, nextBefore } = saved;
     const active = this.manager.recovering.get(id) || this.manager.active.get(id);
     const output = active?.events?.length ? projectOutput(active.events) : null;
@@ -183,7 +204,17 @@ class RemoteReadModel {
     const selected = active?.settings || this.manager.settings(conversation.currentEngine, id);
     const pressure = this.manager.contextPressure?.(conversation, conversation.currentEngine, selected, active);
     const compaction = before === undefined ? this.currentCompaction(conversation, active, transcript, info) : null;
-    return { conversation: this.summary(conversation), messages, live, permission: device.permission,
+    const start = this.manager.controlStarts?.get(id);
+    const subagents = boundedSubtasks((this.manager.subagentView?.(id) || []).filter(task => !task.managedConversationId
+      || this.manager.items.has(task.managedConversationId) && this.allowed(device, this.manager.items.get(task.managedConversationId))).map(task => {
+      const { artifacts, approvals, ...rest } = task;
+      return { ...rest, approvals: device.permission === 'control' ? approvals : [],
+        pendingApprovals: approvals.length, canReply: device.permission === 'control' && task.canReply,
+        canStop: device.permission === 'control' && task.canStop };
+    }));
+    return { conversation: this.summary(conversation), historyVersion, ...(unchanged ? {} : { messages, nextBefore }), live, permission: device.permission,
+      subagents,
+      preparation: start && !start.cancelled && typeof start.startId === 'string' ? { startId: start.startId } : null,
       compaction,
       ...(pressure ? { context: { used: Math.max(0, Math.round(pressure.used)), cap: pressure.cap, source: pressure.source,
         compacting: compaction?.state === 'running', compactionState: compaction?.state || '' } } : {}),
@@ -191,7 +222,7 @@ class RemoteReadModel {
       automation: { goal: mobileGoal(goal, transcript, info),
         tasks: (this.manager.tasks?.list(id) || []).map(task => ({ id: task.id, instruction: String(task.instruction || '').slice(0, 500), status: task.status, state: task.state, intervalMinutes: task.intervalMinutes, lastResult: String(task.lastResult || '').slice(0, 600) })) },
       ...(device.permission === 'control' ? { settings: settingsView(this.manager, conversation) } : {}),
-      nextBefore };
+      };
   }
 }
 

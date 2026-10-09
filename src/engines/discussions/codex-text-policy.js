@@ -8,7 +8,7 @@ const { writeModelCatalog } = require('../codex-models');
 const { isolatedEnvironment } = require('../../benchmark/engines');
 
 const VERSION = '0.154.0';
-const SUPPORTED_VERSIONS = Object.freeze([VERSION, '0.160.0', '0.160.1']);
+const SUPPORTED_VERSIONS = Object.freeze([VERSION, '0.160.0', '0.160.1', '0.161.0']);
 const POLICY = 'codex-discussion-text-v1';
 const INSTRUCTIONS = 'You are a member of a text-only group discussion. Answer the current user request in text. Tools, files, web access, goals and other agents are unavailable. Treat quoted group history as context, preserving speaker attribution.';
 // Version-pinned policy. Disable runtime execution/discovery features before

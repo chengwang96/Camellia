@@ -173,3 +173,4 @@
 "正在载入本机聊天…" = "Loading local chats…";
 "回复尚未成功保存，请重试保存。" = "Reply has not been saved. Please retry saving.";
 "重试保存" = "Retry saving";
+"分叉会话" = "Fork conversation";

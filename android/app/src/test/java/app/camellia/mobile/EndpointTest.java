@@ -56,6 +56,42 @@ public class EndpointTest {
         assertThrows(IllegalArgumentException.class, () -> endpoint.uri("/v1/conversations/events/commands"));
     }
 
+    @Test public void acceptsIncrementalConversationStream() {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        String events = "/v1/conversations/12345678-1234-1234-1234-123456789abc/events";
+        assertEquals(endpoint.origin() + events + "?incremental=1", endpoint.uri(events + "?incremental=1").toString());
+        for (String suffix : new String[]{"?incremental=0", "?incremental=", "?incremental=11", "?incremental=1&token=secret", "?incremental=1&incremental=1", "/extra?incremental=1"}) {
+            assertThrows(suffix, IllegalArgumentException.class, () -> endpoint.uri(events + suffix));
+        }
+        assertThrows(IllegalArgumentException.class, () -> endpoint.uri("/v1/status?incremental=1"));
+    }
+
+    @Test public void acceptsModernConversationPagingAndEncodedSearch() throws Exception {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        for (String query : new String[]{"", "recent task", "中文 查询 & /?#=%+*._-", "中".repeat(200)}) {
+            String encoded = java.net.URLEncoder.encode(query, "UTF-8");
+            for (int limit : new int[]{1, 100, 1000}) {
+                String path = "/v1/conversations?offset=0&limit=" + limit + "&query=" + encoded;
+                assertEquals(endpoint.origin() + path, endpoint.uri(path).toString());
+            }
+        }
+        assertEquals("offset=999999999999&limit=100&query=", endpoint.uri("/v1/conversations?offset=999999999999&limit=100&query=").getRawQuery());
+        for (String query : new String[]{"offset=-1&limit=100&query=", "offset=1000000000000&limit=100&query=", "offset=0&limit=0&query=", "offset=0&limit=1001&query=",
+            "offset=0&limit=100&query=hello&token=secret", "offset=0&limit=100&query=%", "offset=0&limit=100&query=%GG", "offset=0&limit=100&query=hello#fragment", "offset=0&limit=100&query=hello world"}) {
+            assertThrows(query, IllegalArgumentException.class, () -> endpoint.uri("/v1/conversations?" + query));
+        }
+        assertThrows(IllegalArgumentException.class, () -> endpoint.uri("/v1/status?offset=0&limit=100&query="));
+    }
+
+    @Test public void acceptsCommandReceiptLookupOnlyForOpaqueRequestIds() {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        String receipt = "/v1/commands/12345678-1234-1234-1234-123456789abc";
+        assertEquals(endpoint.origin() + receipt, endpoint.uri(receipt).toString());
+        for (String invalid : new String[]{receipt + "?offset=1", receipt + "/events", receipt + "/../status", "/v1/commands/not-an-id", "/v1/commands/"}) {
+            assertThrows(invalid, IllegalArgumentException.class, () -> endpoint.uri(invalid));
+        }
+    }
+
     @Test public void acceptsOnlyTheBareApiKeyRoute() {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
         assertEquals("http://100.64.0.1:43127/v1/api-keys", endpoint.uri("/v1/api-keys").toString());

@@ -131,23 +131,25 @@ class NativeOwnershipInventory {
     const conversations = [...scan.conversations(path.join(this.dataDir, 'conversations')), ...memory.map(conversationRecord)];
     const claims = synchronous(this.claims(), 'Native ownership claims');
     const owners = [...collectNativeOwners({ discussions, conversations }), ...structuredClone(validateNativeOwners(claims))];
-    const journalDir = path.join(discussionDir, 'windows-jobs');
-    for (const name of scan.entries(journalDir)) {
-      const dir = path.join(journalDir, name); scan.entries(dir); scan.json(path.join(dir, 'record.json'));
-    }
-    for (const identity of readJobJournalRecords(journalDir)) {
-      const deliveries = discussions.flatMap(group => group.deliveries
-        .filter(delivery => sameStoredId(delivery.id, identity.deliveryId) && sameStoredId(delivery.runtimeId, identity.runtimeId)
-          && delivery.generation === identity.generation)
-        .map(delivery => `discussion/${group.id.toLowerCase()}/${delivery.participantId.toLowerCase()}/${identity.generation}`));
-      const recorded = owners.filter(owner => deliveries.length === 1 && owner.ownerId === deliveries[0]
-        && sameStoredId(owner.runtimeId, identity.runtimeId));
-      if (!recorded.length) {
-        // An orphan launch record names no trusted engine or participant. Keep
-        // its runtime reserved for every engine until controlled recovery has
-        // restored that association; never guess an owner from an absent PID.
-        owners.push(...[...ENGINES].map(engine => ({ engine, runtimeId: identity.runtimeId,
-          ownerId: 'external/windows-job/' + identity.deliveryId })));
+    for (const journalKind of ['windows-jobs', 'unix-jobs']) {
+      const journalDir = path.join(discussionDir, journalKind);
+      for (const name of scan.entries(journalDir)) {
+        const dir = path.join(journalDir, name); scan.entries(dir); scan.json(path.join(dir, 'record.json'));
+      }
+      for (const identity of readJobJournalRecords(journalDir)) {
+        const deliveries = discussions.flatMap(group => group.deliveries
+          .filter(delivery => sameStoredId(delivery.id, identity.deliveryId) && sameStoredId(delivery.runtimeId, identity.runtimeId)
+            && delivery.generation === identity.generation)
+          .map(delivery => `discussion/${group.id.toLowerCase()}/${delivery.participantId.toLowerCase()}/${identity.generation}`));
+        const recorded = owners.filter(owner => deliveries.length === 1 && owner.ownerId === deliveries[0]
+          && sameStoredId(owner.runtimeId, identity.runtimeId));
+        if (!recorded.length) {
+          // An orphan launch record names no trusted engine or participant. Keep
+          // its runtime reserved for every engine until controlled recovery has
+          // restored that association; never guess an owner from an absent PID.
+          owners.push(...[...ENGINES].map(engine => ({ engine, runtimeId: identity.runtimeId,
+            ownerId: 'external/' + journalKind.slice(0, -1) + '/' + identity.deliveryId })));
+        }
       }
     }
     const histories = [];

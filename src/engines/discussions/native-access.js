@@ -15,7 +15,7 @@ function installDiscussionGuards({ dataDir, drivers, ownership, nativeStorage, o
   const snapshot = () => {
     const discussions = readDiscussionRecords(dir);
     const owners = collectNativeOwners({ discussions });
-    owners.push(...readJobJournalRecords(path.join(dir, 'windows-jobs')));
+    for (const journalKind of ['windows-jobs', 'unix-jobs']) owners.push(...readJobJournalRecords(path.join(dir, journalKind)));
     if (ownership) owners.push(...ownership.listClaims());
     for (const [engine, driver] of Object.entries(drivers)) {
       for (const session of driver.sessions.sessions.values()) {

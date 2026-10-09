@@ -220,16 +220,18 @@ class StorageCleanup {
         if (owner.nativeStorage) owners.add(owner.nativeStorage.conversationId);
       }
     }
-    const journalDir = path.join(discussionDir, 'windows-jobs');
-    for (const name of entries(journalDir)) {
-      const dir = path.join(journalDir, name), file = path.join(dir, 'record.json');
-      entries(dir);
-      const info = this.safeStat(file);
-      if (!info?.isFile() || info.size < 1 || info.size > 4096) throw new Error('Job launch record is missing or invalid; cleanup was stopped');
-      const identity = jobRecordIdentity(readJson(file));
-      if (name !== identity.deliveryId || !this.safeStat(path.join(dir, 'launch.lock'))?.isFile()) throw new Error('Invalid job journal; cleanup was stopped');
-      owners.add(identity.runtimeId);
-      read(file, this.dataDir, true);
+    for (const journalKind of ['windows-jobs', 'unix-jobs']) {
+      const journalDir = path.join(discussionDir, journalKind);
+      for (const name of entries(journalDir)) {
+        const dir = path.join(journalDir, name), file = path.join(dir, 'record.json');
+        entries(dir);
+        const info = this.safeStat(file);
+        if (!info?.isFile() || info.size < 1 || info.size > 4096) throw new Error('Job launch record is missing or invalid; cleanup was stopped');
+        const identity = jobRecordIdentity(readJson(file));
+        if (name !== identity.deliveryId || !this.safeStat(path.join(dir, 'launch.lock'))?.isFile()) throw new Error('Invalid job journal; cleanup was stopped');
+        owners.add(identity.runtimeId);
+        read(file, this.dataDir, true);
+      }
     }
     for (const history of this.histories) {
       for (const directory of entries(history.root, history.root)) {

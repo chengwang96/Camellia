@@ -21,7 +21,7 @@ function setup(t) {
     manager.store.drafts.entries.clear(); removeTree(root);
   });
   const group = manager.create({ cwd: path.join(source.dataDir, 'discussions', 'work', 'fixture') });
-  const member = manager.addMember(group.id, { name: 'A', engine: 'codex', connection: 'subscription', model: 'fixture', accountRef: 'account', contextWindow: 1000000 });
+  const member = manager.addMember(group.id, { name: 'A', engine: 'codex', connection: 'api', model: 'fixture', providerId: 'provider', keyId: 'key', contextWindow: 1000000 });
   const assets = new DiscussionAssets(manager.store.dir);
   const attachments = assets.importData(group.id, [{ name: 'report.txt', bytes: Buffer.from('attachment contents'), isImage: false }]);
   const text = 'Input at ' + attachments[0].path + '\n' + 'public input '.repeat(2000);
@@ -29,8 +29,8 @@ function setup(t) {
   const d = manager.prepare(group.id, request.deliveryIds[0]);
   manager.saveInput(group.id, d.id, d.generation, { prompt: 'Frozen at ' + source.dataDir + '\n' + 'input '.repeat(5000), inputThroughSeq: d.inputThroughSeq, attachments });
   manager.start(group.id, d.id, d.generation, 'native-' + d.runtimeId);
-  fs.mkdirSync(path.join(source.dataDir, 'codex', 'subscription', 'sessions'), { recursive: true });
-  fs.writeFileSync(path.join(source.dataDir, 'codex', 'subscription', 'sessions', 'native-context.jsonl'), 'private native reasoning and tool state\n');
+  fs.mkdirSync(path.join(source.dataDir, 'codex', 'api', 'sessions'), { recursive: true });
+  fs.writeFileSync(path.join(source.dataDir, 'codex', 'api', 'sessions', 'native-context.jsonl'), 'private native reasoning and tool state\n');
   fs.writeFileSync(path.join(source.dataDir, 'desktop-config.json'), '{"language":"zh-CN"}');
   return { root, source, target, manager, group, d, attachments, file: path.join(root, 'profile.zip') };
 }
@@ -55,7 +55,7 @@ test('conversation-only migration carries manifests, rehashed payloads, attachme
   assert.equal(state.participants[0].session.nativeId, before.participants[0].session.nativeId);
   assert.deepEqual(state.participants[0].session.nativeOwnMessageIds, before.participants[0].session.nativeOwnMessageIds);
   assert.equal(state.participants[0].session.coveredThroughSeq, before.participants[0].session.coveredThroughSeq);
-  assert.equal(fs.readFileSync(path.join(h.target.dataDir, 'codex', 'subscription', 'sessions', 'native-context.jsonl'), 'utf8'), 'private native reasoning and tool state\n');
+  assert.equal(fs.readFileSync(path.join(h.target.dataDir, 'codex', 'api', 'sessions', 'native-context.jsonl'), 'utf8'), 'private native reasoning and tool state\n');
   assert.equal(fs.existsSync(path.join(h.target.dataDir, 'desktop-config.json')), false);
   restored.recover(); assert.equal(restored.get(h.group.id).messages[1].text, state.messages[1].text);
 });

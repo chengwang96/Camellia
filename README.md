@@ -17,13 +17,28 @@ Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravi
 - **One routing and account view.** Manage API providers, multiple keys, supported subscription sign-ins, same-model failover, usage, balances, and optional engine runtimes in the app.
 - **Comparable benchmarks.** Run the same model through six harnesses against built-in, DS-1000, or SciCode tasks. Inspect checks, time, token usage, and saved reports.
 - **Remote work.** Pair a headless Linux server as another workbench, or approve an Android device to read and control selected desktop conversations over the embedded Tailscale connection.
-- **Long-running work.** Goals, scheduled checks, queued messages, and next-turn model changes help manage work that outlasts one reply.
+- **Long-running work.** Goals, scheduled checks, queued messages, and next-turn model changes help manage work that outlasts one reply. A [work panel](docs/conversation-work-panel.md) gathers subtasks and artifacts on desktop; mobile uses turn cards and child pages with independent controls.
 
 ![Illustrative shared conversation in the current desktop interface](docs/images/shared-conversation.png)
 
 ## Get started
 
-Desktop builds target **Windows x64** and **macOS Apple Silicon**. To run from source, use Node.js **22.19+ in the 22.x series or 24+**, Git, and Git for Windows with Bash on Windows:
+Download the latest app from [GitHub Releases](https://github.com/chengwang96/Camellia/releases/latest):
+
+| Platform | Download |
+| --- | --- |
+| Windows x64 | Installer: `Camellia-Setup-<version>-win-x64.exe`; portable app: `Camellia-<version>-win-x64-portable.exe` |
+| Android ARM64 | `Camellia-Android-<version>.apk` |
+
+Install the Windows setup package, or launch the portable executable. Desktop downloads include Node.js and npm. On Windows, also install [Git for Windows](https://gitforwindows.org/) with Git Bash. For macOS Apple Silicon, see [source setup and packaging](docs/development.md).
+
+On desktop, choose an engine on the home screen and install it when prompted. Then configure an API provider under **Settings → Providers & Keys**, or connect a supported subscription in **Settings → Engine Settings**. Camellia downloads only the runtimes you choose. Connection validation sends a short model request and may incur provider usage.
+
+For Android installation and desktop pairing, see the [Android guide](android/README.md) and [remote access guide](docs/remote-access.md). For a headless host, see the [Linux server guide](docs/linux-server-preview.md).
+
+### Run from source
+
+Desktop source builds target **Windows x64** and **macOS Apple Silicon**. Use Node.js **22.19+ in the 22.x series or 24+**, Git, and Git for Windows with Bash on Windows:
 
 ```sh
 git clone https://github.com/chengwang96/Camellia.git
@@ -31,10 +46,6 @@ cd Camellia
 npm ci
 npm start
 ```
-
-Choose an engine on the home screen and install it when prompted. Then configure an API provider under **Settings → Providers & Keys**, or connect a supported subscription in **Settings → Engine Settings**. Camellia downloads only the runtimes you choose. Connection validation sends a short model request and may incur provider usage.
-
-For Android installation and desktop pairing, see the [Android guide](android/README.md) and [remote access guide](docs/remote-access.md). For a headless host, see the [Linux server guide](docs/linux-server-preview.md).
 
 ## Documentation
 

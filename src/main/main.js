@@ -283,6 +283,7 @@ function desktopZoom() {
 }
 
 let runtimeManager;
+let migrationBusy = false;
 function engineBusy(engine) {
   return sharedConversations.isBusy(engine)
     || (engine === 'pi' && piChat.sessions.running)
@@ -367,6 +368,7 @@ function assertRuntimeReinstallAllowed(engine) {
 }
 function anyRuntimeUpdating() { return Object.keys(ENGINES).some(engine => runtimeUpdatesService?.isUpdating(engine)); }
 function assertRuntimeAvailable(engine) {
+  if (migrationBusy) throw new Error('Wait for the data transfer to finish before starting an engine');
   if (runtimeUpdatesService?.isUpdating(engine)) throw new Error(`${ENGINES[engine]?.name || engine} is updating. Try again when the update finishes.`);
 }
 function appUpdates() {
@@ -489,6 +491,16 @@ function ollamaProxyConfigPath() {
 function readOllamaProxyConfig() { return routerConfig.loadConfig(ollamaProxyConfigPath()); }
 let ollamaProxyHandle = null;
 let subscriptionUsageStore = null;
+let subscriptionPriceRefresh = null;
+function subscriptionPrices() {
+  return subscriptionPriceRefresh ||= require('../api/subscription-price-catalog').createPriceRefresh({
+    file: path.join(app.getPath('userData'), 'subscription-prices-cache.json'),
+    onChange: () => {
+      try { subscriptionUsage().reprice(); } catch (error) { log('Subscription repricing:', error.message); }
+      broadcastApiRouter(apiRouterState());
+    },
+  });
+}
 function subscriptionUsage() {
   return subscriptionUsageStore ||= require('../api/subscription-usage').createSubscriptionUsage({
     file: path.join(app.getPath('userData'), 'subscription-usage.json'),
@@ -622,6 +634,7 @@ function broadcastAccountInsights(state) {
   if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('dsh:provider-insights', accountInsights(state));
 }
 async function refreshInsights(payload = {}) {
+  if (migrationBusy) throw new Error('Wait for the data transfer to finish before refreshing accounts');
   const wanted = String(payload.subscriptionId || '');
   const kimiIds = !payload.apiOnly && !payload.providerId && !payload.keyId
     ? kimiAccount.list().map(profile => profile.id).filter(id => !runtimeUpdatesService?.isUpdating('kimi') && (!wanted || wanted === 'kimi:' + id)) : [];
@@ -645,7 +658,7 @@ async function refreshInsights(payload = {}) {
 function refreshAccountBalances() {
   clearTimeout(balanceRefreshTimer);
   const minutes = accountRefreshMinutes();
-  if (accountRefreshEnabled()) {
+  if (!migrationBusy && accountRefreshEnabled()) {
     try { void refreshInsights({ force: false }).catch(e => log(`account refresh: ${e.message}`)); } catch (e) { log(`account refresh: ${e.message}`); }
   }
   balanceRefreshTimer = setTimeout(refreshAccountBalances, minutes * 60000);
@@ -1137,7 +1150,7 @@ const piChat = createPiChat({ dataDir: app.getPath('userData'), loadConfig, save
   instructions: () => engineSettings().piInstructions(),
   onEvent: event => publishChatEvent('pi', event), log });
 function sessionPools() { return [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, piChat.sessions]; }
-async function stopEngineForUpdate(engine) {
+async function stopEngineForUpdate(engine, operation = 'the update') {
   const pool = { claude: claudeSessions, kimi: kimiSessions, codex: codex.sessions,
     antigravity: antigravity.sessions, dsh: dshChat.sessions, pi: piChat.sessions }[engine];
   const processes = [...(pool?.sessions.values() || [])]
@@ -1149,7 +1162,7 @@ async function stopEngineForUpdate(engine) {
   await stopEngine(engine);
   try { await Promise.all(exits); }
   catch (error) {
-    if (error.name === 'AbortError') throw new Error(`${ENGINES[engine]?.name || engine} process did not stop before the update`);
+    if (error.name === 'AbortError') throw new Error(`${ENGINES[engine]?.name || engine} process did not stop before ${operation}`);
     throw error;
   }
 }
@@ -1217,7 +1230,7 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
 });
 
 remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme,
-  getDiscussions: process.platform === 'win32' ? discussions : null,
+  getDiscussions: ['win32', 'darwin'].includes(process.platform) ? discussions : null,
   manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow, apiRoutes: apiRoutesBundle,
   networkFactory: sharedDesktopNetwork.factory, computerName, saveComputerName: name => normalizeComputerName(saveConfig({ computerName: normalizeComputerName(name) }).computerName) });
 const cliDevices = require('./remote/devices-desktop').createDevicesDesktop({ app, ipcMain, BrowserWindow,
@@ -1799,6 +1812,10 @@ if (!gotSingleInstanceLock) {
   // ---- Shared API router -------------------------------------------------
   ipcMain.handle('dsh:open-api-settings-window', () => { openApiSettingsWindow(); return { ok: true }; });
   ipcMain.handle('dsh:api-router-get-state', apiRouterState);
+  ipcMain.handle('dsh:subscription-prices-refresh', async () => {
+    const result = await subscriptionPrices().refresh({ force: true });
+    return { ...apiRouterState(), ...result };
+  });
   for (const [channel, handler] of Object.entries({
     'provider-insights': () => accountInsights(),
     'provider-refresh': payload => refreshInsights(payload),
@@ -2205,7 +2222,6 @@ if (!gotSingleInstanceLock) {
   // Move a profile between installs, folders or computers. Both directions are
   // explicit, refuse to run while an engine is busy, and report progress so the
   // settings page can show a real bar instead of a frozen button.
-  let migrationBusy = false;
   let dataDirectoryRestart = false;
   let pluginCacheRestart = false;
   const migrationHome = os.homedir();
@@ -2267,13 +2283,19 @@ if (!gotSingleInstanceLock) {
     migrationBusy = true;
     try {
       assertMigrationIdle();
-      const scope = payload?.scope === undefined ? 'all' : normalizeMigrationScope(payload.scope);
+      const scope = normalizeMigrationScope(payload?.scope === undefined ? 'all' : payload.scope);
       if (!scope) return { ok: false, error: uiText('Choose at least one category to export') };
       const result = await dialog.showSaveDialog(settingsWindow || mainWindow, { title: uiText('Export Camellia data'),
         defaultPath: `camellia-data-${new Date().toISOString().slice(0, 10)}.zip`, filters: [{ name: 'Camellia data package', extensions: ['zip'] }] });
       if (result.canceled || !result.filePath) return { ok: true, canceled: true };
       assertMigrationIdle();
       migrationProgress({ phase: 'export', bytes: 0, totalBytes: 0 });
+      // Native API history needs its writers to finish before snapshotting.
+      // Configuration-only transfers leave engine and account clients running.
+      if (scope.includes('conversations')) {
+        for (const engine of NETWORK_ENGINES) await stopEngineForUpdate(engine, 'data export');
+        assertMigrationIdle();
+      }
       const summary = await createDataPackage({ dataDir: app.getPath('userData'), home: migrationHome, appVersion: app.getVersion(),
         destination: result.filePath, scope, onProgress: migrationProgress });
       return { ok: true, file: result.filePath, ...summary };
@@ -2296,6 +2318,7 @@ if (!gotSingleInstanceLock) {
       if (!scope) {
         if (payload?.scope !== undefined && payload?.scope !== null) return { ok: false, error: uiText('Choose at least one category to import') };
         const { categories } = await inspectDataPackage(file);
+        if (!Object.values(categories).some(category => category.files > 0)) return { ok: false, error: uiText('The package has no Camellia data to import') };
         return { ok: true, needsSelection: true, file, categories };
       }
       assertMigrationIdle();
@@ -2355,8 +2378,7 @@ if (!gotSingleInstanceLock) {
   ipcMain.handle('dsh:codex-desktop-sessions', async () => {
     try {
       const mod = codexDesktop();
-      const imported = new Set([...sharedConversations.items.values()].map(c => c.importThreadId).filter(Boolean));
-      const sessions = mod.listDesktopSessions(mod.desktopStatePath(), { excludeIds: imported });
+      const sessions = mod.listDesktopImportCandidates(sharedConversations, mod.desktopStatePath());
       return { ok: true, sessions, truncated: sessions.truncated };
     } catch (error) { return { ok: false, error: error.message }; }
   });
@@ -2625,6 +2647,8 @@ if (!gotSingleInstanceLock) {
     }
     idleSessionReaper.start();
     void refreshAccountBalances();
+    subscriptionPrices().start();
+    try { subscriptionUsage().reprice(); } catch (error) { log('Subscription repricing:', error.message); }
     switchMode('home');
 
     if (!app.isPackaged && process.argv.includes('--hot-reload')) {

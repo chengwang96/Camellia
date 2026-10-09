@@ -14,6 +14,7 @@ const { SessionPool } = require('../src/engines/session-pool');
 const { ClaudeHistory } = require('../src/engines/claude-history');
 const { SharedConversations } = require('../src/engines/shared-conversations');
 const { WindowsJobJournal } = require('../src/engines/discussions/windows-job-journal');
+const { UnixJobJournal } = require('../src/engines/discussions/unix-job');
 const { removeTree } = require('./test-fs.cjs');
 
 function setup(t) {
@@ -187,9 +188,10 @@ test('linked sources and bounded scans never fall back to partial ownership', t 
   assert.throws(() => h.ownership.reserve(identity), /Linked ownership/);
 });
 
-test('orphan launch records reserve every engine and a matching persisted delivery retains its discussion owner', t => {
+for (const [directory, Journal] of [['windows-jobs', WindowsJobJournal], ['unix-jobs', UnixJobJournal]]) {
+test(`${directory} orphan launch records reserve every engine and a matching persisted delivery retains its discussion owner`, t => {
   const h = setup(t), identity = h.add();
-  const journal = new WindowsJobJournal({ dir: path.join(h.root, 'discussions/windows-jobs') });
+  const journal = new Journal({ dir: path.join(h.root, 'discussions', directory) });
   const record = { runtimeId: randomUUID(), deliveryId: randomUUID(), generation: 1 }; journal.reserve(record);
   assert.throws(() => h.ownership.reserve({ ...identity, runtimeId: record.runtimeId }), /another.*owner/);
   const request = h.manager.enqueue(h.group.id, { requestId: 'request', text: 'Test', participantIds: [identity.participantId] });
@@ -197,6 +199,7 @@ test('orphan launch records reserve every engine and a matching persisted delive
   journal.reserve({ runtimeId: identity.runtimeId, deliveryId: delivery.id, generation: identity.generation });
   const lease = h.ownership.reserve(identity); h.ownership.assert(lease); h.ownership.release(lease);
 });
+}
 
 test('malformed or asynchronous in-memory sources cannot silently shrink the ownership view', async t => {
   const h = setup(t), identity = h.add(), c = { id: randomUUID(), origin: 'codex', currentEngine: 'codex', segments: {} };

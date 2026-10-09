@@ -10,7 +10,8 @@ const { RemoteCommands } = require('./commands');
 function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, getDiscussions = null,
   preferences = () => ({}), setComputerName = () => '' }) {
   let gateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
-  let startupChecked = false, monitor = null, attachmentMaintenance = null;
+  let startupChecked = false, monitor = null, attachmentMaintenance = null, retryDelay = 1000, retryAt = 0;
+  let recovering = null;
   const attachmentReferences = () => ({
     references: [gateway?.commands?.queue.entries || [], ...(gateway?.commands?.pendingAttachments.values() || []),
       ...(gateway?.discussions?.pendingAttachments.values() || [])],
@@ -26,7 +27,12 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       file: path.join(dataDir, 'remote', 'discussion-commands.json'), getService: getDiscussions, access,
       publish: () => { gateway?.publish(); attachmentMaintenance?.markDirty(); } }) : null;
     gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, discussions });
-    try { network = networkFactory({ onFailure: () => { enabled = false; void gateway.stop(); } }); }
+    try { network = networkFactory({ onFailure: () => {
+      if (closed || !enabled) return;
+      recovering = gateway.stop();
+      retryAt = Date.now() + retryDelay;
+      scheduleMonitor();
+    } }); }
     catch (error) { gateway = null; access = null; throw error; }
   }
   function state() {
@@ -35,15 +41,18 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
   }
   async function refreshNetwork() {
     if (!enabled) return;
+    if (recovering) { await recovering; recovering = null; }
+    if (Date.now() < retryAt) return;
+    if (['Stopped', 'Error'].includes(network.snapshot.state)) await network.start();
     const status = await network.status();
     if (!enabled || closed) return;
     if (status.state !== 'Running' || !status.address) {
-      if (gateway.server) { enabled = false; await network.stop(); await gateway.stop(); }
+      if (gateway.server) await gateway.stop();
       return;
     }
     if (gateway.server) {
-      if (gateway.url !== `http://${status.address}:43127`) { enabled = false; await network.stop(); await gateway.stop(); }
-      return;
+      if (gateway.url === `http://${status.address}:43127`) return;
+      await gateway.stop();
     }
     try {
       const token = randomBytes(32).toString('hex');
@@ -51,11 +60,13 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       if (!enabled || closed) { await gateway.stop(); return; }
       await network.listen(`http://127.0.0.1:${gateway.server.address().port}`, token);
       if (!enabled || closed) { await network.stop(); await gateway.stop(); }
-    } catch (error) { enabled = false; await network.stop(); await gateway.stop(); throw error; }
+      else { retryDelay = 1000; retryAt = 0; }
+    } catch (error) { await gateway.stop(); throw error; }
   }
   async function startAccess(interactive) {
     try {
       enabled = true;
+      retryAt = 0;
       await network.start();
       if (closed || !enabled) { await network.stop(); return; }
       const status = await network.status();
@@ -64,8 +75,8 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       await refreshNetwork();
       scheduleMonitor();
     } catch (error) {
-      enabled = false;
-      await network.stop(); await gateway.stop();
+      await gateway.stop();
+      retryAt = Date.now() + retryDelay;
       network.snapshot.state = 'Error';
       throw error;
     }
@@ -77,16 +88,26 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
       if (enabled && !busy) {
         busy = true;
         try { await refreshNetwork(); }
-        catch { enabled = false; await network.stop(); await gateway.stop(); network.snapshot.state = 'Error'; }
+        catch {
+          await gateway.stop(); network.snapshot.state = 'Error';
+          retryAt = Date.now() + retryDelay; retryDelay = Math.min(30_000, retryDelay * 2);
+        }
         finally { busy = false; }
       }
       scheduleMonitor();
-    }, enabled && !gateway?.server ? 250 : 5000);
+    }, enabled && !gateway?.server ? Math.max(250, retryAt - Date.now()) : 5000);
     monitor.unref();
   }
   return {
     async command(action, payload) {
       if (closed) return { ok: false, error: 'Camellia is closing' };
+      if (busy && (action === 'stop' || action === 'logout')) {
+        enabled = false; retryAt = 0;
+        await gateway?.stop();
+        try { if (action === 'logout') await network?.logout(); }
+        finally { await network?.stop(); }
+        return { ok: true, result: state() };
+      }
       if (busy) return action === 'state' && network ? { ok: true, result: state() } : { ok: false, error: 'Please wait for the current operation' };
       busy = true;
       try {
@@ -119,7 +140,13 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
         else if (action === 'revoke') { access.revoke(payload?.id); result = state(); }
         else throw new Error('Unsupported remote-access action');
         return { ok: true, result };
-      } catch (error) { return { ok: false, error: error.message }; }
+      } catch (error) {
+        if (enabled && network && ['state', 'start'].includes(action)) {
+          retryAt = Date.now() + retryDelay; retryDelay = Math.min(30_000, retryDelay * 2);
+          network.snapshot.state = 'Error';
+        }
+        return { ok: false, error: error.message };
+      }
       finally { busy = false; scheduleMonitor(); }
     },
     async startTrustedDevices() {
@@ -132,7 +159,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
         if (!access.devices.some(device => typeof device.id === 'string' && device.id
           && typeof device.tokenDigest === 'string' && /^[a-f0-9]{64}$/.test(device.tokenDigest))) return;
         await startAccess(false);
-      } finally { busy = false; }
+      } finally { busy = false; scheduleMonitor(); }
     },
     attachmentReferences,
     attachmentsChanged() { attachmentMaintenance?.markDirty(); },

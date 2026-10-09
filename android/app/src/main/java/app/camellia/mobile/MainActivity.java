@@ -47,7 +47,9 @@ public final class MainActivity extends Activity {
         locationConsent.permissionResult(requestCode);
     }
     private final ExecutorService worker = Executors.newFixedThreadPool(2);
-    private final ExecutorService commandWorker = Executors.newSingleThreadExecutor();
+    private final ExecutorService commandWorker = Executors.newFixedThreadPool(2);
+    private final ExecutorService urgentWorker = Executors.newSingleThreadExecutor();
+    private final java.util.Set<String> commandRequests = new java.util.HashSet<>();
     private final java.util.concurrent.ThreadPoolExecutor statusWorker = (java.util.concurrent.ThreadPoolExecutor) Executors.newFixedThreadPool(4);
     private final TreeMap<Long, JSONObject> history = new TreeMap<>();
     private long historyBytes;
@@ -64,6 +66,14 @@ public final class MainActivity extends Activity {
     private String replyReadError = "";
     private JSONObject outgoingMessage;
     private long commandCheckDeadline;
+    private long listCommandDeadline;
+    private boolean canCommandReceipts, canStopStart, canIncremental;
+    private boolean canListQuery;
+    private String capabilityAddress = "", remoteListQuery = "";
+    private JSONObject remotePreparation;
+    private Future<?> listRefreshJob;
+    private JSONObject listRefreshSnapshot;
+    private boolean listRefreshBusy;
     private JSONObject credentials = new JSONObject();
     private long editingSeq = -1;
     private String editingText = "";
@@ -103,6 +113,7 @@ public final class MainActivity extends Activity {
     private String conversationTitle = "";
     private Long nextBefore;
     private boolean historyLimited;
+    private String historyInstance = "";
     private boolean olderLoading;
     private int nextOffset;
     private final LinkedHashMap<String, JSONObject> conversations = new LinkedHashMap<>();
@@ -112,6 +123,9 @@ public final class MainActivity extends Activity {
     private long cursor = -1;
     private JSONObject pendingSnapshot;
     private JSONObject lastLive;
+    private JSONArray remoteSubtasks = new JSONArray();
+    private final java.util.Map<Long, Boolean> expandedSubtasks = new java.util.HashMap<>();
+    private SubtaskPage subtaskPage;
     private JSONObject remoteCompaction;
     private boolean snapshotPosted;
     private EditText composer;
@@ -140,6 +154,7 @@ public final class MainActivity extends Activity {
     private JSONArray availableWorkspaces = new JSONArray();
     private java.util.List<String> availableEngines = RemoteEngines.available(null);
     private boolean canCreate, canCreateWorkspace, canImage, canMultiImage, allowIndependent, canArchive;
+    private boolean canFork;
     private boolean canAttachments, canFileAttachments;
     private ConversationMenu conversationPopup;
     private ComputerPickerPopup computerPicker;
@@ -392,7 +407,7 @@ public final class MainActivity extends Activity {
         artifactDownloads.close();
         if (listCache != null) listCache.flush();
         prefetch.close();
-        worker.shutdownNow(); commandWorker.shutdownNow(); statusWorker.shutdownNow(); networkWorker.shutdownNow(); super.onDestroy();
+        worker.shutdownNow(); commandWorker.shutdownNow(); urgentWorker.shutdownNow(); statusWorker.shutdownNow(); networkWorker.shutdownNow(); super.onDestroy();
     }
 
     @Override protected void onSaveInstanceState(Bundle saved) {
@@ -406,6 +421,7 @@ public final class MainActivity extends Activity {
     }
 
     private void stopNetwork() {
+        if (subtaskPage != null) { subtaskPage.dismiss(); subtaskPage = null; }
         replyReadSync.reset();
         if (computerPicker != null) { computerPicker.dismiss(); computerPicker = null; }
         setPairingBusy(false);
@@ -421,6 +437,8 @@ public final class MainActivity extends Activity {
         statusWorker.getQueue().clear();
         handler.removeCallbacksAndMessages(null);
         if (job != null) job.cancel(true);
+        if (listRefreshJob != null) listRefreshJob.cancel(true);
+        listRefreshBusy = false; listRefreshSnapshot = null;
         RemoteApi previous = api;
         api = null;
         if (previous != null) new Thread(previous::cancel, "camellia-disconnect").start();
@@ -1353,6 +1371,7 @@ public final class MainActivity extends Activity {
         ImageView searchIcon = new ImageView(this); searchIcon.setImageDrawable(new LineIcon("search", ink)); searchIcon.setPadding(dp(10), dp(10), dp(10), dp(10));
         searchBar.addView(searchIcon, new LinearLayout.LayoutParams(dp(44), dp(44)));
         searchInput = new EditText(this); searchInput.setSingleLine(true); searchInput.setTextSize(Palette.TEXT_ROW); searchInput.setTextColor(ink); searchInput.setHintTextColor(muted);
+        searchInput.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(200)});
         searchInput.setTag("remoteSearchInput"); searchInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
         searchInput.setHint(tr("搜索会话", "Search conversations")); searchInput.setContentDescription(tr("搜索会话", "Search conversations")); searchInput.setBackgroundColor(Color.TRANSPARENT);
         searchInput.setPadding(dp(2), dp(12), dp(8), dp(12)); searchInput.setMinHeight(dp(48));
@@ -1368,7 +1387,8 @@ public final class MainActivity extends Activity {
             @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence value, int start, int before, int count) {
                 renderConversations(); handler.removeCallbacks(searchRemote);
-                if (nextOffset >= 0 && value.length() > 0) handler.postDelayed(searchRemote, 400);
+                if (canListQuery && !remoteListQuery.equals(value.toString().trim().toLowerCase(Locale.ROOT))
+                    || nextOffset >= 0 && value.length() > 0) handler.postDelayed(searchRemote, 400);
             }
             @Override public void afterTextChanged(android.text.Editable value) {}
         });
@@ -1414,7 +1434,7 @@ public final class MainActivity extends Activity {
     private void cacheConversations() {
         JSONArray rows = new JSONArray();
         for (JSONObject conversation : conversations.values()) rows.put(conversation);
-        listCache.put(credentials, rows, nextOffset, availableWorkspaces, allowIndependent);
+        if (remoteListQuery.isEmpty()) listCache.put(credentials, rows, nextOffset, availableWorkspaces, allowIndependent);
         requestPrefetchViewport();
     }
 
@@ -1656,7 +1676,7 @@ public final class MainActivity extends Activity {
             () -> renameConversation(conversation), () -> {
                 selectingConversations = true; selectedConversations.add(id); renderConversations();
             }, () -> manageConversations("pin", java.util.Set.of(id), "", !conversation.optBoolean("pinned")),
-            () -> archiveConversation(conversation), () -> confirmConversationDelete(java.util.Set.of(id)));
+            () -> archiveConversation(conversation), () -> confirmConversationDelete(java.util.Set.of(id)), canFork ? () -> forkConversation(conversation) : null);
     }
 
     private void renameConversation(JSONObject conversation) {
@@ -1669,6 +1689,14 @@ public final class MainActivity extends Activity {
             if (value.isEmpty() || value.length() > 100) { field.showError(tr("请输入 1–100 字标题", "Enter a title of 1–100 characters")); return; }
             manageConversations("rename", java.util.Set.of(conversation.optString("id")), value, false); dialog.dismiss();
         })); dialog.show();
+    }
+    private void forkConversation(JSONObject conversation) {
+        if (!canFork || commandBusy || credentials.has("pendingCreate")) return;
+        try {
+            JSONObject payload = command("fork").put("instanceId", listInstance).put("expectedSeq", conversation.optLong("seq")).put("moveSessionId", conversation.optString("id"));
+            JSONObject saved = new JSONObject(credentials.toString()).put("pendingCreate", payload);
+            store.save(saved); credentials = saved; retryCreate();
+        } catch (Exception error) { reportError("无法保存分叉操作", "Could not save fork action", error); }
     }
 
     private void confirmConversationDelete(java.util.Set<String> targets) {
@@ -1732,14 +1760,17 @@ public final class MainActivity extends Activity {
         ((RefreshScrollView) scroll).setRefreshing(true);
         String token = credentials.optString("token"); int offset = append ? nextOffset : 0;
         boolean searching = searchInput != null && !searchInput.getText().toString().trim().isEmpty();
+        String query = searchInput == null ? "" : searchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
+        boolean modern = canListQuery && capabilityAddress.equals(credentials.optString("address"));
+        int pageSize = Math.min(1000, Math.max(100, conversations.size()));
         setStatusNotice(conversations.isEmpty() ? tr("正在同步…", "Syncing…")
             : tr("显示上次缓存，正在同步…", "Showing cached conversations; syncing…"));
         job = worker.submit(() -> {
             try {
-                JSONObject page = client.json("/v1/conversations?offset=" + offset, token, null);
+                JSONObject page = client.json(conversationListPath(offset, pageSize, query, modern), token, null);
                 JSONObject info = listInfo(client, token, page);
                 long pageCursor = page.optLong("cursor", -1);
-                if (searching) {
+                if (searching && !modern) {
                     JSONArray results = page.optJSONArray("conversations"); if (results == null) results = new JSONArray();
                     int following = page.optInt("nextOffset", -1);
                     while (following >= 0 && ticket == generation) {
@@ -1752,6 +1783,7 @@ public final class MainActivity extends Activity {
                 }
                 deliver(ticket, () -> {
                     updateCapabilities(info);
+                    remoteListQuery = modern ? page.optString("query") : "";
                     listCursor = append ? -1 : pageCursor;
                     applyConversationPage(page, append);
                     cacheConversations();
@@ -1779,6 +1811,10 @@ public final class MainActivity extends Activity {
         return info;
     }
 
+    private String conversationListPath(int offset, int limit, String query, boolean modern) throws IOException {
+        return "/v1/conversations?offset=" + offset + (modern ? "&limit=" + limit + "&query=" + java.net.URLEncoder.encode(query, "UTF-8") : "");
+    }
+
     private void updateCapabilities(JSONObject info) {
         if (screen.equals("list")) { listLoaded = true; listLoadFailed = false; }
         JSONArray engines = info.optJSONArray("engines");
@@ -1786,11 +1822,16 @@ public final class MainActivity extends Activity {
         if (engines != null) for (int index = 0; index < engines.length(); index++) advertised.add(engines.optString(index));
         availableEngines = RemoteEngines.available(advertised);
         String capabilities = String.valueOf(info.optJSONArray("capabilities"));
+        canCommandReceipts = capabilities.contains("\"command-receipts\"");
+        canStopStart = capabilities.contains("\"stop-start\"");
+        canIncremental = capabilities.contains("\"incremental-snapshots\"");
+        canListQuery = capabilities.contains("\"list-query\""); capabilityAddress = credentials.optString("address");
         canDiscussions = info.optString("permission").equals("control") && capabilities.contains("\"discussions\"");
         discussionGroups = canDiscussions ? info.optJSONArray("discussionGroups") : null;
         if (discussionGroups == null) discussionGroups = new JSONArray();
         moreDiscussions = canDiscussions && info.optInt("discussionsNextOffset", -1) >= 0;
         canCreate = info.optString("permission").equals("control") && capabilities.contains("\"create\"");
+        canFork = canCreate && capabilities.contains("\"fork\"");
         canCreateWorkspace = info.optString("permission").equals("control") && capabilities.contains("\"create-workspace\"");
         canImage = capabilities.contains("\"image\"");
         canMultiImage = capabilities.contains("\"multi-image\"");
@@ -1859,29 +1900,68 @@ public final class MainActivity extends Activity {
     }
 
     private void retryCreate() {
+        if (credentials.optBoolean("pendingCreateUncertain")) {
+            new CamelliaDialog.Builder(this).setMessage(tr("操作可能已经执行，请先核对电脑。解除待确认仅清除手机记录。", "The action may have executed. Check the desktop first; resolving only clears the phone's pending record."))
+                .setPositiveButton(tr("继续查询", "Check again"), (d, w) -> { listCommandDeadline = android.os.SystemClock.elapsedRealtime() + COMMAND_CONFIRM_TIMEOUT_MS; retryCreate(false); })
+                .setNeutralButton(tr("已核对，解除待确认", "Checked; resolve"), (d, w) -> {
+                    try { credentials.remove("pendingCreate"); credentials.remove("pendingCreateSent"); credentials.remove("pendingCreateUncertain"); store.save(credentials); commandBusy = false; loadList(false); }
+                    catch (Exception error) { reportError("无法保存核对结果。", "Could not save the resolution.", error); }
+                }).setNegativeButton(tr("暂不处理", "Later"), null).show(); return;
+        }
+        retryCreate(true);
+    }
+
+    private void retryCreate(boolean manual) {
         if (!foreground || !screen.equals("list") || !credentials.has("pendingCreate") || commandBusy) return;
-        RemoteApi client = begin(); int ticket = generation; commandBusy = true;
+        RemoteApi client = api == null ? begin() : api; int ticket = generation; commandBusy = true;
+        if (manual || listCommandDeadline == 0) listCommandDeadline = android.os.SystemClock.elapsedRealtime() + COMMAND_CONFIRM_TIMEOUT_MS;
         JSONObject payload = credentials.optJSONObject("pendingCreate"); String token = credentials.optString("token");
+        boolean query = canCommandReceipts && credentials.optBoolean("pendingCreateSent");
+        try { credentials.put("pendingCreateSent", true); store.save(credentials); }
+        catch (Exception error) { commandBusy = false; reportError("无法保存操作。", "Could not save the action.", error); return; }
+        JSONObject owner;
+        try { owner = new JSONObject(credentials.toString()); }
+        catch (Exception error) { commandBusy = false; reportError("无法读取操作。", "Could not read the action.", error); return; }
         boolean workspaceCreation = payload != null && payload.optString("action").equals("create-workspace");
         boolean moving = payload != null && payload.optString("action").equals("move");
         boolean archiving = payload != null && payload.optString("action").equals("archive");
         boolean managing = payload != null && java.util.Set.of("rename", "pin", "delete").contains(payload.optString("action"));
         setStatusNotice(archiving ? tr("正在归档会话…", "Archiving conversation…") : moving ? tr("正在移动会话…", "Moving conversation…") : workspaceCreation ? tr("正在新建工作区…", "Creating workspace…") : tr("正在新建会话…", "Creating conversation…"));
         if (managing) setStatusNotice(tr("正在更新会话…", "Updating conversations…"));
-        job = worker.submit(() -> {
+        commandWorker.submit(() -> {
             try {
                 JSONObject request = new JSONObject(payload.toString());
                 String targetId = request.optString("moveSessionId"); request.remove("moveSessionId");
-                JSONObject result = client.json(moving ? "/v1/conversations/" + targetId + "/commands" : "/v1/commands", token, request);
-                deliver(ticket, () -> {
+                boolean targeted = moving || request.optString("action").equals("fork");
+                JSONObject response;
+                try { response = client.json(query ? "/v1/commands/" + request.optString("requestId") : targeted ? "/v1/conversations/" + targetId + "/commands" : "/v1/commands", token, query ? null : request); }
+                catch (RemoteApi.Failure missing) {
+                    if (!query || missing.status != 404) throw missing;
+                    response = client.json(targeted ? "/v1/conversations/" + targetId + "/commands" : "/v1/commands", token, request);
+                }
+                JSONObject result = response;
+                handler.post(() -> {
+                    if (!sameComputer(owner) || !foreground || ticket != generation || !screen.equals("list")) {
+                        settleListReceipt(owner, payload, result); return;
+                    }
                     commandBusy = false;
                     if (result.optString("state").equals("pending")) {
                         renderConversations();
-                        setStatusNotice(tr("电脑正在准备操作，请稍后重试同一请求查询结果。", "The computer is preparing the operation. Retry the same request shortly to check its result."));
+                        setStatusNotice(tr("电脑正在处理操作，正在自动查询结果…", "The computer is processing the action; checking automatically…"));
+                        if (android.os.SystemClock.elapsedRealtime() < listCommandDeadline) handler.postDelayed(() -> retryCreate(false), COMMAND_POLL_INTERVAL_MS);
+                        else {
+                            try { credentials.put("pendingCreateUncertain", true); store.save(credentials); } catch (Exception ignored) { }
+                            setStatusError(tr("等待确认超时，请核对或查询同一请求。", "Confirmation timed out. Inspect or check the same request."));
+                        }
                         return;
+                    }
+                    if (result.optString("state").equals("unknown")) {
+                        try { credentials.put("pendingCreateUncertain", true); store.save(credentials); } catch (Exception ignored) { }
+                        renderConversations(); setStatusError(tr("电脑无法确认结果，请核对后处理待确认记录。", "The desktop cannot confirm the outcome. Inspect it before resolving the pending record.")); return;
                     }
                     try {
                         JSONObject saved = new JSONObject(credentials.toString()); saved.remove("pendingCreate");
+                        saved.remove("pendingCreateSent"); saved.remove("pendingCreateUncertain"); listCommandDeadline = 0;
                         if (result.optBoolean("ok") && payload.optString("action").equals("delete")) {
                             JSONArray deleted = payload.optJSONArray("targets");
                             for (int index = 0; deleted != null && index < deleted.length(); index++) {
@@ -1912,17 +1992,40 @@ public final class MainActivity extends Activity {
                 });
             } catch (Exception error) { deliver(ticket, () -> {
                 commandBusy = false;
-                if (error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status >= 400 && ((RemoteApi.Failure) error).status < 500 && ((RemoteApi.Failure) error).status != 429) {
-                    try { credentials.remove("pendingCreate"); store.save(credentials); } catch (Exception ignored) { }
+                if (!query && error instanceof RemoteApi.Failure && java.util.Set.of(400, 403, 409, 413).contains(((RemoteApi.Failure) error).status)) {
+                    try { credentials.remove("pendingCreate"); credentials.remove("pendingCreateSent"); credentials.remove("pendingCreateUncertain"); store.save(credentials); } catch (Exception ignored) { }
+                } else {
+                    try { credentials.put("pendingCreateUncertain", true); store.save(credentials); } catch (Exception ignored) { }
+                    if (android.os.SystemClock.elapsedRealtime() < listCommandDeadline) handler.postDelayed(() -> retryCreate(false),
+                        error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000 : 2000);
                 }
                 renderConversations(); showFailure(error, true);
             }); }
         });
     }
 
+    private void settleListReceipt(JSONObject owner, JSONObject payload, JSONObject result) {
+        try {
+            JSONObject saved = commandProfile(owner); if (saved == null) return;
+            JSONObject pending = saved.optJSONObject("pendingCreate");
+            if (pending == null || !payload.optString("requestId").equals(pending.optString("requestId"))) return;
+            if (result.optString("state").equals("pending") || result.optString("state").equals("unknown")) saved.put("pendingCreateUncertain", true);
+            else {
+                saved.remove("pendingCreate"); saved.remove("pendingCreateSent"); saved.remove("pendingCreateUncertain");
+                if (result.optBoolean("ok") && payload.optString("action").equals("delete")) {
+                    JSONArray deleted = payload.optJSONArray("targets");
+                    for (int i = 0; deleted != null && i < deleted.length(); i++) for (String key : java.util.List.of("drafts", "draftEdits", "draftAttachments")) {
+                        JSONObject drafts = saved.optJSONObject(key); if (drafts != null) drafts.remove(deleted.getJSONObject(i).getString("id"));
+                    }
+                }
+            }
+            if (store.saveProfile(saved) && sameComputer(owner)) credentials = saved;
+        } catch (Exception error) { if (sameComputer(owner) && foreground) reportError("无法保存操作结果。", "Could not save the action result.", error); }
+    }
+
     private void pickImage() {
         if (loadingImages) return;
-        boolean pending = credentials.has("pendingCommand");
+        boolean pending = (pendingCommand() != null);
         boolean available = connected && controlAllowed && !commandBusy;
         boolean sendable = available && !pending && !loadingImages;
         // The tiles only work when the desktop advertises the image capability
@@ -2071,6 +2174,10 @@ public final class MainActivity extends Activity {
 
     private void watchList(RemoteApi client, int ticket) {
         listConnected();
+        if (foreground && credentials.has("pendingCreate") && !commandBusy) {
+            listCommandDeadline = android.os.SystemClock.elapsedRealtime() + COMMAND_CONFIRM_TIMEOUT_MS;
+            retryCreate(false);
+        }
         if (listEventsUnavailable) {
             setStatusNotice(tr("已连接，定时刷新列表。更新并重启电脑端可启用实时同步。", "Connected; refreshing periodically. Update and restart the desktop for live sync."));
             handler.postDelayed(() -> {
@@ -2101,30 +2208,8 @@ public final class MainActivity extends Activity {
                         deliver(ticket, () -> listConnected());
                         return;
                     }
-                    JSONArray entries = new JSONArray();
-                    int offset = 0;
-                    JSONObject page;
-                    JSONObject info = null;
-                    do {
-                        page = client.json("/v1/conversations?offset=" + offset, token, null);
-                        if (info == null) info = listInfo(client, token, page);
-                        JSONArray rows = page.optJSONArray("conversations");
-                        if (rows != null) for (int index = 0; index < rows.length(); index++) entries.put(rows.optJSONObject(index));
-                        offset = page.optInt("nextOffset", -1);
-                    } while (offset >= 0 && entries.length() < limit);
-                    try { page.put("conversations", entries); }
-                    catch (org.json.JSONException error) { throw new IOException("Invalid conversation list", error); }
-                    JSONObject updated = page;
-                    JSONObject updatedInfo = info;
                     received[0] = true;
-                    deliver(ticket, () -> {
-                        updateCapabilities(updatedInfo);
-                        listCursor = snapshot.optLong("cursor", -1);
-                        applyConversationPage(updated, false);
-                        cacheConversations();
-                        computerStates.put(credentials.optString("address"), tr("已连接", "Connected"));
-                        listConnected();
-                    });
+                    deliver(ticket, () -> scheduleListRefresh(client, ticket, snapshot));
                 });
             } catch (Exception error) { failure = error; }
             final Exception error = failure;
@@ -2145,6 +2230,53 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void scheduleListRefresh(RemoteApi client, int ticket, JSONObject snapshot) {
+        if (ticket != generation || !screen.equals("list")) return;
+        listRefreshSnapshot = snapshot;
+        if (!listRefreshBusy) {
+            listRefreshBusy = true;
+            handler.postDelayed(() -> refreshListFromEvents(client, ticket), 250);
+        }
+    }
+
+    private void refreshListFromEvents(RemoteApi client, int ticket) {
+        if (ticket != generation || !networkActive() || !screen.equals("list")) return;
+        JSONObject trigger = listRefreshSnapshot; listRefreshSnapshot = null;
+        if (trigger == null) { listRefreshBusy = false; return; }
+        String token = credentials.optString("token"); int limit = Math.max(100, conversations.size());
+        String query = searchInput == null ? "" : searchInput.getText().toString().trim().toLowerCase(Locale.ROOT);
+        boolean modern = canListQuery && capabilityAddress.equals(credentials.optString("address"));
+        listRefreshJob = worker.submit(() -> {
+            try {
+                JSONArray entries = new JSONArray(); int offset = 0; JSONObject page, info = null;
+                do {
+                    if (Thread.currentThread().isInterrupted() || ticket != generation) return;
+                    page = client.json(conversationListPath(offset, Math.min(1000, limit), query, modern), token, null);
+                    if (info == null) info = listInfo(client, token, page);
+                    JSONArray rows = page.optJSONArray("conversations");
+                    for (int index = 0; rows != null && index < rows.length(); index++) entries.put(rows.optJSONObject(index));
+                    offset = page.optInt("nextOffset", -1);
+                } while (offset >= 0 && entries.length() < limit);
+                page.put("conversations", entries); JSONObject updated = page, updatedInfo = info;
+                deliver(ticket, () -> {
+                    updateCapabilities(updatedInfo); listCursor = updated.optLong("cursor", trigger.optLong("cursor", -1));
+                    remoteListQuery = modern ? updated.optString("query") : "";
+                    applyConversationPage(updated, false); cacheConversations();
+                    computerStates.put(credentials.optString("address"), tr("已连接", "Connected")); listConnected();
+                    listRefreshBusy = false;
+                    if (listRefreshSnapshot != null) scheduleListRefresh(client, ticket, listRefreshSnapshot);
+                });
+            } catch (Exception error) { deliver(ticket, () -> {
+                listRefreshBusy = false; showFailure(error, true);
+                if (!(error instanceof RemoteApi.Failure) || ((RemoteApi.Failure) error).status == 429 || ((RemoteApi.Failure) error).status >= 500) {
+                    if (listRefreshSnapshot == null) listRefreshSnapshot = trigger;
+                    listRefreshBusy = true;
+                    handler.postDelayed(() -> refreshListFromEvents(client, ticket), error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000 : 3000);
+                }
+            }); }
+        });
+    }
+
     private String activity(JSONObject conversation) {
         String activity = conversation.optString("activity", "");
         if (activity.equals("running")) return tr("正在运行", "Running");
@@ -2153,16 +2285,18 @@ public final class MainActivity extends Activity {
     }
 
     private void detailScreen() {
+        remoteSubtasks = new JSONArray(); expandedSubtasks.clear();
         initialMessageScroll = true;
         renderedMessages.clear();
         processState.clear();
         screen = "detail"; networkScreen = false;
         stopNetwork(); clearHistory(); instance = ""; cursor = -1; nextBefore = null; lastLive = null; historyLimited = false; editingSeq = -1;
         remoteSettings = null;
+        remotePreparation = null;
         remoteCompaction = null;
         remoteQueue = new JSONArray(); canQueue = false; queueVersion = -1; queueSignature = "";
         displayedConversation = null;
-        outgoingMessage = credentials.optJSONObject("pendingCommand");
+        outgoingMessage = pendingCommand();
         if (outgoingMessage != null && !conversationId.equals(outgoingMessage.optString("conversationId"))) outgoingMessage = null;
         if (outgoingMessage != null) {
             try { outgoingMessage = new JSONObject(outgoingMessage.toString()).put("delivery", "unconfirmed"); }
@@ -2280,10 +2414,10 @@ public final class MainActivity extends Activity {
         RemoteApi client = begin(); int ticket = generation;
         updateWorkStatus();
         String token = credentials.optString("token");
-        worker.submit(() -> {
+        job = worker.submit(() -> {
             try {
                 JSONObject info = client.json("/v1/status", token, null);
-                deliver(ticket, () -> { updateCapabilities(info); stream(client, ticket, 0); });
+                deliver(ticket, () -> { updateCapabilities(info); client.incremental(canIncremental); stream(client, ticket, 0); });
             } catch (Exception error) { deliver(ticket, () -> stream(client, ticket, 0)); }
         });
     }
@@ -2315,6 +2449,13 @@ public final class MainActivity extends Activity {
     private void queueSnapshot(int ticket, JSONObject snapshot) {
         synchronized (this) {
             if (ticket != generation) return;
+            // Coalescing must keep the full history page that precedes a delta.
+            if (!snapshot.has("messages") && pendingSnapshot != null && pendingSnapshot.has("messages")
+                    && snapshot.optString("instanceId").equals(pendingSnapshot.optString("instanceId"))
+                    && snapshot.optString("historyVersion").equals(pendingSnapshot.optString("historyVersion"))) {
+                try { snapshot.put("messages", pendingSnapshot.getJSONArray("messages")); snapshot.put("nextBefore", pendingSnapshot.opt("nextBefore")); }
+                catch (org.json.JSONException error) { throw new IllegalStateException(error); }
+            }
             pendingSnapshot = snapshot;
             if (snapshotPosted) return;
             snapshotPosted = true;
@@ -2329,14 +2470,18 @@ public final class MainActivity extends Activity {
     private void applySnapshot(JSONObject snapshot) {
         JSONObject conversation = snapshot.optJSONObject("conversation");
         if (conversation == null || !conversation.optString("id").equals(conversationId)) return;
-        connected = true; controlAllowed = snapshot.optString("permission").equals("control"); conversationSeq = conversation.optLong("seq");
+        boolean reconnect = !connected;
         String server = snapshot.optString("instanceId"); long nextCursor = snapshot.optLong("cursor", -1);
         if (server.equals(instance) && nextCursor < cursor) return;
+        connected = true; controlAllowed = snapshot.optString("permission").equals("control"); conversationSeq = conversation.optLong("seq");
         prefetch.put(credentials, snapshot);
-        if (!server.equals(instance)) { clearHistory(); historyLimited = false; queueVersion = -1; }
+        if (!server.equals(instance)) { queueVersion = -1; clearSubtasks(); }
         boolean following = initialMessageScroll || pendingScrollView == scroll && pendingScrollPosition == Integer.MAX_VALUE
             || scroll.getChildCount() == 0 || scroll.getChildAt(0).getHeight() - scroll.getHeight() - scroll.getScrollY() < dp(120);
         instance = server; cursor = nextCursor;
+        if (snapshot.optJSONArray("subagents") != null) remoteSubtasks = snapshot.optJSONArray("subagents");
+        if (subtaskPage != null) subtaskPage.update(remoteSubtasks);
+        if (subtaskPage != null) following = false;
         conversationTitle = conversation.optString("title", conversationTitle);
         TextView pageTitle = root.findViewWithTag("pageTitle");
         if (pageTitle != null) pageTitle.setText(conversationTitle);
@@ -2346,7 +2491,8 @@ public final class MainActivity extends Activity {
         }
         remoteSettings = settings;
         JSONArray rows = snapshot.optJSONArray("messages");
-        if (rows == null) return;
+        if (rows != null) {
+        if (!server.equals(historyInstance)) { clearHistory(); historyLimited = false; historyInstance = server; }
         long first = rows.length() == 0 ? 0 : rows.optJSONObject(0).optLong("seq");
         // An edited turn returns with a higher seq and takes its superseded rows
         // with it, so cached rows below a snapshot that begins the conversation
@@ -2362,7 +2508,9 @@ public final class MainActivity extends Activity {
         for (int index = 0; index < rows.length(); index++) { JSONObject row = rows.optJSONObject(index); if (row != null) retainHistory(row.optLong("seq"), row); }
         if (history.isEmpty() || history.firstKey() >= first) nextBefore = snapshot.isNull("nextBefore") ? null : snapshot.optLong("nextBefore");
         trimHistory();
+        }
         lastLive = snapshot.optJSONObject("live");
+        remotePreparation = snapshot.optJSONObject("preparation");
         remoteCompaction = ContextCompactionView.fromSnapshot(snapshot, remoteCompaction, conversationSeq);
         displayedConversation = conversation;
         canQueue = snapshot.has("queue");
@@ -2375,6 +2523,12 @@ public final class MainActivity extends Activity {
         renderApprovals(); updateControls();
         updateOlderControl();
         if (following && !olderLoading) positionMessages(Integer.MAX_VALUE);
+        if (reconnect && foreground) {
+            commandCheckDeadline = android.os.SystemClock.elapsedRealtime() + COMMAND_CONFIRM_TIMEOUT_MS;
+            if (pendingCommand() != null) retryCommand(false);
+            JSONObject stop = RemotePendingCommands.get(credentials, conversationId, true);
+            if (stop != null) retryPendingCommand(stop, false, true);
+        }
     }
 
     private void syncReplyRead(JSONObject conversation) {
@@ -2422,6 +2576,12 @@ public final class MainActivity extends Activity {
         JSONArray pendingProcess = new JSONArray();
         long turn = 0;
         pendingMessageViews.clear();
+        java.util.Set<Long> earlierSubtaskTurns = new java.util.TreeSet<>();
+        for (int i = 0; i < remoteSubtasks.length(); i++) {
+            JSONObject task = remoteSubtasks.optJSONObject(i); if (task == null || history.containsKey(task.optLong("userSeq"))) continue;
+            if (java.util.Set.of("starting", "running", "waiting").contains(task.optString("status")) || task.optInt("pendingApprovals") > 0 || task.optBoolean("canReply")) earlierSubtaskTurns.add(task.optLong("userSeq"));
+        }
+        for (long userSeq : earlierSubtaskTurns) addSubtasks(userSeq, retained);
         boolean showCompaction = remoteCompaction != null && !history.containsKey(remoteCompaction.optLong("seq", -1));
         long compactionBoundary = remoteCompaction == null ? Long.MAX_VALUE : remoteCompaction.optLong("afterSeq", conversationSeq);
         for (JSONObject row : history.values()) {
@@ -2442,6 +2602,7 @@ public final class MainActivity extends Activity {
             JSONArray process = row.optJSONArray("process");
             if (role.equals("assistant") && (process == null || process.length() == 0)) process = pendingProcess;
             addMessage(key, label, row.optString("text"), role.equals("user"), row.optBoolean("textTruncated"), process, false, "turn:" + turn, row.optLong("at"), row.optLong("seq"));
+            if (role.equals("user")) addSubtasks(turn, retained);
             if (role.equals("assistant")) pendingProcess = new JSONArray();
         }
         if (showCompaction) { retained.add("compaction:live"); addCompaction("compaction:live", remoteCompaction); }
@@ -2503,6 +2664,58 @@ public final class MainActivity extends Activity {
         target.getViewTreeObserver().addOnPreDrawListener(pendingMessageScroll);
         target.invalidate();
     }
+    private void addSubtasks(long userSeq, java.util.Set<String> retained) {
+        JSONArray children = new JSONArray(); boolean active = false; int attention = 0;
+        for (int i = 0; i < remoteSubtasks.length(); i++) {
+            JSONObject task = remoteSubtasks.optJSONObject(i); if (task == null || task.optLong("userSeq") != userSeq) continue;
+            children.put(task); String state = task.optString("status"); active |= java.util.Set.of("starting", "running", "waiting").contains(state);
+            if (state.equals("waiting") || task.optInt("pendingApprovals") > 0) attention++;
+        }
+        if (children.length() == 0) return;
+        boolean expanded = expandedSubtasks.getOrDefault(userSeq, active); String key = "subtasks:" + userSeq;
+        boolean earlierTurn = !history.containsKey(userSeq);
+        retained.add(key); String signature = children.toString() + expanded + earlierTurn;
+        View existing = renderedMessages.get(key);
+        if (existing != null && signature.equals(existing.getTag())) { pendingMessageViews.add(existing); return; }
+        LinearLayout card = column(); card.setPadding(dp(12), dp(6), dp(12), dp(6)); card.setBackground(chatStyle.rounded(surface));
+        if (earlierTurn) card.addView(text(tr("更早轮次的子任务", "Subtasks from an earlier turn"), Palette.TEXT_NOTE, muted));
+        Button summary = button(tr("子任务", "Subtasks") + " · " + children.length() + (attention > 0 ? tr(" · 待处理 ", " · Needs attention ") + attention : ""), () -> { expandedSubtasks.put(userSeq, !expanded); renderMessages(lastLive); }, false);
+        card.addView(summary);
+        if (expanded) {
+            for (int i = 0; i < Math.min(children.length(), 3); i++) {
+                JSONObject task = children.optJSONObject(i); Button row = button(task.optString("title") + " · " + SubtaskPage.state(task.optString("status"), chinese), () -> openSubtask(userSeq, SubtaskPage.identity(task)), false); card.addView(row);
+                TextView progress = text(task.optString("progress"), Palette.TEXT_NOTE, muted); progress.setMaxLines(2); card.addView(progress);
+            }
+            card.addView(button(tr("查看全部子任务", "View all subtasks"), () -> openSubtask(userSeq, null), false));
+        }
+        card.setTag(signature); renderedMessages.put(key, card); pendingMessageViews.add(card);
+    }
+    private void openSubtask(long userSeq, String taskId) {
+        if (subtaskPage != null) subtaskPage.dismiss();
+        subtaskPage = new SubtaskPage(this, chinese, userSeq, taskId, (task, operation, extra) -> {
+            if (!connected || !controlAllowed || commandBusy || pendingCommand() != null) throw new IllegalStateException(tr("请等待连接或操作完成", "Wait for connection or the current operation"));
+            JSONObject payload = command("subagent-command").put("taskId", task.getString("id")).put("engine", task.getString("engine")).put("operation", operation).put("expectedTurnId", task.optString("turnId"));
+            for (java.util.Iterator<String> keys = extra.keys(); keys.hasNext();) { String key = keys.next(); payload.put(key, extra.get(key)); }
+            submitCommand(payload);
+        });
+        subtaskPage.setOnDismissListener(dialog -> { if (subtaskPage == dialog) subtaskPage = null; });
+        subtaskPage.update(remoteSubtasks);
+        subtaskPage.setControlAvailable(connected && controlAllowed && !commandBusy && pendingCommand() == null);
+        subtaskPage.show();
+    }
+
+    private void clearSubtasks() {
+        remoteSubtasks = new JSONArray(); expandedSubtasks.clear();
+        if (subtaskPage != null) { SubtaskPage page = subtaskPage; subtaskPage = null; page.dismiss(); }
+    }
+
+    private void clearUnavailableDetail() {
+        connected = false; controlAllowed = false; clearSubtasks(); clearHistory();
+        lastLive = null; remotePreparation = null; remoteSettings = null;
+        remoteQueue = new JSONArray(); canQueue = false; queueVersion = -1;
+        if (messages != null) messages.removeAllViews();
+        renderApprovals(); renderAutomation(new JSONObject()); updateControls();
+    }
 
     private void clearMessageScroll() {
         messageScrollRevision++;
@@ -2513,7 +2726,7 @@ public final class MainActivity extends Activity {
     }
 
     private void beginEdit(long seq, String text) {
-        if (!screen.equals("detail") || !connected || !controlAllowed || lastLive != null || commandBusy || credentials.has("pendingCommand") || awaitingSentMessage()) return;
+        if (!screen.equals("detail") || !connected || !controlAllowed || lastLive != null || commandBusy || (pendingCommand() != null) || awaitingSentMessage()) return;
         JSONObject latest = null;
         for (JSONObject row : history.values()) if (row.optString("role").equals("user")) latest = row;
         if (latest == null || latest.optLong("seq") != seq) return;
@@ -2527,7 +2740,7 @@ public final class MainActivity extends Activity {
     }
 
     private void cancelEdit() {
-        if (composer == null || commandBusy || credentials.has("pendingCommand") || lastLive != null) return;
+        if (composer == null || commandBusy || (pendingCommand() != null) || lastLive != null) return;
         locationConsent.cancel();
         editingSeq = -1; editingText = ""; composer.setText("");
         persistDraft(); if (workStatus != null) workStatus.clear(); updateControls();
@@ -2579,7 +2792,7 @@ public final class MainActivity extends Activity {
             retryMessage.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
             retryMessage.setContentDescription(label + tr("（重试同一请求，不会重复执行）", " (retries the same request without duplicate execution)"));
             retryMessage.setOnClickListener(view -> retryCommand());
-            retryMessage.setEnabled(connected && controlAllowed && !commandBusy && credentials.has("pendingCommand"));
+            retryMessage.setEnabled(connected && controlAllowed && !commandBusy && (pendingCommand() != null));
         }
         delivery.addView(deliveryText); pendingMessageViews.add(delivery);
     }
@@ -2771,7 +2984,7 @@ public final class MainActivity extends Activity {
         return trimmed;
     }
 
-    private void clearHistory() { disposeMessageViews(); history.clear(); historyBytes = 0; goalVisibility.reset(); }
+    private void clearHistory() { disposeMessageViews(); history.clear(); historyBytes = 0; historyInstance = ""; goalVisibility.reset(); }
 
     private void retainHistory(long seq, JSONObject row) {
         JSONObject previous = history.put(seq, row);
@@ -2820,9 +3033,9 @@ public final class MainActivity extends Activity {
                 prefetch.remove(credentials, screen.equals("detail") ? conversationId : null);
                 if (screen.equals("detail") && conversationId != null) {
                     boolean released = releasePendingCommandForUnavailableConversation();
-                    clearHistory(); if (messages != null) messages.removeAllViews();
+                    clearUnavailableDetail();
                     setStatusError(tr("会话不可用，可能已归档或不再授权。", "Conversation unavailable, archived or no longer authorized.")
-                        + (released ? tr(" 未确认的消息已恢复到输入框且未发送。", " The unconfirmed message was returned to the box and was not sent.") : "")
+                        + (pendingCommand() != null ? tr(" 操作可能已经执行，请核对后解除待确认。", " The action may have executed. Inspect it before resolving the pending record.") : "")
                         + "\n" + RemoteApi.failureMessage(error, chinese));
                 } else setStatusError(tr("电脑端不支持此接口，请更新并重启电脑端。", "This endpoint is unavailable. Update and restart the desktop.")
                     + "\n" + RemoteApi.failureMessage(error, chinese));
@@ -2831,48 +3044,25 @@ public final class MainActivity extends Activity {
             if (code == 403) {
                 prefetch.cancel();
                 prefetch.remove(credentials, null);
-                if (screen.equals("detail")) { clearHistory(); if (messages != null) messages.removeAllViews(); }
+                if (screen.equals("detail")) {
+                    clearUnavailableDetail();
+                }
             }
             if (code == 429 || code == 403 || code == 409) { setStatusError(RemoteApi.failureMessage(error, chinese)); return; }
         }
         setStatusError(RemoteApi.failureMessage(error, chinese) + tr(" 当前内容可能是缓存。", " Displayed content may be cached."));
     }
 
-    // A command queued for a conversation the desktop deleted or archived can
-    // never be acknowledged, yet it keeps blocking every later send on this
-    // computer. Drop the stored request, restore its draft as a failed send, and
-    // let the user resubmit in an authorized conversation instead.
+    // Unavailability cannot prove that the operation never executed. Preserve
+    // its request ID until the user checks the desktop and resolves the record.
     private boolean releasePendingCommandForUnavailableConversation() {
-        JSONObject pending = credentials.optJSONObject("pendingCommand");
+        JSONObject pending = pendingCommand();
         if (pending == null || !conversationId.equals(pending.optString("conversationId"))) return false;
         JSONObject payload = pending.optJSONObject("payload");
-        String action = payload == null ? "" : payload.optString("action");
-        boolean submitted = action.equals("send") || action.equals("resend");
-        try (AttachmentMaintenance.Lease restoring = AttachmentMaintenance.protect(this, payload)) {
-        try {
-            JSONObject saved = new JSONObject(credentials.toString()); saved.remove("pendingCommand");
-            store.save(saved); credentials = saved;
-        } catch (Exception error) {
-            reportError("无法保存操作结果，请重试同一请求。", "Could not save result. Retry the same request.", error);
-            return false;
-        }
-        if (submitted && composer != null) {
-            try {
-                // A refused edit stays an edit: keep its target so the restored
-                // draft does not silently become a brand new message.
-                if (payload.has("editSeq")) editingSeq = payload.optLong("editSeq");
-                composer.setText(pending.optString("draft", payload.optString("prompt")));
-                ChatAttachments.restore(payload, selectedImages, selectedDocuments);
-                imageConversation = conversationId; imageComputer = credentials.optString("address"); renderImage();
-                persistDraft();
-            } catch (Exception error) {
-                reportError("无法恢复未发送内容，请重新输入。", "Could not restore the unsent content; type it again.", error);
-            }
-        }
-        outgoingMessage = null;
+        try { if (payload != null) markUncertain(credentials, payload); }
+        catch (Exception error) { reportError("无法保存待确认状态。", "Could not save pending state.", error); }
         updateControls();
-        return true;
-        }
+        return false;
     }
 
     private void bindStatusDetails() {
@@ -2912,7 +3102,8 @@ public final class MainActivity extends Activity {
         if (workStatus == null) return;
         if (connected) workStatus.reconnected();
         String value = "";
-        JSONObject pending = credentials.optJSONObject("pendingCommand");
+        JSONObject pending = RemotePendingCommands.get(credentials, conversationId, true);
+        if (pending == null) pending = pendingCommand();
         if (!connected) value = tr("等待同步会话…", "Waiting for conversation sync…");
         else if (pending != null) {
             JSONObject payload = pending.optJSONObject("payload");
@@ -2933,8 +3124,10 @@ public final class MainActivity extends Activity {
 
     private void updateControls() {
         updateWorkStatus();
+        if (subtaskPage != null) subtaskPage.setControlAvailable(connected && controlAllowed && !commandBusy && pendingCommand() == null);
         if (sendButton == null || conversationId == null) return;
-        boolean pending = credentials.has("pendingCommand");
+        boolean pending = (pendingCommand() != null);
+        boolean uncertain = pending && pendingCommand().optBoolean("uncertain");
         boolean available = connected && controlAllowed && !commandBusy;
         boolean configurable = available && !pending && remoteSettings != null && remoteSettings.optBoolean("modelEditable", remoteSettings.optBoolean("editable"));
         if (!configurable && settingsPopup != null) { settingsPopup.dismiss(); settingsPopup = null; }
@@ -2967,13 +3160,16 @@ public final class MainActivity extends Activity {
             attachButton.setEnabled(available && !pending && !loadingImages);
             attachButton.setAlpha(available && !pending && !loadingImages ? 1f : .45f);
         }
-        stopButton.setEnabled(available && lastLive != null && !pending);
+        boolean stopping = RemotePendingCommands.get(credentials, conversationId, true) != null;
+        boolean stoppable = lastLive != null || canStopStart && remotePreparation != null;
+        stopButton.setEnabled(connected && controlAllowed && stoppable && !stopping);
         boolean showQueueSend = queueing && hasMessage;
-        sendButton.setVisibility(lastLive == null || showQueueSend ? View.VISIBLE : View.GONE);
-        stopButton.setVisibility(lastLive != null && !showQueueSend ? View.VISIBLE : View.GONE);
+        sendButton.setVisibility(!stoppable || showQueueSend ? View.VISIBLE : View.GONE);
+        stopButton.setVisibility(stoppable && !showQueueSend ? View.VISIBLE : View.GONE);
         composer.setEnabled(!commandBusy && !pending);
-        if (retryMessage != null) retryMessage.setEnabled(available && pending);
-        if (workStatus != null) workStatus.retry(available && pending && retryMessage == null ? this::retryCommand : null);
+        if (retryMessage != null) retryMessage.setEnabled(pending && (available || uncertain));
+        if (workStatus != null) workStatus.retry(stopping ? this::retryStopCommand
+            : pending && (available || uncertain) && (retryMessage == null || retryMessage.getParent() == null) ? this::retryCommand : null);
         if (approvals != null) for (int index = 0; index < approvals.getChildCount(); index++) {
             View child = approvals.getChildAt(index);
             if (child instanceof Button) child.setEnabled(available && !pending);
@@ -2994,7 +3190,7 @@ public final class MainActivity extends Activity {
 
     private void renderQueue() {
         if (queueBar == null) return;
-        boolean enabled = connected && controlAllowed && !commandBusy && !credentials.has("pendingCommand");
+        boolean enabled = connected && controlAllowed && !commandBusy && !(pendingCommand() != null);
         String signature = remoteQueue.toString() + ":" + enabled;
         if (signature.equals(queueSignature)) return;
         queueSignature = signature;
@@ -3041,7 +3237,7 @@ public final class MainActivity extends Activity {
     }
 
     private void queueCommand(String action, String id) {
-        if (!connected || !controlAllowed || commandBusy || credentials.has("pendingCommand")) return;
+        if (!connected || !controlAllowed || commandBusy || (pendingCommand() != null)) return;
         try {
             JSONObject payload = command(action);
             if (id != null) payload.put("queueId", id);
@@ -3054,7 +3250,7 @@ public final class MainActivity extends Activity {
     }
 
     private void sendMessage() {
-        if (composer == null || !connected || !controlAllowed || remoteBusy() && (!canQueue || editingSeq > 0) || commandBusy || credentials.has("pendingCommand") || awaitingSentMessage()) return;
+        if (composer == null || !connected || !controlAllowed || remoteBusy() && (!canQueue || editingSeq > 0) || commandBusy || (pendingCommand() != null) || awaitingSentMessage()) return;
         String prompt = composer.getText().toString(), target = conversationId, address = credentials.optString("address"), server = instance;
         ArrayList<String> images = new ArrayList<>(selectedImages);
         ArrayList<JSONObject> documents = new ArrayList<>(selectedDocuments);
@@ -3067,7 +3263,7 @@ public final class MainActivity extends Activity {
     }
 
     private void sendMessage(String locationContext) {
-        if (!connected || !controlAllowed || remoteBusy() && (!canQueue || editingSeq > 0) || commandBusy || credentials.has("pendingCommand") || awaitingSentMessage()) return;
+        if (!connected || !controlAllowed || remoteBusy() && (!canQueue || editingSeq > 0) || commandBusy || (pendingCommand() != null) || awaitingSentMessage()) return;
         String prompt = composer.getText().toString();
         if (loadingImages || (prompt.trim().isEmpty() && selectedImages.isEmpty() && selectedDocuments.isEmpty())) return;
         try {
@@ -3085,13 +3281,17 @@ public final class MainActivity extends Activity {
     }
 
     private void stopRun() {
-        if (!connected || !controlAllowed || lastLive == null || commandBusy || credentials.has("pendingCommand")) return;
-        long runId = lastLive.optLong("runId");
-        String server = instance;
+        if (!connected || !controlAllowed || lastLive == null && (!canStopStart || remotePreparation == null)
+                || RemotePendingCommands.get(credentials, conversationId, true) != null) return;
+        long runId = lastLive == null ? 0 : lastLive.optLong("runId");
+        String server = instance, target = conversationId;
+        String startId = remotePreparation == null ? "" : remotePreparation.optString("startId");
         new CamelliaDialog.Builder(this).setTitle(tr("停止当前任务？", "Stop the current run?"))
             .setMessage(tr("停止当前任务并暂停待发送队列，不撤销已经执行的文件操作；关联的自动任务可能暂停。", "Stops this run and pauses queued messages without undoing completed file operations. Related automatic tasks may be paused."))
             .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(tr("停止", "Stop"), (dialog, which) -> {
-                try { submitCommand(command("stop").put("instanceId", server).put("runId", runId)); }
+                if (!target.equals(conversationId) || !server.equals(instance)) return;
+                try { submitCommand(runId > 0 ? command("stop").put("instanceId", server).put("runId", runId)
+                    : command("stop-start").put("instanceId", server).put("startId", startId)); }
                 catch (Exception error) { reportError("无法保存操作。", "Could not save operation.", error); }
             }).show();
     }
@@ -3215,7 +3415,7 @@ public final class MainActivity extends Activity {
     // Automation controls are existing commands, so the request/retry rules and
     // the per-command idempotency journal apply unchanged.
     private void submitAutomation(String action, String operation, String taskId) {
-        if (!connected || !controlAllowed || commandBusy || credentials.has("pendingCommand")) return;
+        if (!connected || !controlAllowed || commandBusy || (pendingCommand() != null)) return;
         try {
             JSONObject payload = command(action).put("instanceId", instance).put("operation", operation);
             if (taskId != null) payload.put("taskId", taskId);
@@ -3245,12 +3445,12 @@ public final class MainActivity extends Activity {
             long runId = lastLive.optLong("runId"); String server = instance;
             if (request.optJSONArray("questions") != null && request.optJSONArray("questions").length() > 0) {
                 approvals.addView(button(tr("回答问题", "Answer questions"), () -> {
-                    if (!connected || !controlAllowed || commandBusy || credentials.has("pendingCommand")) return;
+                    if (!connected || !controlAllowed || commandBusy || (pendingCommand() != null)) return;
                     if (remoteApprovalDialog != null) remoteApprovalDialog.dismiss();
                     String target = conversationId;
                     remoteApprovalKey = scope + request.optString("fingerprint");
                     remoteApprovalDialog = RemoteApprovalDialog.show(this, request, conversationTitle, (allow, input, optionId) -> {
-                        if (!target.equals(conversationId) || !server.equals(instance) || lastLive == null || lastLive.optLong("runId") != runId || !connected || commandBusy || credentials.has("pendingCommand")) return false;
+                        if (!target.equals(conversationId) || !server.equals(instance) || lastLive == null || lastLive.optLong("runId") != runId || !connected || commandBusy || (pendingCommand() != null)) return false;
                         JSONObject payload = command("approve").put("instanceId", server).put("runId", runId).put("approvalId", request.getString("requestId"))
                             .put("fingerprint", request.getString("fingerprint")).put("allow", allow);
                         if (input != null) payload.put("input", input); if (optionId != null) payload.put("optionId", optionId);
@@ -3260,7 +3460,7 @@ public final class MainActivity extends Activity {
             }
             for (boolean allow : new boolean[]{false, true}) {
                 approvals.addView(button(allow ? tr("允许一次", "Allow once") : tr("拒绝", "Deny"), () -> {
-                    if (!connected || !controlAllowed || commandBusy || credentials.has("pendingCommand")) return;
+                    if (!connected || !controlAllowed || commandBusy || (pendingCommand() != null)) return;
                     new CamelliaDialog.Builder(this).setTitle(allow ? tr("确认允许此操作？", "Allow this operation?") : tr("拒绝此操作？", "Deny this operation?"))
                         .setMessage(request.optString("toolName") + "\n" + request.optString("details"))
                         .setNegativeButton(tr("取消", "Cancel"), null).setPositiveButton(allow ? tr("允许一次", "Allow once") : tr("拒绝", "Deny"), (dialog, which) -> {
@@ -3281,7 +3481,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showRemoteSettings(boolean permissions) {
-        if (!connected || !controlAllowed || commandBusy || credentials.has("pendingCommand") || remoteSettings == null
+        if (!connected || !controlAllowed || commandBusy || (pendingCommand() != null) || remoteSettings == null
             || !(permissions ? remoteSettings.optBoolean("editable") : remoteSettings.optBoolean("modelEditable", remoteSettings.optBoolean("editable")))) return;
         if (settingsPopup != null) settingsPopup.dismiss();
         String version = remoteSettings.optString("version"), server = instance, target = conversationId;
@@ -3297,11 +3497,13 @@ public final class MainActivity extends Activity {
     }
 
     private void submitCommand(JSONObject payload) throws Exception {
-        if (!foreground || !connected || !controlAllowed || commandBusy || credentials.has("pendingCommand")) return;
+        boolean stop = payload.optString("action").equals("stop") || payload.optString("action").equals("stop-start");
+        if (!foreground || !connected || !controlAllowed || (!stop && (commandBusy || pendingCommand() != null))
+                || stop && RemotePendingCommands.get(credentials, conversationId, true) != null) return;
         JSONObject saved = new JSONObject(credentials.toString());
         JSONObject pending = new JSONObject().put("conversationId", conversationId).put("payload", payload);
         if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) pending.put("draft", composer.getText().toString()).put("at", System.currentTimeMillis());
-        saved.put("pendingCommand", pending);
+        RemotePendingCommands.put(saved, pending, stop);
         store.save(saved); credentials = saved;
         if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) {
             outgoingMessage = pending;
@@ -3312,21 +3514,59 @@ public final class MainActivity extends Activity {
             viewHandler.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
         }
         updateControls();
-        retryCommand();
+        if (stop) retryPendingCommand(pending, true, true); else retryCommand();
+    }
+
+    private JSONObject pendingCommand() { return RemotePendingCommands.get(credentials, conversationId, false); }
+    private String commandKey(JSONObject profile, JSONObject payload) {
+        return profile.optString("address") + "#" + profile.optString("token") + "#" + payload.optString("requestId");
     }
 
     private void retryCommand() { retryCommand(true); }
 
+    private void retryStopCommand() {
+        JSONObject stop = RemotePendingCommands.get(credentials, conversationId, true); if (stop == null) return;
+        if (stop.optBoolean("uncertain")) {
+            String request = stop.optJSONObject("payload").optString("requestId");
+            new CamelliaDialog.Builder(this).setMessage(tr("请核对电脑上的任务是否已停止，再解除待确认。", "Check whether the desktop task stopped before resolving this record."))
+                .setPositiveButton(tr("继续查询", "Check again"), (d, w) -> retryPendingCommand(stop, true, true))
+                .setNeutralButton(tr("已核对，解除待确认", "Checked; resolve"), (d, w) -> resolvePendingCommand(request))
+                .setNegativeButton(tr("暂不处理", "Later"), null).show();
+        } else retryPendingCommand(stop, true, true);
+    }
+
     private void retryCommand(boolean userInitiated) {
-        JSONObject pending = credentials.optJSONObject("pendingCommand");
-        if (!foreground || !connected || !controlAllowed || commandBusy || pending == null || api == null) return;
-        String target = pending.optString("conversationId"); JSONObject payload = pending.optJSONObject("payload");
-        if (!target.equals(conversationId)) {
-            new CamelliaDialog.Builder(this).setMessage(tr("另一会话有未确认操作。请先打开该会话核对结果。", "Another conversation has an unconfirmed operation. Open it to check the result."))
-                .setPositiveButton(tr("打开", "Open"), (dialog, which) -> { conversationId = target; conversationTitle = tr("待确认操作", "Unconfirmed operation"); detailScreen(); connectEvents(); })
-                .setNegativeButton(tr("取消", "Cancel"), null).show(); return;
+        JSONObject pending = pendingCommand();
+        if (pending == null) return;
+        if (userInitiated && pending.optBoolean("uncertain")) {
+            String request = pending.optJSONObject("payload").optString("requestId");
+            new CamelliaDialog.Builder(this).setTitle(tr("核对未确认操作", "Check unconfirmed action"))
+                .setMessage(tr("操作可能已经执行。查询不会创建新请求；解除待确认只清除手机记录，不会取消电脑操作。", "The action may have executed. Checking keeps the same request. Resolving only clears the phone's pending record; it does not cancel desktop work."))
+                .setPositiveButton(tr("继续查询", "Check again"), (d, w) -> { commandCheckDeadline = android.os.SystemClock.elapsedRealtime() + COMMAND_CONFIRM_TIMEOUT_MS; retryPendingCommand(pending, false, false); })
+                .setNeutralButton(tr("已核对，解除待确认", "Checked; resolve"), (d, w) -> resolvePendingCommand(request))
+                .setNegativeButton(tr("暂不处理", "Later"), null).show(); return;
         }
-        commandBusy = true;
+        retryPendingCommand(pending, userInitiated, pending.optJSONObject("payload").optString("action").startsWith("stop"));
+    }
+
+    private void resolvePendingCommand(String request) {
+        try {
+            JSONObject saved = new JSONObject(credentials.toString()); JSONObject pending = RemotePendingCommands.find(saved, request);
+            boolean stop = pending != null && pending.optJSONObject("payload") != null && pending.optJSONObject("payload").optString("action").startsWith("stop");
+            RemotePendingCommands.remove(saved, request);
+            store.save(saved); credentials = saved;
+            if (!stop) { outgoingMessage = null; commandBusy = false; }
+            renderMessages(lastLive); updateControls();
+        } catch (Exception error) { reportError("无法保存核对结果。", "Could not save the resolution.", error); }
+    }
+
+    private void retryPendingCommand(JSONObject pending, boolean userInitiated, boolean urgent) {
+        if (!foreground || !connected || !controlAllowed || pending == null || api == null) return;
+        String target = pending.optString("conversationId"); JSONObject payload = pending.optJSONObject("payload");
+        if (payload == null || !target.equals(conversationId)) return;
+        String key = commandKey(credentials, payload);
+        if (commandRequests.contains(key)) return;
+        if (!urgent) commandBusy = true;
         boolean sending = payload.optString("action").equals("send") || payload.optString("action").equals("resend");
         // Only the user-facing entry point opens a confirmation window; the
         // automatic checks reuse it. Re-arming on every poll would push the
@@ -3337,38 +3577,117 @@ public final class MainActivity extends Activity {
             if (workStatus != null) workStatus.clear();
         }
         updateControls();
-        RemoteApi client = api; int ticket = generation; String token = credentials.optString("token");
-        commandWorker.submit(() -> {
+        boolean query = canCommandReceipts && pending.optBoolean("dispatched");
+        JSONObject owner;
+        try {
+            pending.put("dispatched", true); store.save(credentials); owner = new JSONObject(credentials.toString());
+        } catch (Exception error) { commandBusy = false; reportError("无法保存操作，请重试。", "Could not save the action. Retry.", error); updateControls(); return; }
+        commandRequests.add(key);
+        RemoteApi client = api; String token = owner.optString("token");
+        (urgent ? urgentWorker : commandWorker).submit(() -> {
             try {
-                JSONObject result = client.json("/v1/conversations/" + target + "/commands", token, payload);
-                deliver(ticket, () -> finishCommand(payload, result));
+                JSONObject result;
+                try { result = client.json(query ? "/v1/commands/" + payload.optString("requestId") : "/v1/conversations/" + target + "/commands", token, query ? null : payload); }
+                catch (RemoteApi.Failure missing) {
+                    if (!query || missing.status != 404) throw missing;
+                    result = client.json("/v1/conversations/" + target + "/commands", token, payload);
+                }
+                JSONObject receipt = result;
+                handler.post(() -> receiveCommand(owner, payload, receipt));
             } catch (Exception error) {
-                deliver(ticket, () -> {
-                    commandBusy = false;
-                    if (error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status >= 400 && ((RemoteApi.Failure) error).status < 500 && ((RemoteApi.Failure) error).status != 429) {
+                handler.post(() -> {
+                    commandRequests.remove(key);
+                    if (!sameComputer(owner) || !target.equals(conversationId) || !screen.equals("detail")) {
+                        try { markUncertain(owner, payload); } catch (Exception ignored) { }
+                        return;
+                    }
+                    if (!urgent) commandBusy = false;
+                    if (!query && error instanceof RemoteApi.Failure && java.util.Set.of(400, 403, 409, 413).contains(((RemoteApi.Failure) error).status)) {
                         finishCommand(payload, new JSONObject());
                         showFailure(error, true);
                     } else {
+                        try { markUncertain(owner, payload); } catch (Exception saveError) { reportError("无法保存待确认状态。", "Could not save pending state.", saveError); }
                         if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) outgoingState("unconfirmed");
                         setStatusError(ErrorDetails.withSummary(tr("发送未确认：连接失败或超时。请重试同一请求，避免重复发送。", "Send unconfirmed: connection failed or timed out. Retry the same request to avoid duplicates."), error));
                         updateControls();
-                        new CamelliaDialog.Builder(this).setMessage(ErrorDetails.withSummary(
-                            tr("未收到电脑确认。操作可能已执行，请勿重复新建发送；点击未确认提示，重试同一请求。", "No confirmation received. The operation may have executed. Tap the unconfirmed status to retry the same request; do not send a new copy."),
-                            error))
-                            .setPositiveButton(tr("知道了", "OK"), null).show();
+                        if (foreground && android.os.SystemClock.elapsedRealtime() < commandCheckDeadline) {
+                            int ticket = generation;
+                            handler.postDelayed(() -> { if (ticket == generation) retryPendingCommand(pending, false, urgent); },
+                                error instanceof RemoteApi.Failure && ((RemoteApi.Failure) error).status == 429 ? 60_000 : 2000);
+                        }
                     }
                 });
             }
         });
     }
 
+    private boolean sameComputer(JSONObject owner) {
+        return owner.optString("address").equals(credentials.optString("address")) && owner.optString("token").equals(credentials.optString("token"));
+    }
+
+    private JSONObject commandProfile(JSONObject owner) throws Exception {
+        for (JSONObject profile : store.all()) if (profile.optString("address").equals(owner.optString("address"))
+                && profile.optString("token").equals(owner.optString("token"))) return sameComputer(owner) ? new JSONObject(credentials.toString()) : profile;
+        return null;
+    }
+
+    private void markUncertain(JSONObject owner, JSONObject payload) throws Exception {
+        JSONObject saved = commandProfile(owner); if (saved == null) return;
+        JSONObject pending = RemotePendingCommands.find(saved, payload.optString("requestId")); if (pending == null) return;
+        pending.put("uncertain", true);
+        if (store.saveProfile(saved) && sameComputer(owner)) credentials = saved;
+    }
+
+    private void receiveCommand(JSONObject owner, JSONObject payload, JSONObject result) {
+        commandRequests.remove(commandKey(owner, payload));
+        try { if (commandProfile(owner) == null) return; }
+        catch (Exception error) { if (sameComputer(owner)) reportError("无法读取操作记录，请重试同一请求。", "Could not read the action record. Retry the same request.", error); return; }
+        JSONObject currentPending = RemotePendingCommands.find(credentials, payload.optString("requestId"));
+        if (sameComputer(owner) && foreground && !isDestroyed() && screen.equals("detail") && currentPending != null && conversationId.equals(currentPending.optString("conversationId"))) {
+            finishCommand(payload, result); return;
+        }
+        try {
+            JSONObject saved = commandProfile(owner); if (saved == null) return;
+            JSONObject pending = RemotePendingCommands.find(saved, payload.optString("requestId")); if (pending == null) return;
+            if (result.optString("state").equals("pending") || result.optString("state").equals("unknown")) {
+                pending.put("uncertain", true);
+            } else {
+                RemotePendingCommands.remove(saved, payload.optString("requestId"));
+                String target = pending.optString("conversationId");
+                if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) {
+                    JSONObject drafts = saved.optJSONObject("drafts");
+                    if (drafts == null) { drafts = new JSONObject(); saved.put("drafts", drafts); }
+                    if (result.optBoolean("ok")) {
+                        if (drafts.optString(target).equals(pending.optString("draft"))) drafts.remove(target);
+                        JSONObject files = saved.optJSONObject("draftAttachments");
+                        if (files != null && AttachmentStore.references(files.optJSONObject(target)).equals(AttachmentStore.references(payload))) files.remove(target);
+                    } else if (drafts.optString(target).isEmpty()) {
+                        drafts.put(target, pending.optString("draft", payload.optString("prompt")));
+                        JSONObject files = saved.optJSONObject("draftAttachments"); if (files == null) { files = new JSONObject(); saved.put("draftAttachments", files); }
+                        files.put(target, payload);
+                        if (payload.has("editSeq")) { JSONObject edits = saved.optJSONObject("draftEdits"); if (edits == null) { edits = new JSONObject(); saved.put("draftEdits", edits); } edits.put(target, payload.optLong("editSeq")); }
+                    }
+                }
+            }
+            if (store.saveProfile(saved) && sameComputer(owner)) {
+                credentials = saved;
+                if (outgoingMessage != null && outgoingMessage.optJSONObject("payload") != null
+                    && payload.optString("requestId").equals(outgoingMessage.optJSONObject("payload").optString("requestId"))
+                    && !result.optString("state").equals("pending") && !result.optString("state").equals("unknown")) outgoingMessage = null;
+                if (!isDestroyed() && foreground) updateControls();
+            }
+        } catch (Exception error) { if (sameComputer(owner)) reportError("无法保存操作结果，请重试同一请求。", "Could not save result. Retry the same request.", error); }
+    }
+
     private void finishCommand(JSONObject payload, JSONObject result) {
-        JSONObject queued = credentials.optJSONObject("pendingCommand");
+        JSONObject queued = RemotePendingCommands.find(credentials, payload.optString("requestId"));
         if (queued == null || queued.optJSONObject("payload") == null
                 || !payload.optString("requestId").equals(queued.optJSONObject("payload").optString("requestId"))) return;
-        commandBusy = false;
+        boolean urgent = payload.optString("action").startsWith("stop");
+        if (!urgent) commandBusy = false;
         if (result.optString("state").equals("pending")) {
             if (android.os.SystemClock.elapsedRealtime() >= commandCheckDeadline) {
+                try { markUncertain(credentials, payload); } catch (Exception error) { reportError("无法保存待确认状态。", "Could not save pending state.", error); }
                 if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) outgoingState("unconfirmed");
                 setStatusError(tr("等待电脑确认超时，操作可能已执行。请重试同一请求，不要重复发送。", "Timed out waiting for confirmation; the operation may have executed. Retry the same request, not a new copy."));
                 updateControls(); return;
@@ -3376,17 +3695,18 @@ public final class MainActivity extends Activity {
             if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) outgoingState("preparing");
             int ticket = generation;
             handler.postDelayed(() -> {
-                JSONObject pending = credentials.optJSONObject("pendingCommand");
+                JSONObject pending = RemotePendingCommands.find(credentials, payload.optString("requestId"));
                 if (foreground && ticket == generation && pending != null && pending.optJSONObject("payload") != null
                         && payload.optString("requestId").equals(pending.optJSONObject("payload").optString("requestId"))) {
                     if (android.os.SystemClock.elapsedRealtime() >= commandCheckDeadline) finishCommand(payload, result);
-                    else retryCommand(false);
+                    else retryPendingCommand(pending, false, urgent);
                 }
             }, COMMAND_POLL_INTERVAL_MS);
             updateControls();
             return;
         }
         if (result.optString("state").equals("unknown")) {
+            try { markUncertain(credentials, payload); } catch (Exception error) { reportError("无法保存待确认状态。", "Could not save pending state.", error); }
             if (payload.optString("action").equals("send") || payload.optString("action").equals("resend")) outgoingState("unconfirmed");
             setStatusError(tr("电脑无法确认该请求结果，请先到电脑核对；不会自动重复发送。", "The computer cannot confirm this request. Inspect it on the computer; it will not be resent automatically."));
             updateControls(); return;
@@ -3394,7 +3714,7 @@ public final class MainActivity extends Activity {
         try (AttachmentMaintenance.Lease responding = AttachmentMaintenance.protect(this, payload)) {
             String target = queued.optString("conversationId");
             boolean submitted = payload.optString("action").equals("send") || payload.optString("action").equals("resend");
-            JSONObject saved = new JSONObject(credentials.toString()); saved.remove("pendingCommand");
+            JSONObject saved = new JSONObject(credentials.toString()); RemotePendingCommands.remove(saved, payload.optString("requestId"));
             // An accepted send is the only moment the stored draft is known to be
             // delivered, so it is the safe place to drop it for good.
             if (result.optBoolean("ok") && submitted && target != null) {
@@ -3407,9 +3727,20 @@ public final class MainActivity extends Activity {
                 if (files != null && AttachmentStore.references(files.optJSONObject(target)).equals(AttachmentStore.references(payload))) files.remove(target);
             }
             store.save(saved); credentials = saved;
+            JSONObject current = result.optJSONObject("current");
+            boolean currentState = payload.optString("instanceId").equals(instance) || current != null && current.optString("instanceId").equals(instance);
+            if (current != null && currentState) applySnapshot(current);
             if (result.optBoolean("ok")) {
+                if (current == null && currentState) {
+                    JSONObject settings = result.optJSONObject("settings");
+                    if (settings != null && remoteSettings != null && payload.optString("expectedSettings").equals(remoteSettings.optString("version"))) remoteSettings = settings;
+                    if (urgent && (lastLive == null || lastLive.optLong("runId") == payload.optLong("runId"))) {
+                        lastLive = null; remotePreparation = null;
+                        if (displayedConversation != null) displayedConversation.put("activity", JSONObject.NULL);
+                    }
+                }
                 if (workStatus != null) workStatus.clear();
-                applyQueue(result);
+                if (currentState) applyQueue(result);
                 if (submitted && result.optString("state").equals("queued")) {
                     outgoingMessage = null; renderMessages(lastLive);
                 } else if (submitted && outgoingMessage != null) {

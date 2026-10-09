@@ -15,11 +15,13 @@ window.dshDesktop = new Proxy({}, {get: (_target, name) => {
   if (name === 'workbenchSettings') return async () => ({...empty,language:'en',theme:'light',dataPath:window.directoryState.source,version:'1.0.0',dataDirectory:window.directoryState});
   if (name === 'dataExport') return async scope => {
     transferCalls.push({type:'export',scope});
-    return {ok:true,files:3,bytes:1200,file:'C:/exports/camellia.zip',scope};
+    return window.exportResult || {ok:true,files:3,bytes:1200,file:'C:/exports/camellia.zip',scope};
   };
   if (name === 'dataImport') return async (file, scope) => {
     transferCalls.push({type:'import',file,scope});
-    if (!scope) return {ok:true,needsSelection:true,file:'C:/exports/camellia.zip',categories:previewCategories};
+    if (!scope) return Object.values(previewCategories).some(category => category.files > 0)
+      ? {ok:true,needsSelection:true,file:'C:/exports/camellia.zip',categories:previewCategories}
+      : {ok:false,error:'The package has no Camellia data to import'};
     return {ok:true,restored:3,bytes:1200,scope};
   };
   if (name === 'dataDirectoryMigrate') return async () => {
@@ -62,10 +64,13 @@ with sync_playwright() as playwright:
     expect(page.locator("#migrateDataDirectory")).to_be_visible()
     expect(page.locator("#dataDirectoryStatus")).to_have_text("Restart to move your data. The old folder is deleted after verification.")
     expect(page.locator("#exportConfig, #importConfig")).to_have_count(0)
+    expect(page.locator("#dataMigrationStatus")).to_have_text("Choose API configuration, application settings or conversation history to transfer. Subscription accounts are not transferred.")
+    expect(page.locator("#dataScopeAll, #importScopeApi, #importScopeSettings, #importScopeConversations")).to_have_count(4)
 
     page.locator("#exportData").click()
     expect(page.locator("#dataScopeTitle")).to_have_text("Export data")
     expect(page.locator("#dataScopeAll")).to_be_checked()
+    expect(page.locator("#importScopeApiHint")).to_be_hidden()
     page.locator("#dataScopeAll").uncheck()
     page.locator("#confirmImportData").click()
     expect(page.locator("#importDataError")).to_have_text("Choose at least one category to export")
@@ -99,6 +104,7 @@ with sync_playwright() as playwright:
     page.locator("#importData").click()
     expect(page.locator("#dataScopeTitle")).to_have_text("Import data")
     expect(page.locator("#importScopeApi")).to_be_checked()
+    expect(page.locator("#importScopeApiHint")).to_have_text("3 files · 1.2 KiB")
     for category in ["Settings", "Conversations"]:
         expect(page.locator("#importScope" + category)).to_be_disabled()
         expect(page.locator("#importScope" + category)).not_to_be_checked()
@@ -117,6 +123,16 @@ with sync_playwright() as playwright:
     page.locator("#confirmImportData").click()
     expect(page.locator("#importData")).to_be_enabled()
     assert page.evaluate("transferCalls.at(-1).scope") == ["conversations"]
+
+    page.evaluate("previewCategories = {}")
+    previous = page.evaluate("transferCalls.length")
+    page.locator("#importData").click()
+    expect(page.locator("#importData")).to_be_enabled()
+    expect(page.locator("#importDataDialog")).not_to_be_visible()
+    expect(page.locator("#dataMigrationStatus")).to_have_text("The package has no Camellia data to import")
+    assert page.evaluate("transferCalls.length") == previous + 1
+    assert page.evaluate("transferCalls.at(-1).scope === undefined")
+    page.evaluate("previewCategories = {api:{files:3,bytes:1200},settings:{files:5,bytes:2048},conversations:{files:10,bytes:5120}}")
 
     for language in ["en", "zh-CN"]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
@@ -151,8 +167,33 @@ with sync_playwright() as playwright:
         page.locator("#exportData").click()
         expect(page.locator("#dataScopeTitle")).to_have_text("Export data" if language == "en" else "导出数据")
         expect(page.locator("#confirmImportData")).to_have_text("Export selected data" if language == "en" else "导出所选内容")
+        expect(page.locator("#importDataDialog p").first).to_have_text(
+            "Subscription accounts are not transferred." if language == "en" else "不迁移订阅账号。"
+        )
         page.locator("#importDataDialog .dialog-head button").click()
         expect(page.locator("#exportData")).to_be_enabled()
+
+        page.evaluate("exportResult = {ok:true,files:3,bytes:1200,file:'C:/exports/camellia.zip',locked:1,lockedFiles:['app/conversations/locked.jsonl']}")
+        page.locator("#exportData").click()
+        page.locator("#confirmImportData").click()
+        expect(page.locator("#exportData")).to_be_enabled()
+        expect(page.locator("#dataMigrationStatus")).to_contain_text(
+            "The package omits 1 unreadable files." if language == "en" else "数据包未包含 1 个被占用或无法读取的文件。"
+        )
+        expect(page.locator("#dataMigrationStatus")).to_contain_text("app/conversations/locked.jsonl")
+        expect(page.locator("#dataMigrationStatus")).to_have_class("hint error")
+        page.evaluate("exportResult = {ok:false,error:'A profile file was locked while packaging; close running engines and export again: app/conversations/locked.jsonl'}")
+        page.locator("#exportData").click()
+        page.locator("#confirmImportData").click()
+        expect(page.locator("#exportData")).to_be_enabled()
+        expect(page.locator("#dataMigrationStatus")).to_contain_text(
+            "A profile file was locked while packaging" if language == "en" else "打包时文件被占用"
+        )
+        page.evaluate("exportResult = null")
+        page.locator("#exportData").click()
+        page.locator("#confirmImportData").click()
+        expect(page.locator("#exportData")).to_be_enabled()
+        expect(page.locator("#dataMigrationStatus")).to_have_class("hint")
 
     page.evaluate("CamelliaI18n.setLanguage('en')")
     page.set_viewport_size({"width": 1040, "height": 900})
@@ -219,4 +260,4 @@ with sync_playwright() as playwright:
         expect(page.locator("#dataPage")).to_be_visible()
     assert errors == [], errors
     browser.close()
-    print("PASS: data page navigation, manual cleanup, migration categories, cancellation, directory states and bilingual responsive layout")
+    print("PASS: transfer categories without subscriptions, empty packages, cancellation, data page navigation, manual cleanup, directory states and bilingual responsive layout")

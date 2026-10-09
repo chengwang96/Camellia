@@ -197,6 +197,17 @@ public final class RemotePrefetch {
             total += Self.weight(live.process)
         }
         for queued in snapshot.queue { total += queued.text.utf8.count + 24 }
+        for task in snapshot.subagents ?? [] {
+            total += task.id.utf8.count + task.engine.utf8.count + task.title.utf8.count
+                + task.goal.utf8.count + task.progress.utf8.count + task.result.utf8.count + task.turnId.utf8.count + 64
+            total += Self.weight(task.history)
+            for request in task.approvals {
+                total += request.id.utf8.count + request.fingerprint.utf8.count + request.title.utf8.count + request.details.utf8.count + 32
+                for question in request.questions {
+                    total += question.id.utf8.count + question.question.utf8.count + question.options.reduce(0) { $0 + $1.utf8.count } + 24
+                }
+            }
+        }
         return total
     }
 

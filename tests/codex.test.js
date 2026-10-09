@@ -73,6 +73,72 @@ async function outputFixture(context) {
   };
   return { session, events, notify, message };
 }
+test('Codex child tool completion does not imply child completion; child controls preserve the parent', async t => {
+  const { session, events, notify } = await outputFixture(t);
+  notify('item/completed', { item: { type: 'collabAgentToolCall', id: 'spawn', tool: 'spawnAgent', status: 'completed',
+    receiverThreadIds: ['child'], prompt: 'Inspect the regression', agentsStates: { child: { status: 'running', message: null } } } });
+  assert.equal(session.children.get('child').status, 'running');
+  assert.equal(events.filter(event => event.type === 'gui:subagent').at(-1).task.goal, 'Inspect the regression');
+  session.childUpdate('child', { turnId: 'child-turn', canReply: true, canStop: true });
+  const requests = []; session.client.request = async (method, params) => { requests.push({ method, params }); return {}; };
+  await session.controlChild('child', { operation: 'reply', prompt: 'Check cache invalidation', expectedTurnId: 'child-turn' });
+  assert.equal(requests[0].method, 'turn/steer'); assert.equal(requests[0].params.threadId, 'child');
+  session.childUpdate('child', { canStop: true });
+  await session.controlChild('child', { operation: 'stop', expectedTurnId: 'child-turn' });
+  assert.equal(requests[1].method, 'turn/interrupt'); assert.equal(requests[1].params.threadId, 'child');
+  assert.equal(session.running, true);
+  await assert.rejects(session.controlChild('other-thread', { operation: 'stop' }), /no longer connected/);
+  await assert.rejects(session.controlChild('child', { operation: 'stop', expectedTurnId: 'old-turn' }), /changed/);
+});
+test('Codex child questions and approvals are routed to their original request', async t => {
+  const { session, events } = await outputFixture(t);
+  session.childUpdate('child', { status: 'running' });
+  session.requestApproval({ id: 917, method: 'item/tool/requestUserInput', params: { threadId: 'child', questions: [{ id: 'format', question: 'Choose a format' }] } });
+  assert.equal(events.filter(event => event.type === 'gui:permission').length, 0);
+  const task = events.filter(event => event.type === 'gui:subagent').at(-1).task;
+  assert.equal(task.status, 'waiting'); assert.equal(task.approvals[0].subagentId, 'child');
+  assert.equal(session.answerPermission('917', true, { format: 'CSV' }), true);
+  assert.equal(session.children.get('child').approvals.length, 0);
+});
+
+test('Codex reads a completed child final answer and artifacts after the parent finishes', async t => {
+  const { session, notify } = await outputFixture(t);
+  session.childUpdate('child', { status: 'running', canStop: true, turnId: 'child-turn' });
+  session.requestApproval({ id: 918, method: 'item/tool/requestUserInput', params: { threadId: 'child', questions: [{ id: 'format', question: 'Choose a format' }] } });
+  session.finish({ subtype: 'success' });
+  assert.equal(session.permissions.has('918'), true, 'finishing the parent keeps child requests actionable');
+  session.answerPermission('918', true, { format: 'CSV' });
+  notify('turn/completed', { threadId: 'child', turn: { id: 'child-turn', status: 'completed' } });
+  assert.equal(session.children.get('child').canStop, false);
+  clearTimeout(session.childTimer);
+  const requests = [];
+  session.client.request = async (method, params) => {
+    requests.push({ method, params });
+    return { thread: { id: 'child', canAcceptDirectInput: true, turns: [{ id: 'child-turn', status: 'completed', items: [
+      { type: 'agentMessage', phase: 'final_answer', text: 'Report saved to checks.md' },
+      { type: 'fileChange', changes: [{ path: 'checks.md' }] },
+    ] }] } };
+  };
+  await session.pollChildren();
+  const child = session.children.get('child');
+  assert.equal(child.result, 'Report saved to checks.md');
+  assert.deepEqual(child.artifacts, [{ path: 'checks.md' }]);
+  assert.equal(child.history.length, 2);
+  assert.equal(child.canStop, false); assert.equal(child.canReply, true);
+  await session.controlChild('child', { operation: 'reply', prompt: 'Explain the report', expectedTurnId: 'child-turn' });
+  assert.equal(requests.at(-1).method, 'turn/start'); assert.equal(requests.at(-1).params.threadId, 'child');
+  assert.equal(session.running, false);
+});
+
+test('Codex recognizes the bundled app-server subAgent source and V2 completion event', async t => {
+  const { session, notify } = await outputFixture(t);
+  notify('thread/started', { thread: { id: 'child-v2', name: 'Inspect parser', source: { subAgent: { thread_spawn: { parent_thread_id: session.sessionId, depth: 1 } } } } });
+  assert.equal(session.children.get('child-v2').status, 'starting');
+  notify('item/completed', { item: { type: 'subAgentActivity', id: 'child-end', agentThreadId: 'child-v2', agentPath: 'Inspect parser', kind: 'completed' } });
+  assert.equal(session.children.get('child-v2').status, 'completed');
+  assert.equal(session.children.get('child-v2').canStop, false);
+  assert.equal(session.childReads.has('child-v2'), true, 'completion still schedules the final thread read');
+});
 
 test('Codex subscription Fast mode reaches threads and turns, and disabling it clears the tier', async t => {
   const root = temporary(t), wire = transport();

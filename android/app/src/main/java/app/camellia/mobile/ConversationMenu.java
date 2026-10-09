@@ -19,6 +19,11 @@ final class ConversationMenu {
     @android.annotation.SuppressLint("RtlHardcoded")
     ConversationMenu(View anchor, ChatStyle style, boolean chinese, boolean pinned,
                      Runnable rename, Runnable select, Runnable pin, Runnable archive, Runnable delete) {
+        this(anchor, style, chinese, pinned, rename, select, pin, archive, delete, null);
+    }
+    @android.annotation.SuppressLint("RtlHardcoded")
+    ConversationMenu(View anchor, ChatStyle style, boolean chinese, boolean pinned,
+                     Runnable rename, Runnable select, Runnable pin, Runnable archive, Runnable delete, Runnable fork) {
         android.content.Context context = anchor.getContext();
         int color = style.background;
         if (Color.red(color) < 128) color = Color.rgb(
@@ -39,6 +44,12 @@ final class ConversationMenu {
             : new String[] { "Rename", "Select", pinned ? "Unpin" : "Pin", "Archive", "Delete" };
         String[] icons = { "edit", "select", "pin", "archive", "delete" };
         Runnable[] actions = { rename, select, pin, archive, delete };
+        if (fork != null) {
+            names = chinese ? new String[] { "重命名", "多选", pinned ? "取消置顶" : "置顶", "分叉会话", "归档会话", "删除" }
+                : new String[] { "Rename", "Select", pinned ? "Unpin" : "Pin", "Fork", "Archive", "Delete" };
+            icons = new String[] { "edit", "select", "pin", "branch", "archive", "delete" };
+            actions = new Runnable[] { rename, select, pin, fork, archive, delete };
+        }
         for (int index = 0; index < names.length; index++) {
             TextView row = new TextView(context); row.setText(names[index]); row.setTextSize(Palette.TEXT_DIALOG);
             int ink = icons[index].equals("delete") ? new SettingsStyle(context).error : style.ink;
@@ -53,7 +64,7 @@ final class ConversationMenu {
         }
         Rect visible = new Rect(); anchor.getWindowVisibleDisplayFrame(visible);
         int[] location = new int[2]; anchor.getLocationOnScreen(location);
-        int width = Math.min(dp(anchor, 224), visible.width() - dp(anchor, 24));
+        int width = Math.min(dp(anchor, 192), visible.width() - dp(anchor, 24));
         int height = Math.min(dp(anchor, names.length * 56 + 16), visible.height() - dp(anchor, 16));
         int left = Math.max(visible.left + dp(anchor, 12), Math.min(location[0], visible.right - width - dp(anchor, 12)));
         int top = Math.max(visible.top + dp(anchor, 8), Math.min(location[1] + anchor.getHeight(), visible.bottom - height - dp(anchor, 8)));

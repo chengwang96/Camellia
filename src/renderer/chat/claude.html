@@ -58,7 +58,10 @@
       <button class="header-pill" id="handoffBtn" title="Choose how to continue in another engine" data-i18n data-i18n-attrs="title">Switch options</button>
       <button class="header-pill" id="handoffStop" hidden data-i18n>Stop handoff</button>
       <span style="flex:1"></span>
+      <button class="header-pill header-icon" id="conversationActions" type="button" aria-label="Conversation actions" title="Conversation actions" aria-haspopup="menu" data-i18n-attrs="aria-label title">···</button>
+      <button class="header-pill header-icon" id="workPanelToggle" type="button" aria-label="Work panel" title="Work panel" aria-controls="workPanel" aria-expanded="false" data-i18n-attrs="aria-label title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M14 4v16M17 9h2M17 13h2"/></svg><span id="workPanelBadge" class="work-panel-badge" hidden></span></button>
     </div>
+    <aside id="workPanel" class="work-panel" aria-label="Work panel" data-i18n-attrs="aria-label" hidden><div class="work-panel-header"><strong data-i18n>Work panel</strong><button id="workPanelClose" type="button" aria-label="Close" data-i18n-attrs="aria-label">×</button></div><div id="workPanelBody" class="work-panel-body"></div></aside>
 
 <div id="conversationOrigin" class="conversation-origin" hidden data-i18n></div>
 <div class="chat-scroll" id="chatScroll">
@@ -180,7 +183,7 @@
   <div class="ws-dialog" role="dialog" aria-modal="true" aria-labelledby="syncDialogTitle">
     <div class="perm-title" id="syncDialogTitle" data-i18n>Sync from Codex desktop</div>
     <p id="syncTitle"></p>
-    <p class="ws-hint" data-i18n>Syncing replaces this conversation's Camellia history with the latest content from the Codex desktop app. This cannot be undone.</p>
+    <p class="ws-hint" data-i18n>Syncing adds only new messages from the Codex desktop app. Existing Camellia messages are kept.</p>
     <div class="perm-actions" style="margin-top:14px">
       <button type="button" class="perm-deny" id="syncCancel" data-i18n>Cancel</button>
       <button type="button" class="perm-allow" id="syncConfirm" data-i18n>Sync now</button>
@@ -191,11 +194,12 @@
   <div class="ws-dialog" role="dialog" aria-modal="true" aria-labelledby="importTitle">
     <div class="perm-title" id="importTitle" data-i18n>Import local Codex sessions</div>
     <p class="ws-hint" data-i18n>Scanning starts only when you open this dialog. Large histories are streamed; only user and assistant text is copied into Camellia. Originals stay untouched. Each conversation is limited to 64 MiB of extracted text or 100,000 messages.</p>
-    <label class="import-row import-all"><input type="checkbox" id="importAll"><span data-i18n>Select all importable sessions</span></label>
+    <p class="ws-hint" data-i18n>Previously imported sessions can be updated here. Only new messages are added; existing Camellia messages are kept.</p>
+    <label class="import-row import-all"><input type="checkbox" id="importAll"><span data-i18n>Select all available sessions</span></label>
     <div class="import-list" id="importList"></div>
     <div class="perm-actions" style="margin-top:14px">
       <button type="button" class="perm-deny" id="importCancel" data-i18n>Cancel</button>
-      <button type="button" class="perm-allow" id="importConfirm" data-i18n>Import selected</button>
+      <button type="button" class="perm-allow" id="importConfirm" data-i18n>Import / update selected</button>
     </div>
   </div>
 </div>
@@ -299,6 +303,7 @@
 <script src="../shared/discussion-surface.js"></script>
 <script src="../../shared/thinking-tags.js"></script>
 <script src="./streaming-markdown.js"></script>
+<script src="./work-panel.js"></script>
 <script src="./claude.js"></script>
 </body>
 </html>

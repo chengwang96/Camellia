@@ -64,7 +64,9 @@ public class ComputerSelectionTest extends InstrumentationTestCase {
         ui(() -> {
             String address = first.getString("address"); View row = root().findViewWithTag("computer:" + address);
             View dot = root().findViewWithTag("computerPresence:" + address);
+            assertTrue("The online presence dot must be visible", dot.isShown());
             int online = ((GradientDrawable) dot.getBackground()).getColor().getDefaultColor();
+            assertEquals("The online presence color must be opaque", 255, android.graphics.Color.alpha(online));
             state(first, "正在检查…");
             assertEquals("正在检查…", ((TextView) root().findViewWithTag("computerState:" + address)).getText().toString());
             assertFalse(row.getContentDescription().toString().contains("已连接"));

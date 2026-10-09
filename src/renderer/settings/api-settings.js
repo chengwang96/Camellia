@@ -495,6 +495,10 @@ function renderUsage() {
     + (live.subscriptionUsage?.pricing?.checkedAt ? ' LiteLLM · ' + live.subscriptionUsage.pricing.checkedAt : '');
   $('subscriptionUsageSince').textContent = live.subscriptionUsage?.since ? t('Subscription recording started: ' + new Date(live.subscriptionUsage.since).toLocaleDateString(window.CamelliaI18n.locale)) : '';
   $('subscriptionCostCard').hidden = $('usageSource').value === 'api';
+  const pricing = live.subscriptionUsage?.pricing || {};
+  $('subscriptionPricesRefresh').disabled = Boolean(pricing.refreshing);
+  $('subscriptionPriceStatus').textContent = (pricing.refreshing ? t('Refreshing prices…') : pricing.error ? t(pricing.error) : t('Prices refresh automatically every day.'))
+    + (subscription.unpricedTokens ? ' ' + t('Unpriced tokens: {0}').replace('{0}', fmt(subscription.unpricedTokens)) + ' ' + t('Older aggregate usage cannot be repriced accurately.') : '');
   const metric = $('usageMetric').value;
   const metricLabel = t({ tokens: 'Token usage', requests: countLabel, inputTokens: 'Input tokens', outputTokens: 'Output tokens', failures: 'Failed / Canceled', estimatedCostUsd: 'Subscription estimate (USD)' }[metric]);
   renderChartGrid($('usageChart'), series.filter(row => metric !== 'estimatedCostUsd' || row.source === 'subscription' && row.points.some(point => point.stats.pricedTokens > 0)).map(series => ({
@@ -702,6 +706,12 @@ for (const id of ['usageSource','usageRange','usageProvider','usageKey','usageMo
   fillUsageFilters();
   renderUsage();
 };
+$('subscriptionPricesRefresh').onclick = async () => {
+  $('subscriptionPricesRefresh').disabled = true;
+  try { live = await api.subscriptionPricesRefresh(); renderUsage(); }
+  catch { $('subscriptionPriceStatus').textContent = window.CamelliaI18n.t('Prices could not be refreshed. The last available catalog is in use.'); }
+  finally { $('subscriptionPricesRefresh').disabled = false; }
+};
 $('balanceCards').onclick = e => {
   const button = e.target.closest('[data-balance]');
   if (!button) return;
@@ -724,7 +734,7 @@ $('openLogs').onclick = () => api.openLogs();
 // files, so the main process asks for confirmation first.
 let dataMigrationBusy = false, dataMigrationActive = false, dataMigrationPackage = null, dataDirectory = null;
 const migrationBytes = bytes => bytes < 1024 ? bytes + ' B' : bytes < 1024 ** 2 ? (bytes / 1024).toFixed(1) + ' KiB' : bytes < 1024 ** 3 ? (bytes / 1024 ** 2).toFixed(1) + ' MiB' : (bytes / 1024 ** 3).toFixed(2) + ' GiB';
-const migrationIdle = () => window.CamelliaI18n.t('Choose API configuration, application settings or conversation history to transfer.');
+const migrationIdle = () => window.CamelliaI18n.t('Choose API configuration, application settings or conversation history to transfer. Subscription accounts are not transferred.');
 function dataMigrationControls() {
   $('exportData').disabled = dataMigrationBusy;
   $('importData').disabled = dataMigrationBusy;
@@ -778,8 +788,13 @@ $('exportData').onclick = async () => {
         : result.file;
       $('dataMigrationStatus').textContent = window.CamelliaI18n.t('Exported {0} files ({1}) to {2}.')
         .replace('{0}', () => fmt(result.files)).replace('{1}', () => migrationBytes(result.bytes)).replace('{2}', () => where);
+      if (result.locked > 0) {
+        $('dataMigrationStatus').textContent += ' ' + window.CamelliaI18n.t('The package omits {0} unreadable files. Close running engines and export again to include them.')
+          .replace('{0}', () => fmt(result.locked)) + (result.lockedFiles?.length ? '\n' + result.lockedFiles.join('\n') : '');
+        $('dataMigrationStatus').classList.add('error');
+      }
     }
-  } catch (error) { $('dataMigrationStatus').textContent = error.message; $('dataMigrationStatus').classList.add('error'); }
+  } catch (error) { $('dataMigrationStatus').textContent = window.CamelliaI18n.t(error.message); $('dataMigrationStatus').classList.add('error'); }
   finally { dataMigrationBusy = false; dataMigrationActive = false; dataMigrationControls(); $('dataMigrationProgress').hidden = true; }
 };
 const importData = async file => {
@@ -791,8 +806,7 @@ const importData = async file => {
   try {
     await assertClean();
     let selectedFile = file;
-    // First call only reads the package; the main process answers with the
-    // category totals so this page can offer a real multi-select.
+    // Preview reads only the package index; importing requires confirmation.
     let result = await api.dataImport(file);
     if (result.ok && result.needsSelection) {
       const scope = await chooseDataScope(result);
@@ -888,7 +902,7 @@ api.onDataMigrationProgress(state => {
   const bar = $('dataMigrationProgress');
   if (typeof state.bytes === 'number' && typeof state.totalBytes === 'number' && state.totalBytes > 0) {
     bar.value = Math.min(100, Math.round(state.bytes / state.totalBytes * 100));
-    $('dataMigrationStatus').textContent = (state.phase === 'import'
+    $('dataMigrationStatus').textContent = (state.phase === 'snapshot' ? window.CamelliaI18n.t('Preparing the data package…') : state.phase === 'import'
       ? window.CamelliaI18n.t('Importing data…') : window.CamelliaI18n.t('Exporting data…')) + ' ' + bar.value + '%';
   } else if (state.files && state.totalFiles) {
     bar.value = Math.min(100, Math.round(state.files / state.totalFiles * 100));
@@ -955,7 +969,7 @@ api.onAppUpdateState(state => {
 // composer's model menu is double-clicked.
 const QUICK_SWITCH_ENGINES = [['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['dsh', 'DSH'], ['kimi', 'Kimi Code'], ['antigravity', 'Antigravity'], ['pi', 'Pi']];
 const SUBSCRIPTION_MODEL_ENGINES = [['codex', 'ChatGPT'], ['kimi', 'Kimi'], ['antigravity', 'Google']];
-let modelPreferences = null, subscriptionModelAccounts = {}, visibilitySaving = false, modelSettingsSeq = 0;
+let modelPreferences = null, subscriptionModelAccounts = {}, visibilitySaving = false, modelSettingsSeq = 0, quickSwitchRenderSeq = 0;
 
 async function accountModelState(engine) {
   try {
@@ -1085,24 +1099,26 @@ async function saveQuickSwitch(patch, select, errorFallback) {
   finally { select.disabled = false; }
 }
 async function renderQuickSwitchModels(preferences, accountStates = {}) {
+  const seq = ++quickSwitchRenderSeq;
   const container = $('quickSwitchModels');
-  container.replaceChildren();
   const router = await api.apiRouterGetState();
+  if (seq !== quickSwitchRenderSeq) return;
+  const table = document.createDocumentFragment();
   const head = document.createElement('div');
   head.className = 'quick-switch-row quick-switch-head';
   for (const title of ['Engine', 'Model', 'Reasoning level']) {
     const cell = document.createElement('span'); cell.className = 'hint'; cell.dataset.i18n = ''; cell.textContent = title;
     head.append(cell);
   }
-  container.append(head);
-  await Promise.all(QUICK_SWITCH_ENGINES.map(async ([engine, label]) => {
+  table.append(head);
+  for (const [engine, label] of QUICK_SWITCH_ENGINES) {
     const row = document.createElement('div'); row.className = 'quick-switch-row';
     const name = document.createElement('label'); name.textContent = label; name.htmlFor = 'quickSwitch-' + engine;
     const modelSelect = document.createElement('select'); modelSelect.id = name.htmlFor; modelSelect.className = 'quick-switch-model'; modelSelect.disabled = true;
     const levelSelect = document.createElement('select'); levelSelect.id = 'quickSwitchLevel-' + engine;
     levelSelect.className = 'quick-switch-level'; levelSelect.disabled = true;
     levelSelect.setAttribute('aria-label', label + ' reasoning level');
-    row.append(name, modelSelect, levelSelect); container.append(row);
+    row.append(name, modelSelect, levelSelect); table.append(row);
     const account = accountStates[engine]?.active || null;
     const models = new Map((router.enabled ? router.models || [] : []).map(id => [id, id]));
     for (const model of account?.models || []) {
@@ -1146,7 +1162,8 @@ async function renderQuickSwitchModels(preferences, accountStates = {}) {
       if (!await saveQuickSwitch({ quickSwitchLevels: { [engine]: levelSelect.value } }, levelSelect, 'Could not save the reasoning level')) return;
       levelSelect.dataset.saved = levelSelect.value;
     });
-  }));
+  }
+  container.replaceChildren(table);
 }
 
 // General and model-session preferences apply on change.

@@ -13,6 +13,7 @@ const { NativeSessionOwnership } = require('../src/engines/discussions/native-ow
 const { installDiscussionGuards } = require('../src/engines/discussions/native-access');
 const { createDiscussionLaunch, revokeDiscussionLaunch } = require('../src/engines/discussions/native-launch');
 const { WindowsJobJournal } = require('../src/engines/discussions/windows-job-journal');
+const { UnixJobJournal } = require('../src/engines/discussions/unix-job');
 const { removeTree } = require('./test-fs.cjs');
 
 const engines = ['claude', 'codex', 'kimi', 'antigravity', 'dsh', 'pi'];
@@ -140,8 +141,9 @@ test('an asynchronous access guard cannot silently authorize a pool entry', asyn
   await new Promise(resolve => setImmediate(resolve));
 });
 
-test('launch journals independently reserve runtime paths and partial journal entries cannot be ignored', t => {
-  const h = setup(t), journal = new WindowsJobJournal({ dir: path.join(h.root, 'discussions/windows-jobs') });
+for (const [directory, Journal] of [['windows-jobs', WindowsJobJournal], ['unix-jobs', UnixJobJournal]]) {
+test(`${directory} launch journals independently reserve runtime paths and partial journal entries cannot be ignored`, t => {
+  const h = setup(t), journal = new Journal({ dir: path.join(h.root, 'discussions', directory) });
   const identity = { runtimeId: randomUUID(), deliveryId: randomUUID(), generation: 1 };
   const record = journal.reserve(identity);
   for (const engine of engines) assert.throws(() => h.drivers[engine].sessions.assertAccess({ conversationId: identity.runtimeId }), /owned by a discussion/);
@@ -149,6 +151,7 @@ test('launch journals independently reserve runtime paths and partial journal en
   fs.unlinkSync(record.lockFile);
   assert.throws(() => h.drivers.codex.sessions.assertAccess({ conversationId: 'ordinary' }), /ENOENT/);
 });
+}
 
 test('a record with an uppercase JSON extension cannot disappear from the admission inventory', t => {
   const h = setup(t), member = h.add('codex'), file = h.manager.store.file(h.group.id);

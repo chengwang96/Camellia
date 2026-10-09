@@ -29,6 +29,11 @@ public final class Endpoint {
     public String port() { return Integer.toString(URI.create(origin).getPort()); }
 
     public URI uri(String path) {
+        if (path.matches("/v1/commands/[a-f0-9-]{36}")
+                || path.matches("/v1/conversations/[a-f0-9-]{36}/events\\?incremental=1")
+                || path.matches("/v1/conversations\\?offset=\\d{1,12}&limit=(?:[1-9]\\d{0,2}|1000)&query=(?:[A-Za-z0-9._*+-]|%[a-fA-F0-9]{2})*")) {
+            return URI.create(origin + path);
+        }
         if (path.matches("/v1/conversations/[a-f0-9-]{36}/read")) return URI.create(origin + path);
         if (path.matches("/v1/discussions/[a-f0-9-]{36}/artifacts(?:/[a-f0-9]{64}|\\?offset=\\d{1,12})?")) return URI.create(origin + path);
         if (path.matches("/v1/discussions(?:\\?(?:offset)=\\d{1,12}|/(?:catalog|events|commands(?:/[a-f0-9-]{36})?|[a-f0-9-]{36}(?:/events|\\?before=\\d{1,12})?))?")) {

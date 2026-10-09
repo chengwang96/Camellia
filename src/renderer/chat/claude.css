@@ -151,6 +151,34 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     max-width: 40%;
   }
+  .main { position: relative; }
+  .header-icon { width: 34px; padding: 0; position: relative; font-size: 21px; border-color: transparent; }
+  .work-panel { position: absolute; z-index: 35; top: 66px; right: 20px; width: min(360px, calc(100% - 32px)); max-height: min(50%, calc(100% - 90px)); display: flex; flex-direction: column; border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px; background: var(--dsw-alias-bg-layer-3); box-shadow: var(--dsw-shadow-lv3); overflow: hidden; }
+  .work-panel[hidden] { display: none; }
+  .work-panel-header { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--dsw-alias-border-l2); font: var(--f-s-14); }
+  .work-panel-header button { border: 0; background: transparent; color: var(--dsw-alias-label-secondary); width: 32px; height: 32px; border-radius: 8px; font-size: 22px; cursor: pointer; }
+  .work-panel-body { min-height: 0; padding: 14px; overflow-y: auto; overscroll-behavior: contain; font: var(--f-s-14); }
+  .work-panel-body h2 { font: var(--f-base-16); overflow-wrap: anywhere; }
+  .work-panel-body h3 { font: var(--f-s-14); margin: 14px 0 6px; }
+  .work-panel-body p, .work-panel-body pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; line-height: 1.55; }
+  .work-group + .work-group { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l2); }
+  .work-group summary, .work-history summary, .subtask-turn-card summary { padding: 8px 4px; cursor: pointer; color: var(--dsw-alias-label-secondary); }
+  .work-task, .work-artifact { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; width: 100%; padding: 12px 10px; text-align: left; border: 0; border-radius: 10px; background: transparent; color: var(--dsw-alias-label-primary); font: inherit; cursor: pointer; }
+  .work-task:hover, .work-artifact:hover, .work-panel-header button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+  .work-task strong, .work-artifact strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .work-task small, .work-artifact small { grid-column: 1 / -1; color: var(--dsw-alias-label-caption); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--f-xxs-12); }
+  .work-state { font: var(--f-xxs-12); color: var(--dsw-alias-label-caption); }
+  .work-waiting, .work-attention, .work-failed { color: var(--dsw-alias-state-danger-primary, #c55c20); }
+  .work-panel-badge { position: absolute; right: -2px; top: -4px; min-width: 15px; height: 15px; font-size: 10px; line-height: 15px; border-radius: 8px; background: var(--dsw-static-deepseek-500); color: white; }
+  .work-empty { color: var(--dsw-alias-label-caption); padding: 0 10px; }
+  .work-action { border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 8px 10px; margin: 6px 6px 6px 0; font: inherit; cursor: pointer; }
+  .work-reply textarea, .work-approval input { display: block; width: 100%; box-sizing: border-box; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 10px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1); font: inherit; }
+  .work-reply textarea { min-height: 80px; resize: vertical; }
+  .work-approval { padding: 10px; margin-top: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
+  .work-approval label { display: block; margin-top: 10px; }
+  .subtask-turn-card { margin: 8px 0 16px; padding: 4px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; font: var(--f-s-14); }
+  .work-panel :focus-visible, .subtask-turn-card :focus-visible { outline: 2px solid var(--dsw-static-deepseek-400); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { .dsh-pop { animation: none; } }
   .header-pill {
     display: inline-flex; align-items: center; justify-content: center; gap: 8px;
     flex-shrink: 0; height: 32px; min-height: 32px;
@@ -1014,6 +1042,9 @@
     animation: popIn .12s var(--ds-ease-in-out);
   }
   @keyframes popIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .dsh-pop.action-menu { min-width: 154px; width: max-content; max-width: min(260px, calc(100vw - 24px)); }
+  .action-menu .pop-row { width: 100%; min-height: 36px; text-align: left; border: 0; background: transparent; }
+  .action-menu .pop-row span { overflow-wrap: anywhere; }
   .pop-row {
     display: flex; align-items: center; gap: 8px;
     padding: 9px 12px; border-radius: 8px;

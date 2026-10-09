@@ -114,6 +114,8 @@ public final class SnapshotCoalescer: @unchecked Sendable {
               next.instanceId == previous.instanceId, next.cursor >= previous.cursor,
               next.conversation == previous.conversation, next.permission == previous.permission,
               next.messages == previous.messages, next.settings == previous.settings,
+              next.subagents == previous.subagents,
+              next.hasLive == previous.hasLive, next.hasAutomation == previous.hasAutomation,
               next.automation == previous.automation, next.queueVersion == previous.queueVersion,
               next.canQueue == previous.canQueue, next.queue == previous.queue,
               next.nextBefore == previous.nextBefore, next.olderAvailable == previous.olderAvailable else { return false }

@@ -11,6 +11,7 @@ const { isolatedEnvironment } = require('../src/benchmark/engines');
 const { removeTree } = require('./test-fs.cjs');
 const { DiscussionProduction } = require('../src/engines/discussions/production');
 const { codexTextSpec } = require('../src/engines/discussions/codex-text-policy');
+const { UnixJobJournal } = require('../src/engines/discussions/unix-job');
 
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-text-policy-'));
@@ -35,12 +36,26 @@ test('Codex discussion catalogs keep text-only instructions in both native schem
   }
 });
 
+test('macOS production registers all six engines with the Unix supervisor and Windows keeps its own backend', t => {
+  const { root } = setup(t);
+  for (const platform of ['darwin', 'win32', 'linux']) {
+    const registered = new Map();
+    const production = new DiscussionProduction({ dataDir:path.join(root,platform), platform,
+      registry:{get:engine=>registered.get(engine),register:entry=>registered.set(entry.engine,entry)},
+      codex:{ensureSession(){}}, antigravity:{ensureSession(){}}, runtimes:()=>({locate:()=>null}), getCatalog:()=>[] });
+    production.refresh();
+    assert.deepEqual([...registered.keys()].sort(), platform === 'linux' ? [] : ['antigravity','claude','codex','dsh','kimi','pi']);
+    assert.equal(production.journal instanceof UnixJobJournal, platform === 'darwin');
+    for (const entry of registered.values()) for (const method of ['prepare','verify','confirmStopped']) assert.equal(typeof entry.policy[method],'function');
+  }
+});
+
 test('validated runtime upgrades stay available and produce distinct evidence; unknown versions remain blocked', () => {
   const production = Object.create(DiscussionProduction.prototype);
   const installed = {};
   production.registry = { get: () => ({}) };
   production.runtimes = () => ({ locate: (engine, connection) => ({ version: installed[engine + ':' + connection] }) });
-  for (const [engine, previous, next] of [['codex', '0.154.0', '0.160.0'], ['codex', '0.160.0', '0.160.1'], ['claude', '2.1.273', '2.1.287'],
+  for (const [engine, previous, next] of [['codex', '0.154.0', '0.160.0'], ['codex', '0.160.0', '0.160.1'], ['codex', '0.160.1', '0.161.0'], ['claude', '2.1.273', '2.1.287'],
     ['claude', '2.1.287', '2.1.288'], ['claude', '2.1.288', '2.1.289'], ['claude', '2.1.289', '2.1.291'], ['dsh', '0.1.5-rc.2', '0.2.0-rc.2'],
     ['kimi', '2.0.0', '2.1.1'], ['antigravity', '0.1.17', '0.1.20']]) {
     const binding = { engine, connection: 'api' }, key = engine + ':api';
@@ -52,6 +67,24 @@ test('validated runtime upgrades stay available and produce distinct evidence; u
     assert.notEqual(production.runtimeInfo(binding).version, before.version, 'Old evidence cannot admit an upgraded runtime');
     installed[key] = '99.0.0';
     assert.equal(production.canVerify(binding), false);
+  }
+});
+
+test('Codex 0.161.0 can verify API and subscription connections; missing and unsupported runtimes have different remedies', () => {
+  const production = Object.create(DiscussionProduction.prototype);
+  production.registry = { get: () => ({}) };
+  let runtime = { version: '0.161.0' };
+  production.runtimes = () => ({ locate: () => runtime });
+  for (const connection of ['api', 'subscription']) {
+    const binding = { engine: 'codex', connection };
+    assert.equal(production.canVerify(binding), true);
+    runtime = { version: '99.0.0' };
+    assert.equal(production.canVerify(binding), false);
+    assert.equal(production.reason(binding), 'The installed harness runtime version is not supported for discussions. Update Camellia or select a supported executable in Settings, then refresh models.');
+    runtime = null;
+    assert.equal(production.canVerify(binding), false);
+    assert.equal(production.reason(binding), 'No harness runtime was found. Install it or set its executable path in Settings, then refresh models.');
+    runtime = { version: '0.161.0' };
   }
 });
 

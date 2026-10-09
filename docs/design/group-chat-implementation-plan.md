@@ -1,6 +1,6 @@
 # Agent discussion implementation and acceptance record
 
-Updated 2026-10-02. The original v1 gate below was drafted for a Windows text-only group. Later user decisions expanded the delivered beta to six harnesses, existing subscriptions and APIs, native tools, files, identity prompts, and Android control. Do not apply the old “no tools or attachments” gate to the current feature. This is a development record, not a claim that every provider, long-context path, and physical-device network has been accepted.
+Updated 2026-10-08. The original v1 gate below was drafted for a Windows text-only group. Later user decisions expanded the delivered beta to six harnesses, existing subscriptions and APIs, native tools, files, identity prompts, Android control, and macOS hosting. Do not apply the old “no tools or attachments” gate to the current feature. This is a development record, not a claim that every provider, long-context path, and physical-device network has been accepted.
 
 ## Delivered integration
 
@@ -8,7 +8,8 @@ Updated 2026-10-02. The original v1 gate below was drafted for a Windows text-on
 - Members can use Claude Code, Codex CLI, DSH, Kimi Code, Antigravity, and Pi through currently configured API routes. Codex, Kimi, and Antigravity also reuse supported subscription sign-ins. API members select a **provider and model**, not an individual key; the router can rotate keys within that provider, while the member binding does not silently change providers.
 - Groups can be created, renamed, pinned, and deleted; a member can have an identity prompt. Structured mentions select one or more responders, with parallel/serial mode, streaming replies, stop, retry, and serial-failure handling.
 - The native-tools path uses the corresponding ordinary-chat transport and permissions. The discussion UI shares attachment, tool card, question/approval, and file preview components. A group has a managed work directory and can pass real generated files between members. [Rich interaction](group-chat-rich-interaction-plan.md) records tested bindings and input limits.
-- An all-access paired Android device can manage and participate in discussion groups when the Windows host advertises the discussion capabilities. Ordinary conversation and group records remain separate. See [remote access](../remote-access.md).
+- An all-access paired Android device can manage and participate in discussion groups when the Windows or macOS host advertises the discussion capabilities. Ordinary conversation and group records remain separate. See [remote access](../remote-access.md).
+- macOS uses a packaged Unix process supervisor for launch, stop, and independent recovery. All six production adapters register on macOS; focused service/ownership tests, ARM64 cross-compilation, and eight native Unix lifecycle/driver tests passed on the Windows/Linux development host. macOS CI now covers the source and packaged helper and a real Codex loopback discussion workflow. Those CI steps and a Mac end-to-end session still require native macOS execution; cross-compilation and Linux results do not establish Mac acceptance. See [desktop discussion development](../development.md#agent-discussions-on-desktop).
 
 ## Acceptance ledger
 

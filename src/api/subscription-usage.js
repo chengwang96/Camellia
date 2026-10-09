@@ -18,6 +18,7 @@ function subscriptionProfiles(config) {
 // Only usage metadata is saved; credentials and conversation text never enter this file.
 function createSubscriptionUsage({ file, onChange = () => {}, now = () => new Date() }) {
   const data = readJson(file, { version: 1, since: now().toISOString(), accounts: {}, recent: [] });
+  data.pendingPricing ||= [];
   let seen = new Set(data.recent || []), error = null;
   function state(profiles = []) {
     const accounts = new Map(Object.entries(data.accounts).map(([id, account]) => [id, { id, ...structuredClone(account) }]));
@@ -31,6 +32,7 @@ function createSubscriptionUsage({ file, onChange = () => {}, now = () => new Da
     if (!Number.isFinite(date.getTime())) throw new Error('Invalid usage date');
     const key = `${engine}:${accountId}`;
     const oldAccount = data.accounts[key] && structuredClone(data.accounts[key]), oldRecent = data.recent;
+    const oldPending = data.pendingPricing.slice();
     const account = data.accounts[key] ||= { engine, accountId, label: accountId, usage: {} };
     const groups = new Map();
     for (const sample of samples) {
@@ -42,7 +44,14 @@ function createSubscriptionUsage({ file, onChange = () => {}, now = () => new Da
       value.reasoningTokens += count(sample.reasoning);
       const tokens = count(sample.input) + count(sample.output);
       const cost = estimateTokens(name, sample);
-      if (cost === null) value.unpricedTokens += tokens;
+      if (cost === null) {
+        value.unpricedTokens += tokens;
+        const valid = ['input', 'output', 'cacheRead', 'cacheWrite'].every(key => sample[key] === undefined || Number.isFinite(sample[key]) && sample[key] >= 0)
+          && count(sample.cacheRead) + count(sample.cacheWrite) <= count(sample.input);
+        if (tokens && valid && sample.reported !== false) data.pendingPricing.push({ account: key, model: name, day: dayId(date),
+          sample: { input: count(sample.input), output: count(sample.output), cacheRead: count(sample.cacheRead),
+            cacheWrite: count(sample.cacheWrite), aggregate: Boolean(sample.aggregate) } });
+      }
       else { value.estimatedCostUsd += cost; value.pricedTokens += tokens; }
       groups.set(name, value);
     }
@@ -61,11 +70,13 @@ function createSubscriptionUsage({ file, onChange = () => {}, now = () => new Da
     }
     seen.add(id);
     data.recent = [...seen].slice(-10000);
+    data.pendingPricing = data.pendingPricing.slice(-10000);
     while (seen.size > 10000) seen.delete(seen.values().next().value);
     try { writeJson(file, data); error = null; }
     catch (failure) {
       if (oldAccount) data.accounts[key] = oldAccount; else delete data.accounts[key];
       data.recent = oldRecent; seen = new Set(oldRecent || []);
+      data.pendingPricing = oldPending;
       error = 'Subscription usage could not be saved.';
       onChange();
       throw failure;
@@ -73,7 +84,27 @@ function createSubscriptionUsage({ file, onChange = () => {}, now = () => new Da
     onChange();
     return true;
   }
-  return { state, record };
+  function reprice() {
+    const eligible = data.pendingPricing.filter(row => estimateTokens(row.model, row.sample) !== null);
+    if (!eligible.length) return false;
+    const oldAccounts = structuredClone(data.accounts), oldPending = data.pendingPricing;
+    const priced = new Set(eligible);
+    for (const row of eligible) {
+      const usage = data.accounts[row.account]?.usage, cost = estimateTokens(row.model, row.sample);
+      const tokens = count(row.sample.input) + count(row.sample.output);
+      for (const bucket of [usage, usage?.byModel?.[row.model], usage?.daily?.[row.day]?.[row.model]]) {
+        if (!bucket) continue;
+        bucket.unpricedTokens = Math.max(0, (bucket.unpricedTokens || 0) - tokens);
+        bucket.pricedTokens = (bucket.pricedTokens || 0) + tokens;
+        bucket.estimatedCostUsd = (bucket.estimatedCostUsd || 0) + cost;
+      }
+    }
+    data.pendingPricing = data.pendingPricing.filter(row => !priced.has(row));
+    try { writeJson(file, data); error = null; }
+    catch (failure) { data.accounts = oldAccounts; data.pendingPricing = oldPending; error = 'Subscription usage could not be saved.'; throw failure; }
+    onChange(); return true;
+  }
+  return { state, record, reprice };
 }
 
 module.exports = { createSubscriptionUsage, subscriptionProfiles };

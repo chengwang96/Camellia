@@ -49,6 +49,10 @@ try:
         # figure, not appended to the headline amount.
         expect(page.locator('#subscriptionCost')).not_to_contain_text('Unpriced usage')
         expect(page.locator('#subscriptionCostNote')).to_contain_text('not your subscription bill')
+        expect(page.locator('#subscriptionPriceStatus')).to_contain_text('Prices refresh automatically every day.')
+        page.locator('#subscriptionPricesRefresh').click()
+        expect(page.locator('#subscriptionPricesRefresh')).to_be_enabled(timeout=35000)
+        expect(page.locator('#subscriptionCostNote')).to_contain_text('LiteLLM')
         expect(page.locator('#subscriptionUsageSince')).not_to_contain_text('{0}')
         expect(page.locator('#usageRows')).not_to_contain_text('gpt-5.3-codex')
 

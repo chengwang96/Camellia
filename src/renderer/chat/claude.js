@@ -911,7 +911,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // Engines with subscriptions list account and API models together, so the
     // composer itself chooses the connection; a session cannot switch engines.
     if (!supportsAccounts()) return [{ title: 'Model · Same-model failover', options: MODELS }];
-    // With no account signed in there is only one list, so keep the plain group.
+    // API routes remain selectable even when the saved connection is a
+    // subscription with no usable account catalog (including a fresh install).
+    if (!accountModels.length && !googleSubscription() && routeModels.length) return [{
+      title: 'Model · Same-model failover', connection: 'api',
+      options: accountSubscription() ? routeModels.map(id => ({ id, label: id })) : MODELS,
+    }];
+    // With no account or API routes there is only the setup/saved-model list.
     if (!accountModels.length) return [{ title: 'Model · Same-model failover', options: MODELS }];
     const account = { title: 'Model · ' + accountName + ' account', connection: 'subscription', options: visibleAccountModels().map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
     const api = { title: 'Model · Shared API routes', connection: 'api', options: routeModels.map(id => ({ id, label: id })) };
@@ -1753,6 +1759,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       list.className = 'turn-artifacts'; list.setAttribute('role', 'group');
       list.dataset.i18nAttrs = 'aria-label'; list.setAttribute('aria-label', 'Files from this turn');
       const sortedFiles = window.CamelliaArtifacts.sortArtifacts(result.files);
+      workPanel.artifacts(sortedFiles);
       const limit = window.CamelliaArtifacts.VISIBLE_ARTIFACT_LIMIT;
       const overflow = document.createElement('details'); overflow.className = 'artifact-overflow';
       const summary = document.createElement('summary');
@@ -2494,6 +2501,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   // ---------- event handling ----------
   function handleEvent(ev) {
     if (!ev) return;
+    if (ev.type === 'gui:subagent') {
+      if (ev.session_id === context.sessionId) workPanel.update(ev.tasks);
+      return;
+    }
     if (['conversation:workspaces', 'conversation:read'].includes(ev.type)) { void sidebar.load(); return; }
     if (ev.type === 'conversation:activity') {
       void sidebar.load();
@@ -3457,9 +3468,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const rect = anchor.getBoundingClientRect();
     closePops();
     const pop = document.createElement('div');
-    pop.className = 'dsh-pop';
+    pop.className = 'dsh-pop action-menu';
     pop.setAttribute('role', 'menu');
-    pop.style.maxWidth = '300px';
     actions.forEach((action) => {
       const row = document.createElement('button');
       row.type = 'button';
@@ -3500,6 +3510,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   function updateConversationControls() {
     const locked = conversationBusy() || loadingSession || switchingEngine || sending;
+    $('conversationActions').disabled = !context.sessionId || loadingSession || switchingEngine;
     // Changing the model or reasoning level is queued the same way a message is:
     // it applies to the next message, not the running turn, so it stays usable
     // while a response runs. Switching harness, and the session-level settings
@@ -3514,6 +3525,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     updateMessageActions();
   }
   function resetConversationView() {
+    workPanel.reset();
     historyOpening = false;
     sending = false;
     drainingQueue = false;
@@ -3545,6 +3557,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       selfDeletedIds.add(id);
       setTimeout(() => selfDeletedIds.delete(id), 5000);
     } });
+  const workPanel = window.createWorkPanel({ context, setStatus, openFilePreview });
+  $('conversationActions').onclick = () => sidebar.openCurrentActions($('conversationActions'));
   const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && canChangeContext() && !running, openHistorySession, setStatus,
     acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); queueMicrotask(drainMessageQueue); }, openActionMenu, closePops });
 
@@ -3615,8 +3629,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let pendingForkId = null;
   const tasksUI = createScheduledTasksUI({ $, context, setStatus });
   async function forkSession(s) {
-    if (!await openHistorySession(s.id)) return;
-    if (conversationBusy()) { setStatus('Wait for this conversation to finish before forking it'); return; }
+    if (!canChangeContext()) return;
     loadingSession = true;
     input.disabled = true;
     updateConversationControls();
@@ -3718,6 +3731,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       restoreDraft();
       setStatus(res.interrupted ? 'The last turn was interrupted. Review its result before continuing.' : res.truncated ? "Showing the latest 200 messages. Continuation uses the full history." : "History loaded. Your next message continues this session.");
       if (!await applyLiveRun(res.live)) return false;
+      workPanel.update(res.subagents);
       if (seq !== sessionOpenSeq) return false;
       const lastSeq = res.live?.eventSeq || 0;
       const liveRun = res.live?.runId;
@@ -3902,7 +3916,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     updateCtxRing();
     if (Array.isArray(state?.models)) routeModels = state.enabled ? state.models : [];
     applyApiLevels();
-    if (accountSubscription()) return;
+    if (accountSubscription() && (accountModels.length || googleSubscription())) return;
     if (!Array.isArray(state?.models)) return;
     const models = state.enabled ? state.models : [];
     const canonical = currentModel.replace(/:cloud$/, '');
@@ -3969,16 +3983,18 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       hiddenSubscriptionModels = preferences?.hiddenSubscriptionModels || {};
       accountModels = accountState?.ok && Array.isArray(accountState.models) ? accountState.models : [];
       applySessionSettings(selected);
-      // Fills the API route list and context caps; it leaves MODELS alone while
-      // a subscription supplies them.
+      // Fills API routes and context caps independently of account sign-in.
       applyRouterModels(routerState);
       if (subscription) {
         const account = accountState || {};
-        if (!account.ok) throw new Error(account.error);
-        const visible = visibleAccountModels();
-        MODELS.splice(0, MODELS.length, ...(accountModels.length ? [] : [{ id: '', label: 'Connect ' + accountName + ' in settings' }]),
-          ...visible.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })));
-        if (currentModel && !accountModels.some(model => model.id === currentModel)) MODELS.push({ id: currentModel, label: currentModel + ' (refresh account)' });
+        const apiOnly = !accountModels.length && !googleSubscription() && routeModels.length > 0;
+        if (!account.ok && !apiOnly) throw new Error(account.error);
+        if (!apiOnly) {
+          const visible = visibleAccountModels();
+          MODELS.splice(0, MODELS.length, ...(accountModels.length ? [] : [{ id: '', label: 'Connect ' + accountName + ' in settings' }]),
+            ...visible.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })));
+          if (currentModel && !accountModels.some(model => model.id === currentModel)) MODELS.push({ id: currentModel, label: currentModel + ' (refresh account)' });
+        }
         $('modelPill').title = window.CamelliaI18n.t('Model · double-click to switch to your model and reasoning default');
         renderModelPill(); updateCtxRing();
       }
