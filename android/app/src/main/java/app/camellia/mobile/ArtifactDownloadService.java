@@ -154,7 +154,7 @@ public final class ArtifactDownloadService extends Service {
         } catch (Exception error) {
             phase = job.cancelled ? "cancelled" : "failed";
             detail = job.cancelled ? tr("下载已取消。", "Download cancelled.")
-                : creating ? tr("无法写入默认下载目录。请在设置中重新选择，或使用「另存为」。", "Cannot write to the default folder. Choose it again in Settings or use Save as.")
+                : creating ? tr("无法写入默认下载目录。请在设置中重新选择，或改为每次询问保存位置。", "Cannot write to the default folder. Choose it again in Settings or choose a location each time.")
                 : RemoteApi.failureMessage(error, tr("zh", "en").equals("zh")) + tr(" 请重新下载；也请检查保存位置的空间和权限。", " Download again; also check storage space and permissions.");
             if (job.destination != null && !cleanup(job.destination)) detail += tr(" 未完成文件可能仍在保存位置，请手动删除。", " A partial file may remain; delete it manually.");
         } finally { if (client != null) client.cancel(); }

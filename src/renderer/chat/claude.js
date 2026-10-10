@@ -469,21 +469,17 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const inline = value => window.CamelliaMarkdownLinks.renderInline(value, cwd);
     const tokens = [];
     let text = String(src);
+    // Protect math before Markdown rules, including backticks inside TeX text.
+    text = window.CamelliaMarkdownLinks.protectMath(text, span => {
+      tokens.push({ t: 'math', span });
+      return SENT + (tokens.length - 1) + SENT;
+    });
     text = text.replace(/```(\w*)[ \t]*\n?([\s\S]*?)(?:```|$)/g, (_m, lang, code) => {
       tokens.push({ t: 'code', lang, code });
       return SENT + (tokens.length - 1) + SENT;
     });
     text = text.replace(/`([^`\n]+)`/g, (_m, code) => {
       tokens.push({ t: 'inline', code });
-      return SENT + (tokens.length - 1) + SENT;
-    });
-    // Protect whole display-math blocks before block rules run, so a formula
-    // line that starts with "-", ">" or "---" is not read as a list or quote.
-    text = text.replace(/\$\$([\s\S]*?)\$\$|(?<!\\)\\\[([\s\S]*?)\\\]/g, (raw, dollars, brackets, offset) => {
-      // Indented code is collected below; keep bracket examples there literal.
-      if (brackets !== undefined && indentCodeWidth(text.slice(text.lastIndexOf('\n', offset - 1) + 1, offset + 1))) return raw;
-      // The inline parser recognizes $$ display math; \[ is a block-only rule.
-      tokens.push({ t: 'math', raw: '$$' + (dollars ?? brackets) + '$$' });
       return SENT + (tokens.length - 1) + SENT;
     });
     const lines = text.split('\n');
@@ -570,10 +566,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         return renderCodeBlock(tk.lang, tk.code);
       }
       if (tk.t === 'inline') return '<code class="md-inline">' + esc(tk.code) + '</code>';
-      if (tk.t === 'math') return inline(tk.raw);
+      if (tk.t === 'math') return window.CamelliaMarkdownLinks.renderMath(tk.span);
       if (tk.t === 'rule') return '<hr class="md-rule">';
       if (tk.t === 'quote') {
-        const body = inline(tk.text).replace(sentRe, renderToken).replace(/\n/g, '<br>');
+        const body = inline(tk.text).replace(/\n/g, '<br>').replace(sentRe, renderToken);
         return '<blockquote class="md-quote">' + body + '</blockquote>';
       }
       if (tk.t === 'list') {

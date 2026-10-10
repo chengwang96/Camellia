@@ -30,7 +30,7 @@ final class MarkdownStream {
     int parseCalls;
 
     static Parser newParser() {
-        return Parser.builder().extensions(Arrays.asList(TablesExtension.create(), StrikethroughExtension.create()))
+        return Parser.builder().extensions(Arrays.asList(TablesExtension.create(), StrikethroughExtension.create(), new MarkdownMath()))
             .includeSourceSpans(IncludeSourceSpans.BLOCKS).build();
     }
 
@@ -338,7 +338,8 @@ final class MarkdownStream {
     }
     static long fingerprint(Node node) {
         long value = hash(0xcbf29ce484222325L, node.getClass().getName());
-        if (node instanceof Text) value = hash(value, ((Text) node).getLiteral());
+        if (node instanceof MarkdownMath.Formula) value = hash(value, ((MarkdownMath.Formula) node).source());
+        else if (node instanceof Text) value = hash(value, ((Text) node).getLiteral());
         else if (node instanceof Code) value = hash(value, ((Code) node).getLiteral());
         else if (node instanceof FencedCodeBlock) { value = hash(value, ((FencedCodeBlock) node).getInfo()); value = hash(value, ((FencedCodeBlock) node).getLiteral()); }
         else if (node instanceof IndentedCodeBlock) value = hash(value, ((IndentedCodeBlock) node).getLiteral());

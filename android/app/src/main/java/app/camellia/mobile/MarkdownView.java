@@ -28,25 +28,20 @@ import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import org.commonmark.Extension;
 import org.commonmark.ext.gfm.strikethrough.Strikethrough;
-import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension;
 import org.commonmark.ext.gfm.tables.TableBlock;
 import org.commonmark.ext.gfm.tables.TableCell;
 import org.commonmark.ext.gfm.tables.TableRow;
-import org.commonmark.ext.gfm.tables.TablesExtension;
 import org.commonmark.node.*;
 import org.commonmark.parser.Parser;
 import java.net.URI;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Supplier;
 
 final class MarkdownView {
-    private static final List<Extension> EXTENSIONS = Arrays.asList(TablesExtension.create(), StrikethroughExtension.create());
-    private final Parser parser = Parser.builder().extensions(EXTENSIONS).build();
+    private final Parser parser = MarkdownStream.newParser();
     private final Context context;
     private final int ink, muted, surface, accent;
     private final boolean chinese;
@@ -150,6 +145,9 @@ final class MarkdownView {
                         List<TableRow> rows = MarkdownStream.tableRows(chunk.node);
                         for (int row = 0; row < rows.size(); row++) patchRow(grid, row, rows.get(row), columns);
                         while (grid.getChildCount() > rows.size()) grid.removeViewAt(grid.getChildCount() - 1);
+                    } else if (chunk.node instanceof MarkdownMath.Block) {
+                        TextView view = binding.views.get(0).findViewWithTag("markdownMathText");
+                        setInline(view, formula((MarkdownMath.Block) chunk.node));
                     } else if ((chunk.node instanceof Paragraph || chunk.node instanceof Heading || chunk.node instanceof HtmlBlock) && binding.views.size() == 1) {
                         TextView view = (TextView) binding.views.get(0);
                         setInline(view, chunk.node instanceof HtmlBlock ? ((HtmlBlock) chunk.node).getLiteral() : inline(chunk.node));
@@ -235,6 +233,7 @@ final class MarkdownView {
         TextView view = new TextView(context); view.setTextColor(ink); view.setTextSize(size);
         view.setLineSpacing(dp(7), 1); view.setPadding(0, dp(4), 0, dp(6));
         view.setText(content, TextView.BufferType.SPANNABLE); view.setTextIsSelectable(true);
+        mathCopy(view);
         if (content instanceof Spanned && ((Spanned) content).getSpans(0, content.length(), URLSpan.class).length > 0) view.setMovementMethod(LinkMovementMethod.getInstance());
         view.setLinkTextColor(accent); return view;
     }
@@ -251,6 +250,7 @@ final class MarkdownView {
 
     private void renderBlock(Node node, LinearLayout target, int depth) {
         if (++blocks > 1200) throw new RenderLimit();
+        if (node instanceof MarkdownMath.Block) { math((MarkdownMath.Block) node, target); return; }
         if (node instanceof TableBlock) { table((TableBlock) node, target); return; }
         if (node instanceof FencedCodeBlock) {
             FencedCodeBlock code = (FencedCodeBlock) node; code(code.getLiteral(), code.getInfo(), target); return;
@@ -299,7 +299,8 @@ final class MarkdownView {
         if (depth > 64) throw new RenderLimit();
         for (Node child = parent.getFirstChild(); child != null; child = child.getNext()) {
             int start = target.length();
-            if (child instanceof Text) target.append(((Text) child).getLiteral());
+            if (child instanceof MarkdownMath.Inline) target.append(formula((MarkdownMath.Inline) child));
+            else if (child instanceof Text) target.append(((Text) child).getLiteral());
             else if (child instanceof Code) target.append(((Code) child).getLiteral());
             else if (child instanceof SoftLineBreak) target.append('\n');
             else if (child instanceof HardLineBreak) target.append('\n');
@@ -325,6 +326,38 @@ final class MarkdownView {
     }
 
     private void span(SpannableStringBuilder target, Object span, int start) { target.setSpan(span, start, target.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE); }
+
+    private SpannableStringBuilder formula(MarkdownMath.Formula formula) {
+        // ReplacementSpan cannot cross Android paragraph boundaries; TeX treats these line breaks as whitespace.
+        SpannableStringBuilder value = new SpannableStringBuilder(formula.closed() ? formula.source().replace('\n', ' ') : formula.source());
+        if (formula.closed() && value.length() > 0) value.setSpan(new MathSpan(context, formula, ink), 0, value.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return value;
+    }
+
+    private void math(MarkdownMath.Block node, LinearLayout target) {
+        HorizontalScrollView horizontal = new HorizontalScrollView(context); horizontal.setTag("markdownMathScroll"); horizontal.setFillViewport(true);
+        TextView view = text(formula(node), 17); view.setTag("markdownMathText");
+        view.setGravity(Gravity.CENTER_HORIZONTAL); view.setHorizontallyScrolling(true);
+        view.setPadding(dp(4), dp(10), dp(4), dp(10));
+        horizontal.addView(view, new android.widget.FrameLayout.LayoutParams(-2, -2));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(4), 0, dp(10)); target.addView(horizontal, params);
+    }
+
+    private void mathCopy(TextView view) {
+        view.setCustomSelectionActionModeCallback(new android.view.ActionMode.Callback() {
+            public boolean onCreateActionMode(android.view.ActionMode mode, android.view.Menu menu) { return true; }
+            public boolean onPrepareActionMode(android.view.ActionMode mode, android.view.Menu menu) { return false; }
+            public void onDestroyActionMode(android.view.ActionMode mode) { }
+            public boolean onActionItemClicked(android.view.ActionMode mode, android.view.MenuItem item) {
+                if (item.getItemId() != android.R.id.copy || !(view.getText() instanceof Spanned)) return false;
+                int from = Math.min(view.getSelectionStart(), view.getSelectionEnd()), to = Math.max(view.getSelectionStart(), view.getSelectionEnd());
+                if (from < 0 || ((Spanned) view.getText()).getSpans(from, to, MathSpan.class).length == 0) return false;
+                ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+                clipboard.setPrimaryClip(ClipData.newPlainText("Camellia", MathSpan.copy((Spanned) view.getText(), from, to)));
+                mode.finish(); return true;
+            }
+        });
+    }
 
     static boolean safeLink(String destination) {
         try {

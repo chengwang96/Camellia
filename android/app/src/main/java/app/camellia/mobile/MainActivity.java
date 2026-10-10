@@ -112,13 +112,13 @@ public final class MainActivity extends Activity {
     private String conversationId;
     private String conversationTitle = "";
     private Long nextBefore;
-    private boolean historyLimited;
+    private boolean historyDetached;
     private String historyInstance = "";
     private boolean olderLoading;
     private int nextOffset;
     private final LinkedHashMap<String, JSONObject> conversations = new LinkedHashMap<>();
     private final LinkedHashMap<String, Boolean> collapsedGroups = new LinkedHashMap<>();
-    private Button older;
+    private Button older, latest;
     private String instance = "";
     private long cursor = -1;
     private JSONObject pendingSnapshot;
@@ -2290,7 +2290,7 @@ public final class MainActivity extends Activity {
         renderedMessages.clear();
         processState.clear();
         screen = "detail"; networkScreen = false;
-        stopNetwork(); clearHistory(); instance = ""; cursor = -1; nextBefore = null; lastLive = null; historyLimited = false; editingSeq = -1;
+        stopNetwork(); clearHistory(); instance = ""; cursor = -1; nextBefore = null; lastLive = null; olderLoading = false; editingSeq = -1;
         remoteSettings = null;
         remotePreparation = null;
         remoteCompaction = null;
@@ -2309,8 +2309,7 @@ public final class MainActivity extends Activity {
         older.setVisibility(View.GONE);
         older.setBackgroundColor(Color.TRANSPARENT); older.setTextSize(Palette.TEXT_SMALL); content.addView(older);
         remoteEmptyState = new ChatEmptyState(this, chatStyle, "brand", tr("从这里开始", "Start here"),
-            tr("描述任务，继续电脑上的工作。", "Describe a task to continue on this computer."),
-            tr("输入消息", "Write a message"), this::focusComposer);
+            tr("描述任务，继续电脑上的工作。", "Describe a task to continue on this computer."));
         remoteEmptyState.setVisibility(View.GONE); content.addView(remoteEmptyState);
         messages = column(); content.addView(messages);
         approvals = column(); content.addView(approvals); approvalSignature = "";
@@ -2321,6 +2320,9 @@ public final class MainActivity extends Activity {
         queueBar = column(); queueBar.setTag("remoteMessageQueue");
         queueBar.setVisibility(View.GONE); content.addView(queueBar);
         LinearLayout composerBar = bottomBar("composerBar");
+        latest = button(tr("回到最新消息", "Back to latest messages"), this::loadLatest, false);
+        latest.setTag("remoteLatestMessages"); latest.setVisibility(View.GONE);
+        latest.setBackgroundColor(Color.TRANSPARENT); latest.setTextSize(Palette.TEXT_SMALL); composerBar.addView(latest);
         chatComposer = new ChatComposer(composerBar, chatStyle, chinese, tr("发消息，继续任务…", "Message your computer…"), 16000,
             () -> showRemoteSettings(false), this::sendMessage, this::stopRun, this::cancelEdit);
         composer = chatComposer.input; composer.setTag("remoteComposer");
@@ -2406,7 +2408,7 @@ public final class MainActivity extends Activity {
             if (row != null) retainHistory(row.optLong("seq"), row);
         }
         connected = false; controlAllowed = false; lastLive = null; remoteSettings = null;
-        trimHistory(); renderMessages(null);
+        trimHistory(false); renderMessages(null);
         updateWorkStatus();
     }
 
@@ -2477,8 +2479,8 @@ public final class MainActivity extends Activity {
         connected = true; controlAllowed = snapshot.optString("permission").equals("control"); conversationSeq = conversation.optLong("seq");
         prefetch.put(credentials, snapshot);
         if (!server.equals(instance)) { queueVersion = -1; clearSubtasks(); }
-        boolean following = initialMessageScroll || pendingScrollView == scroll && pendingScrollPosition == Integer.MAX_VALUE
-            || scroll.getChildCount() == 0 || scroll.getChildAt(0).getHeight() - scroll.getHeight() - scroll.getScrollY() < dp(120);
+        boolean following = !historyDetached && (initialMessageScroll || pendingScrollView == scroll && pendingScrollPosition == Integer.MAX_VALUE
+            || scroll.getChildCount() == 0 || scroll.getChildAt(0).getHeight() - scroll.getHeight() - scroll.getScrollY() < dp(120));
         instance = server; cursor = nextCursor;
         if (snapshot.optJSONArray("subagents") != null) remoteSubtasks = snapshot.optJSONArray("subagents");
         if (subtaskPage != null) subtaskPage.update(remoteSubtasks);
@@ -2492,15 +2494,17 @@ public final class MainActivity extends Activity {
         }
         remoteSettings = settings;
         JSONArray rows = snapshot.optJSONArray("messages");
-        if (rows != null) {
-        if (!server.equals(historyInstance)) { clearHistory(); historyLimited = false; historyInstance = server; }
+        if (rows != null && !server.equals(historyInstance)) { clearHistory(); historyInstance = server; }
+        // Live metadata and controls continue updating while the reader browses
+        // an older window. A latest-page snapshot must not evict that window.
+        if (rows != null && !historyDetached) {
         long first = rows.length() == 0 ? 0 : rows.optJSONObject(0).optLong("seq");
         // An edited turn returns with a higher seq and takes its superseded rows
         // with it, so cached rows below a snapshot that begins the conversation
         // were replaced on the computer and leave this transcript too. A desktop
         // that does not report paging is treated as still holding earlier pages.
         boolean olderAvailable = !snapshot.has("nextBefore") || !snapshot.isNull("nextBefore");
-        for (long seq : RemoteTranscript.superseded(history.keySet(), first, olderAvailable, historyLimited)) {
+        for (long seq : RemoteTranscript.superseded(history.keySet(), first, olderAvailable, false)) {
             JSONObject removed = history.remove(seq);
             if (removed != null) historyBytes -= historyRowBytes(removed);
         }
@@ -2508,7 +2512,7 @@ public final class MainActivity extends Activity {
         forgetHistoryFrom(first);
         for (int index = 0; index < rows.length(); index++) { JSONObject row = rows.optJSONObject(index); if (row != null) retainHistory(row.optLong("seq"), row); }
         if (history.isEmpty() || history.firstKey() >= first) nextBefore = snapshot.isNull("nextBefore") ? null : snapshot.optLong("nextBefore");
-        trimHistory();
+        trimHistory(false);
         }
         lastLive = snapshot.optJSONObject("live");
         remotePreparation = snapshot.optJSONObject("preparation");
@@ -2572,18 +2576,19 @@ public final class MainActivity extends Activity {
     }
 
     private void renderMessages(JSONObject live) {
+        if (historyDetached) live = null;
         int position = scroll.getScrollY();
         java.util.HashSet<String> retained = new java.util.HashSet<>();
         JSONArray pendingProcess = new JSONArray();
         long turn = 0;
         pendingMessageViews.clear();
         java.util.Set<Long> earlierSubtaskTurns = new java.util.TreeSet<>();
-        for (int i = 0; i < remoteSubtasks.length(); i++) {
+        for (int i = 0; !historyDetached && i < remoteSubtasks.length(); i++) {
             JSONObject task = remoteSubtasks.optJSONObject(i); if (task == null || history.containsKey(task.optLong("userSeq"))) continue;
             if (java.util.Set.of("starting", "running", "waiting").contains(task.optString("status")) || task.optInt("pendingApprovals") > 0 || task.optBoolean("canReply")) earlierSubtaskTurns.add(task.optLong("userSeq"));
         }
         for (long userSeq : earlierSubtaskTurns) addSubtasks(userSeq, retained);
-        boolean showCompaction = remoteCompaction != null && !history.containsKey(remoteCompaction.optLong("seq", -1));
+        boolean showCompaction = !historyDetached && remoteCompaction != null && !history.containsKey(remoteCompaction.optLong("seq", -1));
         long compactionBoundary = remoteCompaction == null ? Long.MAX_VALUE : remoteCompaction.optLong("afterSeq", conversationSeq);
         for (JSONObject row : history.values()) {
             if (showCompaction && row.optLong("seq") > compactionBoundary) {
@@ -2617,7 +2622,7 @@ public final class MainActivity extends Activity {
             retained.add("pendingProcess");
             addMessage("pendingProcess", "", "", false, false, pendingProcess, false, "turn:" + turn, 0, 0);
         }
-        renderOutgoing(retained);
+        if (!historyDetached) renderOutgoing(retained);
         java.util.Iterator<java.util.Map.Entry<String, ReplyMessage>> replies = replyMessages.entrySet().iterator();
         while (replies.hasNext()) {
             java.util.Map.Entry<String, ReplyMessage> entry = replies.next();
@@ -2910,7 +2915,7 @@ public final class MainActivity extends Activity {
         if (computerDialog != null) { computerDialog.dismiss(); computerDialog = null; }
         if (remoteApprovalDialog != null) { remoteApprovalDialog.dismiss(); remoteApprovalDialog = null; }
         remoteApprovalKey = ""; locationConsent.cancel();
-        messages = null; older = null; remoteEmptyState = null;
+        messages = null; older = null; latest = null; remoteEmptyState = null;
         composer = null; chatComposer = null; sendButton = null; stopButton = null;
         retryMessage = null; approvals = null; automationBar = null; queueBar = null;
         imageTray = null; imageStrip = null; attachButton = null; modelButton = null; permissionButton = null;
@@ -2921,9 +2926,11 @@ public final class MainActivity extends Activity {
     }
 
     private void updateOlderControl() {
-        boolean available = nextBefore != null && !historyLimited;
+        boolean available = nextBefore != null;
         older.setEnabled(available && !olderLoading);
         older.setVisibility(available ? View.VISIBLE : View.GONE);
+        latest.setVisibility(historyDetached ? View.VISIBLE : View.GONE);
+        latest.setEnabled(!olderLoading);
         ((RefreshScrollView) scroll).setRefreshAction(available ? this::loadOlder : null, ready -> {
             if (ready) setStatusNotice(tr("松开加载更早消息", "Release to load earlier messages"));
         });
@@ -2931,22 +2938,36 @@ public final class MainActivity extends Activity {
 
     private void loadOlder() {
         if (olderLoading) return;
-        if (!foreground || nextBefore == null || api == null || historyLimited) {
+        if (!foreground || nextBefore == null || api == null) {
             ((RefreshScrollView) scroll).setRefreshing(false); return;
         }
         RemoteApi client = api; int ticket = generation; long before = nextBefore;
+        RemoteHistoryPage page = new RemoteHistoryPage(history.keySet(), before);
         String server = instance;
         String id = conversationId, token = credentials.optString("token"); older.setEnabled(false);
         olderLoading = true;
+        latest.setEnabled(false);
         ((RefreshScrollView) scroll).setRefreshing(true);
         setStatusNotice(tr("正在加载更早消息…", "Loading earlier messages…"));
         worker.submit(() -> {
             try {
-                JSONObject snapshot = client.json("/v1/conversations/" + id + "?before=" + before, token, null);
+                do {
+                    if (ticket != generation) return;
+                    long pageBefore = page.nextBefore;
+                    JSONObject snapshot = client.json("/v1/conversations/" + id + "?before=" + pageBefore, token, null);
+                    JSONObject conversation = snapshot.optJSONObject("conversation");
+                    if (!server.equals(snapshot.optString("instanceId", server)) || conversation == null || !id.equals(conversation.optString("id"))) {
+                        throw new IOException("Conversation changed while loading earlier messages");
+                    }
+                    page.append(snapshot, pageBefore);
+                } while (page.needsNext());
                 deliver(ticket, () -> {
                     olderLoading = false;
                     ((RefreshScrollView) scroll).setRefreshing(false);
-                    if (!server.equals(instance) || !server.equals(snapshot.optString("instanceId", server))) { updateOlderControl(); return; }
+                    if (!server.equals(instance)) {
+                        updateOlderControl();
+                        setStatusNotice(tr("会话已更新，请重新加载更早消息。", "Conversation updated. Load earlier messages again.")); return;
+                    }
                     View anchor = null;
                     for (int index = 0; index < messages.getChildCount(); index++) {
                         View candidate = messages.getChildAt(index);
@@ -2954,19 +2975,33 @@ public final class MainActivity extends Activity {
                     }
                     View retainedAnchor = anchor;
                     int anchorOffset = anchor == null ? 0 : messages.getTop() + anchor.getTop() - scroll.getScrollY();
-                    JSONArray rows = snapshot.optJSONArray("messages");
-                    if (rows != null) for (int index = 0; index < rows.length(); index++) { JSONObject row = rows.optJSONObject(index); if (row != null) retainHistory(row.optLong("seq"), row); }
-                    nextBefore = snapshot.isNull("nextBefore") ? null : snapshot.optLong("nextBefore");
-                    boolean trimmed = trimHistory();
+                    java.util.Set<Long> added = new java.util.HashSet<>();
+                    for (JSONObject row : page.rows.values()) {
+                        long seq = row.optLong("seq");
+                        if (!history.containsKey(seq)) { retainHistory(seq, row); added.add(seq); }
+                    }
+                    nextBefore = page.nextBefore;
+                    trimHistory(true);
                     renderMessages(lastLive); updateOlderControl();
                     ScrollView targetScroll = scroll;
                     viewHandler.post(() -> {
-                        if (ticket == generation && retainedAnchor != null && retainedAnchor.getParent() == messages) {
+                        if (ticket == generation && scroll == targetScroll && retainedAnchor != null && retainedAnchor.getParent() == messages) {
                             targetScroll.scrollTo(0, messages.getTop() + retainedAnchor.getTop() - anchorOffset);
+                        } else if (ticket == generation && scroll == targetScroll && retainedAnchor != null) {
+                            targetScroll.fullScroll(View.FOCUS_DOWN);
                         }
                     });
-                    if (trimmed) setStatusNotice(tr("已达到历史显示上限，请在电脑查看更早消息。", "History display limit reached. Read earlier messages on the computer."));
-                    else setStatusNotice(nextBefore == null ? tr("已加载全部消息", "All messages loaded") : tr("已加载更早消息", "Earlier messages loaded"));
+                    int addedMessages = 0, addedProcess = 0;
+                    for (long seq : added) {
+                        JSONObject row = history.get(seq);
+                        if (row == null) continue;
+                        if (RemoteHistoryPage.visible(row)) addedMessages++; else addedProcess++;
+                    }
+                    String notice = addedMessages > 0 ? tr("已新增 " + addedMessages + " 条更早消息，上滑查看。", "Added " + addedMessages + " earlier message" + (addedMessages == 1 ? "" : "s") + ". Scroll up to view.")
+                        : addedProcess > 0 ? tr("已加载 " + addedProcess + " 条过程记录，暂无新的聊天消息。", "Loaded " + addedProcess + " process record" + (addedProcess == 1 ? "" : "s") + "; no new chat messages.")
+                        : tr("没有新增更早消息。", "No new earlier messages.");
+                    if (nextBefore == null) notice += " " + tr("已到达会话最早消息", "Reached the beginning of the conversation");
+                    setStatusNotice(notice);
                 });
             } catch (Exception error) { deliver(ticket, () -> {
                 olderLoading = false; ((RefreshScrollView) scroll).setRefreshing(false);
@@ -2975,17 +3010,50 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private boolean trimHistory() {
-        boolean trimmed = false;
-        while (history.size() > 600 || historyBytes > 4 * 1024 * 1024 && history.size() > 1) {
-            historyBytes -= historyRowBytes(history.pollFirstEntry().getValue()); trimmed = true;
-        }
-        if (historyBytes < 0) historyBytes = 0;
-        if (trimmed) { nextBefore = null; historyLimited = true; }
-        return trimmed;
+    private void loadLatest() {
+        if (olderLoading || !foreground || api == null || !historyDetached) return;
+        RemoteApi client = api; int ticket = generation;
+        String server = instance, id = conversationId, token = credentials.optString("token");
+        olderLoading = true; updateOlderControl();
+        setStatusNotice(tr("正在加载最新消息…", "Loading latest messages…"));
+        worker.submit(() -> {
+            try {
+                JSONObject snapshot = client.json("/v1/conversations/" + id, token, null);
+                JSONObject conversation = snapshot.optJSONObject("conversation");
+                if (!server.equals(snapshot.optString("instanceId", server)) || conversation == null || !id.equals(conversation.optString("id"))
+                        || snapshot.optJSONArray("messages") == null || !snapshot.has("nextBefore")) {
+                    throw new IOException("Invalid latest-message page");
+                }
+                deliver(ticket, () -> {
+                    olderLoading = false;
+                    if (!server.equals(instance) || snapshot.optLong("cursor", -1) < cursor) {
+                        updateOlderControl();
+                        setStatusNotice(tr("会话已更新，请重新加载最新消息。", "Conversation updated. Load latest messages again.")); return;
+                    }
+                    clearHistory(); initialMessageScroll = true;
+                    applySnapshot(snapshot);
+                    setStatusNotice(tr("已回到最新消息", "Back at the latest messages"));
+                });
+            } catch (Exception error) { deliver(ticket, () -> {
+                olderLoading = false; updateOlderControl(); showFailure(error, true);
+            }); }
+        });
     }
 
-    private void clearHistory() { disposeMessageViews(); history.clear(); historyBytes = 0; historyInstance = ""; goalVisibility.reset(); }
+    private boolean trimHistory(boolean keepOlder) {
+        RemoteHistoryPage.Window window = RemoteHistoryPage.trim(history, historyBytes, keepOlder);
+        historyBytes = window.bytes;
+        if (window.trimmed) {
+            if (keepOlder) historyDetached = true;
+            else nextBefore = history.firstKey();
+        }
+        return window.trimmed;
+    }
+
+    private void clearHistory() {
+        disposeMessageViews(); history.clear(); historyBytes = 0; historyInstance = "";
+        nextBefore = null; historyDetached = false; goalVisibility.reset();
+    }
 
     private void retainHistory(long seq, JSONObject row) {
         JSONObject previous = history.put(seq, row);
@@ -3002,13 +3070,7 @@ public final class MainActivity extends Activity {
     }
 
     private static long historyRowBytes(JSONObject row) {
-        long size = 48 + row.optString("text", "").length();
-        JSONArray process = row.optJSONArray("process");
-        for (int index = 0; process != null && index < process.length(); index++) {
-            JSONObject entry = process.optJSONObject(index);
-            if (entry != null) size += 32 + entry.optString("text", "").length() + entry.optString("input", "").length();
-        }
-        return size;
+        return RemoteHistoryPage.weight(row);
     }
 
     private void showFailure(Exception error, boolean authenticated) {
@@ -3308,12 +3370,6 @@ public final class MainActivity extends Activity {
         params.setMargins(dp(8), dp(4), dp(8), dp(4));
         card.setLayoutParams(params);
         return card;
-    }
-
-    private void focusComposer() {
-        if (composer == null) return;
-        composer.requestFocus();
-        ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(composer, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
     }
 
     private void renderAutomation(JSONObject snapshot) {

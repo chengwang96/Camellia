@@ -32,6 +32,17 @@ fixture['messages'][1]['text'] = (
 bridge = ast.literal_eval(bridge_node.value.func.value).replace('FIXTURE', json.dumps(fixture))
 screenshots = repo / 'dist/ui-preview'
 screenshots.mkdir(parents=True, exist_ok=True)
+cases = [
+    {'name': 'escaped-dollar', 'text': r'$$\text{price: \$5} + x$$', 'math': 1, 'display': 1},
+    {'name': 'bracket-price', 'text': r'\[\text{price: \$5} + x\]', 'math': 1, 'display': 1},
+    {'name': 'multiline-inline', 'text': r'\(\frac{a}{b}' + '\n\n+c' + r'\)', 'math': 1, 'display': 0},
+    {'name': 'quoted-array', 'text': r'> \[' + '\n' + r'> \begin{aligned}' + '\n'
+     + r'> a &= b \\' + '\n> c &= d\n' + r'> \end{aligned}' + '\n' + r'> \]', 'math': 1, 'display': 1},
+    {'name': 'list-display', 'text': '- Formula:\n  ' + r'\[' + '\n  x+y\n  ' + r'\]', 'math': 1, 'display': 1},
+    {'name': 'table', 'text': '| Formula | Value |\n| --- | --- |\n| ' + r'\[\text{\$5}\] | $\lvert x\rvert$ |', 'math': 2, 'display': 1},
+    {'name': 'code', 'text': '    $$x^2$$\n\n```tex\n' + r'\[x^2\]' + '\n```', 'math': 0, 'display': 0},
+]
+metrics = []
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
@@ -69,7 +80,40 @@ with sync_playwright() as playwright:
         expect(streamed.locator('.katex-error')).to_have_count(0)
         page.evaluate('onBlockStop(99)')
         expect(streamed.locator('.katex-display')).to_have_count(1)
+        # All desktop surfaces use the same delimiter rules and preserve TeX.
+        for surface in ['chat', 'preview', 'discussion']:
+            for case in cases:
+                result = page.evaluate('''({surface, text}) => {
+                    const area = document.createElement('div'); area.className = 'md';
+                    if (surface === 'chat') area.innerHTML = mdRender(text);
+                    else if (surface === 'preview') area.innerHTML = CamelliaMarkdownPreview.render(text);
+                    else area.append(CamelliaMarkdown.render(document, text));
+                    document.querySelector('#chat').append(area);
+                    const result = {math: area.querySelectorAll('.katex').length,
+                        display: area.querySelectorAll('.katex-display').length,
+                        errors: area.querySelectorAll('.katex-error').length,
+                        unresolved: area.innerHTML.includes('\\x01'),
+                        annotations: [...area.querySelectorAll('annotation')].map(node => node.textContent)};
+                    area.remove(); return result;
+                }''', {'surface': surface, 'text': case['text']})
+                assert result['math'] == case['math'] and result['display'] == case['display'], (surface, case, result)
+                assert result['errors'] == 0 and not result['unresolved'], (surface, case, result)
+                if case['name'] == 'quoted-array':
+                    assert all('>' not in value and '<br>' not in value for value in result['annotations'])
+                metrics.append({'theme': theme, 'surface': surface, 'case': case['name'], **result})
+        # Reloading a saved conversation repeats parsing with no streaming state.
+        page.reload(wait_until='networkidle')
+        page.wait_for_function('uiReady')
+        expect(page.locator('#chat .turn .md').first.locator('.katex')).to_have_count(4)
+        expect(page.locator('#chat .turn .md').first.locator('.katex-error')).to_have_count(0)
+        font_status = page.evaluate('''async () => {
+            await document.fonts.ready;
+            return [...document.fonts].filter(font => font.family.startsWith('KaTeX')).map(font => ({family:font.family,status:font.status}));
+        }''')
+        assert any(font['status'] == 'loaded' for font in font_status), font_status
+        assert not any(font['status'] == 'error' for font in font_status), font_status
         page.close()
     browser.close()
     assert not errors, errors
-print('Chat math: bracket and dollar delimiters, saved messages, code, prices and streaming passed.')
+(screenshots / 'chat-math-metrics.json').write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding='utf-8')
+print(f'Chat math: saved/streamed/reloaded messages, fonts and {len(metrics)} surface cases passed.')

@@ -4,6 +4,19 @@ Desktop assistant replies use `src/renderer/chat/streaming-markdown.js` while
 tokens arrive. The existing `mdRender` chat renderer remains the authority for
 the completed response; document previews keep their separate renderer.
 
+Windows and macOS share `src/renderer/shared/markdown-math.js` for chat,
+discussion/device messages and Markdown file previews. It recognizes `$...$`
+and `\(...\)` inline, plus `$$...$$` and `\[...\]` display formulas. Escaped
+TeX dollars and matrix row spacing stay inside the expression. Complete formulas
+are protected before chat list/table rules; quote container markers are removed
+without inserting HTML into the MathML source annotation. Code examples and
+unpaired currency signs remain literal. Each expression is limited to 20,000
+characters, with KaTeX trust disabled and bounded macro expansion.
+
+The stream scanner retains open bracket/parenthesis formulas across blank lines
+and skips escaped closing delimiters. A completed expression is rendered during
+streaming and uses the same renderer when history is loaded or reconciled.
+
 - Updates are batched for 50 ms, then painted on an animation frame. Block stop
   and turn completion flush immediately, including native reasoning blocks.
 - Completed paragraphs stay in the DOM. The boundary scanner retains open
@@ -35,6 +48,12 @@ persistent history format or additional application disk files.
 
 Run `node --test tests/streaming-markdown.test.js tests/thinking-tags.test.js
 tests/chat-markdown.test.js` and `python tests/streaming-markdown-ui.py`.
+Additional math checks are `node --test tests/markdown-math.test.js
+tests/markdown-preview.test.js`, `python tests/chat-math-ui.py`, and
+`python tests/desktop-math-electron-ui.py`. The last uses real Electron with
+an isolated profile, checks all three renderer surfaces and local KaTeX fonts,
+and records its actual host platform; a Windows pass does not claim macOS
+runtime validation.
 The browser test uses the actual chat page with a fake desktop bridge and makes
 no model calls. It checks intermediate and final DOM parity, node reuse, formula
 panels, selection, focus, scroll position, batching and state disposal.

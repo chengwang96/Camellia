@@ -54,6 +54,8 @@ public class MarkdownStreamTest {
 
     @Test public void smallPrefixesKeepCommonMarkBlockSemantics() {
         String[] sources = {
+            "Before $\\frac{x_1}{y_2}$ and \\(a_i + b^2\\).\n\n$$\n\\sum_{i=1}^{n}x_i\n\n+ 1\n$$\n\nAfter\n\n\\[\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}\\]\n\nEnd",
+            "- inline $x_i$\n- \\(y^2\\)\n\n> $$\n> x_i + y_i\n> $$\n\n| A | B |\n| --- | --- |\n| $x_1$ | \\(y_2\\) |\n\n```latex\n$$a_i$$\n\\[x\\]\n```",
             "# Title\n\nA **bold** paragraph with _emphasis_ and ~~strike~~.\n\nNext [link](https://example.com).",
             "- first\n\n  continued paragraph\n\n  - nested\n- second\n\nAfter list\n\n    indented\n\n    continued code\n\nEnd",
             "> quote\n>\n> - item\n> - other\n\nA heading\n---\n\nA rule\n\n***\n",

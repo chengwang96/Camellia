@@ -13,6 +13,11 @@ available text with a truncation notice; the complete file can be opened with th
 system app. This bounds preview memory and rendering work without changing the
 file or limiting what the conversation engine can read through its own tools.
 
+Markdown math uses the same delimiter parser as desktop chats and discussions:
+`$...$`, `$$...$$`, `\(...\)` and `\[...\]`. Escaped dollars such as
+`\text{\$5}` stay inside the expression; formulas in code remain literal.
+KaTeX scripts, styles and fonts are bundled locally on both desktop targets.
+
 ## LaTeX code blocks
 
 Chat blocks whose language is `latex`, `tex` or `ltx` get a formula button in the

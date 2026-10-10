@@ -132,7 +132,7 @@ public class ReleaseSmokeTest extends InstrumentationTestCase {
         JSONObject chat = new JSONObject().put("id", ID).put("title", "Upgrade kept").put("workspaceId", "").put("routeId", "")
             .put("updatedAt", System.currentTimeMillis()).put("draft", DRAFT).put("messages", new JSONArray()
                 .put(new JSONObject().put("role", "user").put("content", "Original upgrade question"))
-                .put(new JSONObject().put("role", "assistant").put("content", "# Release heading\n\n**Preserved bold** and [a link](https://example.com)\n\n```java\nint preserved = 7;\n```")));
+                .put(new JSONObject().put("role", "assistant").put("content", "# Release heading\n\n**Preserved bold** and [a link](https://example.com)\n\n```java\nint preserved = 7;\n```\n\nEnergy $E=mc^2$ and \\(x_i=\\sqrt{y}\\).\n\n$$\\frac{1}{2} + \\sum_{i=1}^{n} x_i$$\n\n\\[\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}\\]")));
         save("local-chat-private", new JSONObject().put("config", new JSONObject()).put("workspaces", new JSONArray()).put("conversations", new JSONArray().put(chat)));
         assertTrue(context().getSharedPreferences("mobile-preferences", 0).edit().putString("language", "en").putString("theme", "light").putString("deviceName", "Upgrade fixture").commit());
         assertTrue(context().getSharedPreferences("network-mode", 0).edit().putBoolean("embedded", true).commit());
@@ -152,11 +152,27 @@ public class ReleaseSmokeTest extends InstrumentationTestCase {
             return text.contains("Original upgrade question") && text.contains("Release heading") && text.contains("Preserved bold") && text.contains("int preserved = 7;");
         });
         ui(() -> assertTrue("Markdown emphasis was lost by shrinking", bold(activity.getWindow().getDecorView(), "Preserved bold")));
+        ui(() -> assertEquals("History formulas disappeared after upgrade", 4, verifyMath(activity.getWindow().getDecorView())));
         ui(() -> assertEquals(DRAFT, ((EditText) tag(activity, "localComposer")).getText().toString()));
         assertTrue(new java.io.File(context().getNoBackupFilesDir(), "local-chat-v2.db").isFile());
         assertFalse("Verified migration should remove the old encrypted duplicate", context().getSharedPreferences("local-chat-private", 0).contains("credential"));
         ui(activity::finish); await("Conversation did not close", activity::isDestroyed);
         Activity reopened = conversation(); ui(() -> assertEquals(DRAFT, ((EditText) tag(reopened, "localComposer")).getText().toString()));
+    }
+    private int verifyMath(View view) {
+        int count = 0;
+        if (view instanceof TextView && ((TextView) view).getText() instanceof android.text.Spanned) {
+            TextView text = (TextView) view; android.text.Spanned value = (android.text.Spanned) text.getText();
+            for (android.text.style.ReplacementSpan span : value.getSpans(0, value.length(), android.text.style.ReplacementSpan.class)) {
+                int start = value.getSpanStart(span), end = value.getSpanEnd(span);
+                android.graphics.Paint.FontMetricsInt metrics = new android.graphics.Paint.FontMetricsInt();
+                int width = span.getSize(text.getPaint(), value, start, end, metrics);
+                assertTrue("TeX fell back to raw text after shrinking: " + value, width < text.getPaint().measureText(value, start, end));
+                assertTrue("Formula has no height", metrics.descent > metrics.ascent); count++;
+            }
+        }
+        if (view instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) view).getChildCount(); i++) count += verifyMath(((ViewGroup) view).getChildAt(i));
+        return count;
     }
     public void testNativeNetworkAndBrandResource() throws Exception {
         Activity activity = open("MainActivity");

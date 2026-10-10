@@ -29,10 +29,25 @@ public class DownloadDirectoryTest extends InstrumentationTestCase {
         try {
             if (monitor != null) getInstrumentation().removeMonitor(monitor);
             ui(() -> { if (downloads != null) downloads.close(); if (activity != null) activity.finish(); });
-            for (Uri file : created) DocumentsContract.deleteDocument(getInstrumentation().getTargetContext().getContentResolver(), file);
+            for (Uri file : created) deleteCreatedFile(file);
             DownloadDirectory.clear(getInstrumentation().getTargetContext());
             getInstrumentation().waitForIdleSync();
         } finally { super.tearDown(); }
+    }
+
+    private void deleteCreatedFile(Uri file) throws Exception {
+        long deadline = android.os.SystemClock.elapsedRealtime() + 5_000;
+        do {
+            if (!DownloadDirectoryFixture.files(getInstrumentation().getTargetContext()).contains(file)) return;
+            try {
+                DocumentsContract.deleteDocument(getInstrumentation().getTargetContext().getContentResolver(), file);
+            } catch (IllegalStateException error) {
+                if (!DownloadDirectoryFixture.files(getInstrumentation().getTargetContext()).contains(file)) return;
+                if (android.os.SystemClock.elapsedRealtime() >= deadline) throw error;
+            }
+            android.os.SystemClock.sleep(50);
+        } while (android.os.SystemClock.elapsedRealtime() < deadline);
+        assertFalse("The test download must be removed", DownloadDirectoryFixture.files(getInstrumentation().getTargetContext()).contains(file));
     }
 
     public void testSettingsChooseRememberAndClearDirectory() throws Exception {
@@ -102,16 +117,17 @@ public class DownloadDirectoryTest extends InstrumentationTestCase {
         DownloadDirectory.saveSelection(getInstrumentation().getTargetContext(), DownloadDirectoryFixture.selection());
         getInstrumentation().getTargetContext().getContentResolver().releasePersistableUriPermission(DownloadDirectoryFixture.TREE,
             Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        assertSavePicker(false);
+        assertSavePicker();
     }
 
-    public void testSaveAsBypassesAnAuthorizedDefaultDirectory() throws Exception {
+    public void testClearedDefaultDirectoryUsesSavePicker() throws Exception {
         DownloadDirectory.saveSelection(getInstrumentation().getTargetContext(), DownloadDirectoryFixture.selection());
-        assertSavePicker(true);
-        assertTrue(DownloadDirectory.hasPermission(getInstrumentation().getTargetContext(), DownloadDirectoryFixture.TREE));
+        DownloadDirectory.clear(getInstrumentation().getTargetContext());
+        assertNull(DownloadDirectory.selected(getInstrumentation().getTargetContext()));
+        assertSavePicker();
     }
 
-    private void assertSavePicker(boolean saveAs) throws Exception {
+    private void assertSavePicker() throws Exception {
         activity = getInstrumentation().startActivitySync(new Intent(getInstrumentation().getTargetContext(), PopupTestActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         final List<Intent> launched = new ArrayList<>();
         monitor = new Instrumentation.ActivityMonitor() {
@@ -122,15 +138,15 @@ public class DownloadDirectoryTest extends InstrumentationTestCase {
         getInstrumentation().addMonitor(monitor);
         ui(() -> {
             downloads = new ArtifactDownloads(activity, null);
-            var choose = ArtifactDownloads.class.getDeclaredMethod("choose", JSONObject.class, String.class, String.class, String.class, boolean.class);
+            var choose = ArtifactDownloads.class.getDeclaredMethod("choose", JSONObject.class, String.class, String.class, String.class);
             choose.setAccessible(true);
             choose.invoke(downloads, new JSONObject().put("name", "report.pdf").put("size", 10).put("id", "a".repeat(64)),
-                "http://100.64.0.1:43127", "b".repeat(43), "conversation", saveAs);
+                "http://100.64.0.1:43127", "b".repeat(43), "conversation");
         });
         getInstrumentation().waitForIdleSync();
         assertEquals(1, launched.size());
         assertEquals(Intent.ACTION_CREATE_DOCUMENT, launched.get(0).getAction());
-        assertFalse("Choosing a different location must not start a download yet", ArtifactDownloadService.snapshot().active());
+        assertFalse("Choosing a location must not start a download yet", ArtifactDownloadService.snapshot().active());
     }
 
     private interface Check { void run() throws Exception; }

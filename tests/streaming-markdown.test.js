@@ -8,7 +8,9 @@ const { createStream, split } = require('../src/shared/thinking-tags');
 test('streaming boundaries retain unfinished block and inline syntax', () => {
   for (const source of [
     '```js\nfirst\n\nsecond\n',
-    '$$a\n\nb\n', String.raw`\[a` + '\n\nb\n',
+    '$$a\n\nb\n', String.raw`\[a` + '\n\nb\n', String.raw`\(a` + '\n\nb\n',
+    String.raw`$$\text{\$\$}` + '\n\nmore\n',
+    String.raw`\[\begin{matrix}a\\[2pt]b` + '\n\nmore\n',
     '**a\n\nb\n', '*a\n\nb\n', '~~a\n\nb\n',
     '[label\n\nmore\n', '[label](url\n\nmore\n',
     '`*a\n\nb\n', '    code\n\n',
@@ -26,6 +28,8 @@ test('streaming boundaries seal complete paragraphs, lists, tables and formulas'
     '| a | b |\n| --- | --- |\n| c | d |\n\n',
     '```js\nfirst\n\nsecond\n```\n\n', '$$a\n\nb$$\n\n',
     String.raw`\[a` + '\n\nb' + String.raw`\]` + '\n\n',
+    String.raw`\(a` + '\n\nb' + String.raw`\)` + '\n\n',
+    String.raw`$$\text{\$\$}` + '\n\nb$$\n\n',
     '    code\n\n\n', '---\n\n',
   ]) {
     const scanner = new Boundaries();

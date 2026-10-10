@@ -1,12 +1,12 @@
 'use strict';
 
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('markdown-it'), require('markdown-it-footnote'), require('markdown-it-texmath'), require('katex'), require('@highlightjs/cdn-assets/highlight.min.js'));
-  else root.CamelliaMarkdownPreview = factory(root.markdownit, root.markdownitFootnote, root.texmath, root.katex, root.hljs);
-})(typeof window === 'object' ? window : globalThis, function (MarkdownIt, footnote, texmath, katex, highlighter) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('markdown-it'), require('markdown-it-footnote'), require('../shared/markdown-math'), require('@highlightjs/cdn-assets/highlight.min.js'));
+  else root.CamelliaMarkdownPreview = factory(root.markdownit, root.markdownitFootnote, root.CamelliaMarkdownMath, root.hljs);
+})(typeof window === 'object' ? window : globalThis, function (MarkdownIt, footnote, math, highlighter) {
   const parser = new MarkdownIt({ html: false, linkify: true, breaks: false });
   parser.use(footnote);
-  parser.use(texmath, { engine: katex, delimiters: ['dollars', 'brackets'], katexOptions: { trust: false, strict: 'ignore', maxExpand: 200, maxSize: 20 } });
+  parser.use(math.install);
   const escape = parser.utils.escapeHtml;
   const defaultImage = parser.renderer.rules.image;
   parser.renderer.rules.footnote_anchor_name = (tokens, index) => 'preview-note-' + (tokens[index].meta.id + 1);

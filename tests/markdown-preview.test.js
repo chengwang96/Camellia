@@ -5,6 +5,31 @@ const assert = require('node:assert/strict');
 const { render } = require('../src/renderer/chat/markdown-preview');
 const baseUrl = 'file:///C:/project/README.md';
 
+test('preview formulas handle escaped dollars, multiline parentheses, nested containers and table cells', () => {
+  for (const formula of [String.raw`$$\text{\$5} + x$$`, String.raw`\[\text{\$5} + x\]`, String.raw`\(x+
+y\)`]) {
+    const html = render(formula);
+    assert.equal((html.match(/class="katex"/g) || []).length, 1);
+    assert.doesNotMatch(html, /katex-error/);
+  }
+  const html = render(String.raw`- Formula:
+  \[
+  \frac{a}{b}
+  \]
+
+> $$
+> x+y
+> $$
+
+| Formula | Value |
+| --- | --- |
+| \[x^2\] | $y$ |`);
+  assert.equal((html.match(/class="katex"/g) || []).length, 4);
+  assert.equal((html.match(/class="katex-display"/g) || []).length, 3);
+  assert.doesNotMatch(html, /katex-error/);
+  assert.match(html, /<li>Formula:[\s\S]*?<section>/);
+});
+
 test('document math and footnotes render without allowing trusted TeX commands', () => {
   const html = render('Inline $x^2 + y^2$ and note[^source].\n\n$$\n\\frac{1}{2}\n$$\n\n[^source]: A **source**.');
   assert.match(html, /class="katex"/);

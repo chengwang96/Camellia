@@ -30,49 +30,26 @@
     if (/^\/(?!\/)/.test(value)) return imageExtension.test(value) ? fileUrl(value) : null;
     return null;
   }
-  // KaTeX renders the formula itself; `trust` stays off so TeX cannot reach
-  // \href or \includegraphics. Without a loaded KaTeX the source stays literal.
-  function math(source, display) {
-    const katex = root.katex;
-    if (!katex || typeof katex.renderToString !== 'function') return null;
-    try {
-      return katex.renderToString(source, { displayMode: display, throwOnError: false, strict: 'ignore', trust: false, maxExpand: 200, maxSize: 20 });
-    } catch { return null; }
-  }
-  // A single "$" only opens a formula when it is not escaped, not preceded by a
-  // digit, and not a price such as "$5"; the close must not be a digit either.
-  function mathSpan(source, index) {
-    if (source[index - 1] === '\\' || /[\d$]/.test(source[index - 1] || '')) return null;
-    // "$x$" or "$\frac{1}{2}$" inline, or "$$…$$" as display; a lone "\" body is
-    // not math, and the closing "$" must not be the start of a number.
-    const body = /^\$\$([^$]*?)\$\$|^\$(?:[^\s\\$]|[^\s$][^$\n]*?[^\s\\])\$(?!\d)/.exec(source.slice(index));
-    if (!body) return null;
-    return body[0].startsWith('$$')
-      ? { length: body[0].length, display: true, tex: body[1] }
-      : { length: body[0].length, display: false, tex: body[0].slice(1, -1) };
+  // Discussions load their math library after this module, so resolve it at render time.
+  const mathEngine = () => typeof module === 'object' && module.exports
+    ? require('./markdown-math') : root.CamelliaMarkdownMath;
+  function mathNode(document, span, standalone = false) {
+    const html = mathEngine()?.render(span.tex, span.display);
+    if (!html) return document.createTextNode(span.raw);
+    const holder = document.createElement(standalone ? 'div' : 'span');
+    holder.className = standalone ? 'md-math-display' : span.display ? 'md-math md-math-display' : 'md-math';
+    holder.innerHTML = html;
+    return holder;
   }
   // A leading "=" or "<" means the URL sits in an HTML attribute or a tag that
   // is being shown as literal text, so it is left alone.
-  const bareLink = /(?<![=<])(?:https?:\/\/[^\s<>()[\]]+|www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+[^\s<>()[\]`"']*|[\w.!#$%&'*+/=?^`{|}~-]+@[\w-]+(?:\.[\w-]+)+|\$\$[^$]*?\$\$|\$(?:[^\s\\$]|[^\s$][^$\n]*?[^\s\\])\$)/g;
+  const bareLink = /(?<![=<])(?:https?:\/\/[^\s<>()[\]]+|www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+[^\s<>()[\]`"']*|[\w.!#$%&'*+/=?^`{|}~-]+@[\w-]+(?:\.[\w-]+)+)/g;
   // Bare URLs and e-mail addresses become links, but a hostname alone does not:
   // "README.md" and "setup.sh" are file names, not domains.
   function appendText(document, parent, source) {
     let offset = 0, match;
     bareLink.lastIndex = 0;
     while ((match = bareLink.exec(source))) {
-      if (match[0].startsWith('$')) {
-        const span = mathSpan(source, match.index);
-        if (!span) continue;
-        const html = math(span.tex, span.display);
-        if (!html) continue;
-        if (match.index > offset) parent.append(document.createTextNode(source.slice(offset, match.index)));
-        const holder = document.createElement('span');
-        holder.className = span.display ? 'md-math md-math-display' : 'md-math'; holder.innerHTML = html;
-        parent.append(holder);
-        offset = match.index + span.length;
-        bareLink.lastIndex = offset;
-        continue;
-      }
       const value = match[0].replace(/[.,;:!?]+$/, '');
       const href = /^https?:\/\//i.test(value) ? safeLink(value)
         : /^www\./i.test(value) ? safeLink('http://' + value) : safeMail(value);
@@ -149,7 +126,7 @@
     return panel;
   }
   // One list block, keeping nested indentation and GitHub task checkboxes.
-  function readList(document, lines, start, allowImages = true) {
+  function readList(document, lines, start, allowImages = true, mathTokens = []) {
     const base = listMatch(lines[start]);
     const baseIndent = base[1].length, ordered = Boolean(base[3]);
     const node = document.createElement(ordered ? 'ol' : 'ul');
@@ -160,7 +137,7 @@
       if (!entry) {
         if (node.lastChild && listContinuation(lines[index])) {
           node.lastChild.append(document.createTextNode('\n'));
-          inline(document, node.lastChild, lines[index].trim(), 0, allowImages);
+          inline(document, node.lastChild, lines[index].trim(), 0, allowImages, mathTokens);
           index++;
           continue;
         }
@@ -169,7 +146,7 @@
       const indent = entry[1].length;
       if (indent < baseIndent || (indent === baseIndent && Boolean(entry[3]) !== ordered)) break;
       if (indent > baseIndent && node.lastChild) {
-        const nested = readList(document, lines, index, allowImages);
+        const nested = readList(document, lines, index, allowImages, mathTokens);
         node.lastChild.append(nested.node); index = nested.index; continue;
       }
       const item = document.createElement('li');
@@ -179,22 +156,24 @@
         box.type = 'checkbox'; box.disabled = true; box.checked = task[1].toLowerCase() === 'x';
         box.setAttribute('aria-label', box.checked ? 'Completed' : 'Not completed');
         item.className = 'md-task'; item.append(box, document.createTextNode(' '));
-        inline(document, item, task[2], 0, allowImages);
-      } else inline(document, item, entry[4], 0, allowImages);
+        inline(document, item, task[2], 0, allowImages, mathTokens);
+      } else inline(document, item, entry[4], 0, allowImages, mathTokens);
       node.append(item); index++;
     }
     return { index, node };
   }
-  function inline(document, parent, source, depth = 0, allowImages = true) {
+  function inline(document, parent, source, depth = 0, allowImages = true, mathTokens = []) {
     if (depth > 8) { parent.append(document.createTextNode(source)); return; }
     // Text-only surfaces keep image syntax literal, including nested blocks,
     // without creating an image element or initiating a resource request.
-    const pattern = /(!\[[^\]\n]*\]\([^\s)]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\[[^\]\n]+\]\([^\s)]+\)|\*[^*\n]+\*)/g;
+    const pattern = /(\x01\d+\x01|!\[[^\]\n]*\]\([^\s)]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\[[^\]\n]+\]\([^\s)]+\)|\*[^*\n]+\*)/g;
     let offset = 0, match;
     while ((match = pattern.exec(source))) {
       appendText(document, parent, source.slice(offset, match.index));
       const text = match[0]; let node;
-      if (text.startsWith('![')) {
+      if (text.startsWith('\x01') && mathTokens[Number(text.slice(1, -1))]) {
+        node = mathNode(document, mathTokens[Number(text.slice(1, -1))]);
+      } else if (text.startsWith('![')) {
         const image = /^!\[([^\]\n]*)\]\(([^\s)]+)\)$/.exec(text);
         const href = image && allowImages ? imageTarget(image[2]) : null;
         if (href) {
@@ -212,7 +191,7 @@
       } else {
         const double = text.startsWith('**') || text.startsWith('~~');
         node = document.createElement(text.startsWith('**') ? 'strong' : text.startsWith('~~') ? 'del' : 'em');
-        inline(document, node, text.slice(double ? 2 : 1, double ? -2 : -1), depth + 1, allowImages);
+        inline(document, node, text.slice(double ? 2 : 1, double ? -2 : -1), depth + 1, allowImages, mathTokens);
       }
       parent.append(node); offset = pattern.lastIndex;
     }
@@ -220,27 +199,19 @@
   }
   function render(document, value, { allowImages = true, copyLabel = 'Copy code', wrapLabel = 'Word wrap', copiedLabel = 'Copied', failedLabel = 'Copy failed', copy = async text => root.navigator.clipboard.writeText(text) } = {}) {
     const fragment = document.createDocumentFragment();
-    const lines = String(value || '').replace(/\r\n?/g, '\n').split('\n');
+    const mathTokens = [], source = String(value || '').replace(/\r\n?/g, '\n');
+    const protectedSource = mathEngine()?.protect(source, span => {
+      mathTokens.push(span);
+      return '\x01' + (mathTokens.length - 1) + '\x01';
+    }) ?? source;
+    const lines = protectedSource.split('\n');
     let index = 0;
     while (index < lines.length) {
       const line = lines[index];
       if (!line.trim()) { index++; continue; }
-      // A display formula is read before the block rules so a "-", ">" or "---"
-      // line inside it is never parsed as a list, quote or rule.
-      if (/^\s*\$\$/.test(line)) {
-        const same = /^\s*\$\$([\s\S]*?)\$\$\s*$/.exec(line);
-        let body = null, next = index + 1;
-        if (same) body = same[1];
-        else {
-          const close = lines.findIndex((candidate, at) => at > index && /^\s*\$\$\s*$/.test(candidate));
-          if (close !== -1) { body = lines.slice(index + 1, close).join('\n'); next = close + 1; }
-        }
-        const html = body === null ? null : math(body, true);
-        if (html) {
-          const holder = document.createElement('div');
-          holder.className = 'md-math-display'; holder.innerHTML = html;
-          fragment.append(holder); index = next; continue;
-        }
+      const formula = /^\s*\x01(\d+)\x01\s*$/.exec(line);
+      if (formula && mathTokens[+formula[1]]?.display) {
+        fragment.append(mathNode(document, mathTokens[+formula[1]], true)); index++; continue;
       }
       const fence = /^\s{0,3}(`{3,}|~{3,})([^\s]*)\s*$/.exec(line);
       if (fence) {
@@ -261,7 +232,7 @@
           heading.forEach((_value, position) => {
             const cell = document.createElement(tag); const align = delimiter[position];
             cell.className = align.startsWith(':') && align.endsWith(':') ? 'md-align-center' : align.endsWith(':') ? 'md-align-right' : 'md-align-left';
-            inline(document, cell, values[position] || '', 0, allowImages); row.append(cell);
+            inline(document, cell, values[position] || '', 0, allowImages, mathTokens); row.append(cell);
           }); parent.append(row);
         };
         appendRow(heading, head, 'th'); index += 2;
@@ -269,7 +240,7 @@
         table.append(head, body); wrapper.append(table); fragment.append(wrapper); continue;
       }
       const title = /^(#{1,6})\s+(.+)$/.exec(line);
-      if (title) { const node = document.createElement(`h${title[1].length}`); inline(document, node, title[2], 0, allowImages); fragment.append(node); index++; continue; }
+      if (title) { const node = document.createElement(`h${title[1].length}`); inline(document, node, title[2], 0, allowImages, mathTokens); fragment.append(node); index++; continue; }
       if (indentWidth(line)) {
         const code = [];
         let blank = false;
@@ -284,15 +255,15 @@
       }
       if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) { fragment.append(document.createElement('hr')); index++; continue; }
       if (listMatch(line)) {
-        const list = readList(document, lines, index, allowImages);
+        const list = readList(document, lines, index, allowImages, mathTokens);
         fragment.append(list.node); index = list.index; continue;
       }
       if (/^>\s?/.test(line)) {
         const node = document.createElement('blockquote'), text = [];
         while (index < lines.length && /^>\s?/.test(lines[index])) text.push(lines[index++].replace(/^>\s?/, ''));
-        inline(document, node, text.join('\n'), 0, allowImages); fragment.append(node); continue;
+        inline(document, node, text.join('\n'), 0, allowImages, mathTokens); fragment.append(node); continue;
       }
-      const paragraph = document.createElement('p'); inline(document, paragraph, line, 0, allowImages); fragment.append(paragraph); index++;
+      const paragraph = document.createElement('p'); inline(document, paragraph, line, 0, allowImages, mathTokens); fragment.append(paragraph); index++;
     }
     return fragment;
   }

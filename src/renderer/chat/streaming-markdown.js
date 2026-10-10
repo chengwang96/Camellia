@@ -146,10 +146,14 @@
         if (this.fence) continue;
         if (this.math) {
           if (line.startsWith(this.math, i)) { i++; this.math = ''; }
+          // Escaped TeX dollars and row spacing (\\[2pt]) do not close math.
+          else if (line[i] === '\\') i++;
           continue;
         }
         if (line[i] === '\\') {
-          if (!inlineCode && line[i + 1] === '[') { this.math = '\\]'; i++; }
+          if (!inlineCode && (line[i + 1] === '[' || line[i + 1] === '(')) {
+            this.math = line[i + 1] === '[' ? '\\]' : '\\)'; i++;
+          }
           else i++;
           continue;
         }

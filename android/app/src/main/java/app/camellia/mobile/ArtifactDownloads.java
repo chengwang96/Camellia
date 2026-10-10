@@ -91,10 +91,6 @@ final class ArtifactDownloads {
                         TextView download = sheet.action(tr("下载到手机", "Save to phone"), true, () -> choose(file, address, token, conversation));
                         download.setContentDescription(file.optString("name") + " · " + download.getText());
                         row.addView(download);
-                        if (DownloadDirectory.selected(activity) != null) {
-                            TextView saveAs = sheet.action(tr("另存为…", "Save as…"), false, () -> choose(file, address, token, conversation, true));
-                            saveAs.setTag("artifactSaveAs:" + file.optString("id")); row.addView(saveAs);
-                        }
                         if (java.util.Arrays.asList("png", "jpg", "jpeg", "webp", "gif", ".png", ".jpg", ".jpeg", ".webp", ".gif").contains(file.optString("extension").toLowerCase(java.util.Locale.ROOT)) && file.optLong("size") <= 32L * 1024 * 1024) {
                             TextView preview = sheet.action(tr("查看图片", "View image"), false, () -> preview(request, token, conversation, file, ticket, status));
                             preview.setTag("artifactPreview:" + file.optString("id")); row.addView(preview);
@@ -122,12 +118,10 @@ final class ArtifactDownloads {
         });
     }
 
-    private void choose(JSONObject file, String address, String token, String conversation) { choose(file, address, token, conversation, false); }
-
-    private void choose(JSONObject file, String address, String token, String conversation, boolean askLocation) {
+    private void choose(JSONObject file, String address, String token, String conversation) {
         if (ArtifactDownloadService.snapshot().active()) { showProgress(); return; }
         try {
-            Uri directory = askLocation ? null : DownloadDirectory.selected(activity);
+            Uri directory = DownloadDirectory.selected(activity);
             if (directory != null && DownloadDirectory.hasPermission(activity, directory)) {
                 JSONObject selected = new JSONObject(file.toString()).put("address", address).put("conversation", conversation).put("discussion", discussion);
                 try { ArtifactDownloadService.startInDirectory(activity, selected, token, directory); showProgress(); }
