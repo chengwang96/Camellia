@@ -45,6 +45,8 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
 
     private static final class DelayedApi extends RemoteApi {
         final CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        final java.util.Map<Long, JSONObject> historyPages = new java.util.concurrent.ConcurrentHashMap<>();
+        final java.util.List<String> historyPaths = new java.util.concurrent.CopyOnWriteArrayList<>();
         JSONObject result;
         IOException failure;
         final java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
@@ -53,6 +55,7 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
         String requestId;
         DelayedApi() { super("http://100.64.0.1:43128"); }
         @Override public JSONObject json(String path, String token, JSONObject payload) throws IOException {
+            if (path.contains("?before=")) historyPaths.add(path);
             entered.countDown();
             try { if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("Test timeout"); }
             catch (InterruptedException error) { throw new IOException(error); }
@@ -66,7 +69,7 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
                 if (!requestId.equals(payload.optString("requestId"))) throw new IOException("Request changed on retry");
                 retried.countDown();
             }
-            return result;
+            return path.contains("?before=") ? historyPages.getOrDefault(Long.parseLong(path.substring(path.indexOf("?before=") + 8)), result) : result;
         }
     }
 
@@ -770,6 +773,160 @@ public class RemoteFeedbackTest extends InstrumentationTestCase {
             assertTrue(((View) field("older")).isEnabled());
             assertEquals(10L, field("nextBefore"));
             assertEquals(1, countText((View) field("messages"), "History 10"));
+        });
+    }
+
+    public void testToolOnlyPageContinuesToVisibleMessagesAndReportsTheActualCount() throws Exception {
+        JSONObject tool = historySnapshot(9, 9L);
+        tool.getJSONArray("messages").getJSONObject(0).put("role", "tool").put("text", "")
+            .put("process", new JSONArray().put(new JSONObject().put("type", "tool").put("text", "Older tool output")));
+        client.historyPages.put(10L, tool);
+        client.historyPages.put(9L, historySnapshot(8, null));
+        ui(() -> {
+            field("chinese", false); invoke("applySnapshot", historySnapshot(10, 10L));
+            ((View) field("older")).performClick();
+        });
+        assertTrue(client.entered.await(2, TimeUnit.SECONDS)); awaitOlder();
+        ui(() -> {
+            assertEquals(java.util.List.of("/v1/conversations/" + ID + "?before=10", "/v1/conversations/" + ID + "?before=9"), client.historyPaths);
+            assertEquals(1, countText((View) field("messages"), "History 8"));
+            assertEquals(1, countText((View) field("messages"), "History 10"));
+            assertTrue(((TextView) field("status")).getText().toString().contains("Added 1 earlier message."));
+            assertFalse(refreshing()); assertNull(field("nextBefore"));
+        });
+    }
+
+    private JSONObject fullHistory(int count, Long before) throws Exception {
+        JSONObject snapshot = historySnapshot(1000, before); JSONArray rows = new JSONArray();
+        for (long seq = 1001 - count; seq <= 1000; seq++) rows.put(new JSONObject().put("seq", seq)
+            .put("role", seq == 1000 ? "assistant" : "tool").put("text", seq == 1000 ? "Current message" : ""));
+        return snapshot.put("messages", rows);
+    }
+
+    public void testOlderPageMovesTheWindowBackInsteadOfDiscardingTheRequestedMessages() throws Exception {
+        JSONArray rows = new JSONArray();
+        for (long seq = 371; seq <= 410; seq++) rows.put(new JSONObject().put("seq", seq).put("role", "assistant").put("text", "Earlier " + seq));
+        client.result = historySnapshot(410, 371L).put("messages", rows);
+        ui(() -> {
+            field("chinese", false); invoke("applySnapshot", fullHistory(590, 411L));
+            ((View) field("older")).performClick();
+        });
+        assertTrue(client.entered.await(2, TimeUnit.SECONDS)); awaitOlder();
+        ui(() -> {
+            java.util.TreeMap<?, ?> history = (java.util.TreeMap<?, ?>) field("history");
+            assertEquals(600, history.size()); assertEquals(371L, history.firstKey()); assertEquals(970L, history.lastKey());
+            assertEquals(1, countText((View) field("messages"), "Earlier 371"));
+            assertEquals(1, countText((View) field("messages"), "Earlier 410"));
+            String notice = ((TextView) field("status")).getText().toString();
+            assertTrue(notice.contains("Added 40 earlier messages"));
+            assertTrue((Boolean) field("historyDetached")); assertEquals(371L, field("nextBefore"));
+            assertEquals(View.VISIBLE, ((View) field("older")).getVisibility());
+            assertTrue(((View) field("older")).isEnabled());
+            assertEquals(View.VISIBLE, ((View) field("latest")).getVisibility());
+        });
+    }
+
+    public void testAFullHistoryWindowCanContinueLoadingOlderPages() throws Exception {
+        client.result = historySnapshot(400, 400L);
+        ui(() -> {
+            field("chinese", false); invoke("applySnapshot", fullHistory(600, 401L));
+            invoke("loadOlder");
+            assertTrue((Boolean) field("olderLoading")); assertTrue(refreshing());
+        });
+        assertTrue(client.entered.await(2, TimeUnit.SECONDS)); awaitOlder();
+        client.result = historySnapshot(399, 399L);
+        ui(() -> ((View) field("older")).performClick()); awaitOlder();
+        ui(() -> {
+            java.util.TreeMap<?, ?> history = (java.util.TreeMap<?, ?>) field("history");
+            assertEquals(600, history.size()); assertEquals(399L, history.firstKey());
+            assertEquals(998L, history.lastKey()); assertEquals(399L, field("nextBefore"));
+            assertEquals(2, client.historyPaths.size()); assertFalse(refreshing());
+            assertTrue(((View) field("older")).isEnabled());
+        });
+    }
+
+    private void moveHistoryWindowBack() throws Exception {
+        client.result = historySnapshot(400, 400L);
+        ui(() -> { invoke("applySnapshot", fullHistory(600, 401L)); invoke("loadOlder"); });
+        assertTrue(client.entered.await(2, TimeUnit.SECONDS)); awaitOlder();
+    }
+
+    public void testLiveSnapshotsKeepTheOlderWindowUntilTheReaderReturnsToLatest() throws Exception {
+        moveHistoryWindowBack();
+        JSONObject latest = historySnapshot(1001, 1001L).put("cursor", 11)
+            .put("live", new JSONObject().put("text", "Current live reply"));
+        latest.getJSONObject("conversation").put("seq", 1001);
+        ui(() -> {
+            invoke("applySnapshot", latest);
+            java.util.TreeMap<?, ?> history = (java.util.TreeMap<?, ?>) field("history");
+            assertEquals(400L, history.firstKey()); assertEquals(999L, history.lastKey());
+            assertEquals(1001L, field("conversationSeq")); assertEquals(400L, field("nextBefore"));
+            assertEquals(0, countText((View) field("messages"), "Current live reply"));
+            assertEquals(0, countText((View) field("messages"), "History 1001"));
+            assertTrue(((View) field("latest")).isEnabled());
+        });
+        client.result = latest;
+        ui(() -> ((View) field("latest")).performClick()); awaitOlder();
+        // The live reply parses on its worker after a delayed dispatch. Network
+        // completion and main-thread idleness do not mean its text is visible yet.
+        long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+        boolean[] liveVisible = {false};
+        while (!liveVisible[0] && android.os.SystemClock.uptimeMillis() < deadline) {
+            ui(() -> liveVisible[0] = countText((View) field("messages"), "Current live reply") == 1);
+            if (!liveVisible[0]) android.os.SystemClock.sleep(20);
+        }
+        assertTrue(liveVisible[0]);
+        ui(() -> {
+            java.util.TreeMap<?, ?> history = (java.util.TreeMap<?, ?>) field("history");
+            assertEquals(java.util.List.of(1001L), new java.util.ArrayList<>(history.keySet()));
+            assertFalse((Boolean) field("historyDetached")); assertEquals(1001L, field("nextBefore"));
+            assertEquals(View.GONE, ((View) field("latest")).getVisibility());
+            assertEquals(1, countText((View) field("messages"), "History 1001"));
+            assertEquals(1, countText((View) field("messages"), "Current live reply"));
+        });
+    }
+
+    public void testFailedReturnToLatestPreservesTheOlderWindowAndRetry() throws Exception {
+        moveHistoryWindowBack(); client.failure = new IOException("Latest page unavailable");
+        ui(() -> ((View) field("latest")).performClick()); awaitOlder();
+        ui(() -> {
+            java.util.TreeMap<?, ?> history = (java.util.TreeMap<?, ?>) field("history");
+            assertEquals(400L, history.firstKey()); assertEquals(999L, history.lastKey());
+            assertTrue((Boolean) field("historyDetached")); assertEquals(400L, field("nextBefore"));
+            assertTrue(((View) field("latest")).isEnabled()); assertTrue(((View) field("older")).isEnabled());
+        });
+    }
+
+    public void testAStaleLatestResponseDoesNotClearTheOlderWindow() throws Exception {
+        moveHistoryWindowBack(); client.result = historySnapshot(1000, 1000L).put("cursor", 9);
+        ui(() -> ((View) field("latest")).performClick()); awaitOlder();
+        ui(() -> {
+            java.util.TreeMap<?, ?> history = (java.util.TreeMap<?, ?>) field("history");
+            assertEquals(400L, history.firstKey()); assertTrue((Boolean) field("historyDetached"));
+            assertTrue(((View) field("latest")).isEnabled());
+        });
+    }
+
+    public void testAHostRestartReplacesTheDetachedWindow() throws Exception {
+        moveHistoryWindowBack();
+        ui(() -> {
+            invoke("applySnapshot", historySnapshot(2, null).put("instanceId", "new-server").put("cursor", 0));
+            java.util.TreeMap<?, ?> history = (java.util.TreeMap<?, ?>) field("history");
+            assertEquals(java.util.List.of(2L), new java.util.ArrayList<>(history.keySet()));
+            assertFalse((Boolean) field("historyDetached")); assertNull(field("nextBefore"));
+            assertEquals(View.GONE, ((View) field("latest")).getVisibility());
+        });
+    }
+
+    public void testNonAdvancingOlderCursorShowsFailureAndLeavesTheRequestRetryable() throws Exception {
+        client.result = historySnapshot(9, 10L);
+        ui(() -> { invoke("applySnapshot", historySnapshot(10, 10L)); ((View) field("older")).performClick(); });
+        assertTrue(client.entered.await(2, TimeUnit.SECONDS)); awaitOlder();
+        ui(() -> {
+            assertFalse(refreshing()); assertEquals(10L, field("nextBefore"));
+            assertTrue(((View) field("older")).isEnabled());
+            assertEquals(0, countText((View) field("messages"), "History 9"));
+            assertEquals(1, client.historyPaths.size());
         });
     }
 

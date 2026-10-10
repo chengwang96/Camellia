@@ -5,6 +5,18 @@ Local chat, remote chat and remote discussions share `StreamingMarkdownView`,
 presentation; provider context, chat storage and the remote protocol keep their
 existing formats. No persistent render cache is created.
 
+Math is parsed before CommonMark escapes and emphasis. Inline `$...$` and
+`\(...\)` and display `$$...$$` and `\[...\]` use native JLaTeXMath spans,
+including fractions, scripts, sums, roots and matrices. Display blocks scroll
+horizontally when needed. Code spans, code blocks, escaped dollars and ordinary
+currency stay literal. An unfinished formula keeps its TeX visible until its
+delimiter closes; unsupported TeX also falls back to visible source. Formula
+copy restores its original delimiters and line breaks. The parser runs on the
+existing workers, and formula views are patched in place without replacing the
+streaming architecture. CommonMark 0.24's Java collection methods are desugared
+for the app's Android 8.0 minimum version. License notices ship in the existing
+Markdown notices asset and are visible in Settings.
+
 Updates are coalesced for 50 ms. Each visible reply has one worker job and the
 latest pending snapshot. Two shared parser threads serve the active replies.
 Views are patched on the main thread after parsing. Completion bypasses the
@@ -46,6 +58,20 @@ matched to the completed turn/delivery. Tool and delivery controls update
 separately from Markdown.
 
 ## Verification
+
+`MarkdownMathTest` checks delimiter semantics, TeX preservation, code/currency
+exclusions, source spans, partial formulas, nested blocks and fingerprints.
+Streaming prefix fixtures include inline and multiline math. The disposable
+`MarkdownMathRenderingTest` checks actual glyph rendering in light/dark themes,
+fractions, sums, matrices, Greek symbols, horizontal scroll, source copy,
+invalid TeX and formula view reuse across streaming completion.
+
+The release upgrade smoke test seeds TeX in an older signed APK, upgrades without
+clearing data, and verifies native spans in the actual local history alongside
+encrypted data and drafts. R8 must retain `NewCommandMacro`'s no-argument
+constructor and `executeMacro` entry point; matrix environments otherwise fall
+back to raw TeX despite working in a debug build. Current math evidence and
+light/dark screenshots are under `artifacts/android-math-20261010/`.
 
 `MarkdownStreamTest` compares small inputs against complete CommonMark parsing
 at 1-, 7- and 37-character chunk boundaries. It also checks replacements, late

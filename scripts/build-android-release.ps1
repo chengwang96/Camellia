@@ -1,4 +1,5 @@
-param([switch]$SkipTailnet, [switch]$SizeBaseline, [switch]$ReleaseTests, [string]$OutputDirectory)
+param([switch]$SkipTailnet, [switch]$SizeBaseline, [switch]$ReleaseTests, [string]$OutputDirectory,
+    [ValidateSet('arm64-v8a', 'x86_64')][string[]]$Abis = @('arm64-v8a', 'x86_64'))
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
@@ -10,7 +11,9 @@ $required = @('CAMELLIA_ANDROID_KEYSTORE', 'CAMELLIA_ANDROID_KEYSTORE_PASSWORD',
 $loadedLocalSigning = $false
 $originalPath = $env:PATH
 $originalGoPath = $env:GOPATH
+$originalJavaToolOptions = $env:JAVA_TOOL_OPTIONS
 if ($SizeBaseline -and $ReleaseTests) { throw 'Baseline measurement and optimized Release tests are separate builds.' }
+if (-not $Abis.Count -or @($Abis | Sort-Object -Unique).Count -ne $Abis.Count) { throw 'Select at least one distinct release ABI.' }
 if ($SizeBaseline -and -not $OutputDirectory) { throw 'A baseline requires an explicit output directory.' }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repoRoot 'dist' }
 if ($required.Where({ [Environment]::GetEnvironmentVariable($_) }).Count -eq 0 -and
@@ -26,6 +29,8 @@ if ($required.Where({ [Environment]::GetEnvironmentVariable($_) }).Count -eq 0 -
     $loadedLocalSigning = $true
 }
 try {
+# gomobile's generated Java sources use UTF-8 even on Windows JDKs defaulting to GBK.
+$env:JAVA_TOOL_OPTIONS = ($env:JAVA_TOOL_OPTIONS + ' -Dfile.encoding=UTF-8').Trim()
 foreach ($name in $required) {
     if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
         throw "Set $name before building a release APK."
@@ -50,7 +55,7 @@ if (-not $SkipTailnet) {
 
 Push-Location $androidDir
 try {
-    $arguments = @('assembleRelease', "-PcamelliaSplitApks=$(-not $SizeBaseline)", "-PcamelliaSizeBaseline=$([bool]$SizeBaseline)")
+    $arguments = @('assembleRelease', "-PcamelliaSplitApks=$(-not $SizeBaseline)", "-PcamelliaSizeBaseline=$([bool]$SizeBaseline)", "-PcamelliaReleaseAbis=$($Abis -join ',')")
     if ($ReleaseTests) { $arguments += @('-PcamelliaReleaseSmoke=true', ':app:assembleReleaseAndroidTest') }
     & (Join-Path $androidDir 'gradlew.bat') @arguments
     if ($LASTEXITCODE -ne 0) { throw 'Android release build failed.' }
@@ -58,7 +63,7 @@ try {
 
 $releaseDir = Join-Path $androidDir 'app/build/outputs/apk/release'
 $metadata = Get-Content -LiteralPath (Join-Path $releaseDir 'output-metadata.json') -Raw | ConvertFrom-Json
-if ($metadata.variantName -ne 'release' -or $metadata.elements.Count -ne $(if ($SizeBaseline) { 1 } else { 2 })) { throw 'Unexpected Android release output metadata.' }
+if ($metadata.variantName -ne 'release' -or $metadata.elements.Count -ne $(if ($SizeBaseline) { 1 } else { $Abis.Count })) { throw 'Unexpected Android release output metadata.' }
 
 $buildTools = Join-Path $env:ANDROID_HOME 'build-tools/35.0.0'
 $apksigner = Join-Path $buildTools 'apksigner.bat'
@@ -81,13 +86,13 @@ foreach ($element in $metadata.elements) {
     $audit = & (Join-Path $PSScriptRoot 'measure-android-apk.ps1') -Path $source
     if ($audit.unreferencedBytes -lt 0 -or $audit.unreferencedBytes -gt 1MB) { throw 'Release APK contains unexpected unused ZIP payloads.' }
     if (@($audit.nativeLibraries | Where-Object compression -ne 0).Count) { throw 'Native libraries must remain uncompressed for direct loading.' }
-    $abis = @($element.filters | Where-Object filterType -eq 'ABI' | ForEach-Object value)
-    $abi = if ($SizeBaseline) { 'universal' } elseif ($abis.Count -eq 1 -and $abis[0] -in @('arm64-v8a', 'x86_64')) { $abis[0] } else { throw 'Unexpected release ABI output.' }
+    $filterAbis = @($element.filters | Where-Object filterType -eq 'ABI' | ForEach-Object value)
+    $abi = if ($SizeBaseline) { 'universal' } elseif ($filterAbis.Count -eq 1 -and $filterAbis[0] -in $Abis) { $filterAbis[0] } else { throw 'Unexpected release ABI output.' }
     $nativeAbis = @($audit.nativeLibraries.name | ForEach-Object { ($_ -split '/')[1] } | Sort-Object -Unique)
     if (-not $SizeBaseline -and ($nativeAbis.Count -ne 1 -or $nativeAbis[0] -ne $abi)) { throw 'Release APK contains the wrong native architecture.' }
     $outputs += [pscustomobject]@{ source = $source; abi = $abi; element = $element; audit = $audit }
 }
-if (-not $SizeBaseline -and (@($outputs.abi | Sort-Object -Unique).Count -ne 2)) { throw 'An architecture-specific release APK is missing.' }
+if (-not $SizeBaseline -and (@($outputs.abi | Sort-Object -Unique).Count -ne $Abis.Count)) { throw 'An architecture-specific release APK is missing.' }
 $debugApk = Join-Path $androidDir 'app/build/outputs/apk/debug/app-debug.apk'
 if (Test-Path -LiteralPath $debugApk) {
     # Capture the full output before filtering: piping straight into Select-Object
@@ -137,6 +142,8 @@ Write-Output $releaseCertificate
     $env:PATH = $originalPath
     if ($null -eq $originalGoPath) { Remove-Item Env:GOPATH -ErrorAction SilentlyContinue }
     else { $env:GOPATH = $originalGoPath }
+    if ($null -eq $originalJavaToolOptions) { Remove-Item Env:JAVA_TOOL_OPTIONS -ErrorAction SilentlyContinue }
+    else { $env:JAVA_TOOL_OPTIONS = $originalJavaToolOptions }
     if ($loadedLocalSigning) {
         foreach ($name in $required) { Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue }
     }

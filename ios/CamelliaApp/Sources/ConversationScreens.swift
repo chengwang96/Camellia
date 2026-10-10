@@ -1002,13 +1002,10 @@ private struct StatusDetailsHeightKey: PreferenceKey {
 /// blank column otherwise, which reads as a screen that failed to load rather
 /// than as one waiting for a first message.
 struct EmptyConversationView: View {
-    @EnvironmentObject private var model: AppModel
-    let onWrite: () -> Void
-
     var body: some View {
         EmptyStateView(mark: .brand, title: "从这里开始",
                        message: "描述任务，继续电脑上的工作。") {
-            EmptyStateActionButton(title: "输入消息", action: onWrite)
+            EmptyView()
         }
     }
 }
@@ -1064,7 +1061,7 @@ struct ConversationDetailView: View {
                             }.id("earlier-subtasks:\(turn)")
                         }
                         if showsEmptyState {
-                            EmptyConversationView(onWrite: { model.focusComposer() })
+                            EmptyConversationView()
                                 .id("empty")
                         }
                         ForEach(model.transcript.messages, id: \.id) { row in

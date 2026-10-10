@@ -369,6 +369,10 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
                 while (ArtifactDownloadService.snapshot().active() && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(50);
                 if (attempt == 2) {
                     assertEquals("cancelled", ArtifactDownloadService.snapshot().phase);
+                    // The terminal state is published before the service releases its directory grant.
+                    deadline = android.os.SystemClock.elapsedRealtime() + 5_000;
+                    while (DownloadDirectory.hasPermission(context, DownloadDirectoryFixture.TREE)
+                            && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(25);
                     assertFalse("A cleared directory grant must be released after cancellation",
                         DownloadDirectory.hasPermission(context, DownloadDirectoryFixture.TREE));
                     // Regain access to verify saved files and the removal of the cancelled partial file.
@@ -400,6 +404,12 @@ public class GatewayIntegrationTest extends InstrumentationTestCase {
             android.app.Activity lastActivity = activity; ArtifactDownloads lastDownloads = downloads;
             getInstrumentation().runOnMainSync(() -> { if (lastDownloads != null) lastDownloads.close(); if (lastActivity != null) lastActivity.finish(); });
             ArtifactDownloadService.cancel(context);
+            long deadline = android.os.SystemClock.elapsedRealtime() + 5_000;
+            while (ArtifactDownloadService.snapshot().active() && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(25);
+            assertFalse("The test download must stop before cleanup", ArtifactDownloadService.snapshot().active());
+            getInstrumentation().waitForIdleSync();
+            if (!savedFiles.isEmpty() && !DownloadDirectory.hasPermission(context, DownloadDirectoryFixture.TREE))
+                DownloadDirectoryFixture.authorize(getInstrumentation());
             for (android.net.Uri file : savedFiles) android.provider.DocumentsContract.deleteDocument(context.getContentResolver(), file);
             DownloadDirectory.clear(context);
         }

@@ -1,9 +1,9 @@
 'use strict';
 
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('markdown-it'), require('markdown-it-texmath'), require('katex'));
-  else root.CamelliaMarkdownLinks = factory(root.markdownit, root.texmath, root.katex);
-})(typeof window === 'object' ? window : globalThis, function (MarkdownIt, texmath, katex) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('markdown-it'), require('../shared/markdown-math'));
+  else root.CamelliaMarkdownLinks = factory(root.markdownit, root.CamelliaMarkdownMath);
+})(typeof window === 'object' ? window : globalThis, function (MarkdownIt, math) {
   // Keep the chat's existing block layout, but use the Markdown parser for
   // inline links (including titles, escaped characters and balanced brackets)
   // and for inline/display math, which shares the file preview's renderer.
@@ -13,7 +13,7 @@
   // "README.md" or "setup.sh" into fake domains. Explicit schemes are handled
   // by `autolink`/`linkify`, e-mail by `fuzzyEmail`, and "www." by the rule below.
   parser.linkify.set({ fuzzyLink: false, fuzzyEmail: true, fuzzyIP: false });
-  parser.use(texmath, { engine: katex, delimiters: ['dollars', 'brackets'], katexOptions: { trust: false, strict: 'ignore', maxExpand: 200, maxSize: 20 } });
+  parser.use(math.install);
   const escape = parser.utils.escapeHtml;
   const controls = /[\x00-\x1f\x7f]/;
 
@@ -161,5 +161,5 @@
       + '" title="' + escape(target.href) + '" loading="lazy" decoding="async" referrerpolicy="no-referrer">';
   };
 
-  return { destination, renderInline: (source, cwd = '') => parser.renderInline(source, { cwd }) };
+  return { destination, renderInline: (source, cwd = '') => parser.renderInline(source, { cwd }), protectMath: math.protect, renderMath: math.html };
 });

@@ -198,6 +198,59 @@ test('chat renders lists with nesting, ordering and GitHub task checkboxes', () 
   assert.match(render('- `npm test`'), /<li><code class="md-inline">npm test<\/code><\/li>/);
 });
 
+test('Windows and macOS chats preserve escaped dollars and Markdown-looking TeX in every delimiter style', () => {
+  for (const cwd of ['D:/Code/project', '/Users/me/project']) {
+    const render = chatRenderer(cwd);
+    for (const [open, close] of [['$', '$'], ['$$', '$$'], ['\\(', '\\)'], ['\\[', '\\]']]) {
+      const tex = String.raw`\text{price: \$5 and **literal**} + \lvert x\rvert` + '\\text{`code`}';
+      const html = render(open + tex + close);
+      assert.equal((html.match(/class="katex"/g) || []).length, 1, open);
+      assert.doesNotMatch(html, /katex-error|\x01/);
+      assert.ok(html.includes(tex), open);
+    }
+    const table = render(String.raw`| Formula | Value |
+| --- | --- |
+| $|x|$ | \[\text{\$5}\] |`);
+    assert.equal((table.match(/<td>/g) || []).length, 2);
+    assert.equal((table.match(/class="katex"/g) || []).length, 2);
+    assert.doesNotMatch(table, /katex-error|\x01/);
+  }
+});
+
+test('quoted formulas exclude Markdown markers and keep MathML annotation text intact', () => {
+  const html = chatRenderer()(String.raw`> \[
+> \begin{aligned}
+> a &= b \\
+> c &= d
+> \end{aligned}
+> \]
+
+after`);
+  assert.equal((html.match(/class="katex-display"/g) || []).length, 1);
+  const annotation = /<annotation[^>]*>([\s\S]*?)<\/annotation>/.exec(html)[1];
+  assert.doesNotMatch(annotation, /&gt;|<br>/);
+  assert.match(annotation, /\n\\begin\{aligned\}\n/);
+  assert.match(html, /<\/blockquote>\n\nafter$/);
+});
+
+test('dollar and bracket examples in indented code stay literal without unresolved tokens', () => {
+  for (const formula of ['$$x^2$$', String.raw`\[x^2\]`, '$x$', String.raw`\(x\)`]) {
+    const html = chatRenderer()('    ' + formula + '\n\nText');
+    assert.doesNotMatch(html, /katex|\x01/);
+    assert.ok(html.includes('<pre><code>' + formula + '</code></pre>'));
+  }
+});
+
+test('multiline parenthesized math is rendered only after its closing delimiter arrives', () => {
+  const render = chatRenderer(), partial = String.raw`\(\frac{a}{b}
+
++ c`;
+  assert.doesNotMatch(render(partial), /class="katex"/);
+  const html = render(partial + String.raw`\)`);
+  assert.equal((html.match(/class="katex"/g) || []).length, 1);
+  assert.doesNotMatch(html, /katex-error/);
+});
+
 test('a bilingual line stays inside the list item it belongs to', () => {
   const render = chatRenderer();
   const html = render('- `Title one`\n中文译文一\n- `Title two`\n中文译文二');

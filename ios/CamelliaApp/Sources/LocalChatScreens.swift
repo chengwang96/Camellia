@@ -743,7 +743,6 @@ struct LocalChatDetailView: View {
     @State private var composerHeight: CGFloat = 96
     @State private var modelAnchorTop: CGFloat?
     @State private var detailError: String?
-    @State private var focusComposerRequest = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -753,7 +752,7 @@ struct LocalChatDetailView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 14) {
                             if model.messages.isEmpty {
-                                LocalChatEmptyConversationView { focusComposerRequest += 1 }
+                                LocalChatEmptyConversationView()
                                     .frame(minHeight: max(260, viewport.size.height - 24))
                                     .id("local-empty")
                             }
@@ -783,7 +782,6 @@ struct LocalChatDetailView: View {
                 }
             }
             LocalChatComposer(
-                focusRequest: focusComposerRequest,
                 onAttach: { showingAttachments = true },
                 onTools: { showingTools = true },
                 onModelPicker: { showingModelPicker = true })
@@ -952,12 +950,10 @@ struct LocalChatDetailView: View {
 }
 
 private struct LocalChatEmptyConversationView: View {
-    let onWrite: () -> Void
-
     var body: some View {
         EmptyStateView(mark: .brand, title: "今天想做些什么？",
                        message: "写下问题或添加内容，开始这次对话。") {
-            EmptyStateActionButton(title: "输入消息", action: onWrite)
+            EmptyView()
         }
     }
 }
@@ -1150,7 +1146,6 @@ struct LocalChatProcessView: View {
 // MARK: - Composer
 
 struct LocalChatComposer: View {
-    let focusRequest: Int
     let onAttach: () -> Void
     let onTools: () -> Void
     let onModelPicker: () -> Void
@@ -1198,7 +1193,6 @@ struct LocalChatComposer: View {
         .background(GeometryReader { geometry in
             Color.clear.preference(key: LocalComposerHeightKey.self, value: geometry.size.height)
         })
-        .onChange(of: focusRequest) { _ in writing = true }
     }
 
     private var editingBanner: some View {

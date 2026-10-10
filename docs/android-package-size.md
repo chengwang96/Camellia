@@ -1,11 +1,12 @@
 # Android package size
 
 The signed Windows release script exports separate ARM64 and x86_64 APKs. The
-default `dist/Camellia-Android-1.0.0.apk` is identical to the ARM64 export. These
+default `dist/Camellia-Android-1.0.1.apk` is identical to the ARM64 export. These
 are standalone APKs; install the one matching the device. Debug builds remain
 universal so existing development and instrumentation commands keep working.
 Direct Gradle builds enable splitting with `-PcamelliaSplitApks=true`; the
-release script supplies this property automatically.
+release script supplies this property automatically. Use `-Abis arm64-v8a` for
+only the phone package, or `-Abis x86_64` for only the emulator package.
 
 ## Changes
 
@@ -22,7 +23,7 @@ release script supplies this property automatically.
   updated APK ZIPs. The output directory is checked before deletion.
 - Native libraries remain stored and aligned for loading directly from the
   APK. Go builds already use `-s -w`; no redundant stripping step is added.
-- The export script checks both ABI outputs, signature consistency, the release
+- The export script checks the selected ABI outputs, signature consistency, the release
   manifest, native alignment, and unused ZIP space. Each export includes a
   `.sha256` checksum and `.size.json` audit. Its R8 mapping is saved with the
   version code for crash symbolication.
@@ -54,7 +55,7 @@ upgrade fixture rather than the comparison baseline.
 .\scripts\build-android-release.ps1 -SkipTailnet -SizeBaseline `
   -OutputDirectory .\dist\test-results\android-apk-size-baseline
 
-.\scripts\measure-android-apk.ps1 -Path .\dist\Camellia-Android-1.0.0.apk
+.\scripts\measure-android-apk.ps1 -Path .\dist\Camellia-Android-1.0.1.apk
 ```
 
 `-SizeBaseline` disables R8, resource shrinking and icon resizing for measurement.

@@ -44,6 +44,31 @@ The `next-turn-settings` capability allows a model, thinking-level, or supported
 
 Command results are persisted by request ID. A retry must use the **same** ID and parameters; `pending` means the action is still being prepared, while `unknown` or `interrupted` after a crash must be reconciled before the user chooses another action. HTTP 200 alone does not mean an engine turn completed. A reconnect replaces the current snapshot instead of appending it. `instanceId` changes when the gateway restarts, so old cursors and unconfirmed controls must not be treated as current. The client does not automatically resend a timed-out send, stop, or approval.
 
+### Android conversation history
+
+An ordinary conversation page holds at most 200 history records, including tool
+records, and about 1 MiB of text and serialized process detail. Long records can
+reduce the page count. Tool records contribute to reply process panels rather
+than separate chat bubbles, so 200 records do not imply 200 visible messages.
+
+Android retains at most 600 records and 4 MiB of estimated text/process weight.
+This is a sliding display window, not an end to accessible history. Loading older
+pages releases records from the newer end when necessary, keeping the requested
+older records and their next cursor. Latest-page snapshots keep updating live
+controls without replacing a detached older window. **Back to latest messages**
+fetches the current latest page and resumes transcript updates. A failed or stale
+response leaves the older window and the return action available.
+
+A tool-only or already-cached page continues toward a new chat message, the end
+of history, a bounded batch, or eight requests per click. A partial batch resumes
+at its earliest retained record, including on a terminal server page, so unread
+records are not skipped. Invalid or non-advancing cursors fail with retry
+available. The result reports the actual number of newly retained chat messages
+or process records. Prepending preserves the current reading position when its
+anchor remains in the window; scroll up to see the new content. Discussion
+groups use a separate limit of 80 messages per server page and a separate
+retention policy.
+
 ### Forks and subtasks
 
 The `fork` capability allows `action: "fork"` with `expectedSeq`. During a running or recovering turn, a snapshot from the current turn remains valid as tool rows arrive, and the fork excludes that entire turn. An idle fork requires the exact stored sequence. The response identifies the new conversation; the source keeps running.
