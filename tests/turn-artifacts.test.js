@@ -67,9 +67,24 @@ test('artifacts resolve against the workspace and are existing, supported, dedup
     text: '`report.docx` [report](%E5%AE%9E%E9%AA%8C%20report.pdf)' });
   assert.deepEqual(result.map(entry => entry.kind), ['pdf', 'word']);
   assert.equal(result[0].path, file);
+  assert.equal(result[0].canonicalPath, fs.realpathSync.native(file));
   assert.equal(result[0].size, 3);
   assert.deepEqual(resolveArtifacts({ paths: ['report.docx'] }), []);
   assert.deepEqual(resolveArtifacts({ cwd, paths: ['https://example.com/report.pdf'] }), []);
+});
+
+test('repeated reply references and write paths produce one entry per real file, keeping same-name files in different folders', t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-artifact-references-'));
+  t.after(() => removeTree(cwd));
+  for (const folder of ['first', 'second']) {
+    fs.mkdirSync(path.join(cwd, folder));
+    fs.writeFileSync(path.join(cwd, folder, 'report.pdf'), 'fixture');
+  }
+  const file = path.join(cwd, 'first', 'report.pdf');
+  const result = resolveArtifacts({ cwd, paths: [file, 'first/report.pdf'],
+    text: '`first/report.pdf` [report](first/report.pdf) [again](./first/report.pdf)\n'
+      + `[absolute](<${file}>) [URL](<${pathToFileURL(file).href}>)\n\`second/report.pdf\`` });
+  assert.deepEqual(result.map(entry => entry.canonicalPath), [file, path.join(cwd, 'second', 'report.pdf')].map(value => fs.realpathSync.native(value)));
 });
 
 test('edited source and configuration are not deliverables unless explicitly linked without line numbers', t => {
@@ -164,6 +179,9 @@ test('Windows short and long paths identify one deliverable', { skip: process.pl
   assert.equal(fs.readFileSync(path.join(shortRoot, 'report.md'), 'utf8'), 'One deliverable');
   const result = resolveArtifacts({ cwd: shortRoot, explicitPaths: [file], text: '`report.md`' });
   assert.deepEqual(result.map(entry => entry.path), [file]);
+  const shortFile = resolveArtifacts({ cwd: shortRoot, text: '`report.md`' })[0];
+  assert.notEqual(shortFile.path, result[0].path);
+  assert.equal(shortFile.canonicalPath, result[0].canonicalPath);
 });
 
 test('command directories support POSIX paths, spaces, nested quotes and cmd arguments', () => {

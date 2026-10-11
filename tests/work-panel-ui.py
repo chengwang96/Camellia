@@ -19,7 +19,7 @@ for name in ('fixture', 'bridge'):
              'text': 'Review sample ' + str(i) if i % 2 == 0 else ('Review result ' + str(i) + '\n\n') * 20}
             for i in range(20)]
 bridge = namespace['bridge'].replace('onConversationEvent:()=>{}',
-    'onConversationEvent:fn=>{window.deliverChild=tasks=>fn({type:"gui:subagent",session_id:"shared-fixture",tasks});}')
+    'onConversationEvent:fn=>{window.deliverEvent=fn;window.deliverChild=tasks=>fn({type:"gui:subagent",session_id:"shared-fixture",tasks});}')
 bridge = bridge.replace("if(action==='goal-get')", "if(action==='task-list') return {ok:true,tasks:[]}; if(action==='goal-get')")
 bridge += """(() => {
   const command = window.dshDesktop.conversationCommand;
@@ -95,6 +95,30 @@ with sync_playwright() as p:
         page.get_by_role('button', name='Back to overview', exact=True).click()
         expect(page.locator('.work-artifact')).to_contain_text('checks.md')
         expect(page.locator('.work-artifact')).to_contain_text('Check report')
+        page.evaluate(r"""() => {
+          window.dshDesktop.platform = 'win32';
+          window.dshDesktop.resolveArtifacts = async request => ({ok:true,files:request.paths.map(path => ({
+            path, name:'checks.md', canonicalPath:path.includes('other') ? 'C:\\other\\checks.md' : 'C:\\outputs\\checks.md'
+          }))});
+        }""")
+        alias_tasks = [
+            {**completed, 'id': 'alias-1', 'artifacts': [{'path': 'C:/outputs/checks.md'}]},
+            {**completed, 'id': 'alias-2', 'artifacts': [{'path': 'c:\\OUTPUTS\\checks.md'}]},
+            {**completed, 'id': 'alias-link', 'artifacts': [{'path': 'C:/linked/checks.md'}]},
+            {**completed, 'id': 'alias-3', 'artifacts': [{'path': 'C:/other/checks.md'}]},
+        ]
+        page.evaluate('tasks => deliverChild(tasks)', alias_tasks)
+        expect(page.locator('.work-artifact')).to_have_count(3)
+        page.evaluate("""() => {
+          const emit = event => deliverEvent({session_id:'shared-fixture',engine:'codex',runId:901,...event});
+          emit({type:'conversation:started',prompt:'Create report',userSeq:21});
+          emit({type:'assistant',message:{content:[{type:'text',text:'[report](C:/outputs/checks.md) [again](C:/outputs/checks.md)'}]}});
+          emit({type:'result',subtype:'success',artifacts:[{path:'C:/main-alias/checks.md'}]});
+        }""")
+        expect(page.locator('.turn').last.locator('.artifact-row')).to_have_count(1)
+        expect(page.locator('.work-artifact')).to_have_count(3)
+        page.evaluate('tasks => deliverChild(tasks)', alias_tasks)
+        expect(page.locator('.work-artifact')).to_have_count(3)
         panel = page.locator('#workPanel').bounding_box()
         assert 320 <= panel['width'] <= 380
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')

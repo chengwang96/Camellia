@@ -6,6 +6,10 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview }) => {
   let tasks = [], selected = null, files = new Map(), epoch = 0, fileTicket = 0, busy = false;
   const drafts = new Map(), expanded = new Map();
   const taskKey = task => task.engine + ':' + task.id;
+  const fileKey = file => {
+    const value = file.canonicalPath || file.path;
+    return window.dshDesktop.platform === 'win32' ? value.replace(/\\/g, '/').toLowerCase() : value;
+  };
   const el = (tag, cls, text) => { const node = document.createElement(tag); node.className = cls; if (text != null) node.textContent = text; return node; };
   function button(text, run, cls = 'work-action') { const node = el('button', cls, t(text)); node.type = 'button'; node.onclick = run; return node; }
   function setOpen(open) { panel.hidden = !open; toggle.setAttribute('aria-expanded', String(open)); }
@@ -113,7 +117,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview }) => {
       try {
         const result = await window.dshDesktop.resolveArtifacts({ sessionId: task.managedConversationId || sessionId, paths: task.artifacts?.map(file => file.path) || [], text: task.result });
         if (epoch !== generation || fileTicket !== ticket || context.sessionId !== sessionId) return;
-        if (result.ok) for (const file of result.files) files.set(file.path, { ...file, origin: task.title });
+        if (result.ok) for (const file of result.files) files.set(fileKey(file), { ...file, origin: task.title });
       } catch {}
     }
     render();
@@ -121,5 +125,5 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview }) => {
   window.addEventListener('camellia:language', () => { render(); renderCards(); });
   return { reset() { epoch++; tasks = []; files.clear(); drafts.clear(); expanded.clear(); selected = null; render(); },
     update(value) { tasks = value || []; render(); renderCards(); void childFiles(); },
-    artifacts(value) { for (const file of value || []) if (!files.has(file.path)) files.set(file.path, { ...file, origin: t('Main conversation') }); render(); }, refreshCards: renderCards };
+    artifacts(value) { for (const file of value || []) if (!files.has(fileKey(file))) files.set(fileKey(file), { ...file, origin: t('Main conversation') }); render(); }, refreshCards: renderCards };
 };
