@@ -1,5 +1,10 @@
 # Desktop artifact previews
 
+Repeated references to the same file in a reply produce one artifact. The desktop
+work panel also uses the resolved canonical path to merge files across replies and
+subtasks, including Windows case, separator and short-path aliases. Files with the
+same name in different directories remain separate artifacts.
+
 The desktop artifact sidebar renders Markdown locally with headings, tables, lists,
 links, images and task lists. It also supports footnotes, KaTeX mathematics using
 `$…$`, `$$…$$`, `\(…\)` and `\[…\]`, and syntax highlighting for recognized fenced
