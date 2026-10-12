@@ -6,9 +6,43 @@ const { createHash } = require('node:crypto');
 const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { writeJson } = require('../shared/json-store');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const versions = new Map();
+const checkedPaths = new Map();
 const SUPPORTED_CLI_VERSIONS = Object.freeze(['1.2.3', '1.2.14']);
+
+function isAntigravityCliHelp(output) {
+  // The IDE, Python and other native executables also answer --version. Check
+  // the CLI transport and model command that subscription sessions require.
+  return /--input-format\b/.test(output) && /--output-format\b/.test(output)
+    && /\bstream-json\b/.test(output) && /^\s*models\s+\S/m.test(output);
+}
+
+function cliSignature(file) {
+  const stat = fs.statSync(file);
+  return `${fs.realpathSync(file)}:${stat.mtimeMs}:${stat.size}`;
+}
+
+function rememberAntigravityCli(file, version) {
+  checkedPaths.set(file, { signature: cliSignature(file), version });
+}
+
+function checkedAntigravityCliVersion(file, env) {
+  const signature = cliSignature(file), cached = checkedPaths.get(file);
+  if (cached?.signature === signature) return cached.version;
+  const probe = arg => {
+    const result = spawnSync(file, [arg], { windowsHide: true, timeout: 10000, maxBuffer: 65536, encoding: 'utf8',
+      env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    if (result.error || result.status !== 0) throw new Error(`Could not check the Antigravity CLI: ${result.error?.message || `exited (${result.status})`}`);
+    return `${result.stdout || ''}\n${result.stderr || ''}`;
+  };
+  const version = probe('--version').match(/\b\d+\.\d+\.\d+(?:-[\w.-]+)?\b/)?.[0];
+  if (!version || !isAntigravityCliHelp(probe('--help'))) {
+    throw new Error('Choose the Antigravity CLI (agy), not Python or the Antigravity desktop application');
+  }
+  rememberAntigravityCli(file, version);
+  return version;
+}
 
 function locateAntigravityCli(dir) {
   const marker = path.join(dir, 'cli/installed.json');
@@ -60,4 +94,5 @@ async function installAntigravityCli({ source, dir, connection, run, report }) {
   return locateAntigravityCli(dir);
 }
 
-module.exports = { locateAntigravityCli, installAntigravityCli, SUPPORTED_CLI_VERSIONS };
+module.exports = { locateAntigravityCli, installAntigravityCli, SUPPORTED_CLI_VERSIONS, isAntigravityCliHelp,
+  rememberAntigravityCli, checkedAntigravityCliVersion };

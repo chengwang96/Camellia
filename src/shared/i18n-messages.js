@@ -5,6 +5,11 @@
   if (typeof module === 'object' && module.exports) module.exports = messages;
   else root.CamelliaMessages = messages;
 })(typeof window === 'object' ? window : globalThis, {
+  "Google subscription CLI": "Google 订阅 CLI",
+  "CLI installation path": "CLI 安装路径",
+  "CLI path unavailable": "CLI 路径不可用",
+  "Python interpreter (API)": "Python 解释器（API）",
+  "Choose the Antigravity CLI (agy), not Python or the Antigravity desktop application": "请选择 Antigravity CLI（agy），不要选择 Python 或 Antigravity 桌面应用",
   "Reset credits": "重置卡",
   "Use an official reset credit": "使用官方重置卡",
   "Reset Codex usage?": "要重置你的 Codex 使用量吗？",
@@ -893,6 +898,9 @@
   "Message {0}": "给 {0} 发送消息",
   "Add attachments, or drop images here": "添加附件，或将图片拖到这里",
   "Add attachments": "添加附件",
+  "{0} attachments": "{0} 个附件",
+  "Expand attachments": "展开附件",
+  "Collapse attachments": "收起附件",
   "Files": "文件",
   "Conversation": "会话",
   "Attach a conversation": "附加会话",

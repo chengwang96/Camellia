@@ -350,7 +350,7 @@ test('an older DSH bin.js entry in the npx cache is recognized without assuming 
   assert.equal(plan.package, '@deepseek-ai/dsh');
 });
 
-test('Antigravity CLI migration preserves its managed API SDK and packages', async t => {
+test('Antigravity CLI migration from API mode preserves its managed SDK and packages', async t => {
   const f = fixture(t), bytes = Buffer.from('official CLI fixture');
   const server = http.createServer((_req, response) => { response.end(bytes); });
   for (;;) {
@@ -368,11 +368,13 @@ test('Antigravity CLI migration preserves its managed API SDK and packages', asy
   const marker = put(path.join(f.managed, 'runtimes', 'antigravity', 'installed.json'), { sdk: '0.1.17' });
   const original = put(path.join(f.root, 'tools', process.platform === 'win32' ? 'agy.exe' : 'agy'), 'external CLI');
   fs.chmodSync(original, 0o755);
+  require('../src/main/antigravity-cli-runtime').rememberAntigravityCli(original, '1.0.0');
   writeJson(f.config, { antigravity: { file: original, version: '1.0.0' } });
-  const manager = createRuntimeManager({ ...f.settings, runtimeMode: engine => engine === 'antigravity' ? 'subscription' : 'api',
-    probe: async (_exe, _args, options) => { assert.equal(options.env.AGY_CLI_DISABLE_AUTO_UPDATE, 'true'); return { stdout: 'agy 1.2.3' }; },
+  const manager = createRuntimeManager({ ...f.settings, runtimeMode: () => 'api',
+    probe: async (_exe, args, options) => { assert.equal(options.env.AGY_CLI_DISABLE_AUTO_UPDATE, 'true'); return { stdout: args[0] === '--help'
+      ? '--input-format stream-json\n--output-format stream-json\n  models List available models' : 'agy 1.2.3' }; },
     runCommand: async (_exe, args) => { if (args[0] === '-xzf') put(path.join(args[args.indexOf('-C') + 1], 'antigravity'), 'extracted CLI'); } });
-  const ready = await manager.reinstall('antigravity');
+  const ready = await manager.reinstall('antigravity', manager.reinstallPlan('antigravity', 'subscription'));
   assert.equal(ready.version, '1.2.3');
   assert.equal(fs.readFileSync(sdk, 'utf8'), 'keep API packages');
   assert.equal(readJson(marker).sdk, '0.1.17');

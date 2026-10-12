@@ -119,8 +119,24 @@
     return card;
   }
 
-  function renderAttachments(row, files, { preview, remove } = {}) {
+  function renderAttachments(row, files, { preview, remove, collapsible = false } = {}) {
+    const previous = row.querySelector('.attach-overflow');
+    const previousPaths = new Set(Array.from(row.querySelectorAll('.attchip'), chip => chip.title));
+    const expanded = previous?.open && files.some(file => previousPaths.has(file.path));
+    const scrollTop = previous?.querySelector('.attach-list')?.scrollTop || 0;
     row.replaceChildren(); row.classList.toggle('has', files.length > 0);
+    row.classList.toggle('attach-composer', collapsible);
+    let list = row;
+    if (collapsible && files.length > 12) {
+      const details = document.createElement('details'); details.className = 'attach-overflow'; details.open = Boolean(expanded);
+      const summary = document.createElement('summary'); summary.className = 'attach-summary';
+      const count = document.createElement('span'); count.className = 'attach-count'; count.dataset.i18n = ''; count.textContent = files.length + ' attachments';
+      const expand = document.createElement('span'); expand.className = 'attach-expand'; expand.dataset.i18n = ''; expand.textContent = 'Expand attachments';
+      const collapse = document.createElement('span'); collapse.className = 'attach-collapse'; collapse.dataset.i18n = ''; collapse.textContent = 'Collapse attachments';
+      summary.append(count, expand, collapse);
+      list = document.createElement('div'); list.className = 'attach-list';
+      details.append(summary, list); row.append(details);
+    }
     for (const [index, file] of files.entries()) {
       const chip = document.createElement('div'); chip.className = 'attchip'; chip.title = file.path;
       if (file.isImage || file.kind === 'image') { const image = document.createElement('img'); image.src = fileUrl(file.path); image.alt = ''; chip.append(image); }
@@ -135,8 +151,9 @@
       name.onkeydown = event => { if (['Enter', ' '].includes(event.key)) { event.preventDefault(); preview?.(file.path); } };
       chip.append(name);
       if (remove) { const button = document.createElement('button'); button.type = 'button'; button.className = 'attchip-x'; button.title = window.CamelliaI18n.t('Remove'); button.textContent = '✕'; button.onclick = () => remove(index); chip.append(button); }
-      row.append(chip);
+      list.append(chip);
     }
+    if (list !== row) list.scrollTop = scrollTop;
   }
   function questionFields(container, questions, { saved = {}, changed = () => {} } = {}) {
     const fields = []; container.replaceChildren();

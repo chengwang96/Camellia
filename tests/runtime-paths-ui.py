@@ -84,6 +84,56 @@ try:
         assert ('runtimeCheckUpdates', None) in runtime_calls
         page.locator('[data-engine=antigravity]').click()
         expect(page.locator('#runtime-path-antigravity-subscription')).to_be_visible()
+        # API's interpreter and the subscription CLI must each show their own
+        # resolved path, even when the last conversation used API mode.
+        conflict_rows = rpc('runtimeState')['engines']
+        antigravity_row = next(row for row in conflict_rows if row['id'] == 'antigravity')
+        python_path = r'C:\Users\fixture\miniconda3\envs\torch124\python.exe'
+        cli_path = r'C:\Users\fixture\AppData\Local\agy\bin\agy.exe'
+        antigravity_row.update({'mode': 'api', 'status': 'ready', 'version': '0.1.20',
+            'file': python_path, 'source': 'Installed by Camellia', 'external': False,
+            'subscriptionRuntime': {'id': 'antigravity', 'name': 'Antigravity', 'mode': 'subscription',
+                'status': 'ready', 'version': '1.2.14', 'file': cli_path, 'source': 'Available locally', 'external': True}})
+        page.evaluate('rows => window.runtimeListeners.forEach(callback => callback(rows))', conflict_rows)
+        card = page.locator('#runtimeCards .runtime-card:visible')
+        expect(card.locator(':scope > .runtime-installation-path')).to_contain_text('Python interpreter (API)')
+        expect(card.locator(':scope > .runtime-installation-path code')).to_have_text(python_path)
+        cli_section = card.locator('.runtime-subscription')
+        expect(cli_section.locator('h3')).to_have_text('Google subscription CLI')
+        expect(cli_section.locator('.runtime-installation-path code')).to_have_text(cli_path)
+        expect(cli_section.locator('[data-cli-status]')).to_contain_text('Update this CLI')
+        assert cli_section.count() == 1
+        # Re-rendering the path controls must not accumulate CLI summaries.
+        page.evaluate('rows => window.runtimeListeners.forEach(callback => callback(rows))', conflict_rows)
+        expect(card.locator('.runtime-subscription')).to_have_count(1)
+        (repo / 'dist/runtime-paths-qa').mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(repo / 'dist/runtime-paths-qa/antigravity-api-and-cli.png'), full_page=True)
+        # A real Node executable must fail the CLI identity check rather than
+        # become a saved runtime just because its version looks valid.
+        unrelated = subprocess.check_output(['node', '-p', 'process.execPath'], text=True).strip()
+        cli_section.locator('input').fill('"' + unrelated + '"')
+        cli_section.locator('[data-path-action="save"]').click()
+        expect(page.locator('#status')).to_contain_text('Choose the Antigravity CLI')
+        expect(page.locator('#runtime-path-antigravity-subscription')).to_have_value('"' + unrelated + '"')
+        antigravity_row['subscriptionRuntime'] = {'id': 'antigravity', 'name': 'Antigravity',
+            'mode': 'subscription', 'status': 'error', 'customPath': unrelated,
+            'message': 'Choose the Antigravity CLI (agy), not Python or the Antigravity desktop application'}
+        page.evaluate('rows => window.runtimeListeners.forEach(callback => callback(rows))', conflict_rows)
+        expect(card.locator('.runtime-subscription [data-cli-status]')).to_have_text('CLI path unavailable')
+        expect(card.locator('.runtime-subscription [data-install=antigravity]')).to_have_count(0)
+        antigravity_row['subscriptionRuntime'] = {'id': 'antigravity', 'name': 'Antigravity',
+            'mode': 'subscription', 'status': 'missing'}
+        page.evaluate('rows => window.runtimeListeners.forEach(callback => callback(rows))', conflict_rows)
+        card.locator('.runtime-subscription [data-install=antigravity]').click()
+        expect(page.locator('#status')).to_contain_text('Runtime ready')
+        assert ('runtimeEnsure', {'engine': 'antigravity', 'mode': 'subscription'}) in runtime_calls
+        # The API install action uses the opposite mode and never changes the
+        # subscription selection implicitly.
+        antigravity_row.update({'status': 'missing', 'file': ''})
+        page.evaluate('rows => window.runtimeListeners.forEach(callback => callback(rows))', conflict_rows)
+        card.locator(':scope > .runtime-header [data-install=antigravity]').click()
+        expect(page.locator('#status')).to_contain_text('Runtime ready')
+        assert ('runtimeEnsure', {'engine': 'antigravity', 'mode': 'api'}) in runtime_calls
         page.locator('[data-engine=dsh]').click()
         field = page.locator('.runtime-path[data-runtime="dsh"]')
         page.evaluate('rows => {rows.find(row => row.id === "dsh").status = "missing"; window.runtimeListeners.forEach(callback => callback(rows));}', rpc('runtimeState')['engines'])

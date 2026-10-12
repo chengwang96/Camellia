@@ -654,6 +654,27 @@
   /* Attachment chips inside the input card */
   .attach-row { display: none; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   .attach-row.has { display: flex; }
+  .attach-composer { --attach-max-height: min(180px, 25vh); max-height: var(--attach-max-height); overflow-y: auto; overscroll-behavior: contain; }
+  .attach-composer:has(.attach-overflow) { max-height: none; overflow: visible; }
+  .attach-overflow { width: 100%; min-width: 0; }
+  .attach-summary {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+    border-radius: 8px; cursor: pointer; list-style: none;
+    font: var(--f-xxs-12); color: var(--dsw-alias-label-secondary);
+  }
+  .attach-summary::-webkit-details-marker { display: none; }
+  .attach-summary::before { content: ''; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); flex: none; }
+  .attach-overflow[open] > .attach-summary::before { transform: rotate(45deg); }
+  .attach-summary:hover { background: var(--dsw-alias-interactive-bg-hover); }
+  .attach-summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: -2px; }
+  .attach-count { flex: 1; }
+  .attach-expand, .attach-collapse { color: var(--dsw-static-deepseek-500); }
+  .attach-overflow:not([open]) > .attach-summary .attach-collapse, .attach-overflow[open] > .attach-summary .attach-expand { display: none; }
+  .attach-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: var(--attach-max-height); margin-top: 6px; overflow-y: auto; overscroll-behavior: contain; }
+  @media (max-height: 600px) { .attach-composer { --attach-max-height: 12vh; } }
+  .attach-composer .attchip { box-sizing: border-box; max-width: min(240px, 100%); }
+  .attach-composer .attchip img, .attach-composer .attchip-fileicon, .attach-composer .attchip-x { flex: none; }
+  .attach-composer .attchip-name { min-width: 0; }
   .attchip {
     position: relative;
     display: inline-flex; align-items: center; gap: 6px;

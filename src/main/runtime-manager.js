@@ -6,7 +6,7 @@ const { randomUUID } = require('node:crypto');
 const patchDsh = require('../../integrations/dsh/patch.cjs');
 const { locatePythonRuntime, installPythonRuntime, globalPythonEnvironment, detectSystemPython } = require('./python-runtime');
 const { createDownloadConnection } = require('./download-network');
-const { locateAntigravityCli, installAntigravityCli } = require('./antigravity-cli-runtime');
+const { locateAntigravityCli, installAntigravityCli, checkedAntigravityCliVersion } = require('./antigravity-cli-runtime');
 const { createLocalRuntimeDiscovery } = require('./local-runtimes');
 const { checkRuntimeFile, validateRuntimePath, validatePythonPath } = require('./custom-runtimes');
 const { runtimeRemovalPlan, removeRuntime } = require('./runtime-removal');
@@ -89,7 +89,10 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     const custom = usesCustomPath(engine, mode) ? customPaths()[engine] : null;
     if (custom?.file) {
       checkRuntimeFile(custom.file, platform);
-      return { ...custom, dir: path.dirname(custom.file), external: true, custom: true, mode, source: 'Custom local path' };
+      // Older releases accepted any executable with a version number. Recheck
+      // saved CLI paths after restart or file changes before declaring Ready.
+      const version = engine === 'antigravity' ? checkedAntigravityCliVersion(custom.file, env) : custom.version;
+      return { ...custom, version, dir: path.dirname(custom.file), external: true, custom: true, mode, source: 'Custom local path' };
     }
     for (const [base, source] of [[installRoot, "Installed by Camellia"], [root, "Available locally"]]) {
       const found = locateIn(path.join(base, 'runtimes', engine), engine, mode);
@@ -97,15 +100,23 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     }
     return discoverLocal ? locateLocal(engine, mode) : null;
   }
+  function runtimeState(id, engine, mode) {
+    const customPath = usesCustomPath(id, mode) ? customPaths()[id]?.file || '' : '';
+    const paths = Object.fromEntries(['api', 'subscription'].map(connection =>
+      [connection, usesCustomPath(id, connection) ? customPaths()[id]?.file || '' : '']));
+    try {
+      const found = locate(id, mode);
+      return { id, name: engine.name, mode, customPath, paths, ...found, status: found ? 'ready' : 'missing', ...progress.get(id + ':' + mode) };
+    } catch (error) { return { id, name: engine.name, mode, customPath, paths, external: Boolean(customPath), status: 'error', message: error.message }; }
+  }
   function state() {
     return Object.entries(ENGINES).map(([id, engine]) => {
-      const mode = runtimeMode(id), customPath = usesCustomPath(id, mode) ? customPaths()[id]?.file || '' : '';
-      const paths = Object.fromEntries(['api', 'subscription'].map(connection =>
-        [connection, usesCustomPath(id, connection) ? customPaths()[id]?.file || '' : '']));
-      try {
-        const found = locate(id, mode);
-        return { id, name: engine.name, mode, customPath, paths, ...found, status: found ? 'ready' : 'missing', ...progress.get(id + ':' + mode) };
-      } catch (error) { return { id, name: engine.name, mode, customPath, paths, external: Boolean(customPath), status: 'error', message: error.message }; }
+      const mode = runtimeMode(id), row = runtimeState(id, engine, mode);
+      // The CLI path is configurable even when the last conversation used API
+      // mode. Report its actual status instead of showing the API interpreter
+      // as the result of saving or detecting a subscription CLI.
+      if (id === 'antigravity') row.subscriptionRuntime = mode === 'subscription' ? { ...row } : runtimeState(id, engine, 'subscription');
+      return row;
     });
   }
   function report(engine, mode, value) { progress.set(engine + ':' + mode, value); onChange(state()); }
@@ -177,6 +188,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     finally { await connection.close(); }
   }
   function ensure(engine, mode = runtimeMode(engine)) {
+    if (!Object.hasOwn(ENGINES, engine) || !['api', 'subscription'].includes(mode)) throw new Error('Unknown runtime');
     if (changingPaths.has(engine)) return Promise.reject(new Error('Wait for runtime path validation to finish'));
     const key = engine + ':' + mode;
     if (pending.has(key)) return pending.get(key);
@@ -193,9 +205,10 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     pending.set(key, task);
     return task;
   }
-  function reinstallPlan(engine) {
+  function reinstallPlan(engine, mode = runtimeMode(engine)) {
     if (!Object.hasOwn(ENGINES, engine)) throw new Error('Unknown engine');
-    const mode = runtimeMode(engine), found = locate(engine, mode);
+    if (!['api', 'subscription'].includes(mode)) throw new Error('Unknown runtime');
+    const found = locate(engine, mode);
     if (!found?.external) throw new Error('This runtime is already managed by Camellia');
     if (found.custom && !saveCustomPaths) throw new Error('Custom runtime paths are unavailable');
     const runtimeDir = path.join(installRoot, 'runtimes', engine);
@@ -205,7 +218,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
   }
   function reinstall(engine, expected) {
     if (changingPaths.has(engine)) return Promise.reject(new Error('Wait for runtime path validation to finish'));
-    const plan = reinstallPlan(engine), key = engine + ':' + plan.mode;
+    const plan = reinstallPlan(engine, expected?.mode), key = engine + ':' + plan.mode;
     if (pending.has(key)) return Promise.reject(new Error('Wait for the runtime download to finish'));
     const matches = previous => previous.file === plan.file && previous.mode === plan.mode
       && previous.removal.realFile === plan.removal.realFile && previous.removal.signature === plan.removal.signature;
@@ -239,7 +252,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
         const checked = await validateRuntimePath({ engine, mode: plan.mode, file: prepared.file, node, locateLocal, platform, probe,
           env: engine === 'antigravity' ? { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } : env });
         if (checked.version !== prepared.version) throw new Error('The reinstalled CLI version could not be verified');
-        const current = reinstallPlan(engine);
+        const current = reinstallPlan(engine, plan.mode);
         if (!matches(current)) {
           throw new Error('The runtime path changed. Retry the reinstall.');
         }

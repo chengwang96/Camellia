@@ -74,6 +74,9 @@
 #runtimeCards .runtime-path-actions label { flex-shrink: 0; max-width: min(230px, 100%); margin: 0; }
 #runtimeCards .runtime-path-actions input { flex-basis: 180px; }
 #runtimeCards .runtime-path .hint { margin-top: 6px; }
+#runtimeCards .runtime-subscription { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--dsw-alias-border-l2); }
+#runtimeCards .runtime-subscription .runtime-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+#runtimeCards .runtime-subscription h3 { margin: 0; font-size: 14px; }
 @media(max-width:850px) { .engine-tabs button { padding: 8px 10px; }.engine-field { gap: 12px; } }
 @media(max-width:700px) {
   .runtime-summary { flex-basis: 100%; }
