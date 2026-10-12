@@ -12,7 +12,7 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
     return preview.openFilePreview(result.files?.[0]?.path || filePath);
   }
   function attachments(row, files, removable = false) {
-    controls.renderAttachments(row, files, { preview: preview.openFilePreview, ...(removable ? { remove: index => { const next = [...getAttachments()]; next.splice(index, 1); setAttachments(next); changed(); render(); } } : {}) });
+    controls.renderAttachments(row, files, { collapsible: removable, preview: preview.openFilePreview, ...(removable ? { remove: index => { const next = [...getAttachments()]; next.splice(index, 1); setAttachments(next); changed(); render(); } } : {}) });
   }
   async function importFiles(paths, groupId = getGroup()?.id) {
     const group = getGroup(); if (!group || !paths.length || uploading) return;

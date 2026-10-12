@@ -3,10 +3,31 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 const { globalPackageRoots, npmCacheRoot } = require('./runtime-paths');
+const { isAntigravityCliHelp } = require('./antigravity-cli-runtime');
 
-function createLocalRuntimeDiscovery({ engines, node, platform = process.platform, arch = process.arch, env = process.env, home = os.homedir(), probe = execFileSync }) {
+function probeNative(file, args, options) {
+  const result = spawnSync(file, args, options);
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`CLI probe exited (${result.status})`);
+  // The official Go CLI writes --help to stderr, including on success.
+  return `${result.stdout || ''}\n${result.stderr || ''}`;
+}
+
+function antigravityDirectories({ platform, env, home }) {
+  if (platform !== 'win32') return [];
+  const local = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  // A running desktop process can retain PATH from before the CLI installer
+  // ran. Check the official installer and WinGet links without a shell.
+  return [path.join(local, 'agy', 'bin'), path.join(local, 'Microsoft', 'WinGet', 'Links'),
+    path.join(local, 'Packages', 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe', 'LocalState', 'links'),
+    path.join(local, 'Packages', 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe', 'LocalState', 'WinGet', 'Links'),
+    path.join(env.ProgramFiles || 'C:\\Program Files', 'Google', 'antigravity-cli'),
+    path.join(env.ProgramFiles || 'C:\\Program Files', 'WinGet', 'Links')];
+}
+
+function createLocalRuntimeDiscovery({ engines, node, platform = process.platform, arch = process.arch, env = process.env, home = os.homedir(), probe = probeNative }) {
   const versions = new Map();
   const directories = () => [...new Set([
     ...(env.PATH || env.Path || '').split(platform === 'win32' ? ';' : ':').map(dir => dir.replace(/^"|"$/g, '')).filter(dir => path.isAbsolute(dir)),
@@ -69,13 +90,18 @@ function createLocalRuntimeDiscovery({ engines, node, platform = process.platfor
         try { fs.readSync(descriptor, header, 0, header.length, 0); } finally { fs.closeSync(descriptor); }
         const magic = header.toString('hex');
         if (!(magic.startsWith('4d5a') || ['7f454c46', 'cffaedfe', 'cefaedfe', 'feedfacf', 'feedface', 'cafebabe', 'bebafeca'].includes(magic))) continue;
-        const key = `${real}:${fs.statSync(real).mtimeMs}`;
+        const stat = fs.statSync(real);
+        const key = `${engine}:${real}:${stat.mtimeMs}:${stat.size}`;
         if (!versions.has(key)) {
           let version = null;
           try {
-            const output = String(probe(real, ['--version'], { env, timeout: 3000, maxBuffer: 16384, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+            const options = { env: engine === 'antigravity' ? { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } : env,
+              timeout: 3000, maxBuffer: 16384, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
+            const output = String(probe(real, ['--version'], options));
             version = output.match(/\b\d+\.\d+\.\d+(?:-[\w.-]+)?\b/)?.[0] || null;
-          } catch {}
+            if (version && engine === 'antigravity'
+              && !isAntigravityCliHelp(String(probe(real, ['--help'], options)))) version = null;
+          } catch { version = null; }
           versions.set(key, version);
         }
         const version = versions.get(key);
@@ -93,7 +119,8 @@ function createLocalRuntimeDiscovery({ engines, node, platform = process.platfor
         if (found) break;
       }
     }
-    if (!found && ['claude', 'codex', 'antigravity'].includes(engine)) found = nativeRuntime(engine, directories());
+    if (!found && ['claude', 'codex', 'antigravity'].includes(engine)) found = nativeRuntime(engine,
+      engine === 'antigravity' ? [...directories(), ...antigravityDirectories({ platform, env, home })] : directories());
     return found ? { ...found, source: 'Available locally', external: true, ...(engine === 'antigravity' ? { mode } : {}) } : null;
   }
   locate.packageRuntime = npmRuntime;

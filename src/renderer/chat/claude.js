@@ -1126,6 +1126,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
 
   function renderAttachments() {
     window.CamelliaChatControls.renderAttachments($('attachRow'), attachments, {
+      collapsible: true,
       preview: openFilePreview,
       remove: index => {
         const [removed] = attachments.splice(index, 1);

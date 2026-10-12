@@ -1675,7 +1675,7 @@ if (!gotSingleInstanceLock) {
       await antigravity.shutdown();
       return { ok: true, engines, python: runtimes().pythonState() };
     },
-    'runtime-ensure': async ({ engine }) => { assertRuntimeAvailable(engine); return { ok: true, runtime: await runtimes().ensure(engine) }; },
+    'runtime-ensure': async ({ engine, mode }) => { assertRuntimeAvailable(engine); return { ok: true, runtime: await runtimes().ensure(engine, mode) }; },
     'runtime-check-updates': async () => ({ ok: true, engines: await runtimeUpdates().check() }),
     'app-update-check': () => appUpdates().check(),
     'app-update-install': async () => {
@@ -1707,9 +1707,9 @@ if (!gotSingleInstanceLock) {
       if (engine === 'kimi' && kimiAccount.active) throw new Error('Wait for Kimi account activity to finish before updating it');
       return runtimeUpdates().update(engine);
     },
-    'runtime-reinstall-preview': ({ engine }) => {
+    'runtime-reinstall-preview': ({ engine, mode }) => {
       assertRuntimeReinstallAllowed(engine);
-      const plan = runtimes().reinstallPlan(engine);
+      const plan = runtimes().reinstallPlan(engine, mode);
       const token = require('node:crypto').randomUUID();
       runtimeReinstallPreviews.set(engine, { token, plan, expiresAt: Date.now() + 5 * 60 * 1000 });
       return { ok: true, engine, token, name: ENGINES[engine].name, file: plan.file, destination: plan.destination };

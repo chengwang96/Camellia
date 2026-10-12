@@ -360,8 +360,8 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   let pythonState = {};
   let runtimePathBusy = false;
   let runtimeReinstallPromptPending = false;
-  async function confirmRuntimeReinstall(id) {
-    const preview = await api.runtimeReinstallPreview({ engine: id });
+  async function confirmRuntimeReinstall(id, mode) {
+    const preview = await api.runtimeReinstallPreview({ engine: id, ...(mode ? { mode } : {}) });
     if (!preview.ok) throw new Error(preview.error);
     const dialog = $('runtimeReinstallDialog');
     $('runtimeReinstallTitle').textContent = `Reinstall ${preview.name}`;
@@ -375,12 +375,17 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   function runtimePathControls(row) {
     if (!api.runtimeSetPath) return '';
     // Python is a shared interpreter configured on the General page.
-    return (row.id === 'antigravity' ? ['subscription'] : ['api']).map(mode => {
+    const controls = (row.id === 'antigravity' ? ['subscription'] : ['api']).map(mode => {
       const key = row.id + ':' + mode;
       const saved = row.paths?.[mode] || (row.mode === mode ? row.customPath : '') || '';
       const label = row.id === 'antigravity' ? 'Antigravity CLI executable (Google subscription)' : ['dsh', 'kimi', 'pi'].includes(row.id) ? 'Local JavaScript entry file' : 'Local executable';
       return `<fieldset class="runtime-path" data-runtime="${row.id}" data-mode="${mode}" ${runtimePathBusy || row.status === 'installing' || isRuntimeUpdating(row.id) ? 'disabled' : ''}><div class="runtime-path-actions"><label for="runtime-path-${row.id}-${mode}" data-i18n>${label}</label><input id="runtime-path-${row.id}-${mode}" type="text" data-runtime-path="${key}" value="${esc(runtimePathDrafts.get(key) ?? saved)}" placeholder="Automatic detection" data-i18n-attrs="placeholder" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" data-i18n>Choose a local executable or paste its full path. Saving runs it to check its version. Clear to use automatic detection.</p></fieldset>`;
     }).join('');
+    if (row.id !== 'antigravity' || row.mode === 'subscription' || !row.subscriptionRuntime) return controls;
+    const cli = row.subscriptionRuntime, ready = cli.status === 'ready';
+    const description = ready ? `v${esc(cli.version)} · <span data-i18n>${esc(cli.source)}</span>`
+      : `<span data-i18n>${esc(cli.message || 'Downloads the official CLI for Google sign-in. No Python environment is needed.')}</span>`;
+    return `<section class="runtime-subscription" data-runtime-mode="subscription"><div class="runtime-header"><div class="runtime-summary"><h3 data-i18n>Google subscription CLI</h3><p class="hint runtime-version">${description}</p></div><div class="runtime-actions">${runtimeStatusControls(cli, 'data-cli-status')}</div></div>${cli.file ? `<div class="runtime-installation-path"><span data-i18n>CLI installation path</span><code>${esc(cli.file)}</code></div>` : ''}${controls}</section>`;
   }
   function renderPython(python) {
     if (!api.runtimeSetPython) return;
@@ -400,13 +405,17 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       ? t('This interpreter cannot import google.antigravity. Antigravity API mode needs the SDK; other engines and the benchmark verifier work without it.')
       : t('Choose any Python 3 installation; Camellia never edits it or installs packages.');
   }
-  function runtimeStatusControls(row) {
+  function runtimeStatusControls(row, marker = 'data-runtime-status') {
     const id = row.id;
-    if (isRuntimeReinstalling(id)) return `<p class="hint runtime-update"><button data-runtime-status data-reinstall="${id}" data-i18n disabled>Reinstalling…</button></p>`;
-    if (isRuntimeUpdating(id)) return `<p class="hint runtime-update"><button data-runtime-status data-update="${id}" data-i18n disabled>Updating…</button></p>`;
-    if (row.status === 'installing') return `<button data-runtime-status data-install="${id}" data-i18n disabled>Downloading…</button>`;
-    if (row.status !== 'ready') return `${row.status === 'error' ? '<span data-runtime-status data-i18n class="badge bad">Download failed</span>' : ''}<button ${row.status === 'error' ? '' : 'data-runtime-status'} data-install="${id}" data-i18n>${row.status === 'error' ? 'Retry download' : 'Download'}</button>`;
-    if (row.external) return `<p class="hint runtime-update runtime-external-update"><span data-runtime-status data-i18n>Update this CLI using its original installer</span>${api.runtimeReinstall ? ` <button data-reinstall="${id}" data-i18n ${runtimePathBusy ? 'disabled' : ''}>Use Camellia</button>` : ''}</p>`;
+    if (isRuntimeReinstalling(id)) return `<p class="hint runtime-update"><button ${marker} data-reinstall="${id}" data-i18n disabled>Reinstalling…</button></p>`;
+    if (isRuntimeUpdating(id)) return `<p class="hint runtime-update"><button ${marker} data-update="${id}" data-i18n disabled>Updating…</button></p>`;
+    if (row.status === 'installing') return `<button ${marker} data-install="${id}" data-i18n disabled>Downloading…</button>`;
+    if (id === 'antigravity' && row.status === 'error' && row.customPath) return `<span ${marker} data-i18n class="badge bad">CLI path unavailable</span>`;
+    if (row.status !== 'ready') return `${row.status === 'error' ? `<span ${marker} data-i18n class="badge bad">Download failed</span>` : ''}<button ${row.status === 'error' ? '' : marker} data-install="${id}" data-i18n>${row.status === 'error' ? 'Retry download' : 'Download'}</button>`;
+    if (row.external) return `<p class="hint runtime-update runtime-external-update"><span ${marker} data-i18n>Update this CLI using its original installer</span>${api.runtimeReinstall ? ` <button data-reinstall="${id}" data-i18n ${runtimePathBusy ? 'disabled' : ''}>Use Camellia</button>` : ''}</p>`;
+    // SDK update information belongs to API mode; the subscription CLI ships
+    // with Camellia and must never receive the SDK's update action.
+    if (id === 'antigravity' && row.mode === 'subscription') return `<span ${marker} data-i18n class="badge good">Installed</span>`;
     const info = runtimeUpdateInfo[id];
     if (!info) return '<span data-runtime-status data-i18n class="badge good">Installed</span>';
     if (!info.checkable) return `<p data-runtime-status class="hint runtime-update" data-i18n>${info.external ? 'Update this CLI using its original installer' : 'Updates ship with the app'}</p>`;
@@ -424,7 +433,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
           ? 'Downloads the official CLI for Google sign-in. No Python environment is needed.'
           : 'Downloads the official SDK and its own Python environment. Other engines stay uninstalled.'
           : 'Download this engine when you need it. Other engines stay uninstalled.'));
-      return `<article class="runtime-card"><div class="runtime-header"><div class="runtime-summary"><h2>${esc(row.name)}${row.id === 'antigravity' ? ` · ${row.mode === 'subscription' ? 'Google subscription' : 'API'}` : ''}</h2>${ready ? `<p class="hint runtime-version">${description}</p>` : ''}</div><div class="runtime-actions">${runtimeStatusControls(row)}</div></div>${ready ? '' : `<p class="hint runtime-description" data-i18n>${description}</p>`}${row.warning ? `<p class="hint runtime-cleanup-warning">${esc(row.warning)}</p>` : ''}${row.file ? `<div class="runtime-installation-path"><span data-i18n>Installation path</span><code>${esc(row.file)}</code></div>` : ''}</article>`;
+      return `<article class="runtime-card" data-runtime-mode="${esc(row.mode)}"><div class="runtime-header"><div class="runtime-summary"><h2>${esc(row.name)}${row.id === 'antigravity' ? ` · ${row.mode === 'subscription' ? 'Google subscription' : 'API'}` : ''}</h2>${ready ? `<p class="hint runtime-version">${description}</p>` : ''}</div><div class="runtime-actions">${runtimeStatusControls(row)}</div></div>${ready ? '' : `<p class="hint runtime-description" data-i18n>${description}</p>`}${row.warning ? `<p class="hint runtime-cleanup-warning">${esc(row.warning)}</p>` : ''}${row.file ? `<div class="runtime-installation-path"><span data-i18n>${row.id === 'antigravity' && row.mode !== 'subscription' ? 'Python interpreter (API)' : 'Installation path'}</span><code>${esc(row.file)}</code></div>` : ''}</article>`;
     }).join('');
     renderRuntimePaths();
     showSelectedRuntime();
@@ -436,7 +445,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   }
   function renderRuntimePaths() {
     $('runtimeCards').querySelectorAll('.runtime-card').forEach((card, index) => {
-      card.querySelectorAll('.runtime-path').forEach(control => control.remove());
+      card.querySelectorAll('.runtime-subscription, .runtime-path').forEach(control => control.remove());
       card.insertAdjacentHTML('beforeend', runtimePathControls(runtimeRows[index]));
     });
   }
@@ -600,13 +609,14 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     if (updateButton) {
       const reinstall = Boolean(updateButton.dataset.reinstall);
       const updatingEngine = updateButton.dataset.reinstall || updateButton.dataset.update;
+      const runtimeMode = updatingEngine === 'antigravity' ? updateButton.closest('[data-runtime-mode]')?.dataset.runtimeMode : undefined;
       if (updateButton.disabled || isRuntimeUpdating(updatingEngine)) return;
       let payload = { engine: updatingEngine };
       if (reinstall) {
         if (runtimeReinstallPromptPending) return;
         runtimeReinstallPromptPending = true;
         updateButton.disabled = true;
-        try { payload = await confirmRuntimeReinstall(updatingEngine); }
+        try { payload = await confirmRuntimeReinstall(updatingEngine, runtimeMode); }
         catch (error) { status(error.message, true); return; }
         finally { runtimeReinstallPromptPending = false; updateButton.disabled = false; }
         if (!payload) { document.querySelector(`[data-reinstall="${updatingEngine}"]`)?.focus(); return; }
@@ -637,7 +647,8 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     }
     const button = e.target.closest('[data-install]'); if (!button) return;
     button.disabled = true;
-    try { const result = await api.runtimeEnsure({ engine: button.dataset.install }); if (!result.ok) throw new Error(result.error); status(result.canceled ? '' : "Runtime ready"); delete runtimeUpdateInfo[button.dataset.install]; }
+    const selectedMode = button.dataset.install === 'antigravity' ? button.closest('[data-runtime-mode]')?.dataset.runtimeMode : undefined;
+    try { const result = await api.runtimeEnsure({ engine: button.dataset.install, ...(selectedMode ? { mode: selectedMode } : {}) }); if (!result.ok) throw new Error(result.error); status(result.canceled ? '' : "Runtime ready"); delete runtimeUpdateInfo[button.dataset.install]; }
     catch (e) { status(e.message, true); } finally { void runtimePage(); }
   };
   $('runtimeCards').onclick = runtimeAction;

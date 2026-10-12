@@ -74,7 +74,7 @@ async function main() {
     await wait(() => settings.webContents.executeJavaScript("!document.querySelector('#retryNative').hidden && document.querySelector('#retryNative').textContent === 'Manage downloads'"));
     assert.equal(downloads.length, 0, 'Browsing DSH settings must not download DSH');
     await settings.webContents.executeJavaScript("document.querySelector('#retryNative').click()");
-    await wait(() => settings.webContents.executeJavaScript("document.querySelectorAll('[data-install]:not(:disabled)').length === 6"));
+    await wait(() => settings.webContents.executeJavaScript("document.querySelectorAll('#runtimeCards > .runtime-card > .runtime-header [data-install]:not(:disabled)').length === 6 && document.querySelectorAll('#runtimeCards .runtime-subscription [data-install=antigravity]:not(:disabled)').length === 1"));
     assert.equal(downloads.length, 0, 'Listing available downloads is read-only');
     await home.webContents.executeJavaScript("window.dshDesktop.openSettingsWindow({page:'network',focus:'networkMode'})");
     await wait(() => settings.webContents.executeJavaScript("!document.querySelector('#networkPage').hidden"));

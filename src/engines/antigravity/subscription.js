@@ -311,6 +311,9 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
   const state = () => {
     const cached = { models: [], verifiedAt: null, error: '', ...readJson(cacheFile, {}) };
     if (isProfilePictureFailure(cached.error)) cached.error = '';
+    let installed = false;
+    try { installed = Boolean(runtime().locate('antigravity', 'subscription')); }
+    catch (error) { cached.error = error.message; }
     const checkedAt = new Date(cached.verifiedAt).getTime();
     // A failed refresh records its error but keeps the last good catalog, so a
     // signed-in account never degrades into "no models": the composer would lose
@@ -327,7 +330,7 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
       if (!usage.latest) usage.status = null;
     }
     return { ...cached, models: groupModels(cached.models), verification, signingOut: Boolean(signOutPending), usage: { ...usage, refreshing: Boolean(quotaPending) },
-      installed: Boolean(runtime().locate('antigravity', 'subscription')) };
+      installed };
   };
   async function refreshUsage({ force = true } = {}) {
     if (signOutPending || !force && readJson(cacheFile, {}).signedOut) return state();

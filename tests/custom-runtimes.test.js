@@ -61,7 +61,7 @@ test('Python is global: one interpreter serves every harness and the Antigravity
   const setup = fixture(context, { probe: async (executable, args) => {
     if (String(args[1]).startsWith('import sys')) return { stdout: '{"python": "3.13.1"}' };
     if (String(args[1]).startsWith('import google')) return { stdout: '' };
-    return { stdout: 'CLI 1.2.3' };
+    return { stdout: args[0] === '--help' ? '--input-format stream-json\n--output-format stream-json\n  models List available models' : 'CLI 1.2.3' };
   } });
   const python = setup.file('python.exe'), cli = setup.file('agy.exe');
   await setup.manager.setPython(python);

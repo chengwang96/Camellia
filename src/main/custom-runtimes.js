@@ -4,6 +4,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { isAntigravityCliHelp, rememberAntigravityCli } = require('./antigravity-cli-runtime');
+
+function normalizeRuntimePath(file) {
+  if (typeof file !== 'string') return '';
+  const trimmed = file.trim(), quoted = trimmed.match(/^(["'])(.*)\1$/s);
+  return quoted ? quoted[2] : trimmed;
+}
 
 function checkRuntimeFile(file, platform = process.platform) {
   if (typeof file !== 'string' || !path.isAbsolute(file)) throw new Error('Choose an absolute executable path');
@@ -13,7 +20,7 @@ function checkRuntimeFile(file, platform = process.platform) {
 }
 
 async function validateRuntimePath({ engine, mode, file, node, locateLocal, platform = process.platform, probe = promisify(execFile), env = process.env }) {
-  file = typeof file === 'string' ? file.trim() : '';
+  file = normalizeRuntimePath(file);
   checkRuntimeFile(file, platform);
   if (/\.(?:cmd|bat|ps1)$/i.test(file)) {
     const found = locateLocal.packageRuntime(engine, path.join(path.dirname(file), 'node_modules'));
@@ -28,6 +35,7 @@ async function validateRuntimePath({ engine, mode, file, node, locateLocal, plat
   const executable = script ? (typeof node === 'function' ? node() : node) : file;
   if (!executable) throw new Error('Node.js is required for this CLI');
   let output;
+  if (engine === 'antigravity') env = { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' };
   try {
     output = await probe(executable, script ? [file, ...args] : args, { timeout: 10000, maxBuffer: 65536, windowsHide: true, env });
   } catch (error) {
@@ -35,6 +43,15 @@ async function validateRuntimePath({ engine, mode, file, node, locateLocal, plat
   }
   const version = `${output.stdout || ''}\n${output.stderr || ''}`.match(/(?:^|[^\w])v?(\d+\.\d+\.\d+(?:-[\w.-]+)?)/)?.[1];
   if (!version) throw new Error('Could not read a version from this executable');
+  if (engine === 'antigravity') {
+    let help;
+    try { help = await probe(executable, ['--help'], { timeout: 10000, maxBuffer: 65536, windowsHide: true, env }); }
+    catch (error) { throw new Error(`Could not check the Antigravity CLI: ${error.message}`); }
+    if (!isAntigravityCliHelp(`${help.stdout || ''}\n${help.stderr || ''}`)) {
+      throw new Error('Choose the Antigravity CLI (agy), not Python or the Antigravity desktop application');
+    }
+    rememberAntigravityCli(file, version);
+  }
   return { file, version };
 }
 
@@ -45,7 +62,7 @@ const SDK_PROBE = 'import google.antigravity';
 // runtime. Validation therefore only requires a working Python 3 and reports
 // separately whether it can serve Antigravity API mode.
 async function validatePythonPath({ file, platform = process.platform, probe = promisify(execFile), env = process.env, managedPackages }) {
-  file = typeof file === 'string' ? file.trim() : '';
+  file = normalizeRuntimePath(file);
   checkRuntimeFile(file, platform);
   const options = { timeout: 15000, maxBuffer: 65536, windowsHide: true,
     env: { ...env, PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1' } };
