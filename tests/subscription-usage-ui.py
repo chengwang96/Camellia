@@ -142,9 +142,52 @@ try:
         page.screenshot(path=str(preview / 'settings-subscription-usage.png'), full_page=True)
         page.set_viewport_size({'width': 560, 'height': 900})
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+
+        # A real refresh click fills an old tiered aggregate from stored base
+        # rates, keeps the estimate label in Chinese, and survives a restart.
+        rpc('seedHistoricalSubscriptionUsage')
+        page.reload(); page.wait_for_load_state('networkidle')
+        page.locator('[data-view=usage]').click()
+        page.locator('#usageRange').select_option('all')
+        page.locator('#usageSource').select_option('subscription')
+        page.locator('#usageProvider').select_option('subscription:codex')
+        page.locator('#usageKey').select_option('subscription:codex:default')
+        page.locator('#usageModel').select_option('gpt-6.1-sol')
+        expect(page.locator('#subscriptionPriceStatus')).to_contain_text('未定价 token：401,000')
+        expect(page.locator('#subscriptionPricesRefresh')).to_have_text('刷新并补算')
+        page.locator('#subscriptionPricesRefresh').click()
+        expect(page.locator('#subscriptionPricesRefresh')).to_be_enabled()
+        expect(page.locator('#subscriptionCost')).to_contain_text('0.4300')
+        expect(page.locator('#subscriptionPriceStatus')).to_contain_text('历史估算：401,000 token（按基准单价）')
+        expect(page.locator('#subscriptionPriceStatus')).not_to_contain_text('未定价')
+        first = rpc('subscriptionUsageSnapshot')['result']['accounts']
+        page.locator('#subscriptionPricesRefresh').click()
+        expect(page.locator('#subscriptionPricesRefresh')).to_be_enabled()
+        assert rpc('subscriptionUsageSnapshot')['result']['accounts'] == first
+        with page.expect_download() as download:
+            page.locator('#exportUsage').click()
+        exported = list(csv.DictReader(io.StringIO(Path(download.value.path()).read_text(encoding='utf-8-sig'))))
+        assert exported[0]['Historical estimate tokens'] == '401000'
+        assert exported[0]['Unpriced tokens'] == '0'
+        rpc('restart')
+        assert rpc('subscriptionUsageSnapshot')['result']['accounts'] == first
+        rpc('setPriceRefreshOffline', True)
+        page.locator('#subscriptionPricesRefresh').click()
+        expect(page.locator('#subscriptionPricesRefresh')).to_be_enabled()
+        expect(page.locator('#subscriptionPriceStatus')).to_contain_text('历史估算')
+        expect(page.locator('#subscriptionPriceStatus')).to_contain_text('上次')
+        assert rpc('subscriptionUsageSnapshot')['result']['accounts'] == first
+        page.set_viewport_size({'width': 1180, 'height': 940})
+        page.evaluate('''() => {
+          for (let element = document.getElementById('subscriptionCostCard'); element; element = element.parentElement) element.scrollTop = 0;
+          window.scrollTo(0, 0);
+        }''')
+        page.screenshot(path=str(preview / 'settings-subscription-repricing.png'), full_page=True)
+        page.set_viewport_size({'width': 560, 'height': 900})
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
         assert not errors, errors
         browser.close()
-    print('PASS: subscription account/model/date filters, token and cost display, unknown prices, CSV, restart, Chinese and compact layout')
+    print('PASS: subscription filters, cost display, historical repricing, repeated refresh, offline cache, CSV, restart, Chinese and compact layout')
 finally:
     try:
         rpc('cleanup')

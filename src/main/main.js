@@ -1788,7 +1788,7 @@ if (!gotSingleInstanceLock) {
   ipcMain.handle('dsh:open-api-settings-window', () => { openApiSettingsWindow(); return { ok: true }; });
   ipcMain.handle('dsh:api-router-get-state', apiRouterState);
   ipcMain.handle('dsh:subscription-prices-refresh', async () => {
-    const result = await subscriptionPrices().refresh({ force: true });
+    const result = await subscriptionUsage().refreshPricing({ prices: subscriptionPrices(), userData: app.getPath('userData') });
     return { ...apiRouterState(), ...result };
   });
   for (const [channel, handler] of Object.entries({

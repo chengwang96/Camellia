@@ -434,7 +434,7 @@ function usageSources() {
   }
   return [...providers, ...subscriptions.values()];
 }
-const statsFields = ['requests', 'failures', 'cancelled', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'unreported', 'reasoningTokens', 'estimatedCostUsd', 'pricedTokens', 'unpricedTokens'];
+const statsFields = ['requests', 'failures', 'cancelled', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'unreported', 'reasoningTokens', 'estimatedCostUsd', 'pricedTokens', 'unpricedTokens', 'approximateTokens'];
 const blankStats = () => Object.fromEntries(statsFields.map(key => [key,0]));
 function addStats(target, source) { for (const key of statsFields) target[key] += source[key] || 0; return target; }
 function localDay(date) { return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; }
@@ -496,9 +496,12 @@ function renderUsage() {
   $('subscriptionUsageSince').textContent = live.subscriptionUsage?.since ? t('Subscription recording started: ' + new Date(live.subscriptionUsage.since).toLocaleDateString(window.CamelliaI18n.locale)) : '';
   $('subscriptionCostCard').hidden = $('usageSource').value === 'api';
   const pricing = live.subscriptionUsage?.pricing || {};
-  $('subscriptionPricesRefresh').disabled = Boolean(pricing.refreshing);
-  $('subscriptionPriceStatus').textContent = (pricing.refreshing ? t('Refreshing prices…') : pricing.error ? t(pricing.error) : t('Prices refresh automatically every day.'))
-    + (subscription.unpricedTokens ? ' ' + t('Unpriced tokens: {0}').replace('{0}', fmt(subscription.unpricedTokens)) + ' ' + t('Older aggregate usage cannot be repriced accurately.') : '');
+  const repricing = live.subscriptionUsage?.repricing || {};
+  $('subscriptionPricesRefresh').disabled = Boolean(pricing.refreshing || repricing.refreshing);
+  $('subscriptionPriceStatus').textContent = (repricing.refreshing ? t('Refreshing prices and recalculating usage…') : pricing.refreshing ? t('Refreshing prices…')
+    : repricing.error ? t(repricing.error) : pricing.error ? t(pricing.error) : repricing.checkedAt ? t('Prices and usage updated.') : t('Prices refresh automatically every day.'))
+    + (subscription.approximateTokens ? ' ' + t('Historical estimate: {0} tokens at standard rates.').replace('{0}', fmt(subscription.approximateTokens)) : '')
+    + (subscription.unpricedTokens ? ' ' + t('Unpriced tokens: {0}').replace('{0}', fmt(subscription.unpricedTokens)) + ' ' + t('Some models have no usable price or complete usage.') : '');
   const metric = $('usageMetric').value;
   const metricLabel = t({ tokens: 'Token usage', requests: countLabel, inputTokens: 'Input tokens', outputTokens: 'Output tokens', failures: 'Failed / Canceled', estimatedCostUsd: 'Subscription estimate (USD)' }[metric]);
   renderChartGrid($('usageChart'), series.filter(row => metric !== 'estimatedCostUsd' || row.source === 'subscription' && row.points.some(point => point.stats.pricedTokens > 0)).map(series => ({
@@ -708,6 +711,7 @@ for (const id of ['usageSource','usageRange','usageProvider','usageKey','usageMo
 };
 $('subscriptionPricesRefresh').onclick = async () => {
   $('subscriptionPricesRefresh').disabled = true;
+  $('subscriptionPriceStatus').textContent = window.CamelliaI18n.t('Refreshing prices and recalculating usage…');
   try { live = await api.subscriptionPricesRefresh(); renderUsage(); }
   catch { $('subscriptionPriceStatus').textContent = window.CamelliaI18n.t('Prices could not be refreshed. The last available catalog is in use.'); }
   finally { $('subscriptionPricesRefresh').disabled = false; }
@@ -723,7 +727,7 @@ $('balanceSearch').oninput = renderBalances;
 $('refreshBalances').onclick = () => refreshBalances();
 $('exportUsage').onclick = () => {
   const field = value => { let text = String(value ?? ''); if (/^[=+@\-\t\r]/.test(text)) text = "'" + text; return '"' + text.replace(/"/g, '""') + '"'; };
-  const rows = [["Model", "Provider", 'Account / Key', "Successful requests / turns", "Input tokens", "Output tokens", "Cache-read tokens", "Failed", "Cancel", "Source", "Cache-write tokens", "Reasoning tokens (included in output)", "Standard API estimate (USD)", "Unpriced tokens", "Incomplete usage", "Account / Key ID"], ...usageData.map(r => [r.model, r.provider, r.key, r.requests, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.failures, r.cancelled, r.source, r.cacheWriteTokens, r.reasoningTokens, r.source === 'subscription' && r.pricedTokens > 0 ? r.estimatedCostUsd : '', r.unpricedTokens, r.unreported, r.keyId])];
+  const rows = [["Model", "Provider", 'Account / Key', "Successful requests / turns", "Input tokens", "Output tokens", "Cache-read tokens", "Failed", "Cancel", "Source", "Cache-write tokens", "Reasoning tokens (included in output)", "Standard API estimate (USD)", "Unpriced tokens", "Historical estimate tokens", "Incomplete usage", "Account / Key ID"], ...usageData.map(r => [r.model, r.provider, r.key, r.requests, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.failures, r.cancelled, r.source, r.cacheWriteTokens, r.reasoningTokens, r.source === 'subscription' && r.pricedTokens > 0 ? r.estimatedCostUsd : '', r.unpricedTokens, r.approximateTokens, r.unreported, r.keyId])];
   const url = URL.createObjectURL(new Blob(['\ufeff' + rows.map(r => r.map(field).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a'); link.href = url; link.download = `workbench-usage-${localDay(new Date())}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 };

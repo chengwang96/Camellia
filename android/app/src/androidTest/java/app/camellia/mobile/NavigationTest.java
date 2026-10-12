@@ -264,7 +264,9 @@ public class NavigationTest extends InstrumentationTestCase {
                     assertNotNull(root.findViewWithTag("computerState:" + profile.getString("address")));
                     root.findViewWithTag("computer:" + profile.getString("address")).performClick(); invoke(activity, "stopNetwork");
                     root = activity.getWindow().getDecorView();
-                    assertNull(findText(root, "Refresh conversations", "刷新会话")); assertNull(findText(root, "Conversations", "会话"));
+                    assertNull(findText(root, "Refresh conversations", "刷新会话"));
+                    assertSame(root.findViewWithTag("pageTitle"), findText(root, "Conversations", "会话列表"));
+                    assertEquals(1, countText(root, "Conversations", "会话列表"));
                     assertNull(findText(root, "Network settings", "网络设置")); assertNull(findText(root, "Forget computer", "移除电脑"));
                     assertNull(findText(root, profile.getString("address"), profile.getString("address")));
                     assertNull(root.findViewWithTag("searchBar")); assertNotNull(root.findViewWithTag("remoteSearchButton"));
