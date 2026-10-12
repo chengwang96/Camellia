@@ -551,7 +551,7 @@ public final class MainActivity extends Activity {
             header.setClipChildren(false); header.setClipToPadding(false);
             header.addView(chatStyle.backButton(tr("返回上一级", "Back"), this::onBackPressed), new LinearLayout.LayoutParams(dp(48), dp(48)));
             LinearLayout titles = column(); titles.setPadding(dp(10), 0, 0, 0);
-            TextView pageTitle = text(screen.equals("detail") ? conversationTitle : "Camellia", Palette.TEXT_CARD, ink);
+            TextView pageTitle = text(screen.equals("detail") ? conversationTitle : tr("会话列表", "Conversations"), Palette.TEXT_CARD, ink);
             pageTitle.setTag("pageTitle"); pageTitle.setMaxLines(1); pageTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
             pageTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); titles.addView(pageTitle);
             LinearLayout computer = new LinearLayout(this); computer.setGravity(Gravity.CENTER_VERTICAL);
@@ -3260,9 +3260,18 @@ public final class MainActivity extends Activity {
         queueBar.removeAllViews(); queueBar.setVisibility(remoteQueue.length() == 0 ? View.GONE : View.VISIBLE);
         if (remoteQueue.length() == 0) return;
         LinearLayout card = automationCard(); queueBar.addView(card);
+        card.setPadding(dp(12), dp(12), dp(12), dp(12));
         LinearLayout heading = new LinearLayout(this); heading.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text(tr("待发送 · ", "Queued · ") + remoteQueue.length(), Palette.TEXT_NOTE, muted);
-        title.setPadding(dp(12), dp(8), dp(12), dp(8)); heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        heading.setPadding(dp(4), 0, dp(4), dp(10));
+        TextView title = text(tr("待发送", "Queued messages"), Palette.TEXT_BODY, ink);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setSingleLine(true); title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView count = text(String.valueOf(remoteQueue.length()), Palette.TEXT_SMALL, accent);
+        count.setGravity(Gravity.CENTER); count.setMinWidth(dp(28));
+        count.setPadding(dp(8), dp(4), dp(8), dp(4)); count.setBackground(chatStyle.capsule(background));
+        LinearLayout.LayoutParams countParams = new LinearLayout.LayoutParams(-2, -2); countParams.setMargins(dp(8), 0, 0, 0);
+        heading.addView(count, countParams);
         boolean paused = false;
         for (int i = 0; i < remoteQueue.length(); i++) {
             JSONObject entry = remoteQueue.optJSONObject(i);
@@ -3274,20 +3283,32 @@ public final class MainActivity extends Activity {
         }
         card.addView(heading);
         android.widget.ScrollView queued = new android.widget.ScrollView(this);
+        queued.setVerticalScrollBarEnabled(false);
         LinearLayout rows = column(); queued.addView(rows);
         card.addView(queued, new LinearLayout.LayoutParams(-1, remoteQueue.length() > 3 ? dp(200) : -2));
         for (int i = 0; i < remoteQueue.length(); i++) {
             JSONObject entry = remoteQueue.optJSONObject(i); if (entry == null) continue;
             String id = entry.optString("id"), state = entry.optString("state");
-            LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setTag("remoteQueue:" + id);
-            LinearLayout body = column(); body.setPadding(dp(12), dp(6), 0, dp(6));
-            TextView prompt = text((i + 1) + ". " + entry.optString("text"), Palette.TEXT_BODY, ink);
-            prompt.setMaxLines(2); prompt.setEllipsize(android.text.TextUtils.TruncateAt.END); body.addView(prompt);
+            LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.TOP); row.setTag("remoteQueue:" + id);
+            row.setPadding(dp(12), dp(12), dp(12), dp(12)); row.setBackground(rounded(background));
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
+            rowParams.setMargins(0, i == 0 ? 0 : dp(8), 0, 0);
+            TextView position = text(String.valueOf(i + 1), Palette.TEXT_SMALL, muted);
+            position.setGravity(Gravity.CENTER); position.setBackground(chatStyle.capsule(surface));
+            LinearLayout.LayoutParams positionParams = new LinearLayout.LayoutParams(dp(28), dp(28));
+            positionParams.setMargins(0, dp(2), dp(10), 0); row.addView(position, positionParams);
+            LinearLayout body = column(); body.setPadding(0, dp(2), 0, 0);
+            JSONArray files = entry.optJSONArray("attachments");
+            String preview = entry.optString("text");
+            if (preview.trim().isEmpty()) preview = tr("附件消息", "Attachment message");
+            TextView prompt = text(preview, Palette.TEXT_BODY, ink);
+            prompt.setTag("remoteQueuePrompt:" + id); prompt.setMaxLines(3);
+            prompt.setEllipsize(android.text.TextUtils.TruncateAt.END); prompt.setLineSpacing(dp(3), 1); body.addView(prompt);
             String label = state.equals("starting") ? tr("正在发送", "Sending") : state.equals("failed") ? tr("发送失败 · 请检查后继续", "Failed · review before resuming")
                 : state.equals("paused") ? tr("已暂停", "Paused") : tr("等待当前任务结束", "Waiting for the current task");
-            JSONArray files = entry.optJSONArray("attachments");
             if (files != null && files.length() > 0) label += tr(" · 附件 ", " · Attachments: ") + files.length();
-            TextView detail = text(label, Palette.TEXT_SMALL, muted); body.addView(detail);
+            TextView detail = text(label, Palette.TEXT_SMALL, state.equals("starting") ? accent : state.equals("failed") ? Palette.of(this).error : muted);
+            detail.setTag("remoteQueueState:" + id); detail.setPadding(0, dp(6), 0, 0); body.addView(detail);
             if (!entry.optString("error").isEmpty()) {
                 body.setOnClickListener(view -> new CamelliaDialog.Builder(this).setTitle(tr("队列已暂停", "Queue paused"))
                     .setMessage(entry.optString("error")).setPositiveButton(tr("知道了", "OK"), null).show());
@@ -3295,7 +3316,9 @@ public final class MainActivity extends Activity {
             row.addView(body, new LinearLayout.LayoutParams(0, -2, 1));
             ImageButton remove = lineButton("close", tr("移出队列", "Remove from queue"), () -> queueCommand("queue-remove", id));
             remove.setTag("remoteQueueRemove:" + id); remove.setEnabled(enabled && !state.equals("starting"));
-            row.addView(remove, new LinearLayout.LayoutParams(dp(48), dp(48))); rows.addView(row);
+            remove.setImageDrawable(new LineIcon("close", muted)); remove.setAlpha(remove.isEnabled() ? 1f : .4f);
+            LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+            removeParams.setMargins(dp(8), 0, 0, 0); row.addView(remove, removeParams); rows.addView(row, rowParams);
         }
     }
 

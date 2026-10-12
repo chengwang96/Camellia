@@ -4,8 +4,14 @@ const http = require('node:http');
 const path = require('node:path');
 const { readJson, writeJson } = require('../src/shared/json-store');
 const { createHarness } = require('./claude-harness.cjs');
+let priceRefreshOffline = false;
 function createUiHarness(root) {
-  const harness = createHarness(root, { respondToInterrupts: true });
+  const harness = createHarness(root, { respondToInterrupts: true, priceFetcher: async () => {
+    if (priceRefreshOffline) throw new Error('Offline price catalog fixture');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    return new Response(JSON.stringify(Object.fromEntries(Array.from({ length: 12 }, (_, index) => ['gpt-5-ui-fixture-' + index,
+      { litellm_provider: 'openai', input_cost_per_token: .000002, output_cost_per_token: .00001, cache_read_input_token_cost: .0000001 }]))));
+  } });
   // The native CLI is faked by createHarness; skip downloads and title requests
   // while exercising the real shared-conversation IPC and persistence.
   harness.api.sharedConversations.prepare = async () => {};
@@ -171,6 +177,13 @@ rl.on('line', async (line) => {
       });
       result = { ok: true };
     }
+    else if (method === 'seedHistoricalSubscriptionUsage') {
+      h.api.subscriptionUsage().record({ id: 'ui-historical-usage', engine: 'codex', model: 'gpt-6.1-sol',
+        samples: [{ input: 400000, cacheRead: 200000, output: 1000, reasoning: 500, aggregate: true }] });
+      result = { ok: true };
+    }
+    else if (method === 'subscriptionUsageSnapshot') result = h.api.subscriptionUsage().state();
+    else if (method === 'setPriceRefreshOffline') { priceRefreshOffline = Boolean(payload); result = true; }
     else if (method === 'startTestUpstream') {
       testUpstream=http.createServer(async (req,res)=>{
         if (req.method === 'GET') { res.writeHead(200, {'content-type':'application/json'}); res.end(JSON.stringify({ data: [{ id: 'kimi-k3' }, { id: 'model-test' }, { id: 'model-test' }] })); return; }

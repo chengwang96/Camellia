@@ -5,7 +5,7 @@ const { recordUsage, dayId } = require('./api-usage');
 const { estimateTokens, catalogInfo } = require('./subscription-pricing');
 
 const ENGINES = new Set(['codex', 'kimi', 'antigravity']);
-const EXTRA = ['reasoningTokens', 'estimatedCostUsd', 'pricedTokens', 'unpricedTokens'];
+const EXTRA = ['reasoningTokens', 'estimatedCostUsd', 'pricedTokens', 'unpricedTokens', 'approximateTokens'];
 const count = value => Number.isFinite(value) && value >= 0 ? value : 0;
 function subscriptionProfiles(config) {
   const names = { codex: 'ChatGPT / Codex', kimi: 'Kimi Code', antigravity: 'Google / Antigravity' };
@@ -20,10 +20,11 @@ function createSubscriptionUsage({ file, onChange = () => {}, now = () => new Da
   const data = readJson(file, { version: 1, since: now().toISOString(), accounts: {}, recent: [] });
   data.pendingPricing ||= [];
   let seen = new Set(data.recent || []), error = null;
+  let pendingRefresh = null, repricing = { refreshing: false };
   function state(profiles = []) {
     const accounts = new Map(Object.entries(data.accounts).map(([id, account]) => [id, { id, ...structuredClone(account) }]));
     for (const profile of profiles) accounts.set(profile.id, { ...accounts.get(profile.id), ...profile });
-    return { since: data.since, pricing: catalogInfo, error, accounts: [...accounts.values()] };
+    return { since: data.since, pricing: catalogInfo, repricing: { ...repricing }, error, accounts: [...accounts.values()] };
   }
   function record({ id, engine, accountId = 'default', model, samples = [], outcome = 'requests', at = now(), incomplete = false }) {
     if (!ENGINES.has(engine) || !/^[a-z0-9][a-z0-9-]{0,31}$/.test(accountId) || !id || seen.has(id)) return false;
@@ -104,7 +105,34 @@ function createSubscriptionUsage({ file, onChange = () => {}, now = () => new Da
     catch (failure) { data.accounts = oldAccounts; data.pendingPricing = oldPending; error = 'Subscription usage could not be saved.'; throw failure; }
     onChange(); return true;
   }
-  return { state, record, reprice };
+  function repriceHistory(recovered = []) {
+    const next = require('./subscription-repricing').recalculateHistory(data, recovered);
+    if (!next.result.repricedTokens) return next.result;
+    try { writeJson(file, { ...data, accounts: next.accounts, pendingPricing: next.pendingPricing }); }
+    catch (failure) { error = 'Subscription usage could not be saved.'; throw failure; }
+    data.accounts = next.accounts; data.pendingPricing = next.pendingPricing; error = null;
+    onChange(); return next.result;
+  }
+  function refreshPricing({ prices, userData, recover = require('../engines/codex-usage-history').readCodexPricingHistory }) {
+    if (pendingRefresh) return pendingRefresh;
+    pendingRefresh = Promise.resolve().then(async () => {
+      repricing = { refreshing: true }; onChange();
+      try {
+        const result = await prices.refresh({ force: true });
+        reprice();
+        const targets = require('./subscription-repricing').historyTargets(data);
+        const recovered = targets.length ? await recover({ userData, targets }) : [];
+        const history = repriceHistory(recovered);
+        repricing = { refreshing: false, checkedAt: now().toISOString(), ...history };
+        return { ...result, repricing: { ...repricing } };
+      } catch {
+        repricing = { refreshing: false, error: 'Historical usage could not be recalculated. Try refreshing again.' };
+        return { ok: false, error: repricing.error };
+      } finally { pendingRefresh = null; onChange(); }
+    });
+    return pendingRefresh;
+  }
+  return { state, record, reprice, repriceHistory, refreshPricing };
 }
 
 module.exports = { createSubscriptionUsage, subscriptionProfiles };

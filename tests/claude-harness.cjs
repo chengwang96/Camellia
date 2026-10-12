@@ -11,7 +11,7 @@ const { EventEmitter } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const mainDir = path.resolve(__dirname, '../src/main');
 
-function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleCredentials = async () => {} } = {}) {
+function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleCredentials = async () => {}, priceFetcher } = {}) {
   const root = existingRoot || fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-workspaces-'));
   const userData = path.join(root, 'app');
   const home = path.join(root, 'home');
@@ -67,6 +67,10 @@ function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleC
       if (name === 'node:child_process') return { spawn, spawnSync: () => ({ status: 0, stdout: '' }) };
       if (name === 'node:os') return { ...os, homedir: () => home };
       if (name === 'node:fs') return mockFs;
+      if (name === '../api/subscription-price-catalog' && priceFetcher) {
+        const catalog = require('../src/api/subscription-price-catalog');
+        return { ...catalog, createPriceRefresh: options => catalog.createPriceRefresh({ ...options, fetcher: priceFetcher }) };
+      }
       if (name === '../engines/antigravity' || name === '../engines/antigravity.js') {
         const antigravity = require('../src/engines/antigravity.js');
         return { ...antigravity, createAntigravity: options => antigravity.createAntigravity({ ...options, clearCredentials: clearGoogleCredentials }) };
