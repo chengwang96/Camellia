@@ -5,12 +5,18 @@ import java.io.Reader;
 
 public final class SseReader {
     public interface Listener { void onSnapshot(String data) throws IOException; }
+    public interface HeartbeatListener { void onHeartbeat() throws IOException; }
     private static final int LIMIT = 8 * 1024 * 1024;
 
     public static void read(Reader reader, Listener listener) throws IOException {
+        read(reader, listener, null);
+    }
+
+    public static void read(Reader reader, Listener listener, HeartbeatListener heartbeatListener) throws IOException {
         StringBuilder line = new StringBuilder();
         StringBuilder data = new StringBuilder();
         String type = "";
+        boolean heartbeat = false;
         char[] buffer = new char[8192];
         int count;
         while ((count = reader.read(buffer)) != -1) {
@@ -26,8 +32,12 @@ public final class SseReader {
                 line.setLength(0);
                 if (value.isEmpty()) {
                     if (type.equals("snapshot") && data.length() > 0) listener.onSnapshot(data.substring(0, data.length() - 1));
+                    if (heartbeat && heartbeatListener != null) heartbeatListener.onHeartbeat();
                     data.setLength(0);
                     type = "";
+                    heartbeat = false;
+                } else if (value.equals(": heartbeat") || value.equals(":heartbeat")) {
+                    heartbeat = true;
                 } else if (value.startsWith("event:")) {
                     type = field(value.substring(6));
                 } else if (value.startsWith("data:")) {

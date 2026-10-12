@@ -78,6 +78,7 @@ public final class MainActivity extends Activity {
     private long editingSeq = -1;
     private String editingText = "";
     private RemoteApi api;
+    private ConnectionTestDialog connectionTest;
     private Future<?> job;
     private volatile int generation;
     private boolean foreground;
@@ -373,6 +374,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onStop() {
+        if (connectionTest != null) { connectionTest.close(); connectionTest = null; }
         persistDraft();
         if (listCache != null) listCache.flush();
         artifactDownloads.stop();
@@ -399,6 +401,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (connectionTest != null) { connectionTest.close(); connectionTest = null; }
         stopNetwork();
         if (pages != null) { pages.finishTransition(); pages = null; }
         releasePageViews();
@@ -961,11 +964,19 @@ public final class MainActivity extends Activity {
         LinearLayout panel = computerDialogPanel(computerName(computer), address + (state.isEmpty() ? "" : "\n" + state));
         android.app.Dialog dialog = createComputerDialog(panel);
         LinearLayout group = style.group(panel, "");
+        style.action(group, tr("连接稳定性测试", "Connection stability test"), tr("检测手机与电脑的连接，约 30 秒", "Test the phone-to-computer connection for about 30 seconds"),
+            "manageConnectionTest", false, () -> { dialog.dismiss(); testComputerConnection(computer); });
         style.action(group, tr("重命名", "Rename"), tr("更改这台电脑在本机显示的名称", "Change the name shown on this phone"),
             "manageRename", false, () -> { dialog.dismiss(); renameComputer(computer); });
         style.action(group, tr("移除电脑", "Forget computer"), tr("删除手机上的凭据，电脑上的会话不受影响", "Deletes the credentials on this phone; chats stay on the computer"),
             "manageForget", true, () -> { dialog.dismiss(); forget(computer); });
         showComputerDialog(dialog);
+    }
+
+    private void testComputerConnection(JSONObject computer) {
+        if (connectionTest != null) connectionTest.close();
+        connectionTest = new ConnectionTestDialog(this, computer, chinese);
+        computerDialog = connectionTest.show();
     }
 
     private LinearLayout computerDialogPanel(String title, String description) {

@@ -77,8 +77,10 @@ private enum ComposerCheck {
         expect(emojiView.text == "abcd", "surrogate rejection preserves the draft")
 
         let verdict = failures.isEmpty ? "PASS" : "FAIL"
-        NSLog("[composer-check] verdict=%@ failures=%@", verdict,
-              failures.isEmpty ? "none" : failures.joined(separator: ", "))
+        let details = failures.isEmpty ? "none" : failures.joined(separator: ", ")
+        let result = "[composer-check] verdict=\(verdict) failures=\(details)\n"
+        // Flush the result to the console consumed by check-composer.sh before exiting.
+        FileHandle.standardOutput.write(Data(result.utf8))
         exit(failures.isEmpty ? 0 : 1)
     }
 }

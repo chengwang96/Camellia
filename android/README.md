@@ -44,6 +44,12 @@ Conversation prefetch follows the selected computer's visible list: up to four v
 
 Leaving a local chat, remote conversation or discussion releases its View bindings and pending scroll work after preserving its draft. Backgrounding the app retains the current page for resume. See [chat page lifecycle](../docs/android-chat-view-lifecycle.md).
 
+### Connection stability
+
+In **Remote control**, tap **Manage** beside a computer, then **Connection stability test**. The approximately 30-second check samples authenticated status requests every two seconds and monitors the existing live connection, including idle desktop heartbeats. It reports request timeouts (five seconds), live connection setup timeouts (ten seconds), missing heartbeats or updates (15 seconds), service identity changes, and repeated high latency (at least three requests taking two seconds or longer).
+
+An issue automatically shows an error report with the target computer, phone and network information, latency, jitter, completed requests, live-stream observations, and the original error. **Copy report** copies the report without closing it; paired-device tokens and API credentials are redacted. The test uses separate read-only clients, keeps the current computer selection, and stops when cancelled or the app leaves the foreground. A successful result describes only the observed test window.
+
 ### Attachments and downloads
 
 Local and remote messages can combine up to 20 image and document attachments. Images are resized to at most 3072 px on their long edge and encoded as JPEG at no more than 4 MiB each; individual documents are limited to 10 MiB. Remote transmission has an additional 32 MiB aggregate limit. Discussion sends use the host's smaller 16-attachment limit. A newer host advertises `expanded-attachments` and allows the larger remote transfer; older hosts may cap a send at nine files and 8 MiB, or support images only. The UI reports an unsupported limit instead of silently dropping files.

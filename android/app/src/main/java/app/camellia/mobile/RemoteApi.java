@@ -157,12 +157,20 @@ public class RemoteApi {
         eventsAt("/v1/conversations/events", token, listener);
     }
 
+    void listEvents(String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+        eventsAt("/v1/conversations/events", token, listener, heartbeat);
+    }
+
     public void discussionEvents(String id, String token, SnapshotListener listener) throws IOException {
         eventsAt("/v1/discussions" + (id == null ? "" : "/" + id) + "/events", token, listener);
     }
 
     private void eventsAt(String path, String token, SnapshotListener listener) throws IOException {
-        if (EmbeddedNetwork.enabled()) { embeddedEvents(path, token, listener); return; }
+        eventsAt(path, token, listener, null);
+    }
+
+    private void eventsAt(String path, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
+        if (EmbeddedNetwork.enabled()) { embeddedEvents(path, token, listener, heartbeat); return; }
         HttpURLConnection connection = open(path, token);
         try {
             connection.setRequestProperty("Accept", "text/event-stream");
@@ -174,6 +182,9 @@ public class RemoteApi {
                     if (cancelled) throw new IOException("Cancelled");
                     try { listener.onSnapshot(new JSONObject(data)); }
                     catch (JSONException error) { throw new IOException("Invalid snapshot", error); }
+                }, heartbeat == null ? null : () -> {
+                    if (cancelled) throw new IOException("Cancelled");
+                    heartbeat.onHeartbeat();
                 });
             }
         } finally { release(connection); }
@@ -281,7 +292,7 @@ public class RemoteApi {
         finally { release(response); }
     }
 
-    private void embeddedEvents(String path, String token, SnapshotListener listener) throws IOException {
+    private void embeddedEvents(String path, String token, SnapshotListener listener, SseReader.HeartbeatListener heartbeat) throws IOException {
         tailnet.Response response = embeddedOpen(path, token, null);
         try (var reader = new InputStreamReader(input(response), StandardCharsets.UTF_8)) {
             if (!response.contentType().startsWith("text/event-stream")) throw new IOException("Unexpected stream type");
@@ -289,6 +300,9 @@ public class RemoteApi {
                 if (cancelled) throw new IOException("Cancelled");
                 try { listener.onSnapshot(new JSONObject(data)); }
                 catch (JSONException error) { throw new IOException("Invalid snapshot", error); }
+            }, heartbeat == null ? null : () -> {
+                if (cancelled) throw new IOException("Cancelled");
+                heartbeat.onHeartbeat();
             });
         } finally { release(response); }
     }
