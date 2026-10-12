@@ -45,5 +45,9 @@ if [ "$STATUS" -eq 0 ] && [[ "$OUTPUT" == *"verdict=PASS"* ]]; then
   echo "verdict: PASS"
   exit 0
 fi
+echo "simulator launch exit code: $STATUS" >&2
+if [[ "$OUTPUT" != *"[composer-check] verdict="* ]]; then
+  echo "No composer-check verdict received." >&2
+fi
 echo "verdict: FAIL" >&2
 exit 1

@@ -8,6 +8,17 @@ import java.util.List;
 import static org.junit.Assert.*;
 
 public class SseReaderTest {
+    @Test public void completeHeartbeatFramesReachTheDiagnosticWithoutBecomingSnapshots() throws Exception {
+        List<String> snapshots = new ArrayList<>(); List<String> heartbeats = new ArrayList<>();
+        SseReader.read(new StringReader(": heartbeat\r\n\r\nevent: snapshot\ndata: {}\n\n:heartbeat\n\n: other\n\n: heartbeat\n"),
+            snapshots::add, () -> heartbeats.add("heartbeat"));
+        assertEquals(List.of("{}"), snapshots); assertEquals(2, heartbeats.size());
+    }
+
+    @Test public void heartbeatListenerCanCancelAnIdleStream() {
+        assertThrows(IOException.class, () -> SseReader.read(new StringReader(": heartbeat\n\n"), data -> {},
+            () -> { throw new IOException("Cancelled"); }));
+    }
     @Test public void acceptsHeartbeatsCrLfAndMultilineData() throws Exception {
         List<String> snapshots = new ArrayList<>();
         SseReader.read(new StringReader(": heartbeat\r\n\r\nid: server:1\r\nevent: snapshot\r\ndata: {\r\ndata: \"text\":\"你好\"}\r\n\r\n"), snapshots::add);

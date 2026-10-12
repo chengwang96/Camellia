@@ -52,6 +52,7 @@ public class ComputerSelectionTest extends InstrumentationTestCase {
             assertTrue(dialog.isShowing()); View panel = dialog.getWindow().getDecorView();
             assertTrue(containsText(panel, first.getString("address"))); assertTrue(containsText(panel, "已连接"));
             assertNotNull(panel.findViewWithTag("manageRename")); assertNotNull(panel.findViewWithTag("manageForget"));
+            assertNotNull(panel.findViewWithTag("manageConnectionTest"));
             dialog.dismiss(); row.performClick();
             assertEquals("list", field("screen")); assertEquals(first.getString("address"), ((JSONObject) field("credentials")).getString("address"));
             activity.onBackPressed(); assertEquals("computers", field("screen"));
