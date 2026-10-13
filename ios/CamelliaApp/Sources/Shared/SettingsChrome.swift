@@ -13,6 +13,7 @@ struct SettingsCard<Content: View>: View {
             .background(RoundedRectangle(cornerRadius: Palette.groupRadius, style: .continuous)
                 .fill(Palette.card))
             .clipShape(RoundedRectangle(cornerRadius: Palette.groupRadius, style: .continuous))
+            .padding(.bottom, 14)
     }
 }
 
@@ -21,23 +22,24 @@ struct SettingsGroupLabel: View {
 
     var body: some View {
         Text(LocalizedStringKey(title))
-            .font(.system(size: Palette.textSmall, weight: .medium))
+            .font(.system(size: Palette.textNote))
             .foregroundColor(Palette.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 16)
-            .padding(.top, 18)
-            .padding(.bottom, 8)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
     }
 }
 
 struct SettingsDivider: View {
-    var leading: CGFloat = 58
+    var leading: CGFloat = 52
 
     var body: some View {
         Rectangle()
             .fill(Palette.divider)
-            .frame(height: 1)
+            .frame(height: 0.5)
             .padding(.leading, leading)
+            .padding(.trailing, 16)
     }
 }
 
@@ -50,12 +52,10 @@ struct SettingsRowLabel: View {
     var destructive = false
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 13) {
             if !icon.isEmpty {
-                Image(systemName: icon)
-                    .font(.system(size: Palette.textDialog))
+                MobileLineIcon(name: icon)
                     .foregroundColor(destructive ? Palette.error : Palette.ink)
-                    .frame(width: 26, height: 26)
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(LocalizedStringKey(title))
@@ -73,20 +73,21 @@ struct SettingsRowLabel: View {
             Spacer(minLength: 8)
             if !value.isEmpty {
                 Text(LocalizedStringKey(value))
-                    .font(.system(size: Palette.textNote))
+                    .font(.system(size: Palette.textBody))
                     .foregroundColor(Palette.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .frame(maxWidth: 100, alignment: .trailing)
             }
             if showsChevron {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: Palette.textNote, weight: .semibold))
+                MobileLineIcon(name: "right", size: 18)
                     .foregroundColor(Palette.secondary)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-        .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+        .padding(.leading, 16)
+        .padding(.trailing, 14)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
         .contentShape(Rectangle())
     }
 }
@@ -105,36 +106,41 @@ struct SettingsNote: View {
     }
 }
 
-/// Gives a pushed settings page the same raised back control and centred title
-/// as Android, while still using `NavigationView` for the actual stack.
+/// A fixed header keeps Android's geometry on every supported iOS release.
 private struct SettingsPageModifier: ViewModifier {
     let title: String
     let onBack: (() -> Void)?
+    let background: Color
     @Environment(\.presentationMode) private var presentation
 
     func body(content: Content) -> some View {
         content
-            .background(Palette.grouped.ignoresSafeArea())
+            .background(background.ignoresSafeArea())
             .navigationBarBackButtonHidden(true)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+            .navigationBarHidden(true)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                HStack(spacing: 0) {
                     RoundBackButton {
                         if let onBack { onBack() }
                         else { presentation.wrappedValue.dismiss() }
                     }
-                }
-                ToolbarItem(placement: .principal) {
                     Text(LocalizedStringKey(title))
                         .font(.system(size: Palette.textTitle, weight: .medium))
                         .foregroundColor(Palette.ink)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityAddTraits(.isHeader)
+                    Color.clear.frame(width: 48, height: 1)
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 16)
+                .background(background)
             }
     }
 }
 
 extension View {
-    func settingsPage(title: String, onBack: (() -> Void)? = nil) -> some View {
-        modifier(SettingsPageModifier(title: title, onBack: onBack))
+    func settingsPage(title: String, background: Color = Palette.grouped, onBack: (() -> Void)? = nil) -> some View {
+        modifier(SettingsPageModifier(title: title, onBack: onBack, background: background))
     }
 }

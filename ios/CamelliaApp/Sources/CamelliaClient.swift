@@ -159,7 +159,6 @@ struct RootView: View {
     @StateObject private var holder = ViewModelHolder()
     @StateObject private var localHolder = LocalChatViewModelHolder()
     @State private var screen: Screen = .home
-    @State private var showComputers = false
     @State private var showComputerPicker = false
     @State private var showConversationSearch = false
     @State private var showSettings = false
@@ -177,7 +176,15 @@ struct RootView: View {
     /// level would put two back buttons in the same bar. Android's start page
     /// makes the same split.
     private enum Screen: Equatable {
-        case home, localChat, remoteControl
+        case home, localChat, computers, remoteControl
+
+        var depth: Int {
+            switch self {
+            case .home: return 0
+            case .localChat, .computers: return 1
+            case .remoteControl: return 2
+            }
+        }
     }
 
     init(appModel: AppModel = AppModelHolder.shared.model,
@@ -187,77 +194,26 @@ struct RootView: View {
     }
 
     var body: some View {
-        NavigationView {
-            content
-                .environmentObject(holder.model)
-                .environmentObject(localHolder.model)
-                .navigationBarHidden(screen == .home)
-                .navigationTitle(LocalizedStringKey(screen == .localChat ? "" : title))
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        if screen == .localChat {
-                            HStack(spacing: 12) {
-                                leading
-                                RemotePageHeading(title: holder.model.usesChinese ? "本机聊天" : "Local chat",
-                                                  computer: holder.model.usesChinese
-                                                      ? (isPad ? "本机 · 平板直连 API" : "本机 · 手机直连 API")
-                                                      : (isPad ? "On this iPad · Direct API" : "On this phone · Direct API"),
-                                                  systemImage: isPad ? "ipad" : "iphone", note: "")
+        PageStack(route: screen, depth: screen.depth, onBack: screen == .home ? nil : goBack) {
+            Group {
+                if screen == .computers {
+                    ComputersView(onOpenComputer: { screen = .remoteControl },
+                                  onClose: { screen = .home })
+                } else {
+                    NavigationView {
+                        content
+                            .navigationBarHidden(true)
+                            .safeAreaInset(edge: .top, spacing: 0) {
+                                if screen != .home { pageHeader }
                             }
-                        } else {
-                            leading
-                        }
                     }
-                    // Android's list header is the wordmark with the computer's
-                    // name and its connection state underneath, not the
-                    // computer's name alone: the screen is the app's, and which
-                    // computer it is talking to is a detail of it. The detail
-                    // screen keeps its own title and subtitle in the same slot.
-                    //
-                    // The branch lives inside the item rather than around it,
-                    // because a bare `if` at this level reads as either a view
-                    // builder or a toolbar content builder and SwiftUI cannot
-                    // choose between the two overloads.
-                    ToolbarItem(placement: .principal) {
-                        if screen == .remoteControl, holder.model.current?.isPaired == true {
-                            remoteHeading
-                        } else if screen == .localChat {
-                            EmptyView()
-                        } else {
-                            Text(LocalizedStringKey(title)).font(.headline).lineLimit(1)
-                        }
-                    }
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        HStack(spacing: 4) {
-                            if screen == .remoteControl {
-                                if holder.model.openId == nil {
-                                    Button { showConversationSearch.toggle() } label: {
-                                        Image(systemName: "magnifyingglass")
-                                            .frame(width: 44, height: 44)
-                                    }
-                                    .accessibilityLabel(holder.model.usesChinese ? "搜索会话" : "Search conversations")
-                                }
-                                Button { showComputerPicker.toggle() } label: {
-                                    SwitchComputerIcon()
-                                }
-                                .accessibilityLabel(holder.model.usesChinese ? "切换电脑" : "Switch computer")
-                            } else if screen == .home {
-                                // Android's list header carries the switch
-                                // button and nothing else — its settings entry
-                                // is a row of the *home* page, which is where
-                                // this gear lives too. Two gears on the same
-                                // page would be the wrong number of them.
-                                Button { showSettings = true } label: {
-                                    Image(systemName: "gearshape")
-                                }
-                                .accessibilityLabel("设置")
-                            }
-                        }
-                    }
+                    .navigationViewStyle(.stack)
                 }
+            }
+            .environmentObject(holder.model)
+            .environmentObject(localHolder.model)
         }
-        .navigationViewStyle(.stack)
+        .ignoresSafeArea(.container)
         .overlay {
             GeometryReader { geometry in
                 if showComputerPicker, screen == .remoteControl {
@@ -296,33 +252,29 @@ struct RootView: View {
                 }
             }
         }
-        .fullScreenCover(isPresented: $showComputers) {
-            ComputersView(onOpenComputer: { screen = .remoteControl })
-                .environmentObject(holder.model)
-        }
-        .fullScreenCover(isPresented: $showSettings) {
-            SettingsView()
+        .pageCover(isPresented: $showSettings) {
+            SettingsView(onClose: { showSettings = false })
                 .environmentObject(holder.model)
                 .environmentObject(localHolder.model)
         }
-        .fullScreenCover(isPresented: $showPairing, onDismiss: {
+        .pageCover(isPresented: $showPairing, onDismiss: {
             if pairingFromPicker {
-                screen = .home
-                showComputers = true
+                screen = .computers
             }
             pairingFromPicker = false
             pairingComputer = nil
         }) {
             PairingView(initialComputer: pairingComputer,
                         resumePending: resumePendingPairing,
+                        onClose: { showPairing = false },
                         onApproved: {
                 pairingFromPicker = false
                 showPairing = false
                 screen = .remoteControl
             }).environmentObject(holder.model)
         }
-        .fullScreenCover(isPresented: $showLogin) {
-            NavigationView { MobileAccessView().environmentObject(holder.model) }
+        .pageCover(isPresented: $showLogin) {
+            NavigationView { MobileAccessView(onClose: { showLogin = false }).environmentObject(holder.model) }
                 .navigationViewStyle(.stack)
         }
         // Android keeps the start page visible while the node is waiting for a
@@ -346,8 +298,7 @@ struct RootView: View {
             // is lost. Do not strand the remote screen behind an extra welcome
             // step after a revoke or removal.
             if screen == .remoteControl && paired != true && !pairingFromPicker {
-                screen = .home
-                showComputers = true
+                screen = .computers
             }
         }
         .alert(item: notice) { item in
@@ -367,14 +318,44 @@ struct RootView: View {
                          message: Text(LocalizedStringKey(item.text)),
                          dismissButton: .default(Text("好")))
         }
-        // Apply preferences outside the presenters too. A fullScreenCover
+        // Apply preferences outside the presenters too. A page cover
         // created after an inner locale modifier otherwise keeps the previous
         // language even while the home screen redraws in the new one.
         .environment(\.locale, holder.model.interfaceLocale)
+        .environment(\.pagePreferredColorScheme, holder.model.preferredColorScheme)
         .preferredColorScheme(holder.model.preferredColorScheme)
     }
 
     private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+
+    private var pageHeader: some View {
+        HStack(spacing: 10) {
+            leading
+            if screen == .localChat {
+                RemotePageHeading(title: holder.model.usesChinese ? "本机聊天" : "Local chat",
+                                  computer: holder.model.usesChinese
+                                    ? (isPad ? "本机 · 平板直连 API" : "本机 · 手机直连 API")
+                                    : (isPad ? "On this iPad · Direct API" : "On this phone · Direct API"),
+                                  systemImage: isPad ? "ipad" : "iphone")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                remoteHeading.frame(maxWidth: .infinity, alignment: .leading)
+                Button { showConversationSearch.toggle() } label: {
+                    MobileLineIcon(name: "search", size: 22).frame(width: 48, height: 48)
+                }
+                .accessibilityLabel(holder.model.usesChinese ? "搜索会话" : "Search conversations")
+                Button { showComputerPicker.toggle() } label: { SwitchComputerIcon() }
+                    .accessibilityLabel(holder.model.usesChinese ? "切换电脑" : "Switch computer")
+                    .allowsHitTesting(!showComputerPicker)
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(Palette.ink)
+        .padding(.horizontal, PageGutter.horizontal)
+        .padding(.top, 12)
+        .padding(.bottom, 18)
+        .background(Palette.background)
+    }
 
     /// The one button on the left, which means something different per screen.
     @ViewBuilder
@@ -383,19 +364,27 @@ struct RootView: View {
         case .home:
             EmptyView()
         case .localChat:
-            RoundBackButton {
-                localHolder.model.pauseForLeavingApp()
-                screen = .home
-            }
+            RoundBackButton(action: goBack)
+        case .computers:
+            EmptyView()
         case .remoteControl:
             // The remote list is a screen of its own, not the root: without this
             // there was no way back to the start page at all. Android's list
             // header carries the same back button, and moving between computers
             // moved to the trailing side where Android also keeps it.
-            RoundBackButton {
-                if showConversationSearch { showConversationSearch = false }
-                else { screen = .home }
-            }
+            RoundBackButton(action: goBack)
+        }
+    }
+
+    private func goBack() {
+        switch screen {
+        case .home: break
+        case .localChat:
+            localHolder.model.pauseForLeavingApp()
+            screen = .home
+        case .computers: screen = .home
+        case .remoteControl:
+            screen = .computers
         }
     }
 
@@ -433,14 +422,14 @@ struct RootView: View {
         }
         #endif
         switch LaunchScreen.requested {
-        case "computers": showComputers = true
+        case "computers": screen = .computers
         case "settings", "providers", "general", "archived", "mobileAccess", "deviceName":
             showSettings = true
         case "pairing": showPairing = true
         case "login": showLogin = true
         case "conversations":
             if holder.model.current?.isPaired == true { screen = .remoteControl }
-            else { showComputers = true }
+            else { screen = .computers }
         case "local": screen = .localChat
         default:
             screen = .home
@@ -466,20 +455,19 @@ struct RootView: View {
         switch screen {
         case .home:
             HomeView(onLocalChat: { screen = .localChat },
-                     onRemoteControl: {
-                         if holder.model.current?.isPaired == true { screen = .remoteControl }
-                         else { showComputers = true }
-                     },
+                     onRemoteControl: { screen = .computers },
                      onSettings: { showSettings = true },
                      onMobileAccess: { showLogin = true })
         case .localChat:
             LocalChatListView()
+        case .computers:
+            EmptyView() // The computer page owns its NavigationView above.
         case .remoteControl:
             if holder.model.current?.isPaired == true {
                 ConversationListView(showSearch: $showConversationSearch,
                                      onComputerPickerAction: handleComputerPickerAction)
             } else {
-                WelcomeView(onPair: { showComputers = true })
+                WelcomeView(onPair: { screen = .computers })
             }
         }
     }
@@ -505,10 +493,10 @@ struct RootView: View {
             pairingFromPicker = true
             pairingComputer = nil
             resumePendingPairing = false
-            screen = .home
+            screen = .computers
             showPairing = true
         case .manage:
-            showComputers = true
+            screen = .computers
         }
     }
 
@@ -516,6 +504,7 @@ struct RootView: View {
         switch screen {
         case .home: return "Camellia"
         case .localChat: return "本机聊天"
+        case .computers: return "远程控制"
         // When a computer is paired the heading above replaces this, and it says
         // "Camellia" too; this is what shows before there is one to name.
         case .remoteControl: return "Camellia"

@@ -113,8 +113,7 @@ struct SubtaskDetailPage: View {
             }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(Palette.background).foregroundColor(Palette.ink)
-        .navigationTitle(model.usesChinese ? "子任务" : "Subtasks")
-        .navigationBarTitleDisplayMode(.inline)
+        .settingsPage(title: model.usesChinese ? "子任务" : "Subtasks", background: Palette.background)
     }
     @ViewBuilder private func section(_ title: String, _ value: String) -> some View {
         if !value.isEmpty {

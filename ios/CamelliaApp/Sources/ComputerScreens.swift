@@ -4,6 +4,7 @@ import SwiftUI
 
 struct ComputersView: View {
     var onOpenComputer: () -> Void = {}
+    var onClose: (() -> Void)? = nil
     @EnvironmentObject private var model: AppModel
     @Environment(\.presentationMode) private var presentation
     @State private var showPairing = false
@@ -11,6 +12,7 @@ struct ComputersView: View {
     @State private var pairingComputer: PairedComputer?
     @State private var managingComputer: PairedComputer?
     @State private var managePanelHeight: CGFloat = 360
+    @State private var openAfterPairing = false
 
     var body: some View {
         NavigationView {
@@ -31,7 +33,6 @@ struct ComputersView: View {
                             ComputerRow(computer: computer, onSelect: {
                                 guard model.select(computer.address) else { return }
                                 if computer.isPaired {
-                                    presentation.wrappedValue.dismiss()
                                     onOpenComputer()
                                 } else {
                                     resumePendingPairing = computer.isAwaitingApproval
@@ -88,9 +89,7 @@ struct ComputersView: View {
             .simultaneousGesture(TapGesture().onEnded { model.userInteracted() })
             .simultaneousGesture(DragGesture(minimumDistance: 8)
                 .onChanged { _ in model.userInteracted() })
-            .navigationTitle("远程控制")
-            .navigationBarTitleDisplayMode(.inline)
-            .navigationBarBackButtonHidden(true)
+            .settingsPage(title: "远程控制", onBack: close)
             // Checking on entry is what Android's `computersScreen` does with its
             // own `refreshComputers`, and pulling re-runs it — the one thing that
             // makes a list of pairings worth showing on a single screen.
@@ -99,16 +98,16 @@ struct ComputersView: View {
             // Returning to the front is when the last answer went stale; Android
             // re-runs the check from `onStart` and the network listener.
             .onChange(of: model.resumeTick) { _ in Task { await model.refreshComputers() } }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    RoundBackButton { presentation.wrappedValue.dismiss() }
-                }
-            }
-            .fullScreenCover(isPresented: $showPairing) {
-                PairingView(initialComputer: pairingComputer, resumePending: resumePendingPairing) {
-                    showPairing = false
-                    presentation.wrappedValue.dismiss()
+            .pageCover(isPresented: $showPairing, onDismiss: {
+                if openAfterPairing {
+                    openAfterPairing = false
                     onOpenComputer()
+                }
+            }) {
+                PairingView(initialComputer: pairingComputer, resumePending: resumePendingPairing,
+                            onClose: { showPairing = false }) {
+                    openAfterPairing = true
+                    showPairing = false
                 }
                 .environmentObject(model)
             }
@@ -139,6 +138,11 @@ struct ComputersView: View {
                 }
             }
         }
+    }
+
+    private func close() {
+        if let onClose { onClose() }
+        else { presentation.wrappedValue.dismiss() }
     }
 
     private var computerDivider: some View {
@@ -461,6 +465,7 @@ private struct ComputerManagePanel: View {
 struct PairingView: View {
     let initialComputer: PairedComputer?
     let resumePending: Bool
+    let onClose: (() -> Void)?
     let onApproved: () -> Void
     @EnvironmentObject private var model: AppModel
     @Environment(\.presentationMode) private var presentation
@@ -471,12 +476,15 @@ struct PairingView: View {
     @State private var fieldError: PairingField?
     @State private var fieldMessage = ""
     @State private var scanning = false
+    @State private var scannedPayload: PairingPayload?
     @State private var showingMobileAccess = false
 
     init(initialComputer: PairedComputer? = nil, resumePending: Bool = false,
+         onClose: (() -> Void)? = nil,
          onApproved: @escaping () -> Void = {}) {
         self.initialComputer = initialComputer
         self.resumePending = resumePending
+        self.onClose = onClose
         self.onApproved = onApproved
     }
 
@@ -590,22 +598,15 @@ struct PairingView: View {
                     }
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 27)
+                .padding(.top, 12)
                 .padding(.bottom, 24)
             }
             .background(Palette.grouped.ignoresSafeArea())
             .safeAreaInset(edge: .bottom, spacing: 0) { pairingActions }
-            .navigationTitle("配对电脑")
-            .navigationBarTitleDisplayMode(.inline)
-            .navigationBarBackButtonHidden(true)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    RoundBackButton {
-                        model.pairing.cancel()
-                        presentation.wrappedValue.dismiss()
-                    }
-                }
-            }
+            .settingsPage(title: "配对电脑", onBack: {
+                model.pairing.cancel()
+                close()
+            })
             .onAppear {
                 model.pairingSheetOpen = true
                 model.refreshNode()
@@ -617,17 +618,32 @@ struct PairingView: View {
             }
             .onDisappear { model.pairingSheetOpen = false }
             .onChange(of: model.pairingPhase) { phase in reflect(phase) }
-            .fullScreenCover(isPresented: $scanning) {
-                PairingScannerView { payload in
+            .pageCover(isPresented: $scanning, keepsPresentingView: true, onDismiss: {
+                guard let payload = scannedPayload else { return }
+                scannedPayload = nil
+                apply(payload)
+            }) {
+                PairingScannerView(onClose: {
+                    scannedPayload = nil
                     scanning = false
-                    apply(payload)
+                }) { payload in
+                    guard scanning else { return }
+                    scannedPayload = payload
+                    scanning = false
                 }
             }
-            .fullScreenCover(isPresented: $showingMobileAccess) {
-                NavigationView { MobileAccessView().environmentObject(model) }
+            .pageCover(isPresented: $showingMobileAccess) {
+                NavigationView {
+                    MobileAccessView(onClose: { showingMobileAccess = false }).environmentObject(model)
+                }
                     .navigationViewStyle(.stack)
             }
         }
+    }
+
+    private func close() {
+        if let onClose { onClose() }
+        else { presentation.wrappedValue.dismiss() }
     }
 
     private var pairingActions: some View {
@@ -730,7 +746,7 @@ struct PairingView: View {
         switch phase {
         case .approved:
             onApproved()
-            presentation.wrappedValue.dismiss()
+            close()
         case .awaitingApproval:
             code = ""
             fieldError = nil
@@ -780,6 +796,7 @@ private struct Field: View {
 /// live preview out of the settings card also gives the camera enough area to
 /// focus on a QR shown on a desktop monitor.
 private struct PairingScannerView: View {
+    var onClose: (() -> Void)? = nil
     let onCode: (PairingPayload) -> Void
     @Environment(\.presentationMode) private var presentation
     @Environment(\.scenePhase) private var scenePhase
@@ -792,7 +809,8 @@ private struct PairingScannerView: View {
             HStack {
                 RoundBackButton {
                     scanner.stop()
-                    presentation.wrappedValue.dismiss()
+                    if let onClose { onClose() }
+                    else { presentation.wrappedValue.dismiss() }
                 }
                 .accessibilityLabel("返回配对")
                 Text("扫描配对二维码")
@@ -946,6 +964,7 @@ private struct ScannerGuide: View {
 // MARK: - Settings
 
 struct SettingsView: View {
+    var onClose: (() -> Void)? = nil
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var local: LocalChatModel
     @State private var launchTarget = LaunchScreen.requested
@@ -997,10 +1016,10 @@ struct SettingsView: View {
                     }
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 27)
+                .padding(.top, 12)
                 .padding(.bottom, 24)
             }
-            .settingsPage(title: "设置")
+            .settingsPage(title: "设置", onBack: onClose)
         }
         .navigationViewStyle(.stack)
         .onAppear {
@@ -1089,6 +1108,9 @@ struct SettingsView: View {
 private struct GeneralSettingsView: View {
     @EnvironmentObject private var model: AppModel
     @State private var choice: Choice?
+    @State private var pickingFolder = false
+    @State private var savingFolder = false
+    @State private var folderError: String?
 
     private enum Choice {
         case language, theme, enter
@@ -1106,10 +1128,39 @@ private struct GeneralSettingsView: View {
                     SettingsDivider()
                     preferenceRow(icon: "slider.horizontal.3", title: "键盘回车",
                                   value: enterLabel(model.preferences.enterMode), choice: .enter)
+                    SettingsDivider()
+                    Toggle(isOn: Binding(get: { model.preferences.hapticFeedback },
+                                         set: { model.setHapticFeedback($0) })) {
+                        SettingsRowLabel(icon: "", title: "震动效果", detail: "遵循系统触感设置",
+                                         showsChevron: false)
+                    }
+                    .toggleStyle(SwitchToggleStyle(tint: Palette.accent))
+                    .padding(.trailing, 16)
                 }
                 SettingsNote(text: "iOS 键盘没有统一的长按回车手势；需要稳定换行时，请选择回车换行并点击发送按钮。")
                 SettingsNote(text: UIDevice.current.userInterfaceIdiom == .pad
                     ? "以上设置仅作用于这台平板。" : "以上设置仅作用于这台手机。")
+
+                SettingsGroupLabel(title: "下载")
+                SettingsCard {
+                    Button { folderError = nil; pickingFolder = true } label: {
+                        SettingsRowLabel(icon: "folder", title: "默认下载目录",
+                                         detail: savingFolder ? "正在保存…" : downloadFolderLabel)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(savingFolder)
+                    .accessibilityIdentifier("download-directory")
+                    if model.preferences.downloadDirectoryBookmark != nil {
+                        SettingsDivider()
+                        Button { model.clearDownloadDirectory(); folderError = nil } label: {
+                            SettingsRowLabel(icon: "", title: "每次选择保存位置", showsChevron: false)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("download-directory-clear")
+                    }
+                }
+                if let folderError { StatusLine(text: folderError, tone: .bad).padding(.horizontal, 8) }
+                SettingsNote(text: "选择并授权一次，后续下载自动保存；同名文件自动编号。")
 
                 SettingsGroupLabel(title: "远程控制")
                 SettingsCard {
@@ -1131,10 +1182,21 @@ private struct GeneralSettingsView: View {
                 SettingsNote(text: "iOS 不允许第三方应用像 Android 前台服务一样常驻；系统可能提前结束连接，返回应用后会自动重连。")
             }
             .padding(.horizontal, 20)
-            .padding(.top, 27)
+            .padding(.top, 12)
             .padding(.bottom, 24)
         }
         .settingsPage(title: "通用")
+        .sheet(isPresented: $pickingFolder) {
+            DownloadFolderPicker(onSelect: { folder in
+                pickingFolder = false
+                savingFolder = true
+                Task {
+                    do { try await model.setDownloadDirectory(folder) }
+                    catch { folderError = AppModel.describe(error) }
+                    savingFolder = false
+                }
+            }, onCancel: { pickingFolder = false })
+        }
         .overlay(alignment: .bottom) {
             if let choice {
                 ZStack(alignment: .bottom) {
@@ -1154,9 +1216,14 @@ private struct GeneralSettingsView: View {
 
     private func preferenceRow(icon: String, title: String, value: String, choice: Choice) -> some View {
         Button { self.choice = choice } label: {
-            SettingsRowLabel(icon: icon, title: title, detail: value)
+            SettingsRowLabel(icon: icon, title: title, value: value)
         }
         .buttonStyle(.plain)
+    }
+
+    private var downloadFolderLabel: String {
+        model.preferences.downloadDirectoryBookmark == nil
+            ? "每次询问保存位置" : model.preferences.downloadDirectoryLabel
     }
 
     private func choiceTitle(_ choice: Choice) -> String {
@@ -1211,6 +1278,7 @@ private struct GeneralSettingsView: View {
 }
 
 struct MobileAccessView: View {
+    var onClose: (() -> Void)? = nil
     @EnvironmentObject private var model: AppModel
     @State private var embedded = EmbeddedNetwork.shared.isEnabled
     @State private var forgetting = false
@@ -1298,10 +1366,10 @@ struct MobileAccessView: View {
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.top, 27)
+            .padding(.top, 12)
             .padding(.bottom, 24)
         }
-        .settingsPage(title: "手机访问")
+        .settingsPage(title: "手机访问", onBack: onClose)
         .onAppear { model.refreshNode() }
         .onChange(of: model.loginURL, perform: openPendingLogin)
         .onChange(of: model.nodeRunning) { running in

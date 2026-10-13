@@ -33,6 +33,7 @@ struct RemoteSettingsPopupView: View {
             })
             .onPreferenceChange(RemotePopupHeightKey.self) { contentHeight = $0 }
         }
+        .id(showingThinking)
         .frame(height: min(maxHeight, contentHeight))
         .background(PopupGlassSurface())
         .clipShape(RoundedRectangle(cornerRadius: Palette.groupRadius, style: .continuous))
@@ -41,7 +42,13 @@ struct RemoteSettingsPopupView: View {
 
     private var modelRows: some View {
         VStack(spacing: 0) {
-            if let settings = model.transcript.settings, !settings.models.isEmpty {
+            if let settings = model.transcript.settings {
+                if settings.appliesNextTurn { heading("模型与思考等级更改从下一轮生效") }
+                if let quick = settings.quickSwitch, quick.available {
+                    PopupChoiceRow(title: "切换默认模型", subtitle: quick.model) {
+                        choose(["quickSwitch": true], settings: settings)
+                    }
+                }
                 let hasAccount = settings.models.contains(where: \.isSubscription)
                 let hasApi = settings.models.contains(where: { $0.connection == "api" })
                 ForEach(Array(settings.models.enumerated()), id: \.offset) { index, choice in
@@ -50,16 +57,28 @@ struct RemoteSettingsPopupView: View {
                     }) {
                         heading(choice.isSubscription ? "账号模型" : "共享 API 路由")
                     }
-                    PopupChoiceRow(title: choice.name, subtitle: choice.name == choice.id ? "" : choice.id,
-                                   selected: settings.model == choice.id) {
-                        choose("model", choice.id)
+                    let sameConnection = choice.connection == settings.connection
+                    let unavailable = settings.appliesNextTurn && !sameConnection
+                    let description = (choice.name == choice.id ? "" : choice.id)
+                        + (unavailable ? (model.usesChinese ? " · 停止回复后可切换连接" : " · Stop the reply to change connection") : "")
+                    PopupChoiceRow(title: choice.name, subtitle: description,
+                                   selected: settings.model == choice.id && sameConnection,
+                                   enabled: !unavailable) {
+                        choose(settings.modelChanges(for: choice), settings: settings)
+                    }
+                }
+                if settings.models.isEmpty { emptyModels }
+                divider
+                if settings.supportsFast {
+                    PopupChoiceRow(title: "Fast", subtitle: "消耗更多订阅用量；从下一轮生效",
+                                   selected: settings.fastMode) {
+                        choose(["fastMode": !settings.fastMode], settings: settings)
                     }
                 }
             } else {
-                PopupChoiceRow(title: "暂无可用模型", subtitle: "请在电脑端配置模型或登录账号",
-                               action: {})
+                emptyModels
+                divider
             }
-            divider
             PopupChoiceRow(title: "思考等级",
                            subtitle: LocalChatThinking.display(model.transcript.settings?.thinking,
                                                                  chinese: model.usesChinese),
@@ -80,7 +99,7 @@ struct RemoteSettingsPopupView: View {
                            selected: settings?.thinking.isEmpty ?? true) {
                 choose("thinking", "")
             }
-            if let choice = settings?.models.first(where: { $0.id == settings?.model }) {
+            if let choice = settings?.selectedModel {
                 ForEach(choice.thinking, id: \.self) { level in
                     let label = LocalChatThinking.display(level, chinese: model.usesChinese)
                     PopupChoiceRow(title: label, subtitle: label == level ? "" : level,
@@ -90,6 +109,10 @@ struct RemoteSettingsPopupView: View {
                 }
             }
         }
+    }
+
+    private var emptyModels: some View {
+        PopupChoiceRow(title: "暂无可用模型", subtitle: "请在电脑端配置模型或登录账号", action: {})
     }
 
     private var permissionRows: some View {
@@ -121,8 +144,13 @@ struct RemoteSettingsPopupView: View {
     }
 
     private func choose(_ key: String, _ value: String) {
+        guard let settings = model.transcript.settings else { return }
+        choose([key: value], settings: settings)
+    }
+
+    private func choose(_ changes: [String: Any], settings: RemoteSettings) {
         onDismiss()
-        model.configure(key, value: value)
+        model.configure(changes, expectedSettings: settings.version)
     }
 }
 

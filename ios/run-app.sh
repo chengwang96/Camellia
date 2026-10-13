@@ -113,6 +113,12 @@ swiftc -o "$APP/$EXECUTABLE" \
   "${SOURCES[@]}"
 
 cp "$PLIST" "$APP/Info.plist"
+VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' ../package.json | head -1)"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Info.plist"
+# Xcode UI testing needs the platform metadata when driving a prebuilt app.
+/usr/libexec/PlistBuddy -c 'Add :CFBundleSupportedPlatforms array' "$APP/Info.plist"
+/usr/libexec/PlistBuddy -c 'Add :CFBundleSupportedPlatforms:0 string iPhoneSimulator' "$APP/Info.plist"
+/usr/libexec/PlistBuddy -c 'Add :DTPlatformName string iphonesimulator' "$APP/Info.plist"
 printf 'APPL????' > "$APP/PkgInfo"
 if [ "$KIND" = "client" ]; then
   swift tools/generate-localizations.swift "$PWD/.."

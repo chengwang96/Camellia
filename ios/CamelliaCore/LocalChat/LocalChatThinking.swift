@@ -2,11 +2,7 @@ import Foundation
 
 /// How much reasoning the phone asks a model for, and how it says so.
 ///
-/// Ported from Android's `LocalChatThinking`. The phone offers three named
-/// levels — auto, medium and high — while the desktop reports the provider's
-/// own vocabulary (`low`, `xhigh`, `max`…). Both are mapped through one
-/// `display` function so a label never means two different things depending on
-/// which screen drew it.
+/// Mirrors Android's model-specific ladder and shared desktop labels.
 ///
 /// Whether a level is even meaningful depends on the model. An OpenAI-compatible
 /// endpoint takes a `reasoning_effort` field; Anthropic takes a `thinking` block
@@ -14,11 +10,37 @@ import Foundation
 /// ("budget_tokens") generations. Asking the wrong one is a 400, so the level
 /// is dropped entirely rather than sent to a model that cannot read it.
 public enum LocalChatThinking {
-    /// The three levels this client offers.
-    public static let levels = ["auto", "medium", "high"]
+    private static let defaultLevels = ["low", "medium", "high"]
+    private static let xhighLevels = defaultLevels + ["xhigh"]
+    private static let maxLevels = xhighLevels + ["max"]
+    private static let ultraLevels = maxLevels + ["ultra"]
+    private static let anthropicLevels = ["off", "low", "medium", "high", "max"]
+    private static let knownLevels = Set(ultraLevels + ["off"])
+
+    // The ordering and slug boundaries match shared/model-levels.js and Android.
+    private static let modelLevels: [(String, [String])] = [
+        ("gpt-daybreak-blue-latest", ultraLevels), ("gpt-daybreak-red-latest", ultraLevels),
+        ("gpt-6.1-sol", ultraLevels), ("gpt-6-astra", ultraLevels),
+        ("gpt-5.6-luna", maxLevels), ("gpt-5.6-sol", ultraLevels),
+        ("gpt-5.6-terra", ultraLevels), ("gpt-6-luna", maxLevels),
+        ("gpt-6-sol", ultraLevels), ("gpt-5.5", xhighLevels),
+        ("codex-auto-review", maxLevels),
+    ]
+
+    public static func levels(for route: LocalChatRoute?) -> [String] {
+        guard let route else { return defaultLevels }
+        if route.wireProtocol == "anthropic" { return anthropicLevels }
+        let model = route.model.lowercased().components(separatedBy: "/").last ?? ""
+        return modelLevels.first { model == $0.0 || model.hasPrefix($0.0 + "-") }?.1 ?? defaultLevels
+    }
+
+    public static func menu(for route: LocalChatRoute?) -> [String] {
+        ["auto"] + levels(for: route)
+    }
 
     public static func normalize(_ value: String) -> String {
-        value == "medium" || value == "high" ? value : "auto"
+        let level = ComposerText.androidTrim(value).lowercased()
+        return knownLevels.contains(level) ? level : "auto"
     }
 
     public static func label(_ value: String, chinese: Bool = true) -> String {
@@ -31,11 +53,15 @@ public enum LocalChatThinking {
         let level = trimmed.lowercased()
         switch level {
         case "", "auto", "default": return chinese ? "默认" : "Default"
-        case "off", "none": return chinese ? "关闭" : "Off"
-        case "minimal", "low": return chinese ? "快速" : "Fast"
-        case "medium": return chinese ? "标准" : "Standard"
-        case "high": return chinese ? "进阶" : "Advanced"
-        case "xhigh", "max", "ultra": return chinese ? "极限" : "Extreme"
+        case "off": return chinese ? "关闭" : "Off"
+        case "low": return chinese ? "低" : "Low"
+        case "medium": return chinese ? "中" : "Medium"
+        case "high": return chinese ? "高" : "High"
+        case "xhigh": return chinese ? "极高" : "Extra high"
+        case "max": return chinese ? "最高" : "Max"
+        case "ultra": return "Ultra"
+        case "none": return chinese ? "无" : "None"
+        case "minimal": return chinese ? "最小" : "Minimal"
         default: return trimmed
         }
     }
@@ -64,21 +90,25 @@ public enum LocalChatThinking {
 
     /// The level actually sent — `auto` for anything the route cannot express.
     public static func effective(_ route: LocalChatRoute, _ value: String) -> String {
-        supported(route) ? normalize(value) : "auto"
+        guard supported(route) else { return "auto" }
+        let level = normalize(value)
+        return level == "auto" || levels(for: route).contains(level) ? level : "auto"
     }
 
     /// Applies the level to a request body, if it means anything.
     public static func apply(_ route: LocalChatRoute, _ value: String, to body: inout [String: Any]) {
         let level = effective(route, value)
         if level == "auto" { return }
-        if route.wireProtocol == "openai" {
+        if level == "off" {
+            body["thinking"] = ["type": "disabled"]
+        } else if route.wireProtocol == "openai" {
             body["reasoning_effort"] = level
         } else if adaptive(route) {
             body["thinking"] = ["type": "adaptive"]
             body["output_config"] = ["effort": level]
             body["max_tokens"] = 16384
         } else {
-            let tokens = level == "high" ? 8192 : 2048
+            let tokens = level == "high" || level == "max" ? 8192 : 2048
             body["thinking"] = ["type": "enabled", "budget_tokens": tokens]
             body["max_tokens"] = tokens + 4096
         }

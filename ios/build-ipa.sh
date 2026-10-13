@@ -99,6 +99,7 @@ swiftc -o "$APP/$EXECUTABLE" \
   -sdk "$SDK" \
   -F "$FRAMEWORK" \
   -O \
+  -whole-module-optimization \
   -parse-as-library \
   CamelliaCore/Sources/*.swift \
   CamelliaCore/Remote/*.swift \

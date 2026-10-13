@@ -110,12 +110,18 @@ public final class SnapshotCoalescer: @unchecked Sendable {
     /// Cursor progress may accompany every text delta. Regressions must flush
     /// the prior high-water mark so stale frames remain stale in the transcript.
     static func replaceable(_ next: RemoteSnapshot, after previous: RemoteSnapshot?) -> Bool {
-        guard let previous, next.hasMessages, previous.hasMessages,
+        guard let previous else { return false }
+        let sameHistory = next.hasMessages && previous.hasMessages && next.messages == previous.messages
+            || (!next.hasMessages && !previous.hasMessages && next.historyVersion != nil
+                && next.historyVersion == previous.historyVersion)
+        guard sameHistory,
               next.instanceId == previous.instanceId, next.cursor >= previous.cursor,
               next.conversation == previous.conversation, next.permission == previous.permission,
               next.messages == previous.messages, next.settings == previous.settings,
               next.subagents == previous.subagents,
               next.hasLive == previous.hasLive, next.hasAutomation == previous.hasAutomation,
+              next.hasPreparation == previous.hasPreparation,
+              NSDictionary(dictionary: next.preparation?.raw ?? [:]).isEqual(to: previous.preparation?.raw ?? [:]),
               next.automation == previous.automation, next.queueVersion == previous.queueVersion,
               next.canQueue == previous.canQueue, next.queue == previous.queue,
               next.nextBefore == previous.nextBefore, next.olderAvailable == previous.olderAvailable else { return false }

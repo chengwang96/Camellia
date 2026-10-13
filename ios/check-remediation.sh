@@ -20,22 +20,32 @@ BUILD="$(mktemp -d "${TMPDIR:-/tmp}/camellia-remediation-check.XXXXXX")"
 trap 'rm -rf "$BUILD"' EXIT
 APP="$BUILD/CamelliaRemediationCheck.app"
 FRAMEWORK="Frameworks/tailnet.xcframework/ios-arm64_x86_64-simulator"
-mkdir -p "$APP/Frameworks"
+mkdir -p "$APP"
 swiftc -o "$APP/CamelliaRemediationCheck" -target arm64-apple-ios15.0-simulator -sdk "$SDK" \
   -D CAMELLIA_REMEDIATION_CHECK -parse-as-library -F "$FRAMEWORK" \
-  -Xlinker -rpath -Xlinker @executable_path/Frameworks \
   CamelliaCore/Sources/*.swift CamelliaCore/Remote/*.swift CamelliaCore/LocalChat/*.swift \
   CamelliaCore/Camera/*.swift CamelliaCore/Location/*.swift CamelliaCore/Networking/*.swift \
   Support/*.swift CamelliaApp/Sources/*.swift CamelliaApp/Sources/Shared/*.swift RemediationCheck/main.swift
 cp RemediationCheck/Info.plist "$APP/Info.plist"
-cp -R "$FRAMEWORK/Tailnet.framework" "$APP/Frameworks/"
-codesign --force --sign - "$APP/Frameworks/Tailnet.framework" >/dev/null
+cp -R CamelliaApp/Resources/. "$APP/"
+cp ../assets/icon-1024.png "$APP/CamelliaBrand.png"
+cp ../assets/icon-1024.png "$APP/AppIcon60x60@3x.png"
+# Tailnet is a static archive, already linked into the executable. Embedding it
+# as a runtime framework causes iOS 26's installer to reject the test bundle.
 codesign --force --sign - "$APP" >/dev/null
+if [ -n "${CAMELLIA_REMEDIATION_APP_OUT:-}" ]; then
+  if [ -e "$CAMELLIA_REMEDIATION_APP_OUT" ]; then
+    echo "refusing to overwrite $CAMELLIA_REMEDIATION_APP_OUT" >&2
+    exit 1
+  fi
+  cp -R "$APP" "$CAMELLIA_REMEDIATION_APP_OUT"
+fi
 xcrun simctl boot "$UDID" >/dev/null 2>&1 || true
-xcrun simctl bootstatus "$UDID" -b >/dev/null
+# Keep an unavailable simulator from leaving the regression job waiting forever.
+perl -e 'alarm shift; exec @ARGV' 60 xcrun simctl bootstatus "$UDID" -b
 xcrun simctl install "$UDID" "$APP"
 set +e
-OUTPUT="$(xcrun simctl launch --console "$UDID" app.camellia.mobile.remediationcheck 2>&1)"
+OUTPUT="$(perl -e 'alarm shift; exec @ARGV' 240 xcrun simctl launch --console "$UDID" app.camellia.mobile.remediationcheck 2>&1)"
 STATUS=$?
 set -e
 printf '%s\n' "$OUTPUT"

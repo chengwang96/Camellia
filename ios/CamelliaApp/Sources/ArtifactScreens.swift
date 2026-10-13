@@ -147,6 +147,7 @@ struct ArtifactSheetView: View {
     @State private var downloadTransfer: ArtifactTransfer?
     @State private var downloadedBytes: Int64 = 0
     @State private var failure: String?
+    @State private var savedFile: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -156,7 +157,7 @@ struct ArtifactSheetView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.bottom, 12)
             HStack {
-                RoundBackButton(action: onClose)
+                RoundBackButton(isPageBack: false, action: onClose)
                 Text("会话产物")
                     .font(.system(size: Palette.textTitle, weight: .medium))
                     .foregroundColor(Palette.ink)
@@ -178,6 +179,14 @@ struct ArtifactSheetView: View {
                         StatusLine(text: failure, tone: .bad)
                             .padding(.horizontal, 8)
                             .padding(.bottom, 12)
+                    }
+                    if let savedFile {
+                        Text("已保存到 \(savedFile)")
+                            .font(.system(size: Palette.textNote))
+                            .foregroundColor(Palette.accent)
+                            .padding(.horizontal, 8)
+                            .padding(.bottom, 12)
+                            .accessibilityIdentifier("artifact-download-saved")
                     }
                     status
                     ForEach(model.artifacts) { artifact in
@@ -238,7 +247,7 @@ struct ArtifactSheetView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 10)
         } else {
-            Text("下载过程中请保持面板打开并让应用停留前台；完成后选择保存位置。")
+            Text("下载过程中请保持面板打开并让应用停留前台；完成后保存到默认目录，或选择保存位置。")
                 .font(.system(size: Palette.textNote))
                 .foregroundColor(Palette.secondary)
                 .padding(.horizontal, 8)
@@ -306,35 +315,46 @@ struct ArtifactSheetView: View {
         downloading = artifact.id
         downloadedBytes = 0
         failure = nil
-        downloadTransfer = model.downloadArtifact(artifact, filename: Self.sanitized(artifact.name),
+        savedFile = nil
+        let bookmark = model.preferences.downloadDirectoryBookmark
+        downloadTransfer = model.downloadArtifact(artifact, filename: DownloadDirectory.filename(artifact.name),
                                                   progress: { received, _ in downloadedBytes = received }) { result in
-            downloading = nil
             downloadTransfer = nil
             switch result {
             case .success(let url):
-                exportFolder = url.deletingLastPathComponent()
-                export = ArtifactExport(url: url)
+                if let bookmark {
+                    Task {
+                        do {
+                            let saved = try await Task.detached(priority: .utility) {
+                                let directory = try DownloadDirectory.resolve(bookmark)
+                                let target = try DownloadDirectory.save(url, named: artifact.name, in: directory.url)
+                                return (target, directory.refreshed)
+                            }.value
+                            if model.preferences.downloadDirectoryBookmark == bookmark,
+                               let refreshed = saved.1 { model.preferences.downloadDirectoryBookmark = refreshed }
+                            savedFile = saved.0.lastPathComponent
+                            if model.preferences.hapticFeedback {
+                                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            }
+                            try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+                        } catch {
+                            // Preserve the completed download so the user can still save it elsewhere.
+                            failure = AppModel.describe(error)
+                            exportFolder = url.deletingLastPathComponent()
+                            export = ArtifactExport(url: url)
+                        }
+                        downloading = nil
+                    }
+                } else {
+                    downloading = nil
+                    exportFolder = url.deletingLastPathComponent()
+                    export = ArtifactExport(url: url)
+                }
             case .failure(let error):
+                downloading = nil
                 if !(error is ArtifactTransfer.Failure) { failure = AppModel.describe(error) }
             }
         }
-    }
-
-    /// A file name that is safe to hand to the system picker.
-    ///
-    /// Slashes would turn a name into a path, and control characters would
-    /// turn it into something the picker refuses; both become an underscore,
-    /// which is what Android does.
-    private static func sanitized(_ name: String) -> String {
-        let stripped = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let safe = stripped.map { character -> Character in
-            guard character != "/", character != "\\",
-                  character.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
-            else { return "_" }
-            return character
-        }
-        let result = String(safe)
-        return result.isEmpty || result == "." || result == ".." ? "artifact" : result
     }
 
     private static func size(_ bytes: Int64) -> String {

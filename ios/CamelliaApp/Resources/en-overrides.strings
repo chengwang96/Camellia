@@ -1,5 +1,7 @@
 "进入本地聊天" = "Open local chat";
 "进入远程控制" = "Open remote control";
+"回到最新消息" = "Back to latest messages";
+"设置已更新，请重新选择。" = "Settings have changed. Please choose again.";
 "请先在「设置 → 手机访问」登录或授权设备" = "Sign in or authorize this device in Settings → Mobile access";
 "供应商与 Key、通用、已归档、手机访问" = "Providers & keys, general, archived, mobile access";
 "iOS 键盘没有统一的长按回车手势；需要稳定换行时，请选择回车换行并点击发送按钮。" = "iOS keyboards do not share a standard long-press Return gesture. For reliable line breaks, select Return inserts a newline and tap Send.";
@@ -30,7 +32,12 @@
 "等待电脑确认" = "Waiting for desktop confirmation";
 "管理" = "Manage";
 "还没有可用的模型。到 设置 → 供应商与 Key 导入配置。" = "No models are available. Import a configuration in Settings → Providers & keys.";
-"下载过程中请保持面板打开并让应用停留前台；完成后选择保存位置。" = "Keep this panel open and the app in the foreground while downloading, then choose where to save the file.";
+"下载过程中请保持面板打开并让应用停留前台；完成后保存到默认目录，或选择保存位置。" = "Keep this panel open and the app in the foreground while downloading. Files go to your default folder, or you can choose a location.";
+"每次询问保存位置" = "Ask where to save each time";
+"选择并授权一次，后续下载自动保存；同名文件自动编号。" = "Choose and authorize a folder once. Future downloads save there automatically, with numbered names for duplicates.";
+"已保存到 %@" = "Saved to %@";
+"停止结果尚未确认，请查询同一请求。" = "The stop result is unconfirmed. Check the same request again.";
+"等待停止确认超时；可查询同一请求。" = "Stop confirmation timed out. You can check the same request again.";
 "不属于任何工作区" = "No workspace";
 "刷新" = "Refresh";
 "取消请求" = "Cancel request";

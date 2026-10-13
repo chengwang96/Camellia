@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - List
 
@@ -12,6 +13,8 @@ struct ConversationListView: View {
     @State private var creatingWorkspace = false
     @State private var selecting = false
     @State private var selection: Set<String> = []
+    @State private var menuConversation: RemoteConversation?
+    @State private var rowFrames: [String: CGRect] = [:]
     @FocusState private var searchFocused: Bool
     @State private var pushActive = false
     /// Pushes the launch fixture through the real navigation container.
@@ -50,6 +53,18 @@ struct ConversationListView: View {
                 .padding(.horizontal, PageGutter.horizontal)
         }
         .background(pushLinks)
+        .coordinateSpace(name: "remote-conversation-list")
+        .onPreferenceChange(ConversationRowFrames.self) { rowFrames = $0 }
+        .overlay {
+            if let conversation = menuConversation {
+                ConversationMenuOverlay(anchor: rowFrames[conversation.id],
+                                        rows: model.access.canCreate && model.access.capabilities.contains(.fork) ? 6 : 5,
+                                        onDismiss: { menuConversation = nil }) {
+                    conversationActions(conversation)
+                }
+            }
+        }
+        .onDisappear { menuConversation = nil }
         .overlay {
             GeometryReader { geometry in
                 if let choice = model.engineChoice {
@@ -342,6 +357,7 @@ struct ConversationListView: View {
                         .allowsHitTesting(false)
                 }
                 TextField("", text: $model.search)
+                    .textFieldStyle(.plain)
                     .focused($searchFocused)
                     .submitLabel(.search)
                     .onSubmit { searchFocused = false }
@@ -450,7 +466,10 @@ struct ConversationListView: View {
                     .environmentObject(model)) {
                     ConversationRowView(conversation: conversation, unread: model.isUnread(conversation))
                 }
-                .contextMenu { conversationActions(conversation) }
+                .highPriorityGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                    menuConversation = conversation
+                    if model.preferences.hapticFeedback { UISelectionFeedbackGenerator().selectionChanged() }
+                })
             }
         }
         .buttonStyle(.plain)
@@ -458,6 +477,7 @@ struct ConversationListView: View {
         .padding(.trailing, 8)
         .padding(.vertical, 8)
         .contentShape(Rectangle())
+        .conversationMenuAnchor(conversation.id, space: "remote-conversation-list")
         .plainPageRow()
     }
 
@@ -544,7 +564,8 @@ struct ConversationListView: View {
                                     }
                                 }, delete: { prompt = .delete([conversation.id]) },
                                 fork: model.access.canCreate && model.access.capabilities.contains(.fork)
-                                    ? { model.forkConversation(conversation) } : nil)
+                                    ? { model.forkConversation(conversation) } : nil,
+                                onDismiss: { menuConversation = nil })
             .disabled(!model.access.canManageConversations || model.commandBusy || model.hasPendingListOperation)
     }
 
@@ -891,7 +912,7 @@ struct StreamBar: View {
                let error = model.listError {
                 return error
             }
-            return nil
+            return model.openId == nil ? nil : model.historyStatus
         case .reconnecting(let delay, _):
             return model.usesChinese
                 ? "正在重连（\(Int(delay)) 秒后），当前显示上次同步内容。"
@@ -1050,7 +1071,7 @@ struct ConversationDetailView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
-                        olderControl()
+                        olderControl().id("history-start")
                         ForEach(model.transcript.earlierSubtaskTurns, id: \.self) { turn in
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(model.usesChinese ? "更早轮次的子任务" : "Subtasks from an earlier turn")
@@ -1079,7 +1100,7 @@ struct ConversationDetailView: View {
                                 }
                             }
                         }
-                        if let live = model.transcript.live {
+                        if !model.transcript.historyDetached, let live = model.transcript.live {
                             LiveView(live: live, process: model.transcript.liveProcess).id("live")
                             if live.showsDesktopApprovalNotice(
                                 canControl: model.transcript.permission == .control) {
@@ -1092,11 +1113,12 @@ struct ConversationDetailView: View {
                                 canControl: model.transcript.permission == .control)) { approval in
                                 ApprovalCard(approval: approval).id("approval-\(approval.id)")
                             }
-                        } else if !model.transcript.pendingProcess.isEmpty {
+                        } else if !model.transcript.historyDetached, !model.transcript.pendingProcess.isEmpty {
                             ProcessView(entries: model.transcript.pendingProcess)
                                 .id("pendingProcess")
                         }
-                        if let outgoing = model.outgoing, model.detailAccessFailure == nil {
+                        if !model.transcript.historyDetached, let outgoing = model.outgoing,
+                           model.detailAccessFailure == nil {
                             PendingView(state: outgoing,
                                         at: model.outgoingAt,
                                         legacyImage: model.outgoingLegacyImage,
@@ -1110,6 +1132,7 @@ struct ConversationDetailView: View {
                     }
                     .padding(.horizontal, PageGutter.horizontal)
                     .padding(.vertical, 12)
+                    .chatContentTailPadding()
                     .measuringContentBottom()
                 }
                 .measuringViewportBottom()
@@ -1141,31 +1164,46 @@ struct ConversationDetailView: View {
                     followIfNeeded(proxy, animated: true)
                 }
                 .onChange(of: model.olderTick) { _ in
-                    if let anchor = olderAnchor {
+                    if let anchor = olderAnchor,
+                       model.transcript.messages.contains(where: { AnyHashable($0.id) == anchor }) {
                         withAnimation { proxy.scrollTo(anchor, anchor: .top) }
+                    } else if let last = model.transcript.messages.last?.id {
+                        proxy.scrollTo(last, anchor: .bottom)
+                    } else {
+                        proxy.scrollTo("history-start", anchor: .top)
                     }
                     olderAnchor = nil
                 }
+                .onChange(of: model.transcript.historyDetached) { detached in
+                    guard !detached else { return }
+                    pendingFollow = true
+                    DispatchQueue.main.async { followIfNeeded(proxy, animated: false) }
+                }
             }
             .trackingScrollFollow(follow)
-            // Goal and scheduled-task state sits directly above the composer,
-            // where it is visible while typing but never covers the transcript —
-            // Android's `automationBar` and `queueBar`, in that order.
-            RemoteStatusBars()
-                .environmentObject(model)
-            Composer(onAttach: { showAttachPanel = true },
-                     onModelPicker: { remotePopup = .models },
-                     onPermission: { remotePopup = .permissions })
-                .environmentObject(model)
-            // The status line is *under* the composer, not over it: Android's
-            // `composerBar` dock is a fade, the bar and then the status, and a
-            // status that pushed the composer up off the bottom would move the
-            // one thing the thumb is aiming at. The list screen already says
-            // whether the stream is holding; the conversation needs the same
-            // line, because a reply that stops arriving is the thing a person is
-            // most likely to be staring at.
-            StreamBar()
-                .environmentObject(model)
+            .chatDock {
+                VStack(spacing: 0) {
+                    if model.transcript.historyDetached {
+                        Button(action: model.loadLatest) {
+                            Text("回到最新消息")
+                                .font(.system(size: Palette.textSmall))
+                                .foregroundColor(Palette.accent)
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.loadingOlder)
+                    }
+                    // Android's automation and queue bars precede the composer;
+                    // the shared one-line connection status follows it.
+                    RemoteStatusBars().environmentObject(model)
+                    Composer(onAttach: { showAttachPanel = true },
+                             onModelPicker: { remotePopup = .models },
+                             onPermission: { remotePopup = .permissions })
+                        .environmentObject(model)
+                    StreamBar().environmentObject(model)
+                }
+            }
         }
         .background(Palette.background)
         .coordinateSpace(name: "remote-chat-detail")
@@ -1235,6 +1273,12 @@ struct ConversationDetailView: View {
         .onChange(of: remoteSettingsAvailable) { available in
             if !available { remotePopup = nil }
         }
+        .onChange(of: model.transcript.settings?.editable) { editable in
+            if remotePopup == .permissions && editable != true { remotePopup = nil }
+        }
+        .onChange(of: model.transcript.settings?.modelEditable) { editable in
+            if remotePopup == .models && editable != true { remotePopup = nil }
+        }
         .simultaneousGesture(TapGesture().onEnded { model.userInteracted() })
         .simultaneousGesture(DragGesture(minimumDistance: 8)
             .onChanged { _ in model.userInteracted() })
@@ -1247,37 +1291,30 @@ struct ConversationDetailView: View {
         // the system's blue arrow is a different colour, size and shape from the
         // button every other chat page in the pair carries.
         .navigationBarBackButtonHidden(true)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
+        .navigationBarHidden(true)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            HStack(spacing: 10) {
                 RoundBackButton {
                     if showComputerPicker { showComputerPicker = false }
                     else if remotePopup != nil { remotePopup = nil }
                     else { dismiss() }
                 }
-                    .disabled(showArtifacts || showAttachPanel)
-            }
-            ToolbarItem(placement: .principal) {
-                // Android's detail header is the conversation's title over the
-                // *computer's* name, exactly as the list's is. The
-                // "电脑执行 · 手机查看" line that `detailScreen()` passes into
-                // `shell()` is never read: `shell()`'s list/detail branch draws
-                // the computer row and ignores its `subtitle` argument.
-                RemotePageHeading(
-                    title: conversation.title.isEmpty ? "会话" : conversation.title,
-                    computer: model.current?.displayName ?? "",
-                    note: RemoteConnectionNote.text(for: model.streamState,
-                                                    chinese: model.usesChinese))
-            }
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                // Android's detail header carries the switch-computer control
-                // and nothing else; the model and the safety level moved down
-                // into the composer's tool row, where the hand already is.
-                Button { showComputerPicker.toggle() } label: {
-                    SwitchComputerIcon()
-                }
+                .disabled(showArtifacts || showAttachPanel)
+                RemotePageHeading(title: conversation.title.isEmpty ? "会话" : conversation.title,
+                                  computer: model.current?.displayName ?? "",
+                                  note: RemoteConnectionNote.text(for: model.streamState,
+                                                                  chinese: model.usesChinese))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button { showComputerPicker.toggle() } label: { SwitchComputerIcon() }
+                    .buttonStyle(.plain)
                     .accessibilityLabel(model.usesChinese ? "切换电脑" : "Switch computer")
                     .disabled(showArtifacts || showAttachPanel)
+                    .allowsHitTesting(!showComputerPicker)
             }
+            .padding(.horizontal, PageGutter.horizontal)
+            .padding(.top, 12)
+            .padding(.bottom, 18)
+            .background(Palette.background)
         }
         .sheet(isPresented: $showCamera) {
             let computer = model.current?.address
@@ -1352,7 +1389,7 @@ struct ConversationDetailView: View {
     }
 
     private var remoteSettingsAvailable: Bool {
-        model.canDrive && model.transcript.settings?.editable == true
+        model.canDrive && (model.transcript.settings?.modelEditable == true || model.transcript.settings?.editable == true)
             && !model.commandBusy && !model.hasPendingDetailOperation
             && model.outgoing?.showsBubble != true
     }
@@ -1360,6 +1397,9 @@ struct ConversationDetailView: View {
     /// The newest thing the transcript can scroll to: the message box while a
     /// send is in flight, then the live reply, then the newest finished row.
     private var bottomId: AnyHashable? {
+        if model.transcript.historyDetached {
+            return model.transcript.messages.last.map { AnyHashable($0.id) }
+        }
         if model.outgoing != nil, model.detailAccessFailure == nil {
             return AnyHashable("outgoing")
         }
@@ -1390,7 +1430,7 @@ struct ConversationDetailView: View {
     /// move was asked for outright, which is opening the conversation and
     /// sending a message, the two places Android scrolls unconditionally.
     private func followIfNeeded(_ proxy: ScrollViewProxy, animated: Bool) {
-        guard !showsSubtaskPage else { return }
+        guard !showsSubtaskPage, !model.transcript.historyDetached, !model.loadingOlder else { return }
         guard let target = bottomId else { return }
         guard pendingFollow || follow.isAtBottom else { return }
         pendingFollow = false
@@ -1415,10 +1455,11 @@ struct ConversationDetailView: View {
         if model.loadingOlder {
             HStack(spacing: 8) {
                 ProgressView().scaleEffect(0.7)
-                Text("正在加载更早消息…").font(.system(size: Palette.textSmall)).foregroundColor(Palette.muted)
+                Text(verbatim: model.historyStatus ?? (model.usesChinese ? "正在加载更早消息…" : "Loading earlier messages…"))
+                    .font(.system(size: Palette.textSmall)).foregroundColor(Palette.muted)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
+            .frame(minHeight: 44)
         } else if model.hasOlder {
             Button {
                 olderAnchor = model.transcript.messages.first?.id
@@ -1428,7 +1469,8 @@ struct ConversationDetailView: View {
                     .font(.system(size: Palette.textSmall))
                     .foregroundColor(Palette.muted)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
@@ -1443,6 +1485,7 @@ struct ConversationDetailView: View {
     /// twice into a state the user cannot see.
     private func canEdit(_ row: RenderedMessage) -> Bool {
         row.isEditCandidate(lastUserSeq: model.transcript.lastUserSeq)
+            && !model.transcript.historyDetached
             && !model.transcript.busy
             && model.editingSeq == nil
             && model.canDrive
@@ -1528,6 +1571,7 @@ private struct MessageView: View {
             Text(row.message.text.isEmpty ? "等待输出…" : row.message.text)
                 .font(.body)
                 .foregroundColor(Palette.ink)
+                .lineSpacing(Palette.chatLineSpacing)
         }
         .padding(EdgeInsets(top: 8, leading: 14, bottom: 12, trailing: 14))
         .background(RoundedRectangle(cornerRadius: Palette.radius, style: .continuous)
@@ -1763,8 +1807,16 @@ struct RemoteListFixtureView: View {
                 ["seq": 1, "role": "user", "text": "Match the Android layout and behavior.", "at": 1_791_109_100_000],
                 ["seq": 2, "role": "assistant", "text": "I will compare the screens and interactions one by one.", "at": 1_791_109_200_000],
             ],
-            "settings": ["version": "fixture", "editable": true, "model": "gpt-5", "thinking": "medium",
-                         "permissionMode": "ask", "models": [["id": "gpt-5", "name": "GPT-5"]]],
+            "settings": ["version": "fixture", "editable": true, "modelEditable": true,
+                         "connection": "subscription", "model": "gpt-6.1-sol", "thinking": "max",
+                         "permissionMode": "ask", "supportsFast": true, "fastMode": false,
+                         "quickSwitch": ["model": "gpt-6.1-sol", "available": true],
+                         "models": [
+                            ["id": "gpt-6.1-sol", "name": "GPT-6.1-Sol", "connection": "subscription",
+                             "thinking": ["low", "medium", "high", "xhigh", "max", "ultra"]],
+                            ["id": "gpt-6.1-sol", "name": "gpt-6.1-sol", "connection": "api",
+                             "thinking": ["low", "medium", "high"]],
+                         ]],
             "queue": [], "queueVersion": 1,
         ]))
         model.transcript.apply(snapshot)
@@ -2186,7 +2238,7 @@ struct Composer: View {
             toolButton("plus", label: "添加附件", enabled: attachEnabled, action: onAttach)
             toolButton("shield", label: model.usesChinese
                        ? "安全级别：\(permissionTitle)" : "Safety level: \(permissionTitle)",
-                       enabled: configurable,
+                       enabled: canOpenSettings && settings?.editable == true,
                        tint: permissionLevel == "full" ? .orange : Palette.ink,
                        action: onPermission)
                 .background(GeometryReader { geometry in
@@ -2203,11 +2255,17 @@ struct Composer: View {
     /// Whether the run is holding a message slot open, which is what decides
     /// which of send and stop is on screen.
     private var showsSend: Bool {
-        model.transcript.live == nil || (model.queuesInsteadOfSending && canSend)
+        !hasWorkToStop || (model.queuesInsteadOfSending && canSend)
     }
 
     private var showsStop: Bool {
-        model.transcript.live != nil && !showsSend
+        hasWorkToStop && !showsSend
+    }
+
+    private var hasWorkToStop: Bool {
+        if model.transcript.live != nil || model.transcript.preparation != nil { return true }
+        guard let id = model.openId else { return false }
+        return model.current?.pendingStop?.text("conversationId") == id
     }
 
     private func toolButton(_ symbol: String, label: String, enabled: Bool = true,
@@ -2244,12 +2302,9 @@ struct Composer: View {
             .foregroundColor(Palette.ink)
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 48, alignment: .trailing)
-            // Android fills this capsule with `background`, the same colour as
-            // the bar it sits in: the button is legible by position, not by a
-            // second surface tone.
-            .background(Capsule(style: .continuous).fill(Palette.background))
+            .contentShape(RoundedRectangle(cornerRadius: Palette.capsuleRadius))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ComposerPressStyle())
         .disabled(!configurable)
         .opacity(configurable ? 1 : 0.45)
         .accessibilityLabel(model.usesChinese
@@ -2265,13 +2320,12 @@ struct Composer: View {
 
     private var settings: RemoteSettings? { model.transcript.settings }
 
-    /// Whether the desktop will take a settings change at all.
-    ///
-    /// `editable` is the desktop's own answer and the one that matters: an older
-    /// desktop advertises no models and takes no change, and a control that
-    /// looks live and then does nothing is worse than a dimmed one.
-    private var configurable: Bool {
-        guard model.canDrive, let settings, settings.editable else { return false }
+    /// The desktop separately permits next-turn model changes and idle-only
+    /// permission changes. Older versions use `editable` for both.
+    private var configurable: Bool { canOpenSettings && settings?.modelEditable == true }
+
+    private var canOpenSettings: Bool {
+        guard model.canDrive else { return false }
         guard !model.hasPendingDetailOperation, !model.commandBusy else { return false }
         if model.outgoing?.showsBubble == true { return false }
         return true
@@ -2345,7 +2399,7 @@ struct Composer: View {
     /// the control at the end" instead of inventing a second meaning for it.
     private var stopButton: some View {
         actionButton(symbol: "stop.fill", label: "停止",
-                     enabled: model.canDrive && !model.hasPendingDetailOperation && !model.commandBusy) {
+                     enabled: model.canStop) {
             model.stop()
         }
     }
@@ -2358,10 +2412,10 @@ struct Composer: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: Palette.textDisplay, weight: .semibold))
-                .foregroundColor(.white)
+                .foregroundColor(enabled ? .white : Palette.muted)
                 .frame(width: 48, height: 48)
                 .background(Capsule(style: .continuous)
-                    .fill(enabled ? Palette.accent : Palette.muted))
+                    .fill(enabled ? Palette.accent : Palette.surface))
         }
         .buttonStyle(.plain)
         .disabled(!enabled)

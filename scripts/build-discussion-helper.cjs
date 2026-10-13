@@ -17,8 +17,12 @@ function buildDiscussionHelper({ root = path.resolve(__dirname, '..'), platform 
   fs.chmodSync(executable, 0o755);
   fs.writeFileSync(path.join(target, 'discussion-job-version.json'), JSON.stringify({ protocol: 1, platform, arch }));
   const goRoot = execFileSync(process.env.CAMELLIA_GO || 'go', ['env', 'GOROOT'], { encoding: 'utf8', windowsHide: true }).trim();
+  // Homebrew keeps the license beside libexec rather than inside GOROOT.
+  const license = [path.join(goRoot, 'LICENSE'), path.join(goRoot, '..', 'LICENSE')]
+    .find(file => fs.existsSync(file));
+  if (!license) throw new Error('Go license is missing from the build toolchain');
   fs.writeFileSync(path.join(target, 'DISCUSSION-JOB-NOTICES.txt'), 'Camellia discussion supervision\n\nGo runtime and standard library:\n\n'
-    + fs.readFileSync(path.join(goRoot, 'LICENSE'), 'utf8'));
+    + fs.readFileSync(license, 'utf8'));
   return executable;
 }
 module.exports = { buildDiscussionHelper };

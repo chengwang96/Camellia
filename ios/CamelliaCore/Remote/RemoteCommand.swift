@@ -1,5 +1,17 @@
 import Foundation
 
+/// The desktop accepts lowercase command identifiers. Mint once and preserve
+/// that exact value in the journal and every receipt lookup or retry.
+public enum RemoteCommandID {
+    public static func make() -> String { UUID().uuidString.lowercased() }
+
+    public static func isValid(_ value: String) -> Bool {
+        value.utf8.count == 36 && value.utf8.allSatisfy {
+            $0 == 45 || (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
+}
+
 // MARK: - Entry gate
 
 /// What stands between the user and the remote-control entry on the home page.

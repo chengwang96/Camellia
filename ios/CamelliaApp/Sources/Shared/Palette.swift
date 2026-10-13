@@ -79,6 +79,8 @@ enum Palette {
     static let textNote: CGFloat = 13
     static let textBody: CGFloat = 14
     static let textInput: CGFloat = 15
+    /// ChatStyle.messageTypography and MarkdownView add 7dp between lines.
+    static let chatLineSpacing: CGFloat = 7
     /// A row's title in the settings vocabulary.
     static let textRow: CGFloat = 16
     /// A row's title where it is the heaviest text on the page.

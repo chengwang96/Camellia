@@ -33,11 +33,11 @@ swiftc -o "$APP/CamelliaComposerCheck" -target "$TARGET" -sdk "$SDK" \
 cp ComposerCheck/Info.plist "$APP/Info.plist"
 
 xcrun simctl boot "$UDID" >/dev/null 2>&1 || true
-xcrun simctl bootstatus "$UDID" -b >/dev/null
+perl -e 'alarm shift; exec @ARGV' 60 xcrun simctl bootstatus "$UDID" -b >/dev/null
 xcrun simctl install "$UDID" "$APP"
 
 set +e
-OUTPUT="$(xcrun simctl launch --console "$UDID" app.camellia.mobile.composercheck 2>&1)"
+OUTPUT="$(perl -e 'alarm shift; exec @ARGV' 120 xcrun simctl launch --console "$UDID" app.camellia.mobile.composercheck 2>&1)"
 STATUS=$?
 set -e
 printf '%s\n' "$OUTPUT"

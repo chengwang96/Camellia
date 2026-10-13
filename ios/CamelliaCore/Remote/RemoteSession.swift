@@ -58,6 +58,10 @@ struct ConversationPage {
 final class RemoteSession {
     let computer: PairedComputer
     let transport: RemoteTransport
+    private let commandTransport: RemoteTransport
+    private let urgentTransport: RemoteTransport
+    private let commandQueue = DispatchQueue(label: "app.camellia.session.commands")
+    private let urgentQueue = DispatchQueue(label: "app.camellia.session.urgent")
 
     /// One-shot requests, one at a time.
     ///
@@ -79,10 +83,13 @@ final class RemoteSession {
     private var detailCoalescer: SnapshotCoalescer?
     private var artifactTransfers: [UUID: ArtifactTransfer] = [:]
 
-    init(computer: PairedComputer, transport: RemoteTransport) throws {
+    init(computer: PairedComputer, transport: RemoteTransport,
+         commandTransport: RemoteTransport? = nil, urgentTransport: RemoteTransport? = nil) throws {
         guard computer.isPaired else { throw SessionError.notPaired }
         self.computer = computer
         self.transport = transport
+        self.commandTransport = commandTransport ?? transport
+        self.urgentTransport = urgentTransport ?? commandTransport ?? transport
     }
 
     enum SessionError: LocalizedError {
@@ -122,6 +129,8 @@ final class RemoteSession {
         open?.cancel()
         downloads.forEach { $0.cancel() }
         transport.cancelCurrentRequest()
+        if commandTransport !== transport { commandTransport.cancelCurrentRequest() }
+        if urgentTransport !== transport && urgentTransport !== commandTransport { urgentTransport.cancelCurrentRequest() }
     }
 
     /// Ends the session for good. Stream changes use `invalidate()` alone,
@@ -129,6 +138,8 @@ final class RemoteSession {
     func shutdown() {
         invalidate()
         transport.cancel()
+        if commandTransport !== transport { commandTransport.cancel() }
+        if urgentTransport !== transport && urgentTransport !== commandTransport { urgentTransport.cancel() }
     }
 
     // MARK: - One-shot calls
@@ -140,9 +151,16 @@ final class RemoteSession {
     /// Fetches one page by default. A stream refresh preserves the visible
     /// prefix; search requests every remaining page, as on Android.
     func conversations(offset start: Int = 0, minimumCount: Int = 0,
+                       query: String? = nil, limit: Int = 100,
                        completion: @escaping (Result<ConversationPage, Error>) -> Void) {
         run { () -> ConversationPage in
-            let first = try self.transport.conversations(offset: start)
+            let fetch: (Int) throws -> RemoteListPage = { offset in
+                if let query {
+                    return try self.transport.conversations(offset: offset, limit: limit, query: query)
+                }
+                return try self.transport.conversations(offset: offset)
+            }
+            let first = try fetch(start)
             guard first.nextOffset < 0 || first.nextOffset > Int64(start) else {
                 throw SessionError.invalidPage
             }
@@ -155,7 +173,7 @@ final class RemoteSession {
                 guard offset > Int64(start), offset <= Int64(Int.max) else {
                     throw SessionError.invalidPage
                 }
-                page = try self.transport.conversations(offset: Int(offset))
+                page = try fetch(Int(offset))
                 guard page.nextOffset < 0 || page.nextOffset > offset else {
                     throw SessionError.invalidPage
                 }
@@ -192,9 +210,45 @@ final class RemoteSession {
         }.deliver(completion)
     }
 
+    func earlierMessages(conversationId: String, instanceId: String,
+                         cached: Set<Int64>, before: Int64,
+                         completion: @escaping (Result<RemoteHistoryPage, Error>) -> Void) {
+        lock.lock()
+        let ticket = generation
+        lock.unlock()
+        run {
+            var page = RemoteHistoryPage(cached: cached, before: before)
+            repeat {
+                guard self.isCurrent(ticket) else { throw URLError(.cancelled) }
+                guard let cursor = page.nextBefore else { break }
+                let snapshot = try self.transport.conversation(id: conversationId, before: cursor)
+                guard snapshot.conversation?.id == conversationId,
+                      snapshot.instanceId.isEmpty || snapshot.instanceId == instanceId else {
+                    throw SessionError.invalidSnapshot
+                }
+                try page.append(snapshot, before: cursor)
+            } while page.needsNext
+            return page
+        }.deliver(completion)
+    }
+
     func command(_ action: String, conversationId: String? = nil, payload: [String: Any] = [:],
+                 lookupReceipt: Bool = false,
+                 urgent: Bool = false,
                  completion: @escaping (Result<CommandResult, Error>) -> Void) {
-        run { try self.transport.command(action, conversationId: conversationId, payload: payload) }
+        let target = urgent ? urgentTransport : commandTransport
+        let workQueue = target === transport ? queue : (urgent ? urgentQueue : commandQueue)
+        run(on: workQueue) {
+            if lookupReceipt, let requestId = payload["requestId"] as? String {
+                do {
+                    if let receipt = try target.commandReceipt(requestId: requestId) { return receipt }
+                } catch {
+                    // A missing receipt retries only the original idempotent POST.
+                    guard (error as? RemoteHttpError)?.status == 404 else { throw error }
+                }
+            }
+            return try target.command(action, conversationId: conversationId, payload: payload)
+        }
             .deliver(completion)
     }
 
@@ -279,10 +333,11 @@ final class RemoteSession {
     /// 404 before its first snapshot. Detail 404s and failures of an already
     /// established list stream are terminal; other failures retry with backoff.
     func watch(conversationId: String?,
+               incremental: Bool = false,
                onSnapshot: @escaping (RemoteSnapshot) -> Void,
                onState: @escaping (RemoteStreamState) -> Void) {
         watch(conversationId: conversationId, onSnapshot: onSnapshot,
-              onState: onState, onListEvent: nil)
+              onState: onState, onListEvent: nil, incremental: incremental)
     }
 
     /// A list event is complete only after its list request has completed.
@@ -298,13 +353,16 @@ final class RemoteSession {
     private func watch(conversationId: String?,
                        onSnapshot: @escaping (RemoteSnapshot) -> Void,
                        onState: @escaping (RemoteStreamState) -> Void,
-                       onListEvent: ((RemoteSnapshot, Bool, @escaping (Result<Void, Error>) -> Void) -> Void)?) {
+                       onListEvent: ((RemoteSnapshot, Bool, @escaping (Result<Void, Error>) -> Void) -> Void)?,
+                       incremental: Bool = false) {
         invalidate()
         lock.lock()
         watching = true
         let ticket = generation
         lock.unlock()
-        let path = conversationId.map { "/v1/conversations/\($0)/events" } ?? "/v1/conversations/events"
+        let path = conversationId.map {
+            "/v1/conversations/\($0)/events" + (incremental ? "?incremental=1" : "")
+        } ?? "/v1/conversations/events"
         // Its own queue, never the one-shot queue: this block does not return
         // until the person leaves the screen.
         streamQueue.async { [weak self] in
@@ -485,11 +543,11 @@ final class RemoteSession {
 
     /// Runs `work` off the main thread and returns a value tagged with the
     /// generation it belongs to, so a stale answer can be dropped.
-    private func run<T>(_ work: @escaping () throws -> T) -> Pending<T> {
+    private func run<T>(on workQueue: DispatchQueue? = nil, _ work: @escaping () throws -> T) -> Pending<T> {
         lock.lock()
         let ticket = generation
         lock.unlock()
-        let queue = self.queue
+        let queue = workQueue ?? self.queue
         return Pending { completion in
             queue.async { [weak self] in
                 guard let self = self else { return }
