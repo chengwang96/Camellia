@@ -83,7 +83,7 @@ struct ProviderSettingsView: View {
                 transferSection
             }
             .padding(.horizontal, 20)
-            .padding(.top, 27)
+            .padding(.top, 12)
             .padding(.bottom, 24)
         }
         .settingsPage(title: "供应商与 Key", onBack: onClose)

@@ -75,7 +75,7 @@ struct HomeView: View {
     }
 
     private var brand: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             if let image = appIcon {
                 Image(uiImage: image)
                     .resizable()
@@ -84,7 +84,7 @@ struct HomeView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             }
             Text("Camellia")
-                .font(.system(size: Palette.textTitle, weight: .semibold))
+                .font(.system(size: Palette.textRow, weight: .medium))
                 .foregroundColor(Palette.ink)
         }
         .frame(minHeight: 48)
@@ -119,8 +119,7 @@ struct HomeView: View {
                           action: @escaping () -> Void) -> some View {
         Button(action: { if enabled { action() } }) {
             VStack(alignment: .leading, spacing: 0) {
-                Image(systemName: systemImage)
-                    .font(.system(size: Palette.textTitle, weight: .medium))
+                MobileLineIcon(name: systemImage, size: 20)
                     .foregroundColor(Palette.accent)
                     .frame(width: 36, height: 36)
                     .background(RoundedRectangle(cornerRadius: Palette.radius, style: .continuous)
@@ -172,8 +171,7 @@ struct HomeView: View {
     private var settingsEntry: some View {
         Button(action: onSettings) {
             HStack(spacing: 14) {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: Palette.textTitle))
+                MobileLineIcon(name: "settings", size: 24)
                     .foregroundColor(Palette.muted)
                     .frame(width: 24, height: 24)
                 VStack(alignment: .leading, spacing: 3) {
@@ -188,8 +186,7 @@ struct HomeView: View {
                         .layoutPriority(1)
                 }
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: Palette.textRow))
+                MobileLineIcon(name: "right", size: 18)
                     .foregroundColor(Palette.muted)
             }
             .padding(.horizontal, 18)

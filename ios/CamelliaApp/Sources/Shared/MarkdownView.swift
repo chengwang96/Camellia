@@ -14,6 +14,7 @@ struct MarkdownView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .lineSpacing(Palette.chatLineSpacing)
     }
 }
 

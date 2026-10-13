@@ -36,6 +36,19 @@ let uuid = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 let hash64 = String(repeating: "a", count: 64)
 let token43 = String(repeating: "A", count: 43)
 
+// MARK: - Interactive back decisions
+
+checkEqual(PageBackGesture.progress(translation: -12, width: 375), 0, "leftward drag never advances back")
+checkEqual(PageBackGesture.progress(translation: 75, width: 375), 0.2, "back progress follows the finger")
+checkEqual(PageBackGesture.progress(translation: 800, width: 375), 1, "back progress stops at a full page")
+checkEqual(PageBackGesture.progress(translation: 20, width: 0), 0, "unlaid page has no progress")
+check(!PageBackGesture.shouldFinish(translation: 30, width: 375, velocity: 0), "short edge drag cancels")
+check(PageBackGesture.shouldFinish(translation: 150, width: 375, velocity: 0), "long edge drag commits")
+check(PageBackGesture.shouldFinish(translation: 24, width: 375, velocity: 900), "intentional fast edge flick commits")
+check(!PageBackGesture.shouldFinish(translation: 1, width: 375, velocity: 900), "edge jitter cannot commit")
+check(!PageBackGesture.shouldFinish(translation: 250, width: 375, velocity: -300), "pulling back left cancels")
+check(!PageBackGesture.shouldFinish(translation: 150, width: 0, velocity: 900), "zero width cannot commit")
+
 // MARK: - Android JSON boolean semantics
 
 do {
@@ -607,21 +620,144 @@ do {
 }
 
 do {
-    // Past the local cap the phone stops offering to page: the desktop's cursor
-    // would point into rows the phone has dropped.
+    // A bounded window must still allow reading earlier pages. Its cursor moves
+    // to the oldest retained row instead of permanently disabling history.
     let transcript = RemoteTranscript()
     let rows = (1...700).map { "{\"seq\":\($0),\"role\":\"assistant\",\"text\":\"m\"}" }.joined(separator: ",")
     _ = transcript.apply(remoteSnapshot(
         "{\"instanceId\":\"A\",\"cursor\":700,\"messages\":[\(rows)],\"nextBefore\":1}"
     ))
-    check(!transcript.hasOlder, "an evicted transcript stops offering earlier pages")
+    check(transcript.hasOlder, "an evicted transcript still offers earlier pages")
+    checkEqual(transcript.nextBefore, 101, "trimming repairs the cursor to the oldest retained row")
     check(transcript.mergeOlder(remoteSnapshot(
         "{\"instanceId\":\"A\",\"cursor\":1,\"messages\":[{\"seq\":1,\"role\":\"assistant\",\"text\":\"m\"}],\"nextBefore\":null}"
     )), "an earlier page still merges after a trim")
-    check(!transcript.hasOlder, "but the control stays off after the trim")
+    checkEqual(transcript.messages.first?.message.seq, 1, "loading earlier preserves the newly requested end of the window")
+    checkEqual(transcript.messages.last?.message.seq, 699, "loading earlier evicts from the latest end")
+    check(!transcript.hasOlder, "the earliest page has no further cursor")
 }
 
 // MARK: - Scroll follow
+
+// Android 1.0.1 history windows: bounded memory must not bound how far a
+// conversation can be read. These checks exercise real protocol objects.
+func historyPage(_ sequences: [Int], role: String = "tool", next: Any = NSNull(),
+                 cursor: Int64 = 700, instance: String = "A", id: String = uuid) -> RemoteSnapshot {
+    let rows: [[String: Any]] = sequences.map { ["seq": $0, "role": role, "text": "History \($0)"] }
+    return RemoteSnapshot(JSONObject(dictionary: ["conversation": ["id": id],
+        "instanceId": instance, "cursor": cursor, "messages": rows, "nextBefore": next]))
+}
+
+do {
+    let transcript = RemoteTranscript()
+    _ = transcript.apply(historyPage(Array(1...700), role: "assistant", next: 1))
+    _ = transcript.mergeOlder(historyPage([1], role: "user"))
+    check(transcript.historyDetached, "older-window trimming detaches live history")
+    let reading = transcript.messages
+    _ = transcript.apply(RemoteSnapshot(JSONObject(dictionary: ["instanceId": "A", "cursor": 701,
+        "permission": "read", "messages": [["seq": 701, "role": "assistant", "text": "new"]],
+        "live": ["text": "still streaming"], "nextBefore": 700])))
+    checkEqual(transcript.messages, reading, "live updates cannot evict the older window being read")
+    checkEqual(transcript.permission, .read, "detached history still receives current permissions")
+    checkEqual(transcript.live?.text, "still streaming", "detached history keeps live metadata for controls")
+    checkEqual(transcript.nextBefore, nil, "live updates do not replace the older window's cursor")
+    check(!transcript.applyLatest(historyPage([700], role: "assistant", cursor: 700)),
+          "a stale latest request cannot overwrite a newer SSE cursor")
+    check(transcript.historyDetached, "refused latest history keeps the reading position")
+    check(transcript.applyLatest(historyPage([700, 701, 702], role: "assistant", next: 700, cursor: 702)),
+          "an explicit fresh latest request rejoins the live window")
+    check(!transcript.historyDetached, "return to latest restores live following")
+    checkEqual(transcript.messages.map(\.id), [700, 701, 702], "latest does not splice old windows together")
+    _ = transcript.mergeOlder(historyPage(Array(1...699)))
+    _ = transcript.apply(historyPage([1], role: "user", cursor: 1, instance: "B"))
+    check(!transcript.historyDetached, "a desktop restart exits detached history")
+    checkEqual(transcript.messages.map(\.id), [1], "a restart cannot mix two desktop instances")
+}
+
+do {
+    var page = RemoteHistoryPage(cached: [9, 10], before: 10)
+    try page.append(historyPage([9], role: "assistant", next: 9), before: 10)
+    check(page.needsNext && page.messages.isEmpty, "cached rows do not consume a batch or count as new chat")
+    try page.append(historyPage([8], next: 8), before: 9)
+    check(page.needsNext, "process-only pages continue automatically")
+    try page.append(historyPage([7], role: "user"), before: 8)
+    check(!page.needsNext, "a newly visible message stops automatic paging")
+    checkEqual(page.messages.map(\.seq), [7, 8], "a batch is ordered and excludes cached duplicates")
+    var bounded = RemoteHistoryPage(cached: [], before: 20)
+    for before in stride(from: 20, through: 13, by: -1) {
+        try bounded.append(historyPage([before - 1], next: before - 1), before: Int64(before))
+    }
+    check(!bounded.needsNext && !bounded.limited, "automatic process reads stop after eight pages")
+    checkEqual(bounded.nextBefore, 12, "the eight-page boundary preserves a resumable cursor")
+    var partial = RemoteHistoryPage(cached: [701], before: 701)
+    try partial.append(historyPage(Array(1...700)), before: 701)
+    check(partial.limited && !partial.needsNext, "a terminal page still obeys the batch record budget")
+    checkEqual(partial.messages.count, 600, "the batch fits the display record budget")
+    checkEqual(partial.nextBefore, 101, "partial terminal pages never skip their unread rows")
+    var remainder = RemoteHistoryPage(cached: Set(partial.messages.map(\.seq)), before: 101)
+    try remainder.append(historyPage(Array(1...100)), before: 101)
+    checkEqual(remainder.messages.count, 100, "unread terminal rows can be requested again")
+    checkEqual(remainder.nextBefore, nil, "the true earliest page closes the cursor")
+} catch { failures.append("history batch: \(error)") }
+
+let malformedHistoryPages: [[String: Any]] = [
+    ["nextBefore": NSNull()], ["messages": []],
+    ["messages": [], "nextBefore": 9],
+    ["messages": ["invalid"], "nextBefore": NSNull()],
+    ["messages": [["seq": 9]], "nextBefore": "9"],
+    ["messages": [["seq": 9]], "nextBefore": true],
+    ["messages": [["seq": 9]], "nextBefore": 0],
+    ["messages": [["seq": 9]], "nextBefore": 10],
+    ["messages": [["seq": 9]], "nextBefore": 11],
+    ["messages": [["seq": 0]], "nextBefore": NSNull()],
+    ["messages": [["seq": 10]], "nextBefore": NSNull()]
+]
+for (index, raw) in malformedHistoryPages.enumerated() {
+    var page = RemoteHistoryPage(cached: [10], before: 10)
+    do {
+        try page.append(RemoteSnapshot(JSONObject(dictionary: raw)), before: 10)
+        check(false, "malformed earlier page \(index) is refused")
+    } catch {
+        check(page.messages.isEmpty && page.nextBefore == 10, "malformed earlier page \(index) does not close or advance the cursor")
+    }
+}
+
+do {
+    var page = RemoteHistoryPage(cached: [10], before: 10)
+    let huge = RemoteSnapshot(JSONObject(dictionary: ["messages": [["seq": 9, "role": "tool",
+        "process": [["input": String(repeating: "x", count: RemoteHistoryPage.maximumBytes)]]]],
+        "nextBefore": NSNull()]))
+    do { try page.append(huge, before: 10); check(false, "oversized history records must fail") }
+    catch { check(page.messages.isEmpty && page.nextBefore == 10, "oversized records preserve a retryable cursor") }
+    let empty = historyPage([])
+    try page.append(empty, before: 10)
+    check(!page.needsNext && page.nextBefore == nil, "an empty terminal page truthfully ends history")
+} catch { failures.append("history page limit: \(error)") }
+
+do {
+    let transcript = RemoteTranscript()
+    _ = transcript.apply(historyPage(Array(2401...3000), next: 2401))
+    var seen = transcript.cachedSequences
+    var requests = 0
+    while let before = transcript.nextBefore {
+        var page = RemoteHistoryPage(cached: transcript.cachedSequences, before: before)
+        repeat {
+            guard let cursor = page.nextBefore else { break }
+            let first = max(1, Int(cursor) - 200)
+            let snapshot = historyPage(Array(first..<Int(cursor)),
+                role: cursor <= 1001 ? "assistant" : "tool", next: first == 1 ? NSNull() : first)
+            try page.append(snapshot, before: cursor)
+            requests += 1
+        } while page.needsNext
+        seen.formUnion(page.messages.map(\.seq))
+        check(transcript.mergeOlder(page, instanceId: "A"), "older batch commits to the same desktop")
+        check(transcript.cachedSequences.count <= 600, "history traversal retains bounded records")
+        check(transcript.nextBefore == nil || transcript.nextBefore! < before, "history traversal always moves backwards")
+        if requests > 40 { check(false, "history traversal terminates"); break }
+    }
+    checkEqual(seen, Set((1...3000).map(Int64.init)), "all 3000 records remain reachable across bounded windows")
+    checkEqual(transcript.messages.first?.id, 1, "long history reaches its first message")
+} catch { failures.append("history traversal: \(error)") }
 
 do {
     // The rule Android applies per update is
@@ -877,7 +1013,8 @@ do {
         + "{\"seq\":2,\"role\":\"assistant\",\"text\":\"b\"}]}"
     ))
     checkEqual(transcript.messages.map { $0.message.seq }, [2], "tool input counts toward Android's history cap")
-    check(!transcript.hasOlder, "evicting a tool-heavy row disables paging into a hole")
+    check(transcript.hasOlder, "a tool-heavy eviction keeps earlier history accessible")
+    checkEqual(transcript.nextBefore, 2, "byte-budget trimming repairs the earlier cursor")
 }
 
 do {
@@ -2154,6 +2291,42 @@ do {
     checkEqual(unknown.connection, "other", "an explicit unknown connection is not silently rewritten")
 }
 
+do {
+    let legacy = RemoteSettings(JSONObject(dictionary: ["editable": true, "model": "same", "models": [["id": "same"]]]))
+    check(legacy.modelEditable && !legacy.hasModelChoice, "legacy settings use the original editable gate")
+    checkEqual(legacy.connection, "api", "legacy settings default to API")
+    checkEqual(legacy.modelChanges(for: legacy.models[0]), ["model": "same"], "old desktops get a model-only patch")
+    check(!legacy.appliesNextTurn && !legacy.supportsFast && !legacy.fastMode && legacy.quickSwitch == nil,
+          "new settings controls stay absent on legacy desktops")
+
+    let busy = RemoteSettings(JSONObject(dictionary: [
+        "version": "v1", "editable": false, "modelEditable": true, "appliesNextTurn": true,
+        "connection": "subscription", "model": "same", "thinking": "max",
+        "supportsFast": true, "fastMode": true,
+        "quickSwitch": ["model": "default", "thinking": "ultra", "available": true],
+        "models": [["id": "same", "connection": "api", "thinking": ["low"]],
+                   ["id": "same", "name": "Account", "thinking": ["high", "max"]]],
+    ]))
+    check(!busy.editable && busy.modelEditable && busy.appliesNextTurn,
+          "a busy desktop permits next-turn model changes but not permission changes")
+    checkEqual(busy.models[1].connection, "subscription", "model choices inherit the active connection")
+    checkEqual(busy.selectedModel?.name, "Account", "same model id in API and account selects only the active connection")
+    checkEqual(busy.selectedModel?.thinking, ["high", "max"], "thinking menu belongs to the selected connection")
+    checkEqual(busy.modelChanges(for: busy.models[0]), ["model": "same", "connection": "api"],
+               "modern selection sends model and connection atomically")
+    check(busy.supportsFast && busy.fastMode, "Fast capability and selection are distinct decoded flags")
+    checkEqual(busy.quickSwitch?.model, "default", "quick-switch default comes from desktop preferences")
+    checkEqual(busy.quickSwitch?.thinking, "ultra", "quick-switch preserves the desktop thinking default")
+    checkEqual(busy.quickSwitch?.available, true, "only an available default offers quick switching")
+    let locked = RemoteSettings(JSONObject(dictionary: ["editable": true, "modelEditable": false]))
+    check(locked.hasModelChoice && !locked.modelEditable && locked.editable,
+          "explicit modelEditable=false is not replaced by the permission gate")
+    checkEqual(RemoteSettings(JSONObject(dictionary: ["modelEditable": 1])).modelEditable, false,
+               "numeric truth does not enable model editing")
+    check(RemoteSettings(JSONObject(dictionary: ["quickSwitch": NSNull()])).quickSwitch == nil,
+          "null quick-switch means no configured default")
+}
+
 // MARK: - Attachments: limits and count
 
 do {
@@ -2853,15 +3026,23 @@ do {
 do {
     checkEqual(LocalChatThinking.normalize("medium"), "medium", "medium is kept")
     checkEqual(LocalChatThinking.normalize("high"), "high", "high is kept")
-    checkEqual(LocalChatThinking.normalize("low"), "auto", "anything else collapses to auto")
+    checkEqual(LocalChatThinking.normalize("low"), "low", "low is a supported protocol level")
+    checkEqual(LocalChatThinking.normalize(" MAX "), "max", "protocol levels normalize Java trim and case")
+    checkEqual(LocalChatThinking.normalize("ultra"), "ultra", "the highest level is not silently discarded")
     checkEqual(LocalChatThinking.normalize(""), "auto", "including empty")
 
-    checkEqual(LocalChatThinking.label("medium"), "标准", "medium reads as 标准")
-    checkEqual(LocalChatThinking.label("high"), "进阶", "high reads as 进阶")
+    checkEqual(LocalChatThinking.label("medium"), "中", "medium follows Android's shared wording")
+    checkEqual(LocalChatThinking.label("high"), "高", "high follows Android's shared wording")
     checkEqual(LocalChatThinking.label("auto"), "默认", "auto reads as 默认")
-    checkEqual(LocalChatThinking.display("minimal"), "快速", "a desktop level maps onto the shared wording")
-    checkEqual(LocalChatThinking.display("low"), "快速", "as does its alias")
-    checkEqual(LocalChatThinking.display("xhigh"), "极限", "and the extreme one")
+    checkEqual(LocalChatThinking.display("minimal"), "最小", "catalog-only levels retain desktop wording")
+    checkEqual(LocalChatThinking.display("none"), "无", "none is not the off alias")
+    checkEqual(LocalChatThinking.display("low"), "低", "low is not minimal")
+    checkEqual(LocalChatThinking.display("xhigh"), "极高", "xhigh is distinct from max")
+    checkEqual(LocalChatThinking.display("max"), "最高", "max is distinct from ultra")
+    checkEqual(LocalChatThinking.display("ultra"), "Ultra", "Ultra keeps its product name")
+    checkEqual(LocalChatThinking.display("xhigh", chinese: false), "Extra high", "English xhigh is distinct")
+    checkEqual(LocalChatThinking.display("max", chinese: false), "Max", "English max is distinct")
+    checkEqual(LocalChatThinking.display("ULTRA", chinese: false), "Ultra", "English Ultra retains its name")
     checkEqual(LocalChatThinking.display("off"), "关闭", "off is shown rather than hidden")
     checkEqual(LocalChatThinking.display("weird"), "weird", "an unrecognised level is passed through trimmed")
     checkEqual(LocalChatThinking.display(" Weird "), "Weird",
@@ -2899,6 +3080,36 @@ do {
     checkEqual(LocalChatThinking.supported(old), false, "a model that reads no level cannot")
     checkEqual(LocalChatThinking.effective(old, "high"), "auto", "so the level is dropped rather than sent")
 
+    let ordinary = ["low", "medium", "high"]
+    let extended = ordinary + ["xhigh"]
+    let maximum = extended + ["max"]
+    let ultra = maximum + ["ultra"]
+    checkEqual(LocalChatThinking.levels(for: nil), ordinary, "no model uses the conservative default ladder")
+    checkEqual(LocalChatThinking.levels(for: openai), ordinary, "an unknown model keeps the default ladder")
+    checkEqual(LocalChatThinking.menu(for: openai), ["auto"] + ordinary, "the local menu prepends the default option")
+    for (id, expected) in [("gpt-daybreak-blue-latest", ultra), ("gpt-daybreak-red-latest", ultra),
+                           ("gpt-6.1-sol", ultra), ("gpt-6-astra", ultra), ("gpt-5.6-luna", maximum),
+                           ("gpt-5.6-sol", ultra), ("gpt-5.6-terra", ultra), ("gpt-6-luna", maximum),
+                           ("gpt-6-sol", ultra), ("gpt-5.5", extended), ("codex-auto-review", maximum)] {
+        for variant in [id, "provider/" + id.uppercased() + "-20261011"] {
+            let route = LocalChatRoute(id: variant, label: variant, model: variant,
+                                      wireProtocol: "openai", baseURL: "https://invalid.example", keys: ["k"])
+            checkEqual(LocalChatThinking.levels(for: route), expected, "Android ladder for \(variant)")
+            checkEqual(LocalChatThinking.effective(route, expected.last!), expected.last!, "highest supported level for \(variant)")
+            var request: [String: Any] = [:]
+            LocalChatThinking.apply(route, expected.last!, to: &request)
+            checkEqual(request["reasoning_effort"] as? String, expected.last!, "wire level is not collapsed for \(variant)")
+        }
+    }
+    let similar = LocalChatRoute(id: "near", label: "Near", model: "gpt-6-solar",
+                                 wireProtocol: "openai", baseURL: "https://invalid.example", keys: ["k"])
+    checkEqual(LocalChatThinking.levels(for: similar), ordinary, "slug prefixes require a hyphen boundary")
+    checkEqual(LocalChatThinking.effective(openai, "ultra"), "auto", "unsupported levels are omitted for unknown models")
+    checkEqual(LocalChatThinking.effective(openai, "off"), "auto", "OpenAI ladders do not use Anthropic's off payload")
+    checkEqual(LocalChatThinking.levels(for: adaptive), ["off", "low", "medium", "high", "max"],
+               "Anthropic uses its own ladder without xhigh or ultra")
+    checkEqual(LocalChatThinking.effective(adaptive, "xhigh"), "auto", "an out-of-ladder effort is not sent")
+
     var body: [String: Any] = [:]
     LocalChatThinking.apply(openai, "high", to: &body)
     checkEqual(body["reasoning_effort"] as? String, "high", "openai gets a reasoning_effort")
@@ -2919,6 +3130,14 @@ do {
     body = [:]
     LocalChatThinking.apply(budget, "medium", to: &body)
     checkEqual((body["thinking"] as? [String: Any])?["budget_tokens"] as? Int, 2048, "medium buys a smaller one")
+
+    body = [:]
+    LocalChatThinking.apply(budget, "max", to: &body)
+    checkEqual((body["thinking"] as? [String: Any])?["budget_tokens"] as? Int, 8192, "max uses Android's large budget mapping")
+    body = [:]
+    LocalChatThinking.apply(adaptive, "off", to: &body)
+    checkEqual((body["thinking"] as? [String: Any])?["type"] as? String, "disabled", "off explicitly disables supported thinking")
+    check(body["output_config"] == nil && body["max_tokens"] == nil, "off adds no adaptive effort or token override")
 
     body = [:]
     LocalChatThinking.apply(old, "high", to: &body)
@@ -4723,7 +4942,7 @@ do {
 // answers, holds its stream open, and counts what it was asked.
 
 /// A desktop answering on the wire, with no tunnel behind it.
-final class FakeDesktop: RemoteTransport {
+class FakeDesktop: RemoteTransport {
     /// One answer per `/v1/conversations` offset, exactly as the gateway builds
     /// them — `connectionInfo` merged into `reader.list(...)` merged with the
     /// stamp, which is why `protocol` rides on the list page itself.
@@ -4735,6 +4954,7 @@ final class FakeDesktop: RemoteTransport {
     /// The `/v1/status` answer, for the fallback an older page triggers.
     var statusBody = #"{"protocol":1,"permission":"control","capabilities":["artifacts","create"],"engines":["claude","codex"]}"#
     var offsetsAsked: [Int] = []
+    var queriesAsked: [(offset: Int, limit: Int, query: String)] = []
     var statusAsked = 0
     private let streamLock = NSLock()
     private var streamCount = 0
@@ -4795,6 +5015,13 @@ final class FakeDesktop: RemoteTransport {
     func conversation(id: String, before: Int64?) throws -> RemoteSnapshot {
         RemoteSnapshot(try JSONBody.object(Data(snapshotBody.utf8)))
     }
+
+    func conversations(offset: Int, limit: Int, query: String) throws -> RemoteListPage {
+        queriesAsked.append((offset, limit, query))
+        return try conversations(offset: offset)
+    }
+
+    func commandReceipt(requestId: String) throws -> CommandResult? { nil }
 
     func command(_ action: String, conversationId: String?, payload: [String: Any]) throws -> CommandResult {
         commandEntered?.signal()
@@ -6021,6 +6248,290 @@ do {
     check(cache.cached(address: "computer", token: "test", id: "parent") == nil,
           "child output counts toward the mobile snapshot cache budget")
 }
+
+// MARK: - Version 1.0.1 Android parity
+
+final class HistoryDesktop: FakeDesktop {
+    var pages: [Int64: RemoteSnapshot] = [:]
+    var asked: [Int64] = []
+    var entered: DispatchSemaphore?
+    var release: DispatchSemaphore?
+    override func conversation(id: String, before: Int64?) throws -> RemoteSnapshot {
+        guard let before else { return try super.conversation(id: id, before: before) }
+        asked.append(before)
+        entered?.signal()
+        if let release { _ = release.wait(timeout: .now() + 3) }
+        guard let page = pages[before] else { throw Refused.notImplemented }
+        return page
+    }
+}
+
+do {
+    let desktop = HistoryDesktop()
+    desktop.pages = [20: historyPage([19], next: 19),
+                     19: historyPage([18], role: "assistant", next: 18)]
+    let session = try RemoteSession(computer: paired, transport: desktop)
+    var result: Result<RemoteHistoryPage, Error>?
+    session.earlierMessages(conversationId: uuid, instanceId: "A", cached: [20], before: 20) { result = $0 }
+    check(await pump(seconds: 2) { result != nil }, "a fake desktop serves earlier history without a tunnel")
+    checkEqual(desktop.asked, [20, 19], "the production session continues through process-only pages")
+    checkEqual(try result?.get().messages.map(\.seq), [18, 19], "earlier history is committed as one complete batch")
+    session.shutdown()
+} catch { failures.append("earlier history session: \(error)") }
+
+for scenario in ["instance", "conversation", "cursor", "missing"] {
+    do {
+        let desktop = HistoryDesktop()
+        desktop.pages[20] = historyPage([19], next: 19)
+        switch scenario {
+        case "instance": desktop.pages[19] = historyPage([18], instance: "B")
+        case "conversation": desktop.pages[19] = historyPage([18], id: "another-chat")
+        case "cursor": desktop.pages[19] = historyPage([18], next: 19)
+        default: break
+        }
+        let session = try RemoteSession(computer: paired, transport: desktop)
+        var result: Result<RemoteHistoryPage, Error>?
+        session.earlierMessages(conversationId: uuid, instanceId: "A", cached: [20], before: 20) { result = $0 }
+        check(await pump(seconds: 2) { result != nil }, "earlier history failure \(scenario) completes")
+        if case .failure = result { check(true, "a failed second page never delivers a partial batch: \(scenario)") }
+        else { check(false, "a failed second page must not splice partial history: \(scenario)") }
+        checkEqual(desktop.asked, [20, 19], "invalid history does not trigger unbounded retries: \(scenario)")
+        session.shutdown()
+    } catch { failures.append("history failure \(scenario): \(error)") }
+}
+
+do {
+    let desktop = HistoryDesktop()
+    desktop.pages[20] = historyPage([19], next: 19)
+    desktop.entered = DispatchSemaphore(value: 0)
+    desktop.release = DispatchSemaphore(value: 0)
+    let session = try RemoteSession(computer: paired, transport: desktop)
+    var delivered = false
+    session.earlierMessages(conversationId: uuid, instanceId: "A", cached: [20], before: 20) { _ in delivered = true }
+    check(waitForSignal(desktop.entered!, seconds: 1), "the delayed older-history request starts")
+    session.invalidate()
+    desktop.release?.signal()
+    _ = await pump(seconds: 0.2) { delivered }
+    check(!delivered, "switching away drops an in-flight earlier-history response")
+    checkEqual(desktop.asked, [20], "invalidating history stops the next automatic request")
+    session.shutdown()
+} catch { failures.append("history cancellation: \(error)") }
+
+do {
+    let prefs = MobilePreferences(store: DictionaryPreferenceStore())
+    check(prefs.hapticFeedback, "haptics default to enabled, as on Android")
+    prefs.hapticFeedback = false
+    check(!prefs.hapticFeedback, "haptic preference persists")
+    prefs.downloadDirectoryBookmark = Data([0, 255, 128])
+    prefs.downloadDirectoryLabel = "Downloads"
+    checkEqual(prefs.downloadDirectoryBookmark, Data([0, 255, 128]), "folder bookmarks round-trip without UTF-8 conversion")
+    checkEqual(prefs.downloadDirectoryLabel, "Downloads", "download folder label persists")
+    prefs.downloadDirectoryBookmark = nil
+    check(prefs.downloadDirectoryBookmark == nil, "clearing the folder returns to per-download export")
+    checkEqual(DownloadDirectory.filename(" ../reports/a\\b\u{0}.pdf "), ".._reports_a_b_.pdf", "file names cannot introduce directories or controls")
+    checkEqual(DownloadDirectory.filename(".."), "download", "parent folder is never a file name")
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("camellia-folder-check-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = root.appendingPathComponent("Downloads")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let source = root.appendingPathComponent("source")
+    try Data("downloaded contents".utf8).write(to: source)
+    try Data("original".utf8).write(to: directory.appendingPathComponent("report.pdf"))
+    let saved = try DownloadDirectory.save(source, named: "report.pdf", in: directory)
+    checkEqual(saved.lastPathComponent, "report (1).pdf", "a duplicate is numbered before its extension")
+    checkEqual(try String(contentsOf: directory.appendingPathComponent("report.pdf"), encoding: .utf8), "original", "downloads never overwrite an existing file")
+    checkEqual(try Data(contentsOf: saved), Data("downloaded contents".utf8), "the complete file reaches its selected folder")
+    let second = try DownloadDirectory.save(source, named: "report.pdf", in: directory)
+    checkEqual(second.lastPathComponent, "report (2).pdf", "numbering advances for repeated downloads")
+    let bookmark = try DownloadDirectory.bookmark(for: directory)
+    checkEqual(try DownloadDirectory.resolve(bookmark).url.standardizedFileURL, directory.standardizedFileURL, "directory access survives bookmark persistence")
+    do { _ = try DownloadDirectory.bookmark(for: source); check(false, "a file cannot be selected as a folder") }
+    catch { check(true, "a file cannot be selected as a folder") }
+    do { _ = try DownloadDirectory.resolve(Data("broken".utf8)); check(false, "a corrupt grant is not accepted") }
+    catch { check(true, "a corrupt grant is not accepted") }
+    checkEqual(try Data(contentsOf: source), Data("downloaded contents".utf8), "export keeps its downloaded source for retry")
+    let beforeFailure = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    do {
+        _ = try DownloadDirectory.save(root.appendingPathComponent("missing"), named: "missing.pdf", in: directory)
+        check(false, "a missing download cannot be exported")
+    } catch { check(true, "a missing download reports export failure") }
+    checkEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), beforeFailure,
+               "failed export leaves no partial files or access probes")
+    do { _ = try DownloadDirectory.save(source, named: "x", in: source); check(false, "export refuses a file as a folder") }
+    catch { check(true, "export refuses a file as a folder") }
+    let removed = root.appendingPathComponent("removed", isDirectory: true)
+    try FileManager.default.createDirectory(at: removed, withIntermediateDirectories: false)
+    let removedBookmark = try DownloadDirectory.bookmark(for: removed)
+    try FileManager.default.removeItem(at: removed)
+    do {
+        let grant = try DownloadDirectory.resolve(removedBookmark)
+        _ = try DownloadDirectory.save(source, named: "x", in: grant.url)
+        check(false, "a removed selected folder must not silently recreate itself")
+    } catch { check(true, "a removed folder requires a new grant or a visible export error") }
+    check(!FileManager.default.fileExists(atPath: removed.path), "expired exports do not recreate provider folders")
+    for name in ["report", ".hidden", "数据 🚀.txt", "../outside.txt", "\n\t"] {
+        let saved = try DownloadDirectory.save(source, named: name, in: directory)
+        checkEqual(saved.deletingLastPathComponent().standardizedFileURL, directory.standardizedFileURL,
+                   "sanitized export remains inside its folder: \(name.debugDescription)")
+        checkEqual(try Data(contentsOf: saved), Data("downloaded contents".utf8), "unusual names preserve complete contents")
+    }
+    let concurrent = await withTaskGroup(of: Result<URL, Error>.self, returning: [Result<URL, Error>].self) { group in
+        for _ in 0..<8 {
+            group.addTask { Result { try DownloadDirectory.save(source, named: "parallel.pdf", in: directory) } }
+        }
+        var results: [Result<URL, Error>] = []
+        for await result in group { results.append(result) }
+        return results
+    }
+    let savedFiles = try concurrent.map { try $0.get() }
+    checkEqual(Set(savedFiles).count, 8, "concurrent same-name downloads receive unique names")
+    for saved in savedFiles {
+        checkEqual(try Data(contentsOf: saved), Data("downloaded contents".utf8), "concurrent downloads are complete")
+    }
+    checkEqual(try String(contentsOf: directory.appendingPathComponent("report.pdf"), encoding: .utf8), "original",
+               "failure and concurrent export tests never overwrite an existing document")
+} catch { failures.append("download directory: \(error)") }
+
+for path in ["/v1/commands/\(uuid)", "/v1/conversations/\(uuid)/events?incremental=1"] {
+    check(endpoint.isAllowed(path: path), "allow Android recovery endpoint \(path)")
+}
+for path in ["/v1/commands/\(uuid)?token=x", "/v1/commands/\(uuid)/other",
+             "/v1/conversations/\(uuid)/events?incremental=0",
+             "/v1/conversations/\(uuid)/events?incremental=1&extra=1"] {
+    check(!endpoint.isAllowed(path: path), "recovery endpoint rejects extra query/path \(path)")
+}
+let recoveryCaps = RemoteCapabilities(["command-receipts", "incremental-snapshots", "stop-start"])
+check(recoveryCaps.contains(.commandReceipts), "receipt lookup is capability-gated")
+check(recoveryCaps.contains(.incrementalSnapshots), "incremental stream is capability-gated")
+check(recoveryCaps.contains(.stopStart), "preparing runs can advertise stop-start")
+
+let generatedRequestID = RemoteCommandID.make()
+check(UUID(uuidString: generatedRequestID) != nil, "a fresh command id is a UUID")
+checkEqual(generatedRequestID, generatedRequestID.lowercased(), "command ids match the desktop's lowercase grammar")
+check(RemoteCommandID.isValid(generatedRequestID), "a generated id passes the desktop command validator")
+check(endpoint.isAllowed(path: "/v1/commands/\(generatedRequestID)"), "a generated id can query its receipt")
+for invalidID in ["A2345678-1234-1234-1234-123456789abc", generatedRequestID + "\n", "../" + generatedRequestID, ""] {
+    check(!RemoteCommandID.isValid(invalidID), "invalid command ids cannot become receipt paths")
+}
+
+final class ReceiptDesktop: FakeDesktop {
+    var receipt: Result<CommandResult?, Error> = .success(nil)
+    var lookups: [String] = []
+    var posts: [[String: Any]] = []
+    override func commandReceipt(requestId: String) throws -> CommandResult? {
+        lookups.append(requestId)
+        guard RemoteCommandID.isValid(requestId) else { throw RefusedHTTP(status: 400) }
+        return try receipt.get()
+    }
+    override func command(_ action: String, conversationId: String?, payload: [String: Any]) throws -> CommandResult {
+        guard let requestId = payload["requestId"] as? String, RemoteCommandID.isValid(requestId) else {
+            throw RefusedHTTP(status: 400)
+        }
+        posts.append(payload)
+        return CommandResult(JSONObject(dictionary: ["ok": true, "state": "accepted"]))
+    }
+}
+
+for status in [0, 404, 500] {
+    do {
+        let desktop = ReceiptDesktop()
+        desktop.receipt = status == 0 ? .success(CommandResult(JSONObject(dictionary: ["ok": true, "state": "accepted"])))
+            : .failure(RefusedHTTP(status: status))
+        let session = try RemoteSession(computer: paired, transport: desktop)
+        var result: Result<CommandResult, Error>?
+        session.command("send", conversationId: uuid, payload: ["requestId": generatedRequestID], lookupReceipt: true) { result = $0 }
+        check(await pump(seconds: 2) { result != nil }, "receipt lookup completes for status \(status)")
+        checkEqual(desktop.lookups, [generatedRequestID], "recovery reuses the stored request id")
+        checkEqual(desktop.posts.count, status == 404 ? 1 : 0, "only a missing receipt can retry the original POST")
+        if status == 404 { checkEqual(desktop.posts.first?["requestId"] as? String, generatedRequestID, "missing receipt retains idempotency id") }
+        session.shutdown()
+    } catch { failures.append("receipt recovery: \(error)") }
+}
+
+do {
+    let desktop = ReceiptDesktop()
+    let session = try RemoteSession(computer: paired, transport: desktop)
+    var result: Result<CommandResult, Error>?
+    let rejectedLegacyID = "A2345678-1234-1234-1234-123456789abc"
+    session.command("send", conversationId: uuid, payload: ["requestId": rejectedLegacyID], lookupReceipt: true) { result = $0 }
+    check(await pump(seconds: 2) { result != nil }, "an obsolete uppercase journal receives a terminal decision")
+    if case .failure(let error) = result {
+        checkEqual((error as? RemoteHttpError)?.status, 400, "invalid persisted ids are rejected without a retry loop")
+    } else { check(false, "an uppercase journal must not be silently changed into a new request") }
+    checkEqual(desktop.lookups, [rejectedLegacyID], "recovery never rewrites a stored idempotency id")
+    checkEqual(desktop.posts.count, 0, "invalid receipt ids never issue a new POST")
+    session.shutdown()
+} catch { failures.append("legacy command id: \(error)") }
+
+do {
+    let reads = FakeDesktop()
+    reads.statusEntered = DispatchSemaphore(value: 0)
+    reads.statusRelease = DispatchSemaphore(value: 0)
+    let commands = ReceiptDesktop()
+    let urgent = ReceiptDesktop()
+    let session = try RemoteSession(computer: paired, transport: reads,
+                                    commandTransport: commands, urgentTransport: urgent)
+    session.status { _ in }
+    check(waitForSignal(reads.statusEntered!, seconds: 1), "a slow read has started")
+    var completed = false
+    session.command("stop-start", conversationId: uuid, payload: ["requestId": uuid], urgent: true) { _ in completed = true }
+    check(await pump(seconds: 1) { completed }, "urgent stop bypasses a blocked ordinary request")
+    checkEqual(urgent.posts.count, 1, "stop uses its independent transport")
+    checkEqual(commands.posts.count, 0, "urgent stop does not occupy the ordinary command queue")
+    reads.statusRelease?.signal()
+    session.shutdown()
+} catch { failures.append("urgent stop transport: \(error)") }
+
+do {
+    let desktop = FakeDesktop()
+    let session = try RemoteSession(computer: paired, transport: desktop)
+    session.watch(conversationId: uuid, incremental: true, onSnapshot: { _ in }, onState: { _ in })
+    check(await pump(seconds: 2) { desktop.lastStream != nil }, "incremental stream opens")
+    checkEqual(desktop.lastStream?.path, "/v1/conversations/\(uuid)/events?incremental=1", "advertised incremental mode reaches the wire")
+    session.shutdown()
+    let pending = JSONObject(dictionary: ["conversationId": uuid, "payload": ["action": "stop", "requestId": uuid]])
+    var computer = paired
+    computer.pendingStop = pending
+    checkEqual(PairedComputer(JSONObject(dictionary: computer.json)).pendingStop?.text("conversationId"), uuid,
+               "urgent stop has an independent persistent journal")
+    let transcript = RemoteTranscript()
+    _ = transcript.apply(RemoteSnapshot(JSONObject(dictionary: ["instanceId": "A", "cursor": 1,
+        "messages": [], "preparation": ["startId": "preparing-1"]])))
+    checkEqual(transcript.preparation?.text("startId"), "preparing-1", "preparing run state reaches the transcript")
+    check(transcript.busy, "preparing runs prevent a duplicate direct send")
+    transcript.hideMessagesAfterAccessFailure()
+    check(transcript.preparation == nil && !transcript.busy, "revoked detail access removes preparation controls")
+    _ = transcript.apply(RemoteSnapshot(JSONObject(dictionary: ["instanceId": "B", "cursor": 1])))
+    check(transcript.preparation == nil, "desktop restart clears obsolete preparation controls")
+    let first = RemoteSnapshot(JSONObject(dictionary: ["instanceId": "A", "cursor": 1, "historyVersion": "unchanged", "live": ["runId": 1, "text": "a"]]))
+    let delta = RemoteSnapshot(JSONObject(dictionary: ["instanceId": "A", "cursor": 2, "historyVersion": "unchanged", "live": ["runId": 1, "text": "ab"]]))
+    check(SnapshotCoalescer.replaceable(delta, after: first), "ordinary incremental text updates still coalesce")
+} catch { failures.append("incremental snapshots: \(error)") }
+
+do {
+    let query = RemoteListQuery(query: "  中文 + & /REPORT  ", limit: 1500)
+    checkEqual(query.query, "中文 + & /report", "remote search follows Android trim and lowercase")
+    checkEqual(query.path(offset: 100), "/v1/conversations?offset=100&limit=1000&query=%E4%B8%AD%E6%96%87+%2B+%26+%2Freport",
+               "UTF-8 search values cannot introduce another query parameter")
+    let endpoint = try Endpoint("http://100.64.0.1:43127")
+    check(endpoint.isAllowed(path: query.path(offset: 100)), "encoded remote list search is allowlisted")
+    for suffix in ["?offset=0&limit=0&query=", "?offset=0&limit=1001&query=", "?offset=0&limit=100&query=%ZZ",
+                   "?offset=0&limit=100&query=test&extra=1", "?offset=0&query=test&limit=100"] {
+        check(!endpoint.isAllowed(path: "/v1/conversations" + suffix), "list query rejects malformed parameters: \(suffix)")
+    }
+    check(RemoteCapabilities(["list-query"]).contains(.listQuery), "remote search is capability-gated")
+    let desktop = FakeDesktop()
+    desktop.listPages["0"] = #"{"instanceId":"A","cursor":1,"protocol":1,"permission":"control","capabilities":["list-query"],"engines":[],"conversations":[],"nextOffset":100}"#
+    let session = try RemoteSession(computer: paired, transport: desktop)
+    var result: Result<ConversationPage, Error>?
+    session.conversations(query: "report", limit: 250) { result = $0 }
+    check(await pump(seconds: 2) { result != nil }, "remote search returns one bounded page")
+    checkEqual(desktop.offsetsAsked, [0], "modern search leaves the next page for explicit pagination")
+    checkEqual(desktop.queriesAsked.first?.limit, 250, "search page size reaches the transport")
+    checkEqual(desktop.queriesAsked.first?.query, "report", "the search query reaches the selected computer")
+    checkEqual(try result?.get().nextOffset, 100, "remote search preserves its next-page cursor")
+    session.shutdown()
+} catch { failures.append("remote list queries: \(error)") }
 
 // MARK: - Report
 if failures.isEmpty {

@@ -29,6 +29,8 @@ struct LocalChatListView: View {
     @State private var workspaceMenu: LocalChatWorkspace?
     @State private var selecting = false
     @State private var selection: Set<String> = []
+    @State private var menuConversation: LocalChatConversation?
+    @State private var rowFrames: [String: CGRect] = [:]
     @State private var query = ""
     @State private var pushTarget: LocalChatConversation?
     @State private var pushActive = false
@@ -41,7 +43,7 @@ struct LocalChatListView: View {
     var body: some View {
         list
         .background(Palette.background.ignoresSafeArea())
-        .safeAreaInset(edge: .bottom, spacing: 0) { dock }
+        .chatDock { dock }
         .background(pushLink)
         .sheet(isPresented: $showingProviders) {
             // Wrapped so it can be closed without a back button of its own: the
@@ -62,6 +64,17 @@ struct LocalChatListView: View {
             if id == nil { adoptNotice() }
         }
         .overlay(alignment: .bottom) { listActionPanel }
+        .coordinateSpace(name: "local-conversation-list")
+        .onPreferenceChange(ConversationRowFrames.self) { rowFrames = $0 }
+        .overlay {
+            if let conversation = menuConversation {
+                ConversationMenuOverlay(anchor: rowFrames[conversation.id], rows: 5,
+                                        onDismiss: { menuConversation = nil }) {
+                    conversationActions(conversation)
+                }
+            }
+        }
+        .onDisappear { menuConversation = nil }
     }
 
     private var list: some View {
@@ -154,11 +167,12 @@ struct LocalChatListView: View {
                 }
                 .plainPageRow()
             }
+
+            Color.clear.frame(height: 0).chatContentTailPadding().plainPageRow()
         }
         .listStyle(.plain)
         .environment(\.defaultMinListRowHeight, 0)
         .padding(.horizontal, PageGutter.horizontal)
-        .padding(.bottom, PageGutter.contentBottom)
         .background(Palette.background)
         .plainPageBackground()
     }
@@ -299,7 +313,10 @@ struct LocalChatListView: View {
                                  replying: model.runningConversationId == conversation.id)
                 }
                 .buttonStyle(.plain)
-                .contextMenu { conversationActions(conversation) }
+                .highPriorityGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                    menuConversation = conversation
+                    if app.preferences.hapticFeedback { UISelectionFeedbackGenerator().selectionChanged() }
+                })
             }
         }
         .padding(.leading, grouped ? 32 : 2)
@@ -308,6 +325,7 @@ struct LocalChatListView: View {
         .background(RoundedRectangle(cornerRadius: Palette.radius, style: .continuous)
             .fill(Palette.background))
         .contentShape(Rectangle())
+        .conversationMenuAnchor(conversation.id, space: "local-conversation-list")
         .plainPageRow()
     }
 
@@ -339,7 +357,8 @@ struct LocalChatListView: View {
                                     selecting = true
                                 }, pin: { model.togglePin(conversation.id, pinned: !conversation.pinned) },
                                 archive: { model.archive(conversation.id, archived: true) },
-                                delete: { alert = .delete(.conversation(conversation)) })
+                                delete: { alert = .delete(.conversation(conversation)) },
+                                onDismiss: { menuConversation = nil })
             .disabled(model.runningConversationId == conversation.id)
     }
 
@@ -376,50 +395,9 @@ struct LocalChatListView: View {
     }
 
     private var dock: some View {
-        VStack(spacing: 0) {
-            LinearGradient(colors: [Palette.background.opacity(0), Palette.background],
-                           startPoint: .top, endPoint: .bottom)
-                .frame(height: 36)
-                .allowsHitTesting(false)
-            HStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: Palette.textDialog))
-                        .foregroundColor(Palette.ink)
-                        .frame(width: 44, height: 44)
-                    ZStack(alignment: .leading) {
-                        if query.isEmpty {
-                            Text("搜索本机会话")
-                                .font(.system(size: Palette.textRow))
-                                .foregroundColor(Palette.muted)
-                                .allowsHitTesting(false)
-                        }
-                        TextField("", text: $query)
-                            .font(.system(size: Palette.textRow))
-                            .foregroundColor(Palette.ink)
-                            .frame(minHeight: 48)
-                            .padding(EdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 8))
-                    }
-                }
-                .frame(height: 48)
-                .background(Capsule(style: .continuous).fill(Palette.background))
-                .overlay(Capsule(style: .continuous).stroke(Palette.separator, lineWidth: 1))
-                .shadow(color: .black.opacity(0.10), radius: 4, y: 1)
-                .padding(.trailing, 10)
-
-                Button { startConversation(in: "") } label: {
-                    Image(systemName: "plus.bubble")
-                        .font(.system(size: Palette.textTitle))
-                        .foregroundColor(Palette.ink)
-                        .frame(width: 48, height: 48)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("本机新建独立会话")
-            }
-            .padding(6)
-            .padding(.bottom, PageGutter.dockBottom)
+        ChatSearchBar(text: $query, placeholder: "搜索本机会话", newConversationLabel: "本机新建独立会话") {
+            startConversation(in: "")
         }
-        .background(Palette.background)
         .padding(.horizontal, PageGutter.horizontal)
     }
 
@@ -764,8 +742,9 @@ struct LocalChatDetailView: View {
                                     .id(message.id)
                             }
                         }
-                        .padding(.horizontal, 16)
+                        .padding(.horizontal, PageGutter.horizontal)
                         .padding(.vertical, 12)
+                        .chatContentTailPadding()
                         .measuringContentBottom()
                     }
                     .measuringViewportBottom()
@@ -781,19 +760,23 @@ struct LocalChatDetailView: View {
                     }
                 }
             }
-            LocalChatComposer(
-                onAttach: { showingAttachments = true },
-                onTools: { showingTools = true },
-                onModelPicker: { showingModelPicker = true })
-            if let summary = model.contextSummary {
-                StatusLine(text: summary, tone: .muted)
-                    .padding(.horizontal, PageGutter.horizontal)
-                    .padding(.bottom, 2)
-            }
-            if let status = detailStatus {
-                StatusLine(text: status, tone: detailError == nil ? .muted : .bad)
-                    .padding(.horizontal, PageGutter.horizontal)
-                    .padding(.bottom, 2)
+            .chatDock {
+                VStack(spacing: 0) {
+                    LocalChatComposer(
+                        onAttach: { showingAttachments = true },
+                        onTools: { showingTools = true },
+                        onModelPicker: { showingModelPicker = true })
+                    if let summary = model.contextSummary {
+                        StatusLine(text: summary, tone: .muted)
+                            .padding(.horizontal, PageGutter.horizontal)
+                            .padding(.bottom, 2)
+                    }
+                    if let status = detailStatus {
+                        StatusLine(text: status, tone: detailError == nil ? .muted : .bad)
+                            .padding(.horizontal, PageGutter.horizontal)
+                            .padding(.bottom, 2)
+                    }
+                }
             }
         }
         .trackingScrollFollow(follow)
@@ -1004,6 +987,7 @@ private struct LocalChatMessageRow: View {
                     Text(message.text)
                         .font(.body)
                         .foregroundColor(Palette.ink)
+                        .lineSpacing(Palette.chatLineSpacing)
                         .padding(12)
                         .background(RoundedRectangle(cornerRadius: Palette.radius, style: .continuous)
                             .fill(Palette.surface))
@@ -1270,9 +1254,9 @@ struct LocalChatComposer: View {
             .foregroundColor(Palette.ink)
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 48, alignment: .trailing)
-            .background(Capsule(style: .continuous).fill(Palette.background))
+            .contentShape(RoundedRectangle(cornerRadius: Palette.capsuleRadius))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ComposerPressStyle())
         .disabled(model.running)
         .opacity(model.running ? 0.45 : 1)
         .accessibilityLabel(locale.identifier.lowercased().hasPrefix("zh")
@@ -1297,10 +1281,10 @@ struct LocalChatComposer: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: Palette.textDisplay, weight: .semibold))
-                .foregroundColor(.white)
+                .foregroundColor(enabled ? .white : Palette.muted)
                 .frame(width: 48, height: 48)
                 .background(Capsule(style: .continuous)
-                    .fill(enabled ? Palette.accent : Palette.muted))
+                    .fill(enabled ? Palette.accent : Palette.surface))
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -1626,7 +1610,11 @@ private struct LocalChatModelPicker: View {
             + (model.routes.isEmpty ? 64 : 0) + 21 + 64 + 21 + 64)
     }
 
-    private var thinkingHeight: CGFloat { min(maxHeight, CGFloat(24 + 64 + 21 + 3 * 78 + 76)) }
+    private var thinkingHeight: CGFloat {
+        min(maxHeight, CGFloat(24 + 64 + 21 + thinkingOptions.count * 78 + 76))
+    }
+
+    private var thinkingOptions: [String] { LocalChatThinking.menu(for: model.selectedRoute()) }
 
     private var modelPanel: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -1680,7 +1668,7 @@ private struct LocalChatModelPicker: View {
                     withAnimation(.easeOut(duration: 0.18)) { showingThinking = false }
                 }
                 divider
-                ForEach(LocalChatThinking.levels, id: \.self) { level in
+                ForEach(thinkingOptions, id: \.self) { level in
                     PopupChoiceRow(
                         title: LocalChatThinking.label(level, chinese: chinese),
                         subtitle: description(for: level),
@@ -1720,10 +1708,6 @@ private struct LocalChatModelPicker: View {
     }
 
     private func description(for level: String) -> String {
-        switch level {
-        case "medium": return "平衡思考深度与响应速度"
-        case "high": return "投入更多思考，可能增加耗时与费用"
-        default: return "遵循模型默认，不额外设置参数"
-        }
+        level == "auto" ? "遵循模型默认，不额外设置参数" : level
     }
 }

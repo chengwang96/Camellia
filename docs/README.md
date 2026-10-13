@@ -35,6 +35,6 @@ These explain current structures and past decisions. Check the guide and current
 
 - [Benchmark audit](benchmark-audit-2026-09-16.md), [built-in basic set](benchmark-basics-2026-09-16.md), [preview timeouts](benchmark-preview-timeouts-2026-09-16.md), [Codex patch retries](benchmark-codex-patch-2026-09-16.md), and [SciCode errors](benchmark-errors-2026-09-16.md).
 - [Native harness tool calls](harness-tools-audit-2026-09-16.md) and the [WBL API connectivity record](wbl-api.md).
-- [v0.1.0 release note](releases/v0.1.0.md) and [archived planning documents](archive/README.md).
+- [v1.0.1 release note](releases/v1.0.1.md), [v0.1.0 release note](releases/v0.1.0.md), and [archived planning documents](archive/README.md).
 
 `images/` contains current README screenshots captured from the renderer with local demonstration data. Run `python scripts/capture-readme-screenshots.py` from the repository root with Playwright and Chromium installed to regenerate them. Ignored `images/local/` reference captures are not part of the public documentation.

@@ -39,6 +39,10 @@ public struct RemoteCapabilities: OptionSet, Sendable {
     public static let attachments = Self(rawValue: 1 << 7)
     public static let expandedAttachments = Self(rawValue: 1 << 8)
     public static let fork = Self(rawValue: 1 << 9)
+    public static let commandReceipts = Self(rawValue: 1 << 10)
+    public static let incrementalSnapshots = Self(rawValue: 1 << 11)
+    public static let stopStart = Self(rawValue: 1 << 12)
+    public static let listQuery = Self(rawValue: 1 << 13)
 
     /// The five that additionally require `permission == "control"`.
     ///
@@ -53,6 +57,10 @@ public struct RemoteCapabilities: OptionSet, Sendable {
             switch name {
             case "create": value.insert(.create)
             case "fork": value.insert(.fork)
+            case "command-receipts": value.insert(.commandReceipts)
+            case "incremental-snapshots": value.insert(.incrementalSnapshots)
+            case "stop-start": value.insert(.stopStart)
+            case "list-query": value.insert(.listQuery)
             case "create-workspace": value.insert(.createWorkspace)
             case "move": value.insert(.move)
             case "archive": value.insert(.archive)
@@ -469,10 +477,10 @@ public struct RemoteModelChoice: Sendable, Identifiable, Hashable {
     public let connection: String
     public let thinking: [String]
 
-    public init(_ json: JSONObject) {
+    public init(_ json: JSONObject, connection fallback: String = "api") {
         id = json.text("id")
         name = json.text("name", fallback: id)
-        connection = json.text("connection", fallback: "api")
+        connection = json.text("connection", fallback: fallback)
         thinking = json.strings("thinking")
     }
 
@@ -486,28 +494,66 @@ public struct RemoteModelChoice: Sendable, Identifiable, Hashable {
     public var isSubscription: Bool { connection == "subscription" }
 }
 
+public struct RemoteQuickSwitch: Sendable, Equatable {
+    public let model: String
+    public let thinking: String
+    public let available: Bool
+
+    public init(_ json: JSONObject) {
+        model = json.text("model")
+        thinking = json.text("thinking")
+        available = json.bool("available")
+    }
+}
+
 public struct RemoteSettings: Sendable, Equatable {
     /// Optimistic-lock token; `configure` echoes it back as `expectedSettings`.
     public let version: String
     public let editable: Bool
+    public let modelEditable: Bool
+    public let hasModelChoice: Bool
+    public let appliesNextTurn: Bool
+    public let connection: String
     public let model: String
     /// Empty means "whatever the engine defaults to".
     public let thinking: String
     public let permissionMode: String
+    public let supportsFast: Bool
+    public let fastMode: Bool
+    public let quickSwitch: RemoteQuickSwitch?
     public let models: [RemoteModelChoice]
 
     public init(_ json: JSONObject) {
         version = json.text("version")
         editable = json.bool("editable")
+        modelEditable = json.bool("modelEditable", fallback: editable)
+        hasModelChoice = json.has("modelEditable")
+        appliesNextTurn = json.bool("appliesNextTurn")
+        let selectedConnection = json.text("connection", fallback: "api")
+        connection = selectedConnection
         model = json.text("model")
         thinking = json.text("thinking")
         permissionMode = json.text("permissionMode")
-        models = json.objects("models").map(RemoteModelChoice.init)
+        supportsFast = json.bool("supportsFast")
+        fastMode = json.bool("fastMode")
+        quickSwitch = json.object("quickSwitch").map(RemoteQuickSwitch.init)
+        models = json.objects("models").map { RemoteModelChoice($0, connection: selectedConnection) }
     }
 
     public static let empty = RemoteSettings(JSONObject())
 
     public var permissionModes: [String] { ["ask", "auto", "full"] }
+
+    public var selectedModel: RemoteModelChoice? {
+        models.first { $0.id == model && $0.connection == connection }
+    }
+
+    /// New desktops require connection and model together: the same id may
+    /// exist in both the account and shared API groups. Keep legacy payloads
+    /// model-only for desktops predating that protocol field.
+    public func modelChanges(for choice: RemoteModelChoice) -> [String: String] {
+        hasModelChoice ? ["model": choice.id, "connection": choice.connection] : ["model": choice.id]
+    }
 }
 
 // MARK: - Automation
@@ -644,9 +690,15 @@ public struct RemoteSnapshot: Sendable {
     /// Android only replaces rendered history when `messages` is an
     /// array. Missing, null and wrong-typed fields are not empty pages.
     public let hasMessages: Bool
+    /// Paging needs an explicit, correctly typed cursor. A missing array or
+    /// malformed cursor must not silently close the earlier-history control.
+    public let hasHistoryPage: Bool
+    public let historyVersion: String?
     public let messages: [RemoteMessage]
     public let live: RemoteLive?
     public let hasLive: Bool
+    public let preparation: JSONObject?
+    public let hasPreparation: Bool
     public let settings: RemoteSettings?
     public let automation: RemoteAutomation?
     public let hasAutomation: Bool
@@ -683,9 +735,18 @@ public struct RemoteSnapshot: Sendable {
         conversation = json.object("conversation").map(RemoteConversation.init)
         permission = RemotePermission(rawValue: json.text("permission"))
         hasMessages = json.raw["messages"] is [Any]
+        let pagingCursor = json.raw["nextBefore"]
+        let numericCursor = (pagingCursor as? NSNumber).map {
+            CFGetTypeID($0) != CFBooleanGetTypeID()
+        } ?? false
+        hasHistoryPage = hasMessages && json.array("messages").allSatisfy { JSONObject($0) != nil }
+            && (pagingCursor is NSNull || numericCursor)
+        historyVersion = json.string("historyVersion")
         messages = json.objects("messages").map(RemoteMessage.init)
         live = json.object("live").map(RemoteLive.init)
         hasLive = json.has("live")
+        preparation = json.object("preparation")
+        hasPreparation = json.has("preparation")
         settings = json.object("settings").map(RemoteSettings.init)
         automation = json.object("automation").map(RemoteAutomation.init)
         hasAutomation = json.has("automation")

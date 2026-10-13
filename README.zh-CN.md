@@ -28,13 +28,15 @@ Camellia 将 **Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigrav
 | 平台 | 下载文件 |
 | --- | --- |
 | Windows x64 | 安装版：`Camellia-Setup-<version>-win-x64.exe`；便携版：`Camellia-<version>-win-x64-portable.exe` |
+| macOS Apple Silicon | `Camellia-<version>-macOS-arm64.dmg`；更新包：`Camellia-<version>-macOS-arm64.zip` |
 | Android ARM64 | `Camellia-Android-<version>.apk` |
+| iOS 15 及以上，iPhone 与 iPad | 未签名的 `Camellia-<version>.ipa`，需自行侧载或重签 |
 
-Windows 安装版按向导安装，便携版直接运行。桌面版本已包含 Node.js 和 npm；Windows 还需要安装附带 Git Bash 的 [Git for Windows](https://gitforwindows.org/)。Apple Silicon Mac 的运行与构建方式参阅[开发指南](docs/development.md)。
+Windows 安装版按向导安装，便携版直接运行。桌面版本已包含 Node.js 和 npm；Windows 还需要安装附带 Git Bash 的 [Git for Windows](https://gitforwindows.org/)。macOS 版本仅做 ad-hoc 签名、未公证，首次打开需要确认 Gatekeeper 提示；本机运行与构建方式参阅[开发指南](docs/development.md)。
 
 在桌面端首页选择引擎，并按提示安装。之后在 **设置 → 供应商与 Key** 配置 API 供应商，或在 **设置 → 引擎设置** 登录受支持的订阅。Camellia 只下载你选择的运行时。连接验证会发送一条简短的模型请求，可能产生供应商用量。
 
-Android 安装与电脑配对参见 [Android 指南](android/README.md)和[远程访问指南](docs/remote-access.md)；无界面主机参见 [Linux 服务器指南](docs/linux-server-preview.md)。
+Android 安装与电脑配对参见 [Android 指南](android/README.md)和[远程访问指南](docs/remote-access.md)；iOS 侧载参见 [iOS 指南](ios/README.md)；无界面主机参见 [Linux 服务器指南](docs/linux-server-preview.md)。
 
 ### 从源码运行
 

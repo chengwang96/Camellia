@@ -134,6 +134,21 @@ public final class MobilePreferences {
         set { store.set(newValue ? "enabled" : "disabled", for: "remoteKeepAlive") }
     }
 
+    public var hapticFeedback: Bool {
+        get { store.string("hapticFeedback") != "disabled" }
+        set { store.set(newValue ? "enabled" : "disabled", for: "hapticFeedback") }
+    }
+
+    public var downloadDirectoryBookmark: Data? {
+        get { store.string("downloadDirectoryBookmark").flatMap { Data(base64Encoded: $0) } }
+        set { store.set(newValue?.base64EncodedString(), for: "downloadDirectoryBookmark") }
+    }
+
+    public var downloadDirectoryLabel: String {
+        get { store.string("downloadDirectoryLabel") ?? "" }
+        set { store.set(newValue, for: "downloadDirectoryLabel") }
+    }
+
     /// The name this phone offers the desktop when pairing.
     ///
     /// Falls back to the device's model name, then to a literal, so the desktop

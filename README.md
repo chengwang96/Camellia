@@ -28,13 +28,15 @@ Download the latest app from [GitHub Releases](https://github.com/chengwang96/Ca
 | Platform | Download |
 | --- | --- |
 | Windows x64 | Installer: `Camellia-Setup-<version>-win-x64.exe`; portable app: `Camellia-<version>-win-x64-portable.exe` |
+| macOS Apple Silicon | `Camellia-<version>-macOS-arm64.dmg`; update archive: `Camellia-<version>-macOS-arm64.zip` |
 | Android ARM64 | `Camellia-Android-<version>.apk` |
+| iOS 15 or newer, iPhone and iPad | Unsigned `Camellia-<version>.ipa`, for sideloading or re-signing |
 
-Install the Windows setup package, or launch the portable executable. Desktop downloads include Node.js and npm. On Windows, also install [Git for Windows](https://gitforwindows.org/) with Git Bash. For macOS Apple Silicon, see [source setup and packaging](docs/development.md).
+Install the Windows setup package, or launch the portable executable. Desktop downloads include Node.js and npm. On Windows, also install [Git for Windows](https://gitforwindows.org/) with Git Bash. The macOS app is ad-hoc signed and not notarized, so its first launch needs Gatekeeper approval; local setup is described in [source setup and packaging](docs/development.md).
 
 On desktop, choose an engine on the home screen and install it when prompted. Then configure an API provider under **Settings → Providers & Keys**, or connect a supported subscription in **Settings → Engine Settings**. Camellia downloads only the runtimes you choose. Connection validation sends a short model request and may incur provider usage.
 
-For Android installation and desktop pairing, see the [Android guide](android/README.md) and [remote access guide](docs/remote-access.md). For a headless host, see the [Linux server guide](docs/linux-server-preview.md).
+For Android installation and desktop pairing, see the [Android guide](android/README.md) and [remote access guide](docs/remote-access.md). For iOS sideloading, see the [iOS guide](ios/README.md). For a headless host, see the [Linux server guide](docs/linux-server-preview.md).
 
 ### Run from source
 

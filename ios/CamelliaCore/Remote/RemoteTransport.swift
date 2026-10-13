@@ -23,8 +23,10 @@ public protocol RemoteTransport: AnyObject {
     func cancelCurrentRequest()
     func status() throws -> RemoteStatus
     func conversations(offset: Int) throws -> RemoteListPage
+    func conversations(offset: Int, limit: Int, query: String) throws -> RemoteListPage
     func conversation(id: String, before: Int64?) throws -> RemoteSnapshot
     func command(_ action: String, conversationId: String?, payload: [String: Any]) throws -> CommandResult
+    func commandReceipt(requestId: String) throws -> CommandResult?
     func artifacts(conversationId: String, offset: Int64) throws -> RemoteArtifactPage
     func apiKeys() throws -> [String: Any]
     func markRead(conversationId: String, lastReplyAt: Int64) throws -> JSONObject
@@ -35,6 +37,13 @@ public protocol RemoteTransport: AnyObject {
 }
 
 public extension RemoteTransport {
+    func conversations(offset: Int, limit: Int, query: String) throws -> RemoteListPage {
+        try conversations(offset: offset)
+    }
+
+    /// Older transports do not advertise receipts and keep the POST retry path.
+    func commandReceipt(requestId: String) throws -> CommandResult? { nil }
+
     /// A default for test transports; the shipping transport overrides this
     /// with a bounded-memory stream straight to the destination file.
     func artifact(conversationId: String, hash: String, expectedSize: Int64, to destination: URL,

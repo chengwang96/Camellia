@@ -60,33 +60,30 @@ public struct RemoteOutgoingEcho: Sendable, Equatable {
 /// without a phone.
 public final class RemoteTranscript {
     // Android's caps, so a long session cannot grow without bound.
-    public static let maximumRows = 600
-    public static let maximumBytes = 4 * 1024 * 1024
+    public static let maximumRows = RemoteHistoryPage.maximumRows
+    public static let maximumBytes = RemoteHistoryPage.maximumBytes
 
-    /// Marks "we threw away history on purpose", after which rows behind the
-    /// snapshot are no longer assumed to be superseded.
-    private var historyLimited = false
+    /// Browsing an older window after its latest end was evicted. Live control
+    /// metadata still updates, but new snapshots must not replace this window.
+    public private(set) var historyDetached = false
     private var history: [Int64: RemoteMessage] = [:]
 
     public private(set) var instanceId = ""
     public private(set) var cursor: Int64 = -1
     public private(set) var nextBefore: Int64?
 
-    /// Whether paging backwards can still fetch anything.
-    ///
-    /// False once rows were evicted locally: after that the desktop's cursor
-    /// would point into history the phone no longer holds, so the phone stops
-    /// offering to page rather than fetching into a hole. This is Android's
-    /// `nextBefore != null && !historyLimited`.
-    public var hasOlder: Bool { nextBefore != nil && !historyLimited }
+    public var hasOlder: Bool { nextBefore != nil }
+    public var cachedSequences: Set<Int64> { Set(history.keys) }
 
     public private(set) var conversation: RemoteConversation?
     public private(set) var permission: RemotePermission?
     public private(set) var live: RemoteLive?
+    public private(set) var preparation: JSONObject?
     public private(set) var subagents: [RemoteSubtask] = []
     /// Keep actionable children reachable when their initiating turn is outside
     /// the loaded history page. Loading that turn restores its normal card.
     public var earlierSubtaskTurns: [Int64] {
+        guard !historyDetached else { return [] }
         let loaded = Set(history.values.filter { $0.role == .user }.map(\.seq))
         return Set(subagents.filter { !loaded.contains($0.userSeq) && ($0.active || $0.needsAttention || $0.canReply) }
             .map(\.userSeq)).sorted()
@@ -127,12 +124,13 @@ public final class RemoteTranscript {
             // rows belong to a session that no longer exists.
             history.removeAll()
             subagents = []
-            historyLimited = false
+            historyDetached = false
             nextBefore = nil
             queueVersion = -1
             queue = []
             canQueue = false
             live = nil
+            preparation = nil
             automation = nil
             showsGoal = false
             goalVisibility.reset()
@@ -160,14 +158,13 @@ public final class RemoteTranscript {
         // Incremental snapshots omit unchanged history, while live state,
         // approvals, child tasks and queue revisions continue to change.
         if snapshot.hasLive || snapshot.hasMessages { live = snapshot.live }
+        if snapshot.hasPreparation || snapshot.hasMessages { preparation = snapshot.preparation }
         if snapshot.hasAutomation || snapshot.hasMessages { automation = snapshot.automation }
-        guard snapshot.hasMessages else { refreshGoalVisibility(); return true }
+        guard snapshot.hasMessages, !historyDetached else { refreshGoalVisibility(); return true }
 
         let first = snapshot.messages.first?.seq ?? 0
         merge(snapshot.messages, first: first, olderAvailable: snapshot.olderAvailable)
-        // Backwards paging only stays meaningful while the oldest cached row is
-        // at or behind this page. Once rows have been evicted, a cursor into
-        // them would point somewhere the desktop can no longer serve.
+        // Preserve the older cursor when an SSE page only covers the latest end.
         if history.isEmpty || (history.keys.min() ?? 0) >= first {
             nextBefore = snapshot.nextBefore
         }
@@ -180,7 +177,7 @@ public final class RemoteTranscript {
 
     public func reset() {
         history.removeAll()
-        historyLimited = false
+        historyDetached = false
         instanceId = ""
         cursor = -1
         nextBefore = nil
@@ -188,6 +185,7 @@ public final class RemoteTranscript {
         conversation = nil
         permission = nil
         live = nil
+        preparation = nil
         subagents = []
         settings = nil
         automation = nil
@@ -212,9 +210,10 @@ public final class RemoteTranscript {
     public func hideMessagesAfterAccessFailure() {
         history.removeAll()
         subagents = []
-        historyLimited = false
+        historyDetached = false
         nextBefore = nil
         live = nil
+        preparation = nil
         permission = nil
         connected = false
         queue = []
@@ -234,26 +233,39 @@ public final class RemoteTranscript {
         trim()
     }
 
-    /// Folds an older page (`?before=`) in, keeping everything already held.
-    ///
-    /// Deliberately *not* `apply`. An older page's first seq is smaller than
-    /// anything cached, so the supersede rule in `merge` would treat the whole
-    /// conversation as replaced by this page and delete the newer rows the
-    /// person is reading. Android's `loadOlder` has the same split: it calls
-    /// `retainHistory` per row, which is a plain put by seq, and only then moves
-    /// `nextBefore` and trims. Returns false when the page belongs to a
-    /// different desktop instance, which is the same guard Android applies
-    /// before it renders.
+    /// Folds in earlier rows without replacing existing records. When the
+    /// combined window exceeds its budget, retain the end the reader requested.
     @discardableResult
     public func mergeOlder(_ snapshot: RemoteSnapshot) -> Bool {
         let server = snapshot.instanceId
         if !server.isEmpty, server != instanceId { return false }
-        // A plain put by seq: an edited row re-emitted here simply replaces its
-        // older copy, and rows the page does not mention are left alone.
-        for row in snapshot.messages { history[row.seq] = row }
-        nextBefore = snapshot.nextBefore
-        trim()
+        mergeOlder(snapshot.messages, nextBefore: snapshot.nextBefore)
         return true
+    }
+
+    @discardableResult
+    public func mergeOlder(_ page: RemoteHistoryPage, instanceId server: String) -> Bool {
+        guard server == instanceId else { return false }
+        mergeOlder(page.messages, nextBefore: page.nextBefore)
+        return true
+    }
+
+    private func mergeOlder(_ rows: [RemoteMessage], nextBefore: Int64?) {
+        for row in rows where history[row.seq] == nil { history[row.seq] = row }
+        self.nextBefore = nextBefore
+        trim(keepOlder: true)
+    }
+
+    /// Explicitly rejoin live history, without applying a stale request over a
+    /// newer SSE cursor or a restarted desktop's state.
+    @discardableResult
+    public func applyLatest(_ snapshot: RemoteSnapshot) -> Bool {
+        guard snapshot.instanceId == instanceId, snapshot.cursor >= cursor,
+              snapshot.hasHistoryPage else { return false }
+        history.removeAll()
+        historyDetached = false
+        nextBefore = nil
+        return apply(snapshot)
     }
 
     /// Applies the completion-dismissal rule to the goal the snapshot carries.
@@ -321,7 +333,7 @@ public final class RemoteTranscript {
 
     /// Whether the desktop is mid-reply.
     public var busy: Bool {
-        live != nil || conversation?.activity != nil
+        live != nil || preparation != nil || conversation?.activity != nil
     }
 
     /// The highest user message seq known, used to confirm an outgoing message.
@@ -346,12 +358,10 @@ public final class RemoteTranscript {
 
     private func merge(_ rows: [RemoteMessage], first: Int64, olderAvailable: Bool) {
         // 1. Rows behind this page are gone from the desktop, but only when the
-        //    desktop *explicitly* says nothing older exists and we have not
-        //    dropped rows ourselves. After a local eviction the rows are still
-        //    real, they are just not cached, so deleting them would page into a
-        //    hole. See `RemoteSnapshot.olderAvailable` for why a missing
+        //    desktop *explicitly* says nothing older exists. Detached history
+        //    never enters this merge. See `RemoteSnapshot.olderAvailable` for why a missing
         //    `nextBefore` counts as "older pages exist".
-        if !olderAvailable, !historyLimited {
+        if !olderAvailable {
             if first <= 0 {
                 // An empty page with nothing behind it means the desktop holds
                 // no rows at all, so everything cached was replaced.
@@ -373,20 +383,19 @@ public final class RemoteTranscript {
         for row in rows { history[row.seq] = row }
     }
 
-    private func trim() {
+    private func trim(keepOlder: Bool = false) {
         var bytes = 0
-        for row in history.values { bytes += rowBytes(row) }
+        for row in history.values { bytes += RemoteHistoryPage.weight(row) }
+        var trimmed = false
         while history.count > Self.maximumRows || (bytes > Self.maximumBytes && history.count > 1) {
-            guard let oldest = history.keys.min(), let row = history.removeValue(forKey: oldest) else { break }
-            bytes -= rowBytes(row)
-            historyLimited = true
-            nextBefore = nil
+            guard let seq = keepOlder ? history.keys.max() : history.keys.min(),
+                  let row = history.removeValue(forKey: seq) else { break }
+            bytes -= RemoteHistoryPage.weight(row)
+            trimmed = true
         }
-    }
-
-    private func rowBytes(_ row: RemoteMessage) -> Int {
-        48 + row.text.utf16.count + row.process.reduce(0) {
-            $0 + 32 + $1.text.utf16.count + $1.input.utf16.count
+        if trimmed {
+            if keepOlder { historyDetached = true }
+            else { nextBefore = history.keys.min() }
         }
     }
 }

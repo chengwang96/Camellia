@@ -1,8 +1,8 @@
 # Camellia iOS 客户端
 
-在现有 Camellia 架构上新增原生 iOS 客户端。设计前提见桌面端的 `ios-client.md`：自用并分享给朋友、不上架、不购买开发者账号、内置 tsnet、本机聊天纳入第一版。
+在现有 Camellia 架构上新增原生 iOS 客户端：自用并分享给朋友、不上架、不购买开发者账号、内置 tsnet、本机聊天纳入第一版。当前约束、剩余工作和验收门槛见仓库内的 `WORKPLAN.md`，不依赖旧开发机桌面上的计划文件。
 
-当前状态：**S1–S4 的代码主干已落地，S5 可生成未签名 IPA，但尚未完成与 Android 的真机端到端及逐页视觉验收。** Go 桥接已产出 xcframework；内置 tsnet 在模拟器里启动、连到控制面并拿到登录链接，但真实 `Open()` 到已配对网关仍待真机实操。外部系统 VPN 模式也已有受限 HTTP/SSE 通路，24 项无实网检查通过，真实 VPN 未验。协议/状态层有 1429 项可执行校验；首页、本机聊天、远程控制、电脑/配对、产物和设置界面已有实现。未签名 IPA 可用 TrollStore 安装，或经 Sideloadly/SideStore 重签后安装；当前进度、剩余验收见 `ios/WORKPLAN.md`，逐项对照见 `ios/PARITY.md`。
+当前目标版本为 **1.0.1**。已对齐批次以 `95cc8df` 的 Android versionCode 97 为基准；2026-10-14 整理源码时主线已到 `47e6d44`，不代表后续 Android 更新或旧工作树中的功能均已移植。视觉细节沿用此前确认的 19 张安卓实机截图，新版远程搜索栏按 Android 1.0.1 放在顶部。默认下载目录、请求回执、增量快照、准备阶段停止与服务端搜索已接入；本轮修复长历史分页，同步模型/思考等级与账号/API 连接选择，并统一输入区渐变留白。菜单在 iOS 26 使用原生玻璃，iOS 15–25 使用兼容磨玻璃；模型按钮常态无填充。协议/状态检查 1860 项、HTTP 桩检查 24 项，另有输入、140 项 dock 与 80 项页面回归。iPhone 和 iPad 共用最低 iOS 15 的未签名 IPA，安装前需要侧载或重签。讨论群、数学公式渲染、完整视觉对照及实机/真实网络验收仍有待办，详见 `ios/WORKPLAN.md`；不能据自动检查推断完整功能已验收。
 
 ## 环境
 
@@ -12,7 +12,7 @@
 
 `.github/workflows/ios.yml` 在相关文件推送到 `main`、PR 和手动触发时运行。使用 macOS 15 arm64 runner、固定 Xcode 26.3，Go 版本从共享桥接模块的 `go.mod` 读取。
 
-流水线先生成并检查本地化文案，再执行协议/本机聊天检查、外部 HTTP 传输桩检查、共享 Go 桥接测试，从源码生成包含真机和模拟器切片的 `tailnet.xcframework`，再按 iOS 15.0 目标检查客户端与诊断 App。输入框回车/粘贴回归在 runner 可用的 iPhone 模拟器中执行，不需要登录或连接真实电脑。
+流水线先生成并检查本地化文案，再执行协议/本机聊天检查、外部 HTTP 传输桩检查、共享 Go 桥接测试，从源码生成包含真机和模拟器切片的 `tailnet.xcframework`，再按 iOS 15.0 目标检查客户端与诊断 App。输入框回车/粘贴、dock 像素/布局与页面控制器回归在同一个 iPhone 模拟器中串行执行，不需要登录或连接真实电脑；没有注入触控事件。
 
 全部检查通过后构建两个未签名 IPA，上传到 `Camellia-ios-arm64-unsigned` artifact，附带 SHA-256 校验文件与桥接版本信息，保留 14 天。无需 Apple 签名证书；安装方式沿用下文的侧载流程。
 
@@ -22,13 +22,15 @@
 
 | 命令 | 作用 | 需要 Xcode |
 | --- | --- | --- |
-| `./ios/check-protocol.sh` | 纯逻辑协议层校验，1429 项 | 否 |
+| `./ios/check-protocol.sh` | 纯逻辑协议层校验，1860 项 | 否 |
 | `./ios/check-external-http.sh` | 外部系统 VPN 的 URLSession 传输桩检查，24 项 | 是 |
 | `./ios/build-tailnet-ios.sh` | 产出 `ios/Frameworks/tailnet.xcframework` | 是 |
 | `./ios/check-network.sh` | 网络层对 xcframework 类型检查（iOS 模拟器目标） | 是 |
 | `./ios/check-camera.sh` | 相机与位置层类型检查，按 iOS 15 目标，能拦住用高的新 API | 是 |
 | `./ios/check-client.sh` | 客户端与诊断两个 App 按 iOS 15.0 目标整体类型检查（构建前的主闸门） | 是 |
 | `./ios/check-composer.sh` | 模拟器中的输入框回车、粘贴与 UTF-16 长度回归 | 是 |
+| `CAMELLIA_DOCK_UDID=<UDID> ./ios/check-dock.sh` | 已启动模拟器中的输入区渐变、留白与短视口回归，140 项 | 是 |
+| `./ios/check-remediation.sh` | 模拟器中的生产模型、返回控制器与菜单渲染回归，80 项 | 是 |
 | `./ios/run-smoke.sh` | 在模拟器里真实启动节点，跑 S1 验收 | 是 |
 | `./ios/build-ipa.sh` | 产出可侧载的未签名 `.ipa` 到 `ios/dist/`（`client` / `diagnostics`） | 是 |
 | `./ios/run-app.sh` | 在模拟器里跑客户端或诊断 App（`client` / `diagnostics`） | 是 |
@@ -190,7 +192,7 @@ Android 是一份 JSON 凭据外加 AndroidKeyStore 里的 AES-GCM 密钥；iOS 
 ### 装法
 
 ```bash
-./ios/build-ipa.sh          # 产出 ios/dist/Camellia-0.4.0.ipa
+./ios/build-ipa.sh          # 产出 ios/dist/Camellia-1.0.1.ipa
 ```
 
 产物在 `ios/dist/`：`.ipa`、解包好的 `.app`、按目标分别更新的 `SHA256-client.txt` / `SHA256-diagnostics.txt`。
@@ -294,10 +296,13 @@ ios/
 
 ## 待办
 
-1. **路径白名单不覆盖全部网关接口。** Android 的 `Endpoint.java` 白名单只包含 `status`、`commands`、`pair/request|claim`、`conversations…`、`api-keys`；网关实际还提供 `/read`、`/api-import`、`/native-settings/*`、`/server-management`。iOS 已放开 `/read`（已读状态同步要用，`Endpoint` 与 `ProtocolChecks` 同步更新），其余三个仍未开放：`/api-import` 与 `/native-settings/*`、`/server-management` 属电脑端完全控制接口，移动端不用。若 Android 也要标记已读，需同步改 `Endpoint.java` 与它的测试。
-2. **Keychain 实现本身仍未在运行时验证过。** 权限探测与文件回退已在模拟器实测（未签名包必然走回退，日志与界面都会写明），但 `KeychainTailnetStore` 的读写只在类型层面通过——本机没有签名身份，跑不到那条分支。用 Apple ID 在 Xcode 里构建一次，或用 Sideloadly 把 `ios/dist` 里的 `.ipa` 装到真机（它会注入权限），网络页的"状态存储"显示 `Keychain` 即说明这条分支已经生效。
-3. **`Finished()` 的说明会出现在 Java 与 ObjC 绑定里。** gomobile 原样复制 Go 的文档注释，Android 侧会看到一段为 Swift 写的说明，属可接受但需知悉。
-4. **配对流程还没有对着真实电脑端跑过一次。** 信封、电脑列表规则、状态机、字段校验都有可执行校验，但 `pair/request` 与 `pair/claim` 只做到类型检查。要验的其实是两件事：请求能不能穿过隧道到达网关，以及等待期间 App 被挂起再回来时 claim 还活不活。用诊断 App 的配对页在真机上实操即可，日志会逐条打印。
+当前按依赖分类的清单以 `WORKPLAN.md` 开头为准。本轮不需要实机的代码/模拟器结果位于 `dist/evidence/1.0.1-nondevice-20261011/`。
+
+- 无实机可继续：Android 1.0.1 数学公式渲染、剩余 19 场景的逐图对照、iPad 分屏及更多中英/深色/失败态。
+- 操作服务恢复坐标输入后：真正的边缘拖动完成/取消、长按与整行点击；控制器夹具通过不等于真实手势通过。
+- 实机或真实服务：iOS 15 iPhone/iPad、扫码确认返回、震动、锁屏/弱网、签名 Keychain、Files 提供器授权与真实远程命令/附件。用户此前已反馈 iOS/Windows 配对和列表成功，不能沿用旧文档「从未配对」的结论，也不能据此推定本轮全部路径已验收。
+
+白名单仅开放移动端所需接口，不为覆盖率开放电脑管理接口。`Finished()` 的绑定注释不是功能缺口；外部 VPN 后台下载的协议安全边界见 `WORKPLAN.md`。
 
 ## 距离 S1 验收还差的一步
 

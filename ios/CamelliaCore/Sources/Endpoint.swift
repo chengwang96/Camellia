@@ -130,9 +130,11 @@ public struct Endpoint: Equatable, Hashable, Sendable {
     /// cursor and touches nothing else, so it is not a command and does not go
     /// through `/commands`.
     private static let remotePath: NSRegularExpression = {
-        let pattern = "^/v1/(?:(?:status|commands|pair/(?:request|claim)"
+        let pattern = "^/v1/(?:commands/[a-f0-9-]{36}|conversations/[a-f0-9-]{36}/events\\?incremental=1"
+            + "|conversations\\?offset=[0-9]{1,12}&limit=(?:[1-9][0-9]{0,2}|1000)&query=(?:[A-Za-z0-9._*+-]|%[a-fA-F0-9]{2})*"
+            + "|(?:(?:status|commands|pair/(?:request|claim)"
             + "|conversations(?:/events|/[a-f0-9-]{36}(?:/(?:events|commands|read|artifacts(?:/[a-f0-9]{64})?))?)?)"
-            + "(?:\\?(?:offset|before)=[0-9]{1,12})?|api-keys)$"
+            + "(?:\\?(?:offset|before)=[0-9]{1,12})?|api-keys))$"
         guard let expression = try? NSRegularExpression(pattern: pattern) else {
             preconditionFailure("the remote path grammar is a literal and must compile")
         }

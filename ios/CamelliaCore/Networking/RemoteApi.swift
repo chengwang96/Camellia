@@ -66,6 +66,10 @@ public final class RemoteApi {
         RemoteListPage(try json("/v1/conversations?offset=\(offset)"))
     }
 
+    public func conversations(offset: Int, limit: Int, query: String) throws -> RemoteListPage {
+        RemoteListPage(try json(RemoteListQuery(query: query, limit: limit).path(offset: offset)))
+    }
+
     public func conversation(id: String, before: Int64? = nil) throws -> RemoteSnapshot {
         let path = "/v1/conversations/" + id + (before.map { "?before=\($0)" } ?? "")
         return RemoteSnapshot(try json(path))
@@ -75,12 +79,22 @@ public final class RemoteApi {
     public func command(_ action: String, conversationId: String? = nil, payload: [String: Any] = [:]) throws -> CommandResult {
         var body = payload
         body["action"] = action
-        body["requestId"] = body["requestId"] ?? UUID().uuidString
+        body["requestId"] = body["requestId"] ?? RemoteCommandID.make()
+        guard let requestId = body["requestId"] as? String, RemoteCommandID.isValid(requestId) else {
+            throw Failure(status: 400, detail: "Invalid command request identifier")
+        }
         // The desktop rejects a command whose instance does not match, which is
         // how a stale phone is stopped from driving a restarted session.
         body["instanceId"] = body["instanceId"] ?? ""
         let path = conversationId.map { "/v1/conversations/\($0)/commands" } ?? "/v1/commands"
         return CommandResult(try json(path, method: "POST", payload: body))
+    }
+
+    public func commandReceipt(requestId: String) throws -> CommandResult? {
+        guard RemoteCommandID.isValid(requestId) else {
+            throw Failure(status: 400, detail: "Invalid command request identifier")
+        }
+        return CommandResult(try json("/v1/commands/\(requestId)"))
     }
 
     /// Lists the files this conversation referenced and that still exist.

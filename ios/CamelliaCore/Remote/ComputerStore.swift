@@ -54,6 +54,7 @@ public struct PairedComputer: Equatable, Sendable {
     public var pendingCreate: JSONObject?
     /// A conversation command whose result was not confirmed yet.
     public var pendingCommand: JSONObject?
+    public var pendingStop: JSONObject?
     /// Unsent composer text, edit targets and attachment selections, keyed by
     /// conversation id. These live beside the credential because that whole
     /// profile is already sealed at rest, exactly like Android's profile.
@@ -67,7 +68,7 @@ public struct PairedComputer: Equatable, Sendable {
 
     private static let knownFields: Set<String> = [
         "address", "name", "computerName", "token", "deviceId", "permission",
-        "claim", "id", "expiresAt", "pendingCreate", "pendingCommand",
+        "claim", "id", "expiresAt", "pendingCreate", "pendingCommand", "pendingStop",
         "drafts", "draftEdits", "draftAttachments", "computers",
     ]
 
@@ -83,6 +84,7 @@ public struct PairedComputer: Equatable, Sendable {
         expiresAt: Int64? = nil,
         pendingCreate: JSONObject? = nil,
         pendingCommand: JSONObject? = nil,
+        pendingStop: JSONObject? = nil,
         drafts: JSONObject? = nil,
         draftEdits: JSONObject? = nil,
         draftAttachments: JSONObject? = nil
@@ -98,6 +100,7 @@ public struct PairedComputer: Equatable, Sendable {
         self.expiresAt = expiresAt
         self.pendingCreate = pendingCreate
         self.pendingCommand = pendingCommand
+        self.pendingStop = pendingStop
         self.drafts = drafts
         self.draftEdits = draftEdits
         self.draftAttachments = draftAttachments
@@ -116,6 +119,7 @@ public struct PairedComputer: Equatable, Sendable {
         expiresAt = json.isNull("expiresAt") ? nil : json.long("expiresAt")
         pendingCreate = json.object("pendingCreate")
         pendingCommand = json.object("pendingCommand")
+        pendingStop = json.object("pendingStop")
         drafts = json.object("drafts")
         draftEdits = json.object("draftEdits")
         draftAttachments = json.object("draftAttachments")
@@ -134,6 +138,7 @@ public struct PairedComputer: Equatable, Sendable {
         if let expiresAt { fields["expiresAt"] = expiresAt }
         if let pendingCreate { fields["pendingCreate"] = pendingCreate.raw }
         if let pendingCommand { fields["pendingCommand"] = pendingCommand.raw }
+        if let pendingStop { fields["pendingStop"] = pendingStop.raw }
         if let drafts { fields["drafts"] = drafts.raw }
         if let draftEdits { fields["draftEdits"] = draftEdits.raw }
         if let draftAttachments { fields["draftAttachments"] = draftAttachments.raw }
@@ -421,6 +426,7 @@ public final class ComputerStore {
         if next.computerName.isEmpty { next.computerName = stored.computerName }
         if next.pendingCreate == nil { next.pendingCreate = stored.pendingCreate }
         if next.pendingCommand == nil { next.pendingCommand = stored.pendingCommand }
+        if next.pendingStop == nil { next.pendingStop = stored.pendingStop }
         if next.drafts == nil { next.drafts = stored.drafts }
         if next.draftEdits == nil { next.draftEdits = stored.draftEdits }
         if next.draftAttachments == nil { next.draftAttachments = stored.draftAttachments }

@@ -22,11 +22,11 @@ struct RemotePageHeading: View {
             // Android's `pageTitle` is 19sp medium, and the detail screen reuses
             // the same TextView — so one title style covers both.
             Text(title)
-                .font(.system(size: Palette.textRowStrong, weight: .medium))
+                .font(.system(size: Palette.textCard, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.tail)
             HStack(spacing: 4) {
-                Image(systemName: systemImage).font(.system(size: Palette.textTiny))
+                MobileLineIcon(name: systemImage, size: 14)
                 Text(computer)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -86,12 +86,14 @@ struct SwitchComputerIcon: View {
 /// makes that the thing a person compares first — the system chevron is the
 /// wrong colour, the wrong size and in the wrong place.
 struct RoundBackButton: View {
+    var isPageBack = true
     let action: () -> Void
+    @Environment(\.isEnabled) private var enabled
+    @StateObject private var back = PageBackAction()
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: "chevron.left")
-                .font(.system(size: Palette.textRowStrong, weight: .medium))
+        Button { if isPageBack { back.perform(action) } else { action() } } label: {
+            MobileLineIcon(name: "back", size: 20)
                 .foregroundColor(Palette.ink)
                 .frame(width: 48, height: 48)
                 .background(
@@ -106,5 +108,11 @@ struct RoundBackButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("返回上一级")
+        .background {
+            if isPageBack {
+                PageBackSupport(action: back, enabled: enabled, onBack: action)
+                    .frame(width: 0, height: 0)
+            }
+        }
     }
 }

@@ -130,6 +130,7 @@ final class AppModel: ObservableObject {
     /// Whether an earlier-messages page is in flight, so the top control can
     /// show its spinner and refuse a second request.
     @Published var loadingOlder = false
+    @Published var historyStatus: String?
     /// Bumped once an earlier page lands, so the view can restore the reading
     /// position after the new rows are inserted above it.
     @Published var olderTick = 0
@@ -240,6 +241,7 @@ final class AppModel: ObservableObject {
     private var listFetchId: UUID?
     private var deferredListRefresh = false
     private var listCursor: Int64 = -1
+    private var serverListQuery = ""
     private struct PendingListEvent {
         let instance: String
         let cursor: Int64
@@ -332,6 +334,8 @@ final class AppModel: ObservableObject {
     /// other's request record.
     @Published private(set) var commandBusy = false
     private var commandTaskId: UUID?
+    @Published private(set) var stopBusy = false
+    private var stopTaskId: UUID?
 
     init(store: ComputerStore = AppStores.computerStore) {
         self.store = store
@@ -386,6 +390,30 @@ final class AppModel: ObservableObject {
     func setKeepAlive(_ value: Bool) {
         guard preferences.keepAlive != value else { return }
         preferences.keepAlive = value
+        objectWillChange.send()
+    }
+
+    func setHapticFeedback(_ enabled: Bool) {
+        preferences.hapticFeedback = enabled
+        objectWillChange.send()
+        if enabled { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+    }
+
+    func clearDownloadDirectory() {
+        preferences.downloadDirectoryBookmark = nil
+        preferences.downloadDirectoryLabel = ""
+        objectWillChange.send()
+    }
+
+    func setDownloadDirectory(_ folder: URL) async throws {
+        // Retain the picker grant until bookmark creation has finished off the UI thread.
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        let bookmark = try await Task.detached(priority: .utility) {
+            try DownloadDirectory.bookmark(for: folder)
+        }.value
+        preferences.downloadDirectoryBookmark = bookmark
+        preferences.downloadDirectoryLabel = folder.lastPathComponent
         objectWillChange.send()
     }
 
@@ -987,6 +1015,7 @@ final class AppModel: ObservableObject {
         listFetchId = nil
         deferredListRefresh = false
         listCursor = -1
+        serverListQuery = ""
         pendingListEvent = nil
         searchWork?.cancel()
         listPoll?.cancel()
@@ -1003,6 +1032,7 @@ final class AppModel: ObservableObject {
         openId = nil
         activeDetailIdentity = nil
         loadingOlder = false
+        historyStatus = nil
         olderTick = 0
         outgoing = nil
         outgoingEcho = nil
@@ -1181,7 +1211,10 @@ final class AppModel: ObservableObject {
             }
             session = try RemoteSession(computer: computer,
                                         transport: try RemoteApi(endpoint: endpoint, token: token,
-                                                                 attachments: AppStores.attachmentStore))
+                                                                 attachments: AppStores.attachmentStore),
+                                        commandTransport: try RemoteApi(endpoint: endpoint, token: token,
+                                                                        attachments: AppStores.attachmentStore),
+                                        urgentTransport: try RemoteApi(endpoint: endpoint, token: token))
         } catch {
             notice = Notice(text: Self.describe(error), serious: true)
             return
@@ -1288,13 +1321,24 @@ final class AppModel: ObservableObject {
         // Cleared on the way in: the retry button re-runs this, and a stale
         // message beside a fresh attempt reads as the retry having failed.
         listError = nil
-        let count = isSearching ? Int.max : (preservingVisibleCount ? max(100, conversations.count) : 0)
-        session.conversations(minimumCount: count) { [weak self] result in
+        let modern = access.capabilities.contains(.listQuery)
+        let query = modern ? RemoteListQuery(query: search).query : nil
+        let count = !modern && isSearching ? Int.max
+            : (preservingVisibleCount ? max(100, conversations.count) : 0)
+        let limit = preservingVisibleCount ? min(1000, max(100, conversations.count)) : 100
+        session.conversations(minimumCount: count, query: query, limit: limit) { [weak self] result in
             guard let self, self.listFetchId == id else { return }
             self.listFetchId = nil
             self.listLoading = false
             switch result {
             case .success(let page):
+                if let query, query != RemoteListQuery(query: self.search).query {
+                    self.deferredListRefresh = true
+                    event?.finish(.success(()))
+                    self.finishListFetch()
+                    return
+                }
+                self.serverListQuery = query ?? ""
                 self.conversations = page.conversations
                 self.workspaces = page.workspaces
                 self.nextListOffset = page.nextOffset
@@ -1344,16 +1388,25 @@ final class AppModel: ObservableObject {
     /// remain findable without making every first paint wait for the full list.
     func loadMoreConversations(searching: Bool = false) {
         guard let session, nextListOffset >= 0, listFetchId == nil else { return }
+        let modern = access.capabilities.contains(.listQuery)
+        let query = modern ? RemoteListQuery(query: search).query : nil
+        if let query, query != serverListQuery { refreshList(); return }
         let id = UUID()
         let offset = nextListOffset
         listFetchId = id
         listLoadingMore = true
-        session.conversations(offset: Int(offset), minimumCount: searching ? Int.max : 0) { [weak self] result in
+        session.conversations(offset: Int(offset), minimumCount: !modern && searching ? Int.max : 0,
+                              query: query) { [weak self] result in
             guard let self, self.listFetchId == id else { return }
             self.listFetchId = nil
             self.listLoadingMore = false
             switch result {
             case .success(let page):
+                if let query, query != RemoteListQuery(query: self.search).query {
+                    self.deferredListRefresh = true
+                    self.finishListFetch()
+                    return
+                }
                 if !self.listInstanceId.isEmpty && page.instanceId != self.listInstanceId {
                     self.refreshList()
                     return
@@ -1386,6 +1439,13 @@ final class AppModel: ObservableObject {
 
     func searchChanged() {
         searchWork?.cancel()
+        if access.capabilities.contains(.listQuery) {
+            guard serverListQuery != RemoteListQuery(query: search).query else { return }
+            let work = DispatchWorkItem { [weak self] in self?.refreshList() }
+            searchWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+            return
+        }
         guard isSearching, nextListOffset >= 0 else { return }
         let work = DispatchWorkItem { [weak self] in
             self?.loadMoreConversations(searching: true)
@@ -1415,6 +1475,7 @@ final class AppModel: ObservableObject {
     /// Remembers this computer's list, then queues its snapshots and later
     /// pages on the same schedule Android uses.
     private func saveCachedList() {
+        guard serverListQuery.isEmpty else { return }
         guard let computer = current, computer.isPaired,
               let token = computer.token, let endpoint = computer.endpoint else { return }
         listCache.save(address: computer.address, token: token,
@@ -1569,10 +1630,8 @@ final class AppModel: ObservableObject {
 
     /// The conversations the search box currently admits.
     ///
-    /// Matching is on the title alone, case-insensitively, which is what the
-    /// desktop's list gives the phone to match on — there is no server-side
-    /// search endpoint, so this is the same comparison Android runs. Pages are
-    /// completed by `searchChanged`, which drains later pages after a debounce.
+    /// New desktops filter and page on the server; older ones drain their
+    /// remaining pages. Local filtering also hides stale matches during debounce.
     var visibleConversations: [RemoteConversation] {
         let needle = ComposerText.androidTrim(search).lowercased()
         guard !needle.isEmpty else { return conversations }
@@ -1652,6 +1711,7 @@ final class AppModel: ObservableObject {
         activeDetailIdentity = identity
         streamState = .idle
         loadingOlder = false
+        historyStatus = nil
         if sameDetail {
             transcript.suspend()
         } else {
@@ -1675,7 +1735,8 @@ final class AppModel: ObservableObject {
         // retired — and a fetch submitted first would have its answer discarded
         // as stale when it came back. The old order also lost the fetch twice
         // over: the stream held the queue it was submitted to.
-        session.watch(conversationId: id, onSnapshot: { [weak self] snapshot in
+        session.watch(conversationId: id, incremental: access.capabilities.contains(.incrementalSnapshots),
+                      onSnapshot: { [weak self] snapshot in
             guard let self else { return }
             guard self.transcript.apply(snapshot) else { return }
             if snapshot.hasMessages {
@@ -1819,6 +1880,7 @@ final class AppModel: ObservableObject {
         artifacts = []
         transcript.reset()
         loadingOlder = false
+        historyStatus = nil
         publish()
         // Back to the list, which means watching the list again: opening the
         // conversation replaced this stream with the conversation's own.
@@ -1831,6 +1893,8 @@ final class AppModel: ObservableObject {
     /// only the transient spinner is released and the message becomes
     /// explicitly retryable.
     private func abandonActiveCommand() {
+        stopTaskId = nil
+        stopBusy = false
         guard commandBusy else { return }
         commandTaskId = nil
         commandBusy = false
@@ -1847,49 +1911,89 @@ final class AppModel: ObservableObject {
     /// Whether the open conversation has earlier messages the desktop can serve.
     var hasOlder: Bool { transcript.hasOlder }
 
-    /// Fetches one earlier page (`?before=`), keeping what is already on screen.
-    ///
-    /// Mirrors Android's `loadOlder`: refused while one is in flight, when the
-    /// desktop has no cursor, or once rows were evicted locally (a cursor into
-    /// history the phone has dropped would point at a hole). The page is folded
-    /// in with `mergeOlder`, never `apply` — an older page's first seq is
-    /// smaller than anything cached, so the supersede rule would delete the
-    /// rows the person is reading. A page from a different desktop instance is
-    /// dropped rather than merged, the same guard Android makes before render.
+    /// Load a bounded batch, continuing through process-only pages as Android
+    /// does. A full cache moves backwards instead of closing the history entry.
     func loadOlder() {
-        guard !loadingOlder, transcript.hasOlder, let session, let id = openId,
+        guard foregrounded, remoteScreenActive, !loadingOlder, transcript.hasOlder,
+              let session, let id = openId,
               let before = transcript.nextBefore else { return }
+        let instance = transcript.instanceId
         loadingOlder = true
+        historyStatus = usesChinese ? "正在加载更早消息…" : "Loading earlier messages…"
         publish()
-        session.snapshot(conversationId: id, before: before) { [weak self] result in
-            guard let self else { return }
+        session.earlierMessages(conversationId: id, instanceId: instance,
+                                cached: transcript.cachedSequences, before: before) { [weak self] result in
+            guard let self, self.session === session, self.openId == id else { return }
+            self.loadingOlder = false
+            switch result {
+            case .success(let page):
+                let previous = self.transcript.cachedSequences
+                if self.transcript.mergeOlder(page, instanceId: instance) {
+                    self.olderTick += 1
+                    let retained = self.transcript.cachedSequences
+                    let added = page.messages.filter { !previous.contains($0.seq)
+                        && retained.contains($0.seq) }
+                    let visible = added.filter { $0.role != .tool }.count
+                    if visible > 0 {
+                        self.historyStatus = self.usesChinese ? "已新增 \(visible) 条更早消息，上滑查看。"
+                            : "Added \(visible) earlier messages. Scroll up to view."
+                    } else if !added.isEmpty {
+                        self.historyStatus = self.usesChinese ? "已加载 \(added.count) 条过程记录，暂无新的聊天消息。"
+                            : "Loaded \(added.count) process records; no new chat messages."
+                    } else {
+                        self.historyStatus = self.usesChinese ? "没有新增更早消息。" : "No new earlier messages."
+                    }
+                    if !self.transcript.hasOlder {
+                        self.historyStatus = (self.historyStatus ?? "") + (self.usesChinese
+                            ? " 已到达会话最早消息" : " Reached the beginning of the conversation")
+                    }
+                } else {
+                    self.historyStatus = self.usesChinese ? "会话已更新，请重新加载更早消息。"
+                        : "Conversation updated. Load earlier messages again."
+                }
+            case .failure(let error):
+                self.historyFailed(error, session: session)
+            }
+            self.publish()
+        }
+    }
+
+    func loadLatest() {
+        guard foregrounded, remoteScreenActive, !loadingOlder, transcript.historyDetached,
+              let session, let id = openId else { return }
+        let instance = transcript.instanceId
+        loadingOlder = true
+        historyStatus = usesChinese ? "正在加载最新消息…" : "Loading latest messages…"
+        publish()
+        session.snapshot(conversationId: id) { [weak self] result in
+            guard let self, self.session === session, self.openId == id else { return }
             self.loadingOlder = false
             switch result {
             case .success(let snapshot):
-                if self.openId != id { self.publish(); return }
-                if self.transcript.mergeOlder(snapshot) {
-                    self.olderTick += 1
-                }
-            case .failure(let error):
-                if self.handleAuthenticatedFailure(error, session: session) { return }
-                guard self.openId == id else { self.publish(); return }
-                let http = error as? RemoteHttpError
-                let status = http?.status
-                let restored: Bool
-                if let http, http.status == 403 || http.status == 404 {
-                    restored = self.discardDeniedDetail(error: http, session: session)
+                if self.transcript.instanceId == instance, self.transcript.applyLatest(snapshot) {
+                    self.settleOutgoing()
+                    self.historyStatus = self.usesChinese ? "已回到最新消息" : "Back at the latest messages"
                 } else {
-                    restored = false
+                    self.historyStatus = self.usesChinese ? "会话已更新，请重新加载最新消息。"
+                        : "Conversation updated. Load latest messages again."
                 }
-                if status == 404, restored {
-                    self.notice = Notice(
-                        text: "会话不可用，可能已归档或不再授权。未确认的消息已恢复到输入框且未发送。",
-                        serious: false)
-                } else {
-                    self.notice = Notice(text: Self.describe(error), serious: false)
-                }
+            case .failure(let error): self.historyFailed(error, session: session)
             }
             self.publish()
+        }
+    }
+
+    private func historyFailed(_ error: Error, session: RemoteSession) {
+        historyStatus = nil
+        if handleAuthenticatedFailure(error, session: session) { return }
+        let http = error as? RemoteHttpError
+        let restored = http.map { ($0.status == 403 || $0.status == 404)
+            && discardDeniedDetail(error: $0, session: session) } ?? false
+        if http?.status == 404, restored {
+            notice = Notice(text: "会话不可用，可能已归档或不再授权。未确认的消息已恢复到输入框且未发送。",
+                            serious: false)
+        } else {
+            notice = Notice(text: Self.describe(error), serious: false)
         }
     }
 
@@ -1938,11 +2042,13 @@ final class AppModel: ObservableObject {
     private func deliver(session: RemoteSession, action: String, conversationId: String? = nil,
                          payload: [String: Any], draft: String? = nil,
                          pendingSlot requestedSlot: PendingSlot? = nil,
-                         attempt: Int = 0, requestId: String = UUID().uuidString,
+                         attempt: Int = 0, requestId: String = RemoteCommandID.make(),
                          journaled: Bool = false, taskId: UUID? = nil,
+                         lookupReceipt: Bool = false, confirmUntil: TimeInterval? = nil,
                          outcome: @escaping (CommandOutcome) -> Void) -> Bool {
         let slot: PendingSlot = requestedSlot ?? (conversationId == nil ? .list : .detail)
         let address = session.computer.address
+        let deadline = confirmUntil ?? (ProcessInfo.processInfo.systemUptime + 30)
         var body = payload
         body["action"] = action
         body["requestId"] = requestId
@@ -1996,7 +2102,8 @@ final class AppModel: ObservableObject {
             publish()
         }
 
-        session.command(action, conversationId: conversationId, payload: body) { [weak self] result in
+        session.command(action, conversationId: conversationId, payload: body,
+                        lookupReceipt: lookupReceipt && access.capabilities.contains(.commandReceipts)) { [weak self] result in
             guard let self, self.commandTaskId == deliveryId else { return }
             // Any newer command answer supersedes the previous status line.
             // A new 403/404 below immediately replaces it with its own cause.
@@ -2005,6 +2112,25 @@ final class AppModel: ObservableObject {
             case .failure(let error):
                 let status = (error as? RemoteHttpError)?.status
                 let terminal = status.map { $0 >= 400 && $0 < 500 && $0 != 429 } ?? false
+                if !terminal, self.access.capabilities.contains(.commandReceipts),
+                   ProcessInfo.processInfo.systemUptime + 2 < deadline, status != 429 {
+                    self.markPreparing()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        let active = self.foregrounded && self.remoteScreenActive && self.session === session
+                            && (slot == .list ? self.openId == nil : self.openId == conversationId && self.canDrive)
+                        guard active, self.commandTaskId == deliveryId else {
+                            self.finishCommand(id: deliveryId, slot: slot, address: address,
+                                               requestId: requestId, clearJournal: false,
+                                               outcome: .unconfirmed("连接或页面已切换；请重试同一请求。"), completion: outcome)
+                            return
+                        }
+                        self.deliver(session: session, action: action, conversationId: conversationId,
+                                     payload: payload, draft: draft, pendingSlot: slot, attempt: attempt + 1,
+                                     requestId: requestId, journaled: true, taskId: deliveryId,
+                                     lookupReceipt: true, confirmUntil: deadline, outcome: outcome)
+                    }
+                    return
+                }
                 self.finishCommand(id: deliveryId, slot: slot, address: address,
                                    requestId: requestId, clearJournal: terminal,
                                    outcome: terminal
@@ -2020,7 +2146,7 @@ final class AppModel: ObservableObject {
             case .success(let value):
                 switch CommandAck(result: value) {
                 case .pending:
-                    guard attempt < 5 else {
+                    guard ProcessInfo.processInfo.systemUptime < deadline else {
                         self.finishCommand(id: deliveryId, slot: slot, address: address,
                                            requestId: requestId, clearJournal: false,
                                            outcome: .unconfirmed("等待电脑确认超时；请重试同一请求，不要重复操作。"),
@@ -2028,7 +2154,7 @@ final class AppModel: ObservableObject {
                         return
                     }
                     self.markPreparing()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                         let active = self.foregrounded && self.remoteScreenActive
                             && self.session === session
                             && (slot == .list ? self.openId == nil
@@ -2044,6 +2170,7 @@ final class AppModel: ObservableObject {
                                      payload: payload, draft: draft, pendingSlot: slot,
                                      attempt: attempt + 1,
                                      requestId: requestId, journaled: true, taskId: deliveryId,
+                                     lookupReceipt: true, confirmUntil: deadline,
                                      outcome: outcome)
                     }
                 case .accepted, .queued:
@@ -2137,7 +2264,8 @@ final class AppModel: ObservableObject {
         publish()
         let started = deliver(session: session, action: action, conversationId: target,
                               payload: payload, pendingSlot: .list,
-                              requestId: requestId, journaled: true, taskId: taskId) { [weak self] result in
+                              requestId: requestId, journaled: true, taskId: taskId,
+                              lookupReceipt: true) { [weak self] result in
             guard let self else { return }
             switch result {
             case .accepted(let value):
@@ -2194,7 +2322,8 @@ final class AppModel: ObservableObject {
         publish()
         let started = deliver(session: session, action: action, conversationId: target,
                               payload: payload, pendingSlot: .detail,
-                              requestId: requestId, journaled: true, taskId: taskId) { [weak self] result in
+                              requestId: requestId, journaled: true, taskId: taskId,
+                              lookupReceipt: true) { [weak self] result in
             guard let self else { return }
             switch result {
             case .accepted(let value):
@@ -2843,12 +2972,110 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var canStop: Bool {
+        guard canDrive, !stopBusy, let id = openId else { return false }
+        if let pending = current?.pendingStop { return pending.text("conversationId") == id }
+        return transcript.live?.runId != nil || (access.capabilities.contains(.stopStart)
+            && !(transcript.preparation?.text("startId") ?? "").isEmpty)
+    }
+
     func stop() {
-        guard canDrive, !commandBusy, !hasPendingDetailOperation,
-              let id = openId, let runId = transcript.live?.runId, let session else { return }
-        deliver(session: session, action: "stop", conversationId: id, payload: [
-            "instanceId": transcript.instanceId, "runId": runId,
-        ], outcome: { [weak self] in self?.report($0) })
+        guard canStop, let id = openId, let session else { return }
+        let recovering = current?.pendingStop != nil
+        let pending: JSONObject
+        if let saved = current?.pendingStop {
+            guard saved.text("conversationId") == id else { return }
+            pending = saved
+        } else {
+            var payload: [String: Any] = ["instanceId": transcript.instanceId,
+                                          "requestId": RemoteCommandID.make()]
+            if let runId = transcript.live?.runId {
+                payload["action"] = "stop"
+                payload["runId"] = runId
+            } else if let startId = transcript.preparation?.string("startId"), !startId.isEmpty {
+                payload["action"] = "stop-start"
+                payload["startId"] = startId
+            } else { return }
+            pending = JSONObject(dictionary: ["conversationId": id, "payload": payload])
+            do {
+                let updated = try store.update(address: session.computer.address) { computer in
+                    if computer.pendingStop == nil { computer.pendingStop = pending }
+                }
+                guard updated.pendingStop?.object("payload")?.text("requestId")
+                    == pending.object("payload")?.text("requestId") else { return }
+                adopt(updated)
+            } catch {
+                notice = Notice(text: Self.describe(error), serious: true)
+                return
+            }
+        }
+        let ticket = UUID()
+        stopTaskId = ticket
+        stopBusy = true
+        checkStop(pending, session: session, ticket: ticket,
+                  deadline: ProcessInfo.processInfo.systemUptime + 30,
+                  lookupReceipt: recovering)
+    }
+
+    /// Stop has its own journal and transport, so preparing sends and slow GETs cannot block it.
+    private func checkStop(_ pending: JSONObject, session: RemoteSession, ticket: UUID,
+                           deadline: TimeInterval, lookupReceipt: Bool) {
+        guard stopTaskId == ticket, let payload = pending.object("payload") else { return }
+        let id = pending.text("conversationId")
+        session.command(payload.text("action"), conversationId: id, payload: payload.raw,
+                        lookupReceipt: lookupReceipt && access.capabilities.contains(.commandReceipts),
+                        urgent: true) { [weak self] result in
+            guard let self, self.stopTaskId == ticket else { return }
+            var retry = false
+            var resolved = false
+            switch result {
+            case .success(let value):
+                switch CommandAck(result: value) {
+                case .pending: retry = true
+                case .unknown:
+                    self.notice = Notice(text: "停止结果尚未确认，请查询同一请求。", serious: false)
+                default:
+                    resolved = true
+                    if !value.ok { self.notice = Notice(text: value.error, serious: false) }
+                }
+            case .failure(let error):
+                let status = (error as? RemoteHttpError)?.status
+                resolved = status.map { [400, 403, 404, 409, 413].contains($0) } ?? false
+                retry = !resolved && status != 401 && status != 429
+                if !retry { self.notice = Notice(text: Self.describe(error), serious: false) }
+            }
+            if retry, ProcessInfo.processInfo.systemUptime + 1.5 < deadline,
+               self.foregrounded, self.session === session, self.openId == id {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    guard self.foregrounded, self.session === session, self.openId == id else {
+                        if self.stopTaskId == ticket { self.stopTaskId = nil; self.stopBusy = false }
+                        return
+                    }
+                    self.checkStop(pending, session: session, ticket: ticket,
+                                   deadline: deadline, lookupReceipt: true)
+                }
+                return
+            }
+            if resolved {
+                do {
+                    let updated = try self.store.update(address: session.computer.address) { computer in
+                        if computer.pendingStop?.object("payload")?.text("requestId") == payload.text("requestId") {
+                            computer.pendingStop = nil
+                        }
+                    }
+                    self.adopt(updated)
+                } catch { self.notice = Notice(text: Self.describe(error), serious: true) }
+            } else if retry {
+                self.notice = Notice(text: "等待停止确认超时；可查询同一请求。", serious: false)
+            }
+            self.stopTaskId = nil
+            self.stopBusy = false
+            if case .failure(let error) = result,
+               (error as? RemoteHttpError)?.status == 401 {
+                _ = self.handleAuthenticatedFailure(error, session: session)
+            }
+            self.publish()
+        }
     }
 
     /// Asks the composer to take focus, for the empty screen's button.
@@ -2942,14 +3169,31 @@ final class AppModel: ObservableObject {
     }
 
     func configure(_ key: String, value: String) {
+        configure([key: value])
+    }
+
+    func configure(_ changes: [String: Any], expectedSettings: String? = nil) {
         guard canDrive, !commandBusy, !hasPendingDetailOperation,
               let session, let id = openId,
-              let settings = transcript.settings, settings.editable else { return }
+              let settings = transcript.settings else { return }
+        let requiresIdle = changes["permissionMode"] != nil
+        guard requiresIdle ? settings.editable : settings.modelEditable else { return }
+        if let expectedSettings, expectedSettings != settings.version {
+            notice = Notice(text: "设置已更新，请重新选择。", serious: false)
+            return
+        }
+        // Models, thinking and Fast can apply next turn. Permissions and
+        // cross-connection changes must wait until the current reply stops.
+        if !settings.editable {
+            if changes["permissionMode"] != nil { return }
+            if let connection = changes["connection"] as? String,
+               connection != settings.connection { return }
+        }
         configuring = true
         deliver(session: session, action: "configure", conversationId: id, payload: [
             "instanceId": transcript.instanceId,
             "expectedSettings": settings.version,
-            "settings": [key: value],
+            "settings": changes,
         ]) { [weak self] result in
             guard let self else { return }
             self.configuring = false

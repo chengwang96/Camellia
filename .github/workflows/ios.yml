@@ -81,8 +81,8 @@ jobs:
       - name: Check both apps for iOS 15 compatibility
         timeout-minutes: 10
         run: bash ios/check-client.sh
-      - name: Composer simulator regression
-        timeout-minutes: 10
+      - name: Composer, dock and navigation simulator regressions
+        timeout-minutes: 15
         run: |
           CAMELLIA_COMPOSER_UDID="$(xcrun simctl list devices available -j | python3 -c '
           import json, sys
@@ -98,9 +98,14 @@ jobs:
           ')"
           test -n "$CAMELLIA_COMPOSER_UDID"
           export CAMELLIA_COMPOSER_UDID
+          export CAMELLIA_DOCK_UDID="$CAMELLIA_COMPOSER_UDID"
+          export CAMELLIA_REMEDIATION_UDID="$CAMELLIA_COMPOSER_UDID"
           trap 'xcrun simctl shutdown "$CAMELLIA_COMPOSER_UDID" >/dev/null 2>&1 || true' EXIT
-          xcrun simctl bootstatus "$CAMELLIA_COMPOSER_UDID" -b
+          xcrun simctl boot "$CAMELLIA_COMPOSER_UDID" >/dev/null 2>&1 || true
+          perl -e 'alarm shift; exec @ARGV' 90 xcrun simctl bootstatus "$CAMELLIA_COMPOSER_UDID" -b
           bash ios/check-composer.sh
+          bash ios/check-dock.sh
+          bash ios/check-remediation.sh
       - name: Build unsigned iOS apps
         timeout-minutes: 15
         run: |
