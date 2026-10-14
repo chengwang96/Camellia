@@ -107,7 +107,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   // its window recovers, and a stale snapshot can never sideline a key forever.
   let quotaIntervalMs = quotaCheck.intervalMs >= 1000 ? quotaCheck.intervalMs : 15 * 60 * 1000;
   let quotaTtlMs = Math.max(quotaIntervalMs * 3, 10 * 60 * 1000);
-  const quotaQuery = typeof quotaCheck.query === 'function' ? quotaCheck.query : queryAccount;
+  const quotaQuery = typeof quotaCheck.query === 'function' ? quotaCheck.query
+    : (provider, key) => queryAccount(provider, key, { fetchImpl: quotaCheck.fetchImpl });
   // An injected probe is authoritative: it lets a caller (or a test) supply
   // quota data for a host that has no built-in account adapter.
   const quotaQueryInjected = typeof quotaCheck.query === 'function';
@@ -183,12 +184,15 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
             if (!applicable()) continue;
             if (result.status && result.status !== 'ok') throw new Error('Account query did not return a successful reading');
             const windows = (result.windows || []).map(window => ({ id: window.id, label: window.label || window.id,
-              usedPercent: typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent) ? window.usedPercent : null }));
+              usedPercent: typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent) ? window.usedPercent : null,
+              ...(typeof window.remainingValue === 'number' && Number.isFinite(window.remainingValue)
+                ? { remainingValue: window.remainingValue, unit: window.unit } : {}) }));
             const balances = (result.balances || []).map(balance => ({ id: balance.id, currency: balance.currency,
               value: typeof balance.value === 'number' && Number.isFinite(balance.value) ? balance.value : null }));
             if (!windows.some(window => window.usedPercent !== null) && !balances.some(balance => balance.value !== null)) throw new Error('Account query returned no recognized balance or quota');
             const balanceExhausted = !windows.length && balances.length > 0 && balances.every(balance => balance.value !== null && balance.value <= 0);
-            const exhausted = windows.some(window => window.usedPercent !== null && window.usedPercent >= 100) || balanceExhausted;
+            const exhausted = typeof result.exhausted === 'boolean' ? result.exhausted
+              : windows.some(window => window.usedPercent !== null && window.usedPercent >= 100) || balanceExhausted;
             quota.set(key.id, { identity, exhausted, balanceExhausted, windows, balances, checkedAt: Date.now(), attemptedAt: Date.now(), error: null });
             if (!exhausted) {
               const usage = cfg.usage[key.id];

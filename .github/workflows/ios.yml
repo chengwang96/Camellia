@@ -82,8 +82,10 @@ jobs:
         timeout-minutes: 10
         run: bash ios/check-client.sh
       - name: Composer, dock and navigation simulator regressions
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
+          set -o pipefail
+          mkdir -p ios/dist/simulator-checks
           CAMELLIA_COMPOSER_UDID="$(xcrun simctl list devices available -j | python3 -c '
           import json, sys
           devices = json.load(sys.stdin)["devices"]
@@ -102,10 +104,18 @@ jobs:
           export CAMELLIA_REMEDIATION_UDID="$CAMELLIA_COMPOSER_UDID"
           trap 'xcrun simctl shutdown "$CAMELLIA_COMPOSER_UDID" >/dev/null 2>&1 || true' EXIT
           xcrun simctl boot "$CAMELLIA_COMPOSER_UDID" >/dev/null 2>&1 || true
-          perl -e 'alarm shift; exec @ARGV' 90 xcrun simctl bootstatus "$CAMELLIA_COMPOSER_UDID" -b
+          perl -e 'alarm shift; exec @ARGV' 240 xcrun simctl bootstatus "$CAMELLIA_COMPOSER_UDID" -b 2>&1 | tee ios/dist/simulator-checks/boot.log
           bash ios/check-composer.sh
           bash ios/check-dock.sh
           bash ios/check-remediation.sh
+      - name: Save simulator startup diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-simulator-checks
+          if-no-files-found: ignore
+          retention-days: 14
+          path: ios/dist/simulator-checks/
       - name: Build unsigned iOS apps
         timeout-minutes: 15
         run: |

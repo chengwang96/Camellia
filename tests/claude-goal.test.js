@@ -235,6 +235,97 @@ test('pause and resume isolates a new verification from the old verdict', async 
   assert.equal(harness.goal.view().verified.evidence, 'current evidence');
 });
 
+test('revising an active goal preserves its identity, ownership and accumulated progress', t => {
+  const h = setup(t);
+  h.goal.start({ objective: 'Build a website', criterion: 'Browser test passes', sessionId: 'conversation', workspaceId: 'workspace', engine: 'codex' });
+  h.tick(); h.advance(5000);
+  h.goal.touch({ errorStreak: 2, lastErrorSubtype: 'network', blockerStreak: 2, lastBlocker: 'Old blocker', verifyStreak: 2, lastVerify: 'Old criterion unmet', verified: { evidence: 'Old evidence' } });
+  const before = h.goal.view(), owner = h.goal.owner;
+  const update = { objective: ' Build a library ', criterion: ' Library tests pass ', reason: 'The user changed the deliverable', user_request: '改成库' };
+  const revised = h.goal.revise(update);
+  assert.equal(revised.ok, true); assert.equal(revised.updated, true);
+  for (const key of ['id', 'createdAt', 'roundsStarted', 'elapsedMs', 'activeSince', 'sessionId', 'workspaceId', 'engine', 'phase', 'armed'])
+    assert.equal(revised.goal[key], before[key], key);
+  assert.equal(h.goal.owner, owner); assert.equal(h.goal.ownedSession(), h.session);
+  assert.equal(h.interrupts(), 0); assert.equal(h.timers.size, 0);
+  assert.equal(revised.goal.revision, 1); assert.equal(revised.goal.objective, 'Build a library');
+  assert.deepEqual(revised.goal.lastRevision, { at: 6000, reason: update.reason, userRequest: update.user_request,
+    previousObjective: 'Build a website', previousCriterion: 'Browser test passes' });
+  assert.equal(revised.goal.errorStreak, 0); assert.equal(revised.goal.blockerStreak, 0); assert.equal(revised.goal.verifyStreak, 0);
+  assert.equal(revised.goal.lastVerify, null); assert.equal(revised.goal.verified, null);
+  const saved = fs.readFileSync(h.options.file(), 'utf8');
+  assert.equal(JSON.parse(saved).criterion, 'Library tests pass');
+  h.advance(1000);
+  assert.equal(h.goal.revise(update).updated, false);
+  assert.equal(fs.readFileSync(h.options.file(), 'utf8'), saved);
+  h.result({ result: 'Updated the deliverable' }); h.tick();
+  assert.match(h.prompts.at(-1), /Goal continuation.*Build a library/);
+  assert.match(h.prompts.at(-1), /Completion criterion.*Library tests pass/);
+  assert.match(h.prompts.at(-1), /Latest user instruction: 改成库/);
+  assert.doesNotMatch(h.prompts.at(-1), /Build a website|Browser test passes|Old criterion/);
+});
+
+test('paused and blocked goal revisions stay stopped and persist across restart', t => {
+  for (const phase of ['paused', 'blocked']) {
+    const h = setup(t); h.goal.start({ objective: 'Original', criterion: 'Original criterion' });
+    h.goal.setPhase(phase);
+    const revised = h.goal.revise({ criterion: '', reason: 'The user removed the criterion', user_request: '不要这个条件' });
+    assert.equal(revised.ok, true); assert.equal(revised.goal.objective, 'Original'); assert.equal(revised.goal.criterion, null);
+    assert.equal(revised.goal.phase, phase); assert.equal(revised.goal.armed, false); assert.equal(h.timers.size, 0);
+    const restored = new ClaudeGoal(h.options); restored.load();
+    assert.equal(restored.view().criterion, null); assert.equal(restored.view().revision, 1);
+    assert.equal(restored.view().phase, phase); assert.equal(restored.view().armed, false);
+  }
+});
+
+test('missing, complete and invalid goals cannot be revised', t => {
+  const h = setup(t), update = { objective: 'New', reason: 'Changed scope', user_request: 'New request' };
+  assert.equal(h.goal.revise(update).ok, false);
+  h.goal.start({ objective: 'Original' });
+  const expected = h.goal.view();
+  for (const bad of [{ ...update, objective: '' }, { ...update, objective: null }, { ...update, criterion: 1 },
+    { ...update, reason: '' }, { ...update, user_request: '' }, { reason: 'No fields', user_request: 'New request' }]) {
+    assert.equal(h.goal.revise(bad).ok, false); assert.deepEqual(h.goal.view(), expected);
+  }
+  h.goal.setPhase('complete'); assert.equal(h.goal.revise(update).ok, false);
+  assert.equal(h.goal.view().objective, 'Original'); assert.equal(h.goal.view().phase, 'complete');
+});
+
+test('goals saved before revision support can be revised without migration', t => {
+  const h = setup(t); h.goal.start({ objective: 'Legacy goal', criterion: 'Keep this criterion' }); h.goal.setPhase('paused');
+  const saved = JSON.parse(fs.readFileSync(h.options.file(), 'utf8')); delete saved.revision; delete saved.lastRevision;
+  fs.writeFileSync(h.options.file(), JSON.stringify(saved));
+  const restored = new ClaudeGoal(h.options); restored.load();
+  const updated = restored.revise({ objective: 'Current goal', reason: 'Changed scope', user_request: 'New scope' });
+  assert.equal(updated.ok, true); assert.equal(updated.goal.revision, 1); assert.equal(updated.goal.criterion, 'Keep this criterion');
+  assert.equal(updated.goal.id, saved.id); assert.equal(updated.goal.phase, 'paused');
+});
+
+test('a revision aborts old verification and ignores late success, rejection and errors', async t => {
+  for (const outcome of [{ pass: true, reason: 'Old success' }, { pass: false, reason: 'Old failure' }, new Error('Old error')]) {
+    const checks = [];
+    const h = setup(t, { verifyCompletion: (claim, { signal }) => new Promise((resolve, reject) => checks.push({ claim, signal, resolve, reject })) });
+    h.goal.start({ objective: 'Original', criterion: 'Old criterion' }); h.tick(); h.result({ result: '<goal:complete>' });
+    assert.equal(h.goal.revise({ objective: 'Revised', criterion: 'New criterion', reason: 'Changed scope', user_request: 'Use the new scope' }).ok, true);
+    assert.equal(checks[0].signal.aborted, true); assert.equal(h.goal.view().verifying, null);
+    const expected = h.goal.view();
+    if (outcome instanceof Error) checks[0].reject(outcome); else checks[0].resolve(outcome);
+    await h.settle(); assert.deepEqual(h.goal.view(), expected); assert.equal(h.timers.size, 1);
+    h.tick(); h.result({ goalReport: { status: 'complete', reason: 'Revised work checked' } });
+    assert.equal(checks[1].claim.objective, 'Revised'); assert.equal(checks[1].claim.criterion, 'New criterion');
+    checks[1].resolve({ pass: true, reason: 'New evidence' }); await h.settle();
+    assert.equal(h.goal.view().phase, 'complete'); assert.equal(h.goal.view().verified.evidence, 'New evidence');
+  }
+});
+
+test('a revision replaces a pending verification retry with work toward the current goal', async t => {
+  let checks = 0;
+  const h = setup(t, { verifyCompletion: async () => { checks++; return { error: 'Temporary network failure' }; } });
+  h.goal.start({ objective: 'Original' }); h.tick(); h.result({ result: '<goal:complete>' }); await h.settle();
+  h.goal.revise({ objective: 'Revised', reason: 'Changed scope', user_request: 'New scope' }); h.tick(); await h.settle();
+  assert.equal(checks, 1); assert.equal(h.prompts.length, 2); assert.match(h.prompts.at(-1), /Revised/);
+});
+
 test('verify verdicts ignore fenced or quoted markers', () => {
   assert.equal(verifySignal('```\n<verify:pass>\n```'), null);
   assert.equal(verifySignal('> <verify:pass>'), null);
@@ -249,6 +340,16 @@ function denyGoalWrites(t, h) {
     return write(file, ...args);
   });
 }
+
+test('failed revision persistence keeps the saved objective and stops its owned response', t => {
+  const h = setup(t); h.goal.start({ objective: 'Original', criterion: 'Original criterion' }); h.tick();
+  const saved = fs.readFileSync(h.options.file(), 'utf8'), write = denyGoalWrites(t, h);
+  const revised = h.goal.revise({ objective: 'Revised', reason: 'Changed scope', user_request: 'New scope' });
+  assert.equal(revised.ok, false); assert.match(revised.error, /disk full/);
+  assert.equal(h.goal.view().objective, 'Original'); assert.equal(h.goal.view().revision, 0);
+  assert.equal(h.goal.view().armed, false); assert.equal(h.interrupts(), 1); assert.equal(h.timers.size, 0);
+  assert.equal(fs.readFileSync(h.options.file(), 'utf8'), saved); write.mock.restore();
+});
 
 test('a goal that cannot be saved never starts or reports success', t => {
   const changes = [], h = setup(t, { onChange: (goal, error) => changes.push({ goal, error }) });

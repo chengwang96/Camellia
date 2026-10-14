@@ -84,6 +84,22 @@ with sync_playwright() as p:
             expect(page.locator('.context-compaction[data-state="running"]')).to_have_count(0)
             assert page.evaluate('actions.filter(a=>a.action==="send" && a.payload.editSeq).length') == 1
             assert page.evaluate('actions.filter(a=>a.action==="goal-resume" || a.action==="goal-start").length') == 0
+            # A persisted tool revision uses the normal goal event while an
+            # ordinary user response runs; it must refresh details without
+            # resuming the paused goal.
+            page.evaluate('''() => {
+              Object.assign(currentGoal, {objective:'Build a reusable library',criterion:'Library tests pass',revision:1});
+              receiveGoal({sessionId:context.sessionId,goal:currentGoal});
+            }''')
+            goal_chip = page.locator('#goalChipRow .goal-chip').first
+            expect(goal_chip).to_have_attribute('title', 'Build a reusable library')
+            expect(goal_chip).to_contain_text('Goal paused')
+            goal_chip.click()
+            expect(page.locator('.dsh-pop')).to_contain_text('Build a reusable library')
+            expect(page.locator('.dsh-pop')).to_contain_text('Criterion: Library tests pass')
+            expect(page.locator('.dsh-pop')).not_to_contain_text('Finish the complete plan')
+            page.locator('#input').click()
+            assert page.evaluate('actions.filter(a=>a.action==="goal-resume" || a.action==="goal-start").length') == 0
             assert not errors, errors
             page.screenshot(path=str(preview / f'goal-compaction-{mode}-{theme}.png'), animations='disabled')
             page.evaluate('''() => {
@@ -97,4 +113,4 @@ with sync_playwright() as p:
             assert not errors, errors
             page.close()
     browser.close()
-print('PASS: five-hour Goal pause acknowledgement, follow-up, steering, edit/resend, and storage error visibility; light/dark; no model calls')
+print('PASS: five-hour Goal pause acknowledgement, follow-up, steering, edit/resend, revised goal details, and storage error visibility; light/dark; no model calls')

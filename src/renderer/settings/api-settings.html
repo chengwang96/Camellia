@@ -57,7 +57,7 @@
       <h2 class="usage-api-title" data-i18n>Usage history</h2>
       <div class="filter-row"><label data-i18n>Source<select id="usageSource"><option value="" data-i18n>All activity</option><option value="subscription" data-i18n>Subscription accounts</option><option value="api" data-i18n>API Keys</option></select></label><label data-i18n>Date<select id="usageRange"><option value="7" data-i18n>Last 7 days</option><option value="30" data-i18n>Last 30 days</option><option value="90" data-i18n>Last 90 days</option><option value="all" selected data-i18n>Total</option></select></label><label data-i18n>Provider<select id="usageProvider"></select></label><label data-i18n>Account / Key<select id="usageKey"></select></label><label data-i18n>Model<select id="usageModel"></select></label></div>
       <div id="usageSummary" class="usage-summary"></div>
-      <div id="subscriptionCostCard" class="subscription-cost"><div><small data-i18n>Subscription estimate (USD)</small><strong id="subscriptionCost"></strong></div><div><p id="subscriptionCostNote" class="hint"></p><p id="subscriptionUsageSince" class="hint"></p><p id="subscriptionPriceStatus" class="hint" aria-live="polite"></p><button id="subscriptionPricesRefresh" type="button" data-i18n>Refresh and recalculate</button></div></div>
+      <div id="subscriptionCostCard" class="subscription-cost"><div id="subscriptionCostSummary" role="group" aria-label="Subscription estimate (USD)" data-i18n-attrs="aria-label"><small data-i18n>Subscription estimate (USD)</small><strong id="subscriptionCost"></strong></div><div class="subscription-cost-actions"><button id="subscriptionPricesRefresh" type="button" title="Refresh and recalculate" data-i18n data-i18n-attrs="title">Refresh</button><p id="subscriptionPriceStatus" class="hint" aria-live="polite" hidden></p></div></div>
       <div class="section-head"><h2 data-i18n>Account/model usage trends</h2><select id="usageMetric" aria-label="Usage chart metric" data-i18n-attrs="aria-label"><option value="tokens" data-i18n>Token usage</option><option value="requests" data-i18n>Successful requests</option><option value="inputTokens" data-i18n>Input tokens</option><option value="outputTokens" data-i18n>Output tokens</option><option value="failures" data-i18n>Failed / Canceled</option><option value="estimatedCostUsd" data-i18n>Subscription estimate (USD)</option></select></div>
       <div id="usageChart" class="chart-grid-layout"></div>
       <div id="usageChartNotes"></div>
@@ -231,7 +231,7 @@
   <section id="codexResetDetails" class="codex-reset-details" hidden><h3 data-i18n>Reset credit details</h3><ul id="codexResetCredits"></ul></section>
   <p id="codexResetDetailHint" class="hint" hidden></p>
   <p id="codexResetMessage" class="hint" role="status" aria-live="polite"></p>
-  <div class="codex-reset-actions"><button type="button" id="cancelCodexReset" autofocus data-i18n>Cancel</button><button type="button" id="confirmCodexReset" class="primary" disabled data-i18n>Confirm and use one credit</button></div>
+  <div class="codex-reset-actions"><button type="button" id="cancelCodexReset" autofocus data-i18n>Cancel</button><button type="button" id="retryCodexReset" hidden data-i18n>Retry query</button><button type="button" id="confirmCodexReset" class="primary" disabled data-i18n>Confirm and use one credit</button></div>
 </dialog>
 <dialog id="runtimeReinstallDialog" class="runtime-reinstall-dialog" aria-labelledby="runtimeReinstallTitle" aria-describedby="runtimeReinstallDescription">
   <form method="dialog" class="dialog-head"><h2 id="runtimeReinstallTitle" data-i18n>Reinstall with Camellia</h2><button value="cancel" aria-label="Close" data-i18n-attrs="aria-label">×</button></form>
@@ -250,9 +250,10 @@
         <p class="hint" data-i18n>Subscription accounts are not transferred.</p>
         <label class="import-scope"><input type="checkbox" id="dataScopeAll"><span data-i18n>Select all</span></label>
         <label class="import-scope"><input type="checkbox" id="importScopeApi" checked><span><strong data-i18n>API configuration</strong><span class="hint" id="importScopeApiHint"></span></span></label>
-        <label class="import-scope"><input type="checkbox" id="importScopeSettings" checked><span><strong data-i18n>Application settings</strong><span class="hint" id="importScopeSettingsHint"></span></span></label>
+        <label class="import-scope"><input type="checkbox" id="importScopeSettings" checked><span><strong data-i18n>Application settings</strong><span class="hint" data-i18n>Settings page options only</span><span class="hint" id="importScopeSettingsHint"></span></span></label>
         <label class="import-scope"><input type="checkbox" id="importScopeConversations" checked><span><strong data-i18n>Conversation history</strong><span class="hint" id="importScopeConversationsHint"></span></span></label>
         <p class="hint" id="dataScopeNote" data-i18n>Selected files overwrite matching ones in this installation; current files are backed up first. Restart Camellia when the import finishes.</p>
+        <p class="hint" id="dataScopeCompatibility" hidden></p>
         <p class="hint error" id="importDataError" hidden></p>
         <button id="confirmImportData" class="primary" data-i18n>Import selected data</button>
       </dialog>

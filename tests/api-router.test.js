@@ -1143,6 +1143,43 @@ test('Gemini tool signatures round-trip through streamed Anthropic conversion an
   assert.equal(f.router.getState().usage['google-key-1'].byModel['gemini-test'].requests, 2);
 });
 
+test('Command Code monthly readings retain credit units in routing state and cannot become a percentage', async t => {
+  let monthly = 34.96, purchased = 0;
+  const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)),
+    () => [provider('commandcode', 'https://api.commandcode.ai/provider/v1', ['test-key'])],
+    { quotaCheck: { intervalMs: 60000, fetchImpl: async url => ({ ok: true, status: 200, json: async () =>
+      url.includes('whoami') ? {} : url.includes('subscriptions') ? { success: true, data: { status: 'active' } }
+        : { credits: { monthlyCredits: monthly, purchasedCredits: purchased, freeCredits: 0 }, windowLimits: { fiveHour: { used: 0, cap: 14 }, weekly: { used: 0, cap: 35 } } } }) } });
+  await f.router.refreshQuota();
+  let state = f.router.getState().quota['commandcode-key-0'];
+  assert.deepEqual(state.windows[2], { id: 'monthly', label: 'Monthly', usedPercent: null, remainingValue: 34.96, unit: 'credits' });
+  assert.equal(state.exhausted, false);
+  monthly = 0; await f.router.refreshQuota();
+  assert.equal(f.router.getState().quota['commandcode-key-0'].exhausted, true);
+  purchased = 5; await f.router.refreshQuota();
+  assert.equal(f.router.getState().quota['commandcode-key-0'].exhausted, false);
+});
+
+test('the built-in Ollama quota probe shares its fetch transport and respects purchased credit availability', async t => {
+  let purchased = 5;
+  const calls = [];
+  const f = await fixture(t, (r, res) => reply(res, 200, completion(r.body.model)),
+    url => [provider('ollama', 'https://ollama.com/v1', ['test-key']), provider('relay', url)],
+    { quotaCheck: { intervalMs: 60000, fetchImpl: async (url, options) => {
+      calls.push(url); assert.equal(options.headers.Authorization, 'Bearer test-key');
+      return { ok: true, status: 200, json: async () => ({ included: { balance_usd: 0, allowance_usd: 60 }, purchased: { balance_usd: purchased } }) };
+    } } });
+  await f.router.refreshQuota();
+  assert.ok(calls.length > 0); assert.ok(calls.every(url => url === 'https://ollama.com/api/balance'));
+  assert.equal(f.router.getState().quota['ollama-key-0'].windows[0].usedPercent, 100);
+  assert.equal(f.router.getState().quota['ollama-key-0'].exhausted, false);
+  assert.equal(f.router.getState().quota['relay-key-0'], undefined);
+  purchased = 0; await f.router.refreshQuota();
+  assert.equal(f.router.getState().quota['ollama-key-0'].exhausted, true);
+  purchased = 3; await f.router.refreshQuota();
+  assert.equal(f.router.getState().quota['ollama-key-0'].exhausted, false);
+});
+
 test('keys out of quota leave the pool and return once their window recovers', async t => {
   const exhaustedKeys = new Set(['spent']);
   const logs = [];

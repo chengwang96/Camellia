@@ -110,6 +110,11 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 .provider .provider-mark, .balance-card .provider-mark { width: 28px; height: 28px; border-radius: 8px; }
 .balance-card .provider-mark img { width: 23px; height: 23px; }
 .balance-card .quota-preview { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.balance-card .quota-breakdown { display: grid; gap: 8px; margin-top: 10px; }
+.balance-card .quota-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; align-items: baseline; }
+.balance-card .quota-row small { font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.balance-card .quota-row small:last-of-type { text-align: right; font-variant-numeric: tabular-nums; }
+.balance-card .quota-row .meter { grid-column: 1 / -1; margin: 0; }
 .preset-account { border-top: 1px solid var(--dsw-alias-border-l2); margin-top: 18px; padding-top: 14px; }
 .preset-account button { margin-top: 10px; white-space: normal; }
 .provider { border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; padding: 12px 14px; min-width: 0; overflow-wrap: anywhere; }
@@ -180,7 +185,8 @@ td { border-top: 1px solid var(--dsw-alias-border-l2); padding: 10px 8px; overfl
 .subscription-cost { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 28px; padding: 16px 0 24px; margin-bottom: 12px; border-bottom: 1px solid var(--ds-color-border, #dcdcdc); }
 .subscription-cost[hidden] { display: none; }
 .subscription-cost strong { display: block; font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; margin-top: 7px; }
-.subscription-cost .hint { margin: 4px 0; }
+.subscription-cost-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.subscription-cost .hint { margin: 0; overflow-wrap: anywhere; }
 .usage-summary strong { display: block; font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; margin: 7px 0 2px; }
 .chart-panel { border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; padding: 20px 18px 12px; }
 .chart-tile { min-width: 0; padding: 14px 12px 10px; }

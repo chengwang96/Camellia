@@ -12,8 +12,8 @@ const { createInterface } = require('node:readline');
 const { AcpSession } = require('../src/engines/acp-session');
 const { ClaudeHistory } = require('../src/engines/claude-history');
 const { antigravitySpawnSpec, subscriptionSpawnSpec } = require('../src/engines/antigravity');
-const { locatePythonRuntime } = require('../src/main/python-runtime');
-const { locateAntigravityCli } = require('../src/main/antigravity-cli-runtime');
+const { locatePythonRuntime, SUPPORTED_SDK_VERSIONS } = require('../src/main/python-runtime');
+const { locateAntigravityCli, SUPPORTED_CLI_VERSIONS } = require('../src/main/antigravity-cli-runtime');
 const { parseModels, groupModels, runCli } = require('../src/engines/antigravity/subscription');
 const { prepareWindowsJob } = require('../src/engines/discussions/windows-job');
 const { WindowsJobJournal } = require('../src/engines/discussions/windows-job-journal');
@@ -24,8 +24,8 @@ const { removeTree } = require('./test-fs.cjs');
 async function main() {
   assert.equal(process.platform, 'win32');
   const runtimeDir = path.resolve(__dirname, '../runtimes/antigravity');
-  const sdk = locatePythonRuntime(runtimeDir), cli = locateAntigravityCli(runtimeDir);
-  assert.equal(sdk?.version, '0.1.17'); assert.equal(cli?.version, '1.2.3');
+  const sdk = locatePythonRuntime(runtimeDir), cli = locateAntigravityCli(path.resolve(process.argv[2] || runtimeDir));
+  assert.ok(SUPPORTED_SDK_VERSIONS.includes(sdk?.version)); assert.ok(SUPPORTED_CLI_VERSIONS.includes(cli?.version));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-native-extensions-'));
   const journal = new WindowsJobJournal({ dir: path.join(root, 'jobs') });
   const jobs = [], sessions = [], logs = [], requests = [], observations = [];
@@ -93,7 +93,14 @@ if (kind.endsWith('mcp')) {
     const home = path.join(folder, 'adapter');
     const spec = isCli ? subscriptionSpawnSpec({ runtime: cli, home, env, model, effort: selected.defaultReasoningEffort || '', literalInput })
       : antigravitySpawnSpec({ runtime: sdk, home, env, route: { baseUrl }, executionPolicy: 'tool-free-v1' });
-    if (isCli) Object.assign(spec.env, fixtureEnv);
+    if (isCli) {
+      Object.assign(spec.env, fixtureEnv);
+      // Slash expansion belongs to the CLI's print frontend. The interactive
+      // Connect transport sends message text directly and does not expand it.
+      const native = JSON.parse(spec.env.CAMELLIA_ANTIGRAVITY_CLI);
+      spec.env.CAMELLIA_ANTIGRAVITY_CLI = JSON.stringify({ ...native, ...(literalInput ? { legacyStream: true } : {}) });
+      if (process.argv[3]) spec.args[0] = path.resolve(process.argv[3]);
+    }
     const begin = requests.length;
     if (customAgent) {
       const args = ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', model,
@@ -144,6 +151,8 @@ if (kind.endsWith('mcp')) {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     await probe('cli-expanded'); await probe('cli-literal'); await probe('sdk'); await probe('cli-agent');
     const [expanded, literal, toolFree, custom] = observations;
+    fs.mkdirSync(path.resolve(__dirname, '../dist'), { recursive: true });
+    fs.writeFileSync(path.resolve(__dirname, '../dist/antigravity-extension-probe.json'), JSON.stringify({ cliVersion: cli.version, observations }, null, 2));
     for (const value of [expanded, literal, custom]) for (const name of ['global-mcp', 'workspace-mcp']) {
       assert.ok(value.events.some(event => event.kind === name && event.method === 'tools/list'),
         'The canary must reach discovery: ' + value.kind + '/' + name);

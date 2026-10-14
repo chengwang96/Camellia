@@ -60,7 +60,19 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
   // A meter turns amber below a quarter and red below a tenth so the card
   // reads at a glance instead of relying on the number alone.
   const level = remaining => remaining < 10 ? 'critical' : remaining < 25 ? 'low' : 'ok';
-  if (container.querySelector('.subscription-note:not([hidden])')) return;
+  if (container.querySelector('.subscription-note:not([hidden])')) {
+    // Keep the note draft and focus while a background switch updates selection.
+    for (const card of container.querySelectorAll('.subscription-card')) {
+      const account = state?.accounts?.find(account => account.id === card.dataset.cardId);
+      card.classList.toggle('active', Boolean(account?.active));
+      const current = card.querySelector('.subscription-current');
+      if (!account?.active) current?.remove();
+      else if (!current) card.querySelector('.subscription-badges').insertAdjacentHTML('afterbegin', `<span class="subscription-current">${esc(t('Current'))}</span>`);
+      const select = card.querySelector('[data-card-action="switch"]');
+      if (select) select.disabled = Boolean(busy || account?.active || !account?.signedIn || state?.accounts?.some(account => account.loginPending));
+    }
+    return;
+  }
   container.innerHTML = (state?.accounts || []).map(account => {
     const action = (name, label, disabled = false, hint = label) => `<button type="button" data-card-action="${name}" title="${esc(t(hint))}" aria-label="${esc(t(label))}" ${disabled ? 'disabled' : ''}>${icon(name)}</button>`;
     const windows = account.quotaWindows || [];

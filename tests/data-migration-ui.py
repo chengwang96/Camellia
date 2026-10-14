@@ -8,6 +8,7 @@ bridge = """
 window.transferCalls = [];
 window.storageCalls = [];
 window.previewCategories = {api:{files:3,bytes:1200}, settings:{files:0,bytes:0}};
+window.previewSkippedEngines = [];
 window.directoryState = {legacy:true,canMigrate:true,source:'C:/Users/Test/AppData/Roaming/dsh-desktop',destination:'C:/Users/Test/AppData/Roaming/camellia'};
 const empty = {ok:true,providers:[],config:{providers:[],usage:{},active:{}},models:[],engines:[],state:{}};
 const waitForTransfer = async () => {
@@ -25,7 +26,7 @@ window.dshDesktop = new Proxy({}, {get: (_target, name) => {
   if (name === 'dataImport') return async (file, scope) => {
     transferCalls.push({type:'import',file,scope});
     if (!scope) return Object.values(previewCategories).some(category => category.files > 0)
-      ? {ok:true,needsSelection:true,file:'C:/exports/camellia.zip',categories:previewCategories}
+      ? {ok:true,needsSelection:true,file:'C:/exports/camellia.zip',categories:previewCategories,skippedEngines:previewSkippedEngines}
       : {ok:false,error:'The package has no Camellia data to import'};
     await waitForTransfer();
     return window.importResult || {ok:true,restored:3,bytes:1200,scope};
@@ -187,6 +188,29 @@ with sync_playwright() as playwright:
                 page.evaluate("migrationProgress({phase:'export',bytes:1200,totalBytes:1200,percent:99})")
                 expect(page.locator("#dataMigrationStatus")).to_have_text(final_status)
     page.evaluate("exportResult = null; importResult = null")
+
+    for language in ["en", "zh-CN"]:
+        page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
+        page.evaluate("previewCategories = {settings:{files:2,bytes:500}}; previewSkippedEngines = ['codex','kimi']; importResult = {ok:true,restored:0,bytes:0,scope:['settings'],skippedEngines:previewSkippedEngines}")
+        page.locator("#importData").click()
+        expect(page.locator("#dataScopeCompatibility")).to_contain_text("Codex, Kimi Code")
+        expect(page.locator("#importScopeSettings")).to_be_checked()
+        page.locator("#confirmImportData").click()
+        expect(page.locator("#importData")).to_be_enabled()
+        expect(page.locator("#dataMigrationStatus")).to_contain_text(
+            "No compatible settings to import." if language == "en" else "没有可在本机导入的设置。")
+        expect(page.locator("#dataMigrationStatus")).to_contain_text("Codex, Kimi Code")
+        assert "Restart Camellia" not in page.locator("#dataMigrationStatus").text_content()
+        page.locator("#exportData").click()
+        expect(page.locator("#dataScopeCompatibility")).to_be_hidden()
+        page.keyboard.press("Escape")
+        page.evaluate("previewSkippedEngines = []; importResult = {ok:true,restored:1,bytes:50,scope:['settings'],skippedPaths:['memoryDirectory']}")
+        page.locator("#importData").click()
+        page.locator("#confirmImportData").click()
+        expect(page.locator("#importData")).to_be_enabled()
+        expect(page.locator("#dataMigrationStatus")).to_contain_text(
+            "Unavailable local paths or plugins were skipped" if language == "en" else "已跳过不可用的本机路径或插件")
+    page.evaluate("importResult = null; previewCategories = {api:{files:3,bytes:1200},settings:{files:5,bytes:2048},conversations:{files:10,bytes:5120}}")
 
     for language in ["en", "zh-CN"]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)

@@ -25,7 +25,7 @@ with sync_playwright() as playwright:
         async runtimeState() { return {ok: true, engines: structuredClone(rows)}; },
         async runtimeCheckUpdates() {
           calls.checks++;
-          const engines = rows.map(row => ({id: row.id, installed: row.version, latest: '2.0.0',
+          const engines = rows.map(row => ({id: row.id, mode: row.mode, installed: row.version, latest: '2.0.0',
             checkable: true, updateAvailable: row.id !== 'codex' && row.version !== '2.0.0', error: row.id === 'dsh' ? 'offline' : null}));
           if (window.holdCheck) await new Promise(resolve => { window.finishCheck = resolve; });
           if (window.failCheck) throw new Error('offline');
@@ -40,11 +40,20 @@ with sync_playwright() as playwright:
     expect(badge).to_be_visible()
     expect(badge).to_contain_text('有更新')
     expect(badge).to_have_attribute('title', 'Claude Code runtime：v1.0.0 → v2.0.0。查看更新')
-    expect(page.locator('.runtime-update:visible')).to_have_count(1)
+    expect(page.locator('.runtime-update:visible')).to_have_count(2)
+    cli_badge = page.locator('[data-runtime-update=antigravity]')
+    expect(cli_badge).to_be_visible()
     expect(page.locator('.harness-card .entry-description')).to_have_count(0)
     badge.click()
     assert page.evaluate('calls.settings') == [{'page': 'engines', 'engine': 'claude', 'focus': 'updates'}]
     assert page.evaluate('calls.launches') == []
+    cli_badge.click()
+    assert page.evaluate('calls.settings')[-1] == {'page': 'engines', 'engine': 'antigravity', 'focus': 'updates'}
+    # A cached SDK check must never advertise a subscription CLI update.
+    page.evaluate("runtimeRows.get('antigravity').mode = 'api'; renderRuntimeUpdates()")
+    expect(cli_badge).to_be_hidden()
+    page.evaluate("runtimeRows.get('antigravity').mode = 'subscription'; renderRuntimeUpdates()")
+    expect(cli_badge).to_be_visible()
     page.evaluate("rows[0].updating = true; runtimeChanged(structuredClone(rows))")
     expect(page.locator('#enterClaude')).to_be_disabled()
     expect(badge).to_be_hidden()

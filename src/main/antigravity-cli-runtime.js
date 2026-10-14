@@ -9,7 +9,7 @@ const { writeJson } = require('../shared/json-store');
 const { execFileSync, spawnSync } = require('node:child_process');
 const versions = new Map();
 const checkedPaths = new Map();
-const SUPPORTED_CLI_VERSIONS = Object.freeze(['1.2.3', '1.2.14']);
+const SUPPORTED_CLI_VERSIONS = Object.freeze(['1.2.3', '1.2.14', '1.3.5']);
 
 function isAntigravityCliHelp(output) {
   // The IDE, Python and other native executables also answer --version. Check

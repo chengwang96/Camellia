@@ -74,6 +74,60 @@ test('opening/canceling is read-only and redemption requires the matching second
   assert.equal(f.consumes().length, 1, 'completed confirmation cannot consume another card');
 });
 
+test('reset queries work when a forced login refresh is stalled', async t => {
+  const f = fixture(t), original = f.client.request;
+  f.client.request = async (method, params) => {
+    if (method === 'account/read' && params.refreshToken) throw new Error('Forced login refresh stalled');
+    return original(method, params);
+  };
+  const preview = await f.service().preview();
+  assert.equal(preview.credits.availableCount, 3);
+  assert.equal(preview.account.email, f.account.email);
+  assert.equal(f.consumes().length, 0);
+});
+
+test('reset queries time out during startup and can retry without publishing the late read', async t => {
+  const f = fixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let connect;
+  const connection = new Promise(resolve => { connect = resolve; });
+  const service = createResetCredits({ file: f.file, getClient: () => connection,
+    publish: patch => f.patches.push(patch), now: () => f.now });
+  const pending = service.preview();
+  const expired = assert.rejects(pending, /Reset credit query timed out/);
+  t.mock.timers.tick(30000);
+  await expired;
+  connect(f.client);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.calls.length, 0, 'expired startup cannot start another account read');
+  assert.equal(f.patches.length, 0);
+  assert.equal((await service.preview()).credits.availableCount, 3);
+  assert.equal(f.consumes().length, 0);
+});
+
+for (const heldMethod of ['account/read', 'account/rateLimits/read']) {
+  test(`a reset query stalled at ${heldMethod} cannot overwrite a successful retry`, async t => {
+    const f = fixture(t), original = f.client.request;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let finish;
+    f.client.request = async (method, params) => {
+      if (method === heldMethod && !finish) await new Promise(resolve => { finish = resolve; });
+      return original(method, params);
+    };
+    const service = f.service(), pending = service.preview();
+    while (!finish) await new Promise(resolve => setImmediate(resolve));
+    const expired = assert.rejects(pending, /Reset credit query timed out/);
+    t.mock.timers.tick(30000);
+    await expired;
+    const retry = await service.preview();
+    finish();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.patches.length, 1, 'only the successful retry publishes account state');
+    assert.equal((await service.consume({ confirmed: true, confirmationToken: retry.confirmationToken })).outcome, 'reset');
+    assert.equal(f.consumes().length, 1);
+  });
+}
+
 test('expired confirmation and changed account cannot consume a reset credit', async t => {
   const f = fixture(t), service = f.service(), first = await service.preview();
   f.now += 300001;

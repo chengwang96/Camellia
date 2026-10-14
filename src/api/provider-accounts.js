@@ -5,6 +5,13 @@ const { normalizeThinking } = require('../shared/model-levels');
 const number = value => value === null || value === undefined || value === '' ? null : Number.isFinite(Number(value)) ? Number(value) : null;
 const labels = { session: "Current session", rolling: "5-hour", fiveHour: "5-hour", weekly: "Weekly", monthly: "Monthly", daily: "Daily" };
 const time = value => value && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
+function creditTime(value) {
+  if (typeof value !== 'number' && !/^\d+(?:\.\d+)?$/.test(String(value))) return time(value);
+  const timestamp = number(value);
+  if (timestamp === null || timestamp <= 0) return null;
+  const date = new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
 function windowRow(id, value, multiplier = 1) {
   const percent = number(value);
   return percent === null ? null : { id, label: labels[id] || id, usedPercent: Math.max(0, percent * multiplier), resetsAt: null };
@@ -89,19 +96,32 @@ const adapters = [
     },
   },
   {
-    id: 'ollama', label: "Ollama Cloud quota", source: 'observed',
-    docs: 'https://docs.ollama.com/api/usage',
+    id: 'ollama', label: "Ollama Cloud quota", source: 'official',
+    docs: 'https://docs.ollama.com/api/balance',
     matches: u => u.hostname === 'ollama.com',
     async query(u, get) {
-      const data = await get(`${u.origin}/api/usage`), out = empty();
-      for (const [id, usage] of Object.entries(data.limits || {})) {
-        const row = windowRow(id, usage.usage, 100);
-        if (row) out.windows.push(row);
-        for (const m of usage.models || []) out.modelUsage.push({ model: m.name, period: labels[id] || id, requests: number(m.request_count) });
+      const data = await get(`${u.origin}/api/balance`), out = empty();
+      const included = data.included;
+      // Legacy plans report the percentage remaining, rather than a usage
+      // fraction. The usage endpoint now contains request statistics only.
+      for (const id of ['session', 'weekly']) {
+        const remaining = number(included?.[id]?.remaining_percent);
+        if (remaining === null || remaining < 0 || remaining > 100) continue;
+        out.windows.push({ ...windowRow(id, 100 - remaining), resetsAt: time(included[id].resets_at) });
       }
-      for (const m of data.activity?.models || []) out.modelUsage.push({ model: m.name, period: "Provider reporting period", requests: number(m.request_count) });
-      // activity.cost is metered usage, not an available cash balance. No
-      // currency, reset time or absolute quota is inferred from it.
+      const plan = number(included?.balance_usd), purchased = number(data.purchased?.balance_usd);
+      if (plan !== null && purchased !== null) {
+        const value = plan + purchased;
+        out.balances.push({ id: 'available', label: "Available balance", value, currency: 'USD',
+          parts: [{ label: "Plan", value: plan }, { label: "Add-on", value: purchased }] });
+        // New plans have a monthly credit allowance, with no session/weekly
+        // limits. A spent allowance does not block purchased credits.
+        out.exhausted = value <= 0;
+      }
+      const allowance = number(included?.allowance_usd);
+      if (plan !== null && purchased !== null && allowance !== null && allowance > 0) {
+        out.windows.push({ ...windowRow('monthly', (allowance - plan) / allowance * 100), resetsAt: time(included.period?.until) });
+      }
       return requireData(out);
     },
   },
@@ -112,20 +132,39 @@ const adapters = [
     async query(u, get) {
       const who = await get(`${u.origin}/alpha/whoami?limits=1`);
       const org = who.org?.id ? '?orgId=' + encodeURIComponent(who.org.id) : '';
-      const data = await get(`${u.origin}/alpha/billing/credits${org}`), out = empty();
+      const [data, subscriptionResponse] = await Promise.all([
+        get(`${u.origin}/alpha/billing/credits${org}`),
+        get(`${u.origin}/alpha/billing/subscriptions${org}`).catch(() => null),
+      ]);
+      const out = empty();
       const credits = data.credits;
       if (credits) {
         const parts = [['monthlyCredits', "Plan"], ['purchasedCredits', "Add-on"], ['freeCredits', "Promotional"]].map(([key, label]) => ({ label, value: number(credits[key]) }));
         if (parts.every(p => p.value !== null)) out.balances.push({ id: 'credits', label: "Remaining credits", value: parts.reduce((sum, p) => sum + p.value, 0), currency: 'credits', parts });
       }
       for (const [id, usage] of Object.entries(data.windowLimits || {})) {
+        // This container also includes limited/exceeded flags; exceeded may
+        // be null when no usage window is currently exhausted.
+        if (!usage || typeof usage !== 'object' || Array.isArray(usage)) continue;
         const used = number(usage.used), cap = number(usage.cap);
-        if (used !== null && cap !== null && cap > 0) out.windows.push({ id, label: labels[id] || id, usedPercent: Math.max(0, used / cap * 100), resetsAt: time(usage.resetAt) });
+        if (used !== null && cap !== null && cap > 0) out.windows.push({ id, label: labels[id] || id, usedPercent: Math.max(0, used / cap * 100), resetsAt: creditTime(usage.resetAt) });
+      }
+      const subscription = subscriptionResponse?.success !== false ? subscriptionResponse?.data : null;
+      const monthly = number(credits?.monthlyCredits);
+      if (monthly !== null && ['active', 'trialing'].includes(subscription?.status)) {
+        // The API reports remaining monthly credits, but no monthly cap. Show
+        // that amount directly; published plan totals can vary by renewal.
+        out.windows.push({ id: 'monthly', label: "Monthly", usedPercent: null, remainingValue: monthly,
+          unit: 'credits', resetsAt: creditTime(subscription.currentPeriodEnd) });
       }
       for (const limit of who.orgLimits || []) {
         const spent = number(limit.spent), cap = number(limit.limit);
         if (spent !== null && cap !== null && cap > 0) out.windows.push({ id: 'org-' + (limit.model || 'all'), label: limit.modelLabel || limit.model || "Organization limit",
-          model: limit.model || null, usedPercent: Math.max(0, spent / cap * 100), resetsAt: time(limit.resetAt) });
+          model: limit.model || null, usedPercent: Math.max(0, spent / cap * 100), resetsAt: creditTime(limit.resetAt) });
+      }
+      if (out.balances.length) {
+        const extra = number(credits.purchasedCredits) + number(credits.freeCredits);
+        out.exhausted = out.balances[0].value <= 0 || (extra <= 0 && out.windows.some(window => window.usedPercent >= 100));
       }
       return requireData(out);
     },

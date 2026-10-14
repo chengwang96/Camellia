@@ -27,6 +27,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   // One entry per signed-in ChatGPT account. Every account owns a CODEX_HOME so
   // several sign-ins can stay active at once; native threads live there too.
   const accountEntries = new Map();
+  let accountSelectionRevision = 0;
   let pendingAccount = null;
   const wakingAccounts = new Set();
   const wakeClients = new Set();
@@ -72,6 +73,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
     const config = loadConfig();
     saveConfig({ subscriptionAccounts: { ...config.subscriptionAccounts, codex: accounts || accountList() },
       subscriptionActive: { ...config.subscriptionActive, codex: next || activeId() } });
+    if (next) accountSelectionRevision++;
   }
   const connectionFor = id => connections()[id] || settings().connection;
   function settings(sessionId) {
@@ -112,7 +114,20 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   function accountState(id = activeId()) {
     const value = accountEntry(id);
     return { ...value.state, installed: Boolean(runtimes().locate('codex')), loginPending: Boolean(pendingAccount || value.loginId), home: value.home,
-      activeId: activeId(), accounts: accountOptions.accountSummaries({ engine: 'codex', accounts: accountList(), states: accountStates(), activeId: activeId() }) };
+      activeId: activeId(), selectionRevision: accountSelectionRevision,
+      accounts: accountOptions.accountSummaries({ engine: 'codex', accounts: accountList(), states: accountStates(), activeId: activeId() }) };
+  }
+  function syncAccountSelection({ id, expected }) {
+    // A late response must not undo a manual choice or another turn's switch.
+    if (activeId() !== expected?.activeId || accountSelectionRevision !== expected?.selectionRevision) return null;
+    const account = accountState().accounts.find(account => account.id === id);
+    // Serving this turn may consume the last quota; its selection still counts.
+    if (!account?.signedIn || account.loginPending) return null;
+    if (id !== activeId()) {
+      saveAccountConfig({ activeId: id });
+      const state = accountState(); onAccount(state); return state;
+    }
+    return accountState();
   }
   function publishAccount(id, patch) {
     const value = accountEntry(id);
@@ -426,7 +441,7 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
   };
   return { get session() { return sessions.legacy; },
     get active() { return Boolean(sessions.active || [...accountEntries.values()].some(entry => entry.client && !entry.client.dead)); },
-    home, goal, settings, saveSettings, handlers, ensureSession, history, sessions, workspaces, accountState,
+    home, goal, settings, saveSettings, handlers, ensureSession, history, sessions, workspaces, accountState, syncAccountSelection,
     async shutdown() {
       await Promise.allSettled([...wakeClients].map(client => client.shutdown()));
       await sessions.shutdown();

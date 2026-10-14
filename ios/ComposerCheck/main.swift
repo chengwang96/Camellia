@@ -98,5 +98,6 @@ private final class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 }
 
+FileHandle.standardOutput.write(Data("[composer-check] starting\n".utf8))
 UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil,
                   NSStringFromClass(AppDelegate.self))

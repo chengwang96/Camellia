@@ -413,16 +413,15 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     if (id === 'antigravity' && row.status === 'error' && row.customPath) return `<span ${marker} data-i18n class="badge bad">CLI path unavailable</span>`;
     if (row.status !== 'ready') return `${row.status === 'error' ? `<span ${marker} data-i18n class="badge bad">Download failed</span>` : ''}<button ${row.status === 'error' ? '' : marker} data-install="${id}" data-i18n>${row.status === 'error' ? 'Retry download' : 'Download'}</button>`;
     if (row.external) return `<p class="hint runtime-update runtime-external-update"><span ${marker} data-i18n>Update this CLI using its original installer</span>${api.runtimeReinstall ? ` <button data-reinstall="${id}" data-i18n ${runtimePathBusy ? 'disabled' : ''}>Use Camellia</button>` : ''}</p>`;
-    // SDK update information belongs to API mode; the subscription CLI ships
-    // with Camellia and must never receive the SDK's update action.
-    if (id === 'antigravity' && row.mode === 'subscription') return `<span ${marker} data-i18n class="badge good">Installed</span>`;
     const info = runtimeUpdateInfo[id];
-    if (!info) return '<span data-runtime-status data-i18n class="badge good">Installed</span>';
-    if (!info.checkable) return `<p data-runtime-status class="hint runtime-update" data-i18n>${info.external ? 'Update this CLI using its original installer' : 'Updates ship with the app'}</p>`;
-    if (info.error) return `<p data-runtime-status class="hint runtime-update"><span data-i18n>Update check failed</span> · ${esc(info.error)}</p>`;
-    if (!info.installed) return '<span data-runtime-status data-i18n class="badge good">Installed</span>';
-    if (info.updateAvailable && info.latest !== row.version) return `<p class="hint runtime-update"><span data-runtime-status data-i18n class="badge">v${esc(info.latest)} is available</span> <button data-update="${id}" data-i18n ${runtimeUpdatesBusy ? 'disabled' : ''}>Update</button></p>`;
-    return '<span data-runtime-status data-i18n class="badge good">Up to date</span>';
+    // Mode changes must not reuse the SDK's version check for the native CLI.
+    if (id === 'antigravity' && info && info.mode !== row.mode) return `<span ${marker} data-i18n class="badge good">Installed</span>`;
+    if (!info || info.installed && info.installed !== row.version) return `<span ${marker} data-i18n class="badge good">Installed</span>`;
+    if (!info.checkable) return `<p ${marker} class="hint runtime-update" data-i18n>${info.external ? 'Update this CLI using its original installer' : 'Updates ship with the app'}</p>`;
+    if (info.error) return `<p ${marker} class="hint runtime-update"><span data-i18n>Update check failed</span> · ${esc(info.error)}</p>`;
+    if (!info.installed) return `<span ${marker} data-i18n class="badge good">Installed</span>`;
+    if (info.updateAvailable && info.latest !== row.version) return `<p class="hint runtime-update"><span ${marker} data-i18n class="badge">v${esc(info.latest)} is available</span> <button data-update="${id}" data-i18n ${runtimeUpdatesBusy ? 'disabled' : ''}>Update</button></p>`;
+    return `<span ${marker} data-i18n class="badge good">Up to date</span>`;
   }
   function renderRuntimes(rows) {
     runtimeRows = rows;

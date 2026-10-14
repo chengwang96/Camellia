@@ -5,8 +5,47 @@ const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 const net = require('node:net');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { createGoalToolBridge } = require('../src/engines/goal-tool-bridge');
 const { matchesUserRequest, validateTool, instructions } = require('../src/engines/goal-tools');
+
+test('a long Unicode temporary path still supports authenticated Unix IPC and cleanup', {
+  skip: process.platform === 'win32' ? 'Unix domain socket paths are platform-specific' : false, timeout: 15000,
+}, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-ipc-test-'));
+  const temporary = path.join(root, '目录'.repeat(20)); fs.mkdirSync(temporary);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const script = `
+    const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), net = require('node:net');
+    const { createGoalToolBridge } = require(${JSON.stringify(require.resolve('../src/engines/goal-tool-bridge'))});
+    (async () => {
+      let calls = 0;
+      const bridge = await createGoalToolBridge({ node: process.execPath, call: () => { calls++; return { ok: true }; } });
+      try {
+        const endpoint = bridge.config.env.CAMELLIA_GOAL_ENDPOINT, directory = path.dirname(endpoint);
+        assert.ok(Buffer.byteLength(endpoint) <= 103, endpoint);
+        assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
+        const response = await new Promise((resolve, reject) => {
+          const socket = net.createConnection(endpoint); let text = '';
+          socket.setEncoding('utf8'); socket.on('error', reject);
+          socket.on('connect', () => socket.write(JSON.stringify({ token: bridge.config.env.CAMELLIA_GOAL_TOKEN,
+            name: 'camellia_get_goal', arguments: { run_token: 'fixture' } }) + '\\n'));
+          socket.on('data', chunk => { text += chunk; }); socket.on('end', () => resolve(JSON.parse(text)));
+        });
+        assert.equal(response.ok, true); assert.equal(calls, 1);
+        await bridge.close(); await bridge.close();
+        assert.equal(fs.existsSync(directory), false, 'Closing removes the private socket directory');
+      } finally { await bridge.close(); }
+    })().catch(error => { console.error(error); process.exitCode = 1; });`;
+  const proc = spawn(process.execPath, ['-e', script], { env: { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary },
+    windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => proc.kill());
+  let output = ''; proc.stdout.on('data', data => { output += data; }); proc.stderr.on('data', data => { output += data; });
+  const code = await new Promise((resolve, reject) => { proc.once('error', reject); proc.once('close', resolve); });
+  assert.equal(code, 0, output);
+});
 
 test('packaged stdio helper includes every local tool schema dependency', () => {
   const unpacked = require('../package.json').build.asarUnpack;
@@ -24,6 +63,22 @@ test('request provenance accepts natural language anywhere in the current messag
   assert.match(instructions, /never require a special phrase, prefix or punctuation/);
   assert.throws(() => validateTool('camellia_get_goal', { run_token: 'current', sessionId: 'other' }), /Unexpected argument/);
   assert.throws(() => validateTool('camellia_create_goal', { run_token: 'current', objective: 'x' }), /Missing argument/);
+});
+
+test('goal updates accept either an outcome or a revision with current user provenance', () => {
+  const base = { run_token: 'current', reason: 'The user now wants a library' };
+  for (const patch of [{ objective: 'Build a library' }, { criterion: 'Library tests pass' }, { criterion: '' }])
+    assert.doesNotThrow(() => validateTool('camellia_update_goal', { ...base, ...patch, user_request: '改成库' }));
+  assert.doesNotThrow(() => validateTool('camellia_update_goal', { ...base, status: 'complete' }));
+  assert.doesNotThrow(() => validateTool('camellia_update_goal', { ...base, status: 'blocked' }));
+  assert.throws(() => validateTool('camellia_update_goal', base), /Provide objective or criterion/);
+  assert.throws(() => validateTool('camellia_update_goal', { ...base, objective: 'Build a library' }), /Missing argument: user_request/);
+  assert.throws(() => validateTool('camellia_update_goal', { ...base, objective: ' ', user_request: '改成库' }), /Invalid argument: objective/);
+  assert.throws(() => validateTool('camellia_update_goal', { ...base, criterion: null, user_request: '改成库' }), /Invalid argument: criterion/);
+  assert.throws(() => validateTool('camellia_update_goal', { ...base, objective: 'Build a library', status: 'complete', user_request: '改成库' }), /Do not combine/);
+  assert.throws(() => validateTool('camellia_update_goal', { ...base, status: 'complete', user_request: '改成库' }), /only used for a goal revision/);
+  assert.match(instructions, /user need not explicitly ask to edit a goal/);
+  assert.match(instructions, /never weaken a goal just to claim completion/);
 });
 
 test('broker rejects unauthenticated, malformed and unknown requests and closes twice safely', { timeout: 10000 }, async t => {
@@ -67,6 +122,13 @@ test('stdio MCP lists tools and forwards authenticated calls to the application'
   const invalid = await request('tools/call', { name: 'camellia_get_goal', arguments: { run_token: 'current', sessionId: 'other' } });
   assert.equal(invalid.result.isError, true);
   assert.equal(calls.length, 1);
+  const revision = { run_token: 'current', objective: 'Build a library', criterion: '', user_request: '改成库', reason: 'The task scope changed' };
+  const revised = await request('tools/call', { name: 'camellia_update_goal', arguments: revision });
+  assert.equal(revised.result.isError, false);
+  assert.deepEqual(calls.at(-1), { name: 'camellia_update_goal', args: revision });
+  const mixed = await request('tools/call', { name: 'camellia_update_goal', arguments: { ...revision, status: 'complete' } });
+  assert.equal(mixed.result.isError, true);
+  assert.equal(calls.length, 2);
   assert.ok(listed.some(tool => tool.name === 'camellia_task_create'));
   // File search is exposed to the model so a described-but-unnamed file can be
   // located by content, and its arguments are validated like every other tool.

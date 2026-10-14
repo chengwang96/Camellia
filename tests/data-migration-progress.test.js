@@ -7,7 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
-const { createDataPackage, importDataPackage } = require('../src/main/data-migration');
+const JSZip = require('jszip');
+const { createDataPackage, importDataPackage, MANIFEST } = require('../src/main/data-migration');
 const { ImportTransaction } = require('../src/main/data-import-transaction');
 const { removeTree } = require('./test-fs.cjs');
 
@@ -61,7 +62,16 @@ test('multipart export reports cumulative bytes across snapshot and every archiv
   assert.equal(result.parts.length, 3);
   assertPendingProgress(events, ['snapshot', 'export']);
   const exporting = events.filter(event => event.phase === 'export');
-  const total = 30 * 1024 + Buffer.byteLength('{"language":"en"}');
+  // Portable settings are filtered and serialized before archiving. Measure
+  // the payloads actually written rather than the source profile's raw bytes.
+  let total = 0;
+  for (const part of result.parts) {
+    const archive = await JSZip.loadAsync(fs.readFileSync(part));
+    for (const entry of Object.values(archive.files)) {
+      if (!entry.dir && entry.name !== MANIFEST) total += (await entry.async('nodebuffer')).length;
+    }
+  }
+  assert.ok(total > 30 * 1024);
   assert.ok(exporting.every(event => event.totalBytes === total));
   assert.equal(exporting.at(-1).bytes, total);
   for (let index = 1; index < exporting.length; index++) assert.ok(exporting[index].bytes >= exporting[index - 1].bytes);
@@ -74,6 +84,8 @@ test('import progress includes staging validation and activation for more than 2
   for (let index = 0; index < 405; index++) write(source, `conversations/${index}.jsonl`, '{"seq":1}\n');
   const file = path.join(source.root, 'profile.zip');
   await createDataPackage({ ...source, destination: file });
+  // Imported directory preferences must resolve to an existing destination.
+  fs.mkdirSync(path.join(target.dataDir, 'memory'), { recursive: true });
   const events = [];
   const result = await importDataPackage({ ...target, file, onProgress: state => events.push(state) });
   assert.equal(result.restored, 406);

@@ -60,7 +60,7 @@ test('the settings handlers export and re-import the selected profile categories
     const imported = await target.call('data-import', { file: packageFile, scope: ['api', 'settings', 'conversations'] });
     assert.equal(imported.ok, true);
     assert.equal(imported.canceled, undefined);
-    assert.equal(imported.restored, exported.files);
+    assert.equal(imported.restored, exported.files - 1, 'portable preferences and history metadata share the destination desktop file');
     assert.deepEqual(imported.scope, ['api', 'settings', 'conversations']);
     const config = path.join(target.home, '.dsh', 'ollama-proxy.json');
     assert.equal(fs.existsSync(config), true);
@@ -82,6 +82,29 @@ test('a dismissed dialog changes nothing', async t => {
     assert.equal(imported.ok, true); assert.equal(imported.canceled, true);
     assert.equal(fs.existsSync(missing), false);
   } finally { h.cleanup(); }
+});
+
+test('import IPC checks installed harnesses again after preview and never starts an installation', async () => {
+  let installed = { codex: true };
+  const source = createHarness(), target = createHarness(undefined, {
+    runtimeLocator: engine => installed[engine] ? { file: 'fixture-runtime', version: '1.0.0' } : null,
+  });
+  try {
+    const native = path.join(source.userData, 'codex/config.toml');
+    fs.mkdirSync(path.dirname(native), { recursive: true });
+    fs.writeFileSync(native, 'approval_policy = "never"\n');
+    const file = path.join(source.root, 'native-settings.zip');
+    source.dialogBehavior.save = async () => ({ canceled: false, filePath: file });
+    assert.equal((await source.call('data-export', { scope: 'settings' })).ok, true);
+    const preview = await target.call('data-import', { file });
+    assert.equal(preview.ok, true); assert.deepEqual(preview.skippedEngines, []);
+    installed = {};
+    const result = await target.call('data-import', { file, scope: 'settings' });
+    assert.equal(result.ok, true, result.error);
+    assert.deepEqual(result.skippedEngines, ['codex']); assert.equal(result.restored, 0);
+    assert.equal(fs.existsSync(path.join(target.userData, 'codex/config.toml')), false);
+    assert.equal(fs.existsSync(path.join(target.userData, 'runtimes')), false);
+  } finally { source.cleanup(); target.cleanup(); }
 });
 
 test('API export leaves subscription clients and their native files untouched', async () => {

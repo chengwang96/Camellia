@@ -24,18 +24,92 @@ test('DeepSeek and Kimi balance adapters preserve zero, currency and balance com
 test('subscription adapters distinguish percent vs fractions and only report supplied reset times', async () => {
   const go = await query('https://opencode.ai/zen/go/v1', { usage:{ rolling:{percent:72,resetsAt:'2026-09-15T05:00:00Z'}, monthly:{percent:0} } });
   assert.equal(go.windows[0].usedPercent,72); assert.equal(go.windows[0].resetsAt,'2026-09-15T05:00:00.000Z'); assert.equal(go.windows[1].resetsAt,null);
-  const ollama = await query('https://ollama.com/v1', {activity:{cost:'12.80',models:[]},limits:{monthly:{usage:.42,models:[{name:'kimi-k3',request_count:25}]}}});
-  assert.equal(ollama.windows[0].usedPercent,42); assert.equal(ollama.windows[0].resetsAt,null); assert.deepEqual(ollama.balances,[]); assert.equal(ollama.modelUsage[0].requests,25);
   const kimi = await query('https://api.kimi.com/coding/v1', {usage:{used:10,limit:100,resetTime:'2026-09-16T00:00:00Z'},limits:[{window:{duration:5,timeUnit:'TIME_UNIT_HOUR'},detail:{used:7,limit:10}}]});
   assert.equal(kimi.windows[0].usedPercent,10); assert.equal(kimi.windows[1].usedPercent,70); assert.equal(kimi.windows[1].label,"5 hours");
+});
+test('Ollama reads the official balance endpoint and converts legacy remaining percentages and reset times', async () => {
+  const urls = [];
+  const result = await queryAccount(provider('https://ollama.com/v1'), 'test-key', { fetchImpl: async (url, options) => {
+    urls.push(url); assert.equal(options.headers.Authorization, 'Bearer test-key'); assert.equal(options.redirect, 'error');
+    return response({ included: { session: { remaining_percent: 99.89, resets_at: '2026-10-14T10:00:00Z' },
+      weekly: { remaining_percent: 0, resets_at: '2026-10-19T00:00:00Z' } }, purchased: { balance_usd: 0 } });
+  } });
+  assert.deepEqual(urls, ['https://ollama.com/api/balance']);
+  assert.equal(result.source, 'official'); assert.equal(result.docs, 'https://docs.ollama.com/api/balance');
+  assert.ok(Math.abs(result.windows[0].usedPercent - 0.11) < 1e-9);
+  assert.equal(result.windows[1].usedPercent, 100);
+  assert.equal(result.windows[0].resetsAt, '2026-10-14T10:00:00.000Z');
+  assert.equal(result.windows[1].resetsAt, '2026-10-19T00:00:00.000Z');
+  assert.deepEqual(result.balances, []); assert.deepEqual(result.modelUsage, []);
+  const unused = await query('https://ollama.com/v1', { included: { session: { remaining_percent: 100 } } });
+  assert.equal(unused.windows[0].usedPercent, 0); assert.equal(unused.windows[0].resetsAt, null);
+});
+
+test('Ollama credit plans use reported USD balances and allowance, with purchased credits usable after the allowance is spent', async () => {
+  const included = { balance_usd: 72.5, allowance_usd: 100, period: { until: '2026-10-15T09:30:00Z' } };
+  const result = await query('https://ollama.com/api', { included, purchased: { balance_usd: 25 } });
+  assert.equal(result.balances[0].value, 97.5); assert.equal(result.balances[0].currency, 'USD');
+  assert.deepEqual(result.balances[0].parts.map(p => p.value), [72.5, 25]);
+  assert.equal(result.windows[0].id, 'monthly'); assert.ok(Math.abs(result.windows[0].usedPercent - 27.5) < 1e-9);
+  assert.equal(result.windows[0].resetsAt, '2026-10-15T09:30:00.000Z'); assert.equal(result.exhausted, false);
+  const extras = await query('https://ollama.com/v1', { included: { ...included, balance_usd: 0 }, purchased: { balance_usd: 5 } });
+  assert.equal(extras.windows[0].usedPercent, 100); assert.equal(extras.exhausted, false);
+  const empty = await query('https://ollama.com/v1', { included: { ...included, balance_usd: 0 }, purchased: { balance_usd: 0 } });
+  assert.equal(empty.balances[0].value, 0); assert.equal(empty.exhausted, true);
+  const noAllowance = await query('https://ollama.com/v1', { included: { balance_usd: 2 }, purchased: { balance_usd: 0 } });
+  assert.deepEqual(noAllowance.windows, []); assert.equal(noAllowance.balances[0].value, 2);
+});
+
+test('Ollama request statistics, missing balances and invalid remaining percentages cannot masquerade as quota', async () => {
+  for (const data of [{ totals: { request_count: 360 }, buckets: [] },
+    { included: { balance_usd: 0, allowance_usd: 100 } },
+    { included: { session: { remaining_percent: null }, weekly: { remaining_percent: 101 } }, purchased: { balance_usd: 0 } }]) {
+    await assert.rejects(query('https://ollama.com/v1', data), /returned no recognized/);
+  }
 });
 test('Command Code uses the organization discovered by whoami and presents credits separately from cash', async () => {
   const urls=[];
   const data = await queryAccount(provider('https://api.commandcode.ai/provider/v1'), 'secret', {fetchImpl:async url=>{
-    urls.push(url); return response(url.includes('whoami') ? {org:{id:'org a'}} : {credits:{monthlyCredits:10,purchasedCredits:3,freeCredits:0},windowLimits:{fiveHour:{used:7,cap:14,resetAt:'2026-09-15T05:00:00Z'}}});
+    urls.push(url); return response(url.includes('whoami') ? {org:{id:'org a'}} : {credits:{monthlyCredits:10,purchasedCredits:3,freeCredits:0},windowLimits:{limited:true,exceeded:null,fiveHour:{used:7,cap:14,resetAt:'2026-09-15T05:00:00Z'}}});
   }});
-  assert.deepEqual(urls,['https://api.commandcode.ai/alpha/whoami?limits=1','https://api.commandcode.ai/alpha/billing/credits?orgId=org%20a']);
+  assert.deepEqual(urls,['https://api.commandcode.ai/alpha/whoami?limits=1','https://api.commandcode.ai/alpha/billing/credits?orgId=org%20a',
+    'https://api.commandcode.ai/alpha/billing/subscriptions?orgId=org%20a']);
   assert.equal(data.balances[0].value,13); assert.equal(data.balances[0].currency,'credits'); assert.equal(data.windows[0].usedPercent,50);
+});
+
+test('Command Code shows reported monthly credits and the real billing reset without estimating a monthly cap', async () => {
+  const end = '2026-11-07T06:11:15.000Z';
+  const result = await queryAccount(provider('https://api.commandcode.ai/provider/v1'), 'test-key', { fetchImpl: async url => response(
+    url.includes('whoami') ? { org: null } : url.includes('subscriptions') ? { success: true, data: { status: 'active', planId: 'individual-goat', currentPeriodEnd: end } }
+      : { credits: { monthlyCredits: 34.96, purchasedCredits: 3, freeCredits: 0 }, windowLimits: {
+        limited: true, exceeded: null, fiveHour: { used: 0, cap: 14, resetAt: 0 },
+        weekly: { used: 7, cap: 35, resetAt: Date.parse('2026-10-19T00:00:00Z') } } }) });
+  assert.equal(result.balances[0].value, 37.96);
+  assert.deepEqual(result.windows.map(w => w.id), ['fiveHour', 'weekly', 'monthly']);
+  assert.equal(result.windows[0].usedPercent, 0); assert.equal(result.windows[0].resetsAt, null);
+  assert.equal(result.windows[1].usedPercent, 20); assert.equal(result.windows[1].resetsAt, '2026-10-19T00:00:00.000Z');
+  assert.deepEqual(result.windows[2], { id: 'monthly', label: 'Monthly', usedPercent: null, remainingValue: 34.96, unit: 'credits', resetsAt: end });
+  assert.equal(result.exhausted, false);
+});
+
+test('Command Code billing lookup failure and inactive subscriptions retain balance and rolling windows', async () => {
+  for (const subscription of [null, { success: true, data: null }, { success: true, data: { status: 'canceled' } }]) {
+    const result = await queryAccount(provider('https://api.commandcode.ai/provider/v1'), 'test-key', { fetchImpl: async url => {
+      if (url.includes('subscriptions')) { if (subscription === null) throw new Error('unavailable'); return response(subscription); }
+      return response(url.includes('whoami') ? { org: null } : { credits: { monthlyCredits: 10, purchasedCredits: 0, freeCredits: 0 },
+        windowLimits: { fiveHour: { used: 0, cap: 14 }, weekly: { used: 0, cap: 35 } } });
+    } });
+    assert.equal(result.balances[0].value, 10); assert.deepEqual(result.windows.map(w => w.id), ['fiveHour', 'weekly']);
+  }
+});
+
+test('Command Code zero monthly credits exhaust the account while extra credits can bypass a spent window', async () => {
+  for (const [monthly, purchased, used, exhausted] of [[0, 0, 0, true], [10, 0, 14, true], [0, 5, 14, false], [10, 0, 0, false]]) {
+    const result = await queryAccount(provider('https://api.commandcode.ai/provider/v1'), 'test-key', { fetchImpl: async url => response(
+      url.includes('whoami') ? {} : url.includes('subscriptions') ? { success: true, data: { status: 'active' } }
+        : { credits: { monthlyCredits: monthly, purchasedCredits: purchased, freeCredits: 0 }, windowLimits: { fiveHour: { used, cap: 14 } } }) });
+    assert.equal(result.exhausted, exhausted);
+  }
 });
 test('unsupported relay/Zen hosts never forward secrets to an official balance endpoint', async () => {
   assert.equal(accountCapability(provider('https://opencode.ai/zen/v1')).supported,false);
