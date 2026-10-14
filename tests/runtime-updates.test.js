@@ -49,6 +49,11 @@ function pythonRuntime(root, sdk) {
 // API from path-based routes.
 async function registryFixture(t, versions) {
   const server = http.createServer((req, res) => {
+    if (req.url === '/antigravity-cli') {
+      const release = versions['antigravity-cli'];
+      if (!release) { res.statusCode = 404; res.end(); return; }
+      res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(release)); return;
+    }
     if (req.url.startsWith('/npm/')) {
       const version = versions[decodeURIComponent(req.url.slice(5))];
       if (version === undefined) { res.statusCode = 404; res.end(); return; }
@@ -79,6 +84,7 @@ async function registryFixture(t, versions) {
   return {
     npm: pkg => `${base}/npm/${encodeURIComponent(pkg)}`,
     pypi: pkg => `${base}/pypi/${encodeURIComponent(pkg)}`,
+    antigravity: () => `${base}/antigravity-cli`,
   };
 }
 
@@ -122,16 +128,38 @@ test('check reports latest versions, update flags, and registry errors per engin
   assert.equal(rows.dsh.error, null);
 });
 
-test('check flags the subscription CLI as app-managed and update refuses it', async t => {
+test('subscription CLI checks and upgrades use the native release manifest rather than the Python SDK', async t => {
+  let version = '1.2.14';
+  const release = { version: '1.3.5', url: 'https://storage.googleapis.com/antigravity-public/antigravity-cli/1.3.5-123/windows-x64/cli_windows_x64.exe', sha512: 'a'.repeat(128) };
+  const registries = await registryFixture(t, { 'antigravity-cli': release });
+  const lifecycle = [];
   const manager = {
-    state: () => [{ id: 'antigravity', name: 'Antigravity', mode: 'subscription', version: '1.2.3', status: 'ready' }],
-    locate: () => ({ file: 'x', dir: 'x', version: '1.2.3', mode: 'subscription' }),
+    state: () => [{ id: 'antigravity', name: 'Antigravity', mode: 'subscription', version, status: 'ready' }],
+    locate: () => ({ file: 'x', dir: 'x', version, mode: 'subscription' }),
   };
-  const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: null, npm: null, run: async () => {}, downloadSettings: direct });
+  const updates = createRuntimeUpdates({ manager, engines: ENGINES, node: null, npm: null,
+    run: async () => assert.fail('No npm or Python SDK installation'), downloadSettings: direct, registries,
+    beforeInstall: async () => { lifecycle.push('stop'); return async result => { lifecycle.push(result.updated ? 'restart updated' : 'restart previous'); }; },
+    cliUpgrade: async options => { assert.deepEqual(options.release, release); assert.equal(options.dir, 'x'); lifecycle.push('native upgrade'); version = release.version; } });
   const [row] = await updates.check();
-  assert.equal(row.checkable, false);
-  assert.equal(row.updateAvailable, false);
-  await assert.rejects(() => updates.update('antigravity'), /ships with the app/);
+  assert.equal(row.checkable, true);
+  assert.equal(row.mode, 'subscription');
+  assert.equal(row.latest, '1.3.5');
+  assert.equal(row.updateAvailable, true);
+  const result = await updates.update('antigravity');
+  assert.equal(result.to, '1.3.5'); assert.equal(result.changed, true);
+  assert.deepEqual(lifecycle, ['stop', 'native upgrade', 'restart updated']);
+  assert.equal((await updates.check())[0].updateAvailable, false);
+});
+
+test('an unavailable native CLI manifest reports a check failure without stopping the installed engine', async t => {
+  const registries = await registryFixture(t, {});
+  const manager = { state: () => [{ id: 'antigravity', mode: 'subscription', version: '1.2.14', status: 'ready' }] };
+  const updates = createRuntimeUpdates({ manager, engines: ENGINES, downloadSettings: direct, registries,
+    beforeInstall: async () => assert.fail('A version check never stops sessions') });
+  const [row] = await updates.check();
+  assert.equal(row.checkable, true); assert.equal(row.updateAvailable, false); assert.equal(row.latest, null);
+  assert.match(row.error, /HTTP 404/);
 });
 
 test('npm update installs the latest version and restores the harness without restarting Camellia', async t => {

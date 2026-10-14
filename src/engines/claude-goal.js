@@ -98,7 +98,7 @@ class ClaudeGoal {
     this.cancelVerification();
     const previous = this.goal;
     this.goal = {
-      id: 'goal-' + this.now().toString(36), objective, phase: 'active',
+      id: 'goal-' + this.now().toString(36), objective, phase: 'active', revision: 0, lastRevision: null,
       criterion: String(payload.criterion || '').trim() || null,
       roundsStarted: adoptSession ? 1 : 0, createdAt: this.now(), updatedAt: this.now(),
       elapsedMs: 0, activeSince: this.now(),
@@ -113,6 +113,30 @@ class ClaudeGoal {
     if (!this.publish()) { this.goal = previous; this.owner = null; return this.storageFailure(); }
     if (!adoptSession) this.schedule(100);
     return { ok: true, goal: this.view() };
+  }
+
+  revise(payload) {
+    if (!this.goal) return { ok: false, error: 'No current goal' };
+    if (this.goal.phase === 'complete') return { ok: false, error: 'This goal is already complete. Start a new goal to do more work.' };
+    const hasObjective = Object.hasOwn(payload, 'objective'), hasCriterion = Object.hasOwn(payload, 'criterion');
+    if (!hasObjective && !hasCriterion) return { ok: false, error: 'Provide an objective or criterion to revise the goal' };
+    if (hasObjective && (typeof payload.objective !== 'string' || !payload.objective.trim())) return { ok: false, error: 'Goal cannot be empty' };
+    if (hasCriterion && typeof payload.criterion !== 'string') return { ok: false, error: 'Invalid completion criterion' };
+    if (typeof payload.reason !== 'string' || !payload.reason.trim() || typeof payload.user_request !== 'string' || !payload.user_request.trim())
+      return { ok: false, error: 'A goal revision requires a reason and user_request' };
+    const objective = hasObjective ? payload.objective.trim() : this.goal.objective;
+    const criterion = hasCriterion ? payload.criterion.trim() || null : this.goal.criterion || null;
+    if (objective === this.goal.objective && criterion === (this.goal.criterion || null)) return { ok: true, updated: false, goal: this.view() };
+    this.cancelTimer();
+    this.cancelVerification();
+    const saved = this.touch({ objective, criterion, revision: (this.goal.revision || 0) + 1,
+      lastRevision: { at: this.now(), reason: payload.reason.trim(), userRequest: payload.user_request.trim(),
+        previousObjective: this.goal.objective, previousCriterion: this.goal.criterion || null },
+      blockedReason: null, errorStreak: 0, lastErrorSubtype: null, blockerStreak: 0, lastBlocker: null,
+      verifyStreak: 0, lastVerify: null, verifying: null, verified: null });
+    if (!saved) return { ok: false, goal: this.view(), error: this.storageError.message };
+    if (this.armed && !this.ownedSession()?.running) this.schedule(100);
+    return { ok: true, updated: true, goal: this.view() };
   }
 
   setPhase(phase) {
@@ -217,7 +241,7 @@ class ClaudeGoal {
       this.schedule(1200 * streak);
       return;
     }
-    const signal = event.goalReport ? { type: event.goalReport.status, reason: event.goalReport.reason } : goalSignal(event.result);
+    const signal = event.goalReport ? { type: event.goalReport.status, reason: event.goalReport.reason } : event.ignoreGoalMarkers ? null : goalSignal(event.result);
     if (signal?.type === 'complete') { void this.verify(event.goalReport?.reason || event.result); return; }
     if (signal?.type === 'blocked') {
       const streak = (this.goal.blockerStreak || 0) + 1;
@@ -285,6 +309,7 @@ function goalPrompt(goal) {
   return [
     `[${goal.roundsStarted === 1 ? 'Goal' : 'Goal continuation'}] ${goal.objective}`,
     goal.criterion ? `Completion criterion (the acceptance standard an independent verifier will check): ${goal.criterion}` : null,
+    goal.lastRevision ? `The user changed the goal (revision ${goal.revision}): ${goal.lastRevision.reason}. Latest user instruction: ${goal.lastRevision.userRequest}. Work toward the current objective and criterion above.` : null,
     'Keep working autonomously until this goal is fully achieved or a serious blocker prevents further progress. There is no fixed turn limit.',
     'Continue from the existing progress, verify the result, and fix recoverable errors. Do not stop after a plan, a partial result, or one failed approach. Do not repeat completed actions.',
     'Respect the configured permissions and the user\'s instructions. If permission or essential input is required, request it; never bypass it to keep the goal running.',
@@ -326,4 +351,4 @@ function verifySignal(result) {
   return signal;
 }
 
-module.exports = { ClaudeGoal, verifyPrompt, verifySignal };
+module.exports = { ClaudeGoal, goalPrompt, verifyPrompt, verifySignal };

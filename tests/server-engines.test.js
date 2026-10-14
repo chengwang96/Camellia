@@ -106,6 +106,6 @@ test('Linux Antigravity distributions pin official URLs and cryptographic hashes
     assert.match(runtime.python, /linux-.*-gnu\/bin\/python3\.13$/);
     assert.match(cli.url, /^https:\/\/storage\.googleapis\.com\/antigravity-public\//);
     assert.match(cli.sha512, /^[a-f0-9]{128}$/);
-    assert.equal(cli.version, '1.2.11');
+    assert.equal(cli.version, '1.3.5');
   }
 });

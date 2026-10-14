@@ -92,9 +92,10 @@ function renderRuntimeUpdates() {
     const info = runtimeUpdates.find(row => row.id === button.dataset.runtimeUpdate);
     const row = runtimeRows.get(button.dataset.runtimeUpdate);
     // A check can finish after an install, path change, or removal. Never show
-    // a result for a different installation or an app-managed runtime.
+    // a result for a different installation or Antigravity connection mode.
     const available = info?.updateAvailable && info.checkable && !info.error && info.installed && info.latest
-      && row?.status === 'ready' && !row.updating && !row.external && !(row.id === 'antigravity' && row.mode === 'subscription') && row.version === info.installed;
+      && row?.status === 'ready' && !row.updating && !row.external && row.version === info.installed
+      && (row.id !== 'antigravity' || info.mode === row.mode);
     button.hidden = !available;
     if (!available) continue;
     const label = t('{0} runtime: v{1} → v{2}. View update')

@@ -318,7 +318,8 @@ function updateKeyStats() {
     // Reported quota comes from the router, which reads it for every provider
     // with an account API, and is what keeps an exhausted key out of rotation.
     const quota = live.quota?.[k.id];
-    const windows = (quota?.windows || []).map(window => `${t(window.label || window.id)} ${window.usedPercent === null ? '—' : fmt(window.usedPercent) + '%'}`).join(' · ');
+    const windows = (quota?.windows || []).map(window => `${t(window.label || window.id)} ${typeof window.usedPercent === 'number'
+      ? fmt(window.usedPercent) + '%' : typeof window.remainingValue === 'number' ? money({ value: window.remainingValue, currency: window.unit }) : '—'}`).join(' · ');
     const balances = (quota?.balances || []).map(balance => `${balance.currency || balance.id} ${balance.value === null ? '—' : fmt(balance.value)}`).join(' · ');
     const quotaNote = (windows ? ` · ${t('Quota')}: ${windows}` : '') + (balances ? ` · ${t('Balance')}: ${balances}` : '')
       + (quota?.checkedAt ? ` · ${t('Updated ' + when(quota.checkedAt))}` : '')
@@ -479,6 +480,12 @@ function renderChartGrid(container, charts) {
     SettingsCharts.bindHover(body);
   });
 }
+function subscriptionPriceStatus(message, detail = '') {
+  const element = $('subscriptionPriceStatus');
+  element.textContent = message;
+  element.title = detail;
+  element.hidden = !message;
+}
 function renderUsage() {
   const { rows, series } = usageRows(); usageData = rows;
   const sum = rows.reduce(addStats, blankStats());
@@ -488,20 +495,26 @@ function renderUsage() {
   $('usageSummary').innerHTML = [[countLabel, sum.requests, countUnit], ["Input tokens", sum.inputTokens, "Includes cache"], ["Output tokens", sum.outputTokens, "Reported by provider"], ["Failed / Canceled", sum.failures + sum.cancelled, countUnit]].map(([label,value,note]) => `<div><small data-i18n>${label}</small><strong>${compact(value)}</strong><small data-i18n>${note}</small></div>`).join('');
   const t = window.CamelliaI18n.t;
   const subscription = rows.filter(row => row.source === 'subscription').reduce(addStats, blankStats());
-  const usd = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 4 }).format(value);
+  const usd = value => new Intl.NumberFormat(window.CamelliaI18n.locale, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
   const estimate = stats => stats.pricedTokens > 0 ? usd(stats.estimatedCostUsd) : t('Unavailable');
   $('subscriptionCost').textContent = estimate(subscription);
-  $('subscriptionCostNote').textContent = t('Standard text API equivalent, not your subscription bill.')
-    + (live.subscriptionUsage?.pricing?.checkedAt ? ' LiteLLM · ' + live.subscriptionUsage.pricing.checkedAt : '');
-  $('subscriptionUsageSince').textContent = live.subscriptionUsage?.since ? t('Subscription recording started: ' + new Date(live.subscriptionUsage.since).toLocaleDateString(window.CamelliaI18n.locale)) : '';
   $('subscriptionCostCard').hidden = $('usageSource').value === 'api';
   const pricing = live.subscriptionUsage?.pricing || {};
   const repricing = live.subscriptionUsage?.repricing || {};
-  $('subscriptionPricesRefresh').disabled = Boolean(pricing.refreshing || repricing.refreshing);
-  $('subscriptionPriceStatus').textContent = (repricing.refreshing ? t('Refreshing prices and recalculating usage…') : pricing.refreshing ? t('Refreshing prices…')
-    : repricing.error ? t(repricing.error) : pricing.error ? t(pricing.error) : repricing.checkedAt ? t('Prices and usage updated.') : t('Prices refresh automatically every day.'))
-    + (subscription.approximateTokens ? ' ' + t('Historical estimate: {0} tokens at standard rates.').replace('{0}', fmt(subscription.approximateTokens)) : '')
-    + (subscription.unpricedTokens ? ' ' + t('Unpriced tokens: {0}').replace('{0}', fmt(subscription.unpricedTokens)) + ' ' + t('Some models have no usable price or complete usage.') : '');
+  const details = [t('Standard text API equivalent, not your subscription bill.'),
+    pricing.checkedAt ? 'LiteLLM · ' + when(pricing.checkedAt) : t('Prices refresh automatically every day.'),
+    live.subscriptionUsage?.since ? t('Subscription recording started: {0}').replace('{0}', new Date(live.subscriptionUsage.since).toLocaleDateString(window.CamelliaI18n.locale)) : '',
+    subscription.approximateTokens ? t('Historical estimate: {0} tokens at standard rates.').replace('{0}', fmt(subscription.approximateTokens)) : '',
+    subscription.unpricedTokens ? t('Unpriced tokens: {0}').replace('{0}', fmt(subscription.unpricedTokens)) + ' ' + t('Some models have no usable price or complete usage.') : '',
+    repricing.error ? t(repricing.error) : pricing.error ? t(pricing.error) : '',
+  ].filter(Boolean).join('\n');
+  $('subscriptionCostSummary').title = details;
+  $('subscriptionCostSummary').setAttribute('aria-description', details);
+  const refreshing = Boolean(pricing.refreshing || repricing.refreshing);
+  $('subscriptionPricesRefresh').disabled = refreshing;
+  subscriptionPriceStatus(refreshing ? t('Refreshing…')
+    : repricing.error ? t('Recalculation failed. Try again.') : pricing.error ? t('Refresh failed. Using saved prices.')
+    : subscription.unpricedTokens ? t('Unpriced tokens: {0}').replace('{0}', fmt(subscription.unpricedTokens)) : '', details);
   const metric = $('usageMetric').value;
   const metricLabel = t({ tokens: 'Token usage', requests: countLabel, inputTokens: 'Input tokens', outputTokens: 'Output tokens', failures: 'Failed / Canceled', estimatedCostUsd: 'Subscription estimate (USD)' }[metric]);
   renderChartGrid($('usageChart'), series.filter(row => metric !== 'estimatedCostUsd' || row.source === 'subscription' && row.points.some(point => point.stats.pricedTokens > 0)).map(series => ({
@@ -513,8 +526,14 @@ function renderUsage() {
   $('usageRows').innerHTML = rows.map(row => `<tr><td>${esc(row.model)}<small>${esc(row.provider)}</small><small>${esc(t(row.source === 'subscription' ? 'Subscription' : 'API key'))}</small></td><td>${esc(row.key)}</td><td>${fmt(row.requests)}</td><td>${fmt(row.inputTokens)}</td><td>${fmt(row.outputTokens)}</td><td>${fmt(row.cacheReadTokens)}</td><td>${fmt(row.cacheWriteTokens)}</td><td>${fmt(row.failures + row.cancelled)}</td><td>${row.source === 'subscription' ? esc(estimate(row)) : '—'}</td></tr>`).join('') || "<tr><td colspan=\"9\"><div class=\"chart-empty\" data-i18n>No requests in this period.</div></td></tr>";
 }
 function money(balance) { return `${balance.currency === 'CNY' ? '¥' : balance.currency === 'USD' ? '$' : ''}${fmt(balance.value)}${balance.currency === 'credits' ? ' Credits' : !['CNY','USD'].includes(balance.currency) ? ' ' + balance.currency : ''}`; }
-function remaining(window) { return Math.max(0, 100 - window.usedPercent); }
-function meter(window) { const value = remaining(window); return `<div class="meter ${value < 15 ? 'low' : ''}"><span style="width:${Math.min(100,value)}%"></span></div>`; }
+function remaining(window) { return typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent) ? Math.max(0, 100 - window.usedPercent) : null; }
+function quotaRemaining(quota) {
+  const percent = remaining(quota);
+  if (percent !== null) return window.CamelliaI18n.t(`${fmt(percent)}% remaining`);
+  return typeof quota.remainingValue === 'number' && Number.isFinite(quota.remainingValue)
+    ? money({ value: quota.remainingValue, currency: quota.unit }) : window.CamelliaI18n.t('Unavailable');
+}
+function meter(window) { const value = remaining(window); return value === null ? '' : `<div class="meter ${value < 15 ? 'low' : ''}"><span style="width:${Math.min(100,value)}%"></span></div>`; }
 function accountsList() {
   return [...(insight.subscriptions || []).map(s => ({ id: s.id, providerId: s.id, provider: s.name, name: s.label,
     subscriptionId: s.id, engine: s.engine, enabled: true, info: s.info, capability: s.capability })),
@@ -526,13 +545,14 @@ function accountCard(account, selected = false) {
   const { id, provider, name, info, capability, subscriptionId, engine, type, enabled } = account;
   const t = window.CamelliaI18n.t;
   const latest = info.latest, balance = latest?.balances?.[0], quota = latest?.windows?.[0];
-  const summary = balance ? money(balance) : quota ? t(`${fmt(remaining(quota))}% remaining`) : capability.supported ? t('Not queried') : t('Not supported');
+  const summary = balance ? money(balance) : quota ? quotaRemaining(quota) : capability.supported ? t('Not queried') : t('Not supported');
   const brand = subscriptionId ? `<img src="../../../assets/brands/${engine}.svg" alt="">` : mark(type);
   return `<${subscriptionId ? 'div' : 'button'} class="balance-card ${selected ? 'selected' : ''}" data-balance="${esc(id)}"><span class="provider-title"><span class="provider-mark${subscriptionId ? ' engine-mark' : ''}"${subscriptionId ? ` data-engine="${engine}"` : ''}>${brand}</span>${esc(provider)}</span>
     <p>${esc(subscriptionId ? t(name) : name)}${enabled ? '' : ' · ' + t('Disabled')}${subscriptionId ? ' · ' + t('Signed in') : ''}</p>
     <strong>${esc(summary)}</strong>${quota && !balance ? meter(quota) : ''}
     <p>${quota && !balance ? esc(t(quota.label)) + ' · ' : ''}${esc(info.refreshing ? t('Querying…') : latest ? t('Updated ' + when(latest.at)) : t(capability.label))}</p>
-    ${subscriptionId ? `<div class="quota-preview">${(latest?.windows || []).slice(balance ? 0 : 1).map(w => `<small>${esc(t(w.label))} · ${esc(t(`${fmt(remaining(w))}% remaining`))}</small>`).join('')}</div>` : ''}
+    ${balance && quota ? `<div class="quota-breakdown">${latest.windows.map(w => `<div class="quota-row"><small>${esc(t(w.label))}</small><small>${esc(quotaRemaining(w))}</small>${meter(w)}</div>`).join('')}</div>`
+      : quota && latest.windows.length > 1 ? `<div class="quota-preview">${latest.windows.slice(1).map(w => `<small>${esc(t(w.label))} · ${esc(quotaRemaining(w))}</small>`).join('')}</div>` : ''}
     ${(latest?.windows || []).filter(w => w.resetsAt).map(w => `<small>${esc(t(w.label))} · ${esc(t('Resets'))} ${esc(when(w.resetsAt))}</small>`).join('')}
     ${info.error ? `<p class="error">${esc(t(info.error))}${latest ? ' ' + esc(t('The last successful result is shown below.')) : ''}</p>` : ''}</${subscriptionId ? 'div' : 'button'}>`;
 }
@@ -550,14 +570,16 @@ function balanceChartSeries(id = balanceKey) {
   const account = accountsList().find(account => account.id === id);
   if (!account) return [];
   const latest = account.info.latest;
-  const metrics = [...(latest?.balances || []).map(balance => ({ label: t(balance.label), type: 'balances', key: balance.id, unit: balance.currency })), ...(latest?.windows || []).map(window => ({ label: t(window.label) + ' · ' + t('Remaining'), type: 'windows', key: window.id, unit: '%' }))];
+  const metrics = [...(latest?.balances || []).map(balance => ({ label: t(balance.label), type: 'balances', key: balance.id, unit: balance.currency })), ...(latest?.windows || []).map(window => ({ label: t(window.label) + ' · ' + t('Remaining'), type: 'windows', key: window.id, unit: window.unit || '%' }))];
   return metrics.map(metric => ({
     kind: 'quota', label: metric.label + ' · ' + metric.unit,
     description: `${account.provider} · ${t(account.name)} · ${t('30-day observations')}`,
-    unit: metric.unit, percent: metric.type === 'windows',
+    unit: metric.unit, percent: metric.type === 'windows' && metric.unit === '%',
     points: (account.info.history || []).map(sample => {
       const item = sample[metric.type]?.find(entry => entry.id === metric.key);
-      return { at: sample.at, value: item ? metric.type === 'windows' ? remaining(item) : item.value : null };
+      let value = null;
+      if (item) value = metric.type === 'balances' ? item.value : metric.unit === '%' ? remaining(item) : item.remainingValue ?? null;
+      return { at: sample.at, value };
     }),
   }));
 }
@@ -711,9 +733,9 @@ for (const id of ['usageSource','usageRange','usageProvider','usageKey','usageMo
 };
 $('subscriptionPricesRefresh').onclick = async () => {
   $('subscriptionPricesRefresh').disabled = true;
-  $('subscriptionPriceStatus').textContent = window.CamelliaI18n.t('Refreshing prices and recalculating usage…');
+  subscriptionPriceStatus(window.CamelliaI18n.t('Refreshing…'));
   try { live = await api.subscriptionPricesRefresh(); renderUsage(); }
-  catch { $('subscriptionPriceStatus').textContent = window.CamelliaI18n.t('Prices could not be refreshed. The last available catalog is in use.'); }
+  catch { subscriptionPriceStatus(window.CamelliaI18n.t('Refresh failed. Using saved prices.')); }
   finally { $('subscriptionPricesRefresh').disabled = false; }
 };
 $('balanceCards').onclick = e => {
@@ -826,10 +848,12 @@ const importData = async file => {
     else {
       $('dataMigrationProgress').value = 100;
       const scope = scopeLabel(result.scope);
-      const note = window.CamelliaI18n.t('Imported {0} files ({1}) · {2}. Restart Camellia to use the restored data.')
+      const note = window.CamelliaI18n.t(result.restored > 0
+        ? 'Imported {0} files ({1}) · {2}. Restart Camellia to use the restored data.'
+        : 'No compatible settings to import.')
         .replace('{0}', () => fmt(result.restored)).replace('{1}', () => migrationBytes(result.bytes)).replace('{2}', () => scope);
       const backup = result.backupDir ? ' ' + window.CamelliaI18n.t('Previous files were backed up; review them only if something looks wrong.') : '';
-      $('dataMigrationStatus').textContent = note + backup + (result.warning ? '\n' + result.warning : '');
+      $('dataMigrationStatus').textContent = note + backup + migrationCompatibility(result) + (result.warning ? '\n' + result.warning : '');
       dataMigrationPackage = selectedFile || true;
     }
   } catch (error) { $('dataMigrationStatus').textContent = error.message; $('dataMigrationStatus').classList.add('error'); }
@@ -843,12 +867,23 @@ const scopeLabel = kinds => {
 };
 // The scope dialog is opened by script so the checkboxes can reflect what the
 // package actually contains; an empty category is disabled and unchecked.
-function chooseDataScope({ mode = 'import', categories = {} }) {
+function migrationCompatibility({ skippedEngines = [], skippedPaths = [] } = {}) {
+  const names = { claude: 'Claude Code', codex: 'Codex', dsh: 'DSH', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' };
+  const parts = [];
+  if (skippedEngines.length) parts.push(window.CamelliaI18n.t('Unavailable harness settings skipped: {0}.')
+    .replace('{0}', () => skippedEngines.map(engine => names[engine] || engine).join(', ')));
+  if (skippedPaths.length) parts.push(window.CamelliaI18n.t('Unavailable local paths or plugins were skipped; existing settings are kept.'));
+  return parts.length ? '\n' + parts.join(' ') : '';
+}
+function chooseDataScope({ mode = 'import', categories = {}, skippedEngines = [] }) {
   const exporting = mode === 'export';
   $('dataScopeTitle').textContent = exporting ? 'Export data' : 'Import data';
   $('confirmImportData').textContent = exporting ? 'Export selected data' : 'Import selected data';
   $('dataScopeNote').textContent = exporting ? 'Data packages can contain API keys. Keep them private.'
     : 'Selected files overwrite matching ones in this installation; current files are backed up first. Restart Camellia when the import finishes.';
+  $('dataScopeCompatibility').hidden = exporting;
+  $('dataScopeCompatibility').textContent = window.CamelliaI18n.t('Local runtime paths are kept. Settings for unavailable harnesses are skipped.')
+    + migrationCompatibility({ skippedEngines });
   const rows = [['api', 'importScopeApi'], ['settings', 'importScopeSettings'], ['conversations', 'importScopeConversations']];
   for (const [kind, id] of rows) {
     const entry = categories[kind];

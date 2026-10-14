@@ -23,7 +23,7 @@ const { removeTree } = require('./test-fs.cjs');
 async function main() {
   assert.equal(process.platform, 'win32', 'This containment probe requires Windows');
   const runtimeDir = path.resolve(__dirname, '../runtimes/antigravity');
-  const sdk = locatePythonRuntime(runtimeDir), cli = locateAntigravityCli(runtimeDir);
+  const sdk = locatePythonRuntime(runtimeDir), cli = locateAntigravityCli(path.resolve(process.argv[2] || runtimeDir));
   assert.ok(sdk && cli, 'The pinned SDK and CLI must already be installed');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-antigravity-prepare-smoke-'));
   const profile = path.join(root, 'profile'), cwd = path.join(root, 'work'), home = path.join(root, 'adapter');
@@ -65,7 +65,7 @@ async function main() {
       assert.ok(inventory().histories.some(row => row.connection === connection && row.storageDir === bridge.storageDir && row.conversationId === nativeId));
       assert.equal(modelRequests, 0);
       await assert.rejects(first.session.request('session/set_mode', { sessionId, modeId: 'default' }), /fixed/);
-      await assert.rejects(first.session.request('session/new', { cwd }), /fixed/);
+      await assert.rejects(first.session.request('session/new', { cwd }), /fixed|already initialized/);
       await stop(first);
       const resumed = await open(connection, sessionId);
       assert.equal(await resumed.session.prepareNativeStorage(), nativeId, 'Native identity must survive restart without any input');

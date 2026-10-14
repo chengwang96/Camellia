@@ -8,8 +8,10 @@ repo = Path(__file__).resolve().parents[1]
 driver = subprocess.Popen(['node', str(repo / 'tests/claude-ui-driver.cjs')], stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
 updating = set()
-versions = {'claude': '1.0.0', 'kimi': '1.0.0'}
+versions = {'claude': '1.0.0', 'kimi': '1.0.0', 'antigravity': '1.2.14'}
 calls = []
+cli_error = None
+cli_check_mode = 'subscription'
 
 
 def rpc(method, payload=None):
@@ -25,8 +27,10 @@ def rpc(method, payload=None):
         versions[engine] = '2.0.0'
         return {'ok': True, 'engine': engine, 'changed': True, 'to': '2.0.0'}
     if method == 'runtimeCheckUpdates':
-        return {'ok': True, 'engines': [dict(id=engine, checkable=True, installed=version,
-            latest='2.0.0', updateAvailable=version != '2.0.0') for engine, version in versions.items()]}
+        return {'ok': True, 'engines': [dict(id=engine, mode=cli_check_mode if engine == 'antigravity' else 'api',
+            checkable=True, installed=version, latest=None if engine == 'antigravity' and cli_error else '2.0.0',
+            error=cli_error if engine == 'antigravity' else None,
+            updateAvailable=version != '2.0.0' and not (engine == 'antigravity' and cli_error)) for engine, version in versions.items()]}
     driver.stdin.write(json.dumps({'method': method, 'payload': payload}) + '\n')
     driver.stdin.flush()
     response = json.loads(driver.stdout.readline())
@@ -38,6 +42,9 @@ def rpc(method, payload=None):
             row['updating'] = row['id'] in updating
             if row['id'] in versions:
                 row.update(status='ready', version=versions[row['id']])
+            if row['id'] == 'antigravity':
+                row.update(mode='subscription', external=False, file='C:/fixture/agy.exe')
+                row['subscriptionRuntime'] = dict(row)
     return result
 
 
@@ -123,9 +130,41 @@ try:
         page.evaluate("finishUpdate('kimi')")
         expect(kimi).to_have_count(0)
         assert calls == ['claude', 'kimi', 'kimi'], calls
+        page.evaluate("CamelliaI18n.setLanguage('en')")
+        page.locator('[data-engine=antigravity]').click()
+        cli = page.locator('[data-update=antigravity]')
+        expect(cli).to_be_visible()
+        expect(page.locator('.runtime-card:visible')).to_contain_text('Google subscription')
+        cli.click()
+        expect(cli).to_have_text('Updating…')
+        expect(cli).to_be_disabled()
+        page.evaluate("finishUpdate('antigravity')")
+        expect(cli).to_have_count(0)
+        expect(page.locator('.runtime-card:visible')).to_contain_text('Up to date')
+        versions['antigravity'] = '1.2.14'
+        cli_error = 'TLS connection failed'
+        page.evaluate('redrawRuntimes()')
+        page.locator('#checkRuntimeUpdates').click()
+        expect(page.locator('.runtime-card:visible')).to_contain_text('Update check failed')
+        expect(page.locator('.runtime-card:visible')).to_contain_text('TLS connection failed')
+        expect(cli).to_have_count(0)
+        cli_error = None
+        cli_check_mode = 'api'
+        page.locator('#checkRuntimeUpdates').click()
+        expect(page.locator('.runtime-card:visible')).to_contain_text('Installed')
+        expect(cli).to_have_count(0)
+        cli_check_mode = 'subscription'
+        page.locator('#checkRuntimeUpdates').click()
+        expect(cli).to_be_visible()
+        screenshots = repo / 'dist/antigravity-updates-qa'
+        screenshots.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(screenshots / 'settings-en.png'), full_page=True)
+        page.evaluate("CamelliaI18n.setLanguage('zh-CN')")
+        page.screenshot(path=str(screenshots / 'settings-zh.png'), full_page=True)
+        assert calls == ['claude', 'kimi', 'kimi', 'antigravity'], calls
         assert not errors, errors
         browser.close()
-        print('Runtime updates UI: navigation, concurrent updates, redraws, failure retry, reopen and translation passed')
+        print('Runtime updates UI: navigation, updates, native CLI errors, SDK/CLI mode isolation and translation passed')
 finally:
     driver.terminate()
     driver.wait(timeout=10)

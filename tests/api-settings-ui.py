@@ -118,8 +118,10 @@ try:
         emit="""({state, quota}) => window.testEmitRouter({...state, quota})"""
         page.evaluate(emit,{'state':router_state,'quota':{key_id:{'exhausted':False,'windows':[
             {'id':'session','label':'Current session','usedPercent':0.1},
-            {'id':'weekly','label':'Weekly','usedPercent':22.2}],'checkedAt':1700000000000,'error':None}}})
+            {'id':'weekly','label':'Weekly','usedPercent':22.2},
+            {'id':'monthly','label':'Monthly','usedPercent':None,'remainingValue':34.96,'unit':'credits'}],'checkedAt':1700000000000,'error':None}}})
         expect(page.locator(f'[data-note="{key_id}"]')).to_contain_text('Quota: Current session 0.1% · Weekly 22.2%')
+        expect(page.locator(f'[data-note="{key_id}"]')).to_contain_text('Monthly 34.96 Credits')
         page.evaluate(emit,{'state':router_state,'quota':{key_id:{'exhausted':True,'windows':[
             {'id':'weekly','label':'Weekly','usedPercent':100}],'checkedAt':1700000000000,'error':None}}})
         expect(page.locator(f'[data-badge="{key_id}"]')).to_have_text(re.compile('Quota exhausted|额度已用尽'))
@@ -333,7 +335,7 @@ try:
             })''')
             assert layout['columns']==columns, (width, layout)
             assert layout['fits'], (width, layout)
-            assert all(height < 160 for height in layout['heights']), (width, layout)
+            assert all(height < 200 for height in layout['heights']), (width, layout)
             assert all(card_width <= 420 for card_width in layout['widths']), (width, layout)
         page.locator('[data-balance="'+key+'"]').click()
         expect(page.locator('#balanceDetail')).to_have_count(0)
@@ -353,6 +355,57 @@ try:
         page.set_viewport_size({'width':1280,'height':1200})
         page.mouse.move(0,0)
         page.screenshot(path=str(repo/'dist/ui-preview/settings-balances.png'))
+        # A Command Code balance must not hide its rolling windows. Monthly
+        # credits have an absolute remaining amount, with no invented percent.
+        page.locator('[data-view=providers]').click()
+        command_snapshot=json.loads(json.dumps(snapshot))
+        command_reading=command_snapshot['keys'][key]
+        command_reading.update(status='ok',error=None)
+        command_reading['latest']['balances']=[{'id':'credits','label':'Remaining credits','value':34.96,'currency':'credits','parts':[]}]
+        command_reading['latest']['windows']=[
+            {'id':'fiveHour','label':'5-hour','usedPercent':0,'resetsAt':None},
+            {'id':'weekly','label':'Weekly','usedPercent':0,'resetsAt':None},
+            {'id':'monthly','label':'Monthly','usedPercent':None,'remainingValue':34.96,'unit':'credits','resetsAt':'2026-11-07T06:11:15.000Z'}]
+        command_reading['history'].append({'at':now.isoformat(),'balances':command_reading['latest']['balances'],'windows':command_reading['latest']['windows']})
+        page.evaluate('s=>window.testEmitInsights(s)',command_snapshot)
+        card=page.locator('.balance-card.selected')
+        expect(card).to_contain_text('34.96 Credits')
+        expect(card.locator('.quota-row')).to_have_count(3)
+        expect(card.locator('.quota-row').nth(0)).to_contain_text('5-hour')
+        expect(card.locator('.quota-row').nth(0)).to_contain_text('100% remaining')
+        expect(card.locator('.quota-row').nth(1)).to_contain_text('Weekly')
+        expect(card.locator('.quota-row').nth(1)).to_contain_text('100% remaining')
+        expect(card.locator('.quota-row').nth(2)).to_contain_text('Monthly')
+        expect(card.locator('.quota-row').nth(2)).to_contain_text('34.96 Credits')
+        assert '%' not in card.locator('.quota-row').nth(2).inner_text()
+        expect(card.locator('.quota-row .meter')).to_have_count(2)
+        expect(page.locator('#balanceChart [data-chart-kind=quota]')).to_have_count(4)
+        expect(page.locator('#balanceChart [data-chart-kind=quota]').last).to_contain_text('credits')
+        expect(card).to_be_visible()
+        page.evaluate('() => document.querySelector(".balance-card.selected").scrollIntoView({block:"center"})')
+        page.screenshot(path=str(repo/'dist/ui-preview/settings-commandcode-quotas.png'))
+        page.locator('[data-view=general]').click();page.locator('#language').select_option('zh-CN')
+        page.locator('[data-view=providers]').click()
+        expect(card.locator('.quota-row').nth(0)).to_contain_text('5 小时')
+        expect(card.locator('.quota-row').nth(1)).to_contain_text('每周')
+        expect(card.locator('.quota-row').nth(2)).to_contain_text('每月')
+        for width in [550, 760, 960, 1280]:
+            page.set_viewport_size({'width':width,'height':1000})
+            assert card.evaluate('card => card.scrollWidth <= card.clientWidth')
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.set_viewport_size({'width':760,'height':1000});page.emulate_media(color_scheme='dark')
+        expect(card).to_be_visible()
+        page.evaluate('() => document.querySelector(".balance-card.selected").scrollIntoView({block:"center"})')
+        page.screenshot(path=str(repo/'dist/ui-preview/settings-commandcode-quotas-zh.png'))
+        unknown_snapshot=json.loads(json.dumps(command_snapshot))
+        unknown_snapshot['keys'][key]['latest']['windows'][0]['usedPercent']=None
+        page.evaluate('s=>window.testEmitInsights(s)',unknown_snapshot)
+        assert '100%' not in card.locator('.quota-row').first.inner_text()
+        expect(card.locator('.quota-row').first).to_contain_text('暂无数据')
+        page.locator('[data-view=general]').click();page.locator('#language').select_option('en')
+        page.locator('[data-view=providers]').click()
+        page.emulate_media(color_scheme='light');page.set_viewport_size({'width':1280,'height':1200})
+        page.evaluate('s=>window.testEmitInsights(s)',snapshot)
         snapshot['keys'][key]['status']='error'
         snapshot['keys'][key]['error']='<img src=x onerror="window.xss=1">'
         page.evaluate('s=>window.testEmitInsights(s)',snapshot)
@@ -368,6 +421,22 @@ try:
         }''', ollama_key)
         page.locator('[data-view=providers]').click()
         page.locator('[data-balance="'+ollama_key+'"]').click()
+        # Current /api/balance readings carry remaining percentages and reset
+        # timestamps. They replace the old success while keeping its history.
+        current_snapshot=json.loads(json.dumps(snapshot))
+        current_snapshot['keys'][ollama_key].update(status='ok',error=None)
+        current_snapshot['keys'][ollama_key]['latest']['windows']=[
+            {'id':'session','label':'Current session','usedPercent':0.11,'resetsAt':'2026-10-14T10:00:00.000Z'},
+            {'id':'weekly','label':'Weekly','usedPercent':7.05,'resetsAt':'2026-10-19T00:00:00.000Z'}]
+        page.evaluate('s=>window.testEmitInsights(s)',current_snapshot)
+        expect(page.locator('.balance-card.selected')).to_contain_text('99.89% remaining')
+        expect(page.locator('.balance-card.selected > small')).to_have_count(2)
+        expect(page.locator('.balance-card.selected > small').first).to_contain_text('Resets')
+        expect(page.locator('.balance-card.selected .error')).to_have_count(0)
+        expect(page.locator('#balanceChart [data-chart-kind=quota] svg')).to_have_count(2)
+        assert page.locator('.balance-card.selected').evaluate('card => card.scrollWidth <= card.clientWidth')
+        page.screenshot(path=str(repo/'dist/ui-preview/settings-ollama-balance.png'))
+        page.evaluate('s=>window.testEmitInsights(s)',snapshot)
         expect(page.locator('.balance-card.selected')).to_contain_text('72% remaining')
         expect(page.locator('#balanceChart [data-chart-kind=quota] svg')).to_have_count(3)
         expect(page.locator('#balanceChart [data-chart-kind=quota] .chart-dot')).to_have_count(6)

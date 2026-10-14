@@ -213,7 +213,7 @@ test('the selected cross-part file index has a total memory budget before any ex
   const header = manifest(box, 600, 0, { parts: [{ name: path.basename(box.file) }, { name: path.basename(second) }] });
   for (const [part, file] of [box.file, second].entries()) {
     const entries = { [MANIFEST]: header };
-    for (let i = part * 300; i < (part + 1) * 300; i++) entries['app/' + 'p'.repeat(16380) + String(i)] = '';
+    for (let i = part * 300; i < (part + 1) * 300; i++) entries['app/conversations/' + 'p'.repeat(16380) + String(i) + '.jsonl'] = '';
     await zipFile(file, entries, 'STORE');
   }
   seedOldProfile(box);

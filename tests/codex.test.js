@@ -590,6 +590,26 @@ test('Codex gives every ChatGPT account its own home and switches to the one wit
   assert.equal(renamed.label, 'Personal');
 });
 
+test('Codex selection reflects a serving backup even when its last quota has just been consumed', t => {
+  const root = temporary(t), events = [];
+  let config = { subscriptionAccounts: { codex: [{ id: 'default' }, { id: 'account-1' }] },
+    subscriptionActive: { codex: 'default', kimi: 'account-2' } };
+  for (const id of ['default', 'account-1']) {
+    const dir = id === 'default' ? path.join(root, 'codex') : path.join(root, 'subscription-accounts', 'codex', id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'account-state.json'), JSON.stringify({ account: { email: id + '@example.com' },
+      models: [{ id: 'fixture' }], rateLimits: { primary: { usedPercent: 100 } } }));
+  }
+  const engine = createCodex({ dataDir: root, loadConfig: () => config, saveConfig: patch => { config = { ...config, ...patch }; },
+    runtimes: () => ({ locate: () => null }), onAccount: state => events.push(state) });
+  const state = engine.syncAccountSelection({ id: 'account-1', expected: engine.accountState() });
+  assert.equal(state.activeId, 'account-1');
+  assert.equal(state.accounts.find(account => account.active).exhausted, true);
+  assert.equal(config.subscriptionActive.codex, 'account-1');
+  assert.equal(config.subscriptionActive.kimi, 'account-2');
+  assert.equal(events.length, 1);
+});
+
 test('per-conversation Codex homes share one plugin cache instead of copying it', t => {
   const root = temporary(t), home = path.join(root, 'profile');
   const runtime = { file: path.join(root, 'native/bin/codex') };

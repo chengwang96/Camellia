@@ -137,16 +137,18 @@ async function run() {
     assert.equal((await send('GOOGLE SMOKE image', [{path: imageFile, isImage: true}])).subtype, 'success');
     assert.ok(requests.at(-1).contents.flatMap(m => m.parts || []).some(p => p.inlineData?.mimeType === 'image/png'
       && Buffer.from(p.inlineData.data, 'base64').equals(imageBytes)), 'Actual image bytes must reach the native model request');
-    const reviewPending = new Promise(resolve => { permission = resolve; });
-    const reviewStopped = send('GOOGLE SMOKE review stop');
-    const oldRequest = await Promise.race([reviewPending, reviewStopped.then(r => { throw new Error('Missing pending approval: ' + JSON.stringify(r)); })]);
-    session.interrupt();
-    assert.equal((await reviewStopped).subtype, 'stopped');
-    assert.equal(session.answerPermission(oldRequest.requestId, true), false);
-    assert.equal(fs.existsSync(path.join(cwd, 'stopped.txt')), false);
-    permission = null;
-    const continued = await send('GOOGLE SMOKE after cancelled approval');
-    assert.equal(continued.subtype, 'success', 'A stopped turn can continue in the same bridge: ' + JSON.stringify(continued));
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const reviewPending = new Promise(resolve => { permission = resolve; });
+      const reviewStopped = send('GOOGLE SMOKE review stop');
+      const oldRequest = await Promise.race([reviewPending, reviewStopped.then(r => { throw new Error('Missing pending approval: ' + JSON.stringify(r)); })]);
+      session.interrupt();
+      assert.equal((await reviewStopped).subtype, 'stopped');
+      assert.equal(session.answerPermission(oldRequest.requestId, true), false);
+      assert.equal(fs.existsSync(path.join(cwd, 'stopped.txt')), false);
+      permission = null;
+      const continued = await send('GOOGLE SMOKE after cancelled approval');
+      assert.equal(continued.subtype, 'success', 'A stopped turn can continue in the same bridge: ' + JSON.stringify(continued));
+    }
     const requestStarted = new Promise(resolve => { waiting = resolve; });
     const stopped = send('GOOGLE SMOKE wait');
     await Promise.race([requestStarted, stopped.then(() => { throw new Error('The waiting request ended too early'); })]);

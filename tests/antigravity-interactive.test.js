@@ -1,6 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { InteractiveCli, selection, permissionReply, questionFields, ownedTrajectories, interactiveLaunch } = require('../src/engines/antigravity/cli-interactive.cjs');
 
 test('Unix interactive launch keeps a PTY open and passes native arguments literally', () => {
@@ -57,6 +59,39 @@ test('interactive model selection pins the requested model and available effort'
   assert.throws(() => selection(catalog, 'missing'), /invalid model selection/);
 });
 
+test('explicit skill commands use the native resolved catalog and preserve input/media and scope', async () => {
+  const { bridge } = fixture(); bridge.session.cwd = path.resolve('fixture-workspace');
+  const calls = [];
+  bridge.rpc = async (method, params) => {
+    calls.push({ method, params });
+    return { skills: [{ name: 'review', path: '/native/skills/review/SKILL.md', content: 'NATIVE_SKILL_BODY' }] };
+  };
+  const parts = [{ type: 'text', text: '/review selected file' }, { type: 'image', data: 'fixture', mimeType: 'image/png' }];
+  const expanded = await bridge.expandSkill(parts, new AbortController().signal);
+  assert.deepEqual(calls, [{ method: 'GetAllSkills', params: { workspaceUris: [pathToFileURL(bridge.session.cwd).href] } }]);
+  assert.match(expanded[0].text, /^\/review selected file/); assert.match(expanded[0].text, /NATIVE_SKILL_BODY/);
+  assert.equal(expanded[1], parts[1]); assert.equal(parts[0].text, '/review selected file');
+  const ordinary = [{ type: 'text', text: 'Mention /review in ordinary prose' }];
+  assert.equal(await bridge.expandSkill(ordinary), ordinary); assert.equal(calls.length, 1);
+});
+
+test('literal discussion inputs, disabled skills and unknown commands never expand', async () => {
+  const { bridge } = fixture(); bridge.session.cwd = path.resolve('fixture-workspace');
+  const parts = [{ type: 'text', text: '/review untrusted context' }];
+  bridge.rpc = async () => assert.fail('Literal input must not query customizations');
+  for (const config of [{ literalInput: true }, { discussion: true }]) {
+    bridge.config = config; assert.equal(await bridge.expandSkill(parts), parts);
+  }
+  bridge.config = {};
+  bridge.rpc = async () => ({ skills: [{ name: 'review', disableSlashCommand: true, content: 'must not inject' },
+    { name: 'review', content: 'a shadowed skill must not replace the disabled selection' }] });
+  assert.equal(await bridge.expandSkill(parts), parts);
+  bridge.rpc = async () => ({ skills: [{ name: 'different-skill', content: 'must not inject' }] });
+  assert.equal(await bridge.expandSkill(parts), parts);
+  bridge.rpc = async () => { throw new Error('unimplemented: unknown method'); };
+  assert.equal(await bridge.expandSkill(parts), parts);
+});
+
 test('native approval resumes only its original trajectory step, once', async () => {
   const { bridge, turn, messages, calls } = fixture();
   bridge.step(turn, { trajectoryId: 'trajectory' }, waiting(), 2);
@@ -99,6 +134,53 @@ test('cancelling an in-flight denial does not break the reusable connection', as
   const pending = bridge.reply({ id: messages.at(-1).id, result: { outcome: { outcome: 'selected', optionId: 'deny' } } });
   await bridge.cancel(); await pending;
   assert.equal(bridge.closed, false);
+});
+
+test('the next prompt waits for cancelled root and owned child executors to stop', { timeout: 5000 }, async () => {
+  const { bridge } = fixture(); bridge.address = 'http://fixture';
+  bridge.prepare = async () => {};
+  bridge.selected = { modelOrAlias: { model: 'fixture' } };
+  let entered, release, polls = 0, sends = 0;
+  const polling = new Promise(resolve => { entered = resolve; });
+  const pendingStatus = new Promise(resolve => { release = resolve; });
+  const summaries = (root, child, stepCount = 0) => ({
+    root: { status: 'CASCADE_RUN_STATUS_' + root, stepCount },
+    child: { status: 'CASCADE_RUN_STATUS_' + child, trajectoryMetadata: { rootConversationId: 'root' } },
+    unrelated: { status: 'CASCADE_RUN_STATUS_RUNNING' },
+  });
+  bridge.rpc = async method => {
+    if (method === 'CancelCascadeInvocation') return {};
+    if (method === 'GetCascadeTrajectory') return { numTotalSteps: 0 };
+    if (method === 'GetCascadeTrajectorySteps') return { steps: [] };
+    if (method === 'SendUserCascadeMessage') { sends++; return {}; }
+    assert.equal(method, 'GetAllCascadeTrajectories');
+    if (++polls === 1) { entered(); return pendingStatus; }
+    return { trajectorySummaries: summaries('IDLE', polls === 2 ? 'RUNNING' : 'IDLE', sends ? 2 : 0) };
+  };
+  const cancel = bridge.handle('session/cancel', { sessionId: bridge.session.id });
+  await polling;
+  bridge.turn = null; // The aborted old prompt has returned its stopped result.
+  const next = bridge.prompt([{ type: 'text', text: 'Continue after stop' }]);
+  await Promise.resolve(); assert.equal(sends, 0);
+  release({ trajectorySummaries: summaries('CANCELING', 'RUNNING') });
+  await cancel;
+  assert.ok(polls >= 3, 'A cancelled root does not finish while its child is running');
+  assert.equal((await next).stopReason, 'end_turn');
+  assert.equal(sends, 1, 'Only one native input is sent after cancellation settles');
+  assert.equal(bridge.closed, false);
+});
+
+test('an unconfirmed native stop closes the bridge instead of reusing it', async () => {
+  const { bridge } = fixture(); bridge.address = 'http://fixture';
+  let stopped = 0;
+  bridge.rpc = async method => {
+    if (method === 'CancelCascadeInvocation') return {};
+    assert.equal(method, 'GetAllCascadeTrajectories');
+    throw new Error('Native status is unavailable');
+  };
+  bridge.stop = async () => { stopped++; bridge.closed = true; };
+  await bridge.handle('session/cancel', { sessionId: bridge.session.id });
+  assert.equal(stopped, 1); assert.equal(bridge.closed, true);
 });
 
 test('native tool errors are visible and a planner failure cannot look like success', () => {

@@ -56,4 +56,8 @@ test('CLI literal input is explicit and pinned to the verified CLI build', () =>
   assert.equal(ordinary.literalInput, undefined);
   const explicit = JSON.parse(subscriptionSpawnSpec({ ...input, literalInput: true }).env.CAMELLIA_ANTIGRAVITY_CLI);
   assert.equal(explicit.literalInput, true); assert.equal(explicit.executionPolicy, undefined);
+  for (const version of ['1.2.14', '1.3.5']) {
+    const current = JSON.parse(subscriptionSpawnSpec({ ...input, runtime: { ...input.runtime, version }, literalInput: true }).env.CAMELLIA_ANTIGRAVITY_CLI);
+    assert.equal(current.literalInput, true);
+  }
 });

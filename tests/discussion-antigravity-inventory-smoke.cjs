@@ -28,7 +28,7 @@ const { removeTree } = require('./test-fs.cjs');
 async function main() {
   assert.equal(process.platform, 'win32', 'This containment probe requires Windows');
   const runtimeDir = path.resolve(__dirname, '../runtimes/antigravity');
-  const sdk = locatePythonRuntime(runtimeDir), cli = locateAntigravityCli(runtimeDir);
+  const sdk = locatePythonRuntime(runtimeDir), cli = locateAntigravityCli(path.resolve(process.argv[2] || runtimeDir));
   assert.ok(sdk && cli, 'The pinned SDK and CLI must already be installed');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-antigravity-source-smoke-'));
   const profile = path.join(root, 'profile'), home = path.join(root, 'adapter'), cwd = path.join(root, 'work');

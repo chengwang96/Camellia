@@ -21,9 +21,14 @@ const JSZip = require('jszip');
 const { openArchive, entryMetadata, readEntry } = require('./data-import-archive');
 const { ImportTransaction, recoverDataImports: recoverImports } = require('./data-import-transaction');
 const { snapshotExportFiles } = require('./data-export-snapshot');
+const { SETTINGS_FILES, CONVERSATION_CONFIG, CONVERSATION_KEYS, engineInstalled,
+  readSettings, prepareSettingsExport, prepareSettingsImport } = require('./data-transfer-settings');
 
 const FORMAT = 'camellia-data';
-const VERSION = 1;
+// Version 2 separates conversation metadata from portable preferences. Older
+// importers must reject it instead of replacing a full desktop profile with a
+// settings-only document. Version 1 packages remain readable here.
+const VERSION = 2;
 const MANIFEST = 'camellia-migration.json';
 const APP_ROOT = 'app';
 const HOME_ROOT = 'home';
@@ -45,7 +50,7 @@ const APP_SKIP_TOP = new Set([
 // depth: this is what keeps the DSH profile junctions out of the package.
 const APP_SKIP_ANY = new Set(['node_modules', '.tmp', '.tmp-maintenance', 'tmp', '.history-index', 'plugin-caches', '.plugin-cache-operation.json',
   '.camellia-plugin-cache-maintenance.json', '.camellia-plugin-cache-maintenance-result.json']);
-const HOME_SKIP_ANY = new Set(['node_modules', '.tmp', 'tmp']);
+const HOME_SKIP_ANY = new Set(['node_modules', '.tmp', 'tmp', '.git']);
 // Home directories keep most files; only clearly re-creatable caches are left
 // behind, and only near the root. The depth check keeps a plugin's own `cache`
 // folder (deeper in its tree) in scope.
@@ -84,18 +89,16 @@ function createProgressReporter(onProgress, ranges) {
   };
 }
 
-// Every entry is one of three kinds, so an import can bring back API
-// credentials, application settings, conversation history, or any combination.
-// Conversation data is recognised first so an account or engine folder that
-// holds native sessions keeps them with the rest of the history. API files are
-// then matched explicitly; anything left is ordinary configuration, which keeps
-// a new or unexpected settings file in the safe category by default.
+// Settings and API configuration have explicit allowlists. Unknown files are
+// omitted instead of becoming settings merely because they are in a profile.
 const CONVERSATION_SEGMENTS = new Set(['conversations', 'sessions', 'projects', 'transcripts',
   'storages', 'file-history', 'handoffs', 'goals', 'tasks', 'cli-sessions']);
 const CONVERSATION_BASENAMES = [/^session_index\.jsonl$/, /^history\.jsonl$/, /^rollout-.*\.jsonl$/,
-  /^(?:state|thread_history|goals)_\d+\.sqlite(?:-(?:wal|shm|journal))?$/, /^conversation_summaries\.db$/, /^workspace\.json$/];
+  /^(?:state|thread_history|goals)_\d+\.sqlite(?:-(?:wal|shm|journal))?$/, /^conversation_summaries\.db(?:-(?:wal|shm|journal))?$/, /^workspace\.json$/];
 const CONVERSATION_PATHS = [/(^|\/)claude-profiles\/[^/]+\.settings\.json$/,
-  /(^|\/)discussions\//, /(^|\/)antigravity-backup\//];
+  /(^|\/)discussions\//, /(^|\/)antigravity-backup\//,
+  /^app\/clipboard-attachments\//, /^app\/remote\/(?:device-attachments|mobile-images)\//,
+  /^home\/(?:\.dsh\/attachments|\.kimi-code\/files)\//];
 // Subscription logins and their native homes stay on the original device in
 // every scope. Apply the same policy to old packages before classification so
 // credentials cannot enter through settings or conversation history either.
@@ -105,8 +108,8 @@ const SUBSCRIPTION_PATHS = [/(^|\/)(?:subscription-accounts|kimi-subscription|cr
   /(^|\/)(?:\.credentials\.json|auth\.json|account-state\.json|subscription-usage\.json|google-account\.json|google-quota\.json|oauth_creds\.json|mcp-oauth-tokens(?:-v\d+)?\.json)$/i];
 const isSubscriptionData = relative => SUBSCRIPTION_PATHS.some(pattern => pattern.test(relative));
 // API routes, provider keys and their balance/model metadata.
-const API_PATHS = [/(^|\/)(?:ollama-proxy|opencode-proxy)\.json$/, /(^|\/)\.credentials\.yaml$/,
-  /(^|\/)(?:provider-insights|context-capacity)\.json$/, /(^|\/)server\.token$/];
+const API_FILES = new Set(['home/.dsh/ollama-proxy.json', 'home/.dsh/opencode-proxy.json',
+  'home/.dsh/.credentials.yaml', 'app/provider-insights.json', 'app/context-capacity.json']);
 const KINDS = ['api', 'settings', 'conversations'];
 // These documents mix portable preferences with device-local account identity.
 // Strip source identities on export and keep the destination's identities on
@@ -168,12 +171,14 @@ async function preserveLocalAccountMetadata({ targets, staging, dataDir, home })
 }
 
 function classify(relative) {
+  if (relative === CONVERSATION_CONFIG) return 'conversations';
+  if (SETTINGS_FILES.has(relative)) return 'settings';
   if (CONVERSATION_PATHS.some(pattern => pattern.test(relative))) return 'conversations';
   const segments = relative.split('/');
   if (CONVERSATION_BASENAMES.some(pattern => pattern.test(segments[segments.length - 1]))) return 'conversations';
   if (segments.some(part => CONVERSATION_SEGMENTS.has(part))) return 'conversations';
-  if (API_PATHS.some(pattern => pattern.test(relative))) return 'api';
-  return 'settings';
+  if (API_FILES.has(relative)) return 'api';
+  return null;
 }
 
 // Older callers passed one of these strings; keep them working. A selection is
@@ -247,6 +252,12 @@ async function collect(root, rootKind, skip, files, state, prefix = '') {
     // The walk descends into subdirectories, so the package path is accumulated
     // rather than recomputed against the current (deeper) directory.
     const relative = prefix ? prefix + '/' + entry.name : entry.name;
+    const rel = rootKind + '/' + relative;
+    // Configuration-only exports need no walk through native histories or
+    // installed payloads. Visit only parents of the known preference files.
+    if (state.paths && !state.paths.some(file => file === rel || file.startsWith(rel + '/'))) {
+      state.skipped += 1; continue;
+    }
     let stat;
     try { stat = await fs.promises.lstat(absolute); }
     catch { state.skipped += 1; continue; }
@@ -257,16 +268,18 @@ async function collect(root, rootKind, skip, files, state, prefix = '') {
     if (stat.isDirectory()) { await collect(absolute, rootKind, skip, files, state, relative); continue; }
     if (!stat.isFile()) { state.skipped += 1; continue; }
     if (state.files % 1000 === 0) await yieldLoop();
-    const rel = rootKind + '/' + relative;
-    files.push({ abs: absolute, rel, size: stat.size, category: classify(rel) });
+    const category = classify(rel);
+    if (!category) { state.skipped += 1; continue; }
+    files.push({ abs: absolute, rel, size: stat.size, category });
     state.files += 1;
     state.bytes += stat.size;
   }
 }
 
-async function collectAll({ dataDir, home }) {
+async function collectAll({ dataDir, home, kinds = KINDS }) {
   const files = [];
   const state = { files: 0, bytes: 0, skipped: 0 };
+  if (!kinds.includes('conversations')) state.paths = [...SETTINGS_FILES.keys(), ...API_FILES];
   await collect(dataDir, APP_ROOT, skipApp, files, state);
   for (const name of HOME_DIRS) {
     const root = path.join(home, name);
@@ -375,8 +388,9 @@ async function createDataPackage({ dataDir, home, appVersion, destination, scope
   if (!path.isAbsolute(destination)) throw new Error('Choose a destination file for the package');
   onProgress = createProgressReporter(onProgress, { snapshot: [0, 30], export: [30, 99] });
   const kinds = normalizeKinds(scope);
-  const collected = await collectAll({ dataDir, home });
-  const files = collected.files.filter(file => kinds.includes(file.category));
+  const collected = await collectAll({ dataDir, home, kinds });
+  const files = collected.files.filter(file => kinds.includes(file.category)
+    || kinds.includes('conversations') && file.rel === 'app/desktop-config.json');
   const bytes = files.reduce((sum, file) => sum + file.size, 0);
   const skipped = collected.skipped;
   if (!files.length) throw new Error('There is nothing to export yet');
@@ -394,7 +408,28 @@ async function createDataPackage({ dataDir, home, appVersion, destination, scope
     const snapshotBytes = usable.reduce((sum, file) => sum + file.size, 0);
     onProgress?.({ phase: 'snapshot', bytes: 0, totalBytes: snapshotBytes });
     const snapshots = await snapshotExportFiles({ files: usable, directory: staging, onProgress });
+    // Session titles, workspace membership and native connection bindings live
+    // in desktop-config too, but belong to the conversation category.
+    if (kinds.includes('conversations')) {
+      const desktop = snapshots.find(file => file.rel === 'app/desktop-config.json');
+      if (desktop) {
+        const value = await readSettings(desktop.abs, desktop.rel);
+        const metadata = Object.fromEntries(CONVERSATION_KEYS.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]]));
+        if (Object.keys(metadata).length) {
+          const abs = path.join(staging, 'conversation-config.json');
+          const text = JSON.stringify(metadata, null, 2) + '\n';
+          await fs.promises.writeFile(abs, text);
+          snapshots.push({ abs, rel: CONVERSATION_CONFIG, size: Buffer.byteLength(text), category: 'conversations' });
+        }
+      }
+    }
+    if (!kinds.includes('settings')) {
+      const desktop = snapshots.findIndex(file => file.rel === 'app/desktop-config.json');
+      if (desktop >= 0) snapshots.splice(desktop, 1);
+    }
+    if (!snapshots.length) throw new Error('There is nothing to export yet');
     await stripExportAccountMetadata(snapshots);
+    await prepareSettingsExport(snapshots);
     onProgress?.({ phase: 'snapshot', bytes: snapshotBytes, totalBytes: snapshotBytes, phaseComplete: true });
     const oversizedSnapshot = snapshots.find(file => file.size >= MAX_ENTRY_BYTES);
     if (oversizedSnapshot) throw new Error(`A single file is too large to package: ${oversizedSnapshot.rel}`);
@@ -485,7 +520,7 @@ async function readManifest(file, directory = null) {
   let manifest;
   try { manifest = JSON.parse(buffer.toString('utf8')); }
   catch { throw new Error('The package manifest is not valid JSON'); }
-  if (manifest?.format !== FORMAT || manifest.version !== VERSION) {
+  if (manifest?.format !== FORMAT || ![1, VERSION].includes(manifest.version)) {
     throw new Error('This package was written by a different Camellia version');
   }
   if (!manifest.source || typeof manifest.source.appDataDir !== 'string') {
@@ -506,11 +541,11 @@ function packageParts(manifest, selected) {
   return files;
 }
 
-async function inspectPackage(file, kinds = null) {
+async function inspectPackage(file, kinds = null, installedEngines = null) {
   let { manifest, directory: initialDirectory } = await readManifest(file);
   const files = packageParts(manifest, file);
   const categories = {}, entries = new Set();
-  const plans = [];
+  const plans = [], skippedEngines = new Set();
   let bytes = 0, indexBytes = 0, selectedFiles = 0, selectedBytes = 0;
   for (const part of files) {
     const initial = process.platform === 'win32'
@@ -541,10 +576,14 @@ async function inspectPackage(file, kinds = null) {
       // offer, decompress or restore account data and recovery backups.
       if (isSubscriptionData(rel) || /^app\/migration-backups(?:\/|$)/i.test(rel)) continue;
       const kind = classify(rel);
+      if (!kind) continue;
       categories[kind] ||= { files: 0, bytes: 0 };
       categories[kind].files += 1;
       categories[kind].bytes += entry.uncompressedSize;
-      if (kinds?.includes(kind)) {
+      const setting = SETTINGS_FILES.get(rel);
+      const compatible = !setting?.engine || !installedEngines || engineInstalled(installedEngines, setting.engine, setting.mode);
+      if (!compatible && (!kinds || kinds.includes('settings'))) skippedEngines.add(setting.engine);
+      if (kinds?.includes(kind) && compatible) {
         indexBytes += 256 + 4 * entry.path.length;
         if (indexBytes > MAX_IMPORT_INDEX_BYTES) throw new Error('The package file index exceeds the import memory limit');
         selected.push({ rel, entry: entryMetadata(entry, directory.dataEnd) });
@@ -559,13 +598,13 @@ async function inspectPackage(file, kinds = null) {
     throw new Error(`The package is incomplete (${entries.size} of ${manifest.counts.files} files)`);
   }
   if (Number.isFinite(manifest.counts?.bytes) && manifest.counts.bytes !== bytes) throw new Error('The package byte count does not match its manifest');
-  return { manifest, files, categories, plans, available: entries.size,
+  return { manifest, files, categories, plans, available: entries.size, skippedEngines: [...skippedEngines],
     expected: { files: selectedFiles, totalBytes: selectedBytes } };
 }
 
-async function inspectDataPackage(file) {
-  const { manifest, files, categories } = await inspectPackage(file);
-  return { manifest, files, categories };
+async function inspectDataPackage(file, { installedEngines } = {}) {
+  const { manifest, files, categories, skippedEngines } = await inspectPackage(file, null, installedEngines);
+  return { manifest, files, categories, skippedEngines };
 }
 
 async function extractPackage({ plans, staging, onProgress, expected }) {
@@ -703,15 +742,20 @@ async function applyPackage({ staging, targets, transaction, onProgress }) {
   return summary;
 }
 
-async function importDataPackage({ file, dataDir, home, scope = 'all', onProgress }) {
+async function importDataPackage({ file, dataDir, home, scope = 'all', onProgress, installedEngines = {} }) {
   if (!file || !fs.existsSync(file)) throw new Error('Choose a Camellia data package to import');
   onProgress = createProgressReporter(onProgress, { import: [0, 70], rewrite: [70, 80], apply: [80, 99] });
   const kinds = normalizeKinds(scope);
   recoverDataImports({ dataDir, home });
-  const { manifest, categories, plans, expected, available } = await inspectPackage(file, kinds);
+  const { manifest, categories, plans, expected, available, skippedEngines } = await inspectPackage(file, kinds, installedEngines);
   if (scope !== 'all' && kinds.some(kind => !categories[kind]?.files)) {
     throw new Error('The package has no data for the selected categories');
   }
+  if (!expected.files && skippedEngines.length) return {
+    restored: 0, overwritten: 0, bytes: 0, backupDir: null, rewritten: [], scope: kinds, selected: kinds.length,
+    available, skippedEngines, skippedPaths: [],
+    source: { appVersion: manifest.appVersion || null, createdAt: manifest.createdAt || null, platform: manifest.source.platform || null },
+  };
   const staging = path.join(os.tmpdir(), 'camellia-migration-' + randomUUID());
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupDir = path.join(dataDir, 'migration-backups', stamp + '-' + randomUUID().slice(0, 8));
@@ -721,7 +765,7 @@ async function importDataPackage({ file, dataDir, home, scope = 'all', onProgres
     // decompressed, and all of those pass size/CRC checks before any overwrite.
     onProgress?.({ phase: 'import', bytes: 0, totalBytes: expected.totalBytes });
     const selected = await extractPackage({ plans, staging, onProgress, expected });
-    if (!selected.length) {
+    if (!selected.length && !skippedEngines.length) {
       throw new Error('The package has no data for the selected categories');
     }
     onProgress?.({ phase: 'import', bytes: expected.totalBytes, totalBytes: expected.totalBytes, phaseComplete: true });
@@ -734,6 +778,9 @@ async function importDataPackage({ file, dataDir, home, scope = 'all', onProgres
     for (const relative of await preserveLocalAccountMetadata({ targets: selected, staging, dataDir, home })) {
       if (!rewritten.includes(relative)) rewritten.push(relative);
     }
+    const settings = await prepareSettingsImport({ targets: selected, staging, dataDir, home, installedEngines,
+      includeConversations: kinds.includes('conversations') });
+    for (const relative of settings.rewritten) if (!rewritten.includes(relative)) rewritten.push(relative);
     onProgress?.({ phase: 'rewrite', files: selected.length, totalFiles: selected.length, phaseComplete: true });
     transaction = new ImportTransaction({ dataDir, home, backupDir, homeEntries: [...HOME_DIRS, ...HOME_FILES] });
     const summary = await applyPackage({ staging, targets: selected, transaction, onProgress });
@@ -742,6 +789,7 @@ async function importDataPackage({ file, dataDir, home, scope = 'all', onProgres
       restored: summary.restored, overwritten: summary.overwritten, bytes: summary.bytes,
       backupDir: summary.overwritten ? backupDir : null, rewritten,
       scope: kinds, selected: kinds.length, available,
+      skippedEngines: [...new Set([...skippedEngines, ...settings.skippedEngines])], skippedPaths: settings.skippedPaths,
       source: { appVersion: manifest.appVersion || null, createdAt: manifest.createdAt || null, platform: manifest.source.platform || null },
       ...(warning ? { warning } : {}),
     };

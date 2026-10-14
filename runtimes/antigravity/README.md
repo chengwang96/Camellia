@@ -3,7 +3,8 @@
 Camellia provides two optional Antigravity connections through its ACP interface:
 
 - **Google subscription:** the official CLI manages Google sign-in, tools and
-  native conversation state. Camellia adapts its documented `stream-json` mode.
+  native conversation state. Chat uses the CLI's authenticated local interactive
+  transport; restricted connection checks use its `stream-json` mode.
   `npm run setup:antigravity:subscription` downloads only the CLI.
 - **Shared API routes:** the official `google-antigravity` Python SDK uses
   Camellia's router and permission prompts. `npm run setup:antigravity` downloads
@@ -14,8 +15,11 @@ selected connection on demand, without requiring a global CLI or Python install.
 The download prompt uses the device's saved connection preferences.
 
 - SDK: `google-antigravity==0.1.20`; dependencies pinned in `requirements.lock`.
-- CLI: version and official Windows/macOS download URLs pinned in `runtime.json`;
-  the SHA-512 is verified before installation. Automatic CLI updates are disabled.
+- CLI: the initial 1.3.5 download URLs and SHA-512 checksums are pinned in
+  `runtime.json`. **Check for updates** queries Google's platform release manifest;
+  **Update** verifies the checksum, version and transport before replacing the
+  executable, retaining the previous version for recovery. Unattended native
+  self-updates remain disabled so a running conversation cannot change runtimes.
 - Interpreter and installer: pinned in `runtime.json`. The uv wheel is fetched
   from PyPI and checked against its SHA-256 before extraction.
 - Platforms in the pinned manifest: Windows x64, macOS ARM64, Linux x64, and Linux ARM64.

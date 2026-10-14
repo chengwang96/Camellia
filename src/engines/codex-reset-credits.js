@@ -5,6 +5,9 @@ const { readJson, writeJson } = require('../shared/json-store');
 
 const OUTCOMES = new Set(['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit']);
 const CONFIRMATION_TTL = 5 * 60 * 1000;
+const PREVIEW_TIMEOUT = 30000;
+const READ_TIMEOUT = 15000;
+const QUERY_TIMEOUT_MESSAGE = 'Reset credit query timed out. Check your network or proxy settings and try again.';
 const timestamp = value => Number.isSafeInteger(value) && value > 0 ? value : null;
 
 function resetCredits(value) {
@@ -35,11 +38,16 @@ function createResetCredits({ file, getClient, publish, now = () => Date.now() }
   if (saved && (typeof saved.token !== 'string' || typeof saved.identity !== 'string' || !saved.attempted)) {
     throw new Error('Cannot read the saved reset request');
   }
-  async function readSnapshot(client) {
+  async function readSnapshot(client, signal) {
+    signal?.throwIfAborted();
     const request = ++readGeneration;
-    const { account } = await client.request('account/read', { refreshToken: true });
+    // Reading account identity should not force a network token refresh. The
+    // rate-limit request still uses Codex's managed authentication lifecycle.
+    const { account } = await client.request('account/read', { refreshToken: false }, READ_TIMEOUT);
+    signal?.throwIfAborted();
     if (account?.type !== 'chatgpt' || !account.email) throw new Error('Sign in to this ChatGPT account first');
-    const limits = await client.request('account/rateLimits/read', {});
+    const limits = await client.request('account/rateLimits/read', {}, READ_TIMEOUT);
+    signal?.throwIfAborted();
     const identity = JSON.stringify([account.email.toLowerCase(), limits.accountId ?? null]);
     if (request === readGeneration) publish({ account, ...quotaPatch(limits) });
     return { account, limits, identity };
@@ -53,7 +61,21 @@ function createResetCredits({ file, getClient, publish, now = () => Date.now() }
   async function preview() {
     if (running) throw new Error('Wait for the reset request to finish');
     const request = ++previewGeneration;
-    const snapshot = await readSnapshot(await getClient());
+    const controller = new AbortController();
+    let timer, snapshot;
+    try {
+      // Include app-server startup in the deadline and prevent a timed-out
+      // read from publishing stale account state when it eventually returns.
+      snapshot = await Promise.race([
+        (async () => readSnapshot(await getClient(), controller.signal))(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort(new Error(QUERY_TIMEOUT_MESSAGE));
+            reject(controller.signal.reason);
+          }, PREVIEW_TIMEOUT);
+        }),
+      ]);
+    } finally { clearTimeout(timer); }
     // A canceled dialog can be reopened while its original read is in flight.
     // That older read must not invalidate the newer confirmation.
     if (request !== previewGeneration || running) return view(snapshot, null);

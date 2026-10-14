@@ -30,13 +30,15 @@ const desktop=window.dshDesktop;
 window.dshDesktop=new Proxy({}, {get:(_,method)=>{
  if(method==='codexAccountResetPreview')return async id=>{
   resetReads.push(id);
+  if(window.failResetPreview)return {ok:false,error:window.failResetPreview};
   const account=mockAccounts.find(a=>a.id===id);
   const preview={account:{email:account.email,plan:account.plan},credits:structuredClone(account.rateLimitResetCredits),
    creditId:account.rateLimitResetCredits?.credits?.[1]?.id||null,
    confirmationToken:account.rateLimitResetCredits?.availableCount>0?'token-'+id:null,retry:false};
   resetTokens[id]=preview.confirmationToken;
+  const result={...accountSnapshot(),preview};
   if(window.holdResetPreview)await new Promise(resolve=>window.finishResetPreview=resolve);
-  return {...accountSnapshot(),preview};
+  return result;
  };
  if(method==='codexAccountResetConsume')return async payload=>{
   resetUses.push(structuredClone(payload));
@@ -58,7 +60,7 @@ def uses(page):
 
 def assert_layout(dialog):
     assert dialog.evaluate('el=>el.scrollWidth<=el.clientWidth'), 'modal overflows horizontally'
-    assert dialog.locator('button').evaluate_all("""buttons=>buttons.every(button=>{
+    assert dialog.locator('button').evaluate_all("""buttons=>buttons.filter(button=>button.getClientRects().length).every(button=>{
       const box=button.getBoundingClientRect(),modal=button.closest('dialog').getBoundingClientRect();
       return box.left>=modal.left&&box.right<=modal.right;
     })"""), 'modal controls escape dialog'
@@ -76,9 +78,44 @@ try:
         reset = backup.locator('[data-card-action=reset]')
         dialog = page.locator('#codexResetDialog')
         confirm = page.locator('#confirmCodexReset'); cancel = page.locator('#cancelCodexReset')
+        retry_query = page.locator('#retryCodexReset')
         expect(reset).to_have_text('Reset credits · 2')
         expect(cards.locator('[data-card-id=account-2] [data-card-action=reset]')).to_be_disabled()
         expect(page.locator('#kimiAccountList [data-card-action=reset], #googleAccountList [data-card-action=reset]')).to_have_count(0)
+
+        # Native read failures leave loading, expose a read-only retry and recover.
+        page.evaluate("window.failResetPreview='Codex request timed out: account/read'")
+        reset.click()
+        expect(page.locator('#codexResetCount')).to_have_text('Reset credit information is unavailable.')
+        expect(page.locator('#codexResetMessage')).to_have_text('Reset credit query timed out. Check your network or proxy settings and try again.')
+        expect(confirm).to_be_disabled(); expect(cancel).to_be_enabled(); expect(retry_query).to_be_visible()
+        assert not uses(page)
+        page.evaluate('window.failResetPreview=null')
+        read_count = page.evaluate('resetReads.length')
+        retry_query.evaluate('el=>{el.click();el.click();el.click()}')
+        expect(confirm).to_be_enabled(); expect(retry_query).to_be_hidden()
+        assert page.evaluate('resetReads.length') == read_count + 1
+        expect(page.locator('#codexResetCount')).to_have_text('2 reset credits available')
+        cancel.click(); assert not uses(page)
+
+        # An IPC call that never settles is bounded. Its late answer cannot
+        # replace the retry's count or re-render stale account cards.
+        page.clock.install()
+        page.evaluate('window.holdResetPreview=true')
+        reset.click(); expect(page.locator('#codexResetCount')).to_have_text('Checking reset credits…')
+        page.clock.fast_forward(35000)
+        expect(page.locator('#codexResetCount')).to_have_text('Reset credit information is unavailable.')
+        expect(retry_query).to_be_visible(); expect(confirm).to_be_disabled()
+        page.evaluate('window.holdResetPreview=false; mockAccounts[1].rateLimitResetCredits.availableCount=4')
+        retry_query.click(); expect(confirm).to_be_enabled()
+        expect(page.locator('#codexResetCount')).to_have_text('4 reset credits available')
+        page.evaluate('finishResetPreview()')
+        expect(page.locator('#codexResetCount')).to_have_text('4 reset credits available')
+        expect(reset).to_have_text('Reset credits · 4')
+        assert not uses(page)
+        cancel.click()
+        page.evaluate('mockAccounts[1].rateLimitResetCredits.availableCount=2')
+
         reset.click()
         expect(dialog).to_be_visible(); expect(confirm).to_be_enabled(); expect(cancel).to_be_focused()
         expect(page.locator('#codexResetEmail')).to_have_text('research@example.com')
@@ -146,6 +183,16 @@ try:
                     if language == 'zh-CN' and width == 1180:
                         dialog.screenshot(path=str(output/f'codex-reset-{theme}.png'))
                     cancel.click()
+                    page.evaluate("window.failResetPreview='Codex request timed out: account/rateLimits/read'")
+                    cards.locator('[data-card-id=default] [data-card-action=reset]').click()
+                    expect(retry_query).to_be_visible(); assert_layout(dialog)
+                    expect(confirm).to_be_disabled(); expect(cancel).to_be_enabled()
+                    if language == 'zh-CN':
+                        expect(retry_query).to_have_text('重新查询')
+                        expect(page.locator('#codexResetMessage')).to_have_text('查询重置卡超时，请检查网络或代理后重试。')
+                    if language == 'zh-CN' and width == 1180:
+                        dialog.screenshot(path=str(output/f'codex-reset-query-error-{theme}.png'))
+                    cancel.click(); page.evaluate('window.failResetPreview=null')
         page.set_viewport_size({'width': 1180, 'height': 950})
         for zoom in [1.25, 1.75, 2]:
             page.evaluate('value=>document.documentElement.style.zoom=value', zoom)
@@ -153,6 +200,6 @@ try:
             expect(confirm).to_be_enabled(); assert_layout(dialog); cancel.click()
         assert not errors, errors
         browser.close()
-    print('PASS: official reset confirmation, cancellation, duplicate clicks, retry, selected-account isolation, count-only cards, loading races, English/Chinese, light/dark, 320–1180px and 125–200% zoom')
+    print('PASS: reset-query failure, IPC timeout, read-only retry, late answers, official reset confirmation, cancellation, duplicate clicks, idempotent retry, selected-account isolation, count-only cards, loading races, English/Chinese, light/dark, 320–1180px and 125–200% zoom')
 finally:
     driver.terminate(); driver.wait(timeout=10)

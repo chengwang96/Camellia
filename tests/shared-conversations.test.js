@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { SharedConversations, preferences, ENGINES } = require('../src/engines/shared-conversations');
+const { createCodex } = require('../src/engines/codex');
 
 function fixture(t, overrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shared-chat-'));
@@ -336,6 +337,330 @@ function subscriptionFixture(t, engine = 'codex') {
   };
   return { ...h, state };
 }
+
+function codexSelectionFixture(t) {
+  const h = subscriptionFixture(t), dataDir = path.join(h.root, 'accounts'), accountUpdates = [];
+  const accounts = ['default', 'account-1', 'account-2'].map(id => ({ id }));
+  h.setConfig({ subscriptionAccounts: { codex: accounts }, subscriptionActive: { codex: 'default' } });
+  for (const { id } of accounts) {
+    const dir = id === 'default' ? path.join(dataDir, 'codex') : path.join(dataDir, 'subscription-accounts', 'codex', id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'account-state.json'), JSON.stringify({ account: { email: id + '@example.com' },
+      models: [{ id: 'fixture' }], rateLimits: { primary: { usedPercent: 20 } } }));
+  }
+  const options = { dataDir, loadConfig: h.args.loadConfig, saveConfig: h.args.saveConfig,
+    runtimes: () => ({ locate: () => null }), onAccount: state => accountUpdates.push(state) };
+  const codex = createCodex(options);
+  h.drivers.codex.subscriptionAccounts = () => codex.accountState();
+  h.drivers.codex.syncSubscriptionAccount = codex.syncAccountSelection;
+  const progress = (sent = h.sent.at(-1)) => h.manager.capture('codex', { type: 'stream_event', runId: sent.session.gen,
+    conversationId: sent.opts.conversationId, session_id: sent.session.sessionId,
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Working' } } });
+  return { ...h, codex, accountUpdates, progress, options };
+}
+
+for (const engine of ['codex', 'kimi']) test(engine + ' compaction quota fallback retries only the failed fragment and pins the backup', async t => {
+  const h = subscriptionFixture(t, engine), c = h.manager.create(engine);
+  c.engineSettings[engine].contextWindow = 6000;
+  for (let index = 0; index < 3; index++) h.manager.append(c, { role: 'tool', text: 'SOURCE_' + index + ' ' + 'x'.repeat(9000) });
+  const pending = h.manager.compact(c.id).catch(error => error);
+  await h.flush();
+  const firstPrompt = h.sent.at(-1).prompt;
+  h.finish(engine, 'success', 'First completed fragment'); await h.flush();
+  const failedPrompt = h.sent.at(-1).prompt;
+  assert.notEqual(failedPrompt, firstPrompt);
+  h.finish(engine, 'error', 'You\u2019ve hit your usage limit.'); await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'b');
+  assert.equal(h.sent.at(-1).prompt, failedPrompt);
+  while (h.manager.switching.has(c.id)) {
+    assert.ok(h.sent.length < 12);
+    assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'b');
+    h.finish(engine, 'success', 'Recovered working context'); await h.flush();
+  }
+  const result = await pending;
+  assert.equal(result.ok, true, result.message);
+  assert.equal(h.sent.filter(sent => sent.prompt === firstPrompt).length, 1);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /Recovered working context/);
+  assert.equal(c.lastCompaction.outcome, 'completed');
+});
+
+test('Codex pre-send compaction fallback continues the original message and persists the serving account', async t => {
+  const h = codexSelectionFixture(t), c = h.manager.create('codex');
+  c.engineSettings.codex.contextWindow = 6000;
+  h.manager.append(c, { role: 'tool', text: 'OLD_CONTEXT ' + 'x'.repeat(18000) });
+  const pending = h.manager.send('codex', { sessionId: c.id, prompt: 'Finish the original request' }).catch(error => error);
+  await h.flush();
+  h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-1');
+  while (h.manager.switching.has(c.id)) {
+    assert.ok(h.sent.length < 12);
+    h.finish('codex', 'success', 'Recovered working context'); await h.flush();
+  }
+  const run = await pending;
+  assert.equal(run.ok, true, run.message);
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-1');
+  assert.match(h.sent.at(-1).prompt, /Recovered working context[\s\S]*Finish the original request/);
+  h.progress(); h.finish('codex'); await run.done;
+  assert.equal(h.codex.accountState().activeId, 'account-1');
+  assert.equal(createCodex(h.options).accountState().activeId, 'account-1');
+  assert.equal(h.manager.rows(c).filter(row => row.role === 'user').length, 1);
+  assert.equal(h.events.filter(event => event.type === 'conversation:started').length, 1);
+  assert.equal(h.accountUpdates.length, 1);
+});
+
+for (const failure of ['Usage limit reached', '401 authentication failed']) test('Codex native compaction account fallback preserves the native binding until its summary is saved: ' + failure, async t => {
+  const h = codexSelectionFixture(t), ensure = h.drivers.codex.ensure;
+  h.drivers.codex.nativeCompaction = true;
+  h.drivers.codex.ensure = options => {
+    const session = ensure(options);
+    session.compact = async () => { throw new Error(failure); };
+    return session;
+  };
+  const run = await h.manager.send('codex', { prompt: 'Remember the task' });
+  h.finish('codex'); await run.done;
+  const c = h.manager.get(run.sessionId), original = c.segments.codex.nativeId;
+  const pending = h.manager.compact(c.id);
+  await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-1');
+  assert.equal(h.sent.at(-1).opts.sessionId, null);
+  assert.equal(c.segments.codex.nativeId, original);
+  assert.equal(c.segments.codex.nativeCompactionUnsupported, undefined);
+  h.finish('codex', 'success', 'Preserved task summary');
+  assert.equal((await pending).ok, true);
+  assert.equal(c.retiredSegments.at(-1).nativeId, original);
+  assert.equal(c.lastCompaction.reason, 'native-subscription-failure');
+  assert.equal(h.codex.accountState().activeId, 'account-1');
+});
+
+test('Codex compaction retries each account once and keeps its history and selection when all accounts fail', async t => {
+  const h = codexSelectionFixture(t), c = h.manager.create('codex');
+  h.manager.append(c, { role: 'user', text: 'Preserve the original task' });
+  const pending = h.manager.compact(c.id).catch(error => error);
+  for (let index = 0; index < 3; index++) {
+    await h.flush(); h.finish('codex', 'error', 'Usage limit reached');
+  }
+  assert.match((await pending).message, /Usage limit reached/);
+  assert.deepEqual(h.sent.map(sent => sent.opts.settings.subscriptionId), ['default', 'account-1', 'account-2']);
+  assert.deepEqual(h.manager.rows(c).filter(row => !row.internal).map(row => row.text), ['Preserve the original task']);
+  assert.equal(h.manager.busy(c.id), false);
+  assert.equal(h.codex.accountState().activeId, 'default');
+  assert.equal(h.accountUpdates.length, 0);
+});
+
+for (const mode of ['disabled', 'unavailable', 'pending-tool', 'ordinary-error']) test('Codex compaction does not rotate accounts for ' + mode, async t => {
+  const h = subscriptionFixture(t), c = h.manager.create('codex');
+  if (mode === 'disabled') h.setConfig({ subscriptionAutoSwitch: { codex: false } });
+  if (mode === 'unavailable') {
+    h.state.accounts[1].signedIn = false;
+    h.state.accounts[2].exhausted = true;
+  }
+  h.manager.append(c, { role: 'user', text: 'Preserve the task' });
+  const pending = h.manager.compact(c.id).catch(error => error);
+  await h.flush();
+  if (mode === 'pending-tool') h.manager.capture('codex', { type: 'gui:tool', id: 'unfinished', status: 'running', runId: h.sent.at(-1).session.gen });
+  const message = mode === 'ordinary-error' ? 'Provider unavailable' : 'Usage limit reached';
+  h.finish('codex', 'error', message);
+  assert.match((await pending).message, new RegExp(message));
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.manager.busy(c.id), false);
+});
+
+test('Codex compaction authentication fallback remains available when quota switching is disabled', async t => {
+  const h = subscriptionFixture(t), c = h.manager.create('codex');
+  h.setConfig({ subscriptionAutoSwitch: { codex: false } });
+  h.manager.append(c, { role: 'user', text: 'Task' });
+  const pending = h.manager.compact(c.id);
+  await h.flush(); h.finish('codex', 'error', '401 authentication failed'); await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'b');
+  h.finish('codex', 'success', 'Task summary');
+  assert.equal((await pending).ok, true);
+});
+
+test('cancelling Codex compaction during backup preparation never dispatches the backup or updates its card', async t => {
+  const h = codexSelectionFixture(t), c = h.manager.create('codex');
+  h.manager.append(c, { role: 'user', text: 'Task' });
+  const pending = h.manager.compact(c.id).catch(error => error);
+  await h.flush();
+  let release;
+  h.manager.prepare = () => new Promise(resolve => { release = resolve; });
+  h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+  assert.equal(typeof release, 'function');
+  const cancelled = h.manager.cancel({ sessionId: c.id });
+  release();
+  await cancelled;
+  assert.match((await pending).message, /canceled/i);
+  await h.flush();
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.codex.accountState().activeId, 'default');
+  assert.equal(h.accountUpdates.length, 0);
+  assert.equal(h.manager.busy(c.id), false);
+});
+
+test('Codex manual account selection during compaction wins over a late backup summary', async t => {
+  const h = codexSelectionFixture(t), c = h.manager.create('codex');
+  h.manager.append(c, { role: 'user', text: 'Task' });
+  const pending = h.manager.compact(c.id);
+  await h.flush(); h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+  h.codex.handlers['account-select']({ id: 'account-2' });
+  const updates = h.accountUpdates.length;
+  h.finish('codex', 'success', 'Recovered task summary');
+  assert.equal((await pending).ok, true);
+  assert.equal(h.codex.accountState().activeId, 'account-2');
+  assert.equal(h.accountUpdates.length, updates);
+});
+
+test('Codex compaction fallback excludes failed summary accounts from subsequent user-turn recovery', async t => {
+  const h = codexSelectionFixture(t), c = h.manager.create('codex');
+  c.engineSettings.codex.contextWindow = 6000;
+  h.manager.append(c, { role: 'tool', text: 'x'.repeat(18000) });
+  const pending = h.manager.send('codex', { sessionId: c.id, prompt: 'Continue the task' });
+  await h.flush(); h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+  while (h.manager.switching.has(c.id)) {
+    h.finish('codex', 'success', 'Recovered context'); await h.flush();
+  }
+  const run = await pending;
+  h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-2');
+  h.progress(); h.finish('codex'); await run.done;
+  assert.equal(h.codex.accountState().activeId, 'account-2');
+  assert.equal(h.manager.rows(c).filter(row => row.role === 'user').length, 1);
+});
+
+test('Codex overflow recovery can switch accounts inside compaction and resume the same logical turn', async t => {
+  const h = codexSelectionFixture(t), run = await h.manager.send('codex', { prompt: 'Finish the original task' });
+  h.finish('codex', 'error', 'context_length_exceeded'); await h.flush();
+  assert.match(h.sent.at(-1).prompt, /compact working context/);
+  h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-1');
+  h.finish('codex', 'success', 'Preserved task summary'); await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-1');
+  assert.match(h.sent.at(-1).prompt, /Preserved task summary[\s\S]*Finish the original task/);
+  h.progress(); h.finish('codex'); await run.done;
+  assert.equal(h.codex.accountState().activeId, 'account-1');
+  assert.equal(h.manager.rows(h.manager.get(run.sessionId)).filter(row => row.role === 'user').length, 1);
+  assert.equal(h.events.filter(event => event.type === 'conversation:started').length, 1);
+  assert.equal(h.events.filter(event => event.type === 'conversation:continued').length, 1);
+});
+
+test('Codex compaction account rotation stops after twelve attempts', async t => {
+  const h = subscriptionFixture(t), c = h.manager.create('codex');
+  h.state.accounts = ['a', ...Array.from({ length: 20 }, (_, index) => 'backup-' + index)]
+    .map(id => ({ id, signedIn: true, exhausted: false }));
+  h.manager.append(c, { role: 'user', text: 'Preserve the task' });
+  const pending = h.manager.compact(c.id).catch(error => error);
+  for (let index = 0; index < 12; index++) {
+    await h.flush(); h.finish('codex', 'error', 'Usage limit reached');
+  }
+  assert.match((await pending).message, /Usage limit reached/);
+  assert.equal(h.sent.length, 12);
+  assert.equal(new Set(h.sent.map(sent => sent.opts.settings.subscriptionId)).size, 12);
+  assert.equal(h.manager.busy(c.id), false);
+});
+
+test('Codex quota fallback persists and broadcasts the serving account without returning to stale quota', async t => {
+  const h = codexSelectionFixture(t), run = await h.manager.send('codex', { prompt: 'Finish this task' });
+  const original = h.sent[0];
+  h.finish('codex', 'error', '429 quota exhausted'); await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-1');
+  assert.equal(h.codex.accountState().activeId, 'default', 'Opening a native thread alone does not prove the backup can serve');
+  h.progress();
+  const state = h.accountUpdates.at(-1);
+  assert.equal(state.activeId, 'account-1');
+  assert.deepEqual(state.accounts.filter(account => account.active).map(account => account.id), ['account-1']);
+  assert.equal(state.account.email, 'account-1@example.com');
+  assert.equal(h.args.loadConfig().subscriptionActive.codex, 'account-1');
+  assert.equal(createCodex(h.options).accountState().activeId, 'account-1', 'The selection survives a restart');
+  assert.equal(h.drivers.codex.settings(original.session.sessionId).subscriptionId, 'default', 'Existing native bindings stay isolated');
+  h.finish('codex'); await run.done;
+  const next = await h.manager.send('codex', { sessionId: run.sessionId, prompt: 'Continue' });
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-1');
+  h.finish('codex'); await next.done;
+  assert.equal(h.accountUpdates.length, 1);
+});
+
+test('Codex preflight quota fallback updates the current account on a successful result without stream output', async t => {
+  const h = codexSelectionFixture(t);
+  const accountFile = path.join(h.options.dataDir, 'codex', 'account-state.json');
+  const state = JSON.parse(fs.readFileSync(accountFile)); state.rateLimits.primary.usedPercent = 100;
+  fs.writeFileSync(accountFile, JSON.stringify(state));
+  // Reload the cache before a new turn observes the exhausted account.
+  const codex = createCodex(h.options);
+  h.drivers.codex.subscriptionAccounts = () => codex.accountState();
+  h.drivers.codex.syncSubscriptionAccount = codex.syncAccountSelection;
+  const run = await h.manager.send('codex', { prompt: 'Use available quota' });
+  assert.equal(h.sent[0].opts.settings.subscriptionId, 'account-1');
+  assert.equal(codex.accountState().activeId, 'default');
+  h.finish('codex'); await run.done;
+  assert.equal(codex.accountState().activeId, 'account-1');
+  assert.equal(h.accountUpdates.length, 1);
+});
+
+test('Codex later recovery can promote another serving backup in the same turn', async t => {
+  const h = codexSelectionFixture(t), run = await h.manager.send('codex', { prompt: 'Task' });
+  h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+  h.progress();
+  assert.equal(h.codex.accountState().activeId, 'account-1');
+  h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-2');
+  h.progress();
+  assert.equal(h.codex.accountState().activeId, 'account-2');
+  h.finish('codex'); await run.done;
+  assert.deepEqual(h.accountUpdates.map(state => state.activeId), ['account-1', 'account-2']);
+});
+
+test('Codex failed or cancelled account attempts leave the current card unchanged', async t => {
+  for (const cancelled of [false, true]) {
+    const h = codexSelectionFixture(t), run = await h.manager.send('codex', { prompt: 'Task' });
+    h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+    if (cancelled) await h.manager.cancel({ sessionId: run.sessionId, runId: run.runId });
+    else {
+      h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+      h.finish('codex', 'error', 'Usage limit reached');
+    }
+    await run.done;
+    assert.equal(h.codex.accountState().activeId, 'default');
+    assert.equal(h.accountUpdates.length, 0);
+  }
+});
+
+for (const reselectOriginal of [false, true]) test('Codex manual selection wins over delayed account recovery, reselect original ' + reselectOriginal, async t => {
+  const h = codexSelectionFixture(t), run = await h.manager.send('codex', { prompt: 'Task' });
+  let release;
+  h.manager.prepare = () => new Promise(resolve => { release = resolve; });
+  h.finish('codex', 'error', '429 quota exhausted'); await h.flush();
+  h.codex.handlers['account-select']({ id: 'account-2' });
+  if (reselectOriginal) h.codex.handlers['account-select']({ id: 'default' });
+  const chosen = h.codex.accountState().activeId, updates = h.accountUpdates.length;
+  release(); await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-1');
+  h.progress(); h.finish('codex'); await run.done;
+  assert.equal(h.codex.accountState().activeId, chosen);
+  assert.equal(h.accountUpdates.length, updates, 'The late backup must not broadcast a replacement choice');
+});
+
+test('Codex concurrent account recovery cannot undo a newer selection or rebind another running conversation', async t => {
+  const h = codexSelectionFixture(t);
+  const first = await h.manager.send('codex', { prompt: 'First task' });
+  const original = h.sent[0];
+  const second = await h.manager.send('codex', { prompt: 'Second task' });
+  h.finish('codex', 'error', 'Usage limit reached', original.session); await h.flush();
+  const backup = h.sent.at(-1); h.progress(backup);
+  assert.equal(h.codex.accountState().activeId, 'account-1');
+  const other = h.sent.find(sent => sent.opts.conversationId === second.sessionId);
+  h.progress(other);
+  assert.equal(h.codex.accountState().activeId, 'account-1');
+  assert.equal(other.session.settings.subscriptionId, 'default');
+  h.finish('codex', 'error', 'Usage limit reached', other.session); await h.flush();
+  h.finish('codex', 'error', 'Usage limit reached'); await h.flush();
+  const thirdAccount = h.sent.at(-1);
+  assert.equal(thirdAccount.opts.settings.subscriptionId, 'account-2');
+  h.progress(thirdAccount);
+  assert.equal(h.codex.accountState().activeId, 'account-1', 'The earlier-started turn cannot replace the newer selection');
+  assert.equal(backup.session.settings.subscriptionId, 'account-1');
+  h.finish('codex', 'success', 'First complete', backup.session); await first.done;
+  h.finish('codex', 'success', 'Second complete', thirdAccount.session); await second.done;
+  assert.equal(h.accountUpdates.length, 1);
+});
 
 for (const engine of ENGINES) test(engine + ' receives global memory independently of model, MCP and connection', async t => {
   const h = fixture(t);
@@ -2118,6 +2443,111 @@ test('model goal tools adopt the current turn once and verify completion across 
     await harness.flush();
     assert.equal(driver.view().phase, 'complete');
   }
+});
+
+test('goal revisions follow user steering, retain the run and verify the latest scope on every engine', async t => {
+  for (const engine of ENGINES) {
+    const changes = [], h = fixture(t, { onGoal: event => changes.push(event), createGoalBridge: async options => ({ call: options.call, close() {} }) });
+    const run = await h.manager.send(engine, { prompt: 'Set a goal: build a website' });
+    let active = h.manager.active.get(run.sessionId);
+    const bridge = h.sent.at(-1).opts.goalBridge, driver = h.manager.goalFor(run.sessionId);
+    assert.equal(bridge.call('camellia_create_goal', { run_token: active.goalRunToken, objective: 'Build a website', criterion: 'Browser test passes', user_request: 'Set a goal' }).ok, true);
+    const original = driver.view();
+    h.sent.at(-1).session.steerUserMessage = async () => {};
+    const correction = '页面不用做了，改成可复用库，库测试通过即可';
+    await h.manager.steer(engine, { sessionId: run.sessionId, runId: active.facade.gen, prompt: correction });
+    assert.equal(bridge.call('camellia_update_goal', { run_token: active.goalRunToken, status: 'complete', reason: 'The old website is done' }).ok, true);
+    const revision = { run_token: active.goalRunToken, objective: 'Build a reusable library', criterion: 'Library tests pass', reason: 'The user now wants a library', user_request: correction };
+    const updated = bridge.call('camellia_update_goal', revision);
+    assert.equal(updated.ok, true); assert.equal(updated.updated, true);
+    assert.equal(updated.goal.id, original.id); assert.equal(updated.goal.createdAt, original.createdAt);
+    assert.equal(updated.goal.roundsStarted, 1); assert.equal(updated.goal.activeSince, original.activeSince);
+    assert.equal(driver.ownedSession(), active.facade); assert.equal(driver.timer, null); assert.equal(h.sent.length, 1);
+    assert.equal(active.goalReport, undefined); assert.equal(changes.at(-1).goal.objective, revision.objective);
+    assert.match(active.promptSuffix, /Goal.*Build a reusable library/);
+    assert.match(active.nativeFallbackPrompt(), /Goal.*Build a reusable library/);
+    assert.equal(JSON.parse(fs.readFileSync(driver.file(), 'utf8')).criterion, revision.criterion);
+    assert.equal(bridge.call('camellia_update_goal', revision).updated, false);
+    // A completion marker from before the revision cannot start verification.
+    h.finish(engine, 'success', '<goal:complete> The old website is done'); await run.done; await h.flush();
+    assert.equal(driver.view().phase, 'active'); assert.equal(driver.view().verifying, null); assert.equal(h.sent.length, 1);
+    driver.cancelTimer(); driver.drive(); await h.flush();
+    assert.match(h.sent.at(-1).prompt, /Goal continuation.*Build a reusable library/);
+    assert.match(h.sent.at(-1).prompt, /Completion criterion.*Library tests pass/);
+    active = h.manager.active.get(run.sessionId);
+    assert.equal(bridge.call('camellia_update_goal', { ...revision, run_token: active.goalRunToken, objective: 'Weakened scope' }).ok, false);
+    h.sent.at(-1).session.steerUserMessage = async () => {};
+    const criterionChange = '验收改为 npm test 全部通过';
+    await h.manager.steer(engine, { sessionId: run.sessionId, runId: active.facade.gen, prompt: criterionChange });
+    const criterionRevision = { run_token: active.goalRunToken, criterion: 'npm test passes', reason: 'The user changed the acceptance check', user_request: criterionChange };
+    assert.equal(bridge.call('camellia_update_goal', criterionRevision).ok, true);
+    assert.equal(driver.view().objective, revision.objective); assert.equal(driver.view().revision, 2);
+    assert.match(active.promptSuffix, /Completion criterion.*npm test passes/);
+    assert.doesNotMatch(active.promptSuffix, /Library tests pass/);
+    assert.match(active.nativeFallbackPrompt(), /Completion criterion.*npm test passes/);
+    const outcome = { run_token: active.goalRunToken, status: 'complete', reason: 'Library implemented and npm test passed' };
+    assert.equal(bridge.call('camellia_update_goal', outcome).status, 'verification_pending');
+    // Retrying an identical revision must not discard a newer outcome report.
+    assert.equal(bridge.call('camellia_update_goal', criterionRevision).updated, false);
+    assert.deepEqual(active.goalReport, { status: outcome.status, reason: outcome.reason });
+    h.finish(engine, 'success', 'Current work checked'); await h.flush();
+    assert.ok(driver.view().verifying);
+    assert.match(h.sent.at(-1).prompt, /Goal: Build a reusable library/);
+    assert.match(h.sent.at(-1).prompt, /Completion criterion: npm test passes/);
+    assert.equal(h.sent.at(-1).opts.goalBridge, undefined);
+    h.finish(engine, 'success', '<verify:pass> Library and tests checked'); await h.flush();
+    assert.equal(driver.view().phase, 'complete'); assert.equal(driver.view().verified.evidence, 'Library and tests checked');
+  }
+});
+
+test('paused and blocked goals can be revised from a new user turn without resuming', async t => {
+  for (const phase of ['paused', 'blocked']) {
+    const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+    const first = await h.manager.send('codex', { prompt: 'Set a goal: build a website' });
+    const bridge = h.sent.at(-1).opts.goalBridge, originalToken = h.manager.active.get(first.sessionId).goalRunToken;
+    bridge.call('camellia_create_goal', { run_token: originalToken, objective: 'Build a website', criterion: 'Browser test passes', user_request: 'Set a goal' });
+    const driver = h.manager.goalFor(first.sessionId), id = driver.view().id;
+    driver.setPhase(phase); await first.done; await h.flush();
+    const next = await h.manager.send('codex', { sessionId: first.sessionId, prompt: '不用做网页了，改成库，不再要求浏览器测试' });
+    const active = h.manager.active.get(first.sessionId), update = { run_token: active.goalRunToken, objective: 'Build a library', criterion: '', reason: 'The user changed the deliverable', user_request: '不用做网页了，改成库' };
+    assert.equal(bridge.call('camellia_update_goal', { ...update, run_token: originalToken }).ok, false);
+    assert.equal(bridge.call('camellia_update_goal', { ...update, user_request: 'fabricated request' }).ok, false);
+    assert.equal(driver.view().objective, 'Build a website');
+    const revised = bridge.call('camellia_update_goal', update);
+    assert.equal(revised.ok, true); assert.equal(revised.goal.id, id); assert.equal(revised.goal.phase, phase);
+    assert.equal(revised.goal.armed, false); assert.equal(revised.goal.criterion, null); assert.equal(driver.timer, null);
+    assert.equal(h.sent.length, 2);
+    assert.equal(bridge.call('camellia_update_goal', { run_token: active.goalRunToken, status: 'complete', reason: 'Done' }).ok, false);
+    driver.setPhase('complete');
+    assert.equal(bridge.call('camellia_update_goal', { ...update, objective: 'Another goal' }).ok, false);
+    assert.equal(driver.view().objective, 'Build a library');
+    h.finish('codex'); await next.done;
+    const saved = h.restart().goalFor(first.sessionId).view();
+    assert.equal(saved.objective, 'Build a library'); assert.equal(saved.revision, 1); assert.equal(saved.armed, false);
+  }
+});
+
+test('goal revisions require an existing goal and the latest user instructions', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const first = await h.manager.send('codex', { prompt: 'Set a goal: original' });
+  const bridge = h.sent.at(-1).opts.goalBridge, active = h.manager.active.get(first.sessionId);
+  const update = { run_token: active.goalRunToken, objective: 'Revised', reason: 'Changed scope', user_request: 'Set a goal' };
+  assert.equal(bridge.call('camellia_update_goal', update).ok, false);
+  assert.equal(h.manager.goalFor(first.sessionId).view(), null);
+  bridge.call('camellia_create_goal', { run_token: active.goalRunToken, objective: 'Original', user_request: 'Set a goal' });
+  h.sent.at(-1).session.steerUserMessage = async () => {};
+  await h.manager.steer('codex', { sessionId: first.sessionId, runId: active.facade.gen, prompt: 'Use the new scope' });
+  assert.equal(bridge.call('camellia_update_goal', update).ok, false);
+  assert.equal(bridge.call('camellia_update_goal', { ...update, user_request: 'Use the new scope' }).ok, true);
+  h.manager.goalFor(first.sessionId).cancelTimer();
+  h.manager.active.get(first.sessionId).scheduledTaskId = 'scheduled-check';
+  assert.equal(bridge.call('camellia_update_goal', { ...update, user_request: 'Use the new scope', objective: 'Scheduled rewrite' }).ok, false);
+  delete active.scheduledTaskId;
+  active.c.controlParentId = 'parent';
+  assert.equal(bridge.call('camellia_update_goal', { ...update, user_request: 'Use the new scope', objective: 'Child rewrite' }).ok, false);
+  delete active.c.controlParentId;
+  assert.equal(h.manager.goalFor(first.sessionId).view().objective, 'Revised');
+  h.manager.pauseGoals(); await first.done;
 });
 
 test('model goal creation refuses fabricated request quotes and paused adopted turns cannot continue', async t => {

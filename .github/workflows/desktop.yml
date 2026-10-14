@@ -17,7 +17,7 @@ jobs:
   build:
     name: ${{ matrix.platform }} / ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -149,7 +149,107 @@ jobs:
             dist/benchmark-native-smoke.json
             dist/antigravity-sdk-diagnostics.json
             dist/antigravity-subscription-diagnostics.json
-      - uses: actions/upload-artifact@v7
+      - name: Upload desktop candidates for acceptance
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-candidate-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+
+  acceptance:
+    name: Acceptance / ${{ matrix.platform }} / ${{ matrix.arch }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-latest
+            arch: x64
+            bundle: dist/win-unpacked
+          - platform: macos
+            runner: macos-15
+            arch: arm64
+            bundle: dist/mac-arm64/Camellia.app
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          architecture: ${{ matrix.arch }}
+          cache: npm
+      # Only verification libraries are needed here; the app and its Electron
+      # runtime come from the build job's release ZIP, not npm lifecycle hooks.
+      - name: Install package verification dependencies
+        run: npm ci --ignore-scripts
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install packaged desktop UI test driver
+        run: python -m pip install playwright==1.61.0
+      - name: Download this run's desktop candidates
+        uses: actions/download-artifact@v8
+        with:
+          name: desktop-candidate-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist
+      - name: Extract the Windows release ZIP
+        if: matrix.platform == 'windows'
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+          $archive = Join-Path dist "$($manifest.build.productName)-$($manifest.version)-win-${{ matrix.arch }}.zip"
+          Expand-Archive -LiteralPath $archive -DestinationPath "${{ matrix.bundle }}"
+      # Upload the ZIP as a file and use ditto to retain the app's executable
+      # permissions and symlinks across runners.
+      - name: Extract the macOS release ZIP
+        if: matrix.platform == 'macos'
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          product=$(node -p "require('./package.json').build.productName")
+          version=$(node -p "require('./package.json').version")
+          ditto -x -k "dist/$product-$version-macOS-${{ matrix.arch }}.zip" dist/mac-arm64
+      - name: Verify downloaded package and download manifests
+        run: node tests/verify-package.cjs "${{ matrix.bundle }}"
+      - name: Accept the packaged desktop GUI
+        timeout-minutes: 12
+        run: python tests/packaged-desktop-ui.py --bundle "${{ matrix.bundle }}" --output dist/packaged-desktop-bundle
+      - name: Install the final Windows NSIS artifact
+        if: matrix.platform == 'windows'
+        id: installed
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+          ./tests/install-desktop-ci.ps1 -Installer "dist/Camellia-Setup-$($manifest.version)-win-x64.exe"
+      - name: Verify installed files match the build
+        if: matrix.platform == 'windows'
+        run: node tests/verify-package.cjs "${{ steps.installed.outputs.bundle }}"
+      - name: Accept the installed GUI through its desktop shortcut
+        if: matrix.platform == 'windows'
+        timeout-minutes: 12
+        run: python tests/packaged-desktop-ui.py --bundle "${{ steps.installed.outputs.bundle }}" --shortcut "${{ steps.installed.outputs.shortcut }}" --output dist/packaged-desktop-installed
+      - name: Save packaged desktop acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-acceptance-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            dist/packaged-desktop-bundle/
+            dist/packaged-desktop-installed/
+      - name: Upload accepted desktop artifacts
+        if: success()
+        uses: actions/upload-artifact@v7
         with:
           name: Camellia-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error

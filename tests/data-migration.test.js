@@ -4,9 +4,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createDataPackage, importDataPackage, inspectDataPackage, readManifest, recoverDataImports, FORMAT } = require('../src/main/data-migration');
+const { createDataPackage, importDataPackage: importPackage, inspectDataPackage, readManifest, recoverDataImports, FORMAT } = require('../src/main/data-migration');
 const { Readable } = require('node:stream');
 const { removeTree } = require('./test-fs.cjs');
+const installedEngines = Object.fromEntries(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].map(engine => [engine, true]));
+const importDataPackage = options => importPackage({ installedEngines, ...options });
 
 function scratch() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-migration-'));
@@ -254,7 +256,7 @@ for (const damaged of ['manifest', 'file']) test('same-size corruption of the pa
   try {
     const JSZip = require('jszip'), file = path.join(source.root, 'corrupted.zip');
     const original = '{"language":"en"}', marker = damaged === 'manifest' ? 'MANIFEST_CRC_MARKER_A' : 'FILE_CRC_MARKER_A';
-    write(path.join(source.dataDir, 'desktop-config.json'), JSON.stringify({ language: 'zh-CN', marker: 'FILE_CRC_MARKER_A' }));
+    write(path.join(source.dataDir, 'desktop-config.json'), JSON.stringify({ language: 'zh-CN', computerName: 'FILE_CRC_MARKER_A' }));
     write(path.join(target.dataDir, 'desktop-config.json'), original);
     await createDataPackage({ ...source, appVersion: 'MANIFEST_CRC_MARKER_A', destination: file });
     const zip = await JSZip.loadAsync(fs.readFileSync(file)), buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' });
@@ -313,7 +315,7 @@ test('a data package round-trips, rewrites moved paths and skips caches', async 
     assert.equal(manifest.source.appDataDir, source.dataDir);
 
     const imported = await importDataPackage({ file: packageFile, dataDir: target.dataDir, home: target.home, scope: 'all' });
-    assert.equal(imported.restored, exported.files);
+    assert.equal(imported.restored, exported.files - 1, 'conversation metadata and preferences merge into one desktop file');
     assert.equal(imported.overwritten, 0);
     // Conversations, Goal and scheduled task state survive.
     assert.equal(fs.readFileSync(path.join(target.dataDir, 'conversations', 'abc.jsonl'), 'utf8'), '{"seq":1,"role":"user"}\n');
@@ -324,7 +326,9 @@ test('a data package round-trips, rewrites moved paths and skips caches', async 
     assert.equal(JSON.parse(fs.readFileSync(path.join(target.home, '.dsh', 'ollama-proxy.json'), 'utf8')).providers[0].keys[0].key, 'secret');
     // Absolute source paths in metadata now point at the target installation.
     const config = JSON.parse(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8'));
-    assert.equal(config.dshHome, path.join(target.home, '.dsh'));
+    assert.equal(config.dshHome, undefined, 'source runtime homes are device-local');
+    assert.equal(config.language, 'zh-CN');
+    assert.equal(config.mode, 'codex', 'last conversation engine travels with history');
     const conversation = JSON.parse(fs.readFileSync(path.join(target.dataDir, 'conversations', 'abc.json'), 'utf8'));
     assert.equal(conversation.workspace.path, path.join(target.home, 'projects', 'repo'));
     assert.equal(conversation.sessionCwd, path.join(target.home, 'projects', 'repo'));
@@ -432,7 +436,8 @@ test('a split package restores every part and refuses to start when one is missi
     assert.equal(imported.restored, 2);
     assert.equal(fs.readFileSync(path.join(target.dataDir, 'conversations', 'abc.jsonl'), 'utf8'), '{"seq":1}\n');
     const config = JSON.parse(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8'));
-    assert.equal(config.dshHome, path.join(target.home, '.dsh'), 'paths are rewritten after a split import');
+    assert.equal(config.dshHome, undefined, 'legacy runtime homes are not imported');
+    assert.equal(config.language, 'zh-CN');
 
     // Removing one part must stop the import instead of restoring half the set.
     const third = scratch();
@@ -534,8 +539,12 @@ for (const scope of [['api'], ['settings'], ['conversations'], ['api', 'settings
       assert.deepEqual(preview.categories, exported.categories);
       assert.equal(Object.values(preview.categories).reduce((sum, entry) => sum + entry.files, 0), exported.files);
       const imported = await importDataPackage({ file: packageFile, dataDir: target.dataDir, home: target.home, scope });
-      assert.equal(imported.restored, exported.files);
-      assert.equal(fs.existsSync(path.join(target.dataDir, 'desktop-config.json')), scope.includes('settings'));
+      const merged = scope.includes('settings') && scope.includes('conversations');
+      assert.equal(imported.restored, exported.files - Number(merged));
+      assert.equal(fs.existsSync(path.join(target.dataDir, 'desktop-config.json')), scope.includes('settings') || scope.includes('conversations'));
+      if (scope.includes('conversations') && !scope.includes('settings')) {
+        assert.equal(JSON.parse(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8')).language, undefined);
+      }
       assert.equal(fs.existsSync(path.join(target.home, '.dsh/ollama-proxy.json')), scope.includes('api'));
       assert.equal(fs.existsSync(path.join(target.dataDir, 'conversations/abc.json')), scope.includes('conversations'));
     } finally { dispose(source); dispose(target); }
@@ -630,7 +639,7 @@ test('metadata changed or removed during compression does not alter its export s
     assert.equal(changed, true);
     await importDataPackage({ ...target, file: destination });
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target.dataDir, 'desktop-config.json'), 'utf8')), { language: 'en' });
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target.dataDir, 'codex', 'api', 'cache', 'remote_plugin_catalog', 'catalog.json'), 'utf8')), { plugins: [] });
+    assert.equal(fs.existsSync(path.join(target.dataDir, 'codex', 'api', 'cache', 'remote_plugin_catalog', 'catalog.json')), false);
   } finally { dispose(source); dispose(target); }
 });
 

@@ -190,6 +190,25 @@ class InteractiveCli {
     }
     return { sessionId: this.session.id, conversationId: this.session.conversationId };
   }
+  async expandSkill(parts, signal) {
+    // Discussion/context messages are literal input, never user invocations.
+    if (this.config.literalInput || this.config.discussion) return parts;
+    const index = parts.findIndex(part => part.type === 'text');
+    const command = index < 0 ? null : parts[index].text?.match(/^\s*\/(\S+)(?:\s|$)/u);
+    if (!command) return parts;
+    let catalog;
+    try { catalog = await this.rpc('GetAllSkills', { workspaceUris: [pathToFileURL(this.session.cwd).href] }, signal); }
+    catch (error) {
+      if (/unimplemented|unknown (?:method|service)/i.test(error.message)) return parts;
+      throw error;
+    }
+    const skill = catalog.skills?.find(value => value.name === command[1]);
+    if (!skill || skill.disableSlashCommand || typeof skill.content !== 'string' || !skill.content.trim()) return parts;
+    // Use the native catalog's resolved content and precedence. Do not scan
+    // arbitrary local paths or turn a skill into a system-level instruction.
+    return parts.map((part, at) => at !== index ? part : { ...part,
+      text: part.text + '\n\n<skill_instructions>\nSource: ' + skill.path + '\n' + skill.content + '\n</skill_instructions>' });
+  }
   async prompt(parts) {
     await this.cancelling;
     if (this.turn) throw new Error('A response is already running');
@@ -197,6 +216,7 @@ class InteractiveCli {
     try {
       await this.prepare();
       if (turn.canceled || this.closed) return { stopReason: 'cancelled' };
+      parts = await this.expandSkill(parts, turn.controller.signal);
       const items = [], media = [];
       for (const part of parts) {
         if (part.type === 'text') items.push({ text: part.text });
@@ -304,8 +324,19 @@ class InteractiveCli {
     if (this.turn) { if (user) this.turn.canceled = true; this.turn.controller.abort(); }
     this.requests.clear();
     if (this.address && this.session.conversationId && !this.processError) {
-      await this.rpc('CancelCascadeInvocation', { cascadeId: this.session.conversationId, killBackgroundTasks: true }, AbortSignal.timeout(2500))
-        .catch(async () => { if (user) await this.stop(); });
+      const cascadeId = this.session.conversationId, signal = AbortSignal.timeout(2500);
+      try {
+        await this.rpc('CancelCascadeInvocation', { cascadeId, killBackgroundTasks: true }, signal);
+        // The native cancel RPC acknowledges the request before its executor
+        // stops. Keep the next prompt behind this.cancelling until the root and
+        // its owned children are idle, without replaying a stateful send.
+        if (user) while (!this.closed && !this.processError) {
+          const summaries = (await this.rpc('GetAllCascadeTrajectories', {}, signal)).trajectorySummaries;
+          if (!summaries?.[cascadeId]) throw new Error('Antigravity native conversation disappeared while stopping');
+          if (ownedTrajectories(summaries, cascadeId).every(([, summary]) => idle(summary.status))) break;
+          await delay(50, null, { signal });
+        }
+      } catch { if (user) await this.stop(); }
     }
   }
   async stop() {

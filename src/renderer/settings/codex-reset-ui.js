@@ -2,6 +2,8 @@
 window.createCodexResetUI = ({ api, onState, onBusy, status }) => {
   const $ = id => document.getElementById(id);
   const dialog = $('codexResetDialog'), confirm = $('confirmCodexReset'), cancel = $('cancelCodexReset');
+  const retryQuery = $('retryCodexReset');
+  const queryTimeoutMessage = 'Reset credit query timed out. Check your network or proxy settings and try again.';
   const t = text => window.CamelliaI18n.t(text);
   const format = (text, value) => t(text).replace('{0}', String(value));
   const date = seconds => seconds ? new Date(seconds * 1000).toLocaleString(document.documentElement.lang || undefined,
@@ -68,20 +70,38 @@ window.createCodexResetUI = ({ api, onState, onBusy, status }) => {
       consuming = false; confirm.disabled = !preview?.confirmationToken; cancel.disabled = false; $('closeCodexReset').disabled = false;
     }
   };
-  async function open(id) {
-    if (dialog.open || consuming) return;
-    accountId = id; preview = null; const request = ++generation;
+  async function loadPreview() {
+    if (!dialog.open || consuming) return;
+    const id = accountId, request = ++generation;
+    preview = null; retryQuery.hidden = true; retryQuery.disabled = true;
     $('codexResetEmail').textContent = '—'; $('codexResetCount').textContent = t('Checking reset credits…');
     $('codexResetExpiry').hidden = true; $('codexResetDetails').hidden = true; $('codexResetDetailHint').hidden = true;
     confirm.textContent = t('Confirm and use one credit'); confirm.disabled = true;
-    message(''); onBusy(true); dialog.showModal(); cancel.focus();
+    message(''); onBusy(true);
+    let timer;
     try {
-      const result = await api.codexAccountResetPreview(id);
-      if (!result.ok) throw new Error(result.error);
-      onState(result);
+      const result = await Promise.race([api.codexAccountResetPreview(id),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(queryTimeoutMessage)), 35000); })]);
       if (request !== generation || !dialog.open) return;
+      if (!result?.ok) throw new Error(result?.error || 'Reset credit information is unavailable.');
+      onState(result);
       preview = result.preview; render();
-    } catch (error) { if (request === generation && dialog.open) message(error.message, true); }
+    } catch (error) {
+      if (request !== generation || !dialog.open) return;
+      preview = null; render();
+      const raw = String(error?.message || error);
+      message(/timed?\s*out|timeout|ETIMEDOUT/i.test(raw) ? queryTimeoutMessage
+        : /offline|ECONN|ENOTFOUND|network|connection|fetch failed|TLS|SSL/i.test(raw)
+          ? 'Could not query reset credits. Check your network or proxy settings and try again.' : raw, true);
+      retryQuery.hidden = false; retryQuery.disabled = false; onBusy(false);
+    } finally { clearTimeout(timer); }
+  }
+  retryQuery.onclick = () => { void loadPreview(); };
+  async function open(id) {
+    if (dialog.open || consuming) return;
+    accountId = id;
+    dialog.showModal(); cancel.focus();
+    await loadPreview();
   }
   return { open };
 };

@@ -9,7 +9,7 @@ const { canonicalModelId } = require('../shared/model-names');
 const { shortTitle, messageTitle } = require('../shared/conversation-title');
 const { validSessionId } = require('./claude-history');
 const { createSessionWorkspaces } = require('./session-workspaces');
-const { ClaudeGoal, verifyPrompt, verifySignal } = require('./claude-goal');
+const { ClaudeGoal, goalPrompt, verifyPrompt, verifySignal } = require('./claude-goal');
 const { instructions: goalToolInstructions, validateTool, matchesUserRequest } = require('./goal-tools');
 const { collector } = require('../shared/turn-artifacts');
 const { projectOutput } = require('../shared/mobile-output');
@@ -336,6 +336,19 @@ class SharedConversations {
         if (result.ok) {
           active.createdGoal = driver.goal;
           result.goal = driver.view();
+        }
+        return result;
+      }
+      if (Object.hasOwn(args, 'objective') || Object.hasOwn(args, 'criterion')) {
+        if (active.goalContinuation && !active.goalUserPrompt) throw new Error('An automatic Goal continuation cannot authorize a goal revision');
+        if (!matchesUserRequest(active.goalUserPrompt ?? active.prompt, args.user_request)) throw new Error('user_request must quote the current user instructions that change the goal');
+        if (driver.armed && driver.ownedSession() !== active.facade) throw new Error('No active goal owned by this turn');
+        const result = driver.revise(args);
+        if (result.ok && result.updated) {
+          active.goalReport = undefined;
+          active.goalRevised = true;
+          if (driver.armed) active.promptSuffix = [active.goalContinuation ? null : active.prompt,
+            active.goalUserPrompt, goalPrompt(driver.goal)].filter(Boolean).join('\n\n');
         }
         return result;
       }
@@ -1036,9 +1049,13 @@ class SharedConversations {
     const pendingTokens = contextTokens(memory + String(promptSuffix ?? payload.prompt ?? '')) + attachmentTokens;
     const promptFits = (value, cap) => contextTokens(goalPrefix + value) + attachmentTokens <= cap * 0.85
       && !overInputChars(engine, goalPrefix + value);
+    let subscriptionSelection, subscriptionAttempts;
     if (settings.connection === 'subscription' && this.drivers[engine].subscriptionAccounts) {
       const state = this.drivers[engine].subscriptionAccounts();
-      settings.subscriptionId = continuation?.subscriptionOverride || (this.loadConfig().subscriptionAutoSwitch?.[engine] === false ? state.activeId : availableAccount(state) || state.activeId);
+      subscriptionSelection = { activeId: state.activeId, selectionRevision: state.selectionRevision };
+      subscriptionAttempts = continuation?.subscriptionAttempts || [];
+      settings.subscriptionId = continuation?.subscriptionOverride || (internal && ephemeral && summarySettings?.subscriptionId)
+        || (this.loadConfig().subscriptionAutoSwitch?.[engine] === false ? state.activeId : availableAccount(state) || state.activeId);
     }
     if (!internal && !continuation && String(payload.prompt || '').length > 200000) throw new Error('The message is too large to send. Split it up or attach it as a file instead. Nothing was sent.');
     if (!internal && !continuation && !promptFits(memory + String(promptSuffix ?? payload.prompt ?? ''),
@@ -1062,7 +1079,7 @@ class SharedConversations {
       if (context.used + pendingTokens + contextTokens(goalPrefix) > context.cap * 0.85 && (!this.busy(c.id) || (facade || controlStart) && !this.active.has(c.id) && !this.switching.has(c.id))) {
         if (facade) facade.running = true;
         try { await this.compact(c.id, { automatic: true, allowGoal: Boolean(facade), controlStart,
-          destination: { engine, settings, pendingTokens }, portable: true,
+          destination: { engine, settings, pendingTokens, subscriptionSelection, subscriptionAttempts }, portable: true,
           trigger: { reason: 'before-send', ...context, pendingTokens } }); }
         finally { if (facade) facade.running = false; }
         if (facade && !this.goals.get(c.id)?.armed) throw new Error('Goal was stopped during compaction');
@@ -1163,10 +1180,10 @@ class SharedConversations {
       if (inputCharLimit(engine)) trigger.chars = { length: prompt.length, limit: inputCharLimit(engine) };
       const compactedEdit = edit
         ? await this.compact(c.id, { automatic: true, controlStart, history: nativeEdit ? editReplay : edit.prior, trigger,
-          destination: { engine, settings, pendingTokens } })
+          destination: { engine, settings, pendingTokens, subscriptionSelection, subscriptionAttempts } })
         : null;
       if (!edit) await this.compact(c.id, { automatic: true, controlStart, trigger, portable: true,
-        destination: { engine, settings, pendingTokens } });
+        destination: { engine, settings, pendingTokens, subscriptionSelection, subscriptionAttempts } });
       assertAvailable();
       if (edit) {
         editContext = compactedEdit.summary + '\n\n' + this.formatContext(c, [revisionNotice]);
@@ -1185,9 +1202,14 @@ class SharedConversations {
       // Only evaluated if the native session turns out to be unavailable: the
       // stored transcript replaces whatever the missing native thread carried.
       nativeFallbackPrompt: () => (edit ? this.compactionContext(c, edit.prior) + this.formatContext(c, [revisionNotice])
-        : this.context(c, engine, a.userSeq)) + String(promptSuffix ?? payload.prompt ?? ''),
+        : this.context(c, engine, a.userSeq)) + String(a.promptSuffix ?? payload.prompt ?? ''),
       facade: facade || { gen: ++this.sequence, sessionId: c.id, opts: { workspaceId: c.workspaceId } }, priorCursor: c.segments[engine]?.cursor || 0 };
     a.settings = { ...settings };
+    if (!continuation) {
+      a.subscriptionSelection = subscriptionSelection;
+      a.subscriptionAttempts = subscriptionAttempts;
+    }
+    a.subscriptionSelectionSynced = false;
     if (!continuation) a.done = new Promise(resolve => { a.resolve = resolve; });
     this.active.set(c.id, a);
     if (!internal || !this.facades.has(c.id)) this.facades.set(c.id, a.facade);
@@ -1347,6 +1369,19 @@ class SharedConversations {
     if (event.type === 'result' && a.cancelled) event = { ...event, subtype: 'stopped', is_error: false };
     const c = a.c;
     const accountSettings = a.subscriptionSettings || a.session?.settings;
+    // Promote a fallback only once it produces output or a successful result.
+    // Keep the original selection across retries so newer choices win.
+    if (!a.internal && !a.ephemeral && !a.cancelled && accountSettings?.connection === 'subscription'
+        && accountSettings.subscriptionId && a.subscriptionSelection
+        && accountSettings.subscriptionId !== a.subscriptionSelection.activeId && !a.subscriptionSelectionSynced
+        && this.drivers[engine].syncSubscriptionAccount
+        && (event.type !== 'result' && a.nativeSessionProgress || event.type === 'result' && !event.is_error && event.subtype === 'success')) {
+      a.subscriptionSelectionSynced = true;
+      try {
+        const state = this.drivers[engine].syncSubscriptionAccount({ id: accountSettings.subscriptionId, expected: a.subscriptionSelection });
+        if (state) a.subscriptionSelection = { activeId: state.activeId, selectionRevision: state.selectionRevision };
+      } catch (error) { this.log('Subscription account selection update failed: ' + error.message); }
+    }
     const failure = event.type === 'result' && accountSettings?.connection === 'subscription'
       ? subscriptionFailure(event) : null;
     if (failure === 'auth') event = { ...event, result: event.result + '\n' + translate('Subscription login has expired or is invalid. Sign in again in Settings → Subscription accounts.', this.loadConfig().language) };
@@ -1560,7 +1595,7 @@ class SharedConversations {
       a.facade.running = false; this.active.delete(c.id);
       if (!a.internal && c.interrupted) this.remoteQueue?.pause(c.id);
       a.finished = true;
-      if (!a.internal) this.goals.get(c.id)?.handleResult({ ...event, result: event.result || text, goalReport: a.goalReport });
+      if (!a.internal) this.goals.get(c.id)?.handleResult({ ...event, result: event.result || text, goalReport: a.goalReport, ignoreGoalMarkers: a.goalRevised });
       const finalText = a.internal && Array.isArray(event.outputBlocks)
         ? event.outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text).join('\n\n') : text;
       a.resolve({ ...event, result: event.is_error ? String(event.result || text) : finalText });
@@ -2172,7 +2207,14 @@ class SharedConversations {
         : segment?.nativeCompactionUnsupported ? 'native-unsupported'
           : !this.usesNativeCompaction(c, engine, pinnedSettings || this.settings(engine, id)) ? 'native-session-ineligible'
             : !recovery && sourceRows.some(row => row.seq > segment.cursor) ? 'unsynchronized-history' : 'native-eligible';
-    const switching = { target: engine, cancelled: false };
+    const switching = { target: engine, cancelled: false,
+      subscriptionAttempts: (targetEngine === engine && destination?.subscriptionAttempts) || recovery?.subscriptionAttempts || [] };
+    const compactionSettings = pinnedSettings || this.settings(engine, id);
+    if (compactionSettings.connection === 'subscription' && this.drivers[engine].subscriptionAccounts) {
+      const state = this.drivers[engine].subscriptionAccounts();
+      switching.subscriptionSelection = (targetEngine === engine && destination?.subscriptionSelection) || recovery?.subscriptionSelection
+        || { activeId: state.activeId, selectionRevision: state.selectionRevision };
+    }
     let rejectStop, stopped = false;
     const stopPromise = new Promise((_, reject) => { rejectStop = reject; });
     void stopPromise.catch(() => {});
@@ -2201,6 +2243,21 @@ class SharedConversations {
       // turn a successful context switch into another paid summary attempt.
       try { fs.appendFileSync(path.join(this.dir, c.id + '.jsonl'), JSON.stringify(notice) + '\n'); }
       catch (error) { this.log('Could not save compaction notice: ' + error.message); }
+    };
+    const syncSubscription = () => {
+      const accountId = switching.subscriptionId, selection = switching.subscriptionSelection;
+      if (!accountId || !selection) return;
+      // Carry the summary's account into the pending user turn without changing
+      // its model or reasoning settings. Publish only after saving the summary.
+      if (targetEngine === engine && targetSettings.connection === 'subscription') {
+        targetSettings.subscriptionId = accountId;
+        if (recovery) recovery.subscriptionOverride = accountId;
+      }
+      if (accountId === selection.activeId || !this.drivers[engine].syncSubscriptionAccount) return;
+      try {
+        const state = this.drivers[engine].syncSubscriptionAccount({ id: accountId, expected: selection });
+        if (state) Object.assign(selection, { activeId: state.activeId, selectionRevision: state.selectionRevision });
+      } catch (error) { this.log('Subscription account selection update failed: ' + error.message); }
     };
     const savePortable = (markdown, fallback = null) => {
       status('Saving compacted context…', { state: 'running', stage: 'saving', ...(fallback ? { fallback: true } : {}) });
@@ -2240,6 +2297,7 @@ class SharedConversations {
       completed = true;
       diagnostics.saveMs = Date.now() - saveStartedAt;
       appendNotice(notice);
+      if (!fallback) syncSubscription();
       status('', { state: 'completed', seq: notice.seq, durationMs, ...details });
       return { ok: true, sessionId: id, file, durationMs, ...details };
     };
@@ -2316,12 +2374,19 @@ class SharedConversations {
           // A replay can contain years of logical history in one native user
           // message. Too few native groups is temporary, not missing support.
           const tooFewMessages = engine === 'claude' && /^Not enough messages to compact\.?$/i.test(String(error.message).trim());
-          if (switching.cancelled || recovery?.cancelled || !lostNative && error.code !== -32601 && !overflow && !nativeTimeout && !tooFewMessages) throw error;
+          if (!switching.cancelled && !recovery?.cancelled && switching.subscriptionSelection
+              && subscriptionFailure({ is_error: true, result: error.message })) {
+            switching.subscriptionId = session.settings?.subscriptionId || compactionSettings.subscriptionId
+              || switching.subscriptionSelection.activeId;
+          }
+          const subscriptionRetry = !switching.cancelled && !recovery?.cancelled && this.switchCompactionAccount(engine, switching,
+            { is_error: true, result: error.message }, status);
+          if (switching.cancelled || recovery?.cancelled || !lostNative && error.code !== -32601 && !overflow && !nativeTimeout && !tooFewMessages && !subscriptionRetry) throw error;
           if (overflow) this.reduceContextBudget(c, engine, pinnedSettings || this.settings(engine, id), error.message);
-          else if (!lostNative && !nativeTimeout && !tooFewMessages) { segment.nativeCompactionUnsupported = true; this.save(c); }
-          routeReason = lostNative ? 'native-session-unavailable' : overflow ? 'native-overflow'
+          else if (!lostNative && !nativeTimeout && !tooFewMessages && !subscriptionRetry) { segment.nativeCompactionUnsupported = true; this.save(c); }
+          routeReason = subscriptionRetry ? 'native-subscription-failure' : lostNative ? 'native-session-unavailable' : overflow ? 'native-overflow'
             : nativeTimeout ? 'native-timeout' : tooFewMessages ? 'native-too-few-messages' : 'native-unsupported';
-          this.log('native compaction unavailable, timed out, or over context limit; using portable summary: ' + engine);
+          this.log('native compaction could not continue; using portable summary: ' + engine);
         } finally {
           switching.session = null;
           c.pending = null;
@@ -2408,6 +2473,7 @@ class SharedConversations {
         this.save(c);
         diagnostics.saveMs = Date.now() - saveStartedAt;
         completed = true;
+        syncSubscription();
         const durationMs = Date.now() - startedAt;
         status('', { state: 'completed', durationMs });
         return { ok: true, sessionId: id, summary: markdown, durationMs };
@@ -2440,6 +2506,21 @@ class SharedConversations {
       }
     }
   }
+  switchCompactionAccount(engine, switching, result, status) {
+    const failure = subscriptionFailure(result), failedId = switching.subscriptionId;
+    if (!failure || !failedId || !switching.subscriptionSelection
+        || failure === 'quota' && this.loadConfig().subscriptionAutoSwitch?.[engine] === false) return false;
+    const attempts = switching.subscriptionAttempts;
+    if (!attempts.includes(failedId)) attempts.push(failedId);
+    const next = attempts.length < 12 && availableAccount(this.drivers[engine].subscriptionAccounts(), attempts);
+    if (!next) return false;
+    switching.subscriptionId = next;
+    status(translate(failure === 'auth'
+      ? 'Subscription login expired. Sign in again in Settings → Subscription accounts. Switching to another signed-in account and retrying…'
+      : 'Subscription quota reached. Switching to another signed-in account and retrying…', this.loadConfig().language),
+      { state: 'running', stage: 'summarizing' });
+    return true;
+  }
   summaryCheckpoint({ c, engine, settings, units, budget, boundary, maxSummaryChars, diagnostics }) {
     // Legacy checkpoints contain only concatenated text, without evidence of
     // which fragments it covers. Keep them for inspection, but never resume
@@ -2463,6 +2544,12 @@ class SharedConversations {
   // no fragment re-emits a growing rolling summary or redoes completed history.
   async summarizeViaEngine({ c, engine, id, settings, units, plan, budget, cap, boundary, diagnostics, switching, recovery, status, maxSummaryChars = Infinity }) {
     const summarySettings = { ...settings };
+    if (settings.connection === 'subscription' && switching.subscriptionSelection) {
+      const state = this.drivers[engine].subscriptionAccounts();
+      switching.subscriptionId ||= this.loadConfig().subscriptionAutoSwitch?.[engine] === false ? state.activeId
+        : availableAccount(state, switching.subscriptionAttempts) || state.activeId;
+      summarySettings.subscriptionId = switching.subscriptionId;
+    }
     if (['codex', 'claude', 'dsh', 'pi'].includes(engine) && ['medium', 'high', 'xhigh', 'max', 'ultra'].includes(settings.thinkingBudget))
       summarySettings.thinkingBudget = 'low';
     diagnostics.thinkingBudget = summarySettings.thinkingBudget || 'default';
@@ -2479,38 +2566,47 @@ class SharedConversations {
       // requests. Split locally before paying for a doomed provider request.
       if (contextTokens(prompt) > cap * 0.65)
         throw Object.assign(new Error('Summary fragment exceeds its input budget'), { overflow: true });
-      if (++diagnostics.requests > DEFAULT_MAX_REQUESTS) throw new Error('Compaction summary request limit reached. ' + recoveryAdvice);
-      const startedAt = Date.now();
-      const metric = { request: diagnostics.requests, kind, startedAt, inputChars: prompt.length, summaryLimit: maxChars };
-      switching.metric = metric; diagnostics.chunks.push(metric);
-      status('Asking the engine to summarize the conversation…', { state: 'running', stage: 'summarizing', chunk: metric.request, finalChunk: kind === 'reduce' });
-      let timer;
-      try {
-        const timeout = new Promise((resolve, reject) => {
-          timer = setTimeout(() => {
-            this.stopCompactionSummary(id, engine, switching);
-            reject(new Error('A compaction summary request timed out after no progress. ' + recoveryAdvice));
-          }, ENGINE_SUMMARY_TIMEOUT_MS);
-          timer.unref?.();
-        });
-        const result = await Promise.race([timeout, (async () => {
-          const generated = await this.send(engine, { sessionId: id }, { internal: true, fresh: true, ephemeral: true, promptOverride: prompt, summarySettings });
-          metric.setupMs = Date.now() - startedAt;
-          return generated.done;
-        })()]);
+      for (;;) {
         if (stopped()) throw new Error('Compaction canceled');
-        if (contextOverflow(result)) throw Object.assign(new Error(result.result), { overflow: true });
-        if (result.is_error || result.subtype !== 'success') throw new Error('Compaction failed; the original conversation is retained. ' + (result.result || result.subtype));
-        metric.outputChars = result.result?.length || 0;
-        metric.outcome = metric.outputChars > maxChars ? 'shortened' : 'success';
-        return { text: result.result, usage: result.usage };
-      } catch (error) {
-        metric.outcome = 'failed';
-        throw error;
-      } finally {
-        clearTimeout(timer);
-        metric.totalMs = Date.now() - startedAt;
-        if (switching.metric === metric) delete switching.metric;
+        if (++diagnostics.requests > DEFAULT_MAX_REQUESTS) throw new Error('Compaction summary request limit reached. ' + recoveryAdvice);
+        const startedAt = Date.now();
+        const metric = { request: diagnostics.requests, kind, startedAt, inputChars: prompt.length, summaryLimit: maxChars };
+        switching.metric = metric; diagnostics.chunks.push(metric);
+        status('Asking the engine to summarize the conversation…', { state: 'running', stage: 'summarizing', chunk: metric.request, finalChunk: kind === 'reduce' });
+        let timer, attempt;
+        try {
+          const timeout = new Promise((resolve, reject) => {
+            timer = setTimeout(() => {
+              this.stopCompactionSummary(id, engine, switching);
+              reject(new Error('A compaction summary request timed out after no progress. ' + recoveryAdvice));
+            }, ENGINE_SUMMARY_TIMEOUT_MS);
+            timer.unref?.();
+          });
+          const result = await Promise.race([timeout, (async () => {
+            const generated = await this.send(engine, { sessionId: id }, { internal: true, fresh: true, ephemeral: true, promptOverride: prompt, summarySettings });
+            attempt = this.active.get(id);
+            metric.setupMs = Date.now() - startedAt;
+            return generated.done;
+          })()]);
+          if (stopped()) throw new Error('Compaction canceled');
+          if (contextOverflow(result)) throw Object.assign(new Error(result.result), { overflow: true });
+          if (result.is_error || result.subtype !== 'success') throw new Error('Compaction failed; the original conversation is retained. ' + (result.result || result.subtype));
+          metric.outputChars = result.result?.length || 0;
+          metric.outcome = metric.outputChars > maxChars ? 'shortened' : 'success';
+          return { text: result.result, usage: result.usage };
+        } catch (error) {
+          metric.outcome = 'failed';
+          if (!stopped() && !storageFailure(error) && !attempt?.tools.size && !attempt?.permissions.size
+              && this.switchCompactionAccount(engine, switching, { is_error: true, result: error.message }, status)) {
+            summarySettings.subscriptionId = switching.subscriptionId;
+            continue;
+          }
+          throw error;
+        } finally {
+          clearTimeout(timer);
+          metric.totalMs = Date.now() - startedAt;
+          if (switching.metric === metric) delete switching.metric;
+        }
       }
     };
     const run = (source, previous = '') => runSummaryPipeline({ units: source, previous, budget: currentBudget, concurrency: 1,

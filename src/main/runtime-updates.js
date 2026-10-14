@@ -4,14 +4,15 @@
 // npm engines upgrade in place inside the directory locate() resolved (the
 // userData copy in production, the repo copy in development). Antigravity in
 // API mode upgrades its Python SDK through the bundled uv installer; in
-// Google subscription mode the CLI is pinned to the app and only changes with
-// app releases.
+// Google subscription mode the CLI uses Google's SHA-512 release manifest and
+// keeps the previous executable available for rollback.
 
 const fs = require('node:fs');
 const path = require('node:path');
 const patchDsh = require('../../integrations/dsh/patch.cjs');
 const { createDownloadConnection } = require('./download-network');
 const { upgradePythonRuntime } = require('./python-runtime');
+const { latestAntigravityCli, upgradeAntigravityCli, manifestUrl } = require('./antigravity-cli-release');
 
 const REGISTRY_TIMEOUT = 30000;
 
@@ -32,13 +33,14 @@ function compareVersions(a, b) {
   return x.pre < y.pre ? -1 : 1;
 }
 
-function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettings = () => undefined, registries = {}, beforeInstall = async () => {}, onChange = () => {}, log = () => {} }) {
+function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettings = () => undefined, registries = {}, beforeInstall = async () => {}, onChange = () => {}, log = () => {}, cliUpgrade = upgradeAntigravityCli }) {
   const pending = new Map();
   const reinstalling = new Set();
   const state = (rows = manager.state()) => rows.map(row => ({ ...row, updating: pending.has(row.id), reinstalling: reinstalling.has(row.id) }));
   const registryUrls = {
     npm: registries.npm || (pkg => `https://registry.npmjs.org/${pkg}/latest`),
     pypi: registries.pypi || (pkg => `https://pypi.org/pypi/${pkg}/json`),
+    antigravity: registries.antigravity || manifestUrl,
   };
 
   async function fetchJson(connection, url) {
@@ -49,7 +51,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
 
   function latestVersion(connection, engine, mode) {
     if (engines[engine].type === 'python') {
-      if (mode === 'subscription') return Promise.resolve(null);
+      if (mode === 'subscription') return latestAntigravityCli(connection, { url: registryUrls.antigravity() }).then(release => release.version);
       return fetchJson(connection, registryUrls.pypi('google-antigravity')).then(data => data.info?.version || null);
     }
     return fetchJson(connection, registryUrls.npm(engines[engine].package)).then(data => data.version || null);
@@ -59,9 +61,8 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     const connection = createDownloadConnection(downloadSettings());
     try {
       return await Promise.all(manager.state().map(async row => {
-        const base = { id: row.id, name: row.name, external: Boolean(row.external), installed: row.status === 'ready' ? row.version || null : null, latest: null, updateAvailable: false, checkable: true, error: null };
+        const base = { id: row.id, name: row.name, mode: row.mode, external: Boolean(row.external), installed: row.status === 'ready' ? row.version || null : null, latest: null, updateAvailable: false, checkable: true, error: null };
         if (row.external) return { ...base, checkable: false };
-        if (engines[row.id].type === 'python' && row.mode === 'subscription') return { ...base, checkable: false };
         try {
           const latest = await latestVersion(connection, row.id, row.mode);
           return { ...base, latest, updateAvailable: Boolean(base.installed && latest && compareVersions(latest, base.installed) > 0) };
@@ -113,10 +114,11 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     const found = manager.locate(engine);
     if (!found) throw new Error('Download this engine before updating it');
     if (found.external) throw new Error('This CLI is installed outside Camellia. Update it using its original installer.');
-    if (found.mode === 'subscription') throw new Error('This runtime ships with the app and cannot be updated here');
     const connection = createDownloadConnection(downloadSettings());
     try {
-      const latest = await latestVersion(connection, engine, found.mode);
+      const cliRelease = engine === 'antigravity' && found.mode === 'subscription'
+        ? await latestAntigravityCli(connection, { url: registryUrls.antigravity() }) : null;
+      const latest = cliRelease?.version || await latestVersion(connection, engine, found.mode);
       if (!latest) throw new Error('Could not determine the latest version');
       if (compareVersions(latest, found.version) <= 0) {
         return { ok: true, engine, from: found.version, to: found.version, changed: false, restartRequired: false, restarting: false };
@@ -124,7 +126,9 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
       const restore = await beforeInstall(engine);
       let result, updateError;
       try {
-        if (engines[engine].type === 'python') {
+        if (cliRelease) {
+          await cliUpgrade({ dir: found.dir, release: cliRelease, connection, run, report: message => log(message) });
+        } else if (engines[engine].type === 'python') {
           await upgradePythonRuntime({ dir: found.dir, run, connection, sdk: latest, report: () => {},
             python: manager.pythonSelection?.() });
         }

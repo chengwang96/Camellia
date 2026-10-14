@@ -2,6 +2,7 @@
 import csv
 import io
 import json
+import re
 import subprocess
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
@@ -45,15 +46,15 @@ try:
         page.locator('#usageRange').select_option('7')
         page.locator('#usageSource').select_option('subscription')
         expect(page.locator('#usageRows tr')).to_have_count(3)
-        # Unpriced or incomplete usage is described in the note below the
-        # figure, not appended to the headline amount.
+        # Explanatory copy stays in the tooltip; only exceptions are visible.
         expect(page.locator('#subscriptionCost')).not_to_contain_text('Unpriced usage')
-        expect(page.locator('#subscriptionCostNote')).to_contain_text('not your subscription bill')
-        expect(page.locator('#subscriptionPriceStatus')).to_contain_text('Prices refresh automatically every day.')
+        expect(page.locator('#subscriptionCostSummary')).to_have_attribute('title', re.compile('not your subscription bill'))
+        expect(page.locator('#subscriptionCostSummary')).to_have_attribute('title', re.compile('Subscription recording started:'))
+        expect(page.locator('#subscriptionPriceStatus')).to_contain_text('Unpriced tokens:')
         page.locator('#subscriptionPricesRefresh').click()
         expect(page.locator('#subscriptionPricesRefresh')).to_be_enabled(timeout=35000)
-        expect(page.locator('#subscriptionCostNote')).to_contain_text('LiteLLM')
-        expect(page.locator('#subscriptionUsageSince')).not_to_contain_text('{0}')
+        expect(page.locator('#subscriptionCostSummary')).to_have_attribute('title', re.compile('LiteLLM'))
+        assert '{0}' not in page.locator('#subscriptionCostSummary').get_attribute('title')
         expect(page.locator('#usageRows')).not_to_contain_text('gpt-5.3-codex')
 
         page.locator('#usageProvider').select_option('subscription:codex')
@@ -62,7 +63,9 @@ try:
         expect(page.locator('#usageRows tr')).to_have_count(1)
         expect(page.locator('#usageRows')).to_contain_text('Personal')
         expect(page.locator('#usageRows')).to_contain_text('10,000')
-        expect(page.locator('#subscriptionCost')).to_contain_text('$0.0220')
+        expect(page.locator('#subscriptionCost')).to_have_text('$0.02')
+        expect(page.locator('#usageRows tr td:last-child')).to_have_text('$0.02')
+        expect(page.locator('#subscriptionPriceStatus')).to_be_hidden()
         page.locator('#usageMetric').select_option('estimatedCostUsd')
         expect(page.locator('#usageChart svg')).to_have_count(1)
 
@@ -135,7 +138,7 @@ try:
         page.locator('#language').select_option('zh-CN')
         expect(page.locator('html')).to_have_attribute('lang', 'zh-CN')
         page.locator('[data-view=usage]').click()
-        expect(page.locator('#subscriptionCostNote')).to_contain_text('不代表订阅实际账单')
+        expect(page.locator('#subscriptionCostSummary')).to_have_attribute('title', re.compile('不代表订阅实际账单'))
         expect(page.locator('#usageRows')).to_contain_text('订阅')
         preview = repo / 'dist/ui-preview'
         preview.mkdir(parents=True, exist_ok=True)
@@ -154,12 +157,14 @@ try:
         page.locator('#usageKey').select_option('subscription:codex:default')
         page.locator('#usageModel').select_option('gpt-6.1-sol')
         expect(page.locator('#subscriptionPriceStatus')).to_contain_text('未定价 token：401,000')
-        expect(page.locator('#subscriptionPricesRefresh')).to_have_text('刷新并补算')
+        expect(page.locator('#subscriptionPricesRefresh')).to_have_text('刷新')
+        expect(page.locator('#subscriptionPricesRefresh')).to_have_attribute('title', '刷新并补算')
         page.locator('#subscriptionPricesRefresh').click()
         expect(page.locator('#subscriptionPricesRefresh')).to_be_enabled()
-        expect(page.locator('#subscriptionCost')).to_contain_text('0.4300')
-        expect(page.locator('#subscriptionPriceStatus')).to_contain_text('历史估算：401,000 token（按基准单价）')
-        expect(page.locator('#subscriptionPriceStatus')).not_to_contain_text('未定价')
+        expect(page.locator('#subscriptionCost')).to_contain_text('0.43')
+        expect(page.locator('#subscriptionCostSummary')).to_have_attribute('title', re.compile('历史估算：401,000 token（按基准单价）'))
+        expect(page.locator('#subscriptionPriceStatus')).to_be_hidden()
+        page.locator('#subscriptionCostCard').screenshot(path=str(preview / 'settings-subscription-cost.png'))
         first = rpc('subscriptionUsageSnapshot')['result']['accounts']
         page.locator('#subscriptionPricesRefresh').click()
         expect(page.locator('#subscriptionPricesRefresh')).to_be_enabled()
@@ -174,8 +179,8 @@ try:
         rpc('setPriceRefreshOffline', True)
         page.locator('#subscriptionPricesRefresh').click()
         expect(page.locator('#subscriptionPricesRefresh')).to_be_enabled()
-        expect(page.locator('#subscriptionPriceStatus')).to_contain_text('历史估算')
-        expect(page.locator('#subscriptionPriceStatus')).to_contain_text('上次')
+        expect(page.locator('#subscriptionCostSummary')).to_have_attribute('title', re.compile('历史估算'))
+        expect(page.locator('#subscriptionPriceStatus')).to_have_text('刷新失败，使用缓存价格。')
         assert rpc('subscriptionUsageSnapshot')['result']['accounts'] == first
         page.set_viewport_size({'width': 1180, 'height': 940})
         page.evaluate('''() => {

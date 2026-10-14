@@ -132,6 +132,48 @@ python tests/conversation-retention-ui.py
 
 Browser checks write screenshots under `dist/`. README screenshots live in `docs/images/`; local reference captures belong in the ignored `docs/images/local/` directory.
 
+Release acceptance also launches the **built application**, using its normal
+entry, packaged preload and renderer. It does not load a source test driver or
+patch Electron APIs. Use Python 3.11 or newer and install Playwright (no
+separate Chromium download is needed), build the desktop bundle, then run:
+
+```powershell
+python -m pip install playwright==1.61.0
+python tests/packaged-desktop-ui.py --bundle dist/win-unpacked
+```
+
+On macOS, pass `--bundle dist/mac-arm64/Camellia.app`. The fresh-install and
+existing-profile scenarios use temporary Unicode paths, a working directory
+outside the checkout, a limited `PATH`, and isolated CLI homes. They verify
+bundled Node selection, settings persistence, Pi installation through the UI,
+an actual Pi streaming response from a loopback model fixture, packaged
+Markdown/math/fonts and local file preview, and conversation recovery after
+quitting and restarting. The upgrade fixture checks preservation of old
+preferences, an unknown configuration field and existing conversation data;
+it does not replace the separate legacy-directory migration tests. npm
+downloads require network access; model responses are local and incur no
+provider charges. Background-throttling switches keep hidden CI windows
+responsive to the external browser driver. Screenshots, traces, application logs and artifact hashes
+are saved under `dist/packaged-desktop-<platform>/`, including on failure.
+
+Desktop CI separates its 60-minute build/integration job from a 30-minute
+acceptance job on each platform. Acceptance downloads the same workflow run's
+release files and extracts the release ZIP, preserving macOS executable
+permissions and symlinks with `ditto`; it does not rebuild the application.
+Package-content verification runs again before the GUI checks. On its
+disposable Windows runner, `tests/install-desktop-ci.ps1`
+also silently installs the final NSIS artifact into `RUNNER_TEMP`, verifies
+its installed files and desktop shortcut, and repeats the GUI checks by
+launching a temporary copy of that shortcut with an isolated profile.
+Only successful acceptance uploads the final `Camellia-<platform>-<arch>`
+artifacts. Intermediate `desktop-candidate-<platform>-<arch>` files are retained
+for one day and are not validated releases. CI retains acceptance evidence and
+accepted artifacts for 14 days, including evidence from failed checks.
+Installer registration is restricted to GitHub Actions; local acceptance
+targets a bundle or an already installed application directory. These
+fixture checks validate product integration, not live subscription login,
+model quality, or every operating-system and network configuration.
+
 `test:benchmark` drives all six real API runtimes concurrently against one local model fixture: overlapping API requests, native file writes, independent grading, model/provider pinning, isolated per-trial usage, and cancellation. Its fake responses validate integration only and must never be reported as model benchmark scores. `benchmark.test.js` covers grading, Unicode mismatch diagnostics, exceptions and file checks, report persistence, fresh directories, repeats, independent engine queues, concurrent cancellation and accounting, shared budget stops, per-task limit isolation, worker cleanup after persistence errors, and interrupted-run recovery; router tests cover scoped traffic and cancellation. When changing task content or scoring rules, bump the suite version before publishing; reports also record a hash of the full task definition. The independent checker lives in `src/benchmark/verifier.js` and records its own version. Expected values stay in the parent process; the restricted child receives only inputs. Diagnostic previews are bounded and displayed as text.
 
 The additional `checkScore` metric is defined by `checkScoreMethod` (`mean-trial-check-fraction-v1`). It averages unrounded per-attempt fractions, while the existing `score` field remains the full-task pass rate. Tests distinguish partial credit, equal task weighting, repeated attempts, unexecuted checks, API/runtime failures, incomplete runs, and historical reports with missing counts. Changing this metric's formula requires a new method identifier; UI and exports name both metrics explicitly.
@@ -187,7 +229,7 @@ Extract the portable ZIP once and launch `Camellia.exe`. Keep the full extracted
 
 Windows artifacts use ZIP payloads to remain compatible with the installer extractor. The portable smoke test extracts the ZIP, verifies its sources and runtimes, and runs the bundled Electron executable. Pass an archive path when testing a custom output directory.
 
-The [desktop workflow](../.github/workflows/desktop.yml) runs unit tests, Electron smoke tests, native DSH settings checks, packaging, and bundle verification on Windows x64 and macOS ARM64. Builds require a successful native job before they can be treated as validated for that platform. macOS builds use ad-hoc signing for development; no distribution certificates or notarization credentials are configured. For public distribution, override the signing identity, enable hardened runtime, and configure Apple notarization. See the [Electron Builder signing guide](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/).
+The [desktop workflow](../.github/workflows/desktop.yml) runs unit tests, Electron smoke tests, native DSH settings checks, packaging, and bundle verification on Windows x64 and macOS ARM64. Both build and acceptance jobs must succeed before artifacts can be treated as validated for that platform. macOS builds use ad-hoc signing for development; no distribution certificates or notarization credentials are configured. For public distribution, override the signing identity, enable hardened runtime, and configure Apple notarization. See the [Electron Builder signing guide](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/).
 
 To select another output directory:
 

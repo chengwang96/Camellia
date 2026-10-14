@@ -585,7 +585,8 @@ function normalizeChatContentWidth(value) {
   return CHAT_CONTENT_WIDTHS.includes(value) ? value : 'standard';
 }
 function quotaCheckOptions() {
-  return { enabled: accountRefreshEnabled(), intervalMs: accountRefreshMinutes() * 60000 };
+  return { enabled: accountRefreshEnabled(), intervalMs: accountRefreshMinutes() * 60000,
+    fetchImpl: providerAccountConnection().fetch };
 }
 function syncQuotaCheck() {
   try { ollamaProxyHandle?.setQuotaCheck(quotaCheckOptions()); } catch (e) { log(`api-router: quota check update failed (${e.message})`); }
@@ -597,9 +598,16 @@ function capacity() {
   });
   return contextCapacity;
 }
+let accountConnection = null;
+function providerAccountConnection() {
+  return accountConnection ||= require('./provider-account-fetch').createProviderAccountConnection({
+    getMode: () => loadConfig().network?.mode || 'direct',
+  });
+}
 function insights() {
   if (!providerInsights) providerInsights = createProviderInsights({
     file: path.join(app.getPath('userData'), 'provider-insights.json'), getConfig: readOllamaProxyConfig,
+    fetchImpl: providerAccountConnection().fetch,
     getRefreshIntervalMs: () => accountRefreshMinutes() * 60000,
     onChange: broadcastAccountInsights,
   });
@@ -1169,7 +1177,7 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
   drivers: {
     claude: { sessions: claudeSessions, history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
     kimi: { sessions: kimiSessions, history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, subscriptionAccounts: () => kimiAccount.state(), ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
-    codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, subscriptionAccounts: () => codex.accountState(), ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
+    codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, subscriptionAccounts: () => codex.accountState(), syncSubscriptionAccount: codex.syncAccountSelection, ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
     antigravity: { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, nativeAutoCompaction: true },
     dsh: dshChat,
     pi: piChat,
@@ -2201,6 +2209,12 @@ if (!gotSingleInstanceLock) {
   let dataDirectoryRestart = false;
   let pluginCacheRestart = false;
   const migrationHome = os.homedir();
+  const migrationEngines = () => Object.fromEntries(Object.keys(ENGINES).map(engine => [engine,
+    Object.fromEntries(['api', 'subscription'].map(mode => {
+      try { return [mode, Boolean(engine === 'dsh' && loadConfig().dshBin && fs.existsSync(loadConfig().dshBin)
+        || runtimes().locate(engine, mode))]; }
+      catch { return [mode, false]; }
+    }))]));
   const migrationProgress = state => {
     for (const window of [settingsWindow, mainWindow]) if (window && !window.isDestroyed()) window.webContents.send('dsh:data-migration-progress', state);
   };
@@ -2293,13 +2307,14 @@ if (!gotSingleInstanceLock) {
       const scope = payload?.scope === 'all' ? 'all' : normalizeMigrationScope(payload?.scope);
       if (!scope) {
         if (payload?.scope !== undefined && payload?.scope !== null) return { ok: false, error: uiText('Choose at least one category to import') };
-        const { categories } = await inspectDataPackage(file);
+        const { categories, skippedEngines } = await inspectDataPackage(file, { installedEngines: migrationEngines() });
         if (!Object.values(categories).some(category => category.files > 0)) return { ok: false, error: uiText('The package has no Camellia data to import') };
-        return { ok: true, needsSelection: true, file, categories };
+        return { ok: true, needsSelection: true, file, categories, skippedEngines };
       }
       assertMigrationIdle();
       migrationProgress({ phase: 'import', bytes: 0, totalBytes: 0 });
-      const summary = await importDataPackage({ file, scope, dataDir: app.getPath('userData'), home: migrationHome, onProgress: migrationProgress });
+      const summary = await importDataPackage({ file, scope, dataDir: app.getPath('userData'), home: migrationHome,
+        installedEngines: migrationEngines(), onProgress: migrationProgress });
       return { ok: true, ...summary };
     } catch (error) { log('data import failed: ' + error.message); return { ok: false, error: error.message,
       ...(error.backupDir ? { backupDir: error.backupDir, rolledBack: error.rolledBack, recoveryRequired: error.recoveryRequired === true } : {}) }; }
@@ -2715,6 +2730,7 @@ if (!gotSingleInstanceLock) {
 
   app.on('will-quit', () => {
     networkSettingsService?.close();
+    accountConnection?.close();
     stopBackend();
     stopOllamaProxyHandle();
   });
