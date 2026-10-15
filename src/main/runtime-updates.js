@@ -36,7 +36,15 @@ function compareVersions(a, b) {
 function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettings = () => undefined, registries = {}, beforeInstall = async () => {}, onChange = () => {}, log = () => {}, cliUpgrade = upgradeAntigravityCli }) {
   const pending = new Map();
   const reinstalling = new Set();
-  const state = (rows = manager.state()) => rows.map(row => ({ ...row, updating: pending.has(row.id), reinstalling: reinstalling.has(row.id) }));
+  let checked = new Map(), checking = null, checkRevision = 0;
+  const installation = row => JSON.stringify([row.id, row.status, row.version, row.file, row.mode, Boolean(row.external)]);
+  // Both windows read the same completed check. A result belongs to the exact
+  // installation checked, so a path, version or connection change invalidates it.
+  const state = (rows = manager.state()) => rows.map(row => {
+    const cached = checked.get(row.id);
+    return { ...row, updating: pending.has(row.id), reinstalling: reinstalling.has(row.id),
+      updateInfo: cached?.installation === installation(row) ? cached.info : null };
+  });
   const registryUrls = {
     npm: registries.npm || (pkg => `https://registry.npmjs.org/${pkg}/latest`),
     pypi: registries.pypi || (pkg => `https://pypi.org/pypi/${pkg}/json`),
@@ -57,10 +65,22 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     return fetchJson(connection, registryUrls.npm(engines[engine].package)).then(data => data.version || null);
   }
 
-  async function check() {
+  function check() {
+    const rows = manager.state().map(row => ({ ...row }));
+    const signature = JSON.stringify(rows.map(installation));
+    if (checking?.signature === signature) return checking.task;
+    const revision = ++checkRevision;
+    const task = Promise.resolve().then(() => performCheck(rows, revision)).finally(() => {
+      if (checking?.task === task) checking = null;
+    });
+    checking = { signature, task };
+    return task;
+  }
+
+  async function performCheck(rows, revision) {
     const connection = createDownloadConnection(downloadSettings());
     try {
-      return await Promise.all(manager.state().map(async row => {
+      const results = await Promise.all(rows.map(async row => {
         const base = { id: row.id, name: row.name, mode: row.mode, external: Boolean(row.external), installed: row.status === 'ready' ? row.version || null : null, latest: null, updateAvailable: false, checkable: true, error: null };
         if (row.external) return { ...base, checkable: false };
         try {
@@ -71,6 +91,12 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
           return { ...base, error: error.message };
         }
       }));
+      // An older in-flight check must not replace a newer installation's check.
+      if (revision === checkRevision) {
+        checked = new Map(results.map((info, index) => [info.id, { info, installation: installation(rows[index]) }]));
+        onChange(state());
+      }
+      return results;
     } finally {
       await connection.close();
     }

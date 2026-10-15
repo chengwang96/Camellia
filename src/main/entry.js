@@ -1,5 +1,7 @@
 'use strict';
 
+require('./diagnostic-output').installDiagnosticOutput();
+
 if (process.argv.includes('--camellia-directory-progress')) {
   require('./data-directory-progress').showDirectoryMigrationProgress().catch(error => {
     console.error(error);

@@ -153,6 +153,7 @@ private struct QueueCard: View {
     @EnvironmentObject private var model: AppModel
     /// The entry whose failure text is being read, if any.
     @State private var reading: RemoteQueueEntry?
+    @State private var editing: RemoteQueueEntry?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -186,7 +187,7 @@ private struct QueueCard: View {
                     }
                 }
             }
-            .frame(maxHeight: entries.count > 3 ? 200 : nil)
+            .frame(maxHeight: 200)
         }
         .background(RoundedRectangle(cornerRadius: Palette.smallRadius, style: .continuous)
             .fill(Palette.surface))
@@ -196,22 +197,41 @@ private struct QueueCard: View {
                   message: Text(entry.error),
                   dismissButton: .default(Text("知道了")))
         }
+        .sheet(item: $editing) { entry in
+            QueueEditor(entry: entry)
+        }
     }
 
     private func row(index: Int, entry: RemoteQueueEntry) -> some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(index + 1). \(entry.text)")
-                    .font(.subheadline)
-                    .foregroundColor(Palette.ink)
-                    .lineLimit(2)
-                Text(detail(entry))
-                    .font(.caption2)
-                    .foregroundColor(entry.isFailed ? .red : Palette.muted)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(index + 1). \(entry.text)")
+                        .font(.subheadline)
+                        .foregroundColor(Palette.ink)
+                        .lineLimit(2)
+                    Text(detail(entry))
+                        .font(.caption2)
+                        .foregroundColor(entry.isFailed ? .red : Palette.muted)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { if !entry.error.isEmpty { reading = entry } }
+                HStack(spacing: 16) {
+                    Button { editing = entry } label: {
+                        Text(model.usesChinese ? "重新编辑" : "Edit").frame(minHeight: 44)
+                    }
+                        .disabled(!canChangeQueue || entry.isStarting)
+                    Button { model.steerQueued(entry) } label: {
+                        Text(model.usesChinese ? "插队" : "Send now").frame(minHeight: 44)
+                    }
+                        .disabled(!canChangeQueue || entry.isStarting || model.transcript.live == nil)
+                        .accessibilityLabel(model.usesChinese ? "插队到当前回复" : "Send as an instruction to the current reply")
+                }
+                .font(.caption.weight(.medium))
+                .buttonStyle(.plain)
+                .foregroundColor(Palette.accent)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture { if !entry.error.isEmpty { reading = entry } }
             Button {
                 model.removeQueued(entry.id)
             } label: {
@@ -253,5 +273,46 @@ private struct QueueCard: View {
                   : " · \(entry.attachmentCount) attachments"
         }
         return text
+    }
+}
+
+private struct QueueEditor: View {
+    let entry: RemoteQueueEntry
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var prompt: String
+
+    init(entry: RemoteQueueEntry) {
+        self.entry = entry
+        _prompt = State(initialValue: entry.text)
+    }
+
+    var body: some View {
+        NavigationView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(model.usesChinese ? "保存后保留原来的排队位置和附件。"
+                     : "Saving keeps this message's queue position and attachments.")
+                    .font(.caption)
+                    .foregroundColor(Palette.muted)
+                TextEditor(text: $prompt)
+                    .font(.body)
+                    .accessibilityLabel(model.usesChinese ? "排队消息" : "Queued message")
+            }
+            .padding()
+            .navigationTitle(model.usesChinese ? "重新编辑" : "Edit queued message")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(model.usesChinese ? "取消" : "Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(model.usesChinese ? "保存" : "Save") {
+                        model.editQueued(entry, prompt: prompt) { dismiss() }
+                    }
+                    .disabled(!model.canDrive || model.commandBusy || model.hasPendingDetailOperation
+                        || ComposerText.androidTrim(prompt).isEmpty || prompt.utf16.count > 16_000)
+                }
+            }
+        }
     }
 }

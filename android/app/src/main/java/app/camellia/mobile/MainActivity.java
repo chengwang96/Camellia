@@ -3265,7 +3265,7 @@ public final class MainActivity extends Activity {
     private void renderQueue() {
         if (queueBar == null) return;
         boolean enabled = connected && controlAllowed && !commandBusy && !(pendingCommand() != null);
-        String signature = remoteQueue.toString() + ":" + enabled;
+        String signature = remoteQueue.toString() + ":" + enabled + ":" + (lastLive == null ? 0 : lastLive.optLong("runId"));
         if (signature.equals(queueSignature)) return;
         queueSignature = signature;
         queueBar.removeAllViews(); queueBar.setVisibility(remoteQueue.length() == 0 ? View.GONE : View.VISIBLE);
@@ -3293,10 +3293,16 @@ public final class MainActivity extends Activity {
             resume.setTag("remoteQueueResume"); resume.setEnabled(enabled); heading.addView(resume);
         }
         card.addView(heading);
-        android.widget.ScrollView queued = new android.widget.ScrollView(this);
+        android.widget.ScrollView queued = new android.widget.ScrollView(this) {
+            @Override protected void onMeasure(int widthSpec, int heightSpec) {
+                int limit = dp(200);
+                if (View.MeasureSpec.getMode(heightSpec) != View.MeasureSpec.UNSPECIFIED) limit = Math.min(limit, View.MeasureSpec.getSize(heightSpec));
+                super.onMeasure(widthSpec, View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST));
+            }
+        };
         queued.setVerticalScrollBarEnabled(false);
         LinearLayout rows = column(); queued.addView(rows);
-        card.addView(queued, new LinearLayout.LayoutParams(-1, remoteQueue.length() > 3 ? dp(200) : -2));
+        card.addView(queued, new LinearLayout.LayoutParams(-1, -2));
         for (int i = 0; i < remoteQueue.length(); i++) {
             JSONObject entry = remoteQueue.optJSONObject(i); if (entry == null) continue;
             String id = entry.optString("id"), state = entry.optString("state");
@@ -3320,6 +3326,20 @@ public final class MainActivity extends Activity {
             if (files != null && files.length() > 0) label += tr(" · 附件 ", " · Attachments: ") + files.length();
             TextView detail = text(label, Palette.TEXT_SMALL, state.equals("starting") ? accent : state.equals("failed") ? Palette.of(this).error : muted);
             detail.setTag("remoteQueueState:" + id); detail.setPadding(0, dp(6), 0, 0); body.addView(detail);
+            LinearLayout actions = new LinearLayout(this);
+            Button edit = button(tr("重新编辑", "Edit"), () -> showQueueEditor(id, entry.optString("text"), entry.optString("text")), false);
+            edit.setTag("remoteQueueEdit:" + id); edit.setEnabled(enabled && !state.equals("starting"));
+            edit.setTextSize(Palette.TEXT_SMALL); edit.setMinWidth(0);
+            edit.setSingleLine(true); edit.setPadding(dp(4), 0, dp(4), 0);
+            LinearLayout.LayoutParams editParams = new LinearLayout.LayoutParams(0, dp(48), 1); editParams.setMargins(0, dp(4), dp(6), 0);
+            actions.addView(edit, editParams);
+            Button steer = button(tr("插队", "Send now"), () -> queueCommand("queue-steer", id), false);
+            steer.setTag("remoteQueueSteer:" + id); steer.setEnabled(enabled && !state.equals("starting") && lastLive != null);
+            steer.setTextSize(Palette.TEXT_SMALL); steer.setMinWidth(0);
+            steer.setSingleLine(true); steer.setPadding(dp(4), 0, dp(4), 0);
+            steer.setContentDescription(tr("插队到当前回复", "Send as an instruction to the current reply"));
+            LinearLayout.LayoutParams steerParams = new LinearLayout.LayoutParams(0, dp(48), 1); steerParams.setMargins(0, dp(4), 0, 0);
+            actions.addView(steer, steerParams); body.addView(actions);
             if (!entry.optString("error").isEmpty()) {
                 body.setOnClickListener(view -> new CamelliaDialog.Builder(this).setTitle(tr("队列已暂停", "Queue paused"))
                     .setMessage(entry.optString("error")).setPositiveButton(tr("知道了", "OK"), null).show());
@@ -3338,8 +3358,37 @@ public final class MainActivity extends Activity {
         try {
             JSONObject payload = command(action);
             if (id != null) payload.put("queueId", id);
+            if (action.equals("queue-steer")) {
+                if (lastLive == null) return;
+                payload.put("runId", lastLive.optLong("runId"));
+            }
             submitCommand(payload);
         } catch (Exception error) { reportError("无法保存队列操作，请重试。", "Could not save the queue operation. Retry.", error); }
+    }
+
+    private void showQueueEditor(String id, String expectedText, String draft) {
+        if (!connected || !controlAllowed || commandBusy || pendingCommand() != null) return;
+        String target = conversationId, server = instance;
+        EditText editor = new EditText(this); editor.setTag("remoteQueueEditor");
+        editor.setText(draft); editor.setTextSize(Palette.TEXT_INPUT); editor.setTextColor(ink);
+        editor.setGravity(Gravity.TOP); editor.setMinLines(3); editor.setMaxLines(10);
+        editor.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        editor.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(16000)});
+        CamelliaDialog dialog = new CamelliaDialog.Builder(this).setTitle(tr("重新编辑", "Edit"))
+            .setMessage(tr("保存后保留原来的排队位置和附件。", "Saving keeps this message's queue position and attachments."))
+            .setView(editor).setPositiveButton(tr("保存", "Save"), null)
+            .setNegativeButton(tr("取消", "Cancel"), null).show();
+        dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            if (editor.getText().toString().trim().isEmpty()) { editor.setError(tr("请输入消息", "Enter a message")); return; }
+            if (!connected || !controlAllowed || commandBusy || pendingCommand() != null || !target.equals(conversationId) || !server.equals(instance)) {
+                editor.setError(tr("请等待连接恢复或当前操作完成", "Wait for the connection or current operation")); return;
+            }
+            try {
+                JSONObject payload = command("queue-edit").put("queueId", id).put("expectedText", expectedText).put("prompt", editor.getText().toString());
+                submitCommand(payload); dialog.dismiss();
+            } catch (Exception error) { editor.setError(tr("无法保存，请重试", "Could not save. Retry.")); }
+        });
+        editor.requestFocus(); editor.setSelection(editor.length());
     }
 
     private JSONObject command(String action) throws Exception {
@@ -3831,7 +3880,7 @@ public final class MainActivity extends Activity {
                     }
                 }
                 if (workStatus != null) workStatus.clear();
-                if (currentState) applyQueue(result);
+                if (currentState && conversationId.equals(target)) applyQueue(result);
                 if (submitted && result.optString("state").equals("queued")) {
                     outgoingMessage = null; renderMessages(lastLive);
                 } else if (submitted && outgoingMessage != null) {
@@ -3850,7 +3899,10 @@ public final class MainActivity extends Activity {
                     persistDraft();
                     outgoingState("failed");
                 }
-                new CamelliaDialog.Builder(this).setTitle(tr("操作未确认成功", "Operation not confirmed successful"))
+                if (payload.optString("action").equals("queue-edit") && conversationId.equals(target)) {
+                    setStatusError(result.optString("error"));
+                    showQueueEditor(payload.optString("queueId"), payload.optString("expectedText"), payload.optString("prompt"));
+                } else new CamelliaDialog.Builder(this).setTitle(tr("操作未确认成功", "Operation not confirmed successful"))
                     .setMessage(tr("请先检查最新会话状态，再决定是否重新操作。", "Inspect the latest conversation before deciding whether to submit a new operation.") + "\n" + result.optString("error"))
                     .setPositiveButton(tr("知道了", "OK"), null).show();
             }

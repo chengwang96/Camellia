@@ -43,7 +43,9 @@ function desktopStatePath(homeDir = os.homedir()) {
 function withSnapshot(file, fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-desktop-import-'));
   try {
-    for (const suffix of ['', '-wal', '-shm']) {
+    // The live SHM contains byte-range locks on Windows. SQLite rebuilds it
+    // beside the isolated copy; only the database and WAL are source data.
+    for (const suffix of ['', '-wal']) {
       const source = file + suffix;
       if (fs.existsSync(source)) fs.copyFileSync(source, path.join(dir, 'state.sqlite' + suffix));
     }
@@ -98,16 +100,29 @@ function projectForRow(row, projectsByPath, desktop = {}) {
   return projectsByPath.get(pathKey(cwd)) || null;
 }
 
-function listDesktopSessions(stateFile, { excludeIds = new Set(), maxSessions = MAX_LISTED_SESSIONS } = {}) {
+function listDesktopSessions(stateFile, { excludeIds = new Set(), maxSessions = MAX_LISTED_SESSIONS, threadIds } = {}) {
   if (!fs.existsSync(stateFile)) return [];
+  if (threadIds && !threadIds.length) return [];
   return withSnapshot(stateFile, db => {
-    const limit = Math.max(1, Math.min(MAX_LISTED_SESSIONS, Number(maxSessions) || MAX_LISTED_SESSIONS));
+    const limit = Math.max(1, Math.min(MAX_LISTED_SESSIONS, Math.trunc(Number(maxSessions)) || MAX_LISTED_SESSIONS));
+    // Apply visibility filters before LIMIT so unnamed/agent/excluded threads
+    // do not hide available sessions. Old threads with new turns rank first.
+    const where = ['t.archived = 0', "trim(t.name) <> ''", "substr(ltrim(t.source, char(9) || char(10) || char(13) || ' '), 1, 1) <> '{'"];
+    const parameters = [];
+    if (threadIds) {
+      where.push(`t.id IN (${threadIds.map(() => '?').join(',')})`);
+      parameters.push(...threadIds);
+    }
+    if (excludeIds.size) {
+      where.push(`t.id NOT IN (${[...excludeIds].map(() => '?').join(',')})`);
+      parameters.push(...excludeIds);
+    }
     const rows = db.prepare(`SELECT t.id, t.name, t.title, t.first_user_message, t.preview, t.cwd, t.source, t.rollout_path,
         COALESCE(t.created_at_ms, t.created_at * 1000) AS createdAt, COALESCE(t.updated_at_ms, t.updated_at * 1000) AS updatedAt,
         p.id AS projectId, p.name AS projectName, r.path AS projectPath
       FROM threads t LEFT JOIN projects p ON p.id = t.project_id
       LEFT JOIN project_roots r ON r.project_id = t.project_id AND r.position = 0
-      WHERE t.archived = 0 ORDER BY createdAt DESC LIMIT ?`).all(limit + 1);
+      WHERE ${where.join(' AND ')} ORDER BY updatedAt DESC, createdAt DESC LIMIT ?`).all(...parameters, limit + 1);
     const truncated = rows.length > limit;
     if (truncated) rows.length = limit;
     const projectRoots = db.prepare(`SELECT p.id, p.name, r.path, r.position FROM projects p
@@ -170,12 +185,19 @@ async function readRolloutMessages(rolloutPath, onMessage, { maxMessageBytes = M
   let messageCount = 0;
   let previous = null;
   const input = fs.createReadStream(file, { encoding: 'utf8' });
+  let endsWithNewline = false;
+  let incompleteRecord = false;
+  const corruptHistory = () => new Error('Could not import Codex history: invalid JSONL record.');
+  input.on('data', chunk => { if (chunk.length) endsWithNewline = /[\r\n]$/.test(chunk); });
   const lines = readline.createInterface({ input, crlfDelay: Infinity });
   try {
     for await (const line of lines) {
+      if (incompleteRecord) throw corruptHistory();
       if (!line) continue;
       let row;
-      try { row = JSON.parse(line); } catch { continue; }
+      // A live writer may leave one incomplete final record. A malformed
+      // complete record must reject the import instead of silently losing text.
+      try { row = JSON.parse(line); } catch { incompleteRecord = true; continue; }
       if (row?.type !== 'response_item') continue;
       const payload = row.payload || {};
       if (payload.type !== 'message') continue;
@@ -201,6 +223,7 @@ async function readRolloutMessages(rolloutPath, onMessage, { maxMessageBytes = M
       if (onMessage) await onMessage(message);
       else messages.push(message);
     }
+    if (incompleteRecord && endsWithNewline) throw corruptHistory();
   } finally {
     lines.close();
     input.destroy();
@@ -228,9 +251,16 @@ function resolveWorkspace(shared, project) {
 }
 
 async function importDesktopSessions(shared, stateFile, ids, log = () => {}) {
-  const sessions = listDesktopSessions(stateFile);
-  const selected = sessions.filter(s => ids.includes(s.id));
+  if (!Array.isArray(ids) || ids.length > MAX_LISTED_SESSIONS || ids.some(id => typeof id !== 'string' || !id))
+    throw new Error('Select up to 1,000 Codex sessions to import or update.');
+  const threadIds = [...new Set(ids)];
+  // The list may change between opening the dialog and clicking Import.
+  // Resolve selected IDs directly instead of silently dropping off-list rows.
+  const selected = listDesktopSessions(stateFile, { threadIds });
   const imported = [], updated = [], skipped = [];
+  const available = new Set(selected.map(session => session.id));
+  for (const threadId of threadIds) if (!available.has(threadId))
+    skipped.push({ threadId, error: 'The Codex session is no longer available for import. Refresh the import list.' });
   for (const session of selected) {
     let conversation = null;
     try {

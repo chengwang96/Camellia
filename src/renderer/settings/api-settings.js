@@ -191,8 +191,7 @@ function setView(next, engine, focus) {
   if (next === 'subscriptions') void engineUI.accountsPage(focus || engine);
   if (next === 'engines') {
     void engineUI.select(engine || engineUI.selected());
-    void engineUI.runtimePage();
-    if (focus === 'updates') void engineUI.checkRuntimeUpdates();
+    void engineUI.runtimePage({ checkUpdates: focus === 'updates' });
   }
   if (next === 'general') void engineUI.pythonPage();
   if (next === 'models') void renderModelSettings();

@@ -1231,14 +1231,32 @@ with sync_playwright() as p:
     page.wait_for_function('window.importScans === 2')
     page.locator('#importCancel').click()
     expect(page.locator('#importMask')).to_be_hidden()
+    # Batch failures explain why an incremental update was rejected, after the
+    # sidebar refresh, in both supported languages.
+    page.evaluate("""() => {
+      window.dshDesktop.codexDesktopImport = async () => ({ok:true,imported:[],updated:[],skipped:[{
+        threadId:'b',error:'Codex history changed before the last import. Incremental sync stopped; Camellia history was kept.'
+      }]});
+    }""")
+    page.locator('#importBtn').click()
+    page.locator('#importConfirm').click()
+    expect(page.locator('#statusLine')).to_contain_text('Imported 0 sessions · updated 0 · 1 skipped')
+    expect(page.locator('#statusLine')).to_contain_text('Camellia history was kept.')
+    page.evaluate("window.CamelliaI18n.setLanguage('zh-CN')")
+    page.locator('#importBtn').click()
+    page.locator('#importConfirm').click()
+    expect(page.locator('#statusLine')).to_contain_text('已导入 0 个会话 · 更新 0 个 · 跳过 1 个')
+    expect(page.locator('#statusLine')).to_contain_text('增量同步已停止，Camellia 历史已保留。')
+    page.evaluate("window.CamelliaI18n.setLanguage('en')")
     page.evaluate("""() => {
       window.dshDesktop.codexDesktopSessions = async () => ({ok:true,sessions:Array.from({length:24}, (_, index) => ({
         id:'overflow-'+index,title:'Long session title that wraps across multiple lines '.repeat(3),importable:true,
         project:index%3 ? {id:'project-'+Math.floor(index/3),name:'Workspace '+Math.floor(index/3),path:'D:/workspace-'+Math.floor(index/3)} : null
-      }))});
+      })),truncated:true});
     }""")
     page.locator('#importBtn').click()
     expect(page.locator('#importList .import-row')).to_have_count(24)
+    expect(page.locator('#importList')).to_contain_text('Only the 1,000 most recently active sessions are shown for safety.')
     dimensions = page.evaluate("""() => {
       const list = document.querySelector('#importList');
       return {height:list.clientHeight,scrollHeight:list.scrollHeight,groups:[...list.querySelectorAll('.import-project-group')].map(group => ({

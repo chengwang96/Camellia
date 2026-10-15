@@ -139,10 +139,99 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
         getInstrumentation().waitForIdleSync();
         // Allow the page transition and the first surface frame to finish.
         android.os.SystemClock.sleep(600);
+        ui(() -> {
+            View queue = (View) field("queueBar");
+            android.graphics.Rect bounds = new android.graphics.Rect();
+            assertTrue(queue.getGlobalVisibleRect(bounds)); assertEquals(queue.getHeight(), bounds.height());
+            for (String tag : new String[]{"remoteQueueEdit:one", "remoteQueueSteer:one"}) {
+                android.widget.Button action = (android.widget.Button) view(tag);
+                assertTrue(action.getGlobalVisibleRect(bounds)); assertEquals(action.getHeight(), bounds.height());
+                assertEquals(1, action.getLineCount());
+                assertTrue("Action label must fit on narrow screens", action.getPaint().measureText(action.getText().toString())
+                    <= action.getWidth() - action.getPaddingLeft() - action.getPaddingRight());
+            }
+        });
         android.graphics.Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
         assertNotNull(screenshot);
         java.io.File target = new java.io.File(getInstrumentation().getTargetContext().getExternalFilesDir(null), "remote-queue.png");
         try (java.io.FileOutputStream output = new java.io.FileOutputStream(target)) { screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output); }
         screenshot.recycle();
+    }
+
+    public void testQueueEditAndSteerAvailabilityTracksRunConnectionAndStartingState() {
+        ui(() -> {
+            JSONArray queue = new JSONArray().put(entry("one", "queued")).put(entry("two", "starting"));
+            snapshot(true, true, queue, 3);
+            assertTrue(view("remoteQueueEdit:one").isEnabled()); assertTrue(view("remoteQueueSteer:one").isEnabled());
+            assertFalse(view("remoteQueueEdit:two").isEnabled()); assertFalse(view("remoteQueueSteer:two").isEnabled());
+            snapshot(true, false, queue, 3);
+            assertTrue(view("remoteQueueEdit:one").isEnabled()); assertFalse(view("remoteQueueSteer:one").isEnabled());
+            snapshot(true, true, queue, 3);
+            assertTrue(view("remoteQueueSteer:one").isEnabled());
+            field("connected", false); invoke("updateControls");
+            assertFalse(view("remoteQueueEdit:one").isEnabled()); assertFalse(view("remoteQueueSteer:one").isEnabled());
+            field("connected", true); field("controlAllowed", false); invoke("updateControls");
+            assertFalse(view("remoteQueueEdit:one").isEnabled()); assertFalse(view("remoteQueueSteer:one").isEnabled());
+        });
+    }
+
+    public void testSteeringJournalsSelectedQueueIdAndCurrentRunWithoutChangingComposer() {
+        ui(() -> {
+            snapshot(true, true, new JSONArray().put(entry("one", "queued")).put(entry("two", "queued")), 3);
+            input().setText("保留正在输入的草稿");
+            field("foreground", true); view("remoteQueueSteer:two").performClick();
+            JSONObject pending = ((JSONObject) field("credentials")).getJSONObject("pendingCommand").getJSONObject("payload");
+            assertEquals("queue-steer", pending.getString("action")); assertEquals("two", pending.getString("queueId"));
+            assertEquals(1, pending.getLong("runId")); assertEquals("保留正在输入的草稿", input().getText().toString());
+            assertFalse(view("remoteQueueSteer:one").isEnabled());
+            finish(pending, new JSONObject().put("ok", true).put("state", "accepted")
+                .put("queue", new JSONArray().put(entry("one", "queued"))).put("queueVersion", 4));
+            assertNull(view("remoteQueue:two")); assertNotNull(view("remoteQueue:one"));
+            assertEquals("保留正在输入的草稿", input().getText().toString());
+        });
+    }
+
+    private android.view.accessibility.AccessibilityNodeInfo accessibleText(String text) {
+        long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+        while (android.os.SystemClock.uptimeMillis() < deadline) {
+            var root = getInstrumentation().getUiAutomation().getRootInActiveWindow();
+            if (root != null) for (var node : root.findAccessibilityNodeInfosByText(text)) {
+                if (text.equals(String.valueOf(node.getText()))) return node;
+            }
+            android.os.SystemClock.sleep(100);
+        }
+        fail("Missing accessible text: " + text); return null;
+    }
+
+    public void testQueueEditorSavesWithoutChangingDraftOrAttachmentsAndRetainsRejectedText() throws Exception {
+        String original = entry("one", "queued").getString("text");
+        ui(() -> {
+            snapshot(true, true, new JSONArray().put(entry("one", "queued")), 3);
+            input().setText("保留草稿"); field("foreground", true); view("remoteQueueEdit:one").performClick();
+        });
+        getInstrumentation().waitForIdleSync();
+        android.os.Bundle value = new android.os.Bundle();
+        value.putCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "修改后的排队消息");
+        assertTrue(accessibleText(original).performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, value));
+        getInstrumentation().waitForIdleSync();
+        assertTrue(accessibleText("保存").performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK));
+        getInstrumentation().waitForIdleSync();
+        ui(() -> {
+            JSONObject pending = ((JSONObject) field("credentials")).getJSONObject("pendingCommand").getJSONObject("payload");
+            assertEquals("queue-edit", pending.getString("action")); assertEquals("one", pending.getString("queueId"));
+            assertEquals(original, pending.getString("expectedText")); assertEquals("修改后的排队消息", pending.getString("prompt"));
+            assertEquals("保留草稿", input().getText().toString());
+            assertEquals(1, ((JSONArray) field("remoteQueue")).getJSONObject(0).getJSONArray("attachments").length());
+            finish(pending, new JSONObject().put("ok", false).put("state", "failed").put("error", "请检查后重试"));
+            assertEquals("保留草稿", input().getText().toString());
+        });
+        getInstrumentation().waitForIdleSync();
+        assertNotNull(accessibleText("修改后的排队消息"));
+        android.graphics.Bitmap screenshot = getInstrumentation().getUiAutomation().takeScreenshot();
+        assertNotNull(screenshot);
+        java.io.File target = new java.io.File(getInstrumentation().getTargetContext().getExternalFilesDir(null), "remote-queue-editor.png");
+        try (java.io.FileOutputStream output = new java.io.FileOutputStream(target)) { screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output); }
+        screenshot.recycle();
+        assertTrue(accessibleText("取消").performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK));
     }
 }

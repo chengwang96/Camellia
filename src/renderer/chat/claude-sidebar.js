@@ -844,7 +844,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       const nodes = groupedImportNodes(res.sessions);
       if (res.truncated) {
         const warning = document.createElement('p'); warning.className = 'hint';
-        warning.textContent = window.CamelliaI18n.t('Only the newest 1,000 sessions are shown for safety.');
+        warning.textContent = window.CamelliaI18n.t('Only the 1,000 most recently active sessions are shown for safety.');
         nodes.unshift(warning);
       }
       list.replaceChildren(...nodes);
@@ -862,9 +862,11 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       const imported = res.imported?.length || 0, updated = res.updated?.length || 0;
       importableCount = Math.max(0, importableCount - imported - updated);
       const skipped = res.skipped?.length || 0;
-      setStatus('Imported ' + imported + ' sessions \u00b7 updated ' + updated + ' \u00b7 ' + skipped + ' skipped');
+      const summary = window.CamelliaI18n.t('Imported ' + imported + ' sessions \u00b7 updated ' + updated + ' \u00b7 ' + skipped + ' skipped');
+      const failure = res.skipped?.[0]?.error;
       if (res.updated?.some(session => session.id === context.sessionId)) await openHistorySession(context.sessionId);
       await loadSessionHistory();
+      setStatus(summary + (failure ? ' \u00b7 ' + window.CamelliaI18n.t(failure) : ''));
     } catch (error) { setStatus(error.message); }
   };
   $('importAll').onchange = e => {

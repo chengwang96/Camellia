@@ -12,22 +12,26 @@ picker_result = {'canceled': True}
 python_state = {}
 runtime_calls = []
 runtime_updated = False
+update_info = {}
 
 
 def rpc(method, payload=None):
-    global runtime_updated
+    global runtime_updated, update_info
     if method == 'pickFile':
         return picker_result
     # Exercise the renderer's install/update delegation without downloading
     # packages or changing any real installation.
     if method == 'runtimeEnsure':
         runtime_calls.append((method, payload))
+        update_info.pop(payload['engine'], None)
         return {'ok': True}
     if method == 'runtimeCheckUpdates':
         runtime_calls.append((method, payload))
-        return {'ok': True, 'engines': [{**row, 'checkable': True, 'installed': True,
+        engines = [{'id': row['id'], 'mode': row.get('mode'), 'checkable': True, 'installed': row.get('version'),
             'updateAvailable': row['id'] == 'dsh' and not runtime_updated, 'latest': '9.9.9'}
-            for row in rpc('runtimeState')['engines']]}
+            for row in rpc('runtimeState')['engines']]
+        update_info = {row['id']: row for row in engines}
+        return {'ok': True, 'engines': engines}
     if method == 'runtimeUpdate':
         runtime_calls.append((method, payload))
         runtime_updated = True
@@ -49,7 +53,12 @@ def rpc(method, payload=None):
     response = json.loads(driver.stdout.readline())
     if 'error' in response:
         raise RuntimeError(response['error'])
-    return response['result']
+    result = response['result']
+    if method == 'runtimeState':
+        for row in result['engines']:
+            info = update_info.get(row['id'])
+            row['updateInfo'] = info if info and info['installed'] == row.get('version') and info['mode'] == row.get('mode') else None
+    return result
 
 
 try:
@@ -78,7 +87,7 @@ try:
         expect(page.locator('#runtime-path-python')).to_be_hidden()
         expect(page.locator('#runtimeCards .runtime-card:visible')).to_have_count(1)
         expect(page.locator('#runtime-path-antigravity-api')).to_have_count(0)
-        # Home reminders deep-link to the engine and immediately check updates.
+        # An update link without a previous result still checks automatically.
         page.goto(url + '?page=engines&engine=dsh&focus=updates', wait_until='networkidle')
         expect(page.locator('[data-update=dsh]')).to_be_visible()
         assert ('runtimeCheckUpdates', None) in runtime_calls

@@ -3138,6 +3138,29 @@ final class AppModel: ObservableObject {
         ], outcome: { [weak self] in self?.report($0) })
     }
 
+    func editQueued(_ entry: RemoteQueueEntry, prompt: String, accepted: @escaping () -> Void) {
+        guard canDrive, !commandBusy, !hasPendingDetailOperation,
+              !entry.isStarting, !ComposerText.androidTrim(prompt).isEmpty, prompt.utf16.count <= 16_000,
+              transcript.queue.contains(where: { $0.id == entry.id && !$0.isStarting }),
+              let session, let id = openId else { return }
+        deliver(session: session, action: "queue-edit", conversationId: id, payload: [
+            "instanceId": transcript.instanceId, "queueId": entry.id,
+            "expectedText": entry.text, "prompt": prompt,
+        ], outcome: { [weak self] result in
+            if case .accepted = result { accepted() }
+            self?.report(result)
+        })
+    }
+
+    func steerQueued(_ entry: RemoteQueueEntry) {
+        guard canDrive, !commandBusy, !hasPendingDetailOperation, !entry.isStarting,
+              transcript.queue.contains(where: { $0.id == entry.id && !$0.isStarting }),
+              let session, let id = openId, let live = transcript.live else { return }
+        deliver(session: session, action: "queue-steer", conversationId: id, payload: [
+            "instanceId": transcript.instanceId, "queueId": entry.id, "runId": live.runId,
+        ], outcome: { [weak self] in self?.report($0) })
+    }
+
     /// Releases a queue the desktop paused — after a failure, a stop, or a
     /// change in remote access.
     func resumeQueue() {

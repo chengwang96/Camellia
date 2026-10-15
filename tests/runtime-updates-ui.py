@@ -12,9 +12,12 @@ versions = {'claude': '1.0.0', 'kimi': '1.0.0', 'antigravity': '1.2.14'}
 calls = []
 cli_error = None
 cli_check_mode = 'subscription'
+check_calls = 0
+update_info = {}
 
 
 def rpc(method, payload=None):
+    global check_calls, update_info
     if method == 'testBeginUpdate':
         calls.append(payload['engine'])
         updating.add(payload['engine'])
@@ -27,10 +30,13 @@ def rpc(method, payload=None):
         versions[engine] = '2.0.0'
         return {'ok': True, 'engine': engine, 'changed': True, 'to': '2.0.0'}
     if method == 'runtimeCheckUpdates':
-        return {'ok': True, 'engines': [dict(id=engine, mode=cli_check_mode if engine == 'antigravity' else 'api',
+        check_calls += 1
+        engines = [dict(id=engine, mode=cli_check_mode if engine == 'antigravity' else 'api',
             checkable=True, installed=version, latest=None if engine == 'antigravity' and cli_error else '2.0.0',
             error=cli_error if engine == 'antigravity' else None,
-            updateAvailable=version != '2.0.0' and not (engine == 'antigravity' and cli_error)) for engine, version in versions.items()]}
+            updateAvailable=version != '2.0.0' and not (engine == 'antigravity' and cli_error)) for engine, version in versions.items()]
+        update_info = {row['id']: row for row in engines}
+        return {'ok': True, 'engines': engines}
     driver.stdin.write(json.dumps({'method': method, 'payload': payload}) + '\n')
     driver.stdin.flush()
     response = json.loads(driver.stdout.readline())
@@ -45,6 +51,8 @@ def rpc(method, payload=None):
             if row['id'] == 'antigravity':
                 row.update(mode='subscription', external=False, file='C:/fixture/agy.exe')
                 row['subscriptionRuntime'] = dict(row)
+            info = update_info.get(row['id'])
+            row['updateInfo'] = info if info and info['installed'] == row.get('version') and info['mode'] == row.get('mode', 'api') else None
     return result
 
 
@@ -69,7 +77,17 @@ try:
           };
           window.dshDesktop = new Proxy({}, {get: (_, method) => {
             if (method === 'onRuntimeState') return callback => { runtimeListeners.push(callback); return () => {}; };
+            if (method === 'onSettingsNavigate') return callback => { window.settingsNavigate = callback; return () => {}; };
             if (method.startsWith('on')) return () => () => {};
+            if (method === 'runtimeState') return async payload => {
+              const result = await testRpc(method, payload);
+              window.runtimeStateReads = (window.runtimeStateReads || 0) + 1;
+              return result;
+            };
+            if (method === 'runtimeCheckUpdates') return payload => {
+              window.runtimeCheckCalls = (window.runtimeCheckCalls || 0) + 1;
+              return testRpc(method, payload);
+            };
             if (method === 'runtimeUpdate') return async payload => {
               const result = new Promise(resolve => { updateResolvers[payload.engine] = resolve; });
               await testRpc('testBeginUpdate', payload);
@@ -80,11 +98,21 @@ try:
           }});
         """)
         url = (repo / 'src/renderer/settings/api-settings.html').as_uri()
+        # Home has already checked before displaying its update reminder.
+        rpc('runtimeCheckUpdates')
         page.goto(url + '?page=engines&engine=claude&focus=updates', wait_until='networkidle')
         expect(page.locator('.engine-runtime > .download-save .hint')).to_have_text(
             'The selected engine pauses during its update and becomes available again when the update finishes.')
         claude = page.locator('[data-update=claude]')
         kimi = page.locator('[data-update=kimi]')
+        expect(claude).to_be_enabled()
+        assert check_calls == 1, 'New Settings must reuse the Home check'
+        page.locator('[data-view=general]').click()
+        state_reads = page.evaluate('runtimeStateReads')
+        page.evaluate("settingsNavigate({page: 'engines', engine: 'claude', focus: 'updates'})")
+        page.wait_for_function(f'runtimeStateReads > {state_reads}')
+        expect(claude).to_be_enabled()
+        assert check_calls == 1, 'An already open Settings window must also reuse the check'
         claude.click()
         expect(claude).to_be_disabled()
         expect(claude).to_have_text('Updating…')
@@ -101,6 +129,7 @@ try:
         expect(claude).to_have_text('Updating…')
         page.locator('#checkRuntimeUpdates').click()
         expect(page.locator('#checkRuntimeUpdates')).to_be_enabled()
+        assert check_calls == 2, 'The explicit check button must still refresh'
         expect(claude).to_be_disabled()
         page.evaluate('redrawRuntimes()')
         expect(claude).to_have_text('Updating…')
@@ -156,6 +185,14 @@ try:
         cli_check_mode = 'subscription'
         page.locator('#checkRuntimeUpdates').click()
         expect(cli).to_be_visible()
+        # A cold update link can still check when no completed result exists.
+        previous_checks = check_calls
+        window_checks = page.evaluate('window.runtimeCheckCalls || 0')
+        update_info = {}
+        page.evaluate("settingsNavigate({page: 'engines', engine: 'antigravity', focus: 'updates'})")
+        page.wait_for_function(f"window.runtimeCheckCalls > {window_checks} && !document.getElementById('checkRuntimeUpdates').disabled && !!document.querySelector('[data-update=antigravity]')")
+        expect(cli).to_be_enabled()
+        assert check_calls == previous_checks + 1
         screenshots = repo / 'dist/antigravity-updates-qa'
         screenshots.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(screenshots / 'settings-en.png'), full_page=True)

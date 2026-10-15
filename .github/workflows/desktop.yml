@@ -80,6 +80,8 @@ jobs:
       - name: Unit tests
         timeout-minutes: 10
         run: node --test --test-force-exit tests/*.test.js
+      - name: Diagnostic pipe disconnection
+        run: node tests/diagnostic-output-electron.cjs
       - name: Electron smoke test
         run: node tests/electron-smoke.cjs
       - name: Data directory migration smoke test
@@ -165,7 +167,7 @@ jobs:
     name: Acceptance / ${{ matrix.platform }} / ${{ matrix.arch }}
     needs: build
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -220,8 +222,10 @@ jobs:
       - name: Verify downloaded package and download manifests
         run: node tests/verify-package.cjs "${{ matrix.bundle }}"
       - name: Accept the packaged desktop GUI
-        timeout-minutes: 12
-        run: python tests/packaged-desktop-ui.py --bundle "${{ matrix.bundle }}" --output dist/packaged-desktop-bundle
+        # Fresh and upgrade scenarios each use an empty profile and npm cache.
+        # Allow cold Windows downloads to finish before checking the real GUI.
+        timeout-minutes: 20
+        run: python tests/packaged-desktop-ui.py --bundle "${{ matrix.bundle }}" --install-timeout 480 --output dist/packaged-desktop-bundle
       - name: Install the final Windows NSIS artifact
         if: matrix.platform == 'windows'
         id: installed
@@ -235,8 +239,8 @@ jobs:
         run: node tests/verify-package.cjs "${{ steps.installed.outputs.bundle }}"
       - name: Accept the installed GUI through its desktop shortcut
         if: matrix.platform == 'windows'
-        timeout-minutes: 12
-        run: python tests/packaged-desktop-ui.py --bundle "${{ steps.installed.outputs.bundle }}" --shortcut "${{ steps.installed.outputs.shortcut }}" --output dist/packaged-desktop-installed
+        timeout-minutes: 20
+        run: python tests/packaged-desktop-ui.py --bundle "${{ steps.installed.outputs.bundle }}" --shortcut "${{ steps.installed.outputs.shortcut }}" --install-timeout 480 --output dist/packaged-desktop-installed
       - name: Save packaged desktop acceptance evidence
         if: always()
         uses: actions/upload-artifact@v7

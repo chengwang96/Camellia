@@ -56,13 +56,17 @@ def ipc(page, method):
     }""", method)
 
 
-def wait_value(page, method, matches, timeout=30):
+def wait_value(page, method, matches, timeout=30, report=None):
     # wait_for_function polls synchronous predicates. A Promise is truthy even
     # when its eventual IPC result is false, so await IPC before testing it.
     deadline = time.monotonic() + timeout
     last = None
+    next_report = 0
     while time.monotonic() < deadline:
         last = ipc(page, method)
+        if report and time.monotonic() >= next_report:
+            report(last)
+            next_report = time.monotonic() + 15
         if matches(last):
             return last
         page.wait_for_timeout(150)
@@ -396,9 +400,14 @@ def run_scenario(playwright, executable, resources, output, scenario, shortcut, 
             settings.locator('[role="tab"][data-engine="pi"]').click()
             print(f"{scenario}: downloading Pi through the application's UI", flush=True)
             settings.locator('[data-install="pi"]').click()
+            install_started = time.monotonic()
+            def report_install(state):
+                runtime = next(row for row in state["engines"] if row["id"] == "pi")
+                elapsed = int(time.monotonic() - install_started)
+                print(f"{scenario}: Pi install ({elapsed}s): {runtime['status']} {runtime.get('message', '')[:400]}", flush=True)
             rows = wait_value(settings, "runtimeState", lambda state:
                               next(row for row in state["engines"] if row["id"] == "pi")["status"] in
-                              ["ready", "error"], timeout=install_timeout)["engines"]
+                              ["ready", "error"], timeout=install_timeout, report=report_install)["engines"]
             runtime = next(row for row in rows if row["id"] == "pi")
             assert runtime["status"] == "ready", runtime
             assert Path(runtime["file"]).is_relative_to(profile), runtime
