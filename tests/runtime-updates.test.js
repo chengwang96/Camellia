@@ -47,8 +47,9 @@ function pythonRuntime(root, sdk) {
 
 // Loopback registry serving both the npm "latest" document and the PyPI JSON
 // API from path-based routes.
-async function registryFixture(t, versions) {
-  const server = http.createServer((req, res) => {
+async function registryFixture(t, versions, onRequest = () => {}) {
+  const server = http.createServer(async (req, res) => {
+    await onRequest(req);
     if (req.url === '/antigravity-cli') {
       const release = versions['antigravity-cli'];
       if (!release) { res.statusCode = 404; res.end(); return; }
@@ -126,6 +127,64 @@ test('check reports latest versions, update flags, and registry errors per engin
   assert.equal(rows.antigravity.latest, '0.2.0');
   assert.equal(rows.antigravity.installed, null);
   assert.equal(rows.dsh.error, null);
+});
+
+test('completed checks are shared with new windows without another registry request, while manual checks refresh', async t => {
+  const versions = { '@anthropic-ai/claude-code': '2.0.0' };
+  let requests = 0;
+  const registries = await registryFixture(t, versions, () => requests++);
+  const row = { id: 'claude', name: 'Claude Code', status: 'ready', version: '1.0.0', file: '/managed/claude', mode: 'api' };
+  const snapshots = [];
+  const updates = createRuntimeUpdates({ manager: { state: () => [row] }, engines: ENGINES,
+    downloadSettings: direct, registries, onChange: rows => snapshots.push(rows) });
+  assert.equal(updates.state()[0].updateInfo, null);
+  const first = updates.check();
+  assert.strictEqual(updates.check(), first, 'Concurrent windows share the in-flight check');
+  const [info] = await first;
+  assert.equal(info.updateAvailable, true);
+  assert.deepEqual(updates.state()[0].updateInfo, info);
+  assert.deepEqual(snapshots.at(-1)[0].updateInfo, info, 'Open windows receive the completed check');
+  assert.deepEqual(updates.state()[0].updateInfo, info, 'Reopened windows read the same result');
+  assert.equal(requests, 1, 'Reading runtime state never checks the registry');
+  versions['@anthropic-ai/claude-code'] = '3.0.0';
+  await updates.check();
+  assert.equal(updates.state()[0].updateInfo.latest, '3.0.0');
+  assert.equal(requests, 2, 'An explicit check still refreshes the registry');
+});
+
+test('shared update results are invalidated by version, path, mode, status and external-installation changes', async t => {
+  const registries = await registryFixture(t, { '@anthropic-ai/claude-code': '2.0.0' });
+  const row = { id: 'claude', status: 'ready', version: '1.0.0', file: '/managed/claude', mode: 'api', external: false };
+  const updates = createRuntimeUpdates({ manager: { state: () => [row] }, engines: ENGINES, downloadSettings: direct, registries });
+  await updates.check();
+  for (const [field, value] of Object.entries({ version: '2.0.0', file: '/other/claude', mode: 'subscription', status: 'missing', external: true })) {
+    const previous = row[field];
+    row[field] = value;
+    assert.equal(updates.state()[0].updateInfo, null, `${field} changes invalidate the cached check`);
+    row[field] = previous;
+    assert.equal(updates.state()[0].updateInfo.updateAvailable, true);
+  }
+});
+
+test('an older check cannot publish results for a changed installation or replace a newer check', async t => {
+  const requested = Promise.withResolvers(), release = Promise.withResolvers();
+  const versions = { '@anthropic-ai/claude-code': '2.0.0' };
+  let requests = 0;
+  const registries = await registryFixture(t, versions, async () => {
+    if (++requests === 1) { requested.resolve(); await release.promise; }
+  });
+  const row = { id: 'claude', status: 'ready', version: '1.0.0', file: '/first/claude', mode: 'api' };
+  const updates = createRuntimeUpdates({ manager: { state: () => [row] }, engines: ENGINES, downloadSettings: direct, registries });
+  const first = updates.check();
+  await requested.promise;
+  row.file = '/second/claude';
+  row.mode = 'subscription';
+  versions['@anthropic-ai/claude-code'] = '3.0.0';
+  await updates.check();
+  versions['@anthropic-ai/claude-code'] = '2.0.0';
+  release.resolve();
+  assert.equal((await first)[0].latest, '2.0.0');
+  assert.equal(updates.state()[0].updateInfo.latest, '3.0.0');
 });
 
 test('subscription CLI checks and upgrades use the native release manifest rather than the Python SDK', async t => {

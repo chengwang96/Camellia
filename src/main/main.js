@@ -1,5 +1,6 @@
 'use strict';
 
+const diagnosticOutput = require('./diagnostic-output').installDiagnosticOutput();
 const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeTheme } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
@@ -163,6 +164,7 @@ function log(message) {
     // Never let logging break startup.
   }
 }
+diagnosticOutput.setLogger(log);
 
 // A crash currently ends the log mid-sentence with nothing to explain it, which
 // makes a real failure indistinguishable from a deliberate quit. Record the

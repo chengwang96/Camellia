@@ -10,6 +10,7 @@ driver = subprocess.Popen(['node', str(repo / 'tests/claude-ui-driver.cjs')], st
 external = True
 reinstalling = False
 cleanup_warning = ''
+update_info = None
 calls = []
 previews = []
 original = r'C:\CLI\npm-cache\_npx\cached-cli\node_modules\@moonshot-ai\kimi-code\dist\main.mjs'
@@ -17,7 +18,7 @@ managed = r'C:\Camellia\runtimes\kimi\node_modules\@moonshot-ai\kimi-code\dist\m
 
 
 def rpc(method, payload=None):
-    global external, reinstalling, cleanup_warning
+    global external, reinstalling, cleanup_warning, update_info
     if method == 'runtimeReinstallPreview':
         previews.append(payload)
         return {'ok': True, 'engine': 'kimi', 'name': 'Kimi Code', 'token': f'preview-{len(previews)}',
@@ -36,8 +37,9 @@ def rpc(method, payload=None):
         reinstalling = True
         return {'ok': True}
     if method == 'runtimeCheckUpdates':
-        return {'ok': True, 'engines': [{'id': 'kimi', 'external': external, 'checkable': not external,
-            'installed': '1.0.0' if external else '2.0.0', 'latest': '2.1.0', 'updateAvailable': not external}]}
+        update_info = {'id': 'kimi', 'external': external, 'checkable': not external,
+            'installed': '1.0.0' if external else '2.0.0', 'latest': '2.1.0', 'updateAvailable': not external}
+        return {'ok': True, 'engines': [update_info]}
     driver.stdin.write(json.dumps({'method': method, 'payload': payload}) + '\n')
     driver.stdin.flush()
     response = json.loads(driver.stdout.readline())
@@ -50,6 +52,7 @@ def rpc(method, payload=None):
                    version='1.0.0' if external else '2.0.0', file=original if external else managed,
                    source='Custom local path' if external else 'Installed by Camellia',
                    customPath=original if external else '', paths={'api': original if external else ''}, warning=cleanup_warning)
+        row['updateInfo'] = update_info if update_info and update_info['installed'] == row['version'] and update_info['external'] == external else None
     return result
 
 

@@ -95,6 +95,42 @@ test('desktop session listing is capped and reports truncation', t => {
   assert.equal(sessions.truncated, true);
 });
 
+test('listing reads a live WAL without copying its locked shared-memory file', t => {
+  const { root, file, db } = stateFixture(t);
+  db.exec('PRAGMA journal_mode=WAL');
+  const rollout = writeRollout(root, 'live.jsonl', [responseItem('user', 'hello')]);
+  addThread(db, { id: 'live', name: 'Live chat', rollout });
+  assert.ok(fs.existsSync(file + '-shm'));
+  const wal = fs.readFileSync(file + '-wal');
+  const copy = fs.copyFileSync;
+  t.mock.method(fs, 'copyFileSync', (source, destination, ...args) => {
+    if (source.endsWith('-shm')) throw new Error('shared-memory byte range is locked');
+    return copy(source, destination, ...args);
+  });
+  assert.deepEqual(listDesktopSessions(file).map(session => session.id), ['live']);
+  assert.deepEqual(fs.readFileSync(file + '-wal'), wal);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM threads').get().count, 1);
+});
+
+test('listing prioritizes recently updated old threads and applies its cap after exclusions', t => {
+  const { root, file, db, close } = stateFixture(t);
+  const rollout = writeRollout(root, 'active.jsonl', [responseItem('user', 'hello')]);
+  for (const [id, name, source] of [
+    ['old-active', 'Continued old chat', 'vscode'], ['recent', 'Recent chat', 'vscode'],
+    ['other', 'Other chat', 'vscode'], ['unnamed', '', 'vscode'],
+    ['agent', 'Agent chat', ' {"subagent":{}}'],
+  ]) addThread(db, { id, name, source, rollout });
+  db.prepare('UPDATE threads SET created_at = 1, updated_at = 1900000000 WHERE id = ?').run('old-active');
+  db.prepare('UPDATE threads SET updated_at = 2000000000 WHERE id IN (?, ?)').run('unnamed', 'agent');
+  close();
+  const sessions = listDesktopSessions(file, { maxSessions: 2 });
+  assert.deepEqual(sessions.map(session => session.id), ['old-active', 'recent']);
+  assert.equal(sessions.truncated, true);
+  const excluded = listDesktopSessions(file, { maxSessions: 2, excludeIds: new Set(['old-active']) });
+  assert.deepEqual(excluded.map(session => session.id), ['recent', 'other']);
+  assert.equal(excluded.truncated, false);
+});
+
 test('desktop assignments recover pending project migrations and reuse the database workspace', async t => {
   const { root, file, db, close } = stateFixture(t);
   const projectDir = path.join(root, 'project'); fs.mkdirSync(projectDir);
@@ -210,7 +246,7 @@ test('workspace lookup matches by real path so symlinked project roots still reu
   const { root, file, db, close } = stateFixture(t);
   const real = path.join(root, 'real-proj'); fs.mkdirSync(real);
   const link = path.join(root, 'link-proj');
-  try { fs.symlinkSync(real, link, 'dir'); } catch { t.skip('symlink creation unavailable'); return; }
+  try { fs.symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir'); } catch { t.skip('symlink creation unavailable'); return; }
   addProject(db, { id: 'p1', name: 'Linked', roots: [link] });
   const r1 = writeRollout(root, 'l1.jsonl', [responseItem('user', 'q1')]);
   const r2 = writeRollout(root, 'l2.jsonl', [responseItem('user', 'q2')]);
@@ -285,6 +321,72 @@ test('the import list offers changed imports and re-importing updates the same c
   assert.equal(listDesktopImportCandidates(shared, file).length, 0);
   assert.equal((await importDesktopSessions(shared, file, ['update'])).updated[0].addedMessages, 0);
   assert.equal(shared.messages(conversation).length, 4);
+});
+
+test('selected threads remain importable outside the scan cap and unavailable IDs report a failure', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'old question')];
+  const rollout = writeRollout(root, 'off-list.jsonl', original);
+  addThread(db, { id: 'off-list', name: 'Old selected chat', rollout });
+  db.prepare('UPDATE threads SET created_at = 1, updated_at = 1 WHERE id = ?').run('off-list');
+  db.exec('BEGIN');
+  for (let index = 0; index < 1000; index++) addThread(db, { id: 'recent-' + index, name: 'Recent chat', rollout });
+  db.exec('COMMIT');
+  close();
+  assert.ok(listDesktopSessions(file).every(session => session.id !== 'off-list'));
+  const shared = sharedFixture(root);
+  const first = await importDesktopSessions(shared, file, ['off-list', 'no-longer-exists']);
+  assert.equal(first.imported.length, 1);
+  assert.equal(first.skipped.length, 1);
+  assert.equal(first.skipped[0].threadId, 'no-longer-exists');
+  assert.match(first.skipped[0].error, /no longer available/);
+  writeRollout(root, 'off-list.jsonl', [...original, responseItem('assistant', 'continued answer')]);
+  const result = await importDesktopSessions(shared, file, ['off-list']);
+  assert.equal(result.updated[0].id, first.imported[0].id);
+  assert.equal(result.updated[0].addedMessages, 1);
+  assert.equal(shared.items.size, 1);
+});
+
+test('corrupt complete records reject an update without changing history or its checkpoint', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'original')];
+  const rollout = writeRollout(root, 'corrupt.jsonl', original);
+  addThread(db, { id: 'corrupt', name: 'Corrupt source', rollout });
+  close();
+  const shared = sharedFixture(root);
+  const first = await importDesktopSessions(shared, file, ['corrupt']);
+  const conversation = shared.get(first.imported[0].id);
+  const history = fs.readFileSync(path.join(root, 'conversations', conversation.id + '.jsonl'));
+  const saved = JSON.stringify(conversation);
+  for (const suffix of ['{invalid}\n', '{invalid}\n' + JSON.stringify(responseItem('assistant', 'new answer')) + '\n']) {
+    writeRollout(root, 'corrupt.jsonl', original);
+    fs.appendFileSync(rollout, suffix);
+    const result = await importDesktopSessions(shared, file, ['corrupt']);
+    assert.equal(result.updated.length, 0);
+    assert.match(result.skipped[0].error, /invalid JSONL record/);
+    assert.deepEqual(fs.readFileSync(path.join(root, 'conversations', conversation.id + '.jsonl')), history);
+    assert.equal(JSON.stringify(conversation), saved);
+  }
+  writeRollout(root, 'corrupt.jsonl', [...original, responseItem('assistant', 'new answer')]);
+  assert.equal((await syncDesktopSession(shared, file, conversation.id)).addedMessages, 1);
+});
+
+test('a source record still being written is imported exactly once after its tail is completed', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'original')];
+  const rollout = writeRollout(root, 'tail.jsonl', original);
+  addThread(db, { id: 'tail', name: 'Live source', rollout });
+  close();
+  const shared = sharedFixture(root);
+  const first = await importDesktopSessions(shared, file, ['tail']);
+  const conversation = shared.get(first.imported[0].id);
+  const next = JSON.stringify(responseItem('assistant', 'finished answer'));
+  fs.appendFileSync(rollout, next.slice(0, -10));
+  assert.equal((await syncDesktopSession(shared, file, conversation.id)).addedMessages, 0);
+  fs.appendFileSync(rollout, next.slice(-10) + '\n');
+  assert.equal((await syncDesktopSession(shared, file, conversation.id)).addedMessages, 1);
+  assert.equal((await syncDesktopSession(shared, file, conversation.id)).addedMessages, 0);
+  assert.deepEqual(shared.messages(conversation).map(row => row.text), ['original', 'finished answer']);
 });
 
 test('legacy imports gain a persistent cursor while keeping their Camellia continuation', async t => {

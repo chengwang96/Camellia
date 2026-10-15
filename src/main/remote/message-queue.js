@@ -59,6 +59,53 @@ class RemoteMessageQueue {
     this.changed(id); this.schedule(id);
     return { ok: true, ...this.snapshot(id) };
   }
+  edit(id, queueId, text, expectedText) {
+    const entry = this.entries.find(entry => entry.conversationId === id && entry.id === queueId);
+    if (!entry || (entry.payload.displayText ?? entry.payload.prompt) !== expectedText) fail(409, 'Queued message changed; refresh before editing it');
+    if (entry.state === 'starting') fail(409, 'This message is already starting');
+    if (typeof text !== 'string' || !text.trim() || text.length > 16_000) fail(400, 'Enter a message of at most 16000 characters');
+    const previous = entry.payload;
+    // Preserve the prepared attachment references and the position in the queue.
+    const suffix = previous.prompt.slice((previous.displayText ?? previous.prompt).length);
+    entry.payload = { ...previous, prompt: text.trim() + suffix, displayText: text.trim() };
+    try { this.changed(id); }
+    catch (error) { entry.payload = previous; throw error; }
+    return { ok: true, ...this.snapshot(id) };
+  }
+  async steer(id, queueId, runId) {
+    if (this.closed) fail(409, 'Camellia is closing');
+    const entry = this.entries.find(entry => entry.conversationId === id && entry.id === queueId);
+    if (!entry) fail(409, 'Queued message changed; refresh before sending it');
+    if (entry.state === 'starting' || this.starting.has(id)) fail(409, 'A queued message is already starting');
+    const conversation = this.authorize(entry.deviceId, id);
+    const active = this.manager.active.get(id);
+    if (!Number.isSafeInteger(runId) || !active || active.facade.gen !== runId) fail(409, 'This run is no longer active');
+    this.starting.add(id);
+    try {
+      entry.state = 'starting'; this.changed(id);
+      const result = await this.manager.steer(conversation.currentEngine, { ...entry.payload, sessionId: id, runId, queueId: entry.id });
+      if (!result.ok) fail(409, result.error || 'The instruction was not accepted');
+      const index = this.entries.indexOf(entry);
+      if (index >= 0) this.entries.splice(index, 1);
+      this.changed(id);
+      return { ...result, ...this.snapshot(id) };
+    } catch (error) {
+      // A committed instruction must never become a second ordinary send, even
+      // when saving or publishing its acknowledgement fails.
+      if (this.committed(entry)) {
+        const index = this.entries.indexOf(entry);
+        if (index >= 0) this.entries.splice(index, 1);
+      } else { entry.state = 'failed'; entry.error = error.message; }
+      // A failed handoff may have reached the engine before its connection
+      // failed. Require review rather than replaying it when this turn ends.
+      this.pause(id);
+      this.changed(id);
+      throw error;
+    } finally {
+      this.starting.delete(id);
+      this.scheduleIfIdle(id);
+    }
+  }
   resume(id) {
     const entries = this.entries.filter(entry => entry.conversationId === id);
     for (const entry of entries) this.authorize(entry.deviceId, id);

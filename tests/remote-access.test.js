@@ -134,6 +134,154 @@ test('mobile queue supports remove, stop/pause and explicit resume with desktop 
   runs.finish(); await flushQueue();
 });
 
+test('mobile queue edits preserve position, attachments and pause state, reject stale edits and replay current receipts', async context => {
+  const { manager, commands, gateway, access, pair, visible, hidden } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Current task' });
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action, ...extra,
+  }, gateway.instanceId);
+  const first = await execute('send', { queue: true, prompt: 'Original text', expectedSeq: visible.seq,
+    attachments: [{ name: 'notes.txt', isImage: false, data: Buffer.from('Retained file').toString('base64') }] });
+  const second = await execute('send', { queue: true, prompt: 'Following message', expectedSeq: visible.seq });
+  const files = structuredClone(commands.queue.entries[0].payload.attachments);
+  const edit = { action: 'queue-edit', queueId: first.queueId, prompt: '  Revised text\nwith another line  ', expectedText: 'Original text',
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
+  const revised = await commands.execute(device, visible.id, edit, gateway.instanceId);
+  assert.equal(revised.ok, true, revised.error);
+  assert.deepEqual(revised.queue.map(entry => [entry.id, entry.text]), [[first.queueId, 'Revised text\nwith another line'], [second.queueId, 'Following message']]);
+  assert.deepEqual(commands.queue.entries[0].payload.attachments, files);
+  assert.ok(commands.queue.entries[0].payload.prompt.includes(JSON.stringify(files[0].path)));
+  assert.equal((await commands.execute(device, visible.id, edit, gateway.instanceId)).ok, true);
+  assert.equal((await execute('queue-edit', { queueId: first.queueId, expectedText: 'Original text', prompt: 'Stale overwrite' })).ok, false);
+  assert.equal((await execute('queue-edit', { queueId: first.queueId, expectedText: revised.queue[0].text, prompt: '   ' })).ok, false);
+  await assert.rejects(commands.execute(device, hidden.id, { ...edit, requestId: require('node:crypto').randomUUID() }, gateway.instanceId), /not found/);
+  commands.queue.pause(visible.id);
+  assert.equal((await execute('queue-edit', { queueId: second.queueId, expectedText: 'Following message', prompt: 'Paused revision' })).queue[1].state, 'paused');
+  const receipt = commands.receipt(device, edit.requestId);
+  assert.equal(receipt.queue[1].text, 'Paused revision');
+  assert.equal(receipt.queueVersion, commands.queue.snapshot(visible.id).queueVersion);
+  runs.finish(); await flushQueue(); assert.equal(runs.sent.length, 1);
+  commands.queue.resume(visible.id); await flushQueue();
+  assert.ok(runs.sent[1].prompt.endsWith(manager.rawRows(visible).find(row => row.queueId === first.queueId).text));
+  assert.equal(manager.rawRows(visible).find(row => row.queueId === first.queueId).displayText, 'Revised text\nwith another line');
+  assert.deepEqual(runs.sent[1].attachments, files);
+  runs.finish(); await flushQueue(); assert.ok(runs.sent[2].prompt.endsWith('Paused revision'));
+  runs.finish(); await flushQueue();
+});
+
+test('mobile queue steering sends only the selected entry once and serializes concurrent edits, removals and turn completion', async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Current task' });
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action, ...extra,
+  }, gateway.instanceId);
+  const first = await execute('send', { queue: true, prompt: 'Wait for completion', expectedSeq: visible.seq });
+  const selected = await execute('send', { queue: true, prompt: 'Instruction now', expectedSeq: visible.seq,
+    attachments: [{ name: 'notes.txt', isImage: false, data: Buffer.from('Instruction attachment').toString('base64') }] });
+  const active = manager.active.get(visible.id), instructions = [];
+  let accept;
+  active.session.steerUserMessage = (prompt, attachments) => {
+    instructions.push({ prompt, attachments }); return new Promise(resolve => { accept = resolve; });
+  };
+  const payload = { action: 'queue-steer', queueId: selected.queueId, runId: active.facade.gen,
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
+  const steering = commands.execute(device, visible.id, payload, gateway.instanceId);
+  await flushQueue();
+  assert.equal(commands.queue.view(visible.id)[1].state, 'starting');
+  const duplicate = commands.execute(device, visible.id, payload, gateway.instanceId);
+  assert.equal((await execute('queue-remove', { queueId: selected.queueId })).ok, false);
+  assert.equal((await execute('queue-edit', { queueId: selected.queueId, prompt: 'Changed', expectedText: 'Instruction now' })).ok, false);
+  assert.equal((await execute('queue-steer', { queueId: first.queueId, runId: active.facade.gen })).ok, false);
+  runs.finish(); await flushQueue(); assert.equal(runs.sent.length, 1);
+  accept();
+  const [result, repeated] = await Promise.all([steering, duplicate]);
+  assert.equal(result.ok, true, result.error); assert.equal(repeated.userSeq, result.userSeq);
+  assert.equal(instructions.length, 1); assert.ok(instructions[0].prompt.startsWith('Instruction now'));
+  assert.equal(instructions[0].attachments[0].name, 'notes.txt');
+  assert.equal(fs.readFileSync(instructions[0].attachments[0].path, 'utf8'), 'Instruction attachment');
+  assert.equal(manager.rawRows(visible).filter(row => row.queueId === selected.queueId && row.steered).length, 1);
+  await flushQueue(); assert.equal(runs.sent.length, 2); assert.ok(runs.sent[1].prompt.endsWith('Wait for completion'));
+  const replayed = await commands.execute(device, visible.id, payload, gateway.instanceId);
+  assert.equal(replayed.ok, true); assert.equal(replayed.userSeq, result.userSeq);
+  assert.equal(instructions.length, 1); assert.deepEqual(commands.receipt(device, payload.requestId).queue, []);
+  runs.finish(); await flushQueue();
+});
+
+test('mobile queue retains failed instructions and attachments and rejects stale runs and starting edits', async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Current task' });
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action, ...extra,
+  }, gateway.instanceId);
+  const selected = await execute('send', { queue: true, prompt: 'Keep this instruction', expectedSeq: visible.seq,
+    attachments: [{ name: 'notes.txt', isImage: false, data: Buffer.from('Keep file').toString('base64') }] });
+  const previous = structuredClone(commands.queue.entries[0]), active = manager.active.get(visible.id);
+  assert.equal((await execute('queue-steer', { queueId: selected.queueId, runId: active.facade.gen + 1 })).ok, false);
+  // Unsupported connections and explicitly refused steering both retain the entry.
+  assert.equal((await execute('queue-steer', { queueId: selected.queueId, runId: active.facade.gen })).ok, false);
+  active.session.steerUserMessage = async () => { throw new Error('Fixture refused instruction'); };
+  assert.equal((await execute('queue-steer', { queueId: selected.queueId, runId: active.facade.gen })).ok, false);
+  assert.equal(commands.queue.entries[0].id, previous.id);
+  assert.equal(commands.queue.entries[0].state, 'failed');
+  assert.deepEqual(commands.queue.entries[0].payload, previous.payload);
+  assert.equal(fs.readFileSync(previous.payload.attachments[0].path, 'utf8'), 'Keep file');
+  const save = commands.queue.save.bind(commands.queue);
+  context.mock.method(commands.queue, 'save', () => { throw new Error('Disk unavailable'); });
+  assert.throws(() => commands.queue.edit(visible.id, selected.queueId, 'Cannot persist', previous.payload.displayText), /Disk unavailable/);
+  assert.deepEqual(commands.queue.entries[0].payload, previous.payload);
+  context.mock.method(commands.queue, 'save', save);
+  commands.queue.entries[0].state = 'starting';
+  assert.equal((await execute('queue-edit', { queueId: selected.queueId, expectedText: previous.payload.displayText, prompt: 'Cannot edit' })).ok, false);
+  commands.queue.entries[0].state = 'queued';
+  commands.queue.pause(visible.id); runs.finish(); await flushQueue();
+});
+
+test('committed mobile instructions never replay after a queue acknowledgement write fails or a restart', async context => {
+  const { manager, commands, gateway, access, reader, pair, visible, root } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Current task' });
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action, ...extra,
+  }, gateway.instanceId);
+  const selected = await execute('send', { queue: true, prompt: 'Accepted once', expectedSeq: visible.seq });
+  const next = await execute('send', { queue: true, prompt: 'Following entry', expectedSeq: visible.seq });
+  const savedEntry = structuredClone(commands.queue.entries[0]), active = manager.active.get(visible.id);
+  active.session.steerUserMessage = async () => {};
+  const save = commands.queue.save.bind(commands.queue); let writes = 0;
+  context.mock.method(commands.queue, 'save', () => { if (++writes === 2) throw new Error('Acknowledgement write failed'); save(); });
+  await execute('queue-steer', { queueId: selected.queueId, runId: active.facade.gen });
+  assert.deepEqual(commands.queue.view(visible.id).map(entry => entry.id), [next.queueId]);
+  assert.equal(manager.rawRows(visible).filter(row => row.queueId === selected.queueId).length, 1);
+  // Simulate interruption after transcript commitment but before the queue write.
+  commands.queue.close();
+  fs.writeFileSync(commands.queue.file, JSON.stringify([{ ...savedEntry, state: 'starting' }, ...commands.queue.entries]));
+  const restored = new RemoteCommands({ file: path.join(root, 'commands.json'), access, reader });
+  assert.deepEqual(restored.queue.view(visible.id).map(entry => [entry.id, entry.state]), [[next.queueId, 'paused']]);
+  restored.queue.close(); runs.finish(); await flushQueue(); assert.equal(runs.sent.length, 1);
+});
+
+for (const stopped of [false, true]) test(`late failed mobile steering pauses the queue after the current turn ends (stopped=${stopped})`, async context => {
+  const { manager, commands, gateway, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  await manager.send('codex', { sessionId: visible.id, prompt: 'Current task' });
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action, ...extra,
+  }, gateway.instanceId);
+  const selected = await execute('send', { queue: true, prompt: 'Unconfirmed instruction', expectedSeq: visible.seq });
+  const next = await execute('send', { queue: true, prompt: 'Wait for review', expectedSeq: visible.seq });
+  const active = manager.active.get(visible.id); let reject;
+  active.session.steerUserMessage = () => new Promise((resolve, fail) => { reject = fail; });
+  const pending = execute('queue-steer', { queueId: selected.queueId, runId: active.facade.gen });
+  await flushQueue(); runs.finish(stopped ? { subtype: 'stopped', result: '' } : {});
+  reject(new Error('Connection lost before acknowledgement'));
+  assert.equal((await pending).ok, false); await flushQueue();
+  assert.equal(runs.sent.length, 1);
+  assert.deepEqual(commands.queue.view(visible.id).map(entry => [entry.id, entry.state]), [[selected.queueId, 'failed'], [next.queueId, 'paused']]);
+});
+
 test('queue waits through an armed goal and startup reservation, then advances once', async context => {
   const { manager, commands, gateway, access, pair, visible } = fixture(context);
   const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);

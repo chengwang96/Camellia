@@ -38,6 +38,155 @@ task = {'id': 'child-1', 'engine': 'codex', 'userSeq': 1, 'title': 'Check Androi
                        'details': 'Choose a report format', 'responseSupported': True,
                        'questions': [{'id': 'format', 'question': 'Which format?', 'options': [{'label': 'CSV'}]}]}]}
 
+
+def exercise_design(browser, theme, language, width, height):
+    page = browser.new_page(viewport={'width': width, 'height': height}, color_scheme=theme,
+                            reduced_motion='reduce')
+    errors = []
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    page.add_init_script(bridge)
+    page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex', wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    if not page.locator('[data-sid="shared-fixture"]').is_visible():
+        page.locator('#workbenchSidebarToggle').click()
+    page.locator('[data-sid="shared-fixture"]').click()
+    page.evaluate('language => CamelliaI18n.setLanguage(language)', 'zh-CN' if language == 'zh' else 'en')
+    chinese = language == 'zh'
+    goal = '复核主题分类并记录有分歧的条目。' if chinese else 'Review topic classifications and record disagreements.'
+    progress = '已完成 8 包，正在核对剩余 2 包。' if chinese else 'Eight packets complete. Reviewing the remaining two.'
+    child = {'id': 'nash', 'engine': 'codex', 'userSeq': 1, 'title': 'Nash', 'status': 'running',
+             'goal': goal, 'progress': progress, 'turnId': 'nash-turn', 'canStop': True,
+             'history': [{'type': 'commandExecution', 'text': f'node verify.cjs --packet={i}\nPASS: packet validated'} for i in range(12)]}
+    waiting = {**child, 'id': 'ramanujan', 'title': 'Ramanujan', 'status': 'waiting',
+               'progress': '等待确认审核范围。' if chinese else 'Waiting for a scope decision.', 'history': []}
+    finished = {**child, 'id': 'chandra', 'title': 'Chandrasekhar', 'status': 'completed', 'canStop': False,
+                'result': '核验已完成，报告已保存。' if chinese else 'Validation complete. Report saved.'}
+    children = [child, waiting, finished]
+    page.evaluate('tasks => deliverChild(tasks)', children)
+    expect(page.locator('#workPanel')).to_be_hidden()
+    page.locator('#workPanelToggle').click()
+    expect(page.locator('#workPanel .work-task')).to_have_count(3)
+    expect(page.locator('#workPanelCount')).to_have_text('3')
+    expect(page.locator('#workPanel .work-task[data-state=completed] .work-task-preview')).to_have_text(finished['result'])
+    output = repo / 'dist/ui-preview/work-panel-design'
+    output.mkdir(parents=True, exist_ok=True)
+    stem = f'{theme}-{language}-{width}x{height}'
+    page.locator('#workPanel').screenshot(path=str(output / f'overview-{stem}.png'), animations='disabled')
+    page.locator('#workPanel .work-task').first.click()
+    expect(page.locator('.work-detail-heading h2')).to_have_text('Nash')
+    expect(page.locator('.work-detail-heading .work-state')).to_have_text('运行中' if chinese else 'running')
+    expect(page.locator('.work-progress')).to_contain_text(progress)
+    expect(page.locator('#workPanelFooter .work-stop')).to_be_visible()
+    panel = page.locator('#workPanel').bounding_box()
+    header = page.locator('.main-header').bounding_box()
+    main = page.locator('.main').bounding_box()
+    footer = page.locator('#workPanelFooter').bounding_box()
+    assert panel['y'] >= header['y'] + header['height'], (header, panel)
+    assert panel['height'] <= main['height'] / 2 + 1, (main, panel)
+    assert main['x'] <= panel['x'] and panel['x'] + panel['width'] <= width
+    assert panel['y'] + panel['height'] <= height
+    assert footer['y'] + footer['height'] <= panel['y'] + panel['height']
+    assert page.locator('#workPanelBody').evaluate('(node)=>node.scrollWidth<=node.clientWidth')
+    page.locator('#workPanel').screenshot(path=str(output / f'detail-{stem}.png'), animations='disabled')
+
+    # Live updates preserve an expanded history and the current reading position.
+    page.locator('.work-history summary').click()
+    expect(page.locator('.work-history')).to_have_attribute('open', '')
+    page.locator('#workPanelBody').evaluate('(node)=>node.scrollTop=200')
+    before = page.locator('#workPanelBody').evaluate('(node)=>node.scrollTop')
+    assert before > 0
+    updated = {**child, 'progress': progress + ' ✓'}
+    page.evaluate('tasks => deliverChild(tasks)', [updated, waiting, finished])
+    expect(page.locator('.work-progress')).to_contain_text('✓')
+    page.evaluate('() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+    assert page.locator('.work-history').evaluate('(node)=>node.open')
+    after = page.locator('#workPanelBody').evaluate('(node)=>node.scrollTop')
+    assert abs(after - before) <= 2, (before, after)
+
+    # A browser-native state change can precede its queued toggle event.
+    # Reproduce an update in that same turn, including newly appended records.
+    page.locator('.work-history summary').click()
+    expect(page.locator('.work-history')).not_to_have_attribute('open', '')
+    changed_history = {**updated, 'history': [*child['history'], {'type': 'agentMessage', 'text': 'New live history record'}]}
+    still_open = page.evaluate('''tasks => {
+      document.querySelector('.work-history').open=true;
+      deliverChild(tasks);
+      return document.querySelector('.work-history').open;
+    }''', [changed_history, waiting, finished])
+    assert still_open, 'A live update must preserve the actual expanded state before the toggle event arrives'
+    expect(page.locator('.work-history-entry').last).to_contain_text('New live history record')
+    still_closed = page.evaluate('''tasks => {
+      document.querySelector('.work-history').open=false;
+      deliverChild(tasks);
+      return !document.querySelector('.work-history').open;
+    }''', [changed_history, waiting, finished])
+    assert still_closed, 'A live update must also preserve an explicit collapse'
+    page.locator('.work-history summary').focus()
+    page.keyboard.press('Enter')
+    expect(page.locator('.work-history')).to_have_attribute('open', '')
+    for index in range(4):
+        refreshed = {**changed_history, 'history': [*changed_history['history'], {'type': 'agentMessage', 'text': f'Additional live record {index}'}]}
+        page.evaluate('tasks => deliverChild(tasks)', [refreshed, waiting, finished])
+        expect(page.locator('.work-history')).to_have_attribute('open', '')
+        expect(page.locator('.work-history-entry').last).to_contain_text(f'Additional live record {index}')
+
+    # A pending stop disables controls, keeps its focus during updates, and
+    # still carries the displayed task identity rather than the parent ID.
+    page.evaluate('''() => {
+      const command=dshDesktop.conversationCommand;
+      dshDesktop.conversationCommand=async value=>{
+        const result=await command(value);
+        if(value.action==='subagent-command') await new Promise(resolve=>window.finishChildCommand=resolve);
+        return result;
+      };
+    }''')
+    stop = page.locator('.work-stop')
+    stop.click()
+    expect(stop).to_be_disabled()
+    page.evaluate('tasks => deliverChild(tasks)', [updated, waiting, finished])
+    expect(stop).to_be_disabled()
+    page.wait_for_function('typeof finishChildCommand === "function"')
+    page.evaluate('finishChildCommand()')
+    expect(stop).to_be_enabled()
+    command = page.evaluate('childCommands.at(-1).payload')
+    assert command['taskId'] == 'nash' and command['expectedTurnId'] == 'nash-turn'
+
+    # Keyboard focus on disclosures survives a progress-only render.
+    page.locator('.work-history summary').focus()
+    page.evaluate('tasks => deliverChild(tasks)', [updated, waiting, finished])
+    expect(page.locator('.work-history summary')).to_be_focused()
+    page.locator('.work-back').click()
+    page.locator('#workPanel .work-group').last.locator('summary').click()
+    page.evaluate('tasks => deliverChild(tasks)', [updated, waiting, finished])
+    assert not page.locator('#workPanel .work-group').last.evaluate('(node)=>node.open')
+
+    # Native tasks can have only a nickname until progress arrives.
+    empty = {**child, 'goal': '', 'progress': '', 'history': []}
+    page.evaluate('tasks => deliverChild(tasks)', [empty])
+    page.locator('#workPanel .work-task').click()
+    expect(page.locator('.work-progress')).to_contain_text('尚未收到进展' if chinese else 'No progress reported yet')
+    expect(page.locator('.work-history')).to_have_count(0)
+    page.locator('#workPanel').screenshot(path=str(output / f'empty-{stem}.png'), animations='disabled')
+    page.locator('.work-stop').focus()
+    page.keyboard.press('Escape')
+    expect(page.locator('#workPanel')).to_be_hidden()
+    expect(page.locator('#workPanelToggle')).to_be_focused()
+
+    # Long native/custom names wrap safely, and completed details show the
+    # actual result once instead of repeating an old progress message.
+    long_task = {**finished, 'title': 'Chandrasekhar · ' + goal * 4}
+    page.evaluate('tasks => deliverChild(tasks)', [long_task])
+    expect(page.locator('#workPanel')).to_be_hidden()
+    page.locator('#workPanelToggle').click()
+    page.locator('#workPanel .work-task').click()
+    expect(page.locator('.work-progress')).to_contain_text(finished['result'])
+    expect(page.locator('.work-detail-section p').filter(has_text=finished['result'])).to_have_count(1)
+    expect(page.locator('#workPanelFooter')).to_be_hidden()
+    assert page.locator('#workPanelBody').evaluate('(node)=>node.scrollWidth<=node.clientWidth')
+    assert not errors, errors
+    page.close()
+
+
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     for theme, width in [('light', 1440), ('dark', 960)]:
@@ -120,7 +269,7 @@ with sync_playwright() as p:
         page.evaluate('tasks => deliverChild(tasks)', alias_tasks)
         expect(page.locator('.work-artifact')).to_have_count(3)
         panel = page.locator('#workPanel').bounding_box()
-        assert 320 <= panel['width'] <= 380
+        assert 360 <= panel['width'] <= 420
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         output = repo / 'dist/ui-preview'
         output.mkdir(parents=True, exist_ok=True)
@@ -131,5 +280,12 @@ with sync_playwright() as p:
         assert page.locator('.action-menu').bounding_box()['width'] <= 260
         assert not errors, errors
         page.close()
+    for theme, language, width, height in [
+        ('light', 'zh', 1440, 900), ('dark', 'zh', 1440, 900),
+        ('light', 'en', 960, 700), ('dark', 'en', 960, 700),
+        ('light', 'zh', 390, 700), ('dark', 'en', 390, 700),
+        ('light', 'en', 740, 420), ('dark', 'zh', 740, 420),
+    ]:
+        exercise_design(browser, theme, language, width, height)
     browser.close()
-print('PASS: child status, scoped reply/approval/stop, attention without auto-opening, parent and child drafts, turn cards, artifact origin, compact menu, light/dark work panel')
+print('PASS: child controls and drafts; eight light/dark, Chinese/English, narrow/short viewport cases; live scroll, focus and disclosure persistence; busy controls, long names and completed results')

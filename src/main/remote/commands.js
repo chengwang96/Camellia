@@ -12,6 +12,7 @@ const { approval, answer } = require('./approvals');
 const { AttachmentBatch, hasAttachmentReferences } = require('./attachment-batch');
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const QUEUE_ACTIONS = ['queue-remove', 'queue-resume', 'queue-edit', 'queue-steer'];
 // A phone learns about the found files from the conversation's own artifact
 // list, so the command reply carries no server filesystem paths: only the
 // names, kinds and sizes the client can show or count.
@@ -56,7 +57,7 @@ class RemoteCommands {
     }
     const result = this.pending.has(key) ? { ok: false, state: 'pending' }
       : entry.result || { ok: false, state: 'unknown', error: 'Previous request outcome is uncertain; inspect the conversation. It will not be repeated.' };
-    return entry.conversationId && ['send', 'queue-remove', 'queue-resume'].includes(entry.action)
+    return entry.conversationId && (entry.action === 'send' || QUEUE_ACTIONS.includes(entry.action))
       ? { ...result, ...this.queue.snapshot(entry.conversationId) } : result;
   }
   async acknowledgement(operation) {
@@ -100,7 +101,7 @@ class RemoteCommands {
     const managing = ['rename', 'pin', 'delete'].includes(action);
     const validTarget = managing ? id === null : ['archive', 'restore'].includes(action) ? id === null && typeof payload.conversationId === 'string'
       : ['create', 'create-workspace', 'delete-workspace', 'rename-workspace'].includes(action) ? id === null : id !== null;
-    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'resend', 'stop', 'stop-start', 'approve', 'create', 'create-workspace', 'delete-workspace', 'rename-workspace', 'configure', 'move', 'archive', 'restore', 'rename', 'pin', 'delete', 'fork', 'switch-engine', 'compact', 'find', 'goal-control', 'task-control', 'queue-remove', 'queue-resume', 'subagent-command'].includes(action) || !validTarget) fail(400, 'Invalid command');
+    if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId) || !['send', 'resend', 'stop', 'stop-start', 'approve', 'create', 'create-workspace', 'delete-workspace', 'rename-workspace', 'configure', 'move', 'archive', 'restore', 'rename', 'pin', 'delete', 'fork', 'switch-engine', 'compact', 'find', 'goal-control', 'task-control', ...QUEUE_ACTIONS, 'subagent-command'].includes(action) || !validTarget) fail(400, 'Invalid command');
     const fields = ['requestId', 'action', 'instanceId', ...(action === 'move' ? ['workspaceId', 'targetSessionId', 'placement'] : action === 'archive' ? ['conversationId', 'expectedSeq'] : action === 'create-workspace' ? ['name', 'path'] : action === 'configure' ? ['settings', 'expectedSettings'] : action === 'create' ? ['workspaceId', 'engine'] : action === 'send' || action === 'resend' ? ['prompt', 'expectedSeq', ...(payload.editSeq === undefined ? [] : ['editSeq']), ...(payload.image === undefined ? [] : ['image']), ...(payload.images === undefined ? [] : ['images'])] : action === 'stop' ? ['runId'] : ['runId', 'approvalId', 'fingerprint', 'allow'])];
     if (managing) fields.splice(3, fields.length - 3, 'targets', ...(action === 'rename' ? ['title'] : action === 'pin' ? ['pinned'] : []));
     if (action === 'delete-workspace') fields.splice(3, fields.length - 3, 'workspaceId', 'expectedName');
@@ -112,7 +113,8 @@ class RemoteCommands {
     if (['send', 'resend'].includes(action) && payload.attachments !== undefined) fields.push('attachments');
     if (action === 'approve') fields.push('input', 'optionId');
     if (action === 'send' && payload.queue !== undefined) fields.push('queue');
-    if (action === 'queue-remove' || action === 'queue-resume') fields.splice(3, fields.length - 3, ...(action === 'queue-remove' ? ['queueId'] : []));
+    if (QUEUE_ACTIONS.includes(action)) fields.splice(3, fields.length - 3, ...(action === 'queue-resume' ? [] : ['queueId']),
+      ...(action === 'queue-edit' ? ['prompt', 'expectedText'] : action === 'queue-steer' ? ['runId'] : []));
     if (action === 'stop-start') fields.splice(3, fields.length - 3, 'startId');
     if (Object.keys(payload).some(key => !fields.includes(key))) fail(400, 'Unsupported command field');
     if (managing) {
@@ -138,7 +140,7 @@ class RemoteCommands {
       if (task?.managedConversationId) this.authorize(device.id, task.managedConversationId);
     }
     const fingerprint = digest([id, ...fields.map(field => payload[field])]);
-    const receipt = result => id && (payload.queue === true || action === 'queue-remove' || action === 'queue-resume')
+    const receipt = result => id && (payload.queue === true || QUEUE_ACTIONS.includes(action))
       ? { ...result, ...this.queue.snapshot(id) } : result;
     const key = device.id + ':' + requestId;
     const prior = this.entries.find(entry => entry.key === key);
@@ -280,6 +282,13 @@ class RemoteCommands {
       return { ...this.queue.remove(id, payload.queueId), state: 'accepted' };
     }
     if (payload.action === 'queue-resume') return { ...this.queue.resume(id), state: 'accepted' };
+    if (payload.action === 'queue-edit' || payload.action === 'queue-steer') {
+      if (typeof payload.queueId !== 'string') fail(400, 'Queued message ID required');
+      const result = payload.action === 'queue-edit'
+        ? this.queue.edit(id, payload.queueId, payload.prompt, payload.expectedText)
+        : await this.queue.steer(id, payload.queueId, payload.runId);
+      return { ...result, state: 'accepted' };
+    }
     if (payload.action === 'send' || payload.action === 'resend') {
       if (payload.queue !== undefined && typeof payload.queue !== 'boolean') fail(400, 'Invalid queue option');
       const queue = payload.action === 'send' && payload.queue === true;

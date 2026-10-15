@@ -437,6 +437,14 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     renderRuntimePaths();
     showSelectedRuntime();
   }
+  function receiveRuntimes(rows) {
+    for (const row of rows) {
+      if (!Object.hasOwn(row, 'updateInfo')) continue;
+      if (row.updateInfo) runtimeUpdateInfo[row.id] = row.updateInfo;
+      else delete runtimeUpdateInfo[row.id];
+    }
+    renderRuntimes(rows);
+  }
   function showSelectedRuntime() {
     $('runtimeCards').querySelectorAll('.runtime-card').forEach((card, index) => {
       card.hidden = runtimeRows[index]?.id !== engine;
@@ -467,11 +475,15 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     finally { runtimeUpdatesBusy = false; $('checkRuntimeUpdates').disabled = false; renderRuntimes(runtimeRows); }
   }
   $('checkRuntimeUpdates').onclick = checkRuntimeUpdates;
-  async function runtimePage() {
+  async function runtimePage({ checkUpdates = false } = {}) {
+    const selectedEngine = engine;
     try {
       const result = await api.runtimeState();
       if (!result.ok) throw new Error(result.error);
-      renderRuntimes(result.engines);
+      receiveRuntimes(result.engines);
+      // Home already checked before showing its reminder. Reuse that result,
+      // including when Settings is newly opened or was already running.
+      if (checkUpdates && activePage && engine === selectedEngine && !runtimeUpdateInfo[selectedEngine]) await checkRuntimeUpdates();
     } catch (e) { status(e.message, true); }
   }
   async function pythonPage() {
@@ -599,7 +611,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
         if (!result.ok) throw new Error(result.error);
         runtimePathDrafts.delete(key);
         if (isPython) { renderPython(result.python); status('Python path saved. Applies to the next message.'); }
-        else { delete runtimeUpdateInfo[selectedEngine]; renderRuntimes(result.engines); status('Runtime path saved. Applies to the next message.'); }
+        else { delete runtimeUpdateInfo[selectedEngine]; receiveRuntimes(result.engines); status('Runtime path saved. Applies to the next message.'); }
       } catch (error) { status(error.message, true); }
       finally { runtimePathBusy = false; if (isPython) renderPython(pythonState); else renderRuntimePaths(); }
       return;
@@ -652,7 +664,7 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   };
   $('runtimeCards').onclick = runtimeAction;
   $('pythonCard').onclick = runtimeAction;
-  api.onRuntimeState(renderRuntimes);
+  api.onRuntimeState(receiveRuntimes);
   // Python is shared, so its state can change without any engine card changing.
   api.onRuntimePythonState?.(renderPython);
   api.onNativeSettingsReady(() => { nativeReady = true; clearTimeout(nativeReadyTimer); $('nativeLoading').textContent = ''; $('retryNative').hidden = true; });

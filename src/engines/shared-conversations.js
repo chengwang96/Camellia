@@ -1706,7 +1706,8 @@ class SharedConversations {
       active.goalUserPrompt = prompt;
       active.goalReport = undefined;
       const row = this.append(active.c, { role: 'user', engine, text: prompt,
-        displayText: payload.displayText ?? prompt, attachments: payload.attachments || [], steered: true });
+        displayText: payload.displayText ?? prompt, attachments: payload.attachments || [], steered: true,
+        ...(payload.queueId ? { queueId: payload.queueId } : {}) });
       active.c.updatedAt = this.stamp();
       this.save(active.c);
       this.workspaces.promoteSession(active.c.id, [...this.items.values()]
