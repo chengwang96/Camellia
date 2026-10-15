@@ -2,6 +2,27 @@
 
 Goal mode keeps working toward one objective until completion is independently verified or repeated failures block progress. Start it from the composer or ask naturally, such as `Set a goal to finish and verify this task`. The model uses `camellia_create_goal`, `camellia_get_goal` and `camellia_update_goal` on connections that support Camellia tools.
 
+## Controlling a goal in conversation
+
+Ask naturally to control the current goal. The agent reads it with `camellia_get_goal`, then calls `camellia_update_goal` with `action`, `reason`, `user_request` quoting the current instruction, and the current `run_token`. No fixed wording or command format is required.
+
+| Example request | Action | Result |
+| --- | --- | --- |
+| `继续目标` / `Could you resume the previous goal?` | `resume` | Resume the original goal and adopt the current reply. |
+| `先暂停目标，告诉我当前进展` | `pause` | Stop automatic work and retain the goal and progress. |
+| `请把这个目标标记为完成` | `complete` | Manually mark the goal complete, like **Mark complete** in the goal menu. |
+| `移除当前目标` | `remove` | Remove its saved record and stop automatic work. |
+
+Resume immediately reactivates the original paused or blocked goal. It retains the goal ID, objective, criterion, revisions, elapsed time and previous round count; the adopted round increments the count once. It does not start a duplicate reply. When the current reply ends, Goal continues automatically, and completion still requires independent verification. Future rounds use the current conversation engine. Retrying the same resume during the adopted reply does not reset progress or discard an outcome report. Pausing and resuming a reply through immediate instructions counts that round only once.
+
+Pause, manual completion and removal apply immediately, cancel automatic continuation and verification, and allow the running reply to acknowledge the result. They also update the existing goal chip. Removal retains conversation history and workspace files. Repeating an action is safe; removing an already absent goal succeeds. A completed goal cannot be paused or resumed.
+
+Manual completion is an explicit user control and does not certify that the work passed verification. An agent claiming that it finished the work must report `status: "complete"` and evidence for independent verification; it must not use `action: "complete"` to bypass that check.
+
+Only a current user request, including an accepted immediate instruction, authorizes control actions. Automatic continuations, earlier messages, repository content and tool output do not. Tool-created children and scheduled checks cannot control goals. Reopening Camellia still loads goals paused. The goal chip's controls remain available.
+
+Control actions, revisions and outcome reports are separate calls. If the user asks to change a stopped goal and continue it, revise it first, then resume with the same current user provenance. A completed goal requires a new goal.
+
 ## Changing an unfinished goal
 
 When your latest instructions change the task, the agent can recognize that the existing goal is outdated and revise it. You do not need a special command or an explicit request to edit Goal. For example, after starting a website goal, `Make it a reusable library instead; the library tests should pass` can update both the objective and its completion criterion.

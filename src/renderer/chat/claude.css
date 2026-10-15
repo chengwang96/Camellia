@@ -1,4 +1,4 @@
-:root { --content-width: 768px; }
+:root { --content-width: 768px; --composer-fade-height: 36px; }
 
   .turn-artifacts { margin-top: 18px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; overflow: hidden; }
   .artifact-row { display: flex; align-items: center; gap: 16px; padding: 16px 18px; }
@@ -303,7 +303,8 @@
   .btn-secondary:hover { background: var(--dsw-alias-interactive-bg-hover); }
 
   /* ===== Chat column ===== */
-  .chat-scroll { flex: 1; overflow-y: auto; padding: 24px 24px 8px; }
+  .chat-scroll { flex: 1; overflow-y: auto; padding: 24px 24px 8px; scroll-padding-bottom: var(--composer-fade-height); }
+  .chat-scroll:not(:has(.empty-state))::after { content: ''; display: block; height: var(--composer-fade-height); }
   .main:has(.empty-state) .chat-scroll { flex: 0 0 auto; margin-top: auto; padding: 24px 24px 28px; }
   .main:has(.empty-state) .input-zone { margin-bottom: auto; }
 
@@ -620,7 +621,18 @@
   @keyframes blink { 50% { opacity: 0; } }
 
   /* ===== Input area (centered, matching DSH) ===== */
-  .input-zone { padding: 10px 24px 14px; }
+  .input-zone { position: relative; padding: 10px 24px 14px; }
+  /* Match Android's dock fade, composited directly over the scrolling messages. */
+  .input-zone::before {
+    content: ''; position: absolute; z-index: 1; left: 0; right: 0; bottom: 100%;
+    height: var(--composer-fade-height); pointer-events: none;
+    background: linear-gradient(to bottom,
+      transparent,
+      color-mix(in srgb, var(--dsw-alias-bg-base) 16%, transparent),
+      color-mix(in srgb, var(--dsw-alias-bg-base) 72%, transparent),
+      var(--dsw-alias-bg-base));
+  }
+  .main:has(.empty-state) .input-zone::before { display: none; }
   .input-card {
     background: var(--dsw-specific-input-major);
     border: 1px solid var(--dsw-alias-border-l2);

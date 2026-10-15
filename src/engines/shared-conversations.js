@@ -339,6 +339,33 @@ class SharedConversations {
         }
         return result;
       }
+      if (args.action) {
+        if (active.goalContinuation && !active.goalUserPrompt) throw new Error('An automatic Goal continuation cannot authorize a goal control action');
+        if (!matchesUserRequest(active.goalUserPrompt ?? active.prompt, args.user_request)) throw new Error('user_request must quote the current user instruction to control the goal');
+        if (driver.armed && driver.ownedSession() !== active.facade) throw new Error('No active goal owned by this turn');
+        if (args.action === 'resume') {
+          active.facade.interrupt ||= () => { void this.cancel({ sessionId: id, runId: active.facade.gen }); };
+          const result = driver.resume({ adoptSession: active.facade, engine: active.engine });
+          if (result.ok && result.resumed) {
+            active.goalReport = undefined;
+            active.promptSuffix = [active.goalContinuation ? null : active.prompt,
+              active.goalUserPrompt, goalPrompt(driver.goal)].filter(Boolean).join('\n\n');
+          }
+          return result;
+        }
+        if (args.action === 'pause' && driver.goal?.phase === 'complete') throw new Error('This goal is already complete');
+        const phase = args.action === 'pause' ? 'paused' : 'complete';
+        const result = args.action === 'remove' ? driver.clear({ interrupt: false })
+          : driver.goal?.phase === phase && !driver.armed ? { ok: true, goal: driver.view() }
+          : driver.setPhase(phase, { interrupt: false });
+        if (result.ok) {
+          active.goalReport = undefined;
+          active.goalRevised = true;
+          active.promptSuffix = [active.goalUserPrompt ?? active.prompt,
+            `The user's goal control action (${args.action}) has been applied. Automatic Goal work has stopped. Respond to the current user instruction without continuing the stopped goal.`].join('\n\n');
+        }
+        return result;
+      }
       if (Object.hasOwn(args, 'objective') || Object.hasOwn(args, 'criterion')) {
         if (active.goalContinuation && !active.goalUserPrompt) throw new Error('An automatic Goal continuation cannot authorize a goal revision');
         if (!matchesUserRequest(active.goalUserPrompt ?? active.prompt, args.user_request)) throw new Error('user_request must quote the current user instructions that change the goal');

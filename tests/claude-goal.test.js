@@ -60,6 +60,96 @@ test('three consecutive execution errors block even when subtypes differ; resume
   assert.equal(h.timers.size, 1);
 });
 
+test('resuming a stopped goal can adopt the current turn once and preserve accumulated progress', t => {
+  for (const phase of ['paused', 'blocked']) {
+    const h = setup(t);
+    h.goal.start({ objective: 'Finish', criterion: 'Tests pass', engine: 'claude' }); h.tick();
+    h.advance(4000); h.result({ result: 'First step done' });
+    if (phase === 'blocked') h.goal.block('missing-input', 'Need input'); else h.goal.setPhase('paused');
+    const original = h.goal.view(); h.advance(10000);
+    h.session.gen++; h.session.running = true;
+    assert.equal(h.goal.resume().ok, false);
+    assert.equal(h.goal.resume({ adoptSession: { ...h.session } }).ok, false);
+    const result = h.goal.resume({ adoptSession: h.session, engine: 'codex' });
+    assert.equal(result.ok, true); assert.equal(result.resumed, true);
+    for (const key of ['id', 'objective', 'criterion', 'createdAt', 'elapsedMs', 'revision', 'lastRevision'])
+      assert.deepEqual(result.goal[key], original[key], key);
+    assert.equal(result.goal.phase, 'active'); assert.equal(result.goal.armed, true); assert.equal(result.goal.engine, 'codex');
+    assert.equal(result.goal.roundsStarted, original.roundsStarted + 1); assert.equal(result.goal.blockedReason, null);
+    assert.equal(h.goal.ownedSession(), h.session); assert.equal(h.timers.size, 0); assert.equal(h.prompts.length, 1);
+    const resumed = h.goal.view(); h.advance(2000);
+    assert.equal(h.goal.resume({ adoptSession: h.session }).resumed, false); assert.deepEqual(h.goal.view(), resumed);
+    h.result({ result: 'Next step done' }); assert.equal(h.timers.size, 1);
+    h.tick(); assert.match(h.prompts.at(-1), /Goal continuation.*Finish/);
+    assert.equal(h.goal.view().roundsStarted, original.roundsStarted + 2);
+    h.goal.setPhase('paused'); assert.equal(h.goal.view().elapsedMs, original.elapsedMs + 2000);
+  }
+});
+
+test('conversation controls stop automatic work while allowing the current reply to acknowledge them', t => {
+  for (const action of ['pause', 'complete', 'remove']) {
+    let checks = 0;
+    const h = setup(t, { verifyCompletion: async () => { checks++; return { pass: true }; } });
+    h.goal.start({ objective: 'Finish', criterion: 'Tests pass' }); h.tick(); h.advance(3000);
+    const original = h.goal.view();
+    const result = action === 'remove' ? h.goal.clear({ interrupt: false })
+      : h.goal.setPhase(action === 'pause' ? 'paused' : 'complete', { interrupt: false });
+    assert.equal(result.ok, true); assert.equal(h.interrupts(), 0); assert.equal(h.session.running, true);
+    assert.equal(h.goal.armed, false); assert.equal(h.timers.size, 0);
+    if (action === 'remove') {
+      assert.equal(h.goal.view(), null); assert.equal(fs.existsSync(h.options.file()), false);
+    } else {
+      assert.equal(result.goal.id, original.id); assert.equal(result.goal.criterion, original.criterion);
+      assert.equal(result.goal.phase, action === 'pause' ? 'paused' : 'complete');
+      assert.equal(result.goal.elapsedMs, 3000); assert.equal(result.goal.roundsStarted, original.roundsStarted);
+      assert.equal(result.goal.verified, null);
+    }
+    h.result({ goalReport: { status: 'complete', reason: 'Stale claim' }, result: '<goal:complete>' });
+    assert.equal(checks, 0); assert.equal(h.timers.size, 0);
+    assert.equal(h.goal.view()?.phase || null, action === 'remove' ? null : action === 'pause' ? 'paused' : 'complete');
+  }
+});
+
+test('pausing and resuming the same reply does not count the round twice', t => {
+  const h = setup(t); h.goal.start({ objective: 'Finish' }); h.tick(); h.advance(3000);
+  for (let i = 0; i < 2; i++) {
+    h.goal.setPhase('paused', { interrupt: false });
+    assert.equal(h.goal.resume({ adoptSession: h.session }).ok, true);
+    assert.equal(h.goal.view().roundsStarted, 1); assert.equal(h.goal.view().elapsedMs, 3000);
+    assert.equal(h.timers.size, 0); assert.equal(h.interrupts(), 0);
+  }
+  h.result({ result: 'Continue next round' }); h.tick(); assert.equal(h.goal.view().roundsStarted, 2);
+});
+
+test('manual stopping actions cancel verification and ignore a late passing verdict', async t => {
+  for (const action of ['pause', 'complete', 'remove']) {
+    let resolveCheck, signal;
+    const h = setup(t, { verifyCompletion: (_, options) => {
+      signal = options.signal; return new Promise(resolve => { resolveCheck = resolve; });
+    } });
+    h.goal.start({ objective: 'Finish' }); h.tick(); h.result({ result: '<goal:complete>' });
+    assert.ok(h.goal.view().verifying);
+    if (action === 'remove') h.goal.clear({ interrupt: false });
+    else h.goal.setPhase(action === 'pause' ? 'paused' : 'complete', { interrupt: false });
+    assert.equal(signal.aborted, true);
+    resolveCheck({ pass: true, reason: 'Old evidence' }); await h.settle();
+    assert.equal(h.goal.view()?.phase || null, action === 'remove' ? null : action === 'pause' ? 'paused' : 'complete');
+    assert.equal(h.goal.view()?.verified || null, null); assert.equal(h.timers.size, 0);
+  }
+});
+
+test('resume never adopts a stale turn, steals an active goal or reopens a completed goal', t => {
+  const h = setup(t); h.session.running = true;
+  assert.equal(h.goal.resume({ adoptSession: h.session }).ok, false);
+  h.session.running = false; h.goal.start({ objective: 'Finish' });
+  h.session.running = true;
+  assert.equal(h.goal.resume({ adoptSession: h.session }).ok, false);
+  h.session.running = false; h.tick(); h.result({ result: '<goal:complete>' });
+  h.session.gen++; h.session.running = true;
+  assert.equal(h.goal.resume({ adoptSession: h.session }).ok, false);
+  assert.equal(h.goal.view().phase, 'complete'); assert.equal(h.timers.size, 0);
+});
+
 test('restart disarms saved goals and markers in fenced examples do not complete a goal', t => {
   const h = setup(t);
   h.goal.start({ objective: 'Finish' }); h.tick();
@@ -341,6 +431,18 @@ function denyGoalWrites(t, h) {
   });
 }
 
+test('failed adopted resume preserves saved progress and stops the adopted response', t => {
+  const h = setup(t); h.goal.start({ objective: 'Finish' }); h.goal.setPhase('paused');
+  const original = fs.readFileSync(h.options.file(), 'utf8');
+  h.session.gen++; h.session.running = true;
+  const write = denyGoalWrites(t, h), result = h.goal.resume({ adoptSession: h.session, engine: 'codex' });
+  assert.equal(result.ok, false); assert.match(result.error, /disk full/);
+  assert.equal(h.goal.armed, false); assert.equal(h.goal.ownedSession(), null);
+  assert.equal(h.interrupts(), 1); assert.equal(h.timers.size, 0);
+  assert.equal(fs.readFileSync(h.options.file(), 'utf8'), original);
+  write.mock.restore();
+});
+
 test('failed revision persistence keeps the saved objective and stops its owned response', t => {
   const h = setup(t); h.goal.start({ objective: 'Original', criterion: 'Original criterion' }); h.tick();
   const saved = fs.readFileSync(h.options.file(), 'utf8'), write = denyGoalWrites(t, h);
@@ -374,7 +476,7 @@ test('failure to persist a continuation stops before sending another model reque
   write.mock.restore();
 });
 
-for (const action of ['setPhase', 'clear']) test('failed goal ' + action + ' keeps the saved record and still stops its owned turn', t => {
+for (const action of ['setPhase', 'clear']) for (const interrupt of [true, false]) test('failed goal ' + action + ' with interrupt=' + interrupt + ' keeps the saved record and still stops its owned turn', t => {
   const h = setup(t); h.goal.start({ objective: 'Finish' }); h.tick();
   const original = fs.readFileSync(h.options.file(), 'utf8');
   const write = denyGoalWrites(t, h), unlink = fs.unlinkSync;
@@ -384,7 +486,7 @@ for (const action of ['setPhase', 'clear']) test('failed goal ' + action + ' kee
     if (file === h.options.file()) throw Object.assign(new Error('cannot remove goal'), { code: 'EACCES' });
     return unlink(file, ...args);
   });
-  const result = action === 'clear' ? h.goal.clear() : h.goal.setPhase('complete');
+  const result = action === 'clear' ? h.goal.clear({ interrupt }) : h.goal.setPhase('complete', { interrupt });
   assert.equal(result.ok, false); assert.ok(result.error);
   assert.equal(h.goal.armed, false); assert.equal(h.timers.size, 0); assert.equal(h.interrupts(), 1);
   assert.notEqual(h.goal.view().phase, 'complete');
