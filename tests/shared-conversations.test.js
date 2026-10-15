@@ -2445,6 +2445,215 @@ test('model goal tools adopt the current turn once and verify completion across 
   }
 });
 
+test('user-requested goal resume adopts the current reply and verifies the original goal on every engine', async t => {
+  for (const engine of ENGINES) for (const phase of ['paused', 'blocked']) {
+    const changes = [], h = fixture(t, { onGoal: event => changes.push(event), createGoalBridge: async options => ({ call: options.call, close() {} }) });
+    const first = await h.manager.send(engine, { prompt: 'Set a goal: finish and verify the experiment' });
+    const bridge = h.sent.at(-1).opts.goalBridge, driver = h.manager.goalFor(first.sessionId);
+    const firstToken = h.manager.active.get(first.sessionId).goalRunToken;
+    bridge.call('camellia_create_goal', { run_token: firstToken, objective: 'Finish the experiment', criterion: 'The original checks pass', user_request: 'Set a goal' });
+    h.finish(engine, 'success', 'First step done'); await first.done;
+    if (phase === 'blocked') driver.block('missing-input', 'Need input'); else driver.setPhase('paused');
+    const original = driver.view();
+    const instruction = phase === 'paused' ? '继续目标' : '输入已经补齐。\n能继续完成之前的目标吗？';
+    const next = await h.manager.send(engine, { sessionId: first.sessionId, prompt: instruction });
+    const active = h.manager.active.get(first.sessionId);
+    assert.equal(bridge.call('camellia_get_goal', { run_token: active.goalRunToken }).goal.phase, phase);
+    const resume = { run_token: active.goalRunToken, action: 'resume', reason: 'The user asked to continue the original goal', user_request: instruction };
+    const result = bridge.call('camellia_update_goal', resume);
+    assert.equal(result.ok, true); assert.equal(result.resumed, true);
+    for (const key of ['id', 'objective', 'criterion', 'createdAt', 'elapsedMs', 'revision', 'lastRevision'])
+      assert.deepEqual(result.goal[key], original[key], key);
+    assert.equal(result.goal.roundsStarted, original.roundsStarted + 1); assert.equal(result.goal.armed, true);
+    assert.equal(driver.ownedSession(), active.facade); assert.equal(driver.timer, null); assert.equal(h.sent.length, 2);
+    assert.equal(changes.at(-1).goal.phase, 'active'); assert.equal(changes.at(-1).goal.engine, engine);
+    assert.match(active.nativeFallbackPrompt(), /Goal continuation.*Finish the experiment/);
+    assert.equal(JSON.parse(fs.readFileSync(driver.file(), 'utf8')).phase, 'active');
+    const adopted = driver.view();
+    assert.equal(bridge.call('camellia_update_goal', resume).resumed, false); assert.deepEqual(driver.view(), adopted);
+    h.finish(engine, 'success', 'Another step done'); await next.done; await h.flush();
+    assert.ok(driver.timer); driver.cancelTimer(); driver.drive(); await h.flush();
+    assert.equal(h.sent.length, 3); assert.match(h.sent.at(-1).prompt, /Goal continuation.*Finish the experiment/);
+    assert.match(h.sent.at(-1).prompt, /Completion criterion.*The original checks pass/);
+    const continuation = h.manager.active.get(first.sessionId);
+    const report = { run_token: continuation.goalRunToken, status: 'complete', reason: 'Original experiment checks passed' };
+    assert.equal(bridge.call('camellia_update_goal', report).status, 'verification_pending');
+    h.finish(engine, 'success', 'Checked'); await h.flush();
+    assert.ok(driver.view().verifying); assert.match(h.sent.at(-1).prompt, /Goal: Finish the experiment/);
+    assert.match(h.sent.at(-1).prompt, /Completion criterion: The original checks pass/);
+    h.finish(engine, 'success', '<verify:pass> Original experiment independently checked'); await h.flush();
+    assert.equal(driver.view().phase, 'complete');
+  }
+});
+
+test('conversation pause, manual complete and removal acknowledge the result without continuing on every engine', async t => {
+  const instructions = { pause: '先暂停目标，告诉我当前进展。', complete: '请把这个目标标记为完成。', remove: '移除当前目标，保留已有文件和聊天记录。' };
+  for (const engine of ENGINES) for (const action of ['pause', 'complete', 'remove']) for (const steered of [false, true]) {
+    const changes = [], h = fixture(t, { onGoal: event => changes.push(event), createGoalBridge: async options => ({ call: options.call, close() {} }) });
+    const first = await h.manager.send(engine, { prompt: 'Set a goal: finish the experiment' });
+    const bridge = h.sent.at(-1).opts.goalBridge, driver = h.manager.goalFor(first.sessionId);
+    bridge.call('camellia_create_goal', { run_token: h.manager.active.get(first.sessionId).goalRunToken, objective: 'Finish the experiment', criterion: 'Experiment tests pass', user_request: 'Set a goal' });
+    let run = first;
+    if (steered) {
+      h.sent.at(-1).session.steerUserMessage = async () => {};
+      await h.manager.steer(engine, { sessionId: first.sessionId, runId: h.manager.active.get(first.sessionId).facade.gen, prompt: instructions[action] });
+    } else {
+      await h.manager.command(engine, 'goal-pause', { sessionId: first.sessionId }); await first.done;
+      run = await h.manager.send(engine, { sessionId: first.sessionId, prompt: instructions[action] });
+    }
+    const active = h.manager.active.get(first.sessionId), original = driver.view(), count = h.sent.length;
+    const control = { run_token: active.goalRunToken, action, user_request: instructions[action], reason: 'The user requested the goal action' };
+    if (steered) assert.equal(bridge.call('camellia_update_goal', { run_token: active.goalRunToken, status: 'complete', reason: 'Pending claim before control' }).ok, true);
+    const result = bridge.call('camellia_update_goal', control);
+    assert.equal(result.ok, true); assert.equal(driver.armed, false); assert.equal(driver.timer, null);
+    assert.equal(active.goalReport, undefined); assert.equal(Boolean(active.cancelled), false); assert.equal(Boolean(active.finished), false);
+    assert.equal(active.facade.running, true); assert.equal(active.session.running, true); assert.equal(h.manager.active.get(first.sessionId), active);
+    assert.match(active.nativeFallbackPrompt(), /Automatic Goal work has stopped/);
+    assert.doesNotMatch(active.promptSuffix, /Keep working autonomously/);
+    if (action === 'remove') {
+      assert.equal(result.goal, null); assert.equal(changes.at(-1).goal, null); assert.equal(fs.existsSync(driver.file()), false);
+    } else {
+      assert.equal(result.goal.id, original.id); assert.equal(result.goal.criterion, original.criterion);
+      assert.equal(result.goal.roundsStarted, original.roundsStarted); assert.equal(result.goal.verified, null);
+      assert.equal(result.goal.phase, action === 'pause' ? 'paused' : 'complete');
+      assert.equal(changes.at(-1).goal.phase, result.goal.phase);
+    }
+    const stopped = driver.view();
+    assert.equal(bridge.call('camellia_update_goal', control).ok, true); assert.deepEqual(driver.view(), stopped);
+    assert.equal(bridge.call('camellia_update_goal', { run_token: active.goalRunToken, status: 'complete', reason: 'Late claim' }).ok, false);
+    h.finish(engine, 'success', '操作已完成。\n<goal:complete>'); await run.done; await h.flush();
+    assert.equal(h.sent.length, count); assert.equal(driver.timer, null); assert.equal(driver.view()?.phase || null, stopped?.phase || null);
+    assert.ok(h.manager.get(first.sessionId)); assert.match(h.manager.messages(h.manager.get(first.sessionId)).at(-1).text, /操作已完成/);
+    assert.equal(h.restart().goalFor(first.sessionId).view()?.phase || null, stopped?.phase || null);
+  }
+});
+
+test('all conversation goal controls reject stale quotes, automatic turns, children and scheduled checks', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const first = await h.manager.send('codex', { prompt: 'Set a goal: finish' });
+  const bridge = h.sent.at(-1).opts.goalBridge, driver = h.manager.goalFor(first.sessionId);
+  const oldToken = h.manager.active.get(first.sessionId).goalRunToken;
+  bridge.call('camellia_create_goal', { run_token: oldToken, objective: 'Finish', user_request: 'Set a goal' });
+  await h.manager.command('codex', 'goal-pause', { sessionId: first.sessionId }); await first.done;
+  const prompt = '先继续目标，再暂停，标记完成并移除。';
+  const next = await h.manager.send('codex', { sessionId: first.sessionId, prompt });
+  const active = h.manager.active.get(first.sessionId), original = driver.view();
+  for (const action of ['resume', 'pause', 'complete', 'remove']) {
+    const control = { run_token: active.goalRunToken, action, user_request: prompt, reason: 'The user requested the action' };
+    for (const patch of [{ run_token: oldToken }, { user_request: 'Set a goal' }, { user_request: 'fabricated instruction' }])
+      assert.equal(bridge.call('camellia_update_goal', { ...control, ...patch }).ok, false);
+    for (const [target, key, value] of [[active, 'goalContinuation', true], [active, 'scheduledTaskId', 'scheduled-check'], [active.c, 'controlParentId', 'parent']]) {
+      const originalValue = target[key]; target[key] = value;
+      assert.equal(bridge.call('camellia_update_goal', control).ok, false); target[key] = originalValue;
+    }
+    assert.deepEqual(driver.view(), original); assert.equal(driver.timer, null);
+  }
+  h.finish('codex'); await next.done;
+});
+
+test('a paused Goal reply can resume after a newer instruction without counting the same round twice', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const run = await h.manager.send('codex', { prompt: 'Set a goal: finish' });
+  const bridge = h.sent.at(-1).opts.goalBridge, driver = h.manager.goalFor(run.sessionId), active = h.manager.active.get(run.sessionId);
+  bridge.call('camellia_create_goal', { run_token: active.goalRunToken, objective: 'Finish', user_request: 'Set a goal' });
+  h.sent.at(-1).session.steerUserMessage = async () => {};
+  await h.manager.steer('codex', { sessionId: run.sessionId, runId: active.facade.gen, prompt: '先暂停目标' });
+  const pause = { run_token: active.goalRunToken, action: 'pause', user_request: '先暂停目标', reason: 'The user requested a pause' };
+  assert.equal(bridge.call('camellia_update_goal', pause).ok, true); assert.equal(driver.view().phase, 'paused');
+  await h.manager.steer('codex', { sessionId: run.sessionId, runId: active.facade.gen, prompt: '现在可以继续目标了' });
+  assert.equal(bridge.call('camellia_update_goal', pause).ok, false);
+  assert.equal(bridge.call('camellia_update_goal', { ...pause, action: 'resume', user_request: '现在可以继续目标了' }).ok, true);
+  assert.equal(driver.view().roundsStarted, 1); assert.equal(driver.ownedSession(), active.facade); assert.equal(driver.timer, null);
+  h.finish('codex'); await run.done; assert.ok(driver.timer); driver.cancelTimer(); driver.drive(); await h.flush();
+  assert.equal(driver.view().roundsStarted, 2); await h.manager.command('codex', 'goal-pause', { sessionId: run.sessionId });
+});
+
+test('manual completion does not verify work or reopen a completed goal, and removal is idempotent', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const prompt = 'Set a goal: finish; then test marking it complete, pausing, resuming and removing it';
+  const run = await h.manager.send('codex', { prompt });
+  const bridge = h.sent.at(-1).opts.goalBridge, driver = h.manager.goalFor(run.sessionId), active = h.manager.active.get(run.sessionId);
+  const base = { run_token: active.goalRunToken, user_request: prompt, reason: 'The user requested the control sequence' };
+  for (const action of ['resume', 'pause', 'complete']) assert.equal(bridge.call('camellia_update_goal', { ...base, action }).ok, false);
+  assert.equal(bridge.call('camellia_create_goal', { run_token: active.goalRunToken, objective: 'Finish', user_request: prompt }).ok, true);
+  assert.equal(bridge.call('camellia_update_goal', { ...base, action: 'complete' }).ok, true);
+  const completed = driver.view(); assert.equal(completed.verified, null);
+  for (const action of ['pause', 'resume']) assert.equal(bridge.call('camellia_update_goal', { ...base, action }).ok, false);
+  assert.deepEqual(driver.view(), completed);
+  assert.equal(bridge.call('camellia_update_goal', { ...base, action: 'remove' }).ok, true);
+  assert.equal(bridge.call('camellia_update_goal', { ...base, action: 'remove' }).ok, true);
+  assert.equal(driver.view(), null); h.finish('codex'); await run.done; assert.equal(driver.timer, null);
+});
+
+test('resumed user turns can report completion directly without duplicate adoption clearing the report', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const run = await h.manager.send('codex', { prompt: 'Set a goal: finish' });
+  const bridge = h.sent.at(-1).opts.goalBridge, driver = h.manager.goalFor(run.sessionId);
+  bridge.call('camellia_create_goal', { run_token: h.manager.active.get(run.sessionId).goalRunToken, objective: 'Finish', user_request: 'Set a goal' });
+  await h.manager.command('codex', 'goal-pause', { sessionId: run.sessionId }); await run.done;
+  const next = await h.manager.send('codex', { sessionId: run.sessionId, prompt: 'Please resume the existing goal' });
+  const active = h.manager.active.get(run.sessionId);
+  const resume = { run_token: active.goalRunToken, action: 'resume', reason: 'The user asked to resume', user_request: 'Please resume the existing goal' };
+  assert.equal(bridge.call('camellia_update_goal', resume).ok, true);
+  const report = { run_token: active.goalRunToken, status: 'complete', reason: 'The original work is verified' };
+  assert.equal(bridge.call('camellia_update_goal', report).status, 'verification_pending');
+  assert.equal(bridge.call('camellia_update_goal', resume).resumed, false);
+  assert.deepEqual(active.goalReport, { status: report.status, reason: report.reason });
+  h.finish('codex'); await next.done; await h.flush(); assert.ok(driver.view().verifying);
+  h.finish('codex', 'success', '<verify:pass> Verified'); await h.flush(); assert.equal(driver.view().phase, 'complete');
+});
+
+test('goal resume requires current user provenance and rejects automatic, child and scheduled turns', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const first = await h.manager.send('codex', { prompt: 'Set a goal: finish' });
+  const bridge = h.sent.at(-1).opts.goalBridge, driver = h.manager.goalFor(first.sessionId);
+  const firstToken = h.manager.active.get(first.sessionId).goalRunToken;
+  const base = { action: 'resume', reason: 'The user asked to continue', user_request: '继续目标' };
+  assert.equal(bridge.call('camellia_update_goal', { ...base, run_token: firstToken, user_request: 'Set a goal' }).ok, false);
+  bridge.call('camellia_create_goal', { run_token: firstToken, objective: 'Finish', user_request: 'Set a goal' });
+  await h.manager.command('codex', 'goal-pause', { sessionId: first.sessionId }); await first.done;
+  const next = await h.manager.send('codex', { sessionId: first.sessionId, prompt: '继续目标' });
+  const active = h.manager.active.get(first.sessionId), resume = { ...base, run_token: active.goalRunToken };
+  for (const patch of [{ run_token: firstToken }, { user_request: 'Set a goal' }, { user_request: 'Resume another goal' }])
+    assert.equal(bridge.call('camellia_update_goal', { ...resume, ...patch }).ok, false);
+  active.scheduledTaskId = 'scheduled-check';
+  assert.equal(bridge.call('camellia_update_goal', resume).ok, false); delete active.scheduledTaskId;
+  active.c.controlParentId = 'parent';
+  assert.equal(bridge.call('camellia_update_goal', resume).ok, false); delete active.c.controlParentId;
+  active.goalContinuation = true;
+  assert.equal(bridge.call('camellia_update_goal', resume).ok, false); active.goalContinuation = false;
+  assert.equal(driver.view().phase, 'paused'); assert.equal(driver.armed, false); assert.equal(driver.timer, null);
+  assert.equal(bridge.call('camellia_update_goal', resume).ok, true);
+  h.finish('codex'); await next.done; driver.cancelTimer(); driver.drive(); await h.flush();
+  const continuation = h.manager.active.get(first.sessionId);
+  assert.equal(bridge.call('camellia_update_goal', { ...resume, run_token: continuation.goalRunToken, user_request: continuation.prompt }).ok, false);
+  await h.manager.command('codex', 'goal-pause', { sessionId: first.sessionId }); await h.flush();
+  const last = await h.manager.send('codex', { sessionId: first.sessionId, prompt: '继续目标' });
+  const lastToken = h.manager.active.get(first.sessionId).goalRunToken; driver.setPhase('complete');
+  assert.equal(bridge.call('camellia_update_goal', { ...base, run_token: lastToken }).ok, false);
+  h.finish('codex'); await last.done;
+});
+
+test('a steered resume uses the latest instruction and binds future goal rounds to the current engine', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ call: options.call, close() {} }) });
+  const first = await h.manager.send('claude', { prompt: 'Set a goal: finish' });
+  const bridge = h.sent.at(-1).opts.goalBridge, driver = h.manager.goalFor(first.sessionId);
+  bridge.call('camellia_create_goal', { run_token: h.manager.active.get(first.sessionId).goalRunToken, objective: 'Finish', user_request: 'Set a goal' });
+  await h.manager.command('claude', 'goal-pause', { sessionId: first.sessionId }); await first.done;
+  const next = await h.manager.send('codex', { sessionId: first.sessionId, prompt: '继续目标' });
+  const active = h.manager.active.get(first.sessionId), resume = { run_token: active.goalRunToken, action: 'resume', user_request: '继续目标', reason: 'Continue the original goal' };
+  h.sent.at(-1).session.steerUserMessage = async () => {};
+  await h.manager.steer('codex', { sessionId: first.sessionId, runId: active.facade.gen, prompt: '先检查当前结果' });
+  assert.equal(bridge.call('camellia_update_goal', resume).ok, false);
+  const correction = '检查完了，请继续完成原目标';
+  await h.manager.steer('codex', { sessionId: first.sessionId, runId: active.facade.gen, prompt: correction });
+  assert.equal(bridge.call('camellia_update_goal', { ...resume, user_request: correction }).ok, true);
+  assert.equal(driver.view().engine, 'codex'); assert.match(active.nativeFallbackPrompt(), /检查完了，请继续完成原目标/);
+  h.finish('codex'); await next.done; driver.cancelTimer(); driver.drive(); await h.flush();
+  assert.equal(h.sent.at(-1).engine, 'codex'); assert.match(h.sent.at(-1).prompt, /Goal continuation.*Finish/);
+  await h.manager.command('codex', 'goal-pause', { sessionId: first.sessionId }); await h.flush();
+});
+
 test('goal revisions follow user steering, retain the run and verify the latest scope on every engine', async t => {
   for (const engine of ENGINES) {
     const changes = [], h = fixture(t, { onGoal: event => changes.push(event), createGoalBridge: async options => ({ call: options.call, close() {} }) });

@@ -139,31 +139,40 @@ class ClaudeGoal {
     return { ok: true, updated: true, goal: this.view() };
   }
 
-  setPhase(phase) {
+  setPhase(phase, { interrupt = true } = {}) {
     if (!this.goal) return { ok: false, error: "No current goal" };
     const session = this.ownedSession();
     this.armed = false;
     this.cancelTimer();
     this.cancelVerification();
     const saved = this.touch({ ...this.stoppedClock(), phase, blockedReason: null, verifying: null });
-    if (saved) this.interrupt(session);
+    if (saved && interrupt) this.interrupt(session);
     return { ok: saved, goal: this.view(), ...(!saved ? { error: this.storageError.message } : {}) };
   }
 
-  resume() {
+  resume({ adoptSession, engine } = {}) {
     if (!this.goal) return { ok: false, error: "No current goal" };
     if (this.goal.phase === 'complete') return { ok: false, error: "This goal is already complete. Start a new goal to do more work." };
-    if (this.getSession()?.running) return { ok: false, error: "Wait for the response to finish or stop it before resuming the goal" };
-    if (this.armed) return { ok: true, goal: this.view() };
+    if (adoptSession && (this.getSession() !== adoptSession || !adoptSession.running)) return { ok: false, error: 'The current turn is no longer available' };
+    if (this.getSession()?.running && !adoptSession) return { ok: false, error: "Wait for the response to finish or stop it before resuming the goal" };
+    if (this.armed) {
+      if (adoptSession && this.ownedSession() !== adoptSession) return { ok: false, error: 'Another turn owns the active goal' };
+      return { ok: true, resumed: false, goal: this.view() };
+    }
+    this.cancelTimer();
     this.cancelVerification();
+    const alreadyCounted = adoptSession && this.ownedSession() === adoptSession;
     this.armed = true;
-    if (!this.touch({ phase: 'active', activeSince: this.now(), blockedReason: null, errorStreak: 0, lastErrorSubtype: null, blockerStreak: 0, lastBlocker: null, verifyStreak: 0, lastVerify: null, verifying: null }))
+    this.owner = adoptSession ? { goalId: this.goal.id, gen: adoptSession.gen } : null;
+    if (!this.touch({ phase: 'active', activeSince: this.now(), roundsStarted: this.goal.roundsStarted + (adoptSession && !alreadyCounted ? 1 : 0),
+      ...(adoptSession && engine ? { engine } : {}), blockedReason: null, errorStreak: 0, lastErrorSubtype: null,
+      blockerStreak: 0, lastBlocker: null, verifyStreak: 0, lastVerify: null, verifying: null }))
       return { ok: false, goal: this.view(), error: this.storageError.message };
-    this.schedule(100);
-    return { ok: true, goal: this.view() };
+    if (!adoptSession) this.schedule(100);
+    return { ok: true, resumed: true, goal: this.view() };
   }
 
-  clear() {
+  clear({ interrupt = true } = {}) {
     const session = this.ownedSession();
     const previous = this.goal;
     this.goal = null;
@@ -173,7 +182,7 @@ class ClaudeGoal {
     this.cancelVerification();
     const saved = this.publish();
     if (!saved) { this.goal = previous; this.storageFailure(); }
-    this.interrupt(session);
+    if (interrupt || !saved) this.interrupt(session);
     return { ok: saved, goal: this.view(), ...(!saved ? { error: this.storageError.message } : {}) };
   }
 

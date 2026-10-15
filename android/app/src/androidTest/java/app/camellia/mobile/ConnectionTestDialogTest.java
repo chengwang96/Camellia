@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 public class ConnectionTestDialogTest extends InstrumentationTestCase {
     private static final String TOKEN = "a".repeat(43), ID = "12345678-1234-1234-1234-123456789abc";
@@ -50,9 +51,11 @@ public class ConnectionTestDialogTest extends InstrumentationTestCase {
             var method = MainActivity.class.getDeclaredMethod("computersScreen"); method.setAccessible(true); method.invoke(activity);
             field("credentials", owner); field("foreground", false);
         });
+        waitForActivityState("The test activity must be in the foreground", () -> activity.hasWindowFocus() && !activity.isFinishing() && !activity.isDestroyed());
     }
     @Override protected void tearDown() throws Exception {
         ui(() -> { if (test != null) test.close(); if (!activity.isDestroyed()) activity.finish(); });
+        waitForActivityState("The test activity must finish before the next test starts", activity::isDestroyed);
         getInstrumentation().waitForIdleSync(); EmbeddedNetwork.setEnabled(oldEmbedded).get(5, TimeUnit.SECONDS); super.tearDown();
     }
 
@@ -102,6 +105,7 @@ public class ConnectionTestDialogTest extends InstrumentationTestCase {
     public void testActivityStopCancelsItsTestAndDoesNotLeaveAResultPopup() throws Exception {
         Transport transport = new Transport(1); show(transport, ConnectionStabilityCheck.DEFAULT);
         assertTrue(transport.entered.await(3, TimeUnit.SECONDS)); ui(() -> activity.finish());
+        waitForActivityState("Finishing the activity must deliver its stop and destroy callbacks", activity::isDestroyed);
         assertTrue(transport.cleaned.await(3, TimeUnit.SECONDS)); getInstrumentation().waitForIdleSync();
         ui(() -> { assertFalse(dialog.isShowing()); assertEquals(1, transport.closes.get()); });
     }
@@ -205,6 +209,18 @@ public class ConnectionTestDialogTest extends InstrumentationTestCase {
         ui(() -> { test = new ConnectionTestDialog(activity, computer(), true, () -> transport, config); field("connectionTest", test); dialog = test.show(); });
     }
     private View view(String tag) { return dialog.getWindow().getDecorView().findViewWithTag(tag); }
+    private void waitForActivityState(String message, BooleanSupplier condition) throws Exception {
+        // Main-thread idleness does not mean an activity transition has completed.
+        // Wait for its lifecycle before opening a probe or starting another test.
+        long deadline = android.os.SystemClock.elapsedRealtime() + 10000;
+        AtomicBoolean ready = new AtomicBoolean();
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            ui(() -> ready.set(condition.getAsBoolean()));
+            if (ready.get()) return;
+            Thread.sleep(40);
+        }
+        fail(message);
+    }
     private void waitForReport() throws Exception {
         waitForReport(5000);
     }
@@ -239,7 +255,10 @@ public class ConnectionTestDialogTest extends InstrumentationTestCase {
             }
             Thread.sleep(40);
         }
-        fail("Connection test did not produce its result");
+        ui(() -> fail("Connection test did not produce its result: showing=" + dialog.isShowing()
+            + ", activityFinishing=" + activity.isFinishing() + ", activityDestroyed=" + activity.isDestroyed()
+            + ", reportVisibility=" + view("connectionTestReport").getVisibility()
+            + ", reportLayoutPending=" + view("connectionTestReport").isLayoutRequested()));
     }
     private Object field(String name) throws Exception { var member = MainActivity.class.getDeclaredField(name); member.setAccessible(true); return member.get(activity); }
     private void field(String name, Object value) throws Exception { var member = MainActivity.class.getDeclaredField(name); member.setAccessible(true); member.set(activity, value); }
