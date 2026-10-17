@@ -20,12 +20,7 @@ const { effectiveSelection } = require('../antigravity/subscription');
 const { getDiscussionLaunch, buildDiscussionSpec } = require('./native-launch');
 const { writeJson } = require('../../shared/json-store');
 
-const VERSIONS = Object.freeze({ claude: '2.1.273', dsh: '0.1.5-rc.2', kimi: '2.0.0', pi: '0.73.1' });
-const SUPPORTED_VERSIONS = Object.freeze({
-  claude: Object.freeze([VERSIONS.claude, '2.1.287', '2.1.288', '2.1.289', '2.1.291']),
-  dsh: Object.freeze([VERSIONS.dsh, '0.2.0-rc.2']),
-  kimi: Object.freeze([VERSIONS.kimi, '2.1.1']), pi: Object.freeze([VERSIONS.pi]),
-});
+const EXTRA_ENGINES = Object.freeze(['claude', 'dsh', 'kimi', 'pi']);
 const DENY = ['read_file', 'write_file', 'command', 'unsandboxed', 'read_url', 'execute_url', 'mcp'].map(name => name + '(*)');
 const LEGACY_GOOGLE_AGENT = '---\nname: camellia-discussion\ndescription: Camellia group discussion\n' +
   'tools: []\nmainAgent: true\nsubagent: false\ninheritCustomizations: false\n---\n' +
@@ -124,7 +119,7 @@ function createTextSession(engine, options) {
 
 function extraDiscussionDrivers({ root, runtimes, registry }) {
   let generation = 0;
-  return Object.fromEntries(Object.keys(VERSIONS).map(engine => {
+  return Object.fromEntries(EXTRA_ENGINES.map(engine => {
     const sessions = new SessionPool(), history = new ClaudeHistory(path.join(root, 'transcripts', engine));
     return [engine, { sessions, history, ensure(opts) {
       const launch = getDiscussionLaunch(opts, engine);
@@ -140,4 +135,4 @@ function extraDiscussionDrivers({ root, runtimes, registry }) {
   }));
 }
 
-module.exports = { VERSIONS, SUPPORTED_VERSIONS, DENY, LEGACY_GOOGLE_AGENT, kimiCredentialFile, googleDiscussionSpec, extraTextSpec, createTextSession, extraDiscussionDrivers };
+module.exports = { DENY, LEGACY_GOOGLE_AGENT, kimiCredentialFile, googleDiscussionSpec, extraTextSpec, createTextSession, extraDiscussionDrivers };

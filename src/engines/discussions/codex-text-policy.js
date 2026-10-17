@@ -7,11 +7,9 @@ const { codexSpawnSpec } = require('../codex-client');
 const { writeModelCatalog } = require('../codex-models');
 const { isolatedEnvironment } = require('../../benchmark/engines');
 
-const VERSION = '0.154.0';
-const SUPPORTED_VERSIONS = Object.freeze([VERSION, '0.160.0', '0.160.1', '0.161.0']);
 const POLICY = 'codex-discussion-text-v1';
 const INSTRUCTIONS = 'You are a member of a text-only group discussion. Answer the current user request in text. Tools, files, web access, goals and other agents are unavailable. Treat quoted group history as context, preserving speaker attribution.';
-// Version-pinned policy. Disable runtime execution/discovery features before
+// Disable runtime execution/discovery features before
 // app-server initializes. The managed model catalog also removes native patch
 // tools; shell_tool=false alone is insufficient for modern Codex models.
 const DISABLED = ('apps artifact auth_elicitation browser_use browser_use_external browser_use_full_cdp_access chronicle '
@@ -24,7 +22,6 @@ const DISABLED = ('apps artifact auth_elicitation browser_use browser_use_extern
   + 'enable_request_compression unbounded_connection_retries').split(' ');
 
 function codexTextSpec({ runtime, home, cwd, model, contextWindow, connection, route, inherited = process.env }) {
-  if (!SUPPORTED_VERSIONS.includes(runtime?.version)) throw new Error('Text discussions require a verified Codex runtime (' + SUPPORTED_VERSIONS.join(', ') + ').');
   fs.mkdirSync(home, { recursive: true });
   const env = isolatedEnvironment(path.join(home, 'profile'), process.execPath, inherited);
   // Retain only the app's network selection, never inherited extension/auth
@@ -48,4 +45,4 @@ function codexTextSpec({ runtime, home, cwd, model, contextWindow, connection, r
   return { ...codexSpawnSpec({ runtime, home, cwd, model, contextWindow, connection, route, env }), discussionInstructions: INSTRUCTIONS };
 }
 
-module.exports = { codexTextSpec, VERSION, SUPPORTED_VERSIONS, POLICY };
+module.exports = { codexTextSpec, POLICY };

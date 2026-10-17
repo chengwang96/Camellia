@@ -130,9 +130,9 @@
       <div class="ws-field"><label for="memberName" data-i18n>Member name</label><input id="memberName" maxlength="80" required autocomplete="off"></div>
       <div class="ws-field"><label for="memberIdentityPrompt" data-i18n>Identity prompt (optional)</label><textarea id="memberIdentityPrompt" rows="3" maxlength="4096" placeholder="For example: You are a scientist. Examine the evidence and explain uncertainties." data-i18n-attrs="placeholder" aria-describedby="memberIdentityHint"></textarea></div>
       <p id="memberIdentityHint" class="dialog-note" data-i18n>Describe this member's role, expertise, or response style. Leave blank to use the default identity.</p>
-      <p id="bindingStatus" class="dialog-note"></p>
+      <p id="bindingStatus" class="dialog-note" role="status" aria-live="polite"></p>
       <button id="verifyBinding" type="button" class="btn-secondary" hidden data-i18n>Verify connection</button>
-      <div class="dialog-actions"><button id="refreshModels" type="button" class="btn-secondary" data-i18n>Refresh models</button><button type="button" data-close="memberDialog" class="btn-secondary" data-i18n>Cancel</button><button id="saveMember" class="btn-primary" type="submit" data-i18n>Add member</button></div>
+      <div class="dialog-actions"><button id="refreshModels" type="button" class="btn-secondary" data-i18n>Refresh models</button><button type="button" data-close="memberDialog" class="btn-secondary" data-i18n>Cancel</button><button id="installRuntime" type="button" class="btn-primary" hidden data-i18n>Install Harness</button><button id="saveMember" class="btn-primary" type="submit" data-i18n>Add member</button></div>
     </form>
   </dialog>
   <dialog id="identityDialog" class="switch-dialog discussion-dialog" aria-labelledby="identityTitle">

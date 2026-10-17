@@ -2,26 +2,35 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
-const { codexTextSpec, VERSION, SUPPORTED_VERSIONS: CODEX_VERSIONS } = require('./codex-text-policy');
+const { codexTextSpec } = require('./codex-text-policy');
 const { antigravitySpawnSpec } = require('../antigravity');
-const { SUPPORTED_CLI_VERSIONS } = require('../../main/antigravity-cli-runtime');
-const { SUPPORTED_SDK_VERSIONS } = require('../../main/python-runtime');
 const { isolatedEnvironment } = require('../../benchmark/engines');
 const { readAntigravityNativeInventory } = require('./antigravity-history-inventory');
 const { ClaudeHistory } = require('../claude-history');
 const { accountHome } = require('../subscription-accounts');
 const { processJobs, SUPPORTED_PLATFORMS } = require('./process-jobs');
 const { WindowsJobJournal } = require('./windows-job-journal');
-const { bindingFingerprint } = require('./capabilities');
+const { CONNECTIONS, bindingFingerprint } = require('./capabilities');
 const { readCodexNativeHistories } = require('./codex-history-inventory');
 const { readJson, writeJson } = require('../../shared/json-store');
-const { VERSIONS, SUPPORTED_VERSIONS, kimiCredentialFile, googleDiscussionSpec, extraTextSpec, createTextSession, extraDiscussionDrivers } = require('./text-runtimes');
+const { kimiCredentialFile, googleDiscussionSpec, extraTextSpec, createTextSession, extraDiscussionDrivers } = require('./text-runtimes');
 const { nativeToolSpec } = require('./tool-runtimes');
 
 const UUID = /^[0-9a-f-]{36}$/;
 const VERIFY_NOTICE = 'Verify this connection with two short messages for this app session. This uses model quota.';
+const RUNTIME_CHANGED = 'The harness runtime changed during verification. Refresh models and try again.';
+function runtimeIdentity(runtime) {
+  if (!runtime) return null;
+  let stamp = null;
+  if (runtime.file) {
+    try { const stat = fs.statSync(runtime.file); stamp = [stat.size, stat.mtimeMs, stat.ctimeMs]; }
+    catch { /* discovery and launch also check whether the executable exists */ }
+  }
+  return { version: runtime.version || 'unknown', file: runtime.file || null,
+    dir: runtime.dir || null, packages: runtime.packages || null, stamp };
+}
 function managedDir(root, ...parts) {
   const dir = path.resolve(root, ...parts), relative = path.relative(root, dir);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Invalid discussion storage path');
@@ -115,29 +124,44 @@ class DiscussionProduction {
     });
   }
   runtimeInfo(binding) {
-    return { version: binding.engine === 'codex' ? this.runtimes().locate('codex', binding.connection)?.version || VERSION : binding.engine === 'antigravity'
-      ? 'sdk:' + (this.runtimes().locate('antigravity', 'api')?.version || '0.1.17') + '/cli:' + (this.runtimes().locate('antigravity', 'subscription')?.version || '1.2.3')
-        : this.runtimes().locate(binding.engine, binding.connection)?.version || VERSIONS[binding.engine],
+    const manager = this.runtimes();
+    // An adapter serves every connection of its engine. Keep the same identity
+    // for API/subscription callers and include missing installations explicitly.
+    const installed = (CONNECTIONS[binding.engine] || []).map(connection => {
+      try { return runtimeIdentity(manager.locate(binding.engine, connection)); }
+      catch { return null; }
+    });
+    return { version: binding.engine === 'antigravity'
+      ? 'sdk:' + (installed[0]?.version || 'unavailable') + '/cli:' + (installed[1]?.version || 'unavailable')
+      : installed[0]?.version || 'unavailable',
+      fingerprint: createHash('sha256').update(JSON.stringify(installed)).digest('hex'),
       policyVersion: binding.engine + (binding.engine === 'antigravity' ? '-discussion-interactive-v2' : '-discussion-tools-v1') };
-  }
-  expectedVersion(binding) {
-    const supported = binding.engine === 'codex' ? CODEX_VERSIONS : binding.engine === 'antigravity' ? binding.connection === 'subscription' ? SUPPORTED_CLI_VERSIONS : SUPPORTED_SDK_VERSIONS
-      : SUPPORTED_VERSIONS[binding.engine] || [];
-    const installed = this.runtimes().locate(binding.engine, binding.connection)?.version;
-    return supported.find(version => version === installed) || supported[0];
   }
   mode(binding) {
     return 'native-tools';
   }
   canVerify(binding) {
-    return Boolean(this.registry.get(binding.engine)) && (binding.connection === 'api' || ['codex', 'kimi', 'antigravity'].includes(binding.engine))
-      && this.runtimes().locate(binding.engine, binding.connection)?.version === this.expectedVersion(binding);
+    if (!CONNECTIONS[binding.engine]?.includes(binding.connection) || !this.registry.get(binding.engine)) return false;
+    try { return Boolean(this.runtimes().locate(binding.engine, binding.connection)); }
+    catch { return false; }
+  }
+  canInstall(binding) {
+    if (!CONNECTIONS[binding.engine]?.includes(binding.connection) || !this.registry.get(binding.engine)) return false;
+    try { return !this.runtimes().locate(binding.engine, binding.connection); }
+    catch { return false; }
+  }
+  runtimeAvailability() {
+    return Object.entries(CONNECTIONS).flatMap(([engine, connections]) => connections.map(connection => {
+      const binding = { engine, connection };
+      return { ...binding, canInstall: this.canInstall(binding) };
+    }));
   }
   refresh() {
     if (!SUPPORTED_PLATFORMS.includes(this.platform || process.platform)) return;
     for (const [engine, driver] of Object.entries({ codex: this.codex, antigravity: this.antigravity, ...this.extraDrivers })) {
       const info = this.runtimeInfo({ engine });
-      if (!driver || this.registry.get(engine)) continue;
+      if (!driver) continue;
+      if (this.registry.get(engine)) { this.registry.updateRuntime(engine, info); continue; }
       this.registry.register({ engine, driver: { ...driver, ensure: driver.ensureSession || driver.ensure }, runtime: info, policy: {
         prepare: input => this.prepare(input), verify: input => this.verifySession(input),
         confirmStopped: input => this.confirmStopped(input),
@@ -145,10 +169,10 @@ class DiscussionProduction {
     }
   }
   reason(binding) {
-    const runtime = this.runtimes().locate(binding.engine, binding.connection);
+    let runtime;
+    try { runtime = this.runtimes().locate(binding.engine, binding.connection); }
+    catch (error) { return error.message; }
     if (!runtime) return 'No harness runtime was found. Install it or set its executable path in Settings, then refresh models.';
-    if (runtime.version !== this.expectedVersion(binding))
-      return 'The installed harness runtime version is not supported for discussions. Update Camellia or select a supported executable in Settings, then refresh models.';
     return VERIFY_NOTICE;
   }
   async current(profile) {
@@ -162,9 +186,10 @@ class DiscussionProduction {
     record.preparation = (async () => {
       if (this.closing || signal?.aborted) throw new Error('Discussion cancelled');
       await this.current(profile);
+      this.refresh();
       if (!this.canVerify(profile)) throw new Error(this.reason(profile));
       const runtime = this.runtimes().locate(profile.engine, profile.connection);
-      if (runtime?.version !== this.expectedVersion(profile)) throw new Error(this.reason(profile));
+      const info = this.runtimeInfo(profile);
       const home = managedDir(this.root, profile.engine === 'codex' ? 'native' : 'native-' + profile.engine, identity.runtimeId);
       record.home = home; record.profile = profile;
       const expectedWork = path.relative(path.join(this.root, 'work'), cwd);
@@ -239,7 +264,8 @@ class DiscussionProduction {
       spec.env.CAMELLIA_DISCUSSION_HOME = home;
       record.settings = settings;
       return { settings, launch: { spawn: record.job.spawn, buildSpec: ({ runtime: actual }) => {
-        if (actual.file !== runtime.file || actual.version !== runtime.version) throw new Error('Discussion runtime changed');
+        if (!actual || actual.file !== runtime.file || actual.version !== runtime.version
+          || !isDeepStrictEqual(info, this.runtimeInfo(profile))) throw new Error('Discussion runtime changed');
         return spec;
       } } };
     })();
@@ -287,6 +313,8 @@ class DiscussionProduction {
   }
   async check(profile, signal) {
     profile = await this.current(profile);
+    const info = this.runtimeInfo(profile);
+    const assertRuntime = () => { if (!isDeepStrictEqual(info, this.runtimeInfo(profile))) throw new Error(RUNTIME_CHANGED); };
     const runtimeId = randomUUID(), cwd = managedDir(this.root, 'work', runtimeId);
     const code = 'DISCUSSION_' + randomUUID().replaceAll('-', '').slice(0, 12);
     let nativeId = null, supportsImages = ['claude', 'codex', 'pi'].includes(profile.engine);
@@ -294,6 +322,7 @@ class DiscussionProduction {
       const identity = { runtimeId, deliveryId: randomUUID(), generation: 1 };
       let session, timer;
       try {
+        assertRuntime();
         const prepared = await this.prepare({ identity, profile, cwd, signal, verification: true });
         const spec = prepared.launch.buildSpec({ runtime: this.runtimes().locate(profile.engine, profile.connection) });
         let resolve, reject;
@@ -325,11 +354,13 @@ class DiscussionProduction {
           if (reply.subtype !== 'success' || !String(reply.result).includes(code)) throw new Error(reply.result || 'Connection verification did not preserve the previous message.');
         } finally { signal.removeEventListener('abort', abort); }
       } finally { clearTimeout(timer); try { await session?.shutdown(); } finally { await this.confirmStopped({ identity }); } }
+      assertRuntime();
     }
     await this.current(profile);
-    const info = this.runtimeInfo(profile);
+    assertRuntime();
+    this.refresh();
     this.registry.admit(profile, { kind: 'real', reference: 'online-two-turns/' + new Date().toISOString(), bindingFingerprint: bindingFingerprint(profile),
-      runtimeVersion: info.version, policyVersion: info.policyVersion, mode: this.mode(profile), supportsImages, checks: Object.fromEntries([
+      runtimeVersion: info.version, runtimeFingerprint: info.fingerprint, policyVersion: info.policyVersion, mode: this.mode(profile), supportsImages, checks: Object.fromEntries([
         'isolatedSession', 'pinnedBinding', 'continuation', 'stopConfirmed', 'permissionsRouted', 'workspaceQueue'].map(key => [key, true])) });
   }
   cancel(key) { this.checks.get(key)?.controller.abort(); }

@@ -47,7 +47,8 @@ class DiscussionService {
     const adapter = this.registry ? this.registry.get(binding.engine) : this.adapters[binding.engine];
     const value = evaluateCapability(binding, adapter?.runtime, adapter?.evidence?.(binding));
     return !value.available && this.production ? { ...value, detail: this.production.reason(binding),
-      canVerify: this.production.canVerify(binding), supported: this.production.canVerify(binding) } : value;
+      canVerify: this.production.canVerify(binding), supported: this.production.canVerify(binding),
+      canInstall: this.production.canInstall?.(binding) === true } : value;
   }
   async catalog() {
     this.production?.refresh();
@@ -166,7 +167,7 @@ class DiscussionService {
     input(payload);
     authorize();
     if (!['win32', 'darwin'].includes(this.platform)) throw new Error('Agent discussions are currently available on Windows and macOS desktop.');
-    if (action === 'catalog') return { bindings: await this.catalog() };
+    if (action === 'catalog') return { bindings: await this.catalog(), runtimes: this.production?.runtimeAvailability?.() || [] };
     if (action === 'cancel-verification') { this.production?.cancel(payload.bindingId); return {}; }
     if (action === 'verify-binding') {
       const row = (await this.catalog()).find(row => row.id === payload.bindingId);

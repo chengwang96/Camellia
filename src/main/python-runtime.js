@@ -11,7 +11,6 @@ const { writeJson } = require('../shared/json-store');
 // and one found on PATH are judged by exactly the same rules.
 const PYTHON_PROBE = 'import sys, json; print(json.dumps({"python": "%d.%d.%d" % sys.version_info[:3]}))';
 const SDK_PROBE = 'import google.antigravity';
-const SUPPORTED_SDK_VERSIONS = Object.freeze(['0.1.17', '0.1.20']);
 
 function parsePythonVersion(output) {
   try { return JSON.parse(String(output || '').trim().split(/\r?\n/).pop())?.python || null; }
@@ -203,5 +202,5 @@ function globalPythonEnvironment(python, env = process.env) {
   return python.antigravitySdk ? { ...value, PYTHONPATH: undefined } : { ...value, PYTHONPATH: python.packages };
 }
 
-module.exports = { locatePythonRuntime, installPythonRuntime, upgradePythonRuntime, pythonEnvironment, SUPPORTED_SDK_VERSIONS,
+module.exports = { locatePythonRuntime, installPythonRuntime, upgradePythonRuntime, pythonEnvironment,
   globalPythonEnvironment, detectSystemPython, sharedPythonSupportsSdk, pythonCandidates };

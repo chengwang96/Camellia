@@ -29,7 +29,8 @@ function evaluateCapability(binding, runtime, evidence = null) {
   if (!runtime?.version || !runtime.policyVersion) return denied('unknown-runtime-policy');
   if (!evidence || evidence.kind !== 'real' || !evidence.reference) return denied('unverified-connection');
   if (evidence.bindingFingerprint !== bindingFingerprint(binding)
-    || evidence.runtimeVersion !== runtime.version || evidence.policyVersion !== runtime.policyVersion) return denied('evidence-mismatch');
+    || evidence.runtimeVersion !== runtime.version || evidence.policyVersion !== runtime.policyVersion
+    || runtime.fingerprint && evidence.runtimeFingerprint !== runtime.fingerprint) return denied('evidence-mismatch');
   if (!['tool-free', 'workspace-read-only', 'native-tools'].includes(evidence.mode)) return denied('unverified-execution-mode');
   if (evidence.mode === 'native-tools') {
     if (['isolatedSession', 'pinnedBinding', 'continuation', 'stopConfirmed', 'permissionsRouted', 'workspaceQueue']
@@ -43,4 +44,4 @@ function evaluateCapability(binding, runtime, evidence = null) {
   return { available: true, mode: evidence.mode, reason: null, evidenceRef: evidence.reference };
 }
 
-module.exports = { bindingFingerprint, evaluateCapability };
+module.exports = { CONNECTIONS, bindingFingerprint, evaluateCapability };

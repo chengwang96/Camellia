@@ -15,10 +15,12 @@ const t = text => window.CamelliaI18n.t(text);
 const navigation = window.CamelliaWorkbenchNavigation;
 $('discussionNavigation').replaceChildren(navigation.section({ key: 'discussions', title: 'Agent discussions (beta)', content: $('groupList'), add: newGroup, addId: 'newGroup' }));
 let conversationNavigation, navigationRequest = 0, pendingNavigationIntent, navigating = false;
-let groups = [], group = null, bindings = [], selected = new Set(), sending = false, loading = 0, refreshTimer;
+let groups = [], group = null, bindings = [], runtimeOptions = [], selected = new Set(), sending = false, loading = 0, refreshTimer;
 const verifyingMembers = new Set();
 const verificationErrors = new Map();
 let verifyingBinding = null;
+let installingRuntime = null, runtimeRefreshTimer;
+const harnessLabels = new Map([...$('engine').options].map(option => [option.value, option.textContent]));
 let selectedProvider = '';
 let identityTarget = null, identitySaving = false, identityReturnFocus = null;
 let attachments = [];
@@ -377,12 +379,32 @@ async function mutate(action, payload, throwError = false) {
     if (result.groups) groups = result.groups; render();
   } catch (err) { error(err); if (throwError) throw err; }
 }
-async function catalog() { bindings = (await call('catalog')).bindings; renderProviders(); }
+async function catalog({ preserveDraft = true, requireBinding } = {}) {
+  const result = await call('catalog');
+  const previous = $('binding').value, name = $('memberName').value;
+  bindings = result.bindings;
+  runtimeOptions = result.runtimes || [];
+  renderProviders();
+  if (requireBinding && !bindings.some(row => row.id === requireBinding)) {
+    $('binding').value = ''; bindingChanged();
+    $('bindingStatus').textContent = t('This model or account changed. Refresh models and add the member again.');
+  }
+  if (preserveDraft && (previous === $('binding').value || requireBinding)) $('memberName').value = name;
+}
 function matchingBindings() { return bindings.filter(row => row.binding.engine === $('engine').value && row.binding.connection === $('connection').value); }
+function canInstallRuntime(engine = $('engine').value, connection = $('connection').value) {
+  return runtimeOptions.find(row => row.engine === engine && row.connection === connection)?.canInstall
+    ?? bindings.some(row => row.binding.engine === engine && row.binding.connection === connection && row.capability.canInstall);
+}
 function renderProviders() {
   const subscription = $('connection').querySelector('option[value="subscription"]');
   subscription.hidden = subscription.disabled = !['codex', 'kimi', 'antigravity'].includes($('engine').value);
   if (subscription.disabled && $('connection').value === 'subscription') $('connection').value = 'api';
+  for (const option of $('engine').options) {
+    const connection = ['codex', 'kimi', 'antigravity'].includes(option.value) ? $('connection').value : 'api';
+    const missing = canInstallRuntime(option.value, connection);
+    option.textContent = harnessLabels.get(option.value) + (missing ? ' · ' + t('Not installed') : '');
+  }
   const api = $('connection').value === 'api', previous = $('provider').value || selectedProvider;
   $('bindingLabel').textContent = t(api ? 'Model and provider' : 'Model and account');
   $('providerField').hidden = !api; $('providerHint').hidden = !api;
@@ -406,11 +428,29 @@ function renderBindings() {
 function bindingChanged() {
   const row = bindings.find(row => row.id === $('binding').value);
   $('memberName').value = row?.label || '';
-  $('bindingStatus').textContent = !row ? t('Add an API route or sign in to a subscription in Settings, then refresh models.') : row.capability.available ? t('Ready for discussions.') : t(row.capability.canVerify
+  updateBindingStatus();
+}
+function updateMemberControls() {
+  const row = bindings.find(row => row.id === $('binding').value), busy = Boolean(installingRuntime || verifyingBinding);
+  for (const id of ['engine', 'connection', 'provider', 'binding', 'refreshModels']) $(id).disabled = busy;
+  $('saveMember').disabled = busy || !row || row.capability.supported === false;
+  $('installRuntime').disabled = busy;
+  $('installRuntime').setAttribute('aria-busy', String(Boolean(installingRuntime)));
+  $('verifyBinding').disabled = Boolean(installingRuntime);
+  $('memberDialog').querySelector('[data-close]').textContent = t(installingRuntime ? 'Close' : 'Cancel');
+}
+function updateBindingStatus() {
+  const row = bindings.find(row => row.id === $('binding').value);
+  const missingRuntime = canInstallRuntime();
+  $('bindingStatus').textContent = installingRuntime ? t('Installing Harness…') : missingRuntime ? t('This harness is not installed. Install it here to continue.')
+    : !row ? t('Add an API route or sign in to a subscription in Settings, then refresh models.') : row.capability.available ? t('Ready for discussions.') : t(row.capability.canVerify
     ? 'After adding this member, its connection will be checked automatically with two short messages. This uses a small amount of model quota.'
     : row.capability.detail || 'This connection is not verified for discussions yet.');
-  $('verifyBinding').hidden = !row?.capability.canVerify;
-  $('saveMember').disabled = !row || row.capability.supported === false || Boolean(verifyingBinding);
+  $('installRuntime').hidden = !desktop.runtimeEnsure || !missingRuntime && !installingRuntime;
+  $('saveMember').hidden = !$('installRuntime').hidden;
+  $('installRuntime').textContent = t(installingRuntime ? 'Installing Harness…' : 'Install Harness');
+  $('verifyBinding').hidden = Boolean(installingRuntime) || !row?.capability.canVerify;
+  updateMemberControls();
 }
 function newGroup() { $('title').value = ''; $('createError').textContent = ''; $('groupDialog').showModal(); $('title').focus(); }
 $('home').onclick = () => desktop.switchMode('home'); $('settings').onclick = () => desktop.openSettingsWindow();
@@ -432,11 +472,36 @@ $('createForm').onsubmit = async event => {
   catch (err) { if ($('groupDialog').open) $('createError').textContent = t(err.message); else error(err); }
   finally { submit.disabled = false; }
 };
-$('addMember').onclick = async () => { try { await catalog(); $('memberIdentityPrompt').value = ''; $('memberDialog').showModal(); } catch (err) { error(err); } };
+$('addMember').onclick = async () => { try { await catalog({ preserveDraft: false }); $('memberIdentityPrompt').value = ''; $('memberDialog').showModal(); } catch (err) { error(err); } };
 $('engine').onchange = renderProviders; $('connection').onchange = renderProviders;
 $('provider').onchange = () => { selectedProvider = $('provider').value; renderBindings(); }; $('binding').onchange = bindingChanged;
 $('refreshModels').onclick = () => catalog().catch(error);
+$('installRuntime').onclick = async () => {
+  if (installingRuntime || verifyingBinding) return;
+  const row = bindings.find(row => row.id === $('binding').value);
+  if (!canInstallRuntime() || !desktop.runtimeEnsure) return;
+  const target = { engine: $('engine').value, mode: $('connection').value, bindingId: row?.id };
+  installingRuntime = target; updateBindingStatus();
+  let failure;
+  try {
+    const result = await desktop.runtimeEnsure({ engine: target.engine, mode: target.mode });
+    if (!result?.ok) throw new Error(result?.error || 'Installation failed.');
+    if (result.canceled) throw new Error('Installation cancelled.');
+    await catalog({ requireBinding: target.bindingId });
+  } catch (err) { failure = err; }
+  finally {
+    installingRuntime = null;
+    updateBindingStatus();
+    if (failure) {
+      $('bindingStatus').textContent = t(failure.message);
+      $('installRuntime').textContent = t('Retry installation');
+    } else if (target.bindingId && !bindings.some(row => row.id === target.bindingId)) {
+      $('bindingStatus').textContent = t('This model or account changed. Refresh models and add the member again.');
+    }
+  }
+};
 $('verifyBinding').onclick = async () => {
+  if (installingRuntime) return;
   if (verifyingBinding) { await call('cancel-verification', { bindingId: verifyingBinding }); return; }
   const bindingId = $('binding').value;
   verifyingBinding = bindingId; $('verifyBinding').textContent = t('Cancel verification'); $('bindingStatus').textContent = t('Verifying connection…');
@@ -445,13 +510,13 @@ $('verifyBinding').onclick = async () => {
   catch (err) { $('bindingStatus').textContent = t(err.message); }
   finally {
     verifyingBinding = null; $('verifyBinding').textContent = t('Verify connection');
-    for (const id of ['engine', 'connection', 'provider', 'binding', 'refreshModels']) $(id).disabled = false;
-    $('saveMember').disabled = !bindings.some(row => row.id === $('binding').value && row.capability.supported !== false);
+    updateMemberControls();
   }
 };
 $('memberDialog').addEventListener('close', () => { if (verifyingBinding) void call('cancel-verification', { bindingId: verifyingBinding }).catch(error); });
 $('memberForm').onsubmit = async event => {
-  event.preventDefault(); const id = group.id; $('saveMember').disabled = true;
+  event.preventDefault(); if (installingRuntime || verifyingBinding || $('saveMember').disabled) return;
+  const id = group.id; $('saveMember').disabled = true;
   try { const result = await call('add-member', { id, name: $('memberName').value, bindingId: $('binding').value, identityPrompt: $('memberIdentityPrompt').value });
     if (group?.id === id) group = result.group; if (result.groups) groups = result.groups; $('memberDialog').close(); render(); }
   catch (err) { $('bindingStatus').textContent = t(err.message); }
@@ -559,8 +624,15 @@ function applyContentWidth(value) {
 }
 try { applyContentWidth(JSON.parse(localStorage.getItem('camellia-chat-content-width'))); } catch { /* use CSS default */ }
 const unsubscribeWidth = desktop.onChatContentWidthChanged?.(applyContentWidth);
+const unsubscribeRuntime = desktop.onRuntimeState?.(() => {
+  if (!$('memberDialog').open || installingRuntime || verifyingBinding) return;
+  clearTimeout(runtimeRefreshTimer);
+  runtimeRefreshTimer = setTimeout(() => {
+    if ($('memberDialog').open && !installingRuntime && !verifyingBinding) void catalog().catch(error);
+  }, 60);
+});
 void desktop.workbenchSettings().then(settings => { if (settings?.ok) applyContentWidth(settings.chatContentWidth); }).catch(error);
-window.addEventListener('beforeunload', () => { discussionReferenceSources.delete(cleanupReferences); conversationNavigation?.destroy(); rememberDraft(); unsubscribe?.(); unsubscribeWidth?.(); clearTimeout(refreshTimer); });
+window.addEventListener('beforeunload', () => { discussionReferenceSources.delete(cleanupReferences); conversationNavigation?.destroy(); rememberDraft(); unsubscribe?.(); unsubscribeWidth?.(); unsubscribeRuntime?.(); clearTimeout(refreshTimer); clearTimeout(runtimeRefreshTimer); });
 window.addEventListener('camellia:language', () => { closeGroupMenu(); messageNodes.clear(); render(); if ($('memberDialog').open) renderProviders(); });
 const ready = (async () => {
   await window.CamelliaI18n.ready;
