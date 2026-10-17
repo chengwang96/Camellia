@@ -73,6 +73,33 @@ async function outputFixture(context) {
   };
   return { session, events, notify, message };
 }
+
+test('large Codex file changes retain one diff on disk and bounded events in live replay', async t => {
+  const { session, events, notify } = await outputFixture(t);
+  const diff = 'DIFF_START\n' + '<xml>data</xml>\n'.repeat(100000) + '\nDIFF_END';
+  notify('item/completed', { item: { type: 'fileChange', id: 'large-edit', status: 'completed', changes: [{ path: '/work/slide.xml', kind: { type: 'update' }, diff }] } });
+  const event = events.find(row => row.type === 'gui:tool' && row.id === 'large-edit');
+  assert.equal(event.input.changes[0].path, '/work/slide.xml');
+  assert.equal(event.input.changes[0].diff, undefined);
+  assert.ok(JSON.stringify(event).length < 128 * 1024);
+  const full = JSON.parse(fs.readFileSync(event.fullOutput.path));
+  assert.equal(full.output, '/work/slide.xml\n' + diff);
+  assert.equal(full.input.changes[0].diff, undefined);
+  assert.ok(JSON.stringify(session.replayEvents).length < 128 * 1024);
+});
+
+test('a complete tool record storage failure ends its turn and shuts down the native producer', async t => {
+  const { session, events, notify } = await outputFixture(t), write = fs.writeFileSync;
+  t.mock.method(fs, 'writeFileSync', (file, ...args) => {
+    if (String(file).includes('tool-output')) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    return write(file, ...args);
+  });
+  notify('item/completed', { item: { type: 'fileChange', id: 'failed-record', status: 'completed', changes: [{ path: '/work/file', diff: 'x'.repeat(200000) }] } });
+  assert.equal(session.running, false); assert.equal(session.dead, true);
+  assert.equal(events.filter(row => row.type === 'result').length, 1);
+  assert.equal(events.at(-1).is_error, true); assert.match(events.at(-1).result, /disk full/);
+  assert.equal(events.some(row => row.id === 'failed-record'), false);
+});
 test('Codex child tool completion does not imply child completion; child controls preserve the parent', async t => {
   const { session, events, notify } = await outputFixture(t);
   notify('item/completed', { item: { type: 'collabAgentToolCall', id: 'spawn', tool: 'spawnAgent', status: 'completed',

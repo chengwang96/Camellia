@@ -1,6 +1,9 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { retainEvent } = require('./tool-history');
+const { appendText } = require('../shared/file-open');
+const { validSessionId } = require('./claude-history');
 
 // UI event replay and display history shared by native engine transports.
 class StreamingSession {
@@ -16,7 +19,7 @@ class StreamingSession {
   }
 
   appendHistory(role, text, outputBlocks) {
-    fs.appendFileSync(this.historyFile(), JSON.stringify({ type: role, cwd: this.settings.cwd,
+    appendText(this.historyFile(), JSON.stringify({ type: role, cwd: this.settings.cwd,
       ...(outputBlocks ? { outputBlocks } : {}),
       message: { role, content: [{ type: 'text', text }] } }) + '\n');
   }
@@ -41,6 +44,18 @@ class StreamingSession {
 
 
   emit(event) {
+    if (event.type === 'gui:tool' && this.history?.root && this.sessionId) {
+      try {
+        if (!validSessionId(this.sessionId)) throw new Error('Invalid tool history session');
+        event = retainEvent(event, path.join(this.history.root, 'tool-output', this.sessionId));
+      }
+      catch (error) {
+        this.finish({ subtype: 'error', is_error: true, result: 'Could not retain the complete tool output: ' + error.message });
+        try { Promise.resolve(this.kill?.()).catch(failure => this.log(this.name + ': shutdown failed: ' + failure.message)); }
+        catch (failure) { this.log(this.name + ': shutdown failed: ' + failure.message); }
+        return;
+      }
+    }
     const message = { ...event, runId: this.gen, eventSeq: ++this.eventSeq, workspaceId: this.opts.workspaceId || null };
     if (this.running) {
       const last = this.replayEvents.at(-1);

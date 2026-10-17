@@ -1,5 +1,28 @@
 # Storage and memory maintenance
 
+## Large tool records
+
+Tool events larger than 128 Ki characters keep their complete JSONL record under the
+owning history's `tool-output/<session-id>/` directory. Live events and replay
+use a bounded preview with the complete record's path. Codex file-change inputs
+retain paths and change kinds; the diff appears only once in the complete event.
+User messages and assistant prose are not shortened.
+
+Existing conversation JSONL files remain authoritative and unchanged. The
+disposable `.history-index` contains bounded projections of oversized structured
+tool rows, referencing the original JSONL byte range. Index version 2 estimates
+the context from those projections. Deleting or corrupting a preview cache only
+causes it to be rebuilt from the original. Data transfers retain complete tool
+records and omit derived indexes. Attachment cleanup scans complete records for
+references, including references outside the visible preview.
+
+History iteration shares one descriptor across a page or replay and checks its
+identity before and after reading, including when the iterator stops early.
+Ordinary sends find the last summary through the index; native compaction reads
+only the history boundary rather than materializing the entire transcript.
+Transient Windows open failures get at most five short retries (150 ms requested
+wait in total). Write failures are never retried after bytes may have been written.
+
 ## Shared runtime data
 
 New Codex API conversation homes link `.tmp` to `<app-data>/codex/.tmp`.

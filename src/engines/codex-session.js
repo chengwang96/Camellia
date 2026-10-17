@@ -285,7 +285,10 @@ class CodexSession extends StreamingSession {
         const output = item.aggregatedOutput ?? item.result ?? item.contentItems ?? (item.changes && item.changes.map(c => c.path + '\n' + c.diff).join('\n'));
         const failed = Boolean(item.error || ['failed', 'declined'].includes(item.status) || item.exitCode);
         this.emit({ type: 'gui:tool', id: item.id, name: item.tool || item.type,
-          input: item.command ? { command: item.command, cwd: item.cwd } : item.arguments || item,
+          // File diffs already appear in output. Keeping them in input as well
+          // doubled each event, replay snapshot and saved tool record.
+          input: item.command ? { command: item.command, cwd: item.cwd } : item.arguments
+            || (item.type === 'fileChange' ? { ...item, changes: (item.changes || []).map(({ diff, ...change }) => change) } : item),
           output: typeof output === 'string' ? output : output ? JSON.stringify(output, null, 2) : '',
           status: complete ? failed ? 'failed' : 'completed' : 'in_progress', is_error: failed });
       }

@@ -4,13 +4,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { randomUUID, createHash } = require('node:crypto');
+const { writeText } = require('../shared/json-store');
+const { openSync, appendText, retryOpen } = require('../shared/file-open');
+const { INLINE_CHARS, projectRow } = require('./tool-history');
 
 // The JSONL remains authoritative. This disposable index contains offsets and
 // cumulative statistics, never message bodies. Fixed-size records allow paging
 // without loading an entire conversation's index into the heap.
 const HEADER = 4096, RECORD = 80, BLOCK = RECORD * 512, READ = 128 * 1024;
-const VERSION = 1;
-const FLAGS = { public: 1, visible: 2, remote: 4, user: 8, summary: 16, preview: 32, sequence: 64 };
+const VERSION = 2;
+const FLAGS = { public: 1, visible: 2, remote: 4, user: 8, summary: 16, preview: 32, sequence: 64, tool: 128 };
 const signature = stat => stat ? [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':') : 'missing';
 const tokens = text => {
   const value = String(text || '');
@@ -104,7 +107,7 @@ class ConversationHistory {
     const index = this.index(id);
     try {
       this.checkIndex(index);
-      const fd = fs.openSync(index, 'r');
+      const fd = openSync(index, 'r');
       let value, indexStamp;
       try { const buffer = readAt(fd, HEADER, 0); this.metrics.indexBytes += HEADER;
         const parsed = JSON.parse(buffer.subarray(0, buffer.indexOf(0)).toString('utf8'));
@@ -124,7 +127,7 @@ class ConversationHistory {
   scan(id, consume, start = 0) {
     const file = this.file(id), before = stat(file);
     if (!before) return { source: null, tail: null, repaired: false };
-    const fd = fs.openSync(file, 'r'), chunk = Buffer.alloc(READ);
+    const fd = openSync(file, 'r'), chunk = Buffer.alloc(READ);
     let position = start, lineStart = start, parts = [], length = 0, tail = null, repaired = false;
     const line = (end, complete) => {
       if (!length) { parts = []; return; }
@@ -191,6 +194,7 @@ class ConversationHistory {
     if (!Number.isFinite(row.seq) || value.count && seq <= value.lastSeq) value.ordered = false;
     let flags = Number.isFinite(row.seq) ? FLAGS.sequence : 0;
     if (row.role === 'user') flags |= FLAGS.user;
+    if (row.role === 'tool') flags |= FLAGS.tool;
     if (!row.internal) {
       flags |= FLAGS.public;
       if (['user', 'assistant', 'notice'].includes(row.role)) flags |= FLAGS.visible;
@@ -199,7 +203,8 @@ class ConversationHistory {
       if (row.role === 'notice' && row.file) { flags |= FLAGS.summary; value.lastSummary = value.count; }
       if (row.role === 'user' && row.attachments?.length || row.role === 'assistant' && row.artifacts?.length) flags |= FLAGS.preview;
     }
-    const cost = seq > 0 && !row.internal && contextRow(row) ? tokens(row.text) + 200 / 3 : 0;
+    const projected = this.projectToolRow(value, { offset, length }, row);
+    const cost = seq > 0 && !row.internal && contextRow(row) ? tokens(projected.text) + 200 / 3 : 0;
     value.total += cost; value.maxSeq = Math.max(value.maxSeq, seq); value.lastSeq = seq;
     const buffer = Buffer.alloc(RECORD);
     [offset, length, seq, value.total, value.userSeq, value.userAt, value.maxSeq].forEach((n, i) => buffer.writeDoubleLE(n, i * 8));
@@ -214,7 +219,7 @@ class ConversationHistory {
     const pending = target + '.' + randomUUID() + '.tmp';
     let fd;
     try {
-      fs.mkdirSync(path.dirname(target), { recursive: true }); this.checkIndex(target, true); fd = fs.openSync(pending, 'wx+', 0o600);
+      fs.mkdirSync(path.dirname(target), { recursive: true }); this.checkIndex(target, true); fd = openSync(pending, 'wx+', 0o600);
       const value = this.empty(id, stat(this.file(id)));
       const scanned = this.scan(id, (row, offset, length) => this.add(fd, value, row, offset, length));
       value.source = signature(scanned.source); value.size = scanned.source?.size || 0;
@@ -236,7 +241,8 @@ class ConversationHistory {
   }
   append(id, row) {
     const value = this.ensure(id), file = this.file(id), before = stat(file);
-    fs.appendFileSync(file, JSON.stringify(row) + '\n');
+    const text = JSON.stringify(row);
+    appendText(file, text + '\n');
     this.metrics.appends++;
     // Index writes are disposable; their failure cannot turn an already saved
     // user message or reply into a failed conversation commit.
@@ -244,10 +250,10 @@ class ConversationHistory {
       if (value.tail !== null || signature(before) !== value.source) { this.rebuild(id); return; }
       if (!stat(value.index)) { this.rebuild(id); return; }
       this.checkIndex(value.index);
-      const fd = fs.openSync(value.index, 'r+');
+      const fd = openSync(value.index, 'r+');
       const previousCount = value.count;
       try {
-        const length = Buffer.byteLength(JSON.stringify(row));
+        const length = Buffer.byteLength(text);
         this.add(fd, value, row, before?.size || 0, length);
         if (row.role === 'revision') { this.forget(id); value.generation = randomUUID(); }
         const source = stat(file); value.source = signature(source); value.size = source.size;
@@ -263,7 +269,7 @@ class ConversationHistory {
     const block = Math.floor(i / 512), key = value.id + ':index:' + value.generation + ':' + block;
     let buffer = this.get(key);
     if (!buffer) {
-      const fd = fs.openSync(value.index, 'r');
+      const fd = openSync(value.index, 'r');
       try { buffer = readAt(fd, Math.min(BLOCK, (value.count - block * 512) * RECORD), HEADER + block * BLOCK); }
       finally { fs.closeSync(fd); }
       this.metrics.indexBytes += buffer.length; this.put(key, buffer, buffer.length);
@@ -275,25 +281,61 @@ class ConversationHistory {
     }
     return unpack(buffer, offset);
   }
-  row(value, record) {
+  row(value, record, readSource) {
     const key = value.id + ':row:' + value.generation + ':' + record.offset;
     let row = this.get(key);
     if (!row) {
-      const fd = fs.openSync(this.file(value.id), 'r');
-      let buffer;
-      try {
-        if (signature(fs.fstatSync(fd)) !== value.source) throw new Error('Conversation history changed while reading');
-        buffer = readAt(fd, record.length, record.offset);
-        if (signature(fs.fstatSync(fd)) !== value.source) throw new Error('Conversation history changed while reading');
-      } finally { fs.closeSync(fd); }
-      this.metrics.historyBytes += buffer.length; this.metrics.parsedRows++;
-      row = JSON.parse(buffer.toString('utf8')); delete row.previousAttempt;
-      if (row.role === 'revision') row.role = 'user';
+      // Legacy JSONL files remain unchanged. Their oversized tool rows have a
+      // small disposable projection, generated once while indexing. A restart
+      // or cache eviction must not parse the original 70 MB diff again.
+      if (record.flags & FLAGS.tool && record.length > INLINE_CHARS) {
+        try {
+          const file = this.toolProjectionFile(value, record);
+          this.checkIndex(file);
+          if (stat(file).size > 1024 * 1024) throw new Error('Tool preview cache is too large');
+          const text = retryOpen(() => fs.readFileSync(file, 'utf8'));
+          const saved = JSON.parse(text);
+          if (saved.checksum !== digest(saved.row) || saved.row.role !== 'tool' || saved.row.seq !== record.seq)
+            throw new Error('Invalid tool preview cache');
+          row = saved.row; this.metrics.indexBytes += Buffer.byteLength(text);
+        } catch (error) { if (error.code !== 'ENOENT') this.report(error); }
+      }
+      if (!row) {
+        let buffer;
+        if (readSource) buffer = readSource(record);
+        else {
+          const fd = openSync(this.file(value.id), 'r');
+          try {
+            if (signature(fs.fstatSync(fd)) !== value.source) throw new Error('Conversation history changed while reading');
+            buffer = readAt(fd, record.length, record.offset);
+            if (signature(fs.fstatSync(fd)) !== value.source) throw new Error('Conversation history changed while reading');
+          } finally { fs.closeSync(fd); }
+        }
+        this.metrics.historyBytes += buffer.length; this.metrics.parsedRows++;
+        row = JSON.parse(buffer.toString('utf8')); delete row.previousAttempt;
+        if (row.role === 'revision') row.role = 'user';
+        row = this.projectToolRow(value, record, row);
+      }
       // Charge conservatively for decoded strings, object overhead and clones
       // retained in the cache. Oversized individual rows are read on demand.
-      this.put(key, row, buffer.length * 3 + 512);
+      this.put(key, row, Buffer.byteLength(JSON.stringify(row)) * 3 + 512);
     }
     return structuredClone(row);
+  }
+  toolProjectionFile(value, record) {
+    return this.index(value.id) + '.' + value.generation + '.' + record.offset + '.tool';
+  }
+  projectToolRow(value, record, row) {
+    const projected = projectRow(row, { path: this.file(value.id), offset: record.offset, length: record.length });
+    if (projected !== row) {
+      delete projected.previousAttempt;
+      try {
+        const file = this.toolProjectionFile(value, record);
+        this.checkIndex(file, true);
+        writeText(file, JSON.stringify({ row: projected, checksum: digest(projected) }));
+      } catch (error) { this.report(error); }
+    }
+    return projected;
   }
   *iterate(id, { after = -Infinity, before = Infinity, mask = 0, reverse = false } = {}) {
     const value = this.ensure(id);
@@ -308,10 +350,27 @@ class ConversationHistory {
       if (Number.isFinite(after)) low = boundary(after, true);
       if (Number.isFinite(before)) high = boundary(before, false);
     }
-    for (let i = reverse ? high - 1 : low; reverse ? i >= low : i < high; i += reverse ? -1 : 1) {
-      const record = this.record(value, i);
-      if ((!mask || record.flags & mask) && (record.flags & FLAGS.sequence || after === -Infinity && before === Infinity)
-        && record.seq > after && record.seq < before) yield this.row(value, record);
+    let fd;
+    const readSource = record => {
+      if (fd === undefined) {
+        fd = openSync(this.file(id), 'r');
+        if (signature(fs.fstatSync(fd)) !== value.source) throw new Error('Conversation history changed while reading');
+      }
+      return readAt(fd, record.length, record.offset);
+    };
+    try {
+      for (let i = reverse ? high - 1 : low; reverse ? i >= low : i < high; i += reverse ? -1 : 1) {
+        const record = this.record(value, i);
+        if ((!mask || record.flags & mask) && (record.flags & FLAGS.sequence || after === -Infinity && before === Infinity)
+          && record.seq > after && record.seq < before) yield this.row(value, record, readSource);
+      }
+    } finally {
+      if (fd !== undefined) {
+        let unchanged;
+        try { unchanged = signature(fs.fstatSync(fd)) === value.source && signature(stat(this.file(id))) === value.source; }
+        finally { fs.closeSync(fd); }
+        if (!unchanged) throw new Error('Conversation history changed while reading');
+      }
     }
   }
   rows(id, options) { return [...this.iterate(id, options)]; }
@@ -363,6 +422,11 @@ class ConversationHistory {
     const temporary = this.tempById.get(id);
     if (temporary) { try { fs.unlinkSync(temporary); } catch {} this.temporary.delete(temporary); this.tempById.delete(id); }
     try { fs.unlinkSync(this.index(id)); } catch (error) { if (error.code !== 'ENOENT') this.report(error); }
+    try {
+      for (const name of fs.readdirSync(this.indexDir))
+        if (name.startsWith(id + '.idx.') && /^[a-f0-9-]{36}\.\d+\.tool$/.test(name.slice(id.length + 5)))
+          fs.unlinkSync(path.join(this.indexDir, name));
+    } catch (error) { if (error.code !== 'ENOENT') this.report(error); }
   }
   close() {
     for (const file of this.temporary) { try { fs.unlinkSync(file); } catch {} }

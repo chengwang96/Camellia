@@ -244,6 +244,16 @@ with sync_playwright() as p:
         page.get_by_role('button', name='Back to overview', exact=True).click()
         expect(page.locator('.work-artifact')).to_contain_text('checks.md')
         expect(page.locator('.work-artifact')).to_contain_text('Check report')
+        # Resolving an older path-only record must update its row when the
+        # canonical path becomes available, including after the file changes.
+        page.evaluate("""() => {
+          window.dshDesktop.resolveArtifacts = async () => ({ok:true,files:[{
+            path:'/demo/checks.md',canonicalPath:'/real/demo/checks.md',name:'checks.md',size:2048
+          }]});
+        }""")
+        page.evaluate('tasks => deliverChild(tasks)', [{**completed, 'title': 'Recheck report'}])
+        expect(page.locator('.work-artifact')).to_have_count(1)
+        expect(page.locator('.work-artifact')).to_contain_text('Recheck report')
         page.evaluate(r"""() => {
           window.dshDesktop.platform = 'win32';
           window.dshDesktop.resolveArtifacts = async request => ({ok:true,files:request.paths.map(path => ({
@@ -266,6 +276,26 @@ with sync_playwright() as p:
         }""")
         expect(page.locator('.turn').last.locator('.artifact-row')).to_have_count(1)
         expect(page.locator('.work-artifact')).to_have_count(3)
+        main_file = page.locator('.work-artifact[title="C:/main-alias/checks.md"]')
+        expect(main_file).to_contain_text('Main conversation')
+        # A later main-conversation update keeps the count and refreshes the
+        # path used by the preview, even when a child reported the file first.
+        page.evaluate("""() => {
+          const emit = event => deliverEvent({session_id:'shared-fixture',engine:'codex',runId:902,...event});
+          emit({type:'conversation:started',prompt:'Update report',userSeq:23});
+          emit({type:'assistant',message:{content:[{type:'text',text:'Updated the report.'}]}});
+          emit({type:'result',subtype:'success',artifacts:[{path:'C:/updated/checks.md'}]});
+          window.dshDesktop.previewFile = async path => {
+            window.previewedArtifact = path;
+            return {ok:true,file:{path,name:'checks.md',kind:'text',extension:'MD',text:'# Updated report'}};
+          };
+        }""")
+        expect(page.locator('.work-artifact')).to_have_count(3)
+        page.locator('.work-artifact[title="C:/updated/checks.md"]').click()
+        expect(page.locator('#fileViewer')).to_be_visible()
+        assert page.evaluate('previewedArtifact') == 'C:/updated/checks.md'
+        expect(page.locator('.file-preview-markdown')).to_contain_text('Updated report')
+        page.locator('#fileViewerClose').click()
         page.evaluate('tasks => deliverChild(tasks)', alias_tasks)
         expect(page.locator('.work-artifact')).to_have_count(3)
         panel = page.locator('#workPanel').bounding_box()

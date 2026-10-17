@@ -138,6 +138,7 @@ function accountSummaries({ engine, accounts, states, activeId }) {
 function createAccountPool({ engine, userData, root, bindingsKey, loadConfig, saveConfig, createService, onState = () => {} }) {
   const services = new Map();
   let pending = null;
+  let selectionRevision = 0;
   const list = () => accountsFor(loadConfig(), engine);
   const activeId = () => activeAccountId(loadConfig(), engine);
   const bindings = () => bindingsKey ? loadConfig()[bindingsKey] || {} : {};
@@ -172,13 +173,13 @@ function createAccountPool({ engine, userData, root, bindingsKey, loadConfig, sa
       id = completed.id;
     }
     const current = activeId();
-    return { ...safeState(id), ...(pending ? { ...draft, loginPending: true } : {}), activeId: current,
+    return { ...safeState(id), ...(pending ? { ...draft, loginPending: true } : {}), activeId: current, selectionRevision,
       accounts: accountSummaries({ engine, accounts: list(), states: states(), activeId: current }) };
   }
   function select(id) {
     const next = String(id || '');
     if (!list().some(account => account.id === next)) throw new Error('Unknown account');
-    persist({ activeId: next }); onState(state()); return state();
+    persist({ activeId: next }); selectionRevision++; onState(state()); return state();
   }
   function add(label = '') {
     const accounts = list();

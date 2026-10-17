@@ -46,6 +46,20 @@ function write(file, content) {
   fs.writeFileSync(file, content);
 }
 
+test('complete tool records above the metadata rewrite limit survive a data transfer byte for byte', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    const relative = 'conversations/tool-output/sample/' + 'a'.repeat(64) + '.jsonl';
+    const complete = JSON.stringify({ type: 'gui:tool', output: 'BEGIN' + 'x'.repeat(9 * 1024 * 1024) + 'END' });
+    write(path.join(source.dataDir, relative), complete);
+    const file = path.join(source.root, 'tool-records.zip');
+    const exported = await createDataPackage({ ...source, destination: file, categories: ['conversations'] });
+    assert.equal(exported.files, 1);
+    await importDataPackage({ ...target, file });
+    assert.equal(fs.readFileSync(path.join(target.dataDir, relative), 'utf8'), complete);
+  } finally { dispose(source); dispose(target); }
+});
+
 // A minimal but representative profile: shared conversations with Goal and
 // scheduled task state, an engine native home under the user home, an absolute
 // workspace path in config and session metadata, a large streamed file, and

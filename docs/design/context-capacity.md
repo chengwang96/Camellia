@@ -60,14 +60,53 @@ Regression coverage: `node --test tests/context-capacity.test.js tests/api-route
 
 ## Conversation migration
 
-Native compaction remains the first choice for an unchanged, synchronized native
-session. Segments persist the model, connection and configured context window
-used to open them. A changed profile is not assumed to be safe merely because
-the harness supports native compaction. Claude can reject `/compact` with
+Native compaction remains the first choice for a synchronized native session on
+the same model, connection and account. Segments retain the last reported native
+window separately from input-token usage: confirmed compaction invalidates the
+old token count, but keeps the window across restart. Replacing the native ID
+clears both. Raising the configured budget can reuse a smaller native window;
+lowering it below the native window still requires a portable handoff. A changed
+binding is not assumed safe merely because the harness supports compaction.
+Confirmed native compaction also records the global account preference at the
+start of that operation. While that preference remains unchanged, the next turn
+keeps the just-compacted thread's usable account instead of immediately rebuilding
+its history on another account. This continuation does not reset the global
+preference. A new account choice after compaction still takes effect, as do
+explicit recovery overrides. Selection revisions are compared within the same
+runtime; after restart the persisted account ID is used. Automatic switching can
+still migrate an exhausted, signed-out, pending-login or removed owner.
+
+Claude can reject `/compact` with
 `Not enough messages to compact.` after a fresh session receives a large replay:
 many logical history rows still form only one native user message. This temporary
 failure falls back to portable summarization without permanently disabling native
-compaction. Unrelated native errors and cancellation do not trigger this fallback.
+compaction. A transient connection failure before native progress is retried once
+after 250 ms on the same thread and account. Errors after progress, authentication
+or storage failures, exhausted connection retries and cancellation retain the
+native binding and report failure; `/compact` does not silently replace it with
+a local handoff that omits old context. Explicitly unsupported native compaction,
+a lost session, context overflow and the native request timeout can use portable
+summarization.
+
+Markdown handoffs also respect native ownership. A large archived transcript
+alone does not trigger an extra portable summary when the source thread already
+contains it. If the handoff request overflows, native compaction is attempted
+first when eligible, then the source writes the portable Markdown for the target.
+Oversized history that the source thread has not seen still needs a bounded
+portable replay.
+
+`context routing` logs the before-send native reuse decision and subscription
+selection. `context compaction route` records the decision before preparation or
+summary requests begin; final compaction metrics persist it under
+`nativeCompaction`. The decision includes `eligible`, the exact `reason`, native
+ID/cursor, bound and requested model/connection/account/window, and relevant
+native/route limits. Reasons distinguish missing native state, model, connection
+or account changes, undersized configured/route windows, unsupported compaction,
+unsafe shared profiles and unsynchronized public history. `triggerReason` explains
+why compaction was requested, even when the high-level route is
+`portable-requested`. Account selection records retention or the owner's quota,
+login or removal failure. Actual recovery logs its old/new account IDs and auth
+or quota reason. These records contain no prompts, tool output or credentials.
 
 Before sending oversized history to a different model or harness, portable
 compaction separates the summarizer's input capacity from the destination's
@@ -87,16 +126,21 @@ checking the summary; cancellation or summarization failure leaves it intact.
 Markdown handoffs also use the destination budget and shorten oversized drafts
 before asking the target harness to accept them.
 
-Compaction retains a five-minute total budget, including a native-to-portable
-fallback. Engine requests additionally have a two-minute timeout; router
+User `/compact` retains a five-minute total budget, including a native-to-portable
+fallback. Automatic and programmatic compaction have a 30-minute total limit so
+large batches can continue while making progress. Engine requests additionally
+have a two-minute timeout; router
 requests and lack of router progress are bounded at three minutes. Both
 transports allow at most 128 summary attempts, with existing overflow,
 shortening and nesting limits still in force.
 Accepted fragment and merge answers are checkpointed with hashes of their exact
-inputs. A retry after failure, cancellation or restart can reuse them only for
-the same source history and summary configuration. Legacy text-only checkpoints
-cannot be resumed safely. Neither checkpoint form replaces the conversation
-until the entire summary is complete and passes the destination budget check.
+inputs, instructions and output limits. Appending turns or repacking fragments
+does not invalidate unrelated accepted requests; changed requests are generated
+again. Cache scopes isolate the workspace, engine, model, connection, account,
+route set and summary transport. Older checkpoints with a whole-history hash
+remain reusable only when that original hash matches; text-only checkpoints
+cannot be resumed safely. Partial checkpoint text never replaces the conversation.
+The complete summary must pass the destination budget check before it is committed.
 
 Stopping a long Goal does not discard its native context. Codex's acknowledged
 turn interruption advances the logical cursor, so an ordinary follow-up does

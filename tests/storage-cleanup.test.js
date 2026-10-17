@@ -87,6 +87,18 @@ test('automatic cleanup only removes attachment copies and leaves other eligible
   assert.equal((await h.cleaner.clean(token)).files, 2);
 });
 
+test('complete tool records retain attachments referenced only outside their bounded previews', async t => {
+  const h = setup(t), shared = remoteAttachment(h), native = remoteAttachment(h), orphan = remoteAttachment(h);
+  h.write('conversations/tool-output/shared/' + 'a'.repeat(64) + '.jsonl', JSON.stringify({ output: 'x'.repeat(200000) + shared + 'y'.repeat(200000) }));
+  const file = path.join(h.histories[0].root, 'tool-output', 'native', 'b'.repeat(64) + '.jsonl');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ output: 'x'.repeat(200000) + native + 'y'.repeat(200000) }));
+  const result = await h.cleaner.sweepAttachments();
+  assert.equal(result.files, 1); assert.deepEqual(result.errors, []);
+  assert.ok(fs.existsSync(shared)); assert.ok(fs.existsSync(native));
+  assert.equal(fs.existsSync(orphan), false);
+});
+
 test('no old remote files avoids reading history; file age schedules a single later sweep', async t => {
   const h = setup(t);
   h.write('conversations/broken.json', '{torn');

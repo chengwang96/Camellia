@@ -243,6 +243,19 @@ class StorageCleanup {
         }
       }
     }
+    // Large tool previews point to complete records outside the JSONL. Those
+    // records still own any attachments mentioned only in an omitted middle.
+    // Scan them as streams rather than parsing a potentially huge JSON object.
+    for (const root of new Set([this.dataDir, ...this.histories.map(history => history.root)])) {
+      const outputs = path.join(root === this.dataDir ? sharedDir : root, 'tool-output');
+      for (const owner of entries(outputs, root)) {
+        if (!validSessionId(owner)) continue;
+        const directory = path.join(outputs, owner);
+        if (!this.safeStat(directory, root)?.isDirectory()) continue;
+        for (const name of entries(directory, root)) if (/^[a-f0-9]{64}\.jsonl$/.test(name))
+          read(path.join(directory, name), root, false, true);
+      }
+    }
     for (const relative of ['desktop-config.json', 'conversations/tasks/state.json']) {
       const file = path.join(this.dataDir, relative);
       if (this.safeStat(file)) read(file, this.dataDir, true);
@@ -330,7 +343,7 @@ class StorageCleanup {
     }
     const indexDir = path.join(sharedDir, '.history-index');
     for (const name of entries(indexDir)) {
-      const match = name.match(/^([a-zA-Z0-9_-]+)\.idx(?:\.[a-f0-9-]{36}\.tmp)?$/);
+      const match = name.match(/^([a-zA-Z0-9_-]+)\.idx(?:\.[a-f0-9-]{36}\.(?:tmp|\d+\.tool))?$/);
       if (match && !owners.has(match[1])) await add(path.join(indexDir, name), 'History indexes', false, match[1]);
     }
     for (const name of goals) {
