@@ -4,6 +4,9 @@ Repeated references to the same file in a reply produce one artifact. The deskto
 work panel also uses the resolved canonical path to merge files across replies and
 subtasks, including Windows case, separator and short-path aliases. Files with the
 same name in different directories remain separate artifacts.
+Updating a file refreshes its existing work-panel entry. Path-only records and
+later canonical resolutions share the same entry, so adding a canonical path or
+replacing a file does not leave a second row behind.
 
 The desktop artifact sidebar renders Markdown locally with headings, tables, lists,
 links, images and task lists. It also supports footnotes, KaTeX mathematics using

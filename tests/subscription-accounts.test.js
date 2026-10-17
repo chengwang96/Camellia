@@ -128,6 +128,17 @@ test('the pool keeps one service per account and follows the selected account', 
   assert.equal(pool.state(added2).account.name, 'Backup');
 });
 
+test('explicitly reselecting an account advances the revision even when its ID stays the same', () => {
+  const { pool, events, loadConfig } = fakePool();
+  assert.equal(pool.state().selectionRevision, 0);
+  pool.select('default');
+  assert.equal(pool.state().selectionRevision, 1);
+  pool.select('default');
+  assert.equal(pool.state().selectionRevision, 2);
+  assert.equal(events.at(-1).selectionRevision, 2);
+  assert.equal(loadConfig().subscriptionActive.kimi, 'default');
+});
+
 test('the pool binds a new conversation to a signed-in account with quota', async () => {
   const { pool } = fakePool();
   const second = pool.add('Backup');

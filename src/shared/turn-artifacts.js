@@ -6,6 +6,36 @@
 })(typeof window === 'object' ? window : globalThis, function () {
   const VISIBLE_ARTIFACT_LIMIT = 4;
 
+  function artifactPath(value, platform) {
+    if (typeof value !== 'string') return '';
+    return platform === 'win32' ? value.replace(/\\/g, '/').toLowerCase() : value;
+  }
+
+  // A file keeps its identity when a later resolution adds a canonical path
+  // or an edit replaces the file. Keep both path spellings as aliases, and
+  // replace the row's metadata with the latest observation.
+  function artifactStore() {
+    const entries = new Set(), aliases = new Map();
+    return {
+      get size() { return entries.size; },
+      *values() { for (const entry of entries) yield entry.file; },
+      clear() { entries.clear(); aliases.clear(); },
+      set(file, platform) {
+        const keys = [...new Set([file?.path, file?.canonicalPath].map(value => artifactPath(value, platform)).filter(Boolean))];
+        if (!keys.length) return;
+        const matches = new Set(keys.map(key => aliases.get(key)).filter(Boolean));
+        const entry = matches.values().next().value || { keys: new Set() };
+        for (const match of matches) if (match !== entry) {
+          for (const key of match.keys) { entry.keys.add(key); aliases.set(key, entry); }
+          entries.delete(match);
+        }
+        for (const key of keys) { entry.keys.add(key); aliases.set(key, entry); }
+        entry.file = file;
+        entries.add(entry);
+      },
+    };
+  }
+
   function documentFormat(file) {
     const extension = String(file.extension || (file.name || file.path || '').split('.').pop()).replace(/^\./, '').toLowerCase();
     if (['md', 'markdown'].includes(extension)) return 'markdown';
@@ -123,5 +153,5 @@
       },
     };
   }
-  return { textPaths, toolPaths, toolRoots, toolDirectories, collector, documentFormat, sortArtifacts, VISIBLE_ARTIFACT_LIMIT };
+  return { textPaths, toolPaths, toolRoots, toolDirectories, collector, artifactPath, artifactStore, documentFormat, sortArtifacts, VISIBLE_ARTIFACT_LIMIT };
 });

@@ -4,7 +4,8 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview }) => {
   const footer = document.getElementById('workPanelFooter'), count = document.getElementById('workPanelCount');
   const toggle = document.getElementById('workPanelToggle'), badge = document.getElementById('workPanelBadge');
   const t = value => window.CamelliaI18n.t(value);
-  let tasks = [], selected = null, files = new Map(), epoch = 0, fileTicket = 0, busy = false;
+  let tasks = [], selected = null, epoch = 0, fileTicket = 0, busy = false;
+  const files = window.CamelliaArtifacts.artifactStore();
   const drafts = new Map(), expanded = new Map(), detailExpanded = new Map(), scrollPositions = new Map();
   let renderedView = null, footerKey = null;
   const header = toggle.closest('.main-header');
@@ -13,10 +14,8 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview }) => {
     new ResizeObserver(place).observe(header); place();
   }
   const taskKey = task => task.engine + ':' + task.id;
-  const fileKey = file => {
-    const value = file.canonicalPath || file.path;
-    return window.dshDesktop.platform === 'win32' ? value.replace(/\\/g, '/').toLowerCase() : value;
-  };
+  const fileKey = file => window.CamelliaArtifacts.artifactPath(file.canonicalPath || file.path, window.dshDesktop.platform);
+  const addFile = (file, origin) => files.set({ ...file, origin }, window.dshDesktop.platform);
   const el = (tag, cls, text) => { const node = document.createElement(tag); node.className = cls; if (text != null) node.textContent = text; return node; };
   function button(text, run, cls = 'work-action') { const node = el('button', cls, t(text)); node.type = 'button'; node.onclick = run; node.dataset.workFocus = text; return node; }
   const engineName = engine => ({ codex: 'Codex', claude: 'Claude', kimi: 'Kimi', pi: 'Pi', antigravity: 'Antigravity', dsh: 'DSH' })[engine] || engine || '';
@@ -178,7 +177,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview }) => {
       if (!tasks.length) agents.append(el('p', 'work-empty', t('No subtasks yet'))); for (const task of tasks) agents.append(taskRow(task));
       const artifacts = disclosure('Artifacts', 'artifacts'); artifacts.querySelector('summary').append(el('span', 'work-section-count', String(files.size)));
       if (!files.size) artifacts.append(el('p', 'work-empty', t('No artifacts yet')));
-      for (const file of files.values()) { const row = button('', () => void openFilePreview(file.path), 'work-artifact'); row.dataset.workFocus = 'file:' + fileKey(file); row.append(el('strong', '', file.name), el('small', '', file.origin)); artifacts.append(row); }
+      for (const file of files.values()) { const row = button('', () => void openFilePreview(file.path), 'work-artifact'); row.title = file.path; row.dataset.workFocus = 'file:' + fileKey(file); row.append(el('strong', '', file.name), el('small', '', file.origin)); artifacts.append(row); }
       body.append(agents, artifacts);
     }
     if (focused) body.querySelector(`[data-work-focus="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
@@ -190,7 +189,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview }) => {
       try {
         const result = await window.dshDesktop.resolveArtifacts({ sessionId: task.managedConversationId || sessionId, paths: task.artifacts?.map(file => file.path) || [], text: task.result });
         if (epoch !== generation || fileTicket !== ticket || context.sessionId !== sessionId) return;
-        if (result.ok) for (const file of result.files) files.set(fileKey(file), { ...file, origin: task.title });
+        if (result.ok) for (const file of result.files) addFile(file, task.title);
       } catch {}
     }
     render();
@@ -198,5 +197,5 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview }) => {
   window.addEventListener('camellia:language', () => { render(); renderCards(); });
   return { reset() { epoch++; tasks = []; files.clear(); drafts.clear(); expanded.clear(); detailExpanded.clear(); scrollPositions.clear(); renderedView = null; selected = null; render(); },
     update(value) { tasks = value || []; render(); renderCards(); void childFiles(); },
-    artifacts(value) { for (const file of value || []) if (!files.has(fileKey(file))) files.set(fileKey(file), { ...file, origin: t('Main conversation') }); render(); }, refreshCards: renderCards };
+    artifacts(value) { for (const file of value || []) addFile(file, t('Main conversation')); render(); }, refreshCards: renderCards };
 };

@@ -9,7 +9,56 @@ const { pathToFileURL } = require('node:url');
 const { removeTree } = require('./test-fs.cjs');
 const { textPaths, toolPaths, toolRoots, toolDirectories, collector } = require('../src/shared/turn-artifacts');
 const { resolveArtifacts } = require('../src/main/turn-artifacts');
-const { sortArtifacts, documentFormat, VISIBLE_ARTIFACT_LIMIT } = require('../src/shared/turn-artifacts');
+const { sortArtifacts, documentFormat, artifactStore, VISIBLE_ARTIFACT_LIMIT } = require('../src/shared/turn-artifacts');
+
+test('artifact updates refresh one row across path-only records, canonical aliases and file replacements', () => {
+  const files = artifactStore();
+  const original = { path: 'C:/outputs/report.pdf', name: 'report.pdf', size: 10, origin: 'First turn' };
+  files.set(original, 'win32');
+  const resolved = { ...original, canonicalPath: 'C:/real/report.pdf', size: 20, origin: 'Second turn' };
+  files.set(resolved, 'win32');
+  assert.equal(files.size, 1);
+  assert.deepEqual([...files.values()], [resolved]);
+  const alias = { ...resolved, path: 'c:\\linked\\report.pdf', canonicalPath: 'c:\\REAL\\report.pdf', size: 30 };
+  files.set(alias, 'win32');
+  const replaced = { ...resolved, canonicalPath: 'C:/replacement/report.pdf', size: 40 };
+  files.set(replaced, 'win32');
+  assert.deepEqual([...files.values()], [replaced]);
+  assert.equal(original.size, 10);
+});
+
+test('canonical resolution merges existing duplicate rows while keeping same-name files in other folders', () => {
+  const files = artifactStore();
+  const first = { path: 'C:/outputs/report.pdf', name: 'report.pdf' };
+  const alias = { path: 'C:/linked/report.pdf', name: 'report.pdf' };
+  const other = { path: 'C:/other/report.pdf', canonicalPath: 'C:/other/report.pdf', name: 'report.pdf' };
+  for (const file of [first, alias, other]) files.set(file, 'win32');
+  files.set({ ...first, canonicalPath: first.path }, 'win32');
+  const resolved = { ...alias, canonicalPath: 'c:\\OUTPUTS\\report.pdf', size: 25 };
+  files.set(resolved, 'win32');
+  assert.equal(files.size, 2);
+  assert.deepEqual(new Set([...files.values()]), new Set([resolved, other]));
+  const update = { ...first, size: 50 };
+  files.set(update, 'win32');
+  assert.equal(files.size, 2);
+  assert.ok([...files.values()].includes(update));
+  files.clear();
+  assert.equal(files.size, 0);
+  files.set(first, 'win32');
+  files.set(alias, 'win32');
+  assert.equal(files.size, 2, 'reset also forgets aliases from the previous conversation');
+});
+
+test('artifact identity preserves case-sensitive paths outside Windows and ignores size changes', () => {
+  const files = artifactStore();
+  const first = { path: '/outputs/Report.pdf', name: 'Report.pdf', size: 10 };
+  const second = { path: '/outputs/report.pdf', name: 'report.pdf', size: 10 };
+  files.set(first, 'linux');
+  files.set(second, 'linux');
+  files.set({ ...first, size: 50 }, 'linux');
+  assert.equal(files.size, 2);
+  assert.deepEqual([...files.values()].map(file => file.size), [50, 10]);
+});
 
 test('readable artifacts sort first, stably, without changing the collected order', () => {
   assert.equal(documentFormat({ extension: '.MD' }), 'markdown');

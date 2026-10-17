@@ -44,6 +44,11 @@ The `next-turn-settings` capability allows a model, thinking-level, or supported
 
 Command results are persisted by request ID. A retry must use the **same** ID and parameters; `pending` means the action is still being prepared, while `unknown` or `interrupted` after a crash must be reconciled before the user chooses another action. HTTP 200 alone does not mean an engine turn completed. A reconnect replaces the current snapshot instead of appending it. `instanceId` changes when the gateway restarts, so old cursors and unconfirmed controls must not be treated as current. The client does not automatically resend a timed-out send, stop, or approval.
 
+Conversation and discussion artifact lists merge references to the same canonical
+file before pagination, then sort by file modification time, newest first. Files
+with the same modification time use the most recent message reference first.
+Refreshing the list after an existing file changes updates its position.
+
 ### Android conversation history
 
 An ordinary conversation page holds at most 200 history records, including tool

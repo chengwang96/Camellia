@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
+const { planCompaction } = require('../src/engines/compaction-plan');
 const { SharedConversations, preferences, ENGINES } = require('../src/engines/shared-conversations');
 const { createCodex } = require('../src/engines/codex');
 
@@ -297,6 +299,34 @@ async function nativeFixture(context, compact) {
   const conversation = harness.manager.get(run.sessionId);
   return { ...harness, conversation };
 }
+
+test('native compaction never materializes old tool history', async t => {
+  const h = await nativeFixture(t, async () => ({ ok: true })), c = h.conversation;
+  t.mock.method(h.manager, 'rows', () => { throw new Error('Full-history materialization must not happen'); });
+  const result = await h.manager.compact(c.id);
+  assert.equal(result.ok, true); assert.equal(result.native, true);
+});
+
+test('a temporary history lock preserves the running turn and failed appends do not advance its sequence', async t => {
+  const h = fixture(t), run = await h.manager.send('codex', { prompt: 'Continue the task' });
+  const active = h.manager.active.get(run.sessionId), c = active.c, write = fs.appendFileSync;
+  const file = path.join(h.root, c.id + '.jsonl'); let attempts = 0;
+  const denied = t.mock.method(fs, 'appendFileSync', (target, ...args) => {
+    if (target === file && attempts++ < 2) throw Object.assign(new Error('locked'), { code: 'EBUSY', syscall: 'open' });
+    return write(target, ...args);
+  });
+  h.manager.capture('codex', { type: 'gui:tool', id: 'work', name: 'commandExecution', output: 'ok', status: 'completed', runId: active.session.gen });
+  denied.mock.restore(); assert.equal(attempts, 3); assert.equal(h.manager.busy(c.id), true);
+  h.finish('codex'); assert.equal((await run.done).subtype, 'success');
+  assert.equal(h.manager.rows(c).filter(row => row.role === 'tool').length, 1);
+  const seq = c.seq, append = fs.appendFileSync;
+  t.mock.method(fs, 'appendFileSync', (target, ...args) => {
+    if (target === file) throw Object.assign(new Error('disk full'), { code: 'ENOSPC', syscall: 'write' });
+    return append(target, ...args);
+  });
+  assert.throws(() => h.manager.append(c, { role: 'user', text: 'not saved' }), /disk full/);
+  assert.equal(c.seq, seq);
+});
 
 test('failed native compaction persistence does not append a success notice or advance its cursor', async context => {
   const h = await nativeFixture(context, async () => ({ ok: true })), c = h.conversation;
@@ -790,6 +820,124 @@ test('subscription account changes still open a fresh native session after repai
   h.finish('codex'); await next.done;
 });
 
+for (const engine of ['codex', 'kimi']) for (const automatic of [true, false])
+test(engine + ' retains the just-compacted account while an earlier global preference is unchanged, auto-switch=' + automatic, async t => {
+  const h = subscriptionFixture(t, engine), logs = [];
+  h.manager.log = line => logs.push(line); h.args.log = h.manager.log;
+  h.setConfig({ subscriptionAutoSwitch: { [engine]: automatic } });
+  h.drivers[engine].nativeCompaction = true;
+  const ensure = h.drivers[engine].ensure;
+  h.drivers[engine].ensure = options => { const session = ensure(options); session.compact = async () => ({ ok: true }); return session; };
+  const first = await h.manager.send(engine, { prompt: 'Original task' });
+  const c = h.manager.get(first.sessionId);
+  h.manager.append(c, { role: 'tool', text: 'ALREADY_COMPACTED_XML '.repeat(50000) });
+  h.finish(engine); await first.done;
+  const nativeId = c.segments[engine].nativeId;
+  h.state.activeId = 'b';
+  h.state.selectionRevision = 7;
+  assert.equal((await h.manager.compact(c.id)).native, true);
+  const restarted = h.restart(), restored = restarted.get(c.id);
+  h.state.selectionRevision = 0;
+  const oldSelection = { ...restarted.settings(engine, c.id), subscriptionId: 'b' };
+  assert.equal(restarted.nativeCompactionDecision(restored, engine, oldSelection).reason, 'subscription-account-changed',
+    'reproduce the old global override that forced a full-history summary');
+  restarted.compact = async () => { throw new Error('Unnecessary whole-history compaction'); };
+  const next = await restarted.send(engine, { sessionId: c.id, prompt: 'Continue now' });
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'a');
+  assert.equal(h.sent.at(-1).opts.sessionId, nativeId);
+  assert.equal(h.sent.at(-1).prompt, 'Continue now');
+  h.finish(engine); await next.done;
+  assert.equal(h.state.activeId, 'b');
+  const routing = JSON.parse(logs.findLast(line => line.startsWith('context routing: ')).slice('context routing: '.length));
+  assert.equal(routing.nativeCompaction.eligible, true);
+  assert.equal(routing.subscriptionSelection.reason, 'native-account-retained');
+  assert.equal(routing.subscriptionSelection.activeId, 'b');
+  assert.equal(routing.selectedAccount, 'a');
+});
+
+test('continuing a bound Codex account does not overwrite a newer global preference', async t => {
+  const h = codexSelectionFixture(t);
+  h.drivers.codex.nativeAutoCompaction = true;
+  h.drivers.codex.nativeCompaction = true;
+  const ensure = h.drivers.codex.ensure;
+  h.drivers.codex.ensure = options => { const session = ensure(options); session.compact = async () => ({ ok: true }); return session; };
+  const first = await h.manager.send('codex', { prompt: 'Keep this thread' }); h.finish('codex'); await first.done;
+  const nativeId = h.manager.get(first.sessionId).segments.codex.nativeId;
+  h.codex.handlers['account-select']({ id: 'account-2' });
+  assert.equal((await h.manager.compact(first.sessionId)).native, true);
+  const updates = h.accountUpdates.length;
+  const next = await h.manager.send('codex', { sessionId: first.sessionId, prompt: 'Continue' });
+  assert.equal(h.sent.at(-1).opts.sessionId, nativeId);
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'default');
+  h.progress(); h.finish('codex'); await next.done;
+  assert.equal(h.codex.accountState().activeId, 'account-2');
+  assert.equal(h.accountUpdates.length, updates);
+});
+
+for (const restart of [false, true]) for (const reselect of [false, true]) test('a new account selection after native compaction still takes effect, same preference=' + reselect + ', restart=' + restart, async t => {
+  const h = subscriptionFixture(t);
+  h.state.selectionRevision = 0;
+  h.drivers.codex.nativeCompaction = true;
+  const ensure = h.drivers.codex.ensure;
+  h.drivers.codex.ensure = options => { const session = ensure(options); session.compact = async () => ({ ok: true }); return session; };
+  const first = await h.manager.send('codex', { prompt: 'Remember my task' }); h.finish('codex'); await first.done;
+  const nativeId = h.manager.get(first.sessionId).segments.codex.nativeId;
+  h.state.activeId = 'b';
+  await h.manager.compact(first.sessionId);
+  const manager = restart ? h.restart() : h.manager;
+  if (!reselect) h.state.activeId = 'c';
+  h.state.selectionRevision++;
+  const next = await manager.send('codex', { sessionId: first.sessionId, prompt: 'Continue' });
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, reselect ? 'b' : 'c');
+  assert.notEqual(h.sent.at(-1).opts.sessionId, nativeId);
+  assert.match(h.sent.at(-1).prompt, /Remember my task/);
+  h.finish('codex'); await next.done;
+});
+
+for (const unavailable of ['exhausted', 'signedOut', 'removed'])
+test('required native account migration logs its cause before reading full history: ' + unavailable, async t => {
+  const h = subscriptionFixture(t), logs = [];
+  h.manager.log = line => logs.push(line);
+  h.drivers.codex.nativeCompaction = true;
+  const first = await h.manager.send('codex', { prompt: 'Task' });
+  const c = h.manager.get(first.sessionId);
+  h.manager.append(c, { role: 'tool', text: 'OLD_HISTORY '.repeat(100000) });
+  h.finish('codex'); await first.done;
+  if (unavailable === 'exhausted') h.state.accounts[0].exhausted = true;
+  if (unavailable === 'signedOut') h.state.accounts[0].signedIn = false;
+  if (unavailable === 'removed') h.state.accounts.shift();
+  h.state.activeId = 'b';
+  let trigger;
+  h.manager.compact = async (id, options) => { trigger = options.trigger; throw new Error('Stop before paid summarization'); };
+  await assert.rejects(h.manager.send('codex', { sessionId: c.id, prompt: 'Continue' }), /Stop before paid/);
+  assert.equal(trigger.nativeCompaction.reason, 'subscription-account-changed');
+  assert.equal(trigger.nativeCompaction.bound.subscriptionId, 'a');
+  assert.equal(trigger.nativeCompaction.requested.subscriptionId, 'b');
+  assert.equal(trigger.subscriptionSelection.reason, unavailable === 'exhausted' ? 'native-account-exhausted'
+    : unavailable === 'signedOut' ? 'native-account-unavailable' : 'native-account-removed');
+  assert.ok(logs.some(line => line.includes('context routing:') && line.includes('subscription-account-changed')));
+  assert.equal(h.sent.length, 1);
+});
+
+test('portable compaction retains the precise native rejection in early logs and saved diagnostics', async t => {
+  const logs = [], h = fixture(t, { log: line => logs.push(line), summarize: { available: () => true, run: async () => ({ text: 'MIGRATED_CONTEXT' }) } });
+  h.drivers.codex.nativeCompaction = true;
+  const first = await h.manager.send('codex', { prompt: 'Keep these facts' }); h.finish('codex'); await first.done;
+  const c = h.manager.get(first.sessionId), target = { ...h.manager.settings('codex', c.id), model: 'other-model' };
+  const nativeCompaction = h.manager.nativeCompactionDecision(c, 'codex', target);
+  await h.manager.compact(c.id, { automatic: true, portable: true, destination: { engine: 'codex', settings: target },
+    trigger: { reason: 'before-send', nativeCompaction } });
+  assert.equal(c.lastCompaction.reason, 'portable-requested');
+  assert.equal(c.lastCompaction.nativeCompaction.reason, 'model-changed');
+  assert.equal(c.lastCompaction.nativeCompaction.bound.model, 'fixture');
+  assert.equal(c.lastCompaction.nativeCompaction.requested.model, 'other-model');
+  const early = logs.find(line => line.startsWith('context compaction route: '));
+  assert.match(early, /model-changed/);
+  assert.doesNotMatch(early, /Keep these facts|MIGRATED_CONTEXT/);
+  const restarted = h.restart();
+  assert.equal(restarted.get(c.id).lastCompaction.nativeCompaction.reason, 'model-changed');
+});
+
 test('engine fallback maps a million-character history once and merges short summaries without changing turn effort', async context => {
   const h = subscriptionFixture(context), manager = h.manager;
   const first = await manager.send('codex', { prompt: 'Original task' }); h.finish('codex'); await first.done;
@@ -907,16 +1055,19 @@ test('user /compact can clear model context when even the fallback framing does 
   h.finish('kimi'); await next.done;
 });
 
-test('user /compact falls back after native compaction fails', async context => {
-  const h = await nativeFixture(context, async () => { throw new Error('Provider unavailable'); });
+test('user /compact retains native context after a transient failure exhausts its retry', async context => {
+  let attempts = 0;
+  const h = await nativeFixture(context, async () => { attempts++; throw new Error('Provider unavailable'); });
   const { manager, conversation } = h;
   const oldNativeId = conversation.segments.codex.nativeId;
-  const result = await manager.command('codex', 'compact', { sessionId: conversation.id });
-  assert.equal(result.fallback, true);
-  assert.equal(conversation.segments.codex.nativeId, undefined);
-  assert.ok(conversation.retiredSegments.some(segment => segment.nativeId === oldNativeId));
+  await assert.rejects(manager.command('codex', 'compact', { sessionId: conversation.id }), /Provider unavailable/);
+  assert.equal(attempts, 2);
+  assert.equal(conversation.segments.codex.nativeId, oldNativeId);
+  assert.equal(manager.rows(conversation).some(row => row.file), false);
+  assert.equal(conversation.lastCompaction.route, 'native');
   const next = await manager.send('codex', { sessionId: conversation.id, prompt: 'Continue' });
-  assert.match(h.sent.at(-1).prompt, /Remember the original task/);
+  assert.equal(h.sent.at(-1).opts.sessionId, oldNativeId);
+  assert.equal(h.sent.at(-1).prompt, 'Continue');
   h.finish('codex'); await next.done;
 });
 
@@ -1041,7 +1192,7 @@ test('a long edited history can finish more than 32 fast requests within five mi
   assert.equal(manager.busy(c.id), false);
 });
 
-test('retrying engine compaction after restart reuses completed fragments without publishing partial history', async context => {
+test('retrying an older engine checkpoint after restart reuses completed fragments without publishing partial history', async context => {
   const h = subscriptionFixture(context), manager = h.manager, c = manager.create('codex');
   manager.append(c, { role: 'user', text: 'Task constraints' });
   manager.append(c, { role: 'tool', text: 'x'.repeat(600000) });
@@ -1057,6 +1208,11 @@ test('retrying engine compaction after restart reuses completed fragments withou
   h.finish('codex', 'error', 'Provider unavailable');
   await rejected;
   assert.deepEqual(manager.rows(c).filter(row => !row.internal), before);
+  const settings = manager.settings('codex', c.id), budget = Math.floor(manager.summaryTransportCap(c, 'codex', settings) * 1.8);
+  delete c.compactionRecovery.scope;
+  c.compactionRecovery.key = createHash('sha256').update(JSON.stringify([c.cwd, 'codex', settings.model, settings.connection,
+    settings.subscriptionId, budget, before.at(-1).seq, Infinity, planCompaction(before, budget).units])).digest('hex');
+  manager.save(c);
   const restarted = h.restart(), restored = restarted.get(c.id);
   const offset = h.sent.length;
   const retry = restarted.compact(c.id, { portable: true });
@@ -1071,6 +1227,66 @@ test('retrying engine compaction after restart reuses completed fragments withou
   assert.equal(restored.lastCompaction.reusedRequests, 1);
   assert.equal(restored.compactionRecovery, undefined);
   assert.match(fs.readFileSync(result.file, 'utf8'), /FINAL_CONTEXT/);
+});
+
+test('appending a turn after a failed compaction reuses unchanged fragments across restart', async context => {
+  const h = subscriptionFixture(context), manager = h.manager, c = manager.create('codex');
+  manager.append(c, { role: 'user', text: 'Task constraints' });
+  manager.append(c, { role: 'tool', text: 'x'.repeat(600000) });
+  manager.save(c);
+  const first = manager.compact(c.id, { portable: true });
+  const rejected = assert.rejects(first, /Provider unavailable/);
+  await h.flush();
+  const completedPrompt = h.sent.at(-1).prompt;
+  h.finish('codex', 'success', 'COMPLETED_FRAGMENT');
+  await h.flush();
+  const unfinishedPrompt = h.sent.at(-1).prompt;
+  h.finish('codex', 'error', 'Provider unavailable');
+  await rejected;
+  const restarted = h.restart(), restored = restarted.get(c.id);
+  restarted.append(restored, { role: 'user', text: 'NEW_CONSTRAINT: preserve the saved files' });
+  restarted.save(restored);
+  const offset = h.sent.length;
+  const retry = restarted.compact(c.id, { portable: true });
+  await h.flush();
+  assert.equal(h.sent.at(-1).prompt, unfinishedPrompt);
+  h.finish('codex', 'success', 'REMAINING_FRAGMENT');
+  await h.flush();
+  assert.match(h.sent.at(-1).prompt, /COMPLETED_FRAGMENT[\s\S]*REMAINING_FRAGMENT/);
+  h.finish('codex', 'success', 'FINAL_CONTEXT');
+  const result = await retry;
+  assert.ok(h.sent.slice(offset).every(item => item.prompt !== completedPrompt));
+  assert.equal(restored.lastCompaction.reusedRequests, 1);
+  assert.match(fs.readFileSync(result.file, 'utf8'), /FINAL_CONTEXT[\s\S]*NEW_CONSTRAINT/);
+});
+
+test('portable checkpoint reuse remains isolated by the actual subscription account', async context => {
+  const h = subscriptionFixture(context), manager = h.manager, c = manager.create('codex');
+  manager.append(c, { role: 'user', text: 'Task constraints' });
+  manager.append(c, { role: 'tool', text: 'x'.repeat(600000) });
+  manager.save(c);
+  const first = manager.compact(c.id, { portable: true });
+  const rejected = assert.rejects(first, /Provider unavailable/);
+  await h.flush();
+  const completedPrompt = h.sent.at(-1).prompt;
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'a');
+  h.finish('codex', 'success', 'ACCOUNT_A_FRAGMENT');
+  await h.flush();
+  h.finish('codex', 'error', 'Provider unavailable'); await rejected;
+  h.state.activeId = 'b';
+  const restarted = h.restart();
+  const retry = restarted.compact(c.id, { portable: true });
+  await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'b');
+  assert.equal(h.sent.at(-1).prompt, completedPrompt);
+  h.finish('codex', 'success', 'ACCOUNT_B_FIRST');
+  await h.flush();
+  h.finish('codex', 'success', 'ACCOUNT_B_REMAINING');
+  await h.flush();
+  assert.doesNotMatch(h.sent.at(-1).prompt, /ACCOUNT_A_FRAGMENT/);
+  h.finish('codex', 'success', 'ACCOUNT_B_CONTEXT');
+  await retry;
+  assert.equal(restarted.get(c.id).lastCompaction.reusedRequests, undefined);
 });
 
 test('router summary idle timeout aborts all pending fragments without publishing a partial context', async context => {
@@ -1163,10 +1379,11 @@ test('router compaction aborts healthy outstanding batches at the whole-run safe
   assert.equal(manager.rows(c).some(row => row.file), false);
 });
 
-for (const changed of ['none', 'history', 'model', 'legacy']) test('router retry checks checkpoint identity: ' + changed, async context => {
+for (const changed of ['none', 'history', 'model', 'route', 'legacy']) test('router retry checks checkpoint identity: ' + changed, async context => {
   let phase = 'first';
+  let route = 'first-route';
   const calls = [];
-  const h = fixture(context, { summarize: { available: () => true, async run(options) {
+  const h = fixture(context, { contextRoute: () => route, summarize: { available: () => true, async run(options) {
     calls.push({ phase, ...options });
     if (phase === 'first' && options.kind === 'reduce') throw new Error('Merge unavailable');
     return { text: options.kind === 'reduce' ? 'COMPLETE_CONTEXT' : 'FRAGMENT_SUMMARY' };
@@ -1177,6 +1394,7 @@ for (const changed of ['none', 'history', 'model', 'legacy']) test('router retry
   assert.ok(c.compactionRecovery.cache.length > 1);
   if (changed === 'history') manager.append(c, { role: 'tool', text: 'Updated constraints' });
   if (changed === 'model') manager.saveSettings('kimi', { sessionId: c.id, model: 'other' });
+  if (changed === 'route') route = 'other-route';
   if (changed === 'legacy') {
     delete c.compactionRecovery.cache;
     delete c.compactionRecovery.key;
@@ -1187,6 +1405,9 @@ for (const changed of ['none', 'history', 'model', 'legacy']) test('router retry
   if (changed === 'none') {
     assert.deepEqual(retried.map(call => call.kind), ['reduce']);
     assert.ok(c.lastCompaction.reusedRequests > 1);
+  } else if (changed === 'history') {
+    assert.ok(retried.some(call => call.kind === 'map'));
+    assert.ok(c.lastCompaction.reusedRequests > 0, 'unchanged fragments remain reusable while the modified fragment is requested again');
   } else {
     assert.ok(retried.some(call => call.kind === 'map'));
     assert.equal(c.lastCompaction.reusedRequests, undefined);
@@ -1328,6 +1549,97 @@ test('native manual compaction retains thread/history and resumes without replay
   assert.equal(harness.sent.at(-1).opts.sessionId, nativeId);
   assert.equal(harness.sent.at(-1).prompt, 'Continue now');
   harness.finish('codex'); await run.done;
+});
+
+for (const mode of ['manual', 'automatic']) test(mode + ' native compaction retains its reported window and route eligibility after restart', async context => {
+  const h = await nativeFixture(context, async () => ({ ok: true }));
+  const { manager, conversation: c } = h, nativeId = c.segments.codex.nativeId;
+  const capacity = { budget: () => ({ cap: 20000, source: 'catalog', routes: [{ cap: 20000, source: 'catalog' }] }) };
+  h.args.contextCapacity = manager.contextCapacity = capacity;
+  const run = await manager.send('codex', { sessionId: c.id, prompt: 'Continue the task' });
+  const emit = event => manager.capture('codex', { ...event, runId: h.sent.at(-1).session.gen });
+  emit({ type: 'gui:usage', usage: { input_tokens: mode === 'automatic' ? 0 : 18000, context_window: 20000 } });
+  if (mode === 'automatic') emit({ type: 'gui:compaction', state: 'completed' });
+  h.finish('codex'); await run.done;
+  if (mode === 'manual') assert.equal((await manager.compact(c.id)).native, true);
+  assert.equal(c.segments.codex.contextUsage, undefined);
+  assert.equal(c.segments.codex.nativeContextWindow, 20000);
+  const restarted = h.restart(), restored = restarted.get(c.id), settings = restarted.settings('codex', c.id);
+  assert.equal(restarted.usesNativeCompaction(restored, 'codex', settings), true);
+  assert.equal(restarted.contextPressure(restored, 'codex', settings).cap, 20000);
+  const next = await restarted.send('codex', { sessionId: c.id, prompt: 'Continue after restart' });
+  assert.equal(h.sent.at(-1).opts.sessionId, nativeId);
+  assert.equal(h.sent.at(-1).prompt, 'Continue after restart');
+  restarted.capture('codex', { type: 'system', subtype: 'init', session_id: 'replacement-native', runId: h.sent.at(-1).session.gen });
+  assert.equal(restored.segments.codex.nativeContextWindow, undefined);
+  h.finish('codex'); await next.done;
+});
+
+test('raising a configured window reuses native context while smaller windows and other bindings remain ineligible', async context => {
+  const h = await nativeFixture(context, async () => ({ ok: true })), { manager, conversation: c } = h;
+  c.segments.codex.contextUsage = { ...manager.settings('codex', c.id), used: 5000, cap: 20000 };
+  manager.saveSettings('codex', { sessionId: c.id, contextWindow: 40000 });
+  assert.equal(manager.usesNativeCompaction(c, 'codex'), true);
+  assert.equal(manager.contextPressure(c, 'codex', manager.settings('codex', c.id)).source, 'usage');
+  assert.equal((await manager.compact(c.id)).native, true);
+  manager.saveSettings('codex', { sessionId: c.id, contextWindow: 10000 });
+  assert.equal(manager.usesNativeCompaction(c, 'codex'), false);
+  manager.saveSettings('codex', { sessionId: c.id, model: 'different-model', contextWindow: 40000 });
+  assert.equal(manager.usesNativeCompaction(c, 'codex'), false);
+});
+
+test('a transient native connection error retries once on the same thread without a portable summary', async context => {
+  const attempts = [];
+  const h = await nativeFixture(context, async session => {
+    attempts.push(session.opts);
+    if (attempts.length === 1) throw Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
+    return { ok: true };
+  });
+  const { manager, conversation: c } = h, nativeId = c.segments.codex.nativeId;
+  const result = await manager.command('codex', 'compact', { sessionId: c.id });
+  assert.equal(result.native, true);
+  assert.equal(attempts.length, 2);
+  assert.ok(attempts.every(options => options.sessionId === nativeId && options.conversationId === c.id));
+  assert.equal(h.sent.length, 1);
+  assert.equal(c.lastCompaction.retries, 1);
+  assert.equal(c.lastCompaction.nativeAttempts, 2);
+});
+
+test('native progress, storage and authentication failures never retry or discard context through /compact', async context => {
+  for (const mode of ['progress', 'storage', 'auth', 'prepare']) {
+    let attempts = 0;
+    const h = await nativeFixture(context, async (session, options) => {
+      attempts++;
+      if (mode === 'progress') options.onProgress();
+      throw Object.assign(new Error(mode === 'auth' ? '401 unauthorized' : 'fetch failed'), { code: mode === 'storage' ? 'ENOSPC' : undefined });
+    });
+    const { manager, conversation: c } = h, original = JSON.stringify(c.segments);
+    if (mode === 'prepare') manager.prepare = async () => { throw new Error('fetch failed'); };
+    await assert.rejects(manager.command('codex', 'compact', { sessionId: c.id }), /fetch failed|unauthorized/);
+    assert.equal(attempts, mode === 'prepare' ? 0 : 1);
+    assert.equal(JSON.stringify(c.segments), original);
+    assert.equal(h.sent.length, 1);
+    assert.equal(manager.busy(c.id), false);
+    assert.equal(manager.rows(c).some(row => row.file), false);
+  }
+});
+
+test('stopping during native retry backoff prevents the retry and preserves its binding', async context => {
+  let attempts = 0;
+  const h = await nativeFixture(context, async () => { attempts++; throw new Error('fetch failed'); });
+  const { manager, conversation: c } = h, original = JSON.stringify(c.segments);
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = manager.command('codex', 'compact', { sessionId: c.id });
+  const rejected = assert.rejects(pending, /canceled/i);
+  await h.flush();
+  assert.equal(attempts, 1);
+  const stopping = manager.cancel({ sessionId: c.id });
+  await rejected;
+  context.mock.timers.tick(251); await h.flush();
+  await stopping;
+  assert.equal(attempts, 1);
+  assert.equal(JSON.stringify(c.segments), original);
+  assert.equal(manager.busy(c.id), false);
 });
 
 test('native-owned context bypasses proactive thresholds but still shows native progress', async context => {
@@ -4774,8 +5086,8 @@ test('accepted route input does not make a Codex native compactor ineligible aft
   assert.equal(h.manager.recovering.size, 0);
   emit({ type: 'gui:compaction', state: 'completed' });
   assert.equal(c.segments.codex.contextUsage, undefined);
-  assert.equal(h.manager.contextPressure(c, 'codex', settings).cap, 272000,
-    'native metadata governs the next turn until a new usage report arrives');
+  assert.equal(h.manager.contextPressure(c, 'codex', settings).cap, 25272,
+    'the confirmed native window survives compaction until a new usage report arrives');
   emit({ type: 'gui:tool', id: 'next', status: 'completed', output: 'x'.repeat(90000) });
   assert.equal(h.manager.recovering.size, 0);
   assert.equal(h.manager.usesNativeCompaction(c, 'codex', settings), true);
@@ -6106,6 +6418,45 @@ test('a timed-out destination summary uses a bounded local handoff on the short 
   assert.doesNotMatch(harness.sent.at(-1).prompt, /HISTORY_x{1000}/);
   assert.ok(manager.rows(conversation).some(row => row.text.startsWith('HISTORY_')));
   harness.finish('kimi'); await next.done;
+});
+
+test('a Markdown handoff reuses native context despite an inflated archive estimate', async context => {
+  const h = await nativeFixture(context, async () => { throw new Error('Unnecessary native compaction'); });
+  const { manager, conversation: c } = h, nativeId = c.segments.codex.nativeId;
+  manager.append(c, { role: 'tool', text: 'ARCHIVED_TOOL_OUTPUT '.repeat(50000) });
+  c.segments.codex.cursor = c.seq; manager.save(c);
+  assert.ok(manager.contextPressure(c, 'codex', manager.settings('codex', c.id)).used > 272000);
+  const switching = manager.switchEngine(c.id, 'kimi', 'markdown');
+  await h.flush();
+  assert.match(h.sent.at(-1).prompt, /self-contained Markdown handoff/);
+  assert.doesNotMatch(h.sent.at(-1).prompt, /ARCHIVED_TOOL_OUTPUT|compact working context/);
+  assert.equal(h.sent.at(-1).opts.sessionId, nativeId);
+  h.finish('codex', 'success', 'Task and remaining steps');
+  await h.flush();
+  assert.equal(h.sent.at(-1).engine, 'kimi');
+  h.finish('kimi', 'success', 'Acknowledged');
+  assert.equal((await switching).engine, 'kimi');
+  assert.equal(h.sent.length, 3);
+});
+
+test('a Markdown handoff overflow tries native compaction before summarizing the archive', async context => {
+  let attempts = 0;
+  const h = await nativeFixture(context, async () => { attempts++; return { ok: true }; });
+  const { manager, conversation: c } = h, nativeId = c.segments.codex.nativeId;
+  const switching = manager.switchEngine(c.id, 'kimi', 'markdown');
+  await h.flush();
+  h.finish('codex', 'error', 'context_length_exceeded');
+  await h.flush();
+  assert.equal(attempts, 1);
+  assert.match(h.sent.at(-1).prompt, /self-contained Markdown handoff/);
+  assert.doesNotMatch(h.sent.at(-1).prompt, /compact working context/);
+  assert.equal(h.sent.at(-1).opts.sessionId, nativeId);
+  assert.equal(c.lastCompaction.route, 'native');
+  assert.equal(c.lastCompaction.requests, 0);
+  h.finish('codex', 'success', 'Task checkpoint from the native session');
+  await h.flush();
+  h.finish('kimi', 'success', 'Received');
+  assert.equal((await switching).engine, 'kimi');
 });
 
 test('Markdown harness switching recovers once when the source handoff hits its native window', async context => {

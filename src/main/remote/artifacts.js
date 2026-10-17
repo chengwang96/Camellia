@@ -42,7 +42,8 @@ function files(reader, device, conversationId) {
       try {
         const canonical = fs.realpathSync.native(file.path);
         const key = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
-        if (result.has(key)) continue;
+        const previous = result.get(key);
+        if (previous && (previous.seq || 0) >= (row.seq || 0)) continue;
         const stat = fs.statSync(canonical);
         if (!stat.isFile()) continue;
         result.set(key, { id: identity(conversation, canonical, stat), name: file.name, kind: file.kind,
@@ -51,7 +52,10 @@ function files(reader, device, conversationId) {
       } catch {}
     }
   }
-  return [...result.values()];
+  // Collect every source before sorting: message order does not reflect edits
+  // to an existing file, and subtasks are collected separately from replies.
+  return [...result.values()].sort((first, second) => second.modifiedAt - first.modifiedAt
+    || (second.seq || 0) - (first.seq || 0));
 }
 
 function listArtifacts(reader, device, conversationId, offset = 0) {

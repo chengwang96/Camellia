@@ -12,4 +12,6 @@ bindingKey = [engine, connection || 'api', model || '', subscriptionId || null]
 
 Changing the model or reasoning level while a reply is running saves it for the **next** turn. The running turn retains a launch-time settings snapshot. Queued messages use the settings in force when each message is actually sent, including a change made after queueing. Engine, connection, and permission changes still wait for the running turn to finish. Native reasoning and cache state never migrate between bindings or engines.
 
+A confirmed native compact records the account preference seen at its start. While that preference remains unchanged, ordinary continuation keeps the just-compacted native account instead of immediately rebuilding the history on another account. Continuing it does not replace the global preference. A new account selection after compaction still takes effect. Automatic failover remains available for an exhausted, signed-out or removed owner, with exact account and native-reuse reasons recorded before any portable summarization.
+
 Verification: `tests/shared-conversations.test.js`, `tests/shared-chat-ui.py`, and the optional quota-consuming `node tests/model-switch-router-smoke.cjs <model-a> <model-b>`.

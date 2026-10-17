@@ -740,6 +740,43 @@ test('artifact listing and streaming expose only authorized workspace deliverabl
   assert.equal((await request(gateway, route, { token })).status, 401);
 });
 
+test('phone artifact lists sort file updates newest first across replies and subtasks', async context => {
+  const { root, manager, gateway, visible, pair } = fixture(context);
+  const write = (name, seconds, contents = name) => {
+    const target = path.join(root, name);
+    fs.writeFileSync(target, contents);
+    fs.utimesSync(target, 1700000000 + seconds, 1700000000 + seconds);
+  };
+  write('reused.md', 0);
+  write('newest.pdf', 30);
+  write('child.md', 10);
+  write('tie-first.txt', 20);
+  write('tie-last.txt', 20);
+  manager.append(visible, { role: 'assistant', text: '`reused.md` `newest.pdf` `tie-first.txt`' });
+  manager.append(visible, { role: 'assistant', text: '`tie-last.txt` `reused.md`' });
+  visible.subagents = [{ id: 'old-child', engine: 'codex', status: 'completed', userSeq: 1,
+    title: 'Earlier subtask', artifacts: [{ path: 'child.md' }, { path: 'tie-last.txt' }], result: '`child.md` `tie-last.txt`' }];
+  const { token } = pair();
+  await gateway.start('127.0.0.1', 0);
+  const route = `/v1/conversations/${visible.id}/artifacts`;
+  const first = (await request(gateway, route, { token })).body.artifacts;
+  assert.deepEqual(first.map(file => file.name), ['newest.pdf', 'tie-last.txt', 'tie-first.txt', 'child.md', 'reused.md']);
+  assert.equal(first.find(file => file.name === 'child.md').source, 'Earlier subtask');
+  assert.equal(first.find(file => file.name === 'tie-last.txt').source, 'Main conversation');
+  const original = first.find(file => file.name === 'reused.md');
+  // Updating a previously delivered path moves its single row to the top,
+  // even without a new assistant message mentioning the file.
+  write('reused.md', 40, 'Updated report');
+  const updated = (await request(gateway, route, { token })).body.artifacts;
+  assert.deepEqual(updated.map(file => file.name), ['reused.md', 'newest.pdf', 'tie-last.txt', 'tie-first.txt', 'child.md']);
+  assert.notEqual(updated[0].id, original.id);
+  assert.equal(new Set(updated.map(file => file.id)).size, 5);
+  assert.equal((await request(gateway, route + '/' + original.id, { token })).status, 404);
+  const download = await fetch(gateway.url + route + '/' + updated[0].id, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(download.status, 200);
+  assert.equal(await download.text(), 'Updated report');
+});
+
 test('artifact downloads accept Windows workspace aliases with different path casing', { skip: process.platform !== 'win32' }, async context => {
   const { root, manager, reader, access, visible, pair } = fixture(context);
   const { listArtifacts, openArtifact } = require('../src/main/remote/artifacts');
@@ -816,12 +853,15 @@ test('artifact listing resolves the same roots as the desktop and paginates with
   assert.ok(!JSON.stringify(resolved).includes(root));
   for (let index = 0; index < 102; index++) {
     const name = `report-${index}.pdf`; fs.writeFileSync(path.join(workspace, name), String(index));
+    fs.utimesSync(path.join(workspace, name), 1700000000 + index, 1700000000 + index);
     manager.append(visible, { role: 'assistant', text: '`' + name + '`', artifacts: [{ path: name }] });
   }
   const first = listArtifacts(reader, device, visible.id);
   const second = listArtifacts(reader, device, visible.id, first.nextOffset);
   assert.equal(first.artifacts.length, 100); assert.equal(second.artifacts.length, 4); assert.equal(second.nextOffset, null);
   assert.equal(new Set([...first.artifacts, ...second.artifacts].map(file => file.id)).size, 104);
+  assert.deepEqual([...first.artifacts, ...second.artifacts].filter(file => file.name.startsWith('report-')).map(file => file.name),
+    Array.from({ length: 102 }, (_, index) => `report-${101 - index}.pdf`));
   const file = first.artifacts[0];
   manager.workspaces.recordContext(visible.id, 'private', workspace);
   await assert.rejects(openArtifact(reader, device, visible.id, file.id), /not found/);
