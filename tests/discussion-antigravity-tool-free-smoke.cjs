@@ -11,7 +11,7 @@ const { randomUUID } = require('node:crypto');
 const { AcpSession } = require('../src/engines/acp-session');
 const { ClaudeHistory } = require('../src/engines/claude-history');
 const { antigravitySpawnSpec } = require('../src/engines/antigravity');
-const { locatePythonRuntime, SUPPORTED_SDK_VERSIONS } = require('../src/main/python-runtime');
+const { locatePythonRuntime } = require('../src/main/python-runtime');
 const { prepareWindowsJob } = require('../src/engines/discussions/windows-job');
 const { WindowsJobJournal } = require('../src/engines/discussions/windows-job-journal');
 const { isolatedEnvironment } = require('../src/benchmark/engines');
@@ -21,7 +21,7 @@ const { removeTree } = require('./test-fs.cjs');
 async function main() {
   assert.equal(process.platform, 'win32', 'This containment probe requires Windows');
   const runtime = locatePythonRuntime(path.resolve(__dirname, '../runtimes/antigravity'));
-  assert.ok(SUPPORTED_SDK_VERSIONS.includes(runtime?.version));
+  assert.ok(runtime?.file && runtime.version);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-sdk-tool-free-'));
   const cwd = path.join(root, 'work'), home = path.join(root, 'adapter'); fs.mkdirSync(cwd);
   const protectedFile = path.join(cwd, 'existing.txt'); fs.writeFileSync(protectedFile, 'keep this content');

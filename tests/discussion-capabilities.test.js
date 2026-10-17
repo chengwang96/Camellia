@@ -37,6 +37,11 @@ test('evidence cannot transfer across binding, runtime or policy changes', () =>
   for (const change of [{ version: 'new-runtime' }, { policyVersion: 'new-policy' }]) {
     assert.equal(evaluateCapability(binding, { ...runtime, ...change }, evidence).reason, 'evidence-mismatch');
   }
+  const installation = { ...runtime, fingerprint: 'exact-installation' };
+  assert.equal(evaluateCapability(binding, installation, evidence).reason, 'evidence-mismatch');
+  assert.equal(evaluateCapability(binding, installation, { ...evidence, runtimeFingerprint: installation.fingerprint }).available, true);
+  assert.equal(evaluateCapability(binding, { ...installation, fingerprint: 'different-installation' },
+    { ...evidence, runtimeFingerprint: installation.fingerprint }).reason, 'evidence-mismatch');
   assert.equal(evaluateCapability(binding, {}, evidence).available, false);
   assert.equal(bindingFingerprint(binding), bindingFingerprint({ ...binding, apiKey: 'never-store', thinking: '', contextWindow: 0 }));
 });

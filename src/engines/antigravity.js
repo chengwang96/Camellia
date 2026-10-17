@@ -10,19 +10,18 @@ const { ClaudeGoal } = require('./claude-goal');
 const { createSessionWorkspaces } = require('./session-workspaces');
 const { readJson } = require('../shared/json-store');
 const { modelId } = require('../api/api-router-config');
-const { pythonEnvironment, globalPythonEnvironment, SUPPORTED_SDK_VERSIONS } = require('../main/python-runtime');
+const { pythonEnvironment, globalPythonEnvironment } = require('../main/python-runtime');
 const { downloadSettings } = require('../main/download-network');
 const { createGoogleAccount, subscriptionEnvironment, requireGoogleProvider, effectiveSelection, stopCli } = require('./antigravity/subscription');
 const { valid } = require('./permission-levels');
 const { accountSummary, accountsFor, normalizeLabel, DEFAULT_ACCOUNT_ID } = require('./subscription-accounts');
 const { getDiscussionLaunch, buildDiscussionSpec, assertDiscussionPoolAccess } = require('./discussions/native-launch');
-const { SUPPORTED_CLI_VERSIONS } = require('../main/antigravity-cli-runtime');
 
 function antigravitySpawnSpec({ runtime, home, route, config = {}, env, python, executionPolicy }) {
   // Explicit main-process launch input, never a native settings/permission-mode
   // field. This primitive does not register production discussion capability.
-  if (executionPolicy !== undefined && (executionPolicy !== 'tool-free-v1' || !SUPPORTED_SDK_VERSIONS.includes(runtime.version)))
-    throw new Error('Unverified Antigravity execution policy or SDK version');
+  if (executionPolicy !== undefined && executionPolicy !== 'tool-free-v1')
+    throw new Error('Unverified Antigravity execution policy');
   if (executionPolicy && (Object.keys(config.mcpServers || {}).length || config.skillsPaths?.length))
     throw new Error('Tool-free Antigravity cannot load MCP servers or skills');
   return { args: ['-u', path.join(__dirname, 'antigravity/bridge.py').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', env: {
@@ -36,9 +35,8 @@ function antigravitySpawnSpec({ runtime, home, route, config = {}, env, python, 
 function subscriptionSpawnSpec({ runtime, home, env, proxyUrl, model = '', effort = '', literalInput = false, discussion = false, skipPermissions = false }) {
   // Discussion/context inputs must remain text. This prevents native slash
   // expansion only; it is not a tool or extension execution policy.
-  if (typeof literalInput !== 'boolean' || literalInput && !SUPPORTED_CLI_VERSIONS.includes(runtime.version))
-    throw new Error('Unverified Antigravity CLI literal input or runtime version');
-  if (discussion && (!literalInput || !SUPPORTED_CLI_VERSIONS.includes(runtime.version))) throw new Error('Unsupported Antigravity discussion runtime');
+  if (typeof literalInput !== 'boolean') throw new Error('Unverified Antigravity CLI literal input');
+  if (discussion && !literalInput) throw new Error('Antigravity discussions require literal input');
   return { args: [path.join(__dirname, 'antigravity/cli-bridge.cjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')], modeEngine: 'antigravity', applyThinking: false, prepareTimeout: 65000, env: {
     ...subscriptionEnvironment(env, proxyUrl), CAMELLIA_ANTIGRAVITY_CLI: JSON.stringify({ exe: runtime.file, home, model, effort,
       ...(literalInput ? { literalInput: true } : {}), ...(discussion ? { discussion: true } : {}), ...(skipPermissions ? { skipPermissions: true } : {}) }),

@@ -9,7 +9,6 @@ const { writeJson } = require('../shared/json-store');
 const { execFileSync, spawnSync } = require('node:child_process');
 const versions = new Map();
 const checkedPaths = new Map();
-const SUPPORTED_CLI_VERSIONS = Object.freeze(['1.2.3', '1.2.14', '1.3.5']);
 
 function isAntigravityCliHelp(output) {
   // The IDE, Python and other native executables also answer --version. Check
@@ -94,5 +93,5 @@ async function installAntigravityCli({ source, dir, connection, run, report }) {
   return locateAntigravityCli(dir);
 }
 
-module.exports = { locateAntigravityCli, installAntigravityCli, SUPPORTED_CLI_VERSIONS, isAntigravityCliHelp,
+module.exports = { locateAntigravityCli, installAntigravityCli, isAntigravityCliHelp,
   rememberAntigravityCli, checkedAntigravityCliVersion };

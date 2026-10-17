@@ -6,7 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const YAML = require('yaml');
 const TOML = require('smol-toml');
-const { googleDiscussionSpec, extraTextSpec, kimiCredentialFile, VERSIONS } = require('../src/engines/discussions/text-runtimes');
+const { googleDiscussionSpec, extraTextSpec, kimiCredentialFile } = require('../src/engines/discussions/text-runtimes');
+const { CONNECTIONS } = require('../src/engines/discussions/capabilities');
 const { isolatedEnvironment } = require('../src/benchmark/engines');
 const { removeTree } = require('./test-fs.cjs');
 const { DiscussionProduction } = require('../src/engines/discussions/production');
@@ -24,7 +25,7 @@ function setup(t) {
 
 test('Codex discussion catalogs keep text-only instructions in both native schema fields', t => {
   const input = setup(t);
-  const spec = codexTextSpec({ ...input, runtime: { version: '0.160.1', file: path.join(input.root, 'codex') },
+  const spec = codexTextSpec({ ...input, runtime: { version: '99.0.0-next.1', file: path.join(input.root, 'codex') },
     model: 'fixture-model', connection: 'api', inherited: input.env });
   const config = TOML.parse(fs.readFileSync(path.join(input.home, 'config.toml'), 'utf8'));
   const catalog = JSON.parse(fs.readFileSync(config.model_catalog_json, 'utf8'));
@@ -50,42 +51,50 @@ test('macOS production registers all six engines with the Unix supervisor and Wi
   }
 });
 
-test('validated runtime upgrades stay available and produce distinct evidence; unknown versions remain blocked', () => {
+test('every configured harness can verify future and prerelease runtimes without an application update', () => {
   const production = Object.create(DiscussionProduction.prototype);
   const installed = {};
   production.registry = { get: () => ({}) };
   production.runtimes = () => ({ locate: (engine, connection) => ({ version: installed[engine + ':' + connection] }) });
-  for (const [engine, previous, next] of [['codex', '0.154.0', '0.160.0'], ['codex', '0.160.0', '0.160.1'], ['codex', '0.160.1', '0.161.0'], ['claude', '2.1.273', '2.1.287'],
-    ['claude', '2.1.287', '2.1.288'], ['claude', '2.1.288', '2.1.289'], ['claude', '2.1.289', '2.1.291'], ['dsh', '0.1.5-rc.2', '0.2.0-rc.2'],
-    ['kimi', '2.0.0', '2.1.1'], ['antigravity', '0.1.17', '0.1.20']]) {
-    const binding = { engine, connection: 'api' }, key = engine + ':api';
-    installed[key] = previous;
-    assert.equal(production.canVerify(binding), true);
-    const before = production.runtimeInfo(binding);
-    installed[key] = next;
-    assert.equal(production.canVerify(binding), true);
-    assert.notEqual(production.runtimeInfo(binding).version, before.version, 'Old evidence cannot admit an upgraded runtime');
-    installed[key] = '99.0.0';
-    assert.equal(production.canVerify(binding), false);
+  for (const [engine, connections] of Object.entries(CONNECTIONS)) {
+    for (const connection of connections) {
+      const binding = { engine, connection }, key = engine + ':' + connection;
+      installed[key] = '99.0.0';
+      assert.equal(production.canVerify(binding), true);
+      assert.equal(production.canInstall(binding), false);
+      const before = production.runtimeInfo(binding);
+      installed[key] = '100.0.0-next.1';
+      assert.equal(production.canVerify(binding), true);
+      assert.notDeepEqual(production.runtimeInfo(binding), before, 'Old evidence cannot admit an upgraded runtime');
+    }
   }
 });
 
-test('Codex 0.161.0 can verify API and subscription connections; missing and unsupported runtimes have different remedies', () => {
+test('missing runtimes and unsupported connections cannot enter verification', () => {
   const production = Object.create(DiscussionProduction.prototype);
   production.registry = { get: () => ({}) };
-  let runtime = { version: '0.161.0' };
+  let runtime = { version: '99.0.0' };
   production.runtimes = () => ({ locate: () => runtime });
   for (const connection of ['api', 'subscription']) {
     const binding = { engine: 'codex', connection };
     assert.equal(production.canVerify(binding), true);
-    runtime = { version: '99.0.0' };
-    assert.equal(production.canVerify(binding), false);
-    assert.equal(production.reason(binding), 'The installed harness runtime version is not supported for discussions. Update Camellia or select a supported executable in Settings, then refresh models.');
+    assert.match(production.reason(binding), /Verify this connection/);
     runtime = null;
     assert.equal(production.canVerify(binding), false);
+    assert.equal(production.canInstall(binding), true);
     assert.equal(production.reason(binding), 'No harness runtime was found. Install it or set its executable path in Settings, then refresh models.');
-    runtime = { version: '0.161.0' };
+    runtime = { version: '99.0.0' };
   }
+  for (const binding of [{ engine: 'unknown', connection: 'api' }, { engine: 'claude', connection: 'subscription' },
+    { engine: 'codex', connection: 'unknown' }]) {
+    assert.equal(production.canVerify(binding), false);
+    assert.equal(production.canInstall(binding), false);
+  }
+  production.runtimes = () => ({ locate() { throw new Error('Invalid configured executable'); } });
+  assert.equal(production.canVerify({ engine: 'codex', connection: 'api' }), false);
+  assert.equal(production.canInstall({ engine: 'codex', connection: 'api' }), false, 'Installation must not replace an invalid custom path');
+  production.registry.get = () => null;
+  assert.equal(production.canVerify({ engine: 'codex', connection: 'api' }), false);
 });
 
 test('shipped Claude and Codex installer versions can enter discussion verification', () => {
@@ -99,7 +108,7 @@ test('shipped Claude and Codex installer versions can enter discussion verificat
   for (const engine of ['claude', 'codex']) {
     for (const connection of engine === 'codex' ? ['api', 'subscription'] : ['api']) {
       const binding = { engine, connection };
-      assert.equal(production.canVerify(binding), true, engine + ' installer must match the validated discussion policy');
+      assert.equal(production.canVerify(binding), true, engine + ' installer can enter online verification');
       assert.equal(production.runtimeInfo(binding).version, installed[engine]);
     }
   }
@@ -133,7 +142,7 @@ test('new API harness launches keep the exact route and disable native tool disc
   const input = setup(t);
   for (const engine of ['claude', 'kimi', 'pi', 'dsh']) {
     const home = path.join(input.home, engine); fs.mkdirSync(home);
-    const runtime = { version: VERSIONS[engine], file: path.join(input.root, engine + '.js'), dir: input.root };
+    const runtime = { version: '99.0.0-next.1', file: path.join(input.root, engine + '.js'), dir: input.root };
     if (engine === 'dsh') {
       const base = path.join(input.root, 'node_modules/@deepseek-ai/dsh-base'); fs.mkdirSync(base, { recursive: true });
       fs.writeFileSync(path.join(base, 'cordis.patch.yml'), '- insert:\n    - id: tool-bash\n    - id: tool-future-tool\n    - id: tools\n');

@@ -5,7 +5,6 @@ and persistence; Camellia owns credentials, workspace metadata and presentation.
 """
 
 import asyncio
-import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -32,8 +31,8 @@ class Bridge:
         self.config = config
         self.tool_free = "executionPolicy" in config
         if self.tool_free:
-            if config["executionPolicy"] != "tool-free-v1" or importlib.metadata.version("google-antigravity") not in ("0.1.17", "0.1.20"):
-                raise ValueError("Unverified Antigravity execution policy or SDK version")
+            if config["executionPolicy"] != "tool-free-v1":
+                raise ValueError("Unverified Antigravity execution policy")
             native = config.get("settings", {})
             if native.get("mcpServers") or native.get("skillsPaths"):
                 raise ValueError("Tool-free Antigravity cannot load MCP servers or skills")

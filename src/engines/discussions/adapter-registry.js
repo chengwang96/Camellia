@@ -1,5 +1,6 @@
 'use strict';
 
+const { isDeepStrictEqual } = require('node:util');
 const { evaluateCapability, bindingFingerprint } = require('./capabilities');
 const { NativeDiscussionAdapter } = require('./native-adapter');
 const { NativeSessionOwnership } = require('./native-ownership');
@@ -46,6 +47,17 @@ class DiscussionAdapterRegistry {
     return entry.adapter;
   }
   get(engine) { return this.entries.get(engine)?.adapter || null; }
+  updateRuntime(engine, runtime) {
+    const entry = this.entries.get(engine);
+    if (!entry?.enabled) return;
+    if (!runtime?.version || !runtime.policyVersion) throw new Error('Invalid discussion runtime');
+    if (isDeepStrictEqual(entry.runtime, runtime)) return;
+    // Keep ownership, process generations and active stop handlers intact.
+    // A changed installation must earn new evidence before another dispatch.
+    const version = freeze(structuredClone(runtime));
+    entry.evidence.clear();
+    entry.runtime = version; entry.adapter.runtime = version;
+  }
   // Main-process online verification supplies this result; it is never accepted
   // from IPC or a saved participant's permission flags.
   admit(binding, evidence) {

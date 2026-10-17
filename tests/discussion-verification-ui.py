@@ -185,7 +185,7 @@ with sync_playwright() as p:
         expect(page.locator('#verifyBinding')).to_be_hidden()
         assert page.evaluate("calls.filter(x=>x==='verify-member'||x==='verify-binding'||x==='add-member').length") == 0
         page.close()
-    for outcome in ['success', 'failed', 'cancelled']:
+    for outcome in ['success', 'failed', 'cancelled', 'runtime-changed']:
         page = browser.new_page(viewport={'width':1200,'height':900})
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(bridge)
@@ -208,10 +208,11 @@ with sync_playwright() as p:
             card.get_by_role('button', name='取消验证', exact=True).click()
             expect(card).to_contain_text('已取消讨论请求')
             expect(card.locator('.member-state')).to_have_text('连接待验证')
-        elif outcome == 'failed':
-            page.evaluate("finishAutomaticVerification('Selected account quota is exhausted.')")
+        elif outcome in ['failed', 'runtime-changed']:
+            error = 'The harness runtime changed during verification. Refresh models and try again.' if outcome == 'runtime-changed' else 'Selected account quota is exhausted.'
+            page.evaluate('finishAutomaticVerification', error)
             expect(card.locator('.member-state')).to_have_text('连接验证失败')
-            expect(card).to_contain_text('Selected account quota is exhausted.')
+            expect(card).to_contain_text('验证期间 Harness 运行时发生变化' if outcome == 'runtime-changed' else error)
             expect(card.get_by_role('button', name='验证连接', exact=True)).to_be_visible()
         else:
             page.evaluate('finishAutomaticVerification()')

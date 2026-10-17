@@ -91,6 +91,30 @@ test('registration rejects incomplete, mismatched or duplicate proof and never e
   assert.throws(() => h.registry.unregister('codex'), /Revoke/);
 });
 
+test('runtime refresh invalidates evidence while retaining active ownership and stop handlers', async () => {
+  const h = fixture(), adapter = h.registry.register(h.registration);
+  const original = adapter.evidence(h.binding);
+  h.registry.updateRuntime('codex', { ...h.runtime });
+  assert.equal(adapter.evidence(h.binding), original, 'Unchanged installations keep their verification');
+  const run = h.start(); await tick();
+  const runtime = { version: 'upgraded', policyVersion: h.runtime.policyVersion, fingerprint: 'new-executable' };
+  h.registry.updateRuntime('codex', runtime);
+  runtime.version = 'caller-mutation';
+  assert.equal(h.registry.get('codex'), adapter);
+  assert.equal(adapter.runtime.version, 'upgraded');
+  assert.equal(adapter.evidence(h.binding), null);
+  assert.equal(adapter.activities.size, 1);
+  assert.throws(() => h.registry.admit(h.binding, h.evidence), /Invalid discussion verification/);
+  assert.throws(() => h.registry.updateRuntime('codex', {}), /Invalid discussion runtime/);
+  h.calls[0].finish(); await run.done; await run.handle.stop();
+  assert.equal(h.ownership.active.size, 0);
+  h.registry.admit(h.binding, { ...h.evidence, runtimeVersion: 'upgraded', runtimeFingerprint: 'new-executable' });
+  assert.equal(adapter.gate(h.binding).available, true);
+  h.registry.revoke('codex');
+  h.registry.updateRuntime('codex', h.runtime);
+  assert.equal(adapter.evidence(h.binding), null, 'Runtime refresh never reenables a revoked adapter');
+});
+
 test('revocation cancels preparation and registration cannot be replaced before that activity drains', async () => {
   const h = fixture(), pending = deferred(), prepared = await h.policy.prepare({ profile: h.binding });
   h.policy.prepare = () => pending.promise;
