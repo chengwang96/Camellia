@@ -799,9 +799,9 @@ $('exportData').onclick = async () => {
   $('dataMigrationStatus').classList.remove('error');
   $('dataMigrationStatus').textContent = window.CamelliaI18n.t('Preparing the data package…');
   try {
-    await assertClean();
     const scope = await chooseDataScope({ mode: 'export' });
     if (!scope) { $('dataMigrationStatus').textContent = migrationIdle(); return; }
+    await assertClean();
     const result = await api.dataExport(scope);
     if (result.canceled) $('dataMigrationStatus').textContent = migrationIdle();
     else if (!result.ok) throw new Error(result.error);
@@ -830,13 +830,13 @@ const importData = async file => {
   $('dataMigrationStatus').classList.remove('error');
   $('dataMigrationStatus').textContent = window.CamelliaI18n.t('Reading the data package…');
   try {
-    await assertClean();
     let selectedFile = file;
     // Preview reads only the package index; importing requires confirmation.
     let result = await api.dataImport(file);
     if (result.ok && result.needsSelection) {
       const scope = await chooseDataScope(result);
       if (!scope) { $('dataMigrationStatus').textContent = migrationIdle(); return; }
+      await assertClean();
       $('dataMigrationStatus').textContent = window.CamelliaI18n.t('Reading the data package…');
       dataMigrationActive = true;
       selectedFile = result.file || file;
@@ -847,8 +847,10 @@ const importData = async file => {
     else {
       $('dataMigrationProgress').value = 100;
       const scope = scopeLabel(result.scope);
+      const restart = Array.isArray(result.scope) && result.scope.some(kind => kind !== 'api');
       const note = window.CamelliaI18n.t(result.restored > 0
-        ? 'Imported {0} files ({1}) · {2}. Restart Camellia to use the restored data.'
+        ? restart ? 'Imported {0} files ({1}) · {2}. Restart Camellia to use the restored settings and conversations.'
+          : 'Imported {0} files ({1}) · {2}. API settings are applied without restarting.'
         : 'No compatible settings to import.')
         .replace('{0}', () => fmt(result.restored)).replace('{1}', () => migrationBytes(result.bytes)).replace('{2}', () => scope);
       const backup = result.backupDir ? ' ' + window.CamelliaI18n.t('Previous files were backed up; review them only if something looks wrong.') : '';
@@ -878,8 +880,13 @@ function chooseDataScope({ mode = 'import', categories = {}, skippedEngines = []
   const exporting = mode === 'export';
   $('dataScopeTitle').textContent = exporting ? 'Export data' : 'Import data';
   $('confirmImportData').textContent = exporting ? 'Export selected data' : 'Import selected data';
-  $('dataScopeNote').textContent = exporting ? 'Data packages can contain API keys. Keep them private.'
-    : 'Selected files overwrite matching ones in this installation; current files are backed up first. Restart Camellia when the import finishes.';
+  const scopeNote = () => {
+    if (exporting) return 'Data packages can contain API keys. Keep them private.';
+    const selected = rows.filter(([, id]) => $(id).checked && !$(id).disabled).map(([kind]) => kind);
+    return selected.length && selected.every(kind => kind === 'api')
+      ? 'Selected API settings replace this installation\'s providers, keys and models. Current files are backed up first; the local router port and policy are kept. No restart is needed.'
+      : 'Selected files overwrite matching ones in this installation; current files are backed up first. Restart Camellia after importing settings or conversation history.';
+  };
   $('dataScopeCompatibility').hidden = exporting;
   $('dataScopeCompatibility').textContent = window.CamelliaI18n.t('Local runtime paths are kept. Settings for unavailable harnesses are skipped.')
     + migrationCompatibility({ skippedEngines });
@@ -903,6 +910,7 @@ function chooseDataScope({ mode = 'import', categories = {}, skippedEngines = []
     selectAll.disabled = !available.length;
     selectAll.checked = count > 0 && count === available.length;
     selectAll.indeterminate = count > 0 && count < available.length;
+    $('dataScopeNote').textContent = window.CamelliaI18n.t(scopeNote());
   };
   selectAll.onchange = () => { for (const input of available) input.checked = selectAll.checked; updateAll(); };
   for (const input of available) input.onchange = updateAll;

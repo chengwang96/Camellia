@@ -76,6 +76,54 @@ function queueEditorHarness(overrides = {}) {
   return state;
 }
 
+function composerHarness(overrides = {}) {
+  const state = queueHarness(async () => { assert.fail('Queueing must not send'); }, {
+    running: true, input: { value: '' }, attachments: [],
+    goalUI: { isActive: () => false, isDraft: () => false },
+    renderAttachments() {}, autoResize() {}, saveDraft() {}, maybeScroll() {},
+    ...overrides,
+  });
+  vm.runInContext(source.slice(source.indexOf('  function canQueueComposerMessage()'),
+    source.indexOf('  function drainMessageQueue()')), state);
+  return state;
+}
+
+test('composer queues while a send is preparing or compacting context', async () => {
+  const state = composerHarness({
+    sending: true, running: true, pendingConversationSend: () => ({}),
+    input: { value: 'After compaction' }, attachments: [{ path: 'D:/later.txt' }],
+  });
+  state.messageQueue = [];
+  vm.runInContext(source.slice(source.indexOf('  async function send('),
+    source.indexOf('  function autoResize()')), state);
+  assert.equal(state.canQueueComposerMessage(), true);
+  assert.equal(await state.send(), undefined);
+  assert.equal(state.messageQueue.length, 1);
+  assert.equal(state.messageQueue[0].text, 'After compaction');
+  assert.equal(state.messageQueue[0].attachments[0].path, 'D:/later.txt');
+  assert.equal(state.input.value, '');
+  assert.equal(state.status, 'Message queued · 1 waiting');
+});
+
+test('queueing stays unavailable without a pending send or while the session changes', () => {
+  for (const overrides of [
+    { sending: true, pendingConversationSend: () => null },
+    { sending: false, loadingSession: true },
+    { sending: false, switchingEngine: true },
+    { sending: false, editingMessage: {} },
+  ]) {
+    const state = composerHarness({
+      input: { value: 'Not queued' }, attachments: [],
+      ...overrides,
+    });
+    state.messageQueue = [];
+    assert.equal(state.canQueueComposerMessage(), false);
+    assert.equal(state.queueComposerMessage(), false);
+    assert.equal(state.messageQueue.length, 0);
+    assert.equal(state.input.value, 'Not queued');
+  }
+});
+
 test('return to editor moves queued text, files and images into a persisted draft', () => {
   const state = queueEditorHarness();
   const message = state.messageQueue[0];

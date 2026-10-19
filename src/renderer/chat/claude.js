@@ -1237,8 +1237,16 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     return true;
   }
 
+  function canQueueComposerMessage() {
+    // A pending conversation send may be preparing settings or compacting
+    // context before dispatch. Queueing is safe there because draining still
+    // waits for that send and the resulting turn to finish.
+    return !loadingSession && !switchingEngine && !editingMessage
+      && (!sending || Boolean(pendingConversationSend()));
+  }
+
   function queueComposerMessage() {
-    if (sending || loadingSession || switchingEngine || editingMessage || pendingConversationSend()) return false;
+    if (!canQueueComposerMessage()) return false;
     const text = input.value.trim();
     const queuedAttachments = attachments.slice();
     if (!text && !queuedAttachments.length) return false;
@@ -2777,7 +2785,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // live instead of collapsing into the stop action.
     const findReady = typeof findUI !== 'undefined' && findUI.isDraft();
     const hasMessage = Boolean(input.value.trim() || attachments.length || findReady);
-    const active = running || Boolean(conversationActivity) || Boolean(pendingConversationSend());
+    const pendingSend = pendingConversationSend();
+    const active = running || Boolean(conversationActivity) || Boolean(pendingSend);
     sendBtn.classList.toggle('stop', active && !hasMessage);
     sendBtn.classList.toggle('queue', active && hasMessage);
     if (active && !hasMessage) {
@@ -2787,7 +2796,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       sendBtn.title = active ? 'Queue message' : 'Send';
       sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
     }
-    sendBtn.disabled = (loadingSession && !(active && !hasMessage)) || (sending && !(pendingConversationSend() && active && !hasMessage)) || (Boolean(pendingConversationSend()) && hasMessage) || (Boolean(editingMessage) && !(pendingConversationSend() && active && !hasMessage)) || (!active && goalUI.isActive()) || (!active && !hasMessage);
+    sendBtn.disabled = (loadingSession && !(active && !hasMessage)) || (sending && !(pendingSend && (hasMessage || (active && !hasMessage)))) || (Boolean(editingMessage) && !(pendingSend && active && !hasMessage)) || (!active && goalUI.isActive()) || (!active && !hasMessage);
     renderMessageQueue();
   }
 
@@ -2816,10 +2825,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   async function send(queuedMessage = null) {
-    if ((loadingSession && !((running || conversationActivity || pendingConversationSend()) && !queuedMessage && !input.value.trim() && !attachments.length)) || (sending && !(pendingConversationSend() && !queuedMessage && !input.value.trim() && !attachments.length))) return;
-    const active = running || Boolean(conversationActivity) || Boolean(pendingConversationSend());
+    const pendingSend = pendingConversationSend();
+    const composerHasMessage = Boolean(input.value.trim() || attachments.length);
+    if ((loadingSession && !((running || conversationActivity || pendingSend) && !queuedMessage && !composerHasMessage))
+        || (sending && !(pendingSend && !queuedMessage))) return;
+    const active = running || Boolean(conversationActivity) || Boolean(pendingSend);
     if (active && !queuedMessage) {
-      if ((input.value.trim() || attachments.length) && (pendingConversationSend() || editingMessage || switchingEngine)) return;
+      if ((input.value.trim() || attachments.length) && (editingMessage || switchingEngine)) return;
       if (input.value.trim() || attachments.length) { queueComposerMessage(); return; }
       const stopSessionId = context.sessionId, stopRunId = currentRunId, stopOpenSeq = sessionOpenSeq;
       if (messageQueue.length) setMessageQueuePaused(true);
@@ -2950,6 +2962,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // queued behind it even if the engine has not emitted an event yet.
     updateConversationControls();
     if (!res.ok) {
+      if (messageQueue.length) setMessageQueuePaused(true);
       if (sendContext.sessionId && sendContext.dispatched && !queuedMessage) {
         writeUi('failed-send:' + sendContext.sessionId, { text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at });
         showFailedSend({ text, attachments: atts, error: res.error || 'No response from the app', at: userMessage.messageData.at }, userMessage);
@@ -3098,7 +3111,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
     }
     if (e.key === 'Escape' && findUI.isDraft()) { e.preventDefault(); findUI.setDraft(false); return; }
-    if (e.key === 'Enter' && e.altKey && !e.isComposing && (running || conversationActivity)) { e.preventDefault(); if (!sending) queueComposerMessage(); return; }
+    if (e.key === 'Enter' && e.altKey && !e.isComposing && (running || conversationActivity || pendingConversationSend())) { e.preventDefault(); queueComposerMessage(); return; }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
 

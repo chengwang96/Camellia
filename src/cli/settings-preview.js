@@ -10,8 +10,8 @@ const action = (id, label, title, lines, danger = false) => ({ id, label, title,
 const PAGES = [
   {
     id: 'providers', title: pair('服务商与密钥', 'Providers & Keys'),
-    subtitle: pair('API 设置可以导入；订阅身份只保存在这台服务器。', 'Import API routes; subscription identities stay on this server.'),
-    rows: [row(pair('API 路由', 'API routes'), pair('3 个服务商 / 7 个密钥（演示）', '3 providers / 7 keys (demo)')),
+    subtitle: pair('API 密钥与模型可以导入；订阅身份只保存在这台服务器。', 'Import API keys and models; subscription identities stay on this server.'),
+    rows: [row(pair('API 密钥与模型', 'API keys & models'), pair('3 个服务商 / 7 个密钥（演示）', '3 providers / 7 keys (demo)')),
       row(pair('密钥显示', 'Key display'), pair('始终隐藏，不写入日志', 'Hidden; never written to logs')),
       row(pair('订阅账号', 'Subscription accounts'), pair('尚未登录（演示）', 'Not signed in (demo)'))],
     actions: [

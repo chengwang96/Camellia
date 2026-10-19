@@ -27,6 +27,7 @@ function fixture() {
     goalUI: { isActive: () => false, isDraft: () => false },
     sidebar: { render() {}, load() {} }, chat: { querySelector: () => null, querySelectorAll: () => [], appendChild() {} },
     renderAttachments() {}, renderMessageQueue() {}, autoResize() {}, updateConversationControls() { state.updateSendEnabled(); },
+    maybeScroll() {},
     canChangeContext: () => !state.contextBusy(),
     draftKey: () => state.context.sessionId,
     writeUi: (key, value) => drafts.set(key, value), readUi: key => drafts.get(key),
@@ -48,6 +49,7 @@ function fixture() {
   vm.runInContext([
     extract('  function pendingConversationSend()', '  const draftKey'),
     extract('  function saveMessageQueue(', "  window.addEventListener('beforeunload'"),
+    extract('  function canQueueComposerMessage()', '  function drainMessageQueue()'),
     extract('  function conversationBusy()', '  function canChangeContext()'),
     extract('  function updateSendEnabled()', '  async function steerQueuedMessage('),
     extract('  async function steerQueuedMessage(', '  async function send('),
@@ -114,6 +116,23 @@ test('background send failure keeps an edit action and does not unlock another s
   await second;
 });
 
+test('a failed send preparation pauses a queue added during compaction', async () => {
+  const harness = fixture(), { state } = harness;
+  const pending = state.send();
+  harness.settings.resolve({});
+  await flush();
+  state.input.value = 'After compaction';
+  await state.send();
+  assert.deepEqual(JSON.parse(JSON.stringify(state.messageQueue)), [{ text: 'After compaction', attachments: [] }]);
+  assert.equal(state.messageQueuePaused, false);
+  harness.replies[0].resolve({ ok: false, error: 'Compaction failed' });
+  await pending;
+  assert.equal(state.messageQueuePaused, true);
+  assert.equal(harness.drafts.get('queue-paused:conversation-a'), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(state.messageQueue)), [{ text: 'After compaction', attachments: [] }]);
+  assert.equal(harness.requests.length, 1);
+});
+
 test('returning during pending compaction cannot dispatch a duplicate and can stop without a stale run ID', async () => {
   const harness = fixture(), { state } = harness;
   harness.settings.resolve({});
@@ -163,7 +182,7 @@ test('stopping before settings resolve prevents dispatch and restores the draft'
   assert.equal(state.conversationBusy(), false);
 });
 
-test('returning with a nonempty composer cannot steer or duplicate a pending send', async () => {
+test('returning with a nonempty composer queues behind a pending send without duplicating it', async () => {
   const harness = fixture(), { state } = harness;
   const pending = state.send();
   harness.settings.resolve({});
@@ -172,13 +191,15 @@ test('returning with a nonempty composer cannot steer or duplicate a pending sen
   harness.navigate('conversation-a');
   state.input.value = 'A new instruction';
   state.updateSendEnabled();
-  assert.equal(state.sendBtn.disabled, true);
+  assert.equal(state.sendBtn.disabled, false);
   await state.send();
   assert.equal(harness.requests.length, 1);
-  assert.equal(state.input.value, 'A new instruction');
+  assert.equal(state.input.value, '');
+  assert.deepEqual(state.messageQueue.map(message => message.text), ['A new instruction']);
   harness.replies[0].resolve({ ok: false, error: 'Canceled' });
   await pending;
-  assert.equal(state.input.value, 'A new instruction');
+  assert.equal(state.input.value, '');
+  assert.deepEqual(state.messageQueue.map(message => message.text), ['A new instruction']);
   assert.equal(state.conversationBusy(), false);
 });
 

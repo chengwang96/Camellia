@@ -21,8 +21,8 @@ const JSZip = require('jszip');
 const { openArchive, entryMetadata, readEntry } = require('./data-import-archive');
 const { ImportTransaction, recoverDataImports: recoverImports } = require('./data-import-transaction');
 const { snapshotExportFiles } = require('./data-export-snapshot');
-const { SETTINGS_FILES, CONVERSATION_CONFIG, CONVERSATION_KEYS, engineInstalled,
-  readSettings, prepareSettingsExport, prepareSettingsImport } = require('./data-transfer-settings');
+const { SETTINGS_FILES, CONVERSATION_CONFIG, CONVERSATION_KEYS, API_ROUTE_FILE, engineInstalled,
+  readSettings, prepareSettingsExport, prepareSettingsImport, prepareApiExport, prepareApiImport } = require('./data-transfer-settings');
 
 const FORMAT = 'camellia-data';
 // Version 2 separates conversation metadata from portable preferences. Older
@@ -430,6 +430,7 @@ async function createDataPackage({ dataDir, home, appVersion, destination, scope
     if (!snapshots.length) throw new Error('There is nothing to export yet');
     await stripExportAccountMetadata(snapshots);
     await prepareSettingsExport(snapshots);
+    await prepareApiExport(snapshots);
     onProgress?.({ phase: 'snapshot', bytes: snapshotBytes, totalBytes: snapshotBytes, phaseComplete: true });
     const oversizedSnapshot = snapshots.find(file => file.size >= MAX_ENTRY_BYTES);
     if (oversizedSnapshot) throw new Error(`A single file is too large to package: ${oversizedSnapshot.rel}`);
@@ -742,7 +743,7 @@ async function applyPackage({ staging, targets, transaction, onProgress }) {
   return summary;
 }
 
-async function importDataPackage({ file, dataDir, home, scope = 'all', onProgress, installedEngines = {} }) {
+async function importDataPackage({ file, dataDir, home, scope = 'all', onProgress, installedEngines = {}, beforeApply }) {
   if (!file || !fs.existsSync(file)) throw new Error('Choose a Camellia data package to import');
   onProgress = createProgressReporter(onProgress, { import: [0, 70], rewrite: [70, 80], apply: [80, 99] });
   const kinds = normalizeKinds(scope);
@@ -775,12 +776,17 @@ async function importDataPackage({ file, dataDir, home, scope = 'all', onProgres
     ].filter(([from, to]) => from && to && from !== to);
     // Correct paths in staging before any profile file is replaced.
     const rewritten = await rewriteImportedTree({ dataDir: path.join(staging, APP_ROOT), home: path.join(staging, HOME_ROOT), targets: selected, mappings, onProgress });
+    // Recheck live writers only after the selected payload is fully validated,
+    // before reading/merging the destination configuration or replacing files.
+    await beforeApply?.();
     for (const relative of await preserveLocalAccountMetadata({ targets: selected, staging, dataDir, home })) {
       if (!rewritten.includes(relative)) rewritten.push(relative);
     }
     const settings = await prepareSettingsImport({ targets: selected, staging, dataDir, home, installedEngines,
       includeConversations: kinds.includes('conversations') });
     for (const relative of settings.rewritten) if (!rewritten.includes(relative)) rewritten.push(relative);
+    const apiRoutes = await prepareApiImport({ targets: selected, staging, dataDir, home });
+    if (apiRoutes && !rewritten.includes(apiRoutes)) rewritten.push(apiRoutes);
     onProgress?.({ phase: 'rewrite', files: selected.length, totalFiles: selected.length, phaseComplete: true });
     transaction = new ImportTransaction({ dataDir, home, backupDir, homeEntries: [...HOME_DIRS, ...HOME_FILES] });
     const summary = await applyPackage({ staging, targets: selected, transaction, onProgress });
@@ -789,7 +795,7 @@ async function importDataPackage({ file, dataDir, home, scope = 'all', onProgres
       restored: summary.restored, overwritten: summary.overwritten, bytes: summary.bytes,
       backupDir: summary.overwritten ? backupDir : null, rewritten,
       scope: kinds, selected: kinds.length, available,
-      skippedEngines: [...new Set([...skippedEngines, ...settings.skippedEngines])], skippedPaths: settings.skippedPaths,
+      skippedEngines: [...new Set([...skippedEngines, ...settings.skippedEngines])], skippedPaths: settings.skippedPaths, apiRoutes: Boolean(apiRoutes),
       source: { appVersion: manifest.appVersion || null, createdAt: manifest.createdAt || null, platform: manifest.source.platform || null },
       ...(warning ? { warning } : {}),
     };

@@ -412,7 +412,7 @@ Provider keys are stored in local configuration files, not a system credential v
 
 Both export and import support single categories, multiple categories and **Select all**:
 
-- **API configuration.** API routes, provider keys and API balance/model metadata.
+- **API configuration.** API providers, keys and selected models. The local router port, enablement, routing policy, counters and active route stay on the destination.
 - **Application settings.** Options managed by the settings pages: desktop/network preferences, engine defaults and instructions, permission rules, MCP configuration and skills/plugin references. Installed skills/plugins, examples, binaries, indexes, caches and unrelated profile files are excluded.
 - **Conversation history.** Shared conversations with their Goals and scheduled tasks, handoffs, discussions, attachments, titles/workspace membership and portable native API history.
 
@@ -424,7 +424,7 @@ The importer checks the destination's installed harnesses before preview and aga
 
 Older packages containing a complete profile remain readable under the same category selection and account exclusions. The settings allowlist also applies to these packages; old attachments belong to conversation history and installed payloads are omitted. Dedicated subscription entries are skipped before decompression; account fields inside legacy preference files are stripped before installation. API configuration transfer lives here rather than on the API Keys page.
 
-Selected files overwrite matching ones, and the replaced files are written under `<app-data>/migration-backups/<timestamp>/` first. Selected payloads are unpacked and checked before anything is replaced. Absolute paths inside imported metadata are rewritten to the current installation; local account identities are preserved without path changes. Restart Camellia after importing. The package holds API keys in plain text; treat it like the local configuration and do not publish it.
+Selected files overwrite matching ones, and the replaced files are written under `<app-data>/migration-backups/<timestamp>/` first. Selected payloads are unpacked and checked before anything is replaced. Absolute paths inside imported metadata are rewritten to the current installation; local account identities are preserved without path changes. An API-only import applies the provider pool to a running router without an application restart. Restart Camellia after importing application settings or conversation history. The package holds API keys in plain text; treat it like the local configuration and do not publish it.
 
 This moves Camellia's own data. Project files in your workspaces are never copied or deleted.
 

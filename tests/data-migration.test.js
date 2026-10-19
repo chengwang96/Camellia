@@ -315,6 +315,44 @@ test('unselected malformed settings do not prevent importing valid API data', as
   } finally { dispose(source); dispose(target); }
 });
 
+test('API transfers move the provider pool without carrying the local router port or policy', async () => {
+  const source = scratch(), target = scratch();
+  try {
+    const route = { version: 2, enabled: false, port: 19098, routing: { multiKeyConcurrency: false, multiKeyFailover: false },
+      providers: [{ id: 'source', name: 'Source', baseUrl: 'https://api.example.invalid/v1', type: 'custom',
+        protocol: 'openai', models: [{ id: 'source-model', upstream: 'source-model' }],
+        keys: [{ id: 'source-key', key: 'source-secret' }] }] };
+    write(path.join(source.home, '.dsh', 'ollama-proxy.json'), JSON.stringify(route));
+    const localUsage = { 'local-key': { requests: 7, inputTokens: 700, outputTokens: 70 } };
+    const local = { version: 2, enabled: true, port: 19333, routing: { multiKeyConcurrency: true, multiKeyFailover: true },
+      usage: localUsage, active: { 'local-model': 'local-key' },
+      providers: [{ id: 'local', name: 'Local', baseUrl: 'https://local.example.invalid/v1', type: 'custom',
+        protocol: 'openai', models: [{ id: 'local-model', upstream: 'local-model' }],
+        keys: [{ id: 'local-key', key: 'local-secret' }] }] };
+    write(path.join(target.home, '.dsh', 'ollama-proxy.json'), JSON.stringify(local));
+    const file = path.join(source.root, 'api-portable.zip');
+    await createDataPackage({ ...source, destination: file, scope: ['api'] });
+    const zip = await require('jszip').loadAsync(fs.readFileSync(file));
+    const exported = JSON.parse(await zip.file('home/.dsh/ollama-proxy.json').async('string'));
+    assert.deepEqual(exported, { version: 2, providers: route.providers });
+    assert.equal(exported.port, undefined);
+    assert.equal(exported.enabled, undefined);
+    assert.equal(exported.routing, undefined);
+
+    const imported = await importDataPackage({ ...target, file, scope: ['api'] });
+    assert.equal(imported.apiRoutes, true);
+    const next = JSON.parse(fs.readFileSync(path.join(target.home, '.dsh', 'ollama-proxy.json'), 'utf8'));
+    assert.equal(next.port, 19333);
+    assert.equal(next.enabled, true);
+    assert.deepEqual(next.routing, local.routing);
+    assert.equal(next.usage['local-key'].requests, 7);
+    assert.deepEqual(next.active, local.active);
+    assert.deepEqual(next.providers, route.providers);
+    assert.equal(next.providers[0].keys[0].key, 'source-secret');
+    assert.deepEqual(imported.rewritten, ['home/.dsh/ollama-proxy.json']);
+  } finally { dispose(source); dispose(target); }
+});
+
 test('a data package round-trips, rewrites moved paths and skips caches', async t => {
   const source = scratch();
   const target = scratch();

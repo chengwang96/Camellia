@@ -285,6 +285,10 @@ function desktopZoom() {
 
 let runtimeManager;
 let migrationBusy = false;
+// Serializing transfers does not require stopping unrelated engine activity.
+// Only native history snapshots and imports that replace settings/history do.
+let migrationBlocksEngines = false;
+let migrationImportsApi = false;
 function engineBusy(engine) {
   return sharedConversations.isBusy(engine)
     || (engine === 'pi' && piChat.sessions.running)
@@ -369,7 +373,7 @@ function assertRuntimeReinstallAllowed(engine) {
 }
 function anyRuntimeUpdating() { return Object.keys(ENGINES).some(engine => runtimeUpdatesService?.isUpdating(engine)); }
 function assertRuntimeAvailable(engine) {
-  if (migrationBusy) throw new Error('Wait for the data transfer to finish before starting an engine');
+  if (migrationBlocksEngines) throw new Error('Wait for the data transfer to finish before starting an engine');
   if (runtimeUpdatesService?.isUpdating(engine)) throw new Error(`${ENGINES[engine]?.name || engine} is updating. Try again when the update finishes.`);
 }
 function appUpdates() {
@@ -643,7 +647,7 @@ function broadcastAccountInsights(state) {
   if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('dsh:provider-insights', accountInsights(state));
 }
 async function refreshInsights(payload = {}) {
-  if (migrationBusy) throw new Error('Wait for the data transfer to finish before refreshing accounts');
+  if (migrationBlocksEngines) throw new Error('Wait for the data transfer to finish before refreshing accounts');
   const wanted = String(payload.subscriptionId || '');
   const kimiIds = !payload.apiOnly && !payload.providerId && !payload.keyId
     ? kimiAccount.list().map(profile => profile.id).filter(id => !runtimeUpdatesService?.isUpdating('kimi') && (!wanted || wanted === 'kimi:' + id)) : [];
@@ -667,7 +671,7 @@ async function refreshInsights(payload = {}) {
 function refreshAccountBalances() {
   clearTimeout(balanceRefreshTimer);
   const minutes = accountRefreshMinutes();
-  if (!migrationBusy && accountRefreshEnabled()) {
+  if (!migrationBlocksEngines && accountRefreshEnabled()) {
     try { void refreshInsights({ force: false }).catch(e => log(`account refresh: ${e.message}`)); } catch (e) { log(`account refresh: ${e.message}`); }
   }
   balanceRefreshTimer = setTimeout(refreshAccountBalances, minutes * 60000);
@@ -680,12 +684,11 @@ function apiRouterState() {
       presets: routerConfig.PRESETS, configPath: ollamaProxyConfigPath(), subscriptionUsage: subscriptionUsageState() };
   } catch (e) { return { ok: false, error: e.message }; }
 }
-// Full-fidelity API route bundle shared by file export and the paired mobile
-// client. Providers, endpoints and raw keys are included; subscription
-// accounts stay device-local and are never part of the payload.
+// Paired CLI devices receive the portable provider pool, never this
+// installation's router port, enablement or routing policy.
 function apiRoutesBundle(config = readOllamaProxyConfig()) {
   return { format: 'camellia-api-routes', version: 2, exportedAt: new Date().toISOString(),
-    config: { enabled: config.enabled, port: config.port, providers: config.providers } };
+    config: { version: 2, providers: config.providers } };
 }
 async function startOllamaProxyHandle() {
   await stopOllamaProxyHandle();
@@ -729,6 +732,31 @@ async function saveApiRouter(payload) {
   let warning;
   try { engineSettings().syncManagedRoutes(); } catch (e) { warning = "Routes saved, but global CLI connections could not be synchronized: " + e.message; }
   return { ok: true, state, warning };
+}
+
+// A data-package import replaces the portable provider pool on disk. Apply it
+// in place so a port or policy that stayed local is not treated as an import.
+async function applyImportedApiRoutes() {
+  try {
+    if (ollamaProxyHandle?.getState().running && routerConfig.hasRoutes(readOllamaProxyConfig())) {
+      ollamaProxyHandle.reload();
+      if (!ollamaProxyHandle.getState().running) throw new Error(ollamaProxyHandle.getState().error || 'The API router stopped');
+    } else {
+      await startOllamaProxyHandle();
+      if (!ollamaProxyHandle?.getState().running && routerConfig.hasRoutes(readOllamaProxyConfig())) {
+        throw new Error(ollamaProxyHandle?.getState().error || 'The API router did not start');
+      }
+    }
+    syncOllamaBaseUrl(Boolean(ollamaProxyHandle?.getState().running));
+    let warning;
+    try { engineSettings().syncManagedRoutes(); } catch (e) { warning = "API settings were imported, but global CLI connections could not be synchronized: " + e.message; }
+    broadcastApiRouter(apiRouterState());
+    if (loadConfig().autoRefreshBalances !== false) void insights().refresh({ force: false }).catch(e => log(`account refresh: ${e.message}`));
+    return warning;
+  } catch (e) {
+    log(`data import: API routes were restored but could not be applied: ${e.message}`);
+    return 'API settings were imported, but the local API router could not apply them yet: ' + e.message;
+  }
 }
 
 // Add an explicit pool provider to DSH while preserving existing selections.
@@ -1552,6 +1580,7 @@ if (!gotSingleInstanceLock) {
   for (const [name, handler] of Object.entries({
     'benchmark-state': () => ({ ok: true, ...benchmarks().state() }),
     'benchmark-start': async payload => {
+      if (migrationBlocksEngines || migrationImportsApi) throw new Error('Wait for the data transfer to finish before starting a benchmark');
       if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before starting a benchmark');
       return { ok: true, ...await benchmarks().start(payload) };
     },
@@ -1577,28 +1606,6 @@ if (!gotSingleInstanceLock) {
       if (result.canceled || !result.filePath) return { ok: true, canceled: true };
       writeJson(result.filePath, report);
       return { ok: true };
-    },
-    'api-router-export': async () => {
-      const cfg = readOllamaProxyConfig();
-      const result = await dialog.showSaveDialog(settingsWindow || mainWindow, { title: uiText('Export API route configuration'),
-        defaultPath: `camellia-api-routes-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: 'JSON configuration', extensions: ['json'] }] });
-      if (result.canceled || !result.filePath) return { ok: true, canceled: true };
-      writeJson(result.filePath, apiRoutesBundle(cfg));
-      return { ok: true, keys: cfg.providers.reduce((n, p) => n + p.keys.length, 0) };
-    },
-    'api-router-import': async () => {
-      const result = await dialog.showOpenDialog(settingsWindow || mainWindow, { title: uiText('Import API route configuration'),
-        filters: [{ name: 'JSON configuration', extensions: ['json'] }], properties: ['openFile'] });
-      if (result.canceled || !result.filePaths.length) return { ok: true, canceled: true };
-      const bundle = readJson(result.filePaths[0], null);
-      if (bundle?.format !== 'camellia-api-routes' || !bundle.config || !Array.isArray(bundle.config.providers)) {
-        throw new Error('This file is not a Camellia API route export');
-      }
-      const prev = readOllamaProxyConfig();
-      // Keep live usage counters and per-model active route state; replace the rest.
-      const imported = routerConfig.normalizeConfig({ ...bundle.config, usage: prev.usage, active: prev.active }, prev);
-      const saved = await saveApiRouter(imported);
-      return { ...saved, providers: imported.providers.length };
     },
     'engine-settings-get': ({ engine }) => ({ ok: true, ...engineSettings().get(engine) }),
     'subscription-preferences-get': ({ engine }) => {
@@ -1711,6 +1718,7 @@ if (!gotSingleInstanceLock) {
       return appUpdates().install(send, available);
     },
     'runtime-update': async ({ engine }) => {
+      if (migrationBlocksEngines) throw new Error('Wait for the data transfer to finish before starting an engine');
       if (appUpdatesService?.state().installing) throw new Error('Wait for the Camellia update to finish before updating a runtime');
       if (benchmarkRunner?.pending || discussionService?.active) throw new Error('Stop the benchmark or discussion before updating a runtime');
       if (engineBusy(engine)) throw new Error('Stop conversations using this engine before updating it');
@@ -2205,9 +2213,8 @@ if (!gotSingleInstanceLock) {
     try { const result = await storageCleanup.clean(payload?.token); remoteDesktop?.attachmentsChanged(); return { ok: true, ...result }; }
     catch (error) { return { ok: false, error: error.message }; }
   });
-  // Move a profile between installs, folders or computers. Both directions are
-  // explicit, refuse to run while an engine is busy, and report progress so the
-  // settings page can show a real bar instead of a frozen button.
+  // File transfers check the selected data, while whole-directory maintenance
+  // still needs the complete profile to be idle before restarting.
   let dataDirectoryRestart = false;
   let pluginCacheRestart = false;
   const migrationHome = os.homedir();
@@ -2227,9 +2234,26 @@ if (!gotSingleInstanceLock) {
       throw new Error('Wait for downloads and updates to finish before moving your data');
     }
   };
+  const assertDataTransferIdle = (scope, importing = false) => {
+    if (appQuitting || dataDirectoryRestart || appUpdatesService?.state().installing) {
+      throw new Error('Wait for Camellia to finish restarting or installing an update before transferring data');
+    }
+    const replacesProfile = importing && (scope.includes('settings') || scope.includes('conversations'));
+    if (scope.includes('conversations') || replacesProfile) {
+      if (cleanupActivity()) throw new Error('Stop the current response or goal before moving your data');
+      if (benchmarkRunner?.pending || discussionService?.active) throw new Error('Stop the benchmark or discussion before moving your data');
+    }
+    // Runtime upgrades can rewrite the local configuration merged by these
+    // imports. Runtime/quiz downloads only populate excluded installation data.
+    if (replacesProfile && anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before importing settings or conversations');
+    if (importing && scope.includes('api') && benchmarkRunner?.pending) {
+      throw new Error('Stop the benchmark before changing API routes so all engines use the same configuration');
+    }
+  };
   ipcMain.handle('dsh:data-directory-migrate', async () => {
     if (migrationBusy) return { ok: false, error: uiText('A data transfer is already running') };
     migrationBusy = true;
+    migrationBlocksEngines = true;
     let requested = false;
     try {
       if (!managedDataDirectory) throw new Error('Custom data directories are kept unchanged');
@@ -2246,12 +2270,14 @@ if (!gotSingleInstanceLock) {
       if (requested) cancelDirectoryMigration(appDataDirectory);
       dataDirectoryRestart = false;
       migrationBusy = false;
+      migrationBlocksEngines = false;
       return { ok: false, error: error.message };
     }
   });
   ipcMain.handle('dsh:plugin-cache-maintain', async () => {
     if (migrationBusy) return { ok: false, error: uiText('A data transfer is already running') };
     migrationBusy = true;
+    migrationBlocksEngines = true;
     let requested = false;
     try {
       assertMigrationIdle();
@@ -2266,7 +2292,7 @@ if (!gotSingleInstanceLock) {
       return { ok: true, restarting: true };
     } catch (error) {
       if (requested) cancelPluginCacheMaintenance(app.getPath('userData'));
-      pluginCacheRestart = false; dataDirectoryRestart = false; migrationBusy = false;
+      pluginCacheRestart = false; dataDirectoryRestart = false; migrationBusy = false; migrationBlocksEngines = false;
       return { ok: false, error: error.message };
     }
   });
@@ -2274,31 +2300,35 @@ if (!gotSingleInstanceLock) {
     if (migrationBusy) throw new Error('A data transfer is already running');
     migrationBusy = true;
     try {
-      assertMigrationIdle();
       const scope = normalizeMigrationScope(payload?.scope === undefined ? 'all' : payload.scope);
       if (!scope) return { ok: false, error: uiText('Choose at least one category to export') };
+      assertDataTransferIdle(scope);
       const result = await dialog.showSaveDialog(settingsWindow || mainWindow, { title: uiText('Export Camellia data'),
         defaultPath: `camellia-data-${new Date().toISOString().slice(0, 10)}.zip`, filters: [{ name: 'Camellia data package', extensions: ['zip'] }] });
       if (result.canceled || !result.filePath) return { ok: true, canceled: true };
-      assertMigrationIdle();
+      migrationBlocksEngines = scope.includes('conversations');
+      assertDataTransferIdle(scope);
       migrationProgress({ phase: 'export', bytes: 0, totalBytes: 0 });
       // Native API history needs its writers to finish before snapshotting.
       // Configuration-only transfers leave engine and account clients running.
       if (scope.includes('conversations')) {
         for (const engine of NETWORK_ENGINES) await stopEngineForUpdate(engine, 'data export');
-        assertMigrationIdle();
+        assertDataTransferIdle(scope);
       }
       const summary = await createDataPackage({ dataDir: app.getPath('userData'), home: migrationHome, appVersion: app.getVersion(),
-        destination: result.filePath, scope, onProgress: migrationProgress });
+        destination: result.filePath, scope, onProgress: state => {
+          // All remaining ZIP work reads immutable staging files.
+          if (state.phase === 'snapshot' && state.phaseComplete) migrationBlocksEngines = false;
+          migrationProgress(state);
+        } });
       return { ok: true, file: result.filePath, ...summary };
     } catch (error) { log('data export failed: ' + error.message); return { ok: false, error: error.message }; }
-    finally { migrationBusy = false; migrationProgress({ phase: 'done' }); remoteDesktop?.attachmentsChanged(); }
+    finally { migrationBusy = false; migrationBlocksEngines = false; migrationProgress({ phase: 'done' }); remoteDesktop?.attachmentsChanged(); }
   });
   ipcMain.handle('dsh:data-import', async (_event, payload) => {
     if (migrationBusy) throw new Error('A data transfer is already running');
     migrationBusy = true;
     try {
-      assertMigrationIdle();
       let file = payload?.file;
       if (!file) {
         const result = await dialog.showOpenDialog(settingsWindow || mainWindow, { title: uiText('Import Camellia data'),
@@ -2313,14 +2343,24 @@ if (!gotSingleInstanceLock) {
         if (!Object.values(categories).some(category => category.files > 0)) return { ok: false, error: uiText('The package has no Camellia data to import') };
         return { ok: true, needsSelection: true, file, categories, skippedEngines };
       }
-      assertMigrationIdle();
+      const kinds = normalizeMigrationScope(scope);
+      assertDataTransferIdle(kinds, true);
       migrationProgress({ phase: 'import', bytes: 0, totalBytes: 0 });
       const summary = await importDataPackage({ file, scope, dataDir: app.getPath('userData'), home: migrationHome,
-        installedEngines: migrationEngines(), onProgress: migrationProgress });
-      return { ok: true, ...summary };
+        installedEngines: migrationEngines(), onProgress: migrationProgress, beforeApply: async () => {
+          migrationBlocksEngines = kinds.includes('settings') || kinds.includes('conversations');
+          migrationImportsApi = kinds.includes('api');
+          assertDataTransferIdle(kinds, true);
+          if (migrationBlocksEngines) {
+            for (const engine of NETWORK_ENGINES) await stopEngineForUpdate(engine, 'data import');
+            assertDataTransferIdle(kinds, true);
+          }
+        } });
+      const warning = summary.apiRoutes ? await applyImportedApiRoutes() : null;
+      return { ok: true, ...summary, ...(warning ? { warning } : {}) };
     } catch (error) { log('data import failed: ' + error.message); return { ok: false, error: error.message,
       ...(error.backupDir ? { backupDir: error.backupDir, rolledBack: error.rolledBack, recoveryRequired: error.recoveryRequired === true } : {}) }; }
-    finally { migrationBusy = false; migrationProgress({ phase: 'done' }); remoteDesktop?.attachmentsChanged(); }
+    finally { migrationBusy = false; migrationBlocksEngines = false; migrationImportsApi = false; migrationProgress({ phase: 'done' }); remoteDesktop?.attachmentsChanged(); }
   });
   const archivedSources = () => ({
     claude: claudeWorkspaces, kimi: kimiWorkspaces, codex: codex.workspaces,

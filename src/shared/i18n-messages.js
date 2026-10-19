@@ -1580,6 +1580,9 @@
   "Custom data directories are kept unchanged": "自定义数据目录保持不变",
   "Stop the benchmark or discussion before moving your data": "请先停止基准测试或讨论，再迁移数据",
   "Wait for downloads and updates to finish before moving your data": "请等待下载和更新完成，再迁移数据",
+  "Wait for Camellia to finish restarting or installing an update before transferring data": "请等待 Camellia 重启或安装更新完成，再传输数据",
+  "Wait for runtime updates to finish before importing settings or conversations": "请等待引擎更新完成，再导入设置或会话",
+  "Wait for the data transfer to finish before starting a benchmark": "请等待数据传输完成，再开始基准测试",
   "Export selected data": "导出所选内容",
   "Choose at least one category to export": "请至少选择一个类别",
   "Data packages can contain API keys. Keep them private.": "数据包可能包含 API Key，请妥善保管。",
@@ -1601,10 +1604,8 @@
   "{0} process did not stop before data export": "{0} 进程未能退出，请稍后重新导出数据",
   "Wait for the data transfer to finish before starting an engine": "请等待数据传输完成后再启动引擎",
   "Wait for the data transfer to finish before refreshing accounts": "请等待数据传输完成后再刷新账户",
-  "Imported {0} files ({1}). Restart Camellia to use the restored data.": "已导入 {0} 个文件（{1}）。重启 Camellia 后使用恢复的数据。",
   "Previous files were backed up; review them only if something looks wrong.": "原文件已备份，仅在出现异常时查看。",
   "Import data into this installation?": "要把数据导入到当前安装吗？",
-  "Matching conversations, goals, settings and engine history are overwritten by the package. Current files are backed up first. Restart Camellia when the import finishes.": "数据包会覆盖同名的会话、目标、设置和引擎历史；现有文件会先备份。导入完成后请重启 Camellia。",
   "Stop the current response or goal before moving your data": "请先停止当前回复或目标，再迁移数据",
   "A data transfer is already running": "已有数据迁移在进行中",
   "This file is not a Camellia data package": "该文件不是 Camellia 数据包",
@@ -1640,7 +1641,9 @@
   "The package has no data for the selected categories": "数据包中没有所选类别的数据",
   "{0} files · {1}": "{0} 个文件 · {1}",
   "None in this package": "该数据包中无此类内容",
-  "Selected files overwrite matching ones in this installation; current files are backed up first. Restart Camellia when the import finishes.": "所选文件会覆盖当前安装中的同名文件，现有文件会先备份。导入完成后请重启 Camellia。",
   "Import another package": "导入其他数据包",
-  "Imported {0} files ({1}) · {2}. Restart Camellia to use the restored data.": "已导入 {0} 个文件（{1}）· {2}。重启 Camellia 后使用恢复的数据。"
+  "Imported {0} files ({1}) · {2}. API settings are applied without restarting.": "已导入 {0} 个文件（{1}）· {2}。API 设置已直接生效，无需重启。",
+  "Imported {0} files ({1}) · {2}. Restart Camellia to use the restored settings and conversations.": "已导入 {0} 个文件（{1}）· {2}。重启 Camellia 后使用恢复的设置和会话。",
+  "Selected API settings replace this installation's providers, keys and models. Current files are backed up first; the local router port and policy are kept. No restart is needed.": "所选 API 设置会替换本机的服务商、密钥和模型；现有文件会先备份，本机路由端口与策略保持不变，无需重启。",
+  "Selected files overwrite matching ones in this installation; current files are backed up first. Restart Camellia after importing settings or conversation history.": "所选文件会覆盖当前安装中的同名文件，现有文件会先备份。如导入应用设置或会话记录，完成后请重启 Camellia。"
 });

@@ -108,6 +108,33 @@ with sync_playwright() as playwright:
         expect(page.locator("#exportData")).to_be_enabled()
         assert page.evaluate("transferCalls.length") == previous
 
+    # File selection and scope previews are read-only, even if an API draft
+    # cannot currently be saved. Only confirming a transfer flushes that draft.
+    page.evaluate("""() => {
+      window.originalAssertClean = assertClean;
+      window.cleanChecks = 0;
+      assertClean = async () => { window.cleanChecks++; throw new Error('Unsaved API draft fixture'); };
+    }""")
+    for control in ["#exportData", "#importData"]:
+        previous = page.evaluate("transferCalls.length")
+        page.locator(control).click()
+        expect(page.locator("#importDataDialog")).to_be_visible()
+        assert page.evaluate("cleanChecks") == 0
+        page.keyboard.press("Escape")
+        expect(page.locator(control)).to_be_enabled()
+        expected = previous + (1 if control == "#importData" else 0)
+        assert page.evaluate("transferCalls.length") == expected
+    for control in ["#exportData", "#importData"]:
+        previous = page.evaluate("transferCalls.length")
+        page.locator(control).click()
+        page.locator("#confirmImportData").click()
+        expect(page.locator(control)).to_be_enabled()
+        expect(page.locator("#dataMigrationStatus")).to_have_text("Unsaved API draft fixture")
+        expected = previous + (1 if control == "#importData" else 0)
+        assert page.evaluate("transferCalls.length") == expected
+    assert page.evaluate("cleanChecks") == 2
+    page.evaluate("assertClean = window.originalAssertClean")
+
     page.locator("#importData").click()
     expect(page.locator("#dataScopeTitle")).to_have_text("Import data")
     expect(page.locator("#importScopeApi")).to_be_checked()

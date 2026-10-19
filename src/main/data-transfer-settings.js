@@ -34,6 +34,7 @@ const ENGINE_KEYS = ['permissionMode', 'thinkingBudget', 'contextWindow', 'cwd']
 const CONVERSATION_CONFIG = 'app/conversation-config.json';
 const CONVERSATION_KEYS = ['claudeMeta', 'codexMeta', 'kimiMeta', 'antigravityMeta', 'piMeta', 'sharedMeta',
   'kimiSessionConnections', 'codexSessionConnections', 'codexSessionFastModes', 'sharedChat', 'dshChat', 'mode'];
+const API_ROUTE_FILE = 'home/.dsh/ollama-proxy.json';
 const MAX_SETTINGS_BYTES = 8 * 1024 * 1024;
 const pick = (value, keys) => Object.fromEntries(keys.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]]));
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
@@ -163,6 +164,37 @@ async function prepareSettingsExport(files) {
   }
 }
 
+function apiProviders(value) {
+  if (value?.providers !== undefined) {
+    if (!Array.isArray(value.providers)) throw new Error('Invalid API route configuration: ' + API_ROUTE_FILE);
+    return structuredClone(value.providers);
+  }
+  // Legacy route files stored a flat key list. Let the router derive the
+  // equivalent provider entries before they enter a portable package.
+  return require('../../api/api-router-config').normalizeConfig(value).providers;
+}
+
+// A data package carries the provider pool, not the installation's listener.
+// Port, enablement, routing policy, counters and the active route remain local.
+async function prepareApiExport(files) {
+  const file = files.find(item => item.rel.toLowerCase() === API_ROUTE_FILE);
+  if (!file) return;
+  const value = await readSettings(file.abs, file.rel);
+  file.size = await saveSettings(file.abs, { version: 2, providers: apiProviders(value) });
+}
+
+async function prepareApiImport({ targets, staging, dataDir, home }) {
+  const relative = targets.find(item => item.toLowerCase() === API_ROUTE_FILE);
+  if (!relative) return null;
+  const source = path.join(staging, ...relative.split('/'));
+  const target = path.join(home, ...relative.split('/').slice(1));
+  const imported = await readSettings(source, relative);
+  const current = await readSettings(target, relative, 'json', true);
+  const next = { ...current, version: 2, providers: apiProviders(imported) };
+  await saveSettings(source, next);
+  return relative;
+}
+
 async function prepareSettingsImport({ targets, staging, dataDir, home, installedEngines, includeConversations }) {
   const skipped = new Set(), skippedPaths = [], rewritten = [];
   const desktopRel = 'app/desktop-config.json';
@@ -222,5 +254,6 @@ async function prepareSettingsImport({ targets, staging, dataDir, home, installe
   return { skippedEngines: [...skipped], skippedPaths, rewritten };
 }
 
-module.exports = { SETTINGS_FILES, ENGINES, CONVERSATION_CONFIG, CONVERSATION_KEYS, MAX_SETTINGS_BYTES,
-  engineInstalled, portableDesktop, readSettings, prepareSettingsExport, prepareSettingsImport };
+module.exports = { SETTINGS_FILES, ENGINES, CONVERSATION_CONFIG, CONVERSATION_KEYS, API_ROUTE_FILE, MAX_SETTINGS_BYTES,
+  engineInstalled, portableDesktop, readSettings, prepareSettingsExport, prepareSettingsImport,
+  prepareApiExport, prepareApiImport };

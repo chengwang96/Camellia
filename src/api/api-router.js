@@ -81,6 +81,9 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       if (old && cfg.usage[k.id]) latest.usage[k.id] = cfg.usage[k.id];
     }
     cfg = latest; diskMtime = mtime; reconcileQuota();
+    // A data transfer can replace the pool without changing the port. Let the
+    // host update managed CLI clients and the UI after the router re-reads it.
+    try { onState(getState()); } catch { /* observers must not interrupt a request */ }
   }
   function flush() {
     clearTimeout(saveTimer); saveTimer = null;
@@ -575,6 +578,11 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       .filter(key => keyLoad(provider, key) > 0).map(key => provider.id + '/' + key.id)));
     const next = normalizeConfig(raw, previous, { archiveEmptyKeys });
     if (next.port !== cfg.port) throw new Error("Changing the port requires a router restart");
+    const previousKeys = new Map(previous.providers.flatMap(provider => provider.keys.map(key => [provider.id + '/' + key.id, key])));
+    for (const provider of next.providers) for (const key of provider.keys) {
+      const old = previousKeys.get(provider.id + '/' + key.id);
+      if (old && old.key === key.key && previous.usage[key.id]) next.usage[key.id] = previous.usage[key.id];
+    }
     writeConfig(configPath, next);
     const newArchives = next.usageArchive.slice(previous.usageArchive.length);
     for (const provider of previous.providers) for (const key of provider.keys) {
@@ -638,7 +646,8 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     scheduleQuotaProbe();
     ready.then(() => refreshQuota().catch(() => {}), () => {});
   }
-  return { ready, getState, updateConfig, reset, rotate, createScope, refreshQuota, setQuotaCheck, reload: () => { refreshDisk(); notify(); return getState(); }, stop, url: `http://127.0.0.1:${cfg.port}` };
+  return { ready, getState, updateConfig, reset, rotate, createScope, refreshQuota, setQuotaCheck,
+    reload: () => { refreshDisk(); notify(); return getState(); }, stop, url: `http://127.0.0.1:${cfg.port}` };
 }
 
 function routeFingerprint(route) {
