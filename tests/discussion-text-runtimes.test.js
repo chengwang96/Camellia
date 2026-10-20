@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const YAML = require('yaml');
 const TOML = require('smol-toml');
 const { googleDiscussionSpec, extraTextSpec, kimiCredentialFile } = require('../src/engines/discussions/text-runtimes');
@@ -137,6 +138,38 @@ test('Google discussion keeps native subscription auth, selects effort, and has 
   assert.match(fs.readFileSync(path.join(input.cwd, '.agents/agents/camellia-discussion.md'), 'utf8'), /tools: \[\]/);
   assert.equal(fs.existsSync(path.join(input.env.HOME, '.gemini/config/mcp_config.json')), false);
 });
+
+for (const verification of [false, true]) for (const mode of ['auto', 'direct']) {
+  test(`Google discussion ${verification ? 'verification' : 'chat'} preserves the ${mode} subscription network route`, async t => {
+    const { root, node } = setup(t);
+    const profile = { engine: 'antigravity', connection: 'subscription', model: 'gemini-test', accountRef: 'default', thinking: '', contextWindow: 32768 };
+    const runtime = { file: path.join(root, 'agy.exe'), dir: root, version: '1.4.3' };
+    const proxy = mode === 'auto' ? 'http://127.0.0.1:54321' : '';
+    const subscriptionProxy = mode === 'auto' ? 'http://127.0.0.1:7890' : '';
+    const inherited = { ...process.env, CAMELLIA_NETWORK_MODE: mode, CAMELLIA_NETWORK_PROXY: proxy,
+      CAMELLIA_SUBSCRIPTION_PROXY: subscriptionProxy, HTTP_PROXY: proxy, HTTPS_PROXY: proxy,
+      GEMINI_API_KEY: 'must-not-inherit', CAMELLIA_UNRELATED_SECRET: 'must-not-inherit' };
+    const production = new DiscussionProduction({ dataDir: root, node: () => node, environment: () => inherited,
+      registry: { get: () => ({}), updateRuntime() {} },
+      antigravity: { ensureSession() {}, handlers: { 'account-state': async () => ({ models: [] }) } },
+      runtimes: () => ({ locate: engine => engine === 'antigravity' ? runtime : null }), getCatalog: async () => [{ binding: profile }] });
+    const identity = { runtimeId: randomUUID(), deliveryId: randomUUID(), generation: 1 };
+    production.jobs = { prepare: async () => ({ spawn() { assert.fail('Building a launch must not send a prompt'); }, stop: async () => ({ stopped: true }) }) };
+    t.after(() => production.confirmStopped({ identity }));
+    const cwd = path.join(production.root, 'work', randomUUID());
+    const prepared = await production.prepare({ identity, profile, cwd, verification });
+    const spec = prepared.launch.buildSpec({ runtime });
+    assert.equal(spec.env.CAMELLIA_SUBSCRIPTION_PROXY, subscriptionProxy);
+    assert.equal(spec.env.HTTP_PROXY, subscriptionProxy);
+    assert.equal(spec.env.HTTPS_PROXY, subscriptionProxy);
+    assert.equal(spec.env.CAMELLIA_NETWORK_PROXY, proxy);
+    assert.equal(spec.env.NO_PROXY, subscriptionProxy ? 'localhost,127.0.0.1,::1' : '*');
+    assert.equal(spec.env.GEMINI_API_KEY, undefined);
+    assert.equal(spec.env.CAMELLIA_UNRELATED_SECRET, undefined);
+    assert.equal(spec.env.HOME, path.join(production.root, 'native-antigravity', identity.runtimeId, 'profile'));
+    assert.equal(inherited.HTTPS_PROXY, proxy, 'Preparing a member must not change the parent network route');
+  });
+}
 
 test('new API harness launches keep the exact route and disable native tool discovery', t => {
   const input = setup(t);

@@ -282,6 +282,28 @@ test('adding members starts background verification and shares it with manual ve
   assert.equal(checks, 1, 'verified connections and reopening groups do not trigger more checks');
 });
 
+test('verified members send repeatedly without new checks, catalog preparation or a verification banner', async t => {
+  const h = setup(t); let checks = 0;
+  autoVerification(h, async () => { checks++; });
+  const group = await createMembers(h.service, 1), memberId = group.participants[0].id;
+  await h.service.memberChecks.get(memberId)?.promise;
+  assert.equal(checks, 1);
+  const events = []; let catalogReads = 0;
+  const catalog = h.service.getCatalog;
+  h.service.getCatalog = () => { catalogReads++; return catalog(); };
+  h.service.onEvent = () => events.push(h.service.view(h.service.manager.get(group.id)).verifying);
+  for (const requestId of ['first', 'second']) {
+    await h.service.call('send', { id: group.id, requestId, text: 'Continue the discussion', participantIds: [memberId] });
+    for (let i = 0; i < 20 && h.service.active; i++) await tick();
+  }
+  assert.equal(h.calls.length, 2);
+  assert.equal(checks, 1, 'Only adding the member verifies the connection');
+  assert.equal(catalogReads, 0, 'Unchanged verified bindings dispatch directly');
+  assert.ok(events.length > 0);
+  assert.ok(events.every(verifying => verifying === false), 'Normal sends never claim a verification is running');
+  await h.service.shutdown();
+});
+
 test('an automatic verification failure preserves the member and error until an explicit retry', async t => {
   const h = setup(t); let checks = 0;
   autoVerification(h, async () => { if (++checks === 1) throw new Error('Selected account quota is exhausted.'); });
@@ -334,6 +356,72 @@ test('first send verifies once, repairs missing old context metadata, and retry 
   const saved = (await h.service.call('load', { id: group.id })).group;
   assert.equal(saved.participants[0].contextWindow, h.binding.contextWindow);
   assert.equal(saved.messages.at(-1).text, 'Test reply'); assert.equal(saved.verifying, false);
+});
+
+test('sending refreshes legacy working budgets for the same model/account and preserves explicit capacities', async t => {
+  for (const original of [32768, 64000]) {
+    const h = setup(t); h.binding.contextWindow = original;
+    const group = await createMembers(h.service, 1), participantId = group.participants[0].id;
+    await h.service.call('send', { id: group.id, requestId: 'before', text: 'Keep our earlier discussion', participantIds: [participantId] });
+    for (let i = 0; i < 20 && h.service.active; i++) await tick();
+    const previous = h.service.manager.get(group.id);
+    h.binding.contextWindow = 128000;
+    h.service.getCatalog = () => [{ binding: { ...h.binding, accountRef: 'another-account', contextWindow: 999999 } }, { binding: h.binding }];
+    const expected = original === 32768 ? 128000 : original;
+    let verifications = 0;
+    autoVerification(h, async binding => { verifications++; assert.equal(binding.contextWindow, expected); assert.equal(binding.accountRef, 'test-account'); });
+    await h.service.call('load', { id: group.id });
+    assert.equal(h.service.manager.get(group.id).participants[0].contextWindow, original, 'Reading history never changes a binding or calls a model');
+    assert.equal(verifications, 0);
+    await h.service.call('send', { id: group.id, requestId: 'after', text: 'Continue in this group', participantIds: [participantId] });
+    for (let i = 0; i < 20 && h.service.active; i++) await tick();
+    const saved = h.service.manager.get(group.id);
+    assert.equal(saved.participants[0].contextWindow, expected);
+    assert.equal(saved.participants[0].accountRef, 'test-account');
+    assert.deepEqual(saved.messages.slice(0, previous.messages.length), previous.messages);
+    assert.equal(saved.deliveries.at(-1).profile.contextWindow, expected);
+    assert.equal(h.calls.length, 2);
+    assert.equal(verifications, 1);
+    await h.service.shutdown();
+  }
+});
+
+test('serial context failure can be retried after restart and capacity repair without replaying other members', async t => {
+  const h = setup(t); h.binding.contextWindow = 32768;
+  const group = await createMembers(h.service, 3), [first, target, last] = group.participants;
+  const request = h.service.manager.enqueue(group.id, { requestId: 'old-serial', text: 'Keep this original question',
+    participantIds: [first.id, target.id, last.id], mode: 'serial' });
+  const completed = h.service.manager.prepare(group.id, request.deliveryIds[0]);
+  h.service.manager.saveInput(group.id, completed.id, completed.generation, { prompt: 'Synthetic previous input', inputThroughSeq: completed.inputThroughSeq });
+  h.service.manager.start(group.id, completed.id, completed.generation, randomUUID());
+  h.service.manager.complete(group.id, completed.id, completed.generation, 'Keep this completed reply', { ...completed, deliveryId: completed.id, stopped: true, released: true });
+  const failed = h.service.manager.prepare(group.id, request.deliveryIds[1]);
+  h.service.manager.fail(group.id, failed.id, failed.generation, 'failed', { ...failed, deliveryId: failed.id, stopped: true, released: true }, 'This member needs a context summary.');
+  const before = h.service.manager.get(group.id);
+  h.service.manager.store.close();
+  h.binding.contextWindow = 272000;
+  h.service = new DiscussionService(h.options);
+  autoVerification(h, async binding => assert.equal(binding.contextWindow, 272000));
+  assert.equal(h.service.manager.get(group.id).deliveries.at(-1).status, 'interrupted');
+  assert.equal(h.calls.length, 0, 'Restart does not retry any model input');
+  await h.service.call('retry', { id: group.id, deliveryId: failed.id, actionId: 'retry-context-failure' });
+  for (let i = 0; i < 20 && h.service.active; i++) await tick();
+  await h.service.call('retry', { id: group.id, deliveryId: failed.id, actionId: 'retry-context-failure' });
+  assert.equal(h.calls.length, 1, 'An explicit retry dispatches just the selected member once');
+  assert.equal(h.calls[0].identity.participantId, target.id);
+  assert.equal(h.calls[0].identity.profile.contextWindow, 272000);
+  const retried = h.service.manager.get(group.id);
+  assert.deepEqual(retried.deliveries.find(d => d.id === completed.id), before.deliveries.find(d => d.id === completed.id));
+  assert.deepEqual(retried.messages.slice(0, before.messages.length), before.messages);
+  assert.equal(retried.deliveries.find(d => d.id === request.deliveryIds[2]).status, 'interrupted');
+  assert.equal(retried.messages.filter(m => m.role === 'user').length, 1);
+  assert.match(h.calls[0].plan.prompt, /Keep this original question/);
+  assert.match(h.calls[0].plan.prompt, /Keep this completed reply/);
+  await h.service.call('retry', { id: group.id, deliveryId: request.deliveryIds[2], actionId: 'retry-last-member' });
+  for (let i = 0; i < 20 && h.service.active; i++) await tick();
+  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls[1].identity.participantId, last.id);
+  await h.service.shutdown();
 });
 
 test('existing API members migrate from a key to the same provider without losing public history', async t => {

@@ -11,6 +11,7 @@ const { validateReply } = require('./schema');
 const { DiscussionAssets } = require('./assets');
 const { resolveArtifacts } = require('../../main/turn-artifacts');
 const { isVisible: subscriptionModelVisible } = require('../../shared/subscription-models');
+const { UNKNOWN_CONTEXT_BUDGET } = require('../../api/context-capacity');
 
 const { ENGINES: SUPPORTED_ENGINES, apiProviderRef } = require('./catalog');
 const ENGINES = new Set(SUPPORTED_ENGINES);
@@ -67,11 +68,12 @@ class DiscussionService {
     // generated input plans, account homes, launch credentials or ownership records.
     return { id: state.id, title: state.title, pinned: Boolean(state.pinned), revision: state.revision, seq: state.seq, stopping: Boolean(state.stopPending),
       cwd: state.cwd, permissionMode: state.permissionMode || 'ask', permissions: this.scheduler.permissions(state.id),
-      verifying: [...this.pendingStarts.values()].some(row => row.id === state.id),
+      preparing: [...this.pendingStarts.values()].some(row => row.id === state.id),
+      verifying: [...this.pendingStarts.values()].some(row => row.id === state.id && row.verificationIds.length > 0),
       participants: state.participants.map(p => ({ id: p.id, name: p.name, engine: p.engine, connection: p.connection,
         model: p.model, accountLabel: p.accountLabel || '', identityPrompt: p.identityPrompt || '', thinking: p.thinking, contextWindow: p.contextWindow, removed: p.removed,
         removalPending: Boolean(p.removalPending), recoveryRequired: p.retiredSessions.some(s => s.recoveryRequired),
-        verifying: [...this.pendingStarts.values()].some(row => row.id === state.id && row.participantIds.includes(p.id)),
+        verifying: [...this.pendingStarts.values()].some(row => row.id === state.id && row.verificationIds.includes(p.id)),
         verificationError: this.verificationErrors.get(p.id) || null,
         coveredThroughSeq: p.session.coveredThroughSeq, capability: this.capability(p) })),
       messages: state.messages.map(m => ({ id: m.id, seq: m.seq, role: m.role, speakerId: m.speakerId,
@@ -118,23 +120,34 @@ class DiscussionService {
     };
     assertSelectedAvailable();
     if (!this.production || !participantIds.length) return dispatch();
-    const pending = { id, participantIds: [...participantIds], cancelled: false };
+    this.production.refresh();
+    const readMember = participantId => {
+      const member = this.manager.get(id).participants.find(p => p.id === participantId && !p.removed);
+      if (!member) throw new Error('Member not found');
+      this.manager.checkAdmission(id, member.id);
+      if (member.removalPending || member.retiredSessions.some(s => s.recoveryRequired)) throw new Error('Member requires native activity recovery');
+      return member;
+    };
+    const selected = participantIds.map(readMember);
+    if (selected.every(member => member.contextWindow && member.contextWindow !== UNKNOWN_CONTEXT_BUDGET
+      && !(member.connection === 'api' && apiProviderRef(member.accountRef) && apiProviderRef(member.accountRef) !== member.accountRef)
+      && this.capability(member).available)) return dispatch();
+    const pending = { id, participantIds: [...participantIds], cancelled: false,
+      verificationIds: selected.filter(member => !this.capability(member).available).map(member => member.id) };
     const token = randomUUID(); this.pendingStarts.set(token, pending); this.publish(id);
     try {
       this.production.refresh();
       const catalog = await this.getCatalog();
       const members = participantIds.map(participantId => {
-        let member = this.manager.get(id).participants.find(p => p.id === participantId && !p.removed);
-        if (!member) throw new Error('Member not found');
-        this.manager.checkAdmission(id, member.id);
-        if (member.removalPending || member.retiredSessions.some(s => s.recoveryRequired)) throw new Error('Member requires native activity recovery');
+        let member = readMember(participantId);
         member = this.upgradeApiMember(id, member, catalog);
-        // Early beta records saved a zero context window. Fill only that
-        // missing metadata from the same model/account; never swap bindings.
-        if (!member.contextWindow) {
+        // Refresh legacy missing/default budgets from this exact binding's
+        // current metadata. Preserve explicitly selected non-default limits.
+        if (!member.contextWindow || member.contextWindow === UNKNOWN_CONTEXT_BUDGET) {
           const row = catalog.find(row => ['engine', 'connection', 'model', 'accountRef', 'thinking']
             .every(key => (row.binding[key] ?? '') === (member[key] ?? '')) && row.binding.contextWindow > 0);
-          if (row) member = this.manager.configureMember(id, member.id, { contextWindow: row.binding.contextWindow });
+          if (row && row.binding.contextWindow !== member.contextWindow)
+            member = this.manager.configureMember(id, member.id, { contextWindow: row.binding.contextWindow });
         }
         const capability = this.capability(member);
         if (!capability.available && !capability.canVerify) throw new Error(capability.detail || 'This connection cannot be verified in this version.');
@@ -142,6 +155,8 @@ class DiscussionService {
         return member;
       });
       if (pending.cancelled) throw new Error('Discussion cancelled');
+      pending.verificationIds = members.filter(member => !this.capability(member).available).map(member => member.id);
+      this.publish(id);
       for (const member of members) {
         if (pending.cancelled) throw new Error('Discussion cancelled');
         if (!this.capability(member).available) await this.production.verify(member);

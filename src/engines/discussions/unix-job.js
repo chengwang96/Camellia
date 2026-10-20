@@ -5,7 +5,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { randomUUID } = require('node:crypto');
-const { createInterface } = require('node:readline');
+const { jsonLines } = require('../../shared/json-lines');
 const { WindowsJobJournal, jobIdentity } = require('./windows-job-journal');
 
 class UnixJobJournal extends WindowsJobJournal {
@@ -43,7 +43,7 @@ async function prepareUnixJob({ identity, journal, signal, timeoutMs = 30000 }) 
   const scope = validate(identity, journal, timeoutMs);
   if (signal?.aborted) throw Object.assign(new Error('Discussion activity cancelled'), { name: 'AbortError' });
   const record = journal.reserve(scope), nonce = randomUUID(), ready = pending(), confirmed = pending();
-  const host = startHost(record, 'initialize', nonce), lines = createInterface({ input: host.stdio[4] });
+  const host = startHost(record, 'initialize', nonce), lines = jsonLines(host.stdio[4]);
   let proc, sealed = false, proof, failure, closed = false, stopping, exitReceived = false;
   const failProcess = error => { if (proc && !proc.failed) { proc.failed = true; queueMicrotask(() => proc.emit('error', error)); } };
   const fail = error => { failure ||= error; sealed = true; ready.reject(error); confirmed.reject(error); failProcess(error); host.kill('SIGTERM'); };
@@ -52,7 +52,7 @@ async function prepareUnixJob({ identity, journal, signal, timeoutMs = 30000 }) 
     host.stdio[3].write(JSON.stringify({ ...value, nonce }) + '\n');
   };
   const timer = setTimeout(() => fail(new Error('Unix job supervisor preparation timed out')), timeoutMs);
-  lines.on('line', line => {
+  lines.on('data', line => {
     try {
       const value = JSON.parse(line);
       if (value.nonce !== nonce || failure) throw new Error('Invalid Unix job supervisor event');
@@ -81,7 +81,7 @@ async function prepareUnixJob({ identity, journal, signal, timeoutMs = 30000 }) 
   host.on('error', fail); host.stdio[3].on('error', fail);
   host.stdin.on('error', error => { if (!proof) failProcess(error); });
   host.once('close', code => {
-    closed = true; sealed = true; clearTimeout(timer); lines.close(); signal?.removeEventListener('abort', abort);
+    closed = true; sealed = true; clearTimeout(timer); lines.destroy(); signal?.removeEventListener('abort', abort);
     if (proof && !failure && code === 0) confirmed.resolve(proof);
     else { const error = failure || new Error('Unix supervisor exited without verified stop'); ready.reject(error); confirmed.reject(error); failProcess(error); }
     if (proc) { if (proc.exitCode === null) proc.exitCode = -1; proc.emit('close', proc.exitCode, null); }
@@ -126,7 +126,7 @@ async function prepareUnixJob({ identity, journal, signal, timeoutMs = 30000 }) 
 }
 async function recoverUnixJob({ identity, journal, timeoutMs = 30000 }) {
   const scope = validate(identity, journal, timeoutMs), nonce = randomUUID();
-  const host = startHost(journal.read(scope), 'recover', nonce), lines = createInterface({ input: host.stdio[4] });
+  const host = startHost(journal.read(scope), 'recover', nonce), lines = jsonLines(host.stdio[4]);
   // Recovery never consumes native CLI input or account data.
   host.stdin.end(); host.stdout.resume(); host.stderr.resume(); host.stdio[3].end();
   return new Promise((resolve, reject) => {
@@ -134,7 +134,7 @@ async function recoverUnixJob({ identity, journal, timeoutMs = 30000 }) {
     const fail = error => { failure ||= error; host.kill('SIGTERM'); };
     const timer = setTimeout(() => fail(new Error('Unix job recovery timed out')), timeoutMs);
     host.on('error', fail); host.stdio[3].on('error', fail);
-    lines.on('line', line => {
+    lines.on('data', line => {
       try {
         const value = JSON.parse(line);
         if (value.nonce !== nonce || value.type !== 'recovered' || proof || value.sealed !== true || value.activeProcesses !== 0
@@ -142,7 +142,7 @@ async function recoverUnixJob({ identity, journal, timeoutMs = 30000 }) {
         proof = Object.freeze({ ...scope, stopped: true, kind: 'unix-process-group-recovery', sealed: true, activeProcesses: 0, totalProcesses: value.totalProcesses });
       } catch (error) { fail(error); }
     });
-    host.once('close', code => { clearTimeout(timer); lines.close(); failure || !proof || code !== 0
+    host.once('close', code => { clearTimeout(timer); lines.destroy(); failure || !proof || code !== 0
       ? reject(failure || new Error('Unix recovery exited without proof')) : resolve(proof); });
   });
 }

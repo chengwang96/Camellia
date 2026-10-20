@@ -6,6 +6,16 @@ const path = require('node:path');
 const { ClaudeHistory } = require('../src/engines/claude-history');
 const { createHarness } = require('./claude-harness.cjs');
 
+test('saved transcripts retain messages containing Unicode line and paragraph separators', async t => {
+  const h = createHarness(); t.after(() => h.cleanup());
+  const file = h.seedSession('unicode-separators', h.folder('project'));
+  const text = '中文\u2028🧪\u2029history';
+  fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { role: 'user', content: text } }) + '\n');
+  const history = new ClaudeHistory(path.join(h.home, '.claude', 'projects'));
+  await history.list();
+  assert.deepEqual((await history.transcript('unicode-separators')).messages, [{ role: 'user', text }]);
+});
+
 test('unchanged history uses cached heads; edits, renames and deletions invalidate correctly', async t => {
   const h = createHarness(); t.after(() => h.cleanup());
   const file = h.seedSession('cached', h.folder('project'), 'Initial title');

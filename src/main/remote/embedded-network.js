@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
-const { createInterface } = require('node:readline');
+const { jsonLines } = require('../../shared/json-lines');
 const { isTailscaleIPv4 } = require('./tailscale');
 const { DeviceTransport, deviceAddress } = require('./device-transport');
 
@@ -74,8 +74,8 @@ class EmbeddedNetwork {
     child.on('exit', fail);
     child.stdin.on('error', fail);
     child.stderr.resume();
-    const lines = createInterface({ input: child.stdout });
-    lines.on('line', line => {
+    const lines = jsonLines(child.stdout);
+    lines.on('data', line => {
       let response;
       try { response = JSON.parse(line); } catch { fail(); return; }
       const pending = this.pending.get(response.id);

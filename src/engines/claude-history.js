@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const readline = require('node:readline');
+const { jsonLines } = require('../shared/json-lines');
 
 const validSessionId = id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,200}$/.test(id)
   && !['__proto__', 'constructor', 'prototype'].includes(id);
@@ -118,7 +118,7 @@ class ClaudeHistory {
     const file = this.find(id);
     if (!file) throw new Error("Transcript not found. Refresh the session list.");
     const input = this.fs.createReadStream(file, { encoding: 'utf8' });
-    const lines = readline.createInterface({ input, crlfDelay: Infinity });
+    const lines = jsonLines(input);
     const full = limit === Infinity;
     const messages = full ? [] : new Array(limit);
     let total = 0;
@@ -139,7 +139,7 @@ class ClaudeHistory {
         else messages[total++ % limit] = { role, text: text.slice(0, role === 'user' ? 8000 : 20000), ...output };
       }
     } finally {
-      lines.close();
+      lines.destroy();
       input.destroy();
     }
     if (full) return { messages, cwd, truncated: false };

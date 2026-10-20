@@ -5,9 +5,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
+const { jsonLines } = require('../../shared/json-lines');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { permissionNotice } = require('./permission-notice.cjs');
+const { headlessEnvironment, cliAuthenticationError, describeCliFailure } = require('./cli-auth.cjs');
 
 const config = JSON.parse(process.env.CAMELLIA_ANTIGRAVITY_CLI);
 if (Object.hasOwn(config, 'literalInput') && typeof config.literalInput !== 'boolean') throw new Error('Invalid literal input setting');
@@ -15,7 +17,7 @@ if (Object.hasOwn(config, 'skipPermissions') && typeof config.skipPermissions !=
 if (!config.discussion && !config.legacyStream) {
   require('./cli-interactive.cjs').run(config);
 } else {
-const env = { ...process.env };
+const env = headlessEnvironment(process.env);
 delete env.CAMELLIA_ANTIGRAVITY_CLI;
 let session, sessionFile, model = config.model || '', mode = 'default', cli, pending, streamed = '', previousUsage = {};
 // stdout and stderr are independent pipes, so the CLI's native-denial notice can
@@ -96,7 +98,7 @@ function startCli() {
   let errorText = '';
   cliError = null;
   previousUsage = {};
-  const lines = readline.createInterface({ input: child.stdout });
+  const lines = jsonLines(child.stdout);
   const diagnostics = readline.createInterface({ input: child.stderr });
   diagnostics.on('line', line => {
     const notice = permissionNotice(line);
@@ -106,18 +108,24 @@ function startCli() {
     // closed is released by the next flush.
     if (pending) update(notice); else { notices.push(notice); flushNotices(); }
   });
-  lines.on('line', line => {
+  lines.on('data', line => {
     try { receive(JSON.parse(line)); }
     catch (error) { cliError = error; void stopCli(); }
   });
-  child.stderr.on('data', chunk => { errorText = (errorText + chunk).slice(-4000); process.stderr.write(chunk); });
+  child.stderr.on('data', chunk => {
+    errorText = (errorText + chunk).slice(-4000);
+    const error = cliAuthenticationError(errorText);
+    if (error) {
+      if (!cliError) { cliError = error; nativeReady?.reject(error); void stopCli(); }
+    } else process.stderr.write(chunk);
+  });
   child.once('error', error => { nativeReady?.reject(error); finish(error); });
   child.stdin.on('error', error => finish(error));
   closed = new Promise(resolve => child.once('close', code => {
-    lines.close();
+    lines.destroy();
     diagnostics.close();
     if (cli === child) cli = null;
-    const error = cliError || new Error(errorText.trim() || `Antigravity CLI exited (${code})`);
+    const error = cliError || new Error(describeCliFailure(errorText, '', code));
     nativeReady?.reject(error); finish(error);
     resolve();
   }));
@@ -214,8 +222,8 @@ async function handle(method, params) {
   }
   throw new Error('Unsupported ACP method: ' + method);
 }
-const input = readline.createInterface({ input: process.stdin });
-input.on('line', async line => {
+const input = jsonLines(process.stdin);
+input.on('data', async line => {
   let request;
   try {
     request = JSON.parse(line);

@@ -13,7 +13,8 @@ function freeze(value) {
 // Constructed and populated by reviewed main-process code only. Evidence is a
 // copied bundle tied to exact bindings and runtime/policy versions, never a
 // renderer setting or a live callback supplied by a participant. Empty by
-// default. Production bindings are admitted only after online verification.
+// default. Production bindings require online verification or its saved result,
+// revalidated against the same binding, executable and policy on restoration.
 class DiscussionAdapterRegistry {
   constructor({ ownership }) {
     if (!(ownership instanceof NativeSessionOwnership)) throw new Error('Shared native ownership registry is required');

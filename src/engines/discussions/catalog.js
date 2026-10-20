@@ -38,12 +38,11 @@ async function discussionCatalog({ router, codex, kimi, antigravity, contextWind
       for (const model of conversationModels(engine, { connection: 'subscription', subscriptionId: entry.id }, sources)) {
         rows.push({ label: model.name, accountLabel: entry.label || entry.name || entry.id,
           binding: { engine, connection: 'subscription', model: model.id, accountRef: entry.id, thinking: '',
-            // Some native subscription catalogs omit capacity. Use the same
-            // conservative working budget as ordinary chat, not a claim about
-            // the provider's maximum, so a configured model can still reply.
-            contextWindow: model.contextWindow || contextWindow(model.id)
+            // Native subscription capacity must precede API route estimates,
+            // whose fallback working budget may be much smaller for this ID.
+            contextWindow: model.contextWindow
               || (engine === 'codex' ? require('../codex-metadata/models.json').models.find(entry => entry.slug === model.id)?.context_window : 0)
-              || UNKNOWN_CONTEXT_BUDGET } });
+              || contextWindow(model.id) || UNKNOWN_CONTEXT_BUDGET } });
       }
     }
   }

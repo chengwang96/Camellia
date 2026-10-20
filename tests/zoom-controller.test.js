@@ -47,6 +47,23 @@ test('an attached surface can keep a fixed zoom offset across zoom changes and n
   assert.equal(embedded.getZoomLevel(), zoom.level, 'Offsets clamp at the minimum zoom level');
 });
 
+test('discussion URL changes restore the selected zoom without rewriting the preference', () => {
+  const saved = { zoomLevel: 2 }, writes = [];
+  const zoom = createZoomController({ loadConfig: () => saved, saveConfig: patch => writes.push(patch) });
+  const main = content(), embedded = content();
+  zoom.attach(main); zoom.attach(embedded, -1);
+  for (const query of ['?harness=codex&discussion=1', '?harness=codex&discussion=1&group=another', '?harness=codex']) {
+    // Chromium restores a different per-URL zoom after history.replaceState.
+    main.setZoomLevel(0);
+    main.emit('did-navigate-in-page', {}, 'file:///chat.html' + query, true);
+    assert.equal(main.getZoomLevel(), 2, query);
+  }
+  embedded.setZoomLevel(0);
+  embedded.emit('did-navigate-in-page', {}, 'http://127.0.0.1/settings#providers', true);
+  assert.equal(embedded.getZoomLevel(), 1, 'Page navigation preserves the surface offset');
+  assert.deepEqual(writes, [], 'Restoring the visual scale does not change the saved preference');
+});
+
 test('legacy migration uses only the selected page and never rewrites Chromium preferences', t => {  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-zoom-'));
   t.after(() => removeTree(dir));
   const file = path.join(dir, 'Preferences');

@@ -26,8 +26,18 @@ bridge = r"""(() => {
   const preferences = {mode:'direct',warnOnSwitch:false,showOrigin:false};
   const settings = {model:'gpt-test',connection:'subscription',permissionMode:'ask'};
   window.fixtureSends = [];
-  window.fixtureCommands = []; window.extraSessions = []; window.fixtureChat = fixture;
-  const chatListeners = new Set();
+  window.fixtureCommands = []; window.extraSessions = []; window.fixtureChat = fixture; window.fixtureGroup = group;
+  window.fixtureGroups = [group]; window.pendingDiscussionSends = [];
+  const discussionRows = () => fixtureGroups.map(row=>({id:row.id,title:row.title,members:row.participants.length}));
+  window.finishDiscussionSend = (index, failure='') => {
+    const {payload,resolve} = pendingDiscussionSends[index], source = fixtureGroups.find(row=>row.id===payload.id);
+    source.verifying=false; source.revision++;
+    if (!failure) source.messages.push({id:payload.requestId,seq:source.messages.length+1,role:'user',requestId:payload.requestId,text:payload.text});
+    resolve(failure ? {ok:false,error:failure} : {ok:true,group:structuredClone(source),groups:discussionRows()});
+    emitDiscussion({discussionId:source.id});
+  };
+  const chatListeners = new Set(), discussionListeners = new Set();
+  window.emitDiscussion = event => { for (const fn of discussionListeners) fn(event); };
   window.fixtureActivity = activity => { fixture.activity = activity; for (const fn of chatListeners) fn({type:'conversation:activity',session_id:fixture.id,engine:'codex',activity}); };
   window.modeNavigations = []; window.handoffs = []; window.failNavigation = false;
   window.dshDesktop = {
@@ -45,14 +55,19 @@ bridge = r"""(() => {
       return {ok:true};
     },
     discussion:async (action,payload) => {
-      if(action==='list') return {ok:true,groups:[{id:group.id,title:group.title,members:4,preview:prompt}]};
+      if(action==='list') return {ok:true,groups:discussionRows()};
       if(action==='template') return {ok:true,html:template};
-      if(action==='load') {window.modeNavigations.push('discussions');if(window.delayDiscussionLoad) await new Promise(resolve=>window.releaseDiscussionLoad=resolve);return window.failNavigation ? {ok:false,error:'Mode navigation failed.'} : {ok:true,group};}
+      if(action==='load') {window.modeNavigations.push('discussions');if(window.delayDiscussionLoad) await new Promise(resolve=>window.releaseDiscussionLoad=resolve);return window.failNavigation ? {ok:false,error:'Mode navigation failed.'} : {ok:true,group:fixtureGroups.find(row=>row.id===payload.id)};}
       if(action==='open') {window.modeNavigations.push('discussions');return window.failNavigation ? {ok:false,error:'Mode navigation failed.'} : {ok:true};}
-      if(action==='send') {window.fixtureSends.push(payload);return {ok:true,group};}
+      if(action==='send') {
+        window.fixtureSends.push(payload);
+        const source=fixtureGroups.find(row=>row.id===payload.id);
+        if(window.holdDiscussionSends) {source.verifying=true;emitDiscussion({discussionId:source.id});return new Promise(resolve=>pendingDiscussionSends.push({payload,resolve}));}
+        return {ok:true,group:source};
+      }
       return {ok:false,error:'Layout fixture has no model connection.'};
     },
-    onDiscussionEvent:fn=>{window.emitDiscussion=fn;return()=>{};},
+    onDiscussionEvent:fn=>{discussionListeners.add(fn);return()=>discussionListeners.delete(fn);},
     conversationSwitch:async payload=>{window.handoffs.push(payload);return window.failNavigation ? {ok:false,error:'Mode navigation failed.'} : {ok:true};}, apiRouterGetState:async()=>({enabled:true,models:['gpt-test']}),
     codexAccountState:async()=>({ok:true,models:[{id:'gpt-test',name:'gpt-test'}]}),
     onConversationEvent:fn=>{chatListeners.add(fn);return()=>chatListeners.delete(fn);},onConversationGoal:()=>{},onConversationStatus:()=>{},
@@ -69,6 +84,163 @@ def styles(page, selector, properties):
 
 def bounds(page, selector):
     return page.locator(selector).bounding_box()
+
+
+def check_execution_process(page, theme, embedded=False):
+    page.set_viewport_size({'width': 1440, 'height': 960})
+    messages = page.locator('#discussionSurface #messages' if embedded else '#messages')
+    expect(messages.locator('.execution-process')).to_have_count(0)
+    page.evaluate("""() => {
+      fixtureGroup.deliveries[0].tools = [
+        {id:'read',name:'read_file',input:{path:'notes.txt'},status:'completed',output:'Evidence found'},
+        {id:'verify',name:'shell',input:{command:'verify notes.txt'},status:'completed',output:'Verified'}
+      ];
+      fixtureGroup.revision++; emitDiscussion({discussionId:fixtureGroup.id});
+    }""")
+    history = messages.locator('[data-message-id="reply-one"]')
+    process = history.locator('.execution-process')
+    expect(process.locator('summary')).to_contain_text('执行过程')
+    expect(process.locator('.execution-process-count')).to_have_text('2 次工具调用')
+    expect(process).not_to_have_attribute('open', '')
+    expect(process.locator('.tool-card')).to_have_count(2)
+    expect(process.locator('.tool-card').first).not_to_be_visible()
+    expect(history.locator('.message-body')).to_contain_text('需要补充的验证')
+    process.locator('summary').focus()
+    page.keyboard.press('Enter')
+    process.locator('.tool-head').first.click()
+    expect(process.locator('.tool-output').first).to_be_visible()
+    page.evaluate("""() => {
+      fixtureGroup.deliveries.push({id:'live-tools',requestId:'request-one',participantId:'member-1',status:'running',partialText:'Latest progress',
+        tools:[{id:'inspect',name:'read_file',input:{path:'evidence.txt'},status:'running',output:'Inspecting'}]});
+      fixtureGroup.revision++; emitDiscussion({discussionId:fixtureGroup.id});
+    }""")
+    live = messages.locator('[data-delivery-id="live-tools"]')
+    live_process = live.locator('.execution-process')
+    expect(live_process).not_to_have_attribute('open', '')
+    expect(live.locator('.message-body')).to_have_text('Latest progress')
+    live_process.locator('summary').click()
+    live_process.locator('.tool-head').click()
+    page.evaluate("""() => {
+      const delivery = fixtureGroup.deliveries.find(d=>d.id==='live-tools');
+      delivery.tools[0].status='completed'; delivery.tools[0].output='New evidence';
+      delivery.tools.push({id:'check',name:'shell',input:{command:'verify evidence.txt'},status:'completed',output:'Checked'});
+      delivery.partialText='Updated progress'; fixtureGroup.revision++; emitDiscussion({discussionId:fixtureGroup.id});
+    }""")
+    expect(live.locator('.message-body')).to_have_text('Updated progress')
+    expect(live_process).to_have_attribute('open', '')
+    expect(live_process.locator('.execution-process-count')).to_have_text('2 次工具调用')
+    expect(live_process.locator('.tool-output').first).to_be_visible()
+    expect(live_process.locator('.tool-output').first).to_have_text('New evidence')
+    expect(process).to_have_attribute('open', '')
+    page.evaluate("""() => {
+      const delivery = fixtureGroup.deliveries.find(d=>d.id==='live-tools'); delivery.status='completed'; delete delivery.partialText;
+      fixtureGroup.messages.push({id:'reply-two',seq:3,role:'assistant',speakerId:'member-1',speakerName:'方法评审',
+        requestId:'request-one',deliveryId:delivery.id,text:'Verified final answer'});
+      fixtureGroup.revision++; emitDiscussion({discussionId:fixtureGroup.id});
+    }""")
+    completed = messages.locator('[data-message-id="reply-two"]')
+    expect(live).to_have_count(0)
+    expect(completed.locator('.execution-process')).not_to_have_attribute('open', '')
+    expect(completed.locator('.message-body')).to_have_text('Verified final answer')
+    expect(completed.locator('.message-body')).to_be_visible()
+    expect(process).to_have_attribute('open', '')
+    page.evaluate("CamelliaI18n.setLanguage('en')")
+    expect(history.locator('.execution-process > summary')).to_contain_text('Execution process')
+    expect(history.locator('.execution-process-count')).to_have_text('2 tool calls')
+    page.evaluate("CamelliaI18n.setLanguage('zh-CN')")
+    expect(process.locator('summary')).to_contain_text('执行过程')
+    process.locator('summary').click()
+    kind = 'embedded' if embedded else 'standalone'
+    page.screenshot(path=str(preview / f'discussion-execution-process-{kind}-{theme}.png'), animations='disabled')
+    page.set_viewport_size({'width': 390, 'height': 844})
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.screenshot(path=str(preview / f'discussion-execution-process-{kind}-narrow-{theme}.png'), animations='disabled')
+
+
+def check_verification_navigation(page, embedded=False):
+    page.set_viewport_size({'width': 1440, 'height': 960})
+    surface = page.locator('#discussionSurface') if embedded else page.locator('body')
+    rows = '#discussionSessions' if embedded else '#groupList'
+    page.evaluate("""() => {
+      const other = structuredClone(fixtureGroup);
+      Object.assign(other,{id:'other-group',title:'Another discussion',messages:[],requests:[],deliveries:[],verifying:false});
+      fixtureGroups.push(other); window.holdDiscussionSends=true; emitDiscussion({discussionId:fixtureGroup.id});
+    }""")
+    page.locator(rows + ' [data-group-id="other-group"]').wait_for()
+    surface.locator('#mentions .mention').first.click()
+    surface.locator('#message').fill('Verify the source group before sending')
+    surface.locator('#message').press('Enter')
+    expect(surface.locator('#sendHint')).to_contain_text('正在检查连接')
+    surface.locator('#message').fill('A newer source draft')
+    # A pending verification cannot prevent ordinary conversation navigation.
+    before = page.evaluate('handoffs.length')
+    page.locator('#sessionList [data-sid="chat-fixture"]' if embedded else '#conversationNavigation [data-conversation-id="chat-fixture"]').click()
+    if embedded:
+        expect(page.locator('#discussionSurface')).not_to_be_visible()
+        page.locator('#input').fill('Ordinary conversation draft')
+    else:
+        page.wait_for_function('(count)=>handoffs.length===count+1', arg=before)
+    page.locator(rows + ' [data-group-id="group-fixture"]').click()
+    expect(surface.locator('#message')).to_have_value('A newer source draft')
+    expect(surface.locator('#send')).to_be_disabled()
+    surface.locator('#message').press('Enter')
+    assert page.evaluate('pendingDiscussionSends.length') == 1
+    # Each group owns its pending send, draft and eventual result.
+    page.locator(rows + ' [data-group-id="other-group"]').click()
+    expect(surface.locator('#groupTitle')).to_have_text('Another discussion')
+    surface.locator('#mentions .mention').first.click()
+    surface.locator('#message').fill('Another group can send independently')
+    expect(surface.locator('#send')).to_be_enabled()
+    surface.locator('#message').press('Enter')
+    surface.locator('#message').fill('Keep the other group draft')
+    assert page.evaluate('pendingDiscussionSends.length') == 2
+    page.evaluate('finishDiscussionSend(0)')
+    expect(surface.locator('#groupTitle')).to_have_text('Another discussion')
+    expect(surface.locator('#message')).to_have_value('Keep the other group draft')
+    expect(surface.locator('#send')).to_be_disabled()
+    assert page.evaluate("JSON.parse(localStorage.getItem('camellia:discussion:draft:group-fixture')).text") == 'A newer source draft'
+    page.evaluate('finishDiscussionSend(1)')
+    expect(surface.locator('#message')).to_have_value('Keep the other group draft')
+    expect(surface.locator('#send')).to_be_enabled()
+    page.locator(rows + ' [data-group-id="group-fixture"]').click()
+    expect(surface.locator('#message')).to_have_value('A newer source draft')
+    expect(surface.locator('#messages')).to_contain_text('Verify the source group before sending')
+    expect(surface.locator('#messages')).not_to_contain_text('Another group can send independently')
+    expect(surface.locator('#send')).to_be_enabled()
+    # A late error belongs to the source group, even while another is open.
+    surface.locator('#message').fill('A verification that will fail')
+    surface.locator('#message').press('Enter')
+    page.wait_for_function('pendingDiscussionSends.length===3')
+    page.locator(rows + ' [data-group-id="other-group"]').click()
+    expect(surface.locator('#message')).to_have_value('Keep the other group draft')
+    page.evaluate("finishDiscussionSend(2, 'Source connection verification failed')")
+    expect(surface.locator('#notice')).not_to_be_visible()
+    expect(surface.locator('#groupTitle')).to_have_text('Another discussion')
+    page.locator(rows + ' [data-group-id="group-fixture"]').click()
+    expect(surface.locator('#message')).to_have_value('A verification that will fail')
+    expect(surface.locator('#notice')).to_contain_text('Source connection verification failed')
+    surface.locator('#dismissNotice').click()
+    expect(surface.locator('#notice')).not_to_be_visible()
+    # A successful send clears only its submitted text even when its UI is hidden.
+    surface.locator('#message').fill('Clear submitted text in the source group')
+    surface.locator('#message').press('Enter')
+    page.wait_for_function('pendingDiscussionSends.length===4')
+    if embedded:
+        page.locator('#sessionList [data-sid="chat-fixture"]').click()
+        expect(page.locator('#input')).to_have_value('Ordinary conversation draft')
+    else:
+        page.locator(rows + ' [data-group-id="other-group"]').click()
+    page.evaluate('finishDiscussionSend(3)')
+    if embedded:
+        expect(page.locator('#discussionSurface')).not_to_be_visible()
+        expect(page.locator('#input')).to_have_value('Ordinary conversation draft')
+    else:
+        expect(surface.locator('#groupTitle')).to_have_text('Another discussion')
+        expect(surface.locator('#message')).to_have_value('Keep the other group draft')
+    page.locator(rows + ' [data-group-id="group-fixture"]').click()
+    expect(surface.locator('#message')).to_have_value('')
+    expect(surface.locator('#messages')).to_contain_text('Clear submitted text in the source group')
+    assert page.evaluate("JSON.parse(localStorage.getItem('camellia:discussion:draft:group-fixture')).text") == ''
 
 
 with sync_playwright() as p:
@@ -224,6 +396,7 @@ with sync_playwright() as p:
         expect(normal.locator(':light(#sidebar)')).not_to_be_visible()
         normal.screenshot(path=str(preview / f'discussion-integrated-narrow-{theme}.png'), animations='disabled')
         normal.set_viewport_size({'width': 1440, 'height': 960})
+        normal.wait_for_function('(width)=>document.getElementById("sidebar").getBoundingClientRect().width===width', arg=width)
         assert normal.locator(':light(#sidebar)').bounding_box()['width'] == width
         normal.locator('#sessionList [data-sid="chat-fixture"]').click()
         normal.locator('#input').fill('')
@@ -295,8 +468,14 @@ with sync_playwright() as p:
                 discussion.locator('.group-item').click()
                 expect(discussion.locator('#sidebar')).not_to_be_visible()
                 discussion.screenshot(path=str(preview / f'discussion-aligned-narrow-{theme}.png'), animations='disabled')
+        normal.locator('#discussionSessions [data-group-id="group-fixture"]').click()
+        expect(normal.locator('#discussionSurface')).to_be_visible()
+        check_execution_process(normal, theme, embedded=True)
+        check_execution_process(discussion, theme)
+        check_verification_navigation(normal, embedded=True)
+        check_verification_navigation(discussion)
         normal.close()
         discussion.close()
     browser.close()
     assert not errors, errors
-    print('PASS: running chat to discussion without document reload; background completion; shared sidebar width/scroll/drawer; latest navigation wins; drafts and failed navigation; six-harness menu; light/dark and Chinese/English; normal-chat metrics; content widths; members; composer; code wrap; text-only image rendering.')
+    print('PASS: running chat to discussion without document reload; background completion; shared sidebar width/scroll/drawer; latest navigation wins; drafts and failed navigation; six-harness menu; light/dark and Chinese/English; normal-chat metrics; content widths; members; composer; code wrap; text-only image rendering; grouped execution process; navigation during verification, independent group sends, duplicate prevention, source-scoped drafts/errors and hidden completion on both discussion surfaces.')

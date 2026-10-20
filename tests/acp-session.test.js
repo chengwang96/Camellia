@@ -24,6 +24,16 @@ function fixture(t) {
   return { proc, session };
 }
 
+test('ACP replies retain Unicode separators inside JSON strings', async t => {
+  const { proc, session } = fixture(t);
+  const pending = session.request('session/load', { sessionId: 'saved' }, 1000);
+  const id = session.sequence, result = { text: 'Earlier\u2028中文🧪\u2029history' };
+  const bytes = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+  for (const byte of bytes) proc.stdout.write(Buffer.from([byte]));
+  assert.deepEqual(await pending, result);
+  assert.equal(session.pending.size, 0);
+});
+
 test('Antigravity storage preparation uses a no-prompt handshake and validates both identities', async t => {
   const { session } = fixture(t), requests = [];
   session.spec.modeEngine = 'antigravity'; session.sessionId = '00000000-0000-4000-8000-000000000001';

@@ -8,6 +8,7 @@ const { apiProviderRef } = require('./catalog');
 const { nativeStorage: validateStorage, sameStorage } = require('./native-storage');
 const { validateReply, validateIdentityPrompt, replyDigest } = require('./schema');
 const { validateAttachments } = require('./assets');
+const { UNKNOWN_CONTEXT_BUDGET } = require('../../api/context-capacity');
 
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
@@ -341,7 +342,13 @@ class DiscussionManager {
         return action === 'retry' ? state.deliveries.find(d => d.id === delivery.retryDeliveryId) : delivery;
       }
       const index = request.deliveryIds.indexOf(deliveryId);
-      if (request.deliveryIds.slice(index + 1).some(key => state.deliveries.find(d => d.id === key).status !== 'queued')) throw new Error('Serial successors already changed');
+      // Startup recovery and Stop mark untouched queued successors terminal.
+      // They must not prevent an explicit retry/skip of this member. Leave
+      // those successors stopped until the user retries each one explicitly.
+      if (request.deliveryIds.slice(index + 1).some(key => {
+        const next = state.deliveries.find(d => d.id === key);
+        return next.status !== 'queued' && !(RETRYABLE.has(next.status) && next.generation === null);
+      })) throw new Error('Serial successors already changed');
       if (action === 'skip') {
         delivery.serialResolution = action; delivery.resolutionActionId = actionId; return delivery;
       }
@@ -351,9 +358,14 @@ class DiscussionManager {
       if (delivery.profile) {
         const previous = { ...delivery.profile }, current = profile(participant);
         // Retry a pre-migration failure against the same provider pool. All
-        // other model, route, subscription and budget checks remain exact.
+        // other model, route and subscription checks remain exact.
         if (current.connection === 'api' && current.accountRef && apiProviderRef(previous.accountRef) === current.accountRef)
           previous.accountRef = current.accountRef;
+        // Current catalog metadata may repair an older missing/default budget
+        // before retry. Prepare a fresh attempt with that corrected capacity;
+        // retain the failed attempt's profile and explicit non-default limits.
+        if ([0, UNKNOWN_CONTEXT_BUDGET].includes(previous.contextWindow) && current.contextWindow > 0)
+          previous.contextWindow = current.contextWindow;
         if (JSON.stringify(previous) !== JSON.stringify(current)) throw new Error('Retry binding changed');
       }
       const retry = { id: randomUUID(), requestId: request.id, participantId: participant.id, status: 'queued',

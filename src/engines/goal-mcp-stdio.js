@@ -1,7 +1,7 @@
 'use strict';
 
 const net = require('node:net');
-const readline = require('node:readline');
+const { jsonLines } = require('../shared/json-lines');
 const base = require('./goal-tools');
 const web = process.env.CAMELLIA_WEB_TOOLS === 'deepseek' ? require('./web-tools') : { tools: [], instructions: '' };
 const tools = [...base.tools, ...web.tools], instructions = [base.instructions, web.instructions].filter(Boolean).join('\n');
@@ -37,8 +37,8 @@ async function dispatch(request) {
   throw Object.assign(new Error('Unsupported MCP method'), { code: -32601 });
 }
 
-const lines = readline.createInterface({ input: process.stdin });
-lines.on('line', line => {
+const lines = jsonLines(process.stdin);
+lines.on('data', line => {
   void (async () => {
     let request;
     try {

@@ -39,6 +39,21 @@ test('identity guidance comes only from this delivery snapshot and counts toward
   assert.ok(!prompt.includes('A later edit')); assert.ok(!prompt.includes('Private peer identity'));
   delivery.identityPrompt = '';
   assert.ok(!prepareTextInput(state, delivery).prompt.includes('User-defined identity guidance for you:'));
-  delivery.profile.contextWindow = 2048; delivery.identityPrompt = '证据'.repeat(500);
+  delivery.profile.contextWindow = 2048; delivery.identityPrompt = '证据'.repeat(1000);
   assert.throws(() => prepareTextInput(state, delivery), error => error.code === 'DISCUSSION_CONTEXT_FULL');
+});
+
+test('Chinese public history and prior native turns use token estimates instead of UTF-8 byte counts', () => {
+  const { state, delivery } = fixture();
+  delivery.profile.contextWindow = 32768;
+  state.messages[0] = { id: 'old', seq: 1, role: 'assistant', speakerId: 'a', speakerName: 'Reviewer', text: '既往回答'.repeat(250) };
+  state.messages[1].text = '临床讨论'.repeat(1500);
+  state.deliveries.push({ id: 'prior', runtimeId: delivery.runtimeId, status: 'completed', resultId: 'old',
+    inputPlan: { prompt: '既往信息'.repeat(1500) } });
+  const plan = prepareTextInput(state, delivery);
+  assert.ok(plan.prompt.includes(state.messages[1].text), 'The complete peer reply fits without truncation');
+  assert.ok(plan.prompt.includes('Unique current question'));
+  state.messages[1].text = '临床讨论'.repeat(10000);
+  assert.throws(() => prepareTextInput(state, delivery), error => error.code === 'DISCUSSION_CONTEXT_FULL',
+    'Genuinely over-budget history is still rejected');
 });

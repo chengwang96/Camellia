@@ -15,7 +15,9 @@ const t = text => window.CamelliaI18n.t(text);
 const navigation = window.CamelliaWorkbenchNavigation;
 $('discussionNavigation').replaceChildren(navigation.section({ key: 'discussions', title: 'Agent discussions (beta)', content: $('groupList'), add: newGroup, addId: 'newGroup' }));
 let conversationNavigation, navigationRequest = 0, pendingNavigationIntent, navigating = false;
-let groups = [], group = null, bindings = [], runtimeOptions = [], selected = new Set(), sending = false, loading = 0, refreshTimer;
+let groups = [], group = null, bindings = [], runtimeOptions = [], selected = new Set(), loading = 0, refreshTimer;
+const pendingSends = new Set(), sendErrors = new Map();
+const isSending = () => pendingSends.has(group?.id);
 const verifyingMembers = new Set();
 const verificationErrors = new Map();
 let verifyingBinding = null;
@@ -34,7 +36,7 @@ const stateLabels = { queued: 'Waiting', preparing: 'Preparing context', context
   failed: 'Response failed', cancelled: 'Stopped', interrupted: 'Interrupted', completed: 'Finished', summary: 'Preparing context', approval: 'Waiting for your input' };
 const rich = window.CamelliaDiscussionRich.create({ root, isVisible, getGroup: () => group, call, mutate: (action, payload) => mutate(action, payload, true),
   getAttachments: () => attachments, setAttachments: value => { attachments = value; }, changed: () => { rememberDraft(); resizeComposer(); }, error });
-const cleanupReferences = () => ({ references: [attachments, [...drafts.values()]], active: sending || rich.uploading || navigating });
+const cleanupReferences = () => ({ references: [attachments, [...drafts.values()]], active: pendingSends.size > 0 || rich.uploading || navigating });
 discussionReferenceSources.add(cleanupReferences);
 let cleanupReferenceIdentity = '';
 function node(tag, className, text) { const value = document.createElement(tag); if (className) value.className = className; if (text !== undefined) value.textContent = text; return value; }
@@ -45,7 +47,7 @@ function button(text, action, className = 'btn-secondary') {
 }
 function error(error) { $('noticeText').textContent = error?.message || String(error); $('notice').hidden = false; }
 function clearNotice() { $('noticeText').textContent = ''; $('notice').hidden = true; }
-$('dismissNotice').onclick = clearNotice;
+$('dismissNotice').onclick = () => { sendErrors.delete(group?.id); clearNotice(); };
 function icon(path, className = '') {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor');
@@ -106,7 +108,7 @@ function copyAction(text, assistant) {
 function resizeComposer() {
   const input = $('message'); input.style.height = 'auto';
   input.style.height = Math.min(Math.max(input.scrollHeight, 52), 180) + 'px';
-  $('send').disabled = sending || rich.uploading || (!input.value.trim() && !attachments.length);
+  $('send').disabled = isSending() || rich.uploading || (!input.value.trim() && !attachments.length);
 }
 async function call(action, payload) {
   const result = await desktop.discussion(action, payload);
@@ -119,17 +121,23 @@ async function call(action, payload) {
   }
   return result;
 }
+function storeDraft(id, draft) {
+  drafts.set(id, draft);
+  try { localStorage.setItem(draftPrefix + id, JSON.stringify(draft)); return true; }
+  catch {
+    const failure = new Error('Could not save the draft on this computer. Keep this page open until you copy or send it.');
+    sendErrors.set(id, failure); if (group?.id === id) error(failure); return false;
+  }
+}
 function rememberDraft() {
   if (!group) return true;
   const draft = { text: $('message').value, selected: [...selected], mode: $('replyMode').value, attachments };
-  drafts.set(group.id, draft);
   const identity = group.id + JSON.stringify(attachments.map(file => [file.id, file.path]));
   if (identity !== cleanupReferenceIdentity) {
     cleanupReferenceIdentity = identity;
     void desktop.storageReferencesChanged?.();
   }
-  try { localStorage.setItem(draftPrefix + group.id, JSON.stringify(draft)); return true; }
-  catch { error(new Error('Could not save the draft on this computer. Keep this page open until you copy or send it.')); return false; }
+  return storeDraft(group.id, draft);
 }
 function readDraft(id) {
   if (drafts.has(id)) return drafts.get(id);
@@ -209,7 +217,7 @@ function renameGroup(row) {
 }
 async function discardGroup(id, nextGroups) {
   const index = groups.findIndex(row => row.id === id); groups = nextGroups;
-  drafts.delete(id); try { localStorage.removeItem(draftPrefix + id); } catch { /* optional draft */ }
+  drafts.delete(id); sendErrors.delete(id); try { localStorage.removeItem(draftPrefix + id); } catch { /* optional draft */ }
   if (group?.id === id) {
     ++loading; group = null; selected.clear(); attachments = []; messageNodes.clear(); $('messages').replaceChildren(); $('message').value = '';
     try { localStorage.removeItem(selectedGroupKey); } catch { /* optional selection */ }
@@ -278,9 +286,10 @@ function renderMembers() {
   }));
   $('sendHint').textContent = selected.size ? t($('replyMode').value === 'serial' ? 'Each member sees the previous reply.' : 'Selected members reply independently.') : t('No mentions: save a note without calling a model.');
   if ([...selected].some(id => members.find(p => p.id === id)?.capability.canVerify)) $('sendHint').textContent = t('The first send checks the selected connections using two short messages, then sends your question.');
-  if (group.verifying) $('sendHint').textContent = t(sending ? 'Checking connections before sending… You can stop this check.' : 'Verifying member connections… You can keep writing.');
+  if (group.verifying) $('sendHint').textContent = t(isSending() ? 'Checking connections before sending… You can stop this check.' : 'Verifying member connections… You can keep writing.');
+  else if (group.preparing && isSending()) $('sendHint').textContent = t('Preparing to send…');
   else if (selected.size && group.participants.some(p => selected.has(p.id) && p.capability.mode === 'native-tools')) $('sendHint').textContent = t('Tool tasks share this group folder and run one at a time.');
-  $('stopAll').disabled = !group.verifying && !group.stopping && !group.deliveries.some(d => openStatuses.has(d.status));
+  $('stopAll').disabled = !group.preparing && !group.verifying && !group.stopping && !group.deliveries.some(d => openStatuses.has(d.status));
 }
 function renderMessages() {
   const container = $('messages'), scroll = $('chatScroll'), bottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 90;
@@ -368,6 +377,7 @@ async function load(id, refresh = false) {
     attachments = draft?.attachments || [];
     clearNotice();
   }
+  if (sendErrors.has(id)) error(sendErrors.get(id));
   render();
 }
 async function mutate(action, payload, throwError = false) {
@@ -543,17 +553,23 @@ $('identityDialog').addEventListener('close', () => {
 });
 $('stopAll').onclick = () => mutate('stop', {}); $('replyMode').onchange = () => { if (group) { renderMembers(); rememberDraft(); } };
 $('composer').onsubmit = async event => {
-  event.preventDefault(); if (sending || rich.uploading || !group || (!$('message').value.trim() && !attachments.length)) return;
+  event.preventDefault(); if (isSending() || rich.uploading || !group || (!$('message').value.trim() && !attachments.length)) return;
   const id = group.id, text = $('message').value, participantIds = [...selected], sentAttachments = [...attachments];
-  sending = true; resizeComposer(); clearNotice();
+  pendingSends.add(id); sendErrors.delete(id); resizeComposer(); clearNotice();
   try { const result = await call('send', { id, requestId: crypto.randomUUID(), text, participantIds, mode: $('replyMode').value, attachments: sentAttachments });
-    drafts.delete(id);
-    try { localStorage.removeItem(draftPrefix + id); }
-    catch { error(new Error('Could not save the draft on this computer. Keep this page open until you copy or send it.')); }
-    if (group?.id === id) { group = result.group; if ($('message').value === text) $('message').value = ''; attachments = attachments.filter(file => !sentAttachments.some(sent => sent.id === file.id)); rememberDraft(); }
+    // Verification can finish after the user leaves. Settle only the source
+    // draft, preserving anything they typed or attached while it was pending.
+    const draft = group?.id === id ? { text: $('message').value, selected: [...selected], mode: $('replyMode').value, attachments } : readDraft(id);
+    if (draft) {
+      const next = { ...draft, text: draft.text === text ? '' : draft.text,
+        attachments: draft.attachments.filter(file => !sentAttachments.some(sent => sent.id === file.id)) };
+      storeDraft(id, next);
+      if (group?.id === id) { $('message').value = next.text; attachments = next.attachments; }
+    }
+    if (group?.id === id && result.group.revision >= group.revision) group = result.group;
     if (result.groups) groups = result.groups; render(); }
-  catch (err) { error(err); }
-  finally { sending = false; resizeComposer(); }
+  catch (err) { sendErrors.set(id, err); if (group?.id === id) error(err); }
+  finally { pendingSends.delete(id); resizeComposer(); }
 };
 $('message').addEventListener('input', () => { resizeComposer(); rememberDraft(); });
 $('message').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('composer').requestSubmit(); } };
@@ -638,7 +654,7 @@ const ready = (async () => {
   await window.CamelliaI18n.ready;
   if (!embedded) {
     conversationNavigation = navigation.conversations({ container: $('conversationNavigation'), beforeNavigate: () => {
-      if (sending || rich.uploading) return false;
+      if (rich.uploading) return false;
       return rememberDraft();
     }, error });
     $('newSessionBtn').onclick = () => conversationNavigation.create();
@@ -674,7 +690,7 @@ function activate() {
   intent?.();
 }
 function suspend() {
-  if (sending || rich.uploading || !rememberDraft()) return false;
+  if (rich.uploading || !rememberDraft()) return false;
   ++navigationRequest; ++loading;
   navigating = false;
   pendingNavigationIntent = null;

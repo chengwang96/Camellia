@@ -1,7 +1,7 @@
 'use strict';
 window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachments, setAttachments, changed, error, root = document, isVisible = () => true }) {
   const $ = id => root.getElementById(id), t = text => window.CamelliaI18n.t(text), desktop = window.dshDesktop;
-  const controls = window.CamelliaChatControls, cards = new Map(), artifacts = new Map(), questionDrafts = new Map();
+  const controls = window.CamelliaChatControls, cards = new Map(), processes = new Map(), artifacts = new Map(), questionDrafts = new Map();
   const preview = window.CamelliaFilePreview.create({ root, fileViewer: $('fileViewer'), inputCard: $('inputCard'), setStatus: text => error(new Error(text)),
     mdRender: (text, _documentMode, baseUrl) => window.CamelliaMarkdownPreview.render(text, { baseUrl, sourceLines: true }) });
   let uploading = false, pending = null, fields = [], answering = false, deferred = null;
@@ -61,7 +61,25 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
     let process = item.querySelector('.discussion-tools');
     if (!process) { process = node('div', 'discussion-tools'); item.querySelector('.message-header').after(process); }
     process.replaceChildren();
-    for (const tool of delivery.tools || []) {
+    const tools = delivery.tools || [];
+    let bucket = process;
+    if (tools.length) {
+      const key = getGroup().id + ':' + delivery.id;
+      let state = processes.get(key);
+      if (!state) {
+        const el = node('details', 'execution-process');
+        el.innerHTML = '<summary><span data-i18n>Execution process</span><span class="execution-process-count" data-i18n></span></summary><div class="execution-process-body"></div>';
+        state = { el, body: el.querySelector('.execution-process-body') }; processes.set(key, state);
+      }
+      const finished = !['queued', 'preparing', 'running', 'stopping'].includes(delivery.status);
+      // Pending message nodes are recreated on every update. Keep the disclosure
+      // with its delivery so both it and individual tool cards stay expanded.
+      if (finished && state.finished === false) state.el.open = false;
+      state.finished = finished;
+      state.el.querySelector('.execution-process-count').textContent = tools.length + ' tool calls';
+      bucket = state.body; bucket.replaceChildren(); process.append(state.el);
+    }
+    for (const tool of tools) {
       const key = delivery.id + ':' + tool.id;
       let card = cards.get(key);
       if (!card) { card = controls.makeToolCard(tool.name, tool.input, path => void openToolFile(path).catch(error)); cards.set(key, card); }
@@ -70,8 +88,8 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
       else card.outputEl.textContent = tool.output || t('Waiting for result…');
       card.stateEl.title = t(tool.status === 'completed' ? 'Finished' : tool.status === 'failed' ? 'Failed' : tool.status === 'interrupted' ? 'Interrupted' : 'Running');
       card.stateEl.setAttribute('aria-label', card.stateEl.title);
-      process.append(card.el);
-      if (tool.permissionBlocked) process.append(node('p', 'discussion-tool-notice', t('Antigravity subscription cannot ask for approval in this connection. Review the group permission setting, then retry.')));
+      bucket.append(card.el);
+      if (tool.permissionBlocked) bucket.append(node('p', 'discussion-tool-notice', t('Antigravity subscription cannot ask for approval in this connection. Review the group permission setting, then retry.')));
     }
     for (const permission of getGroup()?.permissions || []) if (permission.deliveryId === delivery.id) {
       process.append(action(permission.questions?.length ? 'Answer questions' : 'Review permission', () => { deferred = null; showPermission(permission); }));
@@ -157,7 +175,7 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
     attachments($('attachRow'), getAttachments(), true);
     $('attachFiles').disabled = uploading;
     $('groupWorkspace').title = group.cwd || ''; $('groupPermission').value = group.permissionMode || 'ask';
-    $('groupPermission').disabled = group.verifying || group.deliveries.some(d => ['queued', 'preparing', 'running', 'stopping'].includes(d.status));
+    $('groupPermission').disabled = group.preparing || group.verifying || group.deliveries.some(d => ['queued', 'preparing', 'running', 'stopping'].includes(d.status));
     if (pending && !group.permissions?.some(p => key(p) === key(pending))) { $('discussionPermission').close(); pending = null; }
     const next = group.permissions?.[0];
     if (isVisible() && next && key(next) !== key(pending) && key(next) !== deferred && !answering) showPermission(next);

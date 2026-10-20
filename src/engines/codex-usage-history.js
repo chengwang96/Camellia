@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const readline = require('node:readline');
+const { jsonLines } = require('../shared/json-lines');
 const { accountHome } = require('./subscription-accounts');
 const { dayId } = require('../api/api-usage');
 
@@ -61,7 +61,7 @@ async function readCodexPricingHistory({ userData, targets, maxBytes = 2 * 1024 
         budget.bytes += before.size;
         if (budget.bytes > maxBytes) return [];
         input = fs.createReadStream(file, { start: 0, end: Math.max(0, before.size - 1) });
-        lines = readline.createInterface({ input, crlfDelay: Infinity });
+        lines = jsonLines(input);
         for await (const line of lines) {
           // Ignore message and tool rows without parsing their large contents.
           if (!/"type"\s*:\s*"(?:event_msg|session_meta|turn_context)"/.test(line.slice(0, 160))) continue;
@@ -124,7 +124,7 @@ async function readCodexPricingHistory({ userData, targets, maxBytes = 2 * 1024 
           group.turns++; group.samples.push(...turn.samples); groups.set(turn.key, group);
         }
       } catch { /* Missing or unreadable history keeps the aggregate fallback. */ }
-      finally { lines?.close(); input?.destroy(); }
+      finally { lines?.destroy(); input?.destroy(); }
     }
   }
   return [...groups.values()];

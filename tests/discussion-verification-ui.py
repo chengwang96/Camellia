@@ -4,7 +4,7 @@ from playwright.sync_api import sync_playwright, expect
 
 repo = Path(__file__).resolve().parents[1]
 bridge = r"""(() => {
-  const pending = {available:false,canVerify:true,detail:'Verify this connection with two short messages for this app session. This uses model quota.'};
+  const pending = {available:false,canVerify:true,detail:'Verify this connection once with two short messages. This uses model quota.'};
   const member = {id:'member-one',name:'Reviewer',engine:'codex',connection:'subscription',model:'test-model',accountLabel:'UI fixture',capability:{...pending}};
   const group = {id:'group-one',title:'Verification UI',revision:1,participants:[member],messages:[],requests:[],deliveries:[]};
   const binding = {id:'binding-one',label:'Test model',accountLabel:'UI fixture',binding:{engine:'codex',connection:'subscription',model:'test-model'},capability:{...pending}};
@@ -24,12 +24,13 @@ bridge = r"""(() => {
     group.verifying=false; emit({discussionId:group.id});
   };
   window.resetConnection=()=>{member.capability={...pending};};
+  window.prepareSend=()=>{group.verifying=false;group.preparing=true;member.capability={available:true};emit({discussionId:group.id});};
   window.failRuntime=detail=>{
     member.capability=binding.capability={available:false,canVerify:false,supported:false,detail};
     emit({discussionId:group.id});
   };
   window.finishSend=()=>{
-    group.verifying=false; member.capability={available:true}; group.revision++;
+    group.verifying=false; group.preparing=false; member.capability={available:true}; group.revision++;
     group.messages=[{id:'user-one',role:'user',text:sent.text},{id:'reply-one',role:'assistant',speakerId:member.id,speakerName:member.name,text:'[UI fixture] Answer received.'}];
     resolveSend({ok:true,group});emit({discussionId:group.id});
   };
@@ -51,7 +52,7 @@ bridge = r"""(() => {
         return {ok:true,group};
       }
       if(action==='send'){sent=payload;group.verifying=true;emit({discussionId:group.id});return new Promise(resolve=>{resolveSend=resolve;});}
-      if(action==='stop'){group.verifying=false;resolveSend({ok:false,error:'Discussion cancelled'});emit({discussionId:group.id});return {ok:true,group};}
+      if(action==='stop'){group.verifying=false;group.preparing=false;resolveSend({ok:false,error:'Discussion cancelled'});emit({discussionId:group.id});return {ok:true,group};}
       if(action==='verify-binding'||action==='verify-member'){
         if(window.verificationOutcome==='fail')return {ok:false,error:'Selected account quota is exhausted.'};
         return new Promise(resolve=>{resolveCheck=resolve;});
@@ -116,6 +117,10 @@ with sync_playwright() as p:
     expect(page.locator('#message')).to_have_value('保留我的问题')
     expect(page.locator('#messages')).to_be_empty()
     page.locator('#message').press('Enter')
+    expect(page.locator('#stopAll')).to_be_enabled()
+    page.evaluate('prepareSend()')
+    expect(page.locator('#sendHint')).to_have_text('正在准备发送…')
+    expect(page.locator('#connectionNotice')).to_be_hidden()
     expect(page.locator('#stopAll')).to_be_enabled()
     page.evaluate('finishSend()')
     expect(page.locator('#message')).to_have_value('')

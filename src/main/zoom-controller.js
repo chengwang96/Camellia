@@ -46,7 +46,9 @@ function createZoomController({ loadConfig, saveConfig, legacyLevel, log = () =>
     if (contents.has(wc)) return;
     contents.set(wc, offset);
     apply(wc);
-    for (const event of ['did-navigate', 'dom-ready', 'did-finish-load']) wc.on(event, () => apply(wc));
+    // history.replaceState (including discussion/group switches) also restores
+    // Chromium's per-URL zoom without reloading the document.
+    for (const event of ['did-navigate', 'did-navigate-in-page', 'dom-ready', 'did-finish-load']) wc.on(event, () => apply(wc));
     wc.once('destroyed', () => contents.delete(wc));
     wc.on('before-input-event', (event, input) => {
       if (input.type !== 'keyDown' || !(input.control || input.meta) || input.alt) return;

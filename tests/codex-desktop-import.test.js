@@ -199,6 +199,15 @@ test('rollout parsing keeps user and assistant text, unwraps the desktop request
   assert.equal(messages[0].at, Date.parse('2026-09-16T10:00:01.000Z'));
 });
 
+test('rollout import preserves Unicode separators in user and assistant messages', async t => {
+  const { root } = stateFixture(t);
+  const text = 'Earlier\u2028中文🧪\u2029history';
+  const rollout = writeRollout(root, 'unicode.jsonl', [responseItem('user', text), responseItem('assistant', text)]);
+  const messages = await readRolloutMessages(rollout);
+  assert.deepEqual(messages.map(message => ({ role: message.role, text: message.text })),
+    [{ role: 'user', text }, { role: 'assistant', text }]);
+});
+
 test('import creates shared conversations with codex history and skips re-imports', async t => {
   const { root, file, db, close } = stateFixture(t);
   const cwd = path.join(root, 'work'); fs.mkdirSync(cwd);

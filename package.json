@@ -167,6 +167,7 @@
       }
     },
     "asarUnpack": [
+      "src/shared/json-lines.js",
       "src/engines/goal-mcp-stdio.js",
       "src/engines/goal-tools.js",
       "src/engines/task-tools.js",

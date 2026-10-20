@@ -67,6 +67,13 @@ test('Google subscription models without capacity metadata can be used for discu
   assert.equal(rows[0].binding.contextWindow, require('../src/api/context-capacity').UNKNOWN_CONTEXT_BUDGET);
 });
 
+test('Codex subscription capacity takes precedence over a smaller unrelated API working budget', async () => {
+  const native = require('../src/engines/codex-metadata/models.json').models.find(m => m.slug === 'gpt-6-astra').context_window;
+  const rows = await discussionCatalog({ router: () => ({ enabled: false, providers: [] }), contextWindow: () => 32768,
+    codex: { accountState: () => ({ accounts: [{ id: 'default' }], account: {}, models: [{ id: 'gpt-6-astra' }] }) } });
+  assert.equal(rows[0].binding.contextWindow, native);
+});
+
 test('all enabled providers stay distinct even when their public model names match', async () => {
   const names = ['Ollama Cloud', 'nVidia', 'DeepSeek', 'MiMo', 'QClaw'];
   const config = { enabled: true, providers: names.map((name, i) => ({

@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const readline = require('node:readline');
+const { jsonLines } = require('../shared/json-lines');
 const { StreamingSession } = require('./streaming-session');
 const { validSessionId } = require('./claude-history');
 const { failedToolResult } = require('../api/tool-results');
@@ -40,15 +40,16 @@ class AcpSession extends StreamingSession {
     this.cwd = process.platform === 'win32' ? fs.realpathSync.native(this.settings.cwd) : this.settings.cwd;
     this.proc = this.spawn(this.exe, this.spec.args, { env: this.spec.env, cwd: this.cwd,
       windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    this.lines = readline.createInterface({ input: this.proc.stdout });
-    this.lines.on('line', line => {
+    this.lines = jsonLines(this.proc.stdout);
+    this.lines.on('data', line => {
       let message;
       try { message = JSON.parse(line); }
       catch { this.log(this.name + ': ignored a non-JSON stdout line'); return; }
-      // One bad message or handler must not kill the readline loop.
+      // One bad message or handler must not stop subsequent messages.
       try { this.receive(message); }
       catch (error) { this.log(this.name + ': event handling failed: ' + error.message); }
     });
+    this.lines.on('error', error => this.close(error));
     this.proc.stderr.on('data', chunk => this.log(this.name + ': ' + String(chunk).trim()));
     this.proc.on('error', error => this.close(error));
     // close follows the last stdout data; exit can precede the final ACP reply.
@@ -309,7 +310,7 @@ class AcpSession extends StreamingSession {
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear();
     this.permissions.clear();
-    this.lines?.close();
+    this.lines?.destroy();
   }
 
   kill() {

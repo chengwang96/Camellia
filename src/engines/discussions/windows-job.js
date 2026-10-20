@@ -5,7 +5,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { Writable, PassThrough } = require('node:stream');
-const { createInterface } = require('node:readline');
+const { jsonLines } = require('../../shared/json-lines');
 const { spawn } = require('node:child_process');
 const { WindowsJobJournal, jobIdentity } = require('./windows-job-journal');
 
@@ -36,7 +36,7 @@ async function prepareWindowsJob({ identity, journal, signal, timeoutMs = 25000 
     { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   let proc, sealed = false, proof, broken, stopping, hostClosed = false, readyReceived = false, exitReceived = false;
   let diagnostics = '';
-  const lines = createInterface({ input: host.stdout });
+  const lines = jsonLines(host.stdout);
   const send = message => {
     if (hostClosed || host.stdin.destroyed || host.stdin.writableEnded) throw new Error('Job supervisor is unavailable');
     return host.stdin.write(JSON.stringify({ ...message, nonce }) + '\n');
@@ -60,7 +60,7 @@ async function prepareWindowsJob({ identity, journal, signal, timeoutMs = 25000 
     if (proc.exitCode === null) proc.exitCode = -1;
     proc.emit('close', proc.exitCode, null);
   }
-  lines.on('line', line => {
+  lines.on('data', line => {
     try {
       const event = JSON.parse(line);
       if (event.nonce !== nonce || broken) throw new Error('Invalid job supervisor event');
@@ -98,7 +98,7 @@ async function prepareWindowsJob({ identity, journal, signal, timeoutMs = 25000 
   host.on('error', invalid);
   host.stdin.on('error', error => { if (!proof) invalid(error); });
   host.once('close', code => {
-    hostClosed = true; sealed = true; clearTimeout(timeout); signal?.removeEventListener('abort', abort); lines.close();
+    hostClosed = true; sealed = true; clearTimeout(timeout); signal?.removeEventListener('abort', abort); lines.destroy();
     if (!broken && proof && code === 0) confirmed.resolve(proof);
     else {
       const error = broken || new Error('Job supervisor exited without verified stop' + (diagnostics ? ': ' + diagnostics : ''));
@@ -170,13 +170,13 @@ async function recoverWindowsJob({ identity, journal, timeoutMs = 30000 }) {
   return new Promise((resolve, reject) => {
     const host = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(BOOTSTRAP, 'utf16le').toString('base64')],
       { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    const lines = createInterface({ input: host.stdout });
+    const lines = jsonLines(host.stdout);
     let proof, failure, diagnostics = '';
     const fail = error => { failure ||= error; host.kill(); };
     const timer = setTimeout(() => fail(new Error('Job recovery could not be confirmed')), timeoutMs);
     host.on('error', fail); host.stdin.on('error', fail);
     host.stderr.on('data', data => { diagnostics = (diagnostics + data.toString()).slice(-1500); });
-    lines.on('line', line => {
+    lines.on('data', line => {
       try {
         const event = JSON.parse(line);
         if (event.nonce !== nonce || proof) throw new Error('Invalid job recovery identity');
@@ -188,7 +188,7 @@ async function recoverWindowsJob({ identity, journal, timeoutMs = 30000 }) {
       } catch (error) { fail(error); }
     });
     host.once('close', code => {
-      clearTimeout(timer); lines.close();
+      clearTimeout(timer); lines.destroy();
       if (failure || !proof || code !== 0) reject(failure || new Error('Job recovery exited without proof' + (diagnostics ? ': ' + diagnostics : '')));
       else resolve(proof);
     });

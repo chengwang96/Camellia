@@ -1,10 +1,10 @@
 'use strict';
 const { validateAttachments } = require('./assets');
+const { tokens: estimateTokens } = require('../conversation-history');
 
 // Text-only baseline: preserve exact attribution and the frozen input boundary.
 // Until a drained summary activity is connected, over-budget input is rejected
 // explicitly. It must never be silently truncated or sent to another account.
-const estimateTokens = text => Buffer.byteLength(String(text), 'utf8');
 function prepareTextInput(state, delivery, signal, capability = {}) {
   if (signal?.aborted) throw Object.assign(new Error('Discussion cancelled'), { name: 'AbortError' });
   const member = state.participants.find(p => p.id === delivery.participantId);
@@ -39,8 +39,8 @@ function prepareTextInput(state, delivery, signal, capability = {}) {
   if (!Number.isSafeInteger(limit) || limit < 1024) {
     throw Object.assign(new Error('Set a context window for this model before sending.'), { code: 'DISCUSSION_CONTEXT_UNKNOWN' });
   }
-  // A conservative byte estimate includes every input/output kept in this native
-  // generation. Native hidden/system overhead is reserved separately.
+  // Use the same text-token estimate as ordinary chat for every retained native
+  // input/output. UTF-8 bytes greatly overcount Chinese; reserve overhead below.
   const messagesById = new Map(state.messages.map(m => [m.id, m]));
   const nativeUsed = state.deliveries.filter(d => d.id !== delivery.id && d.runtimeId === delivery.runtimeId
     && d.status === 'completed').reduce((total, d) => total + estimateTokens(d.inputPlan?.prompt || '')

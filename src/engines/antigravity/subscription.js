@@ -6,6 +6,7 @@ const { spawn, execFileSync } = require('node:child_process');
 const { readJson, writeJson } = require('../../shared/json-store');
 const { setTimeout: delay } = require('node:timers/promises');
 const { clearGoogleCredentials } = require('./credentials');
+const { headlessEnvironment, cliAuthenticationError, describeCliFailure } = require('./cli-auth.cjs');
 
 // A blank proxy setting means "use the Windows system proxy", so Google
 // sign-in also works on networks where oauth2.googleapis.com is unreachable
@@ -207,27 +208,8 @@ async function runCliWithRetry(run, file, args, options, { attempts = CLI_ATTEMP
   throw lastError;
 }
 
-// A headless run that cannot use the stored credential stops instead of
-// opening a browser. Report that as a normal sign-in problem so the account
-// card offers the same "sign in again" guidance as any rejected credential.
-function describeCliFailure(errors, output, code) {
-  const text = (errors || '').trim() || (output || '').trim();
-  if (/headless auth|no valid auth/i.test(text)) return 'Google sign-in has expired or is invalid. Sign in again and retry.';
-  return text || `Antigravity CLI exited (${code})`;
-}
-
 function isProfilePictureFailure(error) {
   return /profile picture/i.test(String(error || ''));
-}
-
-// Background quota and model checks ask the CLI for its non-interactive print
-// mode. The flag is only a hint: the official CLI still opens its own sign-in
-// page when silent auth fails, so this does not by itself suppress the browser.
-// The retry above and the deliberate absence of auto-refresh escalation are what
-// keep an unattended refresh from interrupting the user. The explicit "Sign in"
-// button still launches the CLI interactively.
-function headlessEnvironment(env) {
-  return { ...env, AGY_CLI_NONINTERACTIVE_HEADLESS: 'true' };
 }
 
 // The official CLI owns the Google credential, so quota is read through its
@@ -472,4 +454,4 @@ function createGoogleAccount({ home, cliSettingsFile, runtime, environment, sett
   return { state, refresh, refreshUsage, signIn, signOut };
 }
 
-module.exports = { createGoogleAccount, subscriptionEnvironment, systemProxy, parseModels, parseGoogleQuota, normalizeGoogleQuota, groupModels, normalizeSelection, effectiveSelection, runCli, runCliWithRetry, stopCli, requireGoogleProvider, loginScript, headlessEnvironment, describeCliFailure, isProfilePictureFailure };
+module.exports = { createGoogleAccount, subscriptionEnvironment, systemProxy, parseModels, parseGoogleQuota, normalizeGoogleQuota, groupModels, normalizeSelection, effectiveSelection, runCli, runCliWithRetry, stopCli, requireGoogleProvider, loginScript, headlessEnvironment, cliAuthenticationError, describeCliFailure, isProfilePictureFailure };

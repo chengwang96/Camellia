@@ -12,14 +12,14 @@ const { ClaudeHistory } = require('../claude-history');
 const { accountHome } = require('../subscription-accounts');
 const { processJobs, SUPPORTED_PLATFORMS } = require('./process-jobs');
 const { WindowsJobJournal } = require('./windows-job-journal');
-const { CONNECTIONS, bindingFingerprint } = require('./capabilities');
+const { CONNECTIONS, bindingFingerprint, evaluateCapability } = require('./capabilities');
 const { readCodexNativeHistories } = require('./codex-history-inventory');
-const { readJson, writeJson } = require('../../shared/json-store');
+const { readJson, readRecoverableJson, writeJson } = require('../../shared/json-store');
 const { kimiCredentialFile, googleDiscussionSpec, extraTextSpec, createTextSession, extraDiscussionDrivers } = require('./text-runtimes');
 const { nativeToolSpec } = require('./tool-runtimes');
 
 const UUID = /^[0-9a-f-]{36}$/;
-const VERIFY_NOTICE = 'Verify this connection with two short messages for this app session. This uses model quota.';
+const VERIFY_NOTICE = 'Verify this connection once with two short messages. This uses model quota.';
 const RUNTIME_CHANGED = 'The harness runtime changed during verification. Refresh models and try again.';
 function runtimeIdentity(runtime) {
   if (!runtime) return null;
@@ -42,8 +42,8 @@ function managedDir(root, ...parts) {
 
 // Production policies: managed native homes, exact model/account/route, and
 // Platform-native stop confirmation. Verification runs two tiny real turns in a
-// disposable member session before admitting that exact binding for this app
-// process. Restarting never automatically sends a verification or user prompt.
+// disposable member session. Successful exact-binding/runtime results survive
+// restarts; reading them never sends verification or user input.
 class DiscussionProduction {
   constructor({ dataDir, registry, codex, antigravity, runtimes, getRouter, getCatalog, refreshKimi, getNativeConfig = () => ({}), log = () => {}, node = () => process.execPath, environment = () => process.env, platform = process.platform }) {
     Object.assign(this, { dataDir, registry, codex, antigravity, runtimes, getRouter, getCatalog, refreshKimi, log, node, environment });
@@ -51,6 +51,11 @@ class DiscussionProduction {
     this.platform = platform;
     this.jobs = SUPPORTED_PLATFORMS.includes(platform) ? processJobs(platform) : null;
     this.root = path.join(dataDir, 'discussions'); this.activities = new Map(); this.checks = new Map(); this.closing = false;
+    this.verificationFile = path.join(this.root, 'verification-cache', 'connections.json');
+    const saved = readRecoverableJson(this.verificationFile, null, error => this.log(error.message),
+      value => value === null || value?.version === 1 && value.entries && typeof value.entries === 'object' && !Array.isArray(value.entries));
+    this.verified = Object.fromEntries(Object.entries(saved?.entries || {}).filter(([key, row]) => row?.binding && row.evidence
+      && Number.isFinite(row.verifiedAt) && key === bindingFingerprint(row.binding)).slice(-256));
     const Journal = this.jobs?.Journal || WindowsJobJournal;
     this.journal = new Journal({ dir: path.join(this.root, this.jobs?.directory || 'windows-jobs') });
     this.checkJournal = new Journal({ dir: path.join(this.root, 'verification-jobs') });
@@ -161,11 +166,19 @@ class DiscussionProduction {
     for (const [engine, driver] of Object.entries({ codex: this.codex, antigravity: this.antigravity, ...this.extraDrivers })) {
       const info = this.runtimeInfo({ engine });
       if (!driver) continue;
-      if (this.registry.get(engine)) { this.registry.updateRuntime(engine, info); continue; }
-      this.registry.register({ engine, driver: { ...driver, ensure: driver.ensureSession || driver.ensure }, runtime: info, policy: {
+      if (this.registry.get(engine)) this.registry.updateRuntime(engine, info);
+      else this.registry.register({ engine, driver: { ...driver, ensure: driver.ensureSession || driver.ensure }, runtime: info, policy: {
         prepare: input => this.prepare(input), verify: input => this.verifySession(input),
         confirmStopped: input => this.confirmStopped(input),
       } });
+      const adapter = this.registry.get(engine);
+      for (const row of Object.values(this.verified)) {
+        if (row?.binding?.engine !== engine || !evaluateCapability(row.binding, info, row.evidence).available
+          || adapter.evidence(row.binding)) continue;
+        // Only this main-process cache is reusable, after the same binding,
+        // executable and policy checks. Revoked adapters cannot be restored.
+        try { this.registry.admit(row.binding, row.evidence); } catch { /* revoked */ }
+      }
     }
   }
   reason(binding) {
@@ -244,7 +257,9 @@ class DiscussionProduction {
         settings.permissionMode = permissionMode;
         const inherited = this.environment(), env = isolatedEnvironment(path.join(home, 'profile'), this.node(), inherited);
         if (env.SystemRoot && env.SYSTEMROOT) delete env.SYSTEMROOT;
-        for (const [key, value] of Object.entries(inherited)) if (/^(https?_proxy|all_proxy|no_proxy|CAMELLIA_NETWORK_MODE|CAMELLIA_NETWORK_PROXY)$/i.test(key)) env[key] = value;
+        // Subscription logins use the resolved subscription proxy rather than
+        // the general bridge, whose direct-first attempt can stall Google auth.
+        for (const [key, value] of Object.entries(inherited)) if (/^(https?_proxy|all_proxy|no_proxy|CAMELLIA_NETWORK_MODE|CAMELLIA_NETWORK_PROXY|CAMELLIA_SUBSCRIPTION_PROXY)$/i.test(key)) env[key] = value;
         const models = profile.engine === 'antigravity' && profile.connection === 'subscription' ? (await this.antigravity.handlers['account-state']()).models : [];
         spec = nativeToolSpec({ runtime, home, cwd, env, node: this.node(), profile, route: record.route, permissionMode,
           native: this.getNativeConfig(profile.engine, profile.connection), models });
@@ -252,7 +267,7 @@ class DiscussionProduction {
       else {
         const inherited = this.environment(), env = isolatedEnvironment(path.join(home, 'profile'), this.node(), inherited);
         if (env.SystemRoot && env.SYSTEMROOT) delete env.SYSTEMROOT;
-        for (const [key, value] of Object.entries(inherited)) if (/^(https?_proxy|all_proxy|no_proxy|CAMELLIA_NETWORK_MODE|CAMELLIA_NETWORK_PROXY)$/i.test(key)) env[key] = value;
+        for (const [key, value] of Object.entries(inherited)) if (/^(https?_proxy|all_proxy|no_proxy|CAMELLIA_NETWORK_MODE|CAMELLIA_NETWORK_PROXY|CAMELLIA_SUBSCRIPTION_PROXY)$/i.test(key)) env[key] = value;
         if (profile.engine === 'antigravity') {
           if (profile.connection === 'subscription') {
             const account = await this.antigravity.handlers['account-state']();
@@ -307,6 +322,8 @@ class DiscussionProduction {
     if (this.closing) return Promise.reject(new Error('Discussion cancelled'));
     this.refresh();
     if (!this.canVerify(binding)) return Promise.reject(new Error(this.reason(binding)));
+    const adapter = this.registry.get(binding.engine);
+    if (evaluateCapability(binding, adapter?.runtime, adapter?.evidence(binding)).available) return Promise.resolve();
     const controller = new AbortController();
     const promise = this.check(binding, controller.signal).finally(() => this.checks.delete(key));
     this.checks.set(key, { promise, controller }); return promise;
@@ -359,9 +376,14 @@ class DiscussionProduction {
     await this.current(profile);
     assertRuntime();
     this.refresh();
-    this.registry.admit(profile, { kind: 'real', reference: 'online-two-turns/' + new Date().toISOString(), bindingFingerprint: bindingFingerprint(profile),
+    const evidence = { kind: 'real', reference: 'online-two-turns/' + new Date().toISOString(), bindingFingerprint: bindingFingerprint(profile),
       runtimeVersion: info.version, runtimeFingerprint: info.fingerprint, policyVersion: info.policyVersion, mode: this.mode(profile), supportsImages, checks: Object.fromEntries([
-        'isolatedSession', 'pinnedBinding', 'continuation', 'stopConfirmed', 'permissionsRouted', 'workspaceQueue'].map(key => [key, true])) });
+        'isolatedSession', 'pinnedBinding', 'continuation', 'stopConfirmed', 'permissionsRouted', 'workspaceQueue'].map(key => [key, true])) };
+    this.registry.admit(profile, evidence);
+    this.verified[bindingFingerprint(profile)] = { binding: structuredClone(profile), evidence, verifiedAt: Date.now() };
+    this.verified = Object.fromEntries(Object.entries(this.verified).sort((a, b) => b[1].verifiedAt - a[1].verifiedAt).slice(0, 256));
+    try { writeJson(this.verificationFile, { version: 1, entries: this.verified }); }
+    catch (error) { this.log('Could not save discussion connection verification: ' + error.message); }
   }
   cancel(key) { this.checks.get(key)?.controller.abort(); }
   async shutdown() {

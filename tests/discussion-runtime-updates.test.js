@@ -112,6 +112,49 @@ test('adding a member verifies a future harness; upgrades and path changes can b
   }
 });
 
+test('successful connection verification is reused across calls and fresh application registries', async t => {
+  const h = fixture(t);
+  await h.production.verify(h.binding);
+  assert.equal(h.state.starts, 2);
+  await h.production.verify(h.binding);
+  assert.equal(h.state.starts, 2, 'Already verified connections do not spend another two model turns');
+  const registry = new DiscussionAdapterRegistry({ ownership: new NativeSessionOwnership({ readOwners: () => [] }) });
+  const production = new DiscussionProduction({ dataDir: h.root, registry, platform: 'win32',
+    runtimes: h.production.runtimes, getCatalog: h.production.getCatalog, getRouter: h.production.getRouter });
+  production.jobs = h.production.jobs;
+  t.after(() => production.shutdown());
+  production.refresh();
+  assert.equal(registry.get('claude').gate(h.binding).available, true, 'A restart restores the successful exact-binding result');
+  await production.verify(h.binding);
+  assert.equal(h.state.starts, 2);
+  for (const changed of [{ ...h.binding, model: 'different-model' }, { ...h.binding, accountRef: 'different-account' },
+    { ...h.binding, contextWindow: 64000 }]) assert.throws(() => registry.get('claude').gate(changed), /unverified-connection/);
+  fs.appendFileSync(h.installed.file, 'new runtime contents');
+  production.refresh();
+  assert.throws(() => registry.get('claude').gate(h.binding), /unverified-connection/, 'An updated runtime must obtain new verification');
+  assert.equal(h.state.starts, 2, 'Restoring or invalidating cached results never sends model input');
+});
+
+test('cached verification cannot restore a revoked adapter, and a corrupt cache is retained without blocking startup', async t => {
+  const h = fixture(t);
+  await h.production.verify(h.binding);
+  h.registry.revoke('claude');
+  h.production.refresh();
+  assert.throws(() => h.registry.get('claude').gate(h.binding), /unverified-connection/);
+  fs.writeFileSync(h.production.verificationFile, '{incomplete');
+  const registry = new DiscussionAdapterRegistry({ ownership: new NativeSessionOwnership({ readOwners: () => [] }) });
+  const logs = [];
+  const production = new DiscussionProduction({ dataDir: h.root, registry, platform: 'win32',
+    runtimes: h.production.runtimes, getCatalog: h.production.getCatalog, getRouter: h.production.getRouter, log: message => logs.push(message) });
+  t.after(() => production.shutdown());
+  production.refresh();
+  assert.throws(() => registry.get('claude').gate(h.binding), /unverified-connection/);
+  const backup = fs.readdirSync(path.dirname(production.verificationFile)).find(name => name.startsWith('connections.json.invalid-'));
+  assert.equal(fs.readFileSync(path.join(path.dirname(production.verificationFile), backup), 'utf8'), '{incomplete');
+  assert.equal(logs.length, 1);
+  assert.equal(h.state.starts, 2, 'Loading an invalid cache does not retry verification automatically');
+});
+
 test('an incompatible reply fails real verification even when the installed version is accepted', async t => {
   const h = fixture(t);
   h.state.reply = () => 'incompatible protocol reply';

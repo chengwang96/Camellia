@@ -40,13 +40,13 @@ function bridge(t, saved, config = {}) {
     clearTimeout(timer) { timers.delete(timer); },
     require(name) {
       if (name !== 'node:child_process') return runtimeRequire(name);
-      return { spawn(exe, args) {
+      return { spawn(exe, args, options) {
         if (exe === 'taskkill.exe') {
           const child = children.find(value => String(value.pid) === args[1]); assert.ok(child);
           queueMicrotask(() => close(child)); return new EventEmitter();
         }
         assert.equal(exe, 'fixture-cli');
-        const child = Object.assign(new EventEmitter(), { pid: children.length + 100, args: [...args], stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), writes: [] });
+        const child = Object.assign(new EventEmitter(), { pid: children.length + 100, args: [...args], env: options.env, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), writes: [] });
         child.stdin.on('data', data => child.writes.push(String(data))); child.kill = () => close(child);
         children.push(child); return child;
       } };
@@ -72,6 +72,7 @@ test('CLI preparation is idempotent, persists before acknowledgement and sends n
   assert.equal(h.children.length, 0);
   const first = h.rpc('session/camellia_prepare', { sessionId }), second = h.rpc('session/camellia_prepare', { sessionId });
   assert.equal(h.children.length, 1); assert.deepEqual(h.children[0].writes, []);
+  assert.equal(h.children[0].env.AGY_CLI_NONINTERACTIVE_HEADLESS, 'true');
   assert.equal(h.children[0].args.includes('--disable-slash-commands'), false);
   const conversationId = randomUUID(); h.init(conversationId);
   assert.deepEqual(await first, { sessionId, conversationId }); assert.deepEqual(await second, { sessionId, conversationId });
@@ -108,15 +109,18 @@ for (const resume of [false, true]) test(`CLI literal input disables expansion f
   assert.equal((await prompt).stopReason, 'end_turn');
 });
 
-for (const invalid of ['wrong-resume', 'malformed', 'cancel', 'timeout', 'exit']) test(`CLI preparation ${invalid} cannot admit input or retry a failed process`, async t => {
+for (const invalid of ['wrong-resume', 'malformed', 'cancel', 'timeout', 'exit', 'auth', 'split-auth', 'headless-auth']) test(`CLI preparation ${invalid} cannot admit input or retry a failed process`, async t => {
   const saved = invalid === 'wrong-resume' ? { id: 'agy-' + randomUUID(), cwd: process.cwd(), conversationId: randomUUID() } : null;
   const h = bridge(t, saved), { sessionId } = await h.rpc(saved ? 'session/resume' : 'session/new', saved ? { sessionId: saved.id } : { cwd: process.cwd() });
   const preparation = h.rpc('session/camellia_prepare', { sessionId });
   if (invalid === 'cancel') await h.rpc('session/cancel', { sessionId });
   else if (invalid === 'timeout') { [...h.timers][0].fn(); h.init(randomUUID()); }
   else if (invalid === 'exit') h.children[0].emit('close', 1);
+  else if (invalid === 'auth') h.children[0].stderr.write('Authentication required. Please visit the URL to log in:\n');
+  else if (invalid === 'split-auth') { h.children[0].stderr.write('Authentication requ'); h.children[0].stderr.write('ired. Please visit the URL to log in:\n'); }
+  else if (invalid === 'headless-auth') h.children[0].stderr.write('Headless auth: no valid auth (keyring unavailable); starting login\n');
   else h.init(invalid === 'malformed' ? '../wrong' : randomUUID());
-  await assert.rejects(preparation, /identity|exited|timed out|cancelled/);
+  await assert.rejects(preparation, /identity|exited|timed out|cancelled|sign-in/);
   await assert.rejects(h.rpc('session/camellia_prepare', { sessionId }), /failed or stopped/);
   await assert.rejects(h.rpc('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'must not send' }] }), /not succeeded/);
   assert.deepEqual(h.children[0].writes, []); assert.equal(h.children.length, 1);

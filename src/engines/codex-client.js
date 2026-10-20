@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const { writeText } = require('../shared/json-store');
 const path = require('node:path');
-const readline = require('node:readline');
+const { jsonLines } = require('../shared/json-lines');
 const { spawn } = require('node:child_process');
 const TOML = require('smol-toml');
 const { configureApiModel, needsApiToolProfile } = require('./codex-models');
@@ -36,14 +36,15 @@ class CodexClient {
     this.pending = new Map();
     this.sequence = 0;
     this.proc = spawnProcess(exe, args, { env, cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    this.lines = readline.createInterface({ input: this.proc.stdout });
-    this.lines.on('line', line => {
+    this.lines = jsonLines(this.proc.stdout);
+    this.lines.on('data', line => {
       let message;
       try { message = JSON.parse(line); } catch { log('Codex: ignored non-JSON stdout'); return; }
-      // One bad message or handler must not kill the readline loop.
+      // One bad message or handler must not stop subsequent messages.
       try { this.receive(message); }
       catch (error) { log('Codex: event handling failed: ' + error.message); }
     });
+    this.lines.on('error', error => this.close(error));
     this.proc.stderr.on('data', data => log('Codex: ' + String(data).trim()));
     this.proc.once('error', error => this.close(error));
     // The app-server spawns helpers (MCP tool servers, git during plugin sync)
@@ -94,7 +95,7 @@ class CodexClient {
     if (this.dead) return;
     this.dead = true;
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
-    this.pending.clear(); this.lines.close(); this.onClose(error);
+    this.pending.clear(); this.lines.destroy(); this.onClose(error);
   }
   shutdown() {
     if (this.stopping) return this.stopping;

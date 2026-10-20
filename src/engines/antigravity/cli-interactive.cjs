@@ -8,9 +8,10 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
-const readline = require('node:readline');
+const { jsonLines } = require('../../shared/json-lines');
 const { setTimeout: delay } = require('node:timers/promises');
 const http = require('node:http');
+const { cliAuthenticationError, describeCliFailure } = require('./cli-auth.cjs');
 // This agent is exclusively for authenticated loopback IPC. Model traffic
 // stays in the native CLI and continues to honor the user's proxy settings.
 const localAgent = new http.Agent({ proxyEnv: {} });
@@ -148,11 +149,18 @@ class InteractiveCli {
     const child = this.child = spawn(launch.exe, launch.args, { cwd: this.session.cwd, env, windowsHide: true,
       detached: process.platform !== 'win32', stdio: [launch.stdin, 'pipe', 'pipe'] });
     let diagnostic = '';
-    child.stdout.resume(); child.stderr.on('data', chunk => { diagnostic = (diagnostic + chunk).slice(-4000); });
+    child.stdout.resume();
+    child.stderr.on('data', chunk => {
+      diagnostic = (diagnostic + chunk).slice(-4000);
+      const error = cliAuthenticationError(diagnostic);
+      if (error && !this.processError) {
+        this.processError = error; this.turn?.controller.abort(error); void this.stop();
+      }
+    });
     this.exited = new Promise(resolve => {
       child.once('error', error => { this.processError = error; });
       child.once('close', code => {
-        this.processError ||= new Error(diagnostic.trim() || `Antigravity CLI exited (${code})`);
+        this.processError ||= new Error(describeCliFailure(diagnostic, '', code));
         this.turn?.controller.abort(this.processError); resolve();
       });
     });
@@ -393,8 +401,8 @@ class InteractiveCli {
 function run(config) {
   const write = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
   const bridge = new InteractiveCli(config, write);
-  const input = readline.createInterface({ input: process.stdin });
-  input.on('line', async line => {
+  const input = jsonLines(process.stdin);
+  input.on('data', async line => {
     let message;
     try {
       message = JSON.parse(line);

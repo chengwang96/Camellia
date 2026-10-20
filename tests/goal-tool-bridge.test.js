@@ -51,6 +51,7 @@ test('packaged stdio helper includes every local tool schema dependency', () => 
   const unpacked = require('../package.json').build.asarUnpack;
   for (const file of ['goal-mcp-stdio.js', 'goal-tools.js', 'task-tools.js', 'conversation-tools.js'])
     assert.ok(unpacked.includes('src/engines/' + file), file);
+  assert.ok(unpacked.includes('src/shared/json-lines.js'));
 });
 
 test('request provenance accepts natural language anywhere in the current message without classifying intent', () => {
@@ -141,7 +142,7 @@ test('stdio MCP lists tools and forwards authenticated calls to the application'
   const invalid = await request('tools/call', { name: 'camellia_get_goal', arguments: { run_token: 'current', sessionId: 'other' } });
   assert.equal(invalid.result.isError, true);
   assert.equal(calls.length, 1);
-  const revision = { run_token: 'current', objective: 'Build a library', criterion: '', user_request: '改成库', reason: 'The task scope changed' };
+  const revision = { run_token: 'current', objective: 'Build\u2028a 中文🧪\u2029library', criterion: '', user_request: '改成库', reason: 'The task scope changed' };
   const revised = await request('tools/call', { name: 'camellia_update_goal', arguments: revision });
   assert.equal(revised.result.isError, false);
   assert.deepEqual(calls.at(-1), { name: 'camellia_update_goal', args: revision });

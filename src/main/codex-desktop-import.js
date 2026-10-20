@@ -7,7 +7,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const readline = require('node:readline');
+const { jsonLines } = require('../shared/json-lines');
 const { createHash } = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
@@ -189,7 +189,7 @@ async function readRolloutMessages(rolloutPath, onMessage, { maxMessageBytes = M
   let incompleteRecord = false;
   const corruptHistory = () => new Error('Could not import Codex history: invalid JSONL record.');
   input.on('data', chunk => { if (chunk.length) endsWithNewline = /[\r\n]$/.test(chunk); });
-  const lines = readline.createInterface({ input, crlfDelay: Infinity });
+  const lines = jsonLines(input);
   try {
     for await (const line of lines) {
       if (incompleteRecord) throw corruptHistory();
@@ -225,7 +225,7 @@ async function readRolloutMessages(rolloutPath, onMessage, { maxMessageBytes = M
     }
     if (incompleteRecord && endsWithNewline) throw corruptHistory();
   } finally {
-    lines.close();
+    lines.destroy();
     input.destroy();
   }
   return messages;

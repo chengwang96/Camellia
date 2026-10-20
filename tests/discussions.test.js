@@ -315,6 +315,49 @@ test('serial retry refuses changed bindings and queued cancellation never starts
   assert.equal(h.manager.get(id).deliveries[1].status, 'cancelled');
 });
 
+for (const ending of ['restart', 'stop']) for (const action of ['retry', 'skip'])
+  test(`serial ${action} remains available after ${ending} leaves unstarted successors terminal`, t => {
+    const h = setup(t), id = h.group.id;
+    const request = h.manager.enqueue(id, { requestId: 'recover-serial', text: 'Question', participantIds: [h.a.id, h.b.id], mode: 'serial' });
+    const first = running(h, request.deliveryIds[0]);
+    h.manager.fail(id, first.id, first.generation, 'failed', proof(first));
+    if (ending === 'restart') {
+      h.manager = new DiscussionManager({ dir: h.dir }); h.manager.recover();
+    } else { h.manager.beginStopAll(id); h.manager.finishStopAll(id); }
+    const before = h.manager.get(id), successor = before.deliveries.find(d => d.id === request.deliveryIds[1]);
+    assert.equal(successor.status, ending === 'restart' ? 'interrupted' : 'cancelled');
+    assert.equal(successor.generation, null);
+    const resolved = h.manager.resolveSerial(id, first.id, action, 'resolve-first');
+    assert.deepEqual(h.manager.resolveSerial(id, first.id, action, 'resolve-first'), resolved);
+    assert.deepEqual(h.manager.get(id).deliveries.find(d => d.id === successor.id), successor, 'Resolving a predecessor does not replay stopped successors');
+    if (action === 'retry') {
+      const attempt = running(h, resolved.id);
+      h.manager.complete(id, attempt.id, attempt.generation, 'Retried first reply', proof(attempt));
+    }
+    const next = h.manager.resolveSerial(id, successor.id, 'retry', 'resolve-second');
+    const attempt = running(h, next.id);
+    h.manager.complete(id, attempt.id, attempt.generation, 'Retried second reply', proof(attempt));
+    assert.equal(h.manager.get(id).messages.filter(m => m.role === 'user').length, 1);
+  });
+
+for (const original of [0, 32768, 64000]) test(`serial retry handles context capacity correction from ${original} while preserving the model and account`, t => {
+  const h = setup(t), id = h.group.id;
+  h.manager.configureMember(id, h.a.id, { contextWindow: original });
+  const request = h.manager.enqueue(id, { requestId: 'correct-budget', text: 'Question', participantIds: [h.a.id], mode: 'serial' });
+  const first = running(h, request.deliveryIds[0]);
+  h.manager.fail(id, first.id, first.generation, 'failed', proof(first));
+  const failed = h.manager.get(id).deliveries.find(d => d.id === first.id);
+  h.manager.configureMember(id, h.a.id, { contextWindow: 272000 });
+  if (original === 64000) assert.throws(() => h.manager.resolveSerial(id, first.id, 'retry', 'retry-corrected'), /binding changed/);
+  else {
+    const retry = h.manager.resolveSerial(id, first.id, 'retry', 'retry-corrected');
+    const attempt = running(h, retry.id);
+    assert.equal(attempt.profile.contextWindow, 272000);
+    assert.equal(attempt.profile.accountRef, h.input.accountRef);
+    assert.deepEqual(h.manager.get(id).deliveries.find(d => d.id === first.id), { ...failed, serialResolution: 'retry', resolutionActionId: 'retry-corrected', retryDeliveryId: retry.id });
+  }
+});
+
 for (const changedRoute of [false, true]) test(`serial API retry ${changedRoute ? 'rejects a changed route' : 'accepts migration from an individual key to its provider'}`, t => {
   const h = setup(t), id = h.group.id;
   const reference = { providerId: 'ollama', route: 'original-route' };

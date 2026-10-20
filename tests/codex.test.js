@@ -42,6 +42,25 @@ function transport() {
   return { proc, send, messages, requests };
 }
 
+test('Codex resume preserves Unicode separators inside a fragmented JSON response', async t => {
+  const wire = transport(), logs = [], notifications = [];
+  const client = new CodexClient({ spawnProcess: () => wire.proc, log: text => logs.push(text),
+    onNotification: (method, params) => notifications.push({ method, params }) });
+  t.after(() => client.shutdown());
+  await client.ready;
+  const preview = 'Earlier history: ' + '中文\u2028🧪\u2029'.repeat(50000);
+  const thread = { id: 'saved-thread', preview, turns: [{ id: 'saved-turn' }] };
+  const pending = client.request('thread/resume', { threadId: thread.id }, 1000);
+  const id = wire.messages.at(-1).id;
+  const bytes = Buffer.from(JSON.stringify({ id, result: { thread } }) + '\r\n'
+    + JSON.stringify({ method: 'item/agentMessage/delta', params: { delta: '继续\u2028执行\u2029' } }) + '\n');
+  for (let offset = 0; offset < bytes.length; offset += 4093) wire.proc.stdout.write(bytes.subarray(offset, offset + 4093));
+  assert.deepEqual(await pending, { thread });
+  assert.deepEqual(notifications, [{ method: 'item/agentMessage/delta', params: { delta: '继续\u2028执行\u2029' } }]);
+  assert.deepEqual(logs, []);
+  assert.equal(client.pending.size, 0);
+});
+
 for (const [permissionMode, approvalPolicy, sandbox] of [
   ['ask', 'untrusted', 'workspace-write'], ['auto', 'on-request', 'workspace-write'],
   ['full', 'never', 'danger-full-access'], ['default', 'never', 'read-only'],

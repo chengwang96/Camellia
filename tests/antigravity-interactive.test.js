@@ -59,6 +59,36 @@ test('interactive model selection pins the requested model and available effort'
   assert.throws(() => selection(catalog, 'missing'), /invalid model selection/);
 });
 
+test('interactive preparation stops on a split login prompt and reports sign-in instead of timing out', { timeout: 5000 }, async t => {
+  const fs = require('node:fs'), os = require('node:os');
+  const { EventEmitter } = require('node:events'), { PassThrough } = require('node:stream');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-auth-'));
+  const child = Object.assign(new EventEmitter(), { pid: 100, exitCode: null, stdout: new PassThrough(), stderr: new PassThrough() });
+  const file = require.resolve('../src/engines/antigravity/cli-interactive.cjs');
+  const runtimeRequire = require('node:module').createRequire(file), loaded = { exports: {} };
+  let stopped = false;
+  const load = name => name !== 'node:child_process' ? runtimeRequire(name) : { spawn(exe, args) {
+    if (exe === 'taskkill.exe') {
+      assert.deepEqual(args, ['/pid', String(child.pid), '/t', '/f']);
+      stopped = true;
+      queueMicrotask(() => { child.exitCode = 1; child.stdout.end(); child.stderr.end(); child.emit('close', 1); });
+      return new EventEmitter();
+    }
+    assert.equal(exe, 'fixture-cli');
+    queueMicrotask(() => { child.stderr.write('Authentication requ'); child.stderr.write('ired. Please visit the URL to log in:\n'); });
+    return child;
+  } };
+  require('node:vm').compileFunction(fs.readFileSync(file, 'utf8'), ['require', 'module', 'exports', 'process'], { filename: file })(
+    load, loaded, loaded.exports, { ...process, platform: 'win32' });
+  const bridge = new loaded.exports.InteractiveCli({ exe: 'fixture-cli', home: root, model: 'fixture' }, () => {});
+  t.after(async () => { await bridge.stop(); child.stdout.destroy(); child.stderr.destroy(); require('./test-fs.cjs').removeTree(root); });
+  await bridge.handle('session/new', { cwd: root });
+  await assert.rejects(bridge.prepare(), /Google sign-in has expired or is invalid/);
+  assert.equal(stopped, true);
+  assert.equal(bridge.closed, true);
+  await assert.rejects(bridge.prepare(), /Google sign-in has expired or is invalid/);
+});
+
 test('explicit skill commands use the native resolved catalog and preserve input/media and scope', async () => {
   const { bridge } = fixture(); bridge.session.cwd = path.resolve('fixture-workspace');
   const calls = [];
