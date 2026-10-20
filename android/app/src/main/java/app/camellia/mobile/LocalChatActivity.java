@@ -704,10 +704,8 @@ public final class LocalChatActivity extends Activity {
     }
 
     private void openGallery() {
-        android.content.Intent picker = new android.content.Intent(android.content.Intent.ACTION_GET_CONTENT);
-        picker.setType("image/*"); picker.addCategory(android.content.Intent.CATEGORY_OPENABLE);
-        picker.putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true);
-        try { startActivityForResult(picker, PICK_IMAGE_REQUEST); } catch (Exception error) { failure(error); }
+        try { PhotoPicker.open(this, PICK_IMAGE_REQUEST, ChatAttachments.MAX_COUNT - selectedImages.size() - selectedDocuments.size()); }
+        catch (Exception error) { failure(error); }
     }
 
     private void openDocuments() {

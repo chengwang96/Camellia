@@ -53,3 +53,24 @@ test('new unpriced request metadata can be repriced once; legacy aggregate token
   assert.equal(stats.estimatedCostUsd, (600 * 2 + 100 * 10 + 400 * 0.1) / 1e6);
   assert.equal(stats.byModel['gpt-5-fixture-0'].unpricedTokens, 0);
 });
+
+test('Antigravity Opus thinking uses the canonical catalog price for new usage, cache and reasoning', t => {
+  const f = fixture(t), model = 'claude-opus-4-6-thinking';
+  assert.equal(pricing.priceFor(model), pricing.priceFor('claude-opus-4-6'));
+  const rates = { input: 7, output: 30, cacheRead: .7, cacheWrite: 8.75 };
+  pricing.installCatalog({ ...bundled, models: { ...bundled.models, 'claude-opus-4-6': rates } });
+  assert.equal(pricing.priceFor(model), rates, 'the alias follows refreshed canonical rates');
+  const sample = { input: 50841, output: 582, cacheRead: 30799, reasoning: 400, aggregate: true };
+  const expected = (20042 * rates.input + 582 * rates.output + 30799 * rates.cacheRead) / 1e6;
+  assert.equal(pricing.estimateTokens(model, sample), expected);
+  const store = createSubscriptionUsage({ file: path.join(f.root, 'usage.json') });
+  store.record({ id: 'antigravity-thinking', engine: 'antigravity', model, samples: [sample] });
+  const usage = store.state().accounts[0].usage;
+  assert.equal(usage.pricedTokens, 51423); assert.equal(usage.unpricedTokens, 0);
+  assert.equal(usage.estimatedCostUsd, expected); assert.equal(usage.reasoningTokens, 400);
+  assert.ok(usage.byModel[model], 'preserve the actual model ID in usage');
+  for (const unknown of ['claude-opus-4-6-thinking-auto', 'claude-opus-999-thinking', 'auto', 'toString']) {
+    assert.equal(pricing.priceFor(unknown), null);
+    assert.equal(pricing.estimateTokens(unknown, sample), null);
+  }
+});

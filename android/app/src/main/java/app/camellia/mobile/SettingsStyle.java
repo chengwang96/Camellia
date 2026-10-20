@@ -43,6 +43,16 @@ final class SettingsStyle {
      */
     int dp(int value) { return Math.round(value * context.getResources().getDisplayMetrics().density); }
 
+    /** Keep the index and subpages inset even before Android dispatches window insets. */
+    void pagePadding(View page) {
+        page.setPadding(dp(22), dp(12), dp(22), dp(24));
+        page.setOnApplyWindowInsetsListener((view, insets) -> {
+            view.setPadding(dp(22) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(),
+                dp(22) + insets.getSystemWindowInsetRight(), dp(24) + insets.getSystemWindowInsetBottom());
+            return insets;
+        });
+    }
+
     /** A rounded rectangle in this page's own colours. */
     GradientDrawable round(int color, int radiusDp) {
         GradientDrawable shape = new GradientDrawable();
@@ -233,18 +243,18 @@ final class SettingsStyle {
         if (group.getChildCount() == 0) return;
         View line = new View(context); line.setBackgroundColor(divider); line.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, Math.max(1, dp(1) / 2));
-        params.setMargins(dp(18), 0, dp(18), 0); group.addView(line, params);
+        params.setMargins(dp(16), 0, dp(16), 0); group.addView(line, params);
     }
 
     private LinearLayout detailRow(LinearLayout group, String title, String description, int titleColor) {
         separator(group);
         LinearLayout row = new LinearLayout(context); row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setMinimumHeight(dp(62)); row.setPadding(dp(18), dp(16), dp(18), dp(16));
+        row.setMinimumHeight(dp(64)); row.setPadding(dp(16), dp(14), dp(14), dp(14));
         LinearLayout copy = new LinearLayout(context); copy.setOrientation(LinearLayout.VERTICAL);
         TextView heading = new TextView(context); heading.setText(title); heading.setTextSize(Palette.TEXT_ROW_STRONG); heading.setTextColor(titleColor); copy.addView(heading);
         if (!description.isEmpty()) {
             TextView note = new TextView(context); note.setText(description); note.setTextSize(Palette.TEXT_BODY); note.setTextColor(secondary);
-            note.setPadding(0, dp(7), 0, 0); note.setLineSpacing(dp(3), 1); copy.addView(note);
+            note.setPadding(0, dp(2), 0, 0); note.setLineSpacing(dp(3), 1); copy.addView(note);
         }
         row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1)); group.addView(row, new LinearLayout.LayoutParams(-1, -2)); return row;
     }
@@ -435,7 +445,7 @@ final class SettingsStyle {
         row.setContentDescription(description.isEmpty() ? title : title + ", " + description); row.setOnClickListener(view -> action.run());
         for (int index = 0; index < row.getChildCount(); index++) row.getChildAt(index).setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         ImageView arrow = new ImageView(context); arrow.setImageDrawable(new LineIcon("right", secondary)); arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(18), dp(18)); params.setMarginStart(dp(14)); row.addView(arrow, params);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(18), dp(18)); params.setMarginStart(dp(8)); row.addView(arrow, params);
     }
 
     android.widget.Switch toggle(LinearLayout group, String title, String description, String tag, boolean checked,

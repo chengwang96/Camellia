@@ -209,6 +209,107 @@ test('mobile queue steering sends only the selected entry once and serializes co
   runs.finish(); await flushQueue();
 });
 
+test('mobile queue steering reaches an automatic Goal round and authorizes its current instruction', async context => {
+  const { manager, commands, gateway, reader, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  const goal = manager.goalFor(visible.id);
+  // Drive the real controller without waiting for its continuation timer.
+  goal.setTimer = () => 0; goal.clearTimer = () => {};
+  manager.createGoalBridge = async () => ({ close() {} });
+  assert.equal((await manager.command('codex', 'goal-start', { sessionId: visible.id, objective: 'Finish the report' })).ok, true);
+  goal.drive(); await flushQueue();
+  const snapshot = reader.snapshot(device, visible.id), active = manager.active.get(visible.id);
+  assert.equal(snapshot.automation.goal.armed, true);
+  assert.equal(snapshot.live.runId, active.facade.gen);
+  const instructions = [];
+  active.session.steerUserMessage = async prompt => { instructions.push(prompt); };
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action, ...extra,
+  }, gateway.instanceId);
+  const correction = 'Please change the goal to finish the revised report';
+  const queued = await execute('send', { queue: true, prompt: correction, expectedSeq: visible.seq });
+  const accepted = await execute('queue-steer', { queueId: queued.queueId, runId: snapshot.live.runId });
+  assert.equal(accepted.ok, true, accepted.error);
+  assert.equal(instructions.length, 1); assert.ok(instructions[0].endsWith(correction));
+  assert.equal(active.goalContinuation, true); assert.equal(active.goalUserPrompt, correction);
+  const revised = await manager.callGoalTool(visible.id, 'camellia_update_goal', { run_token: active.goalRunToken,
+    objective: 'Finish the revised report', reason: 'Apply the current phone instruction', user_request: correction });
+  assert.equal(revised.ok, true, revised.error);
+  assert.equal(goal.goal.objective, 'Finish the revised report');
+  assert.equal(manager.rawRows(visible).filter(row => row.queueId === queued.queueId && row.steered).length, 1);
+  assert.deepEqual(commands.queue.view(visible.id), []);
+  runs.finish(); await flushQueue();
+});
+
+test('mobile Goal instructions start a selected message between rounds and ignore a late verification', async context => {
+  const { manager, commands, gateway, reader, access, pair, visible } = fixture(context);
+  const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);
+  const goal = manager.goalFor(visible.id);
+  goal.setTimer = () => 0; goal.clearTimer = () => {};
+  manager.createGoalBridge = async () => ({ close() {} });
+  assert.equal((await manager.command('codex', 'goal-start', { sessionId: visible.id, objective: 'Finish the report' })).ok, true);
+  goal.drive(); await flushQueue(); runs.finish(); await flushQueue();
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action, ...extra,
+  }, gateway.instanceId);
+  const ordinary = await execute('send', { queue: true, prompt: 'Wait until the goal finishes', expectedSeq: visible.seq });
+  const selected = await execute('send', { queue: true, prompt: 'Check the revised results now', expectedSeq: visible.seq,
+    attachments: [{ name: 'notes.txt', isImage: false, data: Buffer.from('Revised results').toString('base64') }] });
+  let verdict, verificationSignal;
+  goal.verifyCompletion = (claim, { signal }) => { verificationSignal = signal; return new Promise(resolve => { verdict = resolve; }); };
+  const verification = goal.verify('The previous round claimed completion');
+  const snapshot = reader.snapshot(device, visible.id);
+  assert.equal(snapshot.live, null);
+  assert.equal(snapshot.queueSteering.goalId, goal.goal.id);
+  const request = { action: 'queue-steer', queueId: selected.queueId, goalId: snapshot.queueSteering.goalId,
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId };
+  const accepted = await commands.execute(device, visible.id, request, gateway.instanceId);
+  assert.equal(accepted.ok, true, accepted.error);
+  assert.equal(verificationSignal.aborted, true);
+  verdict({ pass: true, reason: 'An obsolete verdict' }); await verification;
+  assert.equal(goal.armed, true); assert.equal(goal.goal.phase, 'active'); assert.equal(goal.goal.verifying, null);
+  assert.equal(goal.goal.roundsStarted, 2); assert.equal(runs.sent.length, 2);
+  assert.ok(runs.sent[1].prompt.includes('Check the revised results now'));
+  assert.equal(fs.readFileSync(runs.sent[1].attachments[0].path, 'utf8'), 'Revised results');
+  assert.equal(manager.active.get(visible.id).goalUserPrompt, manager.rawRows(visible).find(row => row.queueId === selected.queueId).text);
+  assert.deepEqual(commands.queue.view(visible.id).map(entry => entry.id), [ordinary.queueId]);
+  assert.equal((await commands.execute(device, visible.id, request, gateway.instanceId)).userSeq, accepted.userSeq);
+  assert.equal(runs.sent.length, 2);
+  runs.finish(); await flushQueue(); assert.equal(runs.sent.length, 2);
+});
+
+test('Goal-bound mobile steering survives a round change and rejects stopped, replaced and read-only targets', async context => {
+  const { manager, commands, gateway, reader, access, pair, visible } = fixture(context);
+  const credential = pair(), device = access.authenticate(credential.token), runs = queuedRuns(manager, visible.id);
+  const goal = manager.goalFor(visible.id);
+  goal.setTimer = () => 0; goal.clearTimer = () => {};
+  await manager.command('codex', 'goal-start', { sessionId: visible.id, objective: 'Finish the report' });
+  goal.drive(); await flushQueue();
+  const target = reader.snapshot(device, visible.id), goalId = target.queueSteering.goalId;
+  assert.equal(reader.snapshot({ ...device, permission: 'read' }, visible.id).queueSteering, null);
+  const execute = (action, extra = {}) => commands.execute(device, visible.id, {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, action, ...extra,
+  }, gateway.instanceId);
+  const selected = await execute('send', { queue: true, prompt: 'A current instruction', expectedSeq: visible.seq });
+  runs.finish(); goal.drive(); await flushQueue();
+  const active = manager.active.get(visible.id), instructions = [];
+  assert.notEqual(active.facade.gen, target.live.runId);
+  active.session.steerUserMessage = async prompt => { instructions.push(prompt); };
+  const accepted = await execute('queue-steer', { queueId: selected.queueId, goalId, runId: target.live.runId });
+  assert.equal(accepted.ok, true, accepted.error); assert.equal(accepted.runId, active.facade.gen);
+  assert.deepEqual(instructions, ['A current instruction']);
+  const next = await execute('send', { queue: true, prompt: 'Keep this entry', expectedSeq: visible.seq });
+  for (const invalid of [null, '', {}, 'replaced-goal']) {
+    assert.equal((await execute('queue-steer', { queueId: next.queueId, goalId: invalid })).ok, false);
+  }
+  goal.setPhase('paused', { interrupt: false });
+  assert.equal(reader.snapshot(device, visible.id).queueSteering, null);
+  assert.equal((await execute('queue-steer', { queueId: next.queueId, goalId })).ok, false);
+  assert.deepEqual(commands.queue.view(visible.id).map(entry => [entry.id, entry.state]), [[next.queueId, 'queued']]);
+  commands.queue.pause(visible.id); runs.finish(); await flushQueue();
+  assert.equal(instructions.length, 1);
+});
+
 test('mobile queue retains failed instructions and attachments and rejects stale runs and starting edits', async context => {
   const { manager, commands, gateway, access, pair, visible } = fixture(context);
   const device = access.authenticate(pair().token), runs = queuedRuns(manager, visible.id);

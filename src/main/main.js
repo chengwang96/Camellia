@@ -1207,7 +1207,9 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
   drivers: {
     claude: { sessions: claudeSessions, history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
     kimi: { sessions: kimiSessions, history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, subscriptionAccounts: () => kimiAccount.state(), ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
-    codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, subscriptionAccounts: () => codex.accountState(), syncSubscriptionAccount: codex.syncAccountSelection, ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
+    codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, subscriptionAccounts: () => codex.accountState(), syncSubscriptionAccount: codex.syncAccountSelection,
+      resetCredits: { preview: payload => codex.handlers['account-reset-preview'](payload), consume: payload => codex.handlers['account-reset-consume'](payload) },
+      ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
     antigravity: { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, nativeAutoCompaction: true },
     dsh: dshChat,
     pi: piChat,
@@ -1823,6 +1825,7 @@ if (!gotSingleInstanceLock) {
     closeToTray: loadConfig().closeToTray === true,
     memoryDirectory: loadConfig().memoryDirectory || '',
     quickSwitchModels: loadConfig().quickSwitchModels || {},
+    quickSwitchConnections: loadConfig().quickSwitchConnections || {},
     quickSwitchLevels: loadConfig().quickSwitchLevels || {},
     hiddenSubscriptionModels: loadConfig().hiddenSubscriptionModels || {},
     chatContentWidth: normalizeChatContentWidth(loadConfig().chatContentWidth),
@@ -1858,6 +1861,16 @@ if (!gotSingleInstanceLock) {
           }
           if (model.trim()) patch.quickSwitchModels[engine] = model.trim();
           else delete patch.quickSwitchModels[engine];
+        }
+      }
+      if (payload?.quickSwitchConnections !== undefined) {
+        const connections = payload.quickSwitchConnections;
+        if (!connections || typeof connections !== 'object' || Array.isArray(connections)) throw new Error('Invalid quick-switch connections');
+        patch.quickSwitchConnections = { ...loadConfig().quickSwitchConnections };
+        for (const [engine, connection] of Object.entries(connections)) {
+          if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine) || !['', 'api', 'subscription'].includes(connection)) throw new Error('Invalid quick-switch connection');
+          if (connection) patch.quickSwitchConnections[engine] = connection;
+          else delete patch.quickSwitchConnections[engine];
         }
       }
       if (payload?.quickSwitchLevels !== undefined) {

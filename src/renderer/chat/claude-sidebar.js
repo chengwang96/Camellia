@@ -170,13 +170,19 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       section.dataset.dropGroup = ws.id;
       section.setAttribute('aria-label', ws.name);
       const row = document.createElement('div');
-      row.className = 'session-item ws-row' + (ws.collapsed ? ' collapsed' : '') + (context.workspaceId === ws.id ? ' active' : '');
+      row.className = 'session-item ws-row' + (ws.collapsed ? ' collapsed' : '') + (context.workspaceId === ws.id ? ' active' : '') + (ws.missing ? ' missing' : '');
       row.tabIndex = 0;
       row.setAttribute('role', 'button');
       row.setAttribute('aria-expanded', String(!ws.collapsed));
       row.title = ws.path;
       row.innerHTML = '<span class="ws-chev">' + sidebarIcon('chevron') + '</span>' + sidebarIcon('folder') + '<span class="session-item-text ws-name"></span><span class="ws-count"></span>';
       row.querySelector('.ws-name').textContent = ws.name;
+      if (ws.missing) {
+        const missing = document.createElement('span');
+        missing.className = 'ws-missing-label'; missing.dataset.i18n = '';
+        missing.textContent = 'Folder not found';
+        row.querySelector('.ws-name').appendChild(missing);
+      }
       row.querySelector('.ws-count').textContent = ws.sessionCount || '';
       const toggle = async () => {
         const res = await runMetaOp({ op: 'toggle-collapse', workspaceId: ws.id });
@@ -187,7 +193,11 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
         if (e.target !== row) return;
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void toggle(); }
       });
-      row.appendChild(sidebarButton('plus', 'New session in ' + ws.name, () => void newSession(ws.id)));
+      const addSession = ws.missing
+        ? sidebarButton('folder', 'Relocate folder…', () => openWorkspaceDialog(ws, 'relocate'))
+        : sidebarButton('plus', 'New session in ' + ws.name, () => void newSession(ws.id));
+      if (ws.missing) addSession.classList.add('ws-relocate');
+      row.appendChild(addSession);
       row.appendChild(sidebarButton('more', ws.name + " workspace actions", (button) => openWorkspaceActions(button, ws)));
       section.appendChild(row);
       if (!ws.collapsed) {
@@ -318,9 +328,22 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     } catch (err) { setStatus(err.message); return null; }
   }
   function openWorkspaceActions(anchor, ws) {
+    const platform = window.dshDesktop.platform;
+    const openFolderLabel = platform === 'darwin' ? 'Open in Finder'
+      : platform === 'win32' ? 'Open in File Explorer' : 'Open in file manager';
     openActionMenu(anchor, [
-      { label: "New session in this workspace", disabled: contextBusy(), run: () => void newSession(ws.id) },
+      { label: "New session in this workspace", disabled: contextBusy(), run: () => ws.missing ? openWorkspaceDialog(ws, 'relocate') : void newSession(ws.id) },
+      { label: openFolderLabel, disabled: ws.missing || !ws.path, run: async () => {
+        try {
+          const result = await window.dshDesktop.openFileExternally(ws.path);
+          if (!result?.ok) throw new Error(result?.error || 'Could not open the folder.');
+        } catch (error) {
+          await loadSessionHistory();
+          setStatus(error.message);
+        }
+      } },
       { label: "Rename workspace", run: () => openWorkspaceDialog(ws) },
+      { label: 'Relocate folder…', disabled: contextBusy(), run: () => openWorkspaceDialog(ws, 'relocate') },
       { label: "Remove workspace (keep sessions)", disabled: contextBusy(), run: () => removeWorkspace(ws, false) },
       { label: "Remove workspace (archive sessions)", disabled: contextBusy(), run: () => removeWorkspace(ws, true) },
     ]);
@@ -545,21 +568,29 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
   }
 
   let editingWorkspace = null;
+  let workspaceDialogMode = 'create';
   let workspaceReturnFocus = null;
-  function openWorkspaceDialog(ws = null) {
+  function openWorkspaceDialog(ws = null, mode = ws ? 'rename' : 'create') {
     closePops();
     editingWorkspace = ws;
+    workspaceDialogMode = mode;
+    const relocating = mode === 'relocate', renaming = mode === 'rename';
     workspaceReturnFocus = document.activeElement;
-    $('wsDialogTitle').textContent = ws ? "Rename workspace" : "Add workspace";
+    $('wsDialogTitle').textContent = relocating ? 'Relocate workspace folder' : ws ? "Rename workspace" : "Add workspace";
     $('wsName').value = ws ? ws.name : '';
+    $('wsName').disabled = relocating;
+    $('wsNameField').hidden = relocating;
     $('wsPath').value = ws ? ws.path : '';
-    $('wsPath').disabled = Boolean(ws);
-    $('wsPathField').hidden = Boolean(ws);
-    $('wsHint').hidden = Boolean(ws);
+    $('wsPath').disabled = renaming;
+    $('wsPathField').hidden = renaming;
+    $('wsHint').hidden = renaming;
+    $('wsHint').textContent = relocating
+      ? 'Choose the renamed or moved folder. Existing conversations will use its new location.'
+      : 'Sessions run in this folder. You can move them out to make them standalone.';
     $('wsError').textContent = '';
     $('wsCreate').textContent = ws ? "Save" : "Add";
     $('wsMask').classList.add('visible');
-    $('wsName').focus();
+    (relocating ? $('wsPath') : $('wsName')).focus();
   }
   function closeWorkspaceDialog() {
     if ($('wsCreate').disabled) return;
@@ -600,7 +631,9 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
     $('wsCreate').disabled = true;
     $('wsError').textContent = '';
     try {
-      const payload = editingWorkspace
+      const payload = workspaceDialogMode === 'relocate'
+        ? { op: 'relocate-workspace', id: editingWorkspace.id, path: $('wsPath').value.trim() }
+        : editingWorkspace
         ? { op: 'rename-workspace', id: editingWorkspace.id, name: $('wsName').value.trim() }
         : { op: 'create-workspace', name: $('wsName').value.trim(), path: $('wsPath').value.trim() };
       const res = await chatApi.metaOp(payload);
@@ -609,7 +642,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
       $('wsCreate').disabled = false;
       closeWorkspaceDialog();
       await loadSessionHistory();
-      setStatus(editingWorkspace ? "Workspace renamed" : "Workspace added");
+      setStatus(workspaceDialogMode === 'relocate' ? 'Workspace folder relocated' : editingWorkspace ? "Workspace renamed" : "Workspace added");
     } catch (err) { $('wsError').textContent = err.message; }
     finally { $('wsCreate').disabled = false; }
   });
@@ -916,6 +949,7 @@ function createClaudeSidebar({ $, context, contextBusy, canChangeContext, canRea
   };
 
   window.addEventListener('camellia:language', updateWorkspaceLabel);
+  window.addEventListener('focus', () => void loadSessionHistory());
   return {
     load: loadSessionHistory, render: renderSessionSidebar, updateLabel: updateWorkspaceLabel, metaOp: runMetaOp,
     markReplyRead, renameDiscussion, archivedChanged,

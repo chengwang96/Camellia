@@ -1355,6 +1355,18 @@ struct ConversationDetailView: View {
                 onSkip: { model.skipLocation() },
                 onCancel: { model.cancelLocation() })
         }
+        .alert(model.usesChinese ? "重置 Codex 额度" : "Reset Codex usage", isPresented: $model.codexResetPresented,
+               presenting: model.codexResetPreview) { preview in
+            if preview.canConsume {
+                Button(preview.retry ? (model.usesChinese ? "重试同一请求" : "Retry this reset request")
+                       : (model.usesChinese ? "确认使用一张" : "Confirm and use one credit")) {
+                    model.consumeCodexReset(preview)
+                }
+            }
+            Button(model.usesChinese ? "取消" : "Cancel", role: .cancel) {}
+        } message: { preview in
+            Text(model.codexResetDescription(preview))
+        }
         .onAppear {
             if model.openId != conversation.id {
                 pendingFollow = true

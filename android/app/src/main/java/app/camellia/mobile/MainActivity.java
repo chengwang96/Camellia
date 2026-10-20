@@ -140,6 +140,7 @@ public final class MainActivity extends Activity {
     private boolean canQueue;
     private long queueVersion = -1;
     private String queueSignature = "";
+    private String queueSteeringGoalId = "";
     private final RemoteGoalVisibility goalVisibility = new RemoteGoalVisibility();
     private boolean controlAllowed, connected, commandBusy;
     private long conversationSeq;
@@ -156,6 +157,8 @@ public final class MainActivity extends Activity {
     private java.util.List<String> availableEngines = RemoteEngines.available(null);
     private boolean canCreate, canCreateWorkspace, canImage, canMultiImage, allowIndependent, canArchive;
     private boolean canFork;
+    private boolean canCodexReset;
+    private android.app.AlertDialog codexResetDialog;
     private boolean canAttachments, canFileAttachments;
     private ConversationMenu conversationPopup;
     private ComputerPickerPopup computerPicker;
@@ -535,7 +538,8 @@ public final class MainActivity extends Activity {
         root.setBackgroundColor(pageBackground); getWindow().setStatusBarColor(pageBackground); getWindow().setNavigationBarColor(pageBackground);
         root.setClipToPadding(false);
         if (screen.equals("list") || screen.equals("detail")) { root.setFocusableInTouchMode(true); root.requestFocus(); }
-        root.setOnApplyWindowInsetsListener((view, insets) -> {
+        if (settingsPage) settingsStyle.pagePadding(root);
+        else root.setOnApplyWindowInsetsListener((view, insets) -> {
             view.setPadding(dp(18) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(), dp(18) + insets.getSystemWindowInsetRight(), bottomPadding + insets.getSystemWindowInsetBottom());
             return insets;
         });
@@ -1834,6 +1838,7 @@ public final class MainActivity extends Activity {
         availableEngines = RemoteEngines.available(advertised);
         String capabilities = String.valueOf(info.optJSONArray("capabilities"));
         canCommandReceipts = capabilities.contains("\"command-receipts\"");
+        canCodexReset = info.optString("permission").equals("control") && capabilities.contains("\"codex-reset-credits\"");
         canStopStart = capabilities.contains("\"stop-start\"");
         canIncremental = capabilities.contains("\"incremental-snapshots\"");
         canListQuery = capabilities.contains("\"list-query\""); capabilityAddress = credentials.optString("address");
@@ -2080,10 +2085,8 @@ public final class MainActivity extends Activity {
     }
 
     private void openGallery() {
-        android.content.Intent picker = new android.content.Intent(android.content.Intent.ACTION_GET_CONTENT);
-        picker.setType("image/*"); picker.addCategory(android.content.Intent.CATEGORY_OPENABLE);
-        picker.putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, canMultiImage || canAttachments || canFileAttachments);
-        try { startActivityForResult(picker, PICK_IMAGE_REQUEST); }
+        int remaining = ChatAttachments.remoteCount(canAttachments, canFileAttachments, canMultiImage) - selectedImages.size() - selectedDocuments.size();
+        try { PhotoPicker.open(this, PICK_IMAGE_REQUEST, remaining); }
         catch (Exception error) { reportError("无法打开图片选择器", "Cannot open the image picker", error); }
     }
 
@@ -2305,7 +2308,7 @@ public final class MainActivity extends Activity {
         remoteSettings = null;
         remotePreparation = null;
         remoteCompaction = null;
-        remoteQueue = new JSONArray(); canQueue = false; queueVersion = -1; queueSignature = "";
+        remoteQueue = new JSONArray(); canQueue = false; queueVersion = -1; queueSignature = ""; queueSteeringGoalId = "";
         displayedConversation = null;
         outgoingMessage = pendingCommand();
         if (outgoingMessage != null && !conversationId.equals(outgoingMessage.optString("conversationId"))) outgoingMessage = null;
@@ -2530,6 +2533,8 @@ public final class MainActivity extends Activity {
         remoteCompaction = ContextCompactionView.fromSnapshot(snapshot, remoteCompaction, conversationSeq);
         displayedConversation = conversation;
         canQueue = snapshot.has("queue");
+        JSONObject queueSteering = snapshot.optJSONObject("queueSteering");
+        queueSteeringGoalId = queueSteering == null ? "" : queueSteering.optString("goalId");
         if (!canQueue) remoteQueue = new JSONArray();
         applyQueue(snapshot);
         renderMessages(lastLive);
@@ -2729,7 +2734,7 @@ public final class MainActivity extends Activity {
     private void clearUnavailableDetail() {
         connected = false; controlAllowed = false; clearSubtasks(); clearHistory();
         lastLive = null; remotePreparation = null; remoteSettings = null;
-        remoteQueue = new JSONArray(); canQueue = false; queueVersion = -1;
+        remoteQueue = new JSONArray(); canQueue = false; queueVersion = -1; queueSteeringGoalId = "";
         if (messages != null) messages.removeAllViews();
         renderApprovals(); renderAutomation(new JSONObject()); updateControls();
     }
@@ -2916,6 +2921,7 @@ public final class MainActivity extends Activity {
     }
 
     private void releasePageViews() {
+        if (codexResetDialog != null) { codexResetDialog.dismiss(); codexResetDialog = null; }
         // PageTransitions captures the outgoing hierarchy before detaching it.
         viewHandler.removeCallbacksAndMessages(null); clearMessageScroll();
         prefetchRows.clear(); disposeMessageViews();
@@ -3265,7 +3271,7 @@ public final class MainActivity extends Activity {
     private void renderQueue() {
         if (queueBar == null) return;
         boolean enabled = connected && controlAllowed && !commandBusy && !(pendingCommand() != null);
-        String signature = remoteQueue.toString() + ":" + enabled + ":" + (lastLive == null ? 0 : lastLive.optLong("runId"));
+        String signature = remoteQueue.toString() + ":" + enabled + ":" + (lastLive == null ? 0 : lastLive.optLong("runId")) + ":" + queueSteeringGoalId;
         if (signature.equals(queueSignature)) return;
         queueSignature = signature;
         queueBar.removeAllViews(); queueBar.setVisibility(remoteQueue.length() == 0 ? View.GONE : View.VISIBLE);
@@ -3334,7 +3340,7 @@ public final class MainActivity extends Activity {
             LinearLayout.LayoutParams editParams = new LinearLayout.LayoutParams(0, dp(48), 1); editParams.setMargins(0, dp(4), dp(6), 0);
             actions.addView(edit, editParams);
             Button steer = button(tr("插队", "Send now"), () -> queueCommand("queue-steer", id), false);
-            steer.setTag("remoteQueueSteer:" + id); steer.setEnabled(enabled && !state.equals("starting") && lastLive != null);
+            steer.setTag("remoteQueueSteer:" + id); steer.setEnabled(enabled && !state.equals("starting") && (lastLive != null || !queueSteeringGoalId.isEmpty()));
             steer.setTextSize(Palette.TEXT_SMALL); steer.setMinWidth(0);
             steer.setSingleLine(true); steer.setPadding(dp(4), 0, dp(4), 0);
             steer.setContentDescription(tr("插队到当前回复", "Send as an instruction to the current reply"));
@@ -3359,8 +3365,9 @@ public final class MainActivity extends Activity {
             JSONObject payload = command(action);
             if (id != null) payload.put("queueId", id);
             if (action.equals("queue-steer")) {
-                if (lastLive == null) return;
-                payload.put("runId", lastLive.optLong("runId"));
+                if (!queueSteeringGoalId.isEmpty()) payload.put("goalId", queueSteeringGoalId);
+                else if (lastLive != null) payload.put("runId", lastLive.optLong("runId"));
+                else return;
             }
             submitCommand(payload);
         } catch (Exception error) { reportError("无法保存队列操作，请重试。", "Could not save the queue operation. Retry.", error); }
@@ -3628,11 +3635,16 @@ public final class MainActivity extends Activity {
         settingsPopup = new RemoteSettingsPopup(this, chinese, background, ink, muted, accent, remoteSettings, (key, value) -> {
             if (!target.equals(conversationId) || !server.equals(instance) || remoteSettings == null || !version.equals(remoteSettings.optString("version"))) return;
             try {
+                if (key.equals("codexReset")) {
+                    setStatusNotice(tr("正在查询电脑账号的重置卡…", "Checking this computer account's reset credits…"));
+                    submitCommand(command("codex-reset-preview")); return;
+                }
                 JSONObject changes = key.equals("modelChoice") ? new JSONObject(value)
                     : new JSONObject().put(key, key.equals("fastMode") || key.equals("quickSwitch") ? Boolean.parseBoolean(value) : value);
                 submitCommand(command("configure").put("instanceId", server).put("expectedSettings", version).put("settings", changes));
             } catch (Exception error) { reportError("无法保存设置，请重试。", "Could not save settings. Try again.", error); }
         });
+        settingsPopup.setResetCreditsAvailable(canCodexReset && remoteSettings.optString("engine").equals("codex") && remoteSettings.optString("connection").equals("subscription"));
         settingsPopup.show(permissions ? permissionButton : modelButton, permissions);
     }
 
@@ -3888,6 +3900,15 @@ public final class MainActivity extends Activity {
                     outgoingState("accepted");
                 }
                 setStatusNotice(result.optString("state").equals("queued") ? tr("已加入电脑队列", "Queued on the computer") : tr("电脑已接收操作", "Computer accepted the operation"));
+                if (currentState && conversationId.equals(target) && payload.optString("action").equals("codex-reset-preview")) {
+                    JSONObject preview = result.optJSONObject("resetPreview");
+                    if (preview != null && foreground) showCodexResetPreview(preview);
+                }
+                if (payload.optString("action").equals("codex-reset-consume")) {
+                    String message = RemoteCodexResetDialog.outcome(chinese, result.optString("outcome"));
+                    if (!result.isNull("warning") && !result.optString("warning").isEmpty()) message += tr(" 刷新额度失败，请稍后重新查询。", " Refresh failed. Check the quota again later.");
+                    setStatusNotice(message);
+                }
             } else {
                 if (submitted && outgoingMessage != null) {
                     // A refused edit stays an edit: keep its target so the restored
@@ -3908,6 +3929,19 @@ public final class MainActivity extends Activity {
             }
         } catch (Exception error) { reportError("无法保存操作结果，请重试同一请求。", "Could not save result. Retry the same request.", error); }
         updateControls();
+    }
+
+    private void showCodexResetPreview(JSONObject preview) {
+        if (codexResetDialog != null) codexResetDialog.dismiss();
+        String target = conversationId, server = instance;
+        codexResetDialog = RemoteCodexResetDialog.show(this, chinese, preview, () -> {
+            if (!foreground || !connected || !controlAllowed || !target.equals(conversationId) || !server.equals(instance)) return;
+            try {
+                submitCommand(command("codex-reset-consume").put("accountId", preview.getString("accountId"))
+                    .put("confirmationToken", preview.getString("confirmationToken")).put("confirmed", true));
+                setStatusNotice(tr("正在使用重置卡…", "Using reset credit…"));
+            } catch (Exception error) { reportError("无法提交重置，请重新查询后确认。", "Could not submit reset. Query and confirm again.", error); }
+        });
     }
 
     private void forget(JSONObject computer) {

@@ -751,13 +751,14 @@ public final class RemoteDiscussionsActivity extends Activity {
     private void pickAttachment(int kind) {
         dialog.dismiss(); pickerGroup = groupId;
         try {
+            if (kind == 1) { PhotoPicker.open(this, 811, 16 - images.size() - documents.size()); return; }
             android.content.Intent intent;
             if (kind == 3) {
                 java.io.File directory = new java.io.File(getCacheDir(), "camera"); if (!directory.exists() && !directory.mkdirs()) throw new java.io.IOException("Camera directory unavailable");
                 cameraFile = java.io.File.createTempFile("discussion-", ".jpg", directory);
                 intent = new android.content.Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).putExtra(android.provider.MediaStore.EXTRA_OUTPUT, CameraFileProvider.uri(this, cameraFile))
                     .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION | android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-            } else intent = new android.content.Intent(android.content.Intent.ACTION_GET_CONTENT).setType(kind == 1 ? "image/*" : "*/*")
+            } else intent = new android.content.Intent(android.content.Intent.ACTION_GET_CONTENT).setType("*/*")
                 .addCategory(android.content.Intent.CATEGORY_OPENABLE).putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true);
             startActivityForResult(intent, 810 + kind);
         } catch (Exception error) { showError(error.getMessage()); }

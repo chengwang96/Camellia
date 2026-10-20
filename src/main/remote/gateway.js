@@ -236,6 +236,7 @@ class RemoteGateway {
     if (this.commands) capabilities.push('interactive-approvals', 'next-turn-settings', 'subagents');
     if (this.commands) capabilities.push('fork', 'switch-engine', 'compact', 'find', 'resend', 'automation-control', 'message-queue');
     if (this.commands) capabilities.push('command-receipts', 'stop-start', 'incremental-snapshots');
+    if (this.commands && fullControl && this.reader.manager.drivers.codex?.resetCredits) capabilities.push('codex-reset-credits');
     capabilities.push('list-query');
     return { protocol: 1, permission: device.permission, capabilities,
       engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine)),

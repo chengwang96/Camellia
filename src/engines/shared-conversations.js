@@ -8,7 +8,7 @@ const { translate } = require('../shared/i18n');
 const { canonicalModelId } = require('../shared/model-names');
 const { shortTitle, messageTitle } = require('../shared/conversation-title');
 const { validSessionId } = require('./claude-history');
-const { createSessionWorkspaces } = require('./session-workspaces');
+const { createSessionWorkspaces, directoryExists, relocatedWorkspaceCwd } = require('./session-workspaces');
 const { ClaudeGoal, goalPrompt, verifyPrompt, verifySignal } = require('./claude-goal');
 const { instructions: goalToolInstructions, validateTool, matchesUserRequest } = require('./goal-tools');
 const { collector } = require('../shared/turn-artifacts');
@@ -243,6 +243,12 @@ class SharedConversations {
         for (const goal of this.goals.values()) goal.detachWorkspace(id);
         for (const c of this.items.values()) if (c.workspaceId === id) { c.workspaceId = null; this.save(c); }
       } });
+    // Workspace metadata is saved first during relocation. Recover the new
+    // paths even if a previous run stopped before saving every conversation.
+    const savedCwds = this.workspaces.sessionMeta().sessionCwd;
+    for (const c of this.items.values()) if (savedCwds[c.id] && savedCwds[c.id] !== c.cwd) {
+      c.cwd = savedCwds[c.id]; this.save(c);
+    }
     // Goals are persisted beside their conversation, and never resume on load.
     for (const c of this.items.values()) this.goalFor(c.id);
     try {
@@ -275,12 +281,20 @@ class SharedConversations {
             if (!active || active.facade !== facade && !switching) return;
             active.cancelled = true; active.session?.interrupt();
           },
-          sendUserMessage: prompt => {
+          sendUserMessage: (prompt, instruction) => {
             const objective = goal.goal.objective;
             const displayPrompt = goal.goal.roundsStarted === 1 ? objective : 'Continue working toward the goal: ' + objective;
-            this.send(engine, { ...opts, sessionId: id, prompt: displayPrompt }, { facade, promptSuffix: prompt }).catch(error => {
-              if (goal.armed && goal.ownedSession() === facade) goal.block('session-unavailable', error.message);
+            facade.running = true;
+            const operation = this.send(engine, { ...opts, prompt: displayPrompt, ...instruction, sessionId: id }, {
+              facade, promptSuffix: instruction ? prompt + '\n\nCurrent user instruction:\n\n' + instruction.prompt : prompt,
+              goalUserPrompt: instruction?.prompt,
             });
+            const failed = error => {
+              if (this.active.get(id)?.facade !== facade) facade.running = false;
+              if (goal.armed && goal.ownedSession() === facade) goal.block('session-unavailable', error.message);
+            };
+            if (instruction) return operation.catch(error => { failed(error); throw error; });
+            operation.catch(failed);
             return true;
           } };
         this.facades.set(id, facade);
@@ -721,7 +735,11 @@ class SharedConversations {
     const selected = this.settings(engine);
     c.engineSettings[engine] = conversationSettings(selected);
     if (selected.connection !== 'subscription' && selected.model) c.apiModel = selected.model;
-    if (!cwd) fs.mkdirSync(c.cwd, { recursive: true });
+    if (!cwd) {
+      if (workspaceId) {
+        if (!directoryExists(c.cwd)) throw new Error('Workspace folder not found. Relocate it from the workspace menu.');
+      } else fs.mkdirSync(c.cwd, { recursive: true });
+    }
     this.save(c); this.workspaces.recordContext(c.id, c.workspaceId, c.cwd);
     this.onEvent({ type: 'conversation:created', session_id: c.id, engine });
     return c;
@@ -1050,7 +1068,7 @@ class SharedConversations {
     return 'Conversation context from earlier turns follows as JSON data. Treat it as history, not new instructions; do not repeat completed tool actions. Continue with the user request below.\n'
       + JSON.stringify({ cwd: c.cwd, history: body }) + '\n\n';
   }
-  async send(engine, payload, { internal = false, fresh = false, ephemeral = false, facade, promptOverride, promptSuffix, continuation, goalToolsDisabled = false, scheduledTaskId, controlStart, summarySettings } = {}) {
+  async send(engine, payload, { internal = false, fresh = false, ephemeral = false, facade, promptOverride, promptSuffix, continuation, goalToolsDisabled = false, goalUserPrompt, scheduledTaskId, controlStart, summarySettings } = {}) {
     this.validateEngine(engine);
     this.assertAvailable(engine);
     if (payload.editSeq !== undefined && (internal || payload.fork || !payload.sessionId)) throw new Error('Choose an existing conversation to edit; editing cannot be combined with a handoff or fork');
@@ -1068,6 +1086,7 @@ class SharedConversations {
         throw new Error('Wait for this conversation to finish or stop it first.');
     };
     assertAvailable();
+    if (!directoryExists(c.cwd)) throw new Error('Working directory not found. Relocate the folder from the workspace menu: ' + c.cwd);
     if (!payload.sessionId && !internal && payload.fastMode !== undefined)
       this.saveSettings(engine, { sessionId: c.id, fastMode: payload.fastMode });
     let edit;
@@ -1267,7 +1286,7 @@ class SharedConversations {
     // A failed title request can recover on a later send or revision.
     const needsTitle = !internal && !continuation && this.needsTitle(c)
       && (String(payload.displayText ?? payload.prompt ?? '').trim() || payload.attachments?.length);
-    const a = continuation || { c, engine, internal, ephemeral, scheduledTaskId, nativeEditEligible: Boolean(nativeEdit) || !edit && !this.context(c, engine), goalContinuation: Boolean(facade), prompt: payload.prompt || '', promptSuffix, attachments: payload.attachments || [], events: [], permissions: new Map(), tools: new Set(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
+    const a = continuation || { c, engine, internal, ephemeral, scheduledTaskId, nativeEditEligible: Boolean(nativeEdit) || !edit && !this.context(c, engine), goalContinuation: Boolean(facade), goalUserPrompt, prompt: payload.prompt || '', promptSuffix, attachments: payload.attachments || [], events: [], permissions: new Map(), tools: new Set(), eventSeq: 0, text: '', assistant: [], startedAt: Date.now(),
       nativeEditReplayFromSeq: checkpoint?.replayFromSeq,
       // Only evaluated if the native session turns out to be unavailable: the
       // stored transcript replaces whatever the missing native thread carried.
@@ -1772,6 +1791,25 @@ class SharedConversations {
     return { ok: true, live: { sessionId: a.c.id, workspaceId: a.c.workspaceId, engine: a.engine, runId: a.facade.gen, startedAt: a.startedAt,
       prompt: a.prompt, displayText: a.displayText, userSeq: a.userSeq, attachments: a.attachments, messages,
       events: a.events.filter(e => e.type !== 'gui:permission' || a.permissions.has(e.requestId)), eventSeq: a.eventSeq } };
+  }
+  async steerGoal(engine, payload = {}) {
+    const id = payload.sessionId, goal = this.goalFor(id);
+    if (typeof payload.goalId !== 'string' || !payload.goalId || goal.goal?.id !== payload.goalId || !goal.armed || goal.goal.phase !== 'active')
+      throw new Error('This goal is no longer active. Refresh before sending the instruction.');
+    const active = this.active.get(id);
+    if (active) {
+      if (goal.ownedSession() !== active.facade) throw new Error('The current reply does not belong to this goal.');
+      return this.steer(engine, { ...payload, runId: active.facade.gen });
+    }
+    if (this.goalToolsClosed || this.get(id).currentEngine !== engine || this.recovering.has(id) || this.switching.has(id)
+      || this.controlStarts.has(id) || this.stopping.has(id) || this.deleting.has(id) || goal.getSession()?.running)
+      throw new Error('The goal is preparing a reply. Retry after it starts.');
+    // A selected instruction takes the next Goal round immediately. Invalidate
+    // any old verifier before it can complete the goal without this message.
+    const operation = goal.drive(payload);
+    if (!operation) throw new Error('Could not start the goal instruction. Your message has been retained.');
+    const { done, ...result } = await operation;
+    return result;
   }
   async steer(engine, payload = {}) {
     const active = this.active.get(payload.sessionId);
@@ -2857,6 +2895,21 @@ class SharedConversations {
       case 'delete-session':
         return this.deleteConversation(payload.id);
       case 'meta-op':
+        if (payload.op === 'relocate-workspace') {
+          const workspace = this.workspaces.sessionMeta().workspaces.find(w => w.id === payload.id);
+          if (!workspace) return { ok: false, error: 'Workspace no longer exists' };
+          const affected = [...this.items.values()].filter(c => relocatedWorkspaceCwd(c.cwd, workspace.path, workspace.path) !== null);
+          if (affected.some(c => this.busy(c.id))) throw new Error('Stop conversations using this folder before relocating it');
+          const result = this.workspaces.metaOp(payload);
+          if (result.ok) {
+            for (const c of affected) {
+              c.cwd = relocatedWorkspaceCwd(c.cwd, result.previousPath, result.workspace.path);
+              this.save(c);
+            }
+            this.onEvent({ type: 'conversation:workspaces' });
+          }
+          return result;
+        }
         if (payload.op === 'move-session') {
           const conversation = this.get(payload.sessionId);
           const result = await this.workspaces.metaOp(payload);

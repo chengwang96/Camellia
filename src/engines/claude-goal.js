@@ -212,18 +212,24 @@ class ClaudeGoal {
       ? Math.max(0, at - this.goal.activeSince) : 0), activeSince: null };
   }
 
-  drive() {
+  drive(instruction) {
     this.cancelTimer();
-    if (!this.armed || this.goal?.phase !== 'active' || this.getSession()?.running) return;
+    if (!this.armed || this.goal?.phase !== 'active' || this.getSession()?.running) return false;
+    if (instruction) this.cancelVerification();
     let session;
     try { session = this.ensureSession({ sessionId: this.goal.sessionId, workspaceId: this.goal.workspaceId }); }
     catch (err) { this.block('workspace-unavailable', err.message); return; }
-    if (!this.touch({ roundsStarted: this.goal.roundsStarted + 1 })) return;
+    if (!this.touch({ roundsStarted: this.goal.roundsStarted + 1, ...(instruction ? { verifying: null } : {}) })) return false;
     this.owner = { goalId: this.goal.id, gen: session.gen };
     try {
-      if (session.sendUserMessage(goalPrompt(this.goal))) this.rememberSession(session);
+      const accepted = session.sendUserMessage(goalPrompt(this.goal), instruction);
+      if (accepted) this.rememberSession(session);
       else this.block('session-unavailable', "Session process is unavailable; cannot continue");
-    } catch (error) { this.block('session-unavailable', error.message); }
+      return accepted;
+    } catch (error) {
+      this.block('session-unavailable', error.message);
+      if (instruction) throw error;
+    }
   }
 
   block(code, message) {

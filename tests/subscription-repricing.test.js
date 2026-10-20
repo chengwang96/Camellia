@@ -159,3 +159,32 @@ test('manual historical repricing still works from the cached catalog when refre
   assert.equal(f.store.state().accounts[0].usage.unpricedTokens, 0);
   assert.equal(f.store.state().repricing.refreshing, false);
 });
+
+test('refresh prices historical Antigravity thinking usage once, with or without pending request metadata', async t => {
+  for (const pending of [true, false]) await t.test(pending ? 'pending request' : 'legacy aggregate', async t => {
+    const model = 'claude-opus-4-6-thinking';
+    const value = { input: 50841, output: 582, cacheRead: 30799, cacheWrite: 0, reasoning: 0 };
+    const data = legacyData([{ model, sample: value }]);
+    const account = data.accounts['codex:default']; delete data.accounts['codex:default'];
+    account.engine = 'antigravity'; data.accounts['antigravity:default'] = account;
+    if (pending) data.pendingPricing.push({ account: 'antigravity:default', model, day: DAY,
+      sample: { ...value, aggregate: true } });
+    const f = fixture(t, data), original = structuredClone(account.usage);
+    const options = { prices: { refresh: async () => ({ ok: true }) }, recover: async () => [] };
+    assert.equal((await f.store.refreshPricing(options)).ok, true);
+    const saved = JSON.parse(fs.readFileSync(f.file)), usage = saved.accounts['antigravity:default'].usage;
+    for (const [next, previous] of [[usage, original], [usage.byModel[model], original.byModel[model]],
+      [usage.daily[DAY][model], original.daily[DAY][model]]]) {
+      assert.equal(next.unpricedTokens, 0); assert.equal(next.pricedTokens, 51423);
+      assert.equal(next.estimatedCostUsd, .1301595);
+      for (const field of ['requests', 'failures', 'cancelled', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens', 'unreported']) {
+        assert.equal(next[field], previous[field], field);
+      }
+    }
+    assert.deepEqual(saved.pendingPricing, []);
+    const serialized = fs.readFileSync(f.file, 'utf8');
+    const restarted = createSubscriptionUsage({ file: f.file });
+    await restarted.refreshPricing(options);
+    assert.equal(fs.readFileSync(f.file, 'utf8'), serialized);
+  });
+});

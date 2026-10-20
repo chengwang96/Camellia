@@ -56,6 +56,8 @@ final class Palette {
     final int fieldBorder;
     /** Destructive actions. */
     final int error;
+    /** Readable status text; the brighter ONLINE dot is too light for small labels. */
+    final int success, warning;
 
     /** Both palettes' accent. The one value they genuinely share. */
     final int accent;
@@ -189,6 +191,8 @@ final class Palette {
         field = color(dark, "#303036", "#FFFFFF");
         fieldBorder = color(dark, "#62626C", "#B9BEC7");
         error = color(dark, "#FF969A", "#B8323B");
+        success = color(dark, "#7DDDA5", "#187644");
+        warning = color(dark, "#EAC56D", "#8A5A12");
 
         accent = color(dark, "#679EFE", "#4176E6");
 

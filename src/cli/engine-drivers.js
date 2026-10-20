@@ -146,7 +146,9 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     runtime: () => locate('pi'), node: () => process.execPath, environment, onEvent: event => onEvent('pi', event), log: noLog,
     instructions: () => native.config('pi', 'instructions'), nativeRevision: () => native.fingerprint('pi') });
   const drivers = { dsh, pi, codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession,
-    subscriptionAccounts: () => codex.accountState(), nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
+    subscriptionAccounts: () => codex.accountState(),
+    resetCredits: { preview: payload => codex.handlers['account-reset-preview'](payload), consume: payload => codex.handlers['account-reset-consume'](payload) },
+    nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
   drivers.antigravity = { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
     ensure: antigravity.ensureSession, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
   require('../engines/discussions/native-access').installDiscussionGuards({ dataDir, drivers: {

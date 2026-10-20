@@ -47,8 +47,9 @@ function settingsView(manager, conversation) {
       thinking: model.thinking, connection: model.connection, supportsFast: model.supportsFast })),
     permissionLevels: LEVELS };
   const quickModel = preferences.quickSwitchModels?.[engine];
-  settings.quickSwitch = quickModel ? { model: quickModel, thinking: preferences.quickSwitchLevels?.[engine] || '',
-    available: settings.models.some(m => m.id === quickModel && (m.connection !== 'subscription'
+  settings.quickSwitch = quickModel ? { model: quickModel, connection: preferences.quickSwitchConnections?.[engine]
+    || (settings.models.some(m => m.id === quickModel && m.connection === 'subscription') ? 'subscription' : 'api'), thinking: preferences.quickSwitchLevels?.[engine] || '',
+    available: settings.models.some(m => m.id === quickModel && (!preferences.quickSwitchConnections?.[engine] || m.connection === preferences.quickSwitchConnections[engine]) && (m.connection !== 'subscription'
       || subscriptionModelVisible(preferences.hiddenSubscriptionModels, engine, m.id))) } : null;
   settings.supportsFast = engine === 'codex' && connection === 'subscription' && allModels.some(m => m.connection === connection && m.id === settings.model && m.supportsFast);
   const version = createHash('sha256').update(JSON.stringify([settings, selected.connection, selected.permissionMode, selected.contextWindow])).digest('hex');
@@ -62,7 +63,7 @@ function configure(manager, conversation, payload) {
   let changes = payload.settings;
   if (changes?.quickSwitch === true && Object.keys(changes).length === 1) {
     if (!current.quickSwitch?.available) fail(409, 'Set an available quick-switch default model on the desktop first');
-    const model = current.models.find(m => m.id === current.quickSwitch.model && m.connection === current.connection)
+    const model = current.models.find(m => m.id === current.quickSwitch.model && m.connection === current.quickSwitch.connection)
       || current.models.find(m => m.id === current.quickSwitch.model);
     changes = { model: model.id, connection: model.connection, thinking: model.thinking.includes(current.quickSwitch.thinking) ? current.quickSwitch.thinking : '' };
   }

@@ -25,6 +25,9 @@ final class RemoteSettingsPopup {
     private final LinearLayout body;
     private View anchor;
     private int left, bottom, width, heightLimit;
+    private boolean resetCreditsAvailable;
+
+    void setResetCreditsAvailable(boolean available) { resetCreditsAvailable = available; }
 
     RemoteSettingsPopup(Context context, boolean chinese, int background, int ink, int muted, int accent,
             JSONObject settings, Listener listener) {
@@ -87,6 +90,8 @@ final class RemoteSettingsPopup {
         if (settings.optBoolean("supportsFast")) row("Fast", tr("消耗更多订阅用量；从下一轮生效", "Uses more subscription allowance; applies next turn"),
             settings.optBoolean("fastMode"), "remoteFastMode", () -> choose("fastMode", String.valueOf(!settings.optBoolean("fastMode"))));
         row(tr("思考等级", "Thinking level"), LocalChatThinking.display(settings.optString("thinking"), chinese), false, "remoteThinkingSettings", this::thinking);
+        if (resetCreditsAvailable) row(tr("重置 Codex 额度", "Reset Codex usage"), tr("查看并使用电脑账号的重置卡", "View and use this computer account's reset credits"),
+            false, "remoteCodexReset", () -> choose("codexReset", ""));
         position();
     }
     private boolean hasConnection(JSONArray models, String connection) {

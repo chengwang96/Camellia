@@ -41,6 +41,7 @@ bridge = r"""
     return response.result;
   };
   window.dshDesktop = new Proxy({}, { get: (_, method) => {
+    if (method === 'platform') return window.testPlatform || 'win32';
     if (method === 'discussion') return async () => ({ok:true,groups:[]});
     if (['onDiscussionEvent', 'onNetworkHealth', 'onChatContentWidthChanged', 'onDiscussionNavigate'].includes(method)) return () => () => {};
     if (method === 'onEngineSettingsChanged') return () => () => {};
@@ -80,6 +81,30 @@ try:
         expect(page.locator('#wsMask')).not_to_be_visible()
         expect(page.locator('.ws-row.active')).to_have_count(1)
         alpha = page.locator('section[data-workspace-id]').first.get_attribute('data-workspace-id')
+
+        # Platform-specific names open the directory itself through real IPC.
+        # The system shell is captured so this test never opens desktop windows.
+        open_count = 0
+        for platform, en_label, zh_label in [
+            ('win32', 'Open in File Explorer', '在资源管理器中打开'),
+            ('darwin', 'Open in Finder', '在 Finder 中打开'),
+            ('linux', 'Open in file manager', '在文件管理器中打开'),
+        ]:
+            page.evaluate('(platform) => { window.testPlatform = platform; }', platform)
+            for language, label in [('en', en_label), ('zh-CN', zh_label)]:
+                page.evaluate('(language) => window.CamelliaI18n.setLanguage(language)', language)
+                page.locator(f'section[data-workspace-id="{alpha}"] .ws-row .session-more').last.click()
+                action = page.get_by_role('menuitem', name=label, exact=True)
+                expect(action).to_be_enabled()
+                if args.screenshot and language == 'zh-CN':
+                    args.screenshot.parent.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(args.screenshot.with_name(args.screenshot.stem + '-open-' + platform + '.png')), animations='disabled')
+                action.click()
+                open_count += 1
+                page.wait_for_function('(count) => window.testCall("openedExternalPaths").then(paths => paths.length === count)', arg=open_count)
+                assert rpc('openedExternalPaths')['result'][-1] == fixtures['alpha']
+                assert page.evaluate('context.sessionId') is None
+        page.evaluate("window.testPlatform = 'win32'; window.CamelliaI18n.setLanguage('en')")
 
         # Drafts stay under their workspace; send uses that directory and records ID.
         expect(page.locator(f'section[data-workspace-id="{alpha}"] #sessionCurrent')).to_be_visible()
@@ -163,6 +188,66 @@ try:
         page.get_by_role('menuitem', name='Rename', exact=True).click()
         page.locator('.session-rename-input').fill('分叉后的研究')
         page.locator('.session-rename-input').press('Enter')
+        expect(page.locator('#headerTitle')).to_have_text('分叉后的研究')
+
+        # A renamed project stays in its existing workspace. Cancel, invalid
+        # paths and duplicates leave it untouched; the picker relinks its
+        # conversations, and the next send resumes the same native history.
+        previous_alpha = fixtures['alpha']
+        fixtures['alpha'] = rpc('renameWorkspaceFolder', 'alpha')['result']
+        page.evaluate("window.dispatchEvent(new Event('focus'))")
+        missing_row = page.locator(f'section[data-workspace-id="{alpha}"] .ws-row')
+        expect(missing_row).to_have_class(re.compile(r'missing'))
+        expect(missing_row.locator('.ws-missing-label')).to_have_text('Folder not found')
+        if args.screenshot:
+            args.screenshot.parent.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(args.screenshot.with_name(args.screenshot.stem + '-missing.png')))
+        missing_row.get_by_role('button', name='Relocate folder…', exact=True).click()
+        expect(page.locator('#wsNameField')).to_be_hidden()
+        expect(page.locator('#wsPath')).to_have_value(previous_alpha)
+        page.evaluate("window.CamelliaI18n.setLanguage('zh-CN')")
+        expect(page.locator('#wsDialogTitle')).to_have_text('重新定位工作区目录')
+        expect(page.locator('#wsHint')).to_have_text('选择改名或移动后的文件夹，已有会话将使用新位置。')
+        page.set_viewport_size({'width': 390, 'height': 700})
+        page.evaluate("document.documentElement.dataset.theme = 'dark'")
+        assert page.locator('#wsForm').evaluate('(el) => el.getBoundingClientRect().left >= 0 && el.getBoundingClientRect().right <= innerWidth')
+        if args.screenshot:
+            page.screenshot(path=str(args.screenshot.with_name(args.screenshot.stem + '-relocate-zh-dark.png')))
+        page.evaluate("window.CamelliaI18n.setLanguage('en'); document.documentElement.dataset.theme = 'light'")
+        page.set_viewport_size({'width': 1320, 'height': 900})
+        page.locator('#wsCancel').click()
+        expect(missing_row.locator('.ws-missing-label')).to_be_visible()
+        page.get_by_role('button', name='Alpha Project workspace actions', exact=True).click()
+        expect(page.get_by_role('menuitem', name='Open in File Explorer', exact=True)).to_be_disabled()
+        page.get_by_role('menuitem', name='Relocate folder…', exact=True).click()
+        page.locator('#wsPath').fill(previous_alpha)
+        page.locator('#wsCreate').click()
+        expect(page.locator('#wsError')).to_contain_text('Folder does not exist')
+        page.locator('#wsPath').fill(fixtures['beta'])
+        page.locator('#wsCreate').click()
+        expect(page.locator('#wsError')).to_have_text('This folder is already a workspace')
+        page.locator('#wsBrowse').click()
+        expect(page.locator('#wsPath')).to_have_value(fixtures['alpha'])
+        page.locator('#wsPath').press('Enter')
+        expect(page.locator('#wsMask')).not_to_be_visible()
+        expect(missing_row.locator('.ws-missing-label')).to_have_count(0)
+        expect(page.locator(f'[data-sid="{fork_id}"]')).to_have_attribute('title', re.compile(re.escape(fixtures['alpha'])))
+        page.get_by_role('button', name='Alpha Project workspace actions', exact=True).click()
+        page.get_by_role('menuitem', name='Open in File Explorer', exact=True).click()
+        open_count += 1
+        page.wait_for_function('(count) => window.testCall("openedExternalPaths").then(paths => paths.length === count)', arg=open_count)
+        assert rpc('openedExternalPaths')['result'][-1] == fixtures['alpha']
+        page.locator('#input').fill('目录改名后继续同一会话')
+        page.locator('#send').click()
+        page.wait_for_function('currentRunId !== null')
+        assert rpc('lastProcess')['result']['cwd'] == fixtures['alpha']
+        assert page.evaluate("window.testCall('finishTurn')") == fork_id
+        assert not Path(previous_alpha).exists()
+        rpc('restart')
+        page.reload(wait_until='networkidle')
+        expect(page.locator(f'section[data-workspace-id="{alpha}"] .ws-row')).not_to_have_class(re.compile(r'missing'))
+        expect(page.locator(f'[data-sid="{fork_id}"]')).to_have_attribute('title', re.compile(re.escape(fixtures['alpha'])))
+        page.locator(f'[data-sid="{fork_id}"]').click()
         expect(page.locator('#headerTitle')).to_have_text('分叉后的研究')
 
         # Collect the final layout before exercising destructive-looking UI removal.
@@ -344,7 +429,7 @@ try:
         expect(page.locator('#goalChipRow')).to_be_hidden()
 
         assert not errors, errors
-        print('PASS: shared workspaces, fixed directories, keep/archive removal, restart, paginated history, goals, pin/fork/archive, layout, Chinese IME, batched streaming and special paths; no browser errors')
+        print('PASS: shared workspaces, platform-specific open folder menus, folder relocation and resume, fixed directories, keep/archive removal, restart, paginated history, goals, pin/fork/archive, Chinese dark narrow dialog, layout, Chinese IME, batched streaming and special paths; no browser errors')
         browser.close()
 finally:
     try:

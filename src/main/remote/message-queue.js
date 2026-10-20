@@ -72,18 +72,23 @@ class RemoteMessageQueue {
     catch (error) { entry.payload = previous; throw error; }
     return { ok: true, ...this.snapshot(id) };
   }
-  async steer(id, queueId, runId) {
+  async steer(id, queueId, runId, goalId) {
     if (this.closed) fail(409, 'Camellia is closing');
     const entry = this.entries.find(entry => entry.conversationId === id && entry.id === queueId);
     if (!entry) fail(409, 'Queued message changed; refresh before sending it');
     if (entry.state === 'starting' || this.starting.has(id)) fail(409, 'A queued message is already starting');
     const conversation = this.authorize(entry.deviceId, id);
     const active = this.manager.active.get(id);
-    if (!Number.isSafeInteger(runId) || !active || active.facade.gen !== runId) fail(409, 'This run is no longer active');
+    const goal = goalId === undefined ? null : this.manager.goalFor(id);
+    if (goal) {
+      if (typeof goalId !== 'string' || !goalId || goal.goal?.id !== goalId || !goal.armed || goal.goal.phase !== 'active')
+        fail(409, 'This goal is no longer active. Refresh before sending the instruction.');
+    } else if (!Number.isSafeInteger(runId) || !active || active.facade.gen !== runId) fail(409, 'This run is no longer active');
     this.starting.add(id);
     try {
       entry.state = 'starting'; this.changed(id);
-      const result = await this.manager.steer(conversation.currentEngine, { ...entry.payload, sessionId: id, runId, queueId: entry.id });
+      const payload = { ...entry.payload, sessionId: id, runId, queueId: entry.id, ...(goal ? { goalId } : {}) };
+      const result = await (goal ? this.manager.steerGoal(conversation.currentEngine, payload) : this.manager.steer(conversation.currentEngine, payload));
       if (!result.ok) fail(409, result.error || 'The instruction was not accepted');
       const index = this.entries.indexOf(entry);
       if (index >= 0) this.entries.splice(index, 1);

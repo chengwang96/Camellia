@@ -1137,7 +1137,7 @@ async function saveQuickSwitch(patch, select, errorFallback) {
   try {
     const result = await api.workbenchSaveSettings(patch);
     if (!result.ok) throw new Error(result.error);
-    for (const key of ['quickSwitchModels', 'quickSwitchLevels']) {
+    for (const key of ['quickSwitchModels', 'quickSwitchConnections', 'quickSwitchLevels']) {
       if (patch[key]) modelPreferences[key] = { ...modelPreferences[key], ...patch[key] };
     }
     status('Preferences saved');
@@ -1170,17 +1170,23 @@ async function renderQuickSwitchModels(preferences, accountStates = {}) {
     const models = new Map((router.enabled ? router.models || [] : []).map(id => [id, id]));
     for (const model of account?.models || []) {
       if (window.CamelliaSubscriptionModels.isVisible(preferences.hiddenSubscriptionModels, engine, model.id)) {
-        models.set(model.id, model.name || model.displayName || model.id);
+        models.set('subscription:' + model.id, model.name || model.displayName || model.id);
       }
     }
-    const savedModel = preferences.quickSwitchModels?.[engine] || '';
+    const savedId = preferences.quickSwitchModels?.[engine] || '';
+    const savedConnection = preferences.quickSwitchConnections?.[engine];
+    // Legacy choices preferred the account's display name when IDs overlapped.
+    const savedModel = savedId && (savedConnection === 'subscription' || !savedConnection && models.has('subscription:' + savedId))
+      ? 'subscription:' + savedId : savedId;
     let hiddenSavedModel = false;
     if (savedModel && !models.has(savedModel)) {
-      hiddenSavedModel = !window.CamelliaSubscriptionModels.isVisible(preferences.hiddenSubscriptionModels, engine, savedModel);
-      models.set(savedModel, savedModel + (hiddenSavedModel ? ' (' + window.CamelliaI18n.t('Hidden') + ')' : ''));
+      hiddenSavedModel = !window.CamelliaSubscriptionModels.isVisible(preferences.hiddenSubscriptionModels, engine, savedId);
+      models.set(savedModel, savedId + (hiddenSavedModel ? ' (' + window.CamelliaI18n.t('Hidden') + ')' : ''));
     }
     const unset = new Option('Not configured', ''); unset.dataset.i18n = '';
     modelSelect.add(unset);
+    const selectedModel = () => modelSelect.value.startsWith('subscription:') ? modelSelect.value.slice(13) : modelSelect.value;
+    const selectedAccount = () => modelSelect.value.startsWith('subscription:') ? account : null;
     for (const [id, title] of models) {
       const option = new Option(title, id);
       option.disabled = hiddenSavedModel && id === savedModel;
@@ -1189,20 +1195,20 @@ async function renderQuickSwitchModels(preferences, accountStates = {}) {
     const savedLevel = preferences.quickSwitchLevels?.[engine] || '';
     modelSelect.value = savedModel; modelSelect.dataset.saved = savedModel;
     modelSelect.disabled = false;
-    fillQuickSwitchLevels(levelSelect, engine, savedModel, savedLevel, account, router);
+    fillQuickSwitchLevels(levelSelect, engine, selectedModel(), savedLevel, selectedAccount(), router);
     levelSelect.dataset.saved = savedLevel;
     levelSelect.disabled = false;
     modelSelect.addEventListener('change', async () => {
       // Clearing the model clears its level in the same save: a reasoning level
       // without a model has nothing to apply to.
       const clearing = !modelSelect.value;
-      const patch = { quickSwitchModels: { [engine]: modelSelect.value } };
+      const patch = { quickSwitchModels: { [engine]: selectedModel() }, quickSwitchConnections: { [engine]: clearing ? '' : selectedAccount() ? 'subscription' : 'api' } };
       if (clearing && levelSelect.dataset.saved) patch.quickSwitchLevels = { [engine]: '' };
       if (!await saveQuickSwitch(patch, modelSelect, 'Could not save the model')) return;
       modelSelect.dataset.saved = modelSelect.value;
       if (clearing) levelSelect.dataset.saved = '';
       // Otherwise the ladder follows the newly chosen model.
-      fillQuickSwitchLevels(levelSelect, engine, modelSelect.value, levelSelect.dataset.saved, account, router);
+      fillQuickSwitchLevels(levelSelect, engine, selectedModel(), levelSelect.dataset.saved, selectedAccount(), router);
       levelSelect.dataset.saved = levelSelect.value;
     });
     levelSelect.addEventListener('change', async () => {

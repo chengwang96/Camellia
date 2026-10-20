@@ -96,6 +96,7 @@ public final class RemoteTranscript {
     /// reply arrive constantly and an out-of-order one would otherwise restore
     /// entries the desktop has already sent.
     public private(set) var queueVersion: Int64 = -1
+    public private(set) var queueSteeringGoalId = ""
     /// Whether this desktop accepts queued sends.
     public private(set) var canQueue = false
     /// Whether the goal card should be drawn, after the completion-dismissal
@@ -127,6 +128,7 @@ public final class RemoteTranscript {
             historyDetached = false
             nextBefore = nil
             queueVersion = -1
+            queueSteeringGoalId = ""
             queue = []
             canQueue = false
             live = nil
@@ -160,6 +162,7 @@ public final class RemoteTranscript {
         if snapshot.hasLive || snapshot.hasMessages { live = snapshot.live }
         if snapshot.hasPreparation || snapshot.hasMessages { preparation = snapshot.preparation }
         if snapshot.hasAutomation || snapshot.hasMessages { automation = snapshot.automation }
+        if snapshot.hasQueueSteering || snapshot.hasMessages { queueSteeringGoalId = snapshot.queueSteeringGoalId }
         guard snapshot.hasMessages, !historyDetached else { refreshGoalVisibility(); return true }
 
         let first = snapshot.messages.first?.seq ?? 0
@@ -182,6 +185,7 @@ public final class RemoteTranscript {
         cursor = -1
         nextBefore = nil
         queueVersion = -1
+        queueSteeringGoalId = ""
         conversation = nil
         permission = nil
         live = nil
@@ -219,6 +223,7 @@ public final class RemoteTranscript {
         queue = []
         canQueue = false
         settings = nil
+        queueSteeringGoalId = ""
         automation = nil
         showsGoal = false
         goalVisibility.reset()

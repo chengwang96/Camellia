@@ -42,7 +42,15 @@ The desktop displays the root address, for example `http://100.80.1.2:43127`. JS
 
 The `next-turn-settings` capability allows a model, thinking-level, or supported Codex Fast change during a run for the next turn. Connection and permission changes still require an idle conversation. Models are distinguished by both model ID and connection, since a subscription and an API route may expose the same ID. The snapshot may carry context and compaction progress; Android displays compaction in the message stream rather than a permanent token counter.
 
+Queued messages offer **Send now** during an active Goal, including the wait between rounds and completion verification. A snapshot's `queueSteering.goalId` binds `queue-steer` to that goal, so a round finishing during a phone request does not leave the instruction targeting an expired run. An instruction between rounds starts the selected message as the next Goal round and cancels the earlier completion verification. Other queued messages retain their order. Older hosts continue to use `runId` for current-reply instructions.
+
 Command results are persisted by request ID. A retry must use the **same** ID and parameters; `pending` means the action is still being prepared, while `unknown` or `interrupted` after a crash must be reconciled before the user chooses another action. HTTP 200 alone does not mean an engine turn completed. A reconnect replaces the current snapshot instead of appending it. `instanceId` changes when the gateway restarts, so old cursors and unconfirmed controls must not be treated as current. The client does not automatically resend a timed-out send, stop, or approval.
+
+### Codex reset credits
+
+On Android and iOS, open the model picker in a remote Codex subscription conversation and select **Reset Codex usage**. A capable host advertises `codex-reset-credits` only to devices with full-device control. The preview shows the conversation's desktop account, available card count, and earliest reported expiry. Canceling or viewing it does not consume a credit. **Confirm and use one credit** consumes one official reset credit on that account; it does not send a message or change the preferred account. After a successful reset, send the message again.
+
+The conversation command actions are `codex-reset-preview` and `codex-reset-consume`. The second echoes the preview's `accountId` and `confirmationToken` with `confirmed: true`. Both use the ordinary command receipts. The desktop checks the account and device permission again before consuming. Missing credit information and zero available credits offer no new consumption. An uncertain reset can still be retried when no cards remain: reopening the preview restores the original provider idempotency key, including after a desktop restart. Its confirmation says **Retry this reset request**. Older hosts and API conversations do not offer the entry.
 
 Conversation and discussion artifact lists merge references to the same canonical
 file before pagination, then sort by file modification time, newest first. Files

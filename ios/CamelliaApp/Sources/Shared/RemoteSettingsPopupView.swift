@@ -85,6 +85,12 @@ struct RemoteSettingsPopupView: View {
                            icon: "chevron.right") {
                 showingThinking = true
             }
+            if model.canResetCodex {
+                PopupChoiceRow(title: "重置 Codex 额度", subtitle: "查看并使用电脑账号的重置卡") {
+                    onDismiss()
+                    model.previewCodexReset()
+                }
+            }
         }
     }
 

@@ -43,13 +43,11 @@ public struct RemoteCapabilities: OptionSet, Sendable {
     public static let incrementalSnapshots = Self(rawValue: 1 << 11)
     public static let stopStart = Self(rawValue: 1 << 12)
     public static let listQuery = Self(rawValue: 1 << 13)
+    public static let codexResetCredits = Self(rawValue: 1 << 14)
 
-    /// The five that additionally require `permission == "control"`.
-    ///
-    /// `conversation-actions` belongs here as much as the other four: Android
-    /// gates it on control in the same breath, and leaving it out would offer
-    /// rename, pin and delete to a device the desktop only lets read.
-    public static let needsControl: Self = [.create, .createWorkspace, .move, .archive, .conversationActions, .fork]
+    /// These actions additionally require `permission == "control"`.
+    /// The gateway further restricts reset credits to full-device control.
+    public static let needsControl: Self = [.create, .createWorkspace, .move, .archive, .conversationActions, .fork, .codexResetCredits]
 
     public init(_ names: [String]) {
         var value = Self()
@@ -61,6 +59,7 @@ public struct RemoteCapabilities: OptionSet, Sendable {
             case "incremental-snapshots": value.insert(.incrementalSnapshots)
             case "stop-start": value.insert(.stopStart)
             case "list-query": value.insert(.listQuery)
+            case "codex-reset-credits": value.insert(.codexResetCredits)
             case "create-workspace": value.insert(.createWorkspace)
             case "move": value.insert(.move)
             case "archive": value.insert(.archive)
@@ -507,6 +506,7 @@ public struct RemoteQuickSwitch: Sendable, Equatable {
 }
 
 public struct RemoteSettings: Sendable, Equatable {
+    public let engine: String
     /// Optimistic-lock token; `configure` echoes it back as `expectedSettings`.
     public let version: String
     public let editable: Bool
@@ -524,6 +524,7 @@ public struct RemoteSettings: Sendable, Equatable {
     public let models: [RemoteModelChoice]
 
     public init(_ json: JSONObject) {
+        engine = json.text("engine")
         version = json.text("version")
         editable = json.bool("editable")
         modelEditable = json.bool("modelEditable", fallback: editable)
@@ -704,6 +705,8 @@ public struct RemoteSnapshot: Sendable {
     public let hasAutomation: Bool
     public let queue: [RemoteQueueEntry]
     public let queueVersion: Int64
+    public let queueSteeringGoalId: String
+    public let hasQueueSteering: Bool
     /// Whether this desktop understands queued sends at all.
     ///
     /// Read from the *presence* of the field rather than its contents: a
@@ -752,6 +755,8 @@ public struct RemoteSnapshot: Sendable {
         hasAutomation = json.has("automation")
         queue = json.objects("queue").map(RemoteQueueEntry.init)
         queueVersion = json.long("queueVersion", fallback: -1)
+        queueSteeringGoalId = json.object("queueSteering")?.text("goalId") ?? ""
+        hasQueueSteering = json.has("queueSteering")
         canQueue = json.has("queue")
         // Like Android's `isNull("nextBefore")`, absent and explicit null both
         // mean there is no paging cursor. `olderAvailable` above separately
@@ -847,6 +852,31 @@ public struct PairClaimResult: Sendable {
 
 // MARK: - Commands
 
+public struct RemoteCodexResetPreview: Sendable {
+    public let accountId: String
+    public let email: String
+    public let availableCount: Int?
+    public let confirmationToken: String
+    public let retry: Bool
+    public let earliestExpiry: Date?
+
+    public init(_ json: JSONObject, now: Date = Date()) {
+        accountId = json.text("accountId")
+        email = json.object("account")?.text("email") ?? ""
+        let credits = json.object("credits")
+        let count = credits?.int("availableCount", fallback: -1) ?? -1
+        availableCount = count >= 0 ? count : nil
+        confirmationToken = json.text("confirmationToken")
+        retry = json.bool("retry")
+        earliestExpiry = credits?.objects("credits").filter {
+            $0.text("status") == "available" && $0.text("resetType") == "codexRateLimits"
+                && $0.double("expiresAt") > now.timeIntervalSince1970
+        }.map { Date(timeIntervalSince1970: $0.double("expiresAt")) }.min()
+    }
+
+    public var canConsume: Bool { !accountId.isEmpty && !confirmationToken.isEmpty }
+}
+
 public struct CommandResult: Sendable {
     public let ok: Bool
     public let state: String
@@ -854,6 +884,9 @@ public struct CommandResult: Sendable {
     public let userSeq: Int64?
     public let conversation: RemoteConversation?
     public let workspace: RemoteWorkspace?
+    public let resetPreview: RemoteCodexResetPreview?
+    public let outcome: String
+    public let warning: String
 
     public init(_ json: JSONObject) {
         ok = json.bool("ok")
@@ -862,5 +895,8 @@ public struct CommandResult: Sendable {
         userSeq = json.isNull("userSeq") ? nil : json.long("userSeq")
         conversation = json.object("conversation").map(RemoteConversation.init)
         workspace = json.object("workspace").map(RemoteWorkspace.init)
+        resetPreview = json.object("resetPreview").map { RemoteCodexResetPreview($0) }
+        outcome = json.text("outcome")
+        warning = json.text("warning")
     }
 }

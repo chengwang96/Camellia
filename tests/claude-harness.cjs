@@ -11,7 +11,7 @@ const { EventEmitter } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const mainDir = path.resolve(__dirname, '../src/main');
 
-function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleCredentials = async () => {}, priceFetcher, runtimeLocator } = {}) {
+function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleCredentials = async () => {}, priceFetcher, runtimeLocator, shell } = {}) {
   const root = existingRoot || fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-workspaces-'));
   const userData = path.join(root, 'app');
   const home = path.join(root, 'home');
@@ -26,6 +26,7 @@ function createHarness(existingRoot, { respondToInterrupts = false, clearGoogleC
     message: async () => ({ response: 0 }),
   };
   const electron = {
+    shell,
     BrowserWindow: { getAllWindows: () => [] },
     session: {
       fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY 127.0.0.1:18899' }),

@@ -28,7 +28,7 @@ const SETTINGS_FILES = new Map([
 const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
 const PREFERENCE_KEYS = ['language', 'theme', 'closeToTray', 'autoRefreshBalances', 'accountRefreshMinutes',
   'chatContentWidth', 'network', 'downloadProxy', 'conversations', 'memoryDirectory', 'computerName'];
-const ENGINE_MAP_KEYS = ['quickSwitchModels', 'quickSwitchLevels', 'hiddenSubscriptionModels',
+const ENGINE_MAP_KEYS = ['quickSwitchModels', 'quickSwitchConnections', 'quickSwitchLevels', 'hiddenSubscriptionModels',
   'subscriptionAutoRefresh', 'subscriptionAutoSwitch'];
 const ENGINE_KEYS = ['permissionMode', 'thinkingBudget', 'contextWindow', 'cwd'];
 const CONVERSATION_CONFIG = 'app/conversation-config.json';

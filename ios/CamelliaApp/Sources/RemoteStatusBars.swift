@@ -224,7 +224,7 @@ private struct QueueCard: View {
                     Button { model.steerQueued(entry) } label: {
                         Text(model.usesChinese ? "插队" : "Send now").frame(minHeight: 44)
                     }
-                        .disabled(!canChangeQueue || entry.isStarting || model.transcript.live == nil)
+                        .disabled(!canChangeQueue || entry.isStarting || !model.canSteerQueued)
                         .accessibilityLabel(model.usesChinese ? "插队到当前回复" : "Send as an instruction to the current reply")
                 }
                 .font(.caption.weight(.medium))

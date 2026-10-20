@@ -5,6 +5,35 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { validSessionId } = require('./claude-history');
 
+function directoryExists(folder) {
+  try { return Boolean(folder) && fs.statSync(folder).isDirectory(); }
+  catch { return false; }
+}
+
+// The moved folder may already be missing. Resolve its existing ancestors so
+// aliases such as macOS /var and /private/var still identify the same folder.
+function canonicalWorkspacePath(folder) {
+  let ancestor = path.resolve(folder);
+  const suffix = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync(ancestor), ...suffix); }
+    catch {
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) return path.resolve(folder);
+      suffix.unshift(path.basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
+
+// Match path components so relocating "project" never changes "project-other".
+function relocatedWorkspaceCwd(cwd, previousPath, nextPath) {
+  if (!cwd || !previousPath || !path.isAbsolute(cwd) || !path.isAbsolute(previousPath)) return null;
+  const relative = path.relative(canonicalWorkspacePath(previousPath), canonicalWorkspacePath(cwd));
+  if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return null;
+  return path.join(nextPath, relative);
+}
+
 function createSessionWorkspaces({ history, loadConfig, saveConfig, metaKey, settingsKey, standaloneCwd, getSession, onDetach, fixedCwd = false }) {
 async function listSessions({ limits = {}, activeSessionId = null } = {}) {
   const entries = [...await history.list()].sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
@@ -62,7 +91,7 @@ async function listSessions({ limits = {}, activeSessionId = null } = {}) {
   }));
   return {
     sessions, pagination,
-    workspaces: meta.workspaces.map(w => ({ ...w, collapsed: Boolean(meta.collapsed[w.id]), sessionCount: counts.get(w.id) || 0 })),
+    workspaces: meta.workspaces.map(w => ({ ...w, missing: !directoryExists(w.path), collapsed: Boolean(meta.collapsed[w.id]), sessionCount: counts.get(w.id) || 0 })),
   };
 }
 
@@ -203,7 +232,7 @@ function metaOp(payload) {
   if (op === 'move-session') return moveSession(payload);
   const meta = sessionMeta();
   const workspaceId = payload.id || payload.workspaceId;
-  if (['rename-workspace', 'delete-workspace', 'toggle-collapse', 'move-workspace'].includes(op)
+  if (['rename-workspace', 'relocate-workspace', 'delete-workspace', 'toggle-collapse', 'move-workspace'].includes(op)
       && !meta.workspaces.some((w) => w.id === workspaceId)) return { ok: false, error: "Workspace no longer exists" };
   if (['assign-session', 'toggle-pin'].includes(op)
       && !validSessionId(payload.sessionId)) return { ok: false, error: "Invalid session" };
@@ -213,6 +242,13 @@ function metaOp(payload) {
   if (fixedCwd && op === 'assign-session' && (meta.sessionWorkspace[payload.sessionId] || null) !== (payload.workspaceId || null)) return { ok: false, error: "Existing sessions cannot change directories. Start a new session in the target workspace." };
   if (busy && ((op === 'assign-session' && payload.sessionId === session.sessionId)
       || (op === 'delete-workspace' && payload.id === session.opts.workspaceId))) return { ok: false, error: "Stop the current response before changing workspaces" };
+  if (busy && op === 'relocate-workspace') {
+    const workspace = meta.workspaces.find(w => w.id === workspaceId);
+    const liveId = session.sessionId || session.opts?.sessionId;
+    const cwd = session.settings?.cwd || meta.sessionCwd[liveId];
+    if (session.opts?.workspaceId === workspaceId || relocatedWorkspaceCwd(cwd, workspace?.path, workspace?.path) !== null)
+      return { ok: false, error: 'Stop conversations using this folder before relocating it' };
+  }
   switch (op) {
     case 'move-workspace': {
       if (!meta.workspaces.some(workspace => workspace.id === payload.targetWorkspaceId)
@@ -226,15 +262,31 @@ function metaOp(payload) {
       });
       return { ok: true, meta: sessionMeta() };
     }
-    case 'create-workspace': {
-      const name = String(payload.name || '').trim();
+    case 'create-workspace':
+    case 'relocate-workspace': {
+      const previous = op === 'relocate-workspace' ? meta.workspaces.find(w => w.id === workspaceId) : null;
+      const name = previous ? previous.name : String(payload.name || '').trim();
       if (!name) return { ok: false, error: "Workspace name cannot be empty" };
       const folder = String(payload.path || '').trim();
       if (!folder || !path.isAbsolute(folder)) return { ok: false, error: "Choose a folder or enter its full path" };
-      if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) return { ok: false, error: "Folder does not exist. Choose another folder." };
+      if (!directoryExists(folder)) return { ok: false, error: "Folder does not exist. Choose another folder." };
       const canonical = fs.realpathSync(folder);
       const pathKey = (p) => process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
-      if (meta.workspaces.some((w) => w.path && pathKey(w.path) === pathKey(canonical))) return { ok: false, error: "This folder is already a workspace" };
+      if (meta.workspaces.some((w) => w.id !== previous?.id && w.path && pathKey(w.path) === pathKey(canonical))) return { ok: false, error: "This folder is already a workspace" };
+      if (previous) {
+        const previousPath = previous.path;
+        saveSessionMeta(m => {
+          m.workspaces = m.workspaces.map(w => w.id === previous.id ? { ...w, path: canonical } : w);
+          m.sessionCwd = { ...m.sessionCwd };
+          const ids = new Set([...Object.keys(m.sessionCwd), ...Object.keys(m.sessionWorkspace)]);
+          for (const id of ids) {
+            const cwd = m.sessionCwd[id] || (m.sessionWorkspace[id] === previous.id ? previousPath : null);
+            const relocated = relocatedWorkspaceCwd(cwd, previousPath, canonical);
+            if (relocated !== null) m.sessionCwd[id] = relocated;
+          }
+        });
+        return { ok: true, workspace: { ...previous, path: canonical }, previousPath, meta: sessionMeta() };
+      }
       const ws = {
         id: 'ws-' + randomUUID(),
         name,
@@ -341,4 +393,4 @@ async function transcript(id) {
 return { listSessions, listArchived, removeSession, sessionMeta, resolveContext, recordContext, renameSession, archiveSession, metaOp, promoteSession, transcript };
 }
 
-module.exports = { createSessionWorkspaces };
+module.exports = { createSessionWorkspaces, directoryExists, relocatedWorkspaceCwd };

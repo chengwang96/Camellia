@@ -767,15 +767,18 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       // A default saved before the Google catalog was grouped names a concrete
       // effort row; the family that now owns it is the selectable target.
       const target = googleSubscription() && accountFamily(configured)?.id || configured;
-      if (target !== currentModel) {
-        const available = modelSections().some(section => section.options.some(model => model.id === target));
+      const sections = modelSections();
+      const preferredConnection = settings.quickSwitchConnections?.[harnessId]
+        || (sections.some(section => section.connection === 'subscription' && section.options.some(model => model.id === target)) ? 'subscription' : undefined);
+      if (target !== currentModel || preferredConnection && preferredConnection !== currentConnection) {
+        const available = sections.some(section => (!preferredConnection || (section.connection || 'api') === preferredConnection) && section.options.some(model => model.id === target));
         if (!available) {
           setStatus('The quick-switch default model is unavailable. Update it in Settings → Model Settings.');
           return;
         }
         // Save the configured pair together. A connection refresh after the
         // model save must not race a separate reasoning-level save.
-        await persistModel(target, settings.quickSwitchLevels?.[harnessId] || '');
+        await persistModel(target, settings.quickSwitchLevels?.[harnessId] || '', preferredConnection);
         return;
       }
       if (current()) await applyQuickSwitchLevel(settings);
@@ -814,8 +817,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
   }
   function persistModel(model, quickLevel = '', selectedConnection) {
-    // Menu choices carry their connection, including IDs offered by both
-    // sources. ID-only quick-switch defaults retain the active connection
+    // Menu choices and quick-switch defaults carry their connection, including
+    // IDs offered by both sources. ID-only callers retain the active connection
     // unless only the other source offers the model.
     let connection;
     const canSwitch = supportsAccounts() && model;

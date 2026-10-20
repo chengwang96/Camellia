@@ -5,8 +5,10 @@ const path = require('node:path');
 const { readJson, writeJson } = require('../src/shared/json-store');
 const { createHarness } = require('./claude-harness.cjs');
 let priceRefreshOffline = false;
+const openedExternalPaths = [];
 function createUiHarness(root) {
-  const harness = createHarness(root, { respondToInterrupts: true, priceFetcher: async () => {
+  const harness = createHarness(root, { respondToInterrupts: true,
+    shell: { openPath: async file => { openedExternalPaths.push(file); return ''; } }, priceFetcher: async () => {
     if (priceRefreshOffline) throw new Error('Offline price catalog fixture');
     await new Promise(resolve => setTimeout(resolve, 50));
     return new Response(JSON.stringify(Object.fromEntries(Array.from({ length: 12 }, (_, index) => ['gpt-5-ui-fixture-' + index,
@@ -45,6 +47,7 @@ const methods = {
   kimiAccountState: 'kimi-account-state',
   workbenchSettings: 'workbench-settings', workbenchSaveSettings: 'workbench-save-settings',
   savePastedText: 'save-pasted-text',
+  openFileExternally: 'open-file-externally',
 };
 let testUpstream = null;
 let nativeBackend = null;
@@ -54,6 +57,7 @@ rl.on('line', async (line) => {
     const { method, payload } = JSON.parse(line);
     let result;
     if (method === 'fixtures') result = { ...fixtures, userData: h.userData };
+    else if (method === 'openedExternalPaths') result = openedExternalPaths;
     else if (method === 'seedPluginCacheMaintenance') {
       const fs = require('node:fs');
       for (const relative of ['codex/.tmp', 'codex/api/conversations/cache-one/.tmp', 'codex/api/conversations/cache-two/.tmp']) {
@@ -99,7 +103,14 @@ rl.on('line', async (line) => {
       await h.call('conversation-command', { engine: 'antigravity', action: 'save-settings', payload: { connection: 'subscription', model: 'gemini-fixture-high' } });
       result = true;
     }
-    else if (method === 'pickFile') result = { canceled: false, path: fixtures.alpha };
+    else if (method === 'renameWorkspaceFolder') {
+      if (!['alpha', 'beta'].includes(payload)) throw new Error('Unknown workspace fixture');
+      const next = path.join(h.root, payload + ' renamed 研究');
+      require('node:fs').renameSync(fixtures[payload], next);
+      fixtures[payload + 'Relocated'] = next;
+      result = next;
+    }
+    else if (method === 'pickFile') result = { canceled: false, path: fixtures.alphaRelocated || fixtures.alpha };
     else if (method === 'pickAttachments') result = { canceled: false, paths: [path.join(fixtures.alpha, 'image.png'), path.join(fixtures.alpha, 'notes.txt')] };
     else if (method === 'finishTurn') { result = [...h.api.sharedConversations.active.keys()].at(-1); h.finishTurn(); }
     else if (method === 'seedLongHistory') {

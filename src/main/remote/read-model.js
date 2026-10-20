@@ -219,6 +219,8 @@ class RemoteReadModel {
       ...(pressure ? { context: { used: Math.max(0, Math.round(pressure.used)), cap: pressure.cap, source: pressure.source,
         compacting: compaction?.state === 'running', compactionState: compaction?.state || '' } } : {}),
       ...(this.manager.remoteQueue ? this.manager.remoteQueue.snapshot(id) : {}),
+      queueSteering: device.permission === 'control' && goal?.id && goal.armed && goal.phase === 'active'
+        ? { goalId: goal.id } : null,
       automation: { goal: mobileGoal(goal, transcript, info),
         tasks: (this.manager.tasks?.list(id) || []).map(task => ({ id: task.id, instruction: String(task.instruction || '').slice(0, 500), status: task.status, state: task.state, intervalMinutes: task.intervalMinutes, lastResult: String(task.lastResult || '').slice(0, 600) })) },
       ...(device.permission === 'control' ? { settings: settingsView(this.manager, conversation) } : {}),

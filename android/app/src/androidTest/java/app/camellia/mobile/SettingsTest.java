@@ -457,6 +457,52 @@ public class SettingsTest extends InstrumentationTestCase {
             } finally { ui(activity::finish); }
         }
     }
+    public void testSettingsSubpagesMatchIndexChromeInBothThemesAndLanguages() throws Throwable {
+        Context context = getInstrumentation().getTargetContext();
+        LocalChatFixture store = new LocalChatFixture(context);
+        JSONObject archived = store.createConversation("", "");
+        store.archiveConversation(archived.getString("id"), true);
+        for (String language : new String[]{"zh-CN", "en"}) {
+            MobilePreferences.set(context, "language", language);
+            for (String theme : new String[]{"light", "dark"}) {
+                MobilePreferences.set(context, "theme", theme);
+                android.graphics.Rect[] reference = new android.graphics.Rect[3];
+                Activity index = LocalChatFixture.start(getInstrumentation(), new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                try {
+                    ui(() -> root(index).findViewWithTag("settingsEntry").performClick());
+                    capture(index, "settings-index-" + language + "-" + theme);
+                    ui(() -> {
+                        reference[0] = bounds(root(index).findViewWithTag("settingsBack"));
+                        reference[1] = bounds((View) root(index).findViewWithTag("settingsTitle").getParent());
+                        reference[2] = bounds(root(index).findViewWithTag("settingsGroup"));
+                        assertTrue("The settings index must retain its side margins", reference[2].left > 0);
+                    });
+                } finally { ui(index::finish); }
+                for (String section : new String[]{"general", "providers", "archived"}) {
+                    Activity detail = launch(section);
+                    try {
+                        capture(detail, "settings-" + section + "-" + language + "-" + theme);
+                        ui(() -> {
+                            View page = root(detail);
+                            assertEquals(section + " back button", reference[0], bounds(page.findViewWithTag("settingsBack")));
+                            assertEquals(section + " header", reference[1], bounds((View) page.findViewWithTag("settingsTitle").getParent()));
+                            android.graphics.Rect group = bounds(page.findViewWithTag("settingsGroup"));
+                            assertEquals(section + " card left", reference[2].left, group.left);
+                            assertEquals(section + " card right", reference[2].right, group.right);
+                            if (!section.equals("archived")) assertEquals(section + " first card top", reference[2].top, group.top);
+                        });
+                    } finally { ui(detail::finish); }
+                }
+            }
+        }
+    }
+
+    private android.graphics.Rect bounds(View view) {
+        assertNotNull(view);
+        int[] location = new int[2]; view.getLocationOnScreen(location);
+        return new android.graphics.Rect(location[0], location[1], location[0] + view.getWidth(), location[1] + view.getHeight());
+    }
+
     private View root(Activity activity) { return activity.getWindow().getDecorView(); }
 
     public void testDetailCardsInBothThemes() throws Throwable {

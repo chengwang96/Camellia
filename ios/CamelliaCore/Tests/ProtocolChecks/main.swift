@@ -1077,6 +1077,31 @@ checkEqual(CommandAck(result: CommandResult(try! JSONBody.object(Data("{\"ok\":f
            .pending, "pending is retried by id even without ok")
 
 do {
+    let capable = RemoteCapabilities(["codex-reset-credits"])
+    check(capable.allows(.codexResetCredits, permission: .control), "a capable control device can use reset credits")
+    check(!capable.allows(.codexResetCredits, permission: .read), "read-only devices cannot use reset credits")
+    check(!RemoteCapabilities([]).contains(.codexResetCredits), "older hosts do not offer reset credits")
+    let countOnly = RemoteCodexResetPreview(JSONObject(dictionary: [
+        "accountId": "owner", "account": ["email": "owner@example.test"],
+        "credits": ["availableCount": 2], "confirmationToken": uuid,
+    ]))
+    check(countOnly.canConsume, "count-only cards can be confirmed without invented dates")
+    checkEqual(countOnly.availableCount, 2, "the provider's count remains authoritative")
+    check(countOnly.earliestExpiry == nil, "missing dates remain unavailable")
+    let unknown = RemoteCodexResetPreview(JSONObject())
+    check(unknown.availableCount == nil, "unknown cards are not displayed as zero")
+    check(!unknown.canConsume, "unknown cards offer no redemption")
+    let pendingReset = CommandResult(JSONObject(dictionary: ["ok": true, "state": "accepted", "resetPreview": [
+        "accountId": "owner", "credits": ["availableCount": 0], "confirmationToken": uuid, "retry": true,
+    ]]))
+    check(pendingReset.resetPreview?.canConsume == true, "an uncertain request can be checked when no cards remain")
+    check(pendingReset.resetPreview?.retry == true, "retries use the explicit retry confirmation")
+    let receipt = CommandResult(JSONObject(dictionary: ["ok": true, "state": "accepted", "outcome": "alreadyRedeemed", "warning": "refresh failed"]))
+    checkEqual(receipt.outcome, "alreadyRedeemed", "a duplicate redemption stays distinct from a new reset")
+    checkEqual(receipt.warning, "refresh failed", "a refresh failure does not erase a successful outcome")
+}
+
+do {
     // A workspace creation answers with the workspace it made. Android reloads
     // the list on that object rather than on `ok` alone, so the field has to
     // come through — an `ok` with nothing in it would otherwise be treated as
@@ -6210,6 +6235,24 @@ do {
 }
 
 // MARK: - Incremental mobile compatibility
+do {
+    let transcript = RemoteTranscript()
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"A\",\"cursor\":1,\"permission\":\"control\",\"messages\":[],\"live\":null,\"queueSteering\":{\"goalId\":\"goal-current\"}}"))
+    checkEqual(transcript.queueSteeringGoalId, "goal-current", "Goal queue steering remains available between replies")
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"A\",\"cursor\":2}"))
+    checkEqual(transcript.queueSteeringGoalId, "goal-current", "an omitted incremental steering target preserves the current goal")
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"A\",\"cursor\":1,\"queueSteering\":null}"))
+    checkEqual(transcript.queueSteeringGoalId, "goal-current", "a stale snapshot cannot withdraw the current steering target")
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"A\",\"cursor\":3,\"queueSteering\":null}"))
+    check(transcript.queueSteeringGoalId.isEmpty, "a stopped Goal explicitly clears its steering target")
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"A\",\"cursor\":4,\"queueSteering\":{\"goalId\":\"goal-current\"}}"))
+    transcript.hideMessagesAfterAccessFailure()
+    check(transcript.queueSteeringGoalId.isEmpty, "access failure withdraws Goal steering")
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"A\",\"cursor\":5,\"queueSteering\":{\"goalId\":\"goal-current\"}}"))
+    _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"B\",\"cursor\":0}"))
+    check(transcript.queueSteeringGoalId.isEmpty, "a desktop restart does not retain a Goal steering target")
+}
+
 do {
     let transcript = RemoteTranscript()
     _ = transcript.apply(remoteSnapshot("{\"instanceId\":\"A\",\"cursor\":1,\"permission\":\"control\",\"messages\":[{\"seq\":1,\"role\":\"user\",\"text\":\"parent\"}],\"live\":{\"runId\":1,\"text\":\"old\"},\"queue\":[{\"id\":\"q1\",\"text\":\"old\"}],\"queueVersion\":2}"))

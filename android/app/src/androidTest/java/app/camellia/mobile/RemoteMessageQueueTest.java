@@ -33,12 +33,16 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
             .put("state", state).put("attachments", new JSONArray().put(new JSONObject().put("name", "notes.txt").put("isImage", false)));
     }
     private void snapshot(boolean supported, boolean running, JSONArray queue, long version) throws Exception {
+        snapshot(supported, running, queue, version, null);
+    }
+    private void snapshot(boolean supported, boolean running, JSONArray queue, long version, String goalId) throws Exception {
         JSONObject snapshot = new JSONObject().put("instanceId", "fixture").put("cursor", ++cursor).put("permission", "control")
             .put("conversation", new JSONObject().put("id", id).put("title", "远程消息队列").put("seq", 3)
                 .put("activity", running ? "running" : JSONObject.NULL))
             .put("messages", new JSONArray()).put("nextBefore", JSONObject.NULL);
         if (supported) snapshot.put("queue", queue).put("queueVersion", version);
         if (running) snapshot.put("live", new JSONObject().put("runId", 1).put("text", "正在执行当前任务…"));
+        if (goalId != null) snapshot.put("queueSteering", new JSONObject().put("goalId", goalId));
         var method = MainActivity.class.getDeclaredMethod("applySnapshot", JSONObject.class); method.setAccessible(true); method.invoke(activity, snapshot);
     }
     private void finish(JSONObject payload, JSONObject result) throws Exception {
@@ -172,6 +176,32 @@ public class RemoteMessageQueueTest extends InstrumentationTestCase {
             assertFalse(view("remoteQueueEdit:one").isEnabled()); assertFalse(view("remoteQueueSteer:one").isEnabled());
             field("connected", true); field("controlAllowed", false); invoke("updateControls");
             assertFalse(view("remoteQueueEdit:one").isEnabled()); assertFalse(view("remoteQueueSteer:one").isEnabled());
+        });
+    }
+
+    public void testGoalSteeringBetweenRoundsJournalsGoalIdAndPreservesDraft() {
+        ui(() -> {
+            JSONArray queue = new JSONArray().put(entry("one", "queued"));
+            snapshot(true, true, queue, 3, "goal-current");
+            assertTrue(view("remoteQueueSteer:one").isEnabled());
+            snapshot(true, false, queue, 3, "goal-current");
+            input().setText("保留当前草稿");
+            assertTrue(view("remoteQueueSteer:one").isEnabled());
+            // Target changes must repaint even with the same queue and no live reply.
+            snapshot(true, false, queue, 3);
+            assertFalse(view("remoteQueueSteer:one").isEnabled());
+            snapshot(true, false, queue, 3, "goal-current");
+            assertTrue(view("remoteQueueSteer:one").isEnabled());
+            field("foreground", true); view("remoteQueueSteer:one").performClick();
+            JSONObject pending = ((JSONObject) field("credentials")).getJSONObject("pendingCommand").getJSONObject("payload");
+            assertEquals("queue-steer", pending.getString("action"));
+            assertEquals("goal-current", pending.getString("goalId")); assertFalse(pending.has("runId"));
+            assertEquals("one", pending.getString("queueId"));
+            assertEquals("保留当前草稿", input().getText().toString());
+            assertFalse(view("remoteQueueSteer:one").isEnabled());
+            finish(pending, new JSONObject().put("ok", true).put("state", "accepted")
+                .put("queue", new JSONArray()).put("queueVersion", 4));
+            assertNull(view("remoteQueue:one")); assertEquals("保留当前草稿", input().getText().toString());
         });
     }
 

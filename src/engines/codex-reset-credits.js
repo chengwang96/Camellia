@@ -34,7 +34,7 @@ function quotaPatch(result) {
 // Every profile owns its journal. An ambiguous network result must reuse its
 // original idempotency key, including after a restart or reopening the dialog.
 function createResetCredits({ file, getClient, publish, now = () => Date.now() }) {
-  let saved = readJson(file, null), prepared = null, running = null, previewGeneration = 0, readGeneration = 0;
+  let saved = readJson(file, null), prepared = null, running = null, runningToken = null, previewGeneration = 0, readGeneration = 0;
   if (saved && (typeof saved.token !== 'string' || typeof saved.identity !== 'string' || !saved.attempted)) {
     throw new Error('Cannot read the saved reset request');
   }
@@ -87,7 +87,7 @@ function createResetCredits({ file, getClient, publish, now = () => Date.now() }
     else prepared = null;
     return view(snapshot, prepared);
   }
-  async function redeem(attempt) {
+  async function redeem(attempt, beforeConsume) {
     const client = await getClient();
     if (!attempt.outcome) {
       const snapshot = await readSnapshot(client);
@@ -95,6 +95,9 @@ function createResetCredits({ file, getClient, publish, now = () => Date.now() }
         prepared = null;
         throw new Error('The signed-in account changed. Open the reset dialog again.');
       }
+      // Remote control may be revoked while the identity read is in flight.
+      // Recheck its authority immediately before the irreversible request.
+      beforeConsume?.();
       attempt.attempted = true;
       // Persist before sending. Failure to save cannot consume a credit.
       writeJson(file, attempt); saved = attempt;
@@ -116,16 +119,21 @@ function createResetCredits({ file, getClient, publish, now = () => Date.now() }
     }
     return { outcome: attempt.outcome, warning: warnings.join(' ') || null };
   }
-  function consume({ confirmed, confirmationToken } = {}) {
+  function consume({ confirmed, confirmationToken, beforeConsume } = {}) {
     if (confirmed !== true) return Promise.reject(new Error('Confirm before using a reset credit'));
-    if (!prepared || prepared.token !== confirmationToken) return Promise.reject(new Error('Open the reset dialog and confirm again'));
-    if (!prepared.attempted && now() - prepared.createdAt > CONFIRMATION_TTL) {
+    // An already-attempted token is durable. A phone's original command can
+    // recover it after a desktop restart without minting a second redemption.
+    const attempt = prepared?.token === confirmationToken ? prepared
+      : saved?.attempted && saved.token === confirmationToken ? saved : null;
+    if (!attempt) return Promise.reject(new Error('Open the reset dialog and confirm again'));
+    if (!attempt.attempted && now() - attempt.createdAt > CONFIRMATION_TTL) {
       prepared = null;
       return Promise.reject(new Error('The confirmation expired. Open the reset dialog again.'));
     }
-    if (running) return running;
+    if (running) return runningToken === attempt.token ? running : Promise.reject(new Error('Wait for the reset request to finish'));
     previewGeneration++;
-    running = redeem(prepared).finally(() => { running = null; });
+    runningToken = attempt.token;
+    running = redeem(attempt, beforeConsume).finally(() => { running = null; runningToken = null; });
     return running;
   }
   return { preview, consume, invalidate: () => { prepared = null; previewGeneration++; }, get busy() { return Boolean(running); } };

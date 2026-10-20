@@ -42,6 +42,31 @@ with sync_playwright() as playwright:
     assert len(saves) == 1, saves
     assert saves[0]['model'] == 'model-a' and saves[0]['thinkingBudget'] == 'low', saves
 
+    # Account display names can differ from API names only by case while the
+    # underlying model ID is identical. The saved source must win even when
+    # the currently selected ID already equals the quick-switch ID.
+    source_bridge = bridge.replace(
+        'sharedConversations:true,',
+        "sharedConversations:true,codexAccountState:async()=>({ok:true,account:{},models:[{id:'model-a',displayName:'MODEL-A',supportedReasoningEfforts:[]}]}),")
+    source_bridge = source_bridge.replace(
+        'quickSwitchModels:window.quickSwitchModels,',
+        "quickSwitchModels:window.quickSwitchModels,quickSwitchConnections:window.quickSwitchConnections,")
+    source_context = browser.new_context()
+    source_page = source_context.new_page()
+    source_page.on('pageerror', lambda error: errors.append(str(error)))
+    source_page.add_init_script(source_bridge)
+    source_page.goto((repo / 'src/renderer/chat/claude.html').as_uri() + '?harness=codex&new=1', wait_until='networkidle')
+    source_page.wait_for_function('uiReady')
+    source_page.evaluate("window.quickSwitchModels={codex:'model-a'}; window.quickSwitchConnections={codex:'subscription'}; window.quickSwitchLevels={}")
+    source_page.locator('#modelPill').dblclick()
+    expect(source_page.locator('#modelPillName')).to_have_text('MODEL-A')
+    source_page.wait_for_function("actions.some(a=>a.action==='save-settings' && a.payload.connection==='subscription' && a.payload.model==='model-a')")
+    source_page.evaluate("window.quickSwitchConnections={codex:'api'}")
+    source_page.locator('#modelPill').dblclick()
+    expect(source_page.locator('#modelPillName')).to_have_text('model-a')
+    source_page.wait_for_function("actions.some(a=>a.action==='save-settings' && a.payload.connection==='api' && a.payload.model==='model-a')")
+    source_context.close()
+
     assert not errors, errors
     browser.close()
 

@@ -118,9 +118,7 @@ public final class SettingsActivity extends Activity {
     private void shell(String title) {
         LinearLayout root = column(); root.setBackgroundColor(settingsStyle.background);
         root.setClipChildren(false); root.setClipToPadding(false);
-        root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(dp(20) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(), dp(20) + insets.getSystemWindowInsetRight(), dp(20) + insets.getSystemWindowInsetBottom()); return insets;
-        });
+        settingsStyle.pagePadding(root);
         root.addView(settingsStyle.header(title, tr("返回", "Back"), this::finish));
         ScrollView scroll = new ScrollView(this); scroll.setVerticalScrollBarEnabled(false);
         content = column(); content.setPadding(0, dp(12), 0, dp(16)); scroll.addView(content); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));

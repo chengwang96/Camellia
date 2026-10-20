@@ -1074,6 +1074,8 @@
   }
   .ws-row.collapsed .ws-chev { transform: rotate(-90deg); }
   .ws-row .ws-name { font-weight: 500; }
+  .ws-missing-label { display: block; font: var(--f-xxxs-11); color: var(--dsw-alias-state-error-primary); }
+  .ws-row.missing .ws-relocate { opacity: 1; }
   .ws-row .ws-count { font: var(--f-xxxs-11); color: var(--dsw-alias-label-caption); flex-shrink: 0; }
   .ws-children { padding-left: 14px; }
   .ws-children .session-item { border-left: 1px solid var(--dsw-alias-border-l2); border-radius: 0 8px 8px 0; }

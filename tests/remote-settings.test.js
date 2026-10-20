@@ -131,3 +131,18 @@ test('fast uses catalog support and quick switch uses the host preference', () =
   choose(target, { quickSwitch: true }); assert.equal(target.state.model, 'route-a'); assert.equal(target.state.thinkingBudget, 'low');
   assert.equal(view(target).supportsFast, false);
 });
+
+for (const connection of ['subscription', 'api']) test(`quick switch restores the saved ${connection} source for an identical model ID`, () => {
+  const target = manager({ connection: connection === 'api' ? 'subscription' : 'api', model: 'shared-id' });
+  target.loadConfig = () => ({ quickSwitchModels: { codex: 'shared-id' }, quickSwitchConnections: { codex: connection } });
+  choose(target, { quickSwitch: true });
+  assert.equal(target.state.connection, connection);
+  assert.equal(target.state.model, 'shared-id');
+});
+
+test('legacy quick switch restores the subscription choice when its display name shared an API ID', () => {
+  const target = manager({ connection: 'api', model: 'shared-id' });
+  target.loadConfig = () => ({ quickSwitchModels: { codex: 'shared-id' } });
+  choose(target, { quickSwitch: true });
+  assert.equal(target.state.connection, 'subscription');
+});

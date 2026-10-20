@@ -71,6 +71,9 @@ final class AppModel: ObservableObject {
     /// The full status line captured when it is tapped, matching Android's
     /// selectable/copyable status-detail panel below the chat.
     @Published var statusDetails: String?
+    @Published var codexResetPresented = false
+    @Published private(set) var codexResetPreview: RemoteCodexResetPreview?
+    private var codexResetContext: (conversation: String, instance: String, address: String)?
 
     /// The list's search text.
     ///
@@ -1862,6 +1865,9 @@ final class AppModel: ObservableObject {
     }
 
     func close() {
+        codexResetPresented = false
+        codexResetPreview = nil
+        codexResetContext = nil
         abandonActiveCommand()
         stashDraft()
         cancelPrefetch()
@@ -2325,6 +2331,10 @@ final class AppModel: ObservableObject {
                               requestId: requestId, journaled: true, taskId: taskId,
                               lookupReceipt: true) { [weak self] result in
             guard let self else { return }
+            if action.hasPrefix("codex-reset-") {
+                self.handleCodexReset(result, action: action)
+                return
+            }
             switch result {
             case .accepted(let value):
                 if submitted {
@@ -3152,13 +3162,17 @@ final class AppModel: ObservableObject {
         })
     }
 
+    var canSteerQueued: Bool { transcript.live != nil || !transcript.queueSteeringGoalId.isEmpty }
+
     func steerQueued(_ entry: RemoteQueueEntry) {
         guard canDrive, !commandBusy, !hasPendingDetailOperation, !entry.isStarting,
               transcript.queue.contains(where: { $0.id == entry.id && !$0.isStarting }),
-              let session, let id = openId, let live = transcript.live else { return }
-        deliver(session: session, action: "queue-steer", conversationId: id, payload: [
-            "instanceId": transcript.instanceId, "queueId": entry.id, "runId": live.runId,
-        ], outcome: { [weak self] in self?.report($0) })
+              canSteerQueued, let session, let id = openId else { return }
+        var payload: [String: Any] = ["instanceId": transcript.instanceId, "queueId": entry.id]
+        if !transcript.queueSteeringGoalId.isEmpty { payload["goalId"] = transcript.queueSteeringGoalId }
+        else if let live = transcript.live { payload["runId"] = live.runId }
+        deliver(session: session, action: "queue-steer", conversationId: id, payload: payload,
+                outcome: { [weak self] in self?.report($0) })
     }
 
     /// Releases a queue the desktop paused — after a failure, a stop, or a
@@ -3193,6 +3207,83 @@ final class AppModel: ObservableObject {
 
     func configure(_ key: String, value: String) {
         configure([key: value])
+    }
+
+    var canResetCodex: Bool {
+        canDrive && access.capabilities.contains(.codexResetCredits)
+            && transcript.settings?.engine == "codex" && transcript.settings?.connection == "subscription"
+    }
+
+    func previewCodexReset() {
+        guard canResetCodex, !commandBusy, !hasPendingDetailOperation,
+              let session, let id = openId else { return }
+        codexResetPreview = nil
+        codexResetContext = (id, transcript.instanceId, session.computer.address)
+        notice = Notice(text: usesChinese ? "正在查询电脑账号的重置卡…" : "Checking this computer account's reset credits…", serious: false)
+        deliver(session: session, action: "codex-reset-preview", conversationId: id,
+                payload: ["instanceId": transcript.instanceId]) { [weak self] result in
+            self?.handleCodexReset(result, action: "codex-reset-preview")
+        }
+    }
+
+    func consumeCodexReset(_ preview: RemoteCodexResetPreview) {
+        guard canResetCodex, !commandBusy, !hasPendingDetailOperation, preview.canConsume,
+              let session, let id = openId, let context = codexResetContext,
+              context.conversation == id, context.instance == transcript.instanceId,
+              context.address == session.computer.address else { return }
+        notice = Notice(text: usesChinese ? "正在使用重置卡…" : "Using reset credit…", serious: false)
+        deliver(session: session, action: "codex-reset-consume", conversationId: id, payload: [
+            "instanceId": transcript.instanceId, "accountId": preview.accountId,
+            "confirmationToken": preview.confirmationToken, "confirmed": true,
+        ]) { [weak self] result in
+            self?.handleCodexReset(result, action: "codex-reset-consume")
+        }
+    }
+
+    private func handleCodexReset(_ result: CommandOutcome, action: String) {
+        switch result {
+        case .accepted(let value):
+            if action == "codex-reset-preview", let preview = value.resetPreview,
+               canResetCodex, let id = openId, let address = current?.address {
+                codexResetContext = (id, transcript.instanceId, address)
+                codexResetPreview = preview
+                notice = nil
+                codexResetPresented = true
+            } else if action == "codex-reset-consume" {
+                let messages = usesChinese
+                    ? ["reset": "Codex 额度已重置，可以继续发送消息。", "alreadyRedeemed": "该重置请求已完成。",
+                       "nothingToReset": "当前没有可重置的额度。", "noCredit": "该账号没有可用重置卡。"]
+                    : ["reset": "Codex usage reset. You can send your message again.", "alreadyRedeemed": "This reset request was already completed.",
+                       "nothingToReset": "There is no eligible usage to reset.", "noCredit": "No reset credits are available for this account."]
+                let message = messages[value.outcome] ?? (usesChinese ? "重置结果未确认，请重新打开重置卡核对同一请求。" : "Reset result unknown. Open reset credits again to check the same request.")
+                notice = Notice(text: message + (value.warning.isEmpty ? "" : (usesChinese ? " 刷新额度失败，请稍后重新查询。" : " Refresh failed. Check the quota again later.")), serious: !value.warning.isEmpty)
+            }
+        default: report(result)
+        }
+        publish()
+    }
+
+    func codexResetDescription(_ preview: RemoteCodexResetPreview) -> String {
+        var text = preview.email
+        if let count = preview.availableCount {
+            text += usesChinese ? "\n可用重置卡：\(count)" : "\nReset credits available: \(count)"
+        } else {
+            text += usesChinese ? "\n重置卡信息暂不可用，请稍后重试。" : "\nReset credit information is unavailable. Try again later."
+        }
+        if let expiry = preview.earliestExpiry {
+            let date = DateFormatter()
+            date.locale = Locale(identifier: usesChinese ? "zh_CN" : "en_US")
+            date.dateStyle = .medium; date.timeStyle = .short
+            text += (usesChinese ? "\n最早到期：" : "\nEarliest expiry: ") + date.string(from: expiry)
+        }
+        if preview.retry {
+            text += usesChinese ? "\n\n上次结果未确认。重试将核对同一请求，不会新建重置请求。" : "\n\nThe previous result is unknown. Retry checks the same reset request."
+        } else if preview.canConsume {
+            text += usesChinese ? "\n\n确认后将消耗该电脑账号的一张官方重置卡。" : "\n\nConfirm to use one official reset credit on this computer's account."
+        } else if preview.availableCount == 0 {
+            text += usesChinese ? "\n\n该账号没有可用重置卡。" : "\n\nNo reset credits are available for this account."
+        }
+        return text
     }
 
     func configure(_ changes: [String: Any], expectedSettings: String? = nil) {
