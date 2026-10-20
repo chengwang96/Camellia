@@ -1589,6 +1589,8 @@
   "Restarting to move your data…": "正在重启并迁移数据…",
   "The Camellia data directory already contains files; nothing was overwritten": "camellia 目录已有文件，未覆盖任何数据",
   "The data directory is a link; migrate it manually": "数据目录为链接，请手动迁移",
+  "The data directory cannot be moved safely; migrate it manually": "数据目录无法安全迁移，请手动处理",
+  "This installation already uses the Camellia data directory": "当前安装已使用 camellia 数据目录",
   "This installation is not using the legacy data directory": "当前安装未使用旧数据目录",
   "The data directory changed; migration was stopped": "数据目录已变化，迁移已停止",
   "Save your settings before moving your data": "请先保存设置，再迁移数据",

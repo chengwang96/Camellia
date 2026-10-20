@@ -65,7 +65,15 @@ node scripts/maintain-plugin-cache.cjs "$env:APPDATA\camellia"
 node scripts/maintain-plugin-cache.cjs "$env:APPDATA\camellia" --apply
 ```
 
-Use the directory shown under **Settings → Data & backups → Local data**. Installations that have not migrated yet still use `dsh-desktop`.
+Use the directory shown under **Settings → Data & backups → Local data**.
+When that path differs from the default `camellia` directory, **Move to camellia
+folder** is shown, including for `dsh-desktop`, `camellia-desktop` and custom
+profiles. The move requires an explicit click; custom profiles are otherwise
+kept in place. A populated destination or unsafe source disables the button
+and shows the reason. An existing populated `camellia-desktop` profile remains
+selected until migration instead of being replaced by an empty default profile.
+After a successful custom-profile move, later launches with the original data
+path continue using the verified destination recorded by the migration.
 
 The directory migration runs offline during restart. A separate progress window
 shows the current phase, processed entries and bytes, and elapsed time while

@@ -770,8 +770,9 @@ function dataMigrationControls() {
 }
 function renderDataDirectory(state) {
   dataDirectory = state;
-  $('migrateDataDirectory').hidden = !state?.legacy;
-  const message = state?.migrationError || state?.error || (state?.legacy ? 'Restart to move your data. The old folder is deleted after verification.' : '');
+  const needsMigration = state?.needsMigration ?? state?.legacy;
+  $('migrateDataDirectory').hidden = !needsMigration;
+  const message = state?.migrationError || state?.error || (needsMigration ? 'Restart to move your data. The old folder is deleted after verification.' : '');
   $('dataDirectoryStatus').hidden = !message;
   $('dataDirectoryStatus').textContent = window.CamelliaI18n.t(message);
   $('dataDirectoryStatus').classList.toggle('error', Boolean(state?.error || state?.migrationError));

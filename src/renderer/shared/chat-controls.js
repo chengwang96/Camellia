@@ -155,6 +155,14 @@
     }
     if (list !== row) list.scrollTop = scrollTop;
   }
+  function resizeAnswerField(field) {
+    if (!field || field.tagName !== 'TEXTAREA') return;
+    field.style.height = 'auto';
+    field.style.height = Math.min(Math.max(field.scrollHeight, 40), 180) + 'px';
+  }
+  function resizeQuestionFields(container) {
+    for (const field of container?.querySelectorAll('.question-custom textarea') || []) resizeAnswerField(field);
+  }
   function questionFields(container, questions, { saved = {}, changed = () => {} } = {}) {
     const fields = []; container.replaceChildren();
     for (const [index, question] of questions.entries()) {
@@ -176,13 +184,21 @@
       }
       const customLabel = document.createElement('label'); customLabel.className = 'question-custom';
       const customTitle = document.createElement('span'); customTitle.dataset.i18n = ''; customTitle.textContent = choices.length ? 'Or write your own answer' : 'Your answer';
-      const custom = document.createElement('input'); custom.type = question.isSecret ? 'password' : 'text'; custom.autocomplete = 'off'; custom.value = question.isSecret ? '' : saved[question.id]?.custom || '';
+      const custom = document.createElement(question.isSecret ? 'input' : 'textarea');
+      if (question.isSecret) custom.type = 'password'; else custom.rows = 1;
+      custom.autocomplete = 'off'; custom.value = question.isSecret ? '' : saved[question.id]?.custom || '';
       customLabel.append(customTitle, custom); field.append(customLabel); container.append(field);
       fields.push({ question, choices, custom });
-      custom.oninput = () => { if (!question.multiSelect && custom.value) choices.forEach(choice => choice.checked = false); changed(fields); };
+      custom.oninput = () => {
+        resizeAnswerField(custom);
+        if (!question.multiSelect && custom.value) choices.forEach(choice => choice.checked = false);
+        changed(fields);
+      };
+      custom.addEventListener('focus', () => resizeAnswerField(custom));
+      requestAnimationFrame(() => resizeAnswerField(custom));
       choices.forEach(choice => { choice.onchange = () => { if (!question.multiSelect) custom.value = ''; changed(fields); }; });
     }
     return fields;
   }
-  window.CamelliaChatControls = { isImagePath, attachmentGlyph, fileUrl, makeToolCard, renderAttachments, questionFields };
+  window.CamelliaChatControls = { isImagePath, attachmentGlyph, fileUrl, makeToolCard, renderAttachments, questionFields, resizeQuestionFields };
 })();

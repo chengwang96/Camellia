@@ -3286,6 +3286,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (dialog.open) return;
     dialog.replaceChildren(pendingQuestion.card);
     dialog.showModal();
+    window.CamelliaChatControls.resizeQuestionFields(dialog);
     // Focus the question, without preselecting an option or a submit button.
     $('questionTitle').focus();
   }
@@ -3437,7 +3438,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       input = Object.fromEntries(entries);
     }
     const submission = {}; permissionSubmission = submission;
-    if (question) { question.status.textContent = 'Sending…'; question.status.classList.remove('error'); question.status.setAttribute('role', 'status'); question.card.querySelectorAll('input, button').forEach(el => el.disabled = true); }
+    if (question) { question.status.textContent = 'Sending…'; question.status.classList.remove('error'); question.status.setAttribute('role', 'status'); question.card.querySelectorAll('input, textarea, button').forEach(el => el.disabled = true); }
     let result;
     try {
       result = await chatApi.controlRespond({ requestId: answered, allow, optionId, input,
@@ -3449,7 +3450,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (permRequestId !== answered) return;
     if (!result?.ok) {
       const error = result?.error || 'This request is no longer active';
-      if (question && pendingQuestion === question) { question.card.querySelectorAll('input, button').forEach(el => el.disabled = false); questionError(error); }
+      if (question && pendingQuestion === question) { question.card.querySelectorAll('input, textarea, button').forEach(el => el.disabled = false); questionError(error); }
       setStatus(error); return;
     }
     finishQuestion(allow ? 'Answers sent' : 'Questions skipped', allow);

@@ -10,6 +10,8 @@ const { completeDirectoryMigration } = require('../src/main/data-directory');
 const root = process.argv[2], crash = process.argv[3];
 assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
 assert.ok(path.basename(root).startsWith('camellia-rename-test-'));
+const sourceRelative = process.argv[4] || 'dsh-desktop';
+assert.ok(!path.isAbsolute(sourceRelative) && !sourceRelative.split(/[\\/]/).includes('..'));
 if (crash === 'swap') {
   const rename = fs.renameSync;
   fs.renameSync = (from, to) => {
@@ -23,7 +25,7 @@ if (crash === 'swap') {
     return rm(file, options);
   };
 }
-const result = completeDirectoryMigration({ appData: root, dataDir: path.join(root, 'dsh-desktop'),
+const result = completeDirectoryMigration({ appData: root, dataDir: path.join(root, sourceRelative),
   activate: () => { if (crash === 'activation') process.exit(23); },
   onProgress: state => {
     if ((crash === 'prepare' && state.stage === 'prepare' && state.processedEntries === 1)

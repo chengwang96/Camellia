@@ -14,6 +14,7 @@ async function main() {
       ? { setProxy: async () => {}, resolveProxy: async () => 'PROXY 127.0.0.1:18899' } : fromPartition(name, ...args);
     const resources = process.env.CAMELLIA_OPTIONAL_RESOURCES;
     const profile = process.env.CAMELLIA_OPTIONAL_PROFILE;
+    app.setPath('appData', path.dirname(profile));
     app.setPath('userData', profile); app.setPath('sessionData', profile);
     app.disableHardwareAcceleration();
     Object.defineProperty(app, 'isPackaged', { value: true });

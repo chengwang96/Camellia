@@ -119,6 +119,7 @@ async function main() {
     });
     const profileMode = process.env.CAMELLIA_SMOKE_PROFILE || 'legacy';
     const userData = path.join(root, firstRun ? 'app' : profileMode === 'legacy' ? 'dsh-desktop' : 'camellia');
+    app.setPath('appData', root);
     if (firstRun) {
       app.setPath('userData', userData);
     } else {
@@ -130,7 +131,6 @@ async function main() {
       }
       const renamedDefault = path.join(root, 'camellia-desktop');
       fs.mkdirSync(renamedDefault);
-      app.setPath('appData', root);
       app.setName('camellia-desktop');
       app.setPath('userData', renamedDefault);
       app.setPath('sessionData', renamedDefault);

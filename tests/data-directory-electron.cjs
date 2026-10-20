@@ -12,10 +12,13 @@ async function main() {
     const root = process.env.CAMELLIA_DIRECTORY_TEST_ROOT;
     assert.ok(root && path.basename(root).startsWith('camellia-directory-electron-'));
     const phase = Number(process.env.CAMELLIA_DIRECTORY_TEST_PHASE);
-    const appData = phase === 0 ? path.join(root, 'fresh') : root;
+    const profile = process.env.CAMELLIA_DIRECTORY_TEST_PROFILE || 'dsh-desktop';
+    const appData = phase === 0 ? path.join(root, 'fresh') : profile === 'custom' ? path.join(root, 'roaming') : root;
     fs.mkdirSync(appData, { recursive: true });
-    const legacy = path.join(appData, 'dsh-desktop'), destination = path.join(appData, 'camellia');
-    const initial = path.join(appData, 'camellia-desktop');
+    const legacy = profile === 'custom' ? path.join(root, 'profiles/custom/camellia') : path.join(appData, profile);
+    const destination = path.join(appData, 'camellia');
+    const initial = profile === 'custom' ? legacy : path.join(appData, 'camellia-desktop');
+    if (profile === 'custom') app.commandLine.appendSwitch('user-data-dir', initial);
     app.setName('camellia-desktop');
     app.setPath('appData', appData);
     fs.mkdirSync(initial, { recursive: true });
@@ -51,7 +54,9 @@ async function main() {
     await app.whenReady();
     const settings = await handles.get('dsh:workbench-settings')();
     assert.equal(settings.dataPath, phase === 1 ? legacy : destination);
-    assert.equal(settings.dataDirectory.legacy, phase === 1);
+    assert.equal(settings.dataDirectory.legacy, phase === 1 && profile === 'dsh-desktop');
+    assert.equal(settings.dataDirectory.needsMigration, phase === 1);
+    assert.equal(settings.dataDirectory.canMigrate, phase === 1);
     if (phase === 0) {
       assert.equal(app.getPath('sessionData'), destination);
       assert.equal(fs.existsSync(legacy), false);
@@ -99,41 +104,44 @@ async function main() {
   }
 
   const { spawn } = require('node:child_process');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-directory-electron-'));
-  const legacy = path.join(root, 'dsh-desktop');
-  fs.mkdirSync(path.join(legacy, 'clipboard-attachments'), { recursive: true });
-  fs.mkdirSync(path.join(legacy, 'conversations'), { recursive: true });
-  fs.writeFileSync(path.join(legacy, 'clipboard-attachments/keep.txt'), 'original attachment');
-  fs.writeFileSync(path.join(legacy, 'conversations/metadata.json'), JSON.stringify({ id: 'metadata', origin: 'codex', segments: [],
-    attachment: path.join(legacy, 'clipboard-attachments/keep.txt') }));
-  for (const [name, target] of [['internal-attachments', 'clipboard-attachments'], ['missing-internal', 'missing-dependency']]) {
-    fs.symlinkSync(path.join(legacy, target), path.join(legacy, name), process.platform === 'win32' ? 'junction' : 'dir');
-  }
-  fs.writeFileSync(path.join(legacy, 'desktop-config.json'), JSON.stringify({ firstRunComplete: true, mode: 'home', port: 0, autoRefreshBalances: false }));
-  try {
-    for (const phase of [0, 1, 2]) {
-      const env = { ...process.env, CAMELLIA_DIRECTORY_TEST_ROOT: root, CAMELLIA_DIRECTORY_TEST_PHASE: String(phase),
-        CAMELLIA_DIRECTORY_PROGRESS_HIDDEN: '1',
-        DSH_HOME: path.join(root, 'home/.dsh'), USERPROFILE: path.join(root, 'home'), HOME: path.join(root, 'home') };
-      delete env.ELECTRON_RUN_AS_NODE;
-      const child = spawn(require('electron'), [__filename], { env, windowsHide: true, stdio: 'pipe' });
-      let output = '', errors = '';
-      child.stdout.on('data', chunk => { output += chunk; });
-      child.stderr.on('data', chunk => { errors += chunk; });
-      const timeout = setTimeout(() => {
-        if (process.platform === 'win32') spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-        else child.kill('SIGKILL');
-      }, 60000);
-      const code = await new Promise((resolve, reject) => { child.on('close', resolve); child.on('error', reject); });
-      clearTimeout(timeout);
-      assert.equal(code, 0, output + '\n' + errors);
-      assert.match(output, /PASS: real Electron data directory migration/);
-      console.log(output.trim());
+  for (const profile of ['dsh-desktop', 'camellia-desktop', 'custom']) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-directory-electron-'));
+    const legacy = profile === 'custom' ? path.join(root, 'profiles/custom/camellia') : path.join(root, profile);
+    fs.mkdirSync(path.join(legacy, 'clipboard-attachments'), { recursive: true });
+    fs.mkdirSync(path.join(legacy, 'conversations'), { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'clipboard-attachments/keep.txt'), 'original attachment');
+    fs.writeFileSync(path.join(legacy, 'conversations/metadata.json'), JSON.stringify({ id: 'metadata', origin: 'codex', segments: [],
+      attachment: path.join(legacy, 'clipboard-attachments/keep.txt') }));
+    for (const [name, target] of [['internal-attachments', 'clipboard-attachments'], ['missing-internal', 'missing-dependency']]) {
+      fs.symlinkSync(path.join(legacy, target), path.join(legacy, name), process.platform === 'win32' ? 'junction' : 'dir');
     }
-  } finally {
-    assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
-    assert.ok(path.basename(root).startsWith('camellia-directory-electron-'));
-    removeTree(root);
+    fs.writeFileSync(path.join(legacy, 'desktop-config.json'), JSON.stringify({ firstRunComplete: true, mode: 'home', port: 0, autoRefreshBalances: false }));
+    try {
+      for (const phase of profile === 'dsh-desktop' ? [0, 1, 2] : [1, 2]) {
+        const env = { ...process.env, CAMELLIA_DIRECTORY_TEST_ROOT: root, CAMELLIA_DIRECTORY_TEST_PHASE: String(phase),
+          CAMELLIA_DIRECTORY_TEST_PROFILE: profile,
+          CAMELLIA_DIRECTORY_PROGRESS_HIDDEN: '1',
+          DSH_HOME: path.join(root, 'home/.dsh'), USERPROFILE: path.join(root, 'home'), HOME: path.join(root, 'home') };
+        delete env.ELECTRON_RUN_AS_NODE;
+        const child = spawn(require('electron'), [__filename], { env, windowsHide: true, stdio: 'pipe' });
+        let output = '', errors = '';
+        child.stdout.on('data', chunk => { output += chunk; });
+        child.stderr.on('data', chunk => { errors += chunk; });
+        const timeout = setTimeout(() => {
+          if (process.platform === 'win32') spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+          else child.kill('SIGKILL');
+        }, 60000);
+        const code = await new Promise((resolve, reject) => { child.on('close', resolve); child.on('error', reject); });
+        clearTimeout(timeout);
+        assert.equal(code, 0, output + '\n' + errors);
+        assert.match(output, /PASS: real Electron data directory migration/);
+        console.log(profile + ': ' + output.trim());
+      }
+    } finally {
+      assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
+      assert.ok(path.basename(root).startsWith('camellia-directory-electron-'));
+      removeTree(root);
+    }
   }
 }
 

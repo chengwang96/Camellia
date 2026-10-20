@@ -22,13 +22,14 @@ function hasData(directory) {
   try { return fs.readdirSync(directory).length > 0; } catch { return false; }
 }
 
-function defaultDataDirectory(appData) {
+function defaultDataDirectory(appData, initialDirectory) {
   appData ||= process.platform === 'win32' ? process.env.APPDATA || path.join(os.homedir(), 'AppData/Roaming')
     : process.platform === 'darwin' ? path.join(os.homedir(), 'Library/Application Support')
       : process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
   const current = path.join(appData, DATA_NAME), legacy = path.join(appData, LEGACY_NAME);
-  if (hasData(current) || !fs.existsSync(legacy)) return current;
-  return legacy;
+  if (hasData(current)) return current;
+  const previous = [legacy, initialDirectory, path.join(appData, 'camellia-desktop')].filter(Boolean).find(hasData);
+  return previous || (fs.existsSync(legacy) ? legacy : current);
 }
 
 function usesManagedDataDirectory(app) {
@@ -39,35 +40,70 @@ function usesManagedDataDirectory(app) {
 }
 
 function configureDataDirectory(app) {
-  if (!usesManagedDataDirectory(app)) return false;
+  const managed = usesManagedDataDirectory(app), appData = app.getPath('appData');
   const initial = app.getPath('userData');
-  recoverDirectoryMigration(app.getPath('appData'));
-  const directory = defaultDataDirectory(app.getPath('appData'));
+  recoverDirectoryMigration(appData, managed ? undefined : initial);
+  const result = readDirectoryMigrationResult(appData), destination = path.join(appData, DATA_NAME);
+  // A successful, explicitly requested move also applies to later launches
+  // with the original --user-data-dir or programmatically selected profile.
+  const redirected = result?.migrated && typeof result.source === 'string' && typeof result.destination === 'string'
+    && samePath(result.source, initial) && samePath(result.destination, destination)
+    && !migrationPathError(appData, result.source) && hasData(destination)
+    && !fs.lstatSync(destination).isSymbolicLink();
+  if (!managed && !redirected) return false;
+  const directory = redirected ? destination : defaultDataDirectory(appData, initial);
   fs.mkdirSync(directory, { recursive: true });
   if (samePath(app.getPath('sessionData'), initial)) app.setPath('sessionData', directory);
   app.setPath('userData', directory);
   return true;
 }
 
+function containsPath(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return !relative || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+}
+
+function migrationPathError(appData, source) {
+  if (typeof appData !== 'string' || typeof source !== 'string' || !path.isAbsolute(appData) || !path.isAbsolute(source)
+    || containsPath(source, appData) || containsPath(path.join(appData, DATA_NAME), source)
+    || (containsPath(appData, source) && path.relative(appData, source).split(path.sep)[0].startsWith('.camellia-'))) {
+    return 'The data directory cannot be moved safely; migrate it manually';
+  }
+  return null;
+}
+
 function migrationStatus({ appData, dataDir }) {
-  if (!appData) return { legacy: false, canMigrate: false, source: dataDir, destination: null, error: null };
-  const source = path.join(appData, LEGACY_NAME), destination = path.join(appData, DATA_NAME);
-  const legacy = samePath(dataDir, source);
+  if (!appData || !dataDir) return { legacy: false, needsMigration: false, canMigrate: false, source: dataDir, destination: null, error: null };
+  const source = path.resolve(dataDir), destination = path.join(appData, DATA_NAME);
+  const legacy = samePath(source, path.join(appData, LEGACY_NAME)), needsMigration = !samePath(source, destination);
   let error = null;
-  if (legacy) {
+  if (needsMigration) {
     try {
-      if (fs.lstatSync(source).isSymbolicLink()) error = 'The data directory is a link; migrate it manually';
-      if (fs.existsSync(destination) && (fs.lstatSync(destination).isSymbolicLink() || !fs.statSync(destination).isDirectory() || hasData(destination))) {
+      error = migrationPathError(appData, source);
+      const sourceStat = fs.lstatSync(source), targetStat = fs.lstatSync(destination, { throwIfNoEntry: false });
+      if (sourceStat.isSymbolicLink()) error = 'The data directory is a link; migrate it manually';
+      else if (!sourceStat.isDirectory()) error = 'The data directory cannot be moved safely; migrate it manually';
+      else error ||= migrationPathError(fs.realpathSync(appData), fs.realpathSync(source));
+      if (targetStat && (targetStat.isSymbolicLink() || !targetStat.isDirectory() || hasData(destination))) {
         error = 'The Camellia data directory already contains files; nothing was overwritten';
       }
     } catch (failure) { error = failure.message; }
   }
-  return { legacy, canMigrate: legacy && !error, source: dataDir, destination, error };
+  return { legacy, needsMigration, canMigrate: needsMigration && !error, source, destination, error };
+}
+
+function hasPendingDirectoryMigration({ appData, dataDir }) {
+  if (!appData || !dataDir) return false;
+  try {
+    const pending = JSON.parse(fs.readFileSync(path.join(appData, REQUEST_NAME), 'utf8'));
+    return typeof pending.source === 'string' && typeof pending.destination === 'string'
+      && samePath(pending.source, dataDir) && samePath(pending.destination, path.join(appData, DATA_NAME));
+  } catch { return false; }
 }
 
 function requestDirectoryMigration(options) {
   const state = migrationStatus(options);
-  if (!state.canMigrate) throw new Error(state.error || 'This installation is not using the legacy data directory');
+  if (!state.canMigrate) throw new Error(state.error || 'This installation already uses the Camellia data directory');
   fs.writeFileSync(path.join(options.appData, REQUEST_NAME), JSON.stringify({ source: state.source, destination: state.destination }), { flag: 'wx', mode: 0o600 });
   return state;
 }
@@ -365,7 +401,8 @@ function completeCopyMigration({ appData, dataDir, activate, onProgress }) {
     verifyTree(state.destination, expected, false, progressPhase(onProgress, 'verify-final', expected));
     verifyTree(state.source, original, true, progressPhase(onProgress, 'verify-source', original));
     const currentStat = fs.lstatSync(state.source);
-    if (!samePath(state.source, path.join(appData, LEGACY_NAME)) || currentStat.isSymbolicLink() || !currentStat.isDirectory()
+    if (migrationPathError(appData, state.source) || migrationPathError(fs.realpathSync(appData), fs.realpathSync(state.source))
+      || currentStat.isSymbolicLink() || !currentStat.isDirectory()
       || currentStat.dev !== sourceStat.dev || currentStat.ino !== sourceStat.ino) {
       throw new Error('The data directory changed; migration was stopped');
     }
@@ -404,9 +441,9 @@ function completeDirectoryMigration(options) {
   return { ...completeCopyMigration(options), method: 'copy' };
 }
 
-function recoverDirectoryMigration(appData) {
-  const result = require('./data-directory-fast').recoverDirectoryMigration(appData, migrationHelpers);
-  if (result) saveDirectoryMigrationResult(appData, { ...result, source: path.join(appData, LEGACY_NAME), destination: path.join(appData, DATA_NAME),
+function recoverDirectoryMigration(appData, dataDir) {
+  const result = require('./data-directory-fast').recoverDirectoryMigration(appData, migrationHelpers, dataDir);
+  if (result) saveDirectoryMigrationResult(appData, { ...result,
     ...(!result.migrated ? { error: 'An interrupted data directory migration was rolled back; the original profile was restored' } : {}) });
   return result;
 }
@@ -424,8 +461,8 @@ function readDirectoryMigrationResult(appData) {
   } catch { return null; }
 }
 
-const migrationHelpers = { samePath, movePath, migrationStatus, cancelDirectoryMigration, pathMappings, rewritePaths,
+const migrationHelpers = { samePath, movePath, migrationPathError, migrationStatus, cancelDirectoryMigration, pathMappings, rewritePaths,
   rewriteText, rewriteDatabase, databaseFingerprint, fileFingerprint, directoryLink, progressPhase, SKIP_REWRITE };
 
-module.exports = { defaultDataDirectory, usesManagedDataDirectory, configureDataDirectory, migrationStatus, requestDirectoryMigration, cancelDirectoryMigration,
+module.exports = { defaultDataDirectory, usesManagedDataDirectory, configureDataDirectory, migrationStatus, hasPendingDirectoryMigration, requestDirectoryMigration, cancelDirectoryMigration,
   completeDirectoryMigration, recoverDirectoryMigration, saveDirectoryMigrationResult, readDirectoryMigrationResult };

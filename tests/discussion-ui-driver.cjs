@@ -18,6 +18,8 @@ if (process.env.DISCUSSION_UI_NAVIGATION === '1') {
     return { file: 'ui-navigation-fixture-only' };
   } });
 }
+fs.mkdirSync(path.join(root, 'roaming'), { recursive: true });
+app.setPath('appData', path.join(root, 'roaming'));
 app.setPath('userData', path.join(root, 'app'));
 app.disableHardwareAcceleration();
 const testElectron = Object.create(electron);

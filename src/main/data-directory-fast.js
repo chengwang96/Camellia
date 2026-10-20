@@ -89,7 +89,7 @@ function writeJournal(appData, journal, initial = false) {
 function validateJournal(appData, journal, helpers) {
   if (journal?.version !== 1 || !/^[0-9a-f-]{36}$/.test(journal.id || '')
     || !['preparing', 'moving', 'committed'].includes(journal.status)
-    || !helpers.samePath(journal.source || '.', path.join(appData, 'dsh-desktop'))
+    || helpers.migrationPathError(appData, journal.source)
     || !helpers.samePath(journal.destination || '.', path.join(appData, 'camellia'))
     || !helpers.samePath(journal.work || '.', path.join(appData, WORK_PREFIX + journal.id))
     || !/^\d+$/.test(journal.root?.dev || '') || !/^\d+$/.test(journal.root?.ino || '')
@@ -192,11 +192,12 @@ function rollbackTransaction(appData, journal, helpers) {
   }
 }
 
-function recoverDirectoryMigration(appData, helpers) {
+function recoverDirectoryMigration(appData, helpers, dataDir) {
   const file = path.join(appData, JOURNAL);
   if (!exists(file)) return null;
   if (fs.lstatSync(file).isSymbolicLink()) throw new Error('The migration recovery record is a link; no data was changed');
   const journal = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (dataDir && ![journal.source, journal.destination].some(value => typeof value === 'string' && helpers.samePath(value, dataDir))) return null;
   validateJournal(appData, journal, helpers);
   try {
     process.kill(journal.ownerPid, 0);
@@ -215,13 +216,13 @@ function recoverDirectoryMigration(appData, helpers) {
   }
   catch (error) {
     if (journal.status !== 'committed') throw error;
-    return { recovered: true, migrated: true, method: 'rename',
+    return { recovered: true, migrated: true, method: 'rename', source: journal.source, destination: journal.destination,
       error: 'Data moved and verified; temporary backups could not be removed', cleanupError: error.message, leftoverDirectory: journal.work };
   }
-  return { recovered: true, migrated: journal.status === 'committed', method: 'rename' };
+  return { recovered: true, migrated: journal.status === 'committed', method: 'rename', source: journal.source, destination: journal.destination };
 }
 
-function inventory(source, helpers, progress) {
+function inventory(source, destination, helpers, progress) {
   const candidates = [];
   const visit = (directory, skipText = false) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -230,7 +231,7 @@ function inventory(source, helpers, progress) {
       progress.start(relative);
       if (entry.isSymbolicLink()) {
         const target = fs.readlinkSync(file);
-        if (path.isAbsolute(target) && helpers.movePath(target, source, path.join(path.dirname(source), 'camellia')) !== target) {
+        if (path.isAbsolute(target) && helpers.movePath(target, source, destination) !== target) {
           candidates.push({ relative, kind: 'link' });
         }
       } else if (entry.isDirectory()) visit(file, skipText || helpers.SKIP_REWRITE.has(entry.name));
@@ -379,7 +380,7 @@ function completeRenameMigration(options, helpers) {
     fs.mkdirSync(journal.work);
     fs.mkdirSync(path.join(journal.work, 'updated'));
     fs.mkdirSync(path.join(journal.work, 'original'));
-    const candidates = inventory(state.source, helpers, phase('inventory'));
+    const candidates = inventory(state.source, state.destination, helpers, phase('inventory'));
     prepareUpdates(journal, candidates, helpers, phase('prepare', candidates.length));
     const preparedVerification = phase('verify-prepared', journal.operations.length);
     for (const op of journal.operations) {

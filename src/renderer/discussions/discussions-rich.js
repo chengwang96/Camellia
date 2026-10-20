@@ -128,6 +128,7 @@ window.CamelliaDiscussionRich = { create({ getGroup, call, mutate, getAttachment
       $('permissionActions').append(action(option.name, () => answer(option.kind.startsWith('allow'), option.optionId), option.kind.startsWith('allow') ? 'perm-allow' : 'perm-deny'));
     } else $('permissionActions').append(action('Deny', () => answer(false), 'perm-deny'), action('Allow', () => answer(true), 'perm-allow'));
     if (!$('discussionPermission').open) $('discussionPermission').showModal();
+    controls.resizeQuestionFields($('permissionQuestions'));
   }
   async function answer(allow, optionId) {
     if (!pending || answering) return;

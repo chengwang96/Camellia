@@ -7,10 +7,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { removeTree } = require('./test-fs.cjs');
-const { defaultDataDirectory, configureDataDirectory, migrationStatus, requestDirectoryMigration, completeDirectoryMigration,
+const { defaultDataDirectory, configureDataDirectory, migrationStatus, hasPendingDirectoryMigration, requestDirectoryMigration, completeDirectoryMigration,
   saveDirectoryMigrationResult, readDirectoryMigrationResult } = require('../src/main/data-directory');
 
-function fixture(context) {
+function fixture(context, directory = 'dsh-desktop') {
   const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-directory-test-'));
   context.after(() => {
     const resolved = path.resolve(appData);
@@ -18,7 +18,7 @@ function fixture(context) {
     assert.ok(path.basename(resolved).startsWith('camellia-directory-test-'));
     removeTree(resolved);
   });
-  const dataDir = path.join(appData, 'dsh-desktop'), destination = path.join(appData, 'camellia');
+  const dataDir = path.join(appData, directory), destination = path.join(appData, 'camellia');
   const write = (relative, content) => {
     const file = path.join(dataDir, relative);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -50,6 +50,83 @@ test('existing legacy data is used until explicitly migrated', context => {
   assert.equal(app.paths.userData, box.dataDir);
   assert.equal(app.paths.sessionData, box.dataDir);
   assert.equal(migrationStatus(box).canMigrate, true);
+});
+
+test('an existing camellia-desktop profile remains selected and offers migration', context => {
+  const box = fixture(context, 'camellia-desktop');
+  box.write('desktop-config.json', '{"language":"zh-CN"}');
+  const app = mockApp(box.appData);
+  assert.equal(defaultDataDirectory(box.appData), box.dataDir);
+  assert.equal(configureDataDirectory(app), true);
+  assert.equal(app.paths.userData, box.dataDir);
+  assert.equal(app.paths.sessionData, box.dataDir);
+  assert.equal(fs.existsSync(box.destination), false);
+  const state = migrationStatus(box);
+  assert.equal(state.legacy, false);
+  assert.equal(state.needsMigration, true);
+  assert.equal(state.canMigrate, true);
+});
+
+test('a custom profile moves by explicit request and subsequent launches follow its saved destination', context => {
+  const box = fixture(context, 'profiles/custom/camellia');
+  box.write('desktop-config.json', JSON.stringify({ attachment: path.join(box.dataDir, 'keep.txt') }));
+  box.write('keep.txt', 'keep attachment');
+  const app = mockApp(box.appData, { userData: box.dataDir, sessionData: box.dataDir });
+  app.commandLine = { hasSwitch: name => name === 'user-data-dir' };
+  assert.equal(configureDataDirectory(app), false);
+  assert.equal(app.paths.userData, box.dataDir);
+  const requested = requestDirectoryMigration(box);
+  assert.equal(requested.source, box.dataDir);
+  assert.equal(requested.needsMigration, true);
+  assert.equal(requested.legacy, false);
+  assert.equal(fs.existsSync(box.destination), false);
+  assert.equal(hasPendingDirectoryMigration(box), true);
+  assert.equal(hasPendingDirectoryMigration({ ...box, dataDir: path.join(box.appData, 'unrelated-profile') }), false);
+  const result = completeDirectoryMigration(box);
+  assert.equal(result.migrated, true, result.error);
+  assert.equal(fs.existsSync(box.dataDir), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(box.destination, 'desktop-config.json'), 'utf8')).attachment,
+    path.join(box.destination, 'keep.txt'));
+  assert.equal(fs.readFileSync(path.join(box.destination, 'keep.txt'), 'utf8'), 'keep attachment');
+  saveDirectoryMigrationResult(box.appData, result);
+  assert.equal(configureDataDirectory(app), true);
+  assert.equal(app.paths.userData, box.destination);
+  assert.equal(app.paths.sessionData, box.destination);
+  const unrelated = mockApp(box.appData, { userData: path.join(box.appData, 'other-profile') });
+  assert.equal(configureDataDirectory(unrelated), false);
+  assert.equal(unrelated.paths.userData, path.join(box.appData, 'other-profile'));
+});
+
+test('the default profile has no migration entry and overlapping sources cannot be moved', context => {
+  const box = fixture(context);
+  fs.mkdirSync(box.destination);
+  let state = migrationStatus({ ...box, dataDir: box.destination });
+  assert.equal(state.needsMigration, false);
+  assert.equal(state.canMigrate, false);
+  assert.equal(state.error, null);
+  for (const dataDir of [box.appData, path.dirname(box.appData), path.join(box.destination, 'profile')]) {
+    fs.mkdirSync(dataDir, { recursive: true });
+    state = migrationStatus({ ...box, dataDir });
+    assert.equal(state.needsMigration, true);
+    assert.equal(state.canMigrate, false);
+    assert.ok(state.error);
+    assert.throws(() => requestDirectoryMigration({ ...box, dataDir }));
+  }
+  assert.equal(fs.existsSync(path.join(box.appData, '.camellia-directory-migration.json')), false);
+});
+
+test('custom profiles report a populated destination without changing either profile', context => {
+  const box = fixture(context, 'custom-profile');
+  box.write('keep.txt', 'source');
+  fs.mkdirSync(box.destination);
+  fs.writeFileSync(path.join(box.destination, 'keep.txt'), 'destination');
+  const state = migrationStatus(box);
+  assert.equal(state.needsMigration, true);
+  assert.equal(state.canMigrate, false);
+  assert.match(state.error, /already contains files/);
+  assert.throws(() => requestDirectoryMigration(box), /already contains files/);
+  assert.equal(fs.readFileSync(path.join(box.dataDir, 'keep.txt'), 'utf8'), 'source');
+  assert.equal(fs.readFileSync(path.join(box.destination, 'keep.txt'), 'utf8'), 'destination');
 });
 
 test('an existing camellia profile takes precedence over a remaining legacy directory', context => {

@@ -172,11 +172,11 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             expect(page.locator('#discussionPermission')).to_be_visible()
             page.locator('#permissionQuestions').get_by_role('radio', name='Scientist').check()
             page.locator('#permissionQuestions').get_by_role('checkbox', name='CSV').check()
-            page.locator('#permissionQuestions .question-custom input').nth(1).fill('Markdown')
+            page.locator('#permissionQuestions .question-custom textarea').nth(1).fill('Markdown')
             page.locator('#permissionActions').get_by_role('button', name='Answer later').click()
             page.get_by_role('button', name='Answer questions', exact=True).click()
             expect(page.locator('#permissionQuestions').get_by_role('radio', name='Scientist')).to_be_checked()
-            expect(page.locator('#permissionQuestions .question-custom input').nth(1)).to_have_value('Markdown')
+            expect(page.locator('#permissionQuestions .question-custom textarea').nth(1)).to_have_value('Markdown')
             page.locator('#permissionActions').get_by_role('button', name='Submit answers').click()
             expect(page.locator('.message.assistant')).to_have_count(5)
             assert json.loads((root / 'question-answer.json').read_text())['input'] == {'role': 'Scientist', 'formats': ['CSV', 'Markdown']}

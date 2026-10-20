@@ -665,7 +665,7 @@ with sync_playwright() as p:
         card.get_by_role('radio',name='Main workflow').check()
         card.get_by_role('checkbox',name='CSV',exact=True).check()
         card.get_by_role('checkbox',name='JSON',exact=True).check()
-        card.locator('.question-custom input').nth(1).fill('Markdown report')
+        card.locator('.question-custom textarea').nth(1).fill('Markdown report')
         card.get_by_role('button',name='Answer later').click()
         expect(page.locator('#questionDialog')).not_to_be_visible()
         expect(page.get_by_role('button',name='Answer questions')).to_be_focused()
@@ -683,13 +683,13 @@ with sync_playwright() as p:
         expect(page.locator('#questionDialog')).to_be_visible()
         expect(card.get_by_role('radio',name='Main workflow')).to_be_checked()
         expect(card.get_by_role('checkbox',name='CSV',exact=True)).to_be_checked()
-        expect(card.locator('.question-custom input').nth(1)).to_have_value('Markdown report')
+        expect(card.locator('.question-custom textarea').nth(1)).to_have_value('Markdown report')
         page.evaluate('(a)=>pushEvent({type:"assistant",session_id:a.id,runId:a.runId,engine:document.body.dataset.harness,message:{content:[{type:"text",text:"Please choose the scope."}]}})',{'id':a,'runId':arun})
         expect(card.get_by_role('radio',name='Main workflow')).to_be_checked()
         page.evaluate('window.failAnswer=true')
         card.get_by_role('button',name='Submit answers').click()
         expect(card.locator('[role="alert"]')).to_contain_text('Fixture answer rejected')
-        expect(card.locator('.question-custom input').nth(1)).to_have_value('Markdown report')
+        expect(card.locator('.question-custom textarea').nth(1)).to_have_value('Markdown report')
         page.evaluate('window.failAnswer=false; window.holdAnswer=true')
         card.get_by_role('button',name='Submit answers').click()
         expect(card.get_by_role('button',name='Submit answers')).to_be_disabled()
@@ -774,7 +774,12 @@ with sync_playwright() as p:
         expect(dialog.locator('input:checked')).to_have_count(0)
         dialog.get_by_role('checkbox',name='CSV',exact=False).check()
         dialog.get_by_role('checkbox',name='A, B',exact=False).check()
-        dialog.locator('.question-custom input').fill('Markdown')
+        answer_field=dialog.locator('.question-custom textarea')
+        single_line_height=answer_field.bounding_box()['height']
+        answer_field.fill('Markdown\nwith a second line\nand a third line')
+        expect(answer_field).to_have_value('Markdown\nwith a second line\nand a third line')
+        assert answer_field.bounding_box()['height'] > single_line_height
+        answer_field.fill('Markdown')
         page.evaluate('setRunStatus("Running another tool…")')
         expect(page.locator('.run-text').last).to_have_text('等待你的回答' if language=='zh-CN' else 'Waiting for your answer')
         # The dialog and its actions remain inside a short/narrow viewport.
@@ -812,7 +817,7 @@ with sync_playwright() as p:
         expect(page.locator('.question-answers').last).to_contain_text('••••••')
         assert page.locator('#chat input[type="password"]').input_value()==''
         # A reply still in flight cannot consume a question in another session.
-        dialog.locator('.question-custom input').fill('Submitted in A')
+        dialog.locator('.question-custom textarea').fill('Submitted in A')
         page.evaluate('window.holdAnswer=true')
         dialog.locator('button[type="submit"]').click()
         expect(dialog.locator('button[type="submit"]')).to_be_disabled()
@@ -821,9 +826,9 @@ with sync_playwright() as p:
         page.wait_for_function('!loadingSession')
         page.evaluate('(event)=>pushEvent(event)',{**third,'session_id':b,'runId':brun})
         expect(dialog.locator('legend')).to_have_text('Project name?')
-        dialog.locator('.question-custom input').fill('Unsubmitted in B')
+        dialog.locator('.question-custom textarea').fill('Unsubmitted in B')
         page.evaluate('window.releaseAnswer();window.holdAnswer=false')
-        expect(dialog.locator('.question-custom input')).to_have_value('Unsubmitted in B')
+        expect(dialog.locator('.question-custom textarea')).to_have_value('Unsubmitted in B')
         expect(dialog.locator('button[type="submit"]')).to_be_enabled()
         assert page.evaluate('permRequestId')=='third'
         assert page.evaluate('(id)=>sessionFixtures.get(id).activity',b)=='question'

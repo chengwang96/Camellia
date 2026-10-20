@@ -15,9 +15,9 @@ const { requestDirectoryMigration, completeDirectoryMigration, recoverDirectoryM
 
 const JOURNAL = '.camellia-directory-migration-transaction.json';
 const REQUEST = '.camellia-directory-migration.json';
-function fixture(context) {
+function fixture(context, directory = 'dsh-desktop') {
   const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-rename-test-'));
-  const dataDir = path.join(appData, 'dsh-desktop'), destination = path.join(appData, 'camellia');
+  const dataDir = path.join(appData, directory), destination = path.join(appData, 'camellia');
   const write = (relative, content) => {
     const file = path.join(dataDir, relative);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -45,10 +45,43 @@ function clean(box) {
   assert.equal(fs.readdirSync(box.appData).some(name => name.startsWith('.camellia-migration-work-')), false);
 }
 function crashAt(box, crash) {
-  const child = spawnSync(process.execPath, [path.join(__dirname, 'data-directory-crash-fixture.cjs'), box.appData, crash], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+  const child = spawnSync(process.execPath, [path.join(__dirname, 'data-directory-crash-fixture.cjs'), box.appData, crash, path.relative(box.appData, box.dataDir)], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
   assert.equal(child.status, 23, child.stdout + child.stderr);
   return JSON.parse(fs.readFileSync(path.join(box.appData, JOURNAL), 'utf8'));
 }
+
+test('rename migration retargets links from a custom profile already named camellia', context => {
+  const box = fixture(context, 'profiles/custom/camellia');
+  seed(box);
+  fs.symlinkSync(path.join(box.dataDir, 'attachments'), path.join(box.dataDir, 'internal'), process.platform === 'win32' ? 'junction' : 'dir');
+  const before = fs.statSync(path.join(box.dataDir, 'attachments/keep.bin'), { bigint: true }).ino;
+  const result = completeDirectoryMigration(box);
+  assert.equal(result.migrated, true, result.error);
+  assert.equal(result.method, 'rename');
+  assert.equal(fs.existsSync(box.dataDir), false);
+  assert.equal(path.resolve(fs.readlinkSync(path.join(box.destination, 'internal'))), path.join(box.destination, 'attachments'));
+  assert.equal(fs.statSync(path.join(box.destination, 'attachments/keep.bin'), { bigint: true }).ino, before);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(box.destination, 'metadata.json'), 'utf8')).path,
+    path.join(box.destination, 'attachments/keep.bin'));
+  clean(box);
+});
+
+for (const phase of ['activation', 'committed']) test('custom profile startup recovers an interruption during ' + phase, context => {
+  const box = fixture(context, 'profiles/custom/camellia'), original = seed(box);
+  crashAt(box, phase);
+  const paths = { appData: box.appData, userData: box.dataDir, sessionData: box.dataDir };
+  const app = { getName: () => 'camellia-desktop', getPath: name => paths[name], setPath: (name, value) => { paths[name] = value; } };
+  const migrated = phase === 'committed';
+  assert.equal(configureDataDirectory(app), migrated);
+  assert.equal(paths.userData, migrated ? box.destination : box.dataDir);
+  assert.equal(paths.sessionData, paths.userData);
+  const saved = readDirectoryMigrationResult(box.appData);
+  assert.equal(saved.migrated, migrated);
+  assert.equal(saved.source, box.dataDir);
+  assert.equal(saved.destination, box.destination);
+  if (!migrated) assert.equal(fs.readFileSync(path.join(box.dataDir, 'metadata.json'), 'utf8'), original);
+  clean(box);
+});
 
 test('committed recovery treats a locked request marker as pending cleanup instead of startup failure', context => {
   const box = fixture(context); seed(box); crashAt(box, 'committed');

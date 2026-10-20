@@ -90,6 +90,7 @@ async function main() {
     id: 'local', name: '本地测试线路', protocol: 'openai', baseUrl: 'http://127.0.0.1:' + fixture.address().port + '/v1',
     models: [{ id: 'kimi-k2.5', upstream: 'kimi-k2.5' }], keys: [{ id: 'local-key', key: 'local-fixture-only' }],
   }] }));
+  app.setPath('appData', root);
   app.setPath('userData', path.join(root, 'app'));
   app.disableHardwareAcceleration();
   const errors = [];

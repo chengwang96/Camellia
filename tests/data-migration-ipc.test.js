@@ -210,7 +210,7 @@ test('canceling or refusing a busy export leaves engine processes running', asyn
 });
 
 test('a pending export dialog leaves new responses and account clients available', async context => {
-  const harness = createHarness();
+  const harness = createHarness(undefined, { runtimeLocator: () => null });
   let release, pending;
   try {
     harness.configureApi();
@@ -567,13 +567,36 @@ test('a subscription-only legacy package is refused before import confirmation',
   } finally { harness.cleanup(); }
 });
 
-test('directory migration does not relaunch a custom test profile', async () => {
+test('directory migration offers an explicit restart for a custom profile', async () => {
   const harness = createHarness();
+  let relaunches = 0, quits = 0;
+  harness.app.relaunch = () => relaunches++;
+  harness.app.quit = () => quits++;
   try {
     const settings = await harness.call('workbench-settings');
     assert.equal(settings.dataDirectory.legacy, false);
+    assert.equal(settings.dataDirectory.needsMigration, true);
+    assert.equal(settings.dataDirectory.canMigrate, true);
+    assert.equal(relaunches, 0);
+    const result = await harness.call('data-directory-migrate');
+    assert.equal(result.ok, true, result.error);
+    assert.equal(relaunches, 1);
+    assert.equal(quits, 1);
+    assert.equal(fs.existsSync(path.join(harness.root, 'camellia')), false);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(harness.root, '.camellia-directory-migration.json'), 'utf8')),
+      { source: harness.userData, destination: path.join(harness.root, 'camellia') });
+  } finally { harness.cleanup(); }
+});
+
+test('a failed directory relaunch removes the request and keeps the custom profile active', async () => {
+  const harness = createHarness();
+  harness.app.relaunch = () => { throw new Error('relaunch failed'); };
+  try {
     const result = await harness.call('data-directory-migrate');
     assert.equal(result.ok, false);
-    assert.match(result.error, /Custom data directories/);
+    assert.equal(result.error, 'relaunch failed');
+    assert.equal(fs.existsSync(path.join(harness.root, '.camellia-directory-migration.json')), false);
+    assert.equal(fs.existsSync(harness.userData), true);
+    assert.equal(fs.existsSync(path.join(harness.root, 'camellia')), false);
   } finally { harness.cleanup(); }
 });

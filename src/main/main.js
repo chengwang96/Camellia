@@ -46,7 +46,7 @@ const { createZoomController, readLegacyZoom } = require('./zoom-controller');
 const { saveClipboardImage, savePastedText } = require('./clipboard-attachments');
 const { StorageCleanup } = require('./storage-cleanup');
 const { createDataPackage, importDataPackage, inspectDataPackage, recoverDataImports, resolveKinds: normalizeMigrationScope } = require('./data-migration');
-const { configureDataDirectory, migrationStatus: dataDirectoryStatus, requestDirectoryMigration, cancelDirectoryMigration, readDirectoryMigrationResult } = require('./data-directory');
+const { configureDataDirectory, migrationStatus: dataDirectoryStatus, hasPendingDirectoryMigration, requestDirectoryMigration, cancelDirectoryMigration, readDirectoryMigrationResult } = require('./data-directory');
 const { migrateDataDirectory } = require('./data-directory-progress');
 const { pluginCacheMaintenanceStatus, requestPluginCacheMaintenance, cancelPluginCacheMaintenance, completePluginCacheMaintenance } = require('./plugin-cache-startup');
 const { IdleSessionReaper } = require('../engines/idle-session-reaper');
@@ -119,7 +119,7 @@ const STARTUP_TIMEOUT_MS = 120_000;
 const DEFAULT_PORT = 3000;
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
 
-const managedDataDirectory = configureDataDirectory(app);
+configureDataDirectory(app);
 const appDataDirectory = (() => { try { return app.getPath('appData'); } catch { return null; } })();
 app.setName(APP_NAME);
 let gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -132,14 +132,16 @@ function lockDataDirectory(directory) {
   gotSingleInstanceLock = app.requestSingleInstanceLock();
   if (!gotSingleInstanceLock) throw new Error('Could not lock the data directory: ' + directory);
 }
-const directoryMigration = managedDataDirectory && gotSingleInstanceLock
+const directoryMigration = gotSingleInstanceLock && hasPendingDirectoryMigration({ appData: appDataDirectory, dataDir: app.getPath('userData') })
   ? migrateDataDirectory({ app, appData: appDataDirectory, dataDir: app.getPath('userData'),
     suspend: () => { app.releaseSingleInstanceLock(); gotSingleInstanceLock = false; },
     lockDestination: state => lockDataDirectory(state.destination),
     activate: state => { if (!gotSingleInstanceLock || app.getPath('userData') !== state.destination) lockDataDirectory(state.destination); },
     resume: state => lockDataDirectory(state.source) }) : null;
 if (directoryMigration?.recoveryRequired) throw new Error('Data directory recovery is required: ' + directoryMigration.rollbackError);
-const lastDirectoryMigration = directoryMigration || (managedDataDirectory ? readDirectoryMigrationResult(appDataDirectory) : null);
+const savedDirectoryMigration = readDirectoryMigrationResult(appDataDirectory);
+const lastDirectoryMigration = directoryMigration || ([savedDirectoryMigration?.source, savedDirectoryMigration?.destination]
+  .some(directory => typeof directory === 'string' && path.resolve(directory) === path.resolve(app.getPath('userData'))) ? savedDirectoryMigration : null);
 const pluginCacheMaintenance = gotSingleInstanceLock ? completePluginCacheMaintenance({ app, dataDir: app.getPath('userData') }) : null;
 if (pluginCacheMaintenance?.recoveryRequired) throw new Error('Plugin cache recovery is required: ' + pluginCacheMaintenance.error);
 
@@ -1832,7 +1834,7 @@ if (!gotSingleInstanceLock) {
     computerName: computerName(), dataPath: app.getPath('userData'), version: app.getVersion(),
     pluginCacheMaintenance: pluginCacheMaintenanceStatus(app.getPath('userData')),
     dataDirectory: { ...dataDirectoryStatus({ appData: appDataDirectory, dataDir: app.getPath('userData') }),
-      ...(!managedDataDirectory ? { legacy: false, canMigrate: false } : {}), migrationError: lastDirectoryMigration?.error || null } }));
+      migrationError: lastDirectoryMigration?.error || null } }));
   ipcMain.handle('dsh:workbench-save-settings', (_event, payload) => {
     try {
       // The router's quota probe follows only its own switch and cadence:
@@ -2269,7 +2271,6 @@ if (!gotSingleInstanceLock) {
     migrationBlocksEngines = true;
     let requested = false;
     try {
-      if (!managedDataDirectory) throw new Error('Custom data directories are kept unchanged');
       assertMigrationIdle();
       if (!await flushSettingsWindow()) throw new Error('Save your settings before moving your data');
       assertMigrationIdle();

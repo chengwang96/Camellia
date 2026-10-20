@@ -7,6 +7,7 @@ async function main() {
   if (process.versions.electron) {
     const { app, BrowserWindow, webContents } = require('electron');
     const root = process.env.NATIVE_SETTINGS_TEST_ROOT;
+    app.setPath('appData', root);
     app.setPath('userData', path.join(root, 'app')); app.disableHardwareAcceleration();
     const errors = [];
     app.on('web-contents-created', (_event, wc) => {

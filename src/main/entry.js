@@ -12,7 +12,7 @@ if (process.argv.includes('--camellia-directory-progress')) {
   try {
     // Recover before profile selection can create a new, empty old directory.
     const directories = require('./data-directory');
-    if (directories.usesManagedDataDirectory(app)) directories.recoverDirectoryMigration(app.getPath('appData'));
+    directories.recoverDirectoryMigration(app.getPath('appData'), directories.usesManagedDataDirectory(app) ? undefined : app.getPath('userData'));
     require('./main');
   } catch (error) {
     console.error('Camellia startup: ' + error.message);

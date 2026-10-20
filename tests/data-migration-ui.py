@@ -337,6 +337,27 @@ with sync_playwright() as playwright:
 
     page.reload(wait_until="networkidle")
     page.locator('[data-view="data"]').click()
+    # Non-default profiles offer the same action regardless of their name.
+    for language in ["en", "zh-CN"]:
+        page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
+        page.evaluate("renderDataDirectory({legacy:false,needsMigration:true,canMigrate:true})")
+        expect(page.locator("#migrateDataDirectory")).to_be_visible()
+        expect(page.locator("#migrateDataDirectory")).to_be_enabled()
+        expect(page.locator("#migrateDataDirectory")).to_have_text(
+            "Move to camellia folder" if language == "en" else "迁移到 camellia 目录"
+        )
+        expect(page.locator("#dataDirectoryStatus")).to_have_text(
+            "Restart to move your data. The old folder is deleted after verification."
+            if language == "en" else "重启后迁移数据，校验成功后删除旧目录。"
+        )
+        page.evaluate("renderDataDirectory({legacy:false,needsMigration:true,canMigrate:false,error:'The Camellia data directory already contains files; nothing was overwritten'})")
+        expect(page.locator("#migrateDataDirectory")).to_be_visible()
+        expect(page.locator("#migrateDataDirectory")).to_be_disabled()
+        expect(page.locator("#dataDirectoryStatus")).to_have_text(
+            "The Camellia data directory already contains files; nothing was overwritten"
+            if language == "en" else "camellia 目录已有文件，未覆盖任何数据"
+        )
+    page.evaluate("CamelliaI18n.setLanguage('en')")
     page.evaluate("renderDataDirectory({legacy:false,canMigrate:false})")
     expect(page.locator("#migrateDataDirectory")).to_be_hidden()
     expect(page.locator("#dataDirectoryStatus")).to_be_hidden()
