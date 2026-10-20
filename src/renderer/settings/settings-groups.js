@@ -112,6 +112,7 @@
       group(storage, 'unused-files', range(storage, 'unused-files', get('scanStorage')?.closest('.toolbar')?.previousElementSibling, get('cleanStorage'), true));
     }
     arrange('modelsPage', [
+      ['web-tools', ['#webToolsSection']],
       ['api-routing', [() => get('multiKeyConcurrency')?.closest('.section')]],
       ['subscription-visibility', ['.subscription-models-section']],
       ['quick-switch', [() => get('quickSwitchModels')?.previousElementSibling, '#quickSwitchModels']],

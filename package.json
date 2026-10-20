@@ -172,6 +172,7 @@
       "src/engines/task-tools.js",
       "src/engines/conversation-tools.js",
       "src/engines/find-tools.js",
+      "src/engines/web-tools.js",
       "src/engines/antigravity/**",
       "src/engines/pi-extension.mjs",
       "src/engines/discussions/dsh-text-policy.mjs",

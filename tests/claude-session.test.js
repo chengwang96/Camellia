@@ -20,6 +20,16 @@ function fixture(t, opts = {}) {
   t.after(() => session.kill());
   return { session, proc, writes, events, results, timers, spawns };
 }
+test('Claude selected DeepSeek web tools suppress native web search and fetch only for that session', t => {
+  const config = { command: 'node', args: ['goal-mcp-stdio.js'] };
+  const selected = fixture(t, { goalBridge: { config, webTools: true } });
+  const args = selected.spawns[0].args;
+  assert.equal(args[args.indexOf('--disallowedTools') + 1], 'WebSearch,WebFetch');
+  assert.match(args[args.indexOf('--mcp-config') + 1], /camellia_goals/);
+  const native = fixture(t, { goalBridge: { config, webTools: false } });
+  assert.equal(native.spawns[0].args.includes('--disallowedTools'), false);
+});
+
 test('Claude reports native background task progress and its actual terminal state', t => {
   const f = fixture(t);
   for (const row of [

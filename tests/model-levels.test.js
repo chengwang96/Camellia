@@ -6,9 +6,9 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { levelsFor, thinkingFor, normalizeThinking, labelFor } = require('../src/shared/model-levels');
 
-test('models without reasoning metadata use the three-level fallback regardless of their name', () => {
+test('models without reasoning metadata leave controls to the model default', () => {
   for (const model of ['openai/gpt-6-astra', 'GPT-5.5-Codex', 'gpt-5.6-luna', 'glm-5.3', 'deepseek-v4.1-flash', 'kimi-k3', '']) {
-    assert.deepEqual(levelsFor(model), ['low', 'medium', 'high']);
+    assert.deepEqual(levelsFor(model), []);
   }
 });
 
@@ -54,11 +54,11 @@ test('pooled reasoning metadata intersects active reported routes, leaving unkno
   const reported = { enabled: true, modelThinking: { 'glm-5.3': { values: ['high', 'max'], default: 'max' } } };
   assert.deepEqual(levelsFor('glm-5.3:cloud', reported), ['high', 'max']);
   reported.enabled = false;
-  assert.deepEqual(levelsFor('glm-5.3', reported), ['low', 'medium', 'high']);
+  assert.deepEqual(levelsFor('glm-5.3', reported), []);
   catalog.providers.push(route({ values: [] }));
   assert.deepEqual(levelsFor('glm-5.3', catalog), []);
   catalog.enabled = false;
-  assert.deepEqual(levelsFor('glm-5.3', catalog), ['low', 'medium', 'high']);
+  assert.deepEqual(levelsFor('glm-5.3', catalog), []);
 });
 
 test('quick-switch settings use fetched levels, keep subscription efforts and reject stale selections', () => {

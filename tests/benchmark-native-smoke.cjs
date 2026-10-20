@@ -29,6 +29,7 @@ async function main() {
   const contexts = new Map(), arrived = new Set(), allStarted = Promise.withResolvers(), stopAll = new AbortController();
   const diagnostics = [];
   const server = http.createServer(async (req, res) => {
+    if (require('./model-metadata-fixture.cjs')(req, res)) return;
     try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString() || '{}');

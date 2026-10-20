@@ -220,6 +220,7 @@ async function main() {
   const contexts = new Map(), diagnostics = [], failures = [];
   let router;
   const server = http.createServer(async (req, res) => {
+    if (require('./model-metadata-fixture.cjs')(req, res)) return;
     try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString());

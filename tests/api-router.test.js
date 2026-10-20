@@ -54,7 +54,7 @@ async function fixture(t, respond, makeProviders, options = {}) {
   for (let attempt = 0; ; attempt++) {
     writeConfig(file, normalizeConfig({ port:await port(), providers:makeProviders(url) }));
     router = startApiRouter({ configPath:file, timeoutMs:options.timeoutMs || 2000, onContextEvidence: options.onContextEvidence,
-      quotaCheck: options.quotaCheck, log: options.log });
+      quotaCheck: options.quotaCheck, modelDiscovery: options.modelDiscovery || { enabled: false }, log: options.log });
     try { await router.ready; break; }
     catch (error) { // Another parallel test file may claim a probed port first.
       if (attempt >= 2 || !/EADDRINUSE/.test(error.message)) throw error;
@@ -69,6 +69,32 @@ async function fixture(t, respond, makeProviders, options = {}) {
   const post=(body, endpoint='/v1/chat/completions', opts={}) => fetch(router.url+endpoint,{ method:'POST', headers:{ 'content-type':'application/json', authorization:'Bearer client-placeholder', 'x-api-key':'client-private', ...opts.headers }, body:JSON.stringify({ model:'kimi-k3', messages:[{role:'user',content:'hello'}], ...body }), signal:opts.signal });
   return {router,requests,file,post,url};
 }
+
+test('startup and saved routes automatically discover, publish and persist thinking metadata without inference', async t => {
+  let calls = 0;
+  const thinking = { values: [false, 'low', 'high', 'max'], default: 'high' };
+  const harness = await fixture(t, () => assert.fail('metadata discovery issued an inference request'),
+    url => [{ ...provider('auto-thinking', url), type: 'ollama' }], { modelDiscovery: { fetchImpl: async (url, options) => {
+      calls++;
+      assert.ok(url.endsWith('/api/show'));
+      return { ok: true, json: async () => ({ thinking }) };
+    } } });
+  await harness.router.refreshModels();
+  assert.deepEqual(harness.router.getState().modelThinking['kimi-k3'], thinking);
+  assert.deepEqual(loadConfig(harness.file).providers[0].models[0].thinking, thinking);
+  assert.equal(calls, 1);
+  const draft = harness.router.getState();
+  delete draft.providers[0].models[0].thinking;
+  draft.providers[0].name = 'Edited while discovery finished';
+  harness.router.updateConfig(draft);
+  assert.deepEqual(harness.router.getState().modelThinking['kimi-k3'], thinking);
+  draft.providers[0].models.push({ id: 'new-model', upstream: 'new-model:cloud' });
+  harness.router.updateConfig(draft);
+  await harness.router.refreshModels();
+  assert.deepEqual(harness.router.getState().modelThinking['new-model'], thinking);
+  assert.equal(calls, 3);
+  assert.equal(harness.requests.length, 0);
+});
 
 test('router reports context evidence on its actual route without letting observers break requests', async t => {
   const evidence = [];

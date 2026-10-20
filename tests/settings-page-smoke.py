@@ -18,7 +18,8 @@ with sync_playwright() as playwright:
           window.savedPreferences = patch; return {ok:true};
         };
         if (name === 'apiRouterGetState') return async () => {
-          const state = {...empty, enabled:true, models:['model-a','model-b']};
+          const state = {...empty, enabled:true, models:['model-a','model-b'],
+            modelThinking: {'model-b': {values:['low','high'],default:'high'}}};
           return window.deferRouter ? new Promise(resolve => window.pendingRouters.push(() => resolve(state))) : state;
         };
         if (name === 'workbenchSettings') return async () => ({ ...empty, version: '0.3.0', dataPath: '/test-profile/camellia', language: 'en', theme: 'system', hiddenSubscriptionModels: window.hiddenModels });
@@ -63,12 +64,12 @@ with sync_playwright() as playwright:
     expect(page.locator('#subscriptionModels .subscription-model-group')).to_have_count(3)
     expect(page.locator('#subscriptionModels .subscription-model-row')).to_have_count(5)
     expect(page.locator('#subscriptionModels .subscription-model-row span[title="gpt-other"]')).to_have_text('GPT Other')
-    page.locator('#quickSwitch-codex').select_option('gpt-b')
+    page.locator('#quickSwitch-codex').select_option('subscription:gpt-b')
     page.wait_for_function("savedPreferences.quickSwitchModels?.codex === 'gpt-b'")
     page.locator('#subscriptionModels .subscription-model-row', has_text='GPT B').locator('input').uncheck()
     page.wait_for_function("hiddenModels.codex?.includes('gpt-b')")
-    expect(page.locator('#quickSwitch-codex')).to_have_value('gpt-b')
-    expect(page.locator('#quickSwitch-codex option[value="gpt-b"]')).to_be_disabled()
+    expect(page.locator('#quickSwitch-codex')).to_have_value('subscription:gpt-b')
+    expect(page.locator('#quickSwitch-codex option[value="subscription:gpt-b"]')).to_be_disabled()
     page.locator('#subscriptionModels .subscription-model-row', has_text='Kimi A').locator('input').uncheck()
     page.wait_for_function("hiddenModels.kimi?.includes('kimi-a')")
     page.locator('#subscriptionModels .subscription-model-row', has_text='Google A').locator('input').uncheck()

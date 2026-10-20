@@ -14,6 +14,7 @@ async function run(){
   const marker=path.join(root,'marker.txt'); fs.writeFileSync(marker,'router-tool-history-7391');
   const requests=[];
   const backend=http.createServer(async(req,res)=>{
+    if (require('./model-metadata-fixture.cjs')(req, res)) return;
     const parts=[]; for await(const c of req) parts.push(c);
     const body=JSON.parse(Buffer.concat(parts).toString()); requests.push({body,key:req.headers.authorization,url:req.url});
     if(req.headers.authorization==='Bearer exhausted') {res.writeHead(402,{'content-type':'application/json'});res.end('{"error":"quota exhausted"}');return;}

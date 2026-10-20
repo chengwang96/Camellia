@@ -366,6 +366,7 @@ async function chooseDownloadConnection(engine) {
 let runtimeUpdatesService;
 let appUpdatesService;
 const runtimeReinstallPreviews = new Map();
+const runtimeUninstallPreviews = new Map();
 function assertRuntimeReinstallAllowed(engine) {
   assertRuntimeAvailable(engine);
   if (appUpdatesService?.state().installing) throw new Error('Wait for the Camellia update to finish before updating a runtime');
@@ -698,6 +699,7 @@ async function startOllamaProxyHandle() {
     const cfg = readOllamaProxyConfig();
     if (!routerConfig.hasRoutes(cfg)) { syncOllamaBaseUrl(false); return; }
     ollamaProxyHandle = startApiRouter({ configPath: ollamaProxyConfigPath(), log: msg => log(`[api-router] ${msg}`), onState: broadcastApiRouter,
+      modelDiscovery: { fetchImpl: providerAccountConnection().fetch },
       onContextEvidence: evidence => capacity().observe(evidence), quotaCheck: quotaCheckOptions() });
     await ollamaProxyHandle.ready;
     syncOllamaBaseUrl(true);
@@ -1206,6 +1208,7 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
     antigravity: () => antigravity.handlers['account-state'](),
   }),
   createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: detectNode() }),
+  webTools: require('../api/web-tools').createWebTools({ getConfig: readOllamaProxyConfig }),
   drivers: {
     claude: { sessions: claudeSessions, history: claudeHistory, settings: claudeSettings, saveSettings: saveClaudeSettings, ensure: opts => ensureClaudeSession({ ...claudeSettings(), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
     kimi: { sessions: kimiSessions, history: kimiHistory, settings: kimiSettings, saveSettings: saveKimiSettings, subscriptionAccounts: () => kimiAccount.state(), ensure: opts => ensureKimiSession({ ...kimiSettings(opts.sessionId), ...opts.settings }, opts), nativeCompaction: true, nativeAutoCompaction: true },
@@ -1735,6 +1738,23 @@ if (!gotSingleInstanceLock) {
       const token = require('node:crypto').randomUUID();
       runtimeReinstallPreviews.set(engine, { token, plan, expiresAt: Date.now() + 5 * 60 * 1000 });
       return { ok: true, engine, token, name: ENGINES[engine].name, file: plan.file, destination: plan.destination };
+    },
+    'runtime-uninstall-preview': ({ engine, mode }) => {
+      assertRuntimeReinstallAllowed(engine);
+      const plan = runtimes().uninstallPlan(engine, mode);
+      const token = require('node:crypto').randomUUID();
+      runtimeUninstallPreviews.set(engine, { token, plan, expiresAt: Date.now() + 5 * 60 * 1000 });
+      return { ok: true, engine, mode: plan.mode, token, name: ENGINES[engine].name,
+        file: plan.file, targets: plan.targets || plan.removal.files || [path.join(plan.removal.modules, plan.removal.package)] };
+    },
+    'runtime-uninstall': async ({ engine, token }) => {
+      assertRuntimeReinstallAllowed(engine);
+      const preview = runtimeUninstallPreviews.get(engine);
+      if (!preview || !token || token !== preview.token || Date.now() > preview.expiresAt) {
+        throw new Error('Review the installation before uninstalling this engine');
+      }
+      runtimeUninstallPreviews.delete(engine);
+      return runtimeUpdates().uninstall(engine, preview.plan);
     },
     'runtime-reinstall': async ({ engine, token }) => {
       assertRuntimeReinstallAllowed(engine);

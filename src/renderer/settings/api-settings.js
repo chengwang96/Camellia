@@ -98,6 +98,7 @@ function flushSave(explicit = true) {
 async function saveProviders(explicit) {
   if (saving || !isDirty()) return;
   saving = true;
+  renderWebToolsSettings();
   try {
     let warning = null;
     // Keep saving until the revision stops moving, so an edit typed during the
@@ -122,7 +123,7 @@ async function saveProviders(explicit) {
     else if (draftComplete()) status("Saved. All engines share these connections.");
     else if (explicit) status("Complete the API URL, key or model fields to finish saving.", true);
   } catch (e) { lastSaveError = e.message; status(e.message, true); }
-  finally { saving = false; }
+  finally { saving = false; renderWebToolsSettings(); }
 }
 // The router stores keys masked; mirror that back into the open editor so a
 // secret that has been saved stops sitting in a password field.
@@ -1089,6 +1090,34 @@ function renderRoutingSettings() {
     $(field).disabled = !config;
   }
 }
+function renderWebToolsSettings() {
+  const t = window.CamelliaI18n.t, select = $('webToolsProvider');
+  const providers = window.CamelliaWebTools.availableProviders(live);
+  const settings = config?.webTools || { provider: 'native' };
+  select.replaceChildren(new Option(t('Engine default'), 'native'));
+  for (const provider of providers) select.add(new Option(provider.name === 'DeepSeek' ? 'DeepSeek' : 'DeepSeek · ' + provider.name, 'deepseek:' + provider.id));
+  const unavailable = settings.provider === 'deepseek' && !providers.some(provider => provider.id === settings.providerId);
+  if (unavailable) {
+    const option = new Option(t('DeepSeek (unavailable)'), 'deepseek:' + settings.providerId);
+    option.disabled = true; select.add(option);
+  }
+  select.value = settings.provider === 'deepseek' ? 'deepseek:' + settings.providerId : 'native';
+  select.disabled = !config || saving;
+  $('webToolsPrice').hidden = settings.provider !== 'deepseek';
+  $('webToolsAddApi').hidden = providers.length > 0 && !unavailable;
+  $('webToolsHint').textContent = t(unavailable ? 'The selected official API key is unavailable. Enable it in API Keys or choose another source.'
+    : settings.provider === 'deepseek' ? 'Search and read pages with DeepSeek from the next message. Google subscription sessions are not supported.'
+      : providers.length ? 'Use the engine default, or choose a configured DeepSeek official API.' : 'Add an enabled DeepSeek official API key to use its web tools.');
+}
+$('webToolsProvider').addEventListener('change', () => {
+  if (!config || saving) return;
+  const value = $('webToolsProvider').value;
+  config.webTools = value === 'native' ? { provider: 'native' } : { provider: 'deepseek', providerId: value.slice('deepseek:'.length) };
+  edited(true);
+});
+$('webToolsAddApi').addEventListener('click', () => {
+  setView('providers'); $('preset').value = 'deepseek'; renderPresetAccount(); $('addDialog').showModal();
+});
 for (const field of ['multiKeyConcurrency', 'multiKeyFailover']) {
   $(field).addEventListener('change', () => {
     config.routing ||= {};
@@ -1099,6 +1128,7 @@ for (const field of ['multiKeyConcurrency', 'multiKeyFailover']) {
 }
 async function renderModelSettings(preferences) {
   renderRoutingSettings();
+  renderWebToolsSettings();
   const seq = ++modelSettingsSeq;
   const [loaded, ...accounts] = await Promise.all([
     preferences || api.workbenchSettings(),
@@ -1112,6 +1142,7 @@ async function renderModelSettings(preferences) {
   await renderQuickSwitchModels(modelPreferences, subscriptionModelAccounts);
 }
 window.addEventListener('camellia:language', () => {
+  renderWebToolsSettings();
   if (!modelPreferences) return;
   renderSubscriptionModels();
   void renderQuickSwitchModels(modelPreferences, subscriptionModelAccounts);
@@ -1377,6 +1408,7 @@ async function refresh(initial = false) {
     if (initial || !isDirty()) {
       config = structuredClone(live); $('enabled').checked = config.enabled; $('port').value = config.port;
       renderRoutingSettings();
+      renderWebToolsSettings();
       rememberSavedModels();
       const selectedPreset = $('preset').value;
       $('preset').innerHTML = presets.map(p => `<option value="${p.type}">${esc(p.name)}</option>`).join('');
@@ -1605,9 +1637,21 @@ $('confirmDeleteAllArchived').onclick = async () => {
 };
 api.onApiRouterState(state => {
   if (!live) return; live = { ...live, ...state }; showLive(); updateKeyStats();
+  // Discovery can complete while this settings window has a draft open.
+  // Merge capability metadata alone so a later autosave keeps the new levels.
+  for (const provider of config?.providers || []) {
+    const reported = state.providers?.find(p => p.id === provider.id && p.baseUrl === provider.baseUrl
+      && p.anthropicBaseUrl === provider.anthropicBaseUrl && p.protocol === provider.protocol);
+    for (const model of provider.models || []) {
+      const metadata = reported?.models.find(m => m.id === model.id && m.upstream === model.upstream && m.protocol === model.protocol);
+      if (metadata?.thinking) model.thinking = structuredClone(metadata.thinking);
+    }
+  }
   if (!saving && !isDirty() && config && state.routing) {
     config.routing = structuredClone(state.routing); renderRoutingSettings();
   }
+  if (!saving && !isDirty() && config && state.webTools) config.webTools = structuredClone(state.webTools);
+  renderWebToolsSettings();
   renderRoutes(); renderModelChips();
   if (!saving && !isDirty() && syncMaskedKeys() && current()?.type === 'qclaw') renderKeys();
   if (view === 'usage') { fillUsageFilters(); renderUsage(); }

@@ -41,6 +41,7 @@ async function run() {
   const requests = [], events = [], logs = [];
   let slowRequest;
   const server = http.createServer(async (req, res) => {
+    if (require('./model-metadata-fixture.cjs')(req, res)) return;
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks));
     requests.push({ body, key: req.headers.authorization });

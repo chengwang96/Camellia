@@ -47,7 +47,8 @@ class CodexSession extends StreamingSession {
       ...(this.spec.discussionInstructions ? { baseInstructions: this.spec.discussionInstructions } : {}),
       ...(this.spec.developerInstructions ? { developerInstructions: this.spec.developerInstructions } : {}),
       ...(this.settings.connection === 'subscription' ? { serviceTier: this.settings.serviceTier || null } : {}),
-      ...(this.opts.goalBridge ? { config: { 'mcp_servers.camellia_goals': this.opts.goalBridge.config } } : {}),
+      ...(this.opts.goalBridge ? { config: { 'mcp_servers.camellia_goals': this.opts.goalBridge.config,
+        ...(this.opts.goalBridge.webTools ? { web_search: 'disabled' } : {}) } } : {}),
       modelProvider: this.settings.connection === 'api' ? 'camellia' : 'openai',
       ...PERMISSIONS[permissionModeOf(this.settings)],
       ...((this.settings.permissionMode || 'default') === 'default' ? this.spec.permissions : {}) };

@@ -78,7 +78,8 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
           if (settings?.connection === 'subscription') return;
           if (!config.hasRoutes(routes())) throw new Error('Configure API routes in the server data directory before sending');
           if (!router) {
-            router = require('../api/api-router').startApiRouter({ configPath: routeFile, quotaCheck: { enabled: false }, onContextEvidence: evidence => capacity.observe(evidence) });
+            router = require('../api/api-router').startApiRouter({ configPath: routeFile, quotaCheck: { enabled: false },
+              onState: () => remote?.publish(), onContextEvidence: evidence => capacity.observe(evidence) });
           }
           try { await router.ready; }
           catch (error) { const failed = router; router = null; await failed?.stop(); throw error; }
@@ -87,6 +88,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
       },
       conversationModels: (engine, settings) => engines ? engines.models(engine, settings) : config.publicState(routes()).models.map(id => ({ id, name: id, thinking: [] })),
       createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: process.execPath }),
+      webTools: require('../api/web-tools').createWebTools({ getConfig: routes }),
       onEvent: event => remote?.publish(event),
       onStatus: status => remote?.publish(status),
     });
@@ -277,6 +279,13 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
         return closePromise;
       },
     };
+    // Populate model controls before the first conversation is sent.
+    if (!driverFactory && config.hasRoutes(routes())) {
+      router = require('../api/api-router').startApiRouter({ configPath: routeFile, quotaCheck: { enabled: false },
+        onState: () => remote?.publish(), onContextEvidence: evidence => capacity.observe(evidence) });
+      const started = router;
+      started.ready.catch(() => { if (router === started) router = null; return started.stop(); }).catch(() => {});
+    }
     return host;
   } catch (error) {
     manager?.pauseGoals(); manager?.closeGoalTools(); release(); throw error;

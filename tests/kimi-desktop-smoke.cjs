@@ -41,6 +41,7 @@ async function main() {
   const requests = [];
   const titles = [];
   const fixture = http.createServer(async (req, res) => {
+    if (require('./model-metadata-fixture.cjs')(req, res)) return;
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     let body;
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }

@@ -30,6 +30,7 @@ async function main() {
   const requests = [], logs = [], instances = [], route = {}, held = new Map();
   let holdConcurrent = true;
   const server = http.createServer(async (req, res) => {
+    if (require('./model-metadata-fixture.cjs')(req, res)) return;
     try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); requests.push(body);

@@ -36,7 +36,10 @@ class ClaudeSession {
     // In the app, Allow all is the user's chosen execution mode. EnterPlanMode
     // silently replaces it with read-only planning inside a persistent CLI.
     // Keep this UI choice stable; users can still select Plan only themselves.
-    if (this.opts.lockPermissionMode && nativeMode('claude', this.settings.permissionMode) === 'bypassPermissions') args.push('--disallowedTools', 'EnterPlanMode');
+    const disallowedTools = [];
+    if (this.opts.lockPermissionMode && nativeMode('claude', this.settings.permissionMode) === 'bypassPermissions') disallowedTools.push('EnterPlanMode');
+    if (this.opts.goalBridge?.webTools) disallowedTools.push('WebSearch', 'WebFetch');
+    if (disallowedTools.length) args.push('--disallowedTools', disallowedTools.join(','));
     this.log(`claude: persistent session gen=${this.gen} resume=${this.opts.sessionId || 'no'} ${args.join(' ')}`);
     if (this.opts.goalBridge) args.push('--mcp-config', JSON.stringify({ mcpServers: { camellia_goals: this.opts.goalBridge.config } }));
     const proc = this.spawn(exe, args, { cwd: spec.cwd, env: spec.env, windowsHide: true, shell: exe === 'claude' });

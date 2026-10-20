@@ -90,7 +90,7 @@ test('DSH launch profiles declare reported reasoning capabilities instead of gue
     const home = path.join(fixtureState.home, 'dsh-profile');
     const spec = dshAcpSpec({ runtime: { file: '/runtime/dsh', version: '0.1.0' }, home, model: 'glm-5.3', route: fixtureState.route, env: {}, thinking });
     const model = parse(fs.readFileSync(path.join(home, 'settings.yaml'), 'utf8'), 'yaml')['llm-pi-ai'].providers['api-pool'].models[0];
-    const expected = !thinking ? { low: 'low', medium: 'medium', high: 'high' } : thinking.values.length === 1 ? false
+    const expected = !thinking || thinking.values.length === 1 ? false
       : thinking.values.includes(true) ? { off: 'none', high: 'high' } : { low: 'low', high: 'high', max: 'max' };
     assert.deepEqual(model.reasoningEfforts, expected);
     assert.equal(spec.applyThinking, expected !== false);

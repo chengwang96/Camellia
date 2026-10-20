@@ -370,6 +370,19 @@ test('Codex rejected steering does not add a phantom user message', async () => 
   assert.equal(session.running, true);
 });
 
+test('Codex selected DeepSeek search disables native search for new and resumed threads', async () => {
+  for (const sourceId of [undefined, 'saved-thread']) {
+    const config = { command: process.execPath, args: ['goal-mcp-stdio.js'] };
+    const session = new CodexSession({ settings: { cwd: os.tmpdir(), model: 'fixture', connection: 'api' },
+      opts: { sessionId: sourceId, goalBridge: { config, webTools: true } }, spec: {}, onSessionId() {} });
+    const requests = [];
+    session.client = { request: async (method, params) => { requests.push({ method, params }); return { thread: { id: 'thread-fixture' } }; } };
+    await session.open();
+    assert.equal(requests[0].params.config.web_search, 'disabled');
+    assert.deepEqual(requests[0].params.config['mcp_servers.camellia_goals'], config);
+  }
+});
+
 test('Codex goal MCP registration is scoped to both new and resumed threads', async () => {
   for (const sourceId of [undefined, 'saved-thread']) {
     const config = { command: process.execPath, args: ['goal-mcp-stdio.js'], env: { CAMELLIA_GOAL_TOKEN: 'private' } };

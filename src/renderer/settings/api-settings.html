@@ -101,6 +101,11 @@
       </div>
     </section>
     <section id="modelsPage" class="page" hidden>
+      <section id="webToolsSection" class="section" aria-labelledby="webToolsTitle">
+        <div class="setting-row"><div><h2 id="webToolsTitle" data-i18n>Web search and fetch</h2><p id="webToolsHint" class="hint" aria-live="polite"></p></div><select id="webToolsProvider" disabled aria-label="Web search and fetch" aria-describedby="webToolsHint" data-i18n-attrs="aria-label"><option value="native" data-i18n>Engine default</option></select></div>
+        <p class="hint" id="webToolsPrice" hidden data-i18n>Search and fetch each cost ¥5.00 per 1,000 successful requests. Model tokens are billed separately.</p>
+        <button id="webToolsAddApi" type="button" hidden data-i18n>Add DeepSeek API key</button>
+      </section>
       <section class="section" aria-labelledby="multiKeyRoutingTitle">
         <h2 id="multiKeyRoutingTitle" data-i18n>API key routing</h2>
         <p class="hint" data-i18n>Applies to all API models. Changes save automatically and apply to new requests.</p>
@@ -233,6 +238,16 @@
   <p id="codexResetMessage" class="hint" role="status" aria-live="polite"></p>
   <div class="codex-reset-actions"><button type="button" id="cancelCodexReset" autofocus data-i18n>Cancel</button><button type="button" id="retryCodexReset" hidden data-i18n>Retry query</button><button type="button" id="confirmCodexReset" class="primary" disabled data-i18n>Confirm and use one credit</button></div>
 </dialog>
+<dialog id="runtimeUninstallDialog" class="runtime-reinstall-dialog" aria-labelledby="runtimeUninstallTitle" aria-describedby="runtimeUninstallDescription">
+  <form method="dialog" class="dialog-head"><h2 id="runtimeUninstallTitle" data-i18n>Uninstall engine</h2><button value="cancel" aria-label="Close" data-i18n-attrs="aria-label">×</button></form>
+  <p id="runtimeUninstallDescription" class="hint" data-i18n>Remove this installation? Your conversations, accounts and settings are kept. You can download the engine again later.</p>
+  <dl class="runtime-reinstall-paths">
+    <div><dt data-i18n>Current installation</dt><dd><code id="runtimeUninstallOriginal"></code></dd></div>
+    <div><dt data-i18n>Files to remove</dt><dd><code id="runtimeUninstallTargets"></code></dd></div>
+  </dl>
+  <p id="runtimeUninstallPythonHint" class="hint" data-i18n>Antigravity API and Google subscription installations are removed separately. The shared Python interpreter is kept.</p>
+  <form method="dialog" class="runtime-reinstall-actions"><button value="cancel" autofocus data-i18n>Cancel</button><button id="confirmRuntimeUninstall" value="uninstall" class="danger" data-i18n>Uninstall</button></form>
+</dialog>
 <dialog id="runtimeReinstallDialog" class="runtime-reinstall-dialog" aria-labelledby="runtimeReinstallTitle" aria-describedby="runtimeReinstallDescription">
   <form method="dialog" class="dialog-head"><h2 id="runtimeReinstallTitle" data-i18n>Reinstall with Camellia</h2><button value="cancel" aria-label="Close" data-i18n-attrs="aria-label">×</button></form>
   <p id="runtimeReinstallDescription" class="hint" data-i18n>Camellia will remove the current CLI, reinstall it and manage future updates.</p>
@@ -261,6 +276,7 @@
 <script src="../../shared/model-names.js"></script>
 <script src="../../shared/model-levels.js"></script>
 <script src="../../shared/subscription-models.js"></script>
+<script src="../../shared/web-tools.js"></script>
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>

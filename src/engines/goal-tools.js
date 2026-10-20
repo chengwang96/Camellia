@@ -11,7 +11,7 @@ const tools = [
 ];
 
 function validateTool(name, args) {
-  const tool = [...tools, ...require('./task-tools').tools, ...require('./conversation-tools').tools, ...require('./find-tools').tools].find(entry => entry.name === name);
+  const tool = [...tools, ...require('./task-tools').tools, ...require('./conversation-tools').tools, ...require('./find-tools').tools, ...require('./web-tools').tools].find(entry => entry.name === name);
   if (!tool) throw new Error('Unknown Camellia goal tool');
   if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Tool arguments must be an object');
   for (const key of Object.keys(args)) if (!Object.hasOwn(tool.inputSchema.properties, key)) throw new Error('Unexpected argument: ' + key);
@@ -22,7 +22,7 @@ function validateTool(name, args) {
       if (!Number.isSafeInteger(value) || value < rule.minimum || value > rule.maximum) throw new Error('Invalid argument: ' + key);
     } else if (rule.type === 'boolean') {
       if (typeof value !== 'boolean') throw new Error('Invalid argument: ' + key);
-    } else if (typeof value !== 'string' || rule.minLength && !value.trim() || rule.maxLength && value.length > rule.maxLength || rule.enum && !rule.enum.includes(value)) throw new Error('Invalid argument: ' + key);
+    } else if (typeof value !== 'string' || rule.minLength && !value.trim() || rule.maxLength && [...value].length > rule.maxLength || rule.enum && !rule.enum.includes(value)) throw new Error('Invalid argument: ' + key);
   }
   if (name === 'camellia_update_goal') {
     const revision = Object.hasOwn(args, 'objective') || Object.hasOwn(args, 'criterion');

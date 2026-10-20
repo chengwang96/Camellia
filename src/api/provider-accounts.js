@@ -21,7 +21,7 @@ function requireData(result) {
   if (!result.balances.length && !result.windows.length) throw new Error("The API returned no recognized balance or quota. The previous result was retained.");
   return result;
 }
-async function requestJson(url, key, { fetchImpl = fetch, method = 'GET', body, headers = {}, timeoutMs = 20000, signal } = {}) {
+async function requestJson(url, key, { fetchImpl = fetch, method = 'GET', body, headers = {}, timeoutMs = 20000, signal, maxResponseBytes = 0 } = {}) {
   let response;
   try {
     response = await fetchImpl(url, {
@@ -33,7 +33,25 @@ async function requestJson(url, key, { fetchImpl = fetch, method = 'GET', body, 
     const reason = { 401: "Key is invalid or expired", 402: "Insufficient account balance", 403: "This key lacks access or the required subscription", 404: "The provider does not offer this endpoint", 429: "Too many queries. Try again later." }[response.status];
     throw Object.assign(new Error(`HTTP ${response.status} · ${reason || "The provider cannot complete this query right now"}`), { status: response.status });
   }
-  try { return await response.json(); } catch { throw new Error("The provider returned an unreadable response"); }
+  try {
+    if (!maxResponseBytes || !response.body?.getReader) return await response.json();
+    const reader = response.body.getReader(), chunks = [];
+    let bytes = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxResponseBytes) {
+        await reader.cancel();
+        throw Object.assign(new Error('The provider response is too large. Try a narrower query or another page.'), { code: 'RESPONSE_TOO_LARGE' });
+      }
+      chunks.push(Buffer.from(value));
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch (error) {
+    if (error.code === 'RESPONSE_TOO_LARGE') throw error;
+    throw new Error("The provider returned an unreadable response");
+  }
 }
 
 // Each adapter owns its endpoint and schema. A relay/custom host does not
@@ -218,13 +236,24 @@ function documentedThinking(provider, model) {
   const mimoHosts = ['api.xiaomimimo.com', 'token-plan-cn.xiaomimimo.com', 'token-plan-sgp.xiaomimimo.com', 'token-plan-ams.xiaomimimo.com'];
   const mimoModels = ['mimo-v2.6-flash', 'mimo-v2.6-pro', 'mimo-v2.6-pro-ultraspeed', 'mimo-v2.5-pro', 'mimo-v2.5'];
   if (!model.thinking && mimoHosts.includes(host) && mimoModels.includes(model.upstream)) model.thinking = { values: [false, true], default: true };
+  // https://api-docs.deepseek.com/guides/thinking_mode/ (2026-10-20).
+  // Only the official host and documented IDs inherit this fallback.
+  if (!model.thinking && host === 'api.deepseek.com' && ['deepseek-flash', 'deepseek-v4-pro'].includes(model.upstream)) {
+    model.thinking = { values: ['none', 'low', 'high', 'max'], default: 'high' };
+  }
   if (host === 'api.deepseek.com' && model.thinking?.values.some(value => typeof value === 'string') && !model.thinking.values.includes('none')) {
     model.thinking.values.unshift('none');
   }
 }
 async function fetchModels(provider, key, options = {}) {
   const base = endpoint(provider.baseUrl);
-  const data = await requestJson(base + '/models', key, options);
+  const ollama = provider.type === 'ollama' || new URL(base).hostname === 'ollama.com';
+  let data;
+  if (options.configuredOnly && ollama) data = { data: [] };
+  else {
+    try { data = await requestJson(base + '/models', key, options); }
+    catch (error) { if (!options.configuredOnly) throw error; data = { data: [] }; }
+  }
   if (!Array.isArray(data.data) && !Array.isArray(data.models)) throw new Error("No model catalog was returned. Add models manually.");
   const unique = new Map();
   for (const entry of data.data || data.models) {
@@ -237,9 +266,11 @@ async function fetchModels(provider, key, options = {}) {
       if (!existing.maxContext && model.maxContext) existing.maxContext = model.maxContext;
     }
   }
-  const models = [...unique.values()];
+  // Background discovery updates configured routes, never adds catalog entries
+  // or depends on a working list endpoint for manually configured models.
+  const models = options.configuredOnly ? (provider.models || []).map(model =>
+    unique.get(model.upstream) || { id: model.id, upstream: model.upstream, protocol: model.protocol }) : [...unique.values()];
   for (const model of models) documentedThinking(provider, model);
-  const ollama = provider.type === 'ollama' || new URL(base).hostname === 'ollama.com';
   if (provider.type !== 'qclaw') {
     const configured = new Set((provider.models || []).map(model => model.upstream));
     const queue = models.filter(model => ollama || !model.thinking).sort((first, second) => Number(configured.has(second.upstream)) - Number(configured.has(first.upstream)));

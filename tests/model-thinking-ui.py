@@ -62,13 +62,17 @@ with sync_playwright() as playwright:
         page.wait_for_function("settings.thinkingBudget==='none'")
 
         page.evaluate("persistModel('unknown-model')")
-        page.wait_for_function("settings.model==='unknown-model' && LEVELS.map(level=>level.id).join(',')===',low,medium,high'")
-        reasoning_menu(['Default', 'Low', 'Medium', 'High'])
+        page.wait_for_function("settings.model==='unknown-model' && LEVELS.length===1")
         page.locator('#modelPill').click()
+        expect(page.locator('.pop-row').filter(has_text='Reasoning level')).to_have_count(0)
+        page.locator('#modelPill').click()
+        # Background discovery updates the open composer without a reload.
+        page.evaluate("router.modelThinking['unknown-model']={values:[false,'low','high','max'],default:'high'}; refreshRouter(router)")
+        reasoning_menu(['Default', 'Off', 'Low', 'High', 'Max']).get_by_text('Max', exact=True).click()
         page.evaluate("router.modelThinking['unknown-model']={values:[]}; refreshRouter(router)")
         page.locator('#modelPill').click()
         expect(page.locator('.pop-row').filter(has_text='Reasoning level')).to_have_count(0)
         assert errors == [], errors
         page.close()
     browser.close()
-print('PASS thinking menus: all engines, reported levels, defaults, native config, hot updates, booleans and fallback')
+print('PASS thinking menus: all engines, reported levels, defaults, native config, background discovery, booleans and unknown metadata')

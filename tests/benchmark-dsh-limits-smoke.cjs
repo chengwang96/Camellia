@@ -20,6 +20,7 @@ async function main() {
   let router, forceLimit = false;
   const caps = [];
   const server = http.createServer(async (req, res) => {
+    if (require('./model-metadata-fixture.cjs')(req, res)) return;
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks));
     const agentRequest = Boolean(body.tools?.length);

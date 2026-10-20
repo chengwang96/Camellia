@@ -36,13 +36,14 @@ function compareVersions(a, b) {
 function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettings = () => undefined, registries = {}, beforeInstall = async () => {}, onChange = () => {}, log = () => {}, cliUpgrade = upgradeAntigravityCli }) {
   const pending = new Map();
   const reinstalling = new Set();
+  const uninstalling = new Set();
   let checked = new Map(), checking = null, checkRevision = 0;
   const installation = row => JSON.stringify([row.id, row.status, row.version, row.file, row.mode, Boolean(row.external)]);
   // Both windows read the same completed check. A result belongs to the exact
   // installation checked, so a path, version or connection change invalidates it.
   const state = (rows = manager.state()) => rows.map(row => {
     const cached = checked.get(row.id);
-    return { ...row, updating: pending.has(row.id), reinstalling: reinstalling.has(row.id),
+    return { ...row, updating: pending.has(row.id), reinstalling: reinstalling.has(row.id), uninstalling: uninstalling.has(row.id),
       updateInfo: cached?.installation === installation(row) ? cached.info : null };
   });
   const registryUrls = {
@@ -107,9 +108,11 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     if (pending.has(engine)) return pending.get(engine).operation === operation ? pending.get(engine).task
       : Promise.reject(new Error('Wait for the runtime update to finish'));
     if (operation === 'reinstall') reinstalling.add(engine);
+    if (operation === 'uninstall') uninstalling.add(engine);
     const task = Promise.resolve().then(action).finally(() => {
       pending.delete(engine);
       reinstalling.delete(engine);
+      uninstalling.delete(engine);
       onChange(state());
     });
     pending.set(engine, { task, operation });
@@ -117,6 +120,24 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     return task;
   }
   const update = engine => schedule(engine, 'update', () => perform(engine));
+  function uninstall(engine, plan) {
+    return schedule(engine, 'uninstall', async () => {
+      const restore = await beforeInstall(engine, 'uninstall');
+      try {
+        await manager.uninstall(engine, plan);
+        checked.delete(engine);
+        return { ok: true, engine, mode: plan.mode };
+      } catch (error) {
+        let available = false;
+        try { available = Boolean(manager.locate(engine, plan.mode)); } catch { /* A partial removal may leave a stale custom path. */ }
+        if (available && typeof restore === 'function') {
+          try { await restore({ updated: false, error }); }
+          catch (restoreError) { throw new AggregateError([error, restoreError], `${error.message}; ${restoreError.message}`); }
+        }
+        throw error;
+      }
+    });
+  }
   function reinstall(engine, expected) {
     return schedule(engine, 'reinstall', async () => {
       const plan = expected || manager.reinstallPlan(engine);
@@ -187,7 +208,7 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     if (engine === 'dsh') patchDsh(dir);
   }
 
-  return { check, update, reinstall, state, isUpdating: engine => pending.has(engine) };
+  return { check, update, reinstall, uninstall, state, isUpdating: engine => pending.has(engine) };
 }
 
 module.exports = { compareVersions, createRuntimeUpdates };

@@ -2,7 +2,8 @@ import net from 'node:net';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { tools } = require('./goal-tools.js');
+const tools = [...require('./goal-tools.js').tools,
+  ...(process.env.CAMELLIA_WEB_TOOLS === 'deepseek' ? require('./web-tools.js').tools : [])];
 
 export default function extension(pi) {
   pi.on('before_provider_request', event => {
@@ -33,7 +34,7 @@ export default function extension(pi) {
         let buffer = '';
         const abort = () => socket.destroy(new Error('Tool call cancelled'));
         socket.setEncoding('utf8');
-        socket.setTimeout(10000, () => socket.destroy(new Error('Camellia tool timed out')));
+        socket.setTimeout(tool.name.startsWith('camellia_web_') ? 65000 : 10000, () => socket.destroy(new Error('Camellia tool timed out')));
         socket.on('error', reject);
         socket.on('connect', () => socket.write(JSON.stringify({ token: process.env.CAMELLIA_GOAL_TOKEN, name: tool.name, arguments: args }) + '\n'));
         socket.on('data', chunk => {

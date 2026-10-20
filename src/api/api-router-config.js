@@ -6,6 +6,7 @@ const { FIELDS, counters, normalizeBreakdown } = require('./api-usage');
 const { discoverQclaw, DEFAULT_BASE_URL } = require('./qclaw-provider');
 const { normalizeThinking, thinkingFor } = require('../shared/model-levels');
 const { canonicalModelId } = require('../shared/model-names');
+const { normalizeSettings: normalizeWebTools } = require('../shared/web-tools');
 const DEFAULT_PORT = 8788;
 // QClaw answers through an agent runtime, so the prompt also carries that
 // runtime's own instructions and skills. Measured overflow lands near 110k
@@ -137,7 +138,8 @@ function normalizeConfig(raw = {}, previous = null, options = {}) {
     if (routing[field] !== undefined && typeof routing[field] !== 'boolean') throw new Error("API routing switches must be true or false");
     routingOptions[field] = routing[field] ?? previous?.routing?.[field] ?? true;
   }
-  const cfg = { version: 2, enabled: raw.enabled !== false, port, routing: routingOptions, providers: [], usage: {},
+  const cfg = { version: 2, enabled: raw.enabled !== false, port, routing: routingOptions,
+    webTools: normalizeWebTools(raw.webTools === undefined ? previous?.webTools : raw.webTools), providers: [], usage: {},
     usageArchive: normalizeUsageArchive(previous?.usageArchive || raw.usageArchive), active: {} };
   // QClaw rewrites its gateway port and token into its own state file on every
   // start, so a stored endpoint goes stale. Resolve the live one once, and only
@@ -191,7 +193,12 @@ function normalizeConfig(raw = {}, previous = null, options = {}) {
       if (contextWindow !== undefined && (!Number.isInteger(contextWindow) || contextWindow < 4096 || contextWindow > 2000000)) throw new Error("Context window must be an integer between 4096 and 2000000");
       const maxContext = Number.isInteger(m.maxContext) && m.maxContext >= 4096 ? m.maxContext : undefined;
       if (contextWindow !== undefined && maxContext && contextWindow > maxContext) throw new Error("Context window exceeds the model's maximum (" + maxContext + ")");
-      const thinking = normalizeThinking(m.thinking);
+      // An older/open settings window may save before it receives background
+      // discovery. Preserve metadata only while the exact route stays intact.
+      const oldProvider = previous?.providers.find(old => old.id === id && old.baseUrl === endpoint(declaredBaseUrl)
+        && old.anthropicBaseUrl === (p.anthropicBaseUrl ? endpoint(p.anthropicBaseUrl) : '') && old.protocol === (p.protocol || 'openai'));
+      const oldModel = oldProvider?.models.find(old => old.id === modelId(m.id) && old.upstream === upstream && old.protocol === protocol);
+      const thinking = normalizeThinking(m.thinking === undefined ? oldModel?.thinking : m.thinking);
       return { id: modelId(m.id), upstream, protocol, ...(contextWindow !== undefined ? { contextWindow } : {}), ...(maxContext !== undefined ? { maxContext } : {}), ...(thinking ? { thinking } : {}) };
     });
     if (new Set(models.map(m => JSON.stringify([m.id, m.upstream, m.protocol]))).size !== models.length) throw new Error("A provider cannot contain duplicate entries for the same model route");
@@ -331,7 +338,7 @@ function publicState(cfg) {
   const providers = cfg.providers.map(p => ({ ...p, models: p.models.map(m => ({ ...m })), keys: p.keys.map(({ key, ...k }) => ({ ...k, maskedKey: maskKey(key) })) }));
   const models = [...new Set(cfg.providers.filter(p => p.enabled && p.keys.some(k => k.enabled)).flatMap(p => p.models.map(m => modelId(m.id))))];
   const modelThinking = Object.fromEntries(models.map(id => [id, thinkingFor(id, cfg)]).filter(([, thinking]) => thinking));
-  return { version: 2, enabled: cfg.enabled, port: cfg.port, routing: { ...cfg.routing }, providers, models, modelThinking, usage: structuredClone(cfg.usage),
+  return { version: 2, enabled: cfg.enabled, port: cfg.port, routing: { ...cfg.routing }, webTools: { ...cfg.webTools }, providers, models, modelThinking, usage: structuredClone(cfg.usage),
     usageArchive: structuredClone(cfg.usageArchive), active: { ...cfg.active } };
 }
 

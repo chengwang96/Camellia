@@ -354,8 +354,10 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
   let runtimeRows = [], runtimeUpdateInfo = {}, runtimeUpdatesBusy = false;
   const runtimeUpdating = new Set();
   const runtimeReinstalling = new Set();
+  const runtimeUninstalling = new Set();
   const isRuntimeUpdating = id => runtimeUpdating.has(id) || runtimeRows.some(row => row.id === id && row.updating);
   const isRuntimeReinstalling = id => runtimeReinstalling.has(id) || runtimeRows.some(row => row.id === id && row.reinstalling);
+  const isRuntimeUninstalling = id => runtimeUninstalling.has(id) || runtimeRows.some(row => row.id === id && row.uninstalling);
   const runtimePathDrafts = new Map();
   let pythonState = {};
   let runtimePathBusy = false;
@@ -369,6 +371,19 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     $('runtimeReinstallDestination').textContent = preview.destination;
     dialog.returnValue = '';
     const confirmed = new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'reinstall'), { once: true }));
+    dialog.showModal();
+    return await confirmed ? { engine: id, token: preview.token } : null;
+  }
+  async function confirmRuntimeUninstall(id, mode) {
+    const preview = await api.runtimeUninstallPreview({ engine: id, mode });
+    if (!preview.ok) throw new Error(preview.error);
+    const dialog = $('runtimeUninstallDialog');
+    $('runtimeUninstallTitle').textContent = t('Uninstall {0}').replace('{0}', () => preview.name);
+    $('runtimeUninstallOriginal').textContent = preview.file;
+    $('runtimeUninstallTargets').textContent = preview.targets.join('\n');
+    $('runtimeUninstallPythonHint').hidden = id !== 'antigravity';
+    dialog.returnValue = '';
+    const confirmed = new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'uninstall'), { once: true }));
     dialog.showModal();
     return await confirmed ? { engine: id, token: preview.token } : null;
   }
@@ -406,6 +421,12 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
       : t('Choose any Python 3 installation; Camellia never edits it or installs packages.');
   }
   function runtimeStatusControls(row, marker = 'data-runtime-status') {
+    if (isRuntimeUninstalling(row.id)) return `<button ${marker} data-uninstall="${row.id}" data-i18n disabled>Uninstalling…</button>`;
+    const controls = runtimeVersionControls(row, marker);
+    return controls + (api.runtimeUninstall && row.status === 'ready' && !isRuntimeUpdating(row.id)
+      ? ` <button data-uninstall="${row.id}" data-i18n ${runtimePathBusy || runtimeReinstallPromptPending ? 'disabled' : ''}>Uninstall</button>` : '');
+  }
+  function runtimeVersionControls(row, marker) {
     const id = row.id;
     if (isRuntimeReinstalling(id)) return `<p class="hint runtime-update"><button ${marker} data-reinstall="${id}" data-i18n disabled>Reinstalling…</button></p>`;
     if (isRuntimeUpdating(id)) return `<p class="hint runtime-update"><button ${marker} data-update="${id}" data-i18n disabled>Updating…</button></p>`;
@@ -584,6 +605,31 @@ window.createEngineSettingsUI = ({ api, status, navigate }) => {
     finally { $('engineContent').inert = false; }
   };
   const runtimeAction = async e => {
+    const uninstallButton = e.target.closest('[data-uninstall]');
+    if (uninstallButton) {
+      const id = uninstallButton.dataset.uninstall;
+      const mode = uninstallButton.closest('[data-runtime-mode]')?.dataset.runtimeMode;
+      if (uninstallButton.disabled || runtimeReinstallPromptPending || isRuntimeUpdating(id) || isRuntimeUninstalling(id)) return;
+      runtimeReinstallPromptPending = true;
+      uninstallButton.disabled = true;
+      let payload;
+      try { payload = await confirmRuntimeUninstall(id, mode); }
+      catch (error) { status(error.message, true); }
+      finally { runtimeReinstallPromptPending = false; uninstallButton.disabled = false; }
+      if (!payload) { document.querySelector(`[data-runtime-mode="${mode}"] [data-uninstall="${id}"]`)?.focus(); return; }
+      runtimeUpdating.add(id); runtimeUninstalling.add(id); renderRuntimes(runtimeRows);
+      status(t('Uninstalling…'));
+      try {
+        const result = await api.runtimeUninstall(payload);
+        if (!result.ok) throw new Error(result.error);
+        delete runtimeUpdateInfo[id];
+        for (const connection of ['api', 'subscription']) runtimePathDrafts.delete(id + ':' + connection);
+        status(t('Engine uninstalled. Your conversations, accounts and settings are kept.'));
+        if (id === 'dsh') { nativeStarted = false; nativeReady = false; await nativePanel(true); }
+      } catch (error) { status(error.message, true); }
+      finally { runtimeUpdating.delete(id); runtimeUninstalling.delete(id); await runtimePage(); }
+      return;
+    }
     const pathButton = e.target.closest('[data-path-action]');
     if (pathButton) {
       if (runtimePathBusy) return;

@@ -27,6 +27,9 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 .setting-note { max-width: 76ch; margin: 6px 0 0; padding: 12px 16px; border-left: 2px solid var(--dsw-alias-border-l2); border-radius: 0 10px 10px 0; background: var(--dsw-alias-bg-soft); color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.6; }
 .primary { background: var(--dsw-static-deepseek-500); color: #fff; border-color: transparent; }
 .primary:hover { background: var(--dsw-static-deepseek-400); }
+#webToolsSection .setting-row { gap: 20px; flex-wrap: wrap; }
+#webToolsSection .setting-row > div { flex: 1 1 260px; }
+#webToolsProvider { max-width: 100%; width: 260px; text-overflow: ellipsis; }
 .danger, .error { color: var(--dsw-alias-state-error-primary); }
 .settings-nav { flex: 0 0 192px; min-height: 0; background: var(--dsw-specific-sidebar-fill); padding: 28px 12px 20px; display: flex; flex-direction: column; border-right: 1px solid var(--dsw-alias-border-l2); }
 .settings-brand { display: flex; align-items: center; gap: 10px; padding: 0 12px 28px; font-weight: 600; }

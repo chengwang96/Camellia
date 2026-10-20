@@ -66,6 +66,7 @@ async function main() {
       contextWindow: models.find(row => row.id === model)?.contextWindow || nativeModel?.max_context_size || 262144 };
   } else {
     server = http.createServer(async (req, res) => {
+      if (require('./model-metadata-fixture.cjs')(req, res)) return;
       let raw = ''; for await (const chunk of req) raw += chunk;
       const body = JSON.parse(raw); requests++;
       const text = JSON.stringify(body), code = /DISCUSSION_[a-f0-9]+/.exec(text)?.[0];

@@ -28,6 +28,7 @@ async function main() {
   const requests = [], events = [], logs = [], usageRecords = [];
   let router, session, generation = 0, done, waiting;
   const server = http.createServer(async (req, res) => {
+    if (require('./model-metadata-fixture.cjs')(req, res)) return;
     try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks)); requests.push({ body, key: req.headers.authorization });

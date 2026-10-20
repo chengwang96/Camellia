@@ -21,13 +21,14 @@ const DSH_PRESETS = {
     description: 'Full access without confirmation prompts.' },
 };
 
-function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig = {}, thinking }) {
+function dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig = {}, thinking, webTools = false }) {
   const levels = levelsFor(model, { thinking });
   const supported = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   const reasoningEfforts = Object.fromEntries(levels.map(level => [level === 'none' ? 'off' : level, level]).filter(([level]) => supported.includes(level)));
   const canThink = Object.keys(reasoningEfforts).some(level => level !== 'off');
   const args = dshLaunchArgs({ runtime, home, profile: 'acp', config: {
     ...nativeConfig,
+    ...(webTools ? { 'tool-web': { ...nativeConfig['tool-web'], search: false, fetch: false } } : {}),
     'agent-default-model': { provider: 'api-pool', model },
     permission: { presets: DSH_PRESETS, defaultPreset: nativeMode('dsh', permissionMode, 'auto') },
     'llm-pi-ai': { providers: { 'api-pool': { displayName: 'Camellia API', apiKeyEnv: 'DSH_API_ROUTER_KEY',
@@ -57,7 +58,7 @@ function createDshChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, g
     if (!selected.model || !getModels().includes(selected.model)) throw new Error('Select a configured model first');
     if (current && !current.dead && current.opts.goalBridge === opts.goalBridge && current.sessionId === opts.sessionId && JSON.stringify(current.settings) === JSON.stringify(selected)) return current;
     const spec = dshAcpSpec({ runtime: runtime(), home: path.join(dataDir, 'dsh-chat', ...(opts.conversationId ? ['conversations', opts.conversationId] : [])), model: selected.model,
-      route: getRoute(), permissionMode: selected.permissionMode, env: environment(), nativeConfig: nativeConfig(), thinking: selected.modelThinking });
+      route: getRoute(), permissionMode: selected.permissionMode, env: environment(), nativeConfig: nativeConfig(), thinking: selected.modelThinking, webTools: opts.goalBridge?.webTools });
     if (selected.thinkingBudget === 'none') spec.thinkingValue = 'off';
     const previous = current?.shutdown();
     const session = new AcpSession({ name: 'DSH', gen: ++generation, opts, settings: selected, spec, exe: node(), spawn, log, history,

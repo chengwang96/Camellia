@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   runtimeUpdate: (payload) => ipcRenderer.invoke('dsh:runtime-update', payload),
   runtimeReinstall: (payload) => ipcRenderer.invoke('dsh:runtime-reinstall', payload),
   runtimeReinstallPreview: (payload) => ipcRenderer.invoke('dsh:runtime-reinstall-preview', payload),
+  runtimeUninstall: (payload) => ipcRenderer.invoke('dsh:runtime-uninstall', payload),
+  runtimeUninstallPreview: (payload) => ipcRenderer.invoke('dsh:runtime-uninstall-preview', payload),
   downloadSettings: () => ipcRenderer.invoke('dsh:download-settings'),
   networkSettings: () => ipcRenderer.invoke('dsh:network-settings'),
   networkTest: () => ipcRenderer.invoke('dsh:network-test'),

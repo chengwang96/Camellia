@@ -4,7 +4,6 @@
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./model-names'));
   else root.CamelliaModelLevels = factory(root.CamelliaModelNames);
 })(typeof window === 'object' ? window : globalThis, function ({ canonicalModelId: canonical }) {
-  const DEFAULT_LEVELS = ['low', 'medium', 'high'];
   const LABELS = { off: 'Off', none: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
   function normalizeThinking(thinking) {
     if (!thinking || !Array.isArray(thinking.values) || thinking.values.length > 32) return undefined;
@@ -29,7 +28,7 @@
   }
   function levelsFor(model, catalog) {
     const thinking = thinkingFor(model, catalog);
-    if (!thinking) return DEFAULT_LEVELS.slice();
+    if (!thinking) return [];
     return [...new Set(thinking.values.map(value => value === false ? 'none' : value === true ? 'high' : value))];
   }
   function labelFor(level, model, catalog) {

@@ -6,6 +6,7 @@ const path = require('node:path');
 const YAML = require('yaml');
 const { createHarness } = require('./claude-harness.cjs');
 const { readCredential, syncPoolProvider, cleanupLegacyRoute, dshLaunchArgs } = require('../src/engines/dsh-config');
+const { dshAcpSpec } = require('../src/engines/dsh-session');
 
 function setup(t, source = '') {
   const h = createHarness(); t.after(() => h.cleanup());
@@ -13,6 +14,16 @@ function setup(t, source = '') {
   fs.writeFileSync(file, source);
   return { home, file, read: () => YAML.parse(fs.readFileSync(file, 'utf8'), { merge: true }) };
 }
+
+test('DSH selected DeepSeek tools suppress its native web tools without changing user settings', t => {
+  const h = setup(t);
+  const nativeConfig = { 'tool-web': { search: true, fetch: true, searchMaxResults: 12 } };
+  const runtime = { file: path.join(h.home, 'lib/bin.js'), version: '0.2.0' };
+  dshAcpSpec({ runtime, home: h.home, model: 'fixture', route: { baseUrl: 'http://localhost:8788' }, nativeConfig, webTools: true });
+  const patch = YAML.parse(fs.readFileSync(path.join(h.home, 'camellia-runtime.patch.yml'), 'utf8'));
+  assert.deepEqual(patch.find(entry => entry.id === 'tool-web').config, { search: false, fetch: false, searchMaxResults: 12 });
+  assert.deepEqual(nativeConfig['tool-web'], { search: true, fetch: true, searchMaxResults: 12 });
+});
 
 test('managed launches configure models before DSH 0.2 boots without rewriting legacy user data', t => {
   const h = setup(t, '# existing configuration\npermission: {defaultPreset: read-only}\n');

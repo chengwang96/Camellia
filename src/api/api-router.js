@@ -13,6 +13,7 @@ const { RequestScopes } = require('./request-scopes');
 const { responsesToChat, ResponsesStream, chatToResponse } = require('./responses-protocol');
 const { routedModelId } = require('../shared/codex-tool-model');
 const { accountCapability, queryAccount } = require('./provider-accounts');
+const { createModelDiscovery } = require('./model-discovery');
 
 function retryDelay(headers = {}, now = Date.now()) {
   const value = headers['retry-after'];
@@ -57,7 +58,7 @@ function apiError(res, status, message, protocol, code = 'api_router_error', hea
   json(res, status, protocol === 'anthropic' ? { type: 'error', error: { type: code, message } } : { error: { type: code, code, message } }, headers);
 }
 
-function startApiRouter({ configPath, log = () => {}, onState = () => {}, onContextEvidence = () => {}, timeoutMs = 120000, quotaCheck = {} } = {}) {
+function startApiRouter({ configPath, log = () => {}, onState = () => {}, onContextEvidence = () => {}, timeoutMs = 120000, quotaCheck = {}, modelDiscovery = {} } = {}) {
   let cfg = loadConfig(configPath);
   const geminiTools = new GeminiToolState(configPath + '.gemini-tools.jsonl');
   let running = false, error = null, stopped = false, saveTimer = null, lastRoute = null;
@@ -70,6 +71,23 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     keyActiveRequests: Object.fromEntries(cfg.providers.flatMap(provider => provider.keys.map(key => [key.id, keyLoad(provider, key)]))),
     quota: quotaState(), quotaCheck: { enabled: quotaProbeEnabled, intervalMs: quotaIntervalMs } });
   const notify = () => { try { onState(getState()); } catch { /* observers must not interrupt a request */ } };
+  const discovery = createModelDiscovery({ ...modelDiscovery, getConfig: () => cfg,
+    apply: (provider, models) => {
+      // Re-read concurrent settings edits before merging metadata alone.
+      refreshDisk();
+      const current = cfg.providers.find(p => p.id === provider.id);
+      if (!current || JSON.stringify(current) !== JSON.stringify(provider)) return;
+      let updated = false;
+      for (const model of current.models) {
+        const found = models.find(entry => entry.upstream === model.upstream);
+        if (found?.thinking && JSON.stringify(found.thinking) !== JSON.stringify(model.thinking)) {
+          model.thinking = structuredClone(found.thinking); updated = true;
+        }
+      }
+      if (updated) { flush(); notify(); }
+    } });
+  let discoveryTimer;
+  const refreshModels = () => modelDiscovery.enabled === false || stopped ? Promise.resolve() : discovery.refresh();
   function refreshDisk() {
     const mtime = fs.existsSync(configPath) ? fs.statSync(configPath).mtimeMs : 0;
     if (mtime === diskMtime) return;
@@ -81,6 +99,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       if (old && cfg.usage[k.id]) latest.usage[k.id] = cfg.usage[k.id];
     }
     cfg = latest; diskMtime = mtime; reconcileQuota();
+    void refreshModels().catch(() => {});
     // A data transfer can replace the pool without changing the port. Let the
     // host update managed CLI clients and the UI after the router re-reads it.
     try { onState(getState()); } catch { /* observers must not interrupt a request */ }
@@ -592,6 +611,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
       if (archived) retiredRequests.set(quotaIdentity(provider, key), archived.id);
     }
     clearTimeout(saveTimer); cfg = next; diskMtime = fs.statSync(configPath).mtimeMs; reconcileQuota(); notify();
+    void refreshModels().catch(() => {});
     return getState();
   }
   function reset(model, key) {
@@ -621,6 +641,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
   }
   async function stop() {
     stopped = true; running = false;
+    clearInterval(discoveryTimer); discovery.close();
     clearInterval(quotaTimer); quotaTimer = null;
     scopes.closeAll();
     try { flush(); } catch (e) { log(`Could not save router state: ${e.message}`); }
@@ -646,7 +667,15 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     scheduleQuotaProbe();
     ready.then(() => refreshQuota().catch(() => {}), () => {});
   }
+  if (modelDiscovery.enabled !== false) {
+    discoveryTimer = setInterval(() => {
+      try { refreshDisk(); void refreshModels().catch(() => {}); } catch (e) { log(`Model discovery: ${e.message}`); }
+    }, 60000);
+    discoveryTimer.unref();
+    ready.then(() => refreshModels().catch(() => {}), () => {});
+  }
   return { ready, getState, updateConfig, reset, rotate, createScope, refreshQuota, setQuotaCheck,
+    refreshModels,
     reload: () => { refreshDisk(); notify(); return getState(); }, stop, url: `http://127.0.0.1:${cfg.port}` };
 }
 

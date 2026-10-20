@@ -2718,7 +2718,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     // it reports no native config options; the model menu owns the levels.
     if (ev.type === 'gui:config' && harnessId !== 'claude' && !googleSubscription()) {
       const thinking = (ev.options || []).find(option => ['thinking', 'reasoning_effort'].includes(option.id));
-      if ((!accountSubscription() && window.CamelliaModelLevels.thinkingFor(currentModel, routeModelCatalog)) || !thinking?.options?.length) applyApiLevels();
+      if (!accountSubscription() || !thinking?.options?.length) applyApiLevels();
       else LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' },
         ...thinking.options.map(option => ({ id: option.value, label: option.name })));
       currentLevel = thinking?.currentValue || '';

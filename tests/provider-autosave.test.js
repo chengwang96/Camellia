@@ -30,7 +30,7 @@ function harness({ beforeSave = async () => {}, insights = async () => ({ ok: tr
         stored = normalizeConfig(snapshot, stored);
         return { ok: true, state: publicState(stored) };
       }, providerInsights: insights,
-    } }, showLive() {}, updateKeyStats() {}, renderRoutes() {}, renderProviders() {}, renderKeys() {}, renderModelChips() {} };
+    } }, showLive() {}, updateKeyStats() {}, renderRoutes() {}, renderProviders() {}, renderKeys() {}, renderModelChips() {}, renderWebToolsSettings() {} };
   vm.runInNewContext(source.slice(0, source.indexOf('function setView(')) + `
     module.exports = { initialize(state) { live = structuredClone(state); config = structuredClone(state); rememberSavedModels(); },
       get config() { return config; }, get dirty() { return isDirty(); }, draftComplete, edited, flushSave, assertClean };

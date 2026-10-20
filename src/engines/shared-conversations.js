@@ -174,7 +174,7 @@ const reportedContextLimit = text => {
 // The logical ID belongs to Camellia. Native IDs and synchronization cursors
 // are private to each engine. Original native histories are never rewritten.
 class SharedConversations {
-  constructor({ dir, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, assertAvailable = () => {}, generateTitle = async () => '', summarize, log = () => {}, modelContextWindow = () => undefined, contextRoute = () => '', contextCapacity, conversationModels = () => [], createGoalBridge, stopTimeoutMs = 12000 }) {
+  constructor({ dir, loadConfig, saveConfig, drivers, onEvent = () => {}, onGoal = () => {}, onStatus = () => {}, prepare = async () => {}, assertAvailable = () => {}, generateTitle = async () => '', summarize, log = () => {}, modelContextWindow = () => undefined, contextRoute = () => '', contextCapacity, conversationModels = () => [], createGoalBridge, webTools, stopTimeoutMs = 12000 }) {
     Object.assign(this, { dir, loadConfig, saveConfig, drivers, onEvent, onStatus, prepare, assertAvailable, generateTitle, summarize, log, modelContextWindow, contextRoute, contextCapacity, conversationModels });
     this.runtimeId = randomUUID();
     this.subagentSessions = new Map();
@@ -184,6 +184,7 @@ class SharedConversations {
     this.titleRequests = new Set();
     this.onGoal = onGoal;
     this.createGoalBridge = createGoalBridge;
+    this.webTools = webTools;
     this.goalBridges = new Map();
     this.controlStarts = new Map();
     this.recoveryWarnings = [];
@@ -332,6 +333,7 @@ class SharedConversations {
     this.remoteQueue?.close();
     this.tasks.close();
     this.goalToolsClosed = true;
+    for (const active of this.active.values()) for (const abort of active.webCalls || []) abort.abort();
     for (const [id, reservation] of this.controlStarts) {
       reservation.cancelled = true;
       void this.cancel({ sessionId: id }).catch(error => this.log(error.message));
@@ -340,15 +342,31 @@ class SharedConversations {
     this.goalBridges.clear();
   }
 
-  // Stays synchronous for every existing tool; the file search is the one
-  // branch that returns a promise, and the tool bridge already awaits the
-  // result before replying to the engine.
-  callGoalTool(id, name, args) {
+  // Read-only file and web tools are asynchronous; the bridge awaits them.
+  async callWebTool(name, args, active, { signal } = {}) {
+    const abort = new AbortController();
+    (active.webCalls ||= new Set()).add(abort);
+    try {
+      if (!this.webTools?.enabled()) throw new Error('DeepSeek web tools are disabled in Model Settings');
+      return await this.webTools.call(name, args, { signal: signal ? AbortSignal.any([signal, abort.signal]) : abort.signal });
+    } catch (error) { return { ok: false, error: error.message,
+      ...(error.provider === 'deepseek' ? { provider: error.provider, operation: error.operation, url: error.url,
+        status: error.status, code: error.code, retryable: error.retryable, api_url: error.api_url,
+        response_headers: error.response_headers, download_url: error.download_url } : {}) }; }
+    finally { active.webCalls.delete(abort); }
+  }
+
+  toolInstructions() {
+    return goalToolInstructions + (this.webTools?.enabled() ? '\n' + require('./web-tools').instructions : '');
+  }
+
+  callGoalTool(id, name, args, options) {
     try {
       validateTool(name, args);
       const active = this.active.get(id);
       if (this.goalToolsClosed || !active || active.internal || active.goalToolsDisabled || active.cancelled || active.finished || active.steering || active.compactRequested || active.goalRunToken !== args.run_token)
         throw new Error('This goal tool request does not belong to the current user turn');
+      if (name.startsWith('camellia_web_')) return this.callWebTool(name, args, active, options);
       if (name.startsWith('camellia_conversation_')) return callConversationTool(this, id, name, args, active);
       // File search is read-only and bounded, so children and scheduled checks
       // may use it to locate their own inputs.
@@ -1110,7 +1128,7 @@ class SharedConversations {
     const memory = internal ? '' : memoryInstructions(memoryDirectory, c.hasGlobalMemory === true);
     const goalPrefix = !internal && !goalToolsDisabled && this.createGoalBridge
       && !(engine === 'antigravity' && settings.connection === 'subscription')
-      ? goalToolInstructions + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
+      ? this.toolInstructions() + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
     const attachmentTokens = imageInputTokens(payload.attachments);
     const pendingTokens = contextTokens(memory + String(promptSuffix ?? payload.prompt ?? '')) + attachmentTokens;
     const promptFits = (value, cap) => contextTokens(goalPrefix + value) + attachmentTokens <= cap * 0.85
@@ -1340,13 +1358,17 @@ class SharedConversations {
       let goalBridge = a.goalToolsDisabled ? undefined : this.goalBridges.get(c.id);
       if (!a.goalToolsDisabled && this.createGoalBridge) {
         if (this.goalToolsClosed) throw new Error('Goal tools are shutting down');
+        const webTools = this.webTools?.enabled() === true;
+        if (goalBridge && (goalBridge.webTools === true) !== webTools) {
+          await goalBridge.close(); this.goalBridges.delete(c.id); goalBridge = undefined;
+        }
         if (!goalBridge) {
-          goalBridge = await this.createGoalBridge({ call: (name, args) => this.callGoalTool(c.id, name, args) });
+          goalBridge = await this.createGoalBridge({ webTools, call: (name, args, options) => this.callGoalTool(c.id, name, args, options) });
           if (this.goalToolsClosed) { goalBridge.close(); throw new Error('Goal tools are shutting down'); }
           this.goalBridges.set(c.id, goalBridge);
         }
         a.goalRunToken = randomUUID();
-        prompt = goalToolInstructions + '\nCamellia goal run token for this turn: ' + a.goalRunToken + '\n\n' + prompt;
+        prompt = this.toolInstructions() + '\nCamellia goal run token for this turn: ' + a.goalRunToken + '\n\n' + prompt;
       }
       const closing = this.drivers[engine].sessions?.pendingRelease({ conversationId: c.id });
       if (closing) {
@@ -1430,6 +1452,7 @@ class SharedConversations {
       session_id: c.id, engine, runId: a.facade.gen, userSeq: a.userSeq, eventSeq: ++a.eventSeq };
     c.pending = null; c.interrupted = true;
     a.cancelled = true; a.finished = true; a.facade.running = false;
+    for (const abort of a.webCalls || []) abort.abort();
     if (this.active.get(c.id) === a) this.active.delete(c.id);
     if (this.recovering.get(c.id) === a) this.recovering.delete(c.id);
     // Complete bookkeeping before any observer or shutdown callback runs.
@@ -1697,6 +1720,7 @@ class SharedConversations {
       a.facade.running = false; this.active.delete(c.id);
       if (!a.internal && c.interrupted) this.remoteQueue?.pause(c.id);
       a.finished = true;
+      for (const abort of a.webCalls || []) abort.abort();
       if (!a.internal) this.goals.get(c.id)?.handleResult({ ...event, result: event.result || text, goalReport: a.goalReport, ignoreGoalMarkers: a.goalRevised });
       const finalText = a.internal && Array.isArray(event.outputBlocks)
         ? event.outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text).join('\n\n') : text;
@@ -1739,7 +1763,7 @@ class SharedConversations {
       const pressure = this.contextPressure(c, engine, a.settings || this.settings(engine, c.id));
       const memory = memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true);
       const goalPrefix = !a.goalToolsDisabled && this.createGoalBridge
-        ? goalToolInstructions + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
+        ? this.toolInstructions() + '\nCamellia goal run token for this turn: ' + '0'.repeat(36) + '\n\n' : '';
       const actualInput = goalPrefix + memory + prompt;
       const imageTokens = imageInputTokens(a.attachments);
       if (contextTokens(actualInput) + imageTokens > pressure.cap * 0.85 || overInputChars(engine, actualInput))
@@ -1889,6 +1913,7 @@ class SharedConversations {
     const a = recovery || this.active.get(id);
     if (a && !a.cancelled) {
       a.cancelled = true;
+      for (const abort of a.webCalls || []) abort.abort();
       if (a.facade.running) {
         try { a.session?.interrupt(); } catch (error) { this.log('Conversation interrupt failed: ' + error.message); }
       }
@@ -2467,7 +2492,7 @@ class SharedConversations {
         ? contextTokens(recovery.promptSuffix || recovery.prompt) + contextTokens(memoryInstructions(this.loadConfig().memoryDirectory, c.hasGlobalMemory === true))
           + imageInputTokens(recovery.attachments) + 256
         : 0);
-      const goalTokens = this.createGoalBridge ? contextTokens(goalToolInstructions) + 64 : 0;
+      const goalTokens = this.createGoalBridge ? contextTokens(this.toolInstructions()) + 64 : 0;
       const available = destination || recovery
         ? Math.floor(targetCap * 0.65) - pendingTokens - goalTokens - 512 : Infinity;
       const fallback = this.manualFallbackContext(c, targetEngine, sourceRows(), targetSettings, available);
@@ -2591,7 +2616,7 @@ class SharedConversations {
       if (inputCharLimit(engine)) budget = Math.min(budget, inputCharLimit(engine));
       const targetCap = this.contextPressure(c, targetEngine, targetSettings).cap;
       const targetTokens = Math.floor(targetCap * 0.65) - (destination?.pendingTokens || 0)
-        - (this.createGoalBridge ? contextTokens(goalToolInstructions) : 0) - 512;
+        - (this.createGoalBridge ? contextTokens(this.toolInstructions()) : 0) - 512;
       const maxSummaryChars = destination ? Math.min(12000, targetTokens,
         inputCharLimit(targetEngine) ? Math.floor(inputCharLimit(targetEngine) * 0.8) : Infinity) : Infinity;
       if (maxSummaryChars < 512) throw new Error('The target context has no room for a summary and the new message. ' + recoveryAdvice);

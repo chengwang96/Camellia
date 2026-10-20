@@ -53,6 +53,7 @@ function run(exe, args, options = {}, onOutput = () => {}) {
 function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {}, runCommand = run, downloadOptions = () => undefined, runtimeMode = () => 'api', platform = process.platform, arch = process.arch, discoverLocal = true, env = process.env, home, customPaths = () => ({}), saveCustomPaths, beforePathSave = () => {}, probe }) {
   const pending = new Map(), progress = new Map();
   const changingPaths = new Set();
+  const uninstalling = new Set();
   const locateLocal = createLocalRuntimeDiscovery({ engines: ENGINES, node, platform, arch, env, home });
   const managedPackages = () => path.join(installRoot, 'runtimes', 'antigravity', 'packages');
   // Saving an interpreter is explicit; an unset choice falls back to the first
@@ -189,6 +190,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
   }
   function ensure(engine, mode = runtimeMode(engine)) {
     if (!Object.hasOwn(ENGINES, engine) || !['api', 'subscription'].includes(mode)) throw new Error('Unknown runtime');
+    if (uninstalling.has(engine)) return Promise.reject(new Error('Wait for the engine uninstall to finish'));
     if (changingPaths.has(engine)) return Promise.reject(new Error('Wait for runtime path validation to finish'));
     const key = engine + ':' + mode;
     if (pending.has(key)) return pending.get(key);
@@ -216,7 +218,76 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     const removal = runtimeRemovalPlan({ engine, definition: ENGINES[engine], file: found.file, destination, platform, env, home });
     return { engine, mode, file: found.file, version: found.version, destination, removal };
   }
+  function uninstallPlan(engine, mode = runtimeMode(engine)) {
+    if (!Object.hasOwn(ENGINES, engine) || !['api', 'subscription'].includes(mode)) throw new Error('Unknown runtime');
+    const found = locate(engine, mode);
+    if (!found) throw new Error('This engine is not installed');
+    const realFile = fs.realpathSync.native(found.file), stat = fs.statSync(realFile);
+    const plan = { engine, mode, file: found.file, version: found.version,
+      realFile, signature: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}` };
+    // Only these exact engine directories belong to Camellia. Never remove a
+    // containing npm prefix, personal CLI home, or the shared interpreter.
+    const runtimeDir = [installRoot, root].map(base => path.join(base, 'runtimes', engine)).find(dir => {
+      try {
+        const physical = fs.realpathSync.native(dir), relative = path.relative(physical, realFile);
+        return physical === fs.realpathSync.native(found.dir)
+          || found.custom && relative && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+      } catch { return false; }
+    });
+    if (runtimeDir) {
+      const directory = fs.realpathSync.native(runtimeDir);
+      if (directory !== path.join(fs.realpathSync.native(path.dirname(runtimeDir)), engine)) throw new Error('The runtime directory points outside its installation');
+      const targets = engine !== 'antigravity' ? ['node_modules']
+        : mode === 'subscription' ? ['cli'] : ['packages', 'installed.json'];
+      plan.targets = targets.map(name => path.join(directory, name));
+      for (const target of plan.targets) {
+        if (!fs.existsSync(target)) continue;
+        if (fs.lstatSync(target).isSymbolicLink()) throw new Error('The runtime directory points outside its installation');
+        const relative = path.relative(directory, fs.realpathSync.native(target));
+        if (!relative || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new Error('The runtime directory points outside its installation');
+        const python = customPaths()[PYTHON_KEY]?.file;
+        if (python) {
+          const protectedFile = fs.existsSync(python) ? fs.realpathSync.native(python) : path.resolve(python);
+          const overlap = path.relative(target, protectedFile);
+          if (!overlap || !overlap.startsWith('..' + path.sep) && !path.isAbsolute(overlap)) throw new Error('This installation contains the shared Python interpreter');
+        }
+      }
+      if (!(engine === 'antigravity' && mode === 'api') && !plan.targets.some(target => {
+        const relative = path.relative(target, realFile);
+        return relative && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+      })) throw new Error('Could not identify this CLI installation');
+    } else {
+      plan.removal = runtimeRemovalPlan({ engine, definition: ENGINES[engine], file: found.file,
+        destination: path.join(installRoot, 'runtimes', engine), platform, env, home });
+      if (plan.removal.kind === 'replacement') throw new Error('Could not identify this CLI installation');
+    }
+    if (found.custom && !saveCustomPaths) throw new Error('Custom runtime paths are unavailable');
+    return plan;
+  }
+  function uninstall(engine, expected) {
+    if (changingPaths.size || pending.size) return Promise.reject(new Error('Wait for runtime installation or path validation to finish'));
+    const plan = uninstallPlan(engine, expected?.mode), key = engine + ':' + plan.mode;
+    if (!expected || JSON.stringify(plan) !== JSON.stringify(expected)) return Promise.reject(new Error('The runtime path changed. Review the installation before uninstalling.'));
+    const task = Promise.resolve().then(async () => {
+      // Recheck after idle sessions have stopped and immediately before removal.
+      if (JSON.stringify(uninstallPlan(engine, plan.mode)) !== JSON.stringify(plan)) throw new Error('The runtime path changed. Review the installation before uninstalling.');
+      report(engine, plan.mode, { status: 'uninstalling', message: 'Uninstalling…' });
+      try {
+        if (plan.targets) {
+          for (const target of plan.targets) fs.rmSync(target, { recursive: true, force: true });
+        } else await removeRuntime(plan.removal, { node, npm, run: runCommand, env });
+        if (customPaths()[engine]?.file === plan.file) {
+          const paths = { ...customPaths() }; delete paths[engine]; saveCustomPaths(paths);
+        }
+        return { engine, mode: plan.mode };
+      } finally { progress.delete(key); onChange(state()); }
+    }).finally(() => { pending.delete(key); uninstalling.delete(engine); });
+    uninstalling.add(engine);
+    pending.set(key, task);
+    return task;
+  }
   function reinstall(engine, expected) {
+    if (uninstalling.has(engine)) return Promise.reject(new Error('Wait for the engine uninstall to finish'));
     if (changingPaths.has(engine)) return Promise.reject(new Error('Wait for runtime path validation to finish'));
     const plan = reinstallPlan(engine, expected?.mode), key = engine + ':' + plan.mode;
     if (pending.has(key)) return Promise.reject(new Error('Wait for the runtime download to finish'));
@@ -375,7 +446,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
   }
   // pythonSelection is handed to engine launchers so the same interpreter
   // serves every harness; pythonState carries it to the settings page.
-  return { locate, ensure, reinstallPlan, reinstall, state, setPath, setPython, pythonState, pythonSelection,
+  return { locate, ensure, reinstallPlan, reinstall, uninstallPlan, uninstall, state, setPath, setPython, pythonState, pythonSelection,
     get busy() { return pending.size > 0 || changingPaths.size > 0; } };
 }
 module.exports = { ENGINES, createRuntimeManager, run };

@@ -38,6 +38,95 @@ function fixture(t, overrides = {}) {
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
 
+test('changing web source refreshes session tools while preserving the conversation and checking turn tokens', async t => {
+  let enabled = false;
+  const bridges = [], calls = [];
+  const h = fixture(t, {
+    webTools: { enabled: () => enabled, call: async (name, args) => { calls.push({ name, args }); return { ok: true, results: [] }; } },
+    createGoalBridge: async options => {
+      const bridge = { ...options, config: {}, closed: false, close() { this.closed = true; } };
+      bridges.push(bridge); return bridge;
+    },
+  });
+  t.after(() => h.manager.closeGoalTools());
+  const first = await h.manager.send('codex', { prompt: 'First' });
+  const firstToken = h.manager.active.get(first.sessionId).goalRunToken;
+  assert.equal(bridges[0].webTools, false); h.finish('codex');
+  enabled = true;
+  const second = await h.manager.send('codex', { sessionId: first.sessionId, prompt: 'Search the web' });
+  assert.equal(second.sessionId, first.sessionId);
+  assert.equal(bridges[0].closed, true); assert.equal(bridges[1].webTools, true);
+  assert.equal(h.sent[1].opts.sessionId, h.sent[0].session.sessionId);
+  assert.match(h.sent[1].prompt, /Use camellia_web_search/);
+  const token = h.manager.active.get(second.sessionId).goalRunToken;
+  assert.equal(h.manager.callGoalTool(second.sessionId, 'camellia_web_search', { query: 'news', run_token: firstToken }).ok, false);
+  assert.equal((await bridges[1].call('camellia_web_search', { query: 'news', run_token: token })).ok, true);
+  assert.equal(calls.length, 1);
+  enabled = false;
+  assert.equal((await bridges[1].call('camellia_web_search', { query: 'news', run_token: token })).ok, false);
+  assert.equal(calls.length, 1); h.finish('codex');
+  await h.manager.send('codex', { sessionId: first.sessionId, prompt: 'Continue' });
+  assert.equal(bridges[1].closed, true); assert.equal(bridges[2].webTools, false);
+  h.finish('codex');
+});
+
+test('web fetch failures retain page context and non-retryable status through the conversation bridge', async t => {
+  const h = fixture(t, { createGoalBridge: async options => ({ ...options, config: {}, close() {} }),
+    webTools: { enabled: () => true, call: async () => {
+      throw Object.assign(new Error('HTTP 404 · DeepSeek could not retrieve readable content from this page.'), {
+        status: 404, code: 'web_page_unavailable', provider: 'deepseek', operation: 'fetch', url: 'https://example.com/missing', retryable: false,
+        api_url: 'https://api.deepseek.com/v1/tools/fetch', response_headers: { 'content-type': 'application/json' },
+      });
+    } } });
+  t.after(() => h.manager.closeGoalTools());
+  const run = await h.manager.send('codex', { prompt: 'Read a page' });
+  const result = await h.manager.goalBridges.get(run.sessionId).call('camellia_web_fetch', {
+    url: 'https://example.com/missing', run_token: h.manager.active.get(run.sessionId).goalRunToken,
+  });
+  assert.equal(result.ok, false); assert.equal(result.status, 404); assert.equal(result.code, 'web_page_unavailable');
+  assert.equal(result.provider, 'deepseek'); assert.equal(result.operation, 'fetch');
+  assert.equal(result.url, 'https://example.com/missing'); assert.equal(result.retryable, false);
+  assert.equal(result.api_url, 'https://api.deepseek.com/v1/tools/fetch');
+  assert.deepEqual(result.response_headers, { 'content-type': 'application/json' });
+  h.finish('codex');
+});
+
+test('Word attachment errors retain their download URL through the conversation bridge', async t => {
+  const url = 'https://example.com/attachment.docx';
+  const h = fixture(t, { createGoalBridge: async options => ({ ...options, config: {}, close() {} }),
+    webTools: { enabled: () => true, call: async () => {
+      throw Object.assign(new Error('Download this Word attachment and read it locally.'), {
+        status: 404, code: 'web_attachment_requires_download', provider: 'deepseek', operation: 'fetch', url,
+        api_url: 'https://api.deepseek.com/v1/tools/fetch', download_url: url, response_headers: {}, retryable: false,
+      });
+    } } });
+  t.after(() => h.manager.closeGoalTools());
+  const run = await h.manager.send('codex', { prompt: 'Read an attachment' });
+  const result = await h.manager.goalBridges.get(run.sessionId).call('camellia_web_fetch', {
+    url, run_token: h.manager.active.get(run.sessionId).goalRunToken,
+  });
+  assert.equal(result.ok, false); assert.equal(result.status, 404);
+  assert.equal(result.code, 'web_attachment_requires_download'); assert.equal(result.download_url, url);
+  assert.equal(result.api_url, 'https://api.deepseek.com/v1/tools/fetch');
+  h.finish('codex');
+});
+
+test('stopping a conversation aborts an in-flight web call and denies late calls', async t => {
+  let requestSignal;
+  const h = fixture(t, { createGoalBridge: async options => ({ ...options, config: {}, close() {} }),
+    webTools: { enabled: () => true, call: (_name, _args, { signal }) => new Promise((_resolve, reject) => {
+      requestSignal = signal; signal.addEventListener('abort', () => reject(new Error('Cancelled')), { once: true });
+    }) } });
+  t.after(() => h.manager.closeGoalTools());
+  const run = await h.manager.send('codex', { prompt: 'Fetch a page' });
+  const args = { url: 'https://example.com', run_token: h.manager.active.get(run.sessionId).goalRunToken };
+  const request = h.manager.callGoalTool(run.sessionId, 'camellia_web_fetch', args);
+  await h.manager.cancel({ sessionId: run.sessionId });
+  assert.equal(requestSignal.aborted, true);
+  assert.equal((await request).ok, false);
+  assert.equal(h.manager.callGoalTool(run.sessionId, 'camellia_web_fetch', args).ok, false);
+});
+
 for (const nativeId of [true, false]) test('failed response persistence clears runtime state with native ID ' + nativeId, async t => {
   const status = [], h = fixture(t, { onStatus: event => status.push(event) });
   const run = await h.manager.send('codex', { prompt: 'Remember this request' });

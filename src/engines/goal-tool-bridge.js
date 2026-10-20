@@ -7,7 +7,7 @@ const os = require('node:os');
 const { randomUUID, randomBytes } = require('node:crypto');
 const { tools, instructions, validateTool } = require('./goal-tools');
 
-async function createGoalToolBridge({ node, call }) {
+async function createGoalToolBridge({ node, call, webTools = false }) {
   const token = randomBytes(32).toString('hex');
   const name = 'camellia-goal-' + randomUUID();
   let directory;
@@ -23,8 +23,9 @@ async function createGoalToolBridge({ node, call }) {
   const sockets = new Set();
   let closed = false, closing;
   const server = net.createServer(socket => {
+    const abort = new AbortController();
     sockets.add(socket);
-    socket.on('close', () => sockets.delete(socket));
+    socket.on('close', () => { sockets.delete(socket); abort.abort(); });
     socket.on('error', () => {});
     socket.setTimeout(10000, () => socket.destroy());
     let buffer = '';
@@ -39,7 +40,11 @@ async function createGoalToolBridge({ node, call }) {
           const request = JSON.parse(buffer.slice(0, buffer.indexOf('\n')));
           if (request.token !== token) throw new Error('Unauthorized goal tool request');
           validateTool(request.name, request.arguments);
-          const result = await call(request.name, request.arguments);
+          if (request.name.startsWith('camellia_web_')) {
+            if (!webTools) throw new Error('DeepSeek web tools are disabled in Model Settings');
+            socket.setTimeout(65000);
+          }
+          const result = await call(request.name, request.arguments, { signal: abort.signal });
           socket.end(JSON.stringify(result) + '\n');
         } catch (error) { socket.end(JSON.stringify({ ok: false, error: error.message }) + '\n'); }
       })();
@@ -58,8 +63,10 @@ async function createGoalToolBridge({ node, call }) {
   catch (error) { await close(); throw error; }
   server.unref();
   const script = path.join(__dirname, 'goal-mcp-stdio.js').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
-  const config = { command: node, args: [script], env: { CAMELLIA_GOAL_ENDPOINT: endpoint, CAMELLIA_GOAL_TOKEN: token } };
-  return { config, tools, instructions, close };
+  const config = { command: node, args: [script], env: { CAMELLIA_GOAL_ENDPOINT: endpoint, CAMELLIA_GOAL_TOKEN: token,
+    CAMELLIA_WEB_TOOLS: webTools ? 'deepseek' : '' } };
+  return { config, tools: [...tools, ...(webTools ? require('./web-tools').tools : [])],
+    instructions: instructions + (webTools ? '\n' + require('./web-tools').instructions : ''), webTools, close };
 }
 
 module.exports = { createGoalToolBridge };
