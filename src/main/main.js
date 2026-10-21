@@ -1,7 +1,7 @@
 'use strict';
 
 const diagnosticOutput = require('./diagnostic-output').installDiagnosticOutput();
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeTheme } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeImage, nativeTheme } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const fs = require('node:fs');
@@ -2681,7 +2681,16 @@ if (!gotSingleInstanceLock) {
   function setupTray() {
     if (tray) return;
     try {
-      tray = new Tray(path.join(APP_ROOT, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon-256.png'));
+      const iconPath = path.join(APP_ROOT, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon-256.png');
+      let icon = iconPath;
+      if (process.platform === 'darwin') {
+        // macOS uses the image's logical width for the status item, so the
+        // full-size app icon would reserve 256 points of menu bar space.
+        const source = nativeImage.createFromPath(iconPath);
+        icon = source.resize({ width: 16, height: 16 });
+        icon.addRepresentation({ scaleFactor: 2, buffer: source.resize({ width: 32, height: 32 }).toPNG() });
+      }
+      tray = new Tray(icon);
       tray.setToolTip(APP_NAME);
       tray.on('click', () => showMainWindow());
       refreshTrayMenu();
