@@ -144,7 +144,7 @@ function validateDiscussion(state, id) {
       if (d.retryOf === undefined) originals.push(d.participantId);
       else {
         const prior = deliveries.get(r.deliveryIds[index - 1]);
-        check(r.mode === 'serial' && prior && prior.id === d.retryOf && prior.serialResolution === 'retry'
+        check(prior && prior.id === d.retryOf && prior.serialResolution === 'retry'
           && prior.retryDeliveryId === d.id && prior.participantId === d.participantId, 'retry chain');
       }
     }
@@ -233,7 +233,7 @@ function validateDiscussion(state, id) {
         && (d.settlement === undefined || d.settlement.resultId === result.id || d.settlement.text === result.text), 'completed reply');
     } else check(d.resultId === null, 'uncommitted reply');
     if (d.serialResolution !== undefined) {
-      check(r.mode === 'serial' && ['failed', 'cancelled', 'interrupted'].includes(d.status)
+      check((r.mode === 'serial' || d.serialResolution === 'retry') && ['failed', 'cancelled', 'interrupted'].includes(d.status)
         && ['skip', 'retry'].includes(d.serialResolution), 'serial resolution'); text(d.resolutionActionId, 1024);
       if (d.serialResolution === 'retry') {
         const next = deliveries.get(d.retryDeliveryId); check(next?.retryOf === d.id && next.requestId === r.id, 'serial retry');

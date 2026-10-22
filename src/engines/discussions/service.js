@@ -315,13 +315,10 @@ class DiscussionService {
       this.scheduler.resolveSerial(state.id, payload.deliveryId, payload.resolution, payload.actionId);
     } else if (action === 'retry') {
       const delivery = state.deliveries.find(d => d.id === payload.deliveryId);
-      const request = state.requests.find(r => r.id === delivery?.requestId);
       if (!delivery || !['failed', 'cancelled', 'interrupted'].includes(delivery.status)) throw new Error('This response cannot be retried.');
       await this.prepareMembers(state.id, [delivery.participantId], () => {
         authorize();
-        if (request.mode === 'serial') this.scheduler.resolveSerial(state.id, delivery.id, 'retry', payload.actionId);
-        else this.scheduler.enqueue(state.id, { requestId: payload.actionId, participantIds: [delivery.participantId],
-          text: state.messages.find(m => m.id === request.messageId).text, attachments: state.messages.find(m => m.id === request.messageId).attachments || [], mode: 'parallel' });
+        this.scheduler.retry(state.id, delivery.id, payload.actionId);
       });
     } else throw Object.assign(new Error('Unknown discussion action'), { code: 'DISCUSSION_ACTION_UNSUPPORTED' });
     this.publish(state.id); return { group: this.view(this.manager.get(state.id)), groups: this.list() };

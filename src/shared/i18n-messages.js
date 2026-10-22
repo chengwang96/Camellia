@@ -272,6 +272,7 @@
   "Subscription login has expired or is invalid. Sign in again in Settings → Subscription accounts.": "订阅登录已失效，请在设置 → 订阅账号中重新登录。",
   "Subscription login expired. Sign in again in Settings → Subscription accounts. Switching to another signed-in account and retrying…": "订阅登录已失效，请在设置 → 订阅账号中重新登录。正在切换其他已登录账号重试…",
   "Subscription quota reached. Switching to another signed-in account and retrying…": "订阅额度已达上限，正在切换其他已登录账号重试…",
+  "Subscription retries exhausted. Switching to another signed-in account and continuing…": "订阅请求连续重试失败，正在切换其他已登录账号继续…",
   "Manage subscription sign-ins, quotas and login preferences.": "管理订阅登录、额度及登录偏好。",
   "Manage API providers, keys, balances, models and routes.": "管理 API 供应商、Key、余额、模型和路由。",
   "Key/model usage trends": "Key／模型用量趋势",

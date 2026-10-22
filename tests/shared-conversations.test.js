@@ -457,7 +457,7 @@ function subscriptionFixture(t, engine = 'codex') {
   return { ...h, state };
 }
 
-function codexSelectionFixture(t) {
+function codexSelectionFixture(t, rateLimits = { primary: { usedPercent: 20 } }) {
   const h = subscriptionFixture(t), dataDir = path.join(h.root, 'accounts'), accountUpdates = [];
   const accounts = ['default', 'account-1', 'account-2'].map(id => ({ id }));
   h.setConfig({ subscriptionAccounts: { codex: accounts }, subscriptionActive: { codex: 'default' } });
@@ -465,7 +465,7 @@ function codexSelectionFixture(t) {
     const dir = id === 'default' ? path.join(dataDir, 'codex') : path.join(dataDir, 'subscription-accounts', 'codex', id);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'account-state.json'), JSON.stringify({ account: { email: id + '@example.com' },
-      models: [{ id: 'fixture' }], rateLimits: { primary: { usedPercent: 20 } } }));
+      models: [{ id: 'fixture' }], rateLimits: id === 'default' ? rateLimits : { primary: { usedPercent: 20 } } }));
   }
   const options = { dataDir, loadConfig: h.args.loadConfig, saveConfig: h.args.saveConfig,
     runtimes: () => ({ locate: () => null }), onAccount: state => accountUpdates.push(state) };
@@ -477,6 +477,77 @@ function codexSelectionFixture(t) {
     event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Working' } } });
   return { ...h, codex, accountUpdates, progress, options };
 }
+
+for (const [name, credits] of [['positive', { balance: '15', hasCredits: true }], ['unknown', null],
+  ['unlimited', { balance: '0', unlimited: true }]]) test('Codex retains its selected account and native thread with full windows and ' + name + ' credits', async t => {
+  const h = codexSelectionFixture(t, { primary: { usedPercent: 100 }, credits });
+  const first = await h.manager.send('codex', { prompt: 'Remember the task' });
+  assert.equal(h.sent[0].opts.settings.subscriptionId, 'default');
+  h.finish('codex'); await first.done;
+  const next = await h.manager.send('codex', { sessionId: first.sessionId, prompt: 'Continue' });
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'default');
+  assert.equal(h.sent.at(-1).opts.sessionId, h.sent[0].session.sessionId);
+  h.finish('codex'); await next.done;
+  assert.equal(h.accountUpdates.length, 0);
+});
+
+for (const metadata of [false, true]) test('Codex switches after native retries are exhausted even with credits remaining, metadata=' + metadata, async t => {
+  const h = codexSelectionFixture(t, { primary: { usedPercent: 100 }, credits: { balance: '15', hasCredits: true } });
+  const run = await h.manager.send('codex', { prompt: 'Finish the original task' });
+  const session = h.sent[0].session;
+  assert.equal(h.sent[0].opts.settings.subscriptionId, 'default');
+  session.running = false;
+  h.manager.capture('codex', { type: 'result', subtype: 'error', is_error: true, runId: session.gen, session_id: session.sessionId,
+    result: metadata ? 'Connection failed' : 'exceeded retry limit',
+    ...(metadata ? { codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 503 } } } : {}) });
+  await h.flush();
+  assert.equal(h.sent.length, 2);
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'account-1');
+  assert.match(h.sent.at(-1).prompt, /Finish the original task/);
+  h.finish('codex');
+  assert.equal((await run.done).is_error, false);
+  assert.equal(h.codex.accountState().activeId, 'account-1');
+  assert.equal(h.manager.rows(h.manager.get(run.sessionId)).filter(row => row.role === 'user').length, 1);
+});
+
+for (const mode of ['disabled', 'pending-tool', 'pending-permission', 'no-backup']) test('Codex retry exhaustion respects ' + mode, async t => {
+  const h = subscriptionFixture(t);
+  if (mode === 'disabled') h.setConfig({ subscriptionAutoSwitch: { codex: false } });
+  if (mode === 'no-backup') h.state.accounts = h.state.accounts.slice(0, 1);
+  const run = await h.manager.send('codex', { prompt: 'Task' });
+  const active = h.manager.active.get(run.sessionId);
+  if (mode === 'pending-tool') h.manager.capture('codex', { type: 'gui:tool', id: 'unfinished', status: 'running', runId: active.session.gen });
+  if (mode === 'pending-permission') active.permissions.set('approval', {});
+  h.finish('codex', 'error', 'exceeded retry limit');
+  assert.equal((await run.done).is_error, true);
+  await h.flush();
+  assert.equal(h.sent.length, 1);
+});
+
+test('Codex retry exhaustion tries each account once and stops after all accounts fail', async t => {
+  const h = subscriptionFixture(t), run = await h.manager.send('codex', { prompt: 'Task' });
+  for (let index = 0; index < 3; index++) {
+    h.finish('codex', 'error', 'exceeded retry limit'); await h.flush();
+  }
+  assert.equal((await run.done).is_error, true);
+  assert.deepEqual(h.sent.map(sent => sent.opts.settings.subscriptionId), ['a', 'b', 'c']);
+  assert.equal(h.manager.busy(run.sessionId), false);
+});
+
+test('Codex compaction retains retry exhaustion metadata when choosing a backup', async t => {
+  const h = subscriptionFixture(t), c = h.manager.create('codex');
+  h.manager.append(c, { role: 'user', text: 'Preserve the task' });
+  const pending = h.manager.compact(c.id);
+  await h.flush();
+  const session = h.sent.at(-1).session;
+  session.running = false;
+  h.manager.capture('codex', { type: 'result', subtype: 'error', is_error: true, runId: session.gen, session_id: session.sessionId,
+    result: 'Connection failed', codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 503 } } });
+  await h.flush();
+  assert.equal(h.sent.at(-1).opts.settings.subscriptionId, 'b');
+  h.finish('codex', 'success', 'Preserved task summary');
+  assert.equal((await pending).ok, true);
+});
 
 for (const engine of ['codex', 'kimi']) test(engine + ' compaction quota fallback retries only the failed fragment and pins the backup', async t => {
   const h = subscriptionFixture(t, engine), c = h.manager.create(engine);
@@ -527,12 +598,13 @@ test('Codex pre-send compaction fallback continues the original message and pers
   assert.equal(h.accountUpdates.length, 1);
 });
 
-for (const failure of ['Usage limit reached', '401 authentication failed']) test('Codex native compaction account fallback preserves the native binding until its summary is saved: ' + failure, async t => {
+for (const [failure, codexErrorInfo] of [['Usage limit reached'], ['401 authentication failed'],
+  ['Connection failed', { responseTooManyFailedAttempts: { httpStatusCode: 503 } }]]) test('Codex native compaction account fallback preserves the native binding until its summary is saved: ' + failure, async t => {
   const h = codexSelectionFixture(t), ensure = h.drivers.codex.ensure;
   h.drivers.codex.nativeCompaction = true;
   h.drivers.codex.ensure = options => {
     const session = ensure(options);
-    session.compact = async () => { throw new Error(failure); };
+    session.compact = async () => { throw Object.assign(new Error(failure), { codexErrorInfo }); };
     return session;
   };
   const run = await h.manager.send('codex', { prompt: 'Remember the task' });
@@ -551,14 +623,15 @@ for (const failure of ['Usage limit reached', '401 authentication failed']) test
   assert.equal(h.codex.accountState().activeId, 'account-1');
 });
 
-test('Codex compaction retries each account once and keeps its history and selection when all accounts fail', async t => {
+for (const [failure, options] of [['Usage limit reached', {}], ['Retry limit reached', { manualFallback: true }],
+  ['Retry limit reached', { automatic: true, portable: true }]]) test('Codex compaction keeps its history and selection when all accounts fail: ' + failure + ' ' + JSON.stringify(options), async t => {
   const h = codexSelectionFixture(t), c = h.manager.create('codex');
   h.manager.append(c, { role: 'user', text: 'Preserve the original task' });
-  const pending = h.manager.compact(c.id).catch(error => error);
+  const pending = h.manager.compact(c.id, options).catch(error => error);
   for (let index = 0; index < 3; index++) {
-    await h.flush(); h.finish('codex', 'error', 'Usage limit reached');
+    await h.flush(); h.finish('codex', 'error', failure);
   }
-  assert.match((await pending).message, /Usage limit reached/);
+  assert.ok((await pending).message.includes(failure));
   assert.deepEqual(h.sent.map(sent => sent.opts.settings.subscriptionId), ['default', 'account-1', 'account-2']);
   assert.deepEqual(h.manager.rows(c).filter(row => !row.internal).map(row => row.text), ['Preserve the original task']);
   assert.equal(h.manager.busy(c.id), false);
@@ -700,7 +773,8 @@ test('Codex quota fallback persists and broadcasts the serving account without r
 test('Codex preflight quota fallback updates the current account on a successful result without stream output', async t => {
   const h = codexSelectionFixture(t);
   const accountFile = path.join(h.options.dataDir, 'codex', 'account-state.json');
-  const state = JSON.parse(fs.readFileSync(accountFile)); state.rateLimits.primary.usedPercent = 100;
+  const state = JSON.parse(fs.readFileSync(accountFile));
+  state.rateLimits = { primary: { usedPercent: 100 }, credits: { balance: '0' } };
   fs.writeFileSync(accountFile, JSON.stringify(state));
   // Reload the cache before a new turn observes the exhausted account.
   const codex = createCodex(h.options);

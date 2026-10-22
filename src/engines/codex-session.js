@@ -181,7 +181,7 @@ class CodexSession extends StreamingSession {
       this.compaction = null; this.running = false;
       clearTimeout(operation.timer); clearTimeout(this.cancelTimer);
       if (result.subtype === 'success' && !result.is_error && !this.cancelled) operation.resolve({ ok: true });
-      else operation.reject(Object.assign(new Error(result.result || 'Codex compaction canceled'), { code: result.code }));
+      else operation.reject(Object.assign(new Error(result.result || 'Codex compaction canceled'), { code: result.code, codexErrorInfo: result.codexErrorInfo }));
       return;
     }
     if (this.autoCompacting) {
@@ -244,7 +244,7 @@ class CodexSession extends StreamingSession {
         this.compaction.onProgress({ state: 'running' });
       } else if (method === 'turn/completed') {
         this.finish({ subtype: params.turn.status === 'completed' ? 'success' : params.turn.status === 'interrupted' ? 'stopped' : 'error',
-          result: params.turn.error?.message });
+          result: params.turn.error?.message, codexErrorInfo: params.turn.error?.codexErrorInfo });
       }
       return;
     }
@@ -307,7 +307,7 @@ class CodexSession extends StreamingSession {
       const turn = params.turn, failed = turn.status === 'failed';
       this.finish({ subtype: this.cancelled || turn.status === 'interrupted' ? 'stopped' : failed ? 'error' : 'success',
         ...(!failed && turn.id === this.turnId ? { nativeContextRetained: true } : {}),
-        is_error: failed, ...(failed ? { result: turn.error?.message || 'Codex turn failed' } : {}),
+        is_error: failed, ...(failed ? { result: turn.error?.message || 'Codex turn failed', codexErrorInfo: turn.error?.codexErrorInfo } : {}),
         ...(this.usage ? { usage: this.usage } : {}) });
     }
   }

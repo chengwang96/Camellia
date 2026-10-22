@@ -331,12 +331,18 @@ class DiscussionManager {
     return this.fail(id, deliveryId, generation, 'cancelled', confirmation);
   }
   resolveSerial(id, deliveryId, action, actionId) {
+    return this.resolveDelivery(id, deliveryId, action, actionId, true);
+  }
+  retry(id, deliveryId, actionId) {
+    return this.resolveDelivery(id, deliveryId, 'retry', actionId);
+  }
+  resolveDelivery(id, deliveryId, action, actionId, serialOnly = false) {
     required(actionId, 'action ID');
     if (!['skip', 'retry'].includes(action)) throw new Error('Invalid serial action');
     return this.store.update(id, state => {
       const delivery = state.deliveries.find(d => d.id === deliveryId);
       const request = state.requests.find(r => r.id === delivery?.requestId);
-      if (request?.mode !== 'serial' || !RETRYABLE.has(delivery.status)) throw new Error('Serial delivery is not retryable');
+      if (!request || serialOnly && request.mode !== 'serial' || !RETRYABLE.has(delivery.status)) throw new Error('Discussion delivery is not retryable');
       if (delivery.serialResolution) {
         if (delivery.resolutionActionId !== actionId || delivery.serialResolution !== action) throw new Error('Serial failure already resolved');
         return action === 'retry' ? state.deliveries.find(d => d.id === delivery.retryDeliveryId) : delivery;
@@ -345,7 +351,7 @@ class DiscussionManager {
       // Startup recovery and Stop mark untouched queued successors terminal.
       // They must not prevent an explicit retry/skip of this member. Leave
       // those successors stopped until the user retries each one explicitly.
-      if (request.deliveryIds.slice(index + 1).some(key => {
+      if (request.mode === 'serial' && request.deliveryIds.slice(index + 1).some(key => {
         const next = state.deliveries.find(d => d.id === key);
         return next.status !== 'queued' && !(RETRYABLE.has(next.status) && next.generation === null);
       })) throw new Error('Serial successors already changed');
@@ -369,7 +375,8 @@ class DiscussionManager {
         if (JSON.stringify(previous) !== JSON.stringify(current)) throw new Error('Retry binding changed');
       }
       const retry = { id: randomUUID(), requestId: request.id, participantId: participant.id, status: 'queued',
-        inputThroughSeq: null, generation: null, resultId: null, retryOf: delivery.id };
+        inputThroughSeq: request.mode === 'parallel' ? state.messages.find(m => m.id === request.messageId).seq : null,
+        generation: null, resultId: null, retryOf: delivery.id };
       delivery.serialResolution = action; delivery.resolutionActionId = actionId; delivery.retryDeliveryId = retry.id;
       request.deliveryIds.splice(index + 1, 0, retry.id);
       state.deliveries.splice(state.deliveries.indexOf(delivery) + 1, 0, retry);

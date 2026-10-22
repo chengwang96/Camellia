@@ -27,7 +27,7 @@ test('only the default account reuses the single-account home directory', () => 
 test('quota verdicts cover Kimi usage windows and every Codex rate-limit bucket', () => {
   assert.equal(accounts.accountExhausted('kimi', { usage: { windows: [{ usedPercent: 99 }] } }), false);
   assert.equal(accounts.accountExhausted('kimi', { usage: { windows: [{ usedPercent: 100 }] } }), true);
-  assert.equal(accounts.accountExhausted('codex', { rateLimits: { primary: { usedPercent: 100 }, secondary: { usedPercent: 10 } } }), true);
+  assert.equal(accounts.accountExhausted('codex', { rateLimits: { primary: { usedPercent: 100 }, secondary: { usedPercent: 10 }, credits: { balance: '0' } } }), true);
   assert.equal(accounts.accountExhausted('codex', { rateLimits: { codex: { primary: { usedPercent: 20 }, secondary: { usedPercent: 30 } } } }), false);
   assert.equal(accounts.accountExhausted('codex', { rateLimits: null }), false);
   assert.equal(accounts.accountExhausted('antigravity', { models: [] }), false);
@@ -71,9 +71,9 @@ test('a new session prefers the conversation binding, then the selected account,
 test('account summaries expose sign-in, quota and identity per account', () => {
   const list = accounts.normalizeAccounts(null);
   const summaries = accounts.accountSummaries({ engine: 'codex', accounts: list, activeId: 'default',
-    states: { default: { account: { email: 'a@b.c', planType: 'plus' }, models: [{ id: 'm' }], rateLimits: { primary: { usedPercent: 100 } } } } });
+    states: { default: { account: { email: 'a@b.c', planType: 'plus' }, models: [{ id: 'm' }], rateLimits: { primary: { usedPercent: 100 }, credits: { balance: '0' } } } } });
   assert.deepEqual(summaries, [{ id: 'default', label: '', active: true, signedIn: true, exhausted: true, installed: true,
-    quotaWindows: [{ label: 'Usage', usedPercent: 100, resetsAt: null }], verifiedAt: null, loginPending: false, error: '', models: 1, email: 'a@b.c', plan: 'plus', rateLimitResetCredits: null, credits: null }]);
+    quotaWindows: [{ label: 'Usage', usedPercent: 100, resetsAt: null }], verifiedAt: null, loginPending: false, error: '', models: 1, email: 'a@b.c', plan: 'plus', rateLimitResetCredits: null, credits: { balance: 0, hasCredits: false, unlimited: false } }]);
 });
 
 test('a conversation keeps its account; only a new conversation fails over to available quota', () => {

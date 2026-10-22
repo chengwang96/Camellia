@@ -358,6 +358,35 @@ test('first send verifies once, repairs missing old context metadata, and retry 
   assert.equal(saved.messages.at(-1).text, 'Test reply'); assert.equal(saved.verifying, false);
 });
 
+test('parallel retry keeps the original question, attachments, completed replies and input snapshot across restart', async t => {
+  const h = setup(t), group = await createMembers(h.service, 2), [first, target] = group.participants;
+  const imported = h.service.assets.importData(group.id, [{ name: 'context.txt', bytes: Buffer.from('Original attachment'), isImage: false }]);
+  const request = h.service.manager.enqueue(group.id, { requestId: 'parallel-failure', text: 'Keep this question once',
+    participantIds: [first.id, target.id], mode: 'parallel', attachments: imported });
+  const completed = h.service.manager.prepare(group.id, request.deliveryIds[0]);
+  h.service.manager.saveInput(group.id, completed.id, completed.generation, { prompt: 'Prior input', inputThroughSeq: completed.inputThroughSeq });
+  h.service.manager.start(group.id, completed.id, completed.generation, randomUUID());
+  h.service.manager.complete(group.id, completed.id, completed.generation, 'Keep this completed reply', { ...completed, deliveryId: completed.id, stopped: true, released: true });
+  const failed = h.service.manager.prepare(group.id, request.deliveryIds[1]);
+  h.service.manager.fail(group.id, failed.id, failed.generation, 'failed', { ...failed, deliveryId: failed.id, stopped: true, released: true }, 'Native storage mapping changed ownership');
+  h.service.manager.enqueue(group.id, { requestId: 'later-note', text: 'FUTURE_CONTEXT_MUST_NOT_ENTER_RETRY', participantIds: [] });
+  const before = h.service.manager.get(group.id);
+  await h.service.call('retry', { id: group.id, deliveryId: failed.id, actionId: 'parallel-retry' });
+  for (let i = 0; i < 20 && h.service.active; i++) await tick();
+  assert.equal(h.calls.length, 1);
+  const retried = h.service.manager.get(group.id), attempt = retried.deliveries.find(d => d.retryOf === failed.id);
+  assert.equal(attempt?.status, 'completed'); assert.equal(attempt.inputThroughSeq, failed.inputThroughSeq);
+  assert.deepEqual(retried.messages.slice(0, -1), before.messages);
+  assert.deepEqual(retried.deliveries.find(d => d.id === completed.id), before.deliveries.find(d => d.id === completed.id));
+  assert.equal(retried.requests.length, before.requests.length);
+  assert.deepEqual(h.calls[0].plan.attachments, imported);
+  assert.doesNotMatch(h.calls[0].plan.prompt, /FUTURE_CONTEXT_MUST_NOT_ENTER_RETRY|Keep this completed reply/);
+  h.service.manager.store.close(); h.service = new DiscussionService(h.options);
+  await h.service.call('retry', { id: group.id, deliveryId: failed.id, actionId: 'parallel-retry' });
+  assert.equal(h.calls.length, 1, 'Repeating the saved retry action after restart never resends model input');
+  await h.service.shutdown();
+});
+
 test('sending refreshes legacy working budgets for the same model/account and preserves explicit capacities', async t => {
   for (const original of [32768, 64000]) {
     const h = setup(t); h.binding.contextWindow = original;

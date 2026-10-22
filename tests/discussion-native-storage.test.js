@@ -132,11 +132,52 @@ test('bridge metadata without a checked database reserves storage but cannot aut
 });
 
 test('projection cannot silently replace a persisted native storage identity', () => {
-  const a = identity(); a.nativeId = randomUUID(); const sa = storage(process.cwd());
-  assert.throws(() => projectAntigravityStorage([{ ...owner(a), nativeStorage: sa }],
-    { bridges: [bridge(a.nativeId, storage(process.cwd()))], histories: [] }), /mapping changed/);
+  const a = identity(); a.nativeId = randomUUID(); const sa = storage(process.cwd()), observed = storage(process.cwd());
+  const conflicted = projectAntigravityStorage([{ ...owner(a), nativeStorage: sa }],
+    { bridges: [bridge(a.nativeId, observed)], histories: [] });
+  assert.deepEqual(conflicted.map(row => row.nativeStorage), [sa, observed]);
+  assert.ok(conflicted.every(row => row.ownerId === owner(a).ownerId && row.storageVerified === false));
+  const ownership = new NativeSessionOwnership({ readOwners: () => conflicted });
+  assert.throws(() => ownership.reserve(a), /mapping changed/);
   const projected = projectAntigravityStorage([{ ...owner(a), nativeStorage: sa }], { bridges: [], histories: [] });
   assert.deepEqual(projected[0].nativeStorage, sa); assert.equal(projected[0].storageVerified, false);
+});
+
+for (const retired of [false, true]) test(`a ${retired ? 'retired' : 'current'} mapping conflict reserves both histories without blocking independent members`, () => {
+  const h = sources(), bad = identity(), healthy = identity(), sa = storage(process.cwd()), observed = storage(process.cwd());
+  bad.nativeId = randomUUID(); healthy.nativeId = randomUUID();
+  const independent = storage(path.join(process.cwd(), 'independent'));
+  h.state.owners = [{ ...owner(bad), nativeStorage: sa, retired }, owner(healthy)];
+  h.state.topology.bridges = [bridge(bad.nativeId, observed), bridge(healthy.nativeId, independent)];
+  const lease = h.ownership.reserve(healthy);
+  assert.deepEqual(h.ownership.claimNative(lease, healthy.nativeId), independent);
+  h.ownership.assert(lease); h.ownership.release(lease);
+  const otherEngine = { ...identity(), engine: 'codex' };
+  h.state.owners.push(owner(otherEngine));
+  const otherLease = h.ownership.reserve(otherEngine); h.ownership.release(otherLease);
+  assert.throws(() => h.ownership.reserve(bad), /mapping changed/);
+  for (const reserved of [sa, observed]) {
+    const alias = identity(); alias.nativeId = randomUUID();
+    h.state.owners.push(owner(alias)); h.state.topology.bridges.push(bridge(alias.nativeId, reserved));
+    assert.throws(() => h.ownership.reserve(alias), /storage belongs to another/);
+  }
+  const fresh = identity(); h.state.owners.push(owner(fresh));
+  const freshLease = h.ownership.reserve(fresh); h.ownership.release(freshLease);
+});
+
+test('reverse guards reject aliases of both conflicted histories while allowing separate ordinary storage', t => {
+  const h = disk(t), first = h.start(), observed = storage(h.root), unrelated = randomUUID();
+  h.manager.fail(h.group.id, first.id, first.generation, 'failed', h.proof(first));
+  const aliases = [randomUUID(), randomUUID()];
+  const topology = { bridges: [bridge(first.nativeId, observed), bridge(aliases[0], first.nativeStorage),
+    bridge(aliases[1], observed), bridge(unrelated, storage(path.join(h.root, 'ordinary')))], histories: [] };
+  const drivers = { antigravity: { sessions: new SessionPool(), history: new ClaudeHistory(path.join(h.root, 'mirror')) } };
+  installDiscussionGuards({ dataDir: h.root, drivers, nativeStorage: () => topology });
+  for (const id of aliases) {
+    assert.throws(() => drivers.antigravity.sessions.assertAccess({ sessionId: id }), /owned by a discussion/);
+    assert.throws(() => drivers.antigravity.history.remove(id), /owned by a discussion/);
+  }
+  drivers.antigravity.sessions.assertAccess({ sessionId: unrelated });
 });
 
 test('invalid storage IDs, relative paths, secret fields, duplicate bridges and oversized topology reject', () => {

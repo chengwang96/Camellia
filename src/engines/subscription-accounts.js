@@ -86,12 +86,16 @@ function codexCredits(rateLimits) {
     hasCredits: credits.hasCredits === true, unlimited: credits.unlimited === true };
 }
 
-// A provider-reported quota verdict, not a failure: an account whose window is
-// fully used leaves rotation until the window resets.
+// A full Codex subscription window can still be served by account credits.
+// Unknown balances stay eligible until the provider actually rejects a turn.
 function accountExhausted(engine, state) {
   if (!state) return false;
   if (engine === 'kimi') return windowsExhausted(state.usage?.latest?.windows || state.usage?.windows);
-  if (engine === 'codex') return windowsExhausted(rateLimitWindows(state.rateLimits));
+  if (engine === 'codex') {
+    const credits = codexCredits(state.rateLimits);
+    return windowsExhausted(rateLimitWindows(state.rateLimits)) && credits?.balance === 0
+      && !credits.hasCredits && !credits.unlimited;
+  }
   return false;
 }
 

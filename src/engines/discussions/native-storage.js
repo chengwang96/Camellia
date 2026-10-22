@@ -60,9 +60,17 @@ function projectAntigravityStorage(owners, topology, maxEntries = 100000) {
       rows = [{ engine: 'antigravity', nativeId: bridge.nativeId, ownerId: 'external/antigravity-bridge/' + id }];
       byNative.set(id, rows); result.push(...rows);
     }
+    const conflict = observed && rows.some(row => row.nativeStorage && !sameStorage(row.nativeStorage, observed));
     for (const row of rows) {
-      if (row.nativeStorage && observed && !sameStorage(row.nativeStorage, observed)) throw new Error('Native storage mapping changed ownership');
-      if (observed) { row.nativeStorage = { ...observed }; row.storageVerified = bridge.databaseVerified === true; }
+      if (!observed) continue;
+      if (conflict && row.nativeStorage && !sameStorage(row.nativeStorage, observed)) {
+        // Reserve both identities for the same owner, without authorizing
+        // either mapping. Admission of this native ID will reject the conflict;
+        // unrelated members and fresh retry generations can still be checked.
+        // Keeping the observed identity protected also blocks bridge aliases.
+        result.push({ ...row, nativeStorage: { ...observed }, storageVerified: false });
+      } else row.nativeStorage = { ...observed };
+      row.storageVerified = !conflict && bridge.databaseVerified === true;
     }
   }
   const attributed = new Set(result.filter(row => row.engine === 'antigravity' && row.nativeStorage).map(row => storageKey(row.nativeStorage)));

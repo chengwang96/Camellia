@@ -343,6 +343,10 @@ class DiscussionScheduler {
     const result = this.manager.resolveSerial(id, deliveryId, action, actionId);
     this.pump(id); return result;
   }
+  retry(id, deliveryId, actionId) {
+    const result = this.manager.retry(id, deliveryId, actionId);
+    this.pump(id); return result;
+  }
 }
 
 module.exports = { DiscussionScheduler };

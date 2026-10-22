@@ -98,7 +98,9 @@ class NativeSessionOwnership {
     if (nativeClaim && nativeClaim !== record.ownerId) throw new Error('Native session belongs to another owner');
     let storage = record.nativeStorage || runtimeClaim?.nativeStorage || null;
     for (const owner of owners) if (owner.engine === record.engine && sameStoredId(owner.nativeId, nativeId) && owner.nativeStorage) {
-      if (storage && !sameStorage(storage, owner.nativeStorage)) throw new Error('Native storage mapping changed ownership');
+      if (storage && !sameStorage(storage, owner.nativeStorage)) throw Object.assign(new Error(
+        'Native storage mapping changed ownership. Retry this member to rebuild its private session from the saved discussion.'),
+        { code: 'DISCUSSION_NATIVE_STORAGE_CHANGED' });
       storage = owner.nativeStorage;
     }
     if (storage) {

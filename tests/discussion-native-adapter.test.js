@@ -447,9 +447,10 @@ test('application boundary runs duplicate and mixed Codex/ACP members, retaining
     registrations.push({ engine, driver, policy, runtime: h.adapter.runtime,
       bindings: [{ binding, evidence: h.adapter.reviewedEvidence(binding) }] });
   }
+  const remapped = new Map();
   const nativeStorage = () => {
     const ids = [...new Set(wires.filter(w => w.engine === 'antigravity' && w.nativeId).map(w => w.nativeId))];
-    const bridges = ids.map(nativeId => ({ nativeId, connection: 'api', storageDir: path.join(dir, 'native', nativeId), conversationId: nativeId.replaceAll('-', ''), databaseVerified: true }));
+    const bridges = ids.map(nativeId => ({ nativeId, connection: 'api', storageDir: path.join(dir, 'native', nativeId), conversationId: remapped.get(nativeId) || nativeId.replaceAll('-', ''), databaseVerified: true }));
     return { bridges, histories: bridges.map(({ nativeId, databaseVerified, ...storage }) => storage) };
   };
   const { registry } = createDiscussionBoundary({ dataDir: dir, drivers, conversations: () => [], nativeStorage,
@@ -478,4 +479,27 @@ test('application boundary runs duplicate and mixed Codex/ACP members, retaining
     assert.throws(() => drivers[member.engine].sessions.assertAccess({ sessionId: member.session.nativeId }), /owned by a discussion/);
     assert.equal(registry.capture(member.engine, { conversationId: member.session.runtimeId, runId: -1, type: 'result' }), true);
   }
+  const affected = state.participants.find(p => p.engine === 'antigravity'), saved = structuredClone(affected.session);
+  remapped.set(saved.nativeId, randomUUID().replaceAll('-', ''));
+  const broken = scheduler.enqueue(group.id, { requestId: 'changed-storage', text: 'Recover this response', participantIds: [affected.id], mode: 'serial' });
+  await Promise.all([...scheduler.runs.values()].map(run => run.done));
+  const failed = manager.get(group.id).deliveries.find(d => d.id === broken.deliveryIds[0]);
+  assert.equal(failed.status, 'failed'); assert.match(failed.failureReason, /mapping changed/);
+  assert.equal(wires.length, targets.length * 2, 'The conflicting continuation receives no input and opens no process');
+  const retired = manager.get(group.id).participants.find(p => p.id === affected.id).retiredSessions[0];
+  assert.deepEqual(retired.nativeStorage, saved.nativeStorage);
+  const beforeRetry = manager.get(group.id).messages;
+  scheduler.resolveSerial(group.id, failed.id, 'retry', 'retry-changed-storage');
+  await Promise.all([...scheduler.runs.values()].map(run => run.done));
+  const recovered = manager.get(group.id), fresh = recovered.participants.find(p => p.id === affected.id).session;
+  assert.equal(recovered.deliveries.at(-1).status, 'completed');
+  assert.notEqual(fresh.nativeId, saved.nativeId); assert.equal(fresh.generation, saved.generation + 1);
+  assert.deepEqual(recovered.messages.slice(0, -1), beforeRetry, 'Retry preserves the public transcript and does not duplicate the question');
+  assert.equal(recovered.messages.at(-1).text, 'antigravity public answer');
+  const healthy = recovered.participants.find(p => p.engine === 'codex');
+  scheduler.enqueue(group.id, { requestId: 'healthy-after-conflict', text: 'Continue independently', participantIds: [healthy.id] });
+  await Promise.all([...scheduler.runs.values()].map(run => run.done));
+  assert.equal(manager.get(group.id).deliveries.at(-1).status, 'completed');
+  assert.equal(errors.length, 1); assert.match(errors[0].message, /mapping changed/);
+  assert.ok(wires.every(w => w.proc.exitCode === 0));
 });

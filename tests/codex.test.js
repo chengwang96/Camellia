@@ -288,6 +288,31 @@ test('Codex terminal missing-thread failure reaches the shared recovery layer', 
   assert.equal(session.running, false);
 });
 
+test('Codex waits for native retries to finish and forwards the terminal retry reason', async context => {
+  const { session, events, notify } = await outputFixture(context);
+  const codexErrorInfo = { responseTooManyFailedAttempts: { httpStatusCode: 503 } };
+  notify('error', { willRetry: true, error: { message: 'Reconnecting... 1/5' } });
+  assert.equal(session.running, true);
+  assert.equal(events.some(event => event.type === 'result'), false);
+  notify('turn/completed', { turn: { status: 'failed', error: { message: 'Connection failed', codexErrorInfo } } });
+  assert.equal(session.running, false);
+  assert.equal(events.at(-1).is_error, true);
+  assert.deepEqual(events.at(-1).codexErrorInfo, codexErrorInfo);
+});
+
+test('Codex native compaction preserves the terminal retry metadata', async context => {
+  const { session, notify } = await outputFixture(context);
+  notify('turn/completed', { turn: { status: 'completed' } });
+  const pending = session.compact();
+  const codexErrorInfo = { responseTooManyFailedAttempts: { httpStatusCode: 503 } };
+  notify('turn/completed', { turn: { status: 'failed', error: { message: 'Connection failed', codexErrorInfo } } });
+  await assert.rejects(pending, error => {
+    assert.equal(error.message, 'Connection failed');
+    assert.deepEqual(error.codexErrorInfo, codexErrorInfo);
+    return true;
+  });
+});
+
 test('Codex stderr persistence diagnostics alone do not terminate or replay an active turn', async context => {
   const { session, events, notify } = await outputFixture(context);
   session.client.proc.stderr.write('ERROR codex_core::session: failed to record rollout items: thread native-fixture not found\n');
@@ -618,7 +643,7 @@ test('Codex gives every ChatGPT account its own home and switches to the one wit
   const root = temporary(t), home = path.join(root, 'codex');
   fs.mkdirSync(home, { recursive: true });
   fs.writeFileSync(path.join(home, 'account-state.json'), JSON.stringify({ account: { email: 'primary@example.com' },
-    models: [{ id: 'account-model' }], rateLimits: { primary: { usedPercent: 100 } } }));
+    models: [{ id: 'account-model' }], rateLimits: { primary: { usedPercent: 100 }, credits: { balance: '0' } } }));
   const second = path.join(root, 'subscription-accounts', 'codex', 'account-1');
   fs.mkdirSync(second, { recursive: true });
   fs.writeFileSync(path.join(second, 'account-state.json'), JSON.stringify({ account: { email: 'backup@example.com' },
@@ -634,7 +659,7 @@ test('Codex gives every ChatGPT account its own home and switches to the one wit
   assert.equal(engine.accountState('account-1').home, second);
   assert.equal(engine.accountState('account-1').account.email, 'backup@example.com');
   assert.deepEqual(engine.accountState().accounts, [
-    { id: 'default', label: '', active: true, signedIn: true, exhausted: true, installed: false, loginPending: false, error: '', models: 1, email: 'primary@example.com', plan: '', rateLimitResetCredits: null, credits: null, verifiedAt: null, quotaWindows: [{ label: 'Usage', usedPercent: 100, resetsAt: null }] },
+    { id: 'default', label: '', active: true, signedIn: true, exhausted: true, installed: false, loginPending: false, error: '', models: 1, email: 'primary@example.com', plan: '', rateLimitResetCredits: null, credits: { balance: 0, hasCredits: false, unlimited: false }, verifiedAt: null, quotaWindows: [{ label: 'Usage', usedPercent: 100, resetsAt: null }] },
     { id: 'account-1', label: 'Backup', active: false, signedIn: true, exhausted: false, installed: false, loginPending: false, error: '', models: 1, email: 'backup@example.com', plan: '', rateLimitResetCredits: null, credits: null, verifiedAt: null, quotaWindows: [{ label: 'Usage', usedPercent: 20, resetsAt: null }] },
   ]);
   // A conversation that already ran on an account reports that account, so the
@@ -657,7 +682,7 @@ test('Codex selection reflects a serving backup even when its last quota has jus
     const dir = id === 'default' ? path.join(root, 'codex') : path.join(root, 'subscription-accounts', 'codex', id);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'account-state.json'), JSON.stringify({ account: { email: id + '@example.com' },
-      models: [{ id: 'fixture' }], rateLimits: { primary: { usedPercent: 100 } } }));
+      models: [{ id: 'fixture' }], rateLimits: { primary: { usedPercent: 100 }, credits: { balance: '0' } } }));
   }
   const engine = createCodex({ dataDir: root, loadConfig: () => config, saveConfig: patch => { config = { ...config, ...patch }; },
     runtimes: () => ({ locate: () => null }), onAccount: state => events.push(state) });

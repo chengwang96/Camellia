@@ -23,7 +23,7 @@ const { runSummaryPipeline, DEFAULT_MAX_REQUESTS, MAX_CACHED_SUMMARIES } = requi
 const { searchFiles, searchContents } = require('../main/file-search');
 const { buildHistoryIndex, searchHistory: matchHistory } = require('../main/conversation-index');
 const { previewKind } = require('../main/file-preview');
-const { subscriptionFailure, availableAccount } = require('./subscription-recovery');
+const { subscriptionFailure, subscriptionRecoveryMessage, availableAccount } = require('./subscription-recovery');
 const { memoryInstructions } = require('./global-memory');
 const { ConversationHistory, FLAGS: HISTORY_FLAGS } = require('./conversation-history');
 const { retainEvent } = require('./tool-history');
@@ -125,8 +125,8 @@ function nativeEditCheckpoint(segment, edit) {
 const recoveryAdvice = 'The original history is retained. Try manual compaction, switch to a larger-context model, or continue in a new conversation. Split oversized messages or attachments. Files and external actions have not been rolled back.';
 const storageFailure = error => Boolean(error?.persistence || ['ENOSPC', 'EIO', 'EACCES', 'EPERM', 'EROFS', 'EBUSY'].includes(error?.code)
   || error?.cause && storageFailure(error.cause));
-const retryNativeCompaction = error => !storageFailure(error)
-  && !subscriptionFailure({ is_error: true, result: error.message })
+const retryNativeCompaction = (error, engine) => !storageFailure(error)
+  && !subscriptionFailure({ is_error: true, result: error.message, codexErrorInfo: error.codexErrorInfo }, engine)
   && !/\b403\b|context compaction timed out/i.test(error.message)
   && (/^(?:ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|ETIMEDOUT)$/.test(error.code || '')
     || /\b50[234]\b|(?:provider|service|network) (?:is )?(?:temporarily )?unavailable|fetch failed|socket hang up|connection (?:reset|closed|refused)|TLS handshake.*EOF|websocket.*(?:closed|disconnect)/i.test(error.message));
@@ -140,8 +140,8 @@ const recordNativeCompaction = (segment, selection) => {
     selectionRevision: selection.selectionRevision, runtimeId: selection.runtimeId };
   delete segment.contextUsage;
 };
-const summaryFallbackAllowed = error => !storageFailure(error)
-  && !subscriptionFailure({ is_error: true, result: error.message }) && !/\b403\b/.test(error.message)
+const summaryFallbackAllowed = (error, engine) => !storageFailure(error)
+  && !subscriptionFailure({ is_error: true, result: error.message, codexErrorInfo: error.codexErrorInfo }, engine) && !/\b403\b/.test(error.message)
   && (error.overflow || error.emptySummary
   || error.name === 'TimeoutError' || /(?:summary|summarizer|compaction|compacted context|budget).*(?:too large|too deep|empty|limit reached|budget exhausted|does not fit|timed out|timeout|shortening attempts|split the history)/i.test(error.message));
 // Compaction failures already carry the advice, so appending it again at the
@@ -1501,9 +1501,9 @@ class SharedConversations {
       } catch (error) { this.log('Subscription account selection update failed: ' + error.message); }
     }
     const failure = event.type === 'result' && accountSettings?.connection === 'subscription'
-      ? subscriptionFailure(event) : null;
+      ? subscriptionFailure(event, engine) : null;
     if (failure === 'auth') event = { ...event, result: event.result + '\n' + translate('Subscription login has expired or is invalid. Sign in again in Settings → Subscription accounts.', this.loadConfig().language) };
-    if (failure && (failure !== 'quota' || this.loadConfig().subscriptionAutoSwitch?.[engine] !== false) && !a.internal && !a.cancelled && this.drivers[engine].subscriptionAccounts) {
+    if (failure && (failure === 'auth' || this.loadConfig().subscriptionAutoSwitch?.[engine] !== false) && !a.internal && !a.cancelled && this.drivers[engine].subscriptionAccounts) {
       a.subscriptionAttempts ||= [];
       const failedId = accountSettings.subscriptionId;
       if (failedId && !a.subscriptionAttempts.includes(failedId)) a.subscriptionAttempts.push(failedId);
@@ -1517,9 +1517,7 @@ class SharedConversations {
         this.forgetNativeSession(c, engine);
         a.nativeFallbackPrompt = () => this.context(c, engine)
           + 'Continue the unfinished user request after a subscription account switch. Do not repeat completed actions. Files and external effects have not been rolled back; inspect current state before retrying uncertain actions.';
-        this.onStatus({ sessionId: c.id, text: translate(failure === 'auth'
-          ? 'Subscription login expired. Sign in again in Settings → Subscription accounts. Switching to another signed-in account and retrying…'
-          : 'Subscription quota reached. Switching to another signed-in account and retrying…', this.loadConfig().language) });
+        this.onStatus({ sessionId: c.id, text: translate(subscriptionRecoveryMessage(failure), this.loadConfig().language) });
         this.active.delete(c.id);
         a.session = null; a.priorCursor = 0; a.text = ''; a.assistant = []; a.lastCallUsage = null;
         a.nativeSessionProgress = false; a.nativeEditEligible = false;
@@ -2545,7 +2543,7 @@ class SharedConversations {
               // A completed/started operation must not be submitted again after
               // an uncertain failure. Retry one transient connection failure
               // before progress, retaining the same native thread and account.
-              if (attempt || progressing || switching.cancelled || recovery?.cancelled || switching.timedOut || !retryNativeCompaction(error)) throw error;
+              if (attempt || progressing || switching.cancelled || recovery?.cancelled || switching.timedOut || !retryNativeCompaction(error, engine)) throw error;
               diagnostics.retries++;
               status('Retrying native context compaction…', { state: 'running', native: true });
               await withLimit(new Promise(resolve => setTimeout(resolve, NATIVE_COMPACTION_RETRY_MS)));
@@ -2581,12 +2579,12 @@ class SharedConversations {
           // message. Too few native groups is temporary, not missing support.
           const tooFewMessages = engine === 'claude' && /^Not enough messages to compact\.?$/i.test(String(error.message).trim());
           if (!switching.cancelled && !recovery?.cancelled && switching.subscriptionSelection
-              && subscriptionFailure({ is_error: true, result: error.message })) {
+              && subscriptionFailure({ is_error: true, result: error.message, codexErrorInfo: error.codexErrorInfo }, engine)) {
             switching.subscriptionId = session?.settings?.subscriptionId || compactionSettings.subscriptionId
               || switching.subscriptionSelection.activeId;
           }
           const subscriptionRetry = !switching.cancelled && !recovery?.cancelled && this.switchCompactionAccount(engine, switching,
-            { is_error: true, result: error.message }, status);
+            { is_error: true, result: error.message, codexErrorInfo: error.codexErrorInfo }, status);
           if (switching.cancelled || recovery?.cancelled || !lostNative && error.code !== -32601 && !overflow && !nativeTimeout && !tooFewMessages && !subscriptionRetry) throw error;
           if (overflow) this.reduceContextBudget(c, engine, pinnedSettings || this.settings(engine, id), error.message);
           else if (!lostNative && !nativeTimeout && !tooFewMessages && !subscriptionRetry) { segment.nativeCompactionUnsupported = true; this.save(c); }
@@ -2690,8 +2688,8 @@ class SharedConversations {
     } catch (error) {
       if (switching.timedOut) error = switching.timedOut;
       const manualLocalFallback = manualFallback && diagnostics.route !== 'native' && routeReason !== 'native-eligible' && !storageFailure(error)
-        && !subscriptionFailure({ is_error: true, result: error.message }) && !/\b403\b/.test(error.message);
-      if ((manualLocalFallback || automatic && portableAttempted && summaryFallbackAllowed(error)) && !switching.cancelled && !recovery?.cancelled && !history) {
+        && !subscriptionFailure({ is_error: true, result: error.message, codexErrorInfo: error.codexErrorInfo }, engine) && !/\b403\b/.test(error.message);
+      if ((manualLocalFallback || automatic && portableAttempted && summaryFallbackAllowed(error, engine)) && !switching.cancelled && !recovery?.cancelled && !history) {
         try { return saveLocalFallback(error.message); }
         catch (fallbackError) { error = fallbackError; }
       }
@@ -2715,17 +2713,15 @@ class SharedConversations {
     }
   }
   switchCompactionAccount(engine, switching, result, status) {
-    const failure = subscriptionFailure(result), failedId = switching.subscriptionId;
+    const failure = subscriptionFailure(result, engine), failedId = switching.subscriptionId;
     if (!failure || !failedId || !switching.subscriptionSelection
-        || failure === 'quota' && this.loadConfig().subscriptionAutoSwitch?.[engine] === false) return false;
+        || failure !== 'auth' && this.loadConfig().subscriptionAutoSwitch?.[engine] === false) return false;
     const attempts = switching.subscriptionAttempts;
     if (!attempts.includes(failedId)) attempts.push(failedId);
     const next = attempts.length < 12 && availableAccount(this.drivers[engine].subscriptionAccounts(), attempts);
     if (!next) return false;
     switching.subscriptionId = next;
-    status(translate(failure === 'auth'
-      ? 'Subscription login expired. Sign in again in Settings → Subscription accounts. Switching to another signed-in account and retrying…'
-      : 'Subscription quota reached. Switching to another signed-in account and retrying…', this.loadConfig().language),
+    status(translate(subscriptionRecoveryMessage(failure), this.loadConfig().language),
       { state: 'running', stage: 'summarizing' });
     return true;
   }
@@ -2806,14 +2802,15 @@ class SharedConversations {
           })()]);
           if (stopped()) throw new Error('Compaction canceled');
           if (contextOverflow(result)) throw Object.assign(new Error(result.result), { overflow: true });
-          if (result.is_error || result.subtype !== 'success') throw new Error('Compaction failed; the original conversation is retained. ' + (result.result || result.subtype));
+          if (result.is_error || result.subtype !== 'success') throw Object.assign(new Error('Compaction failed; the original conversation is retained. ' + (result.result || result.subtype)),
+            { codexErrorInfo: result.codexErrorInfo });
           metric.outputChars = result.result?.length || 0;
           metric.outcome = metric.outputChars > maxChars ? 'shortened' : 'success';
           return { text: result.result, usage: result.usage };
         } catch (error) {
           metric.outcome = 'failed';
           if (!stopped() && !storageFailure(error) && !attempt?.tools.size && !attempt?.permissions.size
-              && this.switchCompactionAccount(engine, switching, { is_error: true, result: error.message }, status)) {
+              && this.switchCompactionAccount(engine, switching, { is_error: true, result: error.message, codexErrorInfo: error.codexErrorInfo }, status)) {
             summarySettings.subscriptionId = switching.subscriptionId;
             continue;
           }

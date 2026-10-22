@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { removeTree } = require('./test-fs.cjs');
 const { readJson } = require('../src/shared/json-store');
-const { accountSummary } = require('../src/engines/subscription-accounts');
+const { accountSummary, accountExhausted, usableAccountId } = require('../src/engines/subscription-accounts');
 const { quotaPatch } = require('../src/engines/codex-reset-credits');
 const { createCodex } = require('../src/engines/codex');
 
@@ -38,6 +38,35 @@ test('Codex credits distinguish zero, missing balances and unlimited access', ()
   assert.equal(Object.hasOwn(accountSummary('kimi', profile, {}), 'credits'), false);
 });
 
+test('Codex rotation requires both a full subscription window and explicitly empty credits', () => {
+  const exhausted = rateLimits => accountExhausted('codex', { rateLimits });
+  const wrap = [snapshot => snapshot, snapshot => ({ codex: snapshot }), snapshot => ({ other: snapshot })];
+  for (const group of wrap) {
+    for (const balance of [0, '0', '0.00']) {
+      assert.equal(exhausted(group({ primary: { usedPercent: 100 }, credits: credits(balance) })), true);
+      assert.equal(exhausted(group({ secondary: { usedPercent: 100 }, credits: credits(balance) })), true);
+      assert.equal(exhausted(group({ primary: { usedPercent: 99 }, credits: credits(balance) })), false);
+      assert.equal(exhausted(group({ credits: credits(balance) })), false);
+    }
+    for (const balance of [15, '58453.6', '0.001', null, undefined, '', ' ', 'unknown', 'Infinity', -1, false, [], {}]) {
+      assert.equal(exhausted(group({ primary: { usedPercent: 100 }, credits: credits(balance) })), false);
+    }
+    assert.equal(exhausted(group({ primary: { usedPercent: 100 } })), false);
+    assert.equal(exhausted(group({ primary: { usedPercent: 100 }, credits: credits(0, true) })), false);
+    assert.equal(exhausted(group({ primary: { usedPercent: 100 }, credits: { balance: 0, hasCredits: true } })), false);
+  }
+});
+
+test('Codex account selection keeps the selected account while credits can cover its full window', () => {
+  const options = { engine: 'codex', activeId: 'default', accounts: [profile, { id: 'account-1' }], states: {
+    default: { account: {}, rateLimits: { primary: { usedPercent: 100 }, credits: credits('15') } },
+    'account-1': { account: {}, rateLimits: { primary: { usedPercent: 10 }, credits: credits(0) } },
+  } };
+  assert.equal(usableAccountId(options), 'default');
+  options.states.default.rateLimits.credits = credits(0);
+  assert.equal(usableAccountId(options), 'account-1');
+});
+
 test('Codex refresh, sparse notifications and cached reloads keep credit balances scoped to each account', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-credit-test-'));
   let engine, reloaded;
@@ -50,7 +79,7 @@ test('Codex refresh, sparse notifications and cached reloads keep credit balance
   let config = { subscriptionAccounts: { codex: [profile, { id: 'account-1', label: 'Backup' }] } };
   const notifications = new Map(), events = [];
   const readings = {
-    default: { limitId: 'codex', primary: { usedPercent: 13 }, credits: credits('58453.6') },
+    default: { limitId: 'codex', primary: { usedPercent: 100 }, credits: credits('58453.6') },
     'account-1': { limitId: 'codex', primary: { usedPercent: 30 }, credits: credits('25') },
   };
   const options = { dataDir: root, loadConfig: () => config, saveConfig: patch => { config = { ...config, ...patch }; },
@@ -72,9 +101,11 @@ test('Codex refresh, sparse notifications and cached reloads keep credit balance
   await engine.handlers['account-refresh']({ id: 'account-1' });
   const balances = () => engine.accountState().accounts.map(account => account.credits?.balance);
   assert.deepEqual(balances(), [58453.6, 25]);
+  assert.equal(engine.accountState().accounts[0].exhausted, false);
   const notify = update => notifications.get('default')('account/rateLimits/updated', { rateLimits: update });
-  notify({ limitId: 'codex', primary: { usedPercent: 14 }, credits: null });
+  notify({ limitId: 'codex', primary: { usedPercent: 100 }, credits: null });
   assert.deepEqual(balances(), [58453.6, 25]);
+  assert.equal(engine.accountState().accounts[0].exhausted, false);
   assert.equal(engine.accountState().rateLimits.review.primary.usedPercent, 5);
   notify({ limitId: 'codex', credits: credits('58450.125') });
   assert.deepEqual(balances(), [58450.125, 25]);
@@ -84,9 +115,11 @@ test('Codex refresh, sparse notifications and cached reloads keep credit balance
   assert.equal(reloaded.accountState().accounts[0].credits.balance, 58450.125);
   notify({ limitId: 'codex', credits: credits('0') });
   assert.deepEqual(balances(), [0, 25]);
+  assert.equal(engine.accountState().accounts[0].exhausted, true);
   readings.default = { ...readings.default, credits: null };
   await engine.handlers['account-refresh']({ id: 'default' });
   assert.equal(engine.accountState().accounts[0].credits, null);
+  assert.equal(engine.accountState().accounts[0].exhausted, false);
   await engine.handlers['sign-out']();
   assert.equal(engine.accountState().accounts[0].credits, null);
   assert.equal(engine.accountState().accounts[1].credits.balance, 25);

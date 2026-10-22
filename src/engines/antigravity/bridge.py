@@ -158,9 +158,11 @@ class Bridge:
 
     async def prepare_native(self):
         # SDK 0.1.17 allocates its database during the handshake, but its public
-        # conversation_id remains empty until a step update. The fresh, scoped
-        # directory must contain one native database. The main-process raw
-        # inventory independently verifies its SQLite identity before input.
+        # conversation_id remains empty until a step update. A fresh scoped
+        # directory must contain one native database. A resumed session
+        # can also contain child trajectories, so pin its saved main database.
+        # The main-process raw inventory independently verifies every SQLite
+        # identity before discussion input.
         if self.turn is not None:
             raise ValueError("Native preparation must precede the first prompt")
         if not self.agent:
@@ -168,18 +170,22 @@ class Bridge:
         directory = self.session_dir / "native"
         names = []
         for entry in directory.iterdir():
-            if len(names) >= 3 or not re.fullmatch(r"[0-9a-f]{32}\.db(?:-(?:wal|shm))?", entry.name):
+            if len(names) >= 100000 or not re.fullmatch(r"[0-9a-f]{32}\.db(?:-(?:wal|shm))?", entry.name):
                 raise ValueError("Ambiguous prepared Antigravity storage")
             if entry.is_symlink() or not entry.is_file() or entry.stat().st_nlink != 1:
                 raise ValueError("Linked prepared Antigravity storage")
             names.append(entry.name)
         ids = {name[:32] for name in names}
-        if len(ids) != 1 or next(iter(ids)) + ".db" not in names:
-            raise ValueError("Prepared Antigravity storage is unavailable")
-        native_id = next(iter(ids))
         metadata = read_json(self.session_dir / "session.json", {})
-        if metadata.get("conversationId", native_id) != native_id:
-            raise ValueError("Prepared Antigravity storage changed identity")
+        native_id = metadata.get("conversationId")
+        if native_id is None:
+            if len(ids) != 1:
+                raise ValueError("Ambiguous prepared Antigravity storage")
+            native_id = next(iter(ids))
+        if not isinstance(native_id, str) or not re.fullmatch(r"[0-9a-f]{32}", native_id):
+            raise ValueError("Invalid prepared Antigravity identity")
+        if native_id + ".db" not in names:
+            raise ValueError("Prepared Antigravity storage is unavailable")
         self.save_native_id(native_id)
         self.prepared_id = native_id
         return {"sessionId": self.session_id, "conversationId": native_id}

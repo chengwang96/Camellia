@@ -36,10 +36,12 @@ async function main() {
   if (env.SystemRoot === env.SYSTEMROOT) delete env.SYSTEMROOT;
   env.AGY_CLI_DISABLE_AUTO_UPDATE = 'true';
   fs.mkdirSync(cwd); fs.mkdirSync(path.join(profile, '.gemini/antigravity-cli'), { recursive: true });
-  fs.writeFileSync(path.join(profile, '.gemini/antigravity-cli/settings.json'), JSON.stringify({ modelProvider: 'gemini', enableTelemetry: false }));
+  fs.writeFileSync(path.join(profile, '.gemini/antigravity-cli/settings.json'), JSON.stringify({ modelProvider: 'gemini', enableTelemetry: false,
+    permissions: { ask: ['write_file(*)'] }, toolPermission: 'request-review' }));
   const journal = new WindowsJobJournal({ dir: path.join(root, 'windows-jobs') });
-  const jobs = [], sessions = [], logs = [], sdkRequests = [], cliRequests = [];
-  let router, selected;
+  const jobs = [], sessions = [], logs = [], sdkRequests = [], cliRequests = [], events = [];
+  let router, selected, cliToolProbe = false, cliToolInjected = false, approvals = 0, cliToolResult;
+  const cliToolOutput = path.join(cwd, 'cli-tool-result.txt');
   const server = http.createServer(async (req, res) => {
     try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -53,14 +55,24 @@ async function main() {
         res.end(frame('[DONE]'));
       } else {
         cliRequests.push(body);
-        res.end('data: ' + JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: 'CLI inventory fixture reply' }] }, finishReason: 'STOP' }],
+        const declarations = (body.tools || []).flatMap(tool => tool.functionDeclarations || []);
+        for (const message of body.contents || []) for (const part of message.parts || [])
+          if (part.functionResponse?.name === 'write_to_file') cliToolResult = part.functionResponse.response;
+        let parts = [{ text: 'CLI inventory fixture reply' }];
+        if (cliToolProbe && !cliToolInjected && declarations.some(tool => tool.name === 'write_to_file')) {
+          cliToolInjected = true;
+          parts = [{ functionCall: { name: 'write_to_file', args: { TargetFile: cliToolOutput, CodeContent: 'CLI_TOOL_RESULT_A7',
+            Overwrite: false, Description: 'Local fixture write', toolAction: 'Local fixture', toolSummary: 'Verify native approval routing' } },
+          thoughtSignature: Buffer.from('fixture-signature').toString('base64') }];
+        }
+        res.end('data: ' + JSON.stringify({ candidates: [{ content: { role: 'model', parts }, finishReason: 'STOP' }],
           usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 4, totalTokenCount: 24 } }) + '\n\n');
       }
     } catch (error) { logs.push(error.message); if (!res.headersSent) res.writeHead(500); res.end(); }
   });
   const listen = value => new Promise(resolve => value.listen(0, '127.0.0.1', resolve));
   const close = value => new Promise((resolve, reject) => value.close(error => error ? reject(error) : resolve()));
-  async function open(connection, opts = {}) {
+  async function open(connection, opts = {}, permissionMode = 'plan') {
     const job = await prepareWindowsJob({ identity: { runtimeId: randomUUID(), deliveryId: randomUUID(), generation: 1 }, journal }); jobs.push(job);
     const spec = connection === 'api' ? antigravitySpawnSpec({ runtime: sdk, home, env, route: { baseUrl: router.url } })
       : subscriptionSpawnSpec({ runtime: cli, home, env, model: selected.id, effort: selected.defaultReasoningEffort || '' });
@@ -68,8 +80,14 @@ async function main() {
       GEMINI_API_KEY: 'fixture-not-a-key', GOOGLE_GEMINI_BASE_URL: `http://127.0.0.1:${server.address().port}` });
     const session = new AcpSession({ gen: sessions.length + 1, name: 'Antigravity inventory fixture', opts,
       exe: connection === 'api' ? sdk.file : process.execPath, spec, spawn: job.spawn,
-      settings: { cwd, model: connection === 'api' ? 'inventory-fixture' : selected.id, permissionMode: 'plan' },
-      history: new ClaudeHistory(path.join(root, 'mirror')), log: line => logs.push(line), onEvent() {}, onSessionId() {}, onResult() {} });
+      settings: { cwd, model: connection === 'api' ? 'inventory-fixture' : selected.id, permissionMode },
+      history: new ClaudeHistory(path.join(root, 'mirror')), log: line => logs.push(line), onEvent(event) {
+        events.push(event);
+        if (cliToolProbe && event.type === 'gui:permission') {
+          assert.equal(event.input.TargetFile, cliToolOutput); approvals++;
+          assert.equal(session.answerPermission(event.requestId, true), true);
+        }
+      }, onSessionId() {}, onResult() {} });
     sessions.push(session); session.start(); await (session.ready = session.open());
     await session.prepareNativeStorage();
     return { session, job };
@@ -100,6 +118,14 @@ async function main() {
 
     const original = await open('api'); await turn(original, 'INVENTORY original SDK'); await stop(original);
     const originalId = original.session.sessionId, originalNative = sdkMetadata(originalId).conversationId;
+    // Model a persisted child trajectory beside the actual SDK database. This
+    // is a local SQLite fixture, not an invocation of a model or child agent.
+    const sibling = randomUUID().replaceAll('-', ''), nativeDir = path.join(home, 'sessions', originalId, 'native');
+    fs.copyFileSync(path.join(nativeDir, originalNative + '.db'), path.join(nativeDir, sibling + '.db'));
+    const { DatabaseSync } = require('node:sqlite');
+    const child = new DatabaseSync(path.join(nativeDir, sibling + '.db'));
+    try { child.prepare('UPDATE trajectory_meta SET trajectory_id=?, cascade_id=?').run(sibling, originalNative); }
+    finally { child.close(); }
     const fork = await open('api', { sessionId: originalId, fork: true });
     assert.equal(sdkMetadata(fork.session.sessionId).conversationId, originalNative, 'SDK copies the native ID into a separate save directory');
     await turn(fork, 'INVENTORY fork only'); await stop(fork);
@@ -108,9 +134,14 @@ async function main() {
     assert.ok(!JSON.stringify(sdkRequests.at(-1).messages).includes('INVENTORY fork only'));
     assert.equal(sdkMetadata(fork.session.sessionId).conversationId, originalNative);
 
-    const first = await open('subscription');
+    const first = await open('subscription', {}, 'ask');
     assert.match(cliMetadata(first.session.sessionId).conversationId, /^[0-9a-f-]{36}$/, 'Native preparation completes before the first input');
-    await turn(first, 'INVENTORY original CLI'); await stop(first);
+    await turn(first, 'INVENTORY original CLI');
+    cliToolProbe = true; await turn(first, 'INVENTORY CLI TOOL'); cliToolProbe = false;
+    assert.equal(fs.readFileSync(cliToolOutput, 'utf8').trimEnd(), 'CLI_TOOL_RESULT_A7');
+    assert.equal(approvals, 1); assert.ok(cliToolResult);
+    assert.ok(events.some(event => event.type === 'gui:tool' && event.status === 'completed'));
+    await stop(first);
     const saved = cliMetadata(first.session.sessionId), alias = 'agy-' + randomUUID();
     fs.writeFileSync(path.join(home, 'cli-sessions', alias + '.json'), JSON.stringify({ ...saved, id: alias }));
     const second = await open('subscription', { sessionId: alias }); await turn(second, 'INVENTORY alias CLI'); await stop(second);
@@ -137,7 +168,8 @@ async function main() {
     const cliBridges = inventory.bridges.filter(row => row.connection === 'subscription');
     assert.equal(cliBridges.length, 2); assert.equal(cliBridges[0].conversationId, cliBridges[1].conversationId);
     assert.equal(cliBridges[0].storageDir, cliBridges[1].storageDir);
-    assert.equal(inventory.histories.length, 3);
+    assert.equal(inventory.histories.length, 5);
+    assert.equal(inventory.histories.filter(row => row.conversationId === sibling).length, 2);
     const members = inventory.bridges.map(row => ({ engine: 'antigravity', discussionId: randomUUID(), participantId: randomUUID(),
       runtimeId: randomUUID(), generation: 1, nativeId: row.nativeId }));
     const owners = members.map(member => ({ engine: member.engine, runtimeId: member.runtimeId, nativeId: member.nativeId,
@@ -148,7 +180,8 @@ async function main() {
       else { const lease = ownership.reserve(member); ownership.claimNative(lease, member.nativeId); ownership.release(lease); }
     }
     console.log(JSON.stringify({ sdkVersion: sdk.version, cliVersion: cli.version, sdkForkUsesIndependentStorage: true,
-      cliAliasResumesSameHistory: true, mappedBridges: inventory.bridges.length, storageHistories: inventory.histories.length,
+      cliAliasResumesSameHistory: true, sdkResumesWithChildStorage: true, cliNativeToolApproval: true,
+      mappedBridges: inventory.bridges.length, storageHistories: inventory.histories.length,
       cliAliasAdmissionBlocked: true, sdkIndependentClaims: 2,
       loopbackReplies: sdkRequests.length + cliRequests.length, stoppedJobs: jobs.length, realModelCalls: 0 }));
   } finally {

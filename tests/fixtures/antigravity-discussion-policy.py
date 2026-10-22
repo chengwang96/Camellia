@@ -45,3 +45,45 @@ with tempfile.TemporaryDirectory(prefix="discussion-sdk-policy-") as home:
             raise AssertionError("Verification loaded native extensions")
 
 print("PASS: upgraded SDKs can verify; explicit policies and tool denial remain enforced")
+
+# Native tools can persist child trajectories beside the main database. A
+# resumed bridge must keep the saved main identity instead of requiring the
+# entire directory to contain just one database (three SQLite files).
+with tempfile.TemporaryDirectory(prefix="discussion-sdk-prepare-") as home:
+    root = Path(home)
+    session_dir = root / "sessions" / "fixture"
+    directory = session_dir / "native"
+    directory.mkdir(parents=True)
+    main, child = "a" * 32, "b" * 32
+    metadata = session_dir / "session.json"
+    metadata.write_text('{"conversationId":"' + main + '"}', encoding="utf-8")
+    for identity in [main, child]:
+        for suffix in [".db", ".db-wal", ".db-shm"]:
+            (directory / (identity + suffix)).write_bytes(b"fixture")
+
+    def prepare():
+        bridge = Bridge({"home": home})
+        bridge.session_id = "fixture"
+        bridge.session_dir = session_dir
+        bridge.agent = object()  # Preparation never needs to invoke a model.
+        return asyncio.run(bridge.prepare_native())
+
+    assert prepare() == {"sessionId": "fixture", "conversationId": main}
+    assert main in metadata.read_text(encoding="utf-8")
+    for corrupt in ["missing-main", "ambiguous-new", "unknown-entry"]:
+        if corrupt == "missing-main":
+            (directory / (main + ".db")).unlink()
+        elif corrupt == "ambiguous-new":
+            (directory / (main + ".db")).write_bytes(b"fixture")
+            metadata.unlink()
+        else:
+            metadata.write_text('{"conversationId":"' + main + '"}', encoding="utf-8")
+            (directory / "unverified.tmp").write_bytes(b"fixture")
+        try:
+            prepare()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Unverified preparation was accepted: " + corrupt)
+
+print("PASS: resumed preparation pins the main database with child trajectories; ambiguous or incomplete storage rejects")

@@ -40,6 +40,8 @@ async function main() {
   const runtime = createRuntimeManager({ root: path.resolve(__dirname, '..'), installRoot: runtimeRoot || path.resolve(__dirname, '..') });
   let router, server, service, production, boundary, remoteGateway, config = {}, requests = 0, holdVerification = false;
   const faults = [], logs = [];
+  const localToolResults = new Map();
+  let localToolCase, localToolInput, localToolOutput;
   let approvals = 0;
   let profile;
   if (online && engine === 'codex') {
@@ -75,6 +77,30 @@ async function main() {
       if (text.includes('HOLD_FOR_STOP')) return;
       const reply = code || (/VISIBLE_[A-Z0-9]+/.exec(text)?.[0]) || 'Local discussion reply';
       res.writeHead(200, { 'content-type': 'text/event-stream' });
+      if (localToolCase && !code) {
+        const lastUser = body.messages.findLastIndex(message => message.role === 'user');
+        const results = body.messages.slice(lastUser + 1).filter(message => message.role === 'tool');
+        for (const result of results) localToolResults.set(result.tool_call_id, result.content);
+        const read = (id, file) => ({ id, name: 'view_file', args: { AbsolutePath: file, StartLine: 1, EndLine: 100 } });
+        const steps = localToolCase === 'write' ? [read('fixture-input', localToolInput),
+          { id: 'fixture-write', name: 'write_to_file', args: { TargetFile: localToolOutput, CodeContent: 'TOOL_RESULT_A7',
+            Overwrite: false, Description: 'Write the disposable discussion test result' } }, read('fixture-output', localToolOutput)]
+          : [read('fixture-second-member', localToolOutput)];
+        const step = steps.find(step => !results.some(result => result.tool_call_id === step.id));
+        if (step) {
+          const tool = body.tools.find(tool => tool.function.name === step.name || tool.function.name.endsWith('__' + step.name));
+          assert.ok(tool, 'The native request must advertise ' + step.name);
+          res.write(frame({ choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: step.id,
+            type: 'function', function: { name: tool.function.name, arguments: JSON.stringify({ ...step.args,
+              toolAction: 'Local discussion fixture', toolSummary: 'Verify native file tools and approvals' }) } }] } }] }));
+          res.write(frame({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }));
+        } else {
+          const answer = localToolCase === 'write' ? 'TOOL_INPUT_A7 [Result](' + localToolOutput + ')' : 'TOOL_RESULT_A7';
+          res.write(frame({ choices: [{ index: 0, delta: { role: 'assistant', content: answer } }] }));
+          res.write(frame({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }));
+        }
+        res.end(frame('[DONE]')); return;
+      }
       res.write(frame({ choices: [{ index: 0, delta: { role: 'assistant', content: reply } }] }));
       res.write(frame({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 8 } })); res.end(frame('[DONE]'));
     });
@@ -179,8 +205,7 @@ async function main() {
     // Older beta groups persisted no context metadata. They must still send
     // through the matching current model/account without being re-created.
     service.manager.configureMember(group.id, members[0].id, { contextWindow: 0 });
-    async function send(text, participantIds, mode = 'parallel', attachments = []) {
-      const result = await service.call('send', { id: group.id, requestId: randomUUID(), text, participantIds, mode, attachments });
+    async function settled() {
       const started = Date.now();
       while (service.scheduler.runs.size || service.manager.get(group.id).deliveries.some(d => ['queued', 'preparing', 'running', 'stopping'].includes(d.status))) {
         if (toolCheck) for (const permission of service.scheduler.permissions(group.id)) {
@@ -192,9 +217,13 @@ async function main() {
         if (Date.now() - started > 90000) throw new Error('Discussion delivery timed out: ' + faults.join('; '));
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-      const state = service.manager.get(group.id);
+      return service.manager.get(group.id);
+    }
+    async function send(text, participantIds, mode = 'parallel', attachments = [], expectFailure = false) {
+      const result = await service.call('send', { id: group.id, requestId: randomUUID(), text, participantIds, mode, attachments });
+      const state = await settled();
       const latest = state.deliveries.filter(d => d.requestId === result.group.requests.at(-1).id);
-      assert.ok(latest.every(d => d.status === 'completed'), JSON.stringify(latest.map(d => ({ status: d.status, reason: d.failureReason, unavailable: d.unavailableReason }))) + faults.join('; '));
+      assert.ok(latest.every(d => d.status === (expectFailure ? 'failed' : 'completed')), JSON.stringify(latest.map(d => ({ status: d.status, reason: d.failureReason, unavailable: d.unavailableReason }))) + faults.join('; '));
       return state;
     }
     if (imageFile) {
@@ -207,19 +236,32 @@ async function main() {
       return;
     }
     if (toolCheck) {
-      assert.ok(online || onlineApi, 'Tool smoke requires an explicitly selected real connection');
+      assert.ok(online || onlineApi || engine === 'antigravity', 'Offline file tool fixtures currently support the Antigravity SDK');
       const inputFile = path.join(dataDir, 'source.txt'); fs.writeFileSync(inputFile, 'TOOL_INPUT_A7');
       const { attachments } = await service.call('import-attachments', { id: group.id, paths: [inputFile] });
       fs.unlinkSync(inputFile);
+      if (!online && !onlineApi) {
+        localToolCase = 'write'; localToolInput = attachments[0].path;
+        localToolOutput = path.join(service.manager.get(group.id).cwd, 'discussion-result.txt');
+      }
       const instruction = 'Use native tools to read the attached text file at ' + attachments[0].path
         + '. Then create discussion-result.txt in your current working directory with exactly TOOL_RESULT_A7. Read it back. Reply briefly with the input code and a Markdown link to the created file. This is an authorized test in a disposable directory.';
       const first = await send(instruction, [members[0].id], 'parallel', attachments);
       assert.equal(fs.readFileSync(path.join(first.cwd, 'discussion-result.txt'), 'utf8').trim(), 'TOOL_RESULT_A7');
       assert.match(first.messages.at(-1).text, /TOOL_INPUT_A7/);
       assert.ok(first.deliveries.at(-1).tools?.some(tool => tool.status === 'completed'), 'Actual tool results must be saved');
+      if (localToolCase) {
+        assert.match(String(localToolResults.get('fixture-input')), /TOOL_INPUT_A7/);
+        assert.match(String(localToolResults.get('fixture-output')), /TOOL_RESULT_A7/);
+        localToolCase = 'read';
+      }
       const second = await send('Use native file tools to read discussion-result.txt created by the previous member. Reply only with its exact contents.', [members[1].id]);
       assert.match(second.messages.at(-1).text, /TOOL_RESULT_A7/);
       assert.ok(second.deliveries.at(-1).tools?.some(tool => tool.status === 'completed'));
+      if (localToolCase) {
+        assert.match(String(localToolResults.get('fixture-second-member')), /TOOL_RESULT_A7/);
+        assert.ok(approvals > 0, 'The SDK write must pass through a pending group approval');
+      }
       assert.equal(service.scheduler.runs.size, 0);
       if (engine === 'antigravity' && online) assert.ok(approvals > 0, 'The native write must pass through a real pending group approval');
       console.log(JSON.stringify({ result: 'PASS real native tools, permission routing, created artifact, second member reads file, and drained processes', engine,
@@ -239,6 +281,25 @@ async function main() {
     if (!online && !onlineApi) {
       await send('Reply briefly to the whole group in parallel.', members.map(p => p.id));
       console.log('PASS real native parallel dispatch with independent member storage');
+    }
+    if (engine === 'antigravity' && !online && !onlineApi) {
+      const saved = service.manager.get(group.id).participants[0].session;
+      const metadata = path.join(production.root, 'native-antigravity', saved.runtimeId, 'sessions', saved.nativeId, 'session.json');
+      fs.writeFileSync(metadata, JSON.stringify({ conversationId: randomUUID().replaceAll('-', '') }));
+      const broken = await send('VISIBLE_RETRY42', [members[0].id], 'parallel', [], true);
+      const failed = broken.deliveries.at(-1), questionCount = broken.messages.filter(m => m.role === 'user').length;
+      assert.match(failed.failureReason, /Native storage mapping changed ownership/);
+      const before = requests;
+      await service.call('retry', { id: group.id, deliveryId: failed.id, actionId: randomUUID() });
+      const repaired = await settled(), attempt = repaired.deliveries.find(d => d.retryOf === failed.id);
+      assert.equal(attempt.status, 'completed'); assert.equal(attempt.inputThroughSeq, failed.inputThroughSeq);
+      assert.equal(repaired.messages.filter(m => m.role === 'user').length, questionCount);
+      assert.deepEqual(repaired.messages.slice(0, -1), broken.messages);
+      assert.notEqual(repaired.participants[0].session.nativeId, saved.nativeId);
+      assert.deepEqual(repaired.participants[0].retiredSessions.find(s => s.nativeId === saved.nativeId).nativeStorage, saved.nativeStorage);
+      assert.equal(requests - before, 1, 'Explicit retry sends exactly one new native turn');
+      await send('Continue independently after the other member recovered.', [members[1].id]);
+      console.log('PASS persisted Antigravity mapping conflict: no input to old storage, explicit retry preserves the question and history, independent member still responds');
     }
     const count = requests;
     await service.call('send', { id: group.id, requestId: randomUUID(), text: online || onlineApi ? 'Write a very long numbered list of the integers from 1 to 3000, one number per line.' : 'HOLD_FOR_STOP', participantIds: [members[0].id] });
