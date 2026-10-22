@@ -5,7 +5,7 @@ const { EmbeddedNetwork } = require('./embedded-network');
 const { createRemoteService } = require('./service');
 
 function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager, rendererRoot, loadConfig, getSettingsWindow = () => null, networkFactory, apiRoutes = null, getDiscussions = null,
-  computerName = () => '', saveComputerName = () => {} }) {
+  computerName = () => '', saveComputerName = () => {}, prepareRestart = async () => {}, log = () => {} }) {
   let window = null;
   // Pairing stores the display name on the invitation; an explicit edit stores it
   // as a local preference. Both funnel through here so the snapshot is never empty.
@@ -13,7 +13,9 @@ function createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme, manager
     const saved = typeof value === 'string' ? saveComputerName(value) : undefined;
     return typeof saved === 'string' && saved ? saved : computerName() || 'Camellia desktop';
   };
-  const service = createRemoteService({ dataDir: app.getPath('userData'), manager, apiRoutes, setComputerName, getDiscussions,
+  const desktopRestart = require('./desktop-restart').createDesktopRestart({ file: path.join(app.getPath('userData'), 'remote', 'desktop-restarts.json'),
+    prepare: prepareRestart, restart: () => { app.relaunch(); app.quit(); }, log });
+  const service = createRemoteService({ dataDir: app.getPath('userData'), manager, apiRoutes, setComputerName, getDiscussions, desktopRestart,
     preferences: () => ({ closeToTray: loadConfig().closeToTray === true, theme: loadConfig().theme || 'system', language: loadConfig().language || 'zh-CN',
       computerName: computerName() }),
     networkFactory: ({ onFailure }) => {

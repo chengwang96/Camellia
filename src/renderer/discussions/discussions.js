@@ -30,6 +30,7 @@ const drafts = new Map(), failures = new Map();
 const selectedGroupKey = 'camellia:discussion:selected';
 const draftPrefix = 'camellia:discussion:draft:';
 const messageNodes = new Map();
+let latestScrollFrame = null;
 let groupMenu = null, renamingId = null, deleteTarget = null;
 const openStatuses = new Set(['queued', 'preparing', 'running', 'stopping']);
 const stateLabels = { queued: 'Waiting', preparing: 'Preparing context', context: 'Preparing context', running: 'Replying', stopping: 'Stopping',
@@ -110,6 +111,25 @@ function resizeComposer() {
   input.style.height = Math.min(Math.max(input.scrollHeight, 52), 180) + 'px';
   $('send').disabled = isSending() || rich.uploading || (!input.value.trim() && !attachments.length);
 }
+function cancelLatestScroll() {
+  if (latestScrollFrame !== null) cancelAnimationFrame(latestScrollFrame);
+  latestScrollFrame = null;
+}
+function scrollToLatest() {
+  cancelLatestScroll();
+  if (!group || !isVisible()) return;
+  const id = group.id, ticket = loading, scroll = $('chatScroll');
+  scroll.scrollTop = scroll.scrollHeight;
+  // The composer or embedded surface may finish layout after history renders.
+  latestScrollFrame = requestAnimationFrame(() => {
+    latestScrollFrame = null;
+    if (isVisible() && group?.id === id && ticket === loading) scroll.scrollTop = scroll.scrollHeight;
+  });
+}
+for (const event of ['wheel', 'touchstart', 'pointerdown']) $('chatScroll').addEventListener(event, cancelLatestScroll, { passive: true });
+$('chatScroll').addEventListener('keydown', event => {
+  if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) cancelLatestScroll();
+});
 async function call(action, payload) {
   const result = await desktop.discussion(action, payload);
   if (!result?.ok) {
@@ -346,7 +366,7 @@ function renderMessages() {
     if (anchor) anchor.before(item); else fragment.append(item);
   }
   container.replaceChildren(fragment);
-  if (bottom) scroll.scrollTop = scroll.scrollHeight;
+  if (bottom) scrollToLatest();
 }
 function render() {
   onChange(group?.id || null);
@@ -379,6 +399,7 @@ async function load(id, refresh = false) {
   }
   if (sendErrors.has(id)) error(sendErrors.get(id));
   render();
+  if (!refresh) scrollToLatest();
 }
 async function mutate(action, payload, throwError = false) {
   if (!group) return;
@@ -648,7 +669,7 @@ const unsubscribeRuntime = desktop.onRuntimeState?.(() => {
   }, 60);
 });
 void desktop.workbenchSettings().then(settings => { if (settings?.ok) applyContentWidth(settings.chatContentWidth); }).catch(error);
-window.addEventListener('beforeunload', () => { discussionReferenceSources.delete(cleanupReferences); conversationNavigation?.destroy(); rememberDraft(); unsubscribe?.(); unsubscribeWidth?.(); unsubscribeRuntime?.(); clearTimeout(refreshTimer); clearTimeout(runtimeRefreshTimer); });
+window.addEventListener('beforeunload', () => { cancelLatestScroll(); discussionReferenceSources.delete(cleanupReferences); conversationNavigation?.destroy(); rememberDraft(); unsubscribe?.(); unsubscribeWidth?.(); unsubscribeRuntime?.(); clearTimeout(refreshTimer); clearTimeout(runtimeRefreshTimer); });
 window.addEventListener('camellia:language', () => { closeGroupMenu(); messageNodes.clear(); render(); if ($('memberDialog').open) renderProviders(); });
 const ready = (async () => {
   await window.CamelliaI18n.ready;
@@ -686,11 +707,14 @@ async function open({ id, group: requestedGroup, intent } = {}) {
 }
 function activate() {
   render();
+  // Embedded history loads while hidden, so position it again after revealing it.
+  scrollToLatest();
   const intent = pendingNavigationIntent; pendingNavigationIntent = null;
   intent?.();
 }
 function suspend() {
   if (rich.uploading || !rememberDraft()) return false;
+  cancelLatestScroll();
   ++navigationRequest; ++loading;
   navigating = false;
   pendingNavigationIntent = null;

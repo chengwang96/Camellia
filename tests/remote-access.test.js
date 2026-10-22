@@ -29,7 +29,7 @@ function queuedRuns(manager, id) {
   return { sent, finish };
 }
 
-function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings = null, management = null } = {}) {
+function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-remote-'));
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
   let clock = 1000, config = { sharedMeta: { workspaces: [{ id: 'allowed', name: 'Allowed', path: root }, { id: 'private', name: 'Private', path: root }] } }, gateway, reader;
@@ -41,7 +41,7 @@ function fixture(context, { apiRoutes = null, apiImport = null, nativeSettings =
   const access = new RemoteAccess({ file: path.join(root, 'devices.json'), now: () => clock, onRevoke: id => gateway?.revoke(id) });
   reader = new RemoteReadModel(manager);
   const commands = new RemoteCommands({ file: path.join(root, 'commands.json'), access, reader, publish: () => gateway.publish() });
-  gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, validateHost: host => host === '127.0.0.1' });
+  gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, validateHost: host => host === '127.0.0.1' });
   const start = gateway.start.bind(gateway);
   gateway.start = async (host, port, transport) => {
     for (let attempt = 0; attempt < 32; attempt++) {
@@ -748,6 +748,52 @@ test('workspace-scoped control cannot install runtimes or read management result
   const requestId = require('node:crypto').randomUUID();
   assert.equal((await request(gateway, '/v1/server-management', { token, method: 'POST', payload: { requestId, action: 'runtime-install', payload: { engine: 'codex', confirmed: true } } })).status, 403);
   assert.equal((await request(gateway, '/v1/server-management/' + requestId, { token })).status, 403);
+});
+
+test('desktop restart requires full-device control and writes its response before dispatching relaunch', async context => {
+  const calls = [];
+  const desktopRestart = { submit: async (deviceId, payload, instanceId, validate) => {
+    validate(); calls.push(['submit', deviceId, payload, instanceId]); return { ok: true, state: 'accepted' };
+  }, afterReply: (deviceId, requestId) => calls.push(['reply', deviceId, requestId]) };
+  const { gateway, access, pair } = fixture(context, { desktopRestart });
+  const credential = pair(); await gateway.start('127.0.0.1', 0);
+  const options = { token: credential.token, method: 'POST', payload: { confirmed: true, requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId } };
+  const status = () => request(gateway, '/v1/status', { token: credential.token });
+  assert.equal((await status()).body.capabilities.includes('desktop-restart'), false);
+  assert.equal((await request(gateway, '/v1/desktop/restart', options)).status, 403);
+  access.setScope(credential.deviceId, [], { allWorkspaces: true });
+  const device = access.devices.find(entry => entry.id === credential.deviceId);
+  device.permission = 'read';
+  assert.equal((await status()).body.capabilities.includes('desktop-restart'), false);
+  assert.equal((await request(gateway, '/v1/desktop/restart', options)).status, 403);
+  device.permission = 'control';
+  assert.equal((await status()).body.capabilities.includes('desktop-restart'), true);
+  assert.equal((await request(gateway, '/v1/desktop/restart', { token: credential.token })).status, 405);
+  assert.equal((await request(gateway, '/v1/desktop/restart?offset=1', options)).status, 405);
+  const accepted = await request(gateway, '/v1/desktop/restart', options);
+  assert.equal(accepted.status, 200); assert.equal(accepted.body.state, 'accepted');
+  assert.deepEqual(calls.map(call => call[0]), ['submit', 'reply']);
+  assert.equal(calls[0][1], credential.deviceId); assert.equal(calls[0][3], gateway.instanceId);
+  access.revoke(credential.deviceId);
+  assert.equal((await request(gateway, '/v1/desktop/restart', options)).status, 401);
+  assert.equal(calls.length, 2);
+});
+
+test('desktop restart checks revoked permission again after settings finish saving', async context => {
+  const { gateway, access, pair, root } = fixture(context);
+  let release, started;
+  const preparing = new Promise(resolve => { started = resolve; });
+  const file = path.join(root, 'restart.json');
+  gateway.desktopRestart = require('../src/main/remote/desktop-restart').createDesktopRestart({ file,
+    prepare: () => { started(); return new Promise(resolve => { release = resolve; }); },
+    restart: () => assert.fail('Revoked device must not restart the desktop') });
+  const credential = pair(); access.setScope(credential.deviceId, [], { allWorkspaces: true });
+  await gateway.start('127.0.0.1', 0);
+  const reply = request(gateway, '/v1/desktop/restart', { token: credential.token, method: 'POST', payload: {
+    requestId: require('node:crypto').randomUUID(), instanceId: gateway.instanceId, confirmed: true } });
+  await preparing; access.revoke(credential.deviceId); release();
+  assert.equal((await reply).status, 401);
+  assert.equal(fs.existsSync(file), false);
 });
 
 test('remote summaries expose reply markers and invalidate list versions when activity or replies change', context => {
@@ -1627,7 +1673,7 @@ test('a slow native stop stays pending until confirmation and duplicate requests
 });
 
 test('ordinary remote questions deliver native answers once and reject stale requests', async context => {
-  const { gateway, manager, access, reader, visible, pair, root } = fixture(context);
+  const { gateway, manager, access, reader, visible, pair, root, events } = fixture(context);
   const { token } = pair(), answers = [];
   manager.drivers.codex.ensure = () => ({ gen: 42, sendUserMessage() { return true; }, interrupt() {},
     answerPermission(...args) { answers.push(args); return true; } });
@@ -1655,6 +1701,13 @@ test('ordinary remote questions deliver native answers once and reject stale req
   assert.equal(answers.length, 1);
   assert.deepEqual(answers[0].slice(0, 3), [event.requestId, true, response.input]);
   assert.ok(!fs.readFileSync(path.join(root, 'commands.json'), 'utf8').includes('private-answer-marker'));
+  const resolved = events.filter(event => event.type === 'conversation:approval-resolved');
+  assert.equal(resolved.length, 1, 'Remote answers publish one canonical resolution');
+  assert.equal(resolved[0].allow, true);
+  assert.deepEqual(resolved[0].answers, { role: 'Scientist', inputs: ['Image', 'Text'], note: '••••••' });
+  assert.deepEqual(resolved[0].questions, event.questions);
+  assert.ok(!JSON.stringify(resolved).includes('private-answer-marker'));
+  assert.match(reader.snapshot(access.authenticate(token), visible.id).messages.find(row => row.text.includes('Role?')).text, /Scientist/);
   active.permissions.set(event.requestId, { ...event, questions: [{ id: 'changed', question: 'Changed question?' }] });
   assert.equal((await send({ ...response, requestId: require('node:crypto').randomUUID() })).body.ok, false);
   assert.equal(answers.length, 1);

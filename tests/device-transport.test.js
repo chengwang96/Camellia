@@ -28,6 +28,9 @@ test('outbound targets and endpoints exclude public hosts, redirects and arbitra
   assert.throws(() => endpointPath('/v1/native-settings/auth', 'GET'));
   assert.throws(() => endpointPath('/v1/native-settings/codex?offset=1', 'GET'));
   assert.equal(endpointPath('/v1/archived?offset=0', 'GET'), '/v1/archived?offset=0');
+  assert.equal(endpointPath('/v1/desktop/restart', 'POST'), '/v1/desktop/restart');
+  assert.throws(() => endpointPath('/v1/desktop/restart', 'GET'));
+  assert.throws(() => endpointPath('/v1/desktop/restart?confirmed=true', 'POST'));
   assert.equal(endpointPath('/v1/server-management', 'POST'), '/v1/server-management');
   assert.equal(endpointPath('/v1/server-management/' + 'a'.repeat(36), 'GET'), '/v1/server-management/' + 'a'.repeat(36));
   assert.throws(() => endpointPath('/v1/server-management?token=secret', 'POST'));

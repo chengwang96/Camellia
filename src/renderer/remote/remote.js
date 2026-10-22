@@ -39,6 +39,8 @@ Object.assign(copy.zh, { unavailable: '状态加载失败', loading: '正在加�
 Object.assign(copy.en, { unavailable: 'Status unavailable', loading: 'Loading…', retry: 'Retry', openPanel: 'Open mobile access panel',
   restart: 'The mobile access page has been updated, but the desktop process is still an older version. Save your work, fully quit Camellia (including the tray), and restart it. Refreshing the page does not update the desktop process. You can use the separate panel in the meantime.',
   loadFailed: 'Unable to load mobile access status. Please retry.', loadDevices: 'Unable to load authorized devices. Please retry.' });
+Object.assign(copy.zh, { diagnose: '连接诊断' });
+Object.assign(copy.en, { diagnose: 'Connection diagnostics' });
 let state = null, language = 'zh', working = false, invitationExpiry = 0, invitationDeviceIds = new Set(), pairingRequestId = '', pairingRequestSeen = false, pairedDeviceId = '';
 const translate = key => copy[language][key];
 const scope = () => ({ workspaceIds: [], allWorkspaces: true, includeUnassigned: true });
@@ -147,6 +149,13 @@ function renderDevices(target, entries, pending) {
       rename.textContent = translate('rename'); rename.disabled = working;
       rename.addEventListener('click', () => renameDevice(entry));
       actions.append(rename);
+      if (state.diagnosticsAvailable && window.CamelliaNetworkDiagnostics) {
+        const diagnose = document.createElement('button');
+        diagnose.textContent = translate('diagnose'); diagnose.disabled = working || !state.running;
+        diagnose.addEventListener('click', () => window.CamelliaNetworkDiagnostics.open({ root, device: entry,
+          computerName: state.computerName, language, probe: () => call('diagnose', { id: entry.id }) }));
+        actions.append(diagnose);
+      }
     }
     for (const action of pending ? (entry.state === 'pending' ? ['approve', 'reject'] : entry.state === 'approved' ? ['reject'] : []) : ['revoke']) {
       const button = document.createElement('button');
@@ -344,7 +353,7 @@ element('saveDeviceName')?.addEventListener('click', () => run(async () => {
 renderCopy();
 element('toggle').textContent = translate('loading');
 window.mobileAccessUI = {
-  setVisible(value) { visible = value; if (visible) { renderCopy(); void run(async () => {}); } },
+  setVisible(value) { visible = value; if (visible) { renderCopy(); void run(async () => {}); } else window.CamelliaNetworkDiagnostics?.close(); },
   refresh() { return run(async () => {}); },
 };
 if (!embedded) void run(async () => {});

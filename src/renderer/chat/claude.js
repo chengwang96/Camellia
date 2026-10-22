@@ -796,9 +796,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   async function persistSettings(patch, message) {
-    // Model, reasoning and speed changes are deferred to the next message, so
-    // they may be saved while the current turn runs. Everything else needs the
-    // conversation to be idle.
+    // Model choices (including their connection), reasoning and speed changes
+    // apply to the next message and may be saved while the current turn runs.
+    // Everything else needs the conversation to be idle.
     const deferred = patch.model !== undefined || patch.thinkingBudget !== undefined || patch.fastMode !== undefined;
     if (conversationBusy() && !deferred) return;
     const sessionId = context.sessionId, engine = harnessId, openSeq = sessionOpenSeq;
@@ -2557,13 +2557,19 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (index >= 0) {
         permissionQueue.splice(index, 1);
         if (permRequestId === ev.requestId) {
-          finishQuestion('This request is no longer active');
+          const text = ev.allow === true ? 'Answers sent' : ev.allow === false ? 'Questions skipped' : 'This request is no longer active';
+          finishQuestion(text, ev.allow === true, ev.answers, questionResponseKey(ev));
+          setStatus(text);
           permissionSubmission = null;
           permRequestId = null; $('permMask').classList.remove('visible');
           if (permissionQueue.length) showPermissionDialog(permissionQueue[0]);
           else if (running) setRunStatus('Working…');
+          return;
         }
       }
+      // Live snapshots omit resolved permission requests. The response carries
+      // its own questions so navigation can restore the completed card.
+      if (ev.questions?.length && currentRunId === ev.runId) renderQuestionResponse(ev, ensureTurn());
       return;
     }
     if (ev.type === 'conversation:started') acceptSessionEvents = true;
@@ -3303,12 +3309,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     pendingQuestion.status.classList.add('error');
     pendingQuestion.status.setAttribute('role', 'alert');
   }
-  function finishQuestion(text, confirmed = false) {
-    if (!pendingQuestion) return;
-    const state = pendingQuestion;
-    if ($('questionDialog').open) $('questionDialog').close();
+  function collapseQuestion(state, text, confirmed, submittedAnswers) {
     const title = state.card.querySelector('h3'); title.removeAttribute('id'); title.textContent = text;
-    state.card.querySelector('.question-hint').removeAttribute('id');
+    state.card.querySelector('.question-hint')?.removeAttribute('id');
     for (const control of state.card.querySelectorAll('input, textarea, button')) control.disabled = true;
     state.status.textContent = text; state.status.classList.remove('error'); state.status.setAttribute('role', 'status');
     // Collapse the answered form: a compact answer summary stays visible while
@@ -3316,7 +3319,14 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const answers = document.createElement('div'); answers.className = 'question-answers';
     for (const { question: q, choices, custom } of state.fields) {
       const picked = choices.filter(c => c.checked).map(c => c.value);
-      const value = confirmed ? q.isSecret ? '••••••' : [...picked, ...(custom.value.trim() ? [custom.value.trim()] : [])].join(' · ') : '';
+      const submitted = submittedAnswers?.[q.id];
+      const values = submittedAnswers ? (Array.isArray(submitted) ? submitted : typeof submitted === 'string' ? [submitted] : [])
+        : [...picked, ...(custom.value.trim() ? [custom.value.trim()] : [])];
+      const value = confirmed ? q.isSecret ? '••••••' : values.join(' · ') : '';
+      if (confirmed && submittedAnswers && !q.isSecret) {
+        choices.forEach(choice => choice.checked = values.includes(choice.value));
+        custom.value = values.filter(answer => !choices.some(choice => choice.value === answer)).join(' · ');
+      }
       if (q.isSecret || !confirmed) { custom.value = ''; choices.forEach(choice => choice.checked = false); }
       const line = document.createElement('div');
       const name = document.createElement('strong'); name.textContent = q.question;
@@ -3331,6 +3341,32 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     state.card.insertBefore(answers, state.status);
     state.card.insertBefore(review, state.status);
     state.card.classList.add('done');
+    state.card.dataset.questionKey = state.key;
+  }
+  function questionResponseKey(response) {
+    // Native run/request IDs can repeat after a restart; saved responses have
+    // a durable transcript sequence that keeps separate answers distinct.
+    return JSON.stringify(response.responseSeq !== undefined ? [context.sessionId, 'response', response.responseSeq]
+      : [context.sessionId, response.runId, response.requestId]);
+  }
+  function renderQuestionResponse(response, parent, before = null) {
+    const key = questionResponseKey(response);
+    if (Array.from(chat.querySelectorAll('.question-card')).some(card => card.dataset.questionKey === key)) return;
+    const card = document.createElement('form'); card.className = 'question-card';
+    const header = document.createElement('header'); header.className = 'question-header';
+    const title = document.createElement('h3'); title.dataset.i18n = ''; header.append(title);
+    const fieldList = document.createElement('div'); fieldList.className = 'question-fields';
+    const fields = window.CamelliaChatControls.questionFields(fieldList, response.questions);
+    const status = document.createElement('div'); status.className = 'question-status'; status.dataset.i18n = '';
+    card.append(header, fieldList, status);
+    collapseQuestion({ card, fields, status, key }, response.allow ? 'Answers sent' : 'Questions skipped', response.allow, response.answers);
+    parent.insertBefore(card, before);
+  }
+  function finishQuestion(text, confirmed = false, submittedAnswers, key = pendingQuestion?.key) {
+    if (!pendingQuestion) return;
+    const state = pendingQuestion;
+    if ($('questionDialog').open) $('questionDialog').close();
+    collapseQuestion({ ...state, key }, text, confirmed, submittedAnswers);
     state.slot.replaceWith(state.card);
     $('questionDialog').replaceChildren();
     questionDrafts.delete(state.key); pendingQuestion = null;
@@ -3453,7 +3489,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (question && pendingQuestion === question) { question.card.querySelectorAll('input, textarea, button').forEach(el => el.disabled = false); questionError(error); }
       setStatus(error); return;
     }
-    finishQuestion(allow ? 'Answers sent' : 'Questions skipped', allow);
+    finishQuestion(allow ? 'Answers sent' : 'Questions skipped', allow, input);
     setStatus(allow ? 'Answers sent' : 'Questions skipped');
     permRequestId = null;
     permissionQueue.shift();
@@ -3825,6 +3861,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
             batchStarted = performance.now();
           }
           if (m.role === 'notice') {
+            if (m.questionResponse?.questions?.length) {
+              renderQuestionResponse({ ...m.questionResponse, responseSeq: m.seq }, chat, before);
+              continue;
+            }
             if (m.compaction || ['Context compacted automatically', 'Context compacted: summary saved'].includes(m.text)) {
               renderCompactionStatus({ ...m.compaction, engine: m.engine, state: m.compaction?.state || 'completed', error: m.compaction?.error || (m.compaction?.state === 'failed' ? m.text : ''), seq: m.seq }, before);
               continue;

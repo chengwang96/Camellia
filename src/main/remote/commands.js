@@ -406,7 +406,6 @@ class RemoteCommands {
     const response = answer(event, payload);
     const result = await manager.command(conversation.currentEngine, 'control-respond', { sessionId: id, runId: payload.runId, requestId: payload.approvalId,
       ...response });
-    if (result.ok) manager.onEvent({ type: 'conversation:approval-resolved', session_id: id, runId: payload.runId, requestId: payload.approvalId, eventSeq: ++active.eventSeq });
     return result;
   }
   async sendPrepared(deviceId, id, payload) {

@@ -184,6 +184,7 @@ for outOfRange in [
 let endpoint = try Endpoint("http://100.64.0.1:43127")
 for path in [
     "/v1/status",
+    "/v1/desktop/restart",
     "/v1/commands",
     "/v1/pair/request",
     "/v1/pair/claim",
@@ -205,6 +206,9 @@ for path in [
 
 for path in [
     "/v1",                                   // not an endpoint
+    "/v1/desktop/restart?",
+    "/v1/desktop/restart?confirmed=true",
+    "/v1/desktop/restart/",
     "/v1/status/",                           // no trailing slash
     "/v1/STATUS",                            // case matters
     "/v1/api-import",                        // desktop-only control endpoints

@@ -91,6 +91,7 @@ public struct Endpoint: Equatable, Hashable, Sendable {
     /// `RemoteApi` only ever calls `url(_:)`, which enforces this; the predicate
     /// is public so the rule itself can be unit tested.
     public func isAllowed(path: String) -> Bool {
+        if path == "/v1/desktop/restart" { return true }
         let range = NSRange(path.startIndex..<path.endIndex, in: path)
         return Self.remotePath.firstMatch(in: path, options: [], range: range) != nil
     }

@@ -712,6 +712,40 @@ final class AppModel: ObservableObject {
         computerStates[address] ?? ComputerStatus.unchecked
     }
 
+    func restartComputer(_ computer: PairedComputer) async throws {
+        guard let endpoint = computer.endpoint, let token = computer.token else {
+            throw NSError(domain: "Camellia", code: 401, userInfo: [NSLocalizedDescriptionKey: "请先配对这台电脑。"])
+        }
+        let chinese = usesChinese
+        let requestId = UUID().uuidString.lowercased()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var sent = false
+                do {
+                    let api = try RemoteApi(endpoint: endpoint, token: token)
+                    defer { api.cancel() }
+                    let status = try api.status()
+                    guard status.permission == .control, status.capabilities.contains("desktop-restart"), !status.instanceId.isEmpty else {
+                        throw NSError(domain: "Camellia", code: 403, userInfo: [NSLocalizedDescriptionKey: chinese
+                            ? "需要完整控制权限，并更新重启电脑端。" : "Full-device control and an updated, restarted desktop are required."])
+                    }
+                    sent = true
+                    let reply = try api.json("/v1/desktop/restart", payload: ["requestId": requestId, "instanceId": status.instanceId, "confirmed": true])
+                    guard reply.bool("ok"), ["accepted", "complete"].contains(reply.text("state")) else {
+                        throw NSError(domain: "Camellia", code: 409, userInfo: [NSLocalizedDescriptionKey: reply.text("error")])
+                    }
+                    continuation.resume()
+                } catch {
+                    if sent && !(error is RemoteApi.Failure) {
+                        continuation.resume(throwing: NSError(domain: "Camellia", code: 0, userInfo: [NSLocalizedDescriptionKey: chinese
+                            ? "请求结果不确定，请刷新电脑状态确认后再试。" : "Request outcome is uncertain. Refresh the computer status before trying again."]))
+                    } else { continuation.resume(throwing: error) }
+                }
+            }
+        }
+        computerStates[computer.address] = ComputerStatus.restarting
+    }
+
     /// Checks every paired computer at once, four at a time.
     ///
     /// Mirrors Android's `refreshComputers`: every row goes to "checking"

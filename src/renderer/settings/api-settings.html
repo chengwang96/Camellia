@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="./engine-settings.css">
 <link rel="stylesheet" href="../shared/engine-brand.css">
 <link rel="stylesheet" href="./settings-groups.css">
+<link rel="stylesheet" href="../remote/diagnostics.css">
 </head><body>
 <aside class="settings-nav">
   <div class="settings-brand"><img src="../../../assets/icon-256.png" alt="Camellia cat" width="36" height="36"><span>Camellia<small data-i18n>Settings</small></span></div>
@@ -101,7 +102,7 @@
       </div>
     </section>
     <section id="modelsPage" class="page" hidden>
-      <section id="webToolsSection" class="section" aria-labelledby="webToolsTitle">
+      <section id="webToolsSection" class="section web-tools-section" aria-labelledby="webToolsTitle">
         <div class="setting-row"><div><h2 id="webToolsTitle" data-i18n>Web search and fetch</h2><p id="webToolsHint" class="hint" aria-live="polite"></p></div><select id="webToolsProvider" disabled aria-label="Web search and fetch" aria-describedby="webToolsHint" data-i18n-attrs="aria-label"><option value="native" data-i18n>Engine default</option></select></div>
         <p class="hint" id="webToolsPrice" hidden data-i18n>Search and fetch each cost ¥5.00 per 1,000 successful requests. Model tokens are billed separately.</p>
         <button id="webToolsAddApi" type="button" hidden data-i18n>Add DeepSeek API key</button>
@@ -128,6 +129,11 @@
     <section id="networkPage" class="page" hidden>
       <div class="setting-row"><div><h2 data-i18n>Connection mode</h2><p class="hint" id="networkModeHint"></p></div><select id="networkMode" aria-label="Connection mode" data-i18n-attrs="aria-label"><option value="auto" data-i18n>Auto</option><option value="direct" data-i18n>Direct connection</option><option value="system" data-i18n>Use system proxy</option></select></div>
       <div class="setting-row"><div><h2 data-i18n>System proxy</h2><p class="hint" id="systemProxyStatus" role="status"></p></div><button id="detectSystemProxy" type="button" data-i18n>Detect system proxy</button></div>
+      <section id="networkWebToolsSection" class="section web-tools-section" aria-labelledby="networkWebToolsTitle">
+        <div class="setting-row"><div><h2 id="networkWebToolsTitle" data-i18n>Web search and fetch</h2><p id="networkWebToolsHint" class="hint" aria-live="polite"></p></div><select id="networkWebToolsProvider" disabled aria-label="Web search and fetch" aria-describedby="networkWebToolsHint" data-i18n-attrs="aria-label"><option value="native" data-i18n>Engine default</option></select></div>
+        <p class="hint" id="networkWebToolsPrice" hidden data-i18n>Search and fetch each cost ¥5.00 per 1,000 successful requests. Model tokens are billed separately.</p>
+        <button id="networkWebToolsAddApi" type="button" hidden data-i18n>Add DeepSeek API key</button>
+      </section>
       <section class="connectivity-section">
         <div class="section-head"><h2 data-i18n>Connectivity test</h2><div class="toolbar-actions"><button id="networkTest" class="primary" data-i18n>Test all connections</button></div></div>
         <p class="hint" data-i18n>Tests every enabled provider host and signed-in subscription through both a direct connection and the detected proxy. Results are read-only and never change your connection mode.</p>
@@ -280,6 +286,7 @@
 <script src="../../shared/i18n-messages.js"></script>
 <script src="../../shared/i18n.js"></script>
 <script src="../shared/i18n.js"></script>
+<script src="../remote/diagnostics.js"></script>
 <script src="./settings-charts.js"></script><script src="./subscription-cards.js"></script><script src="./codex-reset-ui.js"></script><script src="./engine-settings-ui.js"></script><script src="../remote/remote.js"></script><script src="../devices/devices-view.js"></script><script src="../devices/connections.js"></script><script src="../shared/network-notice.js"></script><script src="./api-settings.js"></script>
 <script src="./settings-groups.js"></script>
 </body></html>

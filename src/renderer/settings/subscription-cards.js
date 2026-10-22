@@ -101,6 +101,10 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
     const resetCount = account.rateLimitResetCredits?.availableCount;
     const reset = engine === 'codex' && typeof onReset === 'function' && account.signedIn
       ? `<button type="button" class="subscription-reset" data-card-action="reset" title="${esc(t('Use an official reset credit'))}" aria-label="${esc(t('Use an official reset credit'))}" ${resetCount === 0 ? 'disabled' : ''}>${icon('refresh')}<span>${esc(t('Reset credits'))}${Number.isSafeInteger(resetCount) ? ' · ' + resetCount : ''}</span></button>` : '';
+    const balance = account.credits?.unlimited ? t('Unlimited') : Number.isFinite(account.credits?.balance)
+      ? new Intl.NumberFormat(document.documentElement.lang || undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(account.credits.balance) : t('Unavailable');
+    const credits = engine === 'codex' && account.signedIn
+      ? `<div class="subscription-credits"><span>${esc(t('Credit balance'))}</span><strong>${esc(balance)}</strong></div>` : '';
     return `<article class="subscription-card${account.active ? ' active' : ''}" data-card-id="${esc(account.id)}">
       <header><strong title="${esc(heading)}">${esc(heading)}</strong><span class="subscription-badges">${badges}</span></header>
       <div class="subscription-identity-meta">
@@ -110,6 +114,7 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
         ${engine === 'antigravity' && typeof onLabel === 'function' && account.models ? `<span class="subscription-note-text">${esc(t('Available account models'))} · ${esc(account.models)}</span>` : ''}
       </div>
       <div class="subscription-meters">${quotas || `<p class="hint">${esc(t(account.signedIn ? 'Quota information is currently unavailable.' : 'Sign in to view quota'))}</p>`}</div>
+      ${credits}
       <form class="subscription-note" hidden><input maxlength="60" data-account-label="${esc(account.id)}" aria-label="${esc(t('Account label'))}" value="${esc(account.label)}"><button type="submit">${esc(t('Save'))}</button><button type="button" data-note-cancel>${esc(t('Cancel'))}</button></form>
       <div class="subscription-meta">
         <span class="subscription-checked">${esc(account.verifiedAt ? t('Last checked') + ' ' + date(account.verifiedAt) : t('Not checked yet'))}</span>

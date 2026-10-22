@@ -7,11 +7,11 @@ const { RemoteReadModel } = require('./read-model');
 const { RemoteGateway } = require('./gateway');
 const { RemoteCommands } = require('./commands');
 
-function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, getDiscussions = null,
+function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, getDiscussions = null,
   preferences = () => ({}), setComputerName = () => '' }) {
   let gateway = null, access = null, network = null, busy = false, enabled = false, closed = false;
   let startupChecked = false, monitor = null, attachmentMaintenance = null, retryDelay = 1000, retryAt = 0;
-  let recovering = null;
+  let recovering = null, diagnosing = false;
   const attachmentReferences = () => ({
     references: [gateway?.commands?.queue.entries || [], ...(gateway?.commands?.pendingAttachments.values() || []),
       ...(gateway?.discussions?.pendingAttachments.values() || [])],
@@ -26,7 +26,7 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     const discussions = getDiscussions ? new (require('./discussions').RemoteDiscussions)({
       file: path.join(dataDir, 'remote', 'discussion-commands.json'), getService: getDiscussions, access,
       publish: () => { gateway?.publish(); attachmentMaintenance?.markDirty(); } }) : null;
-    gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, discussions });
+    gateway = new RemoteGateway({ access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, discussions });
     try { network = networkFactory({ onFailure: () => {
       if (closed || !enabled) return;
       recovering = gateway.stop();
@@ -36,8 +36,11 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
     catch (error) { gateway = null; access = null; throw error; }
   }
   function state() {
+    const view = access.view();
     return { ...preferences(), running: Boolean(gateway?.server), enabled, network: { ...network.snapshot },
-      address: gateway?.url || null, ...access.view(), workspaces: reader.workspaces() };
+      address: gateway?.url || null, ...view, workspaces: reader.workspaces(),
+      diagnosticsAvailable: typeof network.diagnosePeer === 'function',
+      devices: view.devices.map(device => ({ ...device, peerAddress: gateway.peerAddresses.get(device.id) || null })) };
   }
   async function refreshNetwork() {
     if (!enabled) return;
@@ -101,6 +104,23 @@ function createRemoteService({ dataDir, manager, networkFactory, apiRoutes = nul
   return {
     async command(action, payload) {
       if (closed) return { ok: false, error: 'Camellia is closing' };
+      if (action === 'diagnose') {
+        if (diagnosing) return { ok: false, error: 'A connection probe is already running' };
+        diagnosing = true;
+        try {
+          if (!enabled || !gateway?.server || network?.snapshot.state !== 'Running') throw new Error('Enable mobile access first');
+          const device = access.devices.find(device => device.id === payload?.id);
+          if (!device) throw new Error('Invalid device');
+          const address = gateway.peerAddresses.get(device.id);
+          if (!address) throw new Error('Open this computer on the phone first');
+          if (typeof network.diagnosePeer !== 'function') throw new Error('Network diagnostics are unavailable');
+          const result = await network.diagnosePeer(address);
+          if (closed || !enabled || !gateway.server || !access.devices.some(item => item.id === device.id)
+              || gateway.peerAddresses.get(device.id) !== address) throw new Error('The device connection changed; run diagnostics again');
+          return { ok: true, result };
+        } catch (error) { return { ok: false, error: error.message }; }
+        finally { diagnosing = false; }
+      }
       if (busy && (action === 'stop' || action === 'logout')) {
         enabled = false; retryAt = 0;
         await gateway?.stop();

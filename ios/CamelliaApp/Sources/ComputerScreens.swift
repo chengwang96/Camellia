@@ -288,8 +288,11 @@ private struct ComputerManagePanel: View {
     @State private var mode: Mode = .choices
     @State private var name = ""
     @State private var feedback = "最多 80 个字符"
+    @State private var restarting = false
+    @State private var restartSent = false
+    @State private var restartError = ""
 
-    private enum Mode { case choices, rename, forget }
+    private enum Mode { case choices, rename, forget, restart }
 
     @ViewBuilder var body: some View {
         switch mode {
@@ -298,6 +301,14 @@ private struct ComputerManagePanel: View {
                 grip
                 header(computer.displayName, description: computerDescription)
                 SettingsCard {
+                    if computer.isPaired {
+                        Button { mode = .restart } label: {
+                            SettingsRowLabel(icon: "", title: "重启桌面端 Camellia",
+                                             detail: "保存设置并重新启动电脑上的 Camellia")
+                        }
+                        .buttonStyle(.plain)
+                        SettingsDivider(leading: 16)
+                    }
                     Button {
                         name = computer.displayName
                         feedback = "最多 80 个字符"
@@ -368,6 +379,33 @@ private struct ComputerManagePanel: View {
             .padding(.bottom, compactRename ? 8 : 18)
             .background(panelBackground)
             .onAppear { nameFocused = true }
+        case .restart:
+            VStack(alignment: .leading, spacing: 14) {
+                header("重启桌面端 Camellia？", description: computer.displayName, localized: true)
+                Text(restartSent ? "重启请求已发送，稍后下拉刷新重新连接。"
+                     : "正在运行的回复会停止，目标和定时检查会暂停。远程连接将暂时断开。")
+                    .font(.system(size: Palette.textBody))
+                    .foregroundColor(Palette.secondary)
+                if !restartError.isEmpty {
+                    Text(restartError).font(.system(size: Palette.textSmall)).foregroundColor(Palette.error)
+                }
+                if restartSent {
+                    SettingsDialogAction(title: "完成", primary: true, action: onClose)
+                } else {
+                    SettingsDialogAction(title: restarting ? "正在发送重启请求…" : "重启", primary: true) {
+                        restarting = true
+                        Task {
+                            do { try await model.restartComputer(computer); restartSent = true }
+                            catch { restartError = error.localizedDescription }
+                            restarting = false
+                        }
+                    }
+                    .disabled(restarting || !restartError.isEmpty)
+                    SettingsDialogAction(title: "取消", primary: false, action: onClose).disabled(restarting)
+                }
+            }
+            .padding(18)
+            .background(panelBackground)
         case .forget:
             SettingsMessagePanel(title: "移除这台电脑？",
                                  message: UIDevice.current.userInterfaceIdiom == .pad

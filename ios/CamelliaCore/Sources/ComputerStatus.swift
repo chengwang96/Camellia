@@ -13,6 +13,7 @@ public enum ComputerStatus {
     public static let unchecked = "待检查"
     /// A check is in flight.
     public static let checking = "正在检查…"
+    public static let restarting = "正在重启…"
     /// The desktop answered `/v1/status` with the protocol this build speaks.
     public static let connected = "已连接"
 
@@ -22,7 +23,7 @@ public enum ComputerStatus {
     /// the same grey dot everywhere instead of one green row and a column of
     /// red ones, which is what an unrun check would look like otherwise.
     public static func isChecking(_ state: String) -> Bool {
-        state == unchecked || state == checking
+        state == unchecked || state == checking || state == restarting
     }
 
     public static func isConnected(_ state: String) -> Bool { state == connected }
@@ -34,6 +35,7 @@ public enum ComputerStatus {
         switch state {
         case unchecked: return "Not checked"
         case checking: return "Checking…"
+        case restarting: return "Restarting…"
         case connected: return "Connected"
         default: return state
         }

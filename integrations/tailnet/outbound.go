@@ -38,6 +38,9 @@ func allowedDeviceRequest(request *http.Request) bool {
 		return false
 	}
 	endpoint := request.URL.Path
+	if endpoint == "/v1/desktop/restart" {
+		return request.Method == http.MethodPost && request.URL.RawQuery == "" && !request.URL.ForceQuery
+	}
 	if endpoint == "/v1/server-management" || managementJobPath.MatchString(endpoint) {
 		return request.URL.RawQuery == "" && !request.URL.ForceQuery && (endpoint == "/v1/server-management" && request.Method == http.MethodPost || managementJobPath.MatchString(endpoint) && request.Method == http.MethodGet)
 	}

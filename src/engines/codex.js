@@ -169,7 +169,13 @@ function createCodex({ dataDir, loadConfig, saveConfig, getRoute, getModels = ()
               if (pendingAccount?.id === id) void discardDraft(id).catch(error => log(error.message)).finally(() => onAccount({ ...accountState(), error }));
               else publishAccount(id, { error });
             }
-          } else if (method === 'account/rateLimits/updated') publishAccount(id, { rateLimits: params.rateLimits });
+          } else if (method === 'account/rateLimits/updated' && params.rateLimits) {
+            const update = params.rateLimits, groups = accountOptions.rateLimitGroups(value.state.rateLimits);
+            const limitId = update.limitId || 'codex';
+            // Rolling updates are sparse: null metadata leaves the last reading intact.
+            publishAccount(id, { rateLimits: { ...groups, [limitId]: { ...groups[limitId],
+              ...Object.fromEntries(Object.entries(update).filter(([, value]) => value != null)) } } });
+          }
         },
       });
     }

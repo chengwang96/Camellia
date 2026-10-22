@@ -26,12 +26,13 @@ async function body(request, limit = 4096) {
 }
 
 class RemoteGateway {
-  constructor({ access, reader, commands, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, discussions = null, validateHost = isTailscaleIPv4 }) {
-    Object.assign(this, { access, reader, commands, apiRoutes, apiImport, nativeSettings, management, discussions, validateHost });
+  constructor({ access, reader, commands, apiRoutes = null, apiImport = null, nativeSettings = null, management = null, desktopRestart = null, discussions = null, validateHost = isTailscaleIPv4 }) {
+    Object.assign(this, { access, reader, commands, apiRoutes, apiImport, nativeSettings, management, desktopRestart, discussions, validateHost });
     this.streams = new Set();
     this.downloads = new Set();
     this.sequence = 0;
     this.rate = new Map();
+    this.peerAddresses = new Map();
     this.server = null;
   }
   async start(host, port = 43127, transport = null) {
@@ -115,6 +116,32 @@ class RemoteGateway {
     const authorization = request.headers.authorization || '';
     if (!/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization)) fail(401, 'Device authentication required');
     const device = this.access.authenticate(authorization.slice(7));
+    if (url.pathname === '/v1/desktop/restart' && this.desktopRestart) {
+      const validate = () => {
+        const current = this.access.authenticate(authorization.slice(7));
+        if (current.permission !== 'control' || current.allWorkspaces !== true) fail(403, 'Full-device control permission required');
+      };
+      validate();
+      if (request.method !== 'POST' || url.search) fail(405, 'POST without a query required');
+      const payload = await body(request);
+      const reply = await this.desktopRestart.submit(device.id, payload, this.instanceId, validate);
+      let dispatched = false;
+      const dispatch = () => {
+        if (dispatched) return;
+        dispatched = true;
+        this.desktopRestart.afterReply(device.id, payload.requestId);
+      };
+      response.once('finish', dispatch);
+      response.once('close', dispatch);
+      if (response.destroyed) dispatch();
+      this.json(response, 200, reply);
+      return;
+    }
+    // Only the authenticated embedded helper can supply the phone's Tailnet IP.
+    // Never learn it from forwarded headers on a plain HTTP listener.
+    if (this.transport && isTailscaleIPv4(request.headers['x-camellia-peer'])) {
+      this.peerAddresses.set(device.id, request.headers['x-camellia-peer']);
+    }
     const receipt = /^\/v1\/commands\/([a-f0-9-]{36})$/.exec(url.pathname);
     if (receipt && request.method === 'GET' && !url.search && this.commands) {
       const result = this.commands.receipt(device, receipt[1]);
@@ -232,6 +259,7 @@ class RemoteGateway {
     if (this.apiImport && fullControl) capabilities.push('api-import');
     if (this.nativeSettings && fullControl) capabilities.push('native-settings');
     if (this.management && fullControl) capabilities.push('server-management');
+    if (this.desktopRestart && fullControl) capabilities.push('desktop-restart');
     if (this.discussions && fullControl) capabilities.push('discussions', 'discussion-rich');
     if (this.commands) capabilities.push('interactive-approvals', 'next-turn-settings', 'subagents');
     if (this.commands) capabilities.push('fork', 'switch-engine', 'compact', 'find', 'resend', 'automation-control', 'message-queue');
@@ -358,6 +386,7 @@ class RemoteGateway {
     this.flushTimer.unref();
   }
   revoke(id) {
+    this.peerAddresses.delete(id);
     this.commands?.cancelPending(id);
     for (const stream of this.streams) if (stream.device.id === id) stream.response.end();
     for (const entry of this.downloads) if (entry.device.id === id) entry.response.destroy();
@@ -377,6 +406,7 @@ class RemoteGateway {
     this.url = null;
     this.transport = null;
     this.rate.clear();
+    this.peerAddresses.clear();
     if (server) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
   }
 }

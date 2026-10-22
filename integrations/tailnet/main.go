@@ -118,6 +118,8 @@ func (service *helper) execute(request command) (any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	switch request.Action {
+	case "diagnose-peer":
+		return probePeer(ctx, client, request.Target)
 	case "status":
 		status, err := client.StatusWithoutPeers(ctx)
 		if err != nil {

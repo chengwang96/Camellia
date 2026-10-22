@@ -1,0 +1,21 @@
+dialog.tailnet-diagnostics { width: min(700px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 48px); margin: auto; padding: 24px; overflow: auto; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); }
+dialog.tailnet-diagnostics[open] { display: flex; flex-direction: column; }
+.tailnet-diagnostics > :not(.diagnostic-table) { flex: 0 0 auto; }
+dialog.tailnet-diagnostics::backdrop { background: rgb(0 0 0 / 35%); }
+.tailnet-diagnostics h2 { margin: 0 0 12px; font: var(--f-m-18); overflow-wrap: anywhere; }
+.tailnet-diagnostics .diagnostic-hint { margin: 10px 0; color: var(--dsw-alias-label-tertiary); font: var(--f-xxs-12); overflow-wrap: anywhere; }
+.tailnet-diagnostics .diagnostic-status { margin: 16px 0 6px; font-weight: 600; }
+.tailnet-diagnostics .diagnostic-error { color: var(--dsw-alias-state-error-primary); overflow-wrap: anywhere; }
+.tailnet-diagnostics .diagnostic-table { overflow: auto; min-height: 0; margin: 14px 0; }
+.tailnet-diagnostics table { width: 100%; border-collapse: collapse; font: var(--f-xxs-12); }
+.tailnet-diagnostics th, .tailnet-diagnostics td { padding: 9px 6px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.tailnet-diagnostics th { font-weight: 600; color: var(--dsw-alias-label-secondary); }
+.tailnet-diagnostics td:nth-child(2), .tailnet-diagnostics td:last-child { white-space: nowrap; }
+.tailnet-diagnostics td:nth-child(3) { min-width: 140px; overflow-wrap: anywhere; }
+.tailnet-diagnostics tr[data-path="direct"] td:nth-child(3) { color: var(--dsw-alias-state-success-primary); }
+.tailnet-diagnostics .diagnostic-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.tailnet-diagnostics button { border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px; background: var(--dsw-alias-bg-layer-1); color: inherit; padding: 8px 12px; font: inherit; cursor: pointer; }
+.tailnet-diagnostics button:disabled { cursor: default; opacity: .55; }
+.tailnet-diagnostics button:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 2px; }
+.tailnet-diagnostics .diagnostic-copy-field { position: fixed; opacity: 0; }
+@media (max-width: 520px) { dialog.tailnet-diagnostics { padding: 16px; } }

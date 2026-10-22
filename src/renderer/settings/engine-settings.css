@@ -50,7 +50,7 @@
 .runtime-card .runtime-version, .runtime-card .runtime-update { margin: 0; }
 .runtime-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-width: 0; max-width: 100%; margin-left: auto; }
 .runtime-update { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
-.runtime-update button { flex-shrink: 0; }
+.runtime-update button { flex-shrink: 0; color: var(--dsw-alias-label-primary); }
 .runtime-card .runtime-description, .runtime-card .runtime-cleanup-warning { margin-top: 6px; }
 .runtime-external-update { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .runtime-external-update button { flex-shrink: 0; }

@@ -20,6 +20,8 @@
   "Python interpreter (API)": "Python 解释器（API）",
   "Choose the Antigravity CLI (agy), not Python or the Antigravity desktop application": "请选择 Antigravity CLI（agy），不要选择 Python 或 Antigravity 桌面应用",
   "Reset credits": "重置卡",
+  "Credit balance": "Credits 余额",
+  "Unlimited": "不限额",
   "Use an official reset credit": "使用官方重置卡",
   "Reset Codex usage?": "要重置你的 Codex 使用量吗？",
   "This uses one official reset credit for this account. Confirm before continuing.": "将消耗此账号的一张官方重置卡。请确认后继续。",

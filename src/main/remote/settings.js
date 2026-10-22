@@ -71,8 +71,8 @@ function configure(manager, conversation, payload) {
       || Object.keys(changes).some(key => !['model', 'connection', 'thinking', 'permissionMode', 'fastMode'].includes(key))
       || Object.entries(changes).some(([key, value]) => typeof value !== (key === 'fastMode' ? 'boolean' : 'string'))
       || changes.connection !== undefined && (!['api', 'subscription'].includes(changes.connection) || changes.model === undefined)) fail(400, 'Invalid settings');
-  if (!current.editable && (changes.permissionMode !== undefined || changes.connection !== undefined && changes.connection !== current.connection))
-    fail(409, 'Stop the reply before changing connection or permissions');
+  if (!current.editable && changes.permissionMode !== undefined)
+    fail(409, 'Stop the reply before changing permissions');
   const patch = { sessionId: conversation.id };
   if (changes.permissionMode !== undefined) {
     if (!LEVELS.includes(changes.permissionMode)) fail(400, 'Invalid permission level');
@@ -84,7 +84,6 @@ function configure(manager, conversation, payload) {
     const model = models.find(model => model.id === (changes.model ?? current.model) && model.connection === (changes.connection ?? current.connection))
       || (changes.connection === undefined && models.find(model => model.id === changes.model));
     if (!model) fail(400, 'Model is unavailable; refresh the model list');
-    if (!current.editable && model.connection !== current.connection) fail(409, 'Stop the reply before changing connection');
     if (changes.thinking && !model.thinking?.includes(changes.thinking)) fail(400, 'Unsupported thinking level');
     if (changes.model !== undefined) {
       patch.model = model.id;

@@ -949,7 +949,7 @@ class SharedConversations {
     return { ok: true, discarded: true };
   }
   // A turn stays on the binding it started with. If the user picks another
-  // model or reasoning level while it is still running, the running turn keeps
+  // model, connection or reasoning level while it is still running, the turn keeps
   // its own settings and the change only reaches the next message.
   runSettings(a, engine, c) {
     return a.settings || this.settings(engine, c.id);
@@ -959,14 +959,16 @@ class SharedConversations {
     const c = payload.sessionId ? this.get(payload.sessionId) : null;
     if (payload.fastMode !== undefined && (engine !== 'codex' || typeof payload.fastMode !== 'boolean' || !c))
       throw new Error('Fast mode is a Codex conversation setting');
-    // Model, reasoning and speed changes only take effect on the next message,
-    // so it can be recorded while the current turn is still running: the turn
-    // is pinned to the settings it started with, and the queued messages that
-    // follow pick up the new selection. Anything that changes the engine
-    // process itself (permission mode, connection or account) still waits.
-    const deferredKeys = new Set(['model', 'thinkingBudget', 'contextWindow', 'fastMode']);
+    if (payload.connection !== undefined && !['api', 'subscription'].includes(payload.connection))
+      throw new Error('Invalid connection');
+    // Model choices can cross between subscriptions and API routes. Save the
+    // entire choice locally while busy: the running turn keeps its launch
+    // settings and native process, and the next message opens the new binding.
+    // Permission, account and standalone connection changes still wait.
+    const deferredKeys = new Set(['model', 'connection', 'thinkingBudget', 'contextWindow', 'fastMode']);
     const keys = Object.keys(payload || {}).filter(key => key !== 'sessionId' && payload[key] !== undefined);
-    const deferred = Boolean(c) && this.busy(c.id) && keys.length > 0 && keys.every(key => deferredKeys.has(key));
+    const deferred = Boolean(c) && this.busy(c.id) && keys.length > 0 && keys.every(key => deferredKeys.has(key))
+      && (payload.connection === undefined || typeof payload.model === 'string' && payload.model.trim().length > 0);
     if (c && this.busy(c.id) && !deferred) throw new Error('Wait for this conversation to finish or stop it before changing its settings');
     const previous = this.settings(engine, c?.id);
     // Fast mode belongs to this conversation, never to the global defaults.
@@ -1323,7 +1325,9 @@ class SharedConversations {
     a.facade.running = true;
     try {
       c.engineSettings ||= {};
-      if (!ephemeral) c.engineSettings[engine] = conversationSettings(settings);
+      // A retry keeps the turn's binding without replacing a newer selection
+      // the user has already saved for the next message.
+      if (!ephemeral && !continuation) c.engineSettings[engine] = conversationSettings(settings);
       c.pending = { engine, at: Date.now(), internal }; c.updatedAt = this.stamp();
       if (memoryDirectory) c.hasGlobalMemory = true;
       if (!internal && !continuation) {
@@ -2963,8 +2967,30 @@ class SharedConversations {
       case 'control-respond': {
         const a = this.active.get(payload.sessionId);
         if (!a || a.facade.gen !== payload.runId || !a.permissions.has(payload.requestId)) return { ok: false };
+        const request = a.permissions.get(payload.requestId);
         const ok = Boolean(a.session?.answerPermission(payload.requestId, payload.allow, payload.input, payload.message, payload.optionId));
-        if (ok) { a.permissions.delete(payload.requestId); this.publishActivity(a.c.id); }
+        if (ok) {
+          a.permissions.delete(payload.requestId);
+          const response = { requestId: payload.requestId, runId: a.facade.gen, allow: payload.allow === true };
+          let responseSeq;
+          if (request.questions?.length) {
+            response.questions = structuredClone(request.questions);
+            if (response.allow) response.answers = Object.fromEntries(request.questions.map(question => [question.id,
+              question.isSecret ? '••••••' : structuredClone(payload.input?.[question.id] ?? '')]));
+            const text = [response.allow ? 'Answers sent' : 'Questions skipped', ...response.questions.map(question => {
+              const value = response.answers?.[question.id];
+              return question.question + '\n' + (Array.isArray(value) ? value.join(' · ') : value || '—');
+            })].join('\n\n');
+            // Save the accepted response immediately, including when it came
+            // from another device. Never retain secret values or skipped drafts.
+            responseSeq = this.append(a.c, { role: 'notice', engine: a.engine, text, questionResponse: response, internal: a.internal }).seq;
+          }
+          const event = { ...response, type: 'conversation:approval-resolved', session_id: a.c.id,
+            engine: a.engine, eventSeq: ++a.eventSeq, ...(responseSeq !== undefined ? { responseSeq } : {}) };
+          if (!a.internal) a.events.push(structuredClone(event));
+          this.onEvent(event);
+          this.publishActivity(a.c.id);
+        }
         return { ok };
       }
       case 'task-list': return { ok: true, tasks: payload?.sessionId ? this.tasks.list(payload.sessionId) : [] };

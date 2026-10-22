@@ -120,6 +120,15 @@ class EmbeddedNetwork {
     await this.openExternal(url);
   }
   async listen(target, token) { return this.request('listen', { target, token }); }
+  async diagnosePeer(address) {
+    if (!isTailscaleIPv4(address)) throw new Error('Invalid diagnostic peer address');
+    if (!this.child) throw new Error('Enable mobile access first');
+    try { return await this.request('diagnose-peer', { target: address }); }
+    catch (error) {
+      if (error.message === 'unsupported network action') throw new Error('Network diagnostics require the updated helper. Fully quit Camellia, including the tray, and restart it.');
+      throw error;
+    }
+  }
   async connect(address) {
     deviceAddress(address);
     if (!this.child) throw new Error('Start and sign into embedded networking before connecting a device');

@@ -4,6 +4,12 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class EndpointTest {
+    @Test public void allowsOnlyTheExactDesktopRestartEndpoint() {
+        Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
+        assertEquals("/v1/desktop/restart", endpoint.uri("/v1/desktop/restart").getPath());
+        for (String suffix : new String[]{"/", "?", "?confirmed=true", "/extra", "#fragment"})
+            assertThrows(IllegalArgumentException.class, () -> endpoint.uri("/v1/desktop/restart" + suffix));
+    }
     @Test public void replyReadRouteAllowsOnlyTheExactConversationPath() {
         Endpoint endpoint = new Endpoint("http://100.64.0.1:43127");
         String base = "/v1/conversations/12345678-1234-1234-1234-123456789abc/read";

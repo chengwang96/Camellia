@@ -14,6 +14,7 @@ function deviceAddress(value) {
 function endpointPath(value, method) {
   if (typeof value !== 'string' || !value.startsWith('/v1/') || /[%#\\\s]/.test(value)) throw new Error('Invalid device endpoint');
   const url = new URL(value, 'http://device');
+  if (value === '/v1/desktop/restart' && method === 'POST') return value;
   const conversation = /^\/v1\/conversations\/[a-f0-9-]{36}(?:\/(events|commands|read|artifacts)(\/[a-f0-9]{64})?)?$/.exec(url.pathname);
   if (conversation?.[2] && conversation[1] !== 'artifacts') throw new Error('Unsupported device endpoint');
   const pairing = ['/v1/pair/request', '/v1/pair/claim'].includes(url.pathname);

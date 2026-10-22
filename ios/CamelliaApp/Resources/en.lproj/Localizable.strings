@@ -860,3 +860,10 @@
 "：更多操作" = ": more actions";
 "重置 Codex 额度" = "Reset Codex usage";
 "查看并使用电脑账号的重置卡" = "View and use this computer account's reset credits";
+"重启桌面端 Camellia" = "Restart desktop Camellia";
+"保存设置并重新启动电脑上的 Camellia" = "Save settings and relaunch Camellia on this computer";
+"重启桌面端 Camellia？" = "Restart desktop Camellia?";
+"正在运行的回复会停止，目标和定时检查会暂停。远程连接将暂时断开。" = "Running replies will stop, and goals and scheduled checks will pause. The remote connection will briefly disconnect.";
+"重启请求已发送，稍后下拉刷新重新连接。" = "Restart requested. Pull to refresh shortly to reconnect.";
+"正在发送重启请求…" = "Sending restart request…";
+"重启" = "Restart";

@@ -12,6 +12,17 @@ import (
 	"time"
 )
 
+func TestDesktopRestartEndpoint(t *testing.T) {
+	if !allowedDeviceRequest(httptest.NewRequest("POST", "/v1/desktop/restart", nil)) {
+		t.Fatal("desktop restart rejected")
+	}
+	for _, target := range []string{"/v1/desktop/restart", "/v1/desktop/restart?", "/v1/desktop/restart?confirmed=true", "/v1/desktop/restart/"} {
+		if allowedDeviceRequest(httptest.NewRequest("GET", target, nil)) || target != "/v1/desktop/restart" && allowedDeviceRequest(httptest.NewRequest("POST", target, nil)) {
+			t.Fatal("invalid restart endpoint accepted", target)
+		}
+	}
+}
+
 func TestOutboundTargets(t *testing.T) {
 	for _, target := range []string{"http://100.64.0.1:43127", "http://100.127.255.255:43127"} {
 		if _, err := outboundTarget(target); err != nil {

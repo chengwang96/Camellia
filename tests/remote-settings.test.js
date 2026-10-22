@@ -116,7 +116,13 @@ test('explicit connection disambiguates the same model and busy model changes re
   assert.equal(selected.appliesNextTurn, true);
   assert.equal(selected.settings.editable, false); assert.equal(selected.settings.modelEditable, true);
   assert.equal(target.state.thinkingBudget, 'low');
-  assert.throws(() => choose(target, { model: 'shared-id', connection: 'subscription' }), /Stop/);
+  const subscription = choose(target, { model: 'shared-id', connection: 'subscription' });
+  assert.equal(subscription.appliesNextTurn, true);
+  assert.equal(subscription.settings.connection, 'subscription');
+  const api = choose(target, { model: 'route-a' });
+  assert.equal(api.appliesNextTurn, true);
+  assert.equal(api.settings.connection, 'api');
+  assert.equal(api.settings.thinking, '');
   assert.throws(() => choose(target, { permissionMode: 'full' }), /Stop/);
 });
 
@@ -135,7 +141,9 @@ test('fast uses catalog support and quick switch uses the host preference', () =
 for (const connection of ['subscription', 'api']) test(`quick switch restores the saved ${connection} source for an identical model ID`, () => {
   const target = manager({ connection: connection === 'api' ? 'subscription' : 'api', model: 'shared-id' });
   target.loadConfig = () => ({ quickSwitchModels: { codex: 'shared-id' }, quickSwitchConnections: { codex: connection } });
-  choose(target, { quickSwitch: true });
+  target.busy = () => true;
+  const result = choose(target, { quickSwitch: true });
+  assert.equal(result.appliesNextTurn, true);
   assert.equal(target.state.connection, connection);
   assert.equal(target.state.model, 'shared-id');
 });

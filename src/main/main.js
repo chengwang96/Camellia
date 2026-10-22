@@ -1251,6 +1251,16 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
 
 remoteDesktop = require('./remote/desktop').createRemoteDesktop({ app, BrowserWindow, ipcMain, nativeTheme,
   getDiscussions: ['win32', 'darwin'].includes(process.platform) ? discussions : null,
+  prepareRestart: async () => {
+    const available = () => {
+      if (appQuitting || migrationBusy || migrationBlocksEngines || runtimeManager?.busy || anyRuntimeUpdating()
+          || benchmarkLibraryManager?.busy || appUpdatesService?.state().installing)
+        throw new Error('Wait for Camellia downloads, updates and data transfers to finish before restarting');
+    };
+    available();
+    if (!await flushSettingsWindow()) throw new Error('Save desktop settings before restarting Camellia');
+    available();
+  }, log,
   manager: sharedConversations, rendererRoot: RENDERER_ROOT, loadConfig, getSettingsWindow: () => settingsWindow, apiRoutes: apiRoutesBundle,
   networkFactory: sharedDesktopNetwork.factory, computerName, saveComputerName: name => normalizeComputerName(saveConfig({ computerName: normalizeComputerName(name) }).computerName) });
 const cliDevices = require('./remote/devices-desktop').createDevicesDesktop({ app, ipcMain, BrowserWindow,

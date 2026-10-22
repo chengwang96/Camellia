@@ -898,7 +898,7 @@ with sync_playwright() as p:
         sharedConversations:true,
         onLanguageChanged:()=>()=>{}, onEngineSettingsChanged:()=>{}, onApiRouterState:()=>{}, onNetworkHealth:()=>{},
         onConversationEvent:()=>{},onConversationGoal:()=>{}, onConversationStatus:()=>{}, onHarnessNavigate:()=>{},
-        apiRouterGetState:async()=>({enabled:true,models:['model-a','model-b','model-c']}),
+        apiRouterGetState:async()=>({enabled:true,models:['model-a','model-b','model-c'],modelThinking:{'model-b':{values:['high']}}}),
         workbenchSettings:async()=>({ok:true,conversations:{mode:'direct'},quickSwitchModels:window.quickSwitchModels,quickSwitchLevels:window.quickSwitchLevels}),
         conversationSwitch:async()=>({ok:true}), openSettingsWindow:()=>{},
         previewFile:async()=>({ok:false,error:'fixture'}),openFileExternally:async()=>({ok:true}),
@@ -974,16 +974,17 @@ with sync_playwright() as p:
     expect(page.locator('.dsh-pop')).to_have_count(0)
     page.close()
     # The model pill stays usable while a response runs: the running turn is
-    # unaffected and the change is saved for the next message. The harness and
-    # handoff controls still require an idle conversation.
+    # unaffected and the change is saved for the next message, including picks
+    # across subscription and API groups. The harness and handoff stay locked.
     running_bridge = r"""(() => {
-      let settings = {model:'model-a',permissionMode:'default',connection:'api'};
+      let settings = {model:'gpt-account',permissionMode:'default',connection:'subscription'};
       window.actions = [];
       window.dshDesktop = {
         sharedConversations:true,
         onLanguageChanged:()=>()=>{}, onEngineSettingsChanged:()=>{}, onApiRouterState:()=>{}, onNetworkHealth:()=>{},
         onConversationEvent:()=>{},onConversationGoal:()=>{}, onConversationStatus:()=>{}, onHarnessNavigate:()=>{},
-        apiRouterGetState:async()=>({enabled:true,models:['model-a','model-b','model-c']}),
+        apiRouterGetState:async()=>({enabled:true,models:['model-a','model-b','deepseek-flash']}),
+        codexAccountState:async()=>({ok:true,account:{id:'acct'},models:[{id:'gpt-account',name:'GPT account'}]}),
         workbenchSettings:async()=>({ok:true,conversations:{mode:'direct'}}),
         conversationSwitch:async()=>({ok:true}), openSettingsWindow:()=>{},
         previewFile:async()=>({ok:false,error:'fixture'}),openFileExternally:async()=>({ok:true}),
@@ -994,7 +995,7 @@ with sync_playwright() as p:
           if(action==='list-sessions') return {ok:true,sessions:[],workspaces:[],pagination:{}};
           if(action==='get-live') return {ok:true,live:null};
           if(action==='goal-get') return {ok:true,goal:null};
-          if(action==='send') { window.running=true; window.receiveEvent?.({type:'conversation:activity',session_id:payload.sessionId,activity:'running'}); return {ok:true,sessionId:payload.sessionId,runId:1}; }
+          if(action==='send') { window.running=true; window.receiveEvent?.({type:'conversation:activity',session_id:'running-fixture',activity:'running'}); return {ok:true,sessionId:'running-fixture',runId:1}; }
           if(action==='cancel') { window.running=false; window.receiveEvent?.({type:'conversation:activity',session_id:payload.sessionId,activity:null}); return {ok:true}; }
           return {ok:true};
         },
@@ -1014,9 +1015,19 @@ with sync_playwright() as p:
     # is left untouched; the selection applies to the next message.
     page.locator('#modelPill').click()
     page.locator('.pop-row').first.click()
-    page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('model-b', exact=True).click()
-    page.wait_for_function("actions.some(a=>a.action==='save-settings' && a.payload.model==='model-b')")
-    page.wait_for_function("conversationBusy() && document.querySelector('#modelPillName').textContent==='model-b'")
+    page.locator('.dsh-pop').last.locator('.pop-opt').get_by_text('deepseek-flash', exact=True).click()
+    page.wait_for_function("actions.some(a=>a.action==='save-settings' && a.payload.model==='deepseek-flash' && a.payload.connection==='api' && a.payload.sessionId==='running-fixture')")
+    page.wait_for_function("conversationBusy() && document.querySelector('#modelPillName').textContent==='deepseek-flash'")
+    expect(page.locator('#statusLine')).to_contain_text('applies to the next message')
+    # Both directions remain available while the original response runs.
+    page.locator('#modelPill').click()
+    page.locator('.pop-row').first.click()
+    page.locator('.dsh-pop').last.locator('.pop-opt[data-connection="subscription"]').click()
+    page.wait_for_function("actions.some(a=>a.action==='save-settings' && a.payload.model==='gpt-account' && a.payload.connection==='subscription')")
+    page.wait_for_function("conversationBusy() && document.querySelector('#modelPillName').textContent==='GPT account'")
+    assert not page.evaluate("actions.some(a=>a.action==='cancel')"), 'changing models must leave the running reply active'
+    expect(page.locator('#engineSwitch')).to_be_disabled()
+    expect(page.locator('#selPermission')).to_be_disabled()
     page.close()
     # A mismatched URL reopens the conversation in its saved harness, including
     # when the conversation is idle. No handoff is requested.

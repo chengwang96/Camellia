@@ -16,7 +16,7 @@ def rpc(method, payload=None):
 bridge = """window.calls=[]; window.accountListeners={};
 window.mockAccounts = ['default','account-1','account-2'].map((id,i)=>({id, label:['','长任务备用','个人账号'][i],
  email:['work@example.com','research@example.com','personal@example.com'][i], plan:['plus','pro','free'][i], signedIn:true,
- active:i===0, exhausted:false, verifiedAt:'2026-09-29T07:00:00Z', quotaWindows:[
+ active:i===0, exhausted:false, credits:{balance:[54651.2625055,0,null][i],hasCredits:i===0,unlimited:i===2}, verifiedAt:'2026-09-29T07:00:00Z', quotaWindows:[
  {label:'5h',usedPercent:[4,13,40][i],resetsAt:'2026-09-29T10:02:00Z'},
  {label:'7d',usedPercent:[15,25,85][i],resetsAt:'2026-10-04T07:52:00Z'}]}));
 const snapshot=()=>({ok:true, installed:true,activeId:mockAccounts.find(a=>a.active).id, accounts:mockAccounts,
@@ -92,7 +92,7 @@ window.camelliaDevices={onEvent:()=>()=>{},onTransfer:()=>()=>{},call:async()=>(
 def assert_card_layout(cards):
     problems = cards.locator('.subscription-card').evaluate_all("""cards => cards.flatMap(card => {
       const problems = [], bounds = card.getBoundingClientRect();
-      for (const element of card.querySelectorAll('header strong, .subscription-badges, .subscription-state, .subscription-meter, .subscription-note-text, .subscription-checked, .subscription-actions button, .subscription-note:not([hidden]) > *')) {
+      for (const element of card.querySelectorAll('header strong, .subscription-badges, .subscription-state, .subscription-meter, .subscription-credits, .subscription-credits strong, .subscription-note-text, .subscription-checked, .subscription-actions button, .subscription-note:not([hidden]) > *')) {
         const box = element.getBoundingClientRect();
         if (box.left < bounds.left - 1 || box.right > bounds.right + 1 || box.top < bounds.top - 1 || box.bottom > bounds.bottom + 1)
           problems.push(`${card.dataset.cardId}: ${element.className || element.dataset.cardAction} escapes card`);
@@ -141,9 +141,16 @@ try:
         page.goto((repo/'src/renderer/settings/api-settings.html').as_uri()+'?page=subscriptions',wait_until='networkidle')
         cards=page.locator('#codexAccountList')
         expect(cards.locator('.subscription-card')).to_have_count(3)
+        expect(cards.locator('.subscription-credits span')).to_have_text(['Credit balance'] * 3)
+        expect(cards.locator('.subscription-credits strong')).to_have_text(['54,651.26','0.00','Unlimited'])
+        page.evaluate("mockAccounts[0].credits=null; accountListeners.onCodexAccount(accountSnapshot())")
+        expect(cards.locator('[data-card-id=default] .subscription-credits strong')).to_have_text('Unavailable')
+        page.evaluate("mockAccounts[0].credits={balance:58453.6,hasCredits:true,unlimited:false}; accountListeners.onCodexAccount(accountSnapshot())")
+        expect(cards.locator('[data-card-id=default] .subscription-credits strong')).to_have_text('58,453.60')
         assert_card_layout(cards)
         google=page.locator('#googleAccountList')
         expect(google.locator('.subscription-card')).to_have_count(1)
+        expect(google.locator('.subscription-credits')).to_have_count(0)
         expect(page.locator('#googleSignIn, #googleRefresh')).to_have_count(0)
         expect(page.locator('#googleAccountPanel > .account-actions')).to_have_count(0)
         expect(google.locator('.subscription-meter')).to_have_count(4)
@@ -407,6 +414,8 @@ try:
         page.reload(wait_until='networkidle')
         page.evaluate("CamelliaI18n.setLanguage('zh-CN')")
         expect(cards.locator('.subscription-card')).to_have_count(3)
+        expect(cards.locator('.subscription-credits span')).to_have_text(['Credits 余额'] * 3)
+        expect(cards.locator('.subscription-credits strong')).to_have_text(['54,651.26','0.00','不限额'])
         out=repo/'artifacts';out.mkdir(exist_ok=True)
         screenshot_with_shadow(page, cards, out/'subscription-cards.png')
         page.screenshot(path=str(out/'subscription-page-depth.png'), animations='disabled')

@@ -1091,33 +1091,39 @@ function renderRoutingSettings() {
   }
 }
 function renderWebToolsSettings() {
-  const t = window.CamelliaI18n.t, select = $('webToolsProvider');
+  const t = window.CamelliaI18n.t;
   const providers = window.CamelliaWebTools.availableProviders(live);
   const settings = config?.webTools || { provider: 'native' };
-  select.replaceChildren(new Option(t('Engine default'), 'native'));
-  for (const provider of providers) select.add(new Option(provider.name === 'DeepSeek' ? 'DeepSeek' : 'DeepSeek · ' + provider.name, 'deepseek:' + provider.id));
   const unavailable = settings.provider === 'deepseek' && !providers.some(provider => provider.id === settings.providerId);
-  if (unavailable) {
-    const option = new Option(t('DeepSeek (unavailable)'), 'deepseek:' + settings.providerId);
-    option.disabled = true; select.add(option);
-  }
-  select.value = settings.provider === 'deepseek' ? 'deepseek:' + settings.providerId : 'native';
-  select.disabled = !config || saving;
-  $('webToolsPrice').hidden = settings.provider !== 'deepseek';
-  $('webToolsAddApi').hidden = providers.length > 0 && !unavailable;
-  $('webToolsHint').textContent = t(unavailable ? 'The selected official API key is unavailable. Enable it in API Keys or choose another source.'
+  const hint = t(unavailable ? 'The selected official API key is unavailable. Enable it in API Keys or choose another source.'
     : settings.provider === 'deepseek' ? 'Search and read pages with DeepSeek from the next message. Google subscription sessions are not supported.'
       : providers.length ? 'Use the engine default, or choose a configured DeepSeek official API.' : 'Add an enabled DeepSeek official API key to use its web tools.');
+  for (const prefix of ['webTools', 'networkWebTools']) {
+    const select = $(prefix + 'Provider');
+    select.replaceChildren(new Option(t('Engine default'), 'native'));
+    for (const provider of providers) select.add(new Option(provider.name === 'DeepSeek' ? 'DeepSeek' : 'DeepSeek · ' + provider.name, 'deepseek:' + provider.id));
+    if (unavailable) {
+      const option = new Option(t('DeepSeek (unavailable)'), 'deepseek:' + settings.providerId);
+      option.disabled = true; select.add(option);
+    }
+    select.value = settings.provider === 'deepseek' ? 'deepseek:' + settings.providerId : 'native';
+    select.disabled = !config || saving;
+    $(prefix + 'Price').hidden = settings.provider !== 'deepseek';
+    $(prefix + 'AddApi').hidden = providers.length > 0 && !unavailable;
+    $(prefix + 'Hint').textContent = hint;
+  }
 }
-$('webToolsProvider').addEventListener('change', () => {
-  if (!config || saving) return;
-  const value = $('webToolsProvider').value;
-  config.webTools = value === 'native' ? { provider: 'native' } : { provider: 'deepseek', providerId: value.slice('deepseek:'.length) };
-  edited(true);
-});
-$('webToolsAddApi').addEventListener('click', () => {
-  setView('providers'); $('preset').value = 'deepseek'; renderPresetAccount(); $('addDialog').showModal();
-});
+for (const prefix of ['webTools', 'networkWebTools']) {
+  $(prefix + 'Provider').addEventListener('change', () => {
+    if (!config || saving) return;
+    const value = $(prefix + 'Provider').value;
+    config.webTools = value === 'native' ? { provider: 'native' } : { provider: 'deepseek', providerId: value.slice('deepseek:'.length) };
+    edited(true);
+  });
+  $(prefix + 'AddApi').addEventListener('click', () => {
+    setView('providers'); $('preset').value = 'deepseek'; renderPresetAccount(); $('addDialog').showModal();
+  });
+}
 for (const field of ['multiKeyConcurrency', 'multiKeyFailover']) {
   $(field).addEventListener('change', () => {
     config.routing ||= {};

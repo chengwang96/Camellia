@@ -4122,6 +4122,81 @@ test('a model change made while a turn runs is deferred to the next message', as
   f.finish('codex');
 });
 
+for (const engine of ['codex', 'kimi', 'antigravity']) test(`${engine} model choices cross subscription and API connections on the next turn`, async t => {
+  const f = fixture(t), nativeSettings = new Map();
+  const account = { connection: 'subscription', model: 'account-model', thinkingBudget: 'high' };
+  const driver = f.drivers[engine], ensure = driver.ensure;
+  driver.settings = id => ({ ...(nativeSettings.get(id) || account) });
+  driver.ensure = opts => {
+    const session = ensure(opts);
+    session.settings = { ...opts.settings };
+    nativeSettings.set(session.sessionId, session.settings);
+    return session;
+  };
+  driver.saveSettings = () => { throw new Error('A deferred model choice must not change driver settings'); };
+  const first = await f.manager.send(engine, { prompt: 'Remember the original subscription task' });
+  const original = f.sent.at(-1), conversation = f.manager.get(first.sessionId);
+  const nativeId = conversation.segments[engine].nativeId;
+  const selected = f.manager.saveSettings(engine, { sessionId: first.sessionId, model: 'deepseek-flash', connection: 'api', thinkingBudget: '' });
+  assert.equal(selected.settings.model, 'deepseek-flash');
+  assert.equal(selected.settings.connection, 'api');
+  assert.equal(selected.settings.thinkingBudget, '');
+  assert.equal(original.opts.settings.model, 'account-model');
+  assert.equal(original.opts.settings.connection, 'subscription');
+  assert.equal(original.session.running, true);
+  assert.equal(conversation.segments[engine].nativeId, nativeId);
+  assert.equal(f.sent.length, 1, 'saving the choice does not start another turn');
+  assert.throws(() => f.manager.saveSettings(engine, { sessionId: first.sessionId, permissionMode: 'full', model: 'deepseek-flash' }), /finish or stop/);
+  assert.throws(() => f.manager.saveSettings(engine, { sessionId: first.sessionId, connection: 'subscription' }), /finish or stop/);
+  assert.throws(() => f.manager.saveSettings(engine, { sessionId: first.sessionId, connection: 'invalid', model: 'deepseek-flash' }), /Invalid connection/);
+  f.finish(engine, 'success', 'Subscription answer'); await first.done;
+
+  const next = await f.manager.send(engine, { sessionId: first.sessionId, prompt: 'Continue on DeepSeek' });
+  const api = f.sent.at(-1);
+  assert.equal(api.opts.settings.connection, 'api');
+  assert.equal(api.opts.settings.model, 'deepseek-flash');
+  assert.notEqual(api.session.sessionId, nativeId, 'a different connection uses its own native thread');
+  assert.match(api.prompt, /Remember the original subscription task/);
+  assert.match(api.prompt, /Subscription answer/);
+  f.manager.saveSettings(engine, { sessionId: first.sessionId, model: 'account-model', connection: 'subscription', thinkingBudget: 'high' });
+  assert.equal(api.opts.settings.connection, 'api');
+  assert.equal(api.session.running, true);
+  f.finish(engine, 'success', 'DeepSeek answer'); await next.done;
+
+  const last = await f.manager.send(engine, { sessionId: first.sessionId, prompt: 'Back on the account' });
+  assert.equal(f.sent.at(-1).opts.settings.connection, 'subscription');
+  assert.equal(f.sent.at(-1).opts.settings.model, 'account-model');
+  assert.equal(f.sent.at(-1).opts.settings.thinkingBudget, 'high');
+  assert.match(f.sent.at(-1).prompt, /DeepSeek answer/);
+  f.finish(engine); await last.done;
+  assert.equal(f.restart().settings(engine, first.sessionId).connection, 'subscription');
+});
+
+test('recovering a running subscription turn preserves a deferred API model selection', async t => {
+  const f = fixture(t);
+  f.drivers.codex.settings = () => ({ connection: 'subscription', model: 'account-model', thinkingBudget: 'high' });
+  const first = await f.manager.send('codex', { prompt: 'Original task' });
+  f.finish('codex'); await first.done;
+  const run = await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Continue the task' });
+  assert.ok(f.sent.at(-1).opts.sessionId, 'the turn attempts to resume the native thread');
+  f.manager.saveSettings('codex', { sessionId: first.sessionId, model: 'deepseek-flash', connection: 'api', thinkingBudget: '' });
+  f.finish('codex', 'error', 'thread native-fixture not found');
+  await f.flush();
+  assert.equal(f.sent.length, 3, 'the missing native thread is recovered in the same turn');
+  assert.equal(f.sent.at(-1).opts.settings.connection, 'subscription');
+  assert.equal(f.sent.at(-1).opts.settings.model, 'account-model');
+  const selected = f.manager.settings('codex', first.sessionId);
+  assert.equal(selected.connection, 'api');
+  assert.equal(selected.model, 'deepseek-flash');
+  assert.equal(selected.thinkingBudget, '');
+  f.finish('codex', 'success', 'Recovered subscription answer'); await run.done;
+  const next = await f.manager.send('codex', { sessionId: first.sessionId, prompt: 'Next message on DeepSeek' });
+  assert.equal(f.sent.at(-1).opts.settings.connection, 'api');
+  assert.equal(f.sent.at(-1).opts.settings.model, 'deepseek-flash');
+  assert.match(f.sent.at(-1).prompt, /Recovered subscription answer/);
+  f.finish('codex'); await next.done;
+});
+
 test('Codex Fast mode stays in its conversation, survives reload, and changes only the next turn', async t => {
   const f = subscriptionFixture(t);
   f.drivers.codex.saveSettings = () => { throw new Error('Fast mode must not change global settings'); };
@@ -6155,6 +6230,55 @@ test('questions use an input-needed state while approvals remain distinct and an
   assert.equal(f.manager.activity(a.sessionId), 'running'); assert.equal(f.manager.activity(b.sessionId), 'permission');
   assert.equal(f.manager.live('claude', a.sessionId).live.events.some(e => e.type === 'gui:permission'), false);
   f.finish('claude', 'success', 'A done', sa); f.finish('claude', 'success', 'B done', sb);
+});
+
+test('confirmed question answers are broadcast, replayed and saved with secret values masked', async t => {
+  const f = fixture(t);
+  const run = await f.manager.send('codex', { prompt: 'Ask for the network details' });
+  const session = f.sent.at(-1).session;
+  const questions = [
+    { id: 'network', question: 'Same router?', options: [{ label: 'Yes' }, { label: 'No' }] },
+    { id: 'carrier', question: 'Carriers?', multiSelect: true },
+    { id: 'secret', question: 'Private value?', isSecret: true },
+  ];
+  f.manager.capture('codex', { type: 'gui:permission', requestId: 'network-question', runId: session.gen, questions });
+  const payload = { sessionId: run.sessionId, runId: run.runId, requestId: 'network-question', allow: true,
+    input: { network: 'Yes', carrier: ['Carrier A', 'Custom carrier'], secret: 'private-answer-marker' } };
+  assert.equal((await f.manager.command('codex', 'control-respond', payload)).ok, true);
+  assert.deepEqual(session.permissions[2], payload.input, 'The native engine receives the original answers');
+  const resolved = f.events.find(event => event.type === 'conversation:approval-resolved');
+  assert.ok(resolved, 'All answer transports must publish the confirmed response');
+  assert.equal(resolved.session_id, run.sessionId); assert.equal(resolved.runId, run.runId);
+  assert.equal(resolved.allow, true); assert.deepEqual(resolved.questions, questions);
+  assert.deepEqual(resolved.answers, { network: 'Yes', carrier: ['Carrier A', 'Custom carrier'], secret: '••••••' });
+  assert.ok(f.manager.live('codex', run.sessionId).live.events.some(event => event.type === resolved.type));
+  const saved = f.manager.messages(f.manager.get(run.sessionId)).find(row => row.questionResponse);
+  assert.deepEqual(saved.questionResponse.answers, resolved.answers);
+  assert.equal(resolved.responseSeq, saved.seq);
+  assert.match(saved.text, /Same router\?\nYes/);
+  assert.match(saved.text, /Custom carrier/);
+  assert.equal(JSON.stringify(f.manager.rows(f.manager.get(run.sessionId))).includes('private-answer-marker'), false);
+  assert.equal(JSON.stringify(f.manager.live('codex', run.sessionId)).includes('private-answer-marker'), false);
+  assert.equal((await f.manager.command('codex', 'control-respond', payload)).ok, false);
+  assert.equal(f.events.filter(event => event.type === resolved.type).length, 1);
+  f.finish('codex');
+  const restarted = f.restart();
+  assert.deepEqual(restarted.messages(restarted.get(run.sessionId)).find(row => row.questionResponse).questionResponse, saved.questionResponse);
+});
+
+test('skipped questions retain their outcome without confirming any draft answers', async t => {
+  const f = fixture(t), run = await f.manager.send('claude', { prompt: 'Ask a question' });
+  const session = f.sent.at(-1).session;
+  f.manager.capture('claude', { type: 'gui:permission', requestId: 'skip', runId: session.gen,
+    questions: [{ id: 'scope', question: 'Scope?' }] });
+  assert.equal((await f.manager.command('claude', 'control-respond', { sessionId: run.sessionId,
+    runId: run.runId, requestId: 'skip', allow: false, input: { scope: 'unconfirmed-draft-marker' } })).ok, true);
+  const resolved = f.events.find(event => event.type === 'conversation:approval-resolved');
+  assert.equal(resolved.allow, false); assert.equal(resolved.answers, undefined);
+  const saved = f.manager.messages(f.manager.get(run.sessionId)).find(row => row.questionResponse);
+  assert.equal(saved.questionResponse.allow, false);
+  assert.equal(JSON.stringify(saved).includes('unconfirmed-draft-marker'), false);
+  f.finish('claude');
 });
 
 test('two goals and an ordinary conversation progress independently on one engine', async t => {

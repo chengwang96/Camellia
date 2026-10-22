@@ -943,7 +943,8 @@ public final class MainActivity extends Activity {
     }
 
     private boolean checkingComputer(String state) {
-        return state.equals(tr("待检查", "Not checked")) || state.equals(tr("正在检查…", "Checking…"));
+        return state.equals(tr("待检查", "Not checked")) || state.equals(tr("正在检查…", "Checking…"))
+            || state.equals(tr("正在重启…", "Restarting…"));
     }
 
     private void updateComputerState(String address, String state) {
@@ -970,6 +971,9 @@ public final class MainActivity extends Activity {
         LinearLayout group = style.group(panel, "");
         style.action(group, tr("连接稳定性测试", "Connection stability test"), tr("检测手机与电脑的连接，约 30 秒", "Test the phone-to-computer connection for about 30 seconds"),
             "manageConnectionTest", false, () -> { dialog.dismiss(); testComputerConnection(computer); });
+        if (computer.has("token")) style.action(group, tr("重启桌面端 Camellia", "Restart desktop Camellia"),
+            tr("保存设置并重新启动电脑上的 Camellia", "Save settings and relaunch Camellia on this computer"),
+            "manageRestart", false, () -> { dialog.dismiss(); restartComputer(computer); });
         style.action(group, tr("重命名", "Rename"), tr("更改这台电脑在本机显示的名称", "Change the name shown on this phone"),
             "manageRename", false, () -> { dialog.dismiss(); renameComputer(computer); });
         style.action(group, tr("移除电脑", "Forget computer"), tr("删除手机上的凭据，电脑上的会话不受影响", "Deletes the credentials on this phone; chats stay on the computer"),
@@ -981,6 +985,54 @@ public final class MainActivity extends Activity {
         if (connectionTest != null) connectionTest.close();
         connectionTest = new ConnectionTestDialog(this, computer, chinese);
         computerDialog = connectionTest.show();
+    }
+
+    private void restartComputer(JSONObject computer) {
+        String address = computer.optString("address"), token = computer.optString("token");
+        String requestId = java.util.UUID.randomUUID().toString();
+        LinearLayout panel = computerDialogPanel(tr("重启桌面端 Camellia？", "Restart desktop Camellia?"),
+            computerName(computer) + "\n" + tr("正在运行的回复会停止，目标和定时检查会暂停。远程连接将暂时断开。", "Running replies will stop, and goals and scheduled checks will pause. The remote connection will briefly disconnect."));
+        TextView feedback = text("", Palette.TEXT_SMALL, muted); feedback.setTag("restartFeedback");
+        feedback.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); panel.addView(feedback);
+        android.app.AlertDialog dialog = (android.app.AlertDialog) createComputerDialog(panel, tr("重启", "Restart"), tr("取消", "Cancel"));
+        showComputerDialog(dialog);
+        Button confirm = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE); confirm.setTag("restartConfirm");
+        Button cancel = dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE); cancel.setTag("restartCancel");
+        confirm.setOnClickListener(view -> {
+            confirm.setEnabled(false); cancel.setEnabled(false); dialog.setCancelable(false);
+            feedback.setText(tr("正在发送重启请求…", "Sending restart request…"));
+            commandWorker.submit(() -> {
+                RemoteApi client = statusClientFactory.apply(address); statusClients.add(client);
+                boolean sent = false;
+                try {
+                    JSONObject info = client.json("/v1/status", token, null);
+                    if (!"control".equals(info.optString("permission"))) throw new IllegalStateException(tr("需要这台电脑的完整控制权限。", "Full-device control permission is required."));
+                    JSONArray capabilities = info.optJSONArray("capabilities");
+                    boolean supported = false;
+                    if (capabilities != null) for (int i = 0; i < capabilities.length(); i++) supported |= "desktop-restart".equals(capabilities.optString(i));
+                    if (!supported || info.optString("instanceId").isEmpty()) throw new IllegalStateException(tr("需要完整控制权限，并更新重启电脑端。", "Full-device control and an updated, restarted desktop are required."));
+                    JSONObject payload = new JSONObject().put("requestId", requestId).put("instanceId", info.getString("instanceId")).put("confirmed", true);
+                    sent = true;
+                    JSONObject reply = client.json("/v1/desktop/restart", token, payload);
+                    if (!reply.optBoolean("ok") || !("accepted".equals(reply.optString("state")) || "complete".equals(reply.optString("state"))))
+                        throw new IOException(reply.optString("error", "Desktop restart was not accepted"));
+                    runOnUiThread(() -> {
+                        if (isFinishing() || isDestroyed()) return;
+                        dialog.dismiss(); updateComputerState(address, tr("正在重启…", "Restarting…"));
+                        android.widget.Toast.makeText(this, tr("重启请求已发送，稍后下拉刷新重新连接。", "Restart requested. Pull to refresh shortly to reconnect."), android.widget.Toast.LENGTH_LONG).show();
+                    });
+                } catch (Exception error) {
+                    boolean uncertain = sent && !(error instanceof RemoteApi.Failure);
+                    String message = uncertain ? tr("请求结果不确定，请刷新电脑状态确认后再试。", "Request outcome is uncertain. Refresh the computer status before trying again.")
+                        : error instanceof IllegalStateException ? error.getMessage() : RemoteApi.failureMessage(error, chinese);
+                    runOnUiThread(() -> {
+                        if (isFinishing() || isDestroyed()) return;
+                        feedback.setText(ErrorDetails.withSummary(message, error)); feedback.setTextColor(Palette.of(this).error);
+                        cancel.setEnabled(true); cancel.setText(tr("关闭", "Close")); dialog.setCancelable(true);
+                    });
+                } finally { statusClients.remove(client); client.cancel(); }
+            });
+        });
     }
 
     private LinearLayout computerDialogPanel(String title, String description) {

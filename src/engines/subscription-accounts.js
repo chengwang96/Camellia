@@ -61,15 +61,29 @@ function windowsExhausted(windows) {
 
 // Codex reports either one window group or a map of named groups, each with a
 // primary and secondary window.
+function rateLimitGroups(rateLimits) {
+  if (!rateLimits || typeof rateLimits !== 'object') return {};
+  return ['primary', 'secondary', 'credits'].some(key => Object.hasOwn(rateLimits, key)) ? { codex: rateLimits } : rateLimits;
+}
+
 function rateLimitWindows(rateLimits) {
-  if (!rateLimits || typeof rateLimits !== 'object') return [];
-  const groups = rateLimits.primary || rateLimits.secondary ? { default: rateLimits } : rateLimits;
   const windows = [];
-  for (const group of Object.values(groups)) {
+  for (const group of Object.values(rateLimitGroups(rateLimits))) {
     if (!group || typeof group !== 'object') continue;
     for (const window of [group.primary, group.secondary]) if (window && typeof window === 'object') windows.push(window);
   }
   return windows;
+}
+
+function codexCredits(rateLimits) {
+  const groups = rateLimitGroups(rateLimits);
+  // These are account credits, repeated in multiple buckets; never add them.
+  const credits = groups.codex?.credits ?? Object.values(groups).find(group => group?.credits)?.credits;
+  if (!credits || typeof credits !== 'object') return null;
+  const amount = typeof credits.balance === 'number' || typeof credits.balance === 'string' && credits.balance.trim()
+    ? Number(credits.balance) : NaN;
+  return { balance: Number.isFinite(amount) && amount >= 0 ? amount : null,
+    hasCredits: credits.hasCredits === true, unlimited: credits.unlimited === true };
 }
 
 // A provider-reported quota verdict, not a failure: an account whose window is
@@ -117,7 +131,7 @@ function boundAccountId({ engine, accounts, states, activeId, preferId, autoSwit
 
 function accountSummary(engine, account, state = {}) {
   const detail = engine === 'codex' ? { email: state.account?.email || '', plan: state.account?.planType || '',
-    rateLimitResetCredits: state.rateLimitResetCredits || null }
+    rateLimitResetCredits: state.rateLimitResetCredits || null, credits: state.account ? codexCredits(state.rateLimits) : null }
     : engine === 'kimi' ? { email: state.account?.name || '', region: state.account?.region || '' } : {};
   return { id: account.id, label: account.label, active: false, signedIn: accountSignedIn(engine, state),
     ...(engine === 'antigravity' && state.verification === 'stale' ? { stale: true } : {}),
@@ -249,5 +263,5 @@ function createAccountPool({ engine, userData, root, bindingsKey, loadConfig, sa
 }
 
 module.exports = { DEFAULT_ACCOUNT_ID, MAX_ACCOUNTS, normalizeLabel, normalizeAccounts, accountsFor, activeAccountId, nextAccountId,
-  accountHome, accountExhausted, accountSignedIn, rateLimitWindows, orderAccountIds, usableAccountId, boundAccountId,
+  accountHome, accountExhausted, accountSignedIn, rateLimitGroups, rateLimitWindows, orderAccountIds, usableAccountId, boundAccountId,
   accountSummaries, accountSummary, createAccountPool };

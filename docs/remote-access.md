@@ -15,12 +15,26 @@ Mobile access and **CLI devices** share the desktop embedded node. Signing out o
 
 ## Security and data boundaries
 
+A full-device control pairing can use **Remote control → computer menu → Restart desktop Camellia** on Android and iOS. Confirming saves desktop settings and relaunches the application through its normal shutdown. Running replies stop; Goals and scheduled checks pause. The connection briefly disconnects; pull to refresh after startup. Pairing and conversations remain saved. Update and restart the desktop once to enable this feature. CLI hosts do not advertise it.
+
+The desktop advertises `desktop-restart` only to full-device control devices. `POST /v1/desktop/restart` requires `confirmed: true`, a UUID `requestId`, and the current status `instanceId`. The receipt is persisted before acknowledgment, and restart starts after the acknowledgment is written. Repeating that same request after reconnecting returns its receipt without restarting again. The endpoint is unavailable to read-only and workspace-scoped pairings.
+
 - The packaged Go helper uses pinned `tsnet` 1.98.6. The Node gateway listens only on a random `127.0.0.1` port; the helper authenticates to it with a fresh 256-bit transport secret. There is no LAN or public HTTP listener.
 - Node identity is encrypted with AES-256-GCM and a key protected by Electron `safeStorage`. The gateway refuses to start if secure storage is unavailable. Device tokens are 256-bit random values, stored as SHA-256 digests on the desktop and encrypted with Android Keystore on the phone.
 - Application HTTP travels inside the Tailscale tunnel. The Android client accepts only an explicit Tailnet IPv4 address and port, does not follow redirects, and does not send its token through a system HTTP proxy. Host and Origin checks block cross-origin browser use.
 - Authorized devices can read conversation text and referenced artifact bytes. Secrets written in a message body are part of that body; Camellia does not redact them. API keys are absent from ordinary status and history responses.
 - An all-access control device can request a `camellia-api-routes` v2 export through `GET /v1/api-keys`; it contains plaintext provider keys. Android asks for confirmation before replacing its own encrypted provider configuration. The desktop configuration is not changed.
 - Access is checked again for every request and event stream. Archiving or moving a conversation out of an older restricted scope removes access; revocation closes streams. Pairing is rate limited, and at most 16 event streams (four per device) are allowed.
+
+## Diagnose a phone connection
+
+On the desktop, open **Settings → Mobile access** and choose **Connection diagnostics** beside an authorized device. Keep the phone connected to this computer, with Camellia in the foreground, on the network you want to test. No Android update is required for desktop diagnostics.
+
+The desktop embedded Tailscale node sends ten discovery probes, one second apart after each response (each probe has a three-second timeout). The table and copyable report show the actual probe path: direct UDP and its endpoint, the DERP region, a peer relay, an unknown path, or a timeout. The sequence preserves relay-to-direct transitions. These are computer-to-phone discovery timings, not mobile application request timings, throughput measurements or proof of long-term reliability. Probing can also help Tailscale establish a direct path.
+
+The target is learned from an authenticated phone request through the embedded helper; the diagnostic command accepts an authorized device ID, not a caller-supplied address. If no phone connection has been observed since the gateway started, open this computer on the phone first. Closing the dialog or stopping the test prevents subsequent probes. The current in-flight probe may take up to three seconds to finish. Device revocation or a changed connection invalidates an in-flight result.
+
+Clash `DIRECT` means a connection bypasses the upstream proxy; it does not establish UDP peer-to-peer connectivity. System `tailscale status` or `tailscale ping` also describes a separate node, not Camellia's embedded node. After updating from a helper without diagnostics, fully quit Camellia, including the tray, and restart it to load the updated helper.
 
 ## Protocol v1
 
