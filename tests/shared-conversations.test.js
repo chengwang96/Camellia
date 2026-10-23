@@ -4537,6 +4537,9 @@ test('portable compaction retains recent interactions exactly across restart and
   assert.ok(conversation.lastCompaction.chunks[0].firstDeltaMs >= 0);
   assert.equal(conversation.lastCompaction.chunks[0].usage.cache_read_input_tokens, 80);
   assert.ok(statuses.some(value => value.compaction?.chunk === 1 && value.compaction.stage === 'summarizing'));
+  assert.ok(statuses.some(value => value.compaction?.completedChunks === 0 && value.compaction.totalChunks === 1));
+  assert.ok(statuses.some(value => value.compaction?.completedChunks === 1 && value.compaction.totalChunks === 1));
+  assert.ok(statuses.filter(value => value.compaction).every(value => Number.isSafeInteger(value.compaction.startedAt) && value.compaction.elapsedMs >= 0));
   assert.ok(statuses.some(value => value.compaction?.stage === 'saving'));
   assert.ok(logs.some(value => value.includes('context compaction metrics:')));
   assert.ok(logs.every(value => !/EXACT_TOOL_RESULT|RECENT_TASK_MARKER|SUMMARY_OF_OLD_TASK/.test(value)));
@@ -5110,7 +5113,9 @@ test('stopping pre-send compaction during setup sends neither summary nor task',
   let release;
   f.manager.prepare = () => new Promise(resolve => { release = resolve; });
   const rejected = assert.rejects(f.manager.send('codex', { sessionId: conversation.id, prompt: 'Do not run' }), /canceled/);
-  assert.deepEqual(statuses.at(-1), { sessionId: conversation.id, text: 'Compacting context before continuing the task…', compaction: { engine: 'codex', state: 'running', native: false } });
+  const { startedAt, elapsedMs, ...compaction } = statuses.at(-1).compaction;
+  assert.deepEqual({ ...statuses.at(-1), compaction }, { sessionId: conversation.id, text: 'Compacting context before continuing the task…', compaction: { engine: 'codex', state: 'running', native: false } });
+  assert.ok(Number.isSafeInteger(startedAt) && elapsedMs >= 0);
   assert.equal(f.manager.load('codex', conversation.id).compaction.state, 'running');
   await f.manager.cancel({ sessionId: conversation.id });
   await rejected;
@@ -6423,6 +6428,9 @@ test('a routable model compacts through parallel router summaries and starts no 
   assert.equal(conversation.lastCompaction.requests, 3);
   assert.equal(conversation.lastCompaction.reason, 'manual-native-unavailable');
   assert.deepEqual(conversation.lastCompaction.chunks.map(chunk => chunk.kind), ['map', 'map', 'reduce']);
+  assert.deepEqual(statuses.filter(value => value.compaction?.totalChunks && !value.compaction.chunk)
+    .map(({ compaction: value }) => [value.summaryPhase, value.completedChunks, value.totalChunks]),
+    [['map', 0, 2], ['map', 1, 2], ['map', 2, 2], ['reduce', 0, 1], ['reduce', 1, 1]]);
   assert.equal(conversation.lastCompaction.chunks.at(-1).summaryLimit, 12000);
   assert.ok(conversation.lastCompaction.chunks.every(chunk => chunk.totalMs >= 0 && chunk.outputChars > 0));
   assert.ok(statuses.some(value => value.compaction?.stage === 'summarizing'));

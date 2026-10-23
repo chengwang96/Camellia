@@ -2303,7 +2303,22 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   // The label is translated in place, so the elapsed time lives beside it and
   // is re-rendered from the stored milliseconds when the language changes.
-  function compactionDurationText(element) { element.textContent = compactionDuration(Number(element.dataset.compactionMs)); }
+  function compactionDurationText(element) {
+    const duration = compactionDuration(Number(element.dataset.compactionMs));
+    element.textContent = element.dataset.running === 'true'
+      ? window.CamelliaI18n.t('Elapsed {0}').replace('{0}', duration) : duration;
+  }
+  let compactionClockTimer = null;
+  function refreshCompactionClocks() {
+    const rows = chat.querySelectorAll('.context-compaction[data-state="running"]');
+    for (const row of rows) {
+      const element = row.querySelector('.context-compaction-duration');
+      if (!element) continue;
+      element.dataset.compactionMs = Math.max(0, Date.now() - Number(row.dataset.compactionStartedAt));
+      compactionDurationText(element);
+    }
+    if (!rows.length) { clearInterval(compactionClockTimer); compactionClockTimer = null; }
+  }
   function compactionLabel(compaction) {
     if (compaction.state === 'completed' && compaction.fallback) return 'Context compacted: older context omitted';
     const labels = compaction.native ? {
@@ -2335,8 +2350,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     row.dataset.state = compaction.state;
     if (compaction.seq) row.dataset.seq = compaction.seq;
     const label = compactionLabel(compaction);
-    const progress = compaction.stage === 'summarizing' && Number.isInteger(compaction.chunk)
-      ? (compaction.finalChunk ? 'Summarizing context: chunk {0} (last)…' : 'Summarizing context: chunk {0}…').replace('{0}', compaction.chunk)
+    const hasCounts = Number.isSafeInteger(compaction.completedChunks) && compaction.completedChunks >= 0
+      && Number.isSafeInteger(compaction.totalChunks) && compaction.totalChunks > 0 && compaction.completedChunks <= compaction.totalChunks;
+    const progress = compaction.stage === 'summarizing' && hasCounts
+      ? (compaction.summaryPhase === 'reduce' ? 'Merging summaries: {0}/{1} chunks completed…' : 'Summarizing context: {0}/{1} chunks completed…')
+        .replace('{0}', compaction.completedChunks).replace('{1}', compaction.totalChunks)
+      : compaction.stage === 'summarizing' && Number.isInteger(compaction.chunk)
+        ? (compaction.finalChunk ? 'Summarizing context: chunk {0} (last)…' : 'Summarizing context: chunk {0}…').replace('{0}', compaction.chunk)
       : compaction.stage === 'saving' ? 'Saving compacted context…' : label;
     row.querySelector('span').textContent = compaction.state === 'running' ? progress : label;
     let errorEl = row.querySelector('.context-compaction-error');
@@ -2346,13 +2366,22 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     } else errorEl?.remove();
     // The label is translated in place, so the elapsed time lives beside it
     // instead of inside the translated text node.
-    const durationMs = compaction.state === 'completed' ? compaction.durationMs ?? compaction.totalMs : NaN;
+    const running = compaction.state === 'running';
+    if (running) row.dataset.compactionStartedAt = Number.isFinite(compaction.startedAt) ? compaction.startedAt
+      : Number.isFinite(compaction.elapsedMs) ? Date.now() - compaction.elapsedMs : row.dataset.compactionStartedAt || Date.now();
+    const durationMs = running ? Math.max(0, Date.now() - Number(row.dataset.compactionStartedAt))
+      : compaction.durationMs ?? compaction.totalMs ?? compaction.elapsedMs
+        ?? (row.dataset.compactionStartedAt ? Math.max(0, Date.now() - Number(row.dataset.compactionStartedAt)) : NaN);
     let durationEl = row.querySelector('.context-compaction-duration');
     if (Number.isFinite(durationMs) && durationMs >= 0) {
-      if (!durationEl) { durationEl = document.createElement('span'); durationEl.className = 'context-compaction-duration'; row.appendChild(durationEl); }
+      if (!durationEl) { durationEl = document.createElement('span'); durationEl.className = 'context-compaction-duration'; durationEl.setAttribute('aria-live', 'off'); row.appendChild(durationEl); }
       durationEl.dataset.compactionMs = durationMs;
+      durationEl.dataset.running = running;
       compactionDurationText(durationEl);
     } else if (durationEl) durationEl.remove();
+    if (!running) delete row.dataset.compactionStartedAt;
+    refreshCompactionClocks();
+    if (running && !compactionClockTimer) compactionClockTimer = setInterval(refreshCompactionClocks, 1000);
     if (historyBefore === undefined) maybeScroll(was);
   }
   let statusText = '';
@@ -2614,7 +2643,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
 
     if (ev.type === 'gui:compaction') {
       handleConversationStatus({ sessionId: ev.session_id, text: ev.state === 'running' ? 'Compacting context…' : '',
-        compaction: { state: ev.state, native: ev.native !== false, engine: ev.engine || turnEngine || loadedEngine, seq: ev.compactionSeq, durationMs: ev.compactionDurationMs } });
+        compaction: { state: ev.state, native: ev.native !== false, engine: ev.engine || turnEngine || loadedEngine, seq: ev.compactionSeq,
+          durationMs: ev.compactionDurationMs, startedAt: ev.compactionStartedAt, elapsedMs: ev.compactionElapsedMs } });
       return;
     }
 

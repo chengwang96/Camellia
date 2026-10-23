@@ -35,9 +35,14 @@ function compactionView(value) {
   const result = { state: value.state, native: value.native === true };
   if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(value.engine)) result.engine = value.engine;
   if (['summarizing', 'saving'].includes(value.stage)) result.stage = value.stage;
-  for (const key of ['seq', 'afterSeq', 'chunk', 'durationMs']) {
+  if (['map', 'reduce'].includes(value.summaryPhase)) result.summaryPhase = value.summaryPhase;
+  for (const key of ['seq', 'afterSeq', 'chunk', 'durationMs', 'startedAt', 'elapsedMs', 'completedChunks', 'totalChunks']) {
     if (Number.isSafeInteger(value[key]) && value[key] >= 0) result[key] = value[key];
   }
+  // Reconnecting phones receive a current duration without depending on their
+  // clock agreeing with the host. The phone advances it locally between events.
+  if (result.state === 'running' && result.startedAt !== undefined)
+    result.elapsedMs = Math.max(0, Date.now() - result.startedAt);
   if (value.finalChunk === true) result.finalChunk = true;
   return result;
 }
@@ -82,7 +87,8 @@ class RemoteReadModel {
     const conversation = this.manager.items.get(update?.sessionId || update?.session_id);
     if (!conversation) return;
     const value = compactionView(update.type === 'gui:compaction'
-      ? { state: update.state, native: true, engine: update.engine, seq: update.compactionSeq, durationMs: update.compactionDurationMs }
+      ? { state: update.state, native: true, engine: update.engine, seq: update.compactionSeq, durationMs: update.compactionDurationMs,
+        startedAt: update.compactionStartedAt, elapsedMs: update.compactionElapsedMs }
       : update.compaction);
     if (!value) return;
     const previous = this.compactions.get(conversation);

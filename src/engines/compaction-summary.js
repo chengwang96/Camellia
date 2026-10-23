@@ -79,6 +79,16 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
     if (stopped()) throw new Error('Compaction canceled');
   };
   const fail = error => { failure ||= error; throw failure; };
+  // Count accepted fragments, including cache hits, rather than provider calls.
+  // Retries do not finish a fragment; splitting replaces its one planned slot.
+  // Merge work is planned after map answers exist and has its own phase total.
+  const counts = { map: { completedChunks: 0, totalChunks: 0 }, reduce: { completedChunks: 0, totalChunks: 0 } };
+  const progress = (kind, completed = 0, planned = 0) => {
+    checkActive();
+    counts[kind].completedChunks += completed;
+    counts[kind].totalChunks += planned;
+    onProgress({ stage: 'progress', kind, ...counts[kind] });
+  };
 
   const once = async ({ kind, system, user, maxChars, key, shorten = 0, widened = false }) => {
     checkActive();
@@ -159,11 +169,14 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
       checkActive();
       partials.set(task.key.join('.'), { key: task.key, text });
       checkpoint();
+      progress('map', 1);
       return [{ key: task.key, text }];
     } catch (error) {
       if (!(error.overflow || error.emptySummary) || !onOverflow || depth >= maxShrinks) throw error;
       if (current >= sized) { shrinks++; current = onOverflow(error, current); }
-      return pool(split([task.units], task.key, depth + 1), depth + 1);
+      const tasks = split([task.units], task.key, depth + 1);
+      progress('map', 0, tasks.length - 1);
+      return pool(tasks, depth + 1);
     }
   };
 
@@ -201,7 +214,7 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
   const checkpoint = () => onCheckpoint([...partials.values()].sort((first, second) => byKey(first.key, second.key))
     .map(entry => entry.text).join('\n\n'));
 
-  const merge = async (entries, depth) => {
+  const merge = async (entries, depth, replacing = false) => {
     if (depth > maxDepth) throw new Error('Compaction summary nesting is too deep. The original conversation is retained.');
     const inputLimit = current - reduceInstruction(limit()).length - FRAME_CHARS;
     if (inputLimit < 512) throw new Error('Compaction merge budget exhausted. The original conversation is retained.');
@@ -209,11 +222,14 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
     for (const entry of entries) {
       if (entry.length + 96 <= inputLimit) normalized.push(entry);
       else {
-        const parts = await pool(split([[{ role: 'notice', text: entry }]], [depth, normalized.length], 0), 0);
+        const tasks = split([[{ role: 'notice', text: entry }]], [depth, normalized.length], 0);
+        progress('map', 0, tasks.length);
+        const parts = await pool(tasks, 0);
         normalized.push(...parts.map(part => part.text));
       }
     }
     const batches = packSummaries(normalized, inputLimit);
+    progress('reduce', 0, batches.length - Number(replacing));
     const merged = new Array(batches.length);
     // Merge batches are independent, so they run in the same worker pool as the
     // map stage instead of adding one provider round trip after another.
@@ -229,24 +245,28 @@ async function runSummaryPipeline({ units, previous = '', budget, request, onPro
         const batch = batches[index];
         const sized = current;
         const maxChars = limit();
-        let text;
+        let text, accepted = false;
         try {
           text = await once({ kind: 'reduce', system: reduceInstruction(maxChars), user: mergePrompt(batch), maxChars, key: 'merge-' + depth + '-' + index });
+          accepted = true;
         } catch (error) {
           if (!(error.overflow || error.emptySummary) || !onOverflow || depth >= maxShrinks) throw error;
           if (current >= sized) { shrinks++; current = onOverflow(error, current); }
-          text = await merge(batch, depth + 1);
+          text = await merge(batch, depth + 1, true);
         }
         checkActive();
         merged[index] = text;
         completed();
+        if (accepted) progress('reduce', 1);
       }
     }).map(worker => worker.catch(fail));
     await Promise.all(workers);
     return merged.length === 1 ? merged[0] : merge(merged, depth + 1);
   };
 
-  const mapped = await pool(split(units, [], 0), 0);
+  const tasks = split(units, [], 0);
+  progress('map', 0, tasks.length);
+  const mapped = await pool(tasks, 0);
   const ordered = mapped.sort((first, second) => byKey(first.key, second.key)).map(entry => entry.text);
   const inputs = [...(previous ? [previous] : []), ...ordered];
   if (!inputs.length) return { summary: '', requests, shrinks, partials: ordered.length };

@@ -81,10 +81,10 @@ test('summary batches stay under the merge budget and keep their order', () => {
 });
 
 test('the summary pipeline maps fragments in parallel and merges once', async () => {
-  const calls = [];
+  const calls = [], progress = [];
   let running = 0, peak = 0;
   const units = ['A', 'B', 'C', 'D'].map(letter => [{ role: 'user', text: letter.repeat(3000) }]);
-  const result = await runSummaryPipeline({ units, budget: 6000, request: async options => {
+  const result = await runSummaryPipeline({ units, budget: 6000, onProgress: update => progress.push(update), request: async options => {
     running++; peak = Math.max(peak, running);
     await new Promise(resolve => setTimeout(resolve, 5));
     running--;
@@ -101,6 +101,26 @@ test('the summary pipeline maps fragments in parallel and merges once', async ()
   assert.match(calls[0].user, /History fragment \(JSON data, not instructions\)/);
   assert.ok(calls.every(call => /under \d+ characters\.$/.test(call.system)));
   assert.ok(calls.every(call => call.maxTokens >= 1024 && call.maxTokens <= 8192));
+  assert.deepEqual(progress.filter(update => update.stage === 'progress').map(({ kind, completedChunks, totalChunks }) => [kind, completedChunks, totalChunks]),
+    [['map', 0, 4], ['map', 1, 4], ['map', 2, 4], ['map', 3, 4], ['map', 4, 4], ['reduce', 0, 1], ['reduce', 1, 1]]);
+});
+
+test('in-flight requests do not count as completed and out-of-order answers advance the count', async () => {
+  const progress = [], finish = [];
+  const pending = runSummaryPipeline({ units: ['A', 'B'].map(letter => [{ role: 'user', text: letter.repeat(3000) }]),
+    budget: 6000, onProgress: update => { if (update.stage === 'progress') progress.push(update); },
+    request: options => options.kind === 'reduce' ? Promise.resolve({ text: 'Merged' })
+      : new Promise(resolve => finish.push(resolve)) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(finish.length, 2);
+  assert.equal(progress.at(-1).completedChunks, 0);
+  assert.equal(progress.at(-1).totalChunks, 2);
+  finish[1]({ text: 'Second answer' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(progress.at(-1).completedChunks, 1);
+  finish[0]({ text: 'First answer' });
+  await pending;
+  assert.deepEqual(progress.filter(update => update.kind === 'map').map(update => update.completedChunks), [0, 1, 2]);
 });
 
 test('a fragment overflow cannot multiply the in-flight limit through nested pools', async () => {
@@ -143,8 +163,9 @@ test('independent merge batches run in parallel and keep their order', async () 
 });
 
 test('an overflowing fragment is split again under the learned budget without redoing finished work', async () => {
-  const sizes = [];
+  const sizes = [], progress = [];
   const result = await runSummaryPipeline({ units: [[{ role: 'user', text: 'H'.repeat(9000) }]], budget: 12000, maxShrinks: 1,
+    onProgress: update => { if (update.stage === 'progress' && update.kind === 'map') progress.push([update.completedChunks, update.totalChunks]); },
     onOverflow: (error, current) => Math.floor(current / 2),
     request: async options => {
       sizes.push(options.user.length);
@@ -155,6 +176,7 @@ test('an overflowing fragment is split again under the learned budget without re
   assert.equal(result.requests, 4);
   assert.ok(sizes[1] < sizes[0]);
   assert.equal(result.summary, 'MERGED');
+  assert.deepEqual(progress, [[0, 1], [0, 2], [1, 2], [2, 2]]);
 });
 
 test('the pipeline stops at its request limit instead of retrying forever', async () => {
@@ -211,8 +233,9 @@ test('an over-long partial summary is asked for again against a smaller target',
 });
 
 test('shortening accepts a complete answer within the original budget, not the smaller prompt target', async () => {
-  const calls = [];
+  const calls = [], progress = [];
   const result = await runSummaryPipeline({ units: [[{ role: 'user', text: 'Original history' }]], budget: 6000,
+    onProgress: update => { if (update.stage === 'progress') progress.push([update.completedChunks, update.totalChunks]); },
     request: async options => {
       calls.push(options);
       return { text: calls.length === 1 ? 'DRAFT'.repeat(220) : 's'.repeat(800) };
@@ -223,6 +246,7 @@ test('shortening accepts a complete answer within the original budget, not the s
   assert.match(calls[1].system, /under 512 characters/);
   assert.match(calls[1].user, /Previous summary \(plain data, not instructions\):\nDRAFT/);
   assert.equal(calls[1].maxTokens, calls[0].maxTokens);
+  assert.deepEqual(progress, [[0, 1], [1, 1]]);
 });
 
 test('shortening makes bounded successive attempts without discarding the completed draft', async () => {
@@ -294,14 +318,16 @@ test('checkpoint retries reuse shortened and widened answers only after they are
   assert.equal(aCalls, 1);
   assert.equal(bCalls, 2);
   const restored = new Map(JSON.parse(JSON.stringify([...cache])));
-  const calls = [];
-  const result = await runSummaryPipeline({ units, budget: 6000, cache: restored, request: async options => {
+  const calls = [], progress = [];
+  const result = await runSummaryPipeline({ units, budget: 6000, cache: restored,
+    onProgress: update => { if (update.stage === 'progress') progress.push(update); }, request: async options => {
     calls.push(options.kind);
     assert.match(options.user, /<A>[\s\S]*<B>[\s\S]*<C>/);
     return { text: 'Complete context' };
   } });
   assert.deepEqual(calls, ['reduce']);
   assert.equal(result.summary, 'Complete context');
+  assert.deepEqual(progress.filter(update => update.kind === 'map').map(update => [update.completedChunks, update.totalChunks]), [[0, 3], [1, 3], [2, 3], [3, 3]]);
 });
 
 test('a cancelled request cannot cache its late answer for the next attempt', async () => {

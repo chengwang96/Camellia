@@ -692,6 +692,8 @@
   "Asking the engine to summarize the conversation…": "正在让引擎总结对话…",
   "Summarizing context: chunk {0}…": "正在总结上下文：第 {0} 块…",
   "Summarizing context: chunk {0} (last)…": "正在总结上下文：第 {0} 块（最后一块）…",
+  "Summarizing context: {0}/{1} chunks completed…": "正在总结上下文：已完成 {0}／{1} 块…",
+  "Merging summaries: {0}/{1} chunks completed…": "正在合并摘要：已完成 {0}／{1} 块…",
   "Saving compacted context…": "正在保存压缩后的上下文…",
   "Waiting for the engine to respond…": "正在等待引擎响应…",
   "Request canceled before sending": "请求已在发送前取消",

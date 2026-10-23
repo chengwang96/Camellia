@@ -899,7 +899,8 @@
     color: var(--dsw-alias-label-secondary); font: var(--f-s-14);
   }
   .context-compaction svg { width: 20px; height: 20px; flex-shrink: 0; }
-  .context-compaction .context-compaction-duration { color: var(--dsw-alias-label-caption); }
+  .context-compaction { flex-wrap: wrap; }
+  .context-compaction .context-compaction-duration { color: var(--dsw-alias-label-caption); white-space: nowrap; font-variant-numeric: tabular-nums; }
   .context-compaction[data-state="running"] { color: var(--dsw-alias-label-primary); }
   .context-compaction[data-state="running"] svg { animation: pulse 1.2s ease-in-out infinite; }
   .context-compaction[data-state="failed"] { color: var(--dsw-alias-label-error, #c33); flex-wrap: wrap; }

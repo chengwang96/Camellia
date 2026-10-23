@@ -122,7 +122,7 @@ public class RemoteRichControlsTest extends InstrumentationTestCase {
             assertNull(activity.getWindow().getDecorView().findViewWithTag("remoteContext"));
             View marker = activity.getWindow().getDecorView().findViewWithTag("remoteCompaction:compaction:live");
             assertNotNull(marker);
-            String value = ((TextView) ((LinearLayout) marker).getChildAt(2)).getText().toString();
+            String value = ((TextView) marker.findViewWithTag("compactionStatus")).getText().toString();
             assertFalse(value.contains("123")); assertFalse(value.contains("32000"));
         });
     }
@@ -142,13 +142,16 @@ public class RemoteRichControlsTest extends InstrumentationTestCase {
             LinearLayout messages = (LinearLayout) field(activity, "messages");
             assertEquals(1, messages.getChildCount());
             assertNull(activity.getWindow().getDecorView().findViewWithTag("remoteContext"));
-            snapshot.put("compaction", new JSONObject().put("state", "running").put("afterSeq", 1).put("stage", "summarizing").put("chunk", 2));
+            snapshot.put("compaction", new JSONObject().put("state", "running").put("afterSeq", 1).put("stage", "summarizing").put("chunk", 2)
+                .put("summaryPhase", "map").put("completedChunks", 2).put("totalChunks", 5).put("elapsedMs", 95000));
             snapshot.put("live", new JSONObject().put("text", "").put("userSeq", 1));
             apply.invoke(activity, snapshot);
             ContextCompactionView marker = messages.findViewWithTag("remoteCompaction:compaction:live");
             assertNotNull(marker); assertSame(marker, messages.getChildAt(1));
             assertEquals(View.VISIBLE, marker.getChildAt(0).getVisibility());
-            assertTrue(((TextView) marker.getChildAt(2)).getText().toString().contains("2"));
+            String runningText = ((TextView) marker.findViewWithTag("compactionStatus")).getText().toString();
+            assertTrue(runningText.contains("2/5") || runningText.contains("2／5"));
+            assertTrue(((TextView) marker.findViewWithTag("compactionDuration")).getText().toString().contains("35"));
             JSONObject completion = new JSONObject().put("state", "completed").put("durationMs", 42000).put("seq", 2);
             rows.put(new JSONObject().put("seq", 2).put("role", "notice").put("text", "Context compacted").put("compaction", completion));
             snapshot.put("compaction", completion); snapshot.getJSONObject("conversation").put("seq", 2);
@@ -157,8 +160,9 @@ public class RemoteRichControlsTest extends InstrumentationTestCase {
             marker = messages.findViewWithTag("remoteCompaction:message:2"); assertNotNull(marker);
             assertEquals(3, messages.getChildCount()); assertEquals(View.GONE, marker.getChildAt(0).getVisibility());
             boolean zh = (Boolean) field(activity, "chinese");
-            String value = ((TextView) marker.getChildAt(2)).getText().toString();
-            assertTrue(value.contains(zh ? "上下文已压缩" : "Context compacted")); assertTrue(value.contains("42"));
+            String value = ((TextView) marker.findViewWithTag("compactionStatus")).getText().toString();
+            assertTrue(value.contains(zh ? "上下文已压缩" : "Context compacted"));
+            assertTrue(((TextView) marker.findViewWithTag("compactionDuration")).getText().toString().contains("42"));
             assertFalse(value.contains("123456")); assertFalse(value.contains("32000")); assertFalse(value.contains("tokens"));
             // Reopening and older hosts' text-only history still restore completion.
             detail.invoke(activity); snapshot.put("compaction", JSONObject.NULL); snapshot.remove("live");
@@ -169,10 +173,47 @@ public class RemoteRichControlsTest extends InstrumentationTestCase {
                 snapshot.put("compaction", new JSONObject().put("state", state).put("afterSeq", 2)); apply.invoke(activity, snapshot);
                 marker = messages.findViewWithTag("remoteCompaction:compaction:live");
                 assertNotNull(marker); assertEquals(View.GONE, marker.getChildAt(0).getVisibility());
-                assertTrue(((TextView) marker.getChildAt(2)).getText().toString().contains(zh ? "原对话已保留" : "original conversation is retained"));
+                assertTrue(((TextView) marker.findViewWithTag("compactionStatus")).getText().toString().contains(zh ? "原对话已保留" : "original conversation is retained"));
             }
             set("conversationId", "22222222-2222-4222-8222-222222222222"); detail.invoke(activity); apply.invoke(activity, snapshot);
             assertEquals(0, ((LinearLayout) field(activity, "messages")).getChildCount());
         });
+    }
+
+    public void testCompactionClockKeepsLiveAnnouncementsOnStatusChanges() throws Exception {
+        AtomicReference<ContextCompactionView> view = new AtomicReference<>();
+        AtomicReference<String> initialStatus = new AtomicReference<>(), initialTime = new AtomicReference<>();
+        ui(() -> {
+            ContextCompactionView marker = new ContextCompactionView(activity, new ChatStyle(activity), false);
+            view.set(marker);
+            dialog = new AlertDialog.Builder(activity).setView(marker).create(); dialog.show();
+            marker.update(new JSONObject().put("state", "running").put("stage", "summarizing")
+                .put("summaryPhase", "map").put("completedChunks", 2).put("totalChunks", 5).put("elapsedMs", 95000));
+            TextView status = marker.findViewWithTag("compactionStatus"), time = marker.findViewWithTag("compactionDuration");
+            assertEquals(View.ACCESSIBILITY_LIVE_REGION_NONE, marker.getAccessibilityLiveRegion());
+            assertEquals(View.ACCESSIBILITY_LIVE_REGION_POLITE, status.getAccessibilityLiveRegion());
+            assertEquals(View.ACCESSIBILITY_LIVE_REGION_NONE, time.getAccessibilityLiveRegion());
+            initialStatus.set(status.getText().toString()); initialTime.set(time.getText().toString());
+        });
+        AtomicReference<String> tickedTime = new AtomicReference<>(initialTime.get());
+        long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+        while (initialTime.get().equals(tickedTime.get()) && android.os.SystemClock.uptimeMillis() < deadline) {
+            android.os.SystemClock.sleep(50);
+            ui(() -> tickedTime.set(((TextView) view.get().findViewWithTag("compactionDuration")).getText().toString()));
+        }
+        assertFalse("The clock must advance while the announced status stays unchanged", initialTime.get().equals(tickedTime.get()));
+        ui(() -> {
+            ContextCompactionView marker = view.get();
+            TextView status = marker.findViewWithTag("compactionStatus");
+            assertEquals(initialStatus.get(), status.getText().toString());
+            marker.update(new JSONObject().put("state", "running").put("stage", "summarizing")
+                .put("summaryPhase", "map").put("completedChunks", 3).put("totalChunks", 5));
+            assertEquals("Summarizing context: 3/5 chunks completed…", status.getText().toString());
+            marker.update(new JSONObject().put("state", "completed").put("durationMs", 42000));
+            assertEquals("Context compacted", status.getText().toString());
+            assertEquals("42 seconds", ((TextView) marker.findViewWithTag("compactionDuration")).getText().toString());
+        });
+        android.os.SystemClock.sleep(1100);
+        ui(() -> assertEquals("42 seconds", ((TextView) view.get().findViewWithTag("compactionDuration")).getText().toString()));
     }
 }

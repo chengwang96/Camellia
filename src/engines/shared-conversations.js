@@ -1538,7 +1538,10 @@ class SharedConversations {
     if (event.type === 'gui:compaction' && !a.internal) {
       event = { ...event, native: true };
       if (event.state === 'running') a.nativeCompactionStartedAt ||= Date.now();
-      a.compaction = { state: event.state, native: true, engine };
+      const elapsedMs = a.nativeCompactionStartedAt ? Date.now() - a.nativeCompactionStartedAt : undefined;
+      a.compaction = { state: event.state, native: true, engine,
+        ...(a.nativeCompactionStartedAt ? { startedAt: a.nativeCompactionStartedAt, elapsedMs } : {}) };
+      if (a.nativeCompactionStartedAt) event = { ...event, compactionStartedAt: a.nativeCompactionStartedAt, compactionElapsedMs: elapsedMs };
       if (event.state === 'completed') {
         c.lastCompaction = { outcome: 'completed', route: 'native', engine };
         const durationMs = Number.isFinite(event.durationMs) ? event.durationMs
@@ -2421,7 +2424,7 @@ class SharedConversations {
     let completed = false;
     let failureMessage = '';
     const status = (text, compaction) => {
-      if (compaction) compaction = { engine, ...compaction };
+      if (compaction) compaction = { engine, startedAt, elapsedMs: Date.now() - startedAt, ...compaction };
       switching.compaction = compaction || null;
       this.onStatus({ sessionId: id, text, ...(compaction ? { compaction } : {}) });
     };
@@ -2767,6 +2770,7 @@ class SharedConversations {
     diagnostics.thinkingBudget = summarySettings.thinkingBudget || 'default';
     const checkpoint = this.summaryCheckpoint({ c, engine, settings, cacheSettings: summarySettings, units, budget, boundary, maxSummaryChars, diagnostics });
     let currentBudget = budget, recent = null;
+    let progress = {};
     const stopped = () => switching.cancelled || Boolean(switching.timedOut || recovery?.cancelled);
     const request = async ({ kind, system, user, maxChars }) => {
       if (stopped()) throw new Error('Compaction canceled');
@@ -2784,7 +2788,7 @@ class SharedConversations {
         const startedAt = Date.now();
         const metric = { request: diagnostics.requests, kind, startedAt, inputChars: prompt.length, summaryLimit: maxChars };
         switching.metric = metric; diagnostics.chunks.push(metric);
-        status('Asking the engine to summarize the conversation…', { state: 'running', stage: 'summarizing', chunk: metric.request, finalChunk: kind === 'reduce' });
+        status('Asking the engine to summarize the conversation…', { state: 'running', stage: 'summarizing', ...progress, chunk: metric.request, finalChunk: kind === 'reduce' });
         let timer, attempt;
         try {
           const timeout = new Promise((resolve, reject) => {
@@ -2824,6 +2828,11 @@ class SharedConversations {
     };
     const run = (source, previous = '') => runSummaryPipeline({ units: source, previous, budget: currentBudget, concurrency: 1,
       maxSummaryChars, request, stopped, ...checkpoint,
+      onProgress: update => {
+        if (update.stage !== 'progress') return;
+        progress = { summaryPhase: update.kind, completedChunks: update.completedChunks, totalChunks: update.totalChunks };
+        status('Asking the engine to summarize the conversation…', { state: 'running', stage: 'summarizing', ...progress });
+      },
       onOverflow: (error, current) => {
         if (++diagnostics.retries > 4) throw new Error('Compaction rescue retry limit reached. ' + recoveryAdvice);
         const reduced = this.reduceSummaryBudget(c, engine, settings, error.message, current);
@@ -2853,6 +2862,7 @@ class SharedConversations {
     progress();
     const checkpoint = this.summaryCheckpoint({ c, engine, settings, units, budget, boundary, maxSummaryChars, diagnostics });
     const metrics = new Map();
+    let summaryProgress = {};
     c.pending = { engine, at: Date.now(), internal: true }; this.save(c);
     try {
       const result = await runSummaryPipeline({ units, budget, maxSummaryChars, maxOutputTokens, ...checkpoint,
@@ -2864,13 +2874,18 @@ class SharedConversations {
           return Math.min(Math.floor(current / 2), Math.floor(reduced * 1.8));
         },
         onProgress: update => {
+          if (update.stage === 'progress') {
+            summaryProgress = { summaryPhase: update.kind, completedChunks: update.completedChunks, totalChunks: update.totalChunks };
+            status('Asking the engine to summarize the conversation…', { state: 'running', stage: 'summarizing', ...summaryProgress });
+            return;
+          }
           if (update.stage === 'running') {
             const metric = { request: update.request, kind: update.kind, startedAt: Date.now(), inputChars: update.inputChars,
               summaryLimit: update.maxChars, retry: update.shorten ? 1 : 0 };
             metrics.set(update.request, metric);
             diagnostics.chunks.push(metric); diagnostics.requests = update.request;
             status('Asking the engine to summarize the conversation…', { state: 'running', stage: 'summarizing',
-              chunk: update.request, finalChunk: update.kind === 'reduce' });
+              ...summaryProgress, chunk: update.request, finalChunk: update.kind === 'reduce' });
             return;
           }
           const metric = metrics.get(update.request);

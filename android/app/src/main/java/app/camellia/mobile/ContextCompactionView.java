@@ -16,55 +16,114 @@ final class ContextCompactionView extends LinearLayout {
     private final LoadingIndicator progress;
     private final ImageView icon;
     private final TextView label;
+    private final TextView duration;
+    private JSONObject current;
+    private long elapsedBase = -1, observedAt;
+    private final Runnable clock = new Runnable() {
+        @Override public void run() {
+            if (current == null || !current.optString("state").equals("running") || !isAttachedToWindow()) return;
+            renderDescription();
+            postDelayed(this, 1000);
+        }
+    };
 
     ContextCompactionView(Context context, ChatStyle style, boolean chinese) {
         super(context);
         this.style = style; this.chinese = chinese;
         setGravity(Gravity.CENTER_VERTICAL);
         setPadding(0, style.dp(12), 0, style.dp(12));
-        setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE);
         progress = new LoadingIndicator(context);
         addView(progress, new LayoutParams(style.dp(20), style.dp(20)));
         icon = new ImageView(context); icon.setImageDrawable(new LineIcon("file", style.muted));
         icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         addView(icon, new LayoutParams(style.dp(20), style.dp(20)));
-        label = new TextView(context); label.setTextSize(13);
+        LinearLayout text = new LinearLayout(context); text.setOrientation(VERTICAL);
         LayoutParams textLayout = new LayoutParams(0, -2, 1); textLayout.setMarginStart(style.dp(8));
-        addView(label, textLayout);
+        addView(text, textLayout);
+        label = new TextView(context); label.setTextSize(13); label.setTag("compactionStatus");
+        label.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        text.addView(label, new LayoutParams(-1, -2));
+        duration = new TextView(context); duration.setTextSize(12); duration.setTextColor(style.muted);
+        duration.setTag("compactionDuration");
+        // Announce meaningful status changes; the clock remains readable on focus.
+        duration.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_NONE);
+        text.addView(duration, new LayoutParams(-1, -2));
     }
 
     void update(JSONObject compaction) {
         boolean running = "running".equals(compaction.optString("state"));
+        boolean wasRunning = current != null && "running".equals(current.optString("state"));
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (compaction.optLong("elapsedMs", -1) >= 0) {
+            elapsedBase = compaction.optLong("elapsedMs"); observedAt = now;
+        } else if (running && !wasRunning) {
+            elapsedBase = 0; observedAt = now;
+        } else if (!running && wasRunning && elapsedBase >= 0) {
+            elapsedBase += now - observedAt; observedAt = now;
+        }
+        current = compaction;
         progress.setVisibility(running ? VISIBLE : GONE); icon.setVisibility(running ? GONE : VISIBLE);
         label.setTextColor(running ? style.ink : style.muted);
-        String value = description(compaction);
-        if (!value.contentEquals(label.getText())) label.setText(value);
+        renderDescription();
+        removeCallbacks(clock);
+        if (running && isAttachedToWindow()) postDelayed(clock, 1000);
     }
+
+    private void renderDescription() {
+        String value = description(current);
+        if (!value.contentEquals(label.getText())) label.setText(value);
+        String elapsed = elapsedDescription(current);
+        if (!elapsed.contentEquals(duration.getText())) duration.setText(elapsed);
+        duration.setVisibility(elapsed.isEmpty() ? GONE : VISIBLE);
+    }
+
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (current != null && current.optString("state").equals("running")) { renderDescription(); removeCallbacks(clock); postDelayed(clock, 1000); }
+    }
+
+    @Override protected void onDetachedFromWindow() { removeCallbacks(clock); super.onDetachedFromWindow(); }
 
     private String tr(String zh, String en) { return chinese ? zh : en; }
 
     private String description(JSONObject value) {
         String state = value.optString("state");
+        String status = null;
         if (state.equals("running")) {
-            if (value.optString("stage").equals("saving")) return tr("正在保存压缩后的上下文…", "Saving compacted context…");
-            if (value.optString("stage").equals("summarizing") && value.optInt("chunk") > 0) {
-                String suffix = value.optBoolean("finalChunk") ? tr("（最后一块）", " (last)") : "";
-                return tr("正在总结上下文：第 ", "Summarizing context: chunk ") + value.optInt("chunk") + tr(" 块", "") + suffix + "…";
+            if (value.optString("stage").equals("saving")) status = tr("正在保存压缩后的上下文…", "Saving compacted context…");
+            if (value.optString("stage").equals("summarizing")) {
+                long completed = value.optLong("completedChunks", -1), total = value.optLong("totalChunks", -1);
+                if (completed >= 0 && total > 0 && completed <= total) {
+                    boolean merging = value.optString("summaryPhase").equals("reduce");
+                    status = (merging ? tr("正在合并摘要：已完成 ", "Merging summaries: ") : tr("正在总结上下文：已完成 ", "Summarizing context: "))
+                        + completed + tr("／", "/") + total + tr(" 块…", " chunks completed…");
+                } else if (value.optInt("chunk") > 0) {
+                    String suffix = value.optBoolean("finalChunk") ? tr("（最后一块）", " (last)") : "";
+                    status = tr("正在总结上下文：第 ", "Summarizing context: chunk ") + value.optInt("chunk") + tr(" 块", "") + suffix + "…";
+                }
             }
         }
-        String label = switch (state) {
+        return status != null ? status : switch (state) {
             case "completed" -> tr("上下文已压缩", "Context compacted");
             case "failed" -> tr("上下文压缩失败，原对话已保留。", "Context compaction failed. The original conversation is retained.");
             case "cancelled" -> tr("上下文压缩已取消，原对话已保留。", "Context compaction canceled. The original conversation is retained.");
             default -> tr("正在压缩上下文…", "Compacting context…");
         };
-        if (state.equals("completed") && value.has("durationMs") && value.optLong("durationMs", -1) >= 0) {
-            long seconds = Math.round(value.optLong("durationMs") / 1000.0);
-            label += " · " + (seconds < 60 ? seconds + tr(" 秒", seconds == 1 ? " second" : " seconds")
+    }
+
+    private String elapsedDescription(JSONObject value) {
+        String state = value.optString("state");
+        long elapsed = state.equals("running") ? elapsedBase + android.os.SystemClock.elapsedRealtime() - observedAt
+            : value.optLong("durationMs", value.optLong("elapsedMs", elapsedBase));
+        if (elapsed >= 0) {
+            long seconds = Math.round(elapsed / 1000.0);
+            return (state.equals("running") ? tr("已用时 ", "Elapsed ") : "")
+                + (seconds < 60 ? seconds + tr(" 秒", seconds == 1 ? " second" : " seconds")
                 : seconds / 60 + tr(" 分钟", seconds / 60 == 1 ? " minute" : " minutes")
                     + (seconds % 60 == 0 ? "" : " " + seconds % 60 + tr(" 秒", seconds % 60 == 1 ? " second" : " seconds")));
         }
-        return label;
+        return "";
     }
 
     static JSONObject fromMessage(JSONObject row) {
