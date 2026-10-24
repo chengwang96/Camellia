@@ -42,6 +42,7 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
     if (goalState) {
       const phase = phaseOf();
       const text = goalState.verifying && phase === 'active' ? 'Verifying…'
+        : goalState.waiting && phase === 'active' ? 'Goal waiting · ' + elapsed()
         : { active: 'Goal · ' + elapsed(), paused: 'Goal paused', blocked: 'Goal blocked', complete: goalState.verified ? 'Goal verified' : 'Goal completed' }[phase] || 'Goal';
       row.appendChild(chip(text, { className: phase, title: goalState.objective, onClick: (e) => openGoalMenu(e.currentTarget) }));
       row.hidden = false;
@@ -103,6 +104,10 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
     ];
     if (goalState.criterion) items.push({ label: 'Criterion: ' + goalState.criterion, localize: false, disabled: true });
     if (goalState.storageError) items.push({ label: goalState.storageError, localize: false, disabled: true });
+    if (goalState.waiting && phase === 'active') {
+      items.push({ label: goalState.waiting.reason, localize: false, disabled: true });
+      items.push({ label: window.CamelliaI18n.t('Next check') + ': ' + new Date(goalState.waiting.until).toLocaleString(window.CamelliaI18n.locale), localize: false, disabled: true });
+    }
     if (goalState.lastVerify && phase === 'active') items.push({ label: 'Verifier: ' + goalState.lastVerify, localize: false, disabled: true });
     if (phase === 'blocked' && goalState.blockedReason) items.push({ label: goalState.blockedReason.message || goalState.blockedReason.code || '', localize: false, disabled: true });
     if (goalState.verified) items.push({ label: 'Verified: ' + goalState.verified.evidence, localize: false, disabled: true });

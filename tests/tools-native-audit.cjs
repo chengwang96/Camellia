@@ -1,5 +1,7 @@
 'use strict';
 
+const { removeTree } = require('./test-fs.cjs');
+
 // The installed native runtimes execute every tool. Only model responses are
 // scripted, on loopback, to separate integration bugs from model decisions.
 const assert = require('node:assert/strict');
@@ -308,7 +310,7 @@ async function main() {
     console.log('Diagnostics: ' + file);
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
     assert.ok(path.basename(root).startsWith('camellia-tools-audit-'));
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+    removeTree(root);
   }
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

@@ -101,6 +101,18 @@ test('goal controls require user provenance and are separate from revisions and 
   assert.match(instructions, /Never use action: "complete" for your own completion claim/);
 });
 
+test('waiting reports accept a bounded delay only as a separate goal outcome', () => {
+  const report = { run_token: 'current', status: 'waiting', reason: 'Experiment still running' };
+  assert.doesNotThrow(() => validateTool('camellia_update_goal', report));
+  for (const wait_seconds of [60, 600, 3600]) assert.doesNotThrow(() => validateTool('camellia_update_goal', { ...report, wait_seconds }));
+  for (const wait_seconds of [0, 59, 3601, 60.5, '60', null])
+    assert.throws(() => validateTool('camellia_update_goal', { ...report, wait_seconds }), /Invalid argument: wait_seconds/);
+  for (const patch of [{ status: 'complete' }, { status: 'blocked' }, { action: 'pause', user_request: 'Pause' }, { objective: 'Another goal', user_request: 'Change it' }])
+    assert.throws(() => validateTool('camellia_update_goal', { ...report, wait_seconds: 60, ...patch }), /only used for a waiting/);
+  assert.throws(() => validateTool('camellia_update_goal', { ...report, user_request: 'Continue monitoring' }), /only used for a goal revision/);
+  assert.match(instructions, /do not repeatedly ask whether to continue monitoring/);
+});
+
 test('broker rejects unauthenticated, malformed and unknown requests and closes twice safely', { timeout: 10000 }, async t => {
   const calls = [];
   const bridge = await createGoalToolBridge({ node: process.execPath, call: (...args) => { calls.push(args); return { ok: true }; } });

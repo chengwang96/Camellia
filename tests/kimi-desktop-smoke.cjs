@@ -115,7 +115,7 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
     const log = path.join(root, 'app', 'logs', 'dsh-desktop.log');
-    throw new Error('UI condition timed out: ' + code + '\n' + await js("JSON.stringify({chat:document.querySelector('#chat')?.textContent,status:document.querySelector('#statusLine')?.textContent,running,currentRunId,acceptSessionEvents})")
+    throw new Error('UI condition timed out: ' + code + '\n' + await js("JSON.stringify({chat:document.querySelector('#chat')?.textContent,status:document.querySelector('#statusLine')?.textContent,uiReady,loadingSession,historyOpening,sending,conversationActivity,running,currentRunId,acceptSessionEvents})")
       + '\nErrors: ' + JSON.stringify(errors) + '\nRequests: ' + requests.length + '\nLast request: ' + JSON.stringify(requests.at(-1)?.messages.map(m => ({ role: m.role, content: JSON.stringify(m.content).slice(0, 160) }))) + '\n' + (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').slice(-5000) : 'No log'));
   }
   const shots = path.resolve(__dirname, '../dist/ui-preview');
@@ -135,6 +135,8 @@ async function main() {
   const ws = await js(`chatApi.metaOp(${JSON.stringify({ op: 'create-workspace', name: '示例工作区', path: cwd })})`);
   await js(`sidebar.load().then(() => newSession(${JSON.stringify(ws.workspace.id)}))`);
   async function send(prompt) {
+    // Settings changes can reload the page and restore history asynchronously.
+    await until('uiReady && !loadingSession && !sending && !switchingEngine && !running && !conversationActivity && !input.disabled');
     await js(`document.querySelector('#input').value = ${JSON.stringify(prompt)}; send()`);
   }
   await send('UI write 请在工作区写入 result.txt，并检查结果。');

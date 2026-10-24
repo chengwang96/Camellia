@@ -304,6 +304,7 @@
 
   /* ===== Chat column ===== */
   .chat-scroll { flex: 1; overflow-y: auto; padding: 24px 24px 8px; scroll-padding-bottom: var(--composer-fade-height); }
+  .chat-scroll.history-opening { visibility: hidden; }
   .chat-scroll:not(:has(.empty-state))::after { content: ''; display: block; height: var(--composer-fade-height); }
   .main:has(.empty-state) .chat-scroll { flex: 0 0 auto; margin-top: auto; padding: 24px 24px 28px; }
   .main:has(.empty-state) .input-zone { margin-bottom: auto; }

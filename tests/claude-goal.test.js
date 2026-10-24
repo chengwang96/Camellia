@@ -9,18 +9,98 @@ const { createHarness } = require('./claude-harness.cjs');
 function setup(t, extra = {}) {
   const h = createHarness(); t.after(() => h.cleanup());
   const timers = new Set(), prompts = [];
-  let now = 1000, interrupts = 0;
+  let now = 1000, interrupts = 0, timerDelay;
   const session = { gen: 1, sessionId: null, running: false, sendUserMessage(prompt) { prompts.push(prompt); this.running = true; return true; },
     interrupt() { interrupts++; this.running = false; } };
   const options = { file: () => path.join(h.root, 'goal.json'), getSession: () => session, ensureSession: () => session,
     resolveWorkspace: p => p.workspaceId || null, onChange() {}, log() {},
-    setTimer: fn => { timers.add(fn); return fn; }, clearTimer: fn => timers.delete(fn), now: () => now, ...extra };
+    setTimer: (fn, delay) => { timers.add(fn); timerDelay = delay; return fn; }, clearTimer: fn => timers.delete(fn), now: () => now, ...extra };
   const goal = new ClaudeGoal(options);
   const tick = () => { assert.equal(timers.size, 1); [...timers][0](); };
   const result = event => { session.running = false; goal.handleResult(event); };
   const settle = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); };
-  return { goal, session, options, prompts, timers, tick, result, settle, advance: ms => { now += ms; }, interrupts: () => interrupts };
+  return { goal, session, options, prompts, timers, tick, result, settle, advance: ms => { now += ms; }, delay: () => timerDelay, interrupts: () => interrupts };
 }
+
+test('ongoing operations back off checks even as their progress changes, then productive work resets the delay', t => {
+  const h = setup(t); h.goal.start({ objective: 'Monitor the experiment until its output is ready' }); h.tick();
+  for (const [index, delay] of [60000, 120000, 240000, 480000, 900000, 900000].entries()) {
+    const reason = `Experiment still running: ${index + 1} outputs written`;
+    h.result(index % 2 ? { result: `<goal:waiting> ${reason}` } : { goalReport: { status: 'waiting', reason } });
+    assert.equal(h.goal.view().phase, 'active'); assert.equal(h.goal.view().armed, true);
+    assert.equal(h.goal.view().blockerStreak, 0); assert.equal(h.goal.view().waitStreak, index + 1);
+    assert.deepEqual(h.goal.view().waiting, { reason, until: h.options.now() + delay });
+    assert.equal(h.delay(), delay); assert.equal(h.goal.drive(), false);
+    h.advance(delay - 1); h.tick(); assert.equal(h.delay(), 1); assert.equal(h.prompts.length, index + 1);
+    h.advance(1); h.tick(); assert.equal(h.prompts.length, index + 2);
+    assert.equal(h.goal.view().waiting, null); assert.match(h.prompts.at(-1), /Previous check found work still in progress/);
+    assert.ok(h.prompts.at(-1).includes(reason));
+  }
+  h.result({ result: 'Output ready; completed the analysis and started validation' });
+  assert.equal(h.goal.view().waitStreak, 0); assert.equal(h.goal.view().lastWait, null); assert.equal(h.delay(), 1200);
+  h.tick(); h.result({ goalReport: { status: 'waiting', reason: 'Validation running' } });
+  assert.equal(h.delay(), 60000);
+});
+
+test('waiting honors a later expected completion time and immediate user instructions bypass the delay', t => {
+  const h = setup(t); h.goal.start({ objective: 'Finish' }); h.tick();
+  h.result({ goalReport: { status: 'waiting', reason: 'Next checkpoint in ten minutes', wait_seconds: 600 } });
+  assert.equal(h.delay(), 600000);
+  assert.equal(h.goal.drive({ prompt: 'Inspect another output now' }), true);
+  assert.equal(h.prompts.length, 2); assert.equal(h.timers.size, 0);
+  assert.equal(h.goal.view().waiting, null); assert.equal(h.goal.view().waitStreak, 0);
+  assert.equal(h.goal.view().lastWait, null);
+  h.result({ goalReport: { status: 'waiting', reason: 'Still running' } }); assert.equal(h.delay(), 60000);
+});
+
+test('stopping or revising a waiting goal cancels its pending check and clears backoff', t => {
+  for (const action of ['pause', 'complete', 'clear', 'block', 'revise']) {
+    const h = setup(t); h.goal.start({ objective: 'Finish' }); h.tick();
+    h.result({ result: '<goal:waiting> Operation running' });
+    const staleTimer = [...h.timers][0];
+    if (action === 'clear') h.goal.clear();
+    else if (action === 'block') h.goal.block('missing-input', 'Credentials expired');
+    else if (action === 'revise') h.goal.revise({ objective: 'Inspect a different operation', reason: 'Changed scope', user_request: 'Inspect another operation' });
+    else h.goal.setPhase(action === 'pause' ? 'paused' : 'complete');
+    assert.equal(h.goal.view()?.waiting || null, null); assert.equal(h.goal.view()?.waitStreak || 0, 0);
+    if (action === 'revise') { assert.equal(h.timers.size, 1); assert.equal(h.delay(), 100); }
+    else {
+      staleTimer(); assert.equal(h.timers.size, 0); assert.equal(h.prompts.length, 1);
+      if (action === 'pause' || action === 'block') {
+        h.goal.resume(); h.tick(); h.result({ result: '<goal:waiting> Operation running' }); assert.equal(h.delay(), 60000);
+      }
+    }
+  }
+});
+
+test('restart loads a waiting goal paused with no pending check', t => {
+  const h = setup(t); h.goal.start({ objective: 'Finish' }); h.tick();
+  h.result({ result: '<goal:waiting> Operation running' }); h.goal.cancelTimer();
+  const restarted = new ClaudeGoal(h.options); restarted.load();
+  assert.equal(restarted.view().phase, 'paused'); assert.equal(restarted.view().armed, false);
+  assert.equal(restarted.view().waiting, null); assert.equal(restarted.view().waitStreak, 0);
+  restarted.drive(); assert.equal(h.timers.size, 0); assert.equal(h.prompts.length, 1);
+});
+
+test('completion after waiting still requires independent verification', async t => {
+  let checks = 0;
+  const h = setup(t, { verifyCompletion: async () => { checks++; return { pass: true, reason: 'Output checked' }; } });
+  h.goal.start({ objective: 'Finish' }); h.tick(); h.result({ result: '<goal:waiting> Operation running' });
+  assert.equal(checks, 0); h.advance(h.delay()); h.tick();
+  h.result({ goalReport: { status: 'complete', reason: 'Output ready' } }); await h.settle();
+  assert.equal(checks, 1); assert.equal(h.goal.view().phase, 'complete');
+  assert.equal(h.goal.view().waiting, null); assert.equal(h.timers.size, 0);
+});
+
+test('errors and blockers after waiting reset backoff and retain their existing retry limits', t => {
+  for (const event of [{ is_error: true, subtype: 'network' }, { result: '<goal:blocked> Credentials expired' }]) {
+    const h = setup(t); h.goal.start({ objective: 'Finish' }); h.tick(); h.result({ result: '<goal:waiting> Operation running' });
+    h.advance(h.delay()); h.tick(); h.result(event);
+    assert.equal(h.goal.view().waiting, null); assert.equal(h.goal.view().waitStreak, 0); assert.equal(h.delay(), 1200);
+    h.tick(); h.result({ result: '<goal:waiting> Operation running' });
+    assert.equal(h.delay(), 60000); assert.equal(h.goal.view().errorStreak, 0); assert.equal(h.goal.view().blockerStreak, 0);
+  }
+});
 
 test('goals continue past the former 10, 25 and 50 turn limits and finish only on completion', t => {
   const h = setup(t);
@@ -166,8 +246,8 @@ test('restart disarms saved goals and markers in fenced examples do not complete
 
 test('quoted or fenced status markers and errors cannot falsely complete a goal', t => {
   const h = setup(t); h.goal.start({ objective: 'Finish' });
-  for (const text of ['Use <goal:complete> when done', '> <goal:complete>', '    <goal:complete>', '~~~text\n<goal:complete>\n~~~', '```text\n<goal:complete>']) {
-    h.tick(); h.result({ result: text }); assert.equal(h.goal.view().phase, 'active');
+  for (const text of ['Use <goal:complete> when done', '> <goal:complete>', '    <goal:complete>', '~~~text\n<goal:complete>\n~~~', '```text\n<goal:complete>', '> <goal:waiting>', '```\n<goal:waiting>\n```']) {
+    h.tick(); h.result({ result: text }); assert.equal(h.goal.view().phase, 'active'); assert.equal(h.goal.view().waiting, null);
   }
   h.tick(); h.result({ is_error: true, subtype: 'network', result: '<goal:complete>' });
   assert.equal(h.goal.view().phase, 'active');

@@ -1,5 +1,5 @@
 'use strict';
-window.createWorkPanel = ({ context, setStatus, openFilePreview }) => {
+window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow }) => {
   const panel = document.getElementById('workPanel'), body = document.getElementById('workPanelBody');
   const footer = document.getElementById('workPanelFooter'), count = document.getElementById('workPanelCount');
   const toggle = document.getElementById('workPanelToggle'), badge = document.getElementById('workPanelBadge');
@@ -98,7 +98,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview }) => {
       const box = node.getBoundingClientRect(); return box.bottom > rect.top && box.top < rect.bottom;
     });
     const top = anchor?.getBoundingClientRect().top;
-    const follow = panel.hidden && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
+    const follow = panel.hidden && shouldFollow() && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
     document.querySelectorAll('.subtask-turn-card').forEach(node => node.remove());
     const groups = new Map();
     for (const task of tasks) { const group = groups.get(task.userSeq) || []; group.push(task); groups.set(task.userSeq, group); }

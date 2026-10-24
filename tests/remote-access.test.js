@@ -610,6 +610,39 @@ test('mobile clients receive child state in full and incremental snapshots with 
   assert.ok(Array.isArray(oldClient.messages), 'legacy SSE clients keep complete transcript frames');
 });
 
+test('mobile goals expose bounded waiting details only while armed and active', context => {
+  const { manager, visible, pair, access, reader } = fixture(context);
+  const device = access.authenticate(pair().token);
+  const driver = manager.goalFor(visible.id), until = Date.now() + 120000;
+  driver.goal = { id: 'waiting-goal', objective: 'Monitor the build', phase: 'active', roundsStarted: 2,
+    waiting: { reason: 'The build is still running', until, internal: 'private-waiting-state' },
+    runToken: 'private-run-token', waitStreak: 2 };
+  driver.armed = true;
+  let projected = reader.snapshot(device, visible.id).automation.goal;
+  assert.deepEqual(projected.waiting, { reason: 'The build is still running', until });
+  assert.equal(JSON.stringify(projected).includes('private'), false);
+  assert.equal(Object.hasOwn(projected, 'waitStreak'), false);
+  assert.deepEqual(reader.snapshot({ ...device, permission: 'read' }, visible.id).automation.goal.waiting, projected.waiting);
+  driver.goal.waiting.reason = 'x'.repeat(3000);
+  assert.equal(reader.snapshot(device, visible.id).automation.goal.waiting.reason.length, 2000);
+  driver.goal.waiting.reason = { invalid: true };
+  assert.equal(reader.snapshot(device, visible.id).automation.goal.waiting.reason, '');
+  for (const invalid of [null, {}, { until: -1 }, { until: 0 }, { until: String(until) }, { until: Infinity }, { until: Number.MAX_SAFE_INTEGER + 1 }]) {
+    driver.goal.waiting = invalid;
+    assert.equal(reader.snapshot(device, visible.id).automation.goal.waiting, undefined);
+  }
+  driver.goal.waiting = { reason: 'An old waiting record', until };
+  for (const phase of ['paused', 'blocked', 'complete']) {
+    driver.goal.phase = phase;
+    assert.equal(reader.snapshot(device, visible.id).automation.goal.waiting, undefined);
+  }
+  driver.goal.phase = 'active'; driver.armed = false;
+  assert.equal(reader.snapshot(device, visible.id).automation.goal.waiting, undefined);
+  driver.armed = true; driver.goal.waiting = null;
+  projected = reader.snapshot(device, visible.id).automation.goal;
+  assert.equal(projected.phase, 'active'); assert.equal(projected.waiting, undefined);
+});
+
 test('completed goal notices end with the next user turn without clearing the saved goal', context => {
   const { manager, visible, pair, access, reader } = fixture(context);
   const device = access.authenticate(pair().token);

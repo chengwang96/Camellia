@@ -2920,6 +2920,40 @@ test('model goal tools adopt the current turn once and verify completion across 
   }
 });
 
+test('goal waiting reports delay continuation across all engines and remain cancellable', async t => {
+  for (const engine of ENGINES) {
+    const changes = [], h = fixture(t, { onGoal: event => changes.push(event), createGoalBridge: async options => ({ call: options.call, close() {} }) });
+    t.after(() => h.manager.closeGoalTools());
+    const run = await h.manager.send(engine, { prompt: 'Set a goal: monitor the experiment until its output is ready' });
+    const active = h.manager.active.get(run.sessionId), bridge = h.sent.at(-1).opts.goalBridge, driver = h.manager.goalFor(run.sessionId);
+    let now = Date.now(), timer = null;
+    driver.now = () => now; driver.setTimer = (fn, delay) => (timer = { fn, delay });
+    driver.clearTimer = old => { if (old === timer) timer = null; };
+    const token = active.goalRunToken;
+    assert.equal(bridge.call('camellia_create_goal', { run_token: token, objective: 'Monitor the experiment', user_request: 'Set a goal' }).ok, true);
+    const report = { run_token: token, status: 'waiting', reason: 'Training still running', wait_seconds: 600 };
+    assert.equal(bridge.call('camellia_update_goal', report).status, 'waiting_reported');
+    assert.equal(bridge.call('camellia_update_goal', report).ok, true);
+    assert.equal(bridge.call('camellia_update_goal', { ...report, wait_seconds: 601 }).ok, false);
+    assert.equal(driver.view().waiting, null); assert.equal(timer, null);
+    h.finish(engine, 'success', '<goal:complete>'); await run.done; await h.flush();
+    assert.equal(driver.view().phase, 'active'); assert.equal(driver.view().waitStreak, 1);
+    assert.equal(driver.view().waiting.until, now + 600000); assert.equal(timer.delay, 600000);
+    assert.equal(changes.at(-1).goal.waiting.reason, report.reason);
+    assert.equal(bridge.call('camellia_update_goal', report).ok, false);
+    driver.drive(); await h.flush(); assert.equal(h.sent.length, 1);
+    now += 600000; timer.fn(); await h.flush();
+    assert.equal(h.sent.length, 2); assert.match(h.sent.at(-1).prompt, /Previous check found work still in progress/);
+    const continuation = h.manager.active.get(run.sessionId);
+    assert.equal(bridge.call('camellia_update_goal', { run_token: continuation.goalRunToken, status: 'waiting', reason: 'Training progressed but is still running' }).ok, true);
+    h.finish(engine); await continuation.done; await h.flush(); assert.equal(timer.delay, 120000);
+    const staleTimer = timer.fn;
+    await h.manager.command(engine, 'goal-pause', { sessionId: run.sessionId });
+    staleTimer(); await h.flush(); assert.equal(timer, null); assert.equal(h.sent.length, 2);
+    assert.equal(driver.view().waiting, null); assert.equal(driver.view().phase, 'paused');
+  }
+});
+
 test('user-requested goal resume adopts the current reply and verifies the original goal on every engine', async t => {
   for (const engine of ENGINES) for (const phase of ['paused', 'blocked']) {
     const changes = [], h = fixture(t, { onGoal: event => changes.push(event), createGoalBridge: async options => ({ call: options.call, close() {} }) });
