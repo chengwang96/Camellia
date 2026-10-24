@@ -431,9 +431,10 @@ class SharedConversations {
         return result;
       }
       if (!driver.armed || driver.ownedSession() !== active.facade) throw new Error('No active goal owned by this turn');
-      if (active.goalReport && (active.goalReport.status !== args.status || active.goalReport.reason !== args.reason)) throw new Error('This turn already reported a goal outcome');
-      active.goalReport = { status: args.status, reason: args.reason };
-      return { ok: true, pending: true, status: args.status === 'complete' ? 'verification_pending' : 'blocker_reported' };
+      if (active.goalReport && (active.goalReport.status !== args.status || active.goalReport.reason !== args.reason
+        || active.goalReport.wait_seconds !== args.wait_seconds)) throw new Error('This turn already reported a goal outcome');
+      active.goalReport = { status: args.status, reason: args.reason, ...(args.wait_seconds !== undefined ? { wait_seconds: args.wait_seconds } : {}) };
+      return { ok: true, pending: true, status: { complete: 'verification_pending', blocked: 'blocker_reported', waiting: 'waiting_reported' }[args.status] };
     } catch (error) { return { ok: false, error: error.message }; }
   }
 

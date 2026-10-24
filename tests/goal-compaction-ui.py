@@ -103,6 +103,19 @@ with sync_playwright() as p:
             assert not errors, errors
             page.screenshot(path=str(preview / f'goal-compaction-{mode}-{theme}.png'), animations='disabled')
             page.evaluate('''() => {
+              Object.assign(currentGoal, {phase:'active', armed:true, waiting:{reason:'Training still running',until:Date.now()+600000}});
+              receiveGoal({sessionId:context.sessionId, goal:currentGoal});
+            }''')
+            expect(goal_chip).to_contain_text('Goal waiting')
+            goal_chip.click()
+            expect(page.locator('.dsh-pop')).to_contain_text('Training still running')
+            expect(page.locator('.dsh-pop')).to_contain_text('Next check:')
+            expect(page.locator('.dsh-pop')).to_contain_text('Pause goal')
+            expect(page.locator('.dsh-pop')).not_to_contain_text('Resume goal')
+            page.screenshot(path=str(preview / f'goal-waiting-{mode}-{theme}.png'), animations='disabled')
+            page.locator('.dsh-pop .pop-row', has_text='Pause goal').click()
+            expect(goal_chip).to_contain_text('Goal paused')
+            page.evaluate('''() => {
               Object.assign(currentGoal, {phase:'blocked', armed:false, storageError:'Could not save goal state: disk full'});
               receiveGoal({sessionId:context.sessionId, goal:currentGoal, error:currentGoal.storageError});
             }''')
@@ -113,4 +126,4 @@ with sync_playwright() as p:
             assert not errors, errors
             page.close()
     browser.close()
-print('PASS: five-hour Goal pause acknowledgement, follow-up, steering, edit/resend, revised goal details, and storage error visibility; light/dark; no model calls')
+print('PASS: five-hour Goal pause acknowledgement, follow-up, steering, edit/resend, revised details, waiting schedule/cancellation, and storage errors; light/dark; no model calls')

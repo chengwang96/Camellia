@@ -75,8 +75,12 @@ function mobileGoal(goal, rows, info) {
   // to the finished work, not every later turn (including after reconnecting).
   const datedCompletion = Number.isFinite(completedAt) && completedAt > 0;
   if (datedCompletion && (info ? info.userAt > completedAt : rows.some(row => row.role === 'user' && row.at > completedAt))) return null;
+  const waiting = goal.phase === 'active' && goal.armed === true && goal.waiting
+    && Number.isSafeInteger(goal.waiting.until) && goal.waiting.until > 0
+    ? { reason: typeof goal.waiting.reason === 'string' ? goal.waiting.reason.slice(0, 2000) : '', until: goal.waiting.until } : null;
   return { ...(goal.id ? { id: String(goal.id).slice(0, 100) } : {}),
     objective: String(goal.objective || '').slice(0, 2000), phase: goal.phase, roundsStarted: goal.roundsStarted, armed: goal.armed,
+    ...(waiting ? { waiting } : {}),
     ...(datedCompletion ? { completedAt } : {}) };
 }
 

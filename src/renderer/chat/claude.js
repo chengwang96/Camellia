@@ -39,6 +39,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let openPops = [];          // currently open popover elements
   let runAnchorMs = 0;        // timestamp of message_start (drives the 15s clock)
   let statusClockTimer = null;
+  // Reading history stays paused across replies until the user returns to the
+  // bottom or explicitly sends a message or opens a conversation.
   let followRunOutput = false;
   let userScrollActive = false;
   let userScrollIntentUntil = 0;
@@ -154,17 +156,28 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   window.addEventListener('beforeunload', saveDraft);
   let scrollSaveTimer;
   chatScroll.addEventListener('scroll', () => {
-    if (running && (userScrollActive || performance.now() < userScrollIntentUntil)) followRunOutput = nearBottom();
+    if (userScrollActive || performance.now() < userScrollIntentUntil)
+      followRunOutput = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight <= 2;
     clearTimeout(scrollSaveTimer); scrollSaveTimer = setTimeout(saveDraft, 120);
   });
   chatScroll.addEventListener('wheel', event => {
     userScrollIntentUntil = performance.now() + 250;
-    if (running && event.deltaY < 0) followRunOutput = false;
+    if (event.deltaY < 0) followRunOutput = false;
   }, { passive: true });
   chatScroll.addEventListener('touchstart', () => { userScrollActive = true; }, { passive: true });
   chatScroll.addEventListener('touchend', () => { userScrollActive = false; userScrollIntentUntil = performance.now() + 250; }, { passive: true });
+  chatScroll.addEventListener('touchcancel', () => { userScrollActive = false; }, { passive: true });
   chatScroll.addEventListener('pointerdown', () => { userScrollActive = true; });
   window.addEventListener('pointerup', () => { userScrollActive = false; userScrollIntentUntil = performance.now() + 250; });
+  window.addEventListener('pointercancel', () => { userScrollActive = false; });
+  window.addEventListener('keydown', event => {
+    const target = event.target;
+    if (event.defaultPrevented || (target !== document.body && !chatScroll.contains(target))) return;
+    if (target.closest('input, textarea, select, button') || target.isContentEditable) return;
+    if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) return;
+    userScrollIntentUntil = performance.now() + 250;
+    if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) || event.key === ' ' && event.shiftKey) followRunOutput = false;
+  });
 
   const SENT = '\x01'; // escaped SOH sentinel — never appears in prose
 
@@ -641,19 +654,20 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function scrollToLatest() {
     const seq = sessionOpenSeq;
     const scrollIntent = userScrollIntentUntil;
+    followRunOutput = true;
     chatScroll.scrollTop = chatScroll.scrollHeight;
     if (followScrollFrame !== null) cancelAnimationFrame(followScrollFrame);
     followScrollFrame = requestAnimationFrame(() => {
       followScrollFrame = null;
       if (seq !== sessionOpenSeq || userScrollActive || scrollIntent !== userScrollIntentUntil) return;
-      if (!running || followRunOutput) chatScroll.scrollTop = chatScroll.scrollHeight;
+      if (followRunOutput) chatScroll.scrollTop = chatScroll.scrollHeight;
     });
   }
   function maybeScroll(was) {
-    if (was || running && followRunOutput) scrollToLatest();
+    if (followRunOutput && !userScrollActive && (was || running)) scrollToLatest();
   }
   new ResizeObserver(() => {
-    if (running && followRunOutput) scrollToLatest();
+    if (running && followRunOutput && !userScrollActive) scrollToLatest();
   }).observe(chat);
 
   function clearEmpty() {
@@ -2612,7 +2626,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       clearTextChoice();
       const previousTurn = turnEl;
       const previousStatus = previousTurn?.querySelector('.run-status');
-      addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now(), scrollToBottom: true });
+      addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now() });
       turnEl = null;
       if (previousStatus) {
         ensureTurn().insertBefore(previousStatus, turnBody());
@@ -2632,8 +2646,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         clearTextChoice();
         currentRunId = ev.runId;
         turnEl = null; blocks = {}; pendingTools = {};
-        addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now(), scrollToBottom: true });
-        followRunOutput = true;
+        addUser(ev.displayText ?? ev.prompt, ev.attachments, { seq: ev.userSeq, at: Date.now() });
         setRunning(true);
       }
       return;
@@ -2797,7 +2810,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       setRunning(false);
       currentRunId = null;
       void sidebar.load();
-      maybeScroll(true);
+      maybeScroll(was);
       drainMessageQueue();
       if (ok && !messageQueue.length && !goalUI.isActive()) {
         const finalText = answerText(ev.outputBlocks?.filter(block => block.phase === 'final_answer').at(-1)?.text || ev.result);
@@ -2936,7 +2949,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (sendContext.sessionId && !sendContext.fork) pendingConversationSends.set(sendContext.sessionId, sendContext);
     sending = true;
     turnEngine = harnessId;
-    followRunOutput = true;
+    if (!queuedMessage) followRunOutput = true;
     restoringRun = true;
     if (!queuedMessage) {
       input.value = '';
@@ -2946,7 +2959,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }
     chat.querySelector('.switch-hint')?.remove();
     clearTextChoice();
-    const userMessage = addUser(text || "[Attachments]", atts, { at: Date.now(), scrollToBottom: true });
+    const userMessage = addUser(text || "[Attachments]", atts, { at: Date.now(), scrollToBottom: !queuedMessage });
     setRunning(true);
     setRunStatus('Working…');
     updateSendEnabled();
@@ -3450,7 +3463,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     pendingQuestion = { card, status, fields, key, slot, openButton, requestId: ev.requestId };
     // Keep the pending entry outside streamed text so replies cannot erase it.
     ensureTurn().append(slot); setRunStatus('Waiting for your answer'); setStatus('Waiting for your answer');
-    if (was) slot.scrollIntoView({ block: 'start' });
+    if (was && followRunOutput && !userScrollActive) slot.scrollIntoView({ block: 'start' });
     openQuestionDialog();
   }
   async function autoAllowPermission(ev) {
@@ -3612,6 +3625,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     updateMessageActions();
   }
   function resetConversationView() {
+    chatScroll.classList.remove('history-opening');
     workPanel.reset();
     historyOpening = false;
     sending = false;
@@ -3644,7 +3658,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       selfDeletedIds.add(id);
       setTimeout(() => selfDeletedIds.delete(id), 5000);
     } });
-  const workPanel = window.createWorkPanel({ context, setStatus, openFilePreview });
+  const workPanel = window.createWorkPanel({ context, setStatus, openFilePreview,
+    shouldFollow: () => followRunOutput && !userScrollActive });
   $('conversationActions').onclick = () => sidebar.openCurrentActions($('conversationActions'));
   const goalUI = createClaudeGoalUI({ $, context, canChangeContext: () => !editingMessage && canChangeContext() && !running, openHistorySession, setStatus,
     acceptEvents: () => { acceptSessionEvents = true; }, onChange: () => { sidebar.updateLabel(); updateConversationControls(); queueMicrotask(drainMessageQueue); }, openActionMenu, closePops });
@@ -3751,6 +3766,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (!leaveDiscussion()) return false;
     const seq = ++sessionOpenSeq;
     resetConversationView();
+    chatScroll.classList.add('history-opening');
     loadingSession = true; input.disabled = true;
     historyOpening = true;
     restoringRun = true;
@@ -3784,6 +3800,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (res.remoteQueue) applyRemoteQueue(res.remoteQueue);
       void tasksUI.refresh();
       context.workspaceId = res.workspaceId || null;
+      writeUi('location', { sessionId: id, workspaceId: context.workspaceId });
       conversationPrefs = res.preferences || conversationPrefs;
       loadedEngine = res.currentEngine || harnessId;
       conversationActivity = res.activity || null;
@@ -3829,11 +3846,27 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         text: pending?.phase || (res.compaction?.state === 'running' ? 'Compacting context…' : ''), compaction: res.compaction });
       void goalUI.refresh();
       if (res.lastReplyAt) sidebar.markReplyRead(id, res.lastReplyAt);
+      // Hidden Windows windows may never deliver an animation frame. Bound the
+      // presentation wait and finish pending renders before revealing history.
+      await new Promise(resolve => {
+        let frame;
+        const finish = () => { clearTimeout(timer); cancelAnimationFrame(frame); resolve(); };
+        const timer = setTimeout(finish, 100);
+        frame = requestAnimationFrame(finish);
+      });
+      if (seq !== sessionOpenSeq) return false;
+      flushBlockRenders();
       scrollToLatest();
       return true;
     } catch (err) { if (seq === sessionOpenSeq && !/archived/i.test(err.message)) setStatus("Could not load: " + err.message); return false; }
     finally {
-      if (seq === sessionOpenSeq) { historyOpening = false; loadingSession = false; input.disabled = false; restoringRun = false; updateSendEnabled(); updateConversationControls(); sidebar.updateLabel(); saveDraft(); restoreFailedMessageEdit(); }
+      if (seq === sessionOpenSeq) {
+        historyOpening = false; loadingSession = false; input.disabled = false; restoringRun = false;
+        updateSendEnabled(); updateConversationControls(); sidebar.updateLabel(); saveDraft();
+        chatScroll.scrollTop = chatScroll.scrollHeight;
+        chatScroll.classList.remove('history-opening');
+        restoreFailedMessageEdit();
+      }
     }
   }
 

@@ -24,7 +24,7 @@ class ClaudeGoal {
     try {
       const saved = readRecoverableJson(this.file(), null, this.onLoadError, value => value === null || typeof value?.objective === 'string');
       if (saved && typeof saved.objective === 'string') {
-        this.goal = saved;
+        this.goal = { ...saved, waiting: null, waitStreak: 0, lastWait: null };
         if (saved.phase === 'active') {
           // Count only time known to have elapsed before shutdown, never time offline.
           Object.assign(this.goal, this.stoppedClock(saved.updatedAt), { phase: 'paused' });
@@ -56,7 +56,7 @@ class ClaudeGoal {
   storageFailure() {
     const session = this.ownedSession();
     this.armed = false; this.owner = null; this.cancelTimer(); this.cancelVerification();
-    if (this.goal?.phase === 'active') Object.assign(this.goal, this.stoppedClock(), { phase: 'blocked', verifying: null,
+    if (this.goal?.phase === 'active') Object.assign(this.goal, this.stoppedClock(), { phase: 'blocked', verifying: null, waiting: null,
       blockedReason: { code: 'storage-error', message: this.storageError.message } });
     this.onChange(this.view(), this.storageError.message);
     this.interrupt(session);
@@ -104,6 +104,7 @@ class ClaudeGoal {
       elapsedMs: 0, activeSince: this.now(),
       blockedReason: null, errorStreak: 0, lastErrorSubtype: null,
       blockerStreak: 0, lastBlocker: null,
+      waiting: null, waitStreak: 0, lastWait: null,
       verifyStreak: 0, lastVerify: null, verifying: null, verified: null,
       sessionId: payload.sessionId || null, workspaceId: this.resolveWorkspace(payload),
       ...(payload.engine ? { engine: payload.engine } : {}),
@@ -133,6 +134,7 @@ class ClaudeGoal {
       lastRevision: { at: this.now(), reason: payload.reason.trim(), userRequest: payload.user_request.trim(),
         previousObjective: this.goal.objective, previousCriterion: this.goal.criterion || null },
       blockedReason: null, errorStreak: 0, lastErrorSubtype: null, blockerStreak: 0, lastBlocker: null,
+      waiting: null, waitStreak: 0, lastWait: null,
       verifyStreak: 0, lastVerify: null, verifying: null, verified: null });
     if (!saved) return { ok: false, goal: this.view(), error: this.storageError.message };
     if (this.armed && !this.ownedSession()?.running) this.schedule(100);
@@ -145,7 +147,7 @@ class ClaudeGoal {
     this.armed = false;
     this.cancelTimer();
     this.cancelVerification();
-    const saved = this.touch({ ...this.stoppedClock(), phase, blockedReason: null, verifying: null });
+    const saved = this.touch({ ...this.stoppedClock(), phase, blockedReason: null, verifying: null, waiting: null, waitStreak: 0, lastWait: null });
     if (saved && interrupt) this.interrupt(session);
     return { ok: saved, goal: this.view(), ...(!saved ? { error: this.storageError.message } : {}) };
   }
@@ -166,7 +168,7 @@ class ClaudeGoal {
     this.owner = adoptSession ? { goalId: this.goal.id, gen: adoptSession.gen } : null;
     if (!this.touch({ phase: 'active', activeSince: this.now(), roundsStarted: this.goal.roundsStarted + (adoptSession && !alreadyCounted ? 1 : 0),
       ...(adoptSession && engine ? { engine } : {}), blockedReason: null, errorStreak: 0, lastErrorSubtype: null,
-      blockerStreak: 0, lastBlocker: null, verifyStreak: 0, lastVerify: null, verifying: null }))
+      blockerStreak: 0, lastBlocker: null, waiting: null, waitStreak: 0, lastWait: null, verifyStreak: 0, lastVerify: null, verifying: null }))
       return { ok: false, goal: this.view(), error: this.storageError.message };
     if (!adoptSession) this.schedule(100);
     return { ok: true, resumed: true, goal: this.view() };
@@ -215,11 +217,16 @@ class ClaudeGoal {
   drive(instruction) {
     this.cancelTimer();
     if (!this.armed || this.goal?.phase !== 'active' || this.getSession()?.running) return false;
+    if (!instruction && this.goal.waiting?.until > this.now()) {
+      this.schedule(this.goal.waiting.until - this.now());
+      return false;
+    }
     if (instruction) this.cancelVerification();
     let session;
     try { session = this.ensureSession({ sessionId: this.goal.sessionId, workspaceId: this.goal.workspaceId }); }
     catch (err) { this.block('workspace-unavailable', err.message); return; }
-    if (!this.touch({ roundsStarted: this.goal.roundsStarted + 1, ...(instruction ? { verifying: null } : {}) })) return false;
+    if (!this.touch({ roundsStarted: this.goal.roundsStarted + 1, waiting: null,
+      ...(instruction ? { verifying: null, waitStreak: 0, lastWait: null } : {}) })) return false;
     this.owner = { goalId: this.goal.id, gen: session.gen };
     try {
       const accepted = session.sendUserMessage(goalPrompt(this.goal), instruction);
@@ -237,7 +244,7 @@ class ClaudeGoal {
     this.armed = false;
     this.cancelTimer();
     this.cancelVerification();
-    this.touch({ ...this.stoppedClock(), phase: 'blocked', blockedReason: { code, message }, verifying: null });
+    this.touch({ ...this.stoppedClock(), phase: 'blocked', blockedReason: { code, message }, verifying: null, waiting: null, waitStreak: 0, lastWait: null });
     this.log(`goal: blocked (${code}): ${message}`);
   }
 
@@ -251,19 +258,34 @@ class ClaudeGoal {
     if (event.is_error) {
       const subtype = event.subtype || 'unknown';
       const streak = (this.goal.errorStreak || 0) + 1;
-      this.touch({ errorStreak: streak, lastErrorSubtype: subtype, blockerStreak: 0, lastBlocker: null });
+      if (!this.touch({ errorStreak: streak, lastErrorSubtype: subtype, blockerStreak: 0, lastBlocker: null,
+        waiting: null, waitStreak: 0, lastWait: null })) return;
       if (streak >= 3) { this.block('repeated-errors', `Execution failed 3 times in a row. ${event.result || subtype}`); return; }
       this.schedule(1200 * streak);
       return;
     }
     const signal = event.goalReport ? { type: event.goalReport.status, reason: event.goalReport.reason } : event.ignoreGoalMarkers ? null : goalSignal(event.result);
-    if (signal?.type === 'complete') { void this.verify(event.goalReport?.reason || event.result); return; }
+    if (signal?.type === 'waiting') {
+      const streak = (this.goal.waitStreak || 0) + 1;
+      const seconds = Math.max(event.goalReport?.wait_seconds || 60, Math.min(900, 60 * 2 ** Math.min(streak - 1, 4)));
+      const reason = signal.reason || 'Work is still in progress';
+      if (!this.touch({ waiting: { reason, until: this.now() + seconds * 1000 }, waitStreak: streak, lastWait: reason,
+        blockerStreak: 0, lastBlocker: null, errorStreak: 0, lastErrorSubtype: null })) return;
+      this.schedule(seconds * 1000);
+      return;
+    }
+    if (signal?.type === 'complete') {
+      if (this.touch({ waiting: null, waitStreak: 0, lastWait: null })) void this.verify(event.goalReport?.reason || event.result);
+      return;
+    }
     if (signal?.type === 'blocked') {
       const streak = (this.goal.blockerStreak || 0) + 1;
       const reason = signal.reason || 'The model reported that it cannot make further progress';
-      this.touch({ blockerStreak: streak, lastBlocker: reason, errorStreak: 0, lastErrorSubtype: null });
+      if (!this.touch({ blockerStreak: streak, lastBlocker: reason, errorStreak: 0, lastErrorSubtype: null,
+        waiting: null, waitStreak: 0, lastWait: null })) return;
       if (streak >= 3) { this.block('model-reported', reason); return; }
-    } else this.touch({ blockerStreak: 0, lastBlocker: null, errorStreak: 0, lastErrorSubtype: null });
+    } else if (!this.touch({ blockerStreak: 0, lastBlocker: null, errorStreak: 0, lastErrorSubtype: null,
+      waiting: null, waitStreak: 0, lastWait: null })) return;
     this.schedule(1200);
   }
 
@@ -314,7 +336,7 @@ function goalSignal(result) {
       continue;
     }
     if (fence) continue;
-    const match = line.match(/^ {0,3}<goal:(complete|blocked)>[ \t]*(.*)$/i);
+    const match = line.match(/^ {0,3}<goal:(complete|blocked|waiting)>[ \t]*(.*)$/i);
     if (match) signal = { type: match[1].toLowerCase(), reason: match[2].trim() };
   }
   return signal;
@@ -328,8 +350,11 @@ function goalPrompt(goal) {
     'Keep working autonomously until this goal is fully achieved or a serious blocker prevents further progress. There is no fixed turn limit.',
     'Continue from the existing progress, verify the result, and fix recoverable errors. Do not stop after a plan, a partial result, or one failed approach. Do not repeat completed actions.',
     'Respect the configured permissions and the user\'s instructions. If permission or essential input is required, request it; never bypass it to keep the goal running.',
+    'When an external operation is still running and no useful independent work remains, check its state once, report status: "waiting" and a reason with camellia_update_goal, then end the turn. Optionally set wait_seconds (60 to 3600) for an expected completion time. Without Camellia tools, output <goal:waiting> followed by the reason on its own line. Camellia waits 1 minute, then backs off repeated waiting checks to 2, 4, 8 and at most 15 minutes, or longer when requested. Do not sleep or poll repeatedly within the turn.',
+    'Keep routine waiting updates brief. Ask for user input only when it is essential; do not repeatedly ask whether to keep monitoring an operation that the user already authorized.',
+    goal.lastWait ? `Previous check found work still in progress (${goal.waitStreak} consecutive waiting checks): ${goal.lastWait}. Check once for completion or a meaningful change, then report waiting again if the operation is still running.` : '',
     'Only when all requested work and relevant verification are complete, run objective checks (tests, builds, inspecting changed files), report the concrete evidence, then output <goal:complete> on its own line. Never mark an incomplete goal complete. An independent verifier will review the claim against the goal and criterion; a rejected claim comes back as work to finish.',
-    'If an external condition prevents all useful progress, explain what is needed to unblock it and output <goal:blocked> followed by a short reason on its own line. Try reasonable alternatives first. Camellia pauses after three consecutive blocker reports.',
+    'If a failure, missing essential input or required permission prevents all useful progress, explain what is needed to unblock it and output <goal:blocked> followed by a short reason on its own line. Try reasonable alternatives first. Camellia pauses after three consecutive blocker reports. Treat an operation that is still running as waiting.',
     goal.lastBlocker ? `Previous blocker report (${goal.blockerStreak}/3): ${goal.lastBlocker}. Check whether it can be resolved or independent work remains. If it still blocks all progress, report it again.` : '',
     goal.lastVerify ? `The verifier rejected the completion claim (${goal.verifyStreak}/3): ${goal.lastVerify}. Address these gaps with real changes, then re-verify before claiming completion again.` : '',
     'Do not quote or put status markers in code blocks. Otherwise keep working; Camellia will continue automatically after this response.',

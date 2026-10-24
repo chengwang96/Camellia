@@ -9,9 +9,16 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
 
 test('stream following survives consecutive programmatic scroll events', () => {
-  assert.doesNotMatch(source, /programmaticScroll/);
-  assert.match(source, /if \(running && \(userScrollActive \|\| performance\.now\(\) < userScrollIntentUntil\)\) followRunOutput = nearBottom\(\)/);
-  assert.match(source, /new ResizeObserver\(\(\) => \{\s*if \(running && followRunOutput\) scrollToLatest\(\);/);
+  const { state, dispatch, layout } = scrollFixture();
+  state.running = true;
+  state.scrollToLatest();
+  dispatch('scroll');
+  state.chatScroll.scrollHeight = 3000;
+  dispatch('scroll');
+  assert.equal(state.followRunOutput, true);
+  state.maybeScroll(false);
+  layout();
+  assert.equal(state.chatScroll.scrollTop, 2400);
 });
 
 test('explicitly submitted messages scroll again after the next layout', () => {
@@ -21,6 +28,8 @@ test('explicitly submitted messages scroll again after the next layout', () => {
 
 function scrollFixture() {
   const frames = new Map();
+  const listeners = { chat: new Map(), window: new Map() };
+  let resize;
   let frameId = 0;
   let scrollTop = 0;
   const state = {
@@ -28,16 +37,25 @@ function scrollFixture() {
       scrollHeight: 2000, clientHeight: 600,
       get scrollTop() { return scrollTop; },
       set scrollTop(value) { scrollTop = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)); },
+      addEventListener(type, callback) { listeners.chat.set(type, callback); },
+      contains(target) { return target === this; }, closest() { return null; },
     },
+    chat: {}, document: { body: {} },
+    window: { addEventListener(type, callback) { listeners.window.set(type, callback); } },
+    performance: { now: () => 1000 }, setTimeout() {}, clearTimeout() {}, saveDraft() {},
+    ResizeObserver: class { constructor(callback) { resize = callback; } observe() {} },
     sessionOpenSeq: 1, userScrollIntentUntil: 0, userScrollActive: false,
     followScrollFrame: null, running: false, followRunOutput: false,
     requestAnimationFrame(callback) { frames.set(++frameId, callback); return frameId; },
     cancelAnimationFrame(id) { frames.delete(id); },
   };
   vm.createContext(state);
-  vm.runInContext(source.slice(source.indexOf('  function nearBottom()'), source.indexOf('  new ResizeObserver(')), state);
+  vm.runInContext(source.slice(source.indexOf('  function nearBottom()'), source.indexOf('  function clearEmpty()')), state);
+  vm.runInContext(source.slice(source.indexOf('  let scrollSaveTimer;'), source.indexOf('  const SENT =')), state);
   return {
     state,
+    dispatch(type, event = {}, target = 'chat') { listeners[target].get(type)?.({ target: state.chatScroll, ...event }); },
+    resize() { resize(); },
     layout() {
       const callbacks = [...frames.values()];
       frames.clear();
@@ -53,6 +71,63 @@ test('opening idle history reaches the bottom again after layout grows', () => {
   state.chatScroll.scrollHeight = 3000;
   layout();
   assert.equal(state.chatScroll.scrollTop, 2400);
+});
+
+test('upward wheel, keyboard, touch and scrollbar gestures pause following even near the bottom', () => {
+  for (const gesture of ['wheel', 'keyboard', 'touch', 'pointer']) {
+    const { state, dispatch, layout, resize } = scrollFixture();
+    state.running = true;
+    state.scrollToLatest();
+    state.chatScroll.scrollTop = 1340;
+    if (gesture === 'wheel') dispatch('wheel', { deltaY: -60 });
+    if (gesture === 'keyboard') dispatch('keydown', { key: 'PageUp' }, 'window');
+    if (gesture === 'touch') dispatch('touchstart');
+    if (gesture === 'pointer') dispatch('pointerdown');
+    state.maybeScroll(true);
+    resize();
+    assert.equal(state.chatScroll.scrollTop, 1340, gesture);
+    dispatch('scroll');
+    if (gesture === 'touch') dispatch('touchend');
+    if (gesture === 'pointer') dispatch('pointerup', {}, 'window');
+    assert.equal(state.followRunOutput, false, gesture);
+    state.maybeScroll(true);
+    layout();
+    assert.equal(state.chatScroll.scrollTop, 1340, gesture);
+  }
+});
+
+test('reply completion cannot override paused history reading', () => {
+  const { state, layout } = scrollFixture();
+  state.chatScroll.scrollTop = 1340;
+  state.followRunOutput = false;
+  state.running = false;
+  state.maybeScroll(true);
+  layout();
+  assert.equal(state.chatScroll.scrollTop, 1340);
+});
+
+test('scrolling back to the bottom resumes automatic following', () => {
+  const { state, dispatch, layout } = scrollFixture();
+  state.running = true;
+  state.followRunOutput = false;
+  dispatch('wheel', { deltaY: 1000 });
+  state.chatScroll.scrollTop = 1400;
+  dispatch('scroll');
+  assert.equal(state.followRunOutput, true);
+  state.chatScroll.scrollHeight = 3000;
+  state.maybeScroll(false);
+  layout();
+  assert.equal(state.chatScroll.scrollTop, 2400);
+});
+
+test('explicit submission resumes following after reading older messages', () => {
+  const { state, layout } = scrollFixture();
+  state.chatScroll.scrollTop = 100;
+  state.followRunOutput = false;
+  state.scrollToLatest();
+  layout();
+  assert.equal(state.followRunOutput, true);
+  assert.equal(state.chatScroll.scrollTop, 1400);
 });
 
 test('a pending bottom scroll does not affect a different session', () => {

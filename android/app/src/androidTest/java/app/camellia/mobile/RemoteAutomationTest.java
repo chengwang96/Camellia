@@ -151,6 +151,13 @@ public class RemoteAutomationTest extends InstrumentationTestCase {
             View card = bar().findViewWithTag("remoteGoal");
             assertEquals("目标已暂停", ((TextView) card.findViewWithTag("remoteGoalState")).getText().toString());
             assertEquals("恢复", ((TextView) card.findViewWithTag("remoteGoalToggle")).getText().toString());
+            // The real pause command and reopening a saved Goal use phase=paused.
+            render(new JSONObject().put("goal", new JSONObject()
+                .put("objective", "完成季度报告").put("phase", "paused").put("armed", false)));
+            card = bar().findViewWithTag("remoteGoal");
+            assertEquals("目标已暂停", ((TextView) card.findViewWithTag("remoteGoalState")).getText().toString());
+            assertEquals("恢复", ((TextView) card.findViewWithTag("remoteGoalToggle")).getText().toString());
+            assertTrue(card.findViewWithTag("remoteGoalToggle").hasOnClickListeners());
             render(new JSONObject().put("goal", new JSONObject()
                 .put("objective", "完成季度报告").put("phase", "blocked").put("armed", false)));
             card = bar().findViewWithTag("remoteGoal");
@@ -162,6 +169,55 @@ public class RemoteAutomationTest extends InstrumentationTestCase {
             card = bar().findViewWithTag("remoteGoal");
             assertEquals("目标已完成", ((TextView) card.findViewWithTag("remoteGoalState")).getText().toString());
             assertNull(card.findViewWithTag("remoteGoalToggle"));
+        });
+    }
+
+    public void testWaitingGoalShowsDetailsAndClearsThemWhenPausedOrRunningAgain() {
+        ui(() -> {
+            long until = System.currentTimeMillis() + 120000;
+            JSONObject goal = new JSONObject().put("id", "waiting-goal").put("objective", "等待构建完成")
+                .put("phase", "active").put("armed", true).put("waiting", new JSONObject()
+                    .put("reason", "构建仍在运行，请等待下一次检查。").put("until", until));
+            JSONObject automation = new JSONObject().put("goal", goal);
+            render(automation);
+            View card = bar().findViewWithTag("remoteGoal");
+            assertEquals("目标等待中", ((TextView) card.findViewWithTag("remoteGoalState")).getText().toString());
+            assertEquals("构建仍在运行，请等待下一次检查。", ((TextView) card.findViewWithTag("remoteGoalWaitingReason")).getText().toString());
+            String date = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT,
+                java.util.Locale.SIMPLIFIED_CHINESE).format(new java.util.Date(until));
+            assertEquals("下次检查：" + date, ((TextView) card.findViewWithTag("remoteGoalNextCheck")).getText().toString());
+            assertEquals("暂停", ((TextView) card.findViewWithTag("remoteGoalToggle")).getText().toString());
+            field("chinese", false); render(automation);
+            card = bar().findViewWithTag("remoteGoal");
+            assertEquals("Goal waiting", ((TextView) card.findViewWithTag("remoteGoalState")).getText().toString());
+            assertTrue(((TextView) card.findViewWithTag("remoteGoalNextCheck")).getText().toString().startsWith("Next check: "));
+            field("chinese", true);
+            goal.put("phase", "paused").put("armed", false); render(automation);
+            card = bar().findViewWithTag("remoteGoal");
+            assertEquals("恢复", ((TextView) card.findViewWithTag("remoteGoalToggle")).getText().toString());
+            assertNull(card.findViewWithTag("remoteGoalWaitingReason")); assertNull(card.findViewWithTag("remoteGoalNextCheck"));
+            goal.remove("waiting"); goal.put("phase", "active").put("armed", true); render(automation);
+            card = bar().findViewWithTag("remoteGoal");
+            assertEquals("目标进行中", ((TextView) card.findViewWithTag("remoteGoalState")).getText().toString());
+            assertNull(card.findViewWithTag("remoteGoalWaitingReason")); assertNull(card.findViewWithTag("remoteGoalNextCheck"));
+        });
+    }
+
+    public void testScheduledTaskOffersPauseBetweenChecksAndResumeAfterPausing() {
+        ui(() -> {
+            JSONObject task = new JSONObject().put("id", "scheduled-task").put("instruction", "检查构建")
+                .put("status", "scheduled").put("intervalMinutes", 10);
+            JSONObject automation = new JSONObject().put("tasks", new JSONArray().put(task));
+            render(automation);
+            View card = bar().findViewWithTag("remoteTask");
+            assertEquals("等待", ((TextView) card.findViewWithTag("remoteTaskState")).getText().toString());
+            assertEquals("暂停", ((TextView) card.findViewWithTag("remoteTaskToggle")).getText().toString());
+            assertTrue(card.findViewWithTag("remoteTaskToggle").hasOnClickListeners());
+            task.put("status", "paused"); render(automation);
+            card = bar().findViewWithTag("remoteTask");
+            assertEquals("恢复", ((TextView) card.findViewWithTag("remoteTaskToggle")).getText().toString());
+            task.put("status", "complete"); render(automation);
+            assertNull(bar().findViewWithTag("remoteTaskToggle"));
         });
     }
 

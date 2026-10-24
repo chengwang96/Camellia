@@ -42,7 +42,15 @@ Automatic continuations without new user input cannot rewrite the goal. The agen
 
 ## Reporting progress
 
-Use `camellia_update_goal` with `status` (`complete` or `blocked`) and `reason` to report an outcome separately from a revision. Outcome reports apply at the end of the owned Goal turn. Completion still requires independent verification against the current objective and criterion. Revising a goal discards a pending outcome for its old content; report a fresh outcome after checking the revised work.
+Use `camellia_update_goal` with `status` (`complete`, `blocked` or `waiting`) and `reason` to report an outcome separately from a revision. Outcome reports apply at the end of the owned Goal turn. Completion still requires independent verification against the current objective and criterion. Revising a goal discards a pending outcome for its old content; report a fresh outcome after checking the revised work.
+
+### Waiting for ongoing work
+
+When an external operation is still running and no useful independent work remains, check once and report `status: "waiting"`, then end the turn. Camellia delays the next check by 1 minute. Consecutive waiting reports increase that delay to 2, 4, 8 and at most 15 minutes, even when logs or progress counters change. An optional `wait_seconds` (60 to 3600) sets a longer minimum delay when a completion time is known. Connections without Camellia tools can report `<goal:waiting> reason` on a standalone line and use the default backoff.
+
+Waiting keeps the goal active without accumulating blockers. The goal chip shows that it is waiting, and its menu shows the reason and next check time. Keep routine waiting updates brief; do not repeatedly ask the user whether to continue already-authorized monitoring. New immediate instructions bypass the wait. Productive work, errors, blockers, revisions and resumption reset the waiting streak. Pause, completion, removal and application shutdown cancel pending checks; reopening still requires manual resumption.
+
+This delay handles ongoing work within the current goal. User-requested recurring checks use scheduled tasks separately.
 
 ## Validation
 

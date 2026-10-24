@@ -1,6 +1,8 @@
 # Camellia for Android
 
-Camellia's Android client is a native Java/View application for Android 8.0 (API 26) and newer. It has local provider chat and a separate remote-control view for paired desktop conversations. The current release is `1.0.1` (`versionCode` 97). The signed phone package is `dist/Camellia-Android-1.0.1.apk` (ARM64), also exported as `dist/Camellia-Android-1.0.1-arm64-v8a.apk`. An optional `dist/Camellia-Android-1.0.1-x86_64.apk` can be built for x86_64 emulators or devices; packages ending in `-debug.apk` are development builds.
+Camellia's Android client is a native Java/View application for Android 8.0 (API 26) and newer. It has local provider chat and a separate remote-control view for paired desktop conversations. The current release is `1.0.1` (`versionCode` 99). The signed phone package is `dist/Camellia-Android-1.0.1.apk` (ARM64), also exported as `dist/Camellia-Android-1.0.1-arm64-v8a.apk`. An optional `dist/Camellia-Android-1.0.1-x86_64.apk` can be built for x86_64 emulators or devices; packages ending in `-debug.apk` are development builds.
+
+Build 99 adds compaction progress and elapsed time, Goal waiting reasons and the next check time, Resume for paused Goals, and Pause for scheduled checks between runs. Waiting details require the updated desktop host; restart the desktop after updating its remote snapshot code. Older hosts remain compatible and show the Goal state fields they already provide. The phone package uses the existing release signing key.
 
 ## Local chat
 

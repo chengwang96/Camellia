@@ -923,6 +923,7 @@
   "Start with an idea, or add files to the conversation.": "从一个想法开始，或添加文件一起讨论。",
   "Goal": "目标",
   "Goal · {0}": "目标 · {0}",
+  "Goal waiting · {0}": "目标等待中 · {0}",
   "Goal verified": "目标已验证",
   "Verifying…": "正在核查…",
   "+ Criterion": "＋ 判据",

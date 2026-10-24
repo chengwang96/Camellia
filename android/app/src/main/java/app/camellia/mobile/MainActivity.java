@@ -3548,8 +3548,10 @@ public final class MainActivity extends Activity {
         String phase = goal.optString("phase", "");
         boolean armed = goal.optBoolean("armed");
         boolean running = phase.equals("active") && armed;
+        JSONObject waiting = running ? goal.optJSONObject("waiting") : null;
         String label = phase.equals("complete") ? tr("目标已完成", "Goal complete")
             : phase.equals("blocked") ? tr("目标受阻", "Goal blocked")
+            : waiting != null ? tr("目标等待中", "Goal waiting")
             : running ? tr("目标进行中", "Goal running") : tr("目标已暂停", "Goal paused");
         LinearLayout card = automationCard(); card.setTag("remoteGoal");
         LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);
@@ -3566,9 +3568,9 @@ public final class MainActivity extends Activity {
             TextView count = text(String.valueOf(rounds), Palette.TEXT_SMALL, muted); count.setPadding(dp(6), 0, dp(6), 0);
             row.addView(count, new LinearLayout.LayoutParams(-2, -2));
         }
-        // Only the live states are actionable; a completed goal's menu is the
-        // desktop's job and a blocked one resumes from the same place.
-        if (phase.equals("active") || phase.equals("blocked")) {
+        // Paused and blocked goals resume from the same saved goal. Older hosts
+        // can also report a disarmed goal with phase=active.
+        if (phase.equals("active") || phase.equals("paused") || phase.equals("blocked")) {
             TextView toggle = text(running ? tr("暂停", "Pause") : tr("恢复", "Resume"), Palette.TEXT_NOTE, ink);
             toggle.setTag("remoteGoalToggle"); toggle.setMinHeight(dp(40));
             toggle.setGravity(Gravity.CENTER); toggle.setPadding(dp(10), dp(6), dp(10), dp(6));
@@ -3577,7 +3579,25 @@ public final class MainActivity extends Activity {
             toggle.setOnClickListener(view -> submitAutomation("goal-control", running ? "pause" : "resume", null));
             row.addView(toggle, new LinearLayout.LayoutParams(-2, -2));
         }
-        card.addView(row); return card;
+        card.addView(row);
+        if (waiting != null) {
+            String reason = waiting.optString("reason", "");
+            if (!reason.isEmpty()) {
+                TextView detail = text(reason, Palette.TEXT_NOTE, muted); detail.setTag("remoteGoalWaitingReason");
+                detail.setPadding(dp(12), 0, dp(12), dp(4)); detail.setMaxLines(3);
+                detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                card.addView(detail, new LinearLayout.LayoutParams(-1, -2));
+            }
+            long until = waiting.optLong("until");
+            if (until > 0) {
+                java.text.DateFormat format = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT,
+                    java.text.DateFormat.SHORT, chinese ? java.util.Locale.SIMPLIFIED_CHINESE : java.util.Locale.ENGLISH);
+                TextView next = text(tr("下次检查：", "Next check: ") + format.format(new java.util.Date(until)), Palette.TEXT_SMALL, muted);
+                next.setTag("remoteGoalNextCheck"); next.setPadding(dp(12), 0, dp(12), dp(10));
+                card.addView(next, new LinearLayout.LayoutParams(-1, -2));
+            }
+        }
+        return card;
     }
 
     private View automationTask(JSONObject task) {
@@ -3597,8 +3617,8 @@ public final class MainActivity extends Activity {
             TextView interval = text(tr("每 ", "every ") + minutes + tr(" 分钟", " min"), Palette.TEXT_SMALL, muted);
             interval.setPadding(dp(6), 0, dp(6), 0); row.addView(interval, new LinearLayout.LayoutParams(-2, -2));
         }
-        if (status.equals("running") || status.equals("paused")) {
-            boolean pause = status.equals("running");
+        if (status.equals("scheduled") || status.equals("running") || status.equals("paused")) {
+            boolean pause = !status.equals("paused");
             TextView toggle = text(pause ? tr("暂停", "Pause") : tr("恢复", "Resume"), Palette.TEXT_NOTE, ink);
             toggle.setTag("remoteTaskToggle"); toggle.setMinHeight(dp(40));
             toggle.setGravity(Gravity.CENTER); toggle.setPadding(dp(10), dp(6), dp(10), dp(6));
