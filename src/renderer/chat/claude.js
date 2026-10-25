@@ -86,7 +86,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   let currentConnection = 'api';
   const supportsAccounts = () => ['codex', 'kimi', 'antigravity'].includes(harnessId);
   const accountSubscription = () => supportsAccounts() && currentConnection === 'subscription';
-  const accountName = { codex: 'ChatGPT', kimi: 'Kimi', antigravity: 'Google' }[harnessId];
+  const accountName = () => ({ codex: 'ChatGPT', kimi: 'Kimi', antigravity: 'Google' }[harnessId]);
   let accountModels = [];
   let hiddenSubscriptionModels = {};
   const visibleAccountModels = () => window.CamelliaSubscriptionModels.visibleModels(accountModels, hiddenSubscriptionModels, harnessId);
@@ -481,7 +481,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       || sidebar.workspaces.find(workspace => workspace.id === context.workspaceId)?.path || '';
     const inline = value => window.CamelliaMarkdownLinks.renderInline(value, cwd);
     const tokens = [];
-    let text = String(src);
+    let text = String(src).replace(/\r\n?/g, '\n');
     // Protect math before Markdown rules, including backticks inside TeX text.
     text = window.CamelliaMarkdownLinks.protectMath(text, span => {
       tokens.push({ t: 'math', span });
@@ -567,10 +567,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       rendered.push(SENT + (tokens.length - 1) + SENT);
     }
     text = rendered.join('\n');
-    text = inline(text);
-    text = documentMode
-      ? text.replace(/^(#{1,6})\s+(.+)$/gm, (_match, hashes, heading) => '<h' + hashes.length + '>' + heading + '</h' + hashes.length + '>')
-      : text.replace(/^(#{1,6})\s*(.+)$/gm, '<strong>$2</strong>');
     const sentRe = new RegExp(SENT + '(\\d+)' + SENT, 'g');
     const renderToken = (_m, idx) => {
       const tk = tokens[+idx];
@@ -609,8 +605,25 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       return '<div class="md-table-wrap"><table class="md-table"><thead><tr>' + cells('th', tk.header) +
         '</tr></thead><tbody>' + tk.rows.map(row => '<tr>' + cells('td', row) + '</tr>').join('') + '</tbody></table></div>';
     };
-    text = text.replace(sentRe, renderToken);
-    return text;
+    // Blank lines separate paragraphs; they must not also create line boxes
+    // around lists, code, tables and display math that have their own margins.
+    const prose = value => value.split(/\n[ \t]*\n(?:[ \t]*\n)*/).map(part => {
+      part = part.replace(/^\n+|\n+$/g, '');
+      if (!part.trim()) return '';
+      const body = inline(part).replace(/^(#{1,6})\s*(.+)$/gm, '<strong>$2</strong>')
+        .replace(sentRe, renderToken);
+      return '<p class="md-paragraph">' + body + '</p>';
+    }).join('');
+    const output = [];
+    let offset = 0;
+    for (const match of text.matchAll(sentRe)) {
+      const token = tokens[+match[1]];
+      if (!token || token.t === 'inline' || token.t === 'math' && !token.span.display) continue;
+      output.push(prose(text.slice(offset, match.index)), renderToken(match[0], match[1]));
+      offset = match.index + match[0].length;
+    }
+    output.push(prose(text.slice(offset)));
+    return output.join('');
   }
 
   chat.addEventListener('click', event => {
@@ -932,7 +945,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     }];
     // With no account or API routes there is only the setup/saved-model list.
     if (!accountModels.length) return [{ title: 'Model · Same-model failover', options: MODELS }];
-    const account = { title: 'Model · ' + accountName + ' account', connection: 'subscription', options: visibleAccountModels().map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
+    const account = { title: 'Model · ' + accountName() + ' account', connection: 'subscription', options: visibleAccountModels().map(model => ({ id: model.id, label: model.name || model.displayName || model.id })) };
     const api = { title: 'Model · Shared API routes', connection: 'api', options: routeModels.map(id => ({ id, label: id })) };
     if (googleSubscription()) return account.options.length ? [account] : [];
     const sections = accountSubscription() ? [account, api] : [api, account];
@@ -2769,7 +2782,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       const thinking = (ev.options || []).find(option => ['thinking', 'reasoning_effort'].includes(option.id));
       if (!accountSubscription() || !thinking?.options?.length) applyApiLevels();
       else LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' },
-        ...thinking.options.map(option => ({ id: option.value, label: option.name })));
+        ...thinking.options.map(option => ({ id: option.value,
+          label: String(option.name || option.value).replace(/^Thinking\s+/i, '') })));
       currentLevel = thinking?.currentValue || '';
       renderModelPill();
       return;
@@ -2904,8 +2918,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (context.sessionId && loadedEngine !== harnessId) {
       // A conversation keeps its own harness. A stale renderer must reopen it
       // there instead of turning Send into an implicit harness switch.
-      const opened = await window.dshDesktop.conversationSwitch({ engine: loadedEngine, sessionId: context.sessionId, navigate: true });
-      if (!opened.ok) setStatus(opened.error);
+      await openHistorySession(context.sessionId);
       return;
     }
     const text = queuedMessage ? queuedMessage.text : input.value.trim();
@@ -2944,7 +2957,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         if (message?.messageData?.seq) row.remove(); else message?.remove();
       });
     }
-    const sendContext = { sessionId: context.sessionId || null, workspaceId: context.workspaceId,
+    const sendContext = { sessionId: context.sessionId || null, workspaceId: context.workspaceId, engine: harnessId,
       fork: Boolean(pendingForkId), openSeq: sessionOpenSeq, dispatched: false, cancelled: false, fastMode: currentFastMode };
     if (sendContext.sessionId && !sendContext.fork) pendingConversationSends.set(sendContext.sessionId, sendContext);
     sending = true;
@@ -2968,7 +2981,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     if (pendingConversationSend()) saveDraft();
     let res;
     try {
-      const settings = await chatApi.getSettings({ sessionId: sendContext.sessionId });
+      const settings = await chatApi.getSettings({ sessionId: sendContext.sessionId }, sendContext.engine);
       if (sendContext.cancelled) throw new Error('Request canceled before sending');
       sendContext.dispatched = true;
       res = await chatApi.send({
@@ -2978,9 +2991,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         sessionId: sendContext.sessionId,
         workspaceId: sendContext.workspaceId,
         fork: sendContext.fork,
-        ...(harnessId === 'codex' && !sendContext.sessionId ? { fastMode: sendContext.fastMode } : {}),
+        ...(sendContext.engine === 'codex' && !sendContext.sessionId ? { fastMode: sendContext.fastMode } : {}),
         settings,
-      });
+      }, sendContext.engine);
     } catch (err) { res = { ok: false, error: err.message }; }
     if (pendingConversationSends.get(sendContext.sessionId) === sendContext) pendingConversationSends.delete(sendContext.sessionId);
     if (sendContext.openSeq !== sessionOpenSeq) {
@@ -3172,7 +3185,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     saveDraft();
     if (!leaveDiscussion()) return;
     const wasReady = uiReady; uiReady = false;
-    ++sessionOpenSeq;
+    const seq = ++sessionOpenSeq;
     resetConversationView();
     loadingSession = true; input.disabled = true;
     updateConversationControls();
@@ -3186,6 +3199,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     updateSwitchHint();
     context.workspaceId = workspaceId;
     writeUi('location', { sessionId: null, workspaceId });
+    updateConversationLocation();
     pendingForkId = null;
     turnEl = null;
     turnEngine = null;
@@ -3207,11 +3221,13 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const ws = sidebar.workspaces.find((w) => w.id === workspaceId);
     if (ws && ws.collapsed) await sidebar.metaOp({ op: 'toggle-collapse', workspaceId });
     sidebar.render();
+    const navigation = await window.dshDesktop.conversationSwitch({ engine: harnessId, navigate: true, inPlace: true });
+    if (seq !== sessionOpenSeq) return;
     await sidebar.load();
     await loadSettings();
     await goalUI.refresh();
     restoreDraft(); uiReady = wasReady; loadingSession = false; input.disabled = false; updateSendEnabled(); updateConversationControls(); sidebar.updateLabel(); saveDraft();
-    setStatus(workspaceId ? "New workspace session created" : "Standalone session · No workspace");
+    setStatus(navigation?.ok === false ? navigation.error : workspaceId ? "New workspace session created" : "Standalone session · No workspace");
     input.focus();
   }
   $('newSessionBtn').addEventListener('click', () => void newSession(null));
@@ -3760,11 +3776,34 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       sidebar.updateLabel();
     }
   }
+  function updateConversationLocation() {
+    const query = new URLSearchParams(location.search);
+    query.set('harness', harnessId);
+    for (const key of ['new', 'workspace', 'addWorkspace']) query.delete(key);
+    if (context.sessionId) query.set('conversation', context.sessionId);
+    else query.delete('conversation');
+    history.replaceState(null, '', '?' + query);
+  }
+  function applyChatHarness(engine) {
+    if (engine === harnessId) return;
+    ++settingsLoadSeq;
+    setChatHarness(engine);
+    accountModels = [];
+    MODELS.length = 0;
+    LEVELS.splice(0, LEVELS.length, { id: '', label: 'Default' });
+    currentModel = ''; currentLevel = ''; currentConnection = 'api'; currentFastMode = false;
+    currentPermission = chatProfile.permission;
+    emptyStateTemplate.querySelector('[data-harness-name]').textContent = chatProfile.name;
+    $('engineSwitch').value = engine;
+    window.CamelliaWorkbenchNavigation?.rememberEngine(engine);
+    updateConversationLocation();
+  }
   async function openHistorySession(id) {
     if (!canChangeContext()) return false;
     saveDraft();
     if (!leaveDiscussion()) return false;
     const seq = ++sessionOpenSeq;
+    let draftRestored = false;
     resetConversationView();
     chatScroll.classList.add('history-opening');
     loadingSession = true; input.disabled = true;
@@ -3788,19 +3827,27 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         throw new Error(res.error);
       }
       const s = sidebar.sessions.find((entry) => entry.id === id);
-      if (res.currentEngine && res.currentEngine !== harnessId) {
-        loadedEngine = res.currentEngine;
-        writeUi('location', { sessionId: id, workspaceId: res.workspaceId });
-        restoreDraft();
-        const opened = await window.dshDesktop.conversationSwitch({ engine: res.currentEngine, sessionId: id, navigate: true });
-        if (!opened.ok) throw new Error(opened.error);
-        return false;
+      const engine = res.currentEngine || harnessId;
+      loadedEngine = engine;
+      // Even returning to the current engine supersedes a pending switch in
+      // the main process, keeping the native menu and window title in sync.
+      const opened = await window.dshDesktop.conversationSwitch({ engine, sessionId: id, navigate: true, inPlace: true });
+      if (seq !== sessionOpenSeq || opened.canceled) return false;
+      if (!opened.ok) throw new Error(opened.error);
+      if (engine !== harnessId) {
+        applyChatHarness(engine);
+        // History can be read through any engine; its settings must belong to
+        // the engine we just adopted before the restored composer is revealed.
+        res.settings = await chatApi.getSettings({ sessionId: id });
+        if (seq !== sessionOpenSeq) return false;
+        if (res.settings?.ok === false) throw new Error(res.settings.error);
       }
       context.sessionId = id;
       if (res.remoteQueue) applyRemoteQueue(res.remoteQueue);
       void tasksUI.refresh();
       context.workspaceId = res.workspaceId || null;
       writeUi('location', { sessionId: id, workspaceId: context.workspaceId });
+      updateConversationLocation();
       conversationPrefs = res.preferences || conversationPrefs;
       loadedEngine = res.currentEngine || harnessId;
       conversationActivity = res.activity || null;
@@ -3833,6 +3880,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       if (!chat.childElementCount) chat.innerHTML = "<div class=\"empty-state\"><div class=\"empty-state-desc\" data-i18n>No messages to display. Send a message to continue this session.</div></div>";
       sidebar.render();
       restoreDraft();
+      draftRestored = true;
       setStatus(res.interrupted ? 'The last turn was interrupted. Review its result before continuing.' : res.truncated ? "Showing the latest 200 messages. Continuation uses the full history." : "History loaded. Your next message continues this session.");
       if (!await applyLiveRun(res.live)) return false;
       workPanel.update(res.subagents);
@@ -3862,7 +3910,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     finally {
       if (seq === sessionOpenSeq) {
         historyOpening = false; loadingSession = false; input.disabled = false; restoringRun = false;
-        updateSendEnabled(); updateConversationControls(); sidebar.updateLabel(); saveDraft();
+        updateSendEnabled(); updateConversationControls(); sidebar.updateLabel();
+        if (draftRestored) saveDraft(); else restoreDraft();
         chatScroll.scrollTop = chatScroll.scrollHeight;
         chatScroll.classList.remove('history-opening');
         restoreFailedMessageEdit();
@@ -4089,21 +4138,22 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     renderModelPill();
   }
   async function loadSettings() {
-    const seq = ++settingsLoadSeq, sessionId = context.sessionId;
+    const seq = ++settingsLoadSeq, sessionId = context.sessionId, engine = harnessId;
     try {
       const selected = await chatApi.getSettings({ sessionId });
+      if (seq !== settingsLoadSeq || sessionId !== context.sessionId || engine !== harnessId) return;
       if (selected.ok === false) throw new Error(selected.error);
       const subscription = supportsAccounts() && selected.connection === 'subscription';
       // Engines with subscriptions load both lists so the composer can offer
       // account and API models together and pick the connection itself.
       const [routerState, accountState, preferences] = await Promise.all([
         window.dshDesktop.apiRouterGetState(),
-        supportsAccounts() ? Promise.resolve().then(() => window.dshDesktop[harnessId + 'AccountState'](
-          harnessId === 'codex' ? { id: selected.subscriptionId } : undefined))
+        supportsAccounts() ? Promise.resolve().then(() => window.dshDesktop[engine + 'AccountState'](
+          engine === 'codex' ? { id: selected.subscriptionId } : undefined))
           .catch(error => ({ ok: false, error: error.message })) : Promise.resolve(null),
         window.dshDesktop.workbenchSettings(),
       ]);
-      if (seq !== settingsLoadSeq || sessionId !== context.sessionId) return;
+      if (seq !== settingsLoadSeq || sessionId !== context.sessionId || engine !== harnessId) return;
       hiddenSubscriptionModels = preferences?.hiddenSubscriptionModels || {};
       accountModels = accountState?.ok && Array.isArray(accountState.models) ? accountState.models : [];
       applySessionSettings(selected);
@@ -4115,7 +4165,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         if (!account.ok && !apiOnly) throw new Error(account.error);
         if (!apiOnly) {
           const visible = visibleAccountModels();
-          MODELS.splice(0, MODELS.length, ...(accountModels.length ? [] : [{ id: '', label: 'Connect ' + accountName + ' in settings' }]),
+          MODELS.splice(0, MODELS.length, ...(accountModels.length ? [] : [{ id: '', label: 'Connect ' + accountName() + ' in settings' }]),
             ...visible.map(model => ({ id: model.id, label: model.name || model.displayName || model.id })));
           if (currentModel && !accountModels.some(model => model.id === currentModel)) MODELS.push({ id: currentModel, label: currentModel + ' (refresh account)' });
         }
@@ -4181,10 +4231,24 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         const saved = await chatApi.saveSettings({ model: currentModel });
         if (!saved.ok) throw new Error(saved.error);
       }
-      const result = await window.dshDesktop.conversationSwitch({ engine: target, sessionId: context.sessionId, mode });
+      const result = await window.dshDesktop.conversationSwitch({ engine: target, sessionId: context.sessionId, mode, inPlace: true });
       if (!result.ok) throw new Error(result.error);
+      if (result.canceled) return;
+      applyChatHarness(target);
+      loadedEngine = target;
+      if (context.sessionId) {
+        switchingEngine = false;
+        await openHistorySession(context.sessionId);
+      } else {
+        resetConversationView();
+        chat.replaceChildren(emptyStateTemplate.cloneNode(true));
+        await loadSettings();
+        await goalUI.refresh();
+        restoreDraft();
+        sidebar.render();
+      }
     } catch (error) { setStatus(error.message); }
-    finally { switchingEngine = false; updateConversationControls(); $('engineSwitch').value = harnessId; $('handoffStop').hidden = true; input.disabled = false; }
+    finally { switchingEngine = false; updateConversationControls(); $('engineSwitch').value = harnessId; $('handoffStop').hidden = true; input.disabled = loadingSession; }
   }
   async function switchOptions(target, force = false) {
     if (conversationBusy() || sending || loadingSession) { setStatus('Available when this conversation stops working'); return; }

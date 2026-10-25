@@ -21,7 +21,7 @@ bridge = r"""(() => {
     apiRouterGetState:async()=>router,
     workbenchSettings:async()=>({ok:true,language:'en-US'}),
     codexAccountState:async()=>({ok:true,models:[]}),
-    kimiAccountState:async()=>({ok:true,models:[]}),
+    kimiAccountState:async()=>({ok:true,account:{},models:[{id:'kimi-code/k3.1-pro',name:'K3.1 Pro',supportedReasoningEfforts:['low','high','max'],defaultReasoningEffort:'high'}]}),
     antigravityAccountState:async()=>({ok:true,models:[]}),
     onApiRouterState:callback=>{window.refreshRouter=callback;},
   },{get:(target,key)=>key in target?target[key]:key.startsWith('on')?()=>()=>{}:async()=>({ok:true})});
@@ -72,6 +72,18 @@ with sync_playwright() as playwright:
         page.evaluate("router.modelThinking['unknown-model']={values:[]}; refreshRouter(router)")
         page.locator('#modelPill').click()
         expect(page.locator('.pop-row').filter(has_text='Reasoning level')).to_have_count(0)
+        if engine == 'kimi':
+            page.locator('#modelPill').click()
+            page.evaluate("""async () => {
+              Object.assign(settings, {model:'kimi-code/k3.1-pro',connection:'subscription',thinkingBudget:'',subscriptionId:'default'});
+              await loadSettings();
+            }""")
+            page.wait_for_function("LEVELS.map(level=>level.id).join(',')===',low,high,max'")
+            reasoning_menu(['Default', 'Low', 'High', 'Max']).get_by_text('Max', exact=True).click()
+            page.wait_for_function("settings.thinkingBudget==='max' && settings.connection==='subscription'")
+            page.evaluate("acceptSessionEvents=true; handleEvent({type:'gui:config',session_id:null,options:[{id:'thinking',currentValue:'max',options:[{value:'low',name:'Thinking Low'},{value:'high',name:'Thinking High'},{value:'max',name:'Thinking Max'}]}]})")
+            assert page.evaluate('LEVELS.map(level=>level.id)') == ['', 'low', 'high', 'max']
+            reasoning_menu(['Default', 'Low', 'High', 'Max']).get_by_text('Max', exact=True).click()
         assert errors == [], errors
         page.close()
     browser.close()

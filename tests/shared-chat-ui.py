@@ -111,13 +111,13 @@ with sync_playwright() as p:
             expect(page.locator('#goalToggle')).to_have_attribute('aria-pressed','false')
             page.select_option('#engineSwitch', 'kimi' if engine != 'kimi' else 'codex')
             expect(page.locator('#switchDialog')).not_to_be_visible()
-            page.wait_for_function('window.switches.length === 1')
-            assert page.evaluate('switches[0].sessionId') == 'shared-fixture'
+            page.wait_for_function('window.switches.filter(call => !call.navigate).length === 1 && !loadingSession && !switchingEngine')
+            assert page.evaluate('switches.find(call => !call.navigate).sessionId') == 'shared-fixture'
             page.evaluate('fixturePreferences.warnOnSwitch = true')
             page.select_option('#engineSwitch', 'dsh' if engine != 'dsh' else 'claude')
             expect(page.locator('#switchDialog')).to_be_visible()
             page.locator('#switchCancel').click()
-            assert page.evaluate('window.switches.length') == 1
+            assert page.evaluate('window.switches.filter(call => !call.navigate).length') == 1
             page.locator('#handoffBtn').click()
             expect(page.locator('#switchMethod')).to_have_value('markdown')
             page.screenshot(path=str(preview/f'handoff-{theme}.png'))

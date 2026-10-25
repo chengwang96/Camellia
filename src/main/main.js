@@ -2172,7 +2172,7 @@ if (!gotSingleInstanceLock) {
       }
       const navigation = !payload.sessionId && payload.newSession === true ? { new: '1',
         ...(typeof payload.workspaceId === 'string' ? { workspace: payload.workspaceId } : {}), ...(payload.addWorkspace === true ? { addWorkspace: '1' } : {}) } : undefined;
-      const result = await switchMode(payload.engine, payload.sessionId, navigation);
+      const result = await switchMode(payload.engine, payload.sessionId, navigation, payload.inPlace === true);
       return result;
     } catch (error) { return { ok: false, error: error.message }; }
   });
@@ -2841,7 +2841,7 @@ if (!gotSingleInstanceLock) {
     }
     return switchMode(mode);
   }
-  async function switchMode(mode, conversationId, navigation) {
+  async function switchMode(mode, conversationId, navigation, inPlace = false) {
     if (!['home', 'benchmark', 'discussions', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(mode)) {
       return { ok: false, error: 'Unknown engine or page' };
     }
@@ -2850,6 +2850,10 @@ if (!gotSingleInstanceLock) {
     if (Object.hasOwn(ENGINES, next)) {
       try { assertRuntimeAvailable(next); }
       catch (error) { return { ok: false, error: error.message }; }
+    }
+    if (inPlace && currentMode === next && mainWindow && !mainWindow.isDestroyed()
+      && mainWindow.webContents.getURL().split(/[?#]/)[0] === require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href) {
+      return { ok: true };
     }
     if (next === 'discussions' && mainWindow && !mainWindow.isDestroyed()
       && mainWindow.webContents.getURL().split(/[?#]/)[0] === require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href) {
@@ -2865,6 +2869,10 @@ if (!gotSingleInstanceLock) {
       return { ok: false, error: error.message };
     }
     if (request !== modeRequest) return { ok: true, canceled: true };
+    if (inPlace && (!Object.hasOwn(ENGINES, next) || !mainWindow || mainWindow.isDestroyed()
+      || mainWindow.webContents.getURL().split(/[?#]/)[0] !== require('node:url').pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html')).href)) {
+      return { ok: false, error: 'The chat page changed. Open the conversation again.' };
+    }
     if (!['home', 'benchmark', 'discussions'].includes(next)) saveConfig({ mode: next });
     currentMode = next;
     log(`switch mode → ${next}`);
@@ -2874,7 +2882,7 @@ if (!gotSingleInstanceLock) {
       mainWindow.setTitle(engineName ? `${engineName} — ${APP_NAME}` : APP_NAME);
     }
     setMenu();
-    void loadMode(next, conversationId, navigation);
+    if (!inPlace) void loadMode(next, conversationId, navigation);
     return { ok: true };
   }
 

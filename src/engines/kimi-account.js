@@ -23,12 +23,35 @@ function parseLoginOutput(text) {
   const expiresIn = Number(clean.match(/Code expires in (\d+)s\./)?.[1]) || null;
   return { verificationUrl, userCode, expiresIn };
 }
-function accountModels(config, options = []) {
+function thinkingMetadata(model, snapshot) {
+  const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
+  const efforts = [...new Set((Array.isArray(model.support_efforts) ? model.support_efforts : [])
+    .filter(value => typeof value === 'string' && value))];
+  const always = capabilities.includes('always_thinking');
+  const supported = always || capabilities.includes('thinking');
+  let levels = supported ? efforts.length ? [...(always ? [] : ['off']), ...efforts] : always ? ['on'] : ['off', 'on'] : [];
+  let defaultEffort = efforts.includes(model.default_effort) ? model.default_effort
+    : efforts.length ? efforts[Math.floor(efforts.length / 2)] : levels.includes('on') ? 'on' : undefined;
+  if (snapshot) {
+    const option = snapshot.find(row => row.id === 'thinking'), values = [];
+    const visit = rows => { for (const row of rows || []) {
+      if (typeof row?.value === 'string' && row.value) values.push(row.value);
+      if (row?.options) visit(row.options);
+    } };
+    visit(option?.options);
+    levels = [...new Set(values)];
+    if (!levels.includes(defaultEffort)) defaultEffort = levels.includes(option?.currentValue) ? option.currentValue : undefined;
+  }
+  return { supportedReasoningEfforts: levels,
+    ...(defaultEffort && levels.includes(defaultEffort) ? { defaultReasoningEffort: defaultEffort } : {}) };
+}
+function accountModels(config, options = [], snapshots = new Map()) {
   const labels = new Map();
   const visit = rows => { for (const row of rows || []) { if (row.value) labels.set(row.value, row.name || row.value); if (row.options) visit(row.options); } };
   visit(options.find(row => row.id === 'model')?.options);
   return Object.entries(config.models).map(([id, model]) => ({ id, name: labels.get(id) || model.display_name || model.model || id,
-    isDefault: config.default_model === id, contextWindow: model.max_context_size }));
+    isDefault: config.default_model === id, contextWindow: model.max_context_size,
+    ...thinkingMetadata(model, snapshots.get(id)) }));
 }
 
 // Kimi's official CLI owns the device flow, refresh tokens and logout. Only
@@ -38,6 +61,17 @@ function createKimiAccount({ home, runtime, ensureRuntime, node, environment = (
   createClient, queryQuota = readKimiQuota, now = () => Date.now(), loginTimeoutMs = 15 * 60 * 1000 }) {
   const stateFile = path.join(home, 'account-state.json');
   let saved = readJson(stateFile, { account: null, models: [], verifiedAt: null });
+  if (saved.account && (saved.models || []).some(model => !Array.isArray(model.supportedReasoningEfforts))) {
+    try {
+      const recovered = new Map(accountModels(managedKimiConfig(home)).map(model => [model.id, model]));
+      saved = { ...saved, models: saved.models.map(model => {
+        if (Array.isArray(model.supportedReasoningEfforts)) return model;
+        const fallback = recovered.get(model.id);
+        return { ...model, supportedReasoningEfforts: fallback?.supportedReasoningEfforts || [],
+          ...(fallback?.defaultReasoningEffort ? { defaultReasoningEffort: fallback.defaultReasoningEffort } : {}) };
+      }) };
+    } catch {}
+  }
   let login = null, refreshing = null, signingOut = null, waking = null, closed = false;
   let quotaPending = null, quotaController = null;
   const clients = new Set();
@@ -113,7 +147,12 @@ function createKimiAccount({ home, runtime, ensureRuntime, node, environment = (
         const probeDir = path.join(home, 'account-check'); fs.mkdirSync(probeDir, { recursive: true });
         const probe = await client.request('session/new', { cwd: probeDir, mcpServers: [] });
         probeId = probe.sessionId;
-        const config = managedKimiConfig(home), models = accountModels(config, probe.configOptions);
+        const config = managedKimiConfig(home), snapshots = new Map();
+        for (const id of Object.keys(config.models)) {
+          const selected = await client.request('session/set_config_option', { sessionId: probeId, configId: 'model', value: id });
+          snapshots.set(id, selected.configOptions || []);
+        }
+        const models = accountModels(config, probe.configOptions, snapshots);
         const host = new URL(config.providers['managed:kimi-code'].base_url).hostname;
         publish({ account: { name: 'Kimi Code', region: host.endsWith('.ai') ? 'global' : 'mainland-cn' }, models,
           verifiedAt: new Date().toISOString(), error: models.length ? null : 'Signed in, but no models are available. Retry sign-in or check your subscription.' });

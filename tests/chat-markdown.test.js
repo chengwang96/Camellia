@@ -25,12 +25,27 @@ function chatRenderer(cwd = 'D:/Code/DSH') {
   return context.mdRender;
 }
 
+test('paragraph spacing does not grow with repeated blank lines or Windows line endings', () => {
+  const render = chatRenderer();
+  const expected = render('第一段\n\n第二段');
+  assert.equal(render('\n\n第一段\n \n\n\n第二段\n\n'), expected);
+  assert.equal(render('第一段\r\n\r\n第二段'), expected);
+  assert.equal(render(' \n\n\t\n'), '');
+});
+
+test('single prose line breaks and blank lines inside code remain intact', () => {
+  const render = chatRenderer();
+  assert.equal(render('第一行\n第二行\n\n下一段'),
+    '<p class="md-paragraph">第一行\n第二行</p><p class="md-paragraph">下一段</p>');
+  assert.equal(render('```text\none\n\nthree\n```'), '<pre><code>one\n\nthree\n</code></pre>');
+});
+
 test('the reported Windows Markdown link renders a label and a preview path without the line suffix', () => {
   const html = chatRenderer()('对应说明：[多账号管理](D:/Code/DSH/docs/configuration.md:62)。');
-  assert.match(html, /^对应说明：<a /);
+  assert.match(html, /^<p class="md-paragraph">对应说明：<a /);
   assert.match(html, /data-chat-file="D:\/Code\/DSH\/docs\/configuration.md"/);
   assert.match(html, /data-chat-line="62"/);
-  assert.match(html, />多账号管理<\/a>。$/);
+  assert.match(html, />多账号管理<\/a>。<\/p>$/);
   assert.doesNotMatch(html, /\[多账号管理\]/);
 });
 
@@ -76,7 +91,7 @@ test('code examples remain literal and links in tables render with the same rule
 
 test('incomplete streaming links stay readable until their closing delimiter arrives', () => {
   const render = chatRenderer(), partial = '[多账号管理](D:/Code/DSH/docs/configuration.md:62';
-  assert.equal(render(partial), partial);
+  assert.equal(render(partial), '<p class="md-paragraph">' + partial + '</p>');
   assert.match(render(partial + ')'), /<a [^>]*>多账号管理<\/a>/);
 });
 
@@ -142,8 +157,8 @@ L_{\mathrm{total}}
   assert.match(html, /<math[^>]*display="block">/);
   assert.match(html, /<annotation encoding="application\/x-tex">\s*L_\{\\mathrm\{total\}\}/);
   assert.doesNotMatch(html, /katex-error|<ul|<blockquote|<hr/);
-  assert.match(html, /^算法 2 又加入六项损失：\n\n<section>/);
-  assert.match(html, /<\/section>\n\n它们分别约束：$/);
+  assert.match(html, /^<p class="md-paragraph">算法 2 又加入六项损失：<\/p><section>/);
+  assert.match(html, /<\/section><p class="md-paragraph">它们分别约束：<\/p>$/);
 });
 
 test('chat supports both math delimiter styles together and protects bracket formula contents', () => {
@@ -230,7 +245,7 @@ after`);
   const annotation = /<annotation[^>]*>([\s\S]*?)<\/annotation>/.exec(html)[1];
   assert.doesNotMatch(annotation, /&gt;|<br>/);
   assert.match(annotation, /\n\\begin\{aligned\}\n/);
-  assert.match(html, /<\/blockquote>\n\nafter$/);
+  assert.match(html, /<\/blockquote><p class="md-paragraph">after<\/p>$/);
 });
 
 test('dollar and bracket examples in indented code stay literal without unresolved tokens', () => {
@@ -262,19 +277,19 @@ test('a bilingual line stays inside the list item it belongs to', () => {
 
 test('a list still ends at a blank line or the next block', () => {
   const render = chatRenderer();
-  assert.match(render('- item\n\n普通段落'), /<\/ul>\n+普通段落$/);
-  assert.match(render('- item\n## 标题'), /<\/ul>\n<strong>标题<\/strong>$/);
-  assert.match(render('- item\n> 引用'), /<\/ul>\n<blockquote class="md-quote">引用<\/blockquote>$/);
-  assert.match(render('- item\n---'), /<\/ul>\n<hr class="md-rule">$/);
-  assert.match(render('- item\n```\ncode\n```'), /<\/ul>\n<pre><code>code\n<\/code><\/pre>$/);
+  assert.match(render('- item\n\n普通段落'), /<\/ul><p class="md-paragraph">普通段落<\/p>$/);
+  assert.match(render('- item\n## 标题'), /<\/ul><p class="md-paragraph"><strong>标题<\/strong><\/p>$/);
+  assert.match(render('- item\n> 引用'), /<\/ul><blockquote class="md-quote">引用<\/blockquote>$/);
+  assert.match(render('- item\n---'), /<\/ul><hr class="md-rule">$/);
+  assert.match(render('- item\n```\ncode\n```'), /<\/ul><pre><code>code\n<\/code><\/pre>$/);
 });
 
 test('chat renders blockquotes, rules and headings without touching fenced code', () => {
   const render = chatRenderer();
   assert.match(render('> quoted **text**'), /^<blockquote class="md-quote">quoted <strong>text<\/strong><\/blockquote>$/);
   assert.match(render('> first\n> second'), /<blockquote class="md-quote">first<br>second<\/blockquote>/);
-  for (const rule of ['---', '***', '___']) assert.match(render('a\n\n' + rule + '\n\nb'), /a\n\n<hr class="md-rule">\n\nb/);
-  assert.match(render('###### Six'), /^<strong>Six<\/strong>$/);
+  for (const rule of ['---', '***', '___']) assert.match(render('a\n\n' + rule + '\n\nb'), /<p class="md-paragraph">a<\/p><hr class="md-rule"><p class="md-paragraph">b<\/p>/);
+  assert.match(render('###### Six'), /^<p class="md-paragraph"><strong>Six<\/strong><\/p>$/);
   assert.match(render('```\n- not a list\n> not a quote\n---\n```'), /<pre><code>- not a list\n&gt; not a quote\n---\n<\/code><\/pre>/);
   assert.match(render('`- flag`'), /<code class="md-inline">- flag<\/code>/);
 });
@@ -295,7 +310,7 @@ test('autolinks cover explicit schemes, www hosts and e-mail without faking file
   const mail = render('mail me@example.com ok');
   assert.match(mail, /<a href="mailto:me@example\.com"[^>]*>me@example\.com<\/a>/);
   assert.doesNotMatch(mail, /target="_blank"/);
-  assert.match(render('~~removed~~'), /^<s>removed<\/s>$/);
+  assert.match(render('~~removed~~'), /^<p class="md-paragraph"><s>removed<\/s><\/p>$/);
   for (const name of ['README.md', 'setup.sh', 'index.html', 'D:/Code/DSH/docs/configuration.md', 'D:/bad%00file.md']) {
     assert.doesNotMatch(render(name), /<a\b/, name);
   }
@@ -314,8 +329,8 @@ test('chat renders indented code blocks and stops them at the next block', () =>
   assert.match(render('    const a = 1;\n    const b = 2;'), /^<pre><code>const a = 1;\nconst b = 2;<\/code><\/pre>$/);
   assert.match(render('    a\n\n    b'), /^<pre><code>a\n\nb<\/code><\/pre>$/);
   assert.match(render('    <b>x</b> **literal**'), /<pre><code>&lt;b&gt;x&lt;\/b&gt; \*\*literal\*\*<\/code><\/pre>/);
-  assert.match(render('    code\n\n- item'), /<pre><code>code<\/code><\/pre>\n<ul class="md-list">/);
-  assert.match(render('    code\n\n\ntext'), /<pre><code>code<\/code><\/pre>\n\ntext/);
+  assert.match(render('    code\n\n- item'), /<pre><code>code<\/code><\/pre><ul class="md-list">/);
+  assert.match(render('    code\n\n\ntext'), /<pre><code>code<\/code><\/pre><p class="md-paragraph">text<\/p>/);
   assert.doesNotMatch(render('    code\n\n- item'), /\[/);
 });
 
@@ -330,7 +345,7 @@ test('chat renders prompts with the same Markdown rules as replies', () => {
 test('remote images render with a no-referrer hint and non-images stay literal', () => {
   const render = chatRenderer();
   assert.match(render('![chart](https://example.com/chart.png)'),
-    /^<img class="chat-inline-image" src="https:\/\/example\.com\/chart\.png" alt="chart" title="https:\/\/example\.com\/chart\.png" loading="lazy" decoding="async" referrerpolicy="no-referrer">$/);
+    /^<p class="md-paragraph"><img class="chat-inline-image" src="https:\/\/example\.com\/chart\.png" alt="chart" title="https:\/\/example\.com\/chart\.png" loading="lazy" decoding="async" referrerpolicy="no-referrer"><\/p>$/);
   for (const value of ['![x](https://example.com/file.txt)', '![x](//example.com/a.png)', '![x](data:image/png;base64,AAAA)']) {
     assert.doesNotMatch(render(value), /<img\b/, value);
   }

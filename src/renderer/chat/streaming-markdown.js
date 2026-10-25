@@ -239,7 +239,16 @@
           this.lastParsed = this.tail.length;
           this.literal = null;
         } else if (growth) {
-          if (!this.literal) { this.literal = this.element.ownerDocument.createTextNode(''); this.element.insertBefore(this.literal, this.cursor); }
+          if (!this.literal) {
+            this.literal = this.element.ownerDocument.createTextNode('');
+            let paragraph = this.cursor.previousSibling;
+            if (!paragraph?.matches?.('.md-paragraph')) {
+              paragraph = this.element.ownerDocument.createElement('p');
+              paragraph.className = 'md-paragraph';
+              this.element.insertBefore(paragraph, this.cursor);
+            }
+            paragraph.appendChild(this.literal);
+          }
           patchText(this.literal, this.tail.slice(this.lastParsed));
           this.hasContent ||= /\S/.test(this.literal.data);
         }
@@ -284,11 +293,6 @@
         this.table = { header: match[0], offset: match[0].length, row: null };
         // The active table can follow earlier completed tables in this block.
         this.table.body = this.anchor.nextSibling.querySelector('tbody');
-        this.table.after = this.anchor.nextSibling.nextSibling;
-        if (this.table.after?.nodeType !== 3) {
-          this.table.after = this.element.ownerDocument.createTextNode('');
-          this.element.insertBefore(this.table.after, this.cursor);
-        }
       }
       const state = this.table;
       let offset = state.offset;
@@ -296,10 +300,6 @@
         const newline = this.tail.indexOf('\n', offset);
         const end = newline === -1 ? this.tail.length : newline;
         const row = this.tail.slice(offset, end);
-        if ((!row.trim() || !row.includes('|')) && newline === -1) {
-          patchText(state.after, '\n' + row);
-          return true;
-        }
         if (!row.trim() || !row.includes('|') || /```|\$\$|\\\[/.test(row)) {
           this.table = null; this.tableDisabled = true; return false;
         }
@@ -307,7 +307,6 @@
         if (!fresh) { this.table = null; return false; }
         if (state.row) patchNode(state.row, fresh, this.onCodeChange);
         else { state.row = fresh; state.body.appendChild(fresh); }
-        patchText(state.after, newline === -1 ? '' : '\n');
         if (newline === -1) break;
         offset = state.offset = newline + 1;
         state.row = null;

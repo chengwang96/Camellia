@@ -61,6 +61,19 @@ test('ACP adapters can translate a discovered boolean control to the native opti
   assert.equal(requests.find(request => request.params.configId === 'reasoning_effort').params.value, 'off');
 });
 
+test('Kimi sends a selected effort to the native thinking control', async t => {
+  const { session } = fixture(t), requests = [];
+  session.settings.model = 'kimi-code/k3.1-pro'; session.settings.thinkingBudget = 'max';
+  session.spec.noModes = true; session.onSessionId = () => {};
+  session.request = async (method, params) => {
+    requests.push({ method, params });
+    return method === 'session/new' ? { sessionId: '00000000-0000-4000-8000-000000000001' } : { configOptions: [] };
+  };
+  await session.open();
+  assert.deepEqual(requests.find(request => request.params.configId === 'thinking').params,
+    { sessionId: '00000000-0000-4000-8000-000000000001', configId: 'thinking', value: 'max' });
+});
+
 test('native preparation refuses a busy, closed or unrelated ACP engine', async t => {
   const { session } = fixture(t); let requests = 0;
   session.sessionId = 'existing'; session.request = async () => { requests++; };

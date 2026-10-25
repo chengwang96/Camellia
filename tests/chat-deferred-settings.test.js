@@ -131,7 +131,7 @@ test('quick switch uses fetched routed levels and clears an unsupported effort f
 function modelMenu(subscription, google = false) {
   const state = {
     supportsAccounts: () => true, sharedChat: true, context: { sessionId: 'conversation-a' },
-    accountName: google ? 'Google' : 'Kimi', MODELS: [],
+    accountName: () => google ? 'Google' : 'Kimi', MODELS: [],
     accountModels: [{ id: 'shared-model', name: 'Shared model' }, { id: 'account-only', name: 'Account model' }],
     visibleAccountModels: () => state.accountModels,
     routeModels: ['shared-model', 'api-only'], routeModelCatalog: {},

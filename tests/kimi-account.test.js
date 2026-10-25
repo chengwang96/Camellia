@@ -8,7 +8,7 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const TOML = require('smol-toml');
-const { createKimiAccount, parseLoginOutput } = require('../src/engines/kimi-account');
+const { createKimiAccount, parseLoginOutput, accountModels } = require('../src/engines/kimi-account');
 const { kimiSpawnSpec, kimiEnvironment, kimiConnectionSettings, updateKimiConnectionSettings } = require('../src/engines/kimi-session');
 
 function managedConfig(region = 'mainland-cn') {
@@ -17,7 +17,8 @@ function managedConfig(region = 'mainland-cn') {
   return { default_model: 'kimi-code/coding', thinking: { enabled: true },
     providers: { 'managed:kimi-code': { type: 'kimi', base_url: `https://api.kimi.${suffix}/coding`, api_key: '', oauth } },
     models: {
-      'kimi-code/coding': { provider: 'managed:kimi-code', model: 'coding', display_name: 'Kimi Coding', max_context_size: 262144, capabilities: ['thinking', 'image_in'] },
+      'kimi-code/coding': { provider: 'managed:kimi-code', model: 'coding', display_name: 'Kimi Coding', max_context_size: 262144,
+        capabilities: ['thinking', 'always_thinking', 'image_in'], support_efforts: ['low', 'high', 'max'], default_effort: 'high' },
       'kimi-code/fast': { provider: 'managed:kimi-code', model: 'fast', max_context_size: 131072 },
     },
     services: { moonshot_search: { base_url: `https://api.kimi.${suffix}/coding/search`, api_key: '', oauth } },
@@ -27,10 +28,20 @@ async function until(predicate) {
   for (let i = 0; i < 200; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
   assert.fail('Account operation did not settle');
 }
+function nativeOptions(modelId) {
+  const options = [{ id: 'model', options: [{ value: 'kimi-code/fast', name: 'Fast account model' }] }];
+  if (modelId === 'kimi-code/coding') options.push({ id: 'thinking', currentValue: 'max',
+    options: ['low', 'high', 'max'].map(value => ({ value })) });
+  return options;
+}
 function fixture(t, extra = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-kimi-account-'));
   const home = path.join(root, 'subscription'), processes = [], calls = [], events = [], clients = [], opened = [];
   const put = (config = managedConfig()) => { fs.mkdirSync(home, { recursive: true }); fs.writeFileSync(path.join(home, 'config.toml'), TOML.stringify(config)); };
+  if (extra.cachedModels) {
+    put();
+    fs.writeFileSync(path.join(home, 'account-state.json'), JSON.stringify({ account: { name: 'Kimi Code' }, models: extra.cachedModels, verifiedAt: null }));
+  }
   const account = createKimiAccount({ home, runtime: () => ({ file: '/fixture/kimi.mjs' }), ensureRuntime: async () => {}, node: () => process.execPath,
     environment: () => ({ KIMI_API_KEY: 'secret-parent-key', KIMI_MODEL_NAME: 'api-model', PATH: process.env.PATH }),
     onChange: state => events.push(structuredClone(state)), openExternal: async url => opened.push(url),
@@ -44,7 +55,8 @@ function fixture(t, extra = {}) {
       const client = { spec, start() {}, async shutdown() { this.closed = true; },
         async request(method, params) {
           calls.push({ method, params });
-          if (method === 'session/new') return { sessionId: 'empty-probe', configOptions: [{ id: 'model', options: [{ value: 'kimi-code/fast', name: 'Fast account model' }] }] };
+          if (method === 'session/new') return { sessionId: 'empty-probe', configOptions: nativeOptions('kimi-code/coding') };
+          if (method === 'session/set_config_option' && params.configId === 'model') return { configOptions: nativeOptions(params.value) };
           if (method === 'logout') fs.writeFileSync(path.join(home, 'config.toml'), '');
           return {};
         },
@@ -86,12 +98,40 @@ test('official device login handles split output, verifies the account and delet
   assert.equal(state.account.region, 'global');
   assert.deepEqual(state.models.map(model => [model.id, model.name]), [['kimi-code/coding', 'Kimi Coding'], ['kimi-code/fast', 'Fast account model']]);
   assert.equal(state.models[0].contextWindow, 262144);
-  assert.deepEqual(f.calls.map(call => call.method), ['initialize', 'authenticate', 'session/new', 'session/delete']);
+  assert.deepEqual(state.models[0].supportedReasoningEfforts, ['low', 'high', 'max']);
+  assert.equal(state.models[0].defaultReasoningEffort, 'high');
+  assert.deepEqual(state.models[1].supportedReasoningEfforts, []);
+  assert.deepEqual(f.calls.map(call => call.method), ['initialize', 'authenticate', 'session/new',
+    'session/set_config_option', 'session/set_config_option', 'session/delete']);
   assert.deepEqual(f.calls[1].params, { methodId: 'login' });
-  assert.deepEqual(f.calls[3].params, { sessionId: 'empty-probe' });
+  assert.deepEqual(f.calls.filter(call => call.method === 'session/set_config_option').map(call => call.params.value), ['kimi-code/coding', 'kimi-code/fast']);
+  assert.deepEqual(f.calls.at(-1).params, { sessionId: 'empty-probe' });
   assert.ok(f.clients.every(client => client.closed));
   const publicState = fs.readFileSync(path.join(f.home, 'account-state.json'), 'utf8');
   assert.doesNotMatch(publicState, /ABC-123|verificationUrl|secret-parent-key|oauth/);
+});
+
+test('legacy account caches recover declared thinking metadata without native login', t => {
+  const f = fixture(t, { cachedModels: [{ id: 'kimi-code/coding', name: 'Cached coding' },
+    { id: 'kimi-code/fast', name: 'Cached fast' }, { id: 'kimi-code/removed', name: 'Removed' }] });
+  const models = f.account.state().models;
+  assert.deepEqual(models.map(model => model.supportedReasoningEfforts), [['low', 'high', 'max'], [], []]);
+  assert.equal(models[0].defaultReasoningEffort, 'high');
+  assert.equal(models[0].name, 'Cached coding');
+  assert.equal(f.calls.length, 0);
+});
+
+test('boolean thinking and an empty native snapshot retain their exact controls', () => {
+  const config = { default_model: 'toggle', models: {
+    toggle: { model: 'toggle', capabilities: ['thinking'] },
+    locked: { model: 'locked', capabilities: ['always_thinking'] },
+    plain: { model: 'plain' },
+  } };
+  const models = accountModels(config);
+  assert.deepEqual(models.map(model => model.supportedReasoningEfforts), [['off', 'on'], ['on'], []]);
+  assert.deepEqual(models.map(model => model.defaultReasoningEffort), ['on', 'on', undefined]);
+  const overridden = accountModels(config, [], new Map([['toggle', []]]));
+  assert.deepEqual(overridden[0].supportedReasoningEfforts, []);
 });
 
 test('cancel and timeout terminate the login process and clear the temporary code', async t => {

@@ -332,7 +332,7 @@
     border-radius: 18px 18px 4px 18px;
     background: var(--dsw-static-deepseek-500);
     color: #fff; font: var(--f-base-16); line-height: 1.6;
-    white-space: pre-wrap; word-break: break-word;
+    white-space: normal; word-break: break-word;
   }
   /* A prompt keeps the same Markdown rules as a reply, on the tinted bubble. */
   .msg-user .bubble > :first-child { margin-top: 0; }
@@ -402,10 +402,14 @@
 
   /* Markdown text block */
   .md {
-    font: var(--f-base-16); line-height: 1.75; color: var(--dsw-alias-label-primary);
-    white-space: pre-wrap; overflow-wrap: anywhere;
+    font: var(--f-base-16); line-height: 1.6; color: var(--dsw-alias-label-primary);
+    white-space: normal; overflow-wrap: anywhere;
     margin: 2px 0 10px;
   }
+  .md .md-paragraph { margin: 8px 0; white-space: pre-wrap; }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child { margin-bottom: 0; }
+  .md > .md-paragraph:has(+ .cursor) { display: inline; }
   .md strong { font-weight: 600; }
   .md a { color: var(--dsw-static-deepseek-500); text-decoration: underline; text-underline-offset: 3px; }
   .md a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
@@ -479,9 +483,9 @@
   }
   .md .md-table th:last-child, .md .md-table td:last-child { border-right: 0; }
   .md .md-table tbody tr:last-child td { border-bottom: 0; }
-  .md .md-list { margin: 6px 0 10px; padding-left: 24px; white-space: normal; }
+  .md .md-list { margin: 8px 0; padding-left: 24px; white-space: normal; }
   .md .md-list .md-list { margin: 4px 0 2px; }
-  .md .md-list li { margin: 2px 0; }
+  .md .md-list li { margin: 2px 0; white-space: pre-wrap; }
   .md .md-list li.md-task { list-style: none; margin-left: -20px; }
   .md .md-list input[type="checkbox"] { margin-right: 6px; vertical-align: -1px; }
   .md .md-quote {
@@ -492,7 +496,7 @@
   .md h1, .md h2, .md h3, .md h4 { line-height: 1.4; margin: 12px 0 6px; }
   .md eq { display: inline-block; }
   .md eqn { display: block; }
-  .md section { margin: 10px 0; overflow-x: auto; overflow-y: hidden; white-space: normal; }
+  .md section { margin: 8px 0; overflow-x: auto; overflow-y: hidden; white-space: normal; }
   .md section.eqno { display: flex; flex-direction: row; align-items: center; align-content: space-between; }
   .md section.eqno > eqn { width: 100%; margin-left: 3em; }
   .md section.eqno > span { width: 3em; text-align: right; }

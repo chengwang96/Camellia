@@ -135,8 +135,7 @@ with sync_playwright() as playwright:
       onBlockStart({type:'text', text, phase:'final_answer'}, 88); flushBlockRenders();
       window.liveBlock = blocks[88]; window.stableCode = liveBlock.el.querySelector('.md-code-block');
       window.stableMath = liveBlock.el.querySelector(':scope > section .katex');
-      window.stableText = liveBlock.el.firstChild;
-      while (stableText.nodeType !== Node.TEXT_NODE) stableText = stableText.nextSibling;
+      window.stableText = liveBlock.el.querySelector('.md-paragraph').firstChild;
     }''')
     code = page.locator('#chat .md-code-block').last
     code.locator('.md-code-latex').click()

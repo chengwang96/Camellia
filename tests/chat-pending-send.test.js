@@ -16,7 +16,7 @@ function deferred() {
 }
 
 function fixture() {
-  const requests = [], replies = [], settings = deferred(), drafts = new Map(), cancellations = [];
+  const requests = [], requestEngines = [], replies = [], settings = deferred(), drafts = new Map(), cancellations = [];
   const state = {
     sharedChat: true, context: { sessionId: 'conversation-a', workspaceId: 'workspace-a' }, sessionOpenSeq: 1,
     sending: false, loadingSession: false, switchingEngine: false, running: false, conversationActivity: null,
@@ -41,7 +41,7 @@ function fixture() {
     document: { createElement: () => ({}) },
     chatApi: {
       getSettings: () => settings.promise,
-      send(payload) { requests.push(payload); const reply = deferred(); replies.push(reply); return reply.promise; },
+      send(payload, engine) { requests.push(payload); requestEngines.push(engine); const reply = deferred(); replies.push(reply); return reply.promise; },
       cancel: async payload => { cancellations.push(payload); return { ok: true }; },
     },
   };
@@ -66,7 +66,7 @@ function fixture() {
     state.restoringRun = false;
     state.input.value = '';
   };
-  return { state, requests, replies, settings, drafts, cancellations, navigate };
+  return { state, requests, requestEngines, replies, settings, drafts, cancellations, navigate };
 }
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -95,6 +95,21 @@ test('pending settings and compaction allow navigation without retargeting the r
   await other;
   assert.equal(state.currentRunId, 2);
   assert.equal(state.sending, false);
+});
+
+test('pending settings keep the sending engine after navigating to another harness', async () => {
+  const harness = fixture(), { state } = harness;
+  const pending = state.send();
+  harness.navigate('conversation-b');
+  state.harnessId = state.loadedEngine = 'kimi';
+  harness.settings.resolve({ model: 'codex-model' });
+  await flush();
+  assert.equal(harness.requestEngines[0], 'codex');
+  assert.equal(harness.requests[0].sessionId, 'conversation-a');
+  harness.replies[0].resolve({ ok: true, sessionId: 'conversation-a', runId: 1 });
+  assert.equal(await pending, true);
+  assert.equal(state.harnessId, 'kimi');
+  assert.equal(state.context.sessionId, 'conversation-b');
 });
 
 test('background send failure keeps an edit action and does not unlock another send', async () => {
@@ -238,7 +253,7 @@ for (const returnToOrigin of [false, true]) {
     Object.assign(state, {
       loadedEngine: 'claude', drainingQueue: false, conversationQueues: new Map(),
       messageQueue: [{ text: 'Queued for A', attachments: [{ path: 'D:/queued.csv' }] }],
-      window: { dshDesktop: { conversationSwitch: payload => { opened.push(payload); return preflight.promise; } } },
+      openHistorySession: id => { opened.push(id); return preflight.promise; },
     });
     vm.runInContext([
       extract('  function saveMessageQueue(', "  window.addEventListener('beforeunload'"),
@@ -262,7 +277,7 @@ for (const returnToOrigin of [false, true]) {
     for (const reply of harness.replies) reply.resolve({ ok: true, sessionId: state.context.sessionId, runId: 1 });
     await flush();
     assert.equal(harness.requests.length, 0);
-    assert.deepEqual(JSON.parse(JSON.stringify(opened)), [{ engine: 'claude', sessionId: 'conversation-a', navigate: true }]);
+    assert.deepEqual(opened, ['conversation-a']);
     assert.equal(state.conversationQueues.get('conversation-a')[0].text, 'Queued for A');
     assert.equal(state.conversationQueues.get('conversation-a')[0].attachments[0].path, 'D:/queued.csv');
     assert.equal(state.conversationQueues.get('conversation-b')[0].text, 'Queued for B');
@@ -306,7 +321,7 @@ test('an idle conversation sends its queued message with the current harness', a
 test('a failed harness reopen retains the queued message and composer draft', async () => {
   const harness = fixture(), { state } = harness;
   state.loadedEngine = 'claude';
-  state.window = { dshDesktop: { conversationSwitch: async () => ({ ok: false, error: 'Harness unavailable' }) } };
+  state.openHistorySession = async id => { assert.equal(id, 'conversation-a'); state.setStatus('Harness unavailable'); return false; };
   const queued = { text: 'Queued for A', attachments: [{ path: 'D:/queued.csv' }] };
   state.messageQueue.push(queued);
   await state.send(queued);

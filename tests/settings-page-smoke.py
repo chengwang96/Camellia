@@ -26,7 +26,7 @@ with sync_playwright() as playwright:
         if (name === 'codexAccountState') return async payload => payload?.id === 'other'
           ? {ok:true, models:[{id:'gpt-other',name:'GPT Other'}]}
           : {ok:true, activeId:'default', accounts:[{id:'default',signedIn:true},{id:'other',signedIn:true}], models:[{id:'gpt-a',name:'GPT A'},{id:'gpt-b',name:'GPT B'}]};
-        if (name === 'kimiAccountState') return async () => ({ok:true,models:[{id:'kimi-a',name:'Kimi A'}]});
+        if (name === 'kimiAccountState') return async () => ({ok:true,models:[{id:'kimi-a',name:'Kimi A',supportedReasoningEfforts:['low','high','max'],defaultReasoningEffort:'high'}]});
         if (name === 'antigravityAccountState') return async () => ({ok:true,models:[{id:'google-a',name:'Google A'}]});
         if (name === 'camelliaDevices') return {
           onEvent() {}, onTransfer() {},
@@ -64,6 +64,11 @@ with sync_playwright() as playwright:
     expect(page.locator('#subscriptionModels .subscription-model-group')).to_have_count(3)
     expect(page.locator('#subscriptionModels .subscription-model-row')).to_have_count(5)
     expect(page.locator('#subscriptionModels .subscription-model-row span[title="gpt-other"]')).to_have_text('GPT Other')
+    page.locator('#quickSwitch-kimi').select_option('subscription:kimi-a')
+    page.wait_for_function("savedPreferences.quickSwitchModels?.kimi === 'kimi-a'")
+    expect(page.locator('#quickSwitchLevel-kimi option')).to_have_text(['Not configured', 'Low', 'High', 'Max'])
+    page.locator('#quickSwitchLevel-kimi').select_option('max')
+    page.wait_for_function("savedPreferences.quickSwitchLevels?.kimi === 'max'")
     page.locator('#quickSwitch-codex').select_option('subscription:gpt-b')
     page.wait_for_function("savedPreferences.quickSwitchModels?.codex === 'gpt-b'")
     page.locator('#subscriptionModels .subscription-model-row', has_text='GPT B').locator('input').uncheck()

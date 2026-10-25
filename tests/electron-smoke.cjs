@@ -374,7 +374,7 @@ async function main() {
     }));
     kimiLoginProcesses.at(-1).emit('close', 0);
     await waitWindow("document.querySelector('#kimiAccountStatus')?.textContent.includes('Signed in')");
-    assert.deepEqual(kimiRpcCalls, ['initialize', 'authenticate', 'session/new', 'session/delete']);
+    assert.deepEqual(kimiRpcCalls, ['initialize', 'authenticate', 'session/new', 'session/set_config_option', 'session/delete']);
     await home.webContents.executeJavaScript('loadSettings()');
     assert.equal(await home.webContents.executeJavaScript('currentModel'), 'kimi-code/subscription-fixture');
     assert.equal(await home.webContents.executeJavaScript('currentConnection'), 'subscription');
@@ -565,8 +565,12 @@ async function main() {
     await home.webContents.executeJavaScript('openHistorySession("switch-fixture-a")');
     await waitWindow("document.body.dataset.harness === 'claude' && typeof uiReady !== 'undefined' && uiReady && !loadingSession && context.sessionId === 'switch-fixture-a'");
     await home.webContents.executeJavaScript(`input.value='Keep this unsent draft'; input.dispatchEvent(new Event('input')); addAttachments([${JSON.stringify(path.join(root, 'notes.md'))}]);`);
+    let switchPageLoads = 0;
+    const recordSwitchLoad = () => { switchPageLoads++; };
+    home.webContents.on('dom-ready', recordSwitchLoad);
     Menu.getApplicationMenu().items.find(item => item.label === 'Engine').submenu.items.find(item => item.label === 'Switch to DSH').click();
-    await waitWindow("document.body.dataset.harness === 'dsh' && typeof uiReady !== 'undefined' && uiReady");
+    await waitWindow("document.body.dataset.harness === 'dsh' && typeof uiReady !== 'undefined' && uiReady && !loadingSession && !switchingEngine");
+    assert.equal(switchPageLoads, 0, 'The native engine menu must not reload the chat document');
     assert.equal(await home.webContents.executeJavaScript('context.sessionId'), 'switch-fixture-a');
     assert.equal(await home.webContents.executeJavaScript('currentModel'), 'shared-api-a');
     assert.equal(await home.webContents.executeJavaScript('input.value'), 'Keep this unsent draft');
@@ -578,6 +582,7 @@ async function main() {
     assert.equal((await home.webContents.executeJavaScript('chatApi.loadSession("switch-fixture-a")')).currentEngine, 'dsh');
     assert.equal(await home.webContents.executeJavaScript('currentModel'), 'shared-api-a');
     assert.equal(await home.webContents.executeJavaScript('input.value'), 'Keep this unsent draft');
+    switchPageLoads = 0;
     await home.webContents.executeJavaScript('openHistorySession("switch-fixture-b")');
     await waitWindow("document.body.dataset.harness === 'claude' && typeof uiReady !== 'undefined' && uiReady && !loadingSession && context.sessionId === 'switch-fixture-b'");
     assert.equal(await home.webContents.executeJavaScript('currentModel'), 'shared-api-b');
@@ -585,6 +590,10 @@ async function main() {
     await home.webContents.executeJavaScript('openHistorySession("switch-fixture-a")');
     await waitWindow("document.body.dataset.harness === 'dsh' && typeof uiReady !== 'undefined' && uiReady && !loadingSession && context.sessionId === 'switch-fixture-a'");
     assert.equal(await home.webContents.executeJavaScript('currentModel'), 'shared-api-a');
+    assert.equal(switchPageLoads, 0, 'Opening conversations with different saved engines must not reload the chat document');
+    assert.equal(new URL(home.webContents.getURL()).searchParams.get('harness'), 'dsh');
+    assert.equal(new URL(home.webContents.getURL()).searchParams.get('conversation'), 'switch-fixture-a');
+    home.webContents.off('dom-ready', recordSwitchLoad);
     home.webContents.reload();
     await waitWindow("document.body.dataset.harness === 'dsh' && typeof uiReady !== 'undefined' && uiReady && !loadingSession && context.sessionId === 'switch-fixture-a'");
     assert.equal(await home.webContents.executeJavaScript('input.value'), 'Keep this unsent draft');
