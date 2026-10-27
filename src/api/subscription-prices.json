@@ -606,6 +606,18 @@
       "cacheRead": 0.3,
       "cacheWrite": null
     },
+    "kimi-k3.1-pro": {
+      "input": 2,
+      "output": 10,
+      "cacheRead": 0.2,
+      "cacheWrite": null
+    },
+    "kimi-k3.1-pro-highspeed": {
+      "input": 4,
+      "output": 20,
+      "cacheRead": 0.2,
+      "cacheWrite": null
+    },
     "gpt-5.5-cyber": {
       "input": 12.5,
       "output": 75,

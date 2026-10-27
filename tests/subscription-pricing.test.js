@@ -74,3 +74,27 @@ test('Antigravity Opus thinking uses the canonical catalog price for new usage, 
     assert.equal(pricing.estimateTokens(unknown, sample), null);
   }
 });
+
+test('Kimi K3.1 Code aliases use official standard and Highspeed prices', t => {
+  const f = fixture(t);
+  const cases = [
+    { model: 'kimi-code/k3.1-pro', canonical: 'kimi-k3.1-pro', input: 2, output: 10 },
+    { model: 'kimi-code/k3.1-pro-highspeed', canonical: 'kimi-k3.1-pro-highspeed', input: 4, output: 20 },
+  ];
+  const store = createSubscriptionUsage({ file: path.join(f.root, 'usage.json') });
+  let expected = 0;
+  for (const [index, value] of cases.entries()) {
+    assert.equal(pricing.priceFor(value.model), pricing.priceFor(value.canonical));
+    assert.deepEqual(pricing.priceFor(value.model), { input: value.input, output: value.output, cacheRead: 0.2, cacheWrite: null });
+    const sample = { input: 10000, output: 1000, cacheRead: 6000, cacheWrite: 0 };
+    const cost = (4000 * value.input + 1000 * value.output + 6000 * 0.2) / 1e6;
+    expected += cost;
+    assert.equal(pricing.estimateTokens(value.model, sample), cost);
+    assert.equal(pricing.estimateTokens(value.model, { ...sample, cacheWrite: 1 }), null);
+    store.record({ id: `kimi-k3.1-${index}`, engine: 'kimi', model: value.model, samples: [sample] });
+  }
+  const usage = store.state().accounts[0].usage;
+  assert.equal(usage.pricedTokens, 22000);
+  assert.equal(usage.unpricedTokens, 0);
+  assert.equal(usage.estimatedCostUsd, expected);
+});

@@ -11,7 +11,8 @@ function installCatalog(value, origin = 'cache') {
 
 function priceFor(model) {
   // Only explicit, stable aliases. Unknown routing/auto aliases remain unpriced.
-  const aliases = { 'kimi-code/k3': 'kimi-k3', 'kimi-code/k2.6': 'kimi-k2.6', 'kimi-code/k2.5': 'kimi-k2.5',
+  const aliases = { 'kimi-code/k3': 'kimi-k3', 'kimi-code/k3.1-pro': 'kimi-k3.1-pro',
+    'kimi-code/k3.1-pro-highspeed': 'kimi-k3.1-pro-highspeed', 'kimi-code/k2.6': 'kimi-k2.6', 'kimi-code/k2.5': 'kimi-k2.5',
     // Antigravity exposes Opus 4.6 thinking under a separate model ID.
     'claude-opus-4-6-thinking': 'claude-opus-4-6' };
   const name = aliases[model] || model;
