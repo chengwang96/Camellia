@@ -35,7 +35,7 @@ app.whenReady().then(async () => {
     const fakeInput = document.getElementById('fakeInput');
     const log = [];
 
-    // ---- verbatim logic from claude.js ----
+    // ---- verbatim logic from chat.js ----
     let running = false;
     let followRunOutput = false;
     let programmaticScroll = false;

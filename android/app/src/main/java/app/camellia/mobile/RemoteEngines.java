@@ -6,7 +6,7 @@ import java.util.Locale;
 
 final class RemoteEngines {
     static List<String> available(List<String> advertised) {
-        List<String> known = List.of("codex", "claude", "kimi", "dsh", "antigravity", "pi");
+        List<String> known = List.of("codex", "claude", "kimi", "dsh", "antigravity", "grok");
         if (advertised == null) return known.subList(0, 5);
         List<String> result = new ArrayList<>();
         for (String engine : advertised) {
@@ -16,6 +16,6 @@ final class RemoteEngines {
     }
 
     static String label(String engine) {
-        return engine.equals("pi") ? "Pi" : engine.toUpperCase(Locale.ROOT);
+        return engine.equals("grok") ? "Grok Build" : engine.toUpperCase(Locale.ROOT);
     }
 }

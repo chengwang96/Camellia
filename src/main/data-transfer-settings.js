@@ -11,7 +11,8 @@ const SETTINGS_FILES = new Map([
   ['app/codex/config.toml', { engine: 'codex', format: 'toml' }],
   ['app/codex/AGENTS.md', { engine: 'codex', format: 'text' }],
   ['app/antigravity/settings.json', { engine: 'antigravity', mode: 'api', format: 'json' }],
-  ['app/pi-native/AGENTS.md', { engine: 'pi', format: 'text' }],
+  ['app/grok-native/config.toml', { engine: 'grok', format: 'toml' }],
+  ['app/grok-native/AGENTS.md', { engine: 'grok', format: 'text' }],
   ['home/.dsh/settings.yaml', { engine: 'dsh', format: 'yaml' }],
   ['home/.claude/settings.json', { engine: 'claude', format: 'json' }],
   ['home/.claude/CLAUDE.md', { engine: 'claude', format: 'text' }],
@@ -25,15 +26,15 @@ const SETTINGS_FILES = new Map([
   ...['mcp_config', 'skills', 'plugins'].map(name =>
     ['home/.gemini/config/' + name + '.json', { engine: 'antigravity', mode: 'subscription', format: 'json' }]),
 ]);
-const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
+const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
 const PREFERENCE_KEYS = ['language', 'theme', 'closeToTray', 'autoRefreshBalances', 'accountRefreshMinutes',
   'chatContentWidth', 'network', 'downloadProxy', 'conversations', 'memoryDirectory', 'computerName'];
 const ENGINE_MAP_KEYS = ['quickSwitchModels', 'quickSwitchConnections', 'quickSwitchLevels', 'hiddenSubscriptionModels',
   'subscriptionAutoRefresh', 'subscriptionAutoSwitch'];
-const ENGINE_KEYS = ['permissionMode', 'thinkingBudget', 'contextWindow', 'cwd'];
+const ENGINE_KEYS = ['permissionMode', 'thinkingBudget', 'contextWindow', 'cwd', 'proxyUrl'];
 const CONVERSATION_CONFIG = 'app/conversation-config.json';
-const CONVERSATION_KEYS = ['claudeMeta', 'codexMeta', 'kimiMeta', 'antigravityMeta', 'piMeta', 'sharedMeta',
-  'kimiSessionConnections', 'codexSessionConnections', 'codexSessionFastModes', 'sharedChat', 'dshChat', 'mode'];
+const CONVERSATION_KEYS = ['claudeMeta', 'codexMeta', 'kimiMeta', 'antigravityMeta', 'grokMeta', 'sharedMeta',
+  'kimiSessionConnections', 'codexSessionConnections', 'codexSessionFastModes', 'grokSessionConnections', 'grokSessionAccounts', 'sharedChat', 'dshChat', 'mode'];
 const API_ROUTE_FILE = 'home/.dsh/ollama-proxy.json';
 const MAX_SETTINGS_BYTES = 8 * 1024 * 1024;
 const pick = (value, keys) => Object.fromEntries(keys.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]]));
@@ -69,6 +70,7 @@ const NATIVE_LOCAL_KEYS = {
   'app/codex/config.toml': ['model', 'model_provider', 'model_providers', 'cli_auth_credentials_store',
     'forced_login_method', 'forced_chatgpt_workspace_id', 'openai_base_url', 'chatgpt_base_url'],
   'home/.claude/settings.json': ['model'],
+  'app/grok-native/config.toml': ['model', 'models'],
   'app/kimi-code/config.toml': ['providers', 'models', 'default_model'],
   'home/.kimi-code/config.toml': ['providers', 'models', 'default_model'],
   'home/.gemini/antigravity-cli/settings.json': ['modelProvider', 'useG1Credits'],

@@ -22,7 +22,7 @@ class DiscussionAdapterRegistry {
   }
   register({ engine, driver, runtime, policy, bindings = [] }) {
     if (this.entries.has(engine)) throw new Error('Discussion adapter is already registered');
-    if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine)
+    if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine)
       || !driver?.sessions || typeof driver.ensure !== 'function'
       || !['prepare', 'verify', 'confirmStopped'].every(key => typeof policy?.[key] === 'function')
       || !runtime?.version || !runtime.policyVersion || !Array.isArray(bindings)) throw new Error('Invalid discussion adapter registration');

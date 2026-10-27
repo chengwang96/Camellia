@@ -184,6 +184,6 @@ function createClaudeGoalUI({ $, context, canChangeContext, openHistorySession, 
     }
   });
   window.addEventListener('beforeunload', () => clearInterval(ticker));
-  return { refresh: refreshGoal, isActive: active, isDraft: () => draft, startFromComposer,
+  return { refresh: refreshGoal, isActive: active, waitingId: () => active() && goalState?.waiting ? goalState.id : null, isDraft: () => draft, startFromComposer,
     reveal: () => { if (goalState) openGoalMenu($('goalToggle')); else setDraft(true); } };
 }

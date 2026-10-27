@@ -74,7 +74,7 @@
       <div class="setting-row"><div><h2 data-i18n>Balance and quota refresh interval</h2></div><select id="accountRefreshMinutes" aria-label="Balance and quota refresh interval" data-i18n-attrs="aria-label"><option value="5" data-i18n>Every 5 minutes</option><option value="15" data-i18n>Every 15 minutes</option><option value="30" data-i18n>Every 30 minutes</option><option value="60" data-i18n>Every 60 minutes</option></select></div>
       <div class="setting-row"><div><h2 data-i18n>Keep refreshing Google quota in the background</h2><p class="hint" data-i18n>Turn this off when the official Antigravity CLI keeps opening its Google sign-in page. Quota then updates only when you refresh it in Subscription accounts.</p></div><input id="antigravityAutoRefresh" type="checkbox" aria-label="Keep refreshing Google quota in the background" data-i18n-attrs="aria-label"></div>
       <div class="setting-row"><div><h2 data-i18n>Close to tray and keep routing</h2><p class="hint" data-i18n>Closing the window keeps the router serving other apps. Quit from the tray icon to stop everything.</p></div><input id="closeToTray" type="checkbox" aria-label="Close to tray and keep routing" data-i18n-attrs="aria-label"></div>
-      <div class="setting-row"><div><h2 data-i18n>Shared conversations</h2><p class="hint" data-i18n>Continue any conversation in Claude Code, Codex CLI, DSH, Kimi Code, Antigravity or Pi.</p></div><select id="conversationMode" aria-label="Default conversation handoff" data-i18n-attrs="aria-label"><option value="direct" data-i18n>Continue directly (default)</option><option value="markdown" data-i18n>Automatic Markdown handoff</option></select></div>
+      <div class="setting-row"><div><h2 data-i18n>Shared conversations</h2><p class="hint" data-i18n>Continue any conversation in Claude Code, Codex CLI, DSH, Kimi Code, Antigravity or Grok Build.</p></div><select id="conversationMode" aria-label="Default conversation handoff" data-i18n-attrs="aria-label"><option value="direct" data-i18n>Continue directly (default)</option><option value="markdown" data-i18n>Automatic Markdown handoff</option></select></div>
       <p class="setting-note" data-i18n>Direct continuation sends missing history to the next engine. Markdown asks the previous engine to summarize into a .md file and automatically starts a new native session. Both keep your shared conversation. Switching may increase latency and token usage; caches and internal state cannot transfer, and a summary may lose details.</p>
       <div class="setting-row"><div><h2 data-i18n>Remind me when switching engines</h2></div><input id="conversationWarn" type="checkbox" aria-label="Remind me when switching engines" data-i18n-attrs="aria-label"></div>
       <div class="setting-row"><div><h2 data-i18n>Show conversation origins</h2><p class="hint" data-i18n>Also lists Markdown handoff records.</p></div><input id="conversationOriginSetting" type="checkbox" aria-label="Show conversation origins" data-i18n-attrs="aria-label"></div>
@@ -83,7 +83,7 @@
         <p class="hint" data-i18n>Shared by every harness and the benchmark verifier, not by Antigravity alone. Leave empty for automatic detection.</p>
         <fieldset class="runtime-path" id="pythonPath" disabled><label for="runtime-path-python" data-i18n>Python executable</label><div class="runtime-path-actions"><input id="runtime-path-python" type="text" data-runtime-path="python" placeholder="Automatic detection" data-i18n-attrs="placeholder" spellcheck="false"><button type="button" data-path-action="browse" data-i18n>Browse…</button><button type="button" data-path-action="save" data-i18n>Save path</button><button type="button" data-path-action="reset" data-i18n>Use automatic detection</button></div><p class="hint" id="pythonHint" data-i18n>Choose any Python 3 installation; Camellia never edits it or installs packages.</p></fieldset>
       </article>
-      <div class="setting-row"><div><h2>Camellia</h2><p class="hint">Claude Code · Codex CLI · DeepSeek Harness · Kimi Code · Antigravity · Pi</p></div><span id="version" class="hint"></span></div>
+      <div class="setting-row"><div><h2>Camellia</h2><p class="hint">Claude Code · Codex CLI · DeepSeek Harness · Kimi Code · Antigravity · Grok Build</p></div><span id="version" class="hint"></span></div>
       <div class="setting-row app-update"><div><h2 data-i18n>Application updates</h2><p class="hint" id="appUpdateStatus" role="status" aria-live="polite" data-i18n>Check the official release feed for a newer version of Camellia.</p><progress id="appUpdateProgress" max="100" hidden></progress></div><div class="app-update-actions"><button id="checkAppUpdate" data-i18n>Check for updates</button><button id="installAppUpdate" class="primary" hidden data-i18n>Download and install</button></div></div>
       <details id="appUpdateDetails" hidden><summary data-i18n>Release notes</summary><p class="hint" id="appUpdateMeta"></p><pre id="appUpdateNotes"></pre><p class="hint" data-i18n>Installing closes Camellia and replaces the current installation in place. Your conversations, settings and downloaded engines are kept.</p></details>
     </section>
@@ -179,7 +179,7 @@
       <button id="mobile-openPanel" hidden data-copy="openPanel">打开独立手机访问面板</button>
     </section>
     <section id="enginesPage" class="page" hidden>
-      <div class="engine-tabs" role="tablist" aria-label="Engine" data-i18n-attrs="aria-label"><button role="tab" data-engine="claude">Claude Code</button><button role="tab" data-engine="codex">Codex CLI</button><button role="tab" data-engine="dsh">DeepSeek Harness</button><button role="tab" data-engine="kimi">Kimi Code</button><button role="tab" data-engine="antigravity">Antigravity</button><button role="tab" data-engine="pi">Pi</button></div>
+      <div class="engine-tabs" role="tablist" aria-label="Engine" data-i18n-attrs="aria-label"><button role="tab" data-engine="claude">Claude Code</button><button role="tab" data-engine="codex">Codex CLI</button><button role="tab" data-engine="dsh">DeepSeek Harness</button><button role="tab" data-engine="kimi">Kimi Code</button><button role="tab" data-engine="antigravity">Antigravity</button><button role="tab" data-engine="grok">Grok Build</button></div>
       <section class="engine-runtime" aria-label="Engine installation" data-i18n-attrs="aria-label">
         <div class="download-save"><p class="hint" data-i18n>The selected engine pauses during its update and becomes available again when the update finishes.</p><button id="checkRuntimeUpdates" type="button" data-i18n>Check for updates</button></div>
         <div id="runtimeCards"></div>
@@ -205,6 +205,15 @@
             <button id="kimiUsage" hidden data-i18n>Refresh quota</button>
             <div id="kimiDeviceLogin" hidden><p data-i18n>Authorization code: <code id="kimiUserCode"></code></p><button id="kimiOpenLogin" data-i18n>Open sign-in page</button><p id="kimiLoginExpiry" class="hint" data-i18n></p></div>
             <p class="hint" data-i18n>Complete the official Kimi authorization in your browser. This login stays separate from your personal Kimi CLI, and never falls back to API billing.</p>
+          </div>
+        </div>
+        <div id="grokConnectionPanel" class="engine-connection" hidden>
+          <div id="grokAccountPanel" hidden>
+            <div id="grokAccountList" class="account-list" role="radiogroup" aria-label="Grok accounts" data-i18n-attrs="aria-label"></div>
+            <div class="account-actions"><button id="grokSignIn" class="primary" data-i18n>Sign in with Grok</button><button id="grokAddAccount" data-i18n>Add another account</button><button id="grokRefresh" data-i18n>Refresh account</button><button id="grokCancelLogin" hidden data-i18n>Cancel sign-in</button><button id="grokSignOut" hidden data-i18n>Sign out</button></div>
+            <p id="grokAccountStatus" class="hint" role="status" data-i18n></p>
+            <div id="grokDeviceLogin" hidden><p data-i18n>Authorization code: <code id="grokUserCode"></code></p><button id="grokOpenLogin" data-i18n>Open sign-in page</button></div>
+            <p class="hint" data-i18n>Complete the official Grok authorization in your browser. Each account has an isolated Grok home, and subscription usage never falls back to API billing.</p>
           </div>
         </div>
         <div id="antigravityConnectionPanel" class="engine-connection" hidden>
@@ -280,6 +289,7 @@
       </dialog>
 <script src="../../shared/qr.js"></script>
 <script src="../../shared/model-names.js"></script>
+<script src="../../shared/provider-brands.js"></script>
 <script src="../../shared/model-levels.js"></script>
 <script src="../../shared/subscription-models.js"></script>
 <script src="../../shared/web-tools.js"></script>

@@ -7,7 +7,7 @@ const path = require('node:path');
 const { createDataPackage, importDataPackage: importPackage, inspectDataPackage, readManifest, recoverDataImports, FORMAT } = require('../src/main/data-migration');
 const { Readable } = require('node:stream');
 const { removeTree } = require('./test-fs.cjs');
-const installedEngines = Object.fromEntries(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].map(engine => [engine, true]));
+const installedEngines = Object.fromEntries(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].map(engine => [engine, true]));
 const importDataPackage = options => importPackage({ installedEngines, ...options });
 
 function scratch() {

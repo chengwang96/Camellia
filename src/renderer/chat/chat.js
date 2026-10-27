@@ -84,9 +84,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
   let currentPermission = chatProfile.permission;
   let currentConnection = 'api';
-  const supportsAccounts = () => ['codex', 'kimi', 'antigravity'].includes(harnessId);
+  const supportsAccounts = () => ['codex', 'kimi', 'antigravity', 'grok'].includes(harnessId);
   const accountSubscription = () => supportsAccounts() && currentConnection === 'subscription';
-  const accountName = () => ({ codex: 'ChatGPT', kimi: 'Kimi', antigravity: 'Google' }[harnessId]);
+  const accountName = () => ({ codex: 'ChatGPT', kimi: 'Kimi', antigravity: 'Google', grok: 'Grok' }[harnessId]);
   let accountModels = [];
   let hiddenSubscriptionModels = {};
   const visibleAccountModels = () => window.CamelliaSubscriptionModels.visibleModels(accountModels, hiddenSubscriptionModels, harnessId);
@@ -662,6 +662,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   function nearBottom() {
+    if (replayingLiveSnapshot) return true;
     return chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 140;
   }
   function scrollToLatest() {
@@ -677,10 +678,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     });
   }
   function maybeScroll(was) {
-    if (followRunOutput && !userScrollActive && (was || running)) scrollToLatest();
+    if (!replayingLiveSnapshot && followRunOutput && !userScrollActive && (was || running)) scrollToLatest();
   }
   new ResizeObserver(() => {
-    if (running && followRunOutput && !userScrollActive) scrollToLatest();
+    if (!replayingLiveSnapshot && running && followRunOutput && !userScrollActive) scrollToLatest();
   }).observe(chat);
 
   function clearEmpty() {
@@ -1612,10 +1613,6 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     state.div.querySelector('.message-edit')?.focus();
   }
 
-  document.addEventListener('pointerdown', event => {
-    if (editingMessage && !editingMessage.form.contains(event.target)) cancelMessageEdit();
-  }, true);
-
   function beginMessageEdit(div) {
     if (conversationBusy() || contextBusy() || !div.messageData.seq || div !== [...chat.querySelectorAll('.msg-user')].at(-1)) return;
     cancelMessageEdit();
@@ -1972,6 +1969,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   }
 
   // ---------- blocks ----------
+  let replayingLiveSnapshot = false;
+  const deferredTurnLayouts = new Map();
+
   function appendTurnBlock(el) {
     const body = turnBody();
     (body.processBlocks ||= []).push(el);
@@ -1982,6 +1982,10 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
   function layoutTurnProcess(finished = false, body = turnEl?.querySelector('.turn-body')) {
     const entries = body?.processBlocks;
     if (!entries?.length) return;
+    if (replayingLiveSnapshot) {
+      deferredTurnLayouts.set(body, finished || deferredTurnLayouts.get(body) === true);
+      return;
+    }
     const previous = body.processLayout;
     if (previous?.revision === (body.processRevision || 0) && previous.finished === finished) return;
     const latestThinking = entries.findLast(el => el.classList.contains('think'));
@@ -2862,7 +2866,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       sendBtn.title = active ? 'Queue message' : 'Send';
       sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
     }
-    sendBtn.disabled = (loadingSession && !(active && !hasMessage)) || (sending && !(pendingSend && (hasMessage || (active && !hasMessage)))) || (Boolean(editingMessage) && !(pendingSend && active && !hasMessage)) || (!active && goalUI.isActive()) || (!active && !hasMessage);
+    sendBtn.disabled = (loadingSession && !(active && !hasMessage)) || (sending && !(pendingSend && (hasMessage || (active && !hasMessage)))) || (Boolean(editingMessage) && !(pendingSend && active && !hasMessage)) || (!active && goalUI.isActive() && !goalUI.waitingId?.()) || (!active && !hasMessage);
     renderMessageQueue();
   }
 
@@ -2914,7 +2918,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       }
       return;
     }
-    if (editingMessage || !canChangeContext() || conversationBusy()) return;
+    const waitingGoalId = goalUI.waitingId?.();
+    if (editingMessage || !canChangeContext() || (conversationBusy() && !waitingGoalId)) return;
     if (context.sessionId && loadedEngine !== harnessId) {
       // A conversation keeps its own harness. A stale renderer must reopen it
       // there instead of turning Send into an implicit harness switch.
@@ -2958,7 +2963,8 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       });
     }
     const sendContext = { sessionId: context.sessionId || null, workspaceId: context.workspaceId, engine: harnessId,
-      fork: Boolean(pendingForkId), openSeq: sessionOpenSeq, dispatched: false, cancelled: false, fastMode: currentFastMode };
+      fork: Boolean(pendingForkId), openSeq: sessionOpenSeq, dispatched: false, cancelled: false, fastMode: currentFastMode,
+      ...(waitingGoalId ? { goalId: waitingGoalId } : {}) };
     if (sendContext.sessionId && !sendContext.fork) pendingConversationSends.set(sendContext.sessionId, sendContext);
     sending = true;
     turnEngine = harnessId;
@@ -2991,6 +2997,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         sessionId: sendContext.sessionId,
         workspaceId: sendContext.workspaceId,
         fork: sendContext.fork,
+        ...(sendContext.goalId ? { goalId: sendContext.goalId } : {}),
         ...(sendContext.engine === 'codex' && !sendContext.sessionId ? { fastMode: sendContext.fastMode } : {}),
         settings,
       }, sendContext.engine);
@@ -3641,9 +3648,12 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     updateMessageActions();
   }
   function resetConversationView() {
+    currentFastMode = false;
     chatScroll.classList.remove('history-opening');
     workPanel.reset();
     historyOpening = false;
+    replayingLiveSnapshot = false;
+    deferredTurnLayouts.clear();
     sending = false;
     drainingQueue = false;
     closePops();
@@ -3805,6 +3815,9 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     const seq = ++sessionOpenSeq;
     let draftRestored = false;
     resetConversationView();
+    followRunOutput = true;
+    userScrollActive = false;
+    userScrollIntentUntil = 0;
     chatScroll.classList.add('history-opening');
     loadingSession = true; input.disabled = true;
     historyOpening = true;
@@ -3895,7 +3908,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       void goalUI.refresh();
       if (res.lastReplyAt) sidebar.markReplyRead(id, res.lastReplyAt);
       // Hidden Windows windows may never deliver an animation frame. Bound the
-      // presentation wait and finish pending renders before revealing history.
+      // presentation wait and finish pending renders before the final scroll.
       await new Promise(resolve => {
         let frame;
         const finish = () => { clearTimeout(timer); cancelAnimationFrame(frame); resolve(); };
@@ -3904,7 +3917,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
       });
       if (seq !== sessionOpenSeq) return false;
       flushBlockRenders();
-      scrollToLatest();
+      if (followRunOutput && !userScrollActive) scrollToLatest();
       return true;
     } catch (err) { if (seq === sessionOpenSeq && !/archived/i.test(err.message)) setStatus("Could not load: " + err.message); return false; }
     finally {
@@ -3912,7 +3925,7 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
         historyOpening = false; loadingSession = false; input.disabled = false; restoringRun = false;
         updateSendEnabled(); updateConversationControls(); sidebar.updateLabel();
         if (draftRestored) saveDraft(); else restoreDraft();
-        chatScroll.scrollTop = chatScroll.scrollHeight;
+        if (followRunOutput && !userScrollActive) chatScroll.scrollTop = chatScroll.scrollHeight;
         chatScroll.classList.remove('history-opening');
         restoreFailedMessageEdit();
       }
@@ -4039,6 +4052,16 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     chat.appendChild(hint);
   }
 
+  function flushLiveSnapshotBatch() {
+    flushBlockRenders();
+    const layouts = [...deferredTurnLayouts];
+    deferredTurnLayouts.clear();
+    replayingLiveSnapshot = false;
+    for (const [body, finished] of layouts) if (body.isConnected) layoutTurnProcess(finished, body);
+    maybeScroll(true);
+    replayingLiveSnapshot = true;
+  }
+
   async function applyLiveRun(live) {
     if (!live) { acceptSessionEvents = true; return true; }
     const openSeq = sessionOpenSeq;
@@ -4053,19 +4076,37 @@ let discussionVisible = false, discussionOpening = false, discussionSurface, dis
     setRunning(true);
     runStartedAt = live.startedAt || Date.now();
     sidebar.render();
-    // Snapshot events are already ordered. New arrivals remain buffered until
-    // this snapshot has been painted, then replay only events after its cursor.
-    for (let index = 0; index < live.events.length; index++) {
-      if (index && index % 50 === 0) {
-        await new Promise(resolve => setTimeout(resolve, 0));
-        if (openSeq !== sessionOpenSeq) return false;
+    scrollToLatest();
+    chatScroll.classList.remove('history-opening');
+    setStatus('Restoring live progress…');
+    replayingLiveSnapshot = true;
+    try {
+      // Tool approvals are independent of transcript layout. Restore them before
+      // the event backlog so a long run cannot hide an action that needs input.
+      const replayEvents = [];
+      for (const event of live.events) {
+        if (event.type === 'gui:permission' && !event.questions?.length) queuePermission(event);
+        else replayEvents.push(event);
       }
-      const buffering = restoringRun;
-      restoringRun = false;
-      try { handleEvent(live.events[index]); }
-      finally { restoringRun = buffering; }
+      // Other snapshot events retain their order. New arrivals remain buffered
+      // until this snapshot has been painted, then replay after its cursor.
+      for (let index = 0; index < replayEvents.length; index++) {
+        if (index && index % 50 === 0) {
+          flushLiveSnapshotBatch();
+          await new Promise(resolve => setTimeout(resolve, 0));
+          if (openSeq !== sessionOpenSeq) return false;
+        }
+        const buffering = restoringRun;
+        restoringRun = false;
+        try { handleEvent(replayEvents[index]); }
+        finally { restoringRun = buffering; }
+      }
+      flushLiveSnapshotBatch();
+      return true;
+    } finally {
+      replayingLiveSnapshot = false;
+      deferredTurnLayouts.clear();
     }
-    return true;
   }
   // ---------- settings panel ----------
   $('settingsBtn').addEventListener('click', () => { closePops(); void window.dshDesktop.openSettingsWindow(); });

@@ -102,7 +102,7 @@ const CONVERSATION_PATHS = [/(^|\/)claude-profiles\/[^/]+\.settings\.json$/,
 // Subscription logins and their native homes stay on the original device in
 // every scope. Apply the same policy to old packages before classification so
 // credentials cannot enter through settings or conversation history either.
-const SUBSCRIPTION_PATHS = [/(^|\/)(?:subscription-accounts|kimi-subscription|credentials)(?:\/|$)/i,
+const SUBSCRIPTION_PATHS = [/(^|\/)(?:subscription-accounts|kimi-subscription|grok-subscription|credentials)(?:\/|$)/i,
   /^app\/codex\/subscription(?:\/|$)/i,
   /^home\/\.kimi-code\/\.credentials\.yaml$/i,
   /(^|\/)(?:\.credentials\.json|auth\.json|account-state\.json|subscription-usage\.json|google-account\.json|google-quota\.json|oauth_creds\.json|mcp-oauth-tokens(?:-v\d+)?\.json)$/i];
@@ -115,7 +115,7 @@ const KINDS = ['api', 'settings', 'conversations'];
 // Strip source identities on export and keep the destination's identities on
 // import, including when the source is an older, unfiltered package.
 const ACCOUNT_METADATA_KEYS = new Map([
-  ['app/desktop-config.json', ['subscriptionAccounts', 'subscriptionActive', 'kimiSessionAccounts', 'codexSessionAccounts']],
+  ['app/desktop-config.json', ['subscriptionAccounts', 'subscriptionActive', 'kimiSessionAccounts', 'codexSessionAccounts', 'grokSessionAccounts', 'grokSessionConnections']],
   ['home/.claude.json', ['oauthAccount']],
 ]);
 

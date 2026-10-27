@@ -208,7 +208,7 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript('document.documentElement.lang'), 'en');
     assert.equal(home.getTitle(), 'Camellia');
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('.home-brand').textContent"), 'Camellia');
-    assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('[data-mode]')].map(el => el.dataset.mode)"), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']);
+    assert.deepEqual(await home.webContents.executeJavaScript("[...document.querySelectorAll('[data-mode]')].map(el => el.dataset.mode)"), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']);
     const mobileMenu = electron.Menu.getApplicationMenu().items[0].submenu.items.find(item => item.label === 'Mobile access…');
     assert.ok(mobileMenu);
     assert.equal((await home.webContents.executeJavaScript('window.dshDesktop.openMobileAccess()')).ok, false);
@@ -251,7 +251,7 @@ async function main() {
     const benchmark = await waitWindow("document.querySelector('#scoreboard')?.children.length === 6");
     const benchState = await benchmark.webContents.executeJavaScript('window.dshDesktop.benchmarkState()');
     assert.equal(benchState.ok, true); assert.equal(benchState.models.length, 0);
-    assert.deepEqual(benchState.engines.map(engine => engine.id), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']); assert.equal(benchState.suites.length, 10);
+    assert.deepEqual(benchState.engines.map(engine => engine.id), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']); assert.equal(benchState.suites.length, 10);
     assert.deepEqual(benchState.libraries.map(library => library.id), ['builtin', 'ds1000', 'scicode']);
     assert.equal(await benchmark.webContents.executeJavaScript("document.querySelector('#library').options.length"), 3);
     await benchmark.webContents.executeJavaScript("document.querySelector('input[name=runMode][value=custom]').click();document.querySelector('#library').value='scicode';document.querySelector('#library').dispatchEvent(new Event('change'))");
@@ -356,7 +356,7 @@ async function main() {
     assert.equal(await home.webContents.executeJavaScript("document.querySelector('#settingsPanel') === null"), true);
     const globalState = await engineSettings.webContents.executeJavaScript("window.dshDesktop.engineSettingsGet({engine:'kimi'})");
     assert.equal(globalState.ok, true);
-    assert.ok(globalState.files.every(file => file.path.startsWith(process.env.USERPROFILE)));
+    assert.ok(globalState.files.every(file => file.path.startsWith(path.join(root, 'home'))), JSON.stringify({ root, files: globalState.files.map(file => file.path) }));
 
     await engineSettings.webContents.executeJavaScript("window.dshDesktop.subscriptionPreferencesSave({engine:'kimi', preferences:{connection:'subscription'}})");
     await waitWindow("document.querySelector('#kimiAccountPanel') && !document.querySelector('#kimiSignIn').disabled");
@@ -540,10 +540,10 @@ async function main() {
     const codexSettings = await engineSettings.webContents.executeJavaScript("window.dshDesktop.engineSettingsGet({engine:'codex'})");
     assert.equal(codexSettings.scope, 'app'); assert.ok(codexSettings.files.every(file => file.path.startsWith(userData)));
     assert.equal(await engineSettings.webContents.executeJavaScript("document.querySelector('#engineScopeTitle').textContent"), 'Codex in Camellia');
-    assert.deepEqual(await engineSettings.webContents.executeJavaScript("[...document.querySelectorAll('.engine-tabs [data-engine]')].map(el => el.dataset.engine)"), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']);
+    assert.deepEqual(await engineSettings.webContents.executeJavaScript("[...document.querySelectorAll('.engine-tabs [data-engine]')].map(el => el.dataset.engine)"), ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']);
 
     const layouts = [];
-    for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']) {
+    for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']) {
       await home.webContents.executeJavaScript(`window.dshDesktop.switchMode('${engine}')`);
       await waitWindow(`document.body.dataset.harness === '${engine}'`);
       assert.equal(await home.webContents.executeJavaScript("document.querySelector('#backToDsh')"), null);
@@ -660,7 +660,7 @@ async function main() {
     }
   `);
   try {
-    const env = { ...process.env, DSH_ELECTRON_SMOKE_ROOT: root, DSH_HOME: path.join(root, 'dsh'), USERPROFILE: path.join(root, 'home'), HOME: path.join(root, 'home') };
+    const env = { ...process.env, DSH_ELECTRON_SMOKE_ROOT: root, DSH_HOME: path.join(root, 'dsh'), USERPROFILE: path.join(root, 'home'), HOME: path.join(root, 'home'), KIMI_CODE_HOME: path.join(root, 'home', '.kimi-code') };
     delete env.ELECTRON_RUN_AS_NODE;
     for (const [mode, firstRunComplete] of [['claude', true], ['dsh', false]]) {
       for (const file of ['backend-starts.txt', 'backend-ready', 'browser-opened']) fs.rmSync(path.join(root, file), { force: true });

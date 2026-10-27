@@ -14,11 +14,11 @@ function apiProviderRef(accountRef) {
     return typeof providerId === 'string' && typeof route === 'string' ? JSON.stringify({ providerId, route }) : null;
   } catch { return null; }
 }
-const ENGINES = Object.freeze(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']);
-const SUBSCRIPTIONS = new Set(['codex', 'kimi', 'antigravity']);
-async function discussionCatalog({ router, codex, kimi, antigravity, contextWindow = () => 0 }) {
+const ENGINES = Object.freeze(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']);
+const SUBSCRIPTIONS = new Set(['codex', 'kimi', 'antigravity', 'grok']);
+async function discussionCatalog({ router, codex, kimi, antigravity, grok, contextWindow = () => 0 }) {
   const rows = [], google = await antigravity?.handlers['account-state']() || { accounts: [] };
-  const sources = { router, codex: id => codex?.accountState(id), kimi: id => kimi?.state(id), antigravity: () => google };
+  const sources = { router, codex: id => codex?.accountState(id), kimi: id => kimi?.state(id), antigravity: () => google, grok: id => grok?.state(id) };
   const config = router();
   for (const engine of ENGINES) {
     // Pin the provider and route. Its keys remain a router-managed pool, just

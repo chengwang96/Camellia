@@ -154,7 +154,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
 
             # Exercise real main/preload page navigation for all six harnesses,
             # then return through the sidebar section. No inference is sent.
-            modes = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']
+            modes = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']
             page.locator('.mention').nth(0).click()
             page.locator('.mention').nth(1).click()
             page.locator('#replyMode').select_option('serial')
@@ -187,7 +187,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
                 expect(page.locator(':light(#sessionList)')).to_contain_text('Standalone sessions')
             # Return to an ordinary draft, then create/manage a group from its peer section.
             page.locator(':light(#newSessionBtn)').click()
-            page.wait_for_url('**/chat/claude.html?harness=pi')
+            page.wait_for_url('**/chat/claude.html?harness=grok')
             page.wait_for_function('uiReady')
             expect(page.locator('#input')).to_have_value(last_chat_draft)
             page.locator('#newDiscussionBtn').click()
@@ -195,7 +195,7 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             expect(page.locator('#groupDialog')).to_be_visible()
             page.locator('#groupDialog').press('Escape')
             page.locator(':light(#newSessionBtn)').click()
-            page.wait_for_url('**/chat/claude.html?harness=pi')
+            page.wait_for_url('**/chat/claude.html?harness=grok')
             page.wait_for_function('uiReady')
             row = page.locator('#discussionSessions [data-group-id]').filter(has_text='首版范围评审')
             row.locator('.session-more').click()
@@ -206,7 +206,8 @@ with tempfile.TemporaryDirectory(prefix='discussion-ui-', ignore_cleanup_errors=
             page.locator('#discussionSessions [data-group-id]').filter(has_text='首版范围评审').click()
             expect(page.locator('#message')).to_have_value('切换页面后应保留的讨论草稿')
             assert not calls(), 'Switching pages must not dispatch any model'
-            assert [json.loads(line)['engine'] for line in (root / 'navigation.jsonl').read_text(encoding='utf8').splitlines()] == modes[1:]
+            navigation = [json.loads(line)['engine'] for line in (root / 'navigation.jsonl').read_text(encoding='utf8').splitlines()]
+            assert navigation == modes, navigation
             page.locator('.mention').nth(0).click()
             page.locator('.mention').nth(1).click()
 

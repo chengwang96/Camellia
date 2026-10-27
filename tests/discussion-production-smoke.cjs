@@ -30,7 +30,7 @@ async function main() {
   const runtimeRoot = process.argv.includes('--runtime-root') ? process.argv[process.argv.indexOf('--runtime-root') + 1] : null;
   const toolCheck = process.argv.includes('--tools');
   const imageFile = process.argv.includes('--image') ? process.argv[process.argv.indexOf('--image') + 1] : null;
-  assert.ok(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine));
+  assert.ok(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine));
   if (process.argv.includes('--runtime-root')) assert.ok(runtimeRoot && path.isAbsolute(runtimeRoot), 'Pass the runtime installation root explicitly');
   if (onlineApi) assert.ok(path.isAbsolute(onlineApi));
   if (online) assert.ok(source && path.isAbsolute(source), 'Pass the existing app data directory explicitly');
@@ -38,7 +38,7 @@ async function main() {
   // Use its real path before the native ownership inventory checks ancestors.
   const dataDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'discussion-production-'));
   const runtime = createRuntimeManager({ root: path.resolve(__dirname, '..'), installRoot: runtimeRoot || path.resolve(__dirname, '..') });
-  let router, server, service, production, boundary, remoteGateway, config = {}, requests = 0, holdVerification = false;
+  let router, server, service, production, boundary, remoteGateway, config = {}, requests = 0, verificationRequests = 0, holdVerification = false;
   const faults = [], logs = [];
   const localToolResults = new Map();
   let localToolCase, localToolInput, localToolOutput;
@@ -71,8 +71,13 @@ async function main() {
       if (require('./model-metadata-fixture.cjs')(req, res)) return;
       let raw = ''; for await (const chunk of req) raw += chunk;
       const body = JSON.parse(raw); requests++;
+      const lastContent = body.messages?.at(-1)?.content;
+      const lastPrompt = typeof lastContent === 'string' ? lastContent : (lastContent || []).filter(part => part.type === 'text').map(part => part.text).join('\n');
+      if (body.messages?.length >= 4 && /Remember this verification code and reply only with it: DISCUSSION_|Repeat the verification code from the preceding message\. Output only the code\./.test(lastPrompt)) verificationRequests++;
+      logs.push(JSON.stringify({ tools: body.tools?.map(tool => tool.function.name), system: String(body.system || '').slice(0, 140), maxTokens: body.max_tokens, messageCount: body.messages?.length }));
       const text = JSON.stringify(body), code = /DISCUSSION_[a-f0-9]+/.exec(text)?.[0];
-      if (code) assert.ok(!body.tools?.length);
+      if (code) assert.ok(!body.tools?.some(tool => tool.function.name !== 'session_title'),
+        'Unexpected Discussion tools: ' + body.tools?.map(tool => tool.function.name).join(', '));
       if (holdVerification && code) return;
       if (text.includes('HOLD_FOR_STOP')) return;
       const reply = code || (/VISIBLE_[A-Z0-9]+/.exec(text)?.[0]) || 'Local discussion reply';
@@ -187,7 +192,7 @@ async function main() {
     }
     console.log('Testing verification immediately after adding members:', profile.engine, profile.connection, profile.model);
     const group = (await service.call('create', { title: 'Production connection verification' })).group;
-    const requestsBeforeAdd = requests;
+    const verificationBeforeAdd = verificationRequests;
     const added = await service.call('add-member', { id: group.id, name: 'First', bindingId: catalog[0].id });
     assert.equal(added.group.participants[0].verifying, true);
     await service.call('add-member', { id: group.id, name: 'Second', bindingId: catalog[0].id });
@@ -199,7 +204,7 @@ async function main() {
     const verified = (await service.call('load', { id: group.id })).group;
     assert.ok(verified.participants.every(p => p.capability.available && !p.verifying && !p.verificationError), JSON.stringify(verified.participants));
     assert.deepEqual(verified.messages, []);
-    if (!online && !onlineApi) assert.equal(requests - requestsBeforeAdd, 2, 'same-connection additions share a single two-turn verification');
+    if (!online && !onlineApi) assert.equal(verificationRequests - verificationBeforeAdd, 2, 'same-connection additions share a single two-turn verification');
     console.log('PASS new members: real two-turn verification completes before any send, shared connection checked once, public history empty');
     const members = service.manager.get(group.id).participants;
     // Older beta groups persisted no context metadata. They must still send

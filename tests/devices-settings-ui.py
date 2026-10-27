@@ -47,10 +47,10 @@ with sync_playwright() as playwright:
     page.locator('#cli-servers select').select_option('kimi')
     expect(page.locator('#cli-servers select')).to_have_value('kimi')
     assert page.evaluate("calls.find(call => call.action === 'preferences').payload.deviceId") == 'server-a'
-    page.locator('#cli-servers select').select_option('pi')
-    expect(page.locator('#cli-servers select')).to_have_value('pi')
-    expect(page.locator('#cli-servers select option[value="pi"]')).to_have_text('Pi')
-    assert page.evaluate("calls.filter(call => call.action === 'preferences').at(-1).payload.defaultHarness") == 'pi'
+    page.locator('#cli-servers select').select_option('grok')
+    expect(page.locator('#cli-servers select')).to_have_value('grok')
+    expect(page.locator('#cli-servers select option[value="grok"]')).to_have_text('Grok Build')
+    assert page.evaluate("calls.filter(call => call.action === 'preferences').at(-1).payload.defaultHarness") == 'grok'
 
     # Scoped styles: settings controls keep the settings look, device controls use the device look.
     assert page.evaluate("getComputedStyle(document.getElementById('outsideButton')).borderRadius") == "18px"

@@ -29,7 +29,7 @@ const { ConversationHistory, FLAGS: HISTORY_FLAGS } = require('./conversation-hi
 const { retainEvent } = require('./tool-history');
 const { appendText } = require('../shared/file-open');
 
-const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
+const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
 
 // History hits are prepended to the filesystem reply, each labelled with the
 // conversation that produced it, so the user recognizes where the file came
@@ -60,7 +60,7 @@ function historyLine(history, fallback, language) {
 }
 // Last-resort caps when neither the conversation nor the router catalog knows
 // the model's window; mirrors the composer's defaults.
-const ENGINE_CTX_DEFAULTS = { claude: 200000, codex: 272000, dsh: 131072, kimi: 131072, antigravity: 1048576, pi: 65536 };
+const ENGINE_CTX_DEFAULTS = { claude: 200000, codex: 272000, dsh: 131072, kimi: 131072, antigravity: 1048576, grok: 500000 };
 // Codex's app-server rejects a turn whose total input text exceeds
 // MAX_USER_INPUT_TEXT_CHARS (1 << 20 in codex-protocol) no matter how large the
 // selected model's window is, so a replayed history has to stay under it.
@@ -1219,11 +1219,9 @@ class SharedConversations {
       this.save(c);
       oldSegment = null;
     }
-    // The selected model (or another binding input) changed. Park the previous
-    // native session under its binding and restore the one already recorded for
-    // the new binding: a native thread must not be resumed under a different
-    // model, but returning to a model should reuse its own thread instead of
-    // replaying the whole history again.
+    // The selected model (or another binding input) changed. Normally the previous
+    // native session is parked and the new binding restores its own thread. A
+    // compatible Kimi/Codex subscription model change can migrate the active thread.
     // A restored parked session resumes its own native thread, so the turns
     // other models added while it was parked are handed over as a bridge.
     if (!ephemeral && !edit) {
@@ -2092,7 +2090,7 @@ class SharedConversations {
   estimateTokens(c) {
     return this.historyStore.estimate(c.id);
   }
-  routeContextBudget(engine, settings, protocol = ['claude', 'dsh', 'pi'].includes(engine) ? 'anthropic' : 'openai') {
+  routeContextBudget(engine, settings, protocol = ['claude', 'dsh', 'grok'].includes(engine) ? 'anthropic' : 'openai') {
     if (settings.connection === 'subscription') return null;
     return this.contextCapacity?.budget({ model: settings.model, protocol, contextWindow: settings.contextWindow }) || null;
   }
@@ -2107,11 +2105,11 @@ class SharedConversations {
     if (settings.connection === 'subscription') key.push(account);
     return JSON.stringify(key);
   }
-  // A "binding" is the environment a native session was opened in: the same
-  // engine on a different connection, model or signed-in account cannot share
-  // one native thread, so each binding keeps its own. Policy knobs such as the
-  // configured context window are deliberately excluded: changing them does not
-  // move a session, it only changes how much history is replayed into it.
+  // A "binding" is the environment a native session was opened in. Different
+  // bindings normally keep separate native threads; compatible Kimi/Codex subscription
+  // model changes can instead migrate the current thread. Policy knobs such as
+  // the configured context window are deliberately excluded: changing them does
+  // not move a session, it only changes how much history is replayed into it.
   bindingKey(engine, settings = {}) {
     return JSON.stringify([engine, settings.connection || 'api', settings.model || '', settings.subscriptionId || null]);
   }
@@ -2127,6 +2125,15 @@ class SharedConversations {
       return { segment: restored, restored: Boolean(restored) };
     }
     if (active.bindingKey === key) return { segment: active, restored: false };
+    if (active.nativeId && !c.modelSessions?.[key]) {
+      const native = this.nativeCompactionDecision(c, engine, settings);
+      if (native.eligible && native.modelChanged) {
+        active.bindingKey = key;
+        active.contextSettings = { ...active.contextSettings, model: settings.model };
+        this.save(c);
+        return { segment: active, restored: false };
+      }
+    }
     if (!active.nativeId) {
       // A portable summary has not been sent to a model yet; it has no native
       // binding to park, and must seed the next session exactly once.
@@ -2267,7 +2274,11 @@ class SharedConversations {
     const result = (eligible, reason) => ({ ...decision, eligible, reason });
     if (!segment?.nativeId) return result(false, 'native-session-missing');
     if (c.currentEngine !== engine) return result(false, 'engine-changed');
-    if (previous?.model !== settings.model) return result(false, 'model-changed');
+    const modelChanged = previous?.model !== settings.model;
+    const compatibleModelChange = !modelChanged || ['kimi', 'codex'].includes(engine) && previous?.connection === 'subscription'
+      && settings.connection === 'subscription' && (previous?.subscriptionId || null) === (settings.subscriptionId || null);
+    if (!compatibleModelChange) return result(false, 'model-changed');
+    if (modelChanged) decision.modelChanged = true;
     if (previous?.connection !== settings.connection) return result(false, 'connection-changed');
     if (settings.connection === 'subscription' && settings.subscriptionId && previous?.subscriptionId
         && previous.subscriptionId !== settings.subscriptionId) return result(false, 'subscription-account-changed');
@@ -2278,6 +2289,7 @@ class SharedConversations {
       || ENGINE_CTX_DEFAULTS[engine];
     decision.nativeWindow = nativeWindow;
     decision.targetWindow = this.contextCap(engine, settings, budget);
+    if (modelChanged && decision.targetWindow < nativeWindow) return result(false, 'model-changed');
     // Increasing the configured budget does not invalidate a smaller native
     // window. A smaller destination still needs a portable handoff unless the
     // harness has already reported a window within it.
@@ -2525,6 +2537,9 @@ class SharedConversations {
       if (routeReason === 'native-eligible') {
         diagnostics.route = 'native';
         const segment = c.segments[engine];
+        const requestedSettings = pinnedSettings || this.settings(engine, id);
+        const nativeSettings = diagnostics.nativeCompaction.modelChanged
+          ? { ...requestedSettings, model: diagnostics.nativeCompaction.bound.model } : requestedSettings;
         let session;
         c.pending = { engine, at: Date.now(), internal: true }; this.save(c);
         try {
@@ -2534,7 +2549,7 @@ class SharedConversations {
             if (closing) await withLimit(closing);
             if (switching.cancelled || recovery?.cancelled) throw new Error('Compaction canceled');
             session = this.drivers[engine].ensure({ conversationId: id, sessionId: segment.nativeId, workspaceId: null,
-              cwd: c.cwd, settings: pinnedSettings || this.settings(engine, id), goalBridge: this.goalBridges.get(id) });
+              cwd: c.cwd, settings: nativeSettings, goalBridge: this.goalBridges.get(id) });
             switching.session = session;
             let progressing = false;
             try {
@@ -2766,7 +2781,7 @@ class SharedConversations {
         : availableAccount(state, switching.subscriptionAttempts) || state.activeId;
       summarySettings.subscriptionId = switching.subscriptionId;
     }
-    if (['codex', 'claude', 'dsh', 'pi'].includes(engine) && ['medium', 'high', 'xhigh', 'max', 'ultra'].includes(settings.thinkingBudget))
+    if (['codex', 'claude', 'dsh', 'grok'].includes(engine) && ['medium', 'high', 'xhigh', 'max', 'ultra'].includes(settings.thinkingBudget))
       summarySettings.thinkingBudget = 'low';
     diagnostics.thinkingBudget = summarySettings.thinkingBudget || 'default';
     const checkpoint = this.summaryCheckpoint({ c, engine, settings, cacheSettings: summarySettings, units, budget, boundary, maxSummaryChars, diagnostics });
@@ -2916,7 +2931,9 @@ class SharedConversations {
       case 'send': {
         if (payload?.sessionId && this.get(payload.sessionId).currentEngine !== engine)
           throw new Error('This conversation uses another harness. Reopen it or use the top selector to change its harness.');
-        const { done, ...result } = await this.send(engine, payload); return result;
+        const { done, ...result } = payload.goalId === undefined
+          ? await this.send(engine, payload) : await this.steerGoal(engine, payload);
+        return result;
       }
       case 'steer': return this.steer(engine, payload);
       case 'get-live': return this.live(engine, payload?.sessionId);

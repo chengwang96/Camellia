@@ -15,12 +15,13 @@ function files(reader, device, conversationId) {
   const rows = reader.manager.rows ? reader.manager.rows(conversation) : reader.manager.messages(conversation);
   const result = new Map();
   const turns = [];
+  const userTimes = new Map();
   // A turn's tool events live in their own rows, so replay them to recover the
   // directories its commands ran in; the desktop resolves the same way. A turn
   // starts at its user row and its roots belong to every reply it produced.
   let turn = null;
   for (const row of rows) {
-    if (row.role === 'user') { turn = collector(); continue; }
+    if (row.role === 'user') { userTimes.set(row.seq, row.at); turn = collector(); continue; }
     if (row.role === 'tool') {
       if (turn && !row.internal) { try { turn.capture(JSON.parse(row.text)); } catch {} }
       continue;
@@ -31,19 +32,24 @@ function files(reader, device, conversationId) {
   for (const task of reader.manager.subagentView?.(conversationId) || conversation.subagents || []) {
     if (task.managedConversationId && (!reader.manager.items.has(task.managedConversationId)
       || !reader.allowed(device, reader.manager.items.get(task.managedConversationId)))) continue;
-    if (task.status === 'completed') turns.push({ row: { seq: task.userSeq, text: task.result,
+    if (task.status === 'completed') turns.push({ row: { seq: task.userSeq, at: task.updatedAt || userTimes.get(task.userSeq), text: task.result,
       artifacts: task.artifacts, subagentId: task.id, source: task.title }, roots: [], cwd: task.cwd || conversation.cwd,
       managedConversationId: task.managedConversationId });
   }
-  for (const { row, roots, cwd, managedConversationId } of turns.reverse()) {
+  // A subtask's user sequence marks its start, so use its completion timestamp
+  // alongside reply timestamps. Older histories without timestamps retain
+  // reverse message order. Resolve and deduplicate in latest-delivery order;
+  // editing a file on disk must not move an earlier delivery ahead of a reply.
+  turns.sort((first, second) => (second.row.at || 0) - (first.row.at || 0)
+    || (second.row.seq || 0) - (first.row.seq || 0));
+  for (const { row, roots, cwd, managedConversationId } of turns) {
     const paths = Array.isArray(row.artifacts) ? row.artifacts.map(file => file?.path).filter(file => typeof file === 'string') : [];
     const text = Array.isArray(row.outputBlocks) ? row.outputBlocks.filter(block => block.phase === 'final_answer').map(block => block.text || '').join('\n') : row.text;
     for (const file of resolveArtifacts({ paths, text, cwd, roots })) {
       try {
         const canonical = fs.realpathSync.native(file.path);
         const key = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
-        const previous = result.get(key);
-        if (previous && (previous.seq || 0) >= (row.seq || 0)) continue;
+        if (result.has(key)) continue;
         const stat = fs.statSync(canonical);
         if (!stat.isFile()) continue;
         result.set(key, { id: identity(conversation, canonical, stat), name: file.name, kind: file.kind,
@@ -52,10 +58,7 @@ function files(reader, device, conversationId) {
       } catch {}
     }
   }
-  // Collect every source before sorting: message order does not reflect edits
-  // to an existing file, and subtasks are collected separately from replies.
-  return [...result.values()].sort((first, second) => second.modifiedAt - first.modifiedAt
-    || (second.seq || 0) - (first.seq || 0));
+  return [...result.values()];
 }
 
 function listArtifacts(reader, device, conversationId, offset = 0) {

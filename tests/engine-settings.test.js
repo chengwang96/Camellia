@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const TOML = require('smol-toml');
 const { createEngineSettings, parse } = require('../src/engines/engine-settings');
 const { createRuntimeManager, ENGINES } = require('../src/main/runtime-manager');
 const { kimiSpawnSpec } = require('../src/engines/kimi-session');
@@ -15,72 +16,46 @@ function fixture(t) {
   const desktop = { claude: { model: 'model-exact' }, kimi: { model: 'model-exact', contextWindow: 131072 } };
   const route = { baseUrl: 'http://127.0.0.1:17890', authToken: 'proxy-managed' };
   const service = createEngineSettings({ home, dshHome: () => path.join(home, '.dsh'), kimiHome: path.join(home, '.kimi-code'),
-    piHome: path.join(home, 'app/pi-native'),
+    grokHome: path.join(home, 'app/grok-native'),
     getDesktop: engine => desktop[engine] || {}, saveDesktop: (engine, value) => { desktop[engine] = { ...desktop[engine], ...value }; }, getRoute: () => route });
   const put = (file, text) => { file = path.join(home, file); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); return file; };
   return { home, service, desktop, route, put };
 }
 
-test('Pi defaults and global instructions reach the runtime without changing personal CLI settings', async t => {
+test('Grok defaults and native configuration stay isolated from personal CLI settings', async t => {
   const f = fixture(t);
-  const personal = f.put('.pi/agent/settings.json', '{"theme":"personal"}');
-  const instructions = f.put('app/pi-native/AGENTS.md', 'Original instructions');
-  f.desktop.pi = { model: 'model-exact', permissionMode: 'ask', connection: 'api' };
-  const value = f.service.get('pi');
+  const personal = f.put('.grok/personal-config.toml', 'theme = "personal"');
+  const instructions = f.put('app/grok-native/AGENTS.md', 'Original instructions');
+  f.desktop.grok = { model: 'model-exact', permissionMode: 'ask', connection: 'api' };
+  const value = f.service.get('grok');
   assert.equal(value.scope, 'app');
-  assert.equal(value.fields.find(field => field.key === 'contextWindow').value, 65536);
-  value.files[0].text = 'Follow the project style.\n保留中文说明。';
-  f.service.save('pi', { ...value, common: { permissionMode: 'auto', thinkingBudget: 'high', contextWindow: 131072 } });
-  assert.equal(f.desktop.pi.model, 'model-exact');
-  assert.equal(fs.readFileSync(personal, 'utf8'), '{"theme":"personal"}');
+  assert.equal(value.fields.find(field => field.key === 'contextWindow').value, 131072);
+  value.files[1].text = 'Follow the project style.\n保留中文说明。';
+  f.service.save('grok', { ...value, common: { permissionMode: 'auto', thinkingBudget: 'high', contextWindow: 131072 } });
+  assert.equal(f.desktop.grok.model, 'model-exact');
+  assert.equal(fs.readFileSync(personal, 'utf8'), 'theme = "personal"');
   assert.equal(fs.readFileSync(instructions + '.workbench.bak', 'utf8'), 'Original instructions');
 
-  const { createPiChat } = require('../src/engines/pi-session');
-  const driver = createPiChat({ dataDir: path.join(f.home, 'runtime'), loadConfig: () => ({ pi: f.desktop.pi }), saveConfig() {},
-    getModels: () => ['model-exact'], getRoute: () => f.route, runtime: () => ({ file: '/pi/cli.js' }),
-    node: () => process.execPath, environment: () => ({}), onEvent() {}, instructions: f.service.piInstructions });
+  const { createGrokChat } = require('../src/engines/grok-session');
+  const driver = createGrokChat({ dataDir: path.join(f.home, 'runtime'), loadConfig: () => ({ grok: f.desktop.grok }), saveConfig() {},
+    getModels: () => ['model-exact'], getRoute: () => f.route, runtimes: () => ({ locate: () => ({ file: '/grok/grok.exe' }) }),
+    environment: () => ({}), onEvent() {}, nativeConfig: f.service.grokConfig, nativeRevision: f.service.grokConfigRevision });
   t.after(() => driver.shutdown());
   const session = driver.ensure({ cwd: f.home });
-  assert.equal(session.spec.env.CAMELLIA_PI_PERMISSION, 'auto');
-  assert.equal(session.spec.args[session.spec.args.indexOf('--thinking') + 1], 'high');
-  assert.equal(session.spec.env.CAMELLIA_PI_EFFORT, 'high');
-  assert.equal(session.spec.args[session.spec.args.indexOf('--append-system-prompt') + 1], value.files[0].text);
-  const model = JSON.parse(fs.readFileSync(path.join(f.home, 'runtime/pi', session.sessionId, 'models.json'))).providers.camellia.models[0];
-  assert.equal(model.contextWindow, 131072);
-  const updated = f.service.get('pi'); updated.files[0].text = 'Updated instructions';
-  f.service.save('pi', { ...updated, desktop: { model: 'stale-model', contextWindow: 1 }, common: { thinkingBudget: '' } });
-  assert.equal(f.desktop.pi.contextWindow, 131072, 'Only edited common fields update Pi defaults');
-  assert.equal(f.desktop.pi.model, 'model-exact', 'Model selection remains owned by the conversation');
-  const next = driver.ensure({ cwd: f.home, sessionId: session.sessionId });
+  assert.deepEqual(session.spec.args, ['--model', 'camellia', '--reasoning-effort', 'high', '--no-auto-update', 'agent', 'stdio']);
+  assert.equal(session.settings.permissionMode, 'auto');
+  assert.equal(session.settings.thinkingBudget, 'high');
+  const model = TOML.parse(fs.readFileSync(path.join(f.home, 'runtime/grok/api/standalone/config.toml'), 'utf8')).model.camellia;
+  assert.equal(model.context_window, 131072);
+  const firstRevision = f.service.grokConfigRevision();
+  const updated = f.service.get('grok'); updated.files[1].text = 'Updated instructions';
+  f.service.save('grok', { ...updated, desktop: { model: 'stale-model' }, common: { thinkingBudget: '' } });
+  assert.equal(f.desktop.grok.contextWindow, 131072);
+  assert.equal(f.desktop.grok.model, 'model-exact');
+  assert.notEqual(f.service.grokConfigRevision(), firstRevision);
+  const next = driver.ensure({ cwd: f.home });
   assert.notEqual(next, session);
-  assert.equal(next.spec.args.includes('--thinking'), false);
-  assert.equal(next.spec.env.CAMELLIA_PI_EFFORT, '');
-  assert.equal(next.spec.args[next.spec.args.indexOf('--append-system-prompt') + 1], 'Updated instructions');
-});
-
-test('Pi provider requests retain exact discovered efforts and never inject an effort for Default', async () => {
-  const { default: extension } = await import('../src/engines/pi-extension.mjs');
-  const previous = process.env.CAMELLIA_PI_EFFORT;
-  const handlers = new Map();
-  extension({ on: (name, handler) => handlers.set(name, handler), registerTool() {} });
-  const handler = handlers.get('before_provider_request');
-  try {
-    for (const effort of ['', 'max', 'ultra', 'custom-depth', 'none']) {
-      process.env.CAMELLIA_PI_EFFORT = effort;
-      const payload = { model: 'glm-5.3', thinking: { type: 'enabled', budget_tokens: 10000 }, output_config: { effort: 'medium', format: 'text' } };
-      assert.equal(handler({ payload }), payload);
-      assert.equal(payload.output_config.effort, effort && effort !== 'none' ? effort : undefined);
-      assert.equal(payload.output_config.format, 'text');
-      assert.deepEqual(payload.thinking, effort === 'none' ? { type: 'disabled' } : effort ? { type: 'enabled', budget_tokens: 10000 } : undefined);
-    }
-    delete process.env.CAMELLIA_PI_EFFORT;
-    const untouched = { thinking: { type: 'enabled', budget_tokens: 1000 } };
-    assert.equal(handler({ payload: untouched }), undefined);
-    assert.deepEqual(untouched.thinking, { type: 'enabled', budget_tokens: 1000 });
-  } finally {
-    if (previous === undefined) delete process.env.CAMELLIA_PI_EFFORT;
-    else process.env.CAMELLIA_PI_EFFORT = previous;
-  }
+  assert.equal(next.settings.thinkingBudget, '');
 });
 
 test('DSH launch profiles declare reported reasoning capabilities instead of guessing from model names', context => {
@@ -97,34 +72,34 @@ test('DSH launch profiles declare reported reasoning capabilities instead of gue
   }
 });
 
-test('invalid or stale Pi settings do not partially overwrite defaults or instructions', t => {
+test('invalid or stale Grok settings do not partially overwrite defaults or instructions', t => {
   const f = fixture(t);
-  const file = f.put('app/pi-native/AGENTS.md', 'Keep me');
-  f.desktop.pi = { permissionMode: 'ask' };
+  const file = f.put('app/grok-native/AGENTS.md', 'Keep me');
+  f.desktop.grok = { permissionMode: 'ask' };
   for (const common of [{ permissionMode: 'unsupported' }, { thinkingBudget: 'unknown' }, { contextWindow: 1 }, { contextWindow: 4096.5 }, { model: 'not-a-common-field' }]) {
-    const value = f.service.get('pi'); value.files[0].text = 'Do not write';
-    assert.throws(() => f.service.save('pi', { ...value, common }));
+    const value = f.service.get('grok'); value.files[1].text = 'Do not write';
+    assert.throws(() => f.service.save('grok', { ...value, common }));
     assert.equal(fs.readFileSync(file, 'utf8'), 'Keep me');
-    assert.deepEqual(f.desktop.pi, { permissionMode: 'ask' });
+    assert.deepEqual(f.desktop.grok, { permissionMode: 'ask' });
     assert.equal(fs.existsSync(file + '.workbench.bak'), false);
   }
-  const stale = f.service.get('pi'); fs.writeFileSync(file, 'An external edit');
-  assert.throws(() => f.service.save('pi', { ...stale, common: { permissionMode: 'full' } }), /modified by another application/);
-  assert.equal(f.desktop.pi.permissionMode, 'ask');
+  const stale = f.service.get('grok'); fs.writeFileSync(file, 'An external edit');
+  assert.throws(() => f.service.save('grok', { ...stale, common: { permissionMode: 'full' } }), /modified by another application/);
+  assert.equal(f.desktop.grok.permissionMode, 'ask');
   assert.equal(fs.readFileSync(file, 'utf8'), 'An external edit');
 });
 
-test('desktop IPC exposes Pi settings, blocks running sessions and retires idle sessions after saving', async t => {
+test('desktop IPC exposes Grok settings, blocks running sessions and retires idle sessions after saving', async t => {
   const { createHarness } = require('./claude-harness.cjs');
   const h = createHarness(); t.after(() => h.cleanup());
-  const driver = h.api.sharedConversations.drivers.pi;
+  const driver = h.api.sharedConversations.drivers.grok;
   let retired = false;
   const session = { running: true, shutdown: async () => { retired = true; } };
   driver.sessions.set({}, session);
-  const value = await h.call('engine-settings-get', { engine: 'pi' });
+  const value = await h.call('engine-settings-get', { engine: 'grok' });
   assert.equal(value.ok, true, value.error);
-  value.files[0].text = 'Use the desktop project conventions.';
-  const payload = { ...value, common: { permissionMode: 'full', thinkingBudget: 'minimal', contextWindow: 98304 } };
+  value.files[1].text = 'Use the desktop project conventions.';
+  const payload = { ...value, common: { permissionMode: 'full', thinkingBudget: 'high', contextWindow: 98304 } };
   const blocked = await h.call('engine-settings-save', payload);
   assert.equal(blocked.ok, false); assert.match(blocked.error, /Stop/);
   assert.equal(retired, false);
@@ -134,10 +109,10 @@ test('desktop IPC exposes Pi settings, blocks running sessions and retires idle 
   assert.equal(retired, true);
   assert.equal(driver.sessions.active, false);
   assert.equal(driver.settings().permissionMode, 'full');
-  assert.equal(driver.settings().thinkingBudget, 'minimal');
+  assert.equal(driver.settings().thinkingBudget, 'high');
   assert.equal(Number(driver.settings().contextWindow), 98304);
-  assert.equal(fs.readFileSync(path.join(h.userData, 'pi-native/AGENTS.md'), 'utf8'), value.files[0].text);
-  assert.ok(h.events.some(event => event.channel === 'dsh:engine-settings-changed' && event.data.engine === 'pi'));
+  assert.equal(fs.readFileSync(path.join(h.userData, 'grok-native/AGENTS.md'), 'utf8'), value.files[1].text);
+  assert.ok(h.events.some(event => event.channel === 'dsh:engine-settings-changed' && event.data.engine === 'grok'));
 });
 test('Claude native settings, MCP and instructions save together without overwriting account state; one original backup', t => {
   const f = fixture(t);
@@ -269,7 +244,7 @@ test('source setup and startup checks leave missing engines uninstalled', async 
   const prepare = require('../scripts/prepare-runtimes.cjs');
   for (const options of [{}, { check: true }]) {
     const rows = await prepare({ root, ...options });
-    assert.deepEqual(rows.map(row => row.id), ['claude', 'codex', 'dsh', 'kimi', 'pi', 'antigravity']);
+    assert.deepEqual(rows.map(row => row.id), ['claude', 'codex', 'dsh', 'kimi', 'grok', 'antigravity']);
     assert.ok(rows.every(row => row.status === 'missing' || (row.status === 'ready' && row.external)), 'Only pre-existing external runtimes may be ready');
     assert.deepEqual(fs.readdirSync(root), [], 'No engine files are downloaded by default');
   }

@@ -5,10 +5,10 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class RemoteEnginesTest {
-    @Test public void includesPiOnlyWhenAdvertised() {
-        assertEquals(List.of("pi", "codex"), RemoteEngines.available(List.of("pi", "codex", "pi", "unknown")));
-        assertEquals("Pi", RemoteEngines.label("pi"));
-        assertFalse(RemoteEngines.available(null).contains("pi"));
+    @Test public void includesGrokOnlyWhenAdvertised() {
+        assertEquals(List.of("grok", "codex"), RemoteEngines.available(List.of("grok", "codex", "grok", "unknown")));
+        assertEquals("Grok Build", RemoteEngines.label("grok"));
+        assertFalse(RemoteEngines.available(null).contains("grok"));
         assertTrue(RemoteEngines.available(List.of()).isEmpty());
         assertEquals(List.of("dsh"), RemoteEngines.available(List.of("dsh")));
     }

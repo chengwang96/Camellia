@@ -247,7 +247,7 @@
 <dialog id="switchDialog" class="switch-dialog">
   <h2 data-i18n>Continue with another engine</h2>
   <p data-i18n>Switching can use extra tokens and take longer. Native caches, tool state and internal reasoning do not transfer. Markdown summaries may omit details.</p>
-  <label data-i18n>Engine <select id="switchTarget"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="dsh">DeepSeek Harness</option><option value="kimi">Kimi Code</option><option value="antigravity">Antigravity</option><option value="pi">Pi</option></select></label>
+  <label data-i18n>Engine <select id="switchTarget"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="dsh">DeepSeek Harness</option><option value="kimi">Kimi Code</option><option value="antigravity">Antigravity</option><option value="grok">Grok Build</option></select></label>
   <label data-i18n>Continue using <select id="switchMethod"><option value="direct" data-i18n>Shared conversation history</option><option value="markdown" data-i18n>Markdown handoff · new native session</option></select></label>
   <p class="switch-hint" data-i18n>Markdown asks the previous engine to summarize, saves a .md file, and opens a new session in the target engine automatically. The conversation stays in this shared list.</p>
   <div class="perm-actions"><button id="switchCancel" class="btn-secondary" data-i18n>Cancel</button><button id="switchConfirm" class="btn-primary" data-i18n>Continue</button></div>
@@ -308,6 +308,6 @@
 <script src="../../shared/thinking-tags.js"></script>
 <script src="./streaming-markdown.js"></script>
 <script src="./work-panel.js"></script>
-<script src="./claude.js"></script>
+<script src="./chat.js"></script>
 </body>
 </html>

@@ -12,7 +12,7 @@ const { ClaudeHistory } = require('../claude-history');
 const { ClaudeSession } = require('../claude-session');
 const { AcpSession } = require('../acp-session');
 const { CodexSession } = require('../codex-session');
-const { PiSession, piSpec } = require('../pi-session');
+const { GrokSession, grokSpawnSpec } = require('../grok-session');
 const { kimiSpawnSpec } = require('../kimi-session');
 const { dshAcpSpec } = require('../dsh-session');
 const { subscriptionSpawnSpec } = require('../antigravity');
@@ -20,7 +20,7 @@ const { effectiveSelection } = require('../antigravity/subscription');
 const { getDiscussionLaunch, buildDiscussionSpec } = require('./native-launch');
 const { writeJson } = require('../../shared/json-store');
 
-const EXTRA_ENGINES = Object.freeze(['claude', 'dsh', 'kimi', 'pi']);
+const EXTRA_ENGINES = Object.freeze(['claude', 'dsh', 'kimi', 'grok']);
 const DENY = ['read_file', 'write_file', 'command', 'unsandboxed', 'read_url', 'execute_url', 'mcp'].map(name => name + '(*)');
 const LEGACY_GOOGLE_AGENT = '---\nname: camellia-discussion\ndescription: Camellia group discussion\n' +
   'tools: []\nmainAgent: true\nsubagent: false\ninheritCustomizations: false\n---\n' +
@@ -79,13 +79,9 @@ function extraTextSpec({ runtime, home, cwd, env, node, profile, route }) {
     spec.args.push('--patch', patch);
     return { ...spec, exe: node, cwd };
   }
-  if (engine === 'pi') {
-    const spec = piSpec({ runtime, home, sessionId: 'discussion', settings: { model, contextWindow, permissionMode: 'ask', thinkingBudget: profile.thinking }, route, env });
-    // Keep the native RPC protocol and session format; no permission extension
-    // or auto-discovered skills/templates are needed for text discussions.
-    spec.args.splice(spec.args.indexOf('-e'), 2);
-    spec.args.push('--no-tools', '--no-skills', '--no-prompt-templates', '--no-themes');
-    return { ...spec, exe: node, cwd };
+  if (engine === 'grok') {
+    const spec = grokSpawnSpec({ runtime: runtime.file, home, model, connection, route, contextWindow, env });
+    return { ...spec, exe: runtime.file, cwd };
   }
   throw new Error('Unknown discussion transport');
 }
@@ -113,8 +109,8 @@ function createTextSession(engine, options) {
     };
     return session;
   }
-  const Session = engine === 'pi' ? PiSession : engine === 'codex' ? CodexSession : AcpSession;
-  return new Session({ ...options, ...(engine === 'pi' ? { sessionId: options.opts.sessionId || randomUUID() } : {}) });
+  const Session = engine === 'grok' ? GrokSession : engine === 'codex' ? CodexSession : AcpSession;
+  return new Session(options);
 }
 
 function extraDiscussionDrivers({ root, runtimes, registry }) {

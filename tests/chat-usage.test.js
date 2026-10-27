@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
 const start = source.indexOf('  async function showUsageCard()');
 assert.notEqual(start, -1);
 const usageSource = source.slice(start, source.indexOf('  async function compactConversation()', start));

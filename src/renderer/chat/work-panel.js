@@ -18,7 +18,7 @@ window.createWorkPanel = ({ context, setStatus, openFilePreview, shouldFollow })
   const addFile = (file, origin) => files.set({ ...file, origin }, window.dshDesktop.platform);
   const el = (tag, cls, text) => { const node = document.createElement(tag); node.className = cls; if (text != null) node.textContent = text; return node; };
   function button(text, run, cls = 'work-action') { const node = el('button', cls, t(text)); node.type = 'button'; node.onclick = run; node.dataset.workFocus = text; return node; }
-  const engineName = engine => ({ codex: 'Codex', claude: 'Claude', kimi: 'Kimi', pi: 'Pi', antigravity: 'Antigravity', dsh: 'DSH' })[engine] || engine || '';
+  const engineName = engine => ({ codex: 'Codex', claude: 'Claude', kimi: 'Kimi', grok: 'Grok', antigravity: 'Antigravity', dsh: 'DSH' })[engine] || engine || '';
   const state = task => ['ready', 'starting', 'running', 'waiting', 'completed', 'failed', 'stopped', 'unavailable'].includes(task.status) ? task.status : 'unavailable';
   function stateBadge(task) { return el('span', 'work-state work-' + state(task), t(state(task))); }
   function disclosure(label, key, open = true) {

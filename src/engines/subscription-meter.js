@@ -153,6 +153,10 @@ function createSubscriptionMeter({ engine, accountId = 'default', model, home, v
           } while (true);
           current.samples.push(...usage.samples); current.incomplete ||= usage.incomplete || !usage.settled;
         } catch (error) { current.incomplete = true; log(`Kimi usage: ${error.message}`); }
+      } else if (engine === 'grok') {
+        const usage = codexTokens(result.usage);
+        if (usage) current.samples.push({ ...usage, model: current.model });
+        else if (result.usage) current.incomplete = true;
       } else if (engine === 'antigravity') {
         const usage = antigravityTokens(result.usage);
         const steps = [...current.steps.values()];

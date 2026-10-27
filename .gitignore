@@ -17,6 +17,8 @@ build/node-cache/
 build/node-distributions/
 build/benchmark-research/
 build/benchmark-validation/
+/-d/
+/runtimes/grok/.grok/
 
 # App-owned Python and Antigravity SDK installation
 runtimes/antigravity/python/

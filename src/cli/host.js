@@ -200,7 +200,7 @@ function createHeadlessHost({ dataDir, executable, keyFile, hostname = 'camellia
           if (action === 'engine-settings') {
             if (!supported.includes(payload.engine)) throw new Error('Unsupported engine');
             if (manager.isBusy(payload.engine) || nativeLogins.has(payload.engine)) throw new Error('Stop this engine and finish account login before changing defaults');
-            if (!['api', 'subscription'].includes(payload.connection) || ['dsh', 'pi'].includes(payload.engine) && payload.connection !== 'api') throw new Error('Unsupported connection');
+            if (!['api', 'subscription'].includes(payload.connection) || ['dsh'].includes(payload.engine) && payload.connection !== 'api') throw new Error('Unsupported connection');
             if (typeof payload.model !== 'string' || !payload.model.trim() || payload.model.length > 200) throw new Error('Model is required');
             if (payload.connection === 'api' && !config.publicState(routes()).models.includes(payload.model)) throw new Error('Select a configured API model');
             const permissionMode = payload.permissionMode || 'ask';

@@ -32,9 +32,9 @@ test('macOS bundling downloads verified official Node and replaces the host npm 
       urls.push(url);
       return new Response(url.endsWith('SHASUMS256.txt') ? `${checksum}  ${archiveName}\n` : payload);
     },
-    run: (command, args) => {
+    run: (command, args, options) => {
       assert.equal(command, 'tar');
-      assert.deepEqual(fs.readFileSync(args[1]), payload);
+      assert.deepEqual(fs.readFileSync(path.join(options.cwd, args[1])), payload);
       const source = path.join(args[3], archiveName.replace(/\.tar\.gz$/, ''));
       fs.mkdirSync(path.join(source, 'bin'), { recursive: true });
       fs.mkdirSync(path.join(source, 'lib/node_modules/npm/bin'), { recursive: true });

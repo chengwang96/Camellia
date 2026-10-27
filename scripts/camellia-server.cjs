@@ -41,7 +41,7 @@ async function main(args = process.argv.slice(2)) {
       + 'serve stays in foreground; --restore-network optionally restores already-paired networking without login prompts.\n'
       + 'start enables Tailscale; stop disables networking, not the server.\n'
       + 'Engine commands: runtime-state, runtime-install, account, engine-settings; native-login --payload {"engine":"claude"} (or codex) requires a terminal.\n'
-      + 'DSH, Claude, Codex and Kimi plus Antigravity and Pi are wired. Pi uses shared API routes. Native subscription sign-in happens on this server only.');
+      + 'DSH, Claude, Codex and Kimi plus Antigravity and Grok Build are wired. Grok Build supports OAuth subscriptions and shared API routes. Native subscription sign-in happens on this server only.');
     return;
   }
   if (process.platform !== 'linux') throw new Error('The server entry point requires Linux; use preview:cli for the settings design');

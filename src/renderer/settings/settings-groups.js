@@ -137,7 +137,7 @@
       ['authorized-devices', [() => get('mobile-devices')?.closest('.mobile-section')]],
     ]);
     arrange('subscriptionAccounts', [
-      ['chatgpt-accounts', ['#codexAccountPanel']], ['kimi-accounts', ['#kimiAccountPanel']], ['google-accounts', ['#googleAccountPanel']],
+      ['chatgpt-accounts', ['#codexAccountPanel']], ['kimi-accounts', ['#kimiAccountPanel']], ['grok-accounts', ['#grokAccountPanel']], ['google-accounts', ['#googleAccountPanel']],
     ]);
     arrange('enginesPage', [
       ['engine-installation', ['.engine-runtime']], ['engine-configuration', ['.global-notice', '#engineLoading', '#engineContent']],

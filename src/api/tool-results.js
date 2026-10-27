@@ -19,6 +19,11 @@ function failedToolResult(name, output, explicit = false) {
   // this anchored and shell-specific so reading a log cannot look like a failure.
   if (name === 'Bash' && /^Wall time: \d+(?:\.\d+)? seconds\r?\n<system>ERROR: Tool execution failed\.<\/system>(?:\r?\n|$)/.test(output)) return true;
   if (name === 'apply_patch' && /^(?:apply_patch verification failed:|Invalid patch:|Failed to apply patch)/.test(output)) return true;
+  if (name === 'search_replace' && /^The string to replace was not found in the file/.test(output)) return true;
+  if (name === 'run_terminal_command') {
+    const exit = /^exit: (-?\d+)(?:\r?\n|$)/.exec(output);
+    return Boolean(exit && Number(exit[1]) !== 0);
+  }
   const exit = ['pwsh', 'bash', 'sh', 'shell'].includes(name) ? /\[exit code: (-?\d+)\]\s*$/.exec(output)
     : ['shell_command', 'exec_command', 'run_command', 'Bash'].includes(name)
       ? (/^\s*(?:Exit code: ?|The command exited with code |Process exited with code )(-?\d+)/.exec(output)

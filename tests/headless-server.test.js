@@ -340,7 +340,7 @@ test('live server settings expose counts not API keys and persist explicit local
   assert.equal(saved.providers[0].keys[0].key, 'secret-not-for-settings-view');
 });
 
-test('Pi server advertises and persists API defaults without subscription access', async context => {
+test('Grok server advertises and persists API and subscription preferences', async context => {
   const dataDir = directory(context);
   const host = createHeadlessHost({ dataDir, networkFactory: () => ({ snapshot: { state: 'Stopped' }, async stop() {} }) });
   context.after(() => host.close());
@@ -348,13 +348,13 @@ test('Pi server advertises and persists API defaults without subscription access
   routerConfig.writeConfig(path.join(dataDir, 'api-routes.json'), routerConfig.normalizeConfig({ enabled: false, providers: [
     { id: 'api', type: 'custom', baseUrl: 'https://api.example/v1', models: [{ id: 'test-model', upstream: 'test-model' }], keys: [{ id: 'key', key: 'test' }] },
   ] }));
-  assert.ok((await host.command('settings')).result.engines.some(engine => engine.id === 'pi'));
-  const payload = { engine: 'pi', connection: 'api', model: 'test-model' };
+  assert.ok((await host.command('settings')).result.engines.some(engine => engine.id === 'grok'));
+  const payload = { engine: 'grok', connection: 'api', model: 'test-model' };
   assert.equal((await host.command('engine-settings', payload)).ok, true);
-  assert.equal((await host.command('engine-settings', { ...payload, connection: 'subscription' })).ok, false);
-  assert.equal((await host.command('settings')).result.engines.find(engine => engine.id === 'pi').model, 'test-model');
-  assert.equal((await host.command('create-conversation', { engine: 'pi' })).result.engine, 'pi');
-  assert.equal((await host.command('native-settings-get', { engine: 'pi' })).result.files[0].id, 'instructions');
+  assert.equal((await host.command('engine-settings', { ...payload, connection: 'subscription' })).ok, true);
+  assert.equal((await host.command('settings')).result.engines.find(engine => engine.id === 'grok').model, 'test-model');
+  assert.equal((await host.command('create-conversation', { engine: 'grok' })).result.engine, 'grok');
+  assert.equal((await host.command('native-settings-get', { engine: 'grok' })).result.files[0].id, 'settings');
   await host.close();
 });
 

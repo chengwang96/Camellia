@@ -32,21 +32,21 @@ function nativeCall(ctx, operation, options = {}) {
   const annotation = { toolSummary: 'Isolated tool audit', toolAction: 'Checking tool integration' };
   let name, args;
   if (operation === 'read') {
-    name = { claude: 'Read', codex: 'exec_command', dsh: 'read', kimi: 'Read', antigravity: 'view_file', pi: 'read' }[engine];
+    name = { claude: 'Read', codex: 'exec_command', dsh: 'read', kimi: 'Read', antigravity: 'view_file', grok: 'read_file' }[engine];
     args = engine === 'codex' ? { cmd: "rg -N --no-filename -- '' " + quotePs(target), login: false }
       : engine === 'antigravity' ? { AbsolutePath: target, ...annotation }
-      : { [engine === 'kimi' || engine === 'pi' ? 'path' : 'file_path']: target };
+      : { [engine === 'grok' ? 'target_file' : engine === 'kimi' ? 'path' : 'file_path']: target };
   } else if (operation === 'glob' || operation === 'grep') {
     name = engine === 'codex' ? 'exec_command' : engine === 'antigravity' ? (operation === 'glob' ? 'find_by_name' : 'grep_search')
-      : engine === 'dsh' ? operation : engine === 'pi' ? (operation === 'glob' ? 'find' : 'grep')
+      : engine === 'dsh' ? operation : engine === 'grok' ? operation === 'glob' ? 'list_dir' : 'grep'
         : operation === 'glob' ? 'Glob' : 'Grep';
     args = engine === 'codex' ? { cmd: (operation === 'glob' ? 'rg --files ' : "rg -n 'READ_BETA' ") + quotePs(ctx.cwd), login: false }
       : engine === 'antigravity' ? operation === 'glob' ? { SearchDirectory: ctx.cwd, Pattern: '*.txt', ...annotation }
         : { SearchPath: ctx.cwd, Query: 'READ_BETA', MatchPerLine: true, ...annotation }
-      : engine === 'pi' ? { pattern: operation === 'glob' ? '*.txt' : 'READ_BETA', path: ctx.cwd }
+      : engine === 'grok' ? operation === 'glob' ? { target_directory: ctx.cwd } : { pattern: 'READ_BETA', path: ctx.cwd }
       : { path: ctx.cwd, pattern: operation === 'glob' ? '*.txt' : 'READ_BETA', ...(operation === 'grep' && engine !== 'dsh' ? { output_mode: 'content' } : {}) };
   } else if (operation === 'shell') {
-    name = { claude: 'Bash', codex: 'exec_command', dsh: 'pwsh', kimi: 'Bash', antigravity: 'run_command', pi: 'bash' }[engine];
+    name = { claude: 'Bash', codex: 'exec_command', dsh: 'pwsh', kimi: 'Bash', antigravity: 'run_command', grok: 'run_terminal_command' }[engine];
     // echo/exit work in both native Bash (Claude/Kimi) and pwsh.
     const command = engine === 'claude' && process.argv.includes('--complex-shell')
       ? 'echo "=== fixture references ==="; grep -rn "ARDS/tex\\|ARDS\\\\tex\\|build_compile_test\\|/tex/fig\\|tex/ards" "' + ctx.cwd.replace(/\\/g, '/') + '" 2>/dev/null | head -20; echo "(empty = no script depends on it)"; echo; find "' + ctx.cwd.replace(/\\/g, '/') + '" -maxdepth 2 -name ".git" 2>/dev/null; echo EXPECTED_SHELL_ERROR_7; exit 7'
@@ -61,23 +61,24 @@ function nativeCall(ctx, operation, options = {}) {
       ? '*** Begin Patch\n*** Add File: ' + file + '\n' + normalize(CONTENT).trimEnd().split('\n').map(line => '+' + line).join('\n') + '\n*** End Patch'
       : '*** Begin Patch\n*** Update File: ' + file + '\n@@\n-' + (options.invalid ? 'DOES_NOT_EXIST_742' : 'ORIGINAL_词🙂') + '\n+EDITED_词🙂\n*** End Patch' };
   } else if (operation === 'write') {
-    name = engine === 'antigravity' ? 'write_to_file' : engine === 'dsh' || engine === 'pi' ? 'write' : 'Write';
+    name = engine === 'antigravity' ? 'write_to_file' : engine === 'dsh' ? 'write' : engine === 'grok' ? 'search_replace' : 'Write';
     args = engine === 'antigravity' ? { TargetFile: target, CodeContent: CONTENT, Overwrite: false, Description: 'Create an isolated fixture', ...annotation }
-      : { [engine === 'kimi' || engine === 'pi' ? 'path' : 'file_path']: target, content: CONTENT };
+      : engine === 'grok' ? { file_path: target, old_string: '', new_string: CONTENT }
+      : { [engine === 'kimi' ? 'path' : 'file_path']: target, content: CONTENT };
   } else {
-    name = engine === 'antigravity' ? 'replace_file_content' : engine === 'dsh' || engine === 'pi' ? 'edit' : 'Edit';
+    name = engine === 'antigravity' ? 'replace_file_content' : engine === 'dsh' ? 'edit' : engine === 'grok' ? 'search_replace' : 'Edit';
     const old = options.invalid ? 'DOES_NOT_EXIST_742' : 'ORIGINAL_词🙂';
     args = engine === 'antigravity' ? { TargetFile: target, TargetContent: old, ReplacementContent: 'EDITED_词🙂',
       AllowMultiple: false, StartLine: 1, EndLine: 2, Instruction: 'Replace the fixture marker', Description: 'Check native editing', ...annotation }
-      : engine === 'pi' ? { path: target, edits: [{ oldText: old, newText: 'EDITED_词🙂' }] }
+      : engine === 'grok' ? { file_path: target, old_string: old, new_string: 'EDITED_词🙂' }
       : { [engine === 'kimi' ? 'path' : 'file_path']: target, old_string: old, new_string: 'EDITED_词🙂' };
   }
   let declaration = ctx.tools.find(t => t.function.name === name)
     || ctx.tools.find(t => t.function.name.toLowerCase() === String(name).toLowerCase())
     || (operation === 'shell' ? ctx.tools.find(t => /^(ba|z)?sh$|^shell$/i.test(t.function.name)) : null);
-  if (!declaration && (operation === 'glob' || operation === 'grep') && ['claude', 'pi', 'antigravity'].includes(engine)) {
+  if (!declaration && (operation === 'glob' || operation === 'grep') && ['claude', 'grok', 'antigravity'].includes(engine)) {
     // Some Claude builds skip Glob/Grep (e.g. when the bundled ripgrep is
-    // unavailable), and Pi enables only read/bash/edit/write by default.
+    // unavailable), and Grok enables only read_file/bash/search_replace by default.
     // Audit the same file discovery through the shell tool.
     // Antigravity SDK 0.1.20 also uses its native shell for file discovery.
     const shell = ctx.tools.find(t => t.function.name.toLowerCase() === (engine === 'antigravity' ? 'run_command' : 'bash'));
@@ -226,7 +227,9 @@ async function main() {
     try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString());
-      if (!body.tools?.length) { diagnostics.push({ auxiliary: true, body }); await respond(res, body, []); return; }
+      if (!body.tools?.length || body.tools.every(tool => tool.function.name === 'session_title')) {
+        diagnostics.push({ auxiliary: true, body }); await respond(res, body, []); return;
+      }
       const ctx = [...contexts.values()].find(ctx => JSON.stringify(body.messages).includes('TOOL_AUDIT_' + ctx.id + '_END'));
       assert.ok(ctx, 'Unidentified native request');
       assert.equal(req.headers.authorization, 'Bearer loopback-only');

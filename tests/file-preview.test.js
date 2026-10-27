@@ -48,7 +48,7 @@ test('preview identifies directories for opening in the file manager and rejects
 });
 
 test('renderer exposes previews only from attachments and successful file outputs', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
   const controls = fs.readFileSync(path.join(__dirname, '../src/renderer/shared/chat-controls.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.html'), 'utf8');
   assert.doesNotMatch(html, /id="openFileViewer"/);

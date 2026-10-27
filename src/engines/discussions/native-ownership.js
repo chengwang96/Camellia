@@ -3,7 +3,7 @@
 const { validSessionId } = require('../claude-history');
 const { nativeStorage, storageKey, sameStorage } = require('./native-storage');
 
-const ENGINES = new Set(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']);
+const ENGINES = new Set(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const nativeKey = (engine, nativeId) => JSON.stringify([engine, process.platform === 'win32' && typeof nativeId === 'string' ? nativeId.toLowerCase() : nativeId]);
 const runtimeKey = id => id.toLowerCase();

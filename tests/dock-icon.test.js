@@ -19,6 +19,7 @@ const dockStartup = source.slice(readyStart + readyMarker.length, startupEnd);
 function runDockStartup(context) {
   return vm.runInNewContext('(async () => {' + dockStartup + '\n})()', {
     networkSettings: () => ({ initialize: async () => {} }),
+    settingsWindowSizes: { start() {} },
     log: message => assert.fail('Unexpected startup error: ' + message),
     path,
     APP_ROOT: root,

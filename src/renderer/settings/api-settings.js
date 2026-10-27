@@ -8,7 +8,24 @@ const uid = () => crypto.randomUUID();
 const routingId = window.CamelliaModelNames.canonicalModelId;
 const maskKey = value => { const s = String(value || ''); return s.length > 12 ? s.slice(0, 4) + '…' + s.slice(-4) : '••••••••'; };
 const keyName = (key, index = 0) => key.name || key.maskedKey || `Key ${index + 1}`;
-const mark = type => ({ gemini: 'G', ollama: 'O', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC', qclaw: 'Q' }[type] || 'API');
+const mark = type => ({ gemini: 'G', ollama: 'O', mimo: 'M', 'mimo-token-plan-cn': 'M', 'mimo-token-plan-sgp': 'M', 'mimo-token-plan-ams': 'M', nvidia: 'N', kimi: 'K', 'kimi-code': 'K', deepseek: 'D', commandcode: '⌘', opencode: 'OC', 'opencode-go': 'OC', qclaw: 'Q' }[type] || 'API');
+const brandFile = window.CamelliaProviderBrands.providerBrand;
+function brandMark(provider, { engine = '' } = {}) {
+  const fallback = mark(provider?.type || engine);
+  const file = brandFile(provider);
+  if (!file) return fallback;
+  const extension = file === 'qclaw' ? 'png' : 'svg';
+  return `<span class="provider-brand" data-fallback="${esc(fallback)}"><img src="../../../assets/brands/${file}.${extension}" alt=""></span>`;
+}
+// A missing or unreadable local asset must never leave an empty square. Keep
+// the fallback in one delegated listener because the settings CSP blocks
+// inline image event handlers.
+document.addEventListener('error', event => {
+  const image = event.target;
+  const brand = image?.closest?.('.provider-brand');
+  if (!brand || !brand.contains(image)) return;
+  brand.replaceWith(document.createTextNode(brand.dataset.fallback || 'API'));
+}, true);
 const titles = {
   subscriptions: ["Subscription accounts", "Manage subscription sign-ins, quotas and login preferences."],
   providers: ["API Keys", "Manage API providers, keys, balances, models and routes."],
@@ -236,7 +253,7 @@ function renderProviders() {
   $('providers').innerHTML = config.providers.map((p,i) => {
     const connected = p.keys.filter(k => keyBadge(k)[1] === 'good').length;
     const requests = p.keys.reduce((sum,k) => sum + (live.usage?.[k.id]?.requests || 0), 0);
-    return `<article class="provider"><button data-select="${p.id}"><span class="provider-title"><span class="provider-mark">${mark(p.type)}</span>${esc(p.name)}</span><p class="hint" data-i18n>Keys: ${p.keys.length} · Models: ${p.models.length}${p.enabled ? '' : " · Disabled"}</p></button><div class="provider-footer"><button data-select="${p.id}"><span data-i18n class="badge ${connected ? 'good' : ''}">${connected ? connected + " connected" : "Not connected"}</span><small data-i18n>Total ${fmt(requests)} successful requests</small></button><button data-up="${i}" aria-label="Move up ${esc(p.name)}" ${i ? '' : 'disabled'} data-i18n-attrs="aria-label">↑</button><button data-down="${i}" aria-label="Move down ${esc(p.name)}" ${i === config.providers.length-1 ? 'disabled' : ''} data-i18n-attrs="aria-label">↓</button></div></article>`;
+    return `<article class="provider"><button data-select="${p.id}"><span class="provider-title"><span class="provider-mark">${brandMark(p)}</span>${esc(p.name)}</span><p class="hint" data-i18n>Keys: ${p.keys.length} · Models: ${p.models.length}${p.enabled ? '' : " · Disabled"}</p></button><div class="provider-footer"><button data-select="${p.id}"><span data-i18n class="badge ${connected ? 'good' : ''}">${connected ? connected + " connected" : "Not connected"}</span><small data-i18n>Total ${fmt(requests)} successful requests</small></button><button data-up="${i}" aria-label="Move up ${esc(p.name)}" ${i ? '' : 'disabled'} data-i18n-attrs="aria-label">↑</button><button data-down="${i}" aria-label="Move down ${esc(p.name)}" ${i === config.providers.length-1 ? 'disabled' : ''} data-i18n-attrs="aria-label">↓</button></div></article>`;
   }).join('') || "<div class=\"empty\"><img src=\"../../../assets/icon-256.png\" alt=\"\"><h2 data-i18n>Add your first provider</h2><p data-i18n>Choose a service, paste your keys, and select models.</p><p class=\"hint\" data-i18n>DSH, Claude, and Kimi share these connections.</p></div>";
 }
 function renderEditor() {
@@ -248,7 +265,7 @@ function renderEditor() {
   $('balancesSection').hidden = !!p;
   if (!p) { $('editor').innerHTML = ''; return; }
   $('editor').innerHTML = `<button class="back" id="backProviders" data-i18n>← All providers</button>
-    <div class="editor-heading"><span class="provider-mark">${mark(p.type)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name" data-i18n-attrs="aria-label"><label><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}>Enabled</label></div>
+    <div class="editor-heading"><span class="provider-mark">${brandMark(p)}</span><input id="pName" value="${esc(p.name)}" aria-label="Provider name" data-i18n-attrs="aria-label"><label><input id="pEnabled" type="checkbox" ${p.enabled ? 'checked' : ''}>Enabled</label></div>
     <label for="pPriority" data-i18n>API priority</label><select id="pPriority"><option value="-1" data-i18n>Low</option><option value="0" data-i18n>Default</option><option value="1" data-i18n>High</option></select>
     <p class="hint" data-i18n>Routes follow High, Default, Low priority. Configure multi-key concurrency and automatic key failover in Model Settings. Next route manually switches among available keys at the highest available priority.</p>
     ${p.type.startsWith('mimo-token-plan-') ? '<p class="hint" data-i18n>Use your Token Plan tp- key and the region shown in your console. Coding use only. Do not add a pay-as-you-go route for the same model unless you want paid fallback. Check remaining Credits in the MiMo console.</p>' : ''}
@@ -546,7 +563,7 @@ function accountCard(account, selected = false) {
   const t = window.CamelliaI18n.t;
   const latest = info.latest, balance = latest?.balances?.[0], quota = latest?.windows?.[0];
   const summary = balance ? money(balance) : quota ? quotaRemaining(quota) : capability.supported ? t('Not queried') : t('Not supported');
-  const brand = subscriptionId ? `<img src="../../../assets/brands/${engine}.svg" alt="">` : mark(type);
+  const brand = subscriptionId ? `<img src="../../../assets/brands/${engine}.svg" alt="">` : brandMark({ type, name: provider });
   return `<${subscriptionId ? 'div' : 'button'} class="balance-card ${selected ? 'selected' : ''}" data-balance="${esc(id)}"><span class="provider-title"><span class="provider-mark${subscriptionId ? ' engine-mark' : ''}"${subscriptionId ? ` data-engine="${engine}"` : ''}>${brand}</span>${esc(provider)}</span>
     <p>${esc(subscriptionId ? t(name) : name)}${enabled ? '' : ' · ' + t('Disabled')}${subscriptionId ? ' · ' + t('Signed in') : ''}</p>
     <strong>${esc(summary)}</strong>${quota && !balance ? meter(quota) : ''}
@@ -871,7 +888,7 @@ const scopeLabel = kinds => {
 // The scope dialog is opened by script so the checkboxes can reflect what the
 // package actually contains; an empty category is disabled and unchecked.
 function migrationCompatibility({ skippedEngines = [], skippedPaths = [] } = {}) {
-  const names = { claude: 'Claude Code', codex: 'Codex', dsh: 'DSH', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' };
+  const names = { claude: 'Claude Code', codex: 'Codex', dsh: 'DSH', kimi: 'Kimi Code', antigravity: 'Antigravity', grok: 'Grok Build' };
   const parts = [];
   if (skippedEngines.length) parts.push(window.CamelliaI18n.t('Unavailable harness settings skipped: {0}.')
     .replace('{0}', () => skippedEngines.map(engine => names[engine] || engine).join(', ')));
@@ -1016,8 +1033,8 @@ api.onAppUpdateState(state => {
 // Quick-switch targets are app preferences, independent of CLI defaults. Each
 // engine gets a model and a reasoning level; both are applied together when the
 // composer's model menu is double-clicked.
-const QUICK_SWITCH_ENGINES = [['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['dsh', 'DSH'], ['kimi', 'Kimi Code'], ['antigravity', 'Antigravity'], ['pi', 'Pi']];
-const SUBSCRIPTION_MODEL_ENGINES = [['codex', 'ChatGPT'], ['kimi', 'Kimi'], ['antigravity', 'Google']];
+const QUICK_SWITCH_ENGINES = [['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['dsh', 'DSH'], ['kimi', 'Kimi Code'], ['antigravity', 'Antigravity'], ['grok', 'Grok Build']];
+const SUBSCRIPTION_MODEL_ENGINES = [['codex', 'ChatGPT'], ['kimi', 'Kimi'], ['antigravity', 'Google'], ['grok', 'Grok']];
 let modelPreferences = null, subscriptionModelAccounts = {}, visibilitySaving = false, modelSettingsSeq = 0, quickSwitchRenderSeq = 0;
 
 async function accountModelState(engine) {
@@ -1552,7 +1569,7 @@ $('confirmCleanStorage').onclick = async () => {
   finally { $('storageDetails').hidden = true; $('storageFiles').replaceChildren(); storageBusy = false; storageControls(); }
 };
 // ---------- Archived conversations ----------
-const engineNames = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' };
+const engineNames = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', grok: 'Grok Build' };
 let archivedPendingDelete = null, archivedCount = 0, archivedDeleting = false, archivedRenderSeq = 0;
 function archivedDeleteProgress({ processed, total }) {
   const t = window.CamelliaI18n.t;

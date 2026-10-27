@@ -80,6 +80,6 @@ test('quick-switch settings use fetched levels, keep subscription efforts and re
   sandbox.fillQuickSwitchLevels(select, 'codex', 'glm-5.3', '', account, router);
   assert.deepEqual(select.options.map(option => option.value), ['']);
   router.modelThinking['kimi-k2.6'] = { values: [false, true] };
-  sandbox.fillQuickSwitchLevels(select, 'pi', 'kimi-k2.6', 'none', null, router);
+  sandbox.fillQuickSwitchLevels(select, 'grok', 'kimi-k2.6', 'none', null, router);
   assert.deepEqual(select.options.map(option => option.text), ['Not configured', 'Off', 'On']);
 });

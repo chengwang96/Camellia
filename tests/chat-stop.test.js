@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8').replace(/\r\n/g, '\n');
+const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8').replace(/\r\n/g, '\n');
 const queueSource = source.slice(source.indexOf('  function saveMessageQueue('), source.indexOf("  window.addEventListener('beforeunload'"));
 const sendSource = source.slice(source.indexOf('  async function send('), source.indexOf('    if (editingMessage || !canChangeContext()')) + '\n  }';
 const activitySource = source.slice(source.indexOf('  function handleEvent(ev)'), source.indexOf('    if (restoringRun) { eventsDuringRestore.push(ev); return; }\n    if (ev.session_id')) + '\n  }';

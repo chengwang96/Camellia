@@ -88,7 +88,7 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
     const accountStatus = account.error ? 'error' : account.loginPending ? 'pending' : account.exhausted ? 'exhausted' : account.signedIn ? 'signed-in' : account.stale ? 'stale' : '';
     const note = typeof onLabel === 'function' ? account.label || t('No note')
       : account.models ? t('Available account models') + ' · ' + account.models : '';
-    const badges = `${account.active ? `<span class="subscription-current">${esc(t('Current'))}</span>` : ''}<span class="subscription-plan${account.plan ? planClass(account.plan) : ''}">${esc(account.plan || (engine === 'codex' ? 'ChatGPT' : engine === 'antigravity' ? 'Google' : 'Kimi'))}</span>`;
+    const badges = `${account.active ? `<span class="subscription-current">${esc(t('Current'))}</span>` : ''}<span class="subscription-plan${account.plan ? planClass(account.plan) : ''}">${esc(account.plan || (engine === 'codex' ? 'ChatGPT' : engine === 'antigravity' ? 'Google' : engine === 'grok' ? 'Grok' : 'Kimi'))}</span>`;
     const wake = engine === 'codex' || engine === 'kimi'
       ? action('wake', 'Wake account', !account.signedIn, 'Send 你好 once and refresh quota. Uses subscription allowance; does not reset an active window.') : '';
     const signIn = typeof onSignIn === 'function' && (!manage || !account.signedIn)
@@ -103,8 +103,8 @@ window.renderSubscriptionCards = ({ container, state, busy, engine, manage = tru
       ? `<button type="button" class="subscription-reset" data-card-action="reset" title="${esc(t('Use an official reset credit'))}" aria-label="${esc(t('Use an official reset credit'))}" ${resetCount === 0 ? 'disabled' : ''}>${icon('refresh')}<span>${esc(t('Reset credits'))}${Number.isSafeInteger(resetCount) ? ' · ' + resetCount : ''}</span></button>` : '';
     const balance = account.credits?.unlimited ? t('Unlimited') : Number.isFinite(account.credits?.balance)
       ? new Intl.NumberFormat(document.documentElement.lang || undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(account.credits.balance) : t('Unavailable');
-    const credits = engine === 'codex' && account.signedIn
-      ? `<div class="subscription-credits"><span>${esc(t('Credit balance'))}</span><strong>${esc(balance)}</strong></div>` : '';
+    const credits = ['codex', 'grok'].includes(engine) && account.signedIn
+      ? `<div class="subscription-credits"><span>${esc(t(engine === 'grok' ? 'Prepaid balance' : 'Credit balance'))}</span><strong>${engine === 'grok' && Number.isFinite(account.credits?.balance) ? '$' : ''}${esc(balance)}</strong></div>` : '';
     return `<article class="subscription-card${account.active ? ' active' : ''}" data-card-id="${esc(account.id)}">
       <header><strong title="${esc(heading)}">${esc(heading)}</strong><span class="subscription-badges">${badges}</span></header>
       <div class="subscription-identity-meta">

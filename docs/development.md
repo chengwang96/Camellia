@@ -49,7 +49,7 @@ The entry point is `src/main/main.js`; `src/main/preload.js` exposes the rendere
 | DSH | `@deepseek-ai/dsh@0.2.0-rc.2` | Local web backend and embedded UI |
 | Kimi Code | `@moonshot-ai/kimi-code@2.1.1` | ACP over stdin/stdout |
 | Antigravity | CLI 1.2.3 on desktop; `google-antigravity==0.1.20`, Python 3.13.14, uv 0.12.15 | CLI connection for Google subscriptions; Python SDK for API routing |
-| Pi | `@mariozechner/pi-coding-agent@0.73.1` | Native RPC through shared API routes |
+| Grok Build | `@xai-official/grok@1.0.70` | ACP over stdin/stdout; OAuth subscription or shared API routes |
 | DSH plugin package manager | `pnpm@11.7.0` | Runtime tooling |
 
 The per-engine manifests and lockfiles are authoritative. The patched DSH settings and client-modules packages are pinned to `0.2.0-rc.2`; review patch compatibility before changing upstream pins.
@@ -145,8 +145,8 @@ python tests/packaged-desktop-ui.py --bundle dist/win-unpacked
 On macOS, pass `--bundle dist/mac-arm64/Camellia.app`. The fresh-install and
 existing-profile scenarios use temporary Unicode paths, a working directory
 outside the checkout, a limited `PATH`, and isolated CLI homes. They verify
-bundled Node selection, settings persistence, Pi installation through the UI,
-an actual Pi streaming response from a loopback model fixture, packaged
+bundled Node selection, settings persistence, Grok Build installation through the UI,
+an actual Grok streaming response from a loopback model fixture, packaged
 Markdown/math/fonts and local file preview, and conversation recovery after
 quitting and restarting. The upgrade fixture checks preservation of old
 preferences, an unknown configuration field and existing conversation data;

@@ -9,9 +9,9 @@ const { writeText } = require('../shared/json-store');
 const ROUTE_ENV = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL'];
 const FIELDS = {
-  pi: [
-    { key: 'permissionMode', label: 'Default permissions', type: 'select', options: [['ask', 'Ask by default'], ['auto', 'Ask as needed'], ['full', 'Allow all']] },
-    { key: 'thinkingBudget', label: 'Default reasoning level', type: 'select', options: [['', 'Model default'], ['off', 'Off'], ['minimal', 'Minimal'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high']] },
+  grok: [
+    { key: 'permissionMode', label: 'Default permissions', type: 'select', options: [['ask', 'Ask by default'], ['auto', 'Ask as needed'], ['full', 'Allow all'], ['plan', 'Plan only']] },
+    { key: 'thinkingBudget', label: 'Default reasoning level', type: 'select', options: [['', 'Model default'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high']] },
     { key: 'contextWindow', label: 'API model context window (tokens)', type: 'number', min: 4096, max: 2000000 },
   ],
   codex: [
@@ -68,12 +68,15 @@ function routeKimi(config, { route, model, contextWindow = 131072 }) {
     providers: { ...config.providers, workbench: { type: 'openai', base_url: route.baseUrl + '/v1', api_key: route.authToken } },
     models: { ...config.models, [model]: { provider: 'workbench', model, max_context_size: contextWindow } } };
 }
-function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravityHome, codexHome, piHome, getDesktop, saveDesktop, getRoute }) {
+function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravityHome, codexHome, grokHome, getDesktop, saveDesktop, getRoute }) {
   const claudeDir = claudeHome || path.join(home, '.claude');
   const subscription = engine => engine === 'antigravity' && getDesktop(engine).connection === 'subscription';
   const fields = engine => FIELDS[subscription(engine) ? 'antigravitySubscription' : engine] || [];
   function definitions(engine) {
-    if (engine === 'pi') return [{ id: 'instructions', label: 'Global instructions', format: 'text', path: path.join(piHome, 'AGENTS.md') }];
+    if (engine === 'grok') return [
+      { id: 'settings', label: 'Configuration and MCP servers', format: 'toml', path: path.join(grokHome, 'config.toml') },
+      { id: 'instructions', label: 'Global instructions', format: 'text', path: path.join(grokHome, 'AGENTS.md') },
+    ];
     if (engine === 'codex') return [
       { id: 'settings', label: 'Configuration and MCP servers', format: 'toml', path: path.join(codexHome, 'config.toml') },
       { id: 'instructions', label: 'Instructions', format: 'text', path: path.join(codexHome, 'AGENTS.md') },
@@ -111,6 +114,10 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
     if (engine === 'kimi' && doc.id === 'settings') {
       value = { ...value }; delete value.providers; delete value.models; delete value.default_model;
     }
+    if (engine === 'grok' && doc.id === 'settings') {
+      value = { ...value }; delete value.model;
+      if (value.models) { value.models = { ...value.models }; delete value.models.default; }
+    }
     return value;
   }
   function get(engine) {
@@ -120,8 +127,8 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
       return { ...doc, revision: revision(text), text: doc.format === 'text' ? value : stringify(value, doc.format), backup: fs.existsSync(doc.path + '.workbench.bak') };
     });
     const desktop = getDesktop(engine);
-    const native = engine === 'pi' ? { contextWindow: 65536, ...desktop } : parse(files[0].text, files[0].format);
-    return { engine, files, desktop, scope: ['codex', 'pi'].includes(engine) || engine === 'antigravity' && !subscription(engine) ? 'app' : 'cli',
+    const native = engine === 'grok' ? { contextWindow: 131072, ...desktop } : parse(files[0].text, files[0].format);
+    return { engine, files, desktop, scope: ['codex', 'grok'].includes(engine) || engine === 'antigravity' && !subscription(engine) ? 'app' : 'cli',
       fields: fields(engine).map(field => ({ ...field, value: getAt(native, field.key) ?? (field.type === 'checkbox' ? false : '') })) };
   }
   function save(engine, payload) {
@@ -141,8 +148,12 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
       if (doc.format === 'text') return { file: doc.path, text: String(input.text) };
       const old = parse(original, doc.format);
       let value = parse(input.text, doc.format);
-      if (doc.id === 'settings') for (const [key, next] of Object.entries(payload.common || {})) {
+      if (doc.id === 'settings' && engine !== 'grok') for (const [key, next] of Object.entries(payload.common || {})) {
         setAt(value, key, next);
+      }
+      if (engine === 'grok' && doc.id === 'settings') {
+        value.model = old.model;
+        value.models = { ...value.models, default: old.models?.default };
       }
       if (doc.key) value = { ...old, [doc.key]: value };
       if (subscription(engine) && doc.id === 'settings') {
@@ -172,7 +183,8 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
     });
     // Validate every document before replacing any file, and back up the originals once.
     for (const item of writes) backup(item.file);
-    const desktop = engine === 'pi' ? { ...payload.common } : { ...payload.desktop };
+    const desktop = engine === 'grok' ? { ...payload.desktop, ...payload.common,
+      model: getDesktop(engine).model, apiModel: getDesktop(engine).apiModel, subscriptionModel: getDesktop(engine).subscriptionModel } : { ...payload.desktop };
     if (engine === 'codex') {
       const native = parse(writes.find(item => item.file === definitionsById.get('settings').path).text, 'toml');
       // The composer's default uses the native approval and sandbox combination.
@@ -219,12 +231,15 @@ function createEngineSettings({ home, claudeHome, dshHome, kimiHome, antigravity
     if (engine === 'claude') return { home: claudeDir, config: parse(read(path.join(claudeDir, 'settings.json')), 'json'), mcp: read(path.join(home, '.claude.json')) };
     if (engine === 'kimi') return { home: kimiHome, ...kimiConfig() };
     if (engine === 'dsh') return { config: parse(read(path.join(dshHome(), 'settings.yaml')), 'yaml') };
-    if (engine === 'pi') return { home: piHome, instructions: read(definitions('pi')[0].path) };
+    if (engine === 'grok') return { home: grokHome, config: parse(read(path.join(grokHome, 'config.toml')), 'toml'), instructions: read(definitions('grok')[1].path) };
     if (engine === 'antigravity' && connection === 'subscription') return { home: path.join(home, '.gemini'), config: parse(read(path.join(home, '.gemini/antigravity-cli/settings.json')), 'json') };
     if (engine === 'antigravity') return { config: parse(read(path.join(antigravityHome, 'settings.json')), 'json') };
     return {};
   }
-  return { get, save, kimiConfig, discussionConfig, syncManagedRoutes, piInstructions: () => read(definitions('pi')[0].path),
+  return { get, save, kimiConfig, discussionConfig, syncManagedRoutes,
+    grokConfig: () => parse(read(path.join(grokHome, 'config.toml')), 'toml'),
+    grokConfigRevision: () => revision(read(path.join(grokHome, 'config.toml')) + '\0' + read(definitions('grok')[1].path)),
+    grokInstructions: () => read(definitions('grok')[1].path),
     backupDsh: () => backup(path.join(dshHome(), 'settings.yaml')) };
 }
 module.exports = { createEngineSettings, parse, stringify, backup, routeKimi };

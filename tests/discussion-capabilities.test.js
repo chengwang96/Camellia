@@ -16,7 +16,7 @@ function proof(mode = 'tool-free') {
 }
 
 test('all current connections remain unavailable without reviewed real evidence', () => {
-  for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']) {
+  for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']) {
     for (const connection of ['api', 'subscription']) {
       assert.equal(evaluateCapability({ ...binding, engine, connection }, runtime).available, false);
     }

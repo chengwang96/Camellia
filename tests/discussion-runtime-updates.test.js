@@ -73,7 +73,7 @@ test('the member catalog offers installation only for a missing runtime and refr
   h.service.getCatalog = () => [];
   const empty = await h.service.call('catalog');
   assert.deepEqual(empty.bindings, []);
-  assert.equal(empty.runtimes.length, 9);
+  assert.equal(empty.runtimes.length, 10);
   assert.equal(empty.runtimes.find(row => row.engine === 'dsh').canInstall, true, 'Installation remains available before models are configured');
   assert.equal(empty.runtimes.find(row => row.engine === 'claude').canInstall, false);
 });

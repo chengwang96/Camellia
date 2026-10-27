@@ -10,7 +10,7 @@ const { MAX_IMAGE_BYTES, MAX_TEXT_CHARS, saveClipboardImage, savePastedText } = 
 const { LONG_PASTE_CHARS, shouldAttach } = require('../src/shared/long-paste');
 
 test('clipboard paste keeps the in-memory image fallback outside path resolution', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
   assert.match(source, /try \{ p = window\.dshDesktop\.attachmentPath\(f\) \|\| p; \}\s*catch \(_error\)/);
   assert.match(source, /catch \(_error\)[\s\S]*if \(p\)[\s\S]*await f\.arrayBuffer\(\)[\s\S]*saveClipboardImage/);
 });
@@ -64,7 +64,7 @@ test('pasted text storage rejects empty and oversized payloads', t => {
 });
 
 test('the composer turns long pastes into attachments and keeps short ones inline', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
   assert.match(source, /if \(!files\.length\) \{\s*await attachLongPastedText\(e\);[\s\S]*?\n\s*return;/);
   assert.match(source, /if \(goalUI\.isDraft\(\)\) return;[\s\S]*?if \(!window\.CamelliaLongPaste\.shouldAttach\(text\)\) return;[\s\S]*?savePastedText/);
   assert.match(source, /insertPlainText\(text\)[\s\S]*?Could not save the pasted text\./);

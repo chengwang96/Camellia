@@ -267,7 +267,7 @@ with sync_playwright() as p:
             section.locator('.nav-section-toggle').press('Enter')
             expect(page.locator(rows)).to_be_visible()
         expect(discussion.locator('#conversationNavigation [data-conversation-id="chat-fixture"]')).to_be_visible()
-        modes = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']
+        modes = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']
         expect(discussion.locator('#engineSwitch')).to_have_count(0)
         select = normal.locator('#engineSwitch')
         assert select.locator('option').evaluate_all('(items)=>items.map(item=>item.value)') == modes
@@ -291,7 +291,7 @@ with sync_playwright() as p:
             ('#input', '#message', ['fontSize', 'fontFamily', 'lineHeight', 'minHeight', 'maxHeight']),
             ('.msg-user .bubble', '.msg-user .bubble', ['backgroundColor', 'color', 'borderRadius', 'fontSize', 'padding']),
             ('.turn .md', '.turn .md', ['fontSize', 'lineHeight', 'color']),
-            ('.turn .md > strong', '.turn .md > h2', ['fontSize', 'fontWeight', 'lineHeight', 'color']),
+            ('.turn .md strong', '.turn .md h2', ['fontSize', 'fontWeight', 'lineHeight', 'color']),
             ('.turn .md-list', '.turn .md-list', ['padding', 'marginTop', 'whiteSpace']),
             ('.md-code-block', '.md-code-block', ['borderRadius', 'backgroundColor', 'borderColor']),
             ('.md-code-actions', '.md-code-actions', ['display', 'gap', 'alignItems']),
@@ -324,13 +324,14 @@ with sync_playwright() as p:
         # A page navigation failure keeps the original surface and draft. It
         # must never submit "discussions" to the single-chat handoff API.
         normal.locator('#input').fill('保留普通聊天草稿')
+        navigation_calls = normal.evaluate('fixtureSends.length')
         normal.evaluate('failNavigation = true')
         normal.locator('#discussionSessions [data-group-id="group-fixture"]').click()
         expect(normal.locator('#statusLine')).to_have_text('Mode navigation failed.')
         expect(normal.locator(':light(#engineSwitch)')).to_have_value('codex')
         expect(normal.locator(':light(#engineSwitch)')).to_be_enabled()
         expect(normal.locator('#input')).to_have_value('保留普通聊天草稿')
-        assert normal.evaluate('handoffs.length') == 0
+        assert normal.evaluate('fixtureSends.length') == navigation_calls
         assert normal.evaluate('modeNavigations') == ['discussions']
         normal.evaluate('failNavigation = false')
         normal.locator('#discussionSessions [data-group-id="group-fixture"]').click()

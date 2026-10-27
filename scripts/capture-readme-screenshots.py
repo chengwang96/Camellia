@@ -51,7 +51,7 @@ def shared_chat_bridge():
 
 
 HOME_BRIDGE = """(() => {
-  const engines = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
+  const engines = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
   window.dshDesktop = {
     onLanguageChanged: () => () => {},
     onRuntimeState: () => {},

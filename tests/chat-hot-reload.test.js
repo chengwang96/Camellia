@@ -47,7 +47,7 @@ test('explicit development hot reload debounces chat changes', () => {
   const { state } = harness({ argv: ['electron', '.', '--hot-reload'] });
   assert.equal(state.watches.length, 1);
   assert.equal(state.watches[0].directory, path.join('/renderer', 'chat'));
-  state.watches[0].callback('change', 'claude.js');
+  state.watches[0].callback('change', 'chat.js');
   state.watches[0].callback('change', 'claude.css');
   assert.equal(state.timers.size, 1);
   assert.equal(state.reloads, 0);

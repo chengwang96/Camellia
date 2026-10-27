@@ -7,7 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { translate } = require('../src/shared/i18n');
 
-const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
 const forkSource = source.slice(source.indexOf('  async function forkSession(s)'), source.indexOf('  async function openHistorySession(id)'));
 
 function fixture(overrides = {}) {

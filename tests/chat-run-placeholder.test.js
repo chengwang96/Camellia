@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8')
+const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8')
   .replace(/\r\n/g, '\n');
 const setRunningSource = source.slice(source.indexOf('  function setRunning(v) {'), source.indexOf('  // ---------- event handling ----------'));
 

@@ -22,7 +22,7 @@ function write(box, relative, value) {
   return file;
 }
 function json(box, relative) { return JSON.parse(fs.readFileSync(path.join(box.root, relative), 'utf8')); }
-const allInstalled = { claude: true, codex: true, dsh: true, kimi: true, antigravity: true, pi: true };
+const allInstalled = { claude: true, codex: true, dsh: true, kimi: true, antigravity: true, grok: true };
 async function legacyPackage(box, entries) {
   const zip = new JSZip();
   zip.file('camellia-migration.json', JSON.stringify({ format: FORMAT, version: 1,
@@ -73,13 +73,13 @@ test('API and settings remain small even when the source has attachments, plugin
 test('a partly installed destination keeps local runtime paths and accounts and skips unavailable harness settings', async t => {
   const source = profile(t), target = profile(t);
   write(source, 'app/desktop-config.json', { language: 'zh-CN', theme: 'dark',
-    claude: { thinkingBudget: 'high' }, codex: { thinkingBudget: 'xhigh' }, pi: { permissionMode: 'full' },
+    claude: { thinkingBudget: 'high' }, codex: { thinkingBudget: 'xhigh' }, grok: { permissionMode: 'full' },
     quickSwitchModels: { claude: 'source-claude', codex: 'source-codex' },
     memoryDirectory: path.join(source.root, 'nonexistent-memory'),
     runtimePaths: { codex: { file: 'C:/source/codex.exe' } }, dshHome: 'C:/source/dsh' });
   write(source, 'home/.claude/settings.json', { language: 'Chinese', env: { ANTHROPIC_BASE_URL: 'http://source' } });
   write(source, 'app/codex/config.toml', 'model_reasoning_effort = "xhigh"\n');
-  write(source, 'app/pi-native/AGENTS.md', '# Source Pi instructions');
+  write(source, 'app/grok-native/AGENTS.md', '# Source Grok instructions');
   write(source, 'home/.kimi-code/config.toml', 'default_permission_mode = "auto"\n');
   write(source, 'app/antigravity/settings.json', { permissionMode: 'plan' });
   write(source, 'home/.gemini/antigravity-cli/settings.json', { agentMode: 'accept-edits' });
@@ -94,10 +94,10 @@ test('a partly installed destination keeps local runtime paths and accounts and 
   await createDataPackage({ ...source, scope: 'settings', destination: file });
   const installedEngines = { claude: true, antigravity: { api: true, subscription: false } };
   const preview = await inspectDataPackage(file, { installedEngines });
-  assert.deepEqual(preview.skippedEngines.sort(), ['antigravity', 'codex', 'kimi', 'pi']);
+  assert.deepEqual(preview.skippedEngines.sort(), ['antigravity', 'codex', 'grok', 'kimi']);
   assert.deepEqual(json(target, 'app/desktop-config.json'), current, 'preview is read-only');
   const imported = await importDataPackage({ ...target, file, scope: 'settings', installedEngines });
-  assert.deepEqual(imported.skippedEngines.sort(), ['antigravity', 'codex', 'kimi', 'pi']);
+  assert.deepEqual(imported.skippedEngines.sort(), ['antigravity', 'codex', 'grok', 'kimi']);
   assert.deepEqual(imported.skippedPaths, ['memoryDirectory']);
   const restored = json(target, 'app/desktop-config.json');
   assert.equal(restored.language, 'zh-CN'); assert.equal(restored.theme, 'dark');
@@ -106,7 +106,7 @@ test('a partly installed destination keeps local runtime paths and accounts and 
     assert.deepEqual(restored[key], current[key], key);
   assert.deepEqual(restored.quickSwitchModels, { codex: 'local-codex', claude: 'source-claude' });
   assert.equal(fs.existsSync(path.join(target.dataDir, 'codex')), false);
-  assert.equal(fs.existsSync(path.join(target.dataDir, 'pi-native')), false);
+  assert.equal(fs.existsSync(path.join(target.dataDir, 'grok-native')), false);
   assert.equal(fs.existsSync(path.join(target.home, '.kimi-code')), false);
   assert.equal(fs.existsSync(path.join(target.home, '.gemini')), false);
   assert.equal(json(target, 'app/antigravity/settings.json').permissionMode, 'plan');

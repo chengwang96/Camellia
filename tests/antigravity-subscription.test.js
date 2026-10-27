@@ -6,7 +6,7 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { createHarness } = require('./claude-harness.cjs');
 const { createAntigravity, subscriptionSpawnSpec } = require('../src/engines/antigravity');
-const { subscriptionEnvironment, parseModels, parseGoogleQuota, groupModels, normalizeSelection, effectiveSelection, loginScript, requireGoogleProvider, headlessEnvironment, describeCliFailure, runCliWithRetry } = require('../src/engines/antigravity/subscription');
+const { subscriptionEnvironment, parseModels, parseGoogleQuota, groupModels, normalizeSelection, effectiveSelection, loginScript, requireGoogleProvider, headlessEnvironment, cliAuthenticationError, describeCliFailure, runCliWithRetry } = require('../src/engines/antigravity/subscription');
 const { createGoogleAccount } = require('../src/engines/antigravity/subscription');
 const { createRuntimeManager } = require('../src/main/runtime-manager');
 const { installAntigravityCli } = require('../src/main/antigravity-cli-runtime');
@@ -93,6 +93,37 @@ test('A transient background Google check is retried, but one that opened a logi
   await assert.rejects(runCliWithRetry(async () => { networkCalls++; throw new Error('network down'); },
     'official-agy', ['models'], {}, { attempts: 2, sleep: () => Promise.resolve() }), /network down/);
   assert.equal(networkCalls, 2);
+});
+
+test('OAuth refresh network failures stay retryable and outrank the interactive login fallback', async () => {
+  const networkMessage = 'Could not connect to Google. Check your network or proxy settings and retry.';
+  const diagnostic = [
+    'Print mode: not authenticated, trying silent auth',
+    'keyringAuth: loaded token, expiry=2026-10-08 10:23:52 expired=true',
+    'token refresh failed due to network error: Post "https://oauth2.googleapis.com/token": net/http: TLS handshake timeout',
+    'keyringAuth: token validation failed due to network error (token may still be valid)',
+    'Print mode: silent auth failed',
+    'Authentication required. Please visit the URL to log in:',
+  ].join('\n');
+  assert.equal(cliAuthenticationError(diagnostic)?.message, networkMessage);
+  assert.equal(describeCliFailure(diagnostic, '', 1), networkMessage);
+  assert.equal(describeCliFailure('Authentication required. Please visit the URL to log in:',
+    'token refresh failed due to network error: Post "https://oauth2.googleapis.com/token": EOF', 1), networkMessage);
+  let calls = 0;
+  const output = await runCliWithRetry(async () => {
+    calls++;
+    if (calls < 3) throw new Error(diagnostic);
+    return 'quota-output';
+  }, 'official-agy', ['-p', '/quota'], {}, { attempts: 3, sleep: () => Promise.resolve() });
+  assert.equal(output, 'quota-output');
+  assert.equal(calls, 3);
+  assert.match(describeCliFailure('invalid_grant', '', 1), /sign-in has expired or is invalid/);
+  const revoked = diagnostic + '\ninvalid_grant';
+  assert.match(describeCliFailure(revoked, '', 1), /sign-in has expired or is invalid/);
+  let revokedCalls = 0;
+  await assert.rejects(runCliWithRetry(async () => { revokedCalls++; throw new Error(revoked); },
+    'official-agy', ['models'], {}, { attempts: 3, sleep: () => Promise.resolve() }), /invalid_grant/);
+  assert.equal(revokedCalls, 1);
 });
 
 test('Google account model parsing preserves model versions and reasoning variants while removing duplicate rows', () => {

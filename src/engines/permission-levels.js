@@ -9,7 +9,7 @@
 // mode at the session boundary.
 const LEVELS = ['ask', 'auto', 'full'];
 const TO_NATIVE = {
-  pi: { ask: 'ask', auto: 'auto', full: 'full' },
+  grok: { ask: 'default', auto: 'auto', full: 'bypassPermissions' },
   claude: { ask: 'default', auto: 'acceptEdits', full: 'bypassPermissions' },
   codex: { ask: 'default', auto: 'acceptEdits', full: 'bypassPermissions' },
   kimi: { ask: 'default', auto: 'auto', full: 'yolo' },
@@ -22,6 +22,7 @@ const NATIVE_VALUES = {
   codex: ['default', 'acceptEdits', 'plan', 'bypassPermissions'],
   kimi: ['default', 'plan', 'auto', 'yolo'],
   antigravity: ['default', 'acceptEdits', 'plan', 'bypassPermissions'],
+  grok: ['default', 'auto', 'bypassPermissions', 'plan'],
   dsh: ['default', 'bypassPermissions'],
 };
 function valid(engine, value) {

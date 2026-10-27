@@ -29,7 +29,7 @@ const COPY = {
     name: 'Workspace name', path: 'Absolute existing server folder', independent: 'Independent conversation',
     removeHint: 'Remove only the workspace record. Keep project files and conversation working directories. Conversations become independent.',
     language: 'Language', directory: 'Data directory', engines: 'Available engines', conversations: 'Conversations', busy: 'Active work',
-    limitations: 'Six API engines including Pi and server-local subscription entry points are wired. Real provider and tailnet acceptance is still required.',
+    limitations: 'Six engines including Grok Build and server-local subscription entry points are wired. Real provider and tailnet acceptance is still required.',
     sensitive: 'Network keys use private local files; copying the entire data directory can expose the identity.',
     noService: 'Cannot read server settings. Start serve first in another terminal, using the same --data-dir.',
   },
@@ -55,7 +55,7 @@ const COPY = {
     name: '工作区名称', path: '服务器已有目录的绝对路径', independent: '独立会话',
     removeHint: '只移除记录，保留项目文件和原会话工作目录；会话变为独立会话。',
     language: '语言', directory: '数据目录', engines: '可用引擎', conversations: '会话数量', busy: '正在进行的工作',
-    limitations: '包括 Pi 在内的六种 API 引擎与服务器本地订阅登录入口已接入，仍需真实供应商和 tailnet 验收。',
+    limitations: '包括 Grok Build 在内的六种引擎与服务器本地订阅登录入口已接入，仍需真实供应商和 tailnet 验收。',
     sensitive: '网络密钥使用受权限保护的本地文件；复制整个数据目录可能暴露网络身份。',
     noService: '无法读取服务器设置。请在另一终端启动 serve，并使用同一个 --data-dir。',
   },
@@ -183,10 +183,9 @@ async function settingsSession({ request, ask, write, columns = 80, color = fals
   const accounts = async () => {
     const runtimes = await call('runtime-state');
     for (const runtime of runtimes) out(`${runtime.id}: ${runtime.operation || runtime.status} ${runtime.version || ''} ${runtime.error || ''}`);
-    const engine = await choose(state.engines.map(entry => ({ id: entry.id, name: entry.id === 'pi' ? 'Pi' : entry.id })));
+    const engine = await choose(state.engines.map(entry => ({ id: entry.id, name: entry.id === 'grok' ? 'Grok Build' : entry.id })));
     if (!engine) return;
-    const actions = engine.id === 'pi' ? ['install', 'connection', 'nativeSettings']
-      : ['install', 'accountState', 'accountRefresh', 'accountLogin', 'accountCancel', 'accountLogout', 'connection', 'nativeSettings'];
+    const actions = ['install', 'accountState', 'accountRefresh', 'accountLogin', 'accountCancel', 'accountLogout', 'connection', 'nativeSettings'];
     const action = await choose(actions.map(id => ({ id, name: text(id) })));
     if (!action) return;
     if (action.id === 'nativeSettings') {
@@ -202,7 +201,7 @@ async function settingsSession({ request, ask, write, columns = 80, color = fals
       await call('runtime-install', { engine: engine.id, connection }); out(text('installing')); return;
     }
     if (action.id === 'connection') {
-      const connection = engine.id === 'pi' ? 'api' : await question(text('connectionPrompt'));
+      const connection = await question(text('connectionPrompt'));
       if (!['api', 'subscription'].includes(connection)) return;
       const model = await question(text('modelPrompt')); if (!model) return;
       if (!await confirm(`${engine.id} / ${connection} / ${model}. ${text('modelHint')}`)) return;

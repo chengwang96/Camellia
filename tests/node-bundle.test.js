@@ -25,10 +25,13 @@ function fixture(t) {
     const archives = ['win-x64.zip', 'win-arm64.zip', 'darwin-x64.tar.gz', 'darwin-arm64.tar.gz'].map(suffix => `node-${version}-${suffix}`);
     return new Response(file === 'SHASUMS256.txt' ? archives.map(name => `${checksum(name)}  ${name}`).join('\n') : payload(file));
   };
-  const run = (command, args) => {
+  const run = (command, args, options) => {
+    const archiveArg = args[1];
+    const archiveName = path.basename(archiveArg);
     assert.equal(command, 'tar');
-    const archiveName = path.basename(args[1]);
-    assert.deepEqual(fs.readFileSync(args[1]), payload(archiveName));
+    assert.ok(path.isAbsolute(options.cwd));
+    assert.ok(fs.statSync(options.cwd).isDirectory());
+    assert.deepEqual(fs.readFileSync(path.join(options.cwd, archiveName)), payload(archiveName));
     const windows = archiveName.endsWith('.zip');
     const source = path.join(args[3], archiveName.replace(/\.zip$|\.tar\.gz$/, ''));
     const node = path.join(source, windows ? 'node.exe' : 'bin/node');
@@ -70,6 +73,26 @@ test('Windows downloads the project pin with its own npm and license instead of 
   assert.equal(fs.readFileSync(path.join(options.target, 'NODE-LICENSE'), 'utf8'), 'official Node license');
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(options.target, 'version.json'), 'utf8')), info);
   assert.ok(!fs.readdirSync(options.target).some(file => /\.zip$|\.sha256$/.test(file)));
+});
+
+test('Windows extracts a real ZIP through its built-in tar from a cache path with spaces', { skip: process.platform !== 'win32' }, async t => {
+  const { root, target } = fixture(t);
+  const name = 'node-v22.19.0-win-x64', zip = new (require('jszip'))();
+  zip.file(name + '/node.exe', 'fixture node');
+  zip.file(name + '/node_modules/npm/bin/npm-cli.js', 'fixture npm');
+  zip.file(name + '/node_modules/npm/package.json', JSON.stringify({ version: '10.9.3' }));
+  zip.file(name + '/node_modules/npm/node_modules/nested/index.js', 'nested dependency');
+  zip.file(name + '/LICENSE', 'fixture license');
+  const payload = await zip.generateAsync({ type: 'nodebuffer' });
+  const cacheDir = path.join(root, 'Cache With Spaces'); fs.mkdirSync(cacheDir);
+  const archive = path.join(cacheDir, name + '.zip');
+  fs.writeFileSync(archive, payload);
+  fs.writeFileSync(archive + '.sha256', createHash('sha256').update(payload).digest('hex'));
+  await bundleNode({ target, cacheDir, platform: 'win32', arch: 'x64', version: 'v22.19.0',
+    fetchImpl: () => assert.fail('A valid cache must not access the network') });
+  assert.equal(fs.readFileSync(path.join(target, 'node.exe'), 'utf8'), 'fixture node');
+  assert.equal(fs.readFileSync(path.join(target, 'npm/node_modules/nested/index.js'), 'utf8'), 'nested dependency');
+  assert.equal(fs.readFileSync(path.join(target, 'NODE-LICENSE'), 'utf8'), 'fixture license');
 });
 
 test('a verified archive cache allows repeated builds without network access', async t => {

@@ -7,7 +7,7 @@
   const chinese = Object.fromEntries([...root.querySelectorAll('[data-copy]')].map(element => [element.dataset.copy, element.textContent]));
   const english = { intro: 'Manage connections here. Open a server from Home to use its independent workbench.', network: 'Local Tailscale connection', networkHint: 'Shares the same Tailscale identity as Mobile access. Sign in once; disconnect or sign out from Mobile access.', login: 'Start / Sign in', browser: 'Open sign-in link', refresh: 'Refresh', servers: 'Paired servers', add: 'Add CLI server', defaultHint: 'One entry per server on Home. The default harness applies to new conversations only.', deviceName: 'Server name', address: 'Tailscale address', clientName: 'This computer name', code: 'One-time pairing code', cancel: 'Cancel', pair: 'Pair', forget: 'Forget server' };
   Object.assign(english, { address: 'Tailscale IP', port: 'Port' });
-  const harnesses = { codex: 'Codex CLI', claude: 'Claude Code', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' };
+  const harnesses = { codex: 'Codex CLI', claude: 'Claude Code', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', grok: 'Grok Build' };
   let language = 'zh-CN', busy = false, pending = null, forgotten = null, networkState = '';
   const text = (zh, en) => language === 'en' ? en : zh;
   async function call(action, payload) {

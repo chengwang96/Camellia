@@ -9,7 +9,7 @@ const MarkdownIt = require('markdown-it');
 const links = require('../src/renderer/chat/markdown-links');
 const preview = require('../src/renderer/chat/markdown-preview');
 const escape = new MarkdownIt().utils.escapeHtml;
-const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
 
 function chatRenderer(cwd = 'D:/Code/DSH') {
   const context = {

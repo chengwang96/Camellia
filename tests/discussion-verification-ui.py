@@ -9,11 +9,11 @@ bridge = r"""(() => {
   const group = {id:'group-one',title:'Verification UI',revision:1,participants:[member],messages:[],requests:[],deliveries:[]};
   const binding = {id:'binding-one',label:'Test model',accountLabel:'UI fixture',binding:{engine:'codex',connection:'subscription',model:'test-model'},capability:{...pending}};
   const names = ['Ollama Cloud', 'nVidia', 'DeepSeek', 'MiMo', 'QClaw'];
-  const apiBindings = ['claude','codex','dsh','kimi','antigravity','pi'].flatMap(engine=>names.map((name,i)=>({
+  const apiBindings = ['claude','codex','dsh','kimi','antigravity','grok'].flatMap(engine=>names.map((name,i)=>({
     id:engine+'-provider-'+i,providerId:'provider-'+i,providerLabel:name,label:'shared-model',accountLabel:name+' · Test account',
     binding:{engine,connection:'api',model:'shared-model'},capability:{available:true},
   })));
-  const subscriptions = ['antigravity','kimi'].map(engine=>({id:engine+'-subscription',label:engine+' test',accountLabel:'Subscription account',
+  const subscriptions = ['antigravity','kimi','grok'].map(engine=>({id:engine+'-subscription',label:engine+' test',accountLabel:'Subscription account',
     binding:{engine,connection:'subscription',model:engine+'-test'},capability:{...pending,supported:true}}));
   window.calls=[]; window.verificationOutcome='pending'; let resolveCheck, resolveSend, emit=()=>{}, sent;
   let automaticMember;
@@ -139,8 +139,8 @@ with sync_playwright() as p:
         expect(page.locator('#binding option')).to_have_count(1)
         expect(page.locator('#binding')).to_have_value(f'codex-provider-{index}')
     page.locator('#provider').select_option('provider-2')
-    expect(page.locator('#engine option')).to_have_text(['Claude Code','Codex CLI','DeepSeek Harness','Kimi Code','Antigravity','Pi'])
-    for engine in ['claude','codex','dsh','kimi','antigravity','pi']:
+    expect(page.locator('#engine option')).to_have_text(['Claude Code','Codex CLI','DeepSeek Harness','Kimi Code','Antigravity','Grok Build'])
+    for engine in ['claude','codex','dsh','kimi','antigravity','grok']:
         page.locator('#engine').select_option(engine)
         expect(page.locator('#binding')).to_have_value(f'{engine}-provider-2')
         expect(page.locator('#saveMember')).to_be_enabled()

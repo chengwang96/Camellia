@@ -2275,22 +2275,22 @@ do {
 
     // One that advertises is taken at its word — filtered to the names this
     // client can label, in the desktop's order, without repeats.
-    checkEqual(RemoteEngine.available(advertised: ["pi", "codex", "pi", "nope", "claude"]).map(\.rawValue),
-               ["pi", "codex", "claude"],
+    checkEqual(RemoteEngine.available(advertised: ["grok", "codex", "grok", "nope", "claude"]).map(\.rawValue),
+               ["grok", "codex", "claude"],
                "an advertised list is filtered, deduped and kept in its order")
 
     // Advertising an empty list is not the same as saying nothing: it offers no
     // engine at all, which is the distinction the nil-vs-empty split protects.
     checkEqual(RemoteEngine.available(advertised: []).count, 0, "an empty advertisement offers no engine")
 
-    checkEqual(RemoteEngine.pi.label, "Pi", "Pi keeps its spelling")
+    checkEqual(RemoteEngine.grok.label, "Grok Build", "Grok Build keeps its spelling")
     checkEqual(RemoteEngine.codex.label, "CODEX", "the rest are upper-cased")
 }
 
 do {
     let page = RemoteListPage(try! JSONBody.object(Data(
-        #"{"protocol":1,"permission":"control","engines":["codex","pi"],"conversations":[]}"#.utf8)))
-    checkEqual(page.availableEngines.map(\.rawValue), ["codex", "pi"],
+        #"{"protocol":1,"permission":"control","engines":["codex","grok"],"conversations":[]}"#.utf8)))
+    checkEqual(page.availableEngines.map(\.rawValue), ["codex", "grok"],
                "the list page carries the engines the desktop advertises")
 
     let bare = RemoteListPage(try! JSONBody.object(Data(#"{"conversations":[]}"#.utf8)))

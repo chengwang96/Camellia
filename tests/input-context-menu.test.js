@@ -39,9 +39,49 @@ test('editable context menu contains only cut, copy, paste and select all', () =
   assert.equal(harness.popups[0].frame, frame);
 });
 
-test('non-editable content does not open an input menu', () => {
+test('selected read-only text opens a copy and select all menu in its frame', () => {
   const harness = createHarness();
-  harness.contents.emit('context-menu', {}, { isEditable: false });
+  const frame = {};
+  harness.contents.emit('context-menu', {}, {
+    isEditable: false, mediaType: 'none', frame,
+    selectionText: '最新交付的产物优先',
+    editFlags: { canCut: false, canCopy: true, canPaste: false, canSelectAll: true },
+  });
+  assert.deepEqual(harness.templates[0], [
+    { role: 'copy', label: '复制', enabled: true },
+    { role: 'selectAll', label: '全选', enabled: true },
+  ]);
+  assert.equal(harness.popups[0].frame, frame);
+});
+
+test('read-only text menu follows edit flags and the current language', () => {
+  const harness = createHarness();
+  harness.setLanguage('en');
+  harness.contents.emit('context-menu', {}, {
+    isEditable: false, selectionText: 'Selected response',
+    editFlags: { canCopy: true, canSelectAll: false },
+  });
+  assert.deepEqual(harness.templates[0], [
+    { role: 'copy', label: 'Copy', enabled: true },
+    { role: 'selectAll', label: 'Select all', enabled: false },
+  ]);
+});
+
+test('non-editable content without selected text does not open a menu', () => {
+  const harness = createHarness();
+  for (const selectionText of [undefined, '', ' \n ']) {
+    harness.contents.emit('context-menu', {}, { isEditable: false, selectionText });
+  }
+  assert.equal(harness.templates.length, 0);
+  assert.equal(harness.popups.length, 0);
+});
+
+test('right-clicking an image leaves its context menu to the image handler', () => {
+  const harness = createHarness();
+  harness.contents.emit('context-menu', {}, {
+    isEditable: false, mediaType: 'image', selectionText: 'Selected response',
+    editFlags: { canCopy: true, canSelectAll: true },
+  });
   assert.equal(harness.templates.length, 0);
   assert.equal(harness.popups.length, 0);
 });

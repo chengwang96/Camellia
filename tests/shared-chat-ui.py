@@ -309,6 +309,94 @@ with sync_playwright() as p:
     page.wait_for_function('actions.filter(entry=>entry.action==="send").length === 2 && running && !sending')
     assert page.evaluate('actions.filter(entry=>entry.action==="send").at(-1).payload.displayText') == 'Keep this queued message'
     page.close()
+    # Long live snapshots reveal saved history before replay finishes, preserve
+    # deliberate reading and cannot repaint a session opened after cancellation.
+    page = browser.new_page(viewport={'width':1200,'height':820})
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    page.add_init_script(concurrent_bridge)
+    page.add_init_script(r"""(() => {
+      const nativeSetTimeout = window.setTimeout.bind(window);
+      window.restoreYieldCallbacks = [];
+      window.holdRestoreYield = false;
+      window.setTimeout = (callback, delay = 0, ...args) => {
+        if(window.holdRestoreYield && delay === 0) {
+          window.restoreYieldCallbacks.push(() => callback(...args));
+          return -1;
+        }
+        return nativeSetTimeout(callback, delay, ...args);
+      };
+      window.releaseRestoreYield = () => {
+        for(const callback of window.restoreYieldCallbacks.splice(0)) callback();
+      };
+    })();""")
+    page.goto((repo/'src/renderer/chat/claude.html').as_uri()+'?harness=codex', wait_until='networkidle')
+    page.wait_for_function('uiReady')
+    page.evaluate('''async () => {
+      const id='long-live', runId=901, events=[];
+      for(let index=0;index<60;index++) {
+        const tool={type:'gui:tool',session_id:id,engine:'codex',runId,id:'tool-'+index,name:'Read',input:{file_path:'D:/fixture/'+index+'.txt'}};
+        events.push({...tool,status:'in_progress',eventSeq:events.length+1});
+        events.push({...tool,status:'completed',output:'Result '+index,eventSeq:events.length+1});
+      }
+      events.push(
+        {type:'stream_event',session_id:id,engine:'codex',runId,eventSeq:events.length+1,event:{type:'content_block_start',index:0,content_block:{type:'text',text:''}}},
+        {type:'stream_event',session_id:id,engine:'codex',runId,eventSeq:events.length+2,event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Recovered final response'}}},
+        {type:'stream_event',session_id:id,engine:'codex',runId,eventSeq:events.length+3,event:{type:'content_block_stop',index:0}}
+      );
+      events.push({type:'gui:permission',session_id:id,engine:'codex',runId,eventSeq:events.length+1,
+        requestId:'late-approval',toolName:'Write',input:{path:'D:/fixture/approved.txt'},
+        options:[{kind:'allow_once',optionId:'allow',name:'Allow once'},{kind:'reject_once',optionId:'reject',name:'Deny'}]});
+      const history=[
+        {role:'user',seq:1,text:'Inspect the long running task'},
+        {role:'assistant',seq:2,engine:'codex',text:'Saved history anchor\\n\\n'+'Previous result with enough detail to scroll. '.repeat(80)}
+      ];
+      const live={sessionId:id,workspaceId:null,engine:'codex',runId,userSeq:3,prompt:'Continue long task',displayText:'Continue long task',attachments:[],messages:history,events,eventSeq:events.length};
+      sessionFixtures.set(id,{id,title:id,mtimeMs:Date.now(),currentEngine:'codex',activity:'permission',messages:[...history,{role:'user',seq:3,text:'Continue long task'}],live});
+      sessionFixtures.set('idle-live',{id:'idle-live',title:'idle-live',mtimeMs:Date.now(),currentEngine:'codex',activity:null,messages:[{role:'user',seq:1,text:'Idle history anchor'}],live:null});
+      await sidebar.load();
+      window.holdRestoreYield=true;
+      void openHistorySession(id);
+    }''')
+    page.wait_for_function('restoreYieldCallbacks.length > 0 && replayingLiveSnapshot')
+    expect(page.locator('#chatScroll')).to_be_visible()
+    expect(page.locator('#chat')).to_contain_text('Saved history anchor')
+    expect(page.locator('#chat')).to_contain_text('Continue long task')
+    assert page.evaluate('loadingSession') is True
+    assert 'history-opening' not in page.locator('#chatScroll').get_attribute('class').split()
+    expect(page.locator('#permMask')).to_have_class('perm-mask visible')
+    page.locator('#permLater').click()
+    page.wait_for_function('chatScroll.scrollTop + chatScroll.clientHeight >= chatScroll.scrollHeight - 2')
+    page.locator('#chatScroll').hover()
+    page.mouse.wheel(0, -600)
+    page.wait_for_function('!followRunOutput')
+    reading_top = page.locator('#chatScroll').evaluate('(element) => element.scrollTop')
+    page.evaluate('releaseRestoreYield()')
+    page.wait_for_function('restoreYieldCallbacks.length > 0')
+    assert page.locator('#chatScroll').evaluate('(element) => element.scrollTop') == reading_top
+    page.locator('[data-sid="idle-live"]').click()
+    page.wait_for_function('context.sessionId === "idle-live" && !loadingSession')
+    page.evaluate('releaseRestoreYield()')
+    expect(page.locator('#chat')).to_contain_text('Idle history anchor')
+    expect(page.locator('#chat')).not_to_contain_text('Recovered final response')
+    page.evaluate('window.holdRestoreYield=true; followRunOutput=false; userScrollActive=false; userScrollIntentUntil=performance.now()+10000; void openHistorySession("long-live")')
+    page.wait_for_function('restoreYieldCallbacks.length > 0 && replayingLiveSnapshot')
+    expect(page.locator('#chatScroll')).to_be_visible()
+    page.evaluate('chatScroll.scrollTop=0; chatScroll.dispatchEvent(new Event("scroll"))')
+    assert page.evaluate('followRunOutput') is True
+    expect(page.locator('#permMask')).to_have_class('perm-mask visible')
+    page.locator('#permOptions .perm-allow').click()
+    page.wait_for_function('!permRequestId')
+    expect(page.locator('#permMask')).not_to_have_class('perm-mask visible')
+    answered = page.evaluate('actions.find(action=>action.action==="control-respond").payload')
+    assert answered['requestId'] == 'late-approval' and answered['runId'] == 901
+    page.evaluate('window.holdRestoreYield=false; releaseRestoreYield()')
+    page.wait_for_function('context.sessionId === "long-live" && !loadingSession && !replayingLiveSnapshot')
+    expect(page.locator('#chat')).to_contain_text('Recovered final response')
+    expect(page.locator('.tool-card')).to_have_count(60)
+    expect(page.locator('#permMask')).not_to_have_class('perm-mask visible')
+    assert page.evaluate('actions.filter(action=>action.action==="control-respond").length') == 1
+    page.wait_for_function('chatScroll.scrollTop + chatScroll.clientHeight >= chatScroll.scrollHeight - 2')
+    page.close()
     for finish in ['cancel', 'complete']:
         page = browser.new_page(viewport={'width':1200,'height':820})
         page.on('pageerror', lambda error: errors.append(str(error)))
@@ -567,8 +655,8 @@ with sync_playwright() as p:
         page.wait_for_function('!running')
         assert page.evaluate('actions.filter(a=>a.action==="cancel").map(a=>a.payload.sessionId)') == [b]
         expect(page.locator('#engineSwitch')).to_be_enabled()
-        # Stop -> hover edit, cancel, failed submission retains text, then resend
-        # in place while A is still working and the composer draft is untouched.
+        # Stop -> edit, copy context without losing edits, explicitly cancel, and
+        # resend while A is still working and the composer draft is untouched.
         page.locator('#input').fill('Unsent next message')
         page.mouse.move(2,2)
         user=page.locator('.msg-user').last
@@ -578,18 +666,37 @@ with sync_playwright() as p:
         user.locator('.message-edit').click()
         editor=page.locator('.message-editor textarea')
         expect(editor).to_have_value('Task B')
-        editor.fill('Discarded by model click')
+        editor.fill('Keep this edit while copying context')
         page.locator('#modelPill').click()
-        expect(page.locator('.message-editor')).to_have_count(0)
+        expect(editor).to_have_value('Keep this edit while copying context')
         expect(page.locator('.dsh-pop')).to_be_visible()
         page.keyboard.press('Escape')
+        page.locator('#selPermission').click()
+        expect(editor).to_have_value('Keep this edit while copying context')
+        page.keyboard.press('Escape')
+        page.locator('#input').click()
+        expect(editor).to_have_value('Keep this edit while copying context')
+        page.locator('.turn').last.hover()
+        page.locator('.turn .message-copy').last.click()
+        expect(editor).to_have_value('Keep this edit while copying context')
+        page.locator(f'[data-sid="{b}"]').click()
+        expect(editor).to_have_value('Keep this edit while copying context')
+        # Headless Chromium keeps pages focused, so simulate leaving the app.
+        editor.focus()
+        page.evaluate("document.activeElement.blur(); window.dispatchEvent(new Event('blur'))")
+        expect(editor).to_have_value('Keep this edit while copying context')
+        page.locator(f'[data-sid="{a}"]').click()
+        page.wait_for_function('(id)=>context.sessionId===id && !loadingSession',arg=a)
+        expect(page.locator('.message-editor')).to_have_count(0)
+        # Return through navigation while A's permission dialog is open.
+        page.evaluate('(id)=>openHistorySession(id)',b)
+        page.wait_for_function('(id)=>context.sessionId===id && !loadingSession',arg=b)
         user.hover(); user.locator('.message-edit').click()
         editor=page.locator('.message-editor textarea')
-        editor.fill('Discarded by permission click')
-        page.locator('#selPermission').click()
+        expect(editor).to_have_value('Task B')
+        editor.press('Escape')
         expect(page.locator('.message-editor')).to_have_count(0)
         user.hover(); user.locator('.message-edit').click()
-        editor=page.locator('.message-editor textarea')
         editor.fill('Canceled edit')
         page.get_by_role('button',name='Cancel',exact=True).filter(visible=True).click()
         expect(user.locator('.bubble')).to_have_text('Task B')
@@ -600,12 +707,12 @@ with sync_playwright() as p:
         page.locator('.message-editor button.primary').click()
         expect(page.locator('.message-editor button.primary')).to_have_text('Sending…')
         expect(page.locator('.message-edit-status')).to_contain_text('Restarting this turn')
-        expect(page.locator('#chat')).not_to_contain_text('Streaming Task B')
+        expect(page.locator('#chat')).not_to_contain_text('Stopped Task B')
         expect(page.locator('.message-editor').get_by_role('button',name='Stop',exact=True)).to_be_enabled()
         page.locator('.message-editor').get_by_role('button',name='Stop',exact=True).click()
         expect(editor).to_have_value('Corrected task B')
         expect(page.locator('.message-edit-status[role="alert"]')).to_contain_text('Fixture compaction canceled')
-        expect(page.locator('#chat')).to_contain_text('Streaming Task B')
+        expect(page.locator('#chat')).to_contain_text('Stopped Task B')
         expect(page.locator('#statusLine')).to_contain_text('Fixture compaction canceled')
         page.evaluate('window.failEdit=false;window.holdEdit=true')
         page.screenshot(path=str(preview/f'edit-message-{engine}.png'),animations='disabled')

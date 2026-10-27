@@ -22,11 +22,11 @@ with sync_playwright() as playwright:
             return {ok:false,error:'Device response timed out; verify state before retrying writes'};
           }
           const conversation = {id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',title:'Server conversation',seq:2,workspaceId:'project',activity:null};
-          const info = {instanceId:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',workspaces:[{id:'project',name:'Paper agent'}],capabilities:['create-workspace','delete-workspace','api-import','attachments','artifacts','restore','native-settings','server-management','move'],engines:['dsh','codex','pi'],nextOffset:null};
+          const info = {instanceId:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',workspaces:[{id:'project',name:'Paper agent'}],capabilities:['create-workspace','delete-workspace','api-import','attachments','artifacts','restore','native-settings','server-management','move'],engines:['dsh','codex','grok'],nextOffset:null};
           if(action === 'server-manage') {
             const operation = payload.request.action;
             const results = {
-              'runtime-state': [{id:'codex',name:'Codex CLI',status:'ready',version:'1.0'},{id:'dsh',name:'DeepSeek Harness',status:'ready',version:'1.0'},{id:'pi',name:'Pi',status:'ready',version:'0.73.1'}],
+              'runtime-state': [{id:'codex',name:'Codex CLI',status:'ready',version:'1.0'},{id:'dsh',name:'DeepSeek Harness',status:'ready',version:'1.0'},{id:'grok',name:'Grok Build',status:'ready',version:'0.73.1'}],
               'runtime-check': [{id:'codex',name:'Codex CLI',installed:'1.0',latest:'1.1'}],
               'settings': {engines:[{id:'codex',model:'model-a'}],api:{models:['model-a']}},
               'usage': {providers:[{name:'Example',requests:3,failures:0,inputTokens:100,outputTokens:50}]},
@@ -139,13 +139,13 @@ with sync_playwright() as playwright:
     expect(page.locator('#serverSettingsBody')).to_contain_text('Files removed: 1')
     page.screenshot(path=str(root / '.tmp-server-settings.png'), full_page=True)
     page.locator('#serverSettingsClose').click()
-    page.locator('#harness').select_option('pi')
-    expect(page.locator('#brandTitle')).to_have_text('Pi')
-    expect(page.locator('#brandIcon')).to_have_attribute('src', '../../../assets/brands/pi.svg')
-    page.locator('#prompt').fill('Start with Pi')
+    page.locator('#harness').select_option('grok')
+    expect(page.locator('#brandTitle')).to_have_text('Grok Build')
+    expect(page.locator('#brandIcon')).to_have_attribute('src', '../../../assets/brands/grok.svg')
+    page.locator('#prompt').fill('Start with Grok Build')
     page.locator('#send').click()
     expect(page.locator('#prompt')).to_have_value('')
-    assert page.evaluate("calls.filter(call => call.action === 'command' && call.payload.command.action === 'create').at(-1).payload.command.engine") == 'pi'
+    assert page.evaluate("calls.filter(call => call.action === 'command' && call.payload.command.action === 'create').at(-1).payload.command.engine") == 'grok'
     page.screenshot(path=str(root / '.tmp-server-workbench-empty.png'), full_page=True)
     page.locator('#harness').select_option('codex')
     page.locator('#draftWorkspace').select_option('project')

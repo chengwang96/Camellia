@@ -5,7 +5,7 @@ let activeButton, progressTimer, started, runtimeMessage = '';
 function showProgress() {
   if (!activeButton) return;
   const seconds = Math.floor((Date.now() - started) / 1000);
-  const name = { dsh: 'DSH', claude: 'Claude Code', codex: 'Codex CLI', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' }[activeButton.dataset.mode];
+  const name = { dsh: 'DSH', claude: 'Claude Code', codex: 'Codex CLI', kimi: 'Kimi Code', antigravity: 'Antigravity', grok: 'Grok Build' }[activeButton.dataset.mode];
   status.textContent = runtimeMessage || `Starting ${name}…${seconds ? ` (waiting ${seconds} seconds)` : ''}`;
 }
 for (const button of document.querySelectorAll('[data-mode]')) {
@@ -56,7 +56,7 @@ async function renderServers() {
     if (!result.ok) throw new Error(result.error);
     const english = result.language === 'en';
     const anchor = document.querySelector('.home-tools');
-    const names = { codex: 'Codex CLI', claude: 'Claude Code', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' };
+    const names = { codex: 'Codex CLI', claude: 'Claude Code', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', grok: 'Grok Build' };
     document.getElementById('cliDivider').hidden = result.devices.length === 0;
     for (const entry of document.querySelectorAll('[data-server]')) entry.remove();
     document.querySelector('#openCliDevices .config-title').textContent = english ? 'Server connections' : '服务器连接';
@@ -135,7 +135,7 @@ function renderRuntimes(rows) {
     runtimeRows.set(row.id, row);
     const button = document.querySelector(`[data-mode="${row.id}"]`);
     if (!button) continue;
-    const name = { dsh: 'DSH', claude: 'Claude', codex: 'Codex', kimi: 'Kimi', antigravity: 'Antigravity', pi: 'Pi' }[row.id];
+    const name = { dsh: 'DSH', claude: 'Claude', codex: 'Codex', kimi: 'Kimi', antigravity: 'Antigravity', grok: 'Grok Build' }[row.id];
     const action = row.updating ? `Updating ${name}…` : row.status === 'ready' ? `Open ${name}` : row.status === 'installing' ? `Downloading ${name}…`
       : row.status === 'error' ? `Retry download & open ${name}` : `Download & open ${name}`;
     button.querySelector('.entry-action').firstChild.textContent = action + ' ';

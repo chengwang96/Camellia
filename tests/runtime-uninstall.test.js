@@ -19,6 +19,11 @@ function kimi(dir) {
   put(path.join(pkg, 'package.json'), { name: ENGINES.kimi.package, version: '1.0.0' });
   return put(path.join(pkg, ENGINES.kimi.entry), '// fixture');
 }
+function grok(dir) {
+  const pkg = path.join(dir, 'node_modules', ENGINES.grok.package);
+  put(path.join(pkg, 'package.json'), { name: ENGINES.grok.package, version: '1.0.70' });
+  return put(path.join(dir, ENGINES.grok.entry + (process.platform === 'win32' ? '.exe' : '')), 'fixture');
+}
 function fixture(t, extra = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-uninstall-'));
   t.after(() => removeTree(root));
@@ -32,7 +37,7 @@ function fixture(t, extra = {}) {
 
 test('managed uninstall preserves runtime manifests, other engines, conversations and account configuration; reinstall remains possible', async t => {
   const f = fixture(t), dir = path.join(f.installed, 'runtimes/kimi');
-  const entry = kimi(dir), other = put(path.join(f.installed, 'runtimes/pi/keep'), 'other engine');
+  const entry = kimi(dir), other = put(path.join(f.installed, 'runtimes/grok/keep'), 'other engine');
   const account = put(path.join(f.installed, 'accounts.json'), 'account settings');
   const conversation = put(path.join(f.installed, 'conversations/keep.json'), 'conversation');
   const manifest = put(path.join(dir, 'package.json'), '{}');
@@ -50,6 +55,18 @@ test('managed uninstall preserves runtime manifests, other engines, conversation
   const reinstaller = createRuntimeManager({ root: f.distribution, installRoot: f.installed, node: process.execPath, npm: 'fixture', discoverLocal: false,
     runCommand: async (_exe, args) => kimi(args[args.indexOf('--prefix') + 1]) });
   assert.equal((await reinstaller.ensure('kimi')).source, 'Installed by Camellia');
+});
+
+test('Grok discovers and removes the isolated GROK_HOME binary with its npm package', async t => {
+  const f = fixture(t), dir = path.join(f.installed, 'runtimes/grok');
+  const entry = grok(dir), manifest = put(path.join(dir, 'package.json'), '{}');
+  assert.equal(f.manager.locate('grok').file, entry);
+  assert.equal(f.manager.locate('grok').version, '1.0.70');
+  await f.manager.uninstall('grok', f.manager.uninstallPlan('grok'));
+  assert.equal(f.manager.locate('grok'), null);
+  assert.equal(fs.existsSync(entry), false);
+  assert.equal(fs.existsSync(path.join(dir, 'node_modules')), false);
+  assert.equal(fs.existsSync(manifest), true);
 });
 
 test('external npm uninstall removes only the selected package and clears only its runtime override', async t => {

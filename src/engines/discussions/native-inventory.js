@@ -10,7 +10,7 @@ const { getDiscussionLaunch } = require('./native-launch');
 const { readJobJournalRecords } = require('./windows-job-journal');
 const { projectAntigravityStorage } = require('./native-storage');
 
-const ENGINES = new Set(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']);
+const ENGINES = new Set(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']);
 const object = value => {
   if (!value || typeof value !== 'object') return false;
   const prototype = Object.getPrototypeOf(value);

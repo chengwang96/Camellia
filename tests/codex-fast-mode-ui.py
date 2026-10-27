@@ -11,7 +11,7 @@ bridge = r"""(() => {
   const defaults = {model:'gpt-6-astra',connection:'subscription',permissionMode:'default',thinkingBudget:'max',fastMode:false,subscriptionId:'account-a'};
   const settings = id => ({...defaults,...JSON.parse(localStorage.getItem('speed-fixture:'+id)||'{}')});
   const rows = ['session-a','session-b'].map(id=>({id,title:id==='session-a'?'Fast mode check':'Another conversation',mtimeMs:Date.now(),currentEngine:engine,origin:engine}));
-  window.savedSpeedSettings = []; window.sentSpeedMessages = []; window.accountReads = [];
+  window.savedSpeedSettings = []; window.sentSpeedMessages = []; window.accountReads = []; window.handoffs = [];
   window.failNextSave = false;
   const account = payload => {
     window.accountReads.push(payload);
@@ -23,6 +23,7 @@ bridge = r"""(() => {
   window.dshDesktop = {
     sharedConversations:true,
     onLanguageChanged:()=>{}, workbenchSettings:async()=>({ok:true,language:'zh-CN'}),
+    conversationSwitch:async payload=>{window.handoffs.push(payload);return {ok:true};},
     conversationCommand:async({action,payload})=>{
       const id=payload?.sessionId;
       if(action==='list-sessions')return {ok:true,sessions:rows,workspaces:[],pagination:{}};
@@ -131,7 +132,7 @@ with sync_playwright() as p:
             expect(toggle).to_have_attribute('aria-pressed', 'false')
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             page.close()
-        for engine in ['claude', 'dsh', 'kimi', 'antigravity', 'pi']:
+        for engine in ['claude', 'dsh', 'kimi', 'antigravity', 'grok']:
             page = browser.new_page()
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.add_init_script(bridge)

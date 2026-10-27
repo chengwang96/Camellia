@@ -25,6 +25,10 @@ bridge += r"""
       };
       return {ok:true, goal:currentGoal};
     }
+    if (request.action === 'send' && request.payload.goalId) {
+      Object.assign(currentGoal, {waiting:null, waitStreak:0, lastWait:null});
+      receiveGoal({sessionId:request.payload.sessionId, goal:currentGoal});
+    }
     return command(request);
   };
 })();
@@ -103,6 +107,11 @@ with sync_playwright() as p:
             assert not errors, errors
             page.screenshot(path=str(preview / f'goal-compaction-{mode}-{theme}.png'), animations='disabled')
             page.evaluate('''() => {
+              const s = sessionFixtures.get(context.sessionId);
+              pushEvent({type:'result',subtype:'success',session_id:s.id,engine:'codex',runId:s.live.runId,result:'Edited answer'});
+            }''')
+            page.wait_for_function('!running && !sending')
+            page.evaluate('''() => {
               Object.assign(currentGoal, {phase:'active', armed:true, waiting:{reason:'Training still running',until:Date.now()+600000}});
               receiveGoal({sessionId:context.sessionId, goal:currentGoal});
             }''')
@@ -113,8 +122,18 @@ with sync_playwright() as p:
             expect(page.locator('.dsh-pop')).to_contain_text('Pause goal')
             expect(page.locator('.dsh-pop')).not_to_contain_text('Resume goal')
             page.screenshot(path=str(preview / f'goal-waiting-{mode}-{theme}.png'), animations='disabled')
+            page.keyboard.press('Escape')
+            page.locator('#input').fill('Check the latest output now')
+            expect(page.locator('#send')).to_be_enabled()
+            page.locator('#input').press('Enter')
+            page.wait_for_function('running && !sending')
+            assert page.evaluate('actions.filter(a=>a.action==="send").at(-1).payload.goalId') == 'goal-long'
+            expect(goal_chip).not_to_contain_text('Goal waiting')
+            goal_chip.click()
             page.locator('.dsh-pop .pop-row', has_text='Pause goal').click()
             expect(goal_chip).to_contain_text('Goal paused')
+            page.evaluate('finishPausedGoal()')
+            page.wait_for_function('!running && !sending')
             page.evaluate('''() => {
               Object.assign(currentGoal, {phase:'blocked', armed:false, storageError:'Could not save goal state: disk full'});
               receiveGoal({sessionId:context.sessionId, goal:currentGoal, error:currentGoal.storageError});
@@ -126,4 +145,4 @@ with sync_playwright() as p:
             assert not errors, errors
             page.close()
     browser.close()
-print('PASS: five-hour Goal pause acknowledgement, follow-up, steering, edit/resend, revised details, waiting schedule/cancellation, and storage errors; light/dark; no model calls')
+print('PASS: five-hour Goal pause acknowledgement, follow-up, steering, edit/resend, revised details, waiting schedule/interruption/cancellation, and storage errors; light/dark; no model calls')

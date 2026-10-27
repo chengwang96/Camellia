@@ -6,7 +6,7 @@
 
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
 
-Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravity, and Pi** into a shared desktop workbench. Use a provider API key or a supported subscription, switch engines within a conversation, and keep settings, usage, and account visibility in one place. A paired Android client and a headless Linux server extend the same workflow beyond the desktop.
+Camellia brings **Claude Code, Codex CLI, DeepSeek Harness, Kimi Code, Antigravity, and Grok Build** into a shared desktop workbench. Use a provider API key or a supported subscription, switch engines within a conversation, and keep settings, usage, and account visibility in one place. A paired Android client and a headless Linux server extend the same workflow beyond the desktop.
 
 ![Current Camellia home screen showing six engines and the discussion, benchmark, server, and settings entries](docs/images/home.png)
 

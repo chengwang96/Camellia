@@ -236,7 +236,7 @@ class RemoteCommands {
     }
     if (payload.action === 'create') {
       this.authorizeCreate(deviceId, payload.workspaceId);
-      if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(payload.engine)) fail(400, 'Invalid engine');
+      if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(payload.engine)) fail(400, 'Invalid engine');
       const created = this.reader.manager.create(payload.engine, payload.workspaceId || undefined);
       return { ok: true, state: 'accepted', conversation: this.reader.summary(created) };
     }
@@ -273,7 +273,7 @@ class RemoteCommands {
         return { ok: true, state: 'accepted', conversation: this.reader.summary(manager.fork(conversation.currentEngine, { sessionId: id })) };
       }
       if (payload.action === 'switch-engine') {
-        if (!(manager.remoteEngines || ['dsh', 'codex', 'kimi', 'claude', 'antigravity', 'pi']).includes(payload.engine)) fail(400, 'Unsupported engine');
+        if (!(manager.remoteEngines || ['dsh', 'codex', 'kimi', 'claude', 'antigravity', 'grok']).includes(payload.engine)) fail(400, 'Unsupported engine');
         await manager.switchEngine(id, payload.engine);
       } else await manager.compact(id);
       return { ok: true, state: 'accepted' };

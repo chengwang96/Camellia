@@ -22,8 +22,9 @@ function harness({ beforeSave = async () => {}, insights = async () => ({ ok: tr
   };
   const sandbox = { structuredClone, console, module: { exports: {} },
     setTimeout: () => 1, clearTimeout() {},
-    document: { getElementById: element, querySelector: () => null },
-    window: { CamelliaI18n: { locale: 'en-US' }, CamelliaModelNames: require('../src/shared/model-names'), dshDesktop: {
+    document: { getElementById: element, querySelector: () => null, addEventListener() {} },
+    window: { CamelliaI18n: { locale: 'en-US' }, CamelliaModelNames: require('../src/shared/model-names'),
+      CamelliaProviderBrands: require('../src/shared/provider-brands'), dshDesktop: {
       apiRouterSaveConfig: async snapshot => {
         snapshots.push(structuredClone(snapshot));
         await beforeSave(snapshot, snapshots.length);

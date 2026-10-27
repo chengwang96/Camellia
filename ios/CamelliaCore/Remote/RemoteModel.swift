@@ -148,13 +148,13 @@ public enum RemoteEngine: String, Sendable, CaseIterable {
     case kimi
     case dsh
     case antigravity
-    case pi
+    case grok
 
     /// Used when the desktop advertises nothing.
     public static let fallback: [RemoteEngine] = [.codex, .claude, .kimi, .dsh, .antigravity]
 
     public var label: String {
-        self == .pi ? "Pi" : rawValue.uppercased()
+        self == .grok ? "Grok Build" : rawValue.uppercased()
     }
 
     /// The engines to offer for a new conversation.

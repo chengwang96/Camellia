@@ -62,6 +62,10 @@ test('Tool diagnostics identify native failures without treating successfully re
   assert.equal(failedToolResult('Read', kimiFailure), false);
   assert.equal(failedToolResult('Bash', 'Wall time: 0.056 seconds\nRead log:\n' + kimiFailure), false);
   assert.equal(failedToolResult('apply_patch', 'apply_patch verification failed: no match'), true);
+  assert.equal(failedToolResult('search_replace', 'The string to replace was not found in the file, use read_file.'), true);
+  assert.equal(failedToolResult('run_terminal_command', 'exit: 7\nEXPECTED_SHELL_ERROR_7\n'), true);
+  assert.equal(failedToolResult('run_terminal_command', 'exit: 0\nok\n'), false);
+  assert.equal(failedToolResult('read_file', 'exit: 7\nnot a shell result'), false);
   assert.equal(failedToolResult('exec_command', 'Chunk ID: 7302aa\nWall time: 0.3 seconds\nProcess exited with code 7\nOriginal token count: 6\nOutput:\nEXPECTED_SHELL_ERROR_7'), true);
   assert.equal(failedToolResult('exec_command', 'Chunk ID: 7302aa\nWall time: 0.3 seconds\nProcess exited with code 0\nOriginal token count: 9\nOutput:\nProcess exited with code 3 in a log'), false);
   assert.equal(failedToolResult('bash', 'EXPECTED' + String.fromCharCode(10) + '[exit code: 7]'), true);

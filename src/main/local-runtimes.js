@@ -31,7 +31,7 @@ function createLocalRuntimeDiscovery({ engines, node, platform = process.platfor
   const versions = new Map();
   const directories = () => [...new Set([
     ...(env.PATH || env.Path || '').split(platform === 'win32' ? ';' : ':').map(dir => dir.replace(/^"|"$/g, '')).filter(dir => path.isAbsolute(dir)),
-    path.join(home, '.local', 'bin'),
+    path.join(home, '.local', 'bin'), path.join(home, '.grok', 'bin'),
     ...(platform === 'win32' ? [env.APPDATA && path.join(env.APPDATA, 'npm'), env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Programs', 'claude-code')].filter(Boolean)
       : ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']),
   ])];
@@ -119,7 +119,7 @@ function createLocalRuntimeDiscovery({ engines, node, platform = process.platfor
         if (found) break;
       }
     }
-    if (!found && ['claude', 'codex', 'antigravity'].includes(engine)) found = nativeRuntime(engine,
+    if (!found && ['claude', 'codex', 'antigravity', 'grok'].includes(engine)) found = nativeRuntime(engine,
       engine === 'antigravity' ? [...directories(), ...antigravityDirectories({ platform, env, home })] : directories());
     return found ? { ...found, source: 'Available locally', external: true, ...(engine === 'antigravity' ? { mode } : {}) } : null;
   }

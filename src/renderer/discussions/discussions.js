@@ -59,7 +59,7 @@ function icon(path, className = '') {
 function avatar(engine, className = '') {
   const mark = node('span', 'engine-mark ' + className), image = node('img');
   mark.dataset.engine = engine; mark.setAttribute('aria-hidden', 'true'); image.alt = '';
-  image.src = '../../../assets/brands/' + ({ codex: 'codex.png', dsh: 'deepseek.svg', claude: 'claude.svg', kimi: 'kimi.svg', pi: 'pi.svg', antigravity: 'antigravity.svg' }[engine] || 'codex.png');
+  image.src = '../../../assets/brands/' + ({ codex: 'codex.png', dsh: 'deepseek.svg', claude: 'claude.svg', kimi: 'kimi.svg', grok: 'grok.svg', antigravity: 'antigravity.svg' }[engine] || 'codex.png');
   mark.append(image); return mark;
 }
 function identityButton(memberId, name, engine, roster = false) {
@@ -265,7 +265,7 @@ function renderMembers() {
   $('roster').replaceChildren(...members.map(p => {
     const card = node('div', 'member-card'), head = node('div', 'member-head'); card.dataset.memberId = p.id;
     head.append(identityButton(p.id, p.name, p.engine, true));
-    const engineName = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' }[p.engine] || p.engine;
+    const engineName = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', grok: 'Grok Build' }[p.engine] || p.engine;
     const model = node('span', 'member-model', `${engineName} · ${p.connection === 'api' ? 'API' : t('Subscription')} · ${p.model}`); model.title = model.textContent;
     const active = group.deliveries.find(d => d.participantId === p.id && openStatuses.has(d.status));
     const verifying = p.verifying || verifyingMembers.has(p.id);

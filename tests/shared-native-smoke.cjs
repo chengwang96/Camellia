@@ -20,7 +20,7 @@ const { ClaudeHistory } = require('../src/engines/claude-history');
 const { createCodex } = require('../src/engines/codex');
 const { createAntigravity } = require('../src/engines/antigravity');
 const { createDshChat } = require('../src/engines/dsh-session');
-const { createPiChat } = require('../src/engines/pi-session');
+const { createGrokChat } = require('../src/engines/grok-session');
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-shared-native-'));
@@ -34,7 +34,7 @@ async function main() {
     try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); requests.push(body);
-      const marker = JSON.stringify(body.messages || []).match(/CONCURRENT_(?:A|B)_(?:claude|codex|dsh|kimi|antigravity|pi)/)?.[0];
+      const marker = JSON.stringify(body.messages || []).match(/CONCURRENT_(?:A|B)_(?:claude|codex|dsh|kimi|antigravity|grok)/)?.[0];
       if (marker && holdConcurrent) await new Promise(resolve => held.set(marker, { resolve, body }));
       const asksQuestion = JSON.stringify(body.messages || []).includes('ASK_QUESTION_FIXTURE') && body.tools?.some(tool => tool.function?.name === 'AskUserQuestion');
       const hasAnswer = body.messages?.some(message => message.role === 'tool' && message.tool_call_id === 'question-fixture');
@@ -64,9 +64,9 @@ async function main() {
     const common = { dataDir: root, loadConfig, saveConfig, getRoute: () => route, getModels: () => ['fixture-model', 'fixture-picked'], runtimes: () => runtimes,
       environment: () => isolatedEnvironment(root, process.execPath), log, onGoal: () => {}, onAccount: () => {} };
     const drivers = {};
-    for (const engine of ['codex', 'antigravity', 'dsh', 'pi']) {
-      const options = { ...common, onEvent: event => manager.capture(engine, event), node: () => process.execPath, runtime: () => runtimes.locate(engine) };
-      const instance = engine === 'codex' ? createCodex(options) : engine === 'antigravity' ? createAntigravity(options) : engine === 'pi' ? createPiChat(options) : createDshChat(options);
+    for (const engine of ['codex', 'antigravity', 'dsh', 'grok']) {
+      const options = { ...common, onEvent: event => manager.capture(engine, event), node: () => process.execPath, runtime: () => runtimes.locate(engine), accounts: {} };
+      const instance = engine === 'codex' ? createCodex(options) : engine === 'antigravity' ? createAntigravity(options) : engine === 'grok' ? createGrokChat(options) : createDshChat(options);
       drivers[engine] = { settings: instance.settings, saveSettings: instance.saveSettings, ensure: instance.ensure || instance.ensureSession };
       instances.push(instance);
     }

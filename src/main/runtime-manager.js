@@ -28,7 +28,7 @@ const ENGINES = {
   dsh: { name: 'DeepSeek Harness', package: '@deepseek-ai/dsh', entry: 'lib/bin.js',
     requires: ['node_modules/@deepseek-ai/dsh-app-boot/package.json'] },
   kimi: { name: 'Kimi Code', package: '@moonshot-ai/kimi-code', entry: 'dist/main.mjs' },
-  pi: { name: 'Pi', package: '@mariozechner/pi-coding-agent', entry: 'dist/cli.js' },
+  grok: { name: 'Grok Build', package: '@xai-official/grok', entry: '.grok/bin/grok' },
   antigravity: { name: 'Antigravity', type: 'python' },
 };
 function run(exe, args, options = {}, onOutput = () => {}) {
@@ -72,7 +72,9 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
       if (!cpu || !suffix) throw new Error('Unsupported Codex runtime platform');
       return path.join(dir, 'node_modules', '@openai', `codex-${platform}-${arch}`, 'vendor', `${cpu}-${suffix}`, 'bin', platform === 'win32' ? 'codex.exe' : 'codex');
     }
-    return path.join(dir, 'node_modules', ENGINES[engine].package, ENGINES[engine].entry);
+    const relative = ENGINES[engine].entry;
+    if (engine === 'grok') return path.join(dir, platform === 'win32' ? relative + '.exe' : relative);
+    return path.join(dir, 'node_modules', ENGINES[engine].package, relative);
   };
   // Antigravity consumes a runtime only in Google subscription mode; API mode
   // runs on the shared Python interpreter instead.
@@ -153,7 +155,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
         const installDir = fs.realpathSync.native(staging);
         const args = [npm, 'ci', '--prefix', installDir, '--no-audit', '--no-fund'];
         if (engine === 'kimi') args.push('--omit=optional', '--ignore-scripts');
-        await runCommand(node, args, { cwd: installDir, env: { ...connection.env, PATH: path.dirname(node) + path.delimiter + process.env.PATH } });
+        await runCommand(node, args, { cwd: installDir, env: { ...connection.env, ...(engine === 'grok' ? { GROK_HOME: path.join(installDir, '.grok') } : {}), PATH: path.dirname(node) + path.delimiter + process.env.PATH } });
         if (engine === 'dsh') patchDsh(staging);
         if (!locateIn(staging, engine, mode)) throw new Error('Installation did not produce an executable. Please retry.');
         // Keep the previous tree until the swap succeeds, then drop it.
@@ -237,7 +239,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
     if (runtimeDir) {
       const directory = fs.realpathSync.native(runtimeDir);
       if (directory !== path.join(fs.realpathSync.native(path.dirname(runtimeDir)), engine)) throw new Error('The runtime directory points outside its installation');
-      const targets = engine !== 'antigravity' ? ['node_modules']
+      const targets = engine === 'grok' ? ['node_modules', '.grok'] : engine !== 'antigravity' ? ['node_modules']
         : mode === 'subscription' ? ['cli'] : ['packages', 'installed.json'];
       plan.targets = targets.map(name => path.join(directory, name));
       for (const target of plan.targets) {
@@ -315,7 +317,7 @@ function createRuntimeManager({ root, installRoot, node, npm, onChange = () => {
           const installDir = fs.realpathSync.native(staging);
           const args = [npm, 'ci', '--prefix', installDir, '--no-audit', '--no-fund'];
           if (engine === 'kimi') args.push('--omit=optional', '--ignore-scripts');
-          await runCommand(node, args, { cwd: installDir, env: { ...connection.env, PATH: path.dirname(node) + path.delimiter + (env.PATH || env.Path || '') } });
+          await runCommand(node, args, { cwd: installDir, env: { ...connection.env, ...(engine === 'grok' ? { GROK_HOME: path.join(installDir, '.grok') } : {}), PATH: path.dirname(node) + path.delimiter + (env.PATH || env.Path || '') } });
           if (engine === 'dsh') patchDsh(staging);
         }
         const prepared = locateIn(staging, engine, plan.mode);

@@ -4,11 +4,11 @@ const { readJson, writeJson } = require('../shared/json-store');
 const { recordUsage, dayId } = require('./api-usage');
 const { estimateTokens, catalogInfo } = require('./subscription-pricing');
 
-const ENGINES = new Set(['codex', 'kimi', 'antigravity']);
+const ENGINES = new Set(['codex', 'kimi', 'antigravity', 'grok']);
 const EXTRA = ['reasoningTokens', 'estimatedCostUsd', 'pricedTokens', 'unpricedTokens', 'approximateTokens'];
 const count = value => Number.isFinite(value) && value >= 0 ? value : 0;
 function subscriptionProfiles(config) {
-  const names = { codex: 'ChatGPT / Codex', kimi: 'Kimi Code', antigravity: 'Google / Antigravity' };
+  const names = { codex: 'ChatGPT / Codex', kimi: 'Kimi Code', antigravity: 'Google / Antigravity', grok: 'Grok Build' };
   return Object.keys(names).flatMap(engine => require('../engines/subscription-accounts').accountsFor(config, engine)
     .map(account => ({ id: `${engine}:${account.id}`, engine, accountId: account.id,
       provider: names[engine], label: account.label || `${names[engine]} · ${account.id}` })));

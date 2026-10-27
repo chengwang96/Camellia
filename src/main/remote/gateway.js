@@ -166,7 +166,7 @@ class RemoteGateway {
       } else fail(405, 'Unsupported management method');
       return;
     }
-    const native = /^\/v1\/native-settings\/(claude|codex|kimi|dsh|antigravity|pi)$/.exec(url.pathname);
+    const native = /^\/v1\/native-settings\/(claude|codex|kimi|dsh|antigravity|grok)$/.exec(url.pathname);
     if (native && this.nativeSettings) {
       if (device.permission !== 'control' || device.allWorkspaces !== true) fail(403, 'Full-device control permission required');
       if (url.search || !['GET', 'POST'].includes(request.method)) fail(400, 'Invalid native settings request');
@@ -267,7 +267,7 @@ class RemoteGateway {
     if (this.commands && fullControl && this.reader.manager.drivers.codex?.resetCredits) capabilities.push('codex-reset-credits');
     capabilities.push('list-query');
     return { protocol: 1, permission: device.permission, capabilities,
-      engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine)),
+      engines: (this.reader.manager.remoteEngines || ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']).filter(engine => ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine)),
       workspaces: this.reader.workspaces().filter(item => device.allWorkspaces || device.workspaceIds.includes(item.id)),
       includeUnassigned: Boolean(device.allWorkspaces || device.includeUnassigned) };
   }

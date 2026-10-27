@@ -218,23 +218,3 @@ for (const enabled of [false, true]) test('stdio MCP exposes web tools only when
   if (enabled) assert.equal(JSON.parse(result.content[0].text).results[0].url, row.url);
   assert.equal(JSON.stringify(bridge.config).includes('private-official'), false);
 });
-
-for (const enabled of [false, true]) test('Pi registers and executes web tools through the same authenticated bridge: ' + enabled, async t => {
-  const service = createWebTools({ getConfig: configured, fetchImpl: async () => Response.json({ title: row.title, content: row.content }) });
-  const bridge = await createGoalToolBridge({ node: process.execPath, webTools: enabled, call: (name, args, options) => service.call(name, args, options) });
-  const previous = Object.fromEntries(Object.keys(bridge.config.env).map(key => [key, process.env[key]]));
-  Object.assign(process.env, bridge.config.env);
-  t.after(async () => {
-    for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    await bridge.close();
-  });
-  const registered = [];
-  const extension = await import('../src/engines/pi-extension.mjs?web-test=' + enabled);
-  extension.default({ on() {}, registerTool: tool => registered.push(tool) });
-  const web = registered.filter(tool => tool.name.startsWith('camellia_web_'));
-  assert.equal(web.length, enabled ? 2 : 0);
-  if (enabled) {
-    const result = await web.find(tool => tool.name === 'camellia_web_fetch').execute('call', { url: row.url, run_token: 'current' });
-    assert.equal(result.isError, false); assert.equal(result.details.content, row.content);
-  }
-});

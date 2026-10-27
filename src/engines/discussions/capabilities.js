@@ -4,7 +4,7 @@ const { createHash } = require('node:crypto');
 
 const CONNECTIONS = Object.freeze({
   claude: ['api'], codex: ['api', 'subscription'], dsh: ['api'],
-  kimi: ['api', 'subscription'], antigravity: ['api', 'subscription'], pi: ['api'],
+  kimi: ['api', 'subscription'], antigravity: ['api', 'subscription'], grok: ['api', 'subscription'],
 });
 
 function bindingFingerprint(binding) {

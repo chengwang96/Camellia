@@ -128,7 +128,7 @@ with sync_playwright() as playwright:
         # The source belongs to the event/history, not the page's selected harness
         # or the connection type. Portable and old unknown notices stay generic.
         for seq, (engine, name) in enumerate([('codex', 'Codex'), ('claude', 'Claude'),
-                ('kimi', 'Kimi'), ('dsh', 'DSH'), ('antigravity', 'Antigravity'), ('pi', 'Pi')], start=20):
+                ('kimi', 'Kimi'), ('dsh', 'DSH'), ('antigravity', 'Antigravity'), ('grok', 'Grok')], start=20):
             page.evaluate("""engine => deliverStatus({sessionId:'shared-fixture',text:'Compacting context…',
               compaction:{state:'running',native:true,engine}})""", engine)
             expect(page.locator('.context-compaction[data-state="running"] span[data-i18n]')).to_have_text(f'{name}：正在原生压缩上下文…')

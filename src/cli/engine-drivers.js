@@ -10,6 +10,9 @@ const { ClaudeHistory } = require('../engines/claude-history');
 const { ClaudeSession } = require('../engines/claude-session');
 const { KimiSession, kimiSpawnSpec, kimiConnectionSettings, updateKimiConnectionSettings } = require('../engines/kimi-session');
 const { createKimiAccount } = require('../engines/kimi-account');
+const { createGrokChat } = require('../engines/grok-session');
+const { createGrokAccount } = require('../engines/grok-account');
+const { createAccountPool } = require('../engines/subscription-accounts');
 const { createCodex } = require('../engines/codex');
 const { createDshChat } = require('../engines/dsh-session');
 const { createAntigravity } = require('../engines/antigravity');
@@ -142,17 +145,29 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
     cliSettingsFile: path.join(dataDir, 'google-native/.gemini/antigravity-cli/settings.json'), node: () => process.execPath,
     openLogin: async () => { throw new Error('Use native-login in the server terminal for Google sign-in'); },
     isBusy: () => isBusy('antigravity'), onEvent: event => onEvent('antigravity', event), onGoal: noLog, log: noLog });
-  const pi = require('../engines/pi-session').createPiChat({ dataDir, loadConfig, saveConfig, getRoute, getModels: models,
-    runtime: () => locate('pi'), node: () => process.execPath, environment, onEvent: event => onEvent('pi', event), log: noLog,
-    instructions: () => native.config('pi', 'instructions'), nativeRevision: () => native.fingerprint('pi') });
-  const drivers = { dsh, pi, codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession,
+  const grokAccount = createAccountPool({ engine: 'grok', userData: dataDir,
+    root: path.join(dataDir, 'grok-subscription'), bindingsKey: 'grokSessionAccounts', loadConfig, saveConfig,
+    createService: (profile, notify) => createGrokAccount({ home: profile.home,
+      runtime: () => runtimes.locate('grok'), ensureRuntime: () => Promise.resolve(locate('grok')), environment,
+      getProxyUrl: () => loadConfig().grok?.proxyUrl || '',
+      isBusy: () => isBusy('grok'), openExternal: openExternal('grok'),
+      onModels: entries => { if (!loadConfig().grok?.subscriptionModel && entries.length) saveConfig({ grok: { ...loadConfig().grok, subscriptionModel: (entries.find(entry => entry.isDefault) || entries[0]).id } }); },
+      onChange: () => notify(),
+    }) });
+  const grok = require('../engines/grok-session').createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels: models, getContextWindow: context,
+    runtimes: () => runtimes, environment, accounts: grokAccount, createUsageMeter,
+    nativeConfig: () => native.config('grok'), nativeRevision: () => native.fingerprint('grok'),
+    nativeInstructions: () => native.config('grok', 'instructions'),
+    onEvent: event => onEvent('grok', event), log: noLog });
+  const drivers = { dsh, grok: { ...grok, subscriptionAccounts: () => grokAccount.state(),
+    shutdown: async () => { await grok.shutdown(); await grokAccount.shutdown(); } }, codex: { sessions: codex.sessions, history: codex.history, settings: codex.settings, saveSettings: codex.saveSettings, ensure: codex.ensureSession,
     subscriptionAccounts: () => codex.accountState(),
     resetCredits: { preview: payload => codex.handlers['account-reset-preview'](payload), consume: payload => codex.handlers['account-reset-consume'](payload) },
     nativeCompaction: true, nativeEditing: true, shutdown: () => codex.shutdown() }, kimi, claude };
   drivers.antigravity = { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings,
     ensure: antigravity.ensureSession, nativeAutoCompaction: true, shutdown: () => antigravity.shutdown() };
   require('../engines/discussions/native-access').installDiscussionGuards({ dataDir, drivers: {
-    codex, antigravity, dsh, pi,
+    codex, antigravity, dsh, grok,
     claude: { sessions: claudePool, history: claudeHistory }, kimi: { sessions: kimiPool, history: kimiHistory },
   } });
   for (const [engine, service] of [['codex', codex], ['antigravity', antigravity]]) {
@@ -177,18 +192,19 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
       if (engine === 'kimi') await kimiPool.shutdown();
       else await drivers[engine].shutdown?.();
     },
-    accountBusy(engine) { return engine === 'kimi' ? kimiAccount.active : engine === 'codex' ? codex.accountState().loginPending : false; },
+    accountBusy(engine) { return engine === 'kimi' ? kimiAccount.active : engine === 'grok' ? grokAccount.active : engine === 'codex' ? codex.accountState().loginPending : false; },
     prepare(engine, settings) {
       locate(engine, engine === 'antigravity' ? settings.connection : undefined); if (!drivers[engine]) throw new Error('Engine is unavailable on this server');
       if (engine === 'kimi' && (kimiAccount.state().loginPending || kimiAccount.state().refreshing)) throw new Error('Wait for Kimi account operation to finish');
       if (engine === 'codex' && codex.accountState().loginPending) throw new Error('Wait for Codex account operation to finish');
+      if (engine === 'grok' && (grokAccount.state().loginPending || grokAccount.state().refreshing)) throw new Error('Wait for Grok account operation to finish');
     },
     models(engine, settings) {
       if (engine === 'claude' && settings.connection === 'subscription') return settings.model ? [{ id: settings.model, name: settings.model, thinking: [] }] : [];
-      return conversationModels(engine, settings, { router, codex: id => codex.accountState(id), kimi: () => kimiAccount.state(), antigravity: () => antigravity.handlers['account-state']() });
+      return conversationModels(engine, settings, { router, codex: id => codex.accountState(id), kimi: () => kimiAccount.state(), grok: id => grokAccount.state(id), antigravity: () => antigravity.handlers['account-state']() });
     },
     async account(engine, action) {
-      if (!['codex', 'kimi', 'antigravity'].includes(engine)) throw new Error('Use the native server terminal login for this engine');
+      if (!['codex', 'kimi', 'antigravity', 'grok'].includes(engine)) throw new Error('Use the native server terminal login for this engine');
       if (!['state', 'refresh', 'login', 'cancel', 'logout'].includes(action)) throw new Error('Invalid account action');
       if (action !== 'state' && isBusy(engine)) throw new Error('Stop this engine before changing accounts');
       if (action === 'login') { locate(engine); delete links[engine]; }
@@ -197,20 +213,22 @@ function createEngineDrivers({ root, dataDir, loadConfig, saveConfig, onEvent, g
         if (!['state', 'refresh'].includes(action)) throw new Error('Use the native server terminal to sign in or out of Google');
         result = await antigravity.handlers[action === 'state' ? 'account-state' : 'account-refresh']();
       } else if (engine === 'codex') result = await codex.handlers[{ state: 'account-state', refresh: 'account-refresh', login: 'sign-in', cancel: 'cancel-login', logout: 'sign-out' }[action]]();
-      else result = await kimiAccount[{ state: 'state', refresh: 'refresh', login: 'signIn', cancel: 'cancelLogin', logout: 'signOut' }[action]]();
+      else if (engine === 'kimi') result = await kimiAccount[{ state: 'state', refresh: 'refresh', login: 'signIn', cancel: 'cancelLogin', logout: 'signOut' }[action]]();
+      else result = await grokAccount[{ state: 'state', refresh: 'refresh', login: 'signIn', cancel: 'cancelLogin', logout: 'signOut' }[action]]();
       if (action === 'logout' || action === 'cancel') delete links[engine];
-      result ||= engine === 'kimi' ? kimiAccount.state() : {};
+      result ||= engine === 'kimi' ? kimiAccount.state() : engine === 'grok' ? grokAccount.state() : {};
       return { engine, signedIn: Boolean(result.account || engine === 'antigravity' && result.models?.length), loginPending: Boolean(result.loginPending), login: result.login || null,
         loginUrl: result.loginPending ? links[engine] || null : null, models: (result.models || []).map(model => ({ id: model.id, name: model.displayName || model.name || model.id })) };
     },
     nativeLogin(engine, action = 'login') {
-      if (!['claude', 'codex', 'antigravity'].includes(engine)) throw new Error('This engine uses the account command');
+      if (!['claude', 'codex', 'antigravity', 'grok'].includes(engine)) throw new Error('This engine uses the account command');
       if (!['login', 'logout', 'status'].includes(action) || engine === 'antigravity' && action !== 'login') throw new Error('Use the native Google CLI menu for logout and account status');
+      if (engine === 'grok' && action === 'status') throw new Error('Use the account command for Grok status');
       if (isBusy(engine)) throw new Error('Stop engine conversations before signing in');
       const runtime = locate(engine, engine === 'antigravity' ? 'subscription' : undefined);
-      const home = engine === 'claude' ? claudeHome : engine === 'antigravity' ? googleHome : codex.accountState().home;
+      const home = engine === 'claude' ? claudeHome : engine === 'antigravity' ? googleHome : engine === 'grok' ? grokAccount.home() : codex.accountState().home;
       fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-      const args = engine === 'claude' ? ['auth', action] : engine === 'codex' ? action === 'login' ? ['login', '--device-auth'] : action === 'status' ? ['login', 'status'] : ['logout'] : [];
+      const args = engine === 'claude' ? ['auth', action] : engine === 'grok' ? action === 'login' ? ['login', '--device-auth'] : ['logout'] : engine === 'codex' ? action === 'login' ? ['login', '--device-auth'] : action === 'status' ? ['login', 'status'] : ['logout'] : [];
       return { executable: runtime.file, args, home, engine };
     },
   };

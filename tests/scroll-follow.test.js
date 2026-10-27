@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
 
 test('stream following survives consecutive programmatic scroll events', () => {
   const { state, dispatch, layout } = scrollFixture();
@@ -45,7 +45,7 @@ function scrollFixture() {
     performance: { now: () => 1000 }, setTimeout() {}, clearTimeout() {}, saveDraft() {},
     ResizeObserver: class { constructor(callback) { resize = callback; } observe() {} },
     sessionOpenSeq: 1, userScrollIntentUntil: 0, userScrollActive: false,
-    followScrollFrame: null, running: false, followRunOutput: false,
+    followScrollFrame: null, running: false, followRunOutput: false, replayingLiveSnapshot: false,
     requestAnimationFrame(callback) { frames.set(++frameId, callback); return frameId; },
     cancelAnimationFrame(id) { frames.delete(id); },
   };
@@ -172,7 +172,10 @@ test('restoring a draft ignores legacy scroll positions without losing composer 
   }
 });
 
-test('history scrolls after draft and live state restoration', () => {
-  const history = source.slice(source.indexOf('  async function openHistorySession(id)'), source.indexOf('  async function renderHistoryMessages(messages)'));
-  assert.match(history, /restoreDraft\(\);[\s\S]*await applyLiveRun\(res.live\)[\s\S]*void goalUI.refresh\(\);[\s\S]*scrollToLatest\(\);\s*return true;/);
+test('history is revealed before live replay and final scrolling follows the reader', () => {
+  const history = source.slice(source.indexOf('  async function openHistorySession(id)'), source.indexOf('  async function renderHistoryMessages(messages, pagination)'));
+  assert.match(history, /resetConversationView\(\);\s*followRunOutput = true;\s*userScrollActive = false;\s*userScrollIntentUntil = 0;/);
+  assert.match(history, /restoreDraft\(\);[\s\S]*await applyLiveRun\(res.live\)[\s\S]*void goalUI.refresh\(\);[\s\S]*if \(followRunOutput && !userScrollActive\) scrollToLatest\(\);\s*return true;/);
+  const live = source.slice(source.indexOf('  async function applyLiveRun(live)'), source.indexOf('  // ---------- settings panel'));
+  assert.match(live, /renderHistoryMessages\(live\.messages, live\.historyPage\)[\s\S]*scrollToLatest\(\);[\s\S]*classList\.remove\('history-opening'\)[\s\S]*for \(let index = 0; index < replayEvents\.length; index\+\+\)/);
 });

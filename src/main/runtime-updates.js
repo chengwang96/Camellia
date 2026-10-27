@@ -204,7 +204,9 @@ function createRuntimeUpdates({ manager, engines, node, npm, run, downloadSettin
     const installDir = fs.realpathSync.native(dir);
     const args = [npm, 'install', '--prefix', installDir, '--save-exact', `${engines[engine].package}@${latest}`, '--no-audit', '--no-fund'];
     if (engine === 'kimi') args.push('--omit=optional', '--ignore-scripts');
-    await run(node, args, { cwd: installDir, env: { ...connection.env, PATH: path.dirname(node) + path.delimiter + process.env.PATH } });
+    await run(node, args, { cwd: installDir, env: { ...connection.env,
+      ...(engine === 'grok' ? { GROK_HOME: path.join(installDir, '.grok') } : {}),
+      PATH: path.dirname(node) + path.delimiter + process.env.PATH } });
     if (engine === 'dsh') patchDsh(dir);
   }
 

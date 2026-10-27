@@ -10,7 +10,7 @@ with sync_playwright() as playwright:
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.add_init_script("""
       window.calls = {checks: 0, settings: [], launches: []};
-      window.rows = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].map(id => ({
+      window.rows = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].map(id => ({
         id, name: id, status: 'ready', version: '1.0.0', mode: 'api'
       }));
       rows[0].name = 'Claude Code';

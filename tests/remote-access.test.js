@@ -920,41 +920,80 @@ test('artifact listing and streaming expose only authorized workspace deliverabl
   assert.equal((await request(gateway, route, { token })).status, 401);
 });
 
-test('phone artifact lists sort file updates newest first across replies and subtasks', async context => {
+test('phone artifact lists keep latest deliveries first when files are edited or redelivered', async context => {
   const { root, manager, gateway, visible, pair } = fixture(context);
+  let now = Date.now();
+  context.mock.method(Date, 'now', () => now);
   const write = (name, seconds, contents = name) => {
     const target = path.join(root, name);
     fs.writeFileSync(target, contents);
     fs.utimesSync(target, 1700000000 + seconds, 1700000000 + seconds);
   };
-  write('reused.md', 0);
-  write('newest.pdf', 30);
-  write('child.md', 10);
-  write('tie-first.txt', 20);
-  write('tie-last.txt', 20);
-  manager.append(visible, { role: 'assistant', text: '`reused.md` `newest.pdf` `tie-first.txt`' });
-  manager.append(visible, { role: 'assistant', text: '`tie-last.txt` `reused.md`' });
-  visible.subagents = [{ id: 'old-child', engine: 'codex', status: 'completed', userSeq: 1,
-    title: 'Earlier subtask', artifacts: [{ path: 'child.md' }, { path: 'tie-last.txt' }], result: '`child.md` `tie-last.txt`' }];
+  write('earlier.pdf', 30);
+  write('latest.md', 0);
+  manager.append(visible, { role: 'assistant', text: '`earlier.pdf`' });
+  now += 10;
+  manager.append(visible, { role: 'assistant', text: '`latest.md`', artifacts: [{ path: 'latest.md' }] });
   const { token } = pair();
   await gateway.start('127.0.0.1', 0);
   const route = `/v1/conversations/${visible.id}/artifacts`;
   const first = (await request(gateway, route, { token })).body.artifacts;
-  assert.deepEqual(first.map(file => file.name), ['newest.pdf', 'tie-last.txt', 'tie-first.txt', 'child.md', 'reused.md']);
-  assert.equal(first.find(file => file.name === 'child.md').source, 'Earlier subtask');
-  assert.equal(first.find(file => file.name === 'tie-last.txt').source, 'Main conversation');
-  const original = first.find(file => file.name === 'reused.md');
-  // Updating a previously delivered path moves its single row to the top,
-  // even without a new assistant message mentioning the file.
-  write('reused.md', 40, 'Updated report');
+  assert.deepEqual(first.map(file => file.name), ['latest.md', 'earlier.pdf']);
+  assert.ok(first[0].modifiedAt < first[1].modifiedAt, 'Delivery order must take precedence over file modification times');
+  const original = first.find(file => file.name === 'earlier.pdf');
+  // A disk edit invalidates the old download identity without changing when
+  // the file was delivered. Only a later reply moves it ahead of latest.md.
+  write('earlier.pdf', 40, 'Updated report');
   const updated = (await request(gateway, route, { token })).body.artifacts;
-  assert.deepEqual(updated.map(file => file.name), ['reused.md', 'newest.pdf', 'tie-last.txt', 'tie-first.txt', 'child.md']);
-  assert.notEqual(updated[0].id, original.id);
-  assert.equal(new Set(updated.map(file => file.id)).size, 5);
+  assert.deepEqual(updated.map(file => file.name), ['latest.md', 'earlier.pdf']);
+  assert.notEqual(updated[1].id, original.id);
   assert.equal((await request(gateway, route + '/' + original.id, { token })).status, 404);
-  const download = await fetch(gateway.url + route + '/' + updated[0].id, { headers: { Authorization: `Bearer ${token}` } });
+  const download = await fetch(gateway.url + route + '/' + updated[1].id, { headers: { Authorization: `Bearer ${token}` } });
   assert.equal(download.status, 200);
   assert.equal(await download.text(), 'Updated report');
+  now += 10;
+  const delivery = manager.append(visible, { role: 'assistant', text: '`earlier.pdf`' });
+  const redelivered = (await request(gateway, route, { token })).body.artifacts;
+  assert.deepEqual(redelivered.map(file => file.name), ['earlier.pdf', 'latest.md']);
+  assert.equal(redelivered[0].seq, delivery.seq);
+  assert.equal(redelivered[0].id, updated[1].id, 'Redelivery does not change an unchanged file identity');
+  assert.equal(new Set(redelivered.map(file => file.id)).size, 2);
+});
+
+test('phone artifact lists merge subtask deliveries by completion time rather than their starting turn', context => {
+  const { root, manager, reader, visible, pair, access } = fixture(context);
+  const { listArtifacts } = require('../src/main/remote/artifacts');
+  const now = Date.now() + 100;
+  context.mock.method(Date, 'now', () => now);
+  for (const name of ['child.md', 'shared.md', 'main.md', 'middle.md']) fs.writeFileSync(path.join(root, name), name);
+  manager.append(visible, { role: 'assistant', text: '`shared.md` `main.md`' });
+  visible.subagents = [
+    { id: 'old-child', engine: 'codex', status: 'completed', userSeq: 1, updatedAt: now - 20,
+      title: 'Old result', artifacts: [{ path: 'shared.md' }] },
+    { id: 'late-child', engine: 'codex', status: 'completed', userSeq: 1, updatedAt: now + 10,
+      title: 'Finished last', artifacts: [{ path: 'child.md' }, { path: 'shared.md' }] },
+    { id: 'middle-child', engine: 'codex', status: 'completed', userSeq: 2, updatedAt: now - 10,
+      title: 'Finished before the reply', artifacts: [{ path: 'middle.md' }] },
+  ];
+  const device = access.authenticate(pair().token);
+  const files = listArtifacts(reader, device, visible.id).artifacts;
+  assert.deepEqual(files.map(file => file.name), ['child.md', 'shared.md', 'main.md', 'middle.md']);
+  assert.equal(files[1].source, 'Finished last', 'The latest delivery must also own a repeated path');
+  assert.equal(files[1].subagentId, 'late-child');
+  assert.equal(files[1].seq, 1, 'Starting sequence remains intact in the existing mobile schema');
+  assert.equal(files[2].source, 'Main conversation');
+});
+
+test('artifact deliveries without timestamps retain reverse message order', context => {
+  const { root, manager, reader, visible, pair, access } = fixture(context);
+  const { listArtifacts } = require('../src/main/remote/artifacts');
+  for (const name of ['earlier.md', 'latest.pdf']) fs.writeFileSync(path.join(root, name), name);
+  manager.append(visible, { role: 'assistant', text: '`earlier.md`' });
+  manager.append(visible, { role: 'assistant', text: '`latest.pdf`' });
+  const rows = manager.rows.bind(manager);
+  manager.rows = conversation => rows(conversation).map(({ at, ...row }) => row);
+  const device = access.authenticate(pair().token);
+  assert.deepEqual(listArtifacts(reader, device, visible.id).artifacts.map(file => file.name), ['latest.pdf', 'earlier.md']);
 });
 
 test('artifact downloads accept Windows workspace aliases with different path casing', { skip: process.platform !== 'win32' }, async context => {
@@ -1033,13 +1072,15 @@ test('artifact listing resolves the same roots as the desktop and paginates with
   assert.ok(!JSON.stringify(resolved).includes(root));
   for (let index = 0; index < 102; index++) {
     const name = `report-${index}.pdf`; fs.writeFileSync(path.join(workspace, name), String(index));
-    fs.utimesSync(path.join(workspace, name), 1700000000 + index, 1700000000 + index);
+    fs.utimesSync(path.join(workspace, name), 1700000000 + 102 - index, 1700000000 + 102 - index);
     manager.append(visible, { role: 'assistant', text: '`' + name + '`', artifacts: [{ path: name }] });
   }
   const first = listArtifacts(reader, device, visible.id);
   const second = listArtifacts(reader, device, visible.id, first.nextOffset);
   assert.equal(first.artifacts.length, 100); assert.equal(second.artifacts.length, 4); assert.equal(second.nextOffset, null);
   assert.equal(new Set([...first.artifacts, ...second.artifacts].map(file => file.id)).size, 104);
+  assert.equal(first.artifacts[0].name, 'report-101.pdf');
+  assert.deepEqual(second.artifacts.map(file => file.name), ['report-1.pdf', 'report-0.pdf', '表格.doc', 'deck.pptx']);
   assert.deepEqual([...first.artifacts, ...second.artifacts].filter(file => file.name.startsWith('report-')).map(file => file.name),
     Array.from({ length: 102 }, (_, index) => `report-${101 - index}.pdf`));
   const file = first.artifacts[0];
@@ -1769,11 +1810,11 @@ test('mobile creation is scoped, deduplicated and does not start engines', async
   const status = (await request(gateway, '/v1/status', { token })).body;
   assert.deepEqual(status.workspaces, [{ id: 'allowed', name: 'Allowed' }]);
   assert.ok(status.capabilities.includes('image'));
-  assert.ok(status.engines.includes('pi'));
-  const pi = await create({ ...payload, requestId: require('node:crypto').randomUUID(), engine: 'pi' });
-  assert.equal(pi.body.ok, true);
-  assert.equal(pi.body.conversation.engine, 'pi');
-  assert.equal(manager.get(pi.body.conversation.id).currentEngine, 'pi');
+  assert.ok(status.engines.includes('grok'));
+  const grok = await create({ ...payload, requestId: require('node:crypto').randomUUID(), engine: 'grok' });
+  assert.equal(grok.body.ok, true);
+  assert.equal(grok.body.conversation.engine, 'grok');
+  assert.equal(manager.get(grok.body.conversation.id).currentEngine, 'grok');
   access.setScope(credential.deviceId, ['allowed'], { includeUnassigned: true });
   const independent = await create({ ...payload, requestId: require('node:crypto').randomUUID(), workspaceId: null });
   assert.equal(independent.body.ok, true); assert.equal(independent.body.conversation.workspaceId, null);
@@ -2048,7 +2089,7 @@ test('native settings endpoints require full control, matching engine and explic
   assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token, method: 'POST', payload: { engine: 'codex' } })).status, 400);
   assert.equal((await request(gateway, '/v1/native-settings/claude', { token: credential.token, method: 'POST', payload: { engine: 'claude', confirmed: true } })).body.ok, true);
   // Every engine the status endpoint advertises must also be routable here;
-  // Pi was listed in /v1/status but rejected by this allow-list.
+  // Grok was listed in /v1/status but rejected by this allow-list.
   for (const engine of (await request(gateway, '/v1/status', { token: credential.token })).body.engines) {
     assert.equal((await request(gateway, `/v1/native-settings/${engine}`, { token: credential.token })).body.engine, engine, engine);
   }

@@ -21,7 +21,7 @@ function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-inventory-'));
   t.after(() => removeTree(root));
   const manager = new DiscussionManager({ dir: path.join(root, 'discussions') }), group = manager.create({ cwd: root });
-  const drivers = Object.fromEntries(['codex', 'antigravity', 'claude', 'kimi', 'dsh', 'pi'].map(engine => [engine, {
+  const drivers = Object.fromEntries(['codex', 'antigravity', 'claude', 'kimi', 'dsh', 'grok'].map(engine => [engine, {
     sessions: new SessionPool(), history: new ClaudeHistory(path.join(root, engine + '-history')),
   }]));
   const state = { memory: [], external: { complete: true, histories: [], activities: [] } };

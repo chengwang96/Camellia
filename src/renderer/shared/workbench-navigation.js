@@ -3,7 +3,7 @@
 // Shared navigation primitives. Discussion histories remain separate from ordinary sessions.
 window.CamelliaWorkbenchNavigation = (() => {
   const t = value => window.CamelliaI18n.t(value);
-  const engines = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
+  const engines = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
   const paths = { plus: 'M12 5v14M5 12h14', chevron: 'm6 9 6 6 6-6',
     chat: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
     folder: 'M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z',

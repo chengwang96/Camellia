@@ -221,7 +221,23 @@ class StreamConverter {
         const key = 'tool-' + t.index;
         if (!this.blocks.has(key) && (!t.id || !t.function?.name)) throw new Error("Tool call is missing an ID or name");
         const index = this.block(key, { type: 'tool_use', id: t.id, name: t.function?.name, input: {} });
-        if (t.function?.arguments) this.a('content_block_delta', { index, delta: { type: 'input_json_delta', partial_json: t.function.arguments } });
+        if (t.function?.arguments) {
+          this.toolArgumentRemainders ||= new Map();
+          const partial = (this.toolArgumentRemainders.get(key) || '') + t.function.arguments;
+          let length = partial.length;
+          const unicode = /\\u[\da-f]{0,3}$/i.exec(partial);
+          if (unicode) {
+            let preceding = 0;
+            for (let index = unicode.index - 1; index >= 0 && partial[index] === '\\'; index--) preceding++;
+            if (preceding % 2 === 0) length = unicode.index;
+          }
+          const slashes = /\\+$/.exec(partial);
+          if (slashes && slashes[0].length % 2) length = Math.min(length, partial.length - 1);
+          if (/[\uD800-\uDBFF]$/.test(partial)) length = Math.min(length, partial.length - 1);
+          if (length) this.a('content_block_delta', { index, delta: { type: 'input_json_delta', partial_json: partial.slice(0, length) } });
+          if (length < partial.length) this.toolArgumentRemainders.set(key, partial.slice(length));
+          else this.toolArgumentRemainders.delete(key);
+        }
       }
       if (choice?.finish_reason) this.finish = choice.finish_reason;
     } else {
@@ -251,6 +267,7 @@ class StreamConverter {
   }
   end() {
     if (this.done) return;
+    if (this.toolArgumentRemainders?.size) throw new Error('The upstream stream ended inside a Unicode tool argument escape');
     this.done = true;
     if (this.from === this.to) { if (this.to === 'openai') this.write(frame('[DONE]')); return; }
     if (this.to === 'anthropic') {

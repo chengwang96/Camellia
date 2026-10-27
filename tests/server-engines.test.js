@@ -34,19 +34,19 @@ test('server drivers keep isolated native homes and enable only implemented engi
     onEvent: () => {}, getRoute: () => ({ baseUrl: 'http://127.0.0.1:8788', authToken: 'managed' }), router: () => ({ enabled: false, providers: [], usage: {}, active: {} }),
     isBusy: () => false, runtimeManager: { locate: () => ({ file: '/test/native' }), state: () => [], ensure: async () => ({ file: '/test/native' }) } });
   context.after(() => Promise.all(Object.values(system.drivers).map(driver => driver.shutdown())));
-  assert.deepEqual(Object.keys(system.drivers).sort(), ['antigravity', 'claude', 'codex', 'dsh', 'kimi', 'pi']);
+  assert.deepEqual(Object.keys(system.drivers).sort(), ['antigravity', 'claude', 'codex', 'dsh', 'grok', 'kimi']);
   for (const driver of Object.values(system.drivers)) {
     assert.equal(driver.settings().permissionMode, 'ask');
     for (const method of ['settings', 'saveSettings', 'ensure', 'shutdown']) assert.equal(typeof driver[method], 'function');
   }
-  assert.equal(system.drivers.pi.history.root, path.join(root, 'pi-history'));
-  assert.equal(system.drivers.pi.settings().connection, 'api');
-  assert.throws(() => system.drivers.pi.saveSettings({ connection: 'subscription' }), /API connections only/);
-  system.drivers.pi.saveSettings({ model: 'pi-test-model', thinkingBudget: 'high' });
-  assert.equal(system.drivers.pi.settings().model, 'pi-test-model');
-  assert.equal(system.drivers.pi.settings().thinkingBudget, 'high');
-  assert.equal(system.drivers.pi.settings().connection, 'api');
-  assert.throws(() => system.nativeLogin('pi'), /account command/);
+  assert.equal(system.drivers.grok.history.root, path.join(root, 'grok-history'));
+  assert.equal(system.drivers.grok.settings().connection, 'api');
+  system.drivers.grok.saveSettings({ connection: 'subscription' });
+  system.drivers.grok.saveSettings({ model: 'grok-test-model', thinkingBudget: 'high' });
+  assert.equal(system.drivers.grok.settings().model, 'grok-test-model');
+  assert.equal(system.drivers.grok.settings().thinkingBudget, 'high');
+  assert.equal(system.drivers.grok.settings().connection, 'subscription');
+  assert.deepEqual(system.nativeLogin('grok').args, ['login', '--device-auth']);
   assert.equal(system.nativeLogin('claude').home, path.join(root, 'claude-native'));
   const codex = system.nativeLogin('codex');
   assert.deepEqual(codex.args, ['login', '--device-auth']);

@@ -20,9 +20,9 @@ function validCatalog(catalog) {
 function transformCatalog(upstream, at = new Date()) {
   const models = {};
   for (const [key, row] of Object.entries(upstream)) {
-    if (!row || !['openai', 'gemini', 'anthropic', 'moonshot'].includes(row.litellm_provider)) continue;
-    const model = key.replace(/^(?:gemini|moonshot)\//, '');
-    if (!/^(gpt-[56]|gemini-[23]|claude-(opus|sonnet|haiku)-4|kimi-k[23])/.test(model)
+    if (!row || !['openai', 'gemini', 'anthropic', 'moonshot', 'xai'].includes(row.litellm_provider)) continue;
+    const model = key.replace(/^(?:gemini|moonshot|xai)\//, '');
+    if (!/^(gpt-[56]|gemini-[23]|claude-(opus|sonnet|haiku)-4|kimi-k[23]|grok-)/.test(model)
       || /image|audio|live|tts|realtime|search|embedding|transcribe/.test(model) || model.includes('/')) continue;
     function rates(suffix = '') {
       const read = key => Number.isFinite(row[key + suffix]) ? Number((row[key + suffix] * 1e6).toFixed(8)) : null;

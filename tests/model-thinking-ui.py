@@ -29,7 +29,7 @@ bridge = r"""(() => {
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
-    for engine in ['codex', 'claude', 'dsh', 'kimi', 'antigravity', 'pi']:
+    for engine in ['codex', 'claude', 'dsh', 'kimi', 'antigravity', 'grok']:
         page = browser.new_page(viewport={'width': 1160, 'height': 820})
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))

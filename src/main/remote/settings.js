@@ -7,7 +7,7 @@ const { isVisible: subscriptionModelVisible } = require('../../shared/subscripti
 
 // Engines that can run either a signed-in account or the shared API routes.
 // Everything else has a single model source.
-const DUAL_CONNECTION_ENGINES = new Set(['codex', 'kimi', 'antigravity']);
+const DUAL_CONNECTION_ENGINES = new Set(['codex', 'kimi', 'antigravity', 'grok']);
 
 function connectionModels(manager, engine, selected, connection) {
   return manager.conversationModels(engine, { ...selected, connection }).map(model => ({ id: model.id, name: model.name || model.id,

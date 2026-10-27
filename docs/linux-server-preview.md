@@ -6,7 +6,7 @@ Camellia's headless Linux entry point runs as a foreground Node process without 
 
 - A single writer for each server data directory; local JSON commands and a live settings menu use the Unix socket.
 - Embedded Tailnet login, explicit invitations and server-side approval, revocation, and the existing `/v1` device protocol. The helper does not call a system `tailscale` executable or expose a public listener.
-- Server workspaces, standalone and workspace conversations, and on-demand runtimes for DSH, Claude, Codex, Kimi, Antigravity, and Pi. An absent runtime fails explicitly rather than downloading during a request.
+- Server workspaces, standalone and workspace conversations, and on-demand runtimes for DSH, Claude, Codex, Kimi, Antigravity, and Grok Build. An absent runtime fails explicitly rather than downloading during a request.
 - Desktop workbench windows bound to one paired server, with conversations, files, model/permission settings, usage, runtime management, archive, and confirmed cleanup. Local and server histories remain separate.
 - An API-route import from the desktop after preview and confirmation. It copies transferable provider routes and keys, not subscription logins or local-only endpoints. The server does not receive a desktop device token through its renderer.
 

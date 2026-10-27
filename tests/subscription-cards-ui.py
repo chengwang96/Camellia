@@ -257,6 +257,18 @@ try:
         expect(raw).to_have_text('')
         page.evaluate("mockGoogle.usage.error='Google sign-in has expired or is invalid. Sign in again and retry.'; accountListeners.onAntigravityAccount(mockGoogle)")
         expect(notice).to_contain_text('Google sign-in has expired or is invalid')
+        page.evaluate("""() => {
+          mockGoogle.usage.error=[
+            'Authentication required. Please visit the URL to log in:',
+            'keyringAuth: loaded token, expiry=2026-10-08 10:23:52 expired=true',
+            'token refresh failed due to network error: Post "https://oauth2.googleapis.com/token": EOF'
+          ].join(String.fromCharCode(10));
+          accountListeners.onAntigravityAccount(mockGoogle);
+        }""")
+        expect(notice).to_contain_text('Could not connect to Google.')
+        expect(notice).not_to_contain_text('Google sign-in has expired')
+        page.evaluate("mockGoogle.usage.error+=String.fromCharCode(10)+'invalid_grant'; accountListeners.onAntigravityAccount(mockGoogle)")
+        expect(notice).to_contain_text('Google sign-in has expired or is invalid')
         google.locator('[data-card-action=refresh]').click()
         expect(notice).to_be_hidden()
         # Expiry and a background refresh never lock the priority sign-out.

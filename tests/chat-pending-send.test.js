@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
 const extract = (start, end) => source.slice(source.indexOf(start), source.indexOf(end));
 
 function deferred() {
@@ -302,6 +302,21 @@ test('busy states block queued sends before reopening another harness', async ()
     assert.equal(harness.requests.length, 0);
     assert.equal(state.input.value, 'Continue');
   }
+});
+
+test('a waiting Goal accepts an immediate composer instruction', async () => {
+  const harness = fixture(), { state } = harness;
+  state.goalUI = { isActive: () => true, isDraft: () => false, waitingId: () => 'goal-waiting' };
+  state.updateSendEnabled();
+  assert.equal(state.sendBtn.disabled, false);
+  harness.settings.resolve({});
+  const pending = state.send();
+  await flush();
+  assert.equal(harness.requests.length, 1);
+  assert.equal(harness.requests[0].goalId, 'goal-waiting');
+  assert.equal(harness.requests[0].prompt, 'Continue');
+  harness.replies[0].resolve({ ok: true, sessionId: 'conversation-a', runId: 2, userSeq: 3 });
+  assert.equal(await pending, true);
 });
 
 test('an idle conversation sends its queued message with the current harness', async () => {

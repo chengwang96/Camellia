@@ -45,8 +45,8 @@ function managedDir(root, ...parts) {
 // disposable member session. Successful exact-binding/runtime results survive
 // restarts; reading them never sends verification or user input.
 class DiscussionProduction {
-  constructor({ dataDir, registry, codex, antigravity, runtimes, getRouter, getCatalog, refreshKimi, getNativeConfig = () => ({}), log = () => {}, node = () => process.execPath, environment = () => process.env, platform = process.platform }) {
-    Object.assign(this, { dataDir, registry, codex, antigravity, runtimes, getRouter, getCatalog, refreshKimi, log, node, environment });
+  constructor({ dataDir, registry, codex, antigravity, runtimes, getRouter, getCatalog, refreshKimi, refreshGrok, getNativeConfig = () => ({}), log = () => {}, node = () => process.execPath, environment = () => process.env, platform = process.platform }) {
+    Object.assign(this, { dataDir, registry, codex, antigravity, runtimes, getRouter, getCatalog, refreshKimi, refreshGrok, log, node, environment });
     this.getNativeConfig = getNativeConfig;
     this.platform = platform;
     this.jobs = SUPPORTED_PLATFORMS.includes(platform) ? processJobs(platform) : null;
@@ -241,10 +241,29 @@ class DiscussionProduction {
         // Never race the ordinary account's rotating refresh credential.
         record.credential = kimiCredentialFile(home, managed);
         writeJson(record.credential, { ...token, refresh_token: '' });
+      } else if (profile.connection === 'subscription' && profile.engine === 'grok') {
+        if (this.refreshGrok) await this.refreshGrok(profile.accountRef);
+        const source = accountHome({ userData: this.dataDir, engine: 'grok', id: profile.accountRef, root: path.join(this.dataDir, 'grok-subscription') });
+        const file = path.join(source, 'auth.json');
+        if (!fs.existsSync(file) || fs.lstatSync(file).isSymbolicLink()) throw new Error('Refresh this Grok account in Settings before verifying the connection.');
+        const auth = readJson(file, null);
+        if (!auth?.access_token && !auth?.key) throw new Error('This Grok account has no usable local credential. Refresh it in Settings.');
+        if (Number.isFinite(auth.expires_at) && auth.expires_at * 1000 < Date.now() + 120000) throw new Error('Refresh this Grok account in Settings before verifying the connection.');
+        record.accountId = auth.user_id || auth.userId || '';
+        const bindingFile = path.join(home, 'discussion-binding.json');
+        const expected = { binding: bindingFingerprint(profile), accountId: record.accountId };
+        const previous = readJson(bindingFile, null);
+        if (fs.existsSync(bindingFile) && !isDeepStrictEqual(previous, expected) && previous?.binding !== expected.binding) {
+          throw new Error('This member belongs to a different Grok login or model. Add a new member for the current account.');
+        }
+        if (fs.existsSync(bindingFile) && previous?.accountId !== record.accountId) throw new Error('This member belongs to a different Grok login. Add a new member for the current account.');
+        if (!previous) writeJson(bindingFile, expected);
+        writeJson(path.join(home, 'auth.json'), { ...auth, refresh_token: '' }, { mode: 0o600 });
       } else if (profile.connection === 'api') {
         const account = JSON.parse(profile.accountRef);
         record.route = this.getRouter()?.createScope({ model: profile.model, providerId: account.providerId,
-          routeFingerprint: account.route, maxRequests: verification ? 6 : 100, maxTokens: Math.max(4096, profile.contextWindow * (verification ? 2 : 16)) });
+          routeFingerprint: account.route, maxRequests: verification ? 6 : 100, maxTokens: Math.max(4096, profile.contextWindow * (verification ? 2 : 16)),
+          toolPolicy: verification && profile.engine === 'grok' ? 'none' : 'preserve' });
         if (!record.route) throw new Error('Enable the configured API route before verifying this connection.');
       }
       record.job = await this.jobs.prepare({ identity, journal: verification ? this.checkJournal : this.journal, signal });
@@ -299,6 +318,10 @@ class DiscussionProduction {
       const account = await session.client.request('account/read', { refreshToken: false });
       if (account.account?.type !== 'chatgpt') return false;
     }
+    if (profile.connection === 'subscription' && profile.engine === 'grok') {
+      const auth = readJson(path.join(record.home, 'auth.json'), null);
+      if (!auth || (auth.user_id || auth.userId || '') !== record.accountId || session.spec.env.GROK_HOME !== record.home) return false;
+    }
     return true;
   }
   async confirmStopped({ identity }) {
@@ -312,7 +335,7 @@ class DiscussionProduction {
       proof = fs.existsSync(journal.paths(identity).recordFile) ? await this.jobs.recover({ identity, journal }) : { ...identity, stopped: true };
     }
     await record.route?.close();
-    if (record.profile?.connection === 'subscription' && record.profile.engine === 'codex' && record.home) fs.rmSync(path.join(record.home, 'auth.json'), { force: true });
+    if (record.profile?.connection === 'subscription' && ['codex', 'grok'].includes(record.profile.engine) && record.home) fs.rmSync(path.join(record.home, 'auth.json'), { force: true });
     if (record.credential) fs.rmSync(record.credential, { force: true });
     this.activities.delete(identity.deliveryId); return proof;
   }
@@ -334,7 +357,7 @@ class DiscussionProduction {
     const assertRuntime = () => { if (!isDeepStrictEqual(info, this.runtimeInfo(profile))) throw new Error(RUNTIME_CHANGED); };
     const runtimeId = randomUUID(), cwd = managedDir(this.root, 'work', runtimeId);
     const code = 'DISCUSSION_' + randomUUID().replaceAll('-', '').slice(0, 12);
-    let nativeId = null, supportsImages = ['claude', 'codex', 'pi'].includes(profile.engine);
+    let nativeId = null, supportsImages = ['claude', 'codex', 'grok'].includes(profile.engine);
     for (const prompt of ['Remember this verification code and reply only with it: ' + code, 'Repeat the verification code from the preceding message. Output only the code.']) {
       const identity = { runtimeId, deliveryId: randomUUID(), generation: 1 };
       let session, timer;

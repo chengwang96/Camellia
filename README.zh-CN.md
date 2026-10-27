@@ -6,7 +6,7 @@
 
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
 
-Camellia 将 **Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigravity 和 Pi** 放进同一个桌面工作台。你可以使用供应商 API Key 或受支持的订阅，在一个会话里切换引擎，并集中查看设置、用量和账号状态。配对的 Android 客户端和无界面的 Linux 服务器也能接入这套工作流。
+Camellia 将 **Claude Code、Codex CLI、DeepSeek Harness、Kimi Code、Antigravity 和 Grok Build** 放进同一个桌面工作台。你可以使用供应商 API Key 或受支持的订阅，在一个会话里切换引擎，并集中查看设置、用量和账号状态。配对的 Android 客户端和无界面的 Linux 服务器也能接入这套工作流。
 
 ![当前 Camellia 首页，展示六个引擎及讨论、基准测试、服务器和设置入口](docs/images/home.png)
 

@@ -9,7 +9,7 @@ Implemented beginning 2026-09-16. Home and every desktop harness open the same s
 | Codex CLI | ChatGPT or shared API connection, approval, sandbox, TOML/MCP and AGENTS.md | Isolated `<app-data>/codex`, not personal `~/.codex` |
 | Kimi Code | Native TOML, MCP, terminal preferences and session defaults | `~/.kimi-code/config.toml`, `mcp.json`, and `tui.toml` |
 | Antigravity | Google CLI or API SDK connection, permissions, MCP and skills | API settings under `<app-data>/antigravity`; Google mode under `~/.gemini/` |
-| Pi | Shared API routes and its own native settings | Camellia-managed runtime and app data |
+| [Grok Build](../grok-build.md) | OAuth subscription or shared API routes, native TOML/MCP and instructions | Camellia-managed runtime and app data; isolated `GROK_HOME` per account |
 
 `DSH_HOME`, `CLAUDE_CONFIG_DIR`, and `KIMI_CODE_HOME` are respected where supported. Common controls use forms, while advanced native files remain editable with syntax and concurrent-change checks. Before first overwrite of an existing global native file, Camellia saves a `.workbench.bak` beside it and does not overwrite that original backup later. Claude MCP saving touches only `mcpServers`. Codex uses isolated app data. Project-local configuration still follows the engine's own precedence.
 

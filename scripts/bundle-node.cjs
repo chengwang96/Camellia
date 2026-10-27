@@ -54,8 +54,9 @@ async function bundleNode({ target, platform, arch, root = path.resolve(__dirnam
     }
     const nodeEntry = windows ? 'node.exe' : 'bin/node';
     const npmEntry = windows ? 'node_modules/npm' : 'lib/node_modules/npm';
-    run('tar', [windows ? '-xf' : '-xzf', archive, '-C', temp, `${name}/${nodeEntry}`, `${name}/${npmEntry}`, `${name}/LICENSE`],
-      { windowsHide: true, encoding: 'utf8', timeout: 120000 });
+    run('tar', [windows ? '-xf' : '-xzf', path.basename(archive), '-C', temp,
+      `${name}/${nodeEntry}`, `${name}/${npmEntry}`, `${name}/LICENSE`],
+      { cwd: path.dirname(archive), windowsHide: true, encoding: 'utf8', timeout: 120000 });
     const source = path.join(temp, name);
     const npm = path.join(source, npmEntry);
     for (const file of [path.join(source, nodeEntry), path.join(npm, 'bin/npm-cli.js'), path.join(npm, 'package.json'), path.join(source, 'LICENSE')]) {

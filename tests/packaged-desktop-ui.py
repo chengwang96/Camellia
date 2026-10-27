@@ -1,7 +1,7 @@
 """Accept a built desktop application through its normal entry and real UI.
 
 No source driver, patched Electron APIs, injected IPC handlers or paid APIs.
-Only the upstream model response is a loopback fixture; Pi is downloaded and
+Only the upstream model response is a loopback fixture; Grok Build is downloaded and
 run by the application's own bundled installer and runtime.
 """
 import argparse
@@ -358,14 +358,14 @@ def run_scenario(playwright, executable, resources, output, scenario, shortcut, 
         if scenario == "upgrade":
             (profile / "desktop-config.json").write_text(json.dumps({
                 "theme": "light", "language": "en", "closeToTray": False,
-                "computerName": "Packaged upgrade fixture", "mode": "pi",
+                "computerName": "Packaged upgrade fixture", "mode": "grok",
                 "autoRefreshBalances": False, "legacyMarker": "preserve-this-field",
-                "pi": {"model": MODEL}, "port": 0,
+                "grok": {"model": MODEL}, "port": 0,
             }), encoding="utf-8")
             history = profile / "conversations"
             history.mkdir()
             (history / f"{old_id}.json").write_text(json.dumps({
-                "id": old_id, "origin": "pi", "currentEngine": "pi", "title": OLD_TITLE,
+                "id": old_id, "origin": "grok", "currentEngine": "grok", "title": OLD_TITLE,
                 "cwd": str(root), "workspaceId": None, "createdAt": 1700000000000,
                 "updatedAt": 1700000000000, "seq": 1, "segments": {}, "handoffs": [],
             }, ensure_ascii=False), encoding="utf-8")
@@ -378,7 +378,7 @@ def run_scenario(playwright, executable, resources, output, scenario, shortcut, 
             application = Application(playwright, executable, resources, root, output, scenario, shortcut)
             result["launches"].append(application.evidence)
             home = application.home
-            expect(home.locator("#enterPi")).to_be_visible()
+            expect(home.locator("#enterGrok")).to_be_visible()
             assert home.evaluate("Array.from(document.images).every(img => img.complete && img.naturalWidth > 0)")
             rows = ipc(home, "runtimeState")["engines"]
             assert len(rows) == 6 and all(row["status"] == "missing" for row in rows), rows
@@ -397,26 +397,26 @@ def run_scenario(playwright, executable, resources, output, scenario, shortcut, 
             configure_provider(settings, fixture, free_port())
             result["checks"].append("settings saved through the real renderer and IPC; loopback provider configured")
             settings.locator('[data-view="engines"]').click()
-            settings.locator('[role="tab"][data-engine="pi"]').click()
-            print(f"{scenario}: downloading Pi through the application's UI", flush=True)
-            settings.locator('[data-install="pi"]').click()
+            settings.locator('[role="tab"][data-engine="grok"]').click()
+            print(f"{scenario}: downloading Grok Build through the application's UI", flush=True)
+            settings.locator('[data-install="grok"]').click()
             install_started = time.monotonic()
             def report_install(state):
-                runtime = next(row for row in state["engines"] if row["id"] == "pi")
+                runtime = next(row for row in state["engines"] if row["id"] == "grok")
                 elapsed = int(time.monotonic() - install_started)
-                print(f"{scenario}: Pi install ({elapsed}s): {runtime['status']} {runtime.get('message', '')[:400]}", flush=True)
+                print(f"{scenario}: Grok Build install ({elapsed}s): {runtime['status']} {runtime.get('message', '')[:400]}", flush=True)
             rows = wait_value(settings, "runtimeState", lambda state:
-                              next(row for row in state["engines"] if row["id"] == "pi")["status"] in
+                              next(row for row in state["engines"] if row["id"] == "grok")["status"] in
                               ["ready", "error"], timeout=install_timeout, report=report_install)["engines"]
-            runtime = next(row for row in rows if row["id"] == "pi")
+            runtime = next(row for row in rows if row["id"] == "grok")
             assert runtime["status"] == "ready", runtime
             assert Path(runtime["file"]).is_relative_to(profile), runtime
-            assert all(row["status"] == "missing" for row in rows if row["id"] != "pi"), rows
+            assert all(row["status"] == "missing" for row in rows if row["id"] != "grok"), rows
             result["runtime"] = {key: runtime.get(key) for key in ["file", "version", "status", "source"]}
-            result["checks"].append("real Pi download with bundled Node/npm; other engines remain uninstalled")
+            result["checks"].append("real Grok Build download with bundled Node/npm; other engines remain uninstalled")
             application.screenshot(settings, "runtime")
             settings.close()
-            home.locator("#enterPi").click()
+            home.locator("#enterGrok").click()
             chat = application.wait_page("chat/claude.html")
             expect(chat.locator("body > .app > .main #input")).to_be_visible()
             if scenario == "upgrade":
@@ -464,7 +464,7 @@ def run_scenario(playwright, executable, resources, output, scenario, shortcut, 
             application = Application(playwright, executable, resources, root, output, f"{scenario}-restart", shortcut)
             result["launches"].append(application.evidence)
             assert ipc(application.home, "workbenchSettings")["theme"] == "dark"
-            application.home.locator("#enterPi").click()
+            application.home.locator("#enterGrok").click()
             chat = application.wait_page("chat/claude.html")
             chat.locator("body > .app > #sidebar").get_by_text(conversations[0]["title"], exact=True).click()
             expect(chat.locator("body > .app > .main #chat")).to_contain_text(PROMPT)

@@ -14,7 +14,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // factory so the ordinary driver's global config builder is never consulted.
 // This establishes launch isolation, not a claim of read-only enforcement.
 function createDiscussionLaunch({ engine, identity, cwd, nativeId, settings, launch }) {
-  if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine) || !UUID.test(identity?.runtimeId)
+  if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine) || !UUID.test(identity?.runtimeId)
     || typeof cwd !== 'string' || !path.isAbsolute(cwd)
     || nativeId != null && !validSessionId(nativeId)
     || !settings || Object.keys(settings).some(key => !SETTINGS.includes(key))

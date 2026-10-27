@@ -12,10 +12,10 @@ const { CodexSession } = require('../engines/codex-session');
 const { codexSpawnSpec } = require('../engines/codex-client');
 const { DSH_MAX_OUTPUT_TOKENS } = require('../engines/dsh-session');
 const { dshLaunchArgs } = require('../engines/dsh-config');
-const { PiSession, piSpec } = require('../engines/pi-session');
+const { GrokSession, grokSpawnSpec } = require('../engines/grok-session');
 
-const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
-const NAMES = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity SDK', pi: 'Pi' };
+const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
+const NAMES = { claude: 'Claude Code', codex: 'Codex CLI', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity SDK', grok: 'Grok Build' };
 function isolatedEnvironment(home, node, inherited = process.env) {
   const env = {};
   for (const key of ['PATH', 'Path', 'PATHEXT', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'ProgramFiles', 'ProgramFiles(x86)', 'LANG', 'LC_ALL', 'SHELL']) {
@@ -113,22 +113,17 @@ async function runEngine({ engine, runtime, node, cwd, home, model, route, promp
           });
         } else {
           const opts = { workspaceId: null };
-          const settings = { cwd, model, connection: 'api', permissionMode: engine === 'kimi' ? 'yolo' : 'bypassPermissions' };
+          const settings = { cwd, model, connection: 'api', permissionMode: engine === 'kimi' ? 'yolo' : engine === 'grok' ? 'full' : 'bypassPermissions' };
           let spec, exe;
           if (engine === 'claude') { spec = claudeSpec({ home, cwd, model, route, env }); exe = runtime.file; }
           else if (engine === 'codex') { spec = codexSpawnSpec({ runtime, home: path.join(home, '.codex'), cwd, connection: 'api', model, route, env }); exe = runtime.file; }
           else if (engine === 'kimi') { spec = kimiSpawnSpec({ home: path.join(home, '.kimi'), runtime: runtime.file, model, route, env }); exe = node; }
-          else if (engine === 'pi') {
-            // Pi runs its own RPC host, so the runtime file is an argument
-            // rather than the spawned executable; every engine is launched
-            // through the same isolated Node binary as Kimi.
-            const piHome = path.join(home, '.pi');
-            spec = piSpec({ runtime, home: piHome, sessionId: 'benchmark-' + process.pid + '-' + Date.now(),
-              settings: { model, permissionMode: 'full', cwd }, route, env });
-            exe = node;
+          else if (engine === 'grok') {
+            spec = grokSpawnSpec({ runtime: runtime.file, home: path.join(home, '.grok'), model, connection: 'api', route, env });
+            exe = runtime.file;
           }
           else { spec = antigravitySpawnSpec({ runtime, home: path.join(home, '.antigravity'), route, config: {}, env }); exe = runtime.file; }
-          const Session = engine === 'pi' ? PiSession : engine === 'claude' ? ClaudeSession : engine === 'codex' ? CodexSession : AcpSession;
+          const Session = engine === 'grok' ? GrokSession : engine === 'claude' ? ClaudeSession : engine === 'codex' ? CodexSession : AcpSession;
           session = new Session({ name: NAMES[engine], gen: 1, settings, opts, exe, spec, spawn: trackedSpawn, log: append,
             history: new ClaudeHistory(path.join(home, 'history')), onEvent: event, onSessionId: () => {}, onResult: result });
           session.start();
@@ -143,4 +138,4 @@ async function runEngine({ engine, runtime, node, cwd, home, model, route, promp
   }
 }
 
-module.exports = { ENGINES, NAMES, isolatedEnvironment, runEngine, stopProcess, dshSpec, claudeSpec, piSpec };
+module.exports = { ENGINES, NAMES, isolatedEnvironment, runEngine, stopProcess, dshSpec, claudeSpec, grokSpawnSpec };

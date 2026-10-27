@@ -10,7 +10,7 @@ const { searchFiles } = require('../src/main/file-search');
 const { searchContents } = require('../src/main/file-search');
 const { extractText } = require('../src/main/file-text');
 
-const rendererSource = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
+const rendererSource = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
 const rendererMarkup = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.html'), 'utf8');
 const runtimeSource = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat-runtime.js'), 'utf8');
 

@@ -1,7 +1,7 @@
 'use strict';
 
 const diagnosticOutput = require('./diagnostic-output').installDiagnosticOutput();
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeImage, nativeTheme } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, Menu, Tray, nativeImage, nativeTheme, screen } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const fs = require('node:fs');
@@ -41,8 +41,13 @@ const { createLibraryManager } = require('../benchmark/libraries');
 const { SharedConversations, preferences: conversationPreferences, shortTitle } = require('../engines/shared-conversations');
 const { validateMemoryDirectory } = require('../engines/global-memory');
 const { createDshChat } = require('../engines/dsh-session');
-const { createPiChat } = require('../engines/pi-session');
+const { createGrokChat } = require('../engines/grok-session');
+const { createGrokAccount } = require('../engines/grok-account');
 const { createZoomController, readLegacyZoom } = require('./zoom-controller');
+const { createSettingsWindowSizeCache } = require('./settings-window-size');
+const settingsWindowSizes = createSettingsWindowSizeCache({
+  screen, onError: error => log(`Settings window size: ${error.message}`),
+});
 const { saveClipboardImage, savePastedText } = require('./clipboard-attachments');
 const { StorageCleanup } = require('./storage-cleanup');
 const { createDataPackage, importDataPackage, inspectDataPackage, recoverDataImports, resolveKinds: normalizeMigrationScope } = require('./data-migration');
@@ -68,10 +73,10 @@ let discussionProduction = null;
 function productionDiscussions() {
   if (!discussionProduction) {
     const { discussionCatalog } = require('../engines/discussions/catalog');
-    const getCatalog = () => discussionCatalog({ router: readOllamaProxyConfig, codex, kimi: kimiAccount, antigravity, contextWindow: modelContextWindow });
+    const getCatalog = () => discussionCatalog({ router: readOllamaProxyConfig, codex, kimi: kimiAccount, antigravity, grok: grokAccount, contextWindow: modelContextWindow });
     discussionProduction = new (require('../engines/discussions/production').DiscussionProduction)({
       dataDir: app.getPath('userData'), registry: discussionBoundary.registry, codex, antigravity,
-      runtimes, node: detectNode, refreshKimi: id => kimiAccount.refreshUsage({ force: true }, id), log,
+      runtimes, node: detectNode, refreshKimi: id => kimiAccount.refreshUsage({ force: true }, id), refreshGrok: id => grokAccount.refresh(id), log,
       getNativeConfig: (engine, connection) => engineSettings().discussionConfig(engine, connection),
       getRouter: () => ollamaProxyHandle, getCatalog, environment: () => runtimeEnvironment(detectNode(), 'codex') });
   }
@@ -276,7 +281,7 @@ function desktopZoom() {
     const mode = loadConfig().mode;
     const chatUrl = pathToFileURL(path.join(RENDERER_ROOT, 'chat/claude.html'));
     chatUrl.searchParams.set('harness', mode);
-    const urls = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(mode) ? [chatUrl.href] : [];
+    const urls = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(mode) ? [chatUrl.href] : [];
     if (mode === 'dsh') urls.push('127.0.0.1');
     urls.push(pathToFileURL(path.join(RENDERER_ROOT, 'home/home.html')).href);
     zoomController = createZoomController({ loadConfig, saveConfig, log,
@@ -293,7 +298,7 @@ let migrationBlocksEngines = false;
 let migrationImportsApi = false;
 function engineBusy(engine) {
   return sharedConversations.isBusy(engine)
-    || (engine === 'pi' && piChat.sessions.running)
+    || (engine === 'grok' && grokChat.sessions.running)
     || (engine === 'codex' && (codex.session?.running || codex.goal.armed))
     || (engine === 'claude' && (claudeSessions.legacy?.running || goalDriver.armed))
     || (engine === 'kimi' && (kimiSessions.legacy?.running || kimiGoalDriver.armed))
@@ -309,9 +314,9 @@ async function stopEngine(engine) {
   if (engine === 'antigravity') return antigravity.shutdown();
   if (engine === 'codex') return codex.shutdown();
   if (engine === 'dsh') return dshChat.shutdown();
-  if (engine === 'pi') return piChat.shutdown();
+  if (engine === 'grok') return grokChat.shutdown();
 }
-const NETWORK_ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
+const NETWORK_ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
 // Engines that still have to be retired because a network change could not
 // reach them yet. A turn in flight is never interrupted; the engine joins this
 // set and is stopped the moment it goes idle.
@@ -466,9 +471,9 @@ function engineSettings() {
     claudeHome: process.env.CLAUDE_CONFIG_DIR,
     dshHome: () => loadConfig().dshHome || DSH_HOME,
     kimiHome: process.env.KIMI_CODE_HOME || path.join(os.homedir(), '.kimi-code'),
-    antigravityHome: antigravity.home, codexHome: codex.home, piHome: path.join(app.getPath('userData'), 'pi-native'),
-    getDesktop: engine => engine === 'codex' ? codex.settings() : engine === 'antigravity' ? antigravity.settings() : engine === 'kimi' ? kimiSettings() : engine === 'claude' ? claudeSettings() : engine === 'pi' ? piChat.settings() : {},
-    saveDesktop: (engine, value) => engine === 'codex' ? codex.saveSettings(value) : engine === 'antigravity' ? antigravity.saveSettings(value) : engine === 'kimi' ? saveKimiSettings(value) : engine === 'claude' ? saveClaudeSettings(value) : engine === 'pi' ? piChat.saveSettings(value) : undefined,
+    antigravityHome: antigravity.home, codexHome: codex.home, grokHome: path.join(app.getPath('userData'), 'grok-native'),
+    getDesktop: engine => engine === 'codex' ? codex.settings() : engine === 'antigravity' ? antigravity.settings() : engine === 'kimi' ? kimiSettings() : engine === 'claude' ? claudeSettings() : engine === 'grok' ? grokChat.settings() : {},
+    saveDesktop: (engine, value) => engine === 'codex' ? codex.saveSettings(value) : engine === 'antigravity' ? antigravity.saveSettings(value) : engine === 'kimi' ? saveKimiSettings(value) : engine === 'claude' ? saveClaudeSettings(value) : engine === 'grok' ? grokChat.saveSettings(value) : undefined,
     getRoute: () => routerConfig.hasRoutes(readOllamaProxyConfig()) ? resolveClaudeRoute() : null,
   });
   return nativeSettings;
@@ -525,6 +530,7 @@ function activeSubscriptionEngines() {
     const states = kimiAccount.states();
     if (Object.values(states).some(state => state?.account)) engines.push('kimi');
   } catch { }
+  try { if (Object.values(grokAccount.states()).some(state => state?.account)) engines.push('grok'); } catch { }
   try { if (codex.accountState().accounts.some(account => account.signedIn)) engines.push('codex'); } catch { }
   try { if (antigravity.handlers['account-state']().account) engines.push('antigravity'); } catch { }
   return engines;
@@ -633,6 +639,15 @@ function accountInsights(state = insights().state()) {
       info: { ...kimi.usage, refreshing: Boolean(kimi.usage?.refreshing || kimi.refreshing) },
       capability: { supported: true, label: 'Kimi Code subscription quota', source: 'client' } });
   }
+  const grokStates = grokAccount.states();
+  for (const profile of grokAccount.list()) {
+    const grok = grokStates[profile.id];
+    if (!grok?.account) continue;
+    subscriptions.push({ id: 'grok:' + profile.id, engine: 'grok', name: 'Grok Build',
+      label: profile.label || (profile.id === 'default' ? 'Grok account' : 'Grok account ' + profile.id),
+      info: { ...grok.usage, refreshing: Boolean(grok.usage?.refreshing || grok.refreshing) },
+      capability: { supported: true, label: 'Grok subscription quota', source: 'client' } });
+  }
   for (const profile of codex.accountState().accounts.filter(account => account.signedIn)) {
     const account = codex.accountState(profile.id);
     const history = account.quotaHistory || [];
@@ -654,6 +669,8 @@ async function refreshInsights(payload = {}) {
   const wanted = String(payload.subscriptionId || '');
   const kimiIds = !payload.apiOnly && !payload.providerId && !payload.keyId
     ? kimiAccount.list().map(profile => profile.id).filter(id => !runtimeUpdatesService?.isUpdating('kimi') && (!wanted || wanted === 'kimi:' + id)) : [];
+  const grokIds = !payload.apiOnly && !payload.providerId && !payload.keyId
+    ? grokAccount.list().map(profile => profile.id).filter(id => !runtimeUpdatesService?.isUpdating('grok') && (!wanted || wanted === 'grok:' + id)) : [];
   const codexIds = !payload.apiOnly && !payload.providerId && !payload.keyId
     ? codex.accountState().accounts.filter(account => account.signedIn && !runtimeUpdatesService?.isUpdating('codex') && (!wanted || wanted === 'codex:' + account.id)).map(account => account.id) : [];
   const google = antigravity.handlers['account-state']();
@@ -666,6 +683,7 @@ async function refreshInsights(payload = {}) {
   await Promise.all([
     payload.subscriptionId ? null : insights().refresh(payload),
     ...kimiIds.map(id => kimiAccount.refreshUsage({ force: payload.force !== false }, id)),
+    ...grokIds.map(id => grokAccount.refreshUsage({ force: payload.force !== false }, id)),
     ...codexIds.map(id => codex.handlers['account-refresh']({ id })),
     refreshGoogle ? antigravity.handlers['account-refresh-usage']({ force: payload.force !== false }) : null,
   ]);
@@ -730,7 +748,7 @@ async function saveApiRouter(payload) {
   const state = apiRouterState();
   if (restartClient) await claudeSessions.shutdown();
   if (restartClient) await kimiSessions.shutdown();
-  if (restartClient) { await antigravity.shutdown(); await codex.shutdown(); await dshChat.shutdown(); await piChat.shutdown(); }
+  if (restartClient) { await antigravity.shutdown(); await codex.shutdown(); await dshChat.shutdown(); await grokChat.shutdown(); }
   broadcastApiRouter(state);
   if (loadConfig().autoRefreshBalances !== false) void insights().refresh({ force: false }).catch(e => log(`account refresh: ${e.message}`));
   let warning;
@@ -1158,15 +1176,37 @@ const dshChat = createDshChat({ dataDir: app.getPath('userData'), loadConfig, sa
   getModelThinking: model => routerConfig.publicState(readOllamaProxyConfig()).modelThinking[model],
   runtime: () => ({ file: detectDshBin() }), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'dsh'),
   onEvent: event => publishChatEvent('dsh', event), log });
-const piChat = createPiChat({ dataDir: app.getPath('userData'), loadConfig, saveConfig, getRoute: resolveClaudeRoute,
-  getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models,
-  runtime: () => runtimes().locate('pi'), node: detectNode, environment: () => runtimeEnvironment(detectNode(), 'pi'),
-  instructions: () => engineSettings().piInstructions(),
-  onEvent: event => publishChatEvent('pi', event), log });
-function sessionPools() { return [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, piChat.sessions]; }
+const grokAccount = createAccountPool({ engine: 'grok', userData: app.getPath('userData'),
+  root: path.join(app.getPath('userData'), 'grok-subscription'), bindingsKey: 'grokSessionAccounts', loadConfig, saveConfig,
+  createService: (profile, notify) => createGrokAccount({ home: profile.home,
+    runtime: () => runtimes().locate('grok'), ensureRuntime: () => runtimes().ensure('grok'),
+    getProxyUrl: () => loadConfig().grok?.proxyUrl || '',
+    environment: () => runtimeEnvironment(detectNode(), 'grok'),
+    isBusy: () => sharedConversations?.isBusy('grok'),
+    openExternal: url => shell.openExternal(url),
+    onModels: models => {
+      if (!grokChat.settings().subscriptionModel && models.length) saveConfig({ grok: { ...loadConfig().grok, subscriptionModel: (models.find(model => model.isDefault) || models[0]).id } });
+    },
+    onChange: () => notify(),
+  }),
+  onState: account => {
+    broadcastAccountInsights();
+    for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) {
+      window.webContents.send('dsh:grok-account', account);
+      window.webContents.send('dsh:engine-settings-changed', { engine: 'grok' });
+    }
+  },
+});
+const grokChat = createGrokChat({ dataDir: app.getPath('userData'), loadConfig, saveConfig, getRoute: resolveClaudeRoute,
+  getModels: () => routerConfig.publicState(readOllamaProxyConfig()).models, getContextWindow: modelContextWindow,
+  runtimes, environment: () => runtimeEnvironment(detectNode(), 'grok'), accounts: grokAccount, createUsageMeter,
+  nativeConfig: () => engineSettings().grokConfig(), nativeRevision: () => engineSettings().grokConfigRevision(),
+  nativeInstructions: () => engineSettings().grokInstructions(),
+  onEvent: event => publishChatEvent('grok', event), log });
+function sessionPools() { return [claudeSessions, kimiSessions, codex.sessions, antigravity.sessions, dshChat.sessions, grokChat.sessions]; }
 async function stopEngineForUpdate(engine, operation = 'the update') {
   const pool = { claude: claudeSessions, kimi: kimiSessions, codex: codex.sessions,
-    antigravity: antigravity.sessions, dsh: dshChat.sessions, pi: piChat.sessions }[engine];
+    antigravity: antigravity.sessions, dsh: dshChat.sessions, grok: grokChat.sessions }[engine];
   const processes = [...(pool?.sessions.values() || [])]
     .map(session => session.proc || session.client?.proc)
     .filter(proc => proc && proc.exitCode == null && proc.signalCode == null);
@@ -1187,7 +1227,7 @@ discussionBoundary = require('../engines/discussions/native-boundary').createDis
   ordinaryNativeSeparate: input => productionDiscussions().ordinaryStorageSeparate(input),
   drivers: {
     claude: { sessions: claudeSessions, history: claudeHistory }, kimi: { sessions: kimiSessions, history: kimiHistory },
-    codex, antigravity, dsh: dshChat, pi: piChat,
+    codex, antigravity, dsh: dshChat, grok: grokChat,
   },
 });
 sharedConversations = new SharedConversations({ dir: path.join(app.getPath('userData'), 'conversations'), loadConfig, saveConfig, log, modelContextWindow, generateTitle: generateConversationTitle,
@@ -1204,7 +1244,7 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
     return require('node:crypto').createHash('sha256').update(JSON.stringify(routes)).digest('hex');
   },
   conversationModels: (engine, settings) => require('../engines/conversation-models').conversationModels(engine, settings, {
-    router: readOllamaProxyConfig, codex: id => codex.accountState(id), kimi: id => kimiAccount.state(id),
+    router: readOllamaProxyConfig, codex: id => codex.accountState(id), kimi: id => kimiAccount.state(id), grok: id => grokAccount.state(id),
     antigravity: () => antigravity.handlers['account-state'](),
   }),
   createGoalBridge: options => require('../engines/goal-tool-bridge').createGoalToolBridge({ ...options, node: detectNode() }),
@@ -1217,7 +1257,7 @@ sharedConversations = new SharedConversations({ dir: path.join(app.getPath('user
       ensure: codex.ensureSession, nativeCompaction: true, nativeEditing: true },
     antigravity: { sessions: antigravity.sessions, history: antigravity.history, settings: antigravity.settings, saveSettings: antigravity.saveSettings, ensure: antigravity.ensureSession, nativeAutoCompaction: true },
     dsh: dshChat,
-    pi: piChat,
+    grok: { ...grokChat, subscriptionAccounts: () => grokAccount.state() },
   },
   prepare: async (engine, settings) => {
     assertRuntimeAvailable(engine);
@@ -1383,7 +1423,7 @@ function engineStatusText() {
     ['dsh', 'DSH', dshChat.sessions],
     ['kimi', 'Kimi Code', kimiSessions],
     ['antigravity', 'Antigravity', antigravity.sessions],
-    ['pi', 'Pi', piChat.sessions],
+    ['grok', 'Grok Build', grokChat.sessions],
   ];
   const state = pool => (pool.running ? 'responding' : pool.active ? 'session idle' : 'not started');
   const current = pools.find(([id]) => id === currentMode);
@@ -1442,9 +1482,10 @@ function openSettingsWindow(target = {}) {
     return;
   }
   settingsCloseReady = false;
+  const { width, height } = settingsWindowSizes.size;
   settingsWindow = new BrowserWindow({
-    width: 1160,
-    height: 860,
+    width,
+    height,
     minWidth: 760,
     minHeight: 620,
     // Create hidden and centered: showing the window before the renderer has
@@ -1605,7 +1646,7 @@ if (!gotSingleInstanceLock) {
     'benchmark-report': ({ id }) => ({ ok: true, report: benchmarks().report(id) }),
     'benchmark-delete': ({ id }) => benchmarks().deleteReport(id),
     'benchmark-install': async ({ engine }) => {
-      if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine)) throw new Error('Unknown benchmark engine');
+      if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine)) throw new Error('Unknown benchmark engine');
       assertRuntimeAvailable(engine);
       if (benchmarkRunner?.pending) throw new Error('Stop the benchmark before downloading an engine');
       await runtimes().ensure(engine, 'api');
@@ -1626,14 +1667,14 @@ if (!gotSingleInstanceLock) {
     },
     'engine-settings-get': ({ engine }) => ({ ok: true, ...engineSettings().get(engine) }),
     'subscription-preferences-get': ({ engine }) => {
-      if (!['codex', 'kimi', 'antigravity'].includes(engine)) throw new Error('Unknown subscription engine');
-      const settings = engine === 'codex' ? codex.settings() : engine === 'kimi' ? kimiSettings() : antigravity.settings();
+      if (!['codex', 'kimi', 'antigravity', 'grok'].includes(engine)) throw new Error('Unknown subscription engine');
+      const settings = engine === 'codex' ? codex.settings() : engine === 'kimi' ? kimiSettings() : engine === 'grok' ? grokChat.settings() : antigravity.settings();
       return { ok: true, preferences: { autoSwitchQuota: loadConfig().subscriptionAutoSwitch?.[engine] !== false, connection: settings.connection,
         ...(engine === 'kimi' ? { region: settings.region || 'mainland-cn' } : { proxyUrl: settings.proxyUrl || '' }),
         ...(engine === 'antigravity' ? { useG1Credits: readJson(path.join(os.homedir(), '.gemini/antigravity-cli/settings.json'), {}).useG1Credits === true } : {}) } };
     },
     'subscription-preferences-save': async ({ engine, preferences = {} }) => {
-      if (!['codex', 'kimi', 'antigravity'].includes(engine)) throw new Error('Unknown subscription engine');
+      if (!['codex', 'kimi', 'antigravity', 'grok'].includes(engine)) throw new Error('Unknown subscription engine');
       if (preferences.autoSwitchQuota !== undefined) {
         if (typeof preferences.autoSwitchQuota !== 'boolean') throw new Error('Invalid automatic account switching preference');
         saveConfig({ subscriptionAutoSwitch: { ...loadConfig().subscriptionAutoSwitch, [engine]: preferences.autoSwitchQuota } });
@@ -1647,13 +1688,17 @@ if (!gotSingleInstanceLock) {
         saveKimiSettings({ region: preferences.region, ...connection });
         return { ok: true, preferences: { region: kimiSettings().region, connection: kimiSettings().connection } };
       }
-      const savedProxy = engine === 'codex' ? codex.settings().proxyUrl : antigravity.settings().proxyUrl;
+      const savedProxy = engine === 'codex' ? codex.settings().proxyUrl : engine === 'grok' ? grokChat.settings().proxyUrl : antigravity.settings().proxyUrl;
       const requestedProxy = preferences.proxyUrl ?? savedProxy ?? '';
       const proxyUrl = downloadSettings({ mode: requestedProxy ? 'proxy' : 'direct', url: requestedProxy }).url;
       if (engine === 'codex') {
         if (codex.accountState().accounts.some(account => account.loginPending)) throw new Error('Complete the account operation before changing login preferences');
         await codex.shutdown();
         codex.saveSettings({ proxyUrl, ...connection });
+      } else if (engine === 'grok') {
+        if (grokAccount.changingAccount) throw new Error('Complete the account operation before changing login preferences');
+        grokChat.saveSettings({ proxyUrl, ...connection });
+        return { ok: true, preferences: { proxyUrl, connection: grokChat.settings().connection } };
       } else {
         const file = path.join(os.homedir(), '.gemini/antigravity-cli/settings.json');
         const native = readJson(file, {});
@@ -1680,7 +1725,7 @@ if (!gotSingleInstanceLock) {
       if (engine === 'antigravity') await antigravity.shutdown();
       if (engine === 'codex') await codex.shutdown();
       if (engine === 'dsh') { await dshChat.shutdown(); syncOllamaBaseUrl(Boolean(ollamaProxyHandle?.getState().running)); }
-      if (engine === 'pi') await piChat.shutdown();
+      if (engine === 'grok') await grokChat.shutdown();
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('dsh:engine-settings-changed', { engine });
       return { ok: true, ...result };
     },
@@ -1694,7 +1739,7 @@ if (!gotSingleInstanceLock) {
       if (engine === 'antigravity') await antigravity.shutdown();
       if (engine === 'codex') await codex.shutdown();
       if (engine === 'dsh') await dshChat.shutdown();
-      if (engine === 'pi') await piChat.shutdown();
+      if (engine === 'grok') await grokChat.shutdown();
       return { ok: true, engines: runtimeUpdates().state(engines) };
     },
     'runtime-python-state': () => ({ ok: true, python: runtimes().pythonState() }),
@@ -1702,7 +1747,7 @@ if (!gotSingleInstanceLock) {
       if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before changing Python');
       // Python is shared by every harness, so a running session anywhere may be
       // using it; stop the engines that depend on it before switching.
-      if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].some(engineBusy)) {
+      if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].some(engineBusy)) {
         throw new Error('Stop running responses before changing the shared Python path');
       }
       const engines = await runtimes().setPython(file);
@@ -1722,7 +1767,7 @@ if (!gotSingleInstanceLock) {
       const available = await appUpdates().check();
       if (anyRuntimeUpdating()) throw new Error('Wait for runtime updates to finish before updating Camellia');
       if (!available.updateAvailable) throw new Error('Camellia is already up to date');
-      const busy = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].filter(engineBusy);
+      const busy = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].filter(engineBusy);
       const { response } = await dialog.showMessageBox(settingsWindow || mainWindow, {
         type: 'question', title: uiText('Install update'), noLink: true,
         message: uiText(`Download and install Camellia v${available.latest}?`),
@@ -1888,7 +1933,7 @@ if (!gotSingleInstanceLock) {
         if (!models || typeof models !== 'object' || Array.isArray(models)) throw new Error('Invalid quick-switch models');
         patch.quickSwitchModels = { ...loadConfig().quickSwitchModels };
         for (const [engine, model] of Object.entries(models)) {
-          if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine) || typeof model !== 'string' || model.length > 256) {
+          if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine) || typeof model !== 'string' || model.length > 256) {
             throw new Error('Invalid quick-switch model');
           }
           if (model.trim()) patch.quickSwitchModels[engine] = model.trim();
@@ -1900,7 +1945,7 @@ if (!gotSingleInstanceLock) {
         if (!connections || typeof connections !== 'object' || Array.isArray(connections)) throw new Error('Invalid quick-switch connections');
         patch.quickSwitchConnections = { ...loadConfig().quickSwitchConnections };
         for (const [engine, connection] of Object.entries(connections)) {
-          if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine) || !['', 'api', 'subscription'].includes(connection)) throw new Error('Invalid quick-switch connection');
+          if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine) || !['', 'api', 'subscription'].includes(connection)) throw new Error('Invalid quick-switch connection');
           if (connection) patch.quickSwitchConnections[engine] = connection;
           else delete patch.quickSwitchConnections[engine];
         }
@@ -1910,7 +1955,7 @@ if (!gotSingleInstanceLock) {
         if (!levels || typeof levels !== 'object' || Array.isArray(levels)) throw new Error('Invalid quick-switch levels');
         patch.quickSwitchLevels = { ...loadConfig().quickSwitchLevels };
         for (const [engine, level] of Object.entries(levels)) {
-          if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(engine) || typeof level !== 'string' || level.length > 64) {
+          if (!['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(engine) || typeof level !== 'string' || level.length > 64) {
             throw new Error('Invalid quick-switch level');
           }
           if (level.trim()) patch.quickSwitchLevels[engine] = level.trim();
@@ -2132,6 +2177,36 @@ if (!gotSingleInstanceLock) {
     catch (error) { log('kimi-' + name + ': ' + error.message); return { ok: false, error: error.message }; }
   });
 
+  const grokHandlers = {
+    'account-state': payload => {
+      if (payload?.id && !grokAccount.list().some(account => account.id === payload.id)) throw new Error('Unknown Grok account');
+      return { ok: true, ...grokAccount.state(payload?.id) };
+    },
+    'account-refresh': async payload => {
+      const id = payload?.id || grokAccount.activeId();
+      if (!grokAccount.list().some(account => account.id === id)) throw new Error('Unknown Grok account');
+      return { ok: true, ...await grokAccount.refresh(id) };
+    },
+    'account-select': payload => ({ ok: true, ...grokAccount.select(payload?.id) }),
+    'account-add': async payload => ({ ok: true, ...await grokAccount.beginAdd(payload?.label) }),
+    'account-remove': async payload => ({ ok: true, ...await grokAccount.remove(payload?.id) }),
+    'account-label': payload => ({ ok: true, ...grokAccount.rename(payload?.id, payload?.label) }),
+    'sign-in': async () => ({ ok: true, ...await grokAccount.signIn() }),
+    'cancel-login': async () => ({ ok: true, ...await grokAccount.cancelLogin() }),
+    'open-login': async () => ({ ok: true, ...await grokAccount.openLogin() }),
+    'sign-out': async payload => {
+      if (sharedConversations.isBusy('grok')) throw new Error('Stop the Grok response or goal before signing out');
+      await grokChat.shutdown();
+      return { ok: true, ...await grokAccount.signOut(payload?.id) };
+    },
+  };
+  for (const [name, handler] of Object.entries(grokHandlers)) ipcMain.handle('dsh:grok-' + name, async (_event, payload) => {
+    try {
+      if (['account-refresh', 'account-add', 'account-remove', 'sign-in'].includes(name)) assertRuntimeAvailable('grok');
+      return await handler(payload);
+    } catch (error) { log('grok-' + name + ': ' + error.message); return { ok: false, error: error.message }; }
+  });
+
   for (const [engine, instance] of Object.entries({ codex, antigravity })) for (const [name, handler] of Object.entries(instance.handlers)) ipcMain.handle('dsh:' + engine + '-' + name, async (_event, payload) => {
     try {
       if (['send', 'goal-start', 'goal-resume', 'account-state', 'account-refresh', 'account-refresh-usage',
@@ -2199,7 +2274,7 @@ if (!gotSingleInstanceLock) {
   const storageCleanup = new StorageCleanup({
     dataDir: app.getPath('userData'), conversations: sharedConversations,
     isActive: storageActivity,
-    histories: [claudeHistory, kimiHistory, codex.history, antigravity.history, dshChat.history, piChat.history],
+    histories: [claudeHistory, kimiHistory, codex.history, antigravity.history, dshChat.history, grokChat.history],
     liveOwners: () => sessionPools()
       .flatMap(pool => [...pool.sessions.entries()].filter(([, session]) => !session.dead).map(([id]) => id)),
     references: async () => {
@@ -2674,7 +2749,7 @@ if (!gotSingleInstanceLock) {
       return;
     }
     createMainWindow();
-    const mode = ['home', 'benchmark', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(currentMode) ? currentMode : 'home';
+    const mode = ['home', 'benchmark', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(currentMode) ? currentMode : 'home';
     currentMode = mode;
     void loadMode(mode);
   }
@@ -2709,6 +2784,7 @@ if (!gotSingleInstanceLock) {
   app.on('activate', () => showMainWindow());
 
   app.whenReady().then(async () => {
+    settingsWindowSizes.start();
     try { await networkSettings().initialize(); }
     catch (error) { log('Network settings: ' + error.message); }
     if (process.platform === 'darwin' && app.dock) {
@@ -2741,11 +2817,11 @@ if (!gotSingleInstanceLock) {
       try {
         let reloadTimer = null;
         fs.watch(path.join(RENDERER_ROOT, 'chat'), (_event, filename) => {
-          if (!['claude.html', 'claude.css', 'claude.js', 'chat-runtime.js'].includes(String(filename))) return;
+          if (!['claude.html', 'claude.css', 'chat.js', 'chat-runtime.js'].includes(String(filename))) return;
           clearTimeout(reloadTimer);
           reloadTimer = setTimeout(() => {
-            if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(currentMode) && mainWindow && !mainWindow.isDestroyed()) {
-              log('Claude view changed → hot reload');
+            if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(currentMode) && mainWindow && !mainWindow.isDestroyed()) {
+              log('Chat view changed → hot reload');
               mainWindow.webContents.reloadIgnoringCache();
             }
           }, 400);
@@ -2792,7 +2868,7 @@ if (!gotSingleInstanceLock) {
       directoryClosing = true;
       kimiClosing = true;
       void Promise.allSettled([remoteDesktop?.close(), cliDevices.close(), backend.stopAndWait(), stopOllamaProxyHandle(),
-        discussionService?.shutdown(), claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), piChat.shutdown(),
+        discussionService?.shutdown(), claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), grokChat.shutdown(),
         dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown(), benchmarkRunner?.shutdown()]).then(results => {
         if (results.some(result => result.status === 'rejected')) {
           if (pluginCacheRestart) {
@@ -2806,10 +2882,10 @@ if (!gotSingleInstanceLock) {
       });
       return;
     }
-    if ((discussionService?.active || claudeSessions.active || codex.active || kimiAccount.active || piChat.sessions.active || dshChat.sessions.active || kimiSessions.active || antigravity.sessions.active || benchmarkRunner?.pending) && !kimiClosing) {
+    if ((discussionService?.active || claudeSessions.active || codex.active || kimiAccount.active || grokChat.sessions.active || dshChat.sessions.active || kimiSessions.active || antigravity.sessions.active || benchmarkRunner?.pending) && !kimiClosing) {
       event.preventDefault();
       kimiClosing = true;
-      void Promise.allSettled([discussionService?.shutdown(), claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), piChat.shutdown(), dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown(), benchmarkRunner?.shutdown()]).finally(() => app.quit());
+      void Promise.allSettled([discussionService?.shutdown(), claudeSessions.shutdown(), codex.shutdown(), kimiAccount.shutdown(), grokChat.shutdown(), dshChat.shutdown(), kimiSessions.shutdown(), antigravity.shutdown(), benchmarkRunner?.shutdown()]).finally(() => app.quit());
       return;
     }
     stopBackend();
@@ -2832,7 +2908,7 @@ if (!gotSingleInstanceLock) {
 
   let modeRequest = 0;
   function navigateMode(mode) {
-    const chatModes = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
+    const chatModes = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
     if (chatModes.includes(currentMode) && chatModes.includes(mode) && mainWindow && !mainWindow.isDestroyed()) {
       // The renderer owns the current logical session and unsent draft. All
       // engine menu switches must use the same handoff flow as its selector.
@@ -2842,7 +2918,7 @@ if (!gotSingleInstanceLock) {
     return switchMode(mode);
   }
   async function switchMode(mode, conversationId, navigation, inPlace = false) {
-    if (!['home', 'benchmark', 'discussions', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(mode)) {
+    if (!['home', 'benchmark', 'discussions', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(mode)) {
       return { ok: false, error: 'Unknown engine or page' };
     }
     const request = ++modeRequest;
@@ -2897,7 +2973,7 @@ if (!gotSingleInstanceLock) {
       }
     } catch (err) {
       log(`switch mode failed: ${err && err.stack || err}`);
-      if (['claude', 'codex', 'kimi', 'antigravity', 'pi'].includes(next)) openSettingsWindow({ page: 'engines', engine: next });
+      if (['claude', 'codex', 'kimi', 'antigravity', 'grok'].includes(next)) openSettingsWindow({ page: 'engines', engine: next });
       if (next === 'dsh' && currentMode === 'dsh' && mainWindow && !mainWindow.isDestroyed()) {
         await mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(errorHtml(err)));
       }

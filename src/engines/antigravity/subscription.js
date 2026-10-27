@@ -6,7 +6,7 @@ const { spawn, execFileSync } = require('node:child_process');
 const { readJson, writeJson } = require('../../shared/json-store');
 const { setTimeout: delay } = require('node:timers/promises');
 const { clearGoogleCredentials } = require('./credentials');
-const { headlessEnvironment, cliAuthenticationError, describeCliFailure } = require('./cli-auth.cjs');
+const { headlessEnvironment, cliNetworkError, cliAuthenticationError, describeCliFailure } = require('./cli-auth.cjs');
 
 // A blank proxy setting means "use the Windows system proxy", so Google
 // sign-in also works on networks where oauth2.googleapis.com is unreachable
@@ -189,7 +189,7 @@ const CLI_ATTEMPTS = 3;
 const CLI_RETRY_DELAY_MS = 1500;
 function retryableCliFailure(error) {
   if (!error || error.timedOut || isProfilePictureFailure(error)) return false;
-  return !/sign-in has expired|no valid auth|not authenticated|authentication (?:failed|required|failed or timed out)|unauthorized|invalid_grant/i.test(String(error.message || ''));
+  return Boolean(cliNetworkError(error.message)) || !/sign-in has expired|no valid auth|not authenticated|authentication (?:failed|required|failed or timed out)|unauthorized|invalid_grant/i.test(String(error.message || ''));
 }
 async function runCliWithRetry(run, file, args, options, { attempts = CLI_ATTEMPTS, delay: retryDelay = CLI_RETRY_DELAY_MS,
   sleep = (ms, signal) => delay(ms, undefined, { signal }) } = {}) {

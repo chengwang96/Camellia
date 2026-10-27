@@ -58,7 +58,7 @@ class DeviceClient {
     return this.load().map(({ id, name, address, createdAt, defaultHarness }) => ({ id, name, address, createdAt, ...(defaultHarness ? { defaultHarness } : {}) }));
   }
   preferences(id, { defaultHarness }) {
-    if (!['', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(defaultHarness)) throw new Error('Invalid default harness');
+    if (!['', 'claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(defaultHarness)) throw new Error('Invalid default harness');
     this.record(id);
     this.save(this.load().map(record => record.id === id ? { ...record, defaultHarness } : record));
     return this.list().find(record => record.id === id);
@@ -166,11 +166,11 @@ class DeviceClient {
     return this.json(id, `/v1/server-management/${jobId}`);
   }
   nativeSettings(id, engine) {
-    if (!['claude', 'codex', 'kimi', 'dsh', 'antigravity', 'pi'].includes(engine)) throw new Error('Invalid engine');
+    if (!['claude', 'codex', 'kimi', 'dsh', 'antigravity', 'grok'].includes(engine)) throw new Error('Invalid engine');
     return this.json(id, `/v1/native-settings/${engine}`);
   }
   saveNativeSettings(id, payload) {
-    if (!['claude', 'codex', 'kimi', 'dsh', 'antigravity', 'pi'].includes(payload?.engine)) throw new Error('Invalid engine');
+    if (!['claude', 'codex', 'kimi', 'dsh', 'antigravity', 'grok'].includes(payload?.engine)) throw new Error('Invalid engine');
     return this.json(id, `/v1/native-settings/${payload.engine}`, { method: 'POST', body: payload });
   }
   conversations(id, offset = 0) {

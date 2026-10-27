@@ -16,7 +16,7 @@ const { WindowsJobJournal } = require('../src/engines/discussions/windows-job-jo
 const { UnixJobJournal } = require('../src/engines/discussions/unix-job');
 const { removeTree } = require('./test-fs.cjs');
 
-const engines = ['claude', 'codex', 'kimi', 'antigravity', 'dsh', 'pi'];
+const engines = ['claude', 'codex', 'kimi', 'antigravity', 'dsh', 'grok'];
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discussion-access-'));
   t.after(() => removeTree(root));
@@ -89,7 +89,7 @@ test('live discussion opening protects an uncommitted native ID and requires the
   const pool = h.drivers.codex.sessions;
   pool.set(opts, session);
   assert.throws(() => pool.assertAccess({ sessionId: session.sessionId }), /owned by a discussion/);
-  assert.throws(() => h.drivers.pi.sessions.assertAccess({ conversationId: opts.conversationId }), /owned by a discussion/);
+  assert.throws(() => h.drivers.grok.sessions.assertAccess({ conversationId: opts.conversationId }), /owned by a discussion/);
   assert.throws(() => pool.assertAccess({ ...opts, discussionLaunch: {} }), /Invalid.*discussion launch/);
   assert.throws(() => h.drivers.kimi.sessions.assertAccess(opts), /Invalid.*discussion launch/);
   assert.throws(() => pool.set({ conversationId: opts.conversationId }, {}), /owned by a discussion/);

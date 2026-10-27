@@ -10,7 +10,7 @@ const { once } = require('node:events');
 const { startApiRouter, retryDelay } = require('../src/api/api-router');
 const { normalizeConfig, writeConfig, loadConfig, publicState, PRESETS } = require('../src/api/api-router-config');
 const { recordUsage } = require('../src/api/api-usage');
-const { frame, SSEParser, convertRequest } = require('../src/api/api-protocol');
+const { frame, SSEParser, StreamConverter, convertRequest } = require('../src/api/api-protocol');
 const { toolModelId } = require('../src/shared/codex-tool-model');
 const { BAD_PORTS } = require('./bad-ports.cjs');
 
@@ -413,6 +413,18 @@ test('benchmark routes pin provider and model, isolate usage, and expire on clos
   await scoped.close();
   assert.equal((await f.post({}, scoped.path + '/v1/chat/completions')).status, 410);
   assert.equal(f.requests.length, 2);
+});
+
+test('tool-free discussion scopes remove declarations without changing ordinary routes', async t => {
+  const f = await fixture(t, (_r, res) => reply(res, 200, completion('kimi-k3')), url => [provider('discussion', url)]);
+  const scope = f.router.createScope({ model: 'kimi-k3', providerId: 'discussion', toolPolicy: 'none' });
+  const tools = [{ name: 'read_file', description: 'Read', input_schema: { type: 'object' } }];
+  assert.equal((await f.post({ tools, tool_choice: { type: 'tool', name: 'read_file' } }, scope.path + '/v1/messages')).status, 200);
+  assert.equal('tools' in f.requests[0].body, false);
+  assert.equal('tool_choice' in f.requests[0].body, false);
+  assert.equal((await f.post({ tools })).status, 200);
+  assert.equal(f.requests[1].body.tools[0].name, 'read_file');
+  await scope.close();
 });
 
 test('explicit key scopes remain pinned across cooldowns and config changes', async t => {
@@ -955,6 +967,26 @@ test('Anthropic to OpenAI bridge preserves system, tool history, images and stre
   assert.equal(events.at(-2).delta.stop_reason,'tool_use'); assert.equal(events.at(-1).type,'message_stop');
   assert.equal(f.router.getState().usage['command-key-0'].inputTokens,15);
   assert.equal(f.router.getState().usage['command-key-0'].outputTokens,9);
+});
+
+test('OpenAI to Anthropic tool streaming never emits incomplete Unicode escapes', () => {
+  const events = [], parser = new SSEParser(event => events.push(event));
+  const converter = new StreamConverter('openai', 'anthropic', 'fixture', data => parser.feed(Buffer.from(data)));
+  const args = JSON.stringify({ path: '文档🙂', escaped: '\\u8bcd\\ud83d' });
+  for (let offset = 0; offset < args.length; offset++) {
+    converter.push({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call-1', type: 'function',
+      function: { name: 'read_file', arguments: args[offset] } }] } }] });
+  }
+  converter.push({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
+  converter.end(); parser.end();
+  const parts = events.filter(event => event.delta?.type === 'input_json_delta').map(event => event.delta.partial_json);
+  assert.equal(parts.join(''), args);
+  for (const part of parts) {
+    assert.doesNotMatch(part, /[\uD800-\uDBFF]$/);
+    assert.doesNotMatch(part, /(?<!\\)(?:\\\\)*\\u[\da-f]{0,3}$/i);
+    assert.doesNotMatch(part, /(?<!\\)(?:\\\\)*\\$/);
+  }
+  assert.deepEqual(JSON.parse(parts.join('')), { path: '文档🙂', escaped: '\\u8bcd\\ud83d' });
 });
 
 test('Anthropic native messages and count_tokens use their configured base path and auth', async t => {

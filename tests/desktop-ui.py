@@ -79,7 +79,7 @@ try:
                     return {'result': {'ok': True, 'engines': [
                         {'id': engine, 'name': name, 'status': 'missing'} for engine, name in
                         [('claude', 'Claude Code'), ('codex', 'Codex CLI'), ('dsh', 'DeepSeek Harness'), ('kimi', 'Kimi Code'),
-                         ('antigravity', 'Antigravity'), ('pi', 'Pi')]
+                         ('antigravity', 'Antigravity'), ('grok', 'Grok Build')]
                     ]}}
                 return rpc(method, payload)
             page.expose_function('testRpc', page_rpc)
@@ -95,9 +95,9 @@ try:
             expect(landing.get_by_role('button', name='Download & open Kimi', exact=True)).to_be_visible()
             expect(landing.get_by_role('button', name='Download & open Antigravity', exact=True)).to_be_visible()
             # Every engine must be present and offer a download on a fresh
-            # install; a missing fixture entry silently rendered Pi with the
-            # static "Open Pi" fallback in the README screenshot.
-            expect(landing.get_by_role('button', name='Download & open Pi', exact=True)).to_be_visible()
+            # install; a missing fixture entry silently rendered Grok Build with the
+            # static "Open Grok Build" fallback in the README screenshot.
+            expect(landing.get_by_role('button', name='Download & open Grok Build', exact=True)).to_be_visible()
             expect(landing.get_by_role('button', name='Settings', exact=True)).to_be_visible()
             landing.screenshot(animations='disabled', path=str(screenshots / f'home-{scheme}.png'))
             landing.keyboard.press('Tab')
@@ -341,8 +341,8 @@ try:
         expect(api.locator('#aUrlField')).not_to_be_visible()
         api.locator('#modelAdvanced > summary').click()
         api.locator('#addModel').click()
-        api.get_by_role('textbox', name='Canonical model ID 1', exact=True).fill('test-model')
-        api.get_by_role('textbox', name='Upstream model ID 1', exact=True).fill('test-upstream')
+        api.locator('[data-model="0"][data-field="id"]').fill('test-model')
+        api.locator('[data-model="0"][data-field="upstream"]').fill('test-upstream')
         model = check_picker(api, '[data-model="0"][data-field="protocol"]')
         model.get_by_role('option', name='OpenAI', exact=True).click()
         # A dummy key with the router disabled never reaches an upstream.

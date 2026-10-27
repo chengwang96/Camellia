@@ -14,10 +14,14 @@ const RESERVED = {
   kimi: ['providers', 'models', 'default_model', 'default_provider', 'secondary_model', 'services'],
   dsh: ['agent-default-model', 'llm-pi-ai', 'permission'],
   google: ['modelProvider'],
+  grok: ['model', 'models'],
 };
 function definitions(dataDir) {
   return {
-    pi: [{ id: 'instructions', label: 'Pi instructions', format: 'text', file: path.join(dataDir, 'pi-native/AGENTS.md') }],
+    grok: [
+      { id: 'settings', label: 'Grok config.toml', format: 'toml', file: path.join(dataDir, 'grok-native/config.toml'), policy: 'grok' },
+      { id: 'instructions', label: 'Grok instructions', format: 'text', file: path.join(dataDir, 'grok-native/AGENTS.md') },
+    ],
     claude: [
       { id: 'settings', label: 'Claude settings', format: 'json', file: path.join(dataDir, 'claude-native/settings.json'), policy: 'claude' },
       { id: 'instructions', label: 'CLAUDE.md', format: 'text', file: path.join(dataDir, 'claude-native/CLAUDE.md') },
@@ -40,7 +44,7 @@ function definitions(dataDir) {
   };
 }
 const digest = value => createHash('sha256').update(value).digest('hex');
-function protectedEnv(key) { return /^(ANTHROPIC_|OPENAI_|CODEX_API_KEY$|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_|GOOGLE_APPLICATION_CREDENTIALS$|GEMINI_API_KEY$|GOOGLE_API_KEY$|DSH_API_ROUTER_KEY$|KIMI_API_KEY$|KIMI_BASE_URL$)/i.test(key); }
+function protectedEnv(key) { return /^(ANTHROPIC_|OPENAI_|CODEX_API_KEY$|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_|GOOGLE_APPLICATION_CREDENTIALS$|GEMINI_API_KEY$|GOOGLE_API_KEY$|DSH_API_ROUTER_KEY$|KIMI_API_KEY$|KIMI_BASE_URL$|XAI_API_KEY$|GROK_)/i.test(key); }
 function editable(doc, value) {
   const result = structuredClone(value);
   for (const key of RESERVED[doc.policy] || []) delete result[key];

@@ -46,7 +46,7 @@ test('macOS production registers all six engines with the Unix supervisor and Wi
       registry:{get:engine=>registered.get(engine),register:entry=>registered.set(entry.engine,entry)},
       codex:{ensureSession(){}}, antigravity:{ensureSession(){}}, runtimes:()=>({locate:()=>null}), getCatalog:()=>[] });
     production.refresh();
-    assert.deepEqual([...registered.keys()].sort(), platform === 'linux' ? [] : ['antigravity','claude','codex','dsh','kimi','pi']);
+    assert.deepEqual([...registered.keys()].sort(), platform === 'linux' ? [] : ['antigravity','claude','codex','dsh','grok','kimi']);
     assert.equal(production.journal instanceof UnixJobJournal, platform === 'darwin');
     for (const entry of registered.values()) for (const method of ['prepare','verify','confirmStopped']) assert.equal(typeof entry.policy[method],'function');
   }
@@ -171,9 +171,35 @@ for (const verification of [false, true]) for (const mode of ['auto', 'direct'])
   });
 }
 
+test('Grok subscription verification keeps OAuth authentication and never builds an API route', async t => {
+  const { root, node } = setup(t);
+  const profile = { engine: 'grok', connection: 'subscription', accountRef: 'default', model: 'grok-4.7', thinking: '', contextWindow: 500000 };
+  const runtime = { file: path.join(root, 'grok'), version: '1.0.70' }, refreshed = [];
+  const accountHome = path.join(root, 'grok-subscription');
+  fs.mkdirSync(accountHome);
+  fs.writeFileSync(path.join(accountHome, 'auth.json'), JSON.stringify({ access_token: 'fixture-only', refresh_token: 'must-not-copy', user_id: 'user', expires_at: Date.now() / 1000 + 3600 }));
+  const production = new DiscussionProduction({ dataDir: root, node: () => node,
+    registry: { get: () => ({}), updateRuntime() {} },
+    runtimes: () => ({ locate: engine => engine === 'grok' ? runtime : null }),
+    getRouter: () => { assert.fail('Subscription verification must not use the API router'); },
+    refreshGrok: async id => refreshed.push(id), getCatalog: async () => [{ binding: profile }] });
+  const identity = { runtimeId: randomUUID(), deliveryId: randomUUID(), generation: 1 };
+  production.jobs = { prepare: async () => ({ spawn() { assert.fail('Preparation must not start a turn'); }, stop: async () => ({ stopped: true }) }) };
+  t.after(() => production.confirmStopped({ identity }));
+  const prepared = await production.prepare({ identity, profile, cwd: path.join(production.root, 'work', randomUUID()), verification: true });
+  const spec = prepared.launch.buildSpec({ runtime });
+  assert.deepEqual(refreshed, ['default']);
+  assert.equal(spec.authMethod, 'cached_token');
+  assert.equal(spec.modelValue, profile.model);
+  assert.equal(prepared.settings.connection, 'subscription');
+  const credential = JSON.parse(fs.readFileSync(path.join(spec.env.GROK_HOME, 'auth.json'), 'utf8'));
+  assert.equal(credential.access_token, 'fixture-only');
+  assert.equal(credential.refresh_token, '');
+});
+
 test('new API harness launches keep the exact route and disable native tool discovery', t => {
   const input = setup(t);
-  for (const engine of ['claude', 'kimi', 'pi', 'dsh']) {
+  for (const engine of ['claude', 'kimi', 'grok', 'dsh']) {
     const home = path.join(input.home, engine); fs.mkdirSync(home);
     const runtime = { version: '99.0.0-next.1', file: path.join(input.root, engine + '.js'), dir: input.root };
     if (engine === 'dsh') {
@@ -190,9 +216,10 @@ test('new API harness launches keep the exact route and disable native tool disc
       const config = TOML.parse(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'));
       assert.deepEqual(config.tools.enabled, ['camellia_discussion_text_only']);
       assert.ok(JSON.stringify(config).includes(input.route.baseUrl));
-    } else if (engine === 'pi') {
-      assert.ok(spec.args.includes('--no-tools')); assert.ok(spec.args.includes('--no-extensions')); assert.ok(!spec.args.includes('-e'));
-      assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'models.json'))).providers.camellia.baseUrl, input.route.baseUrl);
+    } else if (engine === 'grok') {
+      assert.ok(spec.args.indexOf('--model') < spec.args.indexOf('agent'));
+      const config = TOML.parse(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'));
+      assert.equal(config.model.camellia.base_url, input.route.baseUrl + '/v1');
     } else {
       const patch = YAML.parse(fs.readFileSync(path.join(home, 'discussion.patch.yml'), 'utf8'));
       assert.ok(patch.some(row => row.id === 'tool-future-tool' && row.disabled));

@@ -165,7 +165,7 @@ test('production requester classifies upstream errors and detects empty truncate
 });
 
 function rendererFixture() {
-  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/claude.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/chat/chat.js'), 'utf8');
   const handler = source.slice(source.indexOf('  function handleEvent(ev)'), source.indexOf("    if (ev.type === 'conversation:remote-queue')")) + '\n  }';
   const header = { textContent: 'Open conversation', dataset: {} }, state = { loads: 0 };
   const context = { context: { sessionId: 'open' }, restoringRun: false, eventsDuringRestore: [],

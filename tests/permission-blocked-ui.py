@@ -2,7 +2,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 root = Path(__file__).resolve().parents[1]
-source = (root / 'src/renderer/chat/claude.js').read_text(encoding='utf-8')
+source = (root / 'src/renderer/chat/chat.js').read_text(encoding='utf-8')
 start = source.index("    if (ev.type === 'gui:tool') {")
 end = source.index("    if (ev.type === 'gui:plan')", start)
 with sync_playwright() as playwright:

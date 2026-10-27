@@ -9,7 +9,7 @@ const { antigravitySpawnSpec, subscriptionSpawnSpec } = require('../antigravity'
 const { effectiveSelection } = require('../antigravity/subscription');
 const { kimiSpawnSpec } = require('../kimi-session');
 const { dshAcpSpec } = require('../dsh-session');
-const { piSpec } = require('../pi-session');
+const { grokSpawnSpec } = require('../grok-session');
 const { nativeMode } = require('../permission-levels');
 
 function resources(home, source, names = ['skills', 'commands', 'plugins']) {
@@ -42,8 +42,8 @@ function nativeToolSpec({ runtime, home, cwd, env, node, profile, route, permiss
   if (engine === 'kimi') return { ...kimiSpawnSpec({ runtime: runtime.file, home, model, contextWindow, route, connection, env,
     config: native.config || {}, mcp: native.mcp || '' }), exe: node, cwd };
   if (engine === 'dsh') return { ...dshAcpSpec({ runtime, home, model, route, permissionMode, env, nativeConfig: native.config }), exe: node, cwd };
-  if (engine === 'pi') return { ...piSpec({ runtime, home, sessionId: 'discussion', route, env,
-    settings: { model, contextWindow, permissionMode, thinkingBudget: profile.thinking, instructions: native.instructions } }), exe: node, cwd };
+  if (engine === 'grok') return { ...grokSpawnSpec({ runtime: runtime.file, home, model, connection, route, contextWindow, env,
+    config: native.config || {}, instructions: native.instructions }), exe: runtime.file, cwd };
   if (engine === 'antigravity' && connection === 'api') return { ...antigravitySpawnSpec({ runtime, home, route, env, config: native.config }), exe: runtime.file, cwd };
   if (engine === 'antigravity' && connection === 'subscription') {
     const legacy = path.join(cwd, '.agents/agents/camellia-discussion.md');

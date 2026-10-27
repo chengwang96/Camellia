@@ -14,7 +14,7 @@ bridge = r"""(() => {
     {id:'kimi-session',title:'Kimi task',origin:'kimi',message:'Kimi answer'},
     {id:'dsh-session',title:'DSH task',origin:'dsh',message:'DSH answer'},
     {id:'antigravity-session',title:'Google task',origin:'antigravity',message:'Google answer'},
-    {id:'pi-session',title:'Pi task',origin:'pi',message:'Pi answer'},
+    {id:'grok-session',title:'Grok Build task',origin:'grok',message:'Grok Build answer'},
   ];
   const engineFor = row => localStorage.getItem('fixture-harness:' + row.id) || row.origin;
   const session = row => ({id:row.id,title:row.title,origin:row.origin,
@@ -134,7 +134,7 @@ with sync_playwright() as playwright:
     expect(page.locator('#engineSwitch')).to_have_value('claude')
     expect(page.locator('#chat')).to_contain_text('Codex answer')
     assert page.evaluate('switchCalls.every(call => call.inPlace)'), 'Every switch must stay in the same document'
-    for engine, name in [('kimi', 'Kimi Code'), ('dsh', 'DeepSeek Harness'), ('antigravity', 'Antigravity'), ('pi', 'Pi')]:
+    for engine, name in [('kimi', 'Kimi Code'), ('dsh', 'DeepSeek Harness'), ('antigravity', 'Antigravity'), ('grok', 'Grok Build')]:
         page.locator(f'[data-sid="{engine}-session"]').click()
         page.wait_for_function(f'harnessId === "{engine}" && !loadingSession')
         expect(page.locator('#engineSwitch')).to_have_value(engine)
@@ -149,11 +149,11 @@ with sync_playwright() as playwright:
     page.evaluate('delayNextSwitch = true')
     page.locator('[data-sid="kimi-session"]').click()
     page.wait_for_function('typeof releaseSwitch === "function"')
-    page.locator('[data-sid="pi-session"]').click()
-    page.wait_for_function('harnessId === "pi" && context.sessionId === "pi-session" && !loadingSession')
+    page.locator('[data-sid="grok-session"]').click()
+    page.wait_for_function('harnessId === "grok" && context.sessionId === "grok-session" && !loadingSession')
     page.evaluate('releaseSwitch()')
     page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
-    assert page.evaluate('harnessId') == 'pi'
+    assert page.evaluate('harnessId') == 'grok'
 
     # Failed navigation must not replace the target's stored draft with blanks.
     page.evaluate("failNextSwitch=true; writeUi('draft:kimi-session',{text:'Kimi retained draft',attachments:[]})")
@@ -161,7 +161,7 @@ with sync_playwright() as playwright:
     page.wait_for_function('!loadingSession && statusLine.textContent.includes("Fixture engine unavailable")')
     assert page.evaluate('readUi("draft:kimi-session").text') == 'Kimi retained draft'
     expect(page.locator('#input')).to_have_value('Kimi retained draft')
-    assert page.evaluate('harnessId') == 'pi'
+    assert page.evaluate('harnessId') == 'grok'
 
     # Running conversations restore their snapshot and continue receiving events.
     page.evaluate('fixtureRunning = true')

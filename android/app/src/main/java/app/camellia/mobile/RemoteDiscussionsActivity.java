@@ -862,8 +862,8 @@ public final class RemoteDiscussionsActivity extends Activity {
             catch (Exception error) { deliver(ticket, () -> showError(RemoteApi.failureMessage(error, chinese))); } });
     }
     private void chooseHarness(List<JSONObject> bindings) {
-        String[] engines = { "claude", "codex", "dsh", "kimi", "antigravity", "pi" };
-        String[] labels = { "Claude Code", "Codex CLI", "DeepSeek Harness", "Kimi Code", "Antigravity", "Pi" };
+        String[] engines = { "claude", "codex", "dsh", "kimi", "antigravity", "grok" };
+        String[] labels = { "Claude Code", "Codex CLI", "DeepSeek Harness", "Kimi Code", "Antigravity", "Grok Build" };
         dialog = new CamelliaDialog.Builder(this).setTitle(tr("选择 Harness", "Choose harness")).setItems(labels, (d, index) -> {
             List<JSONObject> filtered = new ArrayList<>(); for (JSONObject row : bindings) if (row.optJSONObject("binding").optString("engine").equals(engines[index])) filtered.add(row);
             if (filtered.isEmpty()) { showError(tr("这个 Harness 尚无已配置的模型，请先在主机上配置。", "This harness has no configured models. Configure them on the host first.")); return; }

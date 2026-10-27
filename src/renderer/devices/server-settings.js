@@ -12,7 +12,7 @@
     function restoreArchive() { if (archiveNode) { archiveNode.hidden = false; archiveHome.insertBefore(archiveNode, archiveNext); } }
     const text = (zh, en) => language() === 'en' ? en : zh;
     const pages = { runtimes: ['运行时', 'Runtimes'], engines: ['引擎设置', 'Engine settings'], usage: ['用量', 'Usage'], archived: ['已归档', 'Archived'] };
-    const names = { codex: 'Codex CLI', claude: 'Claude Code', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', pi: 'Pi' };
+    const names = { codex: 'Codex CLI', claude: 'Claude Code', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', grok: 'Grok Build' };
     function element(tag, content, className) {
       const node = document.createElement(tag); if (content) node.textContent = content; if (className) node.className = className; return node;
     }

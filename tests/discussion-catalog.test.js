@@ -15,7 +15,7 @@ test('API model choices bind the provider once regardless of its key pool', asyn
   const rows = await discussionCatalog(sources);
   assert.equal(rows.length, 6);
   assert.equal(new Set(rows.map(row => bindingFingerprint(row.binding))).size, 6);
-  assert.deepEqual([...new Set(rows.map(row => row.binding.engine))], ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']);
+  assert.deepEqual([...new Set(rows.map(row => row.binding.engine))], ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']);
   assert.ok(rows.every(row => row.binding.contextWindow === 64000));
   assert.ok(rows.every(row => row.providerId === provider.id && row.providerLabel === provider.name));
   assert.ok(rows.every(row => row.accountLabel === provider.name));
@@ -36,7 +36,7 @@ test('three Ollama keys and three models produce three choices per harness', asy
     keys: [1, 2, 3].map(n => ({ id: 'key-' + n, name: 'weekly-' + n, enabled: true })),
     models: ['kimi-k3', 'deepseek-v4-pro', 'deepseek-v4.1-flash'].map(id => ({ id, upstream: id })) };
   const rows = await discussionCatalog({ router: () => ({ enabled: true, providers: [provider] }) });
-  for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']) {
+  for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']) {
     const choices = rows.filter(row => row.binding.engine === engine);
     assert.deepEqual(choices.map(row => row.label), provider.models.map(m => m.id));
     assert.ok(choices.every(row => row.accountLabel === 'Ollama Cloud'));
@@ -82,7 +82,7 @@ test('all enabled providers stay distinct even when their public model names mat
   })) };
   const rows = await discussionCatalog({ router: () => config, codex: { accountState: () => ({ accounts: [] }) },
     antigravity: { handlers: { 'account-state': () => ({ accounts: [] }) } } });
-  for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']) {
+  for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']) {
     const choices = rows.filter(row => row.binding.engine === engine);
     assert.deepEqual(choices.map(row => row.providerLabel), names);
     assert.equal(new Set(choices.map(row => bindingFingerprint(row.binding))).size, names.length);

@@ -6,7 +6,7 @@ window.CamelliaChatModeSelect = Object.freeze({
   populate(select, current) {
     select.replaceChildren(...[
       ['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['dsh', 'DeepSeek Harness'],
-      ['kimi', 'Kimi Code'], ['antigravity', 'Antigravity'], ['pi', 'Pi'],
+      ['kimi', 'Kimi Code'], ['antigravity', 'Antigravity'], ['grok', 'Grok Build'],
     ].map(([value, label]) => {
       const option = document.createElement('option');
       option.value = value; option.textContent = label;

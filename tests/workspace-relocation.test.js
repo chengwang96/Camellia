@@ -60,7 +60,7 @@ test('shared relocation updates root and nested directories across engines and g
   const ws = (await command(h, { op: 'create-workspace', name: 'Research', path: h.folder('Project') })).workspace;
   const sibling = h.folder('Project-other');
   const nested = h.folder(path.join('Project', 'nested'));
-  const conversations = ['claude', 'codex', 'kimi', 'dsh', 'antigravity', 'pi'].map(engine => {
+  const conversations = ['claude', 'codex', 'kimi', 'dsh', 'antigravity', 'grok'].map(engine => {
     const c = shared.create(engine, ws.id, engine + ' conversation');
     shared.append(c, { role: 'user', engine, text: 'Keep the original history' });
     c.segments[engine] = { nativeId: engine + '-native', cursor: 1 };

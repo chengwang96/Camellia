@@ -1,13 +1,14 @@
 {
   "name": "camellia-desktop",
   "version": "1.0.1",
-  "description": "Camellia: a shared workbench for Claude Code, Codex CLI, DSH, Kimi Code and Antigravity",
+  "description": "Camellia: a shared workbench for Claude Code, Codex CLI, DSH, Kimi Code, Antigravity and Grok Build",
   "main": "src/main/entry.js",
   "author": "Camellia contributors",
   "license": "MIT",
   "private": true,
   "scripts": {
-    "setup:pi": "node scripts/prepare-runtimes.cjs pi",
+    "setup:grok": "node scripts/prepare-runtimes.cjs grok",
+    "test:grok": "node tests/grok-smoke.cjs",
     "setup:kimi": "node scripts/prepare-runtimes.cjs kimi",
     "setup:dsh": "node scripts/prepare-runtimes.cjs dsh",
     "setup:claude": "node scripts/prepare-runtimes.cjs claude",
@@ -65,8 +66,8 @@
     ],
     "extraResources": [
       {
-        "from": "runtimes/pi",
-        "to": "runtimes/pi",
+        "from": "runtimes/grok",
+        "to": "runtimes/grok",
         "filter": ["package.json", "package-lock.json"]
       },
       {
@@ -175,7 +176,7 @@
       "src/engines/find-tools.js",
       "src/engines/web-tools.js",
       "src/engines/antigravity/**",
-      "src/engines/pi-extension.mjs",
+      "src/engines/grok-session.js",
       "src/engines/discussions/dsh-text-policy.mjs",
       "src/engines/goal-tools.js",
       "src/engines/task-tools.js",

@@ -103,7 +103,7 @@ test('default harness is persisted per server without exposing credentials', asy
   assert.throws(() => client.preferences('missing', { defaultHarness: 'codex' }), /not found/);
     const restored = new DeviceClient({ file, safeStorage: storage, network }); clients.push(restored);
     assert.equal(restored.list()[0].defaultHarness, 'codex');
-    assert.equal(restored.preferences(first.id, { defaultHarness: 'pi' }).defaultHarness, 'pi');
+    assert.equal(restored.preferences(first.id, { defaultHarness: 'grok' }).defaultHarness, 'grok');
   assert.equal('token' in restored.list()[0], false);
   assert.equal(client.preferences(first.id, { defaultHarness: '' }).defaultHarness, undefined);
 });
@@ -142,14 +142,14 @@ test('native settings client restricts engines and posts to the selected device 
   const device = await pair();
   await client.nativeSettings(device.id, 'codex');
   assert.equal(calls.at(-1).endpoint, '/v1/native-settings/codex');
-  await client.nativeSettings(device.id, 'pi');
-  assert.equal(calls.at(-1).endpoint, '/v1/native-settings/pi');
+  await client.nativeSettings(device.id, 'grok');
+  assert.equal(calls.at(-1).endpoint, '/v1/native-settings/grok');
   const payload = { engine: 'dsh', id: 'settings', confirmed: true, text: 'setting: true', revision: 'a'.repeat(64) };
   await client.saveNativeSettings(device.id, payload);
   assert.equal(calls.at(-1).endpoint, '/v1/native-settings/dsh');
   assert.deepEqual(calls.at(-1).options.body, payload);
-  await client.saveNativeSettings(device.id, { ...payload, engine: 'pi' });
-  assert.equal(calls.at(-1).endpoint, '/v1/native-settings/pi');
+  await client.saveNativeSettings(device.id, { ...payload, engine: 'grok' });
+  assert.equal(calls.at(-1).endpoint, '/v1/native-settings/grok');
   assert.throws(() => client.nativeSettings(device.id, '../auth'), /Invalid/);
 
 });

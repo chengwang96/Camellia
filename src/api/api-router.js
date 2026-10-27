@@ -506,6 +506,7 @@ function startApiRouter({ configPath, log = () => {}, onState = () => {}, onCont
     let body, model;
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); model = modelId(routedModelId(modelId(body.model))); }
     catch { return apiError(res, 400, "Requests require valid JSON and an explicit model ID", protocol); }
+    if (scope?.toolPolicy === 'none' && !pathname.endsWith('/count_tokens')) { delete body.tools; delete body.tool_choice; }
     if (scope && model !== scope.model) return apiError(res, 400, 'Benchmark requests must use the selected model', protocol, 'benchmark_model_mismatch');
     const routes = candidates(model, protocol).filter(route => !scope || (route.provider.id === scope.providerId
       && (!scope.keyId || route.key.id === scope.keyId) && route.model.upstream === scope.upstream && routeFingerprint(route) === scope.routeFingerprint));

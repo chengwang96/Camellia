@@ -906,7 +906,7 @@ test('global memory is excluded from auxiliary summary turns and refreshed for s
 
 for (const engine of ENGINES) test(engine + ' reuses a native context across turns and restart without replaying compacted history', async context => {
   const h = ['codex', 'kimi'].includes(engine) ? subscriptionFixture(context, engine) : fixture(context);
-  h.drivers[engine].nativeAutoCompaction = engine !== 'pi';
+  h.drivers[engine].nativeAutoCompaction = engine !== 'grok';
   const first = await h.manager.send(engine, { prompt: 'Original task' });
   const c = h.manager.get(first.sessionId);
   h.manager.append(c, { role: 'tool', text: 'ALREADY_IN_NATIVE_CONTEXT '.repeat(30000) });
@@ -967,6 +967,104 @@ for (const engine of ['codex', 'kimi']) test(engine + ' same-account subscriptio
   assert.equal(result.native, true);
   assert.equal(compactedId, nativeId);
   assert.equal(h.sent.length, 2);
+});
+
+for (const engine of ['kimi', 'codex']) {
+  test(engine + ' native manual compaction crosses a compatible subscription model switch', async context => {
+    const h = subscriptionFixture(context, engine);
+    h.drivers[engine].nativeCompaction = true;
+    const compacted = [];
+    const ensure = h.drivers[engine].ensure;
+    h.drivers[engine].ensure = opts => {
+      const session = ensure(opts);
+      session.compact = async () => { compacted.push({ id: opts.sessionId, model: opts.settings.model }); return { ok: true }; };
+      return session;
+    };
+    const first = await h.manager.send(engine, { prompt: 'Task' }); h.finish(engine); await first.done;
+    const c = h.manager.get(first.sessionId), nativeId = c.segments[engine].nativeId;
+    h.manager.saveSettings(engine, { sessionId: c.id, model: 'highspeed' });
+    const decision = h.manager.nativeCompactionDecision(c, engine);
+    assert.equal(decision.eligible, true);
+    assert.equal(decision.modelChanged, true);
+    assert.equal((await h.manager.compact(c.id)).native, true);
+    assert.deepEqual(compacted, [{ id: nativeId, model: 'fixture' }]);
+    assert.equal(c.segments[engine].nativeId, nativeId);
+    const next = await h.manager.send(engine, { sessionId: c.id, prompt: 'Continue with the new model' });
+    assert.equal(h.sent.at(-1).opts.sessionId, nativeId);
+    assert.equal(h.sent.at(-1).opts.settings.model, 'highspeed');
+    assert.equal(h.sent.at(-1).prompt, 'Continue with the new model');
+    h.finish(engine); await next.done;
+  });
+
+  test(engine + ' native model switches still reject incompatible connections, accounts and windows', async context => {
+    const h = subscriptionFixture(context, engine);
+    h.drivers[engine].nativeCompaction = true;
+    const first = await h.manager.send(engine, { prompt: 'Task' }); h.finish(engine); await first.done;
+    const c = h.manager.get(first.sessionId), settings = h.manager.settings(engine, c.id);
+    for (const patch of [{ connection: 'api' }, { subscriptionId: 'b' }, { contextWindow: 65536 }]) {
+      const decision = h.manager.nativeCompactionDecision(c, engine, { ...settings, model: 'highspeed', ...patch });
+      assert.equal(decision.eligible, false);
+      assert.equal(decision.reason, 'model-changed');
+    }
+  });
+
+  test(engine + ' native automatic compaction owns pressure after a compatible model switch', async context => {
+    const h = subscriptionFixture(context, engine);
+    h.drivers[engine].nativeCompaction = true;
+    const first = await h.manager.send(engine, { prompt: 'Task' }); h.finish(engine); await first.done;
+    const c = h.manager.get(first.sessionId), nativeId = c.segments[engine].nativeId;
+    c.engineSettings[engine].contextWindow = 1000;
+    c.segments[engine].contextSettings.contextWindow = 1000;
+    h.manager.append(c, { role: 'tool', text: 'Already native history '.repeat(1000) });
+    c.segments[engine].cursor = c.seq;
+    h.manager.saveSettings(engine, { sessionId: c.id, model: 'highspeed' });
+    h.manager.compact = async () => { throw new Error('Portable compaction should not run'); };
+    const next = await h.manager.send(engine, { sessionId: c.id, prompt: 'Continue' });
+    assert.equal(h.sent.at(-1).opts.sessionId, nativeId);
+    assert.equal(h.sent.at(-1).opts.settings.model, 'highspeed');
+    assert.equal(h.sent.at(-1).prompt, 'Continue');
+    h.finish(engine); await next.done;
+  });
+
+  test(engine + ' cross-model native failure summarizes with the requested new model', async context => {
+    const h = subscriptionFixture(context, engine);
+    h.drivers[engine].nativeCompaction = true;
+    const compacted = [];
+    const ensure = h.drivers[engine].ensure;
+    h.drivers[engine].ensure = opts => {
+      const session = ensure(opts);
+      session.compact = async () => {
+        compacted.push(opts.settings.model);
+        throw Object.assign(new Error('Unsupported'), { code: -32601 });
+      };
+      return session;
+    };
+    const first = await h.manager.send(engine, { prompt: 'Task' }); h.finish(engine); await first.done;
+    const c = h.manager.get(first.sessionId);
+    h.manager.saveSettings(engine, { sessionId: c.id, model: 'highspeed' });
+    const pending = h.manager.compact(c.id);
+    await h.flush();
+    assert.deepEqual(compacted, ['fixture']);
+    assert.equal(h.sent.at(-1).opts.settings.model, 'highspeed');
+    h.finish(engine, 'success', 'Portable summary');
+    assert.ok((await pending).file);
+  });
+}
+
+test('Codex native model migration compares effective context windows', async context => {
+  const h = subscriptionFixture(context, 'codex');
+  h.drivers.codex.nativeCompaction = true;
+  const first = await h.manager.send('codex', { prompt: 'Task' }); h.finish('codex'); await first.done;
+  const c = h.manager.get(first.sessionId), settings = h.manager.settings('codex', c.id);
+  c.segments.codex.nativeContextWindow = 475000;
+  const smaller = h.manager.nativeCompactionDecision(c, 'codex', { ...settings, model: 'short', contextWindow: 131072 });
+  assert.equal(smaller.eligible, false);
+  assert.equal(smaller.reason, 'model-changed');
+  assert.equal(smaller.nativeWindow, 475000);
+  assert.equal(smaller.targetWindow, 131072);
+  const larger = h.manager.nativeCompactionDecision(c, 'codex', { ...settings, model: 'long', contextWindow: 500000 });
+  assert.equal(larger.eligible, true);
+  assert.equal(larger.modelChanged, true);
 });
 
 test('subscription account changes still open a fresh native session after repairing an old binding', async context => {
@@ -2952,6 +3050,33 @@ test('goal waiting reports delay continuation across all engines and remain canc
     staleTimer(); await h.flush(); assert.equal(timer, null); assert.equal(h.sent.length, 2);
     assert.equal(driver.view().waiting, null); assert.equal(driver.view().phase, 'paused');
   }
+});
+
+test('a normal send command wakes a waiting Goal with the current user instruction', async t => {
+  const h = fixture(t);
+  const run = await h.manager.send('codex', { prompt: 'Monitor training' });
+  const driver = h.manager.goalFor(run.sessionId);
+  assert.equal(driver.start({ objective: 'Monitor training', engine: 'codex' },
+    { adoptSession: h.manager.active.get(run.sessionId).facade }).ok, true);
+  let timer = null;
+  driver.setTimer = (fn, delay) => (timer = { fn, delay });
+  driver.clearTimer = old => { if (old === timer) timer = null; };
+  h.finish('codex', 'success', '<goal:waiting> Training still running');
+  await run.done; await h.flush();
+  assert.equal(driver.view().waiting.reason, 'Training still running');
+  assert.equal(timer.delay, 60000);
+  const result = await h.manager.command('codex', 'send', {
+    sessionId: run.sessionId, goalId: driver.goal.id,
+    prompt: 'Check the latest output now', displayText: 'Check the latest output now',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(driver.view().waiting, null);
+  assert.equal(timer, null);
+  assert.equal(h.sent.length, 2);
+  const active = h.manager.active.get(run.sessionId);
+  assert.equal(active.goalUserPrompt, 'Check the latest output now');
+  assert.match(active.promptSuffix, /Current user instruction:\n\nCheck the latest output now/);
+  h.finish('codex'); await h.flush();
 });
 
 test('user-requested goal resume adopts the current reply and verifies the original goal on every engine', async t => {

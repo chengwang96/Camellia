@@ -10,7 +10,7 @@ const { validateReply, validateIdentityPrompt, replyDigest } = require('./schema
 const { validateAttachments } = require('./assets');
 const { UNKNOWN_CONTEXT_BUDGET } = require('../../api/context-capacity');
 
-const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'];
+const ENGINES = ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'];
 const ACTIVE = new Set(['preparing', 'running', 'stopping']);
 const OPEN = new Set(['queued', ...ACTIVE]);
 const RETRYABLE = new Set(['failed', 'cancelled', 'interrupted']);

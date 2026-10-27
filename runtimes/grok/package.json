@@ -1,0 +1,8 @@
+{
+  "name": "camellia-grok-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@xai-official/grok": "1.0.70"
+  }
+}

@@ -15,7 +15,7 @@ suites += [{'id': f'ds1000-{kind}', 'library': 'ds1000', 'name': name, 'count': 
            for kind, name, count in [('quick', 'Quick sample', 3), ('standard', 'Standard sample', 6), ('full', 'Full test split', 1000)]]
 suites += [{'id':'scicode-quick','library':'scicode','name':'Quick sample','count':3,'taskIds':[],'tasks':[]}]
 engine_names = [('claude', 'Claude Code'), ('codex', 'Codex CLI'), ('dsh', 'DeepSeek Harness'), ('kimi', 'Kimi Code'),
-                ('antigravity', 'Antigravity SDK'), ('pi', 'Pi')]
+                ('antigravity', 'Antigravity SDK'), ('grok', 'Grok Build')]
 ENGINE_COUNT = len(engine_names)
 legacy_tasks = [{'id': 'slug', 'name': 'Repair text normalization', 'category': 'Bug fix'}, *suites[0]['tasks'][1:]]
 state = {'ok': True, 'busy': False, 'routerReady': False, 'models': [], 'history': [], 'active': None, 'latest': None,

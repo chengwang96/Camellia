@@ -45,7 +45,7 @@ assert.equal(runtimeInfo.arch, isMac ? 'arm64' : 'x64');
 assert.equal(runtimeInfo.node, readNodeVersion(root), 'Bundled Node must match the project version pin');
 assert.equal(runtimeInfo.source, 'nodejs.org', 'Node must come from the official distribution');
 assert.match(runtimeInfo.sha256, /^[a-f0-9]{64}$/i, 'Official Node archive checksum must be recorded');
-for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'pi']) {
+for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'grok']) {
   for (const name of ['package.json', 'package-lock.json']) {
     const file = path.join('runtimes', engine, name);
     assert.ok(fs.readFileSync(path.join(resources, file)).equals(fs.readFileSync(path.join(root, file))), 'Installer manifest differs: ' + file);
@@ -77,7 +77,7 @@ assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/benchmark/py
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/benchmark/python/scicode_targets.py')), 'The SciCode target reader must run outside ASAR');
 assert.ok(fs.existsSync(path.join(resources, 'app.asar.unpacked/src/benchmark/python/scicode/compare/cmp.py')), 'Official SciCode comparisons must be importable outside ASAR');
 assert.ok(!asar.listPackage(archive).some(file => /test_data\.h5|ds1000\.jsonl|problems_test\.jsonl/.test(file)), 'Official datasets are downloaded on demand');
-for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']) {
+for (const engine of ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']) {
   const files = fs.readdirSync(path.join(resources, 'runtimes', engine));
   assert.ok(files.every(file => ['package.json', 'package-lock.json', 'runtime.json', 'requirements.lock', 'README.md'].includes(file)), 'Only download manifests belong in the base package: ' + engine);
 }

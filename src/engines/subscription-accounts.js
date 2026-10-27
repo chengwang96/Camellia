@@ -1,7 +1,7 @@
 'use strict';
 
 // Subscription accounts are the signed-in provider logins that the official
-// CLIs own: Kimi, ChatGPT and Google. Each engine keeps one entry per account.
+// CLIs own: Kimi, ChatGPT, Google and Grok. Each engine keeps one entry per account.
 // Kimi and Codex isolate credentials by home directory, so several accounts can
 // stay signed in at once. Antigravity's official CLI keeps a single global
 // Google credential, so it exposes one account (the default one).
@@ -91,6 +91,7 @@ function codexCredits(rateLimits) {
 function accountExhausted(engine, state) {
   if (!state) return false;
   if (engine === 'kimi') return windowsExhausted(state.usage?.latest?.windows || state.usage?.windows);
+  if (engine === 'grok') return state.usage?.latest?.exhausted === true;
   if (engine === 'codex') {
     const credits = codexCredits(state.rateLimits);
     return windowsExhausted(rateLimitWindows(state.rateLimits)) && credits?.balance === 0
@@ -136,7 +137,9 @@ function boundAccountId({ engine, accounts, states, activeId, preferId, autoSwit
 function accountSummary(engine, account, state = {}) {
   const detail = engine === 'codex' ? { email: state.account?.email || '', plan: state.account?.planType || '',
     rateLimitResetCredits: state.rateLimitResetCredits || null, credits: state.account ? codexCredits(state.rateLimits) : null }
-    : engine === 'kimi' ? { email: state.account?.name || '', region: state.account?.region || '' } : {};
+    : engine === 'kimi' ? { email: state.account?.name || '', region: state.account?.region || '' }
+      : engine === 'grok' ? { email: state.account?.name || '', plan: state.account?.plan || '',
+        credits: state.account && Number.isFinite(state.usage?.latest?.prepaidBalance) ? { balance: state.usage.latest.prepaidBalance, unlimited: false } : null } : {};
   return { id: account.id, label: account.label, active: false, signedIn: accountSignedIn(engine, state),
     ...(engine === 'antigravity' && state.verification === 'stale' ? { stale: true } : {}),
     quotaWindows: engine === 'codex' ? rateLimitWindows(state.rateLimits).map(window => ({ usedPercent: window.usedPercent,
@@ -262,6 +265,7 @@ function createAccountPool({ engine, userData, root, bindingsKey, loadConfig, sa
     },
     openLogin: (id) => service(id || pending?.id).openLogin(),
     get active() { return [...services.values()].some(value => value.active); },
+    get changingAccount() { return [...services.values()].some(value => value.changingAccount); },
     async shutdown() { await Promise.allSettled([...services.values()].map(value => value.shutdown?.())); },
   };
 }

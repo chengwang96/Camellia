@@ -51,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix="camellia-dist-test-") as temporary:
             return json.loads(result.stdout)
         settings = command("settings")["result"]
         assert settings["network"]["state"] == "Stopped"
-        assert set(engine["id"] for engine in settings["engines"]) == {"claude", "codex", "kimi", "dsh", "antigravity", "pi"}
+        assert set(engine["id"] for engine in settings["engines"]) == {"claude", "codex", "kimi", "dsh", "antigravity", "grok"}
         assert command("runtime-state")["ok"]
         assert command("usage")["result"]["scope"] == "server-api"
         assert command("create-conversation", {"engine": "codex"})["ok"]

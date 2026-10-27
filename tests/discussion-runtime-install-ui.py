@@ -8,8 +8,8 @@ preview.mkdir(parents=True, exist_ok=True)
 bridge = r"""(() => {
   const group={id:'group',title:'Install a member',revision:1,participants:[],messages:[],requests:[],deliveries:[]};
   const installed=new Set(), all=[];
-  for(const engine of ['claude','codex','dsh','kimi','antigravity','pi']) {
-    for(const connection of ['api',...(['codex','kimi','antigravity'].includes(engine)?['subscription']:[])]) {
+  for(const engine of ['claude','codex','dsh','kimi','antigravity','grok']) {
+    for(const connection of ['api',...(['codex','kimi','antigravity','grok'].includes(engine)?['subscription']:[])]) {
       all.push({id:engine+'-'+connection,label:'fixture-model',providerId:connection==='api'?'deepseek':'',
         providerLabel:'DeepSeek',accountLabel:'Fixture account',binding:{engine,connection,model:'fixture-model'}});
     }
@@ -67,7 +67,7 @@ with sync_playwright() as playwright:
         assert page.evaluate('installCalls.length') == 0, 'Choosing a missing harness must not start installation'
         return page
 
-    combinations = [(engine, 'api') for engine in ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi']]
+    combinations = [(engine, 'api') for engine in ['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok']]
     combinations += [(engine, 'subscription') for engine in ['codex', 'kimi', 'antigravity']]
     for engine, connection in combinations:
         page = open_member(engine, connection)
@@ -176,4 +176,4 @@ with sync_playwright() as playwright:
 
     browser.close()
 assert not errors, errors
-print('PASS: 9 harness/connection installs, automatic refresh, saved drafts, duplicate clicks, retry, changed models, external installation, narrow/dark layout and dialog close. Isolated backend only.')
+print('PASS: 10 harness/connection installs, automatic refresh, saved drafts, duplicate clicks, retry, changed models, external installation, narrow/dark layout and dialog close. Isolated backend only.')

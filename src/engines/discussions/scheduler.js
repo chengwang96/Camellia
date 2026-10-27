@@ -259,7 +259,7 @@ class DiscussionScheduler {
     if (!['account-change', 'network-change', 'runtime-change', 'app-exit'].includes(reason)
       || !scope || typeof scope !== 'object' || Array.isArray(scope)
       || Object.keys(scope).some(key => !['engine', 'connection', 'accountRef'].includes(key))
-      || Object.hasOwn(scope, 'engine') && !['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(scope.engine)
+      || Object.hasOwn(scope, 'engine') && !['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(scope.engine)
       || Object.hasOwn(scope, 'connection') && !['api', 'subscription'].includes(scope.connection)
       || Object.hasOwn(scope, 'accountRef') && (!scope.engine || typeof scope.accountRef !== 'string' || !scope.accountRef.trim())
       || reason === 'app-exit' && Object.keys(scope).length) throw new Error('Invalid discussion lifecycle suspension');

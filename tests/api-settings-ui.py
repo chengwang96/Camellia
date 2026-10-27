@@ -79,6 +79,36 @@ try:
         page.set_viewport_size({'width':1040,'height':900})
         page.locator('[data-view=providers]').click()
         expect(page.locator('#providers')).to_contain_text('Add your first provider')
+        # Provider cards use their own offline brand marks, while unidentified
+        # services keep the text/API fallback.
+        brands=page.evaluate("""() => [
+          { id:'ollama', logo:'../../../assets/brands/ollama.svg' },
+          { id:'deepseek', logo:'../../../assets/brands/deepseek.svg' },
+          { id:'mimo', logo:'../../../assets/brands/mimo.svg' },
+          { id:'commandcode', logo:'../../../assets/brands/commandcode.svg' },
+          { id:'nvidia', logo:'../../../assets/brands/nvidia.svg' },
+          { id:'fallback', logo:'../../../assets/brands/does-not-exist.svg' }
+        ].map(item => ({ ...item, exists: window.CamelliaProviderBrands.providerBrand({ type: item.id === 'fallback' ? 'custom' : item.id }) || 'API' }))""")
+        assert [item['id'] for item in brands] == ['ollama', 'deepseek', 'mimo', 'commandcode', 'nvidia', 'fallback']
+        for brand in brands:
+            if brand['id'] == 'fallback':
+                assert brand['exists'] == 'API'
+            else:
+                assert (repo/brand['logo'].replace('../../../','')).exists(), brand
+        page.evaluate("""async logos => {
+          const grid = document.querySelector('#providers');
+          grid.innerHTML = logos.map(({ id, logo }) =>
+            `<article class="provider"><span class="provider-mark"><span class="provider-brand" data-fallback="API"><img src="${logo}" alt=""></span></span></article>`).join('');
+          await Promise.all(logos.map(({ logo }) => new Promise(resolve => {
+            const image = document.querySelector(`img[src="${logo}"]`);
+            if (image.complete) resolve(); else { image.onload = resolve; image.onerror = resolve; }
+          })));
+        }""", brands)
+        expect(page.locator('#providers img')).to_have_count(5)
+        expect(page.locator('#providers .provider-brand')).to_have_count(5)
+        expect(page.locator('#providers .provider-mark').last).to_have_text('API')
+        page.locator('[data-view=general]').click()
+        page.locator('[data-view=providers]').click()
         expect(page.locator('.router-options summary')).to_have_count(0)
         expect(page.locator('#enabled')).to_be_visible()
         expect(page.locator('#port')).to_be_visible()
@@ -142,7 +172,7 @@ try:
         page.evaluate("state => window.testEmitRouter(state)",router_state)
         # Reordering keeps credentials and usage attached to the same IDs.
         page.locator('#backProviders').click()
-        for width, columns in [(600, 1), (760, 1), (960, 2), (1040, 2), (1160, 2), (1440, 3), (1840, 4)]:
+        for width, columns in [(600, 1), (760, 1), (872, 2), (900, 2), (960, 2), (1040, 2), (1160, 2), (1440, 2), (1840, 2)]:
             page.set_viewport_size({'width':width,'height':900})
             layout=page.locator('#providers').evaluate('''grid => ({
                 columns: getComputedStyle(grid).gridTemplateColumns.split(' ').length,
@@ -157,7 +187,7 @@ try:
             })''')
             assert layout['columns']==columns, (width, layout)
             assert layout['fits'], (width, layout)
-            assert all(card['width'] <= 420 and card['fits'] and card['height'] < 150 for card in layout['cards']), (width, layout)
+            assert all(card['fits'] and card['height'] < 150 for card in layout['cards']), (width, layout)
             if width >= 1040:
                 assert all(card['sameRow'] for card in layout['cards']), (width, layout)
         page.set_viewport_size({'width':1040,'height':900})
@@ -411,7 +441,9 @@ try:
         page.evaluate('s=>window.testEmitInsights(s)',snapshot)
         expect(page.locator('.balance-card.selected')).to_contain_text('last successful result')
         expect(page.locator('.balance-card.selected')).to_contain_text('125.5 Credits')
-        expect(page.locator('.balance-card.selected img')).to_have_count(0)
+        # API balance cards now show their own brand mark, but never an engine
+        # subscription icon and never markup from an error string.
+        expect(page.locator('.balance-card.selected .engine-mark img')).to_have_count(0)
         assert page.evaluate('window.xss') is None
         ollama_key=ollama['keys'][0]['id']
         page.evaluate('''key => {

@@ -53,7 +53,7 @@ function rows(values, max, uuidIds = true) {
 }
 function profile(value, exact = true) {
   if (exact) shape(value, PROFILE);
-  check(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(value.engine)
+  check(['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(value.engine)
     && ['api', 'subscription'].includes(value.connection), 'member connection');
   text(value.model); if (value.accountRef !== null) text(value.accountRef);
   text(value.thinking, 1024, true); integer(value.contextWindow, 0);

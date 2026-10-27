@@ -33,7 +33,7 @@ function text(value) {
 function compactionView(value) {
   if (!value || !['running', 'completed', 'failed', 'cancelled'].includes(value.state)) return null;
   const result = { state: value.state, native: value.native === true };
-  if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'pi'].includes(value.engine)) result.engine = value.engine;
+  if (['claude', 'codex', 'dsh', 'kimi', 'antigravity', 'grok'].includes(value.engine)) result.engine = value.engine;
   if (['summarizing', 'saving'].includes(value.stage)) result.stage = value.stage;
   if (['map', 'reduce'].includes(value.summaryPhase)) result.summaryPhase = value.summaryPhase;
   for (const key of ['seq', 'afterSeq', 'chunk', 'durationMs', 'startedAt', 'elapsedMs', 'completedChunks', 'totalChunks']) {

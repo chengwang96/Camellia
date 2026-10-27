@@ -34,13 +34,13 @@ test('live console exits without stopping service or enabling networking', async
   assert.doesNotMatch(harness.output.join(''), /DESIGN PREVIEW|demo data/i);
 });
 
-test('Pi console offers API configuration without subscription actions', async () => {
-  const harness = fixture(['6', '1', '2', 'model-a', 'YES', 'q'], { engines: [{ id: 'pi', model: '', permissionMode: 'ask' }] });
+test('Grok console offers API and subscription configuration', async () => {
+  const harness = fixture(['6', '1', '7', 'api', 'model-a', 'YES', 'q'], { engines: [{ id: 'grok', model: '', permissionMode: 'ask' }] });
   await harness.run();
   const saved = harness.calls.find(call => call.action === 'engine-settings');
-  assert.deepEqual(saved?.payload, { engine: 'pi', connection: 'api', model: 'model-a' });
-  assert.equal(harness.prompts.some(prompt => prompt.includes('api/subscription')), false);
-  assert.doesNotMatch(harness.output.join(''), /Start account login/);
+  assert.deepEqual(saved?.payload, { engine: 'grok', connection: 'api', model: 'model-a' });
+  assert.equal(harness.prompts.some(prompt => prompt.includes('api/subscription')), true);
+  assert.equal(harness.calls.some(call => call.action === 'accountLogin'), false);
 });
 
 test('pairing approval requires an explicit confirmation and is bound to the displayed request', async () => {

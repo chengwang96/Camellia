@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 function removeManagedRuntime(dataDir, engine, runtime) {
-  if (!['dsh', 'codex', 'kimi', 'claude', 'antigravity', 'pi'].includes(engine)) throw new Error('Unsupported engine');
+  if (!['dsh', 'codex', 'kimi', 'claude', 'antigravity', 'grok'].includes(engine)) throw new Error('Unsupported engine');
   const target = path.resolve(dataDir, 'runtimes', engine);
   if (runtime?.external || runtime && path.resolve(runtime.dir) !== target) throw new Error('Only server-managed runtimes can be uninstalled');
   const base = fs.realpathSync(dataDir);

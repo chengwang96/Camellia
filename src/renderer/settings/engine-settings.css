@@ -1,6 +1,7 @@
 .nav-divider { border-top: 1px solid var(--dsw-alias-border-l2); margin: 12px; }
-.engine-tabs { display: flex; flex-wrap: wrap; gap: 5px; padding: 4px; border-radius: 12px; background: var(--dsw-specific-sidebar-fill); margin-bottom: 14px; width: fit-content; max-width: 100%; }
-.engine-tabs button { border: 0; border-radius: 9px; padding: 8px 16px; }
+.engine-tabs { display: flex; flex-wrap: nowrap; gap: 5px; padding: 4px; border-radius: 12px; background: var(--dsw-specific-sidebar-fill); margin-bottom: 14px; width: fit-content; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.engine-tabs::-webkit-scrollbar { display: none; }
+.engine-tabs button { flex: 0 0 auto; border: 0; border-radius: 9px; padding: 8px 16px; white-space: nowrap; }
 .engine-tabs [aria-selected=true] { background: var(--dsw-alias-bg-base); box-shadow: 0 1px 4px #0000000c; font-weight: 600; }
 .global-notice { padding: 15px 18px; border: 1px solid var(--dsw-alias-border-l2); border-left: 3px solid var(--dsw-static-deepseek-400); border-radius: 10px; margin-bottom: 22px; font-size: 12px; line-height: 1.7; }
 .global-notice strong { font-size: 13px; }

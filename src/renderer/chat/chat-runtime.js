@@ -3,7 +3,7 @@
 // One renderer and one set of workspace menus, with engine-specific abilities.
 const requestedHarness = new URLSearchParams(location.search).get('harness');
 const CHAT_PROFILES = {
-  pi: { name: 'Pi', shortName: 'Pi', permission: 'ask' },
+  grok: { name: 'Grok Build', shortName: 'Grok', permission: 'ask' },
   codex: { name: 'Codex CLI', shortName: 'Codex', permission: 'ask' },
   kimi: { name: 'Kimi Code', shortName: 'Kimi', permission: 'ask' },
   claude: { name: 'Claude Code', shortName: 'Claude', permission: 'auto' },
@@ -12,7 +12,7 @@ const CHAT_PROFILES = {
 };
 let harnessId = Object.hasOwn(CHAT_PROFILES, requestedHarness) ? requestedHarness : 'claude';
 let chatProfile = CHAT_PROFILES[harnessId];
-const ENGINE_SHORT_NAMES = { claude: 'Claude', codex: 'Codex', dsh: 'DSH', kimi: 'Kimi', antigravity: 'Antigravity', pi: 'Pi' };
+const ENGINE_SHORT_NAMES = { claude: 'Claude', codex: 'Codex', dsh: 'DSH', kimi: 'Kimi', antigravity: 'Antigravity', grok: 'Grok' };
 const engineAvatar = engine => '<div class="turn-avatar engine-mark" data-engine="' + engine + '" aria-hidden="true"><img src="../../../assets/brands/' + (engine === 'dsh' ? 'deepseek' : engine) + (engine === 'codex' ? '.png' : '.svg') + '" alt=""></div>';
 let chatAvatar = engineAvatar(harnessId);
 const chatApi = Object.fromEntries(['Send', 'Steer', 'Cancel', 'GetSettings', 'SaveSettings', 'ControlRespond', 'Find',

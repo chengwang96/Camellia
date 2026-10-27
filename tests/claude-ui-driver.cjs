@@ -45,6 +45,9 @@ const methods = {
   antigravityAccountLabel: 'antigravity-account-label',
   codexAccountState: 'codex-account-state', codexAccountRefresh: 'codex-account-refresh', codexSignIn: 'codex-sign-in',
   kimiAccountState: 'kimi-account-state',
+  grokAccountState: 'grok-account-state', grokAccountRefresh: 'grok-account-refresh', grokAccountSelect: 'grok-account-select',
+  grokAccountAdd: 'grok-account-add', grokAccountRemove: 'grok-account-remove', grokAccountLabel: 'grok-account-label',
+  grokSignIn: 'grok-sign-in', grokCancelLogin: 'grok-cancel-login', grokOpenLogin: 'grok-open-login', grokSignOut: 'grok-sign-out',
   workbenchSettings: 'workbench-settings', workbenchSaveSettings: 'workbench-save-settings',
   savePastedText: 'save-pasted-text',
   openFileExternally: 'open-file-externally',
@@ -83,6 +86,29 @@ rl.on('line', async (line) => {
         usage: { status: 'ok', checkedAt: at, latest: { ...quota, at }, history: [
           { ...quota, at: new Date(Date.now() - 3600000).toISOString(), windows: quota.windows.map(w => ({ ...w, usedPercent: 5 })) }, { ...quota, at }] } });
       await h.call('conversation-command', { engine: 'kimi', action: 'save-settings', payload: { connection: 'subscription', model: 'kimi-code/fixture' } });
+      h = createUiHarness(h.root); result = true;
+    }
+    else if (method === 'seedGrokAccounts') {
+      const fs = require('node:fs'), at = new Date().toISOString();
+      const config = readJson(path.join(h.userData, 'desktop-config.json'), {});
+      writeJson(path.join(h.userData, 'desktop-config.json'), { ...config,
+        subscriptionAccounts: { ...config.subscriptionAccounts, grok: [{ id: 'default', label: 'Personal' }, { id: 'work', label: 'Work' }] },
+        subscriptionActive: { ...config.subscriptionActive, grok: 'default' },
+        grok: { ...config.grok, connection: 'subscription', model: 'grok-fixture', subscriptionModel: 'grok-fixture' } });
+      for (const [id, home, plan, used, balance] of [
+        ['default', 'grok-subscription', 'SuperGrok', 35, 12.34],
+        ['work', 'subscription-accounts/grok/work', 'Grok Basic', 70, 0],
+      ]) {
+        const latest = { at, windows: [{ id: 'weekly', label: 'Weekly included', usedPercent: used, resetsAt: '2026-11-01T00:00:00Z' }],
+          balances: [], prepaidBalance: balance, exhausted: false };
+        writeJson(path.join(h.userData, home, 'account-state.json'), { account: { name: 'Grok', plan },
+          models: [{ id: 'grok-fixture', name: 'Grok Fixture', contextWindow: 256000, supportedReasoningEfforts: ['low', 'high'] }],
+          verifiedAt: at, error: null, usage: { status: 'ok', checkedAt: at, latest, history: [{ at, ...latest }] } });
+      }
+      const executable = path.join(h.userData, 'runtimes/grok/.grok/bin/grok.exe');
+      fs.mkdirSync(path.dirname(executable), { recursive: true }); fs.writeFileSync(executable, 'UI fixture only');
+      const manifest = path.join(h.userData, 'runtimes/grok/node_modules/@xai-official/grok/package.json');
+      writeJson(manifest, { name: '@xai-official/grok', version: '1.0.70' });
       h = createUiHarness(h.root); result = true;
     }
     else if (method === 'seedGoogleAccount') {
@@ -216,7 +242,12 @@ rl.on('line', async (line) => {
       const [, engine, action] = method.match(/^(claude|codex|kimi|antigravity)(Get|Save)Settings$/);
       result = await h.call('conversation-command', { engine, action: action.toLowerCase() + '-settings', payload });
     }
-    else result = await h.call(methods[method], payload);
+    else {
+      let request = payload;
+      if (['grokAccountSelect', 'grokAccountRefresh', 'grokAccountRemove', 'grokSignOut'].includes(method)) request = { id: payload };
+      if (method === 'grokAccountLabel') request = { id: payload[0], label: payload[1] };
+      result = await h.call(methods[method], request);
+    }
     const events = h.events.splice(0);
     process.stdout.write(JSON.stringify({ result, events }) + '\n');
   } catch (error) { process.stdout.write(JSON.stringify({ error: error.message }) + '\n'); }

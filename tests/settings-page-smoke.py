@@ -27,6 +27,7 @@ with sync_playwright() as playwright:
           ? {ok:true, models:[{id:'gpt-other',name:'GPT Other'}]}
           : {ok:true, activeId:'default', accounts:[{id:'default',signedIn:true},{id:'other',signedIn:true}], models:[{id:'gpt-a',name:'GPT A'},{id:'gpt-b',name:'GPT B'}]};
         if (name === 'kimiAccountState') return async () => ({ok:true,models:[{id:'kimi-a',name:'Kimi A',supportedReasoningEfforts:['low','high','max'],defaultReasoningEffort:'high'}]});
+        if (name === 'grokAccountState') return async () => ({ok:true,models:[{id:'grok-a',name:'Grok A'}]});
         if (name === 'antigravityAccountState') return async () => ({ok:true,models:[{id:'google-a',name:'Google A'}]});
         if (name === 'camelliaDevices') return {
           onEvent() {}, onTransfer() {},
@@ -61,8 +62,8 @@ with sync_playwright() as playwright:
     # One model and one reasoning-level menu per engine, aligned in one grid.
     expect(page.locator('#quickSwitchModels .quick-switch-model')).to_have_count(6)
     expect(page.locator('#quickSwitchModels .quick-switch-level')).to_have_count(6)
-    expect(page.locator('#subscriptionModels .subscription-model-group')).to_have_count(3)
-    expect(page.locator('#subscriptionModels .subscription-model-row')).to_have_count(5)
+    expect(page.locator('#subscriptionModels .subscription-model-group')).to_have_count(4)
+    expect(page.locator('#subscriptionModels .subscription-model-row')).to_have_count(6)
     expect(page.locator('#subscriptionModels .subscription-model-row span[title="gpt-other"]')).to_have_text('GPT Other')
     page.locator('#quickSwitch-kimi').select_option('subscription:kimi-a')
     page.wait_for_function("savedPreferences.quickSwitchModels?.kimi === 'kimi-a'")
