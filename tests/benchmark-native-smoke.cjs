@@ -13,6 +13,7 @@ const { startApiRouter } = require('../src/api/api-router');
 const { normalizeConfig, writeConfig } = require('../src/api/api-router-config');
 const { frame } = require('../src/api/api-protocol');
 const { ENGINES, runEngine, isolatedEnvironment } = require('../src/benchmark/engines');
+const { GROK_STARTUP_TIMEOUT_MS } = require('../src/engines/grok-session');
 const { TASKS, prepareTask, verifyTask } = require('../src/benchmark/tasks');
 const { createLibraryManager } = require('../src/benchmark/libraries');
 const { verifyPythonTask } = require('../src/benchmark/python-verifier');
@@ -29,6 +30,7 @@ async function main() {
   const contexts = new Map(), arrived = new Set(), allStarted = Promise.withResolvers(), stopAll = new AbortController();
   let firstFailure;
   const diagnostics = [];
+  const requestTimeoutMs = GROK_STARTUP_TIMEOUT_MS + 30000;
   const server = http.createServer(async (req, res) => {
     if (require('./model-metadata-fixture.cjs')(req, res)) return;
     try {
@@ -101,14 +103,16 @@ async function main() {
     baseUrl: 'http://127.0.0.1:' + server.address().port + '/v1', protocol: 'openai', enabled: true,
     models: [{ id: 'bench-model', upstream: 'fixture-upstream' }], keys: [{ id: 'fixture-key', key: 'loopback-only', enabled: true }] }] }));
   try {
-    router = startApiRouter({ configPath: file, timeoutMs: 30000 }); await router.ready;
+    // The overlap barrier waits for every CLI's cold native startup before
+    // replying, so its deadline must exceed the native initialization budget.
+    router = startApiRouter({ configPath: file, timeoutMs: requestTimeoutMs }); await router.ready;
     const results = await Promise.allSettled(ENGINES.map(async engine => {
       const runtime = runtimes.locate(engine, 'api');
       assert.ok(runtime, `Run npm run setup:${engine} first`);
       const cwd = path.join(root, engine, 'Project With Spaces'), home = path.join(root, engine, 'profile');
       prepareTask(task, cwd); contexts.set(engine, { engine, cwd });
       const usage = [], events = [];
-      const control = new AbortController(), timer = setTimeout(() => control.abort('Native smoke timed out'), 60000);
+      const control = new AbortController(), timer = setTimeout(() => control.abort('Native smoke timed out'), requestTimeoutMs + 30000);
       const route = router.createScope({ model: 'bench-model', providerId: 'fixture', onUsage: record => usage.push(record) });
       console.log('Running ' + engine);
       let result;
@@ -138,7 +142,7 @@ async function main() {
       contexts.set(engine, { engine, cwd, waiting: true, onRequest: reached });
       const cancel = new AbortController();
       const stopRoute = router.createScope({ model: 'bench-model', providerId: 'fixture' });
-      const deadline = setTimeout(() => cancel.abort('Cancellation fixture timed out'), 30000);
+      const deadline = setTimeout(() => cancel.abort('Cancellation fixture timed out'), requestTimeoutMs);
       try {
         const pending = runEngine({ engine, runtime, node: process.execPath, cwd, home: home + '-cancel', model: 'bench-model', route: stopRoute,
           prompt: 'BENCH_FIXTURE_' + engine + '_ BENCH_WAIT: Wait for a response from the local fixture.',
