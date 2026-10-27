@@ -24,6 +24,21 @@ function fixture(t) {
   return { proc, session };
 }
 
+test('ACP shutdown never signals a failed spawn without a positive child PID', t => {
+  const { proc, session } = fixture(t);
+  let kills = 0;
+  proc.kill = () => { kills++; };
+  for (const pid of [undefined, 0, -1]) {
+    proc.pid = pid;
+    session.kill();
+    assert.equal(session.dead, true);
+    assert.equal(kills, 0);
+  }
+  proc.pid = 123;
+  session.kill();
+  assert.equal(kills, 1);
+});
+
 test('ACP replies retain Unicode separators inside JSON strings', async t => {
   const { proc, session } = fixture(t);
   const pending = session.request('session/load', { sessionId: 'saved' }, 1000);

@@ -386,7 +386,7 @@ test('existing pool slots and replacement sessions are never killed or released 
 // CLI, model service or account is used, and these are NOT runtime evidence.
 function transport(engine, answer) {
   const proc = new EventEmitter(), messages = [];
-  Object.assign(proc, { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null });
+  Object.assign(proc, { pid: 12345, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null });
   let buffer = '', nativeId;
   const send = value => proc.stdout.write(JSON.stringify(value) + '\n');
   proc.stdin.on('data', data => {

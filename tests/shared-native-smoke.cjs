@@ -34,12 +34,14 @@ async function main() {
     try {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); requests.push(body);
-      const marker = JSON.stringify(body.messages || []).match(/CONCURRENT_(?:A|B)_(?:claude|codex|dsh|kimi|antigravity|grok)/)?.[0];
+      const titleOnly = body.tools?.length === 1 && body.tools[0].function?.name === 'session_title';
+      const marker = titleOnly ? null : JSON.stringify(body.messages || []).match(/CONCURRENT_(?:A|B)_(?:claude|codex|dsh|kimi|antigravity|grok)/)?.[0];
       if (marker && holdConcurrent) await new Promise(resolve => held.set(marker, { resolve, body }));
       const asksQuestion = JSON.stringify(body.messages || []).includes('ASK_QUESTION_FIXTURE') && body.tools?.some(tool => tool.function?.name === 'AskUserQuestion');
       const hasAnswer = body.messages?.some(message => message.role === 'tool' && message.tool_call_id === 'question-fixture');
       const askInput = { questions: [{ question: 'Which outputs?', header: 'Outputs', options: [{ label: 'CSV', description: 'Tables' }, { label: 'JSON', description: 'Structured data' }], multiSelect: true }] };
-      const message = asksQuestion && !hasAnswer ? { role: 'assistant', content: 'Please choose the outputs.', tool_calls: [{ index: 0, id: 'question-fixture', type: 'function', function: { name: 'AskUserQuestion', arguments: JSON.stringify(askInput) } }] }
+      const message = titleOnly ? { role: 'assistant', content: null, tool_calls: [{ index: 0, id: 'title-fixture', type: 'function', function: { name: 'session_title', arguments: JSON.stringify({ session_title: 'Shared conversation fixture' }) } }] }
+        : asksQuestion && !hasAnswer ? { role: 'assistant', content: 'Please choose the outputs.', tool_calls: [{ index: 0, id: 'question-fixture', type: 'function', function: { name: 'AskUserQuestion', arguments: JSON.stringify(askInput) } }] }
         : { role: 'assistant', content: asksQuestion ? 'QUESTION_ANSWER_RECEIVED' : marker ? 'Reply for ' + marker : '## Handoff\nRemember SHARED_SECRET_4821. Next step: verify the experiment.' };
       const finishReason = message.tool_calls ? 'tool_calls' : 'stop';
       const usage = { prompt_tokens: 30, completion_tokens: 16, total_tokens: 46 };

@@ -39,12 +39,14 @@ async function run() {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
     requests.push({ body, key: req.headers.authorization });
+    const titleOnly = body.tools?.length === 1 && body.tools[0].function?.name === 'session_title';
     const lastUser = body.messages.findLastIndex(m => m.role === 'user' && JSON.stringify(m.content).includes('GROK_SMOKE'));
     const prompt = lastUser < 0 ? '' : JSON.stringify(body.messages[lastUser].content);
-    if (prompt.includes('GROK_SMOKE wait')) { slowRequest?.(); return; }
+    if (!titleOnly && prompt.includes('GROK_SMOKE wait')) { slowRequest?.(); return; }
     const hasTool = lastUser >= 0 && body.messages.slice(lastUser).some(m => m.role === 'tool');
     let tool;
-    if (!hasTool) {
+    if (titleOnly) tool = { name: 'session_title', arguments: JSON.stringify({ session_title: 'Grok integration fixture' }) };
+    else if (!hasTool) {
       if (prompt.includes('GROK_SMOKE read')) tool = { name: 'read_file', arguments: JSON.stringify({ target_file: marker }) };
       if (prompt.includes('GROK_SMOKE write')) tool = { name: 'search_replace', arguments: JSON.stringify({ file_path: written, old_string: '', new_string: 'grok-wrote-7391' }) };
       if (prompt.includes('GROK_SMOKE deny')) tool = { name: 'search_replace', arguments: JSON.stringify({ file_path: denied, old_string: '', new_string: 'must not write' }) };
@@ -75,7 +77,7 @@ async function run() {
     const settings = { cwd, model: 'fixture-model', permissionMode };
     const spec = grokSpawnSpec({ home, runtime: runtime.file, model: settings.model, contextWindow: 32768,
       route: { baseUrl: router.url, authToken: 'proxy-managed' }, env: isolatedEnvironment(root, process.execPath) });
-    session = new GrokSession({ gen: ++gen, settings, opts, exe: runtime.file, spec, spawn, history,
+    session = new GrokSession({ name: 'Grok', gen: ++gen, settings, opts, exe: runtime.file, spec, spawn, history,
       log: msg => logs.push(msg), onSessionId() {}, onResult: event => done?.(event),
       onEvent: event => {
         events.push(event);
@@ -130,6 +132,17 @@ async function run() {
     assert.ok(!config.includes('loopback-only') && !config.includes('proxy-managed'));
     assert.ok(!logs.join('\n').includes('loopback-only'));
     console.log(`PASS: real Grok Build ${runtime.version}, isolated --version, ACP models, API tools, full/ask permissions, stop, resume, fork and image input. Local endpoints only.`);
+  } catch (error) {
+    const nativeLog = path.join(home, 'logs/unified.jsonl');
+    const diagnostics = { error: error.message, logs, events, requests,
+      nativeLog: fs.existsSync(nativeLog) ? fs.readFileSync(nativeLog, 'utf8').slice(-64000) : '' };
+    const file = path.join(appRoot, 'dist/grok-smoke-diagnostics.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(diagnostics, null, 2));
+    console.error('Grok diagnostics: ' + file);
+    if (logs.length) console.error(logs.join('\n'));
+    if (diagnostics.nativeLog) console.error(diagnostics.nativeLog);
+    throw error;
   } finally {
     await session?.shutdown(); await router.stop(); server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));

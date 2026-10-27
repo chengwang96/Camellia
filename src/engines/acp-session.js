@@ -315,7 +315,9 @@ class AcpSession extends StreamingSession {
 
   kill() {
     this.close(new Error(`${this.name} process stopped`));
-    this.proc?.kill();
+    // A failed spawn has no PID. Never signal its native handle: PID zero
+    // targets the calling process group on Unix.
+    if (Number.isInteger(this.proc?.pid) && this.proc.pid > 0) this.proc.kill();
   }
 
   async shutdown() {

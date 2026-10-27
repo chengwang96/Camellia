@@ -39,19 +39,27 @@ async function main() {
       assert.equal(body.model, 'fixture-upstream');
       assert.equal(req.headers.authorization, 'Bearer loopback-only');
       const record = { engine: current.engine, url: req.url, body }; diagnostics.push(record);
-      if (current.waiting) { current.onRequest(res); return; }
+      const tools = body.tools?.map(t => t.function) || [];
+      const titleOnly = tools.length === 1 && tools[0].name === 'session_title';
+      if (!titleOnly && current.waiting) { current.onRequest(res); return; }
       // Hold the first response until every native runtime has a concurrent
       // request against the same provider. A serial runner cannot pass this.
-      arrived.add(engine);
-      if (arrived.size === ENGINES.length) allStarted.resolve();
-      await allStarted.promise;
+      // Grok's auxiliary title request is not an agent turn or cancellation probe.
+      if (!titleOnly) {
+        arrived.add(engine);
+        if (arrived.size === ENGINES.length) allStarted.resolve();
+        await allStarted.promise;
+      }
       const lastUser = body.messages.findLastIndex(m => m.role === 'user' && JSON.stringify(m.content).includes('BENCH_SMOKE'));
       const hasTool = lastUser >= 0 && body.messages.slice(lastUser).some(m => m.role === 'tool');
       let tool;
-      if (lastUser >= 0 && (!hasTool || (scientific && engine === 'dsh' && !current.written)) && body.tools?.length) {
-        const tools = body.tools?.map(t => t.function) || [];
+      if (titleOnly) {
+        tool = { id: 'title-' + diagnostics.length, type: 'function', function: {
+          name: 'session_title', arguments: JSON.stringify({ session_title: 'Complete the isolated benchmark fixture' }) } };
+      } else if (lastUser >= 0 && (!hasTool || (scientific && engine === 'dsh' && !current.written)) && body.tools?.length) {
         const readFirst = scientific && engine === 'dsh' && !current.read;
         const declared = tools.find(t => readFirst ? /^read$/i.test(t.name) : current.engine === 'codex' ? /shell_command$|exec_command$/.test(t.name)
+          : current.engine === 'grok' ? t.name === 'run_terminal_command'
           : /^write$/i.test(t.name) || /write_to_file$|^write_file$|^file_write$/.test(t.name));
         assert.ok(declared, 'Missing native write tool: ' + JSON.stringify(tools));
         const properties = declared.parameters.properties;
@@ -60,6 +68,7 @@ async function main() {
         const command = process.platform === 'win32' ? "New-Item -ItemType Directory -Force -Path '" + path.dirname(target).replace(/'/g, "''") + "' | Out-Null\nSet-Content " + (scientific ? '-Encoding utf8 ' : '') + "-LiteralPath '" + target.replace(/'/g, "''") + "' -Value '" + content.replace(/'/g, "''") + "'"
           : "mkdir -p '" + path.dirname(target).replace(/'/g, "'\\''") + "'\nprintf '%s\\n' '" + content.replace(/'/g, "'\\''") + "' > '" + target.replace(/'/g, "'\\''") + "'";
         const args = readFirst ? { [properties.file_path ? 'file_path' : 'path']: target }
+          : current.engine === 'grok' ? { command, description: 'Write the fixture solution' }
           : current.engine === 'codex' ? { [properties.cmd ? 'cmd' : 'command']: command, login: false }
           : properties.TargetFile ? { TargetFile: target, CodeContent: content, Overwrite: scientific, Description: 'Write the fixture solution', toolAction: 'Writing solution', toolSummary: 'Save the solution' }
           : properties.file_path ? { file_path: target, content } : { path: target, content };
