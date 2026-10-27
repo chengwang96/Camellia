@@ -56,7 +56,7 @@ async function main() {
         if (engine === 'kimi') assert.match(check(node, [path.join(__dirname, 'kimi-cli-smoke.cjs'), installed.file]), /PASS:/);
         else if (engine === 'codex') assert.match(check(node, [path.join(__dirname, 'codex-smoke.cjs'), installed.file]), /PASS:/);
         else {
-          const version = engine === 'claude' ? check(installed.file, ['--version'], true) : check(node, [installed.file, '--version'], true);
+          const version = ['claude', 'grok'].includes(engine) ? check(installed.file, ['--version'], true) : check(node, [installed.file, '--version'], true);
           assert.ok(version.includes(expected), `${engine}: expected ${expected}, received ${JSON.stringify(version)}`);
         }
         if (engine === 'dsh') {
