@@ -11,6 +11,9 @@ const { downloadSettings } = require('../main/download-network');
 const { valid, nativeMode } = require('./permission-levels');
 const { readJson, writeText } = require('../shared/json-store');
 
+// Allow the native CLI's cold Windows startup before its ACP server is ready.
+const GROK_STARTUP_TIMEOUT_MS = 60000;
+
 function grokEnvironment(home, inherited = process.env, proxyUrl) {
   const env = { ...inherited, GROK_HOME: home };
   for (const key of Object.keys(env)) if (/^(XAI_API_KEY|GROK_CODE_XAI_API_KEY|GROK_OIDC_|GROK_AUTH_)/i.test(key)) delete env[key];
@@ -52,7 +55,7 @@ function grokSpawnSpec({ runtime, home, model, connection = 'api', route, contex
 class GrokSession extends AcpSession {
   async open() {
     await this.starting;
-    const initResult = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '1.0.1' } });
+    const initResult = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '1.0.1' } }, GROK_STARTUP_TIMEOUT_MS);
     this.promptCapabilities = initResult?.agentCapabilities?.promptCapabilities || {};
     if (this.spec.authMethod) await this.request('authenticate', { methodId: this.spec.authMethod, _meta: { headless: true } });
     const sourceId = this.opts.sessionId;
@@ -163,4 +166,4 @@ function createGrokChat({ dataDir, loadConfig, saveConfig, getRoute, getModels, 
     get session() { return sessions.legacy; }, shutdown: () => sessions.shutdown() };
 }
 
-module.exports = { GrokSession, createGrokChat, grokSpawnSpec, grokEnvironment, grokConnectionSettings, updateGrokConnectionSettings, nativeConfig };
+module.exports = { GrokSession, createGrokChat, grokSpawnSpec, grokEnvironment, grokConnectionSettings, updateGrokConnectionSettings, nativeConfig, GROK_STARTUP_TIMEOUT_MS };

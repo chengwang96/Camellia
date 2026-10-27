@@ -27,6 +27,7 @@ async function main() {
   const task = scientific ? library.resolve('ds1000-quick').tasks.find(t => t.category === 'Numpy') : TASKS.find(t => t.id === 'reconcile');
   let router;
   const contexts = new Map(), arrived = new Set(), allStarted = Promise.withResolvers(), stopAll = new AbortController();
+  let firstFailure;
   const diagnostics = [];
   const server = http.createServer(async (req, res) => {
     if (require('./model-metadata-fixture.cjs')(req, res)) return;
@@ -122,7 +123,13 @@ async function main() {
       diagnostics.push({ engine, result, verdict, usage, events });
       assert.equal(result.ok, true, JSON.stringify(result));
       assert.equal(verdict.passed, true, engine + ': ' + JSON.stringify({ verdict, result, requests: diagnostics.filter(d => d.error || d.engine === engine).slice(-3) }));
-      assert.ok(usage.length >= 2 && usage.every(r => r.tokens.input === 50 * (ENGINES.indexOf(engine) + 1) && r.tokens.output === 10));
+      const completedUsage = usage.filter(record => record.outcome === 'success');
+      assert.ok(completedUsage.length >= 2 && completedUsage.every(r => r.tokens.input === 50 * (ENGINES.indexOf(engine) + 1) && r.tokens.output === 10));
+      // Closing the native process can cancel a background reply summary.
+      // Main tool requests must finish; unreported auxiliary cancellations do
+      // not represent generated tokens and remain visible in diagnostics.
+      assert.ok(usage.every(record => record.outcome === 'success'
+        || record.outcome === 'cancelled' && record.hasTools === false && record.tokens.reported === false));
       console.log('PASS ' + engine + ': native tool write, independent grader, scoped model and token usage');
 
       // A stopped native process must not keep its upstream request alive.
@@ -143,7 +150,11 @@ async function main() {
         assert.equal(stopRoute.scope.closed, true);
         console.log('PASS ' + engine + ': cancellation closes the native process and upstream request');
       } finally { clearTimeout(deadline); await stopRoute.close(); }
-    }).map(pending => pending.catch(error => { stopAll.abort('Parallel smoke failed'); allStarted.resolve(); throw error; })));
+    }).map(pending => pending.catch(error => {
+      if (!stopAll.signal.aborted) firstFailure = error;
+      stopAll.abort('Parallel smoke failed'); allStarted.resolve(); throw error;
+    })));
+    if (firstFailure) throw firstFailure;
     const failure = results.find(result => result.status === 'rejected');
     if (failure) throw failure.reason;
     assert.equal(arrived.size, ENGINES.length);

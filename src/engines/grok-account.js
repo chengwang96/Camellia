@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { StringDecoder } = require('node:string_decoder');
-const { GrokSession, grokEnvironment } = require('./grok-session');
+const { GrokSession, grokEnvironment, GROK_STARTUP_TIMEOUT_MS } = require('./grok-session');
 const { normalizeGrokBilling, normalizeGrokModels } = require('./grok-quota');
 const { readJson, writeJson } = require('../shared/json-store');
 
@@ -51,7 +51,7 @@ function createGrokAccount({ home, runtime, ensureRuntime, environment = () => p
     catch (error) { void client.shutdown(); throw error; }
   }
   async function authenticate(client) {
-    await client.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '1.0.1' } });
+    await client.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'Camellia', version: '1.0.1' } }, GROK_STARTUP_TIMEOUT_MS);
     await client.request('authenticate', { methodId: 'cached_token', _meta: { headless: true } });
   }
   async function billing(client) {
