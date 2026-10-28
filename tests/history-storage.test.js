@@ -84,6 +84,67 @@ test('append updates only the new index record and retains cached immutable mess
   assert.equal(h.history.metrics.rebuilds, 1);
 });
 
+test('deleting a large conversation reads no message bodies and yields during file cleanup', async t => {
+  const { root, manager, conversation: c } = managerFixture(t);
+  const file = path.join(root, c.id + '.jsonl');
+  const text = 'large saved message '.repeat(800);
+  fs.writeFileSync(file, Array.from({ length: 1200 }, (_, i) =>
+    JSON.stringify({ seq: i + 1, role: i % 2 ? 'assistant' : 'user', text }) + '\n').join(''));
+  c.seq = 1200; manager.save(c);
+  manager.historyStore.ensure(c.id);
+  const before = { ...manager.historyStore.metrics };
+  const started = performance.now();
+  let settled = false;
+  const deleting = manager.deleteConversation(c.id).then(result => { settled = true; return result; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'file cleanup must let the main process handle input before it finishes');
+  assert.equal((await deleting).ok, true);
+  assert.equal(fs.existsSync(file), false);
+  assert.equal(manager.historyStore.metrics.historyBytes, before.historyBytes, 'deletion must not reread saved message text');
+  assert.equal(manager.historyStore.metrics.parsedRows, before.parsedRows);
+  t.diagnostic(JSON.stringify({ historyMiB: +(1200 * Buffer.byteLength(text) / 1048576).toFixed(2),
+    deleteMs: +(performance.now() - started).toFixed(2), rereadHistoryBytes: manager.historyStore.metrics.historyBytes - before.historyBytes }));
+});
+
+test('handoff cleanup reads only file references and preserves references in another conversation', async t => {
+  const { root, manager, conversation: c } = managerFixture(t);
+  const sibling = manager.create('codex', null, 'Keep', root);
+  const directory = path.join(root, 'handoffs');
+  fs.mkdirSync(directory);
+  const shared = path.join(directory, 'shared.md'), owned = path.join(directory, 'owned.md');
+  fs.writeFileSync(shared, 'shared handoff'); fs.writeFileSync(owned, 'owned handoff');
+  const text = 'unrelated message body '.repeat(800);
+  for (const conversation of [c, sibling]) {
+    const rows = Array.from({ length: 600 }, (_, i) => ({ seq: i + 1, role: i % 2 ? 'assistant' : 'user', text }));
+    rows.push({ seq: 601, role: 'user', text: 'handoff attachment', attachments: [{ fullPath: shared }] });
+    if (conversation === c) rows.push({ seq: 602, role: 'notice', text: 'summary', file: owned });
+    fs.writeFileSync(path.join(root, conversation.id + '.jsonl'), rows.map(row => JSON.stringify(row) + '\n').join(''));
+    conversation.seq = rows.at(-1).seq; manager.save(conversation);
+    manager.historyStore.ensure(conversation.id);
+  }
+  const before = { ...manager.historyStore.metrics };
+  await manager.deleteConversation(c.id);
+  assert.equal(fs.existsSync(owned), false);
+  assert.equal(fs.existsSync(shared), true);
+  assert.ok(manager.historyStore.metrics.historyBytes - before.historyBytes < 4096, 'unrelated histories must not be loaded during deletion');
+  await manager.deleteConversation(sibling.id);
+  assert.equal(fs.existsSync(shared), false);
+});
+
+test('handoff references exclude discarded edits and internal rows after restart', t => {
+  const { root, manager, conversation: c, args } = managerFixture(t);
+  const file = name => path.join(root, 'handoffs', name + '.md');
+  manager.append(c, { role: 'user', text: 'discarded request', attachments: [{ path: file('old') }] });
+  manager.append(c, { role: 'notice', text: 'discarded summary', file: file('summary') });
+  manager.append(c, { role: 'revision', replacesSeq: 1, text: 'edited request', attachments: [{ fullPath: file('current') }] });
+  manager.append(c, { role: 'tool', internal: true, text: 'private', file: file('private') });
+  manager.append(c, { role: 'user', text: 'external file', attachments: [{ path: path.join(root, 'keep.md') }] });
+  manager.save(c);
+  const restarted = new SharedConversations(args);
+  t.after(() => restarted.closeGoalTools());
+  assert.deepEqual([...restarted.handoffFiles(restarted.get(c.id))], [file('current')]);
+});
+
 test('remote pages stop at their output budget and cache projections of oversized uncached rows', t => {
   const { root, manager, conversation: c } = managerFixture(t);
   const file = path.join(root, c.id + '.jsonl'), text = 'x'.repeat(6 * 1024 * 1024);

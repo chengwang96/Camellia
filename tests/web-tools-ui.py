@@ -45,7 +45,6 @@ def wait_saved(page, source):
 def expect_synced(page, value):
     for prefix in ['webTools', 'networkWebTools']:
         expect(page.locator('#' + prefix + 'Provider')).to_have_value(value)
-        expect(page.locator('#' + prefix + 'Price')).to_have_js_property('hidden', value == 'native')
     assert page.locator('#webToolsHint').text_content() == page.locator('#networkWebToolsHint').text_content()
 
 def provider(id, url='https://api.deepseek.com/v1', enabled=True):
@@ -87,7 +86,6 @@ try:
         source.select_option('deepseek:official')
         wait_saved(page, 'deepseek')
         expect_synced(page, 'deepseek:official')
-        expect(page.locator('#webToolsPrice')).to_be_visible()
         assert rpc('apiRouterGetState')['result']['webTools']['providerId'] == 'official'
         assert 'fixture-private' not in page.content()
         page.reload()

@@ -36,6 +36,7 @@ async function main() {
   const root = process.env.ARCHIVED_QA_ROOT;
   const home = path.join(root, 'home');
   const userData = path.join(root, 'app');
+  app.setPath('appData', root);
   app.setPath('userData', userData);
   app.disableHardwareAcceleration();
   const errors = [];
@@ -59,6 +60,18 @@ async function main() {
   fs.writeFileSync(sharedJson, JSON.stringify({ id: sharedId, origin: 'kimi', currentEngine: 'kimi', title: 'Shared archived chat',
     cwd: root, workspaceId: null, createdAt: Date.now(), updatedAt: Date.now(), seq: 1, segments: {}, handoffs: [], engineSettings: {} }));
   fs.writeFileSync(sharedLog, JSON.stringify({ role: 'user', engine: 'kimi', text: 'hello', seq: 1, at: Date.now() }) + '\n');
+  // Keep large shared histories loaded but unarchived until the bulk-delete
+  // check, so startup indexing is outside the measured input-response window.
+  const bulkIds = Array.from({ length: 22 }, (_, index) => 'bulk-archived-' + index);
+  const bulkText = 'large saved message '.repeat(800);
+  const bulkLog = Array.from({ length: 1200 }, (_, index) =>
+    JSON.stringify({ role: index % 2 ? 'assistant' : 'user', text: bulkText, seq: index + 1 }) + '\n').join('');
+  for (const [index, id] of bulkIds.entries()) {
+    fs.writeFileSync(path.join(conversationsDir, id + '.json'), JSON.stringify({ id, origin: 'codex', currentEngine: 'codex',
+      title: 'Bulk archived chat ' + index, cwd: root, workspaceId: null, createdAt: Date.now(), updatedAt: Date.now(),
+      seq: index < 8 ? 1200 : 1, segments: {}, handoffs: [], engineSettings: {} }));
+    fs.writeFileSync(path.join(conversationsDir, id + '.jsonl'), index < 8 ? bulkLog : '{"role":"user","text":"small chat","seq":1}\n');
+  }
   fs.mkdirSync(userData, { recursive: true });
   fs.writeFileSync(path.join(userData, 'desktop-config.json'), JSON.stringify({
     firstRunComplete: true, mode: 'claude', dshHome: process.env.DSH_HOME, port: 0,
@@ -113,13 +126,18 @@ async function main() {
   const configFile = path.join(userData, 'desktop-config.json');
   const savedConfig = JSON.parse(fs.readFileSync(configFile, 'utf8'));
   savedConfig.claudeMeta.archived[legacyId] = Date.now();
+  for (const id of bulkIds) savedConfig.sharedMeta.archived[id] = Date.now();
   fs.writeFileSync(configFile, JSON.stringify(savedConfig));
   settings.webContents.send('dsh:archived-changed', { source: 'claude', id: legacyId, action: 'archive' });
-  await wait(async () => (await run("document.querySelectorAll('#archivedList .archived-row').length")) === 1, 're-archived row appears');
+  await wait(async () => (await run("document.querySelectorAll('#archivedList .archived-row').length")) === 23, 're-archived rows appear');
   assert.equal(await run("document.querySelector('#deleteAllArchived').disabled"), false, 'delete-all enabled with rows');
   await run("document.querySelector('#deleteAllArchived').click()");
   await wait(() => run("document.querySelector('#deleteAllArchivedDialog').open"), 'delete-all dialog opens');
-  assert.equal(await run("document.querySelector('#deleteAllArchivedCount').textContent"), 'All 1 archived conversations will be deleted.');
+  assert.equal(await run("document.querySelector('#deleteAllArchivedCount').textContent"), 'All 23 archived conversations will be deleted.');
+  let previousBeat = performance.now(), maxBeatGap = 0, beats = 0;
+  const heartbeat = setInterval(() => {
+    const now = performance.now(); maxBeatGap = Math.max(maxBeatGap, now - previousBeat); previousBeat = now; beats++;
+  }, 5);
   const deletingState = await run(`(() => {
     document.querySelector('#confirmDeleteAllArchived').click();
     return {
@@ -129,9 +147,14 @@ async function main() {
       progress: document.querySelector('#archivedDeleteStatus').textContent,
     };
   })()`);
-  assert.deepEqual(deletingState, { visible: true, disabled: true, busy: 'true', progress: 'Deleting archived conversations: 0 of 1' });
+  assert.deepEqual(deletingState, { visible: true, disabled: true, busy: 'true', progress: 'Deleting archived conversations: 0 of 23' });
   await wait(() => run("!!document.querySelector('#archivedList .empty')"), 'empty state after delete-all');
+  clearInterval(heartbeat);
+  assert.ok(beats > 0, 'the main process must handle input during deletion');
+  assert.ok(maxBeatGap < 100, 'bulk deletion stalled the main process for ' + maxBeatGap.toFixed(1) + ' ms');
+  console.log('Bulk delete: 23 conversations, largest main-process heartbeat gap ' + maxBeatGap.toFixed(1) + ' ms');
   assert.equal(fs.existsSync(legacyFile), false);
+  for (const id of bulkIds) for (const extension of ['.json', '.jsonl']) assert.equal(fs.existsSync(path.join(conversationsDir, id + extension)), false);
   assert.ok(!JSON.parse(fs.readFileSync(path.join(userData, 'desktop-config.json'), 'utf8')).claudeMeta?.archived?.[legacyId]);
 
   const attachmentDir = path.join(userData, 'clipboard-attachments');

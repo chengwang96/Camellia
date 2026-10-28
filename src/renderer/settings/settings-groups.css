@@ -13,15 +13,11 @@
 .settings-main .settings-group > .engine-field:last-child { padding-bottom: 0; }
 .settings-main .settings-group > .section,
 .settings-main .settings-group > .subscription-account,
-.settings-main .settings-group > .mobile-section,
 .settings-main .settings-group > .connectivity-section,
 .settings-main .settings-group > .subscription-models-section { margin: 0; padding: 0; border-top: 0; border-bottom: 0; }
 .settings-main .settings-group > .router-options,
 .settings-main .settings-group > .balances-section { margin-top: 0; }
 .settings-main .settings-group > .engine-common-title { margin: 0 0 12px; }
-.settings-main #mobilePage .settings-group > .mobile-section:not(.mobile-connection-card):not(.mobile-pair-card) {
-  margin: 0; padding: 0; border: 0;
-}
 .settings-main .settings-group .runtime-card { border-bottom: 0; }
 .settings-main #runtimeCards > .runtime-card:not([hidden]) ~ .runtime-card:not([hidden]) { border-top: 1px solid var(--dsw-alias-border-l2); }
 .settings-main .subscription-cost { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }

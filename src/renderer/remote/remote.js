@@ -137,7 +137,7 @@ function renderDevices(target, entries, pending) {
   target.replaceChildren();
   for (const entry of entries) {
     const row = document.createElement('div'), icon = mobileDeviceIcon(), name = document.createElement('div'), meta = document.createElement('div'), label = document.createElement('small'), actions = document.createElement('div');
-    row.className = 'device'; icon.classList.add('device-icon'); name.className = 'name'; meta.className = 'device-meta'; actions.className = 'actions';
+    row.className = 'device device-row'; icon.classList.add('device-icon'); name.className = 'name device-info'; meta.className = 'device-meta'; actions.className = 'actions device-actions';
     name.textContent = entry.name;
     label.textContent = pending
       ? `${entry.computerName || ''}${entry.computerName ? ' · ' : ''}${translate(entry.state === 'approved' ? 'pairApproved' : entry.state === 'rejected' ? 'pairingRejected' : 'pairWaiting')}`
@@ -159,6 +159,7 @@ function renderDevices(target, entries, pending) {
     }
     for (const action of pending ? (entry.state === 'pending' ? ['approve', 'reject'] : entry.state === 'approved' ? ['reject'] : []) : ['revoke']) {
       const button = document.createElement('button');
+      if (action === 'reject' || action === 'revoke') button.className = 'danger';
       button.textContent = translate(action);
       button.addEventListener('click', () => run(async () => { await call(action, { id: entry.id }); }));
       actions.append(button);

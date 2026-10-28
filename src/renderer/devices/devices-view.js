@@ -2,19 +2,25 @@
 
 (function (root) {
   const CONNECTIONS = `
-<main class="connection-settings">
-  <p class="hint" data-copy="intro">在这里管理连接。回到首页，点击服务器即可打开独立工作台。</p>
-  <section class="connection-group">
-    <h2 data-copy="network">本机 Tailscale 连接</h2><p id="cli-networkState" role="status"></p>
-    <p class="hint" data-copy="networkHint">与「手机访问」共用同一个内置 Tailscale 身份，登录一次两边生效；断开或退出登录请到「手机访问」操作。</p>
-    <div class="actions"><button id="cli-networkStart" data-copy="login">启动 / 登录</button><button id="cli-openLogin" data-copy="browser" hidden>打开登录链接</button><button id="cli-refresh" data-copy="refresh">刷新</button></div>
+<main class="connection-settings device-settings">
+  <section class="device-section device-card device-connection" aria-labelledby="cli-connectionTitle">
+    <div class="device-heading"><h2 id="cli-connectionTitle" data-copy="connection">连接</h2><span id="cli-networkState" class="device-status" role="status"></span></div>
+    <div class="device-toolbar"><p id="cli-networkAddress" class="device-address">本机 Tailscale</p><button id="cli-refresh" data-copy="refresh">刷新</button><button id="cli-openLogin" class="primary" data-copy="browser" hidden>打开登录链接</button><button id="cli-networkStart" class="primary" data-copy="login">启动 / 登录</button></div>
+    <details class="device-help"><summary data-copy="connectionHelp">连接与权限说明</summary>
+      <p class="hint" data-copy="networkHint">与「手机访问」共用同一个内置 Tailscale 身份，登录一次两边生效；断开或退出登录请到「手机访问」操作。仅启动网络不会开启手机访问。</p>
+      <p class="hint" data-copy="boundary">文件、会话和引擎都运行在选中的服务器上。</p>
+    </details>
   </section>
-  <section class="connection-group">
-    <div class="page-head"><h2 data-copy="servers">已配对服务器</h2><button id="cli-add" data-copy="add">＋ 添加 CLI 服务器</button></div>
-    <p class="hint" data-copy="defaultHint">每台服务器在首页只显示一个入口。默认 Harness 用于新会话，不改变已有会话。</p>
+  <section class="device-section device-card device-pair" aria-labelledby="cli-pairTitle">
+    <div class="device-heading"><h2 id="cli-pairTitle" data-copy="pairServer">配对服务器</h2><button id="cli-add" data-copy="add">添加 CLI 服务器</button></div>
+    <p class="hint" data-copy="intro">使用服务器上的一次性配对码添加连接。配对后，从首页打开服务器工作台。</p>
+  </section>
+  <section class="device-section" aria-labelledby="cli-serversTitle">
+    <div class="device-heading"><h2 id="cli-serversTitle" data-copy="servers">已配对服务器</h2></div>
+    <p class="hint" data-copy="defaultHint">默认 Harness 用于新会话，不改变已有会话。</p>
     <div id="cli-servers"></div>
   </section>
-  <p id="cli-error" class="cli-error" role="alert"></p><p id="cli-notice" role="status"></p>
+  <p id="cli-error" class="cli-error device-feedback" role="alert"></p><p id="cli-notice" class="device-feedback" role="status"></p>
   <dialog id="cli-pairDialog"><form id="cli-pairForm"><h2 data-copy="add">添加 CLI 服务器</h2>
     <label for="cli-deviceName" data-copy="deviceName">服务器名称</label><input id="cli-deviceName" name="deviceName" required maxlength="80">
     <label for="cli-address" data-copy="address">Tailscale IP</label><input id="cli-address" name="address" placeholder="100.x.y.z" inputmode="decimal" required>

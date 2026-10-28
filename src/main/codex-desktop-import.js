@@ -10,6 +10,9 @@ const path = require('node:path');
 const { jsonLines } = require('../shared/json-lines');
 const { createHash } = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+const { pipeline } = require('node:stream/promises');
+const { createZstdDecompress } = require('node:zlib');
+const { zstdFrameValidator } = require('../shared/zstd-frames');
 
 const MAX_LISTED_SESSIONS = 1000;
 const MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
@@ -75,6 +78,26 @@ function cleanTitle(text) {
   return text;
 }
 
+const sessionTitle = row => (cleanTitle(row.name) || cleanTitle(row.title)
+  || cleanTitle(row.first_user_message) || cleanTitle(row.preview)).slice(0, 60);
+
+// Codex may compress a rollout without updating older index entries. Prefer
+// the indexed file, then try its compressed sibling without changing either.
+function rolloutInfo(file) {
+  const rolloutPath = cleanPath(file);
+  const candidates = typeof rolloutPath === 'string' && /\.jsonl$/i.test(rolloutPath)
+    ? [rolloutPath, rolloutPath + '.zst'] : [rolloutPath];
+  for (const candidate of candidates) {
+    try {
+      const stat = fs.statSync(candidate);
+      if (!stat.isFile()) continue;
+      fs.accessSync(candidate, fs.constants.R_OK);
+      return { rolloutPath: candidate, rolloutBytes: stat.size, rolloutModifiedAt: stat.mtimeMs, importable: true };
+    } catch {}
+  }
+  return { rolloutPath, rolloutBytes: null, rolloutModifiedAt: null, importable: false };
+}
+
 function readDesktopProjects(stateFile, projectsByPath) {
   let state;
   try { state = JSON.parse(fs.readFileSync(path.join(path.dirname(stateFile), '.codex-global-state.json'), 'utf8')); } catch { return {}; }
@@ -105,9 +128,11 @@ function listDesktopSessions(stateFile, { excludeIds = new Set(), maxSessions = 
   if (threadIds && !threadIds.length) return [];
   return withSnapshot(stateFile, db => {
     const limit = Math.max(1, Math.min(MAX_LISTED_SESSIONS, Math.trunc(Number(maxSessions)) || MAX_LISTED_SESSIONS));
-    // Apply visibility filters before LIMIT so unnamed/agent/excluded threads
-    // do not hide available sessions. Old threads with new turns rank first.
-    const where = ['t.archived = 0', "trim(t.name) <> ''", "substr(ltrim(t.source, char(9) || char(10) || char(13) || ' '), 1, 1) <> '{'"];
+    // Apply visibility filters before LIMIT, accepting older title/message
+    // fields when name is empty. Old threads with new turns rank first.
+    const hasTitle = ['name', 'title', 'first_user_message', 'preview']
+      .map(column => `trim(COALESCE(t.${column}, ''), char(9) || char(10) || char(13) || ' ') <> ''`).join(' OR ');
+    const where = ['t.archived = 0', `(${hasTitle})`, "substr(ltrim(t.source, char(9) || char(10) || char(13) || ' '), 1, 1) <> '{'"];
     const parameters = [];
     if (threadIds) {
       where.push(`t.id IN (${threadIds.map(() => '?').join(',')})`);
@@ -136,21 +161,13 @@ function listDesktopSessions(stateFile, { excludeIds = new Set(), maxSessions = 
     }
     const desktop = readDesktopProjects(stateFile, projectsByPath);
     const sessions = rows.filter(r => !isSubagentSource(r.source) && !excludeIds.has(r.id)).flatMap(r => {
-      const title = cleanTitle(r.name);
+      const title = sessionTitle(r);
       if (!title) return [];
-      const rolloutPath = cleanPath(r.rollout_path);
-      let rolloutBytes = null, rolloutModifiedAt = null;
-      try {
-        const stat = fs.statSync(rolloutPath);
-        if (stat.isFile()) { fs.accessSync(rolloutPath, fs.constants.R_OK); rolloutBytes = stat.size; rolloutModifiedAt = stat.mtimeMs; }
-      } catch {}
       return [{
-        id: r.id, title: title.slice(0, 60),
+        id: r.id, title,
         cwd: cleanPath(r.cwd || ''), createdAt: r.createdAt, updatedAt: r.updatedAt,
-        source: r.source, rolloutPath,
+        source: r.source, ...rolloutInfo(r.rollout_path),
         project: projectForRow(r, projectsByPath, desktop),
-        rolloutBytes, rolloutModifiedAt,
-        importable: rolloutBytes !== null,
       }];
     });
     Object.defineProperty(sessions, 'truncated', { value: truncated, enumerable: false });
@@ -179,17 +196,21 @@ function listDesktopImportCandidates(shared, stateFile) {
 // response_item message rows are canonical here. Tool calls and reasoning are
 // not imported.
 async function readRolloutMessages(rolloutPath, onMessage, { maxMessageBytes = MAX_MESSAGE_BYTES, maxMessageCount = MAX_MESSAGE_COUNT } = {}) {
-  const file = cleanPath(rolloutPath);
+  const file = rolloutInfo(rolloutPath).rolloutPath;
   const messages = [];
   let messageBytes = 0;
   let messageCount = 0;
   let previous = null;
-  const input = fs.createReadStream(file, { encoding: 'utf8' });
+  const source = fs.createReadStream(file);
+  const input = /\.zst$/i.test(file) ? createZstdDecompress() : source;
   let endsWithNewline = false;
   let incompleteRecord = false;
   const corruptHistory = () => new Error('Could not import Codex history: invalid JSONL record.');
-  input.on('data', chunk => { if (chunk.length) endsWithNewline = /[\r\n]$/.test(chunk); });
+  input.on('data', chunk => { if (chunk.length) endsWithNewline = chunk[chunk.length - 1] === 10 || chunk[chunk.length - 1] === 13; });
   const lines = jsonLines(input);
+  // Observe the entire decoder pipeline, including errors after its final
+  // output chunk. Keep cleanup errors handled if the consumer stops early.
+  const completed = input === source ? null : pipeline(source, zstdFrameValidator(), input).then(() => null, error => error);
   try {
     for await (const line of lines) {
       if (incompleteRecord) throw corruptHistory();
@@ -223,10 +244,14 @@ async function readRolloutMessages(rolloutPath, onMessage, { maxMessageBytes = M
       if (onMessage) await onMessage(message);
       else messages.push(message);
     }
+    const decodingError = await completed;
+    if (decodingError) throw decodingError;
     if (incompleteRecord && endsWithNewline) throw corruptHistory();
   } finally {
     lines.destroy();
     input.destroy();
+    source.destroy();
+    await completed;
   }
   return messages;
 }
@@ -290,7 +315,7 @@ async function importDesktopSessions(shared, stateFile, ids, log = () => {}) {
         imported.push({ id: conversation.id, threadId: session.id, title: conversation.title, messages: count });
       });
     } catch (error) {
-      if (conversation) shared.purge(conversation.id);
+      if (conversation) await shared.purge(conversation.id);
       log('codex desktop import failed for ' + session.id + ': ' + error.message);
       skipped.push({ threadId: session.id, error: error.message });
     }
@@ -320,11 +345,10 @@ async function syncDesktopConversation(shared, stateFile, conversationId, listed
           p.id AS projectId, p.name AS projectName, r.path AS projectPath FROM threads t
           LEFT JOIN projects p ON p.id = t.project_id LEFT JOIN project_roots r ON r.project_id = t.project_id AND r.position = 0
           WHERE t.id = ?`).get(c.importThreadId);
-      const stat = r && fs.statSync(cleanPath(r.rollout_path));
-      return r ? { id: r.id, title: (cleanTitle(r.name) || cleanTitle(r.title) || cleanTitle(r.first_user_message || r.preview)).slice(0, 60),
-        updatedAt: r.updatedAt, rolloutBytes: stat.size, rolloutModifiedAt: stat.mtimeMs,
+      return r ? { id: r.id, title: sessionTitle(r),
+        updatedAt: r.updatedAt, ...rolloutInfo(r.rollout_path),
         project: r.projectId ? { id: r.projectId, name: r.projectName || '', path: cleanPath(r.projectPath || '') } : null,
-        rolloutPath: cleanPath(r.rollout_path) } : null;
+      } : null;
     });
   if (!session) throw new Error('The session no longer exists in the Codex desktop app');
   const messages = await readRolloutMessages(session.rolloutPath);

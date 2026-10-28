@@ -35,7 +35,7 @@ const titles = {
   network: ["Network", "Choose how Camellia reaches the internet and test each connection."],
   archived: ["Archived", "Restore or permanently delete archived conversations."],
   mobile: ["Mobile access", "Connect your phone through Tailscale."],
-  devices: ["CLI devices", "Manage server connections and default harnesses. Open a server from Home to work."],
+  devices: ["CLI devices", "Connect to CLI servers through Tailscale."],
   engines: ["Engine Settings", "Manage engine installation, updates, permissions, instructions and tools."],
   models: ["Model Settings", "Manage API key routing, visible subscription models, quick-switch defaults and model sessions."],
 };
@@ -1125,7 +1125,6 @@ function renderWebToolsSettings() {
     }
     select.value = settings.provider === 'deepseek' ? 'deepseek:' + settings.providerId : 'native';
     select.disabled = !config || saving;
-    $(prefix + 'Price').hidden = settings.provider !== 'deepseek';
     $(prefix + 'AddApi').hidden = providers.length > 0 && !unavailable;
     $(prefix + 'Hint').textContent = hint;
   }
@@ -1349,7 +1348,7 @@ function renderConnectivity(result) {
   // "Direct"/"Proxy" under a header that already said which column it was.
   const check = ok => `<span class="route-mark ${ok ? 'good' : 'bad'}" aria-hidden="true">${ok ? '✓' : '✕'}</span>`;
   const summaryText = summary.total === 0
-    ? t('No provider routes or signed-in subscriptions to test yet.')
+    ? t('No configured provider hosts or added subscriptions to test yet.')
     : `${summary.direct} / ${summary.total} ${t('reachable directly')} · ${summary.proxy} / ${summary.total} ${t('reachable through the proxy')}` +
       (summary.unreachable?.length ? ` · ${t('No route to')}: ${summary.unreachable.join(', ')}` : '');
   const rows = results.map(row => {

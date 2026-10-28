@@ -126,11 +126,9 @@ body.cli-devices-standalone { margin: 0; }
 .cli-devices.standalone footer > button { display: block; border: 0; padding: 8px; text-align: left; width: 100%; background: transparent; }
 .cli-devices.embedded { display: block; border: 0; border-radius: 0; min-height: 0; background: transparent; }
 .cli-devices.embedded .connection-settings { padding: 0; }
-.cli-devices .connection-group { margin: 22px 0; padding: 22px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 16px; background: var(--dsw-alias-bg-layer-1); }
 .cli-devices .server-setting { display: grid; grid-template-columns: minmax(0, 1fr) 190px auto; align-items: center; gap: 22px; padding: 20px 0; border-top: 1px solid var(--dsw-alias-border-l2); }
 .cli-devices .server-setting p { margin: 5px 0; overflow-wrap: anywhere; }
 .cli-devices .server-setting select { margin-top: 8px; }
-.cli-devices .connection-group > .page-head { padding: 0; margin: 0; position: static; background: none; border: 0; }
 .cli-devices .connection-settings dialog label { margin-top: 16px; }
 .cli-devices button:focus-visible, .cli-devices select:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; }
 .cli-devices.standalone { height: 100vh; min-height: 0; overflow: hidden; grid-template-columns: 280px minmax(0, 1fr); }

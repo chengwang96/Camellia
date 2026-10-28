@@ -1,5 +1,7 @@
 'use strict';
 
+const { MAX_TITLE_CHARS } = require('../shared/conversation-title');
+
 // Conversation titles are advisory, so they must never delay the first turn,
 // trip the shared route pool's per-model cooldown, or add to the user's usage
 // totals. Naming used to be a single attempt against the conversation's own
@@ -23,7 +25,7 @@ const REQUEST_TIMEOUT_MS = 20000;
 const MAX_OUTPUT_TOKENS = 2048;
 
 const TITLE_INSTRUCTION = 'Write a short, accurate title for the conversation that starts with the user message below. '
-  + 'Output only the title: no quotes, no trailing punctuation, no explanation, at most 10 characters. '
+  + `Output only the title: no quotes, no trailing punctuation, no explanation, at most ${MAX_TITLE_CHARS} characters. `
   + 'Use the language of the message.';
 
 // Newer OpenAI reasoning models reject the legacy cap field outright, so the
@@ -119,7 +121,12 @@ function createTitleRequester({ getRoute, fetchImpl = fetch, timeoutMs = REQUEST
 function createConversationTitles({ candidates, request, normalize = value => String(value || '').trim(),
   log = () => {}, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   async function generate(message, model) {
-    for (const candidate of candidates(model)) {
+    const selected = candidates(model);
+    if (!selected.length) {
+      log('conversation title: no healthy API route is available; keeping the provisional title');
+      return '';
+    }
+    for (const candidate of selected) {
       // A rejected request is retried in its most compatible form: no output
       // cap and a shorter message. Transient trouble is retried unchanged,
       // since shrinking the request would not help it.

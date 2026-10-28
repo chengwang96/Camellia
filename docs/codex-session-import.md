@@ -2,8 +2,10 @@
 
 Open **Import local Codex sessions** in the desktop conversation sidebar. The
 dialog scans the local Codex `state_5.sqlite` index only when opened. It shows
-named, active parent sessions, grouped by workspace, ordered by their latest
-activity. At most 1,000 eligible sessions are shown. Missing or unreadable
+active parent sessions with a name, title, first user message or preview,
+grouped by workspace and ordered by their latest activity. The display title
+uses those fields in that order, so older sessions without a `name` remain
+available. At most 1,000 eligible sessions are shown. Missing or unreadable
 history files remain visible with disabled checkboxes.
 
 Choose **Import / update selected** to copy new sessions or update existing
@@ -27,6 +29,11 @@ scan window is resolved by ID; unavailable selections report a failure.
 The source database and rollout files are read-only inputs. A temporary
 database/WAL copy is used while Codex is running; SQLite rebuilds shared memory
 in that temporary directory. No credentials or source files are changed.
+
+Both plain `.jsonl` and Zstandard-compressed `.jsonl.zst` histories are streamed.
+If the indexed `.jsonl` file is missing, its `.zst` sibling is used when present.
+Decompression happens in memory without rewriting or unpacking source files.
+Invalid or truncated compressed data rejects the import or update.
 
 Only user and assistant text from canonical `response_item` messages is copied.
 Tool calls, reasoning and attachments are excluded. Each conversation is

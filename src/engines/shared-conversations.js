@@ -604,35 +604,49 @@ class SharedConversations {
     }
   }
   // Permanent delete: index, append-only log, goal, handoffs and torn backups.
-  purge(id) {
+  async purge(id) {
     if (this.workInProgress(id) || this.stopping.has(id)) throw new Error('Stop this conversation before deleting it');
     const c = this.items.get(id);
     const files = c ? this.handoffFiles(c) : new Set();
-    if (files.size) for (const other of this.items.values()) {
-      if (other.id !== id) for (const file of this.handoffFiles(other)) files.delete(file);
-    }
     this.goalBridges.get(id)?.close(); this.goalBridges.delete(id);
     this.tasks.removeSession(id);
     this.remoteQueue?.discard(id);
     this.goals.get(id)?.cancelTimer();
     this.items.delete(id); this.facades.delete(id); this.goals.delete(id);
-    const rm = file => { try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; } };
-    rm(this.file(id));
-    rm(path.join(this.dir, id + '.jsonl'));
-    this.historyStore.remove(id);
-    for (const name of fs.readdirSync(this.dir)) if (name.startsWith(id + '.jsonl.torn-')) rm(path.join(this.dir, name));
-    rm(path.join(this.dir, 'goals', id + '.json'));
-    for (const file of files) rm(file);
+    const rm = async file => { try { await fs.promises.unlink(file); } catch (error) { if (error.code !== 'ENOENT') throw error; } };
+    await rm(this.file(id));
+    await rm(path.join(this.dir, id + '.jsonl'));
+    await this.historyStore.removeAsync(id);
+    for (const name of await fs.promises.readdir(this.dir)) if (name.startsWith(id + '.jsonl.torn-')) await rm(path.join(this.dir, name));
+    await rm(path.join(this.dir, 'goals', id + '.json'));
+    // Check sharing after the asynchronous cleanup. No yield between this
+    // check and unlink: a new fork or attachment must retain its handoffs.
+    if (files.size) for (const other of this.items.values()) {
+      for (const file of this.handoffFiles(other)) files.delete(file);
+      if (!files.size) break;
+    }
+    for (const file of files) {
+      try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
     if (c) this.onEvent({ type: 'conversation:deleted', session_id: id, engine: c.currentEngine });
     return Boolean(c);
   }
   handoffFiles(c) {
     const directory = path.resolve(this.dir, 'handoffs');
-    const references = [...c.handoffs,
-      ...this.rows(c).filter(row => !row.internal).flatMap(row => [row, ...(row.attachments || []).flatMap(file =>
-        [{ file: file.path }, ...(file.fullPath ? [{ file: file.fullPath }] : [])])])];
-    return new Set(references.filter(entry => entry.file).map(entry => path.resolve(entry.file))
-      .filter(file => path.dirname(file) === directory));
+    const files = new Set();
+    const add = file => {
+      if (!file) return;
+      const resolved = path.resolve(file);
+      if (path.dirname(resolved) === directory) files.add(resolved);
+    };
+    for (const entry of c.handoffs) add(entry.file);
+    // File-bearing rows are indexed separately so deleting a conversation
+    // never materializes its entire transcript, or another conversation's.
+    for (const row of this.historyRows(c, { mask: HISTORY_FLAGS.file })) {
+      add(row.file);
+      for (const file of row.attachments || []) { add(file.path); add(file.fullPath); }
+    }
+    return files;
   }
   rawRows(c) {
     const rows = [];
@@ -1656,6 +1670,8 @@ class SharedConversations {
     if (event.type === 'gui:tool' || event.type === 'gui:plan' || event.type === 'user') {
       this.append(c, { role: 'tool', engine, text: JSON.stringify(event), internal: a.internal });
     }
+    if (event.type === 'gui:permission' && a.settings.permissionMode === 'full' && !event.questions?.length
+        && a.session?.answerPermission(event.requestId, true)) return true;
     if (event.type === 'gui:permission') { a.permissions.set(event.requestId, event); this.publishActivity(c.id); }
     let toolBoundary = false;
     if (event.type === 'gui:tool' && event.id) {

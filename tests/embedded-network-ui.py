@@ -32,7 +32,13 @@ with sync_playwright() as playwright:
                 html = re.sub(r'<script\b[^>]*>.*?</script>', '', html, flags=re.S)
                 page.route('**/api-settings.html', lambda route: route.fulfill(body=html, content_type='text/html'))
                 page.goto((repo / 'src/renderer/settings/api-settings.html').as_uri())
-                page.evaluate("document.getElementById('mobilePage').hidden = false; document.documentElement.lang = 'zh-CN'")
+                # Replace the parent routing and language-ready setup stripped
+                # above so actual clicks exercise a visible Mobile access page.
+                page.evaluate("""() => {
+                    document.querySelectorAll('.page').forEach(page => { page.hidden = page.id !== 'mobilePage'; });
+                    document.documentElement.lang = 'zh-CN';
+                    document.documentElement.removeAttribute('data-i18n-pending');
+                }""")
                 page.add_script_tag(url=(repo / 'src/renderer/remote/remote.js').as_uri())
                 page.evaluate('window.mobileAccessUI.setVisible(true)')
             else:

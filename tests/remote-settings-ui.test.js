@@ -7,7 +7,7 @@ const path = require('node:path');
 for (const file of ['settings/api-settings.html', 'remote/remote.html']) {
   test(`${file} keeps connection details collapsed and pairing progress accessible`, () => {
     const html = fs.readFileSync(path.join(__dirname, '../src/renderer', file), 'utf8');
-    const help = html.match(/<details class="mobile-help">([\s\S]*?)<\/details>/);
+    const help = html.match(/<details class="mobile-help(?: device-help)?">([\s\S]*?)<\/details>/);
     assert.ok(help);
     assert.match(help[1], /<summary data-copy="connectionHelp">/);
     for (const key of ['network', 'footer', 'logout']) {

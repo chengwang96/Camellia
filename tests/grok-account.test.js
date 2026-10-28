@@ -170,3 +170,30 @@ test('login, account and quota checks, and logout use the current subscription p
   await signingOut;
   assert.equal(inherited.HTTP_PROXY, 'http://old.invalid:1234');
 });
+
+test('account operations use the real central subscription proxy in automatic mode', async t => {
+  const { networkEnvironment } = require('../src/main/network-settings');
+  const inherited = networkEnvironment({ XAI_API_KEY: 'parent-secret' }, {
+    mode: 'auto', url: 'http://127.0.0.1:54321/', subscriptionProxy: 'http://127.0.0.1:7890/' });
+  const f = fixture(t, { getProxyUrl: () => 'http://legacy.invalid:7897', environment: () => inherited });
+  function check(env) {
+    assert.equal(env.HTTP_PROXY, 'http://127.0.0.1:7890/');
+    assert.equal(env.HTTPS_PROXY, 'http://127.0.0.1:7890/');
+    assert.equal(env.ALL_PROXY, '');
+    assert.equal(env.NO_PROXY, 'localhost,127.0.0.1,::1');
+    assert.equal(env.XAI_API_KEY, undefined);
+  }
+  await f.account.signIn();
+  check(f.processes[0].options.env);
+  await f.account.cancelLogin();
+  await f.account.refresh();
+  check(f.clients.at(-1).spec.env);
+  await f.account.refreshUsage();
+  check(f.clients.at(-1).spec.env);
+  const signingOut = f.account.signOut();
+  await until(() => f.processes.at(-1)?.args[0] === 'logout');
+  check(f.processes.at(-1).options.env);
+  f.processes.at(-1).emit('close', 0);
+  await signingOut;
+  assert.equal(inherited.HTTPS_PROXY, 'http://127.0.0.1:54321/');
+});

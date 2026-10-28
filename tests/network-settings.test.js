@@ -125,19 +125,50 @@ function probeStub(summary) {
   return async (targets, options) => targets.map(target => ({ ...target,
     direct: summary.direct, proxy: summary.proxy, preferred: summary.direct ? 'direct' : 'proxy', durationMs: 1 }));
 }
-test('connectivity test probes provider hosts and signed-in subscriptions without changing the mode', async () => {
-  const providerTargetsImpl = () => [{ id: 'api.a.example:443', kind: 'provider', host: 'api.a.example', port: 443, label: 'Provider A', models: ['a-1'] }];
+test('connectivity test probes every configured provider and subscription without changing the mode', async () => {
+  let includeConfigured = false;
+  const providerTargetsImpl = (_routes, options) => {
+    includeConfigured = options?.includeConfigured === true;
+    return [
+      { id: 'api.a.example:443', kind: 'provider', host: 'api.a.example', port: 443, label: 'Provider A', models: ['a-1'] },
+      { id: 'off.example:443', kind: 'provider', host: 'off.example', port: 443, label: 'Disabled provider', models: ['off-1'] },
+    ];
+  };
   let config = { network: { mode: 'system' } }, applied;
   const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),
     sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY localhost:7890' }), defaultSession: { setProxy: async () => {} } }),
     applyEnvironment: env => { applied = env; }, createFallback: async () => ({ url: 'http://127.0.0.1:12345', close() {} }),
-    providerTargetsImpl, subscriptionEngines: () => ['codex'], probeImpl: probeStub({ direct: true, proxy: false }) });
+    providerTargetsImpl, subscriptionEngines: () => { throw new Error('The full test must not use the active-only inventory'); },
+    configuredSubscriptionEngines: () => ['codex', 'grok', 'antigravity'], probeImpl: probeStub({ direct: true, proxy: false }) });
   const result = await service.testConnectivity();
   assert.equal(result.ok, true);
-  assert.equal(result.summary.total, 2);
-  assert.equal(result.summary.direct, 2);
+  assert.equal(includeConfigured, true);
+  assert.equal(result.summary.total, 5);
+  assert.equal(result.summary.direct, 5);
+  assert.deepEqual(result.results.map(target => target.id),
+    ['api.a.example:443', 'off.example:443', 'subscription:codex', 'subscription:grok', 'subscription:antigravity']);
   // A read-only test never rewrites the stored choice or the live transport.
   assert.equal(config.network.mode, 'system'); assert.equal(applied, undefined);
+  service.close();
+});
+test('auto keeps using active routes instead of the full connectivity inventory', async () => {
+  let providerOptions, probed;
+  const providerTargetsImpl = (_routes, options) => {
+    providerOptions = options;
+    return [{ id: 'api.a.example:443', kind: 'provider', host: 'api.a.example', port: 443, label: 'Provider A', models: [] }];
+  };
+  let config = {}, applied;
+  const service = createNetworkSettings({ loadConfig: () => config, saveConfig: value => Object.assign(config, value),
+    sessions: () => ({ fromPartition: () => ({ setProxy: async () => {}, resolveProxy: async () => 'PROXY localhost:7890' }), defaultSession: { setProxy: async () => {} } }),
+    applyEnvironment: env => { applied = env; }, createFallback: async () => ({ url: 'http://127.0.0.1:12345', close() {} }),
+    providerTargetsImpl, subscriptionEngines: () => ['codex'],
+    configuredSubscriptionEngines: () => { throw new Error('Auto must not use configured-only subscriptions'); },
+    probeImpl: async targets => { probed = targets; return probeStub({ direct: true, proxy: true })(targets); } });
+  const result = await service.save({ mode: 'auto' });
+  assert.equal(providerOptions, undefined);
+  assert.deepEqual(probed.map(target => target.id), ['api.a.example:443', 'subscription:codex']);
+  assert.equal(result.directFirst, true);
+  assert.equal(applied.HTTPS_PROXY, 'http://127.0.0.1:12345');
   service.close();
 });
 test('auto falls back to the system proxy when a direct connection fails', async () => {

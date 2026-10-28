@@ -61,7 +61,7 @@ async function healthCheck(proxyUrl, { url = 'https://api.github.com', timeout =
 }
 function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironment, onHealthChange = () => {}, probeUrl = 'https://chatgpt.com',
   healthCheckImpl = healthCheck, createFallback = require('./network-fallback').createFallbackProxy,
-  loadRoutes = () => ({ providers: [] }), providerTargetsImpl = providerTargets, subscriptionEngines = () => [], probeImpl = probeTargets }) {
+  loadRoutes = () => ({ providers: [] }), providerTargetsImpl = providerTargets, subscriptionEngines = () => [], configuredSubscriptionEngines = subscriptionEngines, probeImpl = probeTargets }) {
   let detected = { url: '', unsupported: false }, error = '', queue = Promise.resolve(), degraded = false, monitor = null, closed = false;
   const bridges = [];
   // Whether the live transport is the direct-first bridge, or the real system
@@ -84,15 +84,14 @@ function createNetworkSettings({ loadConfig, saveConfig, sessions, applyEnvironm
   const state = () => ({ mode: degraded ? 'prefer-direct' : mode(), configured: mode() === 'prefer-direct' ? 'auto' : mode(),
     degraded, directFirst, autoFallback: mode() === 'auto' && !directFirst && !degraded,
     detectedUrl: detected.url, unsupported: detected.unsupported, error });
-  // A full connectivity test covers every enabled provider host and the
-  // subscription CLIs that are signed in. It is read-only: the result tells the
-  // settings page what to show and whether "auto" can safely take the
-  // direct-first bridge, and it never changes the stored choice on its own.
+  // The explicit test covers every configured provider host and added
+  // subscription, including disabled and signed-out entries. Automatic mode
+  // keeps using only live routes so an unused entry cannot force the proxy.
   async function testConnectivity() {
     if (closed) return { ok: false, error: 'Network settings are closed' };
     await detectProxy();
-    const engines = subscriptionEngines();
-    const targets = [...providerTargetsImpl(loadRoutes()), ...subscriptionTargets(engines)];
+    const engines = configuredSubscriptionEngines();
+    const targets = [...providerTargetsImpl(loadRoutes(), { includeConfigured: true }), ...subscriptionTargets(engines)];
     const results = targets.length ? await probeImpl(targets, { proxyUrl: detected.url }) : [];
     const summary = summarize(results);
     return { ok: true, at: new Date().toISOString(), detectedUrl: detected.url, unsupported: detected.unsupported,

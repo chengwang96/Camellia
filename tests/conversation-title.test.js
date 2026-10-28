@@ -6,7 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createConversationTitles, createTitleRequester, titleCandidates, titleErrorKind, TitleRequestError,
   MAX_TITLE_MODELS, MAX_OUTPUT_TOKENS, MAX_MESSAGE_CHARS, AUXILIARY_HEADER } = require('../src/main/conversation-title');
-const { shortTitle, messageTitle } = require('../src/shared/conversation-title');
+const { shortTitle, messageTitle, MAX_TITLE_CHARS } = require('../src/shared/conversation-title');
 
 const router = (providers, enabled = true) => ({ enabled, providers });
 const provider = (id, models, { enabled = true, keys = [{ id: 'k', enabled: true }] } = {}) => ({ id, enabled, keys, models: models.map(model => ({ id: model })) });
@@ -88,6 +88,14 @@ test('an empty answer or exhausted candidates returns no title instead of throwi
   await assert.doesNotReject(async () => assert.equal(await failing.generate('message', 'm'), ''));
 });
 
+test('no healthy route keeps the provisional title and leaves a diagnostic log', async () => {
+  const logs = [];
+  const titles = createConversationTitles({ candidates: () => [], log: message => logs.push(message),
+    request: async () => assert.fail('an unavailable router must not be called') });
+  assert.equal(await titles.generate('message', 'm'), '');
+  assert.deepEqual(logs, ['conversation title: no healthy API route is available; keeping the provisional title']);
+});
+
 test('an answer truncated by the output cap is retried without a cap', async () => {
   const bodies = [];
   const titles = createConversationTitles({ candidates: () => ['reasoner'], delay: async () => {}, normalize: shortTitle,
@@ -124,14 +132,17 @@ test('status codes map to the retry decision that actually helps', () => {
 });
 
 test('generated titles share the short-title normalization used everywhere else', () => {
-  assert.equal(shortTitle('  "修复会话默认标题生成逻辑。"  '), '修复会话默认标题生成');
-  assert.ok([...shortTitle('a'.repeat(40))].length <= 10);
+  assert.equal(shortTitle('  "修复会话默认标题生成逻辑。"  '), '修复会话默认标题生成逻辑');
+  assert.equal(shortTitle('First visible request'), 'First visible');
+  assert.ok([...shortTitle('a'.repeat(40))].length <= MAX_TITLE_CHARS);
 });
 
 test('provisional titles use the visible topic, skip empty lines and count Unicode characters', () => {
   assert.equal(messageTitle('\n\n请帮我修复远程会话命名失败\nMore context'), '修复远程会话命名失败');
-  assert.equal(messageTitle('Could you fix naming failures?'), 'fix naming');
-  assert.equal(messageTitle('😀'.repeat(12)), '😀'.repeat(10));
+  assert.equal(messageTitle('为什么 grok 不能聊天'), 'grok 不能聊天');
+  assert.equal(messageTitle('检查问题，我们是用什么逻辑来生成标题的，我们应该尽可能生成一个合理的标题，不然用户不方便找会话'), '检查问题，我们是用什么逻辑来生成标题的');
+  assert.equal(messageTitle('Could you fix naming failures?'), 'fix naming failures');
+  assert.equal(messageTitle('😀'.repeat(12)), '😀'.repeat(12));
   assert.equal(messageTitle('   '), '');
 });
 

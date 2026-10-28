@@ -92,7 +92,7 @@ async function main() {
         addedConversation = manager.create('codex', 'fixture', listSubscriptions >= 3 ? 'Legacy desktop conversation' : 'Desktop-created conversation');
       } else {
         assert.ok(addedConversation);
-        manager.purge(addedConversation.id); addedConversation = undefined;
+        await manager.purge(addedConversation.id); addedConversation = undefined;
       }
       listChanges++;
       gateway.json(response, 200, { ok: true });

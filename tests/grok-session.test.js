@@ -45,6 +45,27 @@ test('Grok subscription sessions apply native MCP settings without adding an API
   assert.equal(spec.env.HTTPS_PROXY, 'http://127.0.0.1:7897/');
 });
 
+test('Grok sessions honor the central network transport over legacy proxy settings', t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-grok-network-'));
+  t.after(() => removeTree(home));
+  const { networkEnvironment } = require('../src/main/network-settings');
+  const route = { baseUrl: 'http://127.0.0.1:17890', authToken: 'proxy-managed' };
+  const automatic = networkEnvironment({ https_proxy: 'http://old.invalid:1234' }, {
+    mode: 'auto', url: 'http://127.0.0.1:54321/', subscriptionProxy: 'http://127.0.0.1:7890/' });
+  const api = grokSpawnSpec({ home: path.join(home, 'api'), model: 'model-exact', route, env: automatic });
+  assert.equal(api.env.HTTPS_PROXY, 'http://127.0.0.1:54321/');
+  const subscription = grokSpawnSpec({ home: path.join(home, 'subscription'), model: 'grok-4.7', connection: 'subscription',
+    route: null, env: automatic, proxyUrl: 'http://legacy.invalid:7897' });
+  assert.equal(subscription.env.HTTP_PROXY, 'http://127.0.0.1:7890/');
+  assert.equal(subscription.env.HTTPS_PROXY, 'http://127.0.0.1:7890/');
+  assert.equal(subscription.env.NO_PROXY, 'localhost,127.0.0.1,::1');
+  const system = networkEnvironment({}, { mode: 'system', url: 'http://127.0.0.1:7890/' });
+  const systemSubscription = grokSpawnSpec({ home: path.join(home, 'system'), model: 'grok-4.7', connection: 'subscription',
+    route: null, env: system, proxyUrl: '' });
+  assert.equal(systemSubscription.env.HTTPS_PROXY, 'http://127.0.0.1:7890/');
+  assert.equal(systemSubscription.env.NO_PROXY, 'localhost,127.0.0.1,::1');
+});
+
 test('Grok opens and resumes native sessions with authentication, model, effort and permission', async t => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'camellia-grok-session-'));
   t.after(() => removeTree(home));

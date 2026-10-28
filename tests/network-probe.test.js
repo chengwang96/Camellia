@@ -27,11 +27,19 @@ test('provider targets are grouped per host and skip disabled providers', () => 
   assert.equal(targets.filter(target => target.id === 'api.b.example:443').length, 1);
 });
 
-test('subscription targets only cover signed-in engines', () => {
+test('full connectivity targets include disabled providers and providers without an enabled key', () => {
+  const targets = providerTargets(config, { includeConfigured: true });
+  assert.deepEqual(targets.map(target => target.id).sort(),
+    ['api.a.example:443', 'api.b.example:443', 'nokey.example:443', 'off.example:443']);
+  assert.deepEqual(targets.find(target => target.id === 'off.example:443').models, ['off-1']);
+  assert.deepEqual(targets.find(target => target.id === 'nokey.example:443').models, ['nokey-1']);
+});
+
+test('subscription targets cover every supported account host', () => {
   assert.deepEqual(subscriptionTargets([]), []);
-  const targets = subscriptionTargets(['codex', 'antigravity']);
+  const targets = subscriptionTargets(['codex', 'antigravity', 'grok']);
   assert.deepEqual(targets.map(target => [target.engine, target.host]),
-    [['codex', 'chatgpt.com'], ['antigravity', 'cloudcode-pa.googleapis.com']]);
+    [['codex', 'chatgpt.com'], ['antigravity', 'cloudcode-pa.googleapis.com'], ['grok', 'cli-chat-proxy.grok.com']]);
 });
 
 test('a target reports direct and proxy reachability independently', async () => {

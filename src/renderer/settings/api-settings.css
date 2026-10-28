@@ -45,28 +45,8 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 .status-dot { display: inline-block; width: 6px; height: 6px; background: var(--dsw-alias-label-tertiary); border-radius: 50%; margin: 0 6px 2px 0; }
 .status-dot.online { background: var(--dsw-alias-state-success-primary); }
 .settings-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-#mobilePage .mobile-section { padding: 24px 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
-#mobilePage .mobile-section:first-child { padding-top: 0; }
-#mobilePage .mobile-connection-card, #mobilePage .mobile-pair-card { padding: 20px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-layer-1); margin-bottom: 16px; }
-#mobilePage .mobile-connection-card { border-left: 3px solid var(--dsw-alias-state-success-primary); }
-#mobilePage .mobile-pair-card { border-left: 3px solid var(--dsw-static-deepseek-500); }
-#mobilePage .mobile-section:first-child { padding-top: 20px; }
-#mobilePage .mobile-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
-#mobilePage .mobile-heading h2 { margin-bottom: 0; }
-#mobile-status { color: var(--dsw-alias-label-tertiary); }
-#mobile-status.online { color: var(--dsw-alias-state-success-primary); }
-#mobilePage p, #mobilePage .name { overflow-wrap: anywhere; }
-#mobilePage .hint { margin: 12px 0; }
-#mobilePage .mobile-address, #mobile-code { font: var(--f-code); overflow-wrap: anywhere; }
+#mobile-code { font: var(--f-code); overflow-wrap: anywhere; }
 #mobilePage #mobile-invitation code { display: block; margin-top: 10px; }
-#mobilePage .mobile-connection-row, #mobilePage .name-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-#mobilePage .mobile-connection-row { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--dsw-alias-bg-soft); }
-#mobilePage .mobile-address { flex: 1 1 220px; min-width: 0; margin: 0; }
-#mobilePage .name-row input { flex: 1 1 160px; width: auto; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 8px 12px; }
-#mobilePage .mobile-heading > button, #mobilePage .mobile-connection-row > button, #mobilePage .name-row > button { flex: 0 0 auto; white-space: nowrap; }
-#mobilePage .mobile-help { margin-top: 16px; }
-#mobilePage .mobile-help summary { width: fit-content; cursor: pointer; color: var(--dsw-alias-label-secondary); font: var(--f-xxs-12); }
-#mobilePage .mobile-help summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-500); outline-offset: 4px; }
 #mobile-invitation { margin-top: 16px; padding: 16px; border-radius: 12px; background: var(--dsw-alias-bg-soft); }
 #mobilePage .mobile-pair-layout { display: grid; grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); align-items: center; gap: 24px; }
 #mobilePage .mobile-pair-details { min-width: 0; }
@@ -77,13 +57,9 @@ small { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1
 #mobilePage .mobile-pair-success { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 14px 16px; border-radius: 12px; background: var(--dsw-alias-state-success-tertiary); color: var(--dsw-alias-label-primary); }
 #mobilePage .mobile-pair-success > div { display: grid; flex: 1; gap: 3px; min-width: 0; }
 #mobilePage .mobile-success-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--dsw-alias-state-success-primary); color: #fff; font-weight: 700; }
-#mobilePage .device { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 12px; padding: 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }
-#mobilePage .device-icon { flex: 0 0 34px; width: 34px; height: 34px; padding: 7px; border-radius: 9px; background: var(--dsw-alias-bg-soft); fill: none; stroke: var(--dsw-alias-label-secondary); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-#mobilePage .name { flex: 1 1 180px; min-width: 0; }
 #mobilePage .device small { display: block; margin-top: 4px; color: var(--dsw-alias-label-tertiary); }
 #mobilePage .device-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 5px; }
 #mobilePage .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
-#mobilePage button { white-space: normal; }
 #mobile-error { color: var(--dsw-alias-state-error-primary); }
 .page-head { padding: 30px 32px 22px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .page-head p { font-size: 13px; color: var(--dsw-alias-label-secondary); }
@@ -473,6 +449,7 @@ dialog > button { display: block; margin: 20px 0 0 auto; }
 .network-detection button { flex: 0 0 auto; }
 #networkPage { max-width: 1240px; }
 #networkMode { flex: 0 0 auto; width: auto; min-width: 0; }
+#networkMode option { white-space: nowrap; overflow-wrap: normal; }
 .connectivity-section { padding: 22px 0 24px; }
 .connectivity-section .section-head { align-items: flex-start; margin-bottom: 6px; }
 .connectivity-section .section-head > h2 { margin-top: 6px; }

@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="../shared/engine-brand.css">
 <link rel="stylesheet" href="./settings-groups.css">
 <link rel="stylesheet" href="../remote/diagnostics.css">
+<link rel="stylesheet" href="./device-settings.css">
 </head><body>
 <aside class="settings-nav">
   <div class="settings-brand"><img src="../../../assets/icon-256.png" alt="Camellia cat" width="36" height="36"><span>Camellia<small data-i18n>Settings</small></span></div>
@@ -104,7 +105,6 @@
     <section id="modelsPage" class="page" hidden>
       <section id="webToolsSection" class="section web-tools-section" aria-labelledby="webToolsTitle">
         <div class="setting-row"><div><h2 id="webToolsTitle" data-i18n>Web search and fetch</h2><p id="webToolsHint" class="hint" aria-live="polite"></p></div><select id="webToolsProvider" disabled aria-label="Web search and fetch" aria-describedby="webToolsHint" data-i18n-attrs="aria-label"><option value="native" data-i18n>Engine default</option></select></div>
-        <p class="hint" id="webToolsPrice" hidden data-i18n>Search and fetch each cost ¥5.00 per 1,000 successful requests. Model tokens are billed separately.</p>
         <button id="webToolsAddApi" type="button" hidden data-i18n>Add DeepSeek API key</button>
       </section>
       <section class="section" aria-labelledby="multiKeyRoutingTitle">
@@ -131,12 +131,11 @@
       <div class="setting-row"><div><h2 data-i18n>System proxy</h2><p class="hint" id="systemProxyStatus" role="status"></p></div><button id="detectSystemProxy" type="button" data-i18n>Detect system proxy</button></div>
       <section id="networkWebToolsSection" class="section web-tools-section" aria-labelledby="networkWebToolsTitle">
         <div class="setting-row"><div><h2 id="networkWebToolsTitle" data-i18n>Web search and fetch</h2><p id="networkWebToolsHint" class="hint" aria-live="polite"></p></div><select id="networkWebToolsProvider" disabled aria-label="Web search and fetch" aria-describedby="networkWebToolsHint" data-i18n-attrs="aria-label"><option value="native" data-i18n>Engine default</option></select></div>
-        <p class="hint" id="networkWebToolsPrice" hidden data-i18n>Search and fetch each cost ¥5.00 per 1,000 successful requests. Model tokens are billed separately.</p>
         <button id="networkWebToolsAddApi" type="button" hidden data-i18n>Add DeepSeek API key</button>
       </section>
       <section class="connectivity-section">
         <div class="section-head"><h2 data-i18n>Connectivity test</h2><div class="toolbar-actions"><button id="networkTest" class="primary" data-i18n>Test all connections</button></div></div>
-        <p class="hint" data-i18n>Tests every enabled provider host and signed-in subscription through both a direct connection and the detected proxy. Results are read-only and never change your connection mode.</p>
+        <p class="hint" data-i18n>Tests every configured provider host and added subscription, including disabled and signed-out entries, through both a direct connection and the detected proxy. Results are read-only and never change your connection mode.</p>
         <div id="networkResults" class="network-results"></div>
       </section>
     </section>
@@ -146,25 +145,23 @@
       <div id="archivedList"></div>
     </section>
     <section id="devicesPage" class="page" hidden>
-      <p class="hint" data-i18n>Files, conversations and engines stay on the selected server.</p>
       <div id="cliDevicesRoot"></div>
     </section>
-    <section id="mobilePage" class="page" hidden>
-      <section class="mobile-section mobile-connection-card" aria-labelledby="mobile-connectionTitle">
-        <div class="mobile-heading"><h2 id="mobile-connectionTitle" data-copy="connection">连接</h2><span id="mobile-status" role="status"></span></div>
-        <div class="mobile-connection-row"><p id="mobile-address" class="mobile-address"></p><button id="mobile-copyAddress" data-copy="copyAddress">复制地址</button><button id="mobile-toggle" class="primary" disabled>…</button><span id="mobile-copyStatus" class="hint" role="status" aria-live="polite"></span></div>
+    <section id="mobilePage" class="page device-settings" hidden>
+      <section class="device-section device-card device-connection" aria-labelledby="mobile-connectionTitle">
+        <div class="device-heading"><h2 id="mobile-connectionTitle" data-copy="connection">连接</h2><span id="mobile-status" class="device-status" role="status"></span></div>
+        <div class="device-toolbar"><p id="mobile-address" class="device-address"></p><button id="mobile-copyAddress" data-copy="copyAddress">复制地址</button><button id="mobile-toggle" class="primary" disabled>…</button><span id="mobile-copyStatus" class="hint" role="status" aria-live="polite"></span></div>
         <div id="mobile-networkControls" hidden><p id="mobile-networkState" class="hint" role="status"></p><button id="mobile-login" hidden data-copy="login">登录 Tailscale</button></div>
-        <details class="mobile-help">
+        <details class="mobile-help device-help">
           <summary data-copy="connectionHelp">连接与权限说明</summary>
           <p class="hint" data-copy="network"></p><p id="mobile-lifetime" class="hint"></p>
           <p class="hint" data-copy="footer"></p>
           <button id="mobile-logout" hidden data-copy="logout">退出 Tailscale 登录</button>
         </details>
       </section>
-      <section class="mobile-section mobile-pair-card" aria-labelledby="mobile-pairTitle">
-        <div class="mobile-heading"><h2 id="mobile-pairTitle" data-copy="pair">配对设备</h2><button id="mobile-invite" disabled data-copy="generate">生成配对码</button></div>
-        <label for="mobile-deviceName" data-copy="deviceName">本机名称</label>
-        <div class="name-row"><input id="mobile-deviceName" maxlength="80" autocomplete="off"><button id="mobile-saveDeviceName" data-copy="deviceNameSave">保存名称</button></div>
+      <section class="device-section device-card device-pair" aria-labelledby="mobile-pairTitle">
+        <div class="device-heading"><h2 id="mobile-pairTitle" data-copy="pair">配对设备</h2><button id="mobile-invite" disabled data-copy="generate">生成配对码</button></div>
+        <div class="device-name-row"><label for="mobile-deviceName" data-copy="deviceName">本机名称</label><input id="mobile-deviceName" maxlength="80" autocomplete="off"><button id="mobile-saveDeviceName" data-copy="deviceNameSave">保存名称</button></div>
         <p class="hint" data-copy="deviceNameHint"></p><p id="mobile-deviceNameStatus" class="hint" role="status"></p>
         <div id="mobile-invitation" hidden><div class="mobile-pair-layout"><div id="mobile-qr" class="qr"></div><div class="mobile-pair-details"><code id="mobile-code"></code><p id="mobile-expires" class="hint" role="timer"></p><p class="hint" data-copy="scanHint"></p><p class="hint" data-copy="scanFallback"></p></div></div></div>
         <button id="mobile-refreshInvite" hidden data-copy="refreshCode">刷新二维码</button>
@@ -173,8 +170,8 @@
         <p id="mobile-pairFailed" class="hint" role="status" hidden data-copy="pairFailed">配对请求已结束，请重新生成二维码。</p>
         <div id="mobile-pending"></div>
       </section>
-      <section class="mobile-section" aria-labelledby="mobile-devicesTitle"><h2 id="mobile-devicesTitle" data-copy="devices">已授权设备</h2><div id="mobile-devices"></div></section>
-      <p id="mobile-error" role="alert"></p>
+      <section class="device-section" aria-labelledby="mobile-devicesTitle"><div class="device-heading"><h2 id="mobile-devicesTitle" data-copy="devices">已授权设备</h2></div><div id="mobile-devices"></div></section>
+      <p id="mobile-error" class="device-feedback" role="alert"></p>
       <button id="mobile-retry" hidden data-copy="retry">重试</button>
       <button id="mobile-openPanel" hidden data-copy="openPanel">打开独立手机访问面板</button>
     </section>

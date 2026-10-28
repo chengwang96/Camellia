@@ -119,7 +119,9 @@
       ['model-sessions', [() => get('conversationSessionTtl')?.closest('.section')]],
     ]);
     arrange('networkPage', [
-      ['connection-mode', ['#networkMode', '#systemProxyStatus']], ['connectivity-test', ['.connectivity-section']],
+      ['connection-mode', ['#networkMode', '#systemProxyStatus']],
+      ['web-tools', ['#networkWebToolsSection']],
+      ['connectivity-test', ['.connectivity-section']],
     ]);
     arrange('providersPage', [
       ['provider-overview', ['#providersHeading', '#providers']], ['provider-editor', ['#editor']],
@@ -132,10 +134,7 @@
       group(usage, 'usage-trends', range(usage, 'usage-trends', get('usageMetric')?.closest('.section-head'), get('usageChartNotes'), true));
       arrange('usagePage', [['usage-details', [() => get('exportUsage')?.closest('.section-head'), '.table-scroll']]]);
     }
-    arrange('mobilePage', [
-      ['mobile-connection', ['.mobile-connection-card']], ['device-pairing', ['.mobile-pair-card']],
-      ['authorized-devices', [() => get('mobile-devices')?.closest('.mobile-section')]],
-    ]);
+    // Device pages own their shared card/list layout in device-settings.css.
     arrange('subscriptionAccounts', [
       ['chatgpt-accounts', ['#codexAccountPanel']], ['kimi-accounts', ['#kimiAccountPanel']], ['grok-accounts', ['#grokAccountPanel']], ['google-accounts', ['#googleAccountPanel']],
     ]);

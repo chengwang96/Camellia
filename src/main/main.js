@@ -521,18 +521,22 @@ function subscriptionUsage() {
   });
 }
 let networkSettingsService, networkDispatcher;
-// Only the subscription CLIs that are actually signed in can use the proxy
-// environment, so the connectivity test lists them instead of probing hosts a
-// user has not connected yet.
-function activeSubscriptionEngines() {
+// Account summaries use the same signed-in rules as the subscription UI. A
+// stored or previously verified profile also counts as added when it is
+// currently signed out; an implicit empty default does not create a target.
+function subscriptionEngines(includeConfigured = false) {
+  const configured = loadConfig().subscriptionAccounts || {};
   const engines = [];
-  try {
-    const states = kimiAccount.states();
-    if (Object.values(states).some(state => state?.account)) engines.push('kimi');
-  } catch { }
-  try { if (Object.values(grokAccount.states()).some(state => state?.account)) engines.push('grok'); } catch { }
-  try { if (codex.accountState().accounts.some(account => account.signedIn)) engines.push('codex'); } catch { }
-  try { if (antigravity.handlers['account-state']().account) engines.push('antigravity'); } catch { }
+  const add = (engine, state) => {
+    const accounts = Array.isArray(state?.accounts) ? state.accounts : [];
+    const stored = Array.isArray(configured[engine]) && configured[engine].length > 0;
+    const previous = accounts.some(account => account.stale || account.verifiedAt);
+    if (accounts.some(account => account.signedIn) || includeConfigured && (stored || previous)) engines.push(engine);
+  };
+  try { add('kimi', kimiAccount.state()); } catch { }
+  try { add('grok', grokAccount.state()); } catch { }
+  try { add('codex', codex.accountState()); } catch { }
+  try { add('antigravity', antigravity.handlers['account-state']()); } catch { }
   return engines;
 }
 function networkSettings() {
@@ -544,7 +548,8 @@ function networkSettings() {
         if (!window.isDestroyed()) window.webContents.send('dsh:network-health', payload);
       }
     },
-    subscriptionEngines: activeSubscriptionEngines,
+    subscriptionEngines: () => subscriptionEngines(),
+    configuredSubscriptionEngines: () => subscriptionEngines(true),
     loadRoutes: readOllamaProxyConfig,
     sessions: () => require('electron').session,
     applyEnvironment: env => {

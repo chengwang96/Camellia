@@ -1,0 +1,45 @@
+/* Mobile access and CLI connections share the same settings layout. */
+.device-settings { display: grid; gap: 16px; min-width: 0; }
+.device-settings .device-section { min-width: 0; margin: 0; }
+.device-settings .device-card { padding: 20px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-layer-1); }
+.device-settings .device-connection { border-left: 3px solid var(--dsw-alias-border-l3); }
+.device-settings .device-connection:has(.device-status.online) { border-left-color: var(--dsw-alias-state-success-primary); }
+.device-settings .device-pair { border-left: 3px solid var(--dsw-static-deepseek-500); }
+.device-settings .device-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.device-settings h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.device-settings p { overflow-wrap: anywhere; }
+.device-settings .hint { margin: 10px 0 0; font-size: 13px; line-height: 1.6; }
+.device-settings .hint:empty { display: none; }
+.device-settings .device-status { color: var(--dsw-alias-label-tertiary); }
+.device-settings .device-status.online { color: var(--dsw-alias-state-success-primary); }
+.device-settings .device-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--dsw-alias-bg-soft); }
+.device-settings .device-address { font: var(--f-code); overflow-wrap: anywhere; }
+.device-settings .device-toolbar > .device-address { flex: 1 1 220px; min-width: 0; margin: 0; }
+.device-settings .device-toolbar > [role="status"]:empty { display: none; }
+.device-settings button { min-height: 34px; padding: 6px 14px; border-radius: 18px; background: transparent; white-space: nowrap; }
+.device-settings button.primary { background: var(--dsw-static-deepseek-500); color: #fff; border-color: transparent; }
+.device-settings button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.device-settings button.primary:hover { background: var(--dsw-static-deepseek-400); }
+.device-settings button.danger { color: var(--dsw-alias-state-error-primary); }
+.device-settings .device-help { margin-top: 14px; }
+.device-settings .device-help summary { width: fit-content; cursor: pointer; color: var(--dsw-alias-label-secondary); font: var(--f-xxs-12); }
+.device-settings .device-help button { margin-top: 10px; }
+.device-settings .device-name-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
+.device-settings .device-name-row label { margin: 0; }
+.device-settings .device-name-row input { flex: 1 1 160px; width: auto; padding: 8px 12px; }
+.device-settings .device-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 12px; padding: 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }
+.device-settings .device-icon { flex: 0 0 34px; width: 34px; height: 34px; padding: 7px; border-radius: 9px; background: var(--dsw-alias-bg-soft); fill: none; stroke: var(--dsw-alias-label-secondary); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.device-settings .device-info { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.device-settings .device-info strong { font-weight: 500; }
+.device-settings .device-meta { margin: 5px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; }
+.device-settings .device-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; max-width: 100%; }
+.device-settings .device-field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.device-settings .device-field select { width: 180px; }
+.device-settings .device-feedback:empty { display: none; }
+.device-settings button:focus-visible, .device-settings input:focus-visible, .device-settings select:focus-visible, .device-settings summary:focus-visible { outline: 2px solid var(--dsw-static-deepseek-400); outline-offset: 3px; }
+.device-settings dialog { padding: 24px; }
+@media (max-width: 760px) {
+  .device-settings .device-card { padding: 16px; }
+  .device-settings .device-row { gap: 12px; }
+  .device-settings .device-actions { flex: 1 1 100%; }
+}

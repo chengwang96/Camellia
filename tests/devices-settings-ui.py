@@ -52,13 +52,13 @@ with sync_playwright() as playwright:
     expect(page.locator('#cli-servers select option[value="grok"]')).to_have_text('Grok Build')
     assert page.evaluate("calls.filter(call => call.action === 'preferences').at(-1).payload.defaultHarness") == 'grok'
 
-    # Scoped styles: settings controls keep the settings look, device controls use the device look.
+    # Embedded connection controls share the settings look without changing other controls.
     assert page.evaluate("getComputedStyle(document.getElementById('outsideButton')).borderRadius") == "18px"
     assert page.evaluate("getComputedStyle(document.getElementById('outsideButton')).padding") == "6px 14px"
     assert page.evaluate("getComputedStyle(document.getElementById('outsideDialog')).padding") == "24px"
-    assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).borderRadius") == "16px"
-    assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).padding") == "8px 13px"
-    assert page.evaluate("getComputedStyle(document.getElementById('cli-pairDialog')).padding") == "26px"
+    assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).borderRadius") == "18px"
+    assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).padding") == "6px 14px"
+    assert page.evaluate("getComputedStyle(document.getElementById('cli-pairDialog')).padding") == "24px"
     page.evaluate("window.networkState = 'NeedsLogin'")
     page.locator('#cli-refresh').click()
     page.locator('#cli-add').click()

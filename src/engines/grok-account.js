@@ -26,7 +26,7 @@ function createGrokAccount({ home, runtime, ensureRuntime, environment = () => p
   let login = null, refreshing = null, signingOut = null, quotaPending = null, closed = false;
   const clients = new Set();
   const empty = () => ({ account: null, models: [], verifiedAt: null, usage: null });
-  const accountEnvironment = () => grokEnvironment(home, environment(), getProxyUrl());
+  const accountEnvironment = () => grokEnvironment(home, environment(), getProxyUrl(), { subscription: true });
   function state() {
     return { ...saved, installed: Boolean(runtime()), loginPending: Boolean(login), refreshing: Boolean(refreshing), signingOut: Boolean(signingOut),
       login: login?.details || null, usage: { ...saved.usage, refreshing: Boolean(quotaPending) } };

@@ -33,7 +33,17 @@ function fixture(t, overrides = {}) {
   function finish(engine, subtype = 'success', text = 'Answer from ' + engine, session = sessions[engine]) { session.running = false;
     manager.capture(engine, { type: 'result', subtype, is_error: subtype === 'error', result: text, session_id: session.sessionId, runId: session.gen });
   }
-  const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); };
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r));
+    // Verifier completion includes asynchronous deletion of its saved files.
+    // Event-loop turns alone do not guarantee that disk I/O has completed.
+    if (manager.deleting.size) {
+      const deadline = Date.now() + 5000;
+      while (manager.deleting.size && Date.now() < deadline) await new Promise(r => setTimeout(r, 1));
+      assert.equal(manager.deleting.size, 0, 'conversation deletion did not finish');
+      for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r));
+    }
+  };
   return { manager, args, root, sent, events, finish, drivers, flush, get goal() { return [...manager.goals.values()].at(-1); }, setConfig: c => { config = c; },
     restart: () => { manager = new SharedConversations(args); return manager; } };
 }
@@ -2245,7 +2255,7 @@ test('sidebar fork copies revised history without discarded turns', async contex
   assert.equal(harness.sent.length, 0);
 });
 
-for (const mode of ['sidebar', 'tool']) for (const first of ['source', 'fork']) test(`${mode} fork retains shared handoffs after deleting ${first}, including after restart`, context => {
+for (const mode of ['sidebar', 'tool']) for (const first of ['source', 'fork']) test(`${mode} fork retains shared handoffs after deleting ${first}, including after restart`, async context => {
   const harness = fixture(context, { conversationModels: () => [{ id: 'fixture', thinking: [] }] });
   let manager = harness.manager;
   const source = manager.create('claude', null, 'Original');
@@ -2264,7 +2274,7 @@ for (const mode of ['sidebar', 'tool']) for (const first of ['source', 'fork']) 
   const kept = first === 'source' ? fork.id : source.id;
   manager.workspaces.archiveSession(kept, true);
   manager = harness.restart();
-  manager.purge(first === 'source' ? source.id : fork.id);
+  await manager.purge(first === 'source' ? source.id : fork.id);
   assert.equal(fs.readFileSync(file, 'utf8'), 'Important handoff');
   assert.equal(fs.readFileSync(summary, 'utf8'), 'Important compacted context');
   assert.deepEqual([...manager.handoffFiles(manager.get(kept))].sort(), [file, summary].sort());
@@ -2281,7 +2291,7 @@ for (const mode of ['sidebar', 'tool']) for (const first of ['source', 'fork']) 
   assert.equal(open(summary).ok, true);
   assert.equal(open(path.join(harness.root, 'unrelated.md')).ok, false);
   assert.deepEqual(opened, [file, summary]);
-  manager.purge(kept);
+  await manager.purge(kept);
   assert.equal(fs.existsSync(file), false);
   assert.equal(fs.existsSync(summary), false);
 });
@@ -2354,7 +2364,7 @@ for (const engine of ENGINES) test(engine + ' conversation tools create, fork, c
   assert.equal(call('send', { ...sendArgs, prompt: 'Different' }).ok, false);
   assert.equal(call('send', { ...sendArgs, request_id: 'duplicate' }).ok, false);
   assert.equal(call('configure', { conversation_id: child.id, model: 'fixture' }).ok, false);
-  assert.throws(() => manager.purge(child.id), /Stop/);
+  await assert.rejects(manager.purge(child.id), /Stop/);
   await harness.flush();
   const childSession = harness.sent.at(-1).session;
   assert.equal(childSession.opts.sessionId, undefined);
@@ -2553,7 +2563,7 @@ for (const mode of ['cancel', 'close', 'failure', 'compact-cancel', 'compact-clo
   assert.equal(manager.busy(child.id), true);
   await assert.rejects(manager.send('codex', { sessionId: child.id, prompt: 'Race' }), /starting/);
   assert.equal(call('configure', { conversation_id: child.id, thinking: '' }).ok, false);
-  assert.throws(() => manager.purge(child.id), /Stop/);
+  await assert.rejects(manager.purge(child.id), /Stop/);
   if (mode.endsWith('close')) manager.closeGoalTools();
   else if (mode !== 'failure') await call('cancel', { conversation_id: child.id });
   if (mode === 'failure') rejectStart(new Error('Runtime unavailable'));
@@ -3588,15 +3598,15 @@ test('usage survives reloading shared conversations without mixing per-call and 
   }
 });
 
-test('new conversations use the default model to generate a title of at most ten characters', async t => {
+test('new conversations use the default model to generate a title of at most twenty characters', async t => {
   const calls = [];
   const f = fixture(t, { generateTitle: async (message, model) => { calls.push({ message, model }); return '  修复会话默认标题生成逻辑。  '; } });
   const run = await f.manager.send('claude', { prompt: '请不要直接使用这条消息作为会话标题' });
   await f.flush();
   assert.deepEqual(calls, [{ message: '请不要直接使用这条消息作为会话标题', model: 'fixture' }]);
-  assert.equal(f.manager.get(run.sessionId).title, '修复会话默认标题生成');
-  assert.ok([...f.manager.get(run.sessionId).title].length <= 10);
-  assert.ok(f.events.some(event => event.type === 'conversation:title' && event.title === '修复会话默认标题生成'));
+  assert.equal(f.manager.get(run.sessionId).title, '修复会话默认标题生成逻辑');
+  assert.ok([...f.manager.get(run.sessionId).title].length <= 20);
+  assert.ok(f.events.some(event => event.type === 'conversation:title' && event.title === '修复会话默认标题生成逻辑'));
 });
 
 test('pre-created conversations generate a title only for their first user message', async t => {
@@ -3624,7 +3634,7 @@ test('unnamed conversations retry naming after restart using the first visible r
     const first = await harness.manager.send(engine, { prompt: 'Native request', displayText: 'First visible request' });
     harness.finish(engine);
     await first.done; await harness.flush();
-    assert.equal(harness.manager.get(first.sessionId).title, 'First visi');
+    assert.equal(harness.manager.get(first.sessionId).title, 'First visible');
     assert.equal(harness.manager.get(first.sessionId).titleSource, 'message');
     const manager = harness.restart();
     const next = await manager.send(engine, { sessionId: first.sessionId, prompt: 'Later request' });
@@ -3720,7 +3730,7 @@ test('a slow title request never delays sending and can improve the provisional 
   const harness = fixture(t, { generateTitle: () => new Promise(resolve => { resolveTitle = resolve; }) });
   const run = await harness.manager.send('codex', { prompt: 'First request about naming' });
   assert.equal(harness.sent.length, 1);
-  assert.equal(harness.manager.get(run.sessionId).title, 'First requ');
+  assert.equal(harness.manager.get(run.sessionId).title, 'First request about');
   resolveTitle('模型生成标题'); await harness.flush();
   assert.equal(harness.manager.get(run.sessionId).title, '模型生成标题');
   assert.equal(harness.manager.get(run.sessionId).titleSource, 'model');
@@ -3749,7 +3759,7 @@ test('a revision during naming discards the old result and names the revised vis
   harness.finish('codex'); await first.done;
   const revision = await harness.manager.send('codex', { sessionId: first.sessionId, editSeq: first.userSeq,
     prompt: 'Corrected request', displayText: 'Updated visible topic' });
-  assert.equal(harness.manager.get(first.sessionId).title, 'Updated vi');
+  assert.equal(harness.manager.get(first.sessionId).title, 'Updated visible');
   assert.deepEqual(calls, ['Original request']);
   resolveTitle('过时标题'); await harness.flush();
   assert.deepEqual(calls, ['Original request', 'Updated visible topic']);
@@ -3780,7 +3790,7 @@ test('a title persistence failure retains the provisional name and can retry lat
     return save(c);
   });
   resolveTitle('生成标题'); await harness.flush();
-  assert.equal(harness.manager.get(run.sessionId).title, 'Visible re');
+  assert.equal(harness.manager.get(run.sessionId).title, 'Visible request');
   assert.equal(harness.manager.get(run.sessionId).titleSource, 'message');
   assert.equal(harness.manager.titleRequests.size, 0);
   assert.equal(harness.events.some(event => event.type === 'conversation:title' && event.title === '生成标题'), false);
@@ -4866,8 +4876,9 @@ test('a content search cannot restore a deleted conversation when its result arr
   const conversation = manager.create('codex', undefined, 'Search lifecycle');
   fs.writeFileSync(path.join(conversation.cwd, 'search.txt'), 'lifecycle search fixture');
   const pending = manager.find(conversation.id, 'inside: lifecycle', { userText: '/find inside: lifecycle' });
-  manager.purge(conversation.id);
+  const deleted = manager.purge(conversation.id);
   await assert.rejects(pending, /Conversation not found|changed/);
+  await deleted;
   assert.equal(manager.items.has(conversation.id), false);
   assert.equal(fs.existsSync(manager.file(conversation.id)), false);
   assert.equal(fs.existsSync(path.join(harness.root, conversation.id + '.jsonl')), false);
@@ -6195,13 +6206,13 @@ test('conversation attachments snapshot the saved transcript and remain availabl
   assert.deepEqual(await manager.command('claude', 'discard-conversation-attachment', { path: unused.path }), { ok: true, discarded: true });
   assert.equal(fs.existsSync(unused.path), false);
   assert.equal(fs.existsSync(unused.fullPath), false);
-  manager.purge(source.id);
+  await manager.purge(source.id);
   assert.equal(fs.existsSync(attachment.path), true);
   assert.equal(fs.existsSync(attachment.fullPath), true);
   const destination = manager.create('claude');
   manager.append(destination, { role: 'user', engine: 'claude', text: 'Continue', attachments: [attachment] });
   assert.deepEqual(await manager.command('claude', 'discard-conversation-attachment', { path: attachment.path }), { ok: true, discarded: false });
-  manager.purge(destination.id);
+  await manager.purge(destination.id);
   assert.equal(fs.existsSync(attachment.path), false);
   assert.equal(fs.existsSync(attachment.fullPath), false);
 });
@@ -6406,6 +6417,25 @@ test('continuation setup failure finishes once and releases the conversation', a
   await f.flush();
   assert.equal(f.events.filter(event => event.type === 'result').length, 1);
   assert.equal(f.manager.busy(run.sessionId), false);
+});
+
+test('full permissions resolve background tool and plan approvals without a renderer while questions still wait', async t => {
+  const f = fixture(t);
+  f.drivers.kimi.settings = () => ({ model: 'fixture', permissionMode: 'full' });
+  const run = await f.manager.send('kimi', { prompt: 'Prepare the implementation plan' });
+  const active = f.manager.active.get(run.sessionId), session = active.session;
+  f.manager.capture('kimi', { type: 'gui:permission', requestId: 'plan-approval', runId: session.gen, toolName: 'ExitPlanMode' });
+  assert.deepEqual(session.permissions, ['plan-approval', true]);
+  assert.equal(active.permissions.size, 0);
+  assert.equal(f.manager.activity(run.sessionId), 'running');
+  assert.equal(f.events.some(event => event.type === 'gui:permission'), false);
+  assert.equal(f.manager.live('kimi', run.sessionId).live.events.some(event => event.type === 'gui:permission'), false);
+  f.manager.capture('kimi', { type: 'gui:permission', requestId: 'question', runId: session.gen,
+    questions: [{ id: 'scope', question: 'Continue with this approach?' }] });
+  assert.equal(active.permissions.size, 1);
+  assert.equal(f.manager.activity(run.sessionId), 'question');
+  assert.deepEqual(session.permissions, ['plan-approval', true]);
+  f.finish('kimi');
 });
 
 test('permissions and live snapshots are addressed by conversation and run, including duplicate request IDs', async t => {

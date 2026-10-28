@@ -5,7 +5,7 @@
   const bridge = window.dshDesktop.camelliaDevices;
   const elements = Object.fromEntries([...root.querySelectorAll('[id]')].map(element => [element.id.slice(4), element]));
   const chinese = Object.fromEntries([...root.querySelectorAll('[data-copy]')].map(element => [element.dataset.copy, element.textContent]));
-  const english = { intro: 'Manage connections here. Open a server from Home to use its independent workbench.', network: 'Local Tailscale connection', networkHint: 'Shares the same Tailscale identity as Mobile access. Sign in once; disconnect or sign out from Mobile access.', login: 'Start / Sign in', browser: 'Open sign-in link', refresh: 'Refresh', servers: 'Paired servers', add: 'Add CLI server', defaultHint: 'One entry per server on Home. The default harness applies to new conversations only.', deviceName: 'Server name', address: 'Tailscale address', clientName: 'This computer name', code: 'One-time pairing code', cancel: 'Cancel', pair: 'Pair', forget: 'Forget server' };
+  const english = { connection: 'Connection', connectionHelp: 'Connection and permissions', pairServer: 'Pair a server', intro: 'Use the server’s one-time pairing code to add a connection. Once paired, open its workbench from Home.', networkHint: 'Shares the same Tailscale identity as Mobile access. Sign in once; disconnect or sign out from Mobile access. Starting the network does not enable mobile access.', boundary: 'Files, conversations and engines run on the selected server.', login: 'Start / Sign in', browser: 'Open sign-in link', refresh: 'Refresh', servers: 'Paired servers', add: 'Add CLI server', defaultHint: 'The default harness applies to new conversations only.', deviceName: 'Server name', address: 'Tailscale address', clientName: 'This computer name', code: 'One-time pairing code', cancel: 'Cancel', pair: 'Pair', forget: 'Forget server' };
   Object.assign(english, { address: 'Tailscale IP', port: 'Port' });
   const harnesses = { codex: 'Codex CLI', claude: 'Claude Code', dsh: 'DeepSeek Harness', kimi: 'Kimi Code', antigravity: 'Antigravity', grok: 'Grok Build' };
   let language = 'zh-CN', busy = false, pending = null, forgotten = null, networkState = '';
@@ -31,20 +31,29 @@
   async function refresh() {
     const state = await call('state'); language = state.language; networkState = state.network.state;
     for (const element of root.querySelectorAll('[data-copy]')) element.textContent = (language === 'en' ? english : chinese)[element.dataset.copy];
-    const labels = { Running: text('已连接', 'Connected'), NeedsLogin: text('需要登录', 'Sign-in required'), Starting: text('启动中', 'Starting'), Stopped: text('未启动', 'Not started'), Error: text('连接出错', 'Connection error') };
+    const labels = { Running: text('已连接', 'Connected'), NeedsLogin: text('需要登录', 'Sign-in required'), NeedsMachineAuth: text('等待设备批准', 'Awaiting device approval'), Starting: text('启动中', 'Starting'), Stopped: text('未启动', 'Not started'), Error: text('连接出错', 'Connection error') };
     elements.networkState.textContent = labels[networkState] || networkState;
+    elements.networkState.classList.toggle('online', networkState === 'Running');
+    elements.networkAddress.textContent = state.network.address || text('本机 Tailscale', 'Local Tailscale');
     elements.openLogin.hidden = !state.network.loginUrl;
+    elements.networkStart.hidden = networkState === 'Running' || networkState === 'NeedsMachineAuth' || Boolean(state.network.loginUrl);
     elements.servers.replaceChildren();
     if (!state.devices.length) {
       const empty = document.createElement('p'); empty.className = 'hint'; empty.textContent = text('尚未添加服务器。连接 Tailscale 后，使用服务器配对码添加。', 'No servers yet. Connect Tailscale, then add a server using its pairing code.'); elements.servers.append(empty);
     }
     for (const device of state.devices) {
-      const row = document.createElement('article'); row.className = 'server-setting';
-      const details = document.createElement('div');
+      const row = document.createElement('article'); row.className = 'device-row';
+      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true'); icon.classList.add('device-icon');
+      const outline = document.createElementNS(icon.namespaceURI, 'path');
+      outline.setAttribute('d', 'M5 3.5h14a1.5 1.5 0 0 1 1.5 1.5v11a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 16V5A1.5 1.5 0 0 1 5 3.5Zm3 17h8m-4-3v3M7 8l3 3-3 3m6 0h4');
+      icon.append(outline);
+      const details = document.createElement('div'); details.className = 'device-info';
       const title = document.createElement('strong'); title.textContent = device.name;
-      const address = document.createElement('p'); address.className = 'hint'; address.textContent = device.address;
-      const stateLabel = document.createElement('p'); stateLabel.className = 'hint'; stateLabel.textContent = text('已配对 · 从首页连接', 'Paired · Connect from Home'); details.append(title, address, stateLabel);
-      const label = document.createElement('label'); label.textContent = text('默认 Harness', 'Default harness');
+      const address = document.createElement('p'); address.className = 'device-meta device-address'; address.textContent = device.address;
+      details.append(title, address);
+      const actions = document.createElement('div'); actions.className = 'device-actions';
+      const label = document.createElement('label'); label.className = 'device-field'; label.textContent = text('默认 Harness', 'Default harness');
       const select = document.createElement('select'); select.setAttribute('aria-label', `${device.name} · ${label.textContent}`);
       select.append(new Option(text('服务器可用引擎', 'Available server engine'), ''), ...Object.entries(harnesses).map(([id, name]) => new Option(name, id)));
       select.value = device.defaultHarness || '';
@@ -52,7 +61,8 @@
       label.append(select);
       const forget = document.createElement('button'); forget.className = 'danger'; forget.textContent = text('忘记', 'Forget');
       forget.onclick = () => { forgotten = device.id; elements.forgetHint.textContent = `${device.name} · ${text('仅移除本机凭据，不删除服务器文件或会话，也不撤销服务器授权。已打开的服务器窗口将关闭。', 'Removes local credentials only. Server files, conversations and authorization remain. The server window will close.')}`; elements.forgetDialog.showModal(); };
-      row.append(details, label, forget); elements.servers.append(row);
+      actions.append(label, forget);
+      row.append(icon, details, actions); elements.servers.append(row);
     }
   }
   elements.refresh.onclick = () => run(refresh);

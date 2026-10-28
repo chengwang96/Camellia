@@ -1207,7 +1207,7 @@ test('list streams immediately notify desktop creation and deletion and resync a
   assert.notEqual(added.listVersion, initial.listVersion);
   assert.ok(added.cursor > initial.cursor);
   assert.ok((await request(gateway, '/v1/conversations', { token: credential.token })).body.conversations.some(entry => entry.id === created.id));
-  manager.purge(created.id);
+  await manager.purge(created.id);
   const removed = await events.next();
   assert.equal(removed.listVersion, initial.listVersion);
   assert.ok(removed.cursor > added.cursor);
@@ -1234,12 +1234,12 @@ test('list versions include later pages, exclude unauthorized changes, and suppr
   const write = connected.response.write.bind(connected.response);
   connected.response.write = (...args) => { writes++; return write(...args); };
   gateway.publish();
-  manager.purge(hidden.id);
+  await manager.purge(hidden.id);
   await new Promise(resolve => setTimeout(resolve, 350));
   assert.equal(writes, 0);
   assert.equal(reader.listSnapshot(device).listVersion, initial.listVersion);
   const later = reader.list(device, 100).conversations[0];
-  manager.purge(later.id);
+  await manager.purge(later.id);
   assert.notEqual((await events.next()).listVersion, initial.listVersion);
   assert.equal(writes, 1);
 });
@@ -1841,9 +1841,9 @@ test('mobile create then send generates a title visible in snapshots and lists',
   assert.equal((await request(gateway, endpoint, { token, method: 'POST', payload })).body.ok, true);
   assert.deepEqual(calls, [payload.prompt]);
   const snapshot = await request(gateway, `/v1/conversations/${conversation.id}`, { token });
-  assert.equal(snapshot.body.conversation.title, 'Remote tit');
+  assert.equal(snapshot.body.conversation.title, 'Remote title');
   const list = await request(gateway, '/v1/conversations', { token });
-  assert.equal(list.body.conversations.find(item => item.id === conversation.id).title, 'Remote tit');
+  assert.equal(list.body.conversations.find(item => item.id === conversation.id).title, 'Remote title');
 });
 
 for (const workspaceId of ['allowed', null]) test('mobile new conversation keeps a readable title while the API is offline in workspace ' + workspaceId, async context => {
@@ -1892,7 +1892,7 @@ test('mobile event streams show a provisional title and then the background mode
     action: 'send', expectedSeq: created.body.conversation.seq, prompt: 'First visible request',
   } });
   assert.equal(sent.body.ok, true);
-  assert.equal((await events.next()).conversation.title, 'First visi');
+  assert.equal((await events.next()).conversation.title, 'First visible');
   resolveTitle('远程命名修复');
   // The send also publishes activity snapshots; drain them until the title
   // changes, with a finite read deadline so a missing update fails the test.

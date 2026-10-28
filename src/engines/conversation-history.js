@@ -12,8 +12,8 @@ const { INLINE_CHARS, projectRow } = require('./tool-history');
 // cumulative statistics, never message bodies. Fixed-size records allow paging
 // without loading an entire conversation's index into the heap.
 const HEADER = 4096, RECORD = 80, BLOCK = RECORD * 512, READ = 128 * 1024;
-const VERSION = 2;
-const FLAGS = { public: 1, visible: 2, remote: 4, user: 8, summary: 16, preview: 32, sequence: 64, tool: 128 };
+const VERSION = 3;
+const FLAGS = { public: 1, visible: 2, remote: 4, user: 8, summary: 16, preview: 32, sequence: 64, tool: 128, file: 256 };
 const signature = stat => stat ? [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':') : 'missing';
 const tokens = text => {
   const value = String(text || '');
@@ -90,7 +90,7 @@ class ConversationHistory {
   }
   empty(id, source) {
     return { version: VERSION, id, generation: randomUUID(), source: signature(source), size: source?.size || 0, count: 0, total: 0,
-      userSeq: 0, userAt: 0, maxSeq: 0, lastSeq: 0, lastSummary: -1, ordered: true, tail: null, repaired: false };
+      userSeq: 0, userAt: 0, maxSeq: 0, lastSeq: 0, lastSummary: -1, hasFiles: false, ordered: true, tail: null, repaired: false };
   }
   header(fd, value) {
     const { index, indexStamp, ...saved } = value;
@@ -202,6 +202,7 @@ class ConversationHistory {
       if (row.role === 'user') { value.userSeq = Math.max(value.userSeq, seq); value.userAt = Math.max(value.userAt, Number(row.at) || 0); }
       if (row.role === 'notice' && row.file) { flags |= FLAGS.summary; value.lastSummary = value.count; }
       if (row.role === 'user' && row.attachments?.length || row.role === 'assistant' && row.artifacts?.length) flags |= FLAGS.preview;
+      if (row.file || row.attachments?.some(file => file.path || file.fullPath)) { flags |= FLAGS.file; value.hasFiles = true; }
     }
     const projected = this.projectToolRow(value, { offset, length }, row);
     const cost = seq > 0 && !row.internal && contextRow(row) ? tokens(projected.text) + 200 / 3 : 0;
@@ -339,6 +340,10 @@ class ConversationHistory {
   }
   *iterate(id, { after = -Infinity, before = Infinity, mask = 0, reverse = false } = {}) {
     const value = this.ensure(id);
+    // Deletion needs paths, not message text. Most conversations have no file
+    // references at all, so their index records need not be visited either.
+    // Revisions may leave hasFiles true; the effective records remain decisive.
+    if (mask === FLAGS.file && !value.hasFiles) return;
     let low = 0, high = value.count;
     if (value.ordered) {
       const boundary = (seq, inclusive) => {
@@ -426,6 +431,20 @@ class ConversationHistory {
       for (const name of fs.readdirSync(this.indexDir))
         if (name.startsWith(id + '.idx.') && /^[a-f0-9-]{36}\.\d+\.tool$/.test(name.slice(id.length + 5)))
           fs.unlinkSync(path.join(this.indexDir, name));
+    } catch (error) { if (error.code !== 'ENOENT') this.report(error); }
+  }
+  async removeAsync(id) {
+    this.forget(id);
+    const temporary = this.tempById.get(id);
+    if (temporary) {
+      try { await fs.promises.unlink(temporary); } catch {}
+      this.temporary.delete(temporary); this.tempById.delete(id);
+    }
+    try { await fs.promises.unlink(this.index(id)); } catch (error) { if (error.code !== 'ENOENT') this.report(error); }
+    try {
+      for (const name of await fs.promises.readdir(this.indexDir))
+        if (name.startsWith(id + '.idx.') && /^[a-f0-9-]{36}\.\d+\.tool$/.test(name.slice(id.length + 5)))
+          await fs.promises.unlink(path.join(this.indexDir, name));
     } catch (error) { if (error.code !== 'ENOENT') this.report(error); }
   }
   close() {

@@ -29,6 +29,16 @@ with sync_playwright() as playwright:
         if (name === 'kimiAccountState') return async () => ({ok:true,models:[{id:'kimi-a',name:'Kimi A',supportedReasoningEfforts:['low','high','max'],defaultReasoningEffort:'high'}]});
         if (name === 'grokAccountState') return async () => ({ok:true,models:[{id:'grok-a',name:'Grok A'}]});
         if (name === 'antigravityAccountState') return async () => ({ok:true,models:[{id:'google-a',name:'Google A'}]});
+        if (name === 'networkTest') return async () => {
+          const results = [
+            {id:'off.example:443',kind:'provider',label:'Disabled API',host:'off.example',port:443,models:['off-1'],direct:false,proxy:true},
+            {id:'nokey.example:443',kind:'provider',label:'API without an enabled key',host:'nokey.example',port:443,models:['nokey-1'],direct:true,proxy:true},
+            {id:'subscription:grok',kind:'subscription',label:'Grok account',host:'cli-chat-proxy.grok.com',port:443,models:[],direct:true,proxy:true},
+            {id:'subscription:antigravity',kind:'subscription',label:'Google account',host:'cloudcode-pa.googleapis.com',port:443,models:[],direct:false,proxy:true},
+            {id:'subscription:kimi',kind:'subscription',label:'Kimi account',host:'api.kimi.com',port:443,models:[],direct:false,proxy:true},
+          ];
+          return {ok:true,results,summary:{total:5,direct:2,proxy:5,unreachable:[]}};
+        };
         if (name === 'camelliaDevices') return {
           onEvent() {}, onTransfer() {},
           async call(action) {
@@ -170,10 +180,15 @@ with sync_playwright() as playwright:
     expect(page.locator("#generalPage")).to_be_hidden()
     expect(page.locator("#networkMode")).to_be_visible()
     expect(page.locator("#networkTest")).to_have_text("Test all connections")
+    page.locator("#networkTest").click()
+    expect(page.locator("#networkResults .connectivity-row")).to_have_count(5)
+    for label in ["Disabled API", "API without an enabled key", "Grok account", "Google account", "Kimi account"]:
+        expect(page.locator("#networkResults")).to_contain_text(label)
     for language in ["en", "zh-CN"]:
         page.evaluate("language => CamelliaI18n.setLanguage(language)", language)
-        page.set_viewport_size({"width": 1180, "height": 820})
-        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), language
+        for width in [1180, 700, 390, 320]:
+            page.set_viewport_size({"width": width, "height": 820})
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (language, width)
     page.evaluate("CamelliaI18n.setLanguage('en')")
     page.locator('.settings-nav nav [data-view="general"]').click()
     expect(page.locator("#pageTitle")).to_have_text("General")
@@ -204,9 +219,9 @@ with sync_playwright() as playwright:
     page.locator('.settings-nav nav [data-view="devices"]').click()
     expect(page.locator("#devicesPage")).to_be_visible()
 
-    # Scoped styles keep settings controls and device controls visually distinct.
+    # Embedded device controls use the same metrics as the other settings controls.
     assert page.evaluate("getComputedStyle(document.getElementById('checkAppUpdate')).borderRadius") == "18px"
-    assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).borderRadius") == "16px"
+    assert page.evaluate("getComputedStyle(document.getElementById('cli-refresh')).borderRadius") == "18px"
     assert not errors, errors
     browser.close()
 print("Settings page: model and general groups, quick-switch saves, bilingual responsive layout and CLI device navigation passed")

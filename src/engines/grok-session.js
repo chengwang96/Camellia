@@ -14,10 +14,12 @@ const { readJson, writeText } = require('../shared/json-store');
 // Allow the native CLI's cold Windows startup before its ACP server is ready.
 const GROK_STARTUP_TIMEOUT_MS = 60000;
 
-function grokEnvironment(home, inherited = process.env, proxyUrl) {
+function grokEnvironment(home, inherited = process.env, proxyUrl, { subscription = false } = {}) {
   const env = { ...inherited, GROK_HOME: home };
   for (const key of Object.keys(env)) if (/^(XAI_API_KEY|GROK_CODE_XAI_API_KEY|GROK_OIDC_|GROK_AUTH_)/i.test(key)) delete env[key];
-  if (proxyUrl !== undefined) {
+  if (env.CAMELLIA_NETWORK_MODE !== undefined) {
+    if (subscription) Object.assign(env, require('../main/network-settings').subscriptionEnvironment(env));
+  } else if (proxyUrl !== undefined) {
     const network = downloadSettings({ mode: proxyUrl ? 'proxy' : 'direct', url: proxyUrl });
     for (const key of Object.keys(env)) if (/^(https?|all|no)_proxy$/i.test(key)) delete env[key];
     Object.assign(env, { HTTP_PROXY: network.url, HTTPS_PROXY: network.url,
@@ -43,7 +45,7 @@ function grokSpawnSpec({ runtime, home, model, connection = 'api', route, contex
     } };
   }
   writeText(path.join(home, 'config.toml'), TOML.stringify(merged));
-  const environment = { ...grokEnvironment(home, env, proxyUrl), CAMELLIA_API_KEY: route?.authToken || 'proxy-managed' };
+  const environment = { ...grokEnvironment(home, env, proxyUrl, { subscription: connection === 'subscription' }), CAMELLIA_API_KEY: route?.authToken || 'proxy-managed' };
   const args = ['--model', connection === 'subscription' ? model : 'camellia'];
   if (instructions) args.push('--rules', instructions);
   if (reasoningEffort) args.push('--reasoning-effort', reasoningEffort);

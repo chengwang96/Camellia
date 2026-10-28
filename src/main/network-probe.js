@@ -14,6 +14,7 @@ const MAX_CONCURRENCY = 4;
 const SUBSCRIPTION_HOSTS = {
   codex: { host: 'chatgpt.com', port: 443, label: 'ChatGPT account' },
   kimi: { host: 'api.kimi.com', port: 443, label: 'Kimi account' },
+  grok: { host: 'cli-chat-proxy.grok.com', port: 443, label: 'Grok account' },
   antigravity: { host: 'cloudcode-pa.googleapis.com', port: 443, label: 'Google account' },
 };
 
@@ -27,10 +28,10 @@ function hostOf(baseUrl) {
 
 // One route per host: several models on the same provider share a connection,
 // so probing each model separately would only repeat the same TCP attempt.
-function providerTargets(config) {
+function providerTargets(config, { includeConfigured = false } = {}) {
   const grouped = new Map();
   for (const provider of config?.providers || []) {
-    if (!provider.enabled || !provider.keys?.some(key => key.enabled)) continue;
+    if (!includeConfigured && (!provider.enabled || !provider.keys?.some(key => key.enabled))) continue;
     const models = (provider.models || []).map(model => model.id);
     for (const base of [provider.baseUrl, provider.anthropicBaseUrl].filter(Boolean)) {
       const target = hostOf(base);

@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
+const { zstdCompressSync } = require('node:zlib');
 const { SharedConversations } = require('../src/engines/shared-conversations');
 const { listDesktopSessions, listDesktopImportCandidates, readRolloutMessages, importDesktopSessions, syncDesktopSession, desktopStatePath } = require('../src/main/codex-desktop-import');
 
@@ -43,6 +44,12 @@ function writeRollout(root, name, rows) {
   return file;
 }
 
+function writeCompressedRollout(root, name, rows) {
+  const file = path.join(root, name);
+  fs.writeFileSync(file, zstdCompressSync(Buffer.from(rows.map(row => JSON.stringify(row)).join('\n') + '\n')));
+  return file;
+}
+
 function sharedFixture(root) {
   const dir = path.join(root, 'conversations');
   let config = {};
@@ -53,24 +60,28 @@ function sharedFixture(root) {
 const responseItem = (role, text, at = '2026-09-16T10:00:00.000Z') =>
   ({ timestamp: at, type: 'response_item', payload: { type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] } });
 
-test('desktop session listing skips subagents, archived rows, unnamed rows and missing rollouts', t => {
+test('desktop session listing skips subagents, archived rows and empty titles, and disables missing rollouts', t => {
   const { root, file, db, close } = stateFixture(t);
   const rollout = writeRollout(root, 'a.jsonl', [responseItem('user', 'hello')]);
   addThread(db, { id: 'main', name: 'Main chat', rollout });
   addThread(db, { id: 'sub', name: 'Subagent', source: '{"subagent":{"other":"x"}}', rollout });
   addThread(db, { id: 'archived', name: 'Archived', archived: 1, rollout });
   addThread(db, { id: 'unnamed', title: 'Generated title', first: 'First message', rollout });
+  addThread(db, { id: 'empty', rollout });
+  addThread(db, { id: 'whitespace', name: ' \t\n', title: '\r ', first: '\t', rollout });
   addThread(db, { id: 'gone', name: 'No file left', rollout: path.join(root, 'missing.jsonl') });
   close();
   const sessions = listDesktopSessions(file);
-  assert.deepEqual(sessions.map(s => s.id), ['main', 'gone']);
+  assert.deepEqual(sessions.map(s => s.id), ['main', 'unnamed', 'gone']);
   assert.equal(sessions[0].title, 'Main chat');
-  assert.equal(sessions[1].importable, false);
-  assert.equal(sessions[1].title, 'No file left');
-  assert.deepEqual(listDesktopSessions(file, { excludeIds: new Set(['main']) }).map(s => s.id), ['gone']);
+  assert.equal(sessions[1].title, 'Generated title');
+  assert.equal(sessions[1].importable, true);
+  assert.equal(sessions[2].importable, false);
+  assert.equal(sessions[2].title, 'No file left');
+  assert.deepEqual(listDesktopSessions(file, { excludeIds: new Set(['main']) }).map(s => s.id), ['unnamed', 'gone']);
 });
 
-test('only the user-visible name is used, and cwd falls back to a matching project root', t => {
+test('the user-visible name takes priority, and cwd falls back to a matching project root', t => {
   const { root, file, db, close } = stateFixture(t);
   const rollout = writeRollout(root, 'n.jsonl', [responseItem('user', 'hello')]);
   const projectDir = path.join(root, 'proj'); fs.mkdirSync(projectDir);
@@ -83,6 +94,25 @@ test('only the user-visible name is used, and cwd falls back to a matching proje
   assert.equal(named.title, 'real working session');
   assert.deepEqual(named.project, { id: 'p1', name: 'ARDS', path: projectDir });
   assert.equal(sessions.find(s => s.id === 'plain').project, null);
+});
+
+test('unnamed sessions fall back to cleaned titles, first messages and previews before the scan cap', t => {
+  const { root, file, db, close } = stateFixture(t);
+  const rollout = writeRollout(root, 'fallback.jsonl', [responseItem('user', 'hello')]);
+  addThread(db, { id: 'title', name: ' \t', title: '## My request:\n标题', first: 'Lower priority', rollout });
+  addThread(db, { id: 'first', name: '## My request:', title: ' ', first: '## My request:\n首条问题', rollout });
+  addThread(db, { id: 'preview', rollout });
+  db.prepare('UPDATE threads SET preview = ? WHERE id = ?').run('Preview '.repeat(20), 'preview');
+  addThread(db, { id: 'empty', rollout });
+  db.prepare('UPDATE threads SET updated_at = 2000000000 WHERE id = ?').run('empty');
+  close();
+  const sessions = listDesktopSessions(file, { maxSessions: 2 });
+  assert.deepEqual(sessions.map(session => [session.id, session.title]), [['title', '标题'], ['first', '首条问题']]);
+  assert.equal(sessions.truncated, true);
+  const preview = listDesktopSessions(file, { excludeIds: new Set(['title', 'first']) });
+  assert.equal(preview.length, 1);
+  assert.equal(preview[0].title, 'Preview '.repeat(20).trim().slice(0, 60));
+  assert.equal(preview.truncated, false);
 });
 
 test('desktop session listing is capped and reports truncation', t => {
@@ -330,6 +360,71 @@ test('the import list offers changed imports and re-importing updates the same c
   assert.equal(listDesktopImportCandidates(shared, file).length, 0);
   assert.equal((await importDesktopSessions(shared, file, ['update'])).updated[0].addedMessages, 0);
   assert.equal(shared.messages(conversation).length, 4);
+});
+
+for (const compressedIndex of [true, false]) {
+  test(`unnamed compressed sessions import and update in place with a ${compressedIndex ? 'compressed' : 'legacy plain'} index path`, async t => {
+    const { root, file, db, close } = stateFixture(t);
+    const original = [responseItem('user', '你好\u2028世界'), responseItem('assistant', '原始回答')];
+    const rollout = writeCompressedRollout(root, 'compressed.jsonl.zst', original);
+    const indexedPath = compressedIndex ? rollout : rollout.slice(0, -4);
+    addThread(db, { id: 'compressed', title: 'Compressed conversation', rollout: indexedPath });
+    close();
+    const sourceBefore = fs.readFileSync(rollout);
+    const sourceStat = fs.statSync(rollout);
+    const databaseBefore = fs.readFileSync(file);
+    const shared = sharedFixture(root);
+    const candidates = listDesktopImportCandidates(shared, file);
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].action, 'import');
+    assert.equal(candidates[0].title, 'Compressed conversation');
+    assert.equal(candidates[0].importable, true);
+    assert.equal(candidates[0].rolloutPath, rollout);
+    assert.equal(candidates[0].rolloutBytes, sourceBefore.length);
+    const result = await importDesktopSessions(shared, file, ['compressed']);
+    assert.deepEqual(result.skipped, []);
+    assert.equal(result.imported.length, 1);
+    const conversation = shared.get(result.imported[0].id);
+    assert.deepEqual(shared.messages(conversation).map(row => row.text), ['你好\u2028世界', '原始回答']);
+    assert.equal(listDesktopImportCandidates(shared, file).length, 0);
+    assert.deepEqual(fs.readFileSync(rollout), sourceBefore);
+    assert.equal(fs.statSync(rollout).mtimeMs, sourceStat.mtimeMs);
+    assert.deepEqual(fs.readFileSync(file), databaseBefore);
+    assert.equal(fs.existsSync(rollout.slice(0, -4)), false);
+    shared.append(conversation, { role: 'user', engine: 'codex', text: 'Camellia continuation', attachments: [] });
+    writeCompressedRollout(root, 'compressed.jsonl.zst', [...original, responseItem('user', '新增问题'), responseItem('assistant', '新增回答')]);
+    assert.equal(listDesktopImportCandidates(shared, file)[0].action, 'update');
+    const updated = await importDesktopSessions(shared, file, ['compressed']);
+    assert.deepEqual(updated.skipped, []);
+    assert.equal(updated.updated[0].id, conversation.id);
+    assert.equal(updated.updated[0].addedMessages, 2);
+    assert.equal(shared.items.size, 1);
+    assert.deepEqual(shared.messages(conversation).map(row => row.text), ['你好\u2028世界', '原始回答', 'Camellia continuation', '新增问题', '新增回答']);
+    const reopened = sharedFixture(root);
+    assert.equal((await syncDesktopSession(reopened, file, conversation.id)).addedMessages, 0);
+    assert.equal(listDesktopImportCandidates(reopened, file).length, 0);
+  });
+}
+
+test('manual sync finds compressed siblings after an imported rollout is compressed and archived', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'Original question')];
+  const rollout = writeRollout(root, 'later-compressed.jsonl', original);
+  addThread(db, { id: 'later-compressed', title: 'Original title', rollout });
+  const shared = sharedFixture(root);
+  const result = await importDesktopSessions(shared, file, ['later-compressed']);
+  const conversation = shared.get(result.imported[0].id);
+  writeCompressedRollout(root, 'later-compressed.jsonl.zst', [...original, responseItem('assistant', 'Later answer')]);
+  fs.unlinkSync(rollout);
+  db.prepare('UPDATE threads SET archived = 1, title = ?, first_user_message = ? WHERE id = ?')
+    .run('', '## My request:\nFallback title', 'later-compressed');
+  close();
+  assert.equal(listDesktopSessions(file).length, 0);
+  const update = await syncDesktopSession(shared, file, conversation.id);
+  assert.equal(update.addedMessages, 1);
+  assert.equal(update.title, 'Fallback title');
+  assert.deepEqual(shared.messages(conversation).map(row => row.text), ['Original question', 'Later answer']);
+  assert.equal((await syncDesktopSession(shared, file, conversation.id)).addedMessages, 0);
 });
 
 test('selected threads remain importable outside the scan cap and unavailable IDs report a failure', async t => {
@@ -589,6 +684,46 @@ test('extracted-text safety limits apply after filtering and use UTF-8 bytes', a
   await assert.rejects(readRolloutMessages(rollout, null, { maxMessageCount: 1 }), /Extracted conversation exceeds/);
   await assert.rejects(readRolloutMessages(rollout, () => { throw new Error('write failed'); }), /write failed/);
   assert.equal((await readRolloutMessages(rollout)).length, 2);
+});
+
+test('compressed histories enforce extracted-text limits after decompression and recover from interrupted reads', async t => {
+  const { root } = stateFixture(t);
+  const rollout = writeCompressedRollout(root, 'compressed-limits.jsonl.zst', [
+    { type: 'response_item', payload: { type: 'function_call_output', output: 'ignored'.repeat(10000) } },
+    responseItem('user', '你好'), responseItem('assistant', '好'),
+  ]);
+  assert.equal((await readRolloutMessages(rollout, null, { maxMessageBytes: 9, maxMessageCount: 2 })).length, 2);
+  await assert.rejects(readRolloutMessages(rollout, null, { maxMessageBytes: 8 }), /Extracted conversation exceeds/);
+  await assert.rejects(readRolloutMessages(rollout, null, { maxMessageCount: 1 }), /Extracted conversation exceeds/);
+  await assert.rejects(readRolloutMessages(rollout, () => { throw new Error('write failed'); }), /write failed/);
+  assert.equal((await readRolloutMessages(rollout)).length, 2);
+  await assert.rejects(readRolloutMessages(path.join(root, 'missing.jsonl.zst')), /ENOENT/);
+});
+
+test('invalid and truncated compressed histories reject without partial imports or sync writes', async t => {
+  const { root, file, db, close } = stateFixture(t);
+  const original = [responseItem('user', 'Keep original')];
+  const rollout = writeCompressedRollout(root, 'corrupt-compressed.jsonl.zst', original);
+  addThread(db, { id: 'corrupt-compressed', title: 'Corrupt compressed', rollout });
+  addThread(db, { id: 'invalid-compressed', title: 'Invalid compressed', rollout: path.join(root, 'invalid.jsonl.zst') });
+  fs.writeFileSync(path.join(root, 'invalid.jsonl.zst'), 'not a zstd frame');
+  close();
+  const shared = sharedFixture(root);
+  const first = await importDesktopSessions(shared, file, ['corrupt-compressed']);
+  const conversation = shared.get(first.imported[0].id);
+  writeCompressedRollout(root, 'corrupt-compressed.jsonl.zst', [...original, responseItem('assistant', 'Incomplete frame')]);
+  const compressed = fs.readFileSync(rollout);
+  fs.writeFileSync(rollout, compressed.subarray(0, compressed.length - 3));
+  await assert.rejects(syncDesktopSession(shared, file, conversation.id));
+  assert.deepEqual(shared.messages(conversation).map(row => row.text), ['Keep original']);
+  const fresh = sharedFixture(path.join(root, 'fresh'));
+  const failed = await importDesktopSessions(fresh, file, ['corrupt-compressed', 'invalid-compressed']);
+  assert.equal(failed.imported.length, 0, JSON.stringify(failed));
+  assert.equal(failed.skipped.length, 2);
+  assert.equal(fresh.items.size, 0);
+  const malformed = path.join(root, 'malformed.jsonl.zst');
+  fs.writeFileSync(malformed, zstdCompressSync(Buffer.from('{invalid json}\n')));
+  await assert.rejects(readRolloutMessages(malformed), /invalid JSONL record/);
 });
 
 test('unreadable history rejects cleanly and a failed import leaves no partial conversation', async t => {
